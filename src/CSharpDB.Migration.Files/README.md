@@ -67,8 +67,11 @@ order, emits deterministic reject evidence, bounds batches by rows and
 canonical bytes, and supplies snapshot/policy-bound replay cursors.
 Raw and typed retained packages, source-bound typed intent, typed table/apply
 conversion, JSON/NDJSON table export, and durable retained-adapter/CLI resume
-routing are now implemented. Collection projection and typed export-intent
-generation remain later slices. See
+routing are now implemented. Retained package v1 is also available through
+fail-fast CLI inspect, plan, apply/resume, and validation for root-array JSON
+and NDJSON. Deterministic JSON reject CLI policy, typed-v2 CLI routing,
+collection projection, and typed export-intent generation remain later slices.
+See
 [`migration-json-reader-foundation.md`](../../docs/migration-json-reader-foundation.md)
 and
 [`migration-json-table-schema.md`](../../docs/migration-json-table-schema.md),

@@ -227,7 +227,10 @@ Tests must cover:
 - large-stream bounded memory, cancellation, integrity, and replay
   determinism.
 
-Track 4B remains open after schema inspection. The later JSON migration notes
-now define the catalog-bound data source, deterministic row-local rejects,
-cursor and batch accounting, and retained-source package. Typed sidecars,
-export, resume, and CLI integration remain open.
+Track 4B remains open after schema inspection. Later JSON migration slices now
+implement the catalog-bound data source, deterministic row-local rejects,
+cursor and batch accounting, raw and typed retained packages, source-bound
+typed intent, JSON/NDJSON export with durable resume, and fail-fast retained-v1
+CLI inspect, plan, apply/resume, and validation. Collection projection, typed
+export-intent generation, typed-v2 CLI routing, and deterministic JSON reject
+CLI policy remain open.

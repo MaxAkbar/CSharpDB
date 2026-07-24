@@ -112,28 +112,41 @@ Migration and retained table-export surface:
 ```powershell
 csharpdb migrate inspect --source synthetic --out <catalog.json>
 csharpdb migrate inspect --source csv --input <source.csv> --package <source.csdbcsv> --out <catalog.json> [--delimiter auto|comma|semicolon|tab|pipe|<character>] [--no-header]
+csharpdb migrate inspect --source json --input <source.json|source.ndjson> --package <source.csdbjson> --out <catalog.json> [--framing root-array|ndjson] [--table <name>] [--sample-rows <count>] [--source-id <label>] [--workspace <directory>] [--max-source-bytes <count>]
 csharpdb migrate plan <catalog.json> --out <plan.json> [--profile preserve|queryable] [--accept-exclusions all|<id,...>] [--accept-diagnostics <id,...>] [--reject-mode fail-fast|deterministic --reject-rules all|<id,...> --max-rejected-rows-per-batch <count> --max-rejected-rows-per-run <count> --max-reject-evidence-value-bytes <count> --max-reject-evidence-bytes-per-batch <count> --max-reject-evidence-bytes-per-run <count> --max-reject-artifact-bytes <count>]
 csharpdb migrate preview <plan.json> --catalog <catalog.json> [--format text|json]
-csharpdb migrate apply <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv> --expected-manifest-digest <sha256:...> --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]
-csharpdb migrate validate <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv> --expected-manifest-digest <sha256:...> --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]
+csharpdb migrate apply <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv|source.csdbjson> --expected-manifest-digest <sha256:...> --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]
+csharpdb migrate validate <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv|source.csdbjson> --expected-manifest-digest <sha256:...> --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]
 csharpdb migrate export <retained-snapshot.db> --format csv --table <physical-table> --out <table.csv> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1|spreadsheet-safe-lossy-v1] [--max-data-bytes <positive-int64>] [--max-decoded-blob-bytes <positive-int32>] [--checkpoint-row-interval <positive-int64>] [--json]
 csharpdb migrate export <retained-snapshot.db> --format json|ndjson --table <physical-table> --out <table.json|table.ndjson> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1] [--max-data-bytes <positive-int64>] [--max-decoded-blob-bytes <positive-int32>] [--checkpoint-row-interval <positive-int64>] [--json]
 ```
 
-Inspection supports both the immutable synthetic qualification source and a
-strict CSV source. CSV inspection freezes the raw bytes and complete reader and
-inference policy into one no-overwrite `.csdbcsv` package, writes the normal
-catalog artifact, and prints `manifestDigest=sha256:...`. Retain that digest in
-an independently trusted change record or CI parameter; CSV apply, resume, and
-validation require it through `--expected-manifest-digest`. The original CSV
-path is not retained and is never reopened after inspection. Common delimiter
-detection is automatic; `--delimiter` supplies the only candidate when an
-explicit convention is required. CSV defaults are strict UTF-8 with BOM
-detection, a header row, invariant culture, and no null token.
+Inspection supports the immutable synthetic qualification source, strict CSV,
+and retained JSON package v1. CSV inspection freezes the raw bytes and complete
+reader and inference policy into one no-overwrite `.csdbcsv` package. JSON
+inspection does the same for root-array JSON or NDJSON-compatible
+whitespace-separated top-level values in one no-overwrite `.csdbjson` package.
+Both write the normal catalog artifact and print
+`manifestDigest=sha256:...`. Retain that digest in an independently trusted
+change record or CI parameter; apply, resume, and validation require it through
+`--expected-manifest-digest`. The original CSV or JSON path is not retained and
+is never reopened after inspection.
+
+Common CSV delimiter detection is automatic; `--delimiter` supplies the only
+candidate when an explicit convention is required. CSV defaults are strict
+UTF-8 with BOM detection, a header row, invariant culture, and no null token.
+JSON defaults are `root-array` framing, table `json_data`, 1,000 type-profile
+sample rows, and the retained JSON snapshot's default source-size ceiling.
+Select `--framing ndjson` for that multiple-value mode; line breaks are
+conventional, not required by the reader. JSON package v1 is currently routed
+only through the fail-fast migration plan; deterministic JSON rejects and typed
+package v2 CLI routing remain later slices.
+
 The package parent and any explicit workspace must already exist and remain
 caller-controlled and cannot themselves be links, junctions, reparse points,
-or devices. CSV collision checks resolve link aliases in ancestor components
-before comparing input, package, catalog, plan, target, and report roles.
+or devices. Source-package collision checks resolve link aliases in ancestor
+components before comparing input, package, catalog, plan, target, and report
+roles.
 
 CSV export accepts only an already retained CSharpDB snapshot. Capture
 and pin its canonical identity independently before invoking the command; the

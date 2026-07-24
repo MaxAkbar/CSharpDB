@@ -9,8 +9,9 @@ NDJSON path.
 It builds on
 [`migration-json-reader-foundation.md`](migration-json-reader-foundation.md),
 [`migration-json-table-schema.md`](migration-json-table-schema.md), and
-[`migration-json-data-source.md`](migration-json-data-source.md). It does not
-define collection projection, typed sidecars, export, or CLI behavior.
+[`migration-json-data-source.md`](migration-json-data-source.md). Later slices
+add typed sidecars, export, and fail-fast CLI routing without changing this
+package-v1 contract. Collection projection remains outside its scope.
 
 ## Public Contract
 
@@ -144,14 +145,16 @@ The merge gate covers both root-array and multiple-value/NDJSON framing:
 
 Fresh-process qualification writes in one process, deletes the original
 input, pin-opens and reads in a second process, then independently resumes an
-earlier cursor in a third process for both framing modes. Full CLI
-inspect/plan/apply/resume/validate routing remains part of the CLI slice.
-Large generated streams and broader header/manifest mutation fuzzing remain
-release qualification.
+earlier cursor in a third process for both framing modes. CLI qualification now
+also covers fail-fast inspect, plan, apply, an independent resume command, and
+validation from independently pinned package-v1 manifests for root-array JSON
+and NDJSON. Large generated streams and broader header/manifest mutation
+fuzzing remain release qualification.
 
 ## Deferred Work
 
 Version 1 does not add overwrite, repair, in-place upgrade, signatures,
 encryption, compression, deduplication, direct reads from the durable package,
 remote/object storage, automatic retention cleanup, embedded plans or
-receipts, typed sidecars, collection projection, export, or CLI routing.
+receipts, typed sidecars, collection projection, typed-package-v2 CLI routing,
+or deterministic JSON reject CLI policy.

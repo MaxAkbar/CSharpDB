@@ -668,8 +668,10 @@ prepared-data rehash, and manifest-last prepared publication. The retained
   framings once journal authority exists and all five publication cutoffs for
   both framings, including empty NDJSON. The one-time adoption of same-binding
   restart-only finals is not yet process-kill qualified. Abrupt-power-loss
-  qualification, collection projection, and import CLI integration remain
-  open. Restart-only publication uses
+  qualification, collection projection, typed-v2 import routing, and
+  deterministic JSON reject CLI policy remain open. Fail-fast retained JSON v1
+  inspect, plan, apply/resume, and validation now route through the CLI for
+  root-array JSON and NDJSON. Restart-only publication uses
 deterministic exclusive `.next` siblings and safely reclaims only qualified
 crash leftovers.
 
@@ -721,6 +723,8 @@ crash leftovers.
 - [x] Route durable resume/publication through the retained CSharpDB adapter
   and CLI.
 - [x] Child-process qualify JSON resume and publication cutoffs.
+- [x] Route retained JSON v1 packages through fail-fast CLI inspect, plan,
+  apply/resume, and validation for root-array JSON and NDJSON.
 
 ### Shared Deliverables
 
