@@ -1,5 +1,6 @@
 using CSharpDB.Migration;
 using CSharpDB.Migration.Sqlite;
+using Microsoft.Data.Sqlite;
 
 namespace CSharpDB.Migration.Sqlite.Tests;
 
@@ -316,6 +317,381 @@ public sealed class SqliteMigrationSourceInspectorTests
         AssertFacet(table, "sqliteRowIdAlias", "rowid");
     }
 
+    [Fact]
+    public async Task ProfileSkipsGeneratedColumnThatRequiresUnavailableApplicationFunction()
+    {
+        using var temporary = new SqliteTestDirectory();
+        string sourcePath = temporary.PathFor("generated-function-source.sqlite");
+        string snapshotPath = temporary.PathFor("generated-function-snapshot.sqlite");
+        await CreateFunctionBackedGeneratedColumnDatabaseAsync(sourcePath);
+
+        SqliteBackupSnapshot? snapshot = null;
+        try
+        {
+            snapshot = await SqliteBackupSnapshot.CreateAsync(
+                sourcePath,
+                snapshotPath,
+                Ct);
+            MigrationCatalog catalog = await InspectAsync(
+                new SqliteMigrationSourceInspector(snapshot),
+                includeProfile: true);
+
+            MigrationCatalogObject table =
+                Find(catalog, MigrationObjectKind.Table, "generated_values");
+            MigrationCatalogObject source = ChildrenOf(
+                    catalog,
+                    table,
+                    MigrationObjectKind.Column)
+                .Single(static column => column.SourceName == "source_value");
+            MigrationCatalogObject generated = ChildrenOf(
+                    catalog,
+                    table,
+                    MigrationObjectKind.Column)
+                .Single(static column => column.SourceName == "generated_value");
+
+            AssertFacet(source, "sqliteStorageClassText", "1");
+            Assert.DoesNotContain(
+                generated.Facets,
+                static facet => facet.Name == "profileKind");
+            Assert.DoesNotContain(
+                generated.Facets,
+                static facet => facet.Name == "sqliteStorageClassText");
+            Assert.Contains(
+                catalog.Diagnostics,
+                diagnostic =>
+                    diagnostic.ObjectId == generated.ObjectId &&
+                    diagnostic.RuleId == "MIG-SQLITE-COLUMN-GENERATED-001");
+        }
+        finally
+        {
+            await SqliteTestDatabase.DisposeIfSupportedAsync(snapshot);
+        }
+    }
+
+    [Fact]
+    public async Task NonRowIdPrimaryKeysHaveDeterministicNonOverrideableDiagnostic()
+    {
+        using var temporary = new SqliteTestDirectory();
+        string sourcePath = temporary.PathFor("nullable-primary-source.sqlite");
+        string snapshotPath = temporary.PathFor("nullable-primary-snapshot.sqlite");
+        await SqliteTestDatabase.CreateAsync(
+            sourcePath,
+            """
+            CREATE TABLE nullable_primary (
+                id TEXT PRIMARY KEY,
+                payload TEXT
+            );
+            CREATE TABLE required_primary (
+                id TEXT NOT NULL PRIMARY KEY,
+                payload TEXT
+            );
+            CREATE TABLE rowid_primary (
+                id INTEGER PRIMARY KEY,
+                payload TEXT
+            );
+            CREATE TABLE integer_named_primary (
+                id INT NOT NULL PRIMARY KEY,
+                payload TEXT
+            );
+            INSERT INTO nullable_primary(id, payload) VALUES (NULL, 'allowed');
+            INSERT INTO integer_named_primary(id, payload) VALUES (10, 'not-a-rowid-alias');
+            """,
+            Ct);
+
+        SqliteBackupSnapshot? snapshot = null;
+        try
+        {
+            snapshot = await SqliteBackupSnapshot.CreateAsync(
+                sourcePath,
+                snapshotPath,
+                Ct);
+            var inspector = new SqliteMigrationSourceInspector(snapshot);
+            MigrationCatalog first = await InspectAsync(inspector, includeProfile: false);
+            MigrationCatalog second = await InspectAsync(inspector, includeProfile: false);
+
+            MigrationCatalogObject nullableTable =
+                Find(first, MigrationObjectKind.Table, "nullable_primary");
+            MigrationCatalogObject nullablePrimary = Assert.Single(
+                first.Objects,
+                candidate =>
+                    candidate.Kind == MigrationObjectKind.Key &&
+                    candidate.ParentObjectId == nullableTable.ObjectId);
+            MigrationDiagnostic diagnostic = Assert.Single(
+                first.Diagnostics,
+                candidate =>
+                    candidate.ObjectId == nullablePrimary.ObjectId &&
+                    candidate.RuleId == "MIG-SQLITE-PRIMARY-KEY-NON-ROWID-001");
+            MigrationDiagnostic repeated = Assert.Single(
+                second.Diagnostics,
+                candidate =>
+                    candidate.ObjectId == nullablePrimary.ObjectId &&
+                    candidate.RuleId == "MIG-SQLITE-PRIMARY-KEY-NON-ROWID-001");
+
+            Assert.Equal(MigrationCompatibilityStatus.Unsupported, diagnostic.Status);
+            Assert.Equal(MigrationDiagnosticSeverity.Error, diagnostic.Severity);
+            Assert.False(diagnostic.CanOverride);
+            Assert.Equal(diagnostic.DiagnosticId, repeated.DiagnosticId);
+            Assert.Contains("NULL", diagnostic.Summary, StringComparison.Ordinal);
+
+            foreach (string nonRowIdTableName in
+                     new[] { "required_primary", "integer_named_primary" })
+            {
+                MigrationCatalogObject nonRowIdTable =
+                    Find(first, MigrationObjectKind.Table, nonRowIdTableName);
+                MigrationCatalogObject nonRowIdPrimary = Assert.Single(
+                    first.Objects,
+                    candidate =>
+                        candidate.Kind == MigrationObjectKind.Key &&
+                        candidate.ParentObjectId == nonRowIdTable.ObjectId);
+                MigrationDiagnostic nonRowIdDiagnostic = Assert.Single(
+                    first.Diagnostics,
+                    candidate =>
+                        candidate.ObjectId == nonRowIdPrimary.ObjectId &&
+                        candidate.RuleId == "MIG-SQLITE-PRIMARY-KEY-NON-ROWID-001");
+                Assert.False(nonRowIdDiagnostic.CanOverride);
+            }
+
+            MigrationCatalogObject rowIdTable =
+                Find(first, MigrationObjectKind.Table, "rowid_primary");
+            MigrationCatalogObject rowIdPrimary = Assert.Single(
+                first.Objects,
+                candidate =>
+                    candidate.Kind == MigrationObjectKind.Key &&
+                    candidate.ParentObjectId == rowIdTable.ObjectId);
+            Assert.DoesNotContain(
+                first.Diagnostics,
+                candidate =>
+                    candidate.ObjectId == rowIdPrimary.ObjectId &&
+                    candidate.RuleId == "MIG-SQLITE-PRIMARY-KEY-NON-ROWID-001");
+        }
+        finally
+        {
+            await SqliteTestDatabase.DisposeIfSupportedAsync(snapshot);
+        }
+    }
+
+    [Fact]
+    public async Task ForeignKeyViolationHasNonOverrideableDiagnosticWithoutRowData()
+    {
+        using var temporary = new SqliteTestDirectory();
+        string sourcePath = temporary.PathFor("foreign-key-violation-source.sqlite");
+        string snapshotPath = temporary.PathFor("foreign-key-violation-snapshot.sqlite");
+        await SqliteTestDatabase.CreateAsync(
+            sourcePath,
+            """
+            CREATE TABLE parents (
+                id INTEGER PRIMARY KEY
+            );
+            CREATE TABLE children (
+                id INTEGER PRIMARY KEY,
+                parent_id INTEGER,
+                FOREIGN KEY(parent_id) REFERENCES parents(id)
+            );
+            PRAGMA foreign_keys=OFF;
+            INSERT INTO children(id, parent_id) VALUES (1, 424242);
+            """,
+            Ct);
+
+        SqliteBackupSnapshot? snapshot = null;
+        try
+        {
+            snapshot = await SqliteBackupSnapshot.CreateAsync(
+                sourcePath,
+                snapshotPath,
+                Ct);
+            MigrationCatalog catalog = await InspectAsync(
+                new SqliteMigrationSourceInspector(snapshot),
+                includeProfile: false);
+
+            MigrationCatalogObject foreignKey =
+                Find(catalog, MigrationObjectKind.ForeignKey, "FK_children_0");
+            MigrationDiagnostic diagnostic = Assert.Single(
+                catalog.Diagnostics,
+                candidate =>
+                    candidate.ObjectId == foreignKey.ObjectId &&
+                    candidate.RuleId == "MIG-SQLITE-FK-DATA-VIOLATION-001");
+
+            Assert.Equal(MigrationCompatibilityStatus.Unsupported, diagnostic.Status);
+            Assert.Equal(MigrationDiagnosticSeverity.Error, diagnostic.Severity);
+            Assert.False(diagnostic.CanOverride);
+            Assert.DoesNotContain("424242", diagnostic.Summary, StringComparison.Ordinal);
+            Assert.DoesNotContain("424242", diagnostic.Explanation, StringComparison.Ordinal);
+            Assert.DoesNotContain("424242", diagnostic.Remediation, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await SqliteTestDatabase.DisposeIfSupportedAsync(snapshot);
+        }
+    }
+
+    [Fact]
+    public async Task UnverifiableForeignKeyCheckHasNonOverrideableDiagnostic()
+    {
+        using var temporary = new SqliteTestDirectory();
+        string sourcePath = temporary.PathFor("foreign-key-unverifiable-source.sqlite");
+        string snapshotPath = temporary.PathFor("foreign-key-unverifiable-snapshot.sqlite");
+        await SqliteTestDatabase.CreateAsync(
+            sourcePath,
+            """
+            CREATE TABLE parents (
+                id INTEGER
+            );
+            CREATE TABLE children (
+                id INTEGER PRIMARY KEY,
+                parent_id INTEGER,
+                FOREIGN KEY(parent_id) REFERENCES parents(id)
+            );
+            """,
+            Ct);
+
+        SqliteBackupSnapshot? snapshot = null;
+        try
+        {
+            snapshot = await SqliteBackupSnapshot.CreateAsync(
+                sourcePath,
+                snapshotPath,
+                Ct);
+            MigrationCatalog catalog = await InspectAsync(
+                new SqliteMigrationSourceInspector(snapshot),
+                includeProfile: false);
+
+            MigrationCatalogObject foreignKey =
+                Find(catalog, MigrationObjectKind.Other, "FK_children_0");
+            MigrationDiagnostic diagnostic = Assert.Single(
+                catalog.Diagnostics,
+                candidate =>
+                    candidate.ObjectId == foreignKey.ObjectId &&
+                    candidate.RuleId == "MIG-SQLITE-FK-DATA-UNVERIFIABLE-001");
+
+            Assert.Equal(MigrationCompatibilityStatus.Unknown, diagnostic.Status);
+            Assert.Equal(MigrationDiagnosticSeverity.Error, diagnostic.Severity);
+            Assert.False(diagnostic.CanOverride);
+        }
+        finally
+        {
+            await SqliteTestDatabase.DisposeIfSupportedAsync(snapshot);
+        }
+    }
+
+    [Fact]
+    public async Task InspectRejectsSchemaObjectCountBeforeGrowingCatalogCollections()
+    {
+        await AssertInspectionLimitAsync(
+            """
+            CREATE TABLE first_object (id INTEGER PRIMARY KEY);
+            CREATE TABLE sensitive_second_object (id INTEGER PRIMARY KEY);
+            """,
+            SqliteInspectionLimits.Default with
+            {
+                MaxSchemaObjects = 1,
+            },
+            "SQLite inspection exceeded the fixed schema-object limit.",
+            "sensitive_second_object");
+    }
+
+    [Fact]
+    public async Task InspectRejectsColumnCountBeforeReadingColumnMetadata()
+    {
+        await AssertInspectionLimitAsync(
+            """
+            CREATE TABLE sensitive_wide_table (
+                first_column INTEGER,
+                second_column TEXT
+            );
+            """,
+            SqliteInspectionLimits.Default with
+            {
+                MaxColumnsPerTable = 1,
+            },
+            "SQLite inspection exceeded the fixed per-table column limit.",
+            "sensitive_wide_table");
+    }
+
+    [Fact]
+    public async Task InspectRejectsIndexCountBeforeGrowingIndexCollections()
+    {
+        await AssertInspectionLimitAsync(
+            """
+            CREATE TABLE indexed_values (id INTEGER, value TEXT);
+            CREATE INDEX first_index ON indexed_values(id);
+            CREATE INDEX sensitive_second_index ON indexed_values(value);
+            """,
+            SqliteInspectionLimits.Default with
+            {
+                MaxIndexesPerTable = 1,
+            },
+            "SQLite inspection exceeded the fixed per-table index limit.",
+            "sensitive_second_index");
+    }
+
+    [Fact]
+    public async Task InspectRejectsForeignKeyCountBeforeGrowingForeignKeyCollections()
+    {
+        await AssertInspectionLimitAsync(
+            """
+            CREATE TABLE first_parent (id INTEGER PRIMARY KEY);
+            CREATE TABLE second_parent (id INTEGER PRIMARY KEY);
+            CREATE TABLE sensitive_child (
+                first_parent_id INTEGER,
+                second_parent_id INTEGER,
+                FOREIGN KEY(first_parent_id) REFERENCES first_parent(id),
+                FOREIGN KEY(second_parent_id) REFERENCES second_parent(id)
+            );
+            """,
+            SqliteInspectionLimits.Default with
+            {
+                MaxForeignKeysPerTable = 1,
+            },
+            "SQLite inspection exceeded the fixed per-table foreign-key limit.",
+            "sensitive_child");
+    }
+
+    [Fact]
+    public async Task InspectUsesUtf8ByteLengthForIndividualCatalogStrings()
+    {
+        const string sensitiveName = "\u00e9\u00e9\u00e9";
+        await AssertInspectionLimitAsync(
+            $"CREATE TABLE \"{sensitiveName}\" (id INTEGER);",
+            SqliteInspectionLimits.Default with
+            {
+                MaxCatalogStringUtf8Bytes = 5,
+            },
+            "SQLite inspection exceeded the fixed catalog-string byte limit.",
+            sensitiveName);
+    }
+
+    [Fact]
+    public async Task InspectUsesUtf8ByteLengthForUtf16DatabaseCatalogStrings()
+    {
+        const string sensitiveName = "\u6f22\u6f22\u6f22";
+        await AssertInspectionLimitAsync(
+            $"""
+             PRAGMA encoding='UTF-16le';
+             CREATE TABLE "{sensitiveName}" (id INTEGER);
+             """,
+            SqliteInspectionLimits.Default with
+            {
+                MaxCatalogStringUtf8Bytes = 7,
+            },
+            "SQLite inspection exceeded the fixed catalog-string byte limit.",
+            sensitiveName);
+    }
+
+    [Fact]
+    public async Task InspectRejectsAggregateRetainedSchemaMetadata()
+    {
+        const string sensitiveName = "sensitive_aggregate_table";
+        await AssertInspectionLimitAsync(
+            $"CREATE TABLE {sensitiveName} (id INTEGER);",
+            SqliteInspectionLimits.Default with
+            {
+                MaxCatalogStringUtf8Bytes = 1_024,
+                MaxRetainedSchemaMetadataBytes = 100,
+            },
+            "SQLite inspection exceeded the fixed aggregate schema-metadata byte limit.",
+            sensitiveName);
+    }
+
     private static async ValueTask<MigrationCatalog> InspectAsync(
         SqliteMigrationSourceInspector inspector,
         bool includeProfile,
@@ -329,6 +705,42 @@ public sealed class SqliteMigrationSourceInspectorTests
                 ProfileSampleSize = profileSampleSize,
             },
             Ct);
+
+    private static async Task AssertInspectionLimitAsync(
+        string sql,
+        SqliteInspectionLimits limits,
+        string expectedMessage,
+        string forbiddenText)
+    {
+        using var temporary = new SqliteTestDirectory();
+        string sourcePath = temporary.PathFor("bounded-source.sqlite");
+        string snapshotPath = temporary.PathFor("bounded-snapshot.sqlite");
+        await SqliteTestDatabase.CreateAsync(sourcePath, sql, Ct);
+
+        SqliteBackupSnapshot? snapshot = null;
+        try
+        {
+            snapshot = await SqliteBackupSnapshot.CreateAsync(
+                sourcePath,
+                snapshotPath,
+                Ct);
+            var inspector = new SqliteMigrationSourceInspector(snapshot, limits);
+
+            SqliteMigrationException exception = await Assert.ThrowsAsync<
+                SqliteMigrationException>(
+                async () => await InspectAsync(inspector, includeProfile: false));
+
+            Assert.Equal(expectedMessage, exception.Message);
+            Assert.DoesNotContain(
+                forbiddenText,
+                exception.ToString(),
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            await SqliteTestDatabase.DisposeIfSupportedAsync(snapshot);
+        }
+    }
 
     private static MigrationCatalogObject Find(
         MigrationCatalog catalog,
@@ -367,5 +779,36 @@ public sealed class SqliteMigrationSourceInspectorTests
             schemaObject.Facets,
             candidate => candidate.Name == name);
         Assert.Equal(expectedValue, facet.Value);
+    }
+
+    private static async ValueTask CreateFunctionBackedGeneratedColumnDatabaseAsync(
+        string path)
+    {
+        var connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = path,
+            Mode = SqliteOpenMode.ReadWriteCreate,
+            Cache = SqliteCacheMode.Private,
+            Pooling = false,
+        }.ToString();
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync(Ct);
+        connection.CreateFunction<string?, string?>(
+            "app_only",
+            static value => value?.ToUpperInvariant(),
+            isDeterministic: true);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            PRAGMA journal_mode=DELETE;
+            CREATE TABLE generated_values (
+                id INTEGER PRIMARY KEY,
+                source_value TEXT NOT NULL,
+                generated_value TEXT
+                    GENERATED ALWAYS AS (app_only(source_value)) VIRTUAL
+            );
+            INSERT INTO generated_values(id, source_value) VALUES (1, 'source');
+            """;
+        await command.ExecuteNonQueryAsync(Ct);
     }
 }

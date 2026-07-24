@@ -19,11 +19,11 @@ internal static class MigrationCommandRunner
         "Usage: csharpdb migrate inspect --source synthetic --out <catalog.json>\n" +
         "       csharpdb migrate inspect --source csv --input <source.csv> --package <source.csdbcsv> --out <catalog.json> [--delimiter auto|comma|semicolon|tab|pipe|<character>] [--no-header] [--table <name>] [--sample-rows <count>] [--null-token <text>] [--source-id <label>] [--workspace <directory>] [--max-source-bytes <count>]\n" +
         "       csharpdb migrate inspect --source json --input <source.json|source.ndjson> --package <source.csdbjson> --out <catalog.json> [--framing root-array|ndjson] [--table <name>] [--sample-rows <count>] [--source-id <label>] [--workspace <directory>] [--max-source-bytes <count>] [--typed-intent <source.csdbjson-intent.json> --expected-intent-manifest-digest <sha256:...>]\n" +
-        "       csharpdb migrate inspect --source sqlite --input <source.db> --package <snapshot.csdbsqlite> --out <catalog.json> [--profile-sample-size <count>]\n" +
+        "       csharpdb migrate inspect --source sqlite --input <source.db> --package <snapshot.csdbsqlite> --out <catalog.json> [--profile-sample-size <count>] [--max-source-bytes <count>]\n" +
         "       csharpdb migrate plan <catalog.json> --out <plan.json> [--profile preserve|queryable] [--accept-exclusions all|<id,...>] [--accept-diagnostics <id,...>] [--reject-mode fail-fast|deterministic --reject-rules all|<id,...> --max-rejected-rows-per-batch <count> --max-rejected-rows-per-run <count> --max-reject-evidence-value-bytes <count> --max-reject-evidence-bytes-per-batch <count> --max-reject-evidence-bytes-per-run <count> --max-reject-artifact-bytes <count>]\n" +
         "       csharpdb migrate preview <plan.json> --catalog <catalog.json> [--format text|json]\n" +
-        "       csharpdb migrate apply <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv|source.csdbjson> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
-        "       csharpdb migrate validate <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv|source.csdbjson> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
+        "       csharpdb migrate apply <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
+        "       csharpdb migrate validate <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
         "       csharpdb migrate export <retained-snapshot.db> --format csv --table <physical-table> --out <table.csv> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1|spreadsheet-safe-lossy-v1] [--max-data-bytes <count>] [--max-decoded-blob-bytes <count>] [--checkpoint-row-interval <count>] [--json]\n" +
         "       csharpdb migrate export <retained-snapshot.db> --format json|ndjson --table <physical-table> --out <table.json|table.ndjson> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1] [--max-data-bytes <count>] [--max-decoded-blob-bytes <count>] [--checkpoint-row-interval <count>] [--json]";
 
@@ -610,6 +610,7 @@ internal static class MigrationCommandRunner
                     "--package",
                     "--out",
                     "--profile-sample-size",
+                    "--max-source-bytes",
                 ],
                 out string? parseError))
         {
@@ -651,6 +652,18 @@ internal static class MigrationCommandRunner
             {
                 ProfileSampleSize = profileSampleSize,
             };
+        }
+
+        long maxSourceBytes =
+            SqliteBackupSnapshot.DefaultMaxSnapshotBytes;
+        if (options.TryGetValue(
+                "--max-source-bytes",
+                out string? maxSourceBytesValue) &&
+            !TryParseSourceByteLimit(maxSourceBytesValue, out maxSourceBytes))
+        {
+            return await OptionErrorAsync(
+                "The SQLite source byte limit must be a non-negative 64-bit integer below Int64.MaxValue.",
+                error);
         }
 
         string inputPath;
@@ -714,6 +727,7 @@ internal static class MigrationCommandRunner
                 await SqliteBackupSnapshot.CreateAsync(
                     inputPath,
                     packagePath,
+                    maxSourceBytes,
                     ct);
             packagePublished = true;
             MigrationCatalog catalog =
@@ -2516,6 +2530,13 @@ internal static class MigrationCommandRunner
                     "Deterministic rejects are not supported for explicitly typed retained JSON package v2 migrations.";
                 return false;
 
+            case MigrationSourceKind.Sqlite:
+                supportedRuleIds = [];
+                sourceDescription = "retained SQLite backup source";
+                error =
+                    "Deterministic rejects are not supported for retained SQLite backup migrations.";
+                return false;
+
             default:
                 supportedRuleIds = [];
                 sourceDescription = "unsupported migration source";
@@ -2724,20 +2745,35 @@ internal static class MigrationCommandRunner
             return false;
         }
 
-        if (catalog.Source.Kind is MigrationSourceKind.Csv or MigrationSourceKind.Json)
+        if (catalog.Source.Kind == MigrationSourceKind.Sqlite &&
+            !IsSupportedSqliteV1Catalog(catalog))
         {
+            error = SqliteCatalogRouteOnlyMessage;
+            return false;
+        }
+
+        if (catalog.Source.Kind is
+            MigrationSourceKind.Csv or
+            MigrationSourceKind.Json or
+            MigrationSourceKind.Sqlite)
+        {
+            string sourceDescription = catalog.Source.Kind switch
+            {
+                MigrationSourceKind.Csv => "CSV",
+                MigrationSourceKind.Json => "JSON",
+                MigrationSourceKind.Sqlite => "SQLite",
+                _ => "retained-source",
+            };
             if (!hasPackage)
             {
-                error = catalog.Source.Kind == MigrationSourceKind.Csv
-                    ? "Missing required option --source-package for a CSV migration."
-                    : "Missing required option --source-package for a JSON migration.";
+                error =
+                    $"Missing required option --source-package for a {sourceDescription} migration.";
                 return false;
             }
             if (!hasDigest)
             {
-                error = catalog.Source.Kind == MigrationSourceKind.Csv
-                    ? "Missing required option --expected-manifest-digest for a CSV migration."
-                    : "Missing required option --expected-manifest-digest for a JSON migration.";
+                error =
+                    $"Missing required option --expected-manifest-digest for a {sourceDescription} migration.";
                 return false;
             }
 
@@ -3025,6 +3061,67 @@ internal static class MigrationCommandRunner
                     try
                     {
                         await typedJsonSession.DisposeAsync();
+                    }
+                    catch (Exception cleanupFailure)
+                    {
+                        throw new AggregateException(
+                            operationFailure,
+                            cleanupFailure);
+                    }
+
+                    ExceptionDispatchInfo.Capture(
+                        operationFailure).Throw();
+                    throw;
+                }
+
+            case MigrationSourceKind.Sqlite:
+                long sqliteMaxSourceBytes =
+                    SqliteSnapshotPackageOpenOptions.DefaultMaxSourceBytes;
+                if (options.TryGetValue(
+                        "--max-source-bytes",
+                        out string? sqliteMaxSourceBytesValue))
+                {
+                    _ = TryParseSourceByteLimit(
+                        sqliteMaxSourceBytesValue,
+                        out sqliteMaxSourceBytes);
+                }
+
+                SqliteSnapshotPackageSession? sqliteSession = null;
+                try
+                {
+                    sqliteSession =
+                        await SqliteSnapshotPackageSession.OpenAsync(
+                            Path.GetFullPath(
+                                options["--source-package"]),
+                            catalog,
+                            new SqliteSnapshotPackageOpenOptions
+                            {
+                                WorkspacePath =
+                                    options.GetValueOrDefault(
+                                        "--workspace"),
+                                MaxSourceBytes =
+                                    sqliteMaxSourceBytes,
+                                ExpectedContentDigest =
+                                    options[
+                                        "--expected-manifest-digest"],
+                            },
+                            ct);
+                    ValidateOpenedSource(
+                        catalog,
+                        sqliteSession.DataSource);
+                    return new MigrationSourceLease(
+                        sqliteSession.DataSource,
+                        sqliteSession,
+                        new MigrationSourcePackageMetadata(
+                            SqliteSnapshotPackageSession.Format,
+                            sqliteSession.ContentDigest));
+                }
+                catch (Exception operationFailure) when (
+                    sqliteSession is not null)
+                {
+                    try
+                    {
+                        await sqliteSession.DisposeAsync();
                     }
                     catch (Exception cleanupFailure)
                     {

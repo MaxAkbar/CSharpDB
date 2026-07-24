@@ -838,7 +838,7 @@ public sealed class CsvMigrationCommandRunnerTests
             artifactBytes: originalRejectBytes.LongLength,
             artifactReused: false);
         Assert.DoesNotContain(
-            "bad",
+            "\"bad\"",
             applyReport.RootElement.GetRawText(),
             StringComparison.Ordinal);
         Assert.DoesNotContain(

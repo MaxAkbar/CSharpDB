@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
+using System.Text;
 using CSharpDB.Migration;
 using Microsoft.Data.Sqlite;
 
@@ -14,11 +15,22 @@ public sealed class SqliteMigrationSourceInspector : IMigrationSourceInspector
     public const string CatalogContract = "csharpdb-sqlite-catalog-v1";
 
     private readonly SqliteBackupSnapshot snapshot;
+    private readonly SqliteInspectionLimits limits;
 
     public SqliteMigrationSourceInspector(SqliteBackupSnapshot snapshot)
+        : this(snapshot, SqliteInspectionLimits.Default)
+    {
+    }
+
+    internal SqliteMigrationSourceInspector(
+        SqliteBackupSnapshot snapshot,
+        SqliteInspectionLimits limits)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentNullException.ThrowIfNull(limits);
+        limits.Validate();
         this.snapshot = snapshot;
+        this.limits = limits;
     }
 
     public MigrationSourceKind SourceKind => MigrationSourceKind.Sqlite;
@@ -52,6 +64,7 @@ public sealed class SqliteMigrationSourceInspector : IMigrationSourceInspector
                     transaction,
                     snapshot,
                     request,
+                    limits,
                     cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -77,21 +90,33 @@ public sealed class SqliteMigrationSourceInspector : IMigrationSourceInspector
         SqliteTransaction transaction,
         SqliteBackupSnapshot snapshot,
         MigrationInspectionRequest request,
+        SqliteInspectionLimits limits,
         CancellationToken cancellationToken)
     {
+        string textEncoding = await ReadTextEncodingAsync(
+                connection,
+                transaction,
+                cancellationToken)
+            .ConfigureAwait(false);
+        var budget = new InspectionBudget(
+            limits,
+            string.Equals(textEncoding, "UTF-8", StringComparison.Ordinal));
         IReadOnlyList<SchemaEntry> schema = await ReadSchemaAsync(
                 connection,
                 transaction,
+                budget,
                 cancellationToken)
             .ConfigureAwait(false);
         IReadOnlyList<TableListEntry> tableList = await ReadTableListAsync(
                 connection,
                 transaction,
+                budget,
                 cancellationToken)
             .ConfigureAwait(false);
         string compileOptionsDigest = await ReadCompileOptionsDigestAsync(
                 connection,
                 transaction,
+                budget,
                 cancellationToken)
             .ConfigureAwait(false);
 
@@ -115,12 +140,24 @@ public sealed class SqliteMigrationSourceInspector : IMigrationSourceInspector
                 Facet("isDefault", "true"),
                 Facet("sqliteCatalogContract", CatalogContract),
                 Facet("sqliteCompileOptionsDigest", compileOptionsDigest),
+                Facet("sqliteTextEncoding", textEncoding),
                 Facet("sqliteProfileIncluded", Boolean(request.IncludeProfile)),
                 Facet(
                     "sqliteProfileSampleSize",
                     request.ProfileSampleSize.ToString(CultureInfo.InvariantCulture)),
             ],
         });
+        if (!string.Equals(
+                textEncoding,
+                "UTF-8",
+                StringComparison.Ordinal))
+        {
+            diagnostics.Add(Unsupported(
+                namespaceId,
+                "MIG-SQLITE-ENCODING-UNSUPPORTED-001",
+                $"SQLite database text encoding '{textEncoding}' is inventoried but is outside the Tier 1 UTF-8 replay contract.",
+                "Create a coherent UTF-8 SQLite copy before migration."));
+        }
 
         foreach (TableListEntry entry in tableList)
         {
@@ -171,10 +208,13 @@ public sealed class SqliteMigrationSourceInspector : IMigrationSourceInspector
                 continue;
             }
 
+            if (entry.ColumnCount > limits.MaxColumnsPerTable)
+                throw InspectionLimitExceeded("per-table column");
             IReadOnlyList<ColumnInfo> columns = await ReadColumnsAsync(
                     connection,
                     transaction,
                     entry.Name,
+                    budget,
                     cancellationToken)
                 .ConfigureAwait(false);
             string? rowIdAlias = entry.WithoutRowId ? null : FindRowIdAlias(columns);
@@ -258,6 +298,7 @@ public sealed class SqliteMigrationSourceInspector : IMigrationSourceInspector
                     connection,
                     transaction,
                     state,
+                    budget,
                     cancellationToken)
                 .ConfigureAwait(false);
             state.Indexes.AddRange(indexes);
@@ -344,9 +385,24 @@ public sealed class SqliteMigrationSourceInspector : IMigrationSourceInspector
                     connection,
                     transaction,
                     state.Entry.Name,
+                    budget,
                     cancellationToken)
                 .ConfigureAwait(false);
-            AddForeignKeys(state, foreignKeys, tableStates, objects, diagnostics);
+            IReadOnlyDictionary<int, ForeignKeyDataCheck> foreignKeyDataChecks =
+                await CheckForeignKeyDataAsync(
+                        connection,
+                        transaction,
+                        state.Entry.Name,
+                        foreignKeys,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            AddForeignKeys(
+                state,
+                foreignKeys,
+                foreignKeyDataChecks,
+                tableStates,
+                objects,
+                diagnostics);
         }
 
         foreach (SchemaEntry entry in schema.Where(
@@ -525,6 +581,24 @@ public sealed class SqliteMigrationSourceInspector : IMigrationSourceInspector
             objects.Add(primary);
             if (primaryIndex is not null)
                 AddIndexFeatureDiagnostics(primary, primaryIndex, diagnostics);
+            bool rowIdAliasPrimaryKey =
+                primaryColumns.Length == 1 &&
+                table.IsIntegerPrimaryKeyAlias(primaryColumns[0]);
+            bool sqliteCanPermitNull =
+                !rowIdAliasPrimaryKey &&
+                !table.Entry.WithoutRowId &&
+                !table.Entry.Strict &&
+                primaryColumns.Any(column => column.NotNull == 0);
+            if (!rowIdAliasPrimaryKey)
+            {
+                diagnostics.Add(Unsupported(
+                    primary.ObjectId,
+                    "MIG-SQLITE-PRIMARY-KEY-NON-ROWID-001",
+                    sqliteCanPermitNull
+                        ? $"SQLite non-rowid primary key semantics on table '{table.Entry.Name}' can permit NULL values and are outside Tier 1."
+                        : $"SQLite non-rowid primary key semantics on table '{table.Entry.Name}' are outside Tier 1 and can diverge from target identity behavior.",
+                    "Use a reviewed source-specific mapping or exclude the table from this migration."));
+            }
         }
 
         foreach (IndexInfo index in table.Indexes.OrderBy(item => item.Sequence))
@@ -665,6 +739,7 @@ public sealed class SqliteMigrationSourceInspector : IMigrationSourceInspector
     private static void AddForeignKeys(
         TableState sourceTable,
         IReadOnlyList<ForeignKeyInfo> foreignKeys,
+        IReadOnlyDictionary<int, ForeignKeyDataCheck> dataChecks,
         IReadOnlyDictionary<string, TableState> tables,
         ICollection<MigrationCatalogObject> objects,
         ICollection<MigrationDiagnostic> diagnostics)
@@ -676,6 +751,11 @@ public sealed class SqliteMigrationSourceInspector : IMigrationSourceInspector
             ForeignKeyInfo[] rows = group.OrderBy(item => item.Sequence).ToArray();
             string sourceName = $"FK_{sourceTable.Entry.Name}_{group.Key.ToString(CultureInfo.InvariantCulture)}";
             string objectId = SqliteObjectIds.ForeignKey(sourceTable.Entry.Name, group.Key);
+            AddForeignKeyDataDiagnostic(
+                objectId,
+                sourceName,
+                dataChecks[group.Key],
+                diagnostics);
             ColumnInfo[] sourceColumns = rows
                 .Select(row => sourceTable.ColumnByName(row.FromColumn))
                 .Where(column => column is not null)
@@ -773,6 +853,34 @@ public sealed class SqliteMigrationSourceInspector : IMigrationSourceInspector
         }
     }
 
+    private static void AddForeignKeyDataDiagnostic(
+        string objectId,
+        string sourceName,
+        ForeignKeyDataCheck dataCheck,
+        ICollection<MigrationDiagnostic> diagnostics)
+    {
+        switch (dataCheck)
+        {
+            case ForeignKeyDataCheck.Violation:
+                diagnostics.Add(Unsupported(
+                    objectId,
+                    "MIG-SQLITE-FK-DATA-VIOLATION-001",
+                    $"SQLite foreign key '{sourceName}' has at least one existing violating row.",
+                    "Repair the source relationship data and create a new retained backup."));
+                break;
+            case ForeignKeyDataCheck.Unverifiable:
+                diagnostics.Add(Diagnostic(
+                    objectId,
+                    "MIG-SQLITE-FK-DATA-UNVERIFIABLE-001",
+                    MigrationDiagnosticSeverity.Error,
+                    MigrationCompatibilityStatus.Unknown,
+                    $"Existing data for SQLite foreign key '{sourceName}' could not be verified.",
+                    "Repair the source schema, verify foreign keys natively, and create a new retained backup.",
+                    canOverride: false));
+                break;
+        }
+    }
+
     private static KeyState? ResolveReferencedKey(
         TableState table,
         IReadOnlyList<ForeignKeyInfo> rows)
@@ -795,13 +903,23 @@ public sealed class SqliteMigrationSourceInspector : IMigrationSourceInspector
     private static async ValueTask<IReadOnlyList<SchemaEntry>> ReadSchemaAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
+        InspectionBudget budget,
         CancellationToken cancellationToken)
     {
         await using SqliteCommand command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText =
             """
-            SELECT rowid, type, name, tbl_name, sql
+            SELECT
+                rowid,
+                type,
+                name,
+                tbl_name,
+                sql,
+                length(CAST(type AS BLOB)),
+                length(CAST(name AS BLOB)),
+                length(CAST(tbl_name AS BLOB)),
+                length(CAST(sql AS BLOB))
             FROM main.sqlite_schema
             ORDER BY rowid;
             """;
@@ -810,6 +928,9 @@ public sealed class SqliteMigrationSourceInspector : IMigrationSourceInspector
             await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
+            if (entries.Count >= budget.Limits.MaxSchemaObjects)
+                throw InspectionLimitExceeded("schema-object");
+            budget.ReserveStrings(reader, 1, 5, 2, 6, 3, 7, 4, 8);
             entries.Add(new SchemaEntry(
                 reader.GetInt64(0),
                 reader.GetString(1),
@@ -823,13 +944,21 @@ public sealed class SqliteMigrationSourceInspector : IMigrationSourceInspector
     private static async ValueTask<IReadOnlyList<TableListEntry>> ReadTableListAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
+        InspectionBudget budget,
         CancellationToken cancellationToken)
     {
         await using SqliteCommand command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText =
             """
-            SELECT name, type, ncol, wr, strict
+            SELECT
+                name,
+                type,
+                ncol,
+                wr,
+                strict,
+                length(CAST(name AS BLOB)),
+                length(CAST(type AS BLOB))
             FROM pragma_table_list
             WHERE schema = 'main'
             ORDER BY name COLLATE BINARY;
@@ -839,6 +968,9 @@ public sealed class SqliteMigrationSourceInspector : IMigrationSourceInspector
             await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
+            if (entries.Count >= budget.Limits.MaxSchemaObjects)
+                throw InspectionLimitExceeded("table-list");
+            budget.ReserveStrings(reader, 0, 5, 1, 6);
             entries.Add(new TableListEntry(
                 reader.GetString(0),
                 reader.GetString(1),
@@ -853,13 +985,24 @@ public sealed class SqliteMigrationSourceInspector : IMigrationSourceInspector
         SqliteConnection connection,
         SqliteTransaction transaction,
         string tableName,
+        InspectionBudget budget,
         CancellationToken cancellationToken)
     {
         await using SqliteCommand command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText =
             """
-            SELECT cid, name, type, "notnull", dflt_value, pk, hidden
+            SELECT
+                cid,
+                name,
+                type,
+                "notnull",
+                dflt_value,
+                pk,
+                hidden,
+                length(CAST(name AS BLOB)),
+                length(CAST(type AS BLOB)),
+                length(CAST(dflt_value AS BLOB))
             FROM pragma_table_xinfo($tableName)
             ORDER BY cid;
             """;
@@ -869,6 +1012,9 @@ public sealed class SqliteMigrationSourceInspector : IMigrationSourceInspector
             await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
+            if (columns.Count >= budget.Limits.MaxColumnsPerTable)
+                throw InspectionLimitExceeded("per-table column");
+            budget.ReserveStrings(reader, 1, 7, 2, 8, 4, 9);
             columns.Add(new ColumnInfo(
                 reader.GetInt32(0),
                 reader.GetString(1),
@@ -885,13 +1031,21 @@ public sealed class SqliteMigrationSourceInspector : IMigrationSourceInspector
         SqliteConnection connection,
         SqliteTransaction transaction,
         TableState table,
+        InspectionBudget budget,
         CancellationToken cancellationToken)
     {
         await using SqliteCommand list = connection.CreateCommand();
         list.Transaction = transaction;
         list.CommandText =
             """
-            SELECT seq, name, "unique", origin, partial
+            SELECT
+                seq,
+                name,
+                "unique",
+                origin,
+                partial,
+                length(CAST(name AS BLOB)),
+                length(CAST(origin AS BLOB))
             FROM pragma_index_list($tableName)
             ORDER BY seq;
             """;
@@ -902,6 +1056,9 @@ public sealed class SqliteMigrationSourceInspector : IMigrationSourceInspector
         {
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
+                if (headers.Count >= budget.Limits.MaxIndexesPerTable)
+                    throw InspectionLimitExceeded("per-table index");
+                budget.ReserveStrings(reader, 1, 5, 3, 6);
                 headers.Add(new IndexHeader(
                     reader.GetInt32(0),
                     reader.GetString(1),
@@ -918,18 +1075,31 @@ public sealed class SqliteMigrationSourceInspector : IMigrationSourceInspector
             detail.Transaction = transaction;
             detail.CommandText =
                 """
-                SELECT seqno, cid, name, "desc", coll, "key"
+                SELECT
+                    seqno,
+                    cid,
+                    name,
+                    "desc",
+                    coll,
+                    "key",
+                    length(CAST(name AS BLOB)),
+                    length(CAST(coll AS BLOB))
                 FROM pragma_index_xinfo($indexName)
                 ORDER BY seqno;
                 """;
             detail.Parameters.AddWithValue("$indexName", header.Name);
             var members = new List<IndexMember>();
+            int detailRows = 0;
             await using SqliteDataReader reader =
                 await detail.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
+                if (detailRows >= budget.Limits.MaxIndexRowsPerIndex)
+                    throw InspectionLimitExceeded("per-index member");
+                detailRows++;
                 if (reader.GetInt32(5) == 0)
                     continue;
+                budget.ReserveStrings(reader, 2, 6, 4, 7);
                 int cid = reader.GetInt32(1);
                 members.Add(new IndexMember(
                     reader.GetInt32(0),
@@ -955,24 +1125,65 @@ public sealed class SqliteMigrationSourceInspector : IMigrationSourceInspector
         SqliteConnection connection,
         SqliteTransaction transaction,
         string tableName,
+        InspectionBudget budget,
         CancellationToken cancellationToken)
     {
         await using SqliteCommand command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText =
             """
-            SELECT id, seq, "table", "from", "to", on_update, on_delete, "match"
+            SELECT
+                id,
+                seq,
+                "table",
+                "from",
+                "to",
+                on_update,
+                on_delete,
+                "match",
+                length(CAST("table" AS BLOB)),
+                length(CAST("from" AS BLOB)),
+                length(CAST("to" AS BLOB)),
+                length(CAST(on_update AS BLOB)),
+                length(CAST(on_delete AS BLOB)),
+                length(CAST("match" AS BLOB))
             FROM pragma_foreign_key_list($tableName)
             ORDER BY id, seq;
             """;
         command.Parameters.AddWithValue("$tableName", tableName);
         var rows = new List<ForeignKeyInfo>();
+        int foreignKeyCount = 0;
+        int? previousForeignKeyId = null;
         await using SqliteDataReader reader =
             await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
+            if (rows.Count >= budget.Limits.MaxForeignKeyRowsPerTable)
+                throw InspectionLimitExceeded("per-table foreign-key");
+            int foreignKeyId = reader.GetInt32(0);
+            if (previousForeignKeyId != foreignKeyId)
+            {
+                if (foreignKeyCount >= budget.Limits.MaxForeignKeysPerTable)
+                    throw InspectionLimitExceeded("per-table foreign-key");
+                foreignKeyCount++;
+                previousForeignKeyId = foreignKeyId;
+            }
+            budget.ReserveStrings(
+                reader,
+                2,
+                8,
+                3,
+                9,
+                4,
+                10,
+                5,
+                11,
+                6,
+                12,
+                7,
+                13);
             rows.Add(new ForeignKeyInfo(
-                reader.GetInt32(0),
+                foreignKeyId,
                 reader.GetInt32(1),
                 reader.GetString(2),
                 reader.IsDBNull(3) ? string.Empty : reader.GetString(3),
@@ -982,6 +1193,50 @@ public sealed class SqliteMigrationSourceInspector : IMigrationSourceInspector
                 reader.GetString(7)));
         }
         return rows.AsReadOnly();
+    }
+
+    private static async ValueTask<IReadOnlyDictionary<int, ForeignKeyDataCheck>>
+        CheckForeignKeyDataAsync(
+            SqliteConnection connection,
+            SqliteTransaction transaction,
+            string tableName,
+            IReadOnlyList<ForeignKeyInfo> foreignKeys,
+            CancellationToken cancellationToken)
+    {
+        var checks = new Dictionary<int, ForeignKeyDataCheck>();
+        foreach (int foreignKeyId in foreignKeys
+                     .Select(foreignKey => foreignKey.Id)
+                     .Distinct()
+                     .Order())
+        {
+            try
+            {
+                await using SqliteCommand command = connection.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText =
+                    """
+                    SELECT 1
+                    FROM pragma_foreign_key_check($tableName)
+                    WHERE fkid = $foreignKeyId
+                    LIMIT 1;
+                    """;
+                command.Parameters.AddWithValue("$tableName", tableName);
+                command.Parameters.AddWithValue("$foreignKeyId", foreignKeyId);
+                object? result = await command.ExecuteScalarAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                checks.Add(
+                    foreignKeyId,
+                    result is null
+                        ? ForeignKeyDataCheck.Verified
+                        : ForeignKeyDataCheck.Violation);
+            }
+            catch (Exception exception) when (
+                exception is SqliteException or InvalidOperationException)
+            {
+                checks.Add(foreignKeyId, ForeignKeyDataCheck.Unverifiable);
+            }
+        }
+        return new ReadOnlyDictionary<int, ForeignKeyDataCheck>(checks);
     }
 
     private static async ValueTask<ProfileResult> ProfileAsync(
@@ -1002,15 +1257,23 @@ public sealed class SqliteMigrationSourceInspector : IMigrationSourceInspector
         sample.Transaction = transaction;
         sample.CommandText = BuildProfileSql(table);
         sample.Parameters.AddWithValue("$sampleSize", sampleSize);
-        var columns = table.Columns.Select(_ => new ColumnProfile()).ToArray();
+        (ColumnInfo Column, int Ordinal)[] visibleColumns = table.Columns
+            .Select((column, ordinal) => (Column: column, Ordinal: ordinal))
+            .Where(item => item.Column.Hidden == 0)
+            .ToArray();
+        var columns = new ColumnProfile?[table.Columns.Count];
+        foreach (var visibleColumn in visibleColumns)
+            columns[visibleColumn.Ordinal] = new ColumnProfile();
         long examined = 0;
         await using SqliteDataReader reader =
             await sample.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             examined++;
-            for (int index = 0; index < columns.Length; index++)
-                columns[index].Add(reader.GetString(index));
+            for (int index = 0; index < visibleColumns.Length; index++)
+            {
+                columns[visibleColumns[index].Ordinal]!.Add(reader.GetString(index));
+            }
         }
 
         MigrationCoverageKind coverage = total <= sampleSize
@@ -1020,15 +1283,20 @@ public sealed class SqliteMigrationSourceInspector : IMigrationSourceInspector
             coverage,
             examined,
             total,
-            new ReadOnlyCollection<ColumnProfile>(columns));
+            new ReadOnlyCollection<ColumnProfile?>(columns));
     }
 
     private static string BuildProfileSql(TableState table)
     {
+        ColumnInfo[] visibleColumns = table.Columns
+            .Where(column => column.Hidden == 0)
+            .ToArray();
         string projections = string.Join(
             ", ",
-            table.Columns.Select(column =>
+            visibleColumns.Select(column =>
                 $"typeof({QuoteIdentifier(column.Name)})"));
+        if (projections.Length == 0)
+            projections = "1";
         string order = table.RowIdAlias is null
             ? string.Empty
             : $" ORDER BY {QuoteIdentifier(table.RowIdAlias)}";
@@ -1038,19 +1306,48 @@ public sealed class SqliteMigrationSourceInspector : IMigrationSourceInspector
     private static async ValueTask<string> ReadCompileOptionsDigestAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
+        InspectionBudget budget,
         CancellationToken cancellationToken)
     {
         await using SqliteCommand command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = "SELECT compile_options FROM pragma_compile_options ORDER BY compile_options;";
+        command.CommandText =
+            """
+            SELECT
+                compile_options,
+                length(CAST(compile_options AS BLOB))
+            FROM pragma_compile_options
+            ORDER BY compile_options;
+            """;
         var options = new List<string>();
         await using SqliteDataReader reader =
             await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (options.Count >= budget.Limits.MaxCompileOptions)
+                throw InspectionLimitExceeded("compile-option");
+            budget.ReserveStrings(reader, 0, 1);
             options.Add(reader.GetString(0));
+        }
         return "sha256:" + SqliteStableDigest.Text(
             "csharpdb-sqlite-compile-options-v1",
             options.Cast<string?>().ToArray());
+    }
+
+    private static async ValueTask<string> ReadTextEncodingAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "PRAGMA encoding;";
+        return Convert.ToString(
+                await command.ExecuteScalarAsync(cancellationToken)
+                    .ConfigureAwait(false),
+                CultureInfo.InvariantCulture) ??
+            throw new SqliteMigrationException(
+                "The SQLite database text encoding could not be determined.");
     }
 
     private static string? FindRowIdAlias(IReadOnlyList<ColumnInfo> columns)
@@ -1250,6 +1547,12 @@ public sealed class SqliteMigrationSourceInspector : IMigrationSourceInspector
         Value = value,
     };
 
+    private static SqliteMigrationException InspectionLimitExceeded(string category) =>
+        new(
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"SQLite inspection exceeded the fixed {category} limit."));
+
     private static string? FacetValue(MigrationCatalogObject item, string name) =>
         item.Facets.FirstOrDefault(
             facet => string.Equals(facet.Name, name, StringComparison.Ordinal))?.Value;
@@ -1263,6 +1566,127 @@ public sealed class SqliteMigrationSourceInspector : IMigrationSourceInspector
 
     private static string QuoteIdentifier(string identifier) =>
         "\"" + identifier.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
+
+    private sealed class InspectionBudget
+    {
+        // This deterministic charge covers the retained row/list bookkeeping in
+        // addition to the exact UTF-8 byte lengths of retained catalog strings.
+        private const long RetainedEntryChargeBytes = 64;
+        private readonly bool databaseUsesUtf8;
+        private long retainedBytes;
+
+        public InspectionBudget(
+            SqliteInspectionLimits limits,
+            bool databaseUsesUtf8)
+        {
+            Limits = limits;
+            this.databaseUsesUtf8 = databaseUsesUtf8;
+        }
+
+        public SqliteInspectionLimits Limits { get; }
+
+        public void ReserveStrings(
+            SqliteDataReader reader,
+            int firstValue,
+            int firstLength) =>
+            Reserve(GetUtf8Length(reader, firstValue, firstLength));
+
+        public void ReserveStrings(
+            SqliteDataReader reader,
+            int firstValue,
+            int firstLength,
+            int secondValue,
+            int secondLength) =>
+            Reserve(
+                GetUtf8Length(reader, firstValue, firstLength) +
+                GetUtf8Length(reader, secondValue, secondLength));
+
+        public void ReserveStrings(
+            SqliteDataReader reader,
+            int firstValue,
+            int firstLength,
+            int secondValue,
+            int secondLength,
+            int thirdValue,
+            int thirdLength) =>
+            Reserve(
+                GetUtf8Length(reader, firstValue, firstLength) +
+                GetUtf8Length(reader, secondValue, secondLength) +
+                GetUtf8Length(reader, thirdValue, thirdLength));
+
+        public void ReserveStrings(
+            SqliteDataReader reader,
+            int firstValue,
+            int firstLength,
+            int secondValue,
+            int secondLength,
+            int thirdValue,
+            int thirdLength,
+            int fourthValue,
+            int fourthLength) =>
+            Reserve(
+                GetUtf8Length(reader, firstValue, firstLength) +
+                GetUtf8Length(reader, secondValue, secondLength) +
+                GetUtf8Length(reader, thirdValue, thirdLength) +
+                GetUtf8Length(reader, fourthValue, fourthLength));
+
+        public void ReserveStrings(
+            SqliteDataReader reader,
+            int firstValue,
+            int firstLength,
+            int secondValue,
+            int secondLength,
+            int thirdValue,
+            int thirdLength,
+            int fourthValue,
+            int fourthLength,
+            int fifthValue,
+            int fifthLength,
+            int sixthValue,
+            int sixthLength) =>
+            Reserve(
+                GetUtf8Length(reader, firstValue, firstLength) +
+                GetUtf8Length(reader, secondValue, secondLength) +
+                GetUtf8Length(reader, thirdValue, thirdLength) +
+                GetUtf8Length(reader, fourthValue, fourthLength) +
+                GetUtf8Length(reader, fifthValue, fifthLength) +
+                GetUtf8Length(reader, sixthValue, sixthLength));
+
+        private long GetUtf8Length(
+            SqliteDataReader reader,
+            int valueOrdinal,
+            int lengthOrdinal)
+        {
+            if (reader.IsDBNull(lengthOrdinal))
+                return 0;
+            long databaseByteCount = reader.GetInt64(lengthOrdinal);
+            if (databaseByteCount < 0)
+            {
+                throw new SqliteMigrationException(
+                    "SQLite returned an invalid schema metadata length.");
+            }
+            long preMaterializationLimit = databaseUsesUtf8
+                ? Limits.MaxCatalogStringUtf8Bytes
+                : Limits.MaxCatalogStringUtf8Bytes * 2;
+            if (databaseByteCount > preMaterializationLimit)
+                throw InspectionLimitExceeded("catalog-string byte");
+
+            string value = reader.GetString(valueOrdinal);
+            long utf8ByteCount = Encoding.UTF8.GetByteCount(value);
+            if (utf8ByteCount > Limits.MaxCatalogStringUtf8Bytes)
+                throw InspectionLimitExceeded("catalog-string byte");
+            return utf8ByteCount;
+        }
+
+        private void Reserve(long stringBytes)
+        {
+            long remaining =
+                Limits.MaxRetainedSchemaMetadataBytes - retainedBytes;
+            if (stringBytes > remaining - RetainedEntryChargeBytes)
+                throw InspectionLimitExceeded("aggregate schema-metadata byte");
+            retainedBytes += stringBytes + RetainedEntryChargeBytes;
+        }
+    }
 
     private sealed record SchemaEntry(
         long RowId,
@@ -1334,6 +1758,13 @@ public sealed class SqliteMigrationSourceInspector : IMigrationSourceInspector
         string OnDelete,
         string Match);
 
+    private enum ForeignKeyDataCheck
+    {
+        Verified,
+        Violation,
+        Unverifiable,
+    }
+
     private sealed class ColumnProfile
     {
         public long NullCount { get; private set; }
@@ -1393,7 +1824,7 @@ public sealed class SqliteMigrationSourceInspector : IMigrationSourceInspector
         MigrationCoverageKind CoverageKind,
         long ValuesExamined,
         long TotalValues,
-        IReadOnlyList<ColumnProfile> Columns);
+        IReadOnlyList<ColumnProfile?> Columns);
 
     private sealed record KeyState(
         MigrationCatalogObject Object,
@@ -1475,5 +1906,56 @@ public sealed class SqliteMigrationSourceInspector : IMigrationSourceInspector
             SqliteStableDigest.Text(
                 "csharpdb-sqlite-object-id-v1/" + domain,
                 value)[..32];
+    }
+}
+
+internal sealed record SqliteInspectionLimits
+{
+    public static SqliteInspectionLimits Default { get; } = new();
+
+    public int MaxSchemaObjects { get; init; } = 16_384;
+
+    public int MaxColumnsPerTable { get; init; } = 2_000;
+
+    public int MaxIndexesPerTable { get; init; } = 2_000;
+
+    public int MaxIndexRowsPerIndex { get; init; } = 4_096;
+
+    public int MaxForeignKeysPerTable { get; init; } = 2_000;
+
+    public int MaxForeignKeyRowsPerTable { get; init; } = 2_000;
+
+    public int MaxCompileOptions { get; init; } = 4_096;
+
+    public long MaxCatalogStringUtf8Bytes { get; init; } = 1L * 1024 * 1024;
+
+    public long MaxRetainedSchemaMetadataBytes { get; init; } = 64L * 1024 * 1024;
+
+    public void Validate()
+    {
+        if (MaxSchemaObjects <= 0)
+            throw new ArgumentOutOfRangeException(nameof(MaxSchemaObjects));
+        if (MaxColumnsPerTable <= 0)
+            throw new ArgumentOutOfRangeException(nameof(MaxColumnsPerTable));
+        if (MaxIndexesPerTable <= 0)
+            throw new ArgumentOutOfRangeException(nameof(MaxIndexesPerTable));
+        if (MaxIndexRowsPerIndex <= 0)
+            throw new ArgumentOutOfRangeException(nameof(MaxIndexRowsPerIndex));
+        if (MaxForeignKeysPerTable <= 0)
+            throw new ArgumentOutOfRangeException(nameof(MaxForeignKeysPerTable));
+        if (MaxForeignKeyRowsPerTable <= 0)
+            throw new ArgumentOutOfRangeException(nameof(MaxForeignKeyRowsPerTable));
+        if (MaxCompileOptions <= 0)
+            throw new ArgumentOutOfRangeException(nameof(MaxCompileOptions));
+        if (MaxCatalogStringUtf8Bytes <= 0 ||
+            MaxCatalogStringUtf8Bytes > long.MaxValue / 12)
+        {
+            throw new ArgumentOutOfRangeException(nameof(MaxCatalogStringUtf8Bytes));
+        }
+        if (MaxRetainedSchemaMetadataBytes <= 64)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(MaxRetainedSchemaMetadataBytes));
+        }
     }
 }

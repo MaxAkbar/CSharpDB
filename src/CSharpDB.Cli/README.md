@@ -114,22 +114,27 @@ csharpdb migrate inspect --source synthetic --out <catalog.json>
 csharpdb migrate inspect --source csv --input <source.csv> --package <source.csdbcsv> --out <catalog.json> [--delimiter auto|comma|semicolon|tab|pipe|<character>] [--no-header]
 csharpdb migrate inspect --source json --input <source.json|source.ndjson> --package <source.csdbjson> --out <catalog.json> [--framing root-array|ndjson] [--table <name>] [--sample-rows <count>] [--source-id <label>] [--workspace <directory>] [--max-source-bytes <count>]
 csharpdb migrate inspect --source json --input <source.json|source.ndjson> --typed-intent <source.csdbjson-intent.json> --expected-intent-manifest-digest <sha256:...> --package <source.csdbjson> --out <catalog.json> [--framing root-array|ndjson] [--table <name>] [--sample-rows <count>] [--source-id <label>] [--workspace <directory>] [--max-source-bytes <count>]
+csharpdb migrate inspect --source sqlite --input <source.db> --package <source.csdbsqlite> --out <catalog.json> [--profile-sample-size <count>] [--max-source-bytes <count>]
 csharpdb migrate plan <catalog.json> --out <plan.json> [--profile preserve|queryable] [--accept-exclusions all|<id,...>] [--accept-diagnostics <id,...>] [--reject-mode fail-fast|deterministic --reject-rules all|<id,...> --max-rejected-rows-per-batch <count> --max-rejected-rows-per-run <count> --max-reject-evidence-value-bytes <count> --max-reject-evidence-bytes-per-batch <count> --max-reject-evidence-bytes-per-run <count> --max-reject-artifact-bytes <count>]
 csharpdb migrate preview <plan.json> --catalog <catalog.json> [--format text|json]
-csharpdb migrate apply <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv|source.csdbjson> --expected-manifest-digest <sha256:...> --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]
-csharpdb migrate validate <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv|source.csdbjson> --expected-manifest-digest <sha256:...> --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]
+csharpdb migrate apply <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite> --expected-manifest-digest <sha256:...> --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]
+csharpdb migrate validate <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite> --expected-manifest-digest <sha256:...> --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]
 csharpdb migrate export <retained-snapshot.db> --format csv --table <physical-table> --out <table.csv> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1|spreadsheet-safe-lossy-v1] [--max-data-bytes <positive-int64>] [--max-decoded-blob-bytes <positive-int32>] [--checkpoint-row-interval <positive-int64>] [--json]
 csharpdb migrate export <retained-snapshot.db> --format json|ndjson --table <physical-table> --out <table.json|table.ndjson> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1] [--max-data-bytes <positive-int64>] [--max-decoded-blob-bytes <positive-int32>] [--checkpoint-row-interval <positive-int64>] [--json]
 ```
 
 Inspection supports the immutable synthetic qualification source, strict CSV,
-untyped retained JSON package v1, and explicitly selected typed JSON package
-v2. CSV inspection freezes the raw bytes and complete reader and inference
-policy into one no-overwrite `.csdbcsv` package. JSON inspection does the same
-for root-array JSON or NDJSON-compatible whitespace-separated top-level values
-in one no-overwrite `.csdbjson` package. Both JSON package versions use that
-extension; the catalog's versioned schema facets select the reopen API, never
-the filename or package contents.
+untyped retained JSON package v1, explicitly selected typed JSON package v2,
+and SQLite. CSV inspection freezes the raw bytes and complete reader and
+inference policy into one no-overwrite `.csdbcsv` package. JSON inspection does
+the same for root-array JSON or NDJSON-compatible whitespace-separated
+top-level values in one no-overwrite `.csdbjson` package. Both JSON package
+versions use that extension; the catalog's versioned schema facets select the
+reopen API, never the filename or package contents. SQLite inspection creates a
+coherent online backup in one no-overwrite `.csdbsqlite` package and binds its
+native catalog plus sampled storage-class profile to the package SHA-256.
+SQLite backup creation is incrementally cancellable and defaults to a 1 TiB
+retained-snapshot ceiling; `--max-source-bytes` can select a smaller bound.
 
 Pass both `--typed-intent` and
 `--expected-intent-manifest-digest` to select v2. The canonical sidecar must
@@ -144,8 +149,46 @@ Inspection writes the normal catalog artifact and prints
 `intentManifestDigest=sha256:...`. Retain package and sidecar pins in an
 independently trusted change record or CI parameter. Apply, resume, and
 validation require the package pin through `--expected-manifest-digest`.
-The original CSV or JSON path is not retained and is never reopened after
-inspection.
+The original CSV, JSON, or live SQLite path is not retained and is never
+reopened after inspection.
+
+SQLite Tier 1 replays visible scalar columns from ordinary UTF-8 rowid tables in
+signed rowid order. It preserves null, integer, finite real, UTF-8 text, and
+BLOB values exactly, validates every emitted resume boundary, and supports
+fail-fast plans only. Views, triggers, generated columns, virtual/internal
+tables, `WITHOUT ROWID`, non-rowid primary keys, partial or expression indexes,
+unresolved or violating foreign keys, and other unsupported semantics remain
+visible as nonoverrideable catalog diagnostics or exclusions. Apply and
+validation copy the pinned package into an owner-private workspace, reconstruct
+the exact catalog before target access, and never read the deleted or changed
+live source path.
+
+Supported migration-source matrix:
+
+| Source | Retained consistency boundary | Schema/data route | Reject policy |
+| --- | --- | --- | --- |
+| CSV | Private byte-for-byte snapshot in `.csdbcsv` | Strict tabular inference and streaming | Fail-fast or the fixed CSV deterministic registry |
+| JSON/NDJSON v1 | Private byte-for-byte snapshot in `.csdbjson` | Untyped table inference and streaming | Fail-fast or the fixed untyped-JSON deterministic registry |
+| Typed JSON v2 | Source- and intent-pinned `.csdbjson` | Explicit typed table contract | Fail-fast |
+| SQLite v1 | Coherent online backup in `.csdbsqlite` | Tier 1 native catalog and rowid streaming | Fail-fast |
+
+SQLite catalogs record the adapter, Microsoft.Data.Sqlite assembly, native
+SQLite engine, compile-option digest, database text encoding, profile coverage,
+and content fingerprint used for the run. This repository qualifies the
+provider version selected by `CSharpDbQualifiedEfCoreVersion` together with the
+pinned SQLitePCLRaw bundle; a catalog produced by a different build remains
+explicitly versioned evidence, not an implied compatibility claim.
+
+Example SQLite workflow:
+
+```powershell
+csharpdb migrate inspect --source sqlite --input .\source.db --package .\source.csdbsqlite --out .\catalog.json
+# Record the printed manifestDigest in trusted change control.
+csharpdb migrate plan .\catalog.json --out .\plan.json --accept-exclusions all
+csharpdb migrate preview .\plan.json --catalog .\catalog.json
+csharpdb migrate apply .\plan.json --catalog .\catalog.json --source-package .\source.csdbsqlite --expected-manifest-digest <recorded-sha256> --target .\staged.csdb --out .\run.json
+csharpdb migrate validate .\plan.json --catalog .\catalog.json --source-package .\source.csdbsqlite --expected-manifest-digest <recorded-sha256> --target .\staged.csdb --out .\validation.json --level checksum
+```
 
 Common CSV delimiter detection is automatic; `--delimiter` supplies the only
 candidate when an explicit convention is required. CSV defaults are strict
@@ -210,7 +253,8 @@ with both JSON data formats.
 
 Fail-fast is the default: omitting `--reject-mode` produces the established
 `csharpdb-migration-fail-fast/v1` plan JSON and digest. Retained CSV and
-untyped retained JSON package v1 can opt into `--reject-mode deterministic`.
+untyped retained JSON package v1 can opt into `--reject-mode deterministic`;
+typed JSON v2 and SQLite currently remain fail-fast only.
 That mode requires `--reject-rules` plus all six positive, base-10 limits shown
 above. `--reject-rules all` expands to a source-specific fixed set. CSV uses
 `MIG-CSV-DATA-MISSING-001`, `MIG-CSV-DATA-NULL-001`, and
@@ -240,11 +284,11 @@ fails.
 
 These commands produce digested deterministic planning artifacts and apply an
 explicitly approved plan to a new staged database. Apply never overwrites or
-activates an existing target. Before target creation, retained CSV or JSON
-execution verifies the exact package-manifest digest and reconstructs the
-catalog, source fingerprint, snapshot identity, reader policy, and inference
-recipe. Rows and receipts commit together; `--resume` replays the same source
-snapshot and skips only batches whose identities and digests match exactly.
+activates an existing target. Before target creation, retained CSV, JSON, or
+SQLite execution verifies the exact package digest and reconstructs the
+catalog, source fingerprint, snapshot identity, and inspection recipe. Rows and
+receipts commit together; `--resume` replays the same source snapshot and skips
+only batches whose identities and digests match exactly.
 Successful execution stops at `awaitingValidation` and writes a derived run
 report that contains no source values or resume cursors. In fail-fast mode the
 first invalid value stops the load before its batch reaches the target, and the
@@ -286,7 +330,7 @@ checkpoint, and is not consulted to decide which batches `--resume` skips.
 - `MaintenanceCommandRunner.cs` - maintenance commands
 - `DevOpsCommandRunner.cs` - schema compare commands
 - `PipelineCommandRunner.cs` - ETL package and catalog commands
-- `MigrationCommandRunner.cs` - migration inspect, plan, preview, apply, resume, validate, and retained CSV/JSON/NDJSON export commands
+- `MigrationCommandRunner.cs` - migration inspect, plan, preview, apply, resume, validate, and retained CSV/JSON/SQLite plus CSV/JSON/NDJSON export commands
 - `CliConsole.cs` and `TableFormatter.cs` - terminal formatting helpers
 
 ## Build And Test
