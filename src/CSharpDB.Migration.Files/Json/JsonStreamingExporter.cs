@@ -58,7 +58,7 @@ public sealed record JsonStreamingExportResult
 /// Writes deterministic compact JSON or NDJSON to a caller-owned empty stream.
 /// The exporter flushes but does not claim durable storage.
 /// </summary>
-public sealed class JsonStreamingExporter
+public sealed partial class JsonStreamingExporter
 {
     private const int Utf8BufferBytes = 16 * 1024;
     private const int Utf8InputChunkCharacters = 4 * 1024;
@@ -128,16 +128,11 @@ public sealed class JsonStreamingExporter
         using var exportedDigest =
             new JsonExportOrderedContentDigest();
 
-        if (request.Framing ==
-            JsonExportFraming.RootArray)
-        {
-            sink.EnsureCanWrite(3);
-            await sink
-                .WriteAsync(
-                    s_arrayStart,
-                    cancellationToken)
-                .ConfigureAwait(false);
-        }
+        await WriteFramingStartAsync(
+                sink,
+                prepared.Framing,
+                cancellationToken)
+            .ConfigureAwait(false);
 
         long rowCount = 0;
         bool hasPreviousRowId = false;
@@ -198,15 +193,11 @@ public sealed class JsonStreamingExporter
             }
         }
 
-        if (request.Framing ==
-            JsonExportFraming.RootArray)
-        {
-            await sink
-                .WriteAsync(
-                    s_arrayEndNewline,
-                    cancellationToken)
-                .ConfigureAwait(false);
-        }
+        await WriteFramingEndAsync(
+                sink,
+                prepared.Framing,
+                cancellationToken)
+            .ConfigureAwait(false);
 
         await destination
             .FlushAsync(cancellationToken)
@@ -261,6 +252,59 @@ public sealed class JsonStreamingExporter
             CryptographicOperations.ZeroMemory(
                 canonicalManifestBytes);
             throw;
+        }
+    }
+
+    private static async ValueTask
+        WriteFramingStartAsync(
+        ExportByteSink sink,
+        JsonExportFraming framing,
+        CancellationToken cancellationToken)
+    {
+        switch (framing)
+        {
+            case JsonExportFraming.RootArray:
+                // Reserve the opening byte and exact two-byte closing tail
+                // before exposing any partial root-array output.
+                sink.EnsureCanWrite(3);
+                await sink
+                    .WriteAsync(
+                        s_arrayStart,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                break;
+
+            case JsonExportFraming.Ndjson:
+                break;
+
+            default:
+                throw new InvalidOperationException(
+                    "Prepared JSON export framing is unsupported.");
+        }
+    }
+
+    private static async ValueTask
+        WriteFramingEndAsync(
+        ExportByteSink sink,
+        JsonExportFraming framing,
+        CancellationToken cancellationToken)
+    {
+        switch (framing)
+        {
+            case JsonExportFraming.RootArray:
+                await sink
+                    .WriteAsync(
+                        s_arrayEndNewline,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                break;
+
+            case JsonExportFraming.Ndjson:
+                break;
+
+            default:
+                throw new InvalidOperationException(
+                    "Prepared JSON export framing is unsupported.");
         }
     }
 
@@ -2112,6 +2156,41 @@ public sealed class JsonStreamingExporter
                     HashAlgorithmName.SHA256);
         }
 
+        internal ExportByteSink(
+            Stream destination,
+            long maximumBytes,
+            IncrementalHash hash,
+            long bytesWritten)
+        {
+            ArgumentNullException.ThrowIfNull(
+                destination);
+            ArgumentNullException.ThrowIfNull(
+                hash);
+            if (maximumBytes <= 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(maximumBytes));
+            }
+            if (bytesWritten < 0 ||
+                bytesWritten > maximumBytes)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(bytesWritten));
+            }
+            if (hash.AlgorithmName !=
+                HashAlgorithmName.SHA256)
+            {
+                throw new ArgumentException(
+                    "The seeded JSON export checksum must use SHA-256.",
+                    nameof(hash));
+            }
+
+            this.destination = destination;
+            this.maximumBytes = maximumBytes;
+            this.hash = hash;
+            BytesWritten = bytesWritten;
+        }
+
         public long BytesWritten
         {
             get;
@@ -2149,14 +2228,13 @@ public sealed class JsonStreamingExporter
         }
 
         internal JsonExportHashManifest
-            CompleteHash()
+            GetCurrentHash()
         {
             ThrowIfUnavailable();
             byte[] current =
                 hash.GetCurrentHash();
             try
             {
-                completed = true;
                 return new JsonExportHashManifest
                 {
                     Algorithm =
@@ -2173,6 +2251,15 @@ public sealed class JsonStreamingExporter
                 CryptographicOperations.ZeroMemory(
                     current);
             }
+        }
+
+        internal JsonExportHashManifest
+            CompleteHash()
+        {
+            JsonExportHashManifest result =
+                GetCurrentHash();
+            completed = true;
+            return result;
         }
 
         public void Dispose()
