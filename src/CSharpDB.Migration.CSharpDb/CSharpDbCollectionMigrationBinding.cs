@@ -17,6 +17,8 @@ internal sealed record CSharpDbCollectionMigrationBinding
 
     internal required string DocumentColumnObjectId { get; init; }
 
+    internal required MigrationDocumentCollectionKeyMode KeyMode { get; init; }
+
     internal required int KeyValueIndex { get; init; }
 
     internal required int DocumentValueIndex { get; init; }
@@ -42,20 +44,22 @@ internal sealed record CSharpDbCollectionMigrationBinding
                          planned.Included)
                      .OrderBy(item => item.ObjectId, StringComparer.Ordinal))
         {
-            if (!MigrationDocumentCollectionContract.TryBindExactV1Collection(
+            if (!MigrationDocumentCollectionContract.TryBindSupportedV1Collection(
                     collection,
                     objectsById,
-                    out MigrationCatalogObject? keyColumn,
-                    out MigrationCatalogObject? documentColumn,
+                    out MigrationDocumentCollectionBinding? contractBinding,
                     out string? reason))
             {
                 throw new InvalidDataException(
-                    $"Included collection '{collection.ObjectId}' does not satisfy the JSON document contract: {reason}");
+                    $"Included collection '{collection.ObjectId}' does not satisfy a supported document contract: {reason}");
             }
 
+            MigrationCatalogObject keyColumn = contractBinding!.KeyColumn;
+            MigrationCatalogObject documentColumn =
+                contractBinding.DocumentColumn;
             MigrationPlanObject collectionPlan = plansById[collection.ObjectId];
-            MigrationPlanObject keyPlan = plansById[keyColumn!.ObjectId];
-            MigrationPlanObject documentPlan = plansById[documentColumn!.ObjectId];
+            MigrationPlanObject keyPlan = plansById[keyColumn.ObjectId];
+            MigrationPlanObject documentPlan = plansById[documentColumn.ObjectId];
             if (!keyPlan.Included ||
                 !documentPlan.Included ||
                 keyPlan.TypeMappings.SingleOrDefault()?.TargetType != DbType.Text ||
@@ -103,6 +107,7 @@ internal sealed record CSharpDbCollectionMigrationBinding
                 PhysicalTableName = physicalName,
                 KeyColumnObjectId = keyColumn.ObjectId,
                 DocumentColumnObjectId = documentColumn.ObjectId,
+                KeyMode = contractBinding.KeyMode,
                 KeyValueIndex = keyIndex,
                 DocumentValueIndex = documentIndex,
             });

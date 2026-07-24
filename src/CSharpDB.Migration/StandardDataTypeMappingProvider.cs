@@ -403,27 +403,10 @@ public sealed class StandardDataTypeMappingProvider : IDataTypeMappingProvider
                     "jsonTypedIntentManifestDigest"));
     }
 
-    private static bool IsOrderedJsonDocument(MigrationCatalogObject source) =>
-        string.Equals(
-            source.NativeType,
-            MigrationDocumentCollectionContract.DocumentNativeType,
-            StringComparison.Ordinal) &&
-        string.Equals(
-            GetFacet(source, MigrationDocumentCollectionContract.LogicalTypeFacet),
-            MigrationDocumentCollectionContract.JsonLogicalType,
-            StringComparison.Ordinal) &&
-        string.Equals(
-            GetFacet(source, MigrationDocumentCollectionContract.NullableFacet),
-            "false",
-            StringComparison.Ordinal) &&
-        string.Equals(
-            GetFacet(source, MigrationDocumentCollectionContract.FieldRoleFacet),
-            MigrationDocumentCollectionContract.DocumentRole,
-            StringComparison.Ordinal) &&
-        string.Equals(
-            GetFacet(source, MigrationDocumentCollectionContract.DocumentEncodingFacet),
-            MigrationDocumentCollectionContract.DocumentEncoding,
-            StringComparison.Ordinal);
+    private static bool IsOrderedJsonDocument(
+        MigrationCatalogObject source) =>
+        MigrationDocumentCollectionContract.IsSupportedV1DocumentColumn(
+            source);
 
     private static MigrationCatalogFacet Facet(string name, string value) => new()
     {

@@ -468,15 +468,14 @@ public static class MigrationContractValidator
             }
             if (catalogObject.Kind == MigrationObjectKind.Collection)
             {
-                bool bound = MigrationDocumentCollectionContract.TryBindExactV1Collection(
+                bool bound = MigrationDocumentCollectionContract.TryBindSupportedV1Collection(
                     catalogObject,
                     catalogObjectsById,
-                    out MigrationCatalogObject? keyColumn,
-                    out MigrationCatalogObject? documentColumn,
+                    out MigrationDocumentCollectionBinding? binding,
                     out _);
                 if (!bound ||
-                    !planObjectsById[keyColumn!.ObjectId].Included ||
-                    !planObjectsById[documentColumn!.ObjectId].Included)
+                    !planObjectsById[binding!.KeyColumn.ObjectId].Included ||
+                    !planObjectsById[binding.DocumentColumn.ObjectId].Included)
                 {
                     throw Invalid(
                         $"Included document collection '{item.SourceObjectId}' requires included key and document bridge columns.");

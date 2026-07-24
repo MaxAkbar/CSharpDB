@@ -2212,7 +2212,7 @@ public sealed class CSharpDbStagedMigrationTarget :
                     StringComparison.Ordinal))
             {
                 throw new InvalidDataException(
-                    "JSON collection migration accepts only fail-fast data batches.");
+                    "Document collection migration accepts only fail-fast data batches.");
             }
 
             foreach (MigrationTargetRow row in batch.Rows)
@@ -2220,18 +2220,39 @@ public sealed class CSharpDbStagedMigrationTarget :
                 DbValue keyValue = row.Values[collectionBinding.KeyValueIndex];
                 DbValue documentValue =
                     row.Values[collectionBinding.DocumentValueIndex];
-                string expectedKey =
-                    MigrationDocumentCollectionContract.FormatOrdinalKey(
-                        row.SourceRowOrdinal);
+                string? expectedKey = collectionBinding.KeyMode switch
+                {
+                    MigrationDocumentCollectionKeyMode.SourceOrdinal =>
+                        MigrationDocumentCollectionContract.FormatOrdinalKey(
+                            row.SourceRowOrdinal),
+                    MigrationDocumentCollectionKeyMode.StableSourceKey =>
+                        row.StableKey,
+                    _ => throw new InvalidDataException(
+                        "Migration collection key mode is unsupported."),
+                };
                 if (keyValue.IsNull ||
                     keyValue.Type != DbType.Text ||
                     documentValue.IsNull ||
                     documentValue.Type != DbType.Text ||
+                    expectedKey is null ||
                     !string.Equals(row.StableKey, expectedKey, StringComparison.Ordinal) ||
                     !string.Equals(keyValue.AsText, expectedKey, StringComparison.Ordinal))
                 {
                     throw new InvalidDataException(
-                        "Migration collection row does not match its ordinal key and canonical document contract.");
+                        collectionBinding.KeyMode ==
+                        MigrationDocumentCollectionKeyMode.SourceOrdinal
+                            ? "Migration collection row does not match its ordinal key and canonical document contract."
+                            : "Migration collection row does not match its bound stable key and canonical document contract.");
+                }
+
+                if (collectionBinding.KeyMode ==
+                        MigrationDocumentCollectionKeyMode.StableSourceKey &&
+                    !MigrationLiteDbDocumentCollectionContract.TryValidateTypedKey(
+                        expectedKey,
+                        out _))
+                {
+                    throw new InvalidDataException(
+                        "Migration collection row does not contain a valid version 1 typed stable key.");
                 }
             }
         }

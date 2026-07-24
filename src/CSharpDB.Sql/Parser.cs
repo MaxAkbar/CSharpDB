@@ -140,7 +140,10 @@ public sealed class Parser
         var tokenizer = new Tokenizer(sql);
         var tokens = tokenizer.Tokenize();
         var parser = new Parser(tokens);
-        return parser.ParseStatement();
+        Statement statement = parser.ParseStatement();
+        if (parser.Peek().Type != TokenType.Eof)
+            throw parser.Error($"Unexpected token '{parser.Peek().Value}' after statement.");
+        return statement;
     }
 
     public static Expression ParseExpressionSql(string sql)

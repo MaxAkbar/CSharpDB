@@ -50,16 +50,17 @@ internal sealed class CSharpDbTargetCapabilityEvaluator
         if (statusReason is not null)
             return statusReason;
 
-        if (!MigrationDocumentCollectionContract.TryBindExactV1Collection(
+        if (!MigrationDocumentCollectionContract.TryBindSupportedV1Collection(
                 collection,
                 objectsById,
-                out MigrationCatalogObject? keyColumn,
-                out MigrationCatalogObject? documentColumn,
+                out MigrationDocumentCollectionBinding? binding,
                 out string? bindingReason))
         {
             return Reject(rule, bindingReason!);
         }
 
+        MigrationCatalogObject keyColumn = binding!.KeyColumn;
+        MigrationCatalogObject documentColumn = binding.DocumentColumn;
         if (!mappingsByObjectId.TryGetValue(keyColumn!.ObjectId, out MigrationTypeMapping? keyMapping) ||
             keyMapping.TargetType != DbType.Text ||
             keyMapping.Classification != MigrationMappingClassification.Exact ||
@@ -71,7 +72,7 @@ internal sealed class CSharpDbTargetCapabilityEvaluator
         }
 
         if (!mappingsByObjectId.TryGetValue(
-                documentColumn!.ObjectId,
+                documentColumn.ObjectId,
                 out MigrationTypeMapping? documentMapping) ||
             documentMapping.TargetType != DbType.Text ||
             documentMapping.Classification != MigrationMappingClassification.LosslessReencoded ||

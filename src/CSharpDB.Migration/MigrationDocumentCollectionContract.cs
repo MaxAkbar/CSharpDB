@@ -3,6 +3,21 @@ using CSharpDB.Primitives;
 
 namespace CSharpDB.Migration;
 
+public enum MigrationDocumentCollectionKeyMode
+{
+    SourceOrdinal,
+    StableSourceKey,
+}
+
+public sealed record MigrationDocumentCollectionBinding
+{
+    public required MigrationDocumentCollectionKeyMode KeyMode { get; init; }
+
+    public required MigrationCatalogObject KeyColumn { get; init; }
+
+    public required MigrationCatalogObject DocumentColumn { get; init; }
+}
+
 /// <summary>
 /// Versioned source and row-bridge contract for projecting ordered JSON values
 /// into a CSharpDB document collection.
@@ -206,6 +221,81 @@ public static class MigrationDocumentCollectionContract
         return true;
     }
 
+    public static bool TryBindSupportedV1Collection(
+        MigrationCatalogObject collection,
+        IReadOnlyDictionary<string, MigrationCatalogObject> objectsById,
+        out MigrationDocumentCollectionBinding? binding,
+        out string? reason)
+    {
+        ArgumentNullException.ThrowIfNull(collection);
+        ArgumentNullException.ThrowIfNull(objectsById);
+
+        binding = null;
+        reason = null;
+
+        bool isJson = HasExactFacet(
+            collection,
+            ProjectionFacet,
+            ProjectionContract);
+        bool isLiteDb = collection.Facets.Any(facet =>
+            string.Equals(
+                facet.Name,
+                MigrationLiteDbDocumentCollectionContract.ProjectionFacet,
+                StringComparison.Ordinal) &&
+            string.Equals(
+                facet.Value,
+                MigrationLiteDbDocumentCollectionContract.ProjectionContract,
+                StringComparison.Ordinal));
+        if (isJson == isLiteDb)
+        {
+            reason = isJson
+                ? $"Collection '{collection.ObjectId}' declares ambiguous document collection projection contracts."
+                : $"Collection '{collection.ObjectId}' does not declare a supported version 1 document collection projection contract.";
+            return false;
+        }
+
+        MigrationCatalogObject? keyColumn;
+        MigrationCatalogObject? documentColumn;
+        bool bound;
+        if (isJson)
+        {
+            bound = TryBindExactV1Collection(
+                collection,
+                objectsById,
+                out keyColumn,
+                out documentColumn,
+                out reason);
+        }
+        else
+        {
+            bound = MigrationLiteDbDocumentCollectionContract
+                .TryBindExactV1Collection(
+                    collection,
+                    objectsById,
+                    out keyColumn,
+                    out documentColumn,
+                    out reason);
+        }
+        if (!bound)
+            return false;
+
+        binding = new MigrationDocumentCollectionBinding
+        {
+            KeyMode = isJson
+                ? MigrationDocumentCollectionKeyMode.SourceOrdinal
+                : MigrationDocumentCollectionKeyMode.StableSourceKey,
+            KeyColumn = keyColumn!,
+            DocumentColumn = documentColumn!,
+        };
+        return true;
+    }
+
+    internal static bool IsSupportedV1DocumentColumn(
+        MigrationCatalogObject source) =>
+        IsExactV1DocumentColumn(source) ||
+        MigrationLiteDbDocumentCollectionContract.IsExactV1DocumentColumn(
+            source);
+
     public static string GetPhysicalCollectionName(string logicalCollectionName)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(logicalCollectionName);
@@ -276,6 +366,20 @@ public static class MigrationDocumentCollectionContract
         item.Facets.Any(facet =>
             string.Equals(facet.Name, name, StringComparison.Ordinal) &&
             string.Equals(facet.Value, value, StringComparison.Ordinal));
+
+    private static bool IsExactV1DocumentColumn(
+        MigrationCatalogObject source) =>
+        string.Equals(
+            source.NativeType,
+            DocumentNativeType,
+            StringComparison.Ordinal) &&
+        HasExactFacet(source, LogicalTypeFacet, JsonLogicalType) &&
+        HasExactFacet(source, NullableFacet, "false") &&
+        HasExactFacet(source, FieldRoleFacet, DocumentRole) &&
+        HasExactFacet(
+            source,
+            DocumentEncodingFacet,
+            DocumentEncoding);
 
     private static bool Fail(string failureReason, out string? reason)
     {
