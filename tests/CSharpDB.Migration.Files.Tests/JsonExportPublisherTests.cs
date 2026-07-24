@@ -1071,6 +1071,23 @@ public sealed class JsonExportPublisherTests
                     Path.Combine(
                         other,
                         "manifest.json")));
+        string exactCaseParent =
+            workspace.PathFor(
+                "CaseSensitiveParent");
+        Directory.CreateDirectory(
+            exactCaseParent);
+        string differentCaseParent =
+            workspace.PathFor(
+                "casesensitiveparent");
+        Assert.Throws<ArgumentException>(
+            () => JsonExportPublisher
+                .ValidatePaths(
+                    Path.Combine(
+                        exactCaseParent,
+                        "data.json"),
+                    Path.Combine(
+                        differentCaseParent,
+                        "manifest.json")));
         string unnormalized =
             workspace.Root +
             Path.DirectorySeparatorChar +

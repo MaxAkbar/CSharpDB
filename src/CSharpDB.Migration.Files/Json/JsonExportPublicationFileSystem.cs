@@ -992,7 +992,7 @@ internal sealed class JsonExportPublicationFileSystem :
         if (!string.Equals(
                 parent,
                 Paths.ParentPath,
-                StringComparison.OrdinalIgnoreCase))
+                StringComparison.Ordinal))
         {
             throw new InvalidDataException(
                 "The JSON export rename destination is outside the bound parent.");
@@ -1097,7 +1097,7 @@ internal sealed class JsonExportPublicationFileSystem :
             if (!string.Equals(
                     destinationParent,
                     manifestParent,
-                    StringComparison.OrdinalIgnoreCase))
+                    StringComparison.Ordinal))
             {
                 throw new ArgumentException(
                     "The JSON export data and manifest must be siblings.",
