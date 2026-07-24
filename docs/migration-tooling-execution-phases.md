@@ -655,10 +655,13 @@ checkpoint and lossy-profile options. The adapter is intentionally bound to
 the built-in/default Engine reader composition; custom provider provenance is
 not yet representable in the manifest. The bounded canonical checkpoint
 artifact, framing/generation rules, and platform-neutral replay/resume
-coordinator are now implemented. The Windows prepared-output lease, durable
-checkpoint publication, public resume activation, killed-process staging
-reclamation, abrupt-power-loss qualification, collection projection, and
-import CLI integration remain open.
+coordinator are now implemented. A local-Windows prepared-output lease now
+adds exact-spelling deterministic journals, active-only recovery, verified
+tail truncation, stale-pending reclamation, and data-first durable active
+checkpoint replacement relative to a pinned parent. Public retained-adapter
+and CLI resume activation, killed-process publication-staging reclamation,
+process-crash qualification, abrupt-power-loss qualification, collection
+projection, and import CLI integration remain open.
 
 - [x] Stream root arrays and NDJSON/multiple top-level values without loading
   the full input.
@@ -695,8 +698,13 @@ import CLI integration remain open.
   strict signed row-ID continuation, periodic object-boundary checkpoints,
   EOF-qualified completion, and a lease-owned persistence/cancellation
   boundary.
-- [ ] Add deterministic leased JSON export staging, safe killed-process orphan
-  reclamation, durable checkpoints, and verified mid-stream resume.
+- [x] Add a local-Windows prepared-output lease with exclusive owner-private
+  files, bounded active-only recovery, stale-pending reclamation, exact prefix
+  verification, durable tail truncation, pinned-parent-relative checkpoint
+  activation, and reopen-on-uncertain-failure semantics.
+- [ ] Activate retained-source mid-stream resume through deterministic leased
+  publication staging, safe killed-process orphan reclamation, adapter/CLI
+  routing, and child-process crash qualification.
 
 ### Shared Deliverables
 

@@ -96,11 +96,15 @@ The internal platform-neutral resumable coordinator now initializes
 generation zero, replays exactly to recovered object boundaries without
 lookahead, independently rehashes the qualified prepared prefix, resumes after
 the signed row ID, and emits periodic and EOF-qualified terminal checkpoints.
-Its injected session contract leaves exclusive filesystem ownership,
-torn-tail recovery, durable pending/active replacement, and the persistence
-cancellation cutoff to the next Windows lease slice. Public resume activation,
-deterministic killed-process staging reclamation, and hard-power qualification
-remain later gates. See
+`JsonExportPreparedOutputLease` now supplies that session's local-Windows
+filesystem boundary: exact-spelling deterministic private siblings, an
+exclusive current-owner-only prepared handle, active-only recovery, stale
+pending reclamation, verified tail truncation, and data-first durable
+pending/active replacement relative to a pinned parent. Any uncertain
+replacement failure poisons the live lease so recovery must reopen and
+requalify durable authority. Public coordinator activation, deterministic
+killed-process publication-staging reclamation, process-crash qualification,
+and hard-power qualification remain later gates. See
 [`migration-json-export-contract.md`](../../docs/migration-json-export-contract.md).
 
 The typed `csharpdb-csv-export-manifest/v1` sidecar contract now binds a

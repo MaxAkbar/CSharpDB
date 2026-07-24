@@ -6,8 +6,9 @@ This document freezes deterministic export from one typed retained CSharpDB
 table to either a compact JSON root array or newline-delimited JSON. The
 restart-only publisher is implemented. The durable checkpoint artifact,
 prefix geometry, generation transitions, and platform-neutral replay
-coordinator are also implemented behind an internal prepared-output session
-boundary before the Windows lease activates them.
+coordinator are implemented. A local-Windows prepared-output lease now
+provides the coordinator's durable session boundary, although the coordinator
+is not yet exposed through the retained adapter or CLI.
 
 The completed restart-only slice includes:
 
@@ -19,12 +20,12 @@ The completed restart-only slice includes:
 - retained-snapshot source binding; and
 - `migrate export --format json|ndjson` CLI routing.
 
-Durable checkpoint publication, the Windows prepared-output lease, public
-resume activation, killed-process staging reclamation, collection/document
+Public resume activation, deterministic killed-process publication-staging
+reclamation, retained-adapter and CLI resume routing, collection/document
 export, and typed export intent remain later slices. The disposable Windows
-VM qualification is also deferred. This restart-only publisher flushes
-completed staging files to durable storage as supported by the host, but
-makes no directory-fsync or abrupt-power-loss guarantee.
+VM qualification is also deferred. The implemented lease and restart-only
+publisher flush completed files to durable storage as supported by the host,
+but make no directory-fsync or abrupt-power-loss guarantee.
 
 ## Public Contract
 
@@ -127,9 +128,59 @@ and finalizes root-array or NDJSON framing.
 The session contract, not the coordinator, owns exclusive files, binding and
 transition enforcement at persistence, torn-tail truncation, durable data
 flush, pending-checkpoint durability, atomic active replacement, and the
-post-pending cancellation cutoff. The internal coordinator is not yet exposed
-through the public exporter or CLI; that activation waits for the qualified
-Windows session implementation.
+post-pending cancellation cutoff.
+
+## Local-Windows Prepared Output
+
+`JsonExportPreparedOutputLease.OpenAsync` binds one fully qualified,
+normalized, exact-spelling future destination to deterministic private
+siblings:
+
+- `.csharpdb-json-export-<digest>.prepared`;
+- `.csharpdb-json-export-<digest>.checkpoint`; and
+- `.csharpdb-json-export-<digest>.checkpoint.next`.
+
+The final destination is never opened or created by the lease and must be
+absent. The exact destination spelling is the journal identity. Cooperating
+callers must therefore use one spelling consistently; case aliases on an
+ordinary case-insensitive directory are not mutually excluded by this
+prepared lease, although later no-replace publication still fails closed.
+
+The lease supports only local Windows filesystems. It rejects relative or
+unnormalized paths, wrong-cased or aliased parents, UNC and mapped-network
+locations, device and alternate-stream syntax, DOS short-name aliases,
+reserved or invalid Win32 names, reparse points, special files, hard links,
+and files without a protected current-owner-only ACL. The prepared file is
+held without sharing as the compliant-exporter lease. Its parent is pinned
+without delete sharing, and active-checkpoint replacement names only a
+validated leaf relative to that parent. Windows does not provide a
+destination-identity compare-and-swap rename; another same-SID actor that
+already has independent authority to mutate the parent namespace is outside
+this boundary's threat model.
+
+Only the active checkpoint is recovery authority. A qualified stale pending
+checkpoint is handle-deleted during open and is never adopted. With no active
+checkpoint, an empty prepared file opens as `New`; nonempty bytes open as
+`UncheckpointedData` and remain inaccessible until an explicit durable reset.
+With an active checkpoint, open requires its bounded canonical bytes and exact
+binding, independently rehashes the prepared prefix, verifies the root-array
+or NDJSON complete-object boundary, then truncates and durably flushes any
+later tail. A zero-byte NDJSON prefix can be reconstructed exactly when its
+valid active checkpoint remains.
+
+Persistence requires the prepared stream to end at the checkpoint's exact
+length and digest. It durably flushes data first, durably writes the canonical
+pending checkpoint second, then stops observing cancellation and atomically
+replaces the active leaf relative to the pinned parent. Same-generation
+retries require identical canonical bytes; other transitions advance by
+exactly one and terminal checkpoints cannot advance. If replacement reports
+failure after authority may have changed, the lease closes and becomes
+unusable so the caller must reopen and requalify the active generation.
+Disposal otherwise preserves prepared data and the active checkpoint.
+
+The platform-neutral coordinator remains internal and is not yet exposed
+through the public exporter or CLI. Wiring it to retained-source replay,
+publication, and cross-process recovery is the next activation slice.
 
 ## Retained-Snapshot Publication
 
@@ -352,12 +403,12 @@ The merge gate covers:
 
 ## Deferred Work
 
-This slice freezes and validates checkpoint artifacts and implements the
-portable replay coordinator, but it does not yet persist an active checkpoint
-through a real filesystem lease, expose partial-export resume publicly, emit
-nested collection documents, or create a typed export-intent sidecar. Until
-the prepared-output lease activates the coordinator, an exact CLI rerun still
-starts from row zero.
+This slice freezes and validates checkpoint artifacts, implements the portable
+replay coordinator, and persists active checkpoints through the qualified
+Windows lease. It does not yet expose partial-export resume through the
+retained adapter or CLI, process-crash qualify that composition, emit nested
+collection documents, or create a typed export-intent sidecar. An exact CLI
+rerun therefore still starts from row zero.
 
 An uncatchable process termination can leave an unreferenced private
 `.csharpdb-json-export-*.stage` sibling. A full rerun uses new private staging
