@@ -13,6 +13,8 @@ public static class MigrationContractValidator
 
         IReadOnlyList<MigrationCatalogObject> objects = RequireList(catalog.Objects, "Catalog objects");
         var objectIds = new HashSet<string>(StringComparer.Ordinal);
+        var objectsById =
+            new Dictionary<string, MigrationCatalogObject>(StringComparer.Ordinal);
         foreach (MigrationCatalogObject item in objects)
         {
             if (item is null)
@@ -20,7 +22,8 @@ public static class MigrationContractValidator
 
             RequireText(item.ObjectId, "Catalog object id");
             RequireText(item.SourceName, $"Source name for catalog object '{item.ObjectId}'");
-            if (!objectIds.Add(item.ObjectId))
+            if (!objectIds.Add(item.ObjectId) ||
+                !objectsById.TryAdd(item.ObjectId, item))
                 throw Invalid($"Catalog contains duplicate object id '{item.ObjectId}'.");
 
             var facetNames = new HashSet<string>(StringComparer.Ordinal);
@@ -127,7 +130,7 @@ public static class MigrationContractValidator
             objects.Select(item => item.ObjectId),
             id =>
             {
-                MigrationCatalogObject item = objects.Single(candidate => candidate.ObjectId == id);
+                MigrationCatalogObject item = objectsById[id];
                 IEnumerable<string> structuralReferences = item.DependsOn.Concat(
                     item.Members.Select(member => member.ObjectId));
                 return item.ParentObjectId is null

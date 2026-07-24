@@ -4,9 +4,9 @@ using CSharpDB.Migration;
 
 namespace CSharpDB.Migration.SqlServer;
 
-internal static class SqlServerCatalogBuilder
+internal static partial class SqlServerCatalogBuilder
 {
-    public const string CatalogContract = "csharpdb-sqlserver-catalog/v1";
+    public const string CatalogContract = "csharpdb-sqlserver-catalog/v2";
 
     private static readonly UTF8Encoding s_strictUtf8 =
         new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
@@ -42,11 +42,15 @@ internal static class SqlServerCatalogBuilder
         ValidateSnapshot(snapshot, limits, cancellationToken);
 
         var objects = new List<MigrationCatalogObject>(
-            1 + snapshot.Schemas.Count + snapshot.Tables.Count + snapshot.Columns.Count);
+            1 +
+            snapshot.Schemas.Count +
+            snapshot.Tables.Count +
+            snapshot.Columns.Count +
+            RelationalObjectCapacity(snapshot));
         var diagnostics = new List<MigrationDiagnostic>();
 
         string databaseId = ObjectId("database", snapshot.Database.Name);
-        MetadataVisibility visibility = GetMetadataVisibility(snapshot.Database);
+        MetadataVisibility visibility = GetMetadataVisibility(snapshot);
         objects.Add(new MigrationCatalogObject
         {
             ObjectId = databaseId,
@@ -93,6 +97,28 @@ internal static class SqlServerCatalogBuilder
                 Facet(
                     "sqlServerPermissionViewDefinition",
                     NullableBoolean(snapshot.Database.HasViewDefinition)),
+                Facet(
+                    "sqlServerPermissionViewSecurityDefinition",
+                    NullableBoolean(snapshot.Database.HasViewSecurityDefinition)),
+                Facet(
+                    "sqlServerPermissionAuditAttempted",
+                    Boolean(
+                        snapshot.PermissionAuditBefore.Attempted &&
+                        snapshot.PermissionAuditAfter.Attempted)),
+                Facet(
+                    "sqlServerPermissionTokenCount",
+                    Invariant(snapshot.PermissionAuditAfter.Tokens.Count)),
+                Facet(
+                    "sqlServerPermissionDenyCount",
+                    Invariant(snapshot.PermissionAuditAfter.Denials.Count)),
+                Facet(
+                    "sqlServerPermissionAuditDigest",
+                    PermissionAuditDigest(snapshot.PermissionAuditAfter)),
+                Facet(
+                    "sqlServerPermissionAuditStable",
+                    Boolean(PermissionAuditsEqual(
+                        snapshot.PermissionAuditBefore,
+                        snapshot.PermissionAuditAfter))),
             ],
         });
 
@@ -107,7 +133,7 @@ internal static class SqlServerCatalogBuilder
             MigrationDiagnosticSeverity.Error,
             MigrationCompatibilityStatus.Unknown,
             "This checkpoint is an intentionally partial SQL Server inventory.",
-            "Schemas, user tables, columns, defaults, identity, and computed-column facts are inventoried. Keys, foreign keys, checks, indexes, sequences, views, triggers, routines, and dependency edges remain absent, so this catalog must not be presented as a complete readiness report.",
+            "Schemas, user tables, columns, defaults, identity, computed-column facts, keys, foreign keys, checks, table indexes, and sequences are inventoried. Views, triggers, routines, module bodies, dependency edges, indexed views, full-text indexes, and physical partition or storage layouts remain absent, so this catalog must not be presented as a complete readiness report.",
             "Complete the remaining Phase 7A object-class inventory before relying on the analyzer for migration approval.",
             canOverride: false));
 
@@ -132,6 +158,9 @@ internal static class SqlServerCatalogBuilder
                     Facet("isDefault", Boolean(
                         string.Equals(schema.Name, "dbo", StringComparison.Ordinal))),
                     Facet("sqlServerSchemaId", Invariant(schema.SchemaId)),
+                    Facet(
+                        "sqlServerPermissionViewDefinition",
+                        NullableBoolean(schema.HasViewDefinition)),
                 ],
             });
         }
@@ -162,6 +191,9 @@ internal static class SqlServerCatalogBuilder
                     Facet("sqlServerTemporalType", table.TemporalType),
                     Facet("sqlServerGraphNode", Boolean(table.IsNode)),
                     Facet("sqlServerGraphEdge", Boolean(table.IsEdge)),
+                    Facet(
+                        "sqlServerPermissionViewDefinition",
+                        NullableBoolean(table.HasViewDefinition)),
                 ],
             });
 
@@ -179,6 +211,8 @@ internal static class SqlServerCatalogBuilder
             }
         }
 
+        var columnsByCatalogId =
+            new Dictionary<(int ObjectId, int ColumnId), (SqlServerColumnMetadata Metadata, string Id)>();
         foreach (SqlServerColumnMetadata column in snapshot.Columns
                      .OrderBy(static item => item.ObjectId)
                      .ThenBy(static item => item.ColumnId))
@@ -187,6 +221,7 @@ internal static class SqlServerCatalogBuilder
             (SqlServerTableMetadata table, string tableId) = tablesByObjectId[column.ObjectId];
             SqlServerSchemaMetadata schema = schemasById[table.SchemaId].Metadata;
             string columnId = ObjectId("column", schema.Name, table.Name, column.Name);
+            columnsByCatalogId.Add((column.ObjectId, column.ColumnId), (column, columnId));
             bool computed = column.IsComputed;
             bool rowVersion = IsRowVersion(column.SystemTypeName);
             bool userDefinedType = !string.Equals(
@@ -244,6 +279,15 @@ internal static class SqlServerCatalogBuilder
             AddColumnDiagnostics(column, columnId, logicalType, diagnostics);
         }
 
+        AddRelationalObjects(
+            snapshot,
+            schemasById,
+            tablesByObjectId,
+            columnsByCatalogId,
+            objects,
+            diagnostics,
+            cancellationToken);
+
         string fingerprint = "sha256:" + ComputeSnapshotDigest(snapshot);
         var catalog = new MigrationCatalog
         {
@@ -287,6 +331,7 @@ internal static class SqlServerCatalogBuilder
             throw LimitExceeded("table count");
         if (snapshot.Columns.Count > limits.MaxColumns)
             throw LimitExceeded("column count");
+        ValidateRelationalCounts(snapshot, limits);
         if (snapshot.Instance.ProductMajorVersion <= 0)
             throw new SqlServerMigrationException("SQL Server returned an invalid product major version.");
         if (snapshot.Database.DatabaseId <= 0)
@@ -367,6 +412,14 @@ internal static class SqlServerCatalogBuilder
 
             ValidateColumnShape(column);
         }
+
+        ValidateRelationalSnapshot(
+            snapshot,
+            schemaIds,
+            tableIds,
+            columnIds,
+            budget,
+            cancellationToken);
     }
 
     private static void AddQualificationDiagnostics(
@@ -387,6 +440,11 @@ internal static class SqlServerCatalogBuilder
                 "Treat this inventory as partial, or add an effective per-object permission scan before using a least-privilege result for planning.",
                 canOverride: false));
         }
+
+        AddPermissionQualificationDiagnostics(
+            snapshot,
+            databaseId,
+            diagnostics);
 
         if (snapshot.Instance.EngineEdition is not (2 or 3 or 4))
         {
@@ -764,21 +822,22 @@ internal static class SqlServerCatalogBuilder
         }
     }
 
-    private static MetadataVisibility GetMetadataVisibility(SqlServerDatabaseMetadata database)
+    private static MetadataVisibility GetMetadataVisibility(SqlServerCatalogSnapshot snapshot)
     {
+        SqlServerDatabaseMetadata database = snapshot.Database;
         if (database.IsSysAdmin == true)
             return MetadataVisibility.Complete;
 
-        bool?[] evidence =
-        [
-            database.IsSysAdmin,
-            database.IsDbOwner,
-            database.HasControl,
-            database.HasViewDefinition,
-        ];
-        return evidence.All(static value => value == false)
-            ? MetadataVisibility.Incomplete
-            : MetadataVisibility.Unknown;
+        if (database.HasViewDefinition == false ||
+            snapshot.Schemas.Any(static item => item.HasViewDefinition == false) ||
+            snapshot.Tables.Any(static item => item.HasViewDefinition == false) ||
+            HasRelevantMetadataDeny(snapshot.PermissionAuditBefore) ||
+            HasRelevantMetadataDeny(snapshot.PermissionAuditAfter))
+        {
+            return MetadataVisibility.Incomplete;
+        }
+
+        return MetadataVisibility.Unknown;
     }
 
     internal static string ComputeSnapshotDigest(SqlServerCatalogSnapshot snapshot)
@@ -807,6 +866,7 @@ internal static class SqlServerCatalogBuilder
             yield return NullableBoolean(snapshot.Database.IsDbOwner);
             yield return NullableBoolean(snapshot.Database.HasControl);
             yield return NullableBoolean(snapshot.Database.HasViewDefinition);
+            yield return NullableBoolean(snapshot.Database.HasViewSecurityDefinition);
 
             foreach (SqlServerSchemaMetadata schema in snapshot.Schemas
                          .OrderBy(static item => item.SchemaId)
@@ -815,6 +875,7 @@ internal static class SqlServerCatalogBuilder
                 yield return "schema";
                 yield return Invariant(schema.SchemaId);
                 yield return schema.Name;
+                yield return NullableBoolean(schema.HasViewDefinition);
             }
             foreach (SqlServerTableMetadata table in snapshot.Tables
                          .OrderBy(static item => item.ObjectId))
@@ -829,6 +890,7 @@ internal static class SqlServerCatalogBuilder
                 yield return table.TemporalType;
                 yield return Boolean(table.IsNode);
                 yield return Boolean(table.IsEdge);
+                yield return NullableBoolean(table.HasViewDefinition);
             }
             foreach (SqlServerColumnMetadata column in snapshot.Columns
                          .OrderBy(static item => item.ObjectId)
@@ -871,10 +933,13 @@ internal static class SqlServerCatalogBuilder
                 yield return column.IdentityIncrement;
                 yield return Boolean(column.IdentityNotForReplication);
             }
+
+            foreach (string? field in RelationalSnapshotFields(snapshot))
+                yield return field;
         }
 
         return SqlServerStableDigest.Sequence(
-            "csharpdb-sqlserver-snapshot/v1",
+            "csharpdb-sqlserver-snapshot/v2",
             Fields());
     }
 

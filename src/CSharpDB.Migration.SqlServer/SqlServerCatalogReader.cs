@@ -13,7 +13,7 @@ internal interface ISqlServerCatalogReader
         CancellationToken cancellationToken);
 }
 
-internal sealed class SqlServerCatalogReader : ISqlServerCatalogReader
+internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
 {
     private const int ConnectionTimeoutSeconds = 30;
     private const int CommandTimeoutSeconds = 30;
@@ -42,7 +42,17 @@ internal sealed class SqlServerCatalogReader : ISqlServerCatalogReader
             CONVERT(int, IS_SRVROLEMEMBER(N'sysadmin')),
             CONVERT(int, IS_MEMBER(N'db_owner')),
             CONVERT(int, HAS_PERMS_BY_NAME(DB_NAME(), N'DATABASE', N'CONTROL')),
-            CONVERT(int, HAS_PERMS_BY_NAME(DB_NAME(), N'DATABASE', N'VIEW DEFINITION'))
+            CONVERT(int, HAS_PERMS_BY_NAME(DB_NAME(), N'DATABASE', N'VIEW DEFINITION')),
+            CASE
+                WHEN CONVERT(int, SERVERPROPERTY(N'ProductMajorVersion')) >= 16
+                THEN CONVERT(
+                    int,
+                    HAS_PERMS_BY_NAME(
+                        DB_NAME(),
+                        N'DATABASE',
+                        N'VIEW SECURITY DEFINITION'))
+                ELSE NULL
+            END
         FROM sys.databases AS d
         WHERE d.database_id = DB_ID();
         """;
@@ -51,7 +61,13 @@ internal sealed class SqlServerCatalogReader : ISqlServerCatalogReader
         """
         SELECT
             s.schema_id,
-            s.name
+            s.name,
+            CONVERT(
+                int,
+                HAS_PERMS_BY_NAME(
+                    s.name,
+                    N'SCHEMA',
+                    N'VIEW DEFINITION'))
         FROM sys.schemas AS s
         LEFT JOIN sys.database_principals AS p
             ON p.principal_id = s.principal_id
@@ -75,7 +91,15 @@ internal sealed class SqlServerCatalogReader : ISqlServerCatalogReader
             t.is_filetable,
             t.temporal_type_desc,
             t.is_node,
-            t.is_edge
+            t.is_edge,
+            CONVERT(
+                int,
+                HAS_PERMS_BY_NAME(
+                    QUOTENAME(OBJECT_SCHEMA_NAME(t.object_id)) +
+                        N'.' +
+                        QUOTENAME(t.name),
+                    N'OBJECT',
+                    N'VIEW DEFINITION'))
         FROM sys.tables AS t
         WHERE t.is_ms_shipped = 0
         ORDER BY t.object_id;
@@ -144,6 +168,15 @@ internal sealed class SqlServerCatalogReader : ISqlServerCatalogReader
             SchemasQuery,
             TablesQuery,
             ColumnsQuery,
+            UserTokensQuery,
+            PermissionDenialsQuery,
+            KeysQuery,
+            IndexesQuery,
+            IndexColumnsQuery,
+            ForeignKeysQuery,
+            ForeignKeyColumnsQuery,
+            ChecksQuery,
+            SequencesQuery,
         ]);
 
     private readonly string connectionString;
@@ -241,6 +274,15 @@ internal sealed class SqlServerCatalogReader : ISqlServerCatalogReader
                     budget,
                     cancellationToken)
                 .ConfigureAwait(false);
+        SqlServerPermissionAuditMetadata permissionAuditBefore =
+            await ReadPermissionAuditAsync(
+                    connection,
+                    instance,
+                    database,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
         IReadOnlyList<SqlServerSchemaMetadata> schemas = await ReadSchemasAsync(
                 connection,
                 budget,
@@ -259,6 +301,61 @@ internal sealed class SqlServerCatalogReader : ISqlServerCatalogReader
                 limits,
                 cancellationToken)
             .ConfigureAwait(false);
+        IReadOnlyList<SqlServerKeyMetadata> keys = await ReadKeysAsync(
+                connection,
+                budget,
+                limits,
+                cancellationToken)
+            .ConfigureAwait(false);
+        IReadOnlyList<SqlServerIndexMetadata> indexes = await ReadIndexesAsync(
+                connection,
+                budget,
+                limits,
+                cancellationToken)
+            .ConfigureAwait(false);
+        IReadOnlyList<SqlServerIndexColumnMetadata> indexColumns =
+            await ReadIndexColumnsAsync(
+                    connection,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        IReadOnlyList<SqlServerForeignKeyMetadata> foreignKeys =
+            await ReadForeignKeysAsync(
+                    connection,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        IReadOnlyList<SqlServerForeignKeyColumnMetadata> foreignKeyColumns =
+            await ReadForeignKeyColumnsAsync(
+                    connection,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        IReadOnlyList<SqlServerCheckMetadata> checks = await ReadChecksAsync(
+                connection,
+                budget,
+                limits,
+                cancellationToken)
+            .ConfigureAwait(false);
+        IReadOnlyList<SqlServerSequenceMetadata> sequences =
+            await ReadSequencesAsync(
+                    connection,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        SqlServerPermissionAuditMetadata permissionAuditAfter =
+            await ReadPermissionAuditAsync(
+                    connection,
+                    instance,
+                    database,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
 
         return new SqlServerCatalogSnapshot(
             endpointDigest,
@@ -267,7 +364,16 @@ internal sealed class SqlServerCatalogReader : ISqlServerCatalogReader
             database,
             schemas,
             tables,
-            columns);
+            columns,
+            keys,
+            indexes,
+            indexColumns,
+            foreignKeys,
+            foreignKeyColumns,
+            checks,
+            sequences,
+            permissionAuditBefore,
+            permissionAuditAfter);
     }
 
     private static async ValueTask<(
@@ -312,7 +418,8 @@ internal sealed class SqlServerCatalogReader : ISqlServerCatalogReader
             OptionalBoolean(reader, 18),
             OptionalBoolean(reader, 19),
             OptionalBoolean(reader, 20),
-            OptionalBoolean(reader, 21));
+            OptionalBoolean(reader, 21),
+            OptionalBoolean(reader, 22));
 
         if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
@@ -340,7 +447,8 @@ internal sealed class SqlServerCatalogReader : ISqlServerCatalogReader
                 throw LimitExceeded("schema count");
             schemas.Add(new SqlServerSchemaMetadata(
                 RequiredInt32(reader, 0),
-                RequiredString(reader, 1, budget, isName: true)));
+                RequiredString(reader, 1, budget, isName: true),
+                OptionalBoolean(reader, 2)));
         }
         return schemas.AsReadOnly();
     }
@@ -370,7 +478,8 @@ internal sealed class SqlServerCatalogReader : ISqlServerCatalogReader
                 RequiredBoolean(reader, 5),
                 RequiredString(reader, 6, budget),
                 RequiredBoolean(reader, 7),
-                RequiredBoolean(reader, 8)));
+                RequiredBoolean(reader, 8),
+                OptionalBoolean(reader, 9)));
         }
         return tables.AsReadOnly();
     }
@@ -549,6 +658,11 @@ internal sealed class SqlServerCatalogReader : ISqlServerCatalogReader
             ? null
             : Convert.ToInt64(reader.GetValue(ordinal), CultureInfo.InvariantCulture);
 
+    private static int? OptionalInt32(SqlDataReader reader, int ordinal) =>
+        reader.IsDBNull(ordinal)
+            ? null
+            : Convert.ToInt32(reader.GetValue(ordinal), CultureInfo.InvariantCulture);
+
     private static bool RequiredBoolean(SqlDataReader reader, int ordinal)
     {
         if (reader.IsDBNull(ordinal))
@@ -585,6 +699,8 @@ internal sealed class SqlServerCatalogReader : ISqlServerCatalogReader
         private readonly SqlServerInspectionLimits limits;
         private long metadataBytes;
         private long expressionStorageBytes;
+        private int structuralRows;
+        private int permissionRows;
 
         public ReaderBudget(SqlServerInspectionLimits limits)
         {
@@ -634,6 +750,20 @@ internal sealed class SqlServerCatalogReader : ISqlServerCatalogReader
             expressionStorageBytes = checked(expressionStorageBytes + sourceBytes);
             if (expressionStorageBytes > limits.MaxExpressionBytesTotal)
                 throw LimitExceeded("aggregate expression byte");
+        }
+
+        public void AddStructuralRow()
+        {
+            structuralRows = checked(structuralRows + 1);
+            if (structuralRows > limits.MaxStructuralRowsTotal)
+                throw LimitExceeded("aggregate structural row");
+        }
+
+        public void AddPermissionRow()
+        {
+            permissionRows = checked(permissionRows + 1);
+            if (permissionRows > limits.MaxPermissionRowsTotal)
+                throw LimitExceeded("aggregate permission row");
         }
     }
 }

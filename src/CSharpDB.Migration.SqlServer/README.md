@@ -1,9 +1,10 @@
 # CSharpDB.Migration.SqlServer
 
-This optional project is the first SQL Server readiness checkpoint for the
+This optional project is the bounded SQL Server readiness analyzer for the
 CSharpDB migration tooling. It inspects server and database facts plus schemas,
-ordinary user tables, columns, defaults, identity columns, and computed-column
-metadata. It does not copy SQL Server rows or write to either the source or a
+ordinary user tables, columns, defaults, identity and computed-column metadata,
+primary and unique keys, foreign keys, check constraints, table indexes, and
+sequences. It does not copy SQL Server rows or write to either the source or a
 CSharpDB target.
 
 The intended qualification boundary is on-premises SQL Server 2019, 2022, and
@@ -15,11 +16,11 @@ unqualified-source diagnostic. Azure SQL Database, Azure SQL Managed Instance,
 Synapse, Fabric, and other compatible services are not silently treated as
 equivalent to the intended on-premises products.
 
-This checkpoint is intentionally non-shipping. Keys, foreign keys, checks,
-indexes, sequences, views, triggers, routines, module/dependency analysis,
-ScriptDom analysis, CSharpDB DDL previews, CLI integration, and live server
-qualification are later Phase 7A checkpoints. A SQL Server data importer is a
-separately approved follow-on.
+This checkpoint is intentionally non-shipping. Views, triggers, routines,
+module/dependency analysis, indexed views, full-text and physical partition
+inventory, ScriptDom analysis, CSharpDB DDL previews, CLI integration, and live
+server qualification are later Phase 7A checkpoints. A SQL Server data importer
+is a separately approved follow-on.
 
 ## Read-only and security boundary
 
@@ -37,11 +38,15 @@ The production reader:
 boundary. Run the analyzer with a dedicated least-privilege login that can
 connect to the selected database and view its complete definitions but has no
 data- or schema-write grants. Database-level `db_owner`, `CONTROL`, and
-`VIEW DEFINITION` evidence is not treated as proof of completeness because an
-object- or schema-level `DENY` can still narrow visibility. Until an effective
-per-object permission scan is implemented, only sysadmin membership proves
-complete visibility; other evidence is reported as unknown or incomplete and
-blocks planning.
+`VIEW DEFINITION` evidence is not treated as proof of completeness by itself
+because an object- or schema-level `DENY` can still narrow visibility. The
+reader captures effective `sys.user_token` membership and applicable explicit
+denials before and after the structural inventory, probes `VIEW DEFINITION` on
+each visible schema and table, and probes `VIEW SECURITY DEFINITION` on SQL
+Server 2022 and later. A detected denial, missing definition access, or changed
+permission snapshot blocks completeness. Only sysadmin membership currently
+promotes visibility to complete; a clean least-privilege result remains
+`Unknown` until the live restricted-account qualification lane passes.
 
 The caller supplies connection material at runtime. Raw connection strings,
 account names, access material, and endpoints are not written to migration
@@ -76,16 +81,20 @@ fixture. A successful compile or TCP connection is not qualification evidence.
 
 Catalog queries share one connection, but SQL Server metadata is not claimed
 to be a transactionally coherent snapshot. The catalog therefore reports
-`BestEffort` consistency. Later live qualification must detect concurrent DDL
-and prove repeatable output with a restricted account.
+`BestEffort` consistency. Permission-token or denial drift during the read is
+detected, but concurrent DDL is not excluded. Later live qualification must
+prove repeatable output with a restricted account.
 
 Fixed ceilings currently allow at most 4,096 schemas, 10,000 tables, and
-20,000 columns. Additional ceilings cover names; individual and aggregate
-default/computed expressions; and total retained metadata. Crossing a ceiling
-fails the inspection rather than returning a truncated catalog. Default and
-computed SQL text is read and hashed only in memory; parsing remains deferred,
-and durable facets retain bounded facts and digests rather than the raw
-expression.
+20,000 columns, with independent and aggregate ceilings for keys, indexes,
+index columns, foreign keys, foreign-key columns, checks, sequences, effective
+tokens, and denials. Additional ceilings cover names, individual and aggregate
+expressions, and total retained metadata. Crossing a ceiling fails the
+inspection rather than returning a truncated catalog. Default, computed, check,
+and index-filter SQL text is read and hashed only in memory; parsing remains
+deferred, and durable facets retain bounded facts and digests rather than the
+raw expression. Sequence fingerprints retain only static definition facts and
+exclude volatile current, last-used, and exhaustion values.
 
 ## Dependency
 

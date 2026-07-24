@@ -10,10 +10,19 @@ public sealed partial class SqlServerCatalogReaderTests
     private const string Secret = "DistinctiveReaderPassword-42";
     private static readonly string[] s_auditedCommandDigests =
     [
-        "cd1475e0cfc7963444bbd2006fd067d460a20fd45e071387f6aef30e6b215e85",
-        "4cf1fbb5db2646e3312a59301d6d26d4cae4bf1685ff7cd665081c6c0f382881",
-        "d6759973b36f00b17dfab8de8aeca0580f99773d5f00680ac066740e6904d66e",
+        "22e2c647c25def7f9da85e8b7bca6de41f517c1920f0f0d26cb3d2f78af46955",
+        "7e796bfce6b9d4330e68d662c0928feba19f636aab0fe37e13910882c3d0d72a",
+        "0b5dac4b7e0cbc8beca983743f02bce0d7b801bf6a73c99b7d339c95f0e224dd",
         "cd178870a4583120c033a3ce1460f6d42d98a88d16e6120939858d9d1d6feafe",
+        "2072d04734b060c00d79bdac0099e018780157368ea153eb8d15018aa08a6216",
+        "e3b65500b75b0aa66e2beb81fa5a847c90300929f153810aaea85de1c23b6aca",
+        "13a0d89c0c528d48c9bd1740c4e4395ba71d314ed8195d389241c9c88e8987f1",
+        "862d93cced51b5610b76b05c0a116e6f9a4f546154ea23d297cd43bf945fc794",
+        "b1504a1b2b4a253cd4439db05002c9096ab1ac748753d8a348265bde0c2408d7",
+        "67300ecd636451a5436093d1337ad572f582f6247e0e98a2e6d0109699d5dfa8",
+        "adb505bd36ea55f724a25f7696d5bcd7ef47f2340f26ff5af488456aea5aecfa",
+        "4d8728fd4cd5894a561f0eaf2bdeb52635703a81936986b39c845319503fd0a3",
+        "18683225b1345714ee7b63c617f1492ce4e307e0cf1984a29c9bebe8385782cc",
     ];
 
     [Fact]
@@ -106,7 +115,7 @@ public sealed partial class SqlServerCatalogReaderTests
     [Fact]
     public void CatalogCommandsAreStaticSelectOnlyAndPreflightLargeExpressions()
     {
-        Assert.Equal(4, SqlServerCatalogReader.CommandTexts.Count);
+        Assert.Equal(13, SqlServerCatalogReader.CommandTexts.Count);
         foreach (string command in SqlServerCatalogReader.CommandTexts)
         {
             Assert.StartsWith(
@@ -114,6 +123,7 @@ public sealed partial class SqlServerCatalogReaderTests
                 command.TrimStart(),
                 StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotMatch(MutatingStatement(), command);
+            Assert.DoesNotContain("@", command, StringComparison.Ordinal);
         }
 
         Assert.Contains(
@@ -136,6 +146,46 @@ public sealed partial class SqlServerCatalogReaderTests
             "c.is_computed",
             SqlServerCatalogReader.ColumnsQuery,
             StringComparison.Ordinal);
+        Assert.Contains(
+            "DATALENGTH(i.filter_definition)",
+            SqlServerCatalogReader.IndexesQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "DATALENGTH(cc.definition)",
+            SqlServerCatalogReader.ChecksQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "VIEW SECURITY DEFINITION",
+            SqlServerCatalogReader.ServerAndDatabaseQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "sys.user_token",
+            SqlServerCatalogReader.UserTokensQuery,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            ".name",
+            SqlServerCatalogReader.UserTokensQuery,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            ".sid",
+            SqlServerCatalogReader.UserTokensQuery,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(
+            "permission_name",
+            SqlServerCatalogReader.PermissionDenialsQuery,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "current_value",
+            SqlServerCatalogReader.SequencesQuery,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            "last_used_value",
+            SqlServerCatalogReader.SequencesQuery,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            "is_exhausted",
+            SqlServerCatalogReader.SequencesQuery,
+            StringComparison.OrdinalIgnoreCase);
 
         string[] actualDigests = SqlServerCatalogReader.CommandTexts
             .Select(static command =>
