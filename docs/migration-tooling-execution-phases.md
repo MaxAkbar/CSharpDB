@@ -640,7 +640,13 @@ and mutually exclusive v2 cursors. The
 contract carries the exact sidecar and raw source in a deterministic,
 tamper-evident package v2, then privately reconstructs the typed schema,
 catalog, data source, and cursor replay after reopen without changing package
-v1. Collection projection, export, and CLI integration remain open.
+v1. The
+[`migration-json-export-contract.md`](migration-json-export-contract.md)
+contract now adds restart-only, bounded-memory table export to compact JSON
+root arrays or LF-terminated NDJSON with canonical manifests and exact
+physical and logical evidence. Retained-snapshot publication, export CLI
+routing, checkpoint/resume, collection projection, and import CLI integration
+remain open.
 
 - [x] Stream root arrays and NDJSON/multiple top-level values without loading
   the full input.
@@ -662,7 +668,9 @@ v1. Collection projection, export, and CLI integration remain open.
   embedding, trusted package-manifest pinning, pre-workspace validation,
   copy-on-open ownership, typed catalog replay, and fresh-process v2 cursor
   resume while preserving package v1 bytes and APIs.
-- [ ] Stream JSON array and NDJSON output without buffering all rows.
+- [x] Stream lossless table rows as deterministic compact JSON arrays or
+  NDJSON without buffering all rows, with schema-order properties, strict
+  scalar codecs, bounded values, and canonical physical/logical evidence.
 
 ### Shared Deliverables
 
