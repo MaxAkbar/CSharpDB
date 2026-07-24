@@ -671,10 +671,13 @@ prepared-data rehash, and manifest-last prepared publication. The retained
   framings once journal authority exists and all five publication cutoffs for
   both framings, including empty NDJSON. The one-time adoption of same-binding
   restart-only finals is not yet process-kill qualified. Abrupt-power-loss
-  qualification, collection projection, and typed-v2 import routing remain
-  open. Fail-fast and source-aware deterministic-reject retained JSON v1
-  inspect, plan, apply/resume, and validation now route through the CLI for
-  root-array JSON and NDJSON. Restart-only publication uses
+  qualification, collection projection, typed-v2 deterministic rejects, and
+  typed export-intent generation remain open. Fail-fast and source-aware
+  deterministic-reject retained JSON v1 inspect, plan, apply/resume, and
+  validation now route through the CLI for root-array JSON and NDJSON.
+  Explicitly sidecar-selected typed package v2 also routes through fail-fast
+  inspect, plan, apply/resume, and validation for both framings. Restart-only
+  publication uses
 deterministic exclusive `.next` siblings and safely reclaims only qualified
 crash leftovers.
 
@@ -731,6 +734,9 @@ crash leftovers.
 - [x] Route the untyped JSON v1 reject registry through CLI planning and
   qualify bounded late-tail type rejects, canonical artifact reuse, exact
   resume, and pre-activation validation for root-array JSON and NDJSON.
+- [x] Route explicitly selected, independently pinned typed JSON package v2
+  through fail-fast CLI inspect, plan, apply/resume, and validation for
+  root-array JSON and NDJSON while preserving catalog-driven v1/v2 isolation.
 
 ### Shared Deliverables
 

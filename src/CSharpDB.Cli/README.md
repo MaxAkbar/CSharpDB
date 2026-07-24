@@ -113,6 +113,7 @@ Migration and retained table-export surface:
 csharpdb migrate inspect --source synthetic --out <catalog.json>
 csharpdb migrate inspect --source csv --input <source.csv> --package <source.csdbcsv> --out <catalog.json> [--delimiter auto|comma|semicolon|tab|pipe|<character>] [--no-header]
 csharpdb migrate inspect --source json --input <source.json|source.ndjson> --package <source.csdbjson> --out <catalog.json> [--framing root-array|ndjson] [--table <name>] [--sample-rows <count>] [--source-id <label>] [--workspace <directory>] [--max-source-bytes <count>]
+csharpdb migrate inspect --source json --input <source.json|source.ndjson> --typed-intent <source.csdbjson-intent.json> --expected-intent-manifest-digest <sha256:...> --package <source.csdbjson> --out <catalog.json> [--framing root-array|ndjson] [--table <name>] [--sample-rows <count>] [--source-id <label>] [--workspace <directory>] [--max-source-bytes <count>]
 csharpdb migrate plan <catalog.json> --out <plan.json> [--profile preserve|queryable] [--accept-exclusions all|<id,...>] [--accept-diagnostics <id,...>] [--reject-mode fail-fast|deterministic --reject-rules all|<id,...> --max-rejected-rows-per-batch <count> --max-rejected-rows-per-run <count> --max-reject-evidence-value-bytes <count> --max-reject-evidence-bytes-per-batch <count> --max-reject-evidence-bytes-per-run <count> --max-reject-artifact-bytes <count>]
 csharpdb migrate preview <plan.json> --catalog <catalog.json> [--format text|json]
 csharpdb migrate apply <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv|source.csdbjson> --expected-manifest-digest <sha256:...> --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]
@@ -122,15 +123,29 @@ csharpdb migrate export <retained-snapshot.db> --format json|ndjson --table <phy
 ```
 
 Inspection supports the immutable synthetic qualification source, strict CSV,
-and retained JSON package v1. CSV inspection freezes the raw bytes and complete
-reader and inference policy into one no-overwrite `.csdbcsv` package. JSON
-inspection does the same for root-array JSON or NDJSON-compatible
-whitespace-separated top-level values in one no-overwrite `.csdbjson` package.
-Both write the normal catalog artifact and print
-`manifestDigest=sha256:...`. Retain that digest in an independently trusted
-change record or CI parameter; apply, resume, and validation require it through
-`--expected-manifest-digest`. The original CSV or JSON path is not retained and
-is never reopened after inspection.
+untyped retained JSON package v1, and explicitly selected typed JSON package
+v2. CSV inspection freezes the raw bytes and complete reader and inference
+policy into one no-overwrite `.csdbcsv` package. JSON inspection does the same
+for root-array JSON or NDJSON-compatible whitespace-separated top-level values
+in one no-overwrite `.csdbjson` package. Both JSON package versions use that
+extension; the catalog's versioned schema facets select the reopen API, never
+the filename or package contents.
+
+Pass both `--typed-intent` and
+`--expected-intent-manifest-digest` to select v2. The canonical sidecar must
+already exist and must be bound to the exact input bytes, framing, source ID,
+and reader defaults used by the command. The CLI does not author or
+automatically discover typed sidecars. Typed inspection embeds the exact
+verified sidecar in package v2, so the original JSON and standalone sidecar can
+both be removed after successful publication.
+
+Inspection writes the normal catalog artifact and prints
+`manifestDigest=sha256:...`; typed inspection also reports the embedded
+`intentManifestDigest=sha256:...`. Retain package and sidecar pins in an
+independently trusted change record or CI parameter. Apply, resume, and
+validation require the package pin through `--expected-manifest-digest`.
+The original CSV or JSON path is not retained and is never reopened after
+inspection.
 
 Common CSV delimiter detection is automatic; `--delimiter` supplies the only
 candidate when an explicit convention is required. CSV defaults are strict
@@ -138,9 +153,10 @@ UTF-8 with BOM detection, a header row, invariant culture, and no null token.
 JSON defaults are `root-array` framing, table `json_data`, 1,000 type-profile
 sample rows, and the retained JSON snapshot's default source-size ceiling.
 Select `--framing ndjson` for that multiple-value mode; line breaks are
-conventional, not required by the reader. JSON package v1 is currently routed
-only through the fail-fast migration plan; deterministic JSON rejects and typed
-package v2 CLI routing remain later slices.
+conventional, not required by the reader. Untyped package v1 supports fail-fast
+and source-aware deterministic-reject plans. Typed package v2 currently
+supports fail-fast CLI plans only; its typed deterministic-reject registry is a
+separate qualification slice.
 
 The package parent and any explicit workspace must already exist and remain
 caller-controlled and cannot themselves be links, junctions, reparse points,
@@ -208,8 +224,9 @@ therefore change its digest. They cannot be supplied to a fail-fast plan.
 Selecting a reject rule does not waive catalog readiness. Known JSON
 structural defects remain blocking inspection diagnostics; the retained-v1 CLI
 path is end-to-end qualified for sampled schemas whose later rows produce
-row-local type mismatches. Typed JSON package v2 and
-`MIG-JSON-DATA-TYPED-001` remain outside the CLI route.
+row-local type mismatches. Typed JSON package v2 is available through the
+fail-fast route, while its deterministic registry and
+`MIG-JSON-DATA-TYPED-001` remain outside the CLI reject route.
 
 Apply, `apply --resume`, and validate require a second explicit opt-in for a
 deterministic plan: both `--allow-deterministic-rejects` and

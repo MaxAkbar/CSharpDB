@@ -64,8 +64,9 @@ uses `MIG-JSON-DATA-MISSING-001`, `MIG-JSON-DATA-NULL-001`,
 comma-separated list may select a nonempty subset of the selected source's
 registry. The contract tag, expanded rules, and six limits are serialized in
 the plan and included in its digest. Reject policy options are invalid with a
-fail-fast plan. Typed JSON v2 and `MIG-JSON-DATA-TYPED-001` remain outside the
-CLI route.
+fail-fast plan. Typed JSON v2 is available through the fail-fast CLI route;
+its deterministic registry and `MIG-JSON-DATA-TYPED-001` remain outside this
+CLI reject route.
 
 Every `migrate apply`, `migrate apply --resume`, and `migrate validate`
 invocation for a deterministic plan requires both the valueless

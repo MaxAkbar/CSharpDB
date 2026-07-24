@@ -234,4 +234,6 @@ typed intent, JSON/NDJSON export with durable resume, and fail-fast retained-v1
 CLI inspect, plan, apply/resume, and validation. Retained-v1 deterministic
 reject policy, canonical artifact publication/reuse, resume, and validation are
 also routed for root-array JSON and NDJSON. Collection projection, typed
-export-intent generation, and typed-v2 CLI routing remain open.
+export-intent generation, and typed-v2 deterministic-reject CLI routing remain
+open. Explicitly sidecar-selected typed package v2 is routed through the
+fail-fast CLI workflow.

@@ -17,7 +17,7 @@ internal static class MigrationCommandRunner
     internal const string Usage =
         "Usage: csharpdb migrate inspect --source synthetic --out <catalog.json>\n" +
         "       csharpdb migrate inspect --source csv --input <source.csv> --package <source.csdbcsv> --out <catalog.json> [--delimiter auto|comma|semicolon|tab|pipe|<character>] [--no-header] [--table <name>] [--sample-rows <count>] [--null-token <text>] [--source-id <label>] [--workspace <directory>] [--max-source-bytes <count>]\n" +
-        "       csharpdb migrate inspect --source json --input <source.json|source.ndjson> --package <source.csdbjson> --out <catalog.json> [--framing root-array|ndjson] [--table <name>] [--sample-rows <count>] [--source-id <label>] [--workspace <directory>] [--max-source-bytes <count>]\n" +
+        "       csharpdb migrate inspect --source json --input <source.json|source.ndjson> --package <source.csdbjson> --out <catalog.json> [--framing root-array|ndjson] [--table <name>] [--sample-rows <count>] [--source-id <label>] [--workspace <directory>] [--max-source-bytes <count>] [--typed-intent <source.csdbjson-intent.json> --expected-intent-manifest-digest <sha256:...>]\n" +
         "       csharpdb migrate plan <catalog.json> --out <plan.json> [--profile preserve|queryable] [--accept-exclusions all|<id,...>] [--accept-diagnostics <id,...>] [--reject-mode fail-fast|deterministic --reject-rules all|<id,...> --max-rejected-rows-per-batch <count> --max-rejected-rows-per-run <count> --max-reject-evidence-value-bytes <count> --max-reject-evidence-bytes-per-batch <count> --max-reject-evidence-bytes-per-run <count> --max-reject-artifact-bytes <count>]\n" +
         "       csharpdb migrate preview <plan.json> --catalog <catalog.json> [--format text|json]\n" +
         "       csharpdb migrate apply <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv|source.csdbjson> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
@@ -48,10 +48,10 @@ internal static class MigrationCommandRunner
     ];
     private const string DeferredDeterministicRejectRuleId =
         "MIG-CLI-REJECT-RULE-001";
-    private const string JsonUntypedV1OnlyCode =
+    private const string JsonCatalogRouteOnlyCode =
         "MIG-JSON-CLI-SOURCE-VERSION-001";
-    private const string JsonUntypedV1OnlyMessage =
-        "This CLI route supports only untyped retained JSON package v1 catalogs.";
+    private const string JsonCatalogRouteOnlyMessage =
+        "This CLI route supports only untyped retained JSON package v1 or explicitly typed retained JSON package v2 catalogs.";
 
     public static bool IsKnownCommand(string? arg) =>
         string.Equals(arg, "migrate", StringComparison.OrdinalIgnoreCase);
@@ -98,6 +98,10 @@ internal static class MigrationCommandRunner
                     $"{snapshotError.RuleId}: {snapshotError.Message}",
                 JsonTableSchemaInferenceException schemaError =>
                     $"{schemaError.RuleId}: {schemaError.Message}",
+                JsonTypedTableSchemaException typedSchemaError =>
+                    $"{typedSchemaError.RuleId}: {typedSchemaError.Message}",
+                JsonTypedIntentException intentError =>
+                    $"{intentError.RuleId}: {intentError.Message}",
                 JsonReadException readError =>
                     $"{readError.Diagnostic.RuleId}: {readError.Message}",
                 _ => ex.Message,
@@ -771,6 +775,8 @@ internal static class MigrationCommandRunner
                     "--source-id",
                     "--workspace",
                     "--max-source-bytes",
+                    "--typed-intent",
+                    "--expected-intent-manifest-digest",
                 ],
                 out string? parseError))
         {
@@ -784,6 +790,32 @@ internal static class MigrationCommandRunner
         {
             return await OptionErrorAsync(
                 "JSON input and package paths cannot be blank.",
+                error);
+        }
+        bool hasTypedIntent = options.TryGetValue(
+            "--typed-intent",
+            out string? typedIntentValue);
+        bool hasExpectedIntentDigest = options.TryGetValue(
+            "--expected-intent-manifest-digest",
+            out string? expectedIntentDigest);
+        if (hasTypedIntent != hasExpectedIntentDigest)
+        {
+            return await OptionErrorAsync(
+                "Options --typed-intent and --expected-intent-manifest-digest must be supplied together.",
+                error);
+        }
+        if (hasTypedIntent &&
+            string.IsNullOrWhiteSpace(typedIntentValue))
+        {
+            return await OptionErrorAsync(
+                "The typed JSON intent path cannot be blank.",
+                error);
+        }
+        if (hasExpectedIntentDigest &&
+            !IsCanonicalSha256(expectedIntentDigest!))
+        {
+            return await OptionErrorAsync(
+                "The expected typed JSON intent manifest digest must be canonical lowercase sha256:<64-hex>.",
                 error);
         }
         if (options.TryGetValue("--workspace", out string? workspaceValue) &&
@@ -832,15 +864,23 @@ internal static class MigrationCommandRunner
         string inputPath = Path.GetFullPath(inputValue);
         string packagePath = Path.GetFullPath(packageValue);
         string outputPath = Path.GetFullPath(outputValue);
-        if (ContainsEquivalentResolvedPaths([inputPath, packagePath, outputPath]))
+        string? typedIntentPath = hasTypedIntent
+            ? Path.GetFullPath(typedIntentValue!)
+            : null;
+        string[] protectedPaths = typedIntentPath is null
+            ? [inputPath, packagePath, outputPath]
+            : [inputPath, typedIntentPath, packagePath, outputPath];
+        if (ContainsEquivalentResolvedPaths(protectedPaths))
         {
             return await OptionErrorAsync(
-                "JSON input, retained package, and catalog output must use different files.",
+                typedIntentPath is null
+                    ? "JSON input, retained package, and catalog output must use different files."
+                    : "JSON input, typed intent, retained package, and catalog output must use different files.",
                 error);
         }
         if (!ValidateWorkspacePath(
                 options,
-                [inputPath, packagePath, outputPath],
+                protectedPaths,
                 out parseError))
         {
             return await OptionErrorAsync(parseError!, error);
@@ -881,6 +921,75 @@ internal static class MigrationCommandRunner
             new JsonStreamingReaderOptions { Framing = framing },
             options.GetValueOrDefault("--source-id"),
             ct);
+        if (typedIntentPath is not null)
+        {
+            JsonTypedIntentManifest intentManifest =
+                await JsonTypedIntentSidecar.OpenAsync(
+                    typedIntentPath,
+                    binding,
+                    new JsonTypedIntentOpenOptions
+                    {
+                        ExpectedManifestDigest =
+                            expectedIntentDigest,
+                    },
+                    ct);
+            JsonTypedTableSchemaInferenceResult typedSchema =
+                await JsonTypedTableSchemaInferer.InferAsync(
+                    binding,
+                    snapshot,
+                    intentManifest,
+                    sampleRows,
+                    new JsonTableSchemaInferenceOptions
+                    {
+                        TableName = options.GetValueOrDefault(
+                            "--table",
+                            "json_data"),
+                    },
+                    ct);
+            MigrationCatalog typedCatalog =
+                typedSchema.CreateCatalog(
+                    CSharpDbCapabilityCatalogLoader
+                        .CurrentTargetVersion);
+            string serializedTypedCatalog =
+                MigrationArtifactSerializer.SerializeCatalog(
+                    typedCatalog);
+
+            bool typedPackagePublished = false;
+            bool typedCatalogPublished = false;
+            try
+            {
+                JsonTypedSnapshotPackageManifest manifest =
+                    await JsonTypedSnapshotPackage.WriteAsync(
+                        packagePath,
+                        snapshot,
+                        typedSchema,
+                        typedCatalog.TargetCSharpDbVersion,
+                        ct);
+                typedPackagePublished = true;
+                await WriteArtifactAsync(
+                    outputPath,
+                    serializedTypedCatalog,
+                    ct);
+                typedCatalogPublished = true;
+
+                int exitCode = typedCatalog.Diagnostics.Count == 0
+                    ? InspectorCommandRunner.ExitOk
+                    : InspectorCommandRunner.ExitWarn;
+                await output.WriteLineAsync(
+                    $"Status: {StatusLabel(exitCode)} | catalog={outputPath} | package={packagePath} | manifestDigest={manifest.ManifestDigest} | intentManifestDigest={manifest.IntentManifestDigest} | objects={typedCatalog.Objects.Count} | diagnostics={typedCatalog.Diagnostics.Count}");
+                return exitCode;
+            }
+            catch (Exception operationFailure) when (
+                typedPackagePublished &&
+                !typedCatalogPublished)
+            {
+                throw new IOException(
+                    $"Catalog publication failed after the retained typed JSON package was published. " +
+                    $"The package was preserved at '{packagePath}'.",
+                    operationFailure);
+            }
+        }
+
         JsonTableSchemaInferenceResult schema = await JsonTableSchemaInferer.InferAsync(
             binding,
             snapshot,
@@ -1011,10 +1120,12 @@ internal static class MigrationCommandRunner
         MigrationCatalog catalog = MigrationArtifactSerializer.DeserializeCatalog(
             await File.ReadAllTextAsync(catalogPath, ct));
         if (catalog.Source.Kind == MigrationSourceKind.Json &&
-            !IsUntypedJsonV1Catalog(catalog))
+            ClassifyJsonCatalog(
+                catalog,
+                out _) == JsonCatalogRoute.Unsupported)
         {
             return await OptionErrorAsync(
-                JsonUntypedV1OnlyMessage,
+                JsonCatalogRouteOnlyMessage,
                 error);
         }
         if (!TryBindPlanLoadPolicy(
@@ -1301,6 +1412,9 @@ internal static class MigrationCommandRunner
                 SourcePackageFormat = sourceLease.PackageMetadata?.Format,
                 SourcePackageManifestDigest =
                     sourceLease.PackageMetadata?.ManifestDigest,
+                SourcePackageIntentManifestDigest =
+                    sourceLease.PackageMetadata
+                        ?.IntentManifestDigest,
                 result.RejectContractVersion,
                 result.BatchesWritten,
                 result.BatchesSkipped,
@@ -2200,6 +2314,17 @@ internal static class MigrationCommandRunner
                 error = null;
                 return true;
 
+            case MigrationSourceKind.Json
+                when ClassifyJsonCatalog(
+                    catalog,
+                    out _) == JsonCatalogRoute.TypedV2:
+                supportedRuleIds = [];
+                sourceDescription =
+                    "explicitly typed retained JSON package v2 source";
+                error =
+                    "Deterministic rejects are not supported for explicitly typed retained JSON package v2 migrations.";
+                return false;
+
             default:
                 supportedRuleIds = [];
                 sourceDescription = "unsupported migration source";
@@ -2283,6 +2408,15 @@ internal static class MigrationCommandRunner
             plan.Load.RejectPolicy is null)
         {
             error = "The migration plan contains an unsupported reject policy.";
+            return false;
+        }
+        if (catalog.Source.Kind == MigrationSourceKind.Json &&
+            ClassifyJsonCatalog(
+                catalog,
+                out _) == JsonCatalogRoute.TypedV2)
+        {
+            error =
+                "Deterministic-reject CLI execution is not supported for explicitly typed retained JSON package v2 migrations.";
             return false;
         }
         if (catalog.Source.Kind != MigrationSourceKind.Csv &&
@@ -2391,9 +2525,11 @@ internal static class MigrationCommandRunner
             options.ContainsKey("--max-source-bytes");
 
         if (catalog.Source.Kind == MigrationSourceKind.Json &&
-            !IsUntypedJsonV1Catalog(catalog))
+            ClassifyJsonCatalog(
+                catalog,
+                out _) == JsonCatalogRoute.Unsupported)
         {
-            error = JsonUntypedV1OnlyMessage;
+            error = JsonCatalogRouteOnlyMessage;
             return false;
         }
 
@@ -2589,13 +2725,18 @@ internal static class MigrationCommandRunner
                 }
 
             case MigrationSourceKind.Json:
-                if (!IsUntypedJsonV1Catalog(catalog))
+                JsonCatalogRoute jsonRoute =
+                    ClassifyJsonCatalog(
+                        catalog,
+                        out string?
+                            catalogIntentManifestDigest);
+                if (jsonRoute == JsonCatalogRoute.Unsupported)
                 {
                     throw new MigrationCliSafeException(
-                        JsonUntypedV1OnlyCode,
-                        JsonUntypedV1OnlyMessage,
+                        JsonCatalogRouteOnlyCode,
+                        JsonCatalogRouteOnlyMessage,
                         new NotSupportedException(
-                            JsonUntypedV1OnlyMessage));
+                            JsonCatalogRouteOnlyMessage));
                 }
 
                 long jsonMaxSourceBytes =
@@ -2609,33 +2750,90 @@ internal static class MigrationCommandRunner
                         out jsonMaxSourceBytes);
                 }
 
-                JsonSnapshotPackageSession? jsonSession = null;
+                var jsonOpenOptions =
+                    new JsonSnapshotPackageOpenOptions
+                    {
+                        WorkspacePath =
+                            options.GetValueOrDefault(
+                                "--workspace"),
+                        MaxSourceBytes =
+                            jsonMaxSourceBytes,
+                        ExpectedManifestDigest =
+                            options[
+                                "--expected-manifest-digest"],
+                    };
+                string jsonPackagePath = Path.GetFullPath(
+                    options["--source-package"]);
+                if (jsonRoute == JsonCatalogRoute.UntypedV1)
+                {
+                    JsonSnapshotPackageSession? jsonSession = null;
+                    try
+                    {
+                        jsonSession =
+                            await JsonSnapshotPackage.OpenAsync(
+                                jsonPackagePath,
+                                jsonOpenOptions,
+                                ct);
+                        ValidateOpenedJsonSource(
+                            catalog,
+                            jsonSession);
+                        return new MigrationSourceLease(
+                            jsonSession.DataSource,
+                            jsonSession,
+                            new MigrationSourcePackageMetadata(
+                                JsonSnapshotPackage.Format,
+                                jsonSession.Manifest
+                                    .ManifestDigest));
+                    }
+                    catch (Exception operationFailure) when (
+                        jsonSession is not null)
+                    {
+                        try
+                        {
+                            await jsonSession.DisposeAsync();
+                        }
+                        catch (Exception cleanupFailure)
+                        {
+                            throw new AggregateException(
+                                operationFailure,
+                                cleanupFailure);
+                        }
+
+                        ExceptionDispatchInfo.Capture(
+                            operationFailure).Throw();
+                        throw;
+                    }
+                }
+
+                JsonTypedSnapshotPackageSession?
+                    typedJsonSession = null;
                 try
                 {
-                    jsonSession = await JsonSnapshotPackage.OpenAsync(
-                        Path.GetFullPath(options["--source-package"]),
-                        new JsonSnapshotPackageOpenOptions
-                        {
-                            WorkspacePath =
-                                options.GetValueOrDefault("--workspace"),
-                            MaxSourceBytes = jsonMaxSourceBytes,
-                            ExpectedManifestDigest =
-                                options["--expected-manifest-digest"],
-                        },
-                        ct);
-                    ValidateOpenedJsonSource(catalog, jsonSession);
+                    typedJsonSession =
+                        await JsonTypedSnapshotPackage.OpenAsync(
+                            jsonPackagePath,
+                            jsonOpenOptions,
+                            ct);
+                    ValidateOpenedTypedJsonSource(
+                        catalog,
+                        typedJsonSession,
+                        catalogIntentManifestDigest!);
                     return new MigrationSourceLease(
-                        jsonSession.DataSource,
-                        jsonSession,
+                        typedJsonSession.DataSource,
+                        typedJsonSession,
                         new MigrationSourcePackageMetadata(
-                            JsonSnapshotPackage.Format,
-                            jsonSession.Manifest.ManifestDigest));
+                            JsonTypedSnapshotPackage.Format,
+                            typedJsonSession.Manifest
+                                .ManifestDigest,
+                            typedJsonSession.Manifest
+                                .IntentManifestDigest));
                 }
-                catch (Exception operationFailure) when (jsonSession is not null)
+                catch (Exception operationFailure) when (
+                    typedJsonSession is not null)
                 {
                     try
                     {
-                        await jsonSession.DisposeAsync();
+                        await typedJsonSession.DisposeAsync();
                     }
                     catch (Exception cleanupFailure)
                     {
@@ -2644,7 +2842,8 @@ internal static class MigrationCommandRunner
                             cleanupFailure);
                     }
 
-                    ExceptionDispatchInfo.Capture(operationFailure).Throw();
+                    ExceptionDispatchInfo.Capture(
+                        operationFailure).Throw();
                     throw;
                 }
 
@@ -2655,8 +2854,20 @@ internal static class MigrationCommandRunner
     }
 
     private static bool IsUntypedJsonV1Catalog(
-        MigrationCatalog catalog)
+        MigrationCatalog catalog) =>
+        ClassifyJsonCatalog(
+            catalog,
+            out _) == JsonCatalogRoute.UntypedV1;
+
+    private static JsonCatalogRoute ClassifyJsonCatalog(
+        MigrationCatalog catalog,
+        out string? intentManifestDigest)
     {
+        ArgumentNullException.ThrowIfNull(catalog);
+        intentManifestDigest = null;
+        if (catalog.Source.Kind != MigrationSourceKind.Json)
+            return JsonCatalogRoute.Unsupported;
+
         MigrationCatalogObject[] tables = catalog.Objects
             .Where(item => item.Kind == MigrationObjectKind.Table)
             .ToArray();
@@ -2666,11 +2877,11 @@ internal static class MigrationCommandRunner
                 JsonMigrationObjectIds.Table,
                 StringComparison.Ordinal))
         {
-            return false;
+            return JsonCatalogRoute.Unsupported;
         }
 
         IReadOnlyList<MigrationCatalogFacet> facets = tables[0].Facets;
-        return HasSingleFacet(
+        bool isUntypedV1 = HasSingleFacet(
                 facets,
                 "jsonSchemaAlgorithm",
                 JsonTableSchemaInferenceResult.AlgorithmId) &&
@@ -2684,6 +2895,32 @@ internal static class MigrationCommandRunner
                     facet => facet.Name.StartsWith(
                         "jsonTyped",
                         StringComparison.Ordinal));
+        if (isUntypedV1)
+            return JsonCatalogRoute.UntypedV1;
+
+        if (!HasSingleFacet(
+                facets,
+                "jsonSchemaAlgorithm",
+                JsonTypedTableSchemaInferenceResult.AlgorithmId) ||
+            !HasSingleFacet(
+                facets,
+                "jsonScalarPolicy",
+                JsonTypedTableSchemaInferenceResult.ScalarPolicyId) ||
+            !HasSingleFacet(
+                facets,
+                "jsonTypedIntentFormat",
+                JsonTypedIntentSidecar.Format) ||
+            !TryGetSingleFacetValue(
+                facets,
+                "jsonTypedIntentManifestDigest",
+                out string typedIntentDigest) ||
+            !IsCanonicalSha256(typedIntentDigest))
+        {
+            return JsonCatalogRoute.Unsupported;
+        }
+
+        intentManifestDigest = typedIntentDigest;
+        return JsonCatalogRoute.TypedV2;
     }
 
     private static bool HasSingleFacet(
@@ -2703,6 +2940,29 @@ internal static class MigrationCommandRunner
                 matches[0].Value,
                 expectedValue,
                 StringComparison.Ordinal);
+    }
+
+    private static bool TryGetSingleFacetValue(
+        IReadOnlyList<MigrationCatalogFacet> facets,
+        string name,
+        out string value)
+    {
+        MigrationCatalogFacet[] matches = facets
+            .Where(
+                facet => string.Equals(
+                    facet.Name,
+                    name,
+                    StringComparison.Ordinal))
+            .ToArray();
+        if (matches.Length == 1 &&
+            matches[0].Value is string singleValue)
+        {
+            value = singleValue;
+            return true;
+        }
+
+        value = string.Empty;
+        return false;
     }
 
     private static void ValidateOpenedCsvSource(
@@ -2751,6 +3011,50 @@ internal static class MigrationCommandRunner
         {
             throw new InvalidDataException(
                 "The retained JSON package catalog does not match the supplied catalog artifact.");
+        }
+
+        ValidateOpenedSource(catalog, session.DataSource);
+    }
+
+    private static void ValidateOpenedTypedJsonSource(
+        MigrationCatalog catalog,
+        JsonTypedSnapshotPackageSession session,
+        string catalogIntentManifestDigest)
+    {
+        string catalogDigest =
+            MigrationArtifactSerializer.ComputeCatalogDigest(
+                catalog);
+        string retainedCatalogDigest =
+            MigrationArtifactSerializer.ComputeCatalogDigest(
+                session.Catalog);
+        if (!string.Equals(
+                catalogDigest,
+                retainedCatalogDigest,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                catalogDigest,
+                session.Manifest.CatalogDigest,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                catalog.TargetCSharpDbVersion,
+                session.Manifest.TargetCSharpDbVersion,
+                StringComparison.Ordinal) ||
+            session.Manifest.Source != catalog.Source ||
+            !string.Equals(
+                catalogIntentManifestDigest,
+                session.Manifest.IntentManifestDigest,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                catalogIntentManifestDigest,
+                session.IntentManifest.ManifestDigest,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                catalogIntentManifestDigest,
+                session.Schema.IntentManifest.ManifestDigest,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "The retained typed JSON package catalog or intent does not match the supplied catalog artifact.");
         }
 
         ValidateOpenedSource(catalog, session.DataSource);
@@ -3016,6 +3320,9 @@ internal static class MigrationCommandRunner
             SourcePackageFormat = sourceLease.PackageMetadata?.Format,
             SourcePackageManifestDigest =
                 sourceLease.PackageMetadata?.ManifestDigest,
+            SourcePackageIntentManifestDigest =
+                sourceLease.PackageMetadata
+                    ?.IntentManifestDigest,
             result.RejectContractVersion,
             result.BatchesWritten,
             result.BatchesSkipped,
@@ -3175,11 +3482,19 @@ internal static class MigrationCommandRunner
 
     private sealed record MigrationSourcePackageMetadata(
         string Format,
-        string ManifestDigest);
+        string ManifestDigest,
+        string? IntentManifestDigest = null);
 
     private sealed record ParsedPlanLoadPolicy(
         MigrationLoadPolicy Load,
         bool UseAllRuleIds);
+
+    private enum JsonCatalogRoute
+    {
+        Unsupported,
+        UntypedV1,
+        TypedV2,
+    }
 
     private sealed record PreviewCounts(
         int TotalObjects,

@@ -8,12 +8,14 @@ sidecar for JSON scalar intent that native JSON cannot express by itself.
 The sidecar declares how selected object-table columns are represented as
 binary, decimal, GUID, date/time, or full-width integer values. It is a
 standalone artifact bound to the exact immutable source and reader policy. It
-does not yet change schema inference, row projection, cursors, retained
-packages, export, or CLI behavior.
+does not change those behaviors merely by existing and is never discovered
+implicitly. Later typed-schema and package-v2 contracts explicitly bind it
+into inference, row projection, cursors, retained migration, and the fail-fast
+CLI route.
 
 The existing `csharpdb-json-snapshot-package/v1` format remains byte- and
-behavior-compatible. Applying typed intent requires new schema, scalar,
-cursor, and retained-package contracts in a later slice.
+behavior-compatible. Applying typed intent uses the separate typed schema,
+scalar, cursor, and retained-package-v2 contracts.
 
 ## Public Contract
 
@@ -142,10 +144,11 @@ Sidecar failures use JSON-specific stable rules:
 Exception text does not include property names, source values, or credentials.
 Digest comparisons use fixed-time comparison.
 
-## Deferred Integration
+## Integration And Deferred Work
 
 Version 1 of the standalone sidecar does not inspect whether a declaration
-matches a discovered column or decode values. The integration slice will:
+matches a discovered column or decode values. The completed typed integration
+layers:
 
 - bind the manifest digest into typed schema, scalar, catalog, cursor, plan,
   and reject contracts with new version identifiers;
@@ -153,7 +156,13 @@ matches a discovered column or decode values. The integration slice will:
   object-table shape;
 - decode typed values with deterministic row-local failures and fatal resource
   limits;
-- preserve typed intent through streaming export; and
-- add a retained package v2 that embeds the exact canonical intent artifact.
+- add a retained package v2 that embeds the exact canonical intent artifact;
+  and
+- consume the explicitly supplied, independently pinned sidecar during typed
+  CLI inspect, then replay its embedded bytes from the independently pinned
+  package during fail-fast apply/resume and validation.
 
 Package v1 will never infer, embed, or silently apply typed intent.
+Typed export-intent generation, CLI sidecar authoring or discovery,
+collection projection, and typed deterministic-reject CLI qualification
+remain deferred.

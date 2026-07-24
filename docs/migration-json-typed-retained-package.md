@@ -11,8 +11,10 @@ It builds on
 [`migration-json-retained-package.md`](migration-json-retained-package.md),
 [`migration-json-typed-intent.md`](migration-json-typed-intent.md), and
 [`migration-json-typed-table.md`](migration-json-typed-table.md). Package v1,
-untyped schema and cursor contracts, collection projection, export, and CLI
-routing remain unchanged.
+untyped schema and cursor contracts, collection projection, and typed
+export-intent generation remain outside package v2. The CLI now explicitly
+routes package v2 through its fail-fast object-table workflow; typed
+deterministic rejects remain a separate slice.
 
 ## Public Contract
 
@@ -34,6 +36,15 @@ The typed session and schema are distinct from package v1 types. They cannot
 be passed through the untyped retained-package API or silently lose intent.
 Both package versions use `.csdbjson`; callers select an explicit API, and the
 header magic rejects the other version.
+
+The CLI selects the typed API from exact versioned catalog facets, never from
+the shared extension or by probing an untrusted package header. Typed
+inspection is explicitly requested with `--typed-intent` plus
+`--expected-intent-manifest-digest`. It verifies that independently pinned
+sidecar against the exact immutable source binding, embeds it in package v2,
+and publishes the catalog last. Apply, resume, and validation require the
+independently retained package-manifest pin and replay the typed catalog from
+the package before a staged target is created.
 
 `JsonSnapshotPackageOpenOptions.ExpectedManifestDigest` remains the external
 trust pin. It is the lowercase SHA-256 of the exact canonical v2 package
@@ -149,9 +160,16 @@ The merge gate covers both root-array and multiple-value/NDJSON framing:
 - v1/v2 header, API, schema, and cursor isolation; and
 - fresh-process write, pin-open, and independent cursor resume.
 
+CLI qualification covers both framings through typed inspect, fail-fast plan,
+apply, exact resume, checksum validation, and activation after deleting the
+original JSON and standalone sidecar. It also covers independently pinned
+sidecar/source mismatch, package tamper, catalog mismatch, and both directions
+of v1/v2 package substitution before target creation.
+
 ## Deferred Work
 
 Version 2 does not add overwrite, repair, in-place upgrade, signatures,
 encryption, compression, direct reads from the durable package, automatic
-sidecar discovery, embedded plans or receipts, collection projection, export,
-or CLI routing.
+sidecar discovery, embedded plans or receipts, collection projection, typed
+export-intent generation, CLI sidecar authoring, or typed
+deterministic-reject CLI policy.

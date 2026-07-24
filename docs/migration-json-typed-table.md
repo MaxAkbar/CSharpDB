@@ -188,9 +188,11 @@ readers and independently reparsed equivalent manifests remain deterministic.
 
 ## Deferred Work
 
-JSON export, CLI routing, collection projection, signatures, encryption, and
-automatic sidecar discovery remain deferred. Portable typed migration can now
+JSON export-intent generation, typed deterministic-reject CLI routing,
+collection projection, signatures, encryption, CLI sidecar authoring, and
+automatic sidecar discovery remain deferred. Portable typed migration can
 retain the raw immutable snapshot and exact source-bound sidecar together in
 the explicitly selected
 [`csharpdb-json-snapshot-package/v2`](migration-json-typed-retained-package.md)
-format.
+format, and the CLI now routes that package through fail-fast inspect, plan,
+apply/resume, and validation.

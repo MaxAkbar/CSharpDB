@@ -754,7 +754,7 @@ public sealed class JsonMigrationCommandRunnerTests
     }
 
     [Fact]
-    public async Task PlanJson_TypedV2CatalogIsRejectedBeforePlanPublication()
+    public async Task PlanJson_TypedV2CatalogPublishesFailFastPlan()
     {
         using var workspace = new TemporaryDirectory();
         TypedPackage typed = await CreateTypedPackageAsync(workspace.Root);
@@ -780,13 +780,28 @@ public sealed class JsonMigrationCommandRunnerTests
             planError,
             Cancellation);
 
-        Assert.Equal(InspectorCommandRunner.ExitUsage, planCode);
-        Assert.True(string.IsNullOrWhiteSpace(planOutput.ToString()));
+        AssertSuccessful(planCode, planError);
+        Assert.True(
+            string.IsNullOrWhiteSpace(planError.ToString()),
+            planError.ToString());
         Assert.Contains(
-            "untyped retained JSON package v1",
-            planError.ToString(),
-            StringComparison.OrdinalIgnoreCase);
-        Assert.False(File.Exists(planPath));
+            $"plan={Path.GetFullPath(planPath)}",
+            planOutput.ToString(),
+            StringComparison.Ordinal);
+        Assert.True(File.Exists(planPath));
+        MigrationPlan plan =
+            MigrationArtifactSerializer.DeserializePlan(
+                await File.ReadAllTextAsync(
+                    planPath,
+                    Cancellation),
+                typed.Catalog);
+        Assert.Equal(
+            MigrationRejectMode.FailFast,
+            plan.Load.RejectMode);
+        Assert.Equal(
+            MigrationArtifactSerializer.ComputeCatalogDigest(
+                typed.Catalog),
+            plan.CatalogDigest);
         Assert.Equal(
             originalTypedPackage,
             await File.ReadAllBytesAsync(

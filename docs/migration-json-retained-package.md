@@ -10,9 +10,9 @@ It builds on
 [`migration-json-reader-foundation.md`](migration-json-reader-foundation.md),
 [`migration-json-table-schema.md`](migration-json-table-schema.md), and
 [`migration-json-data-source.md`](migration-json-data-source.md). Later slices
-add typed sidecars, export, and fail-fast or deterministic-reject CLI routing
-without changing this package-v1 contract. Collection projection remains
-outside its scope.
+have added typed sidecars and package v2, export, and fail-fast or
+deterministic-reject CLI routing without changing this package-v1 contract.
+Collection projection remains outside its scope.
 
 ## Public Contract
 
@@ -156,8 +156,9 @@ header/manifest mutation fuzzing remain release qualification.
 
 ## Deferred Work
 
-Version 1 does not add overwrite, repair, in-place upgrade, signatures,
+Version 1 itself does not add overwrite, repair, in-place upgrade, signatures,
 encryption, compression, deduplication, direct reads from the durable package,
 remote/object storage, automatic retention cleanup, embedded plans or
-receipts, typed sidecars, collection projection, typed-package-v2 CLI routing,
-or typed-v2 reject CLI policy.
+receipts, typed sidecars, collection projection, or typed-v2 reject CLI
+policy. Typed intent and fail-fast package-v2 CLI routing use the separate,
+explicitly selected v2 contract.
