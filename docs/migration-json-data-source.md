@@ -161,3 +161,6 @@ Tests must cover:
   disposal; and
 - provider-neutral apply/replay plus validation against a ledger-capable
   staged target.
+
+The portable retained boundary for this source is specified in
+[`migration-json-retained-package.md`](migration-json-retained-package.md).

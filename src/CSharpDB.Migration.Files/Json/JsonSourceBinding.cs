@@ -122,6 +122,72 @@ public sealed class JsonSourceBinding
     }
 
     /// <summary>
+    /// Restores a binding after the immediate caller has already hashed and
+    /// matched a freshly created private snapshot.
+    /// </summary>
+    internal static ValueTask<JsonSourceBinding>
+        RestoreFromVerifiedSnapshotAsync(
+            JsonSourceSnapshot snapshot,
+            MigrationSourceIdentity source,
+            string expectedOptionsDigest,
+            JsonStreamingReaderOptions readerOptions,
+            CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(readerOptions);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (!IsCanonicalDigest(expectedOptionsDigest))
+        {
+            throw new InvalidDataException(
+                "The restored JSON options digest is not canonical SHA-256 text.");
+        }
+
+        JsonStreamingReaderOptions normalizedOptions;
+        try
+        {
+            normalizedOptions = FreezeReaderOptions(readerOptions);
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException or NotSupportedException)
+        {
+            throw new InvalidDataException(
+                "The restored JSON reader options are invalid.",
+                exception);
+        }
+
+        string optionsDigest = DigestOptions(normalizedOptions);
+        if (!string.Equals(
+                optionsDigest,
+                expectedOptionsDigest,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "The restored JSON options digest does not match the normalized reader policy.");
+        }
+
+        string sourceFingerprint = ComputeSourceFingerprint(
+            snapshot.ContentDigest,
+            snapshot.ContentLength,
+            optionsDigest);
+        MigrationSourceIdentity canonicalSource =
+            RestoreCanonicalSource(
+                source,
+                snapshot.ContentDigest,
+                sourceFingerprint);
+
+        return ValueTask.FromResult(
+            new JsonSourceBinding(
+                canonicalSource,
+                snapshot.SnapshotIdentity,
+                snapshot.ContentDigest,
+                snapshot.ContentLength,
+                optionsDigest,
+                normalizedOptions));
+    }
+
+    /// <summary>
     /// Opens a fresh strict reader over the exact snapshot bound to this
     /// source. The returned reader owns and releases its snapshot lease.
     /// </summary>
@@ -223,6 +289,104 @@ public sealed class JsonSourceBinding
             contentDigest,
             contentLength.ToString(CultureInfo.InvariantCulture),
             optionsDigest);
+
+    private static MigrationSourceIdentity RestoreCanonicalSource(
+        MigrationSourceIdentity source,
+        string contentDigest,
+        string sourceFingerprint)
+    {
+        MigrationConsistencyStrategy? consistency = source.Consistency;
+        if (source.Kind != MigrationSourceKind.Json ||
+            !string.Equals(
+                source.ProviderVersion,
+                AdapterProviderVersion,
+                StringComparison.Ordinal) ||
+            source.SourceVersion is not null ||
+            consistency is null ||
+            consistency.Kind != MigrationConsistencyKind.Snapshot ||
+            !string.Equals(
+                consistency.Description,
+                SnapshotConsistencyDescription,
+                StringComparison.Ordinal) ||
+            consistency.Watermark is not null)
+        {
+            throw new InvalidDataException(
+                "The restored migration source is not canonical JSON snapshot metadata.");
+        }
+
+        if (!IsSafeSourceIdentity(source.Identity, contentDigest))
+        {
+            throw new InvalidDataException(
+                "The restored JSON source identity is not a canonical safe identity.");
+        }
+
+        if (!string.Equals(
+                source.Fingerprint,
+                sourceFingerprint,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "The restored JSON source fingerprint does not match the snapshot and reader policy.");
+        }
+
+        return new MigrationSourceIdentity
+        {
+            Kind = MigrationSourceKind.Json,
+            Identity = source.Identity,
+            Fingerprint = sourceFingerprint,
+            ProviderVersion = AdapterProviderVersion,
+            SourceVersion = null,
+            Consistency = new MigrationConsistencyStrategy
+            {
+                Kind = MigrationConsistencyKind.Snapshot,
+                Description = SnapshotConsistencyDescription,
+                Watermark = null,
+            },
+        };
+    }
+
+    private static bool IsSafeSourceIdentity(
+        string? identity,
+        string contentDigest)
+    {
+        if (string.Equals(
+                identity,
+                ContentIdentityPrefix + contentDigest,
+                StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return identity is not null &&
+            identity.StartsWith(
+                LogicalIdentityPrefix,
+                StringComparison.Ordinal) &&
+            IsCanonicalDigest(
+                identity[LogicalIdentityPrefix.Length..]);
+    }
+
+    private static bool IsCanonicalDigest(string? digest)
+    {
+        if (digest is null ||
+            digest.Length != 71 ||
+            !digest.StartsWith(
+                "sha256:",
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        foreach (char character in digest.AsSpan(7))
+        {
+            if (character is not (>= '0' and <= '9') and
+                not (>= 'a' and <= 'f'))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
 
     private static string FramingName(JsonInputFraming framing) =>
         framing switch

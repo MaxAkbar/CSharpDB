@@ -1,8 +1,11 @@
 using System.IO.Pipes;
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using CSharpDB.Migration;
 using CSharpDB.Migration.CSharpDb;
 using CSharpDB.Migration.Files.Csv;
+using CSharpDB.Migration.Files.Json;
 using CSharpDB.Primitives;
 
 return await MigrationCrashHarness.RunAsync(args);
@@ -19,6 +22,13 @@ internal static class MigrationCrashHarness
 
     public static async Task<int> RunAsync(string[] args)
     {
+        string? jsonPackageMode =
+            OptionalOption(args, "--json-package-mode");
+        if (jsonPackageMode is not null)
+        {
+            return await RunJsonPackageAsync(args, jsonPackageMode)
+                .ConfigureAwait(false);
+        }
         if (OptionalOption(args, "--csv-checkpoint-destination") is not null)
             return await RunCsvCheckpointAsync(args).ConfigureAwait(false);
         if (OptionalOption(args, "--csv-publication-destination") is not null)
@@ -138,6 +148,296 @@ internal static class MigrationCrashHarness
 
             return 2;
         }
+    }
+
+    private static async Task<int> RunJsonPackageAsync(
+        string[] args,
+        string mode)
+    {
+        string packagePath = Path.GetFullPath(
+            RequiredOption(args, "--json-package"));
+        string workspacePath = Path.GetFullPath(
+            RequiredOption(args, "--json-workspace"));
+        string resultPath = Path.GetFullPath(
+            RequiredOption(args, "--json-result"));
+
+        JsonPackageProcessResult result = mode switch
+        {
+            "write" => await WriteJsonPackageAsync(
+                    args,
+                    packagePath,
+                    workspacePath)
+                .ConfigureAwait(false),
+            "read" => await ReadJsonPackageAsync(
+                    args,
+                    packagePath,
+                    workspacePath,
+                    resumeCursor: null,
+                    mode)
+                .ConfigureAwait(false),
+            "resume" => await ReadJsonPackageAsync(
+                    args,
+                    packagePath,
+                    workspacePath,
+                    RequiredOption(args, "--json-resume-cursor"),
+                    mode)
+                .ConfigureAwait(false),
+            _ => throw new ArgumentException(
+                $"Unknown JSON package mode '{mode}'.",
+                nameof(args)),
+        };
+
+        await WriteJsonPackageResultAsync(resultPath, result)
+            .ConfigureAwait(false);
+        return 0;
+    }
+
+    private static async Task<JsonPackageProcessResult>
+        WriteJsonPackageAsync(
+            IReadOnlyList<string> args,
+            string packagePath,
+            string workspacePath)
+    {
+        string sourcePath = Path.GetFullPath(
+            RequiredOption(args, "--json-source"));
+        string framingName =
+            RequiredOption(args, "--json-framing");
+        if (!Enum.TryParse(
+                framingName,
+                ignoreCase: false,
+                out JsonInputFraming framing) ||
+            !Enum.IsDefined(framing))
+        {
+            throw new ArgumentException(
+                $"Unknown JSON framing '{framingName}'.",
+                nameof(args));
+        }
+
+        await using JsonSourceSnapshot snapshot =
+            await JsonSourceSnapshot.CreateFromFileAsync(
+                    sourcePath,
+                    new JsonSourceSnapshotOptions
+                    {
+                        WorkspacePath = workspacePath,
+                        MaxSourceBytes = 1024 * 1024,
+                        CopyBufferBytes = 32 * 1024,
+                    })
+                .ConfigureAwait(false);
+        JsonSourceBinding binding =
+            await JsonSourceBinding.CreateAsync(
+                    snapshot,
+                    CreateJsonReaderOptions(framing),
+                    logicalSourceIdentity:
+                        "json-package-process-fixture")
+                .ConfigureAwait(false);
+        JsonTableSchemaInferenceResult schema =
+            await JsonTableSchemaInferer.InferAsync(
+                    binding,
+                    snapshot,
+                    maxProfileRecords: 4,
+                    new JsonTableSchemaInferenceOptions
+                    {
+                        TableName = "json_process_rows",
+                        MaxColumns = 32,
+                        MaxTotalColumnNameBytes = 32 * 1024,
+                        MaxProfileBytes = 256 * 1024,
+                    })
+                .ConfigureAwait(false);
+        string targetVersion =
+            CSharpDbCapabilityCatalogLoader.CurrentTargetVersion;
+        MigrationCatalog catalog =
+            schema.CreateCatalog(targetVersion);
+        JsonSnapshotPackageManifest manifest =
+            await JsonSnapshotPackage.WriteAsync(
+                    packagePath,
+                    snapshot,
+                    schema,
+                    targetVersion)
+                .ConfigureAwait(false);
+
+        await using JsonMigrationDataSource dataSource =
+            await JsonMigrationDataSource.CreateAsync(
+                    schema,
+                    snapshot,
+                    catalog)
+                .ConfigureAwait(false);
+        JsonReadOutcome firstBatch = await ReadJsonRowsAsync(
+                dataSource,
+                schema,
+                resumeCursor: null,
+                stopAfterFirstBatch: true)
+            .ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(firstBatch.NextCursor))
+        {
+            throw new InvalidDataException(
+                "The first JSON package batch did not produce a resume cursor.");
+        }
+
+        return new JsonPackageProcessResult
+        {
+            Mode = "write",
+            ManifestDigest = manifest.ManifestDigest,
+            CatalogDigest = manifest.CatalogDigest,
+            SnapshotIdentity = manifest.SnapshotIdentity,
+            FirstBatchCursor = firstBatch.NextCursor,
+            AcceptedRowCount = firstBatch.RowDigests.Count,
+            RejectedRowCount = firstBatch.RejectedRowCount,
+            RowDigests = firstBatch.RowDigests,
+        };
+    }
+
+    private static async Task<JsonPackageProcessResult>
+        ReadJsonPackageAsync(
+            IReadOnlyList<string> args,
+            string packagePath,
+            string workspacePath,
+            string? resumeCursor,
+            string mode)
+    {
+        string expectedManifestDigest =
+            RequiredOption(
+                args,
+                "--json-expected-manifest-digest");
+        await using JsonSnapshotPackageSession session =
+            await JsonSnapshotPackage.OpenAsync(
+                    packagePath,
+                    new JsonSnapshotPackageOpenOptions
+                    {
+                        WorkspacePath = workspacePath,
+                        MaxSourceBytes = 1024 * 1024,
+                        CopyBufferBytes = 32 * 1024,
+                        ExpectedManifestDigest =
+                            expectedManifestDigest,
+                    })
+                .ConfigureAwait(false);
+        JsonReadOutcome rows = await ReadJsonRowsAsync(
+                session.DataSource,
+                session.Schema,
+                resumeCursor,
+                stopAfterFirstBatch: false)
+            .ConfigureAwait(false);
+
+        return new JsonPackageProcessResult
+        {
+            Mode = mode,
+            ManifestDigest =
+                session.Manifest.ManifestDigest,
+            CatalogDigest = session.Manifest.CatalogDigest,
+            SnapshotIdentity =
+                session.Manifest.SnapshotIdentity,
+            FirstBatchCursor = null,
+            AcceptedRowCount = rows.RowDigests.Count,
+            RejectedRowCount = rows.RejectedRowCount,
+            RowDigests = rows.RowDigests,
+        };
+    }
+
+    private static JsonStreamingReaderOptions
+        CreateJsonReaderOptions(JsonInputFraming framing) =>
+        new()
+        {
+            Framing = framing,
+            MaxValueBytes = 256 * 1024,
+            MaxDepth = 32,
+            MaxPropertiesPerObject = 128,
+            MaxArrayElements = 256,
+            MaxTotalNodes = 512,
+            MaxPropertyNameBytes = 8 * 1024,
+            MaxStringBytes = 128 * 1024,
+            MaxNumberBytes = 8 * 1024,
+            LeaveOpen = false,
+        };
+
+    private static async Task<JsonReadOutcome> ReadJsonRowsAsync(
+        JsonMigrationDataSource dataSource,
+        JsonTableSchemaInferenceResult schema,
+        string? resumeCursor,
+        bool stopAfterFirstBatch)
+    {
+        string[] columnIds = schema.Columns
+            .OrderBy(column => column.ColumnIndex)
+            .Select(column =>
+                JsonMigrationObjectIds.Column(
+                    column.ColumnIndex))
+            .ToArray();
+        var request = new MigrationReadRequest
+        {
+            SourceObjectId = JsonMigrationObjectIds.Table,
+            ColumnObjectIds = columnIds,
+            BatchSize = 3,
+            MaxBatchBytes = 1024 * 1024,
+            MaxValueBytes = 256 * 1024,
+            SnapshotToken = dataSource.SnapshotIdentity,
+            ResumeCursor = resumeCursor,
+        };
+        var rowDigests = new List<string>();
+        int rejectedRows = 0;
+        string? nextCursor = resumeCursor;
+        await foreach (MigrationDataBatch batch in
+                       dataSource.ReadAsync(request))
+        {
+            foreach (MigrationDataRow row in batch.Rows)
+                rowDigests.Add(ComputeJsonRowDigest(row));
+            rejectedRows = checked(
+                rejectedRows + batch.RejectedRows.Count);
+            nextCursor = batch.NextCursor;
+            if (stopAfterFirstBatch)
+                break;
+        }
+
+        return new JsonReadOutcome(
+            rowDigests,
+            rejectedRows,
+            nextCursor);
+    }
+
+    private static string ComputeJsonRowDigest(
+        MigrationDataRow row)
+    {
+        byte[] canonicalRow =
+            JsonSerializer.SerializeToUtf8Bytes(
+                row,
+                JsonProcessJson.Options);
+        try
+        {
+            return "sha256:" +
+                Convert.ToHexString(
+                        SHA256.HashData(canonicalRow))
+                    .ToLowerInvariant();
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(canonicalRow);
+        }
+    }
+
+    private static async Task WriteJsonPackageResultAsync(
+        string resultPath,
+        JsonPackageProcessResult result)
+    {
+        string? parentPath =
+            Path.GetDirectoryName(resultPath);
+        if (parentPath is null ||
+            !Directory.Exists(parentPath))
+        {
+            throw new DirectoryNotFoundException(
+                "The JSON package result parent directory does not exist.");
+        }
+
+        await using var output = new FileStream(
+            resultPath,
+            FileMode.CreateNew,
+            FileAccess.Write,
+            FileShare.None,
+            bufferSize: 16 * 1024,
+            FileOptions.Asynchronous |
+            FileOptions.SequentialScan);
+        await JsonSerializer.SerializeAsync(
+                output,
+                result,
+                JsonProcessJson.Options)
+            .ConfigureAwait(false);
+        await output.FlushAsync().ConfigureAwait(false);
     }
 
     private static async Task<int> RunCsvCheckpointAsync(string[] args)
@@ -500,6 +800,39 @@ internal static class MigrationCrashHarness
             .OrderBy(item => item.ObjectId, StringComparer.Ordinal)
             .Select(item => item.ObjectId)
             .ToArray();
+    }
+
+    private static class JsonProcessJson
+    {
+        internal static readonly JsonSerializerOptions Options =
+            new(JsonSerializerDefaults.Web)
+            {
+                WriteIndented = false,
+            };
+    }
+
+    private sealed record JsonReadOutcome(
+        IReadOnlyList<string> RowDigests,
+        int RejectedRowCount,
+        string? NextCursor);
+
+    private sealed record JsonPackageProcessResult
+    {
+        public required string Mode { get; init; }
+
+        public required string ManifestDigest { get; init; }
+
+        public required string CatalogDigest { get; init; }
+
+        public required string SnapshotIdentity { get; init; }
+
+        public string? FirstBatchCursor { get; init; }
+
+        public required int AcceptedRowCount { get; init; }
+
+        public required int RejectedRowCount { get; init; }
+
+        public required IReadOnlyList<string> RowDigests { get; init; }
     }
 
     private static string RequiredOption(IReadOnlyList<string> args, string name)

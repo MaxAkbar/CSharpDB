@@ -624,14 +624,21 @@ number classification, and migration-catalog inspection. The
 [`migration-json-data-source.md`](migration-json-data-source.md) contract now
 adds catalog-bound object-row projection, full-stream projected-value
 revalidation, deterministic row-local rejects, bounded batches, and exact
-snapshot/policy-bound cursor replay. Retained-source packaging, collection
-projection, typed sidecars, export, and CLI integration remain open.
+snapshot/policy-bound cursor replay. The
+[`migration-json-retained-package.md`](migration-json-retained-package.md)
+contract adds deterministic single-file publication, strict canonical
+manifests, trusted digest pinning, copy-on-open ownership, semantic replay,
+and tamper-aware reopen. Collection projection, typed sidecars, export, and
+CLI integration remain open.
 
 - [x] Stream root arrays and NDJSON/multiple top-level values without loading
   the full input.
 - [x] Preserve original names, explicit nulls, stable output order, duplicate
   key diagnostics, and unrepresentable number lexemes.
 - [x] Keep nested values as versioned canonical JSON text for table targets.
+- [x] Add an atomic retained JSON/NDJSON package with bounded canonical
+  manifests, exact raw-byte identity, trusted digest pinning, copy-on-open
+  ownership, schema/catalog replay, and fresh-process cursor resume.
 - [ ] Keep nested values as documents for collection targets unless an
   explicit projection is selected.
 - [ ] Define a sidecar or tagged convention for BLOB, decimal, GUID,

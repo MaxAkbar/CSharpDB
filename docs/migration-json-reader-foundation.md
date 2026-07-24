@@ -162,6 +162,7 @@ The foundation tests must cover:
 - large generated root-array and multiple-value streams whose first value is
   yielded before the unread suffix is made available.
 
-Track 4B remains open after this foundation. The next slices add the
-migration-source adapter and inference policy, typed sidecar convention,
-streaming JSON/NDJSON export, resumability, and CLI integration.
+Track 4B remains open after this foundation. The table-source, schema,
+catalog, data-source, and retained-package layers are specified in the later
+JSON migration notes. Typed sidecars, streaming JSON/NDJSON export,
+resumability, and CLI integration remain open.
