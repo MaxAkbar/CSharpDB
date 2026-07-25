@@ -46,6 +46,7 @@
     <Project Path="src/CSharpDB.Execution/CSharpDB.Execution.csproj" />
     <Project Path="src/CSharpDB.ImportExport/CSharpDB.ImportExport.csproj" />
     <Project Path="src/CSharpDB.Migration/CSharpDB.Migration.csproj" />
+    <Project Path="src/CSharpDB.Migration.CSharpDb.Ddl/CSharpDB.Migration.CSharpDb.Ddl.csproj" />
     <Project Path="src/CSharpDB.Migration.CSharpDb/CSharpDB.Migration.CSharpDb.csproj" />
     <Project Path="src/CSharpDB.Migration.Files/CSharpDB.Migration.Files.csproj" />
     <Project Path="src/CSharpDB.Migration.LiteDb/CSharpDB.Migration.LiteDb.csproj" />

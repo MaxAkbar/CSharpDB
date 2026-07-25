@@ -1,12 +1,24 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using CSharpDB.Migration;
 
 const string protocol = "csharpdb-sqlserver-worker/v1";
+const string ddlProtocol = "csharpdb-sqlserver-ddl-worker/v1";
 const string modeVariable = "CSHARPDB_TEST_SQLSERVER_WORKER_MODE";
 const string pidFileVariable = "CSHARPDB_TEST_SQLSERVER_WORKER_PID_FILE";
 const string childVariable = "CSHARPDB_TEST_SQLSERVER_WORKER_CHILD";
 const string secret = "Password=worker-stderr-secret";
+
+if (args.Length == 4 &&
+    string.Equals(args[0], "--protocol", StringComparison.Ordinal) &&
+    string.Equals(args[1], ddlProtocol, StringComparison.Ordinal) &&
+    string.Equals(args[2], "--target-version", StringComparison.Ordinal) &&
+    !string.IsNullOrWhiteSpace(args[3]))
+{
+    return await RunDdlAsync(args, args[3]);
+}
 
 if (args.Length != 6 ||
     !string.Equals(args[0], "--protocol", StringComparison.Ordinal) ||
@@ -124,6 +136,308 @@ await WriteBytesAsync(
         .. new UTF8Encoding(false, true).GetBytes(json),
     ]);
 return 0;
+
+static async Task<int> RunDdlAsync(
+    IReadOnlyList<string> arguments,
+    string targetVersion)
+{
+    const string ddlProtocol =
+        "csharpdb-sqlserver-ddl-worker/v1";
+    const string modeVariable =
+        "CSHARPDB_TEST_SQLSERVER_WORKER_MODE";
+    const string childVariable =
+        "CSHARPDB_TEST_SQLSERVER_WORKER_CHILD";
+    const string secret =
+        "Password=worker-stderr-secret";
+    const string diagnosticSecret =
+        "Password=ddl-worker-diagnostic-secret";
+    const int maxInputBytes = 16 * 1024 * 1024;
+
+    byte[] input;
+    try
+    {
+        input = await ReadBoundedAsync(
+            Console.OpenStandardInput(),
+            maxInputBytes);
+    }
+    catch
+    {
+        return 10;
+    }
+
+    try
+    {
+        string source;
+        try
+        {
+            source = new UTF8Encoding(
+                encoderShouldEmitUTF8Identifier: false,
+                throwOnInvalidBytes: true)
+                .GetString(input);
+        }
+        catch (DecoderFallbackException)
+        {
+            return 10;
+        }
+
+        string mode =
+            Environment.GetEnvironmentVariable(modeVariable) ??
+            "ddl-success";
+        switch (mode)
+        {
+            case "ddl-analysis-error":
+                await Console.Error.WriteLineAsync(secret);
+                return 12;
+            case "ddl-internal-error":
+                await Console.Error.WriteLineAsync(secret);
+                return 13;
+            case "ddl-bad-header":
+                await WriteBytesAsync(
+                    Encoding.ASCII.GetBytes("wrong-worker/v1\n{}"));
+                return 0;
+            case "ddl-invalid-utf8":
+                await WriteBytesAsync(
+                    [
+                        .. Encoding.ASCII.GetBytes(
+                            ddlProtocol + "\n"),
+                        0xff,
+                    ]);
+                return 0;
+            case "ddl-stdout-overflow":
+                await WriteBytesAsync(
+                    Encoding.ASCII.GetBytes(
+                        ddlProtocol + "\n"));
+                await WriteRepeatedAsync(
+                    Console.OpenStandardOutput(),
+                    8L * 1024 * 1024 + 1);
+                return 0;
+            case "ddl-stderr-overflow":
+                await WriteRepeatedAsync(
+                    Console.OpenStandardError(),
+                    64L * 1024 + 1);
+                return 13;
+            case "ddl-stdout-overflow-tree":
+                await RecordPidAsync();
+                if (string.Equals(
+                        Environment.GetEnvironmentVariable(
+                            childVariable),
+                        "1",
+                        StringComparison.Ordinal))
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan);
+                    return 13;
+                }
+                int overflowChildId =
+                    StartChild(arguments);
+                await RecordPidAsync(overflowChildId);
+                await WriteBytesAsync(
+                    Encoding.ASCII.GetBytes(
+                        ddlProtocol + "\n"));
+                await WriteRepeatedAsync(
+                    Console.OpenStandardOutput(),
+                    8L * 1024 * 1024 + 1);
+                await Task.Delay(Timeout.InfiniteTimeSpan);
+                return 13;
+            case "ddl-hang-tree":
+                await RecordPidAsync();
+                if (!string.Equals(
+                        Environment.GetEnvironmentVariable(
+                            childVariable),
+                        "1",
+                        StringComparison.Ordinal))
+                {
+                    int childId = StartChild(arguments);
+                    await RecordPidAsync(childId);
+                }
+                await Task.Delay(Timeout.InfiniteTimeSpan);
+                return 13;
+        }
+
+        string sourceDigest = ComputeDdlDigest(input);
+        bool contradictoryDiagnostic =
+            mode == "ddl-contradictory-success-diagnostic";
+        bool hostileDiagnostic =
+            mode is "ddl-malicious-diagnostic-prose" or
+                "ddl-wrong-capability" or
+                "ddl-contradictory-success-diagnostic";
+        string diagnosticRule = contradictoryDiagnostic
+            ? "tsql.ddl.statement.unsupported"
+            : "csharpdb.ddl.canonical-rewrite";
+        var report = new
+        {
+            Format = mode == "ddl-wrong-format"
+                ? "wrong-ddl-report/v1"
+                : "csharpdb-ddl-compatibility/v1",
+            Dialect = mode == "ddl-wrong-dialect"
+                ? "csharpdb"
+                : "tsql",
+            SourceGrammar = mode == "ddl-wrong-grammar"
+                ? "tsql170"
+                : "tsql160",
+            TargetCSharpDbVersion =
+                mode == "ddl-wrong-target"
+                    ? targetVersion + "-mismatch"
+                    : targetVersion,
+            CapabilityDigest =
+                mode == "ddl-wrong-capability"
+                    ? new string('b', 64)
+                    : CSharpDbCapabilityCatalogLoader
+                        .LoadEmbedded()
+                        .Digest,
+            ScriptDigest = mode == "ddl-wrong-digest"
+                ? new string('c', 64)
+                : sourceDigest,
+            Status = mode == "ddl-overclaim-compatible"
+                ? "compatible"
+                : "compatibleWithRewrite",
+            HighestEvidence = "scratchExecuted",
+            RuleId = "csharpdb.ddl.canonical-rewrite",
+            StatementCount = 1,
+            ProvenStatementCount = 1,
+            CandidateActionCount = 1,
+            CatalogDigest = new string('d', 64),
+            PlanContractDigest = new string('e', 64),
+            GeneratedDdlDigest = new string('f', 64),
+            ExpectedSchemaDigest = new string('1', 64),
+            ActualSchemaDigest = new string('1', 64),
+            Statements = mode == "ddl-null-statement"
+                ? new object?[] { null }
+                : new object?[]
+                {
+                    new
+                    {
+                        Index = 0,
+                        Kind = "create-table",
+                        Span = new
+                        {
+                            SourceId = "input",
+                            Start = 0,
+                            Length = source.Length,
+                            Line = 1,
+                            Column = 1,
+                        },
+                        Status = mode == "ddl-overclaim-compatible"
+                            ? "compatible"
+                            : "compatibleWithRewrite",
+                        Evidence = "scratchExecuted",
+                        RuleId =
+                            "csharpdb.ddl.canonical-rewrite",
+                    },
+                },
+            Diagnostics = mode == "ddl-null-diagnostic"
+                ? new object?[] { null }
+                : new object?[]
+                {
+                    new
+                    {
+                        Ordinal = 0,
+                        DiagnosticId = string.Concat(
+                            contradictoryDiagnostic
+                                ? "tsql-ddl/000000/"
+                                : "csharpdb-ddl/000000/",
+                            diagnosticRule),
+                        RuleId = diagnosticRule,
+                        Severity = contradictoryDiagnostic
+                            ? "error"
+                            : "warning",
+                        Status = contradictoryDiagnostic
+                            ? "unsupported"
+                            : mode == "ddl-overclaim-compatible"
+                                ? "compatible"
+                                : "compatibleWithRewrite",
+                        Evidence = contradictoryDiagnostic
+                            ? "parsed"
+                            : "scratchExecuted",
+                        StatementIndex = contradictoryDiagnostic
+                            ? 0
+                            : (int?)null,
+                        SourceSpan = contradictoryDiagnostic
+                            ? new
+                            {
+                                SourceId = "input",
+                                Start = 0,
+                                Length = source.Length,
+                                Line = 1,
+                                Column = 1,
+                            }
+                            : null,
+                        Summary = hostileDiagnostic
+                                ? string.Concat(
+                                    diagnosticSecret,
+                                    "\r\nDROP TABLE private_data;",
+                                    "\u001b[31mINJECTED-CONTROL")
+                                : "Untrusted harness summary.",
+                        Remediation = hostileDiagnostic
+                                ? string.Concat(
+                                    diagnosticSecret,
+                                    "\u0000hostile-remediation")
+                                : "Untrusted harness remediation.",
+                    },
+                },
+            Differences = mode == "ddl-null-difference"
+                ? new object?[] { null }
+                : Array.Empty<object?>(),
+        };
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            report,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        try
+        {
+            await WriteBytesAsync(
+                [
+                    .. Encoding.ASCII.GetBytes(
+                        ddlProtocol + "\n"),
+                    .. json,
+                ]);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(json);
+        }
+        return 0;
+    }
+    finally
+    {
+        CryptographicOperations.ZeroMemory(input);
+    }
+}
+
+static async Task<byte[]> ReadBoundedAsync(
+    Stream stream,
+    int maximumBytes)
+{
+    using var output = new MemoryStream();
+    byte[] buffer = new byte[64 * 1024];
+    try
+    {
+        while (true)
+        {
+            int read = await stream.ReadAsync(buffer);
+            if (read == 0)
+                return output.ToArray();
+            if (output.Length > maximumBytes - read)
+                throw new IOException("Input limit exceeded.");
+            output.Write(buffer, 0, read);
+        }
+    }
+    finally
+    {
+        CryptographicOperations.ZeroMemory(buffer);
+        if (output.TryGetBuffer(out ArraySegment<byte> written))
+            CryptographicOperations.ZeroMemory(written.AsSpan());
+    }
+}
+
+static string ComputeDdlDigest(ReadOnlySpan<byte> source)
+{
+    using IncrementalHash hash =
+        IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+    hash.AppendData("tsql-ddl-input/v1"u8);
+    hash.AppendData([0]);
+    hash.AppendData(source);
+    return Convert.ToHexString(hash.GetHashAndReset())
+        .ToLowerInvariant();
+}
 
 static bool IsSafeEnvironmentVariableName(string value)
 {

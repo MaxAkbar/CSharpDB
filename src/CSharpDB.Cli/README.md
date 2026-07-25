@@ -117,7 +117,7 @@ csharpdb migrate inspect --source json --input <source.json|source.ndjson> --typ
 csharpdb migrate inspect --source sqlite --input <source.db> --package <source.csdbsqlite> --out <catalog.json> [--profile-sample-size <count>] [--max-source-bytes <count>]
 csharpdb migrate inspect --source sqlserver --connection-env <name> --out <catalog.json>
 csharpdb migrate inspect --source mysql --connection-env <name> --out <catalog.json>
-csharpdb migrate ddl-check <file.sql> --dialect csharpdb [--format text|json]
+csharpdb migrate ddl-check <file.sql> --dialect csharpdb|tsql [--format text|json]
 csharpdb migrate plan <catalog.json> --out <plan.json> [--profile preserve|queryable] [--accept-exclusions all|<id,...>] [--accept-diagnostics <id,...>] [--reject-mode fail-fast|deterministic --reject-rules all|<id,...> --max-rejected-rows-per-batch <count> --max-rejected-rows-per-run <count> --max-reject-evidence-value-bytes <count> --max-reject-evidence-bytes-per-batch <count> --max-reject-evidence-bytes-per-run <count> --max-reject-artifact-bytes <count>]
 csharpdb migrate preview <plan.json> --catalog <catalog.json> [--ddl|--scratch] [--format text|json]
 csharpdb migrate apply <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite> --expected-manifest-digest <sha256:...> --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]
@@ -172,22 +172,57 @@ validation require the package pin through `--expected-manifest-digest`.
 The original CSV, JSON, or live SQLite path is not retained and is never
 reopened after inspection.
 
-Phase 6B.1 adds a CSharpDB-ready DDL proof command. It reads one strict,
-bounded UTF-8 script and initially allowlists persistent `CREATE TABLE`
-statements and simple `CREATE INDEX` statements. Every other statement or
-unproven feature fails closed with a stable diagnostic; the checker never
-silently omits an unsupported statement or proves only a supported prefix.
-It lowers the complete supported script through the migration model, renders
-candidate target DDL, and proves the resulting normalized schema in a new,
-isolated in-memory scratch database.
+The DDL proof command reads one strict, bounded UTF-8 script and supports the
+`csharpdb` and `tsql` dialects. The CSharpDB route uses source grammar
+`csharpdb-sql/v1` and allowlists persistent `CREATE TABLE` plus simple
+`CREATE INDEX`. The T-SQL route uses the fixed `tsql160` standalone ScriptDom
+grammar with `QUOTED_IDENTIFIER` on; there is no grammar or SQL Server version
+switch.
+
+The T-SQL allowlist is intentionally narrow: ordinary two-part, exact-lowercase
+`dbo` table creation, supported built-in scalar column types and facets,
+explicit nullability, primary and unique keys over SQL Server signed-integer
+columns, source-ordered foreign keys, and later simple ascending indexes over
+the same source type family. Explicit constraint names share the schema-object
+namespace with tables; index names are table-scoped and cannot collide with a
+named key's backing index on that table. Defaults, identity, computed or
+generated columns, rowversion, checks, non-`dbo` or one-part names, `ALTER`,
+`DROP`, views, sequences, triggers, routines,
+derived/temporal/graph/storage features,
+filtered/included/descending/clustered indexes, and other statement or
+physical-option shapes fail closed. Any unsupported statement prevents
+scratch proof for the complete script; a supported prefix is never proved by
+itself.
+
+The T-SQL parser ceilings are 4,194,304 UTF-16 code units, 16 MiB of UTF-8,
+4,096 statements, 1,048,576 code units per statement, 250,000 tokens, nesting
+depth 128, 250,000 AST nodes, 64 lexer errors, 64 parser errors, and 100,000
+lowered catalog objects. A conservative lexical-unit preflight rejects
+definite token-budget overruns before ScriptDom token allocation, followed by
+the authoritative ScriptDom token-count check. Any lexer or parser error
+rejects the script; crossing an error-count or other limit returns `Unknown`.
+The downstream CSharpDB render, parser, action-count, SQL-size, and scratch
+ceilings still apply. An ambiguous reference or failed target capability proof
+also returns sanitized fail-closed evidence rather than a partial result.
+
+Both routes lower the complete supported script through the migration model,
+render candidate target DDL, and compare the resulting normalized schema in a
+new, isolated in-memory scratch database. T-SQL always requires a rewrite, so
+a passing non-text script reports `CompatibleWithRewrite`, not `Compatible`.
+SQL Server text collation semantics remain unresolved: a text-bearing script
+can attain `ScratchExecuted` evidence and equal normalized schemas while its
+overall status remains `Conditional` and `ProvenStatementCount` remains zero.
+`CompatibleWithRewrite` and `Conditional` return warning exit code 1;
+`Unsupported` and `Unknown` return error exit code 2. T-SQL cannot return the
+success exit code 0 because it always requires a rewrite.
 
 The command writes only deterministic, sanitized text or JSON evidence to
-standard output. Reports contain digests, counts, source spans, stable rule
-identifiers, compatibility status, and the attained evidence level, but not
-the script text, input path, object names, or raw parser and engine messages.
-It never opens an existing target, creates a target file, applies a rewrite,
-or promotes a migration plan. Generated DDL remains review-only. Phase 6B.2
-will add a separately bounded T-SQL subset; other dialects remain deferred.
+standard output. Reports contain `SourceGrammar` (`sourceGrammar` in JSON),
+digests, counts, source spans, stable rule identifiers, compatibility status,
+and the attained evidence level, but not the script text, input path, object
+names, or raw parser and engine messages. It never opens an existing target,
+creates a target file, applies a rewrite, or promotes a migration plan.
+Generated DDL remains review-only; other source dialects remain deferred.
 
 Planning accepts a strict UTF-8 catalog artifact of at most 64 MiB. Before a
 plan is published, the CLI renders the selected CSharpDB schema actions once
@@ -283,11 +318,25 @@ ceilings. The regenerated DDL digest must match the binding in a sealed plan.
 The base CLI has no SQL Server project reference and its output contains no
 SqlClient, ScriptDom, SNI, or related authentication assets. The non-packable
 SQL Server bundle places that dependency closure only beneath
-`adapters/sqlserver`, with a fixed companion executable using
-`csharpdb-sqlserver-worker/v1`. A missing or incompatible worker fails only the
-SQL Server route with `MIG-SQLSERVER-CLI-ADAPTER-001`; other migration commands
-remain provider-independent. This packaging boundary does not qualify a live
-server, runtime identifier, authentication mode, or shipping connector.
+`adapters/sqlserver`, with a fixed companion executable. Schema inspection
+uses `csharpdb-sqlserver-worker/v1`; standalone T-SQL DDL proof uses the
+separate `csharpdb-sqlserver-ddl-worker/v1` protocol. The DDL host passes only
+the protocol and current target version as arguments and streams the strict,
+at-most-16-MiB script through redirected standard input, never an argument or
+temporary file. A leading UTF-8 BOM is removed before transmission and digest
+binding. The host accepts only a digest- and target-bound, `tsql160` report
+under the 8 MiB output ceiling, drains bounded standard error without relaying
+it, clears transient byte buffers, and terminates the worker process tree on
+cancellation or protocol failure. On Windows, a kill-on-close job also limits
+the worker to 512 MiB of process memory.
+
+A missing or incompatible inspection worker fails only that route with
+`MIG-SQLSERVER-CLI-ADAPTER-001`. A missing, incompatible, overclaiming, or
+contract-invalid DDL worker fails the T-SQL route with
+`MIG-TSQL-CLI-ADAPTER-001`; a safe worker analysis failure uses
+`MIG-TSQL-CLI-DDL-CHECK-001`. Other migration commands remain
+provider-independent. This packaging boundary does not qualify a live server,
+runtime identifier, authentication mode, or shipping connector.
 
 The base CLI also has no MySQL project reference and its output contains no
 MySqlConnector assets. The non-packable MySQL bundle places that dependency
@@ -443,7 +492,8 @@ checkpoint, and is not consulted to decide which batches `--resume` skips.
 - `MigrationCommandRunner.cs` - migration inspect, plan, bounded DDL/scratch
   preview, apply, resume, validate, retained CSV/JSON/SQLite, schema-only SQL
   Server/MySQL analysis, and CSV/JSON/NDJSON export commands
-- `SqlServerWorkerClient.cs` - bounded fixed-path protocol client for the optional SQL Server inspection worker
+- `SqlServerWorkerClient.cs` - bounded fixed-path protocol client for the
+  optional SQL Server inspection and standalone T-SQL DDL worker routes
 - `MySqlWorkerClient.cs` - bounded fixed-path protocol client for the optional MySQL inspection worker
 - `CliConsole.cs` and `TableFormatter.cs` - terminal formatting helpers
 

@@ -64,6 +64,135 @@ Phase 7A work. Disposable-VM and restricted-login qualification remain
 deferred; no offline fixture is described as live evidence. A SQL Server data
 importer is a separately approved follow-on.
 
+## Phase 6B.2: standalone T-SQL DDL proof
+
+The optional adapter now provides a connection-free proof route for one
+standalone T-SQL DDL script:
+
+```powershell
+csharpdb migrate ddl-check .\schema.sql --dialect tsql [--format text|json]
+```
+
+This route is separate from live SQL Server inspection: the source script is
+parsed and lowered but never executed on SQL Server. It always uses
+`TSql160Parser` with `QUOTED_IDENTIFIER` on and
+`SqlEngineType.Standalone`, reported as source grammar `tsql160`, and proves
+only the current embedded CSharpDB target. The CLI does not accept a grammar,
+compatibility-level, engine, or server-version option. `GO` batches are
+accepted and flattened by that fixed grammar, but every contained statement
+must fit the following whole-script additive DDL allowlist:
+
+- `CREATE TABLE` must name an ordinary persistent table as exactly
+  `dbo.<name>`, declare at least one column, and omit graph, temporal,
+  filetable, derived-table, storage, partition, inline-index, and table-option
+  features. Identifiers are at most 128 UTF-16 code units and a table has at
+  most 1,024 columns.
+- Accepted no-parameter built-in shapes are `bigint`, `int`, `smallint`,
+  `tinyint`, `bit`, `real`, `money`, `smallmoney`, `datetime`,
+  `smalldatetime`, `text`, `ntext`, `image`, `uniqueidentifier`, and `date`.
+  User-defined, alias, qualified, `rowversion`/`timestamp`, and every unlisted
+  type fail closed.
+- `decimal`/`numeric` default to `(18,0)`, with precision 1 through 38 and
+  scale 0 through the selected precision. `float` has optional precision 1
+  through 53 and defaults to 53. `char`, `varchar`, `binary`, and `varbinary`
+  default to length 1 and accept 1 through 8,000; only `varchar` and
+  `varbinary` also accept `max`. `nchar` and `nvarchar` default to length 1
+  and accept 1 through 4,000; only `nvarchar` also accepts `max`. `time`,
+  `datetime2`, and `datetimeoffset` accept fractional precision 0 through 7
+  and default to 7.
+- Every non-primary-key column must state exactly one `NULL` or `NOT NULL`;
+  primary-key columns may omit nullability but cannot be nullable. Defaults,
+  identity, computed or generated values, column indexes, encryption, masking,
+  hidden/row-guid/persisted flags, and storage options are outside the
+  allowlist. Explicit `COLLATE` is accepted only for a text-mapped type, and
+  remains conditional rather than proving SQL Server collation semantics.
+- Only primary keys, unique constraints, and foreign keys are lowered.
+  Primary and unique key members must be distinct, ascending, non-null columns
+  of the SQL Server `bigint`, `int`, `smallint`, or `tinyint` source family,
+  with at most 32 members, at most one primary key per table, and no clustered
+  or physical index options. Explicit constraint names share the `dbo`
+  schema-object namespace with table names and are checked case-insensitively;
+  omitted source names remain unnamed and receive only a deterministic target
+  identity. Foreign keys must resolve in source order to exactly one earlier
+  or self-referenced ordered primary/unique key with exact identifier
+  spelling, native type, facets, target mapping, classification, and codec.
+  Update actions are restricted to no action; delete permits no action or
+  cascade. `SET NULL`, `SET DEFAULT`, unenforced, and
+  `NOT FOR REPLICATION` shapes fail closed.
+- A separate `CREATE [UNIQUE] [NONCLUSTERED] INDEX` must follow its table, use
+  a case-insensitively unique name within that table, avoid the backing-index
+  name of an explicitly named primary/unique key, and use distinct ascending
+  columns from that same signed-integer source family, with at most 32
+  members. The same standalone index name may occur on different tables.
+  Clustered, descending, included, filtered, filegroup/partition, and other
+  index options are omitted. Unique index members must also be non-null.
+
+`ALTER`, `DROP`, checks, views, sequences, triggers, routines, and every other
+statement kind are outside this standalone proof. Duplicate detection is
+case-insensitive, while `dbo` and every reference must exactly match the
+declared spelling so the analyzer does not infer a database collation. If
+any statement, feature, reference, type, or target capability is unsupported,
+the analyzer does not prove a supported prefix or silently omit it; the whole
+script stops before scratch execution and returns sanitized span- and
+rule-based evidence.
+
+The parser hard ceilings are 4,194,304 UTF-16 code units, 16 MiB of strict
+UTF-8, 4,096 statements, 1,048,576 code units per statement, 250,000 tokens,
+nesting depth 128, 250,000 AST nodes, 64 lexer errors, 64 parser errors, and
+100,000 lowered catalog objects. A conservative lexical-unit preflight rejects
+definite token-budget overruns before ScriptDom allocates a token stream; the
+ScriptDom count remains the authoritative second check. Any lexer or parser
+error rejects the script; exceeding either error ceiling returns `Unknown`.
+Lower caller-selected limits are allowed, but these production maxima cannot
+be raised. The CSharpDB target proof independently caps candidate actions at
+4,096 and aggregate candidate SQL at 16 MiB; its defaults also cap each action
+at 1,048,576 UTF-16 code units and 4 MiB of UTF-8. Crossing a ceiling fails
+closed without partial proof.
+
+A completely lowered script is evaluated against the current CSharpDB
+capability catalog, rendered as candidate CSharpDB DDL, parsed again by
+`CSharpDB.Sql`, executed in a new in-memory scratch database, and compared with
+the intended normalized schema. Because this route necessarily rewrites
+T-SQL, a passing non-text script reports `CompatibleWithRewrite`, never
+`Compatible`. SQL Server text collation semantics are not yet proven: any
+text-bearing script retains `tsql.ddl.collation.unresolved` and overall
+`Conditional` status even when `HighestEvidence` is `ScratchExecuted` and the
+normalized schema digests match. In that conditional case
+`ProvenStatementCount` remains zero and every statement remains
+`Conditional`/`ScratchExecuted`: scratch proves the rewritten target shape,
+not SQL Server collation equivalence.
+
+The shared `csharpdb-ddl-compatibility/v1` report includes `SourceGrammar`
+(`sourceGrammar` in JSON), `Dialect`, the current target version, a
+domain-separated source digest, sanitized statement spans, stable rules,
+counts, status, and evidence. The T-SQL digest is lowercase SHA-256 over UTF-8
+`tsql-ddl-input/v1`, one NUL byte, and the exact strict UTF-8 source bytes.
+Reports omit SQL text, paths, identifiers, ASTs, parser messages, and engine
+messages. This proof creates no durable database, opens no existing target,
+applies no rewrite, and changes no plan readiness.
+
+The base CLI reaches this code only through the optional fixed sibling worker
+under `adapters/sqlserver`, using the separate
+`csharpdb-sqlserver-ddl-worker/v1` protocol. The host supplies exactly the
+protocol and current target version as
+`--protocol csharpdb-sqlserver-ddl-worker/v1 --target-version <current>`.
+The CLI removes an optional leading UTF-8 BOM, then streams the at-most-16-MiB
+strict UTF-8 script through redirected standard input; SQL is never placed in
+arguments or a temporary file. Success output is the exact header
+`csharpdb-sqlserver-ddl-worker/v1\n` followed by one compact camelCase,
+string-enum report capped at 8 MiB. Worker exit 0 means success, 10 means
+incompatible input or invocation, 12 means analysis failed, and 13 means an
+internal failure; exit 11 is not used by this DDL protocol. Standard error is
+bounded and never relayed, transient byte buffers are cleared, and
+cancellation or a protocol limit terminates the worker process tree. On
+Windows, the host also attaches the worker to a kill-on-close job with a
+512-MiB per-process memory ceiling.
+
+The host accepts only a report bound to the expected protocol, format, `tsql`
+dialect, `tsql160` grammar, current target, and source digest. A missing,
+incompatible, overclaiming, or malformed worker fails only this route with a
+sanitized adapter error.
+
 ## Read-only and security boundary
 
 The production reader:

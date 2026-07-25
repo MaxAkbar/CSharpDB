@@ -118,6 +118,25 @@ function Assert-ReviewedWorkerPackageClosure {
 
     $dependencies = [System.IO.File]::ReadAllText($DependencyPath) |
         ConvertFrom-Json -AsHashtable
+    $forbiddenLibraryPrefixes = @(
+        'CSharpDB.Migration.CSharpDb/',
+        'CSharpDB.Migration.Files/',
+        'CsvHelper/'
+    )
+    $unexpectedLibraries = @(
+        $dependencies['libraries'].Keys |
+            Where-Object {
+                $library = $_
+                $forbiddenLibraryPrefixes |
+                    Where-Object {
+                        $library.StartsWith($_, [StringComparison]::Ordinal)
+                    }
+            }
+    )
+    if ($unexpectedLibraries.Count -gt 0) {
+        throw "The SQL Server worker contains excluded migration/file-import dependencies: $($unexpectedLibraries -join ', ')"
+    }
+
     $actualPackages = @(
         $dependencies['libraries'].GetEnumerator() |
             Where-Object { $_.Value['type'] -eq 'package' } |
@@ -185,6 +204,7 @@ $requiredFiles = @(
     (Join-Path $output $(if ($targetIsWindows) { 'csharpdb.exe' } else { 'csharpdb' })),
     (Join-Path $output 'LICENSE'),
     (Join-Path $workerOutput $workerExecutableName),
+    (Join-Path $workerOutput 'CSharpDB.Migration.CSharpDb.Ddl.dll'),
     (Join-Path $workerOutput 'CSharpDB.Migration.SqlServer.dll'),
     (Join-Path $workerOutput 'Microsoft.Data.SqlClient.dll'),
     (Join-Path $workerOutput 'Microsoft.SqlServer.TransactSql.ScriptDom.dll'),

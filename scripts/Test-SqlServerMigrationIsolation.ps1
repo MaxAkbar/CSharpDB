@@ -146,6 +146,65 @@ function Assert-CommandFailure {
     }
 }
 
+function Assert-DdlCommandFailure {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Executable,
+
+        [Parameter(Mandatory = $true)]
+        [string] $ScriptPath,
+
+        [Parameter(Mandatory = $true)]
+        [string] $ExpectedCode
+    )
+
+    $commandOutput = @(
+        & $Executable `
+            migrate ddl-check $ScriptPath `
+            --dialect tsql 2>&1
+    )
+    $exitCode = $LASTEXITCODE
+    $text = $commandOutput -join [Environment]::NewLine
+
+    if ($exitCode -ne 2) {
+        throw "Expected T-SQL DDL analysis to fail with exit code 2, but received $exitCode."
+    }
+    if (-not $text.Contains($ExpectedCode, [StringComparison]::Ordinal)) {
+        throw "T-SQL DDL analysis did not report the stable code $ExpectedCode."
+    }
+}
+
+function Assert-DdlCommandProof {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Executable,
+
+        [Parameter(Mandatory = $true)]
+        [string] $ScriptPath
+    )
+
+    $commandOutput = @(
+        & $Executable `
+            migrate ddl-check $ScriptPath `
+            --dialect tsql 2>&1
+    )
+    $exitCode = $LASTEXITCODE
+    $text = $commandOutput -join [Environment]::NewLine
+
+    if ($exitCode -ne 1) {
+        throw "Expected a proven T-SQL canonical rewrite with exit code 1, but received $exitCode."
+    }
+    if (-not $text.Contains(
+            'Source grammar: tsql160',
+            [StringComparison]::Ordinal) -or
+        -not $text.Contains(
+            'Status: compatible-with-rewrite',
+            [StringComparison]::Ordinal))
+    {
+        throw 'The bundled T-SQL DDL proof did not return the expected fixed-grammar rewrite evidence.'
+    }
+}
+
 function Assert-ReviewedWorkerPackageClosure {
     param(
         [Parameter(Mandatory = $true)]
@@ -184,6 +243,25 @@ function Assert-ReviewedWorkerPackageClosure {
 
     $dependencies = [System.IO.File]::ReadAllText($DependencyPath) |
         ConvertFrom-Json -AsHashtable
+    $forbiddenLibraryPrefixes = @(
+        'CSharpDB.Migration.CSharpDb/',
+        'CSharpDB.Migration.Files/',
+        'CsvHelper/'
+    )
+    $unexpectedLibraries = @(
+        $dependencies['libraries'].Keys |
+            Where-Object {
+                $library = $_
+                $forbiddenLibraryPrefixes |
+                    Where-Object {
+                        $library.StartsWith($_, [StringComparison]::Ordinal)
+                    }
+            }
+    )
+    if ($unexpectedLibraries.Count -gt 0) {
+        throw "The SQL Server worker contains excluded migration/file-import dependencies: $($unexpectedLibraries -join ', ')"
+    }
+
     $actualPackages = @(
         $dependencies['libraries'].GetEnumerator() |
             Where-Object { $_.Value['type'] -eq 'package' } |
@@ -243,6 +321,7 @@ try {
     $workerOutput = Join-Path $bundleOutput 'adapters/sqlserver'
     $requiredWorkerFiles = @(
         (Join-Path $bundleOutput 'LICENSE'),
+        (Join-Path $workerOutput 'CSharpDB.Migration.CSharpDb.Ddl.dll'),
         (Join-Path $workerOutput 'CSharpDB.Migration.SqlServer.dll'),
         (Join-Path $workerOutput 'Microsoft.Data.SqlClient.dll'),
         (Join-Path $workerOutput 'Microsoft.SqlServer.TransactSql.ScriptDom.dll'),
@@ -292,6 +371,18 @@ try {
         -ConnectionEnvironmentName $missingConnectionName `
         -OutputPath (Join-Path $workspace 'bundle-catalog.json') `
         -ExpectedCode 'MIG-SQLSERVER-CLI-CONNECTION-001'
+
+    $ddlPath = Join-Path $workspace 'bounded-ddl.sql'
+    [System.IO.File]::WriteAllText(
+        $ddlPath,
+        'CREATE TABLE dbo.widgets (id int NOT NULL PRIMARY KEY);')
+    Assert-DdlCommandFailure `
+        -Executable (Join-Path $baseOutput $cliName) `
+        -ScriptPath $ddlPath `
+        -ExpectedCode 'MIG-TSQL-CLI-ADAPTER-001'
+    Assert-DdlCommandProof `
+        -Executable (Join-Path $bundleOutput $cliName) `
+        -ScriptPath $ddlPath
 
     Write-Host 'SQL Server migration adapter isolation is valid.'
 }

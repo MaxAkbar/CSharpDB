@@ -50,6 +50,15 @@ internal sealed record MigrationCommandDependencies
                 cancellationToken: cancellationToken);
 
     internal Func<
+        string,
+        string,
+        CancellationToken,
+        ValueTask<SqlServerDdlWorkerResult>>
+    AnalyzeTsqlDdlAsync
+    { get; init; } =
+        SqlServerWorkerClient.AnalyzeDdlAsync;
+
+    internal Func<
         MigrationPlan,
         MigrationCatalog,
         CancellationToken,

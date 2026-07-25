@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Globalization;
 using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
@@ -24,7 +25,7 @@ internal static class MigrationCommandRunner
         "       csharpdb migrate inspect --source sqlite --input <source.db> --package <snapshot.csdbsqlite> --out <catalog.json> [--profile-sample-size <count>] [--max-source-bytes <count>]\n" +
         "       csharpdb migrate inspect --source sqlserver --connection-env <name> --out <catalog.json>\n" +
         "       csharpdb migrate inspect --source mysql --connection-env <name> --out <catalog.json>\n" +
-        "       csharpdb migrate ddl-check <file.sql> --dialect csharpdb [--format text|json]\n" +
+        "       csharpdb migrate ddl-check <file.sql> --dialect csharpdb|tsql [--format text|json]\n" +
         "       csharpdb migrate plan <catalog.json> --out <plan.json> [--profile preserve|queryable] [--accept-exclusions all|<id,...>] [--accept-diagnostics <id,...>] [--reject-mode fail-fast|deterministic --reject-rules all|<id,...> --max-rejected-rows-per-batch <count> --max-rejected-rows-per-run <count> --max-reject-evidence-value-bytes <count> --max-reject-evidence-bytes-per-batch <count> --max-reject-evidence-bytes-per-run <count> --max-reject-artifact-bytes <count>]\n" +
         "       csharpdb migrate preview <plan.json> --catalog <catalog.json> [--ddl|--scratch] [--format text|json]\n" +
         "       csharpdb migrate apply <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
@@ -105,6 +106,8 @@ internal static class MigrationCommandRunner
             dependencies.BuildCSharpDbDdlPreview);
         ArgumentNullException.ThrowIfNull(
             dependencies.AnalyzeCSharpDbDdlAsync);
+        ArgumentNullException.ThrowIfNull(
+            dependencies.AnalyzeTsqlDdlAsync);
         ArgumentNullException.ThrowIfNull(
             dependencies.SealCSharpDbMigrationPlan);
         ArgumentNullException.ThrowIfNull(
@@ -2028,13 +2031,18 @@ internal static class MigrationCommandRunner
                 "Missing required option --dialect.",
                 error);
         }
-        if (!string.Equals(
-                dialect,
-                "csharpdb",
-                StringComparison.OrdinalIgnoreCase))
+        bool isCSharpDbDialect = string.Equals(
+            dialect,
+            "csharpdb",
+            StringComparison.OrdinalIgnoreCase);
+        bool isTsqlDialect = string.Equals(
+            dialect,
+            "tsql",
+            StringComparison.OrdinalIgnoreCase);
+        if (!isCSharpDbDialect && !isTsqlDialect)
         {
             return await OptionErrorAsync(
-                "This DDL compatibility command supports only the csharpdb dialect.",
+                "This DDL compatibility command supports only the csharpdb and tsql dialects.",
                 error);
         }
 
@@ -2068,7 +2076,7 @@ internal static class MigrationCommandRunner
         {
             throw new MigrationCliSafeException(
                 "MIG-CSHARPDB-DDL-CHECK-LIMIT-001",
-                "The DDL script exceeds the production byte limit.",
+                "The DDL script exceeds a production size limit.",
                 limitError);
         }
         catch (DecoderFallbackException encodingError)
@@ -2090,12 +2098,66 @@ internal static class MigrationCommandRunner
         CSharpDbDdlCompatibilityReport report;
         try
         {
-            report = await dependencies.AnalyzeCSharpDbDdlAsync(
-                script,
-                ct);
+            if (isCSharpDbDialect)
+            {
+                report = await dependencies.AnalyzeCSharpDbDdlAsync(
+                    script,
+                    ct);
+            }
+            else
+            {
+                string targetCSharpDbVersion =
+                    CSharpDbCapabilityCatalogLoader.CurrentTargetVersion;
+                SqlServerDdlWorkerResult result =
+                    await dependencies.AnalyzeTsqlDdlAsync(
+                        script,
+                        targetCSharpDbVersion,
+                        ct);
+                ArgumentNullException.ThrowIfNull(result);
+                if (result.Status is
+                    SqlServerDdlWorkerStatus.Missing or
+                    SqlServerDdlWorkerStatus.Incompatible)
+                {
+                    throw new MigrationCliSafeException(
+                        "MIG-TSQL-CLI-ADAPTER-001",
+                        "The optional T-SQL DDL analyzer is unavailable or incompatible.",
+                        new InvalidOperationException(
+                            "The T-SQL worker boundary is unavailable."));
+                }
+                if (result.Status ==
+                    SqlServerDdlWorkerStatus.AnalysisFailed)
+                {
+                    throw new MigrationCliSafeException(
+                        "MIG-TSQL-CLI-DDL-CHECK-001",
+                        "The T-SQL DDL compatibility proof could not be produced safely.",
+                        new InvalidOperationException(
+                            "The T-SQL worker could not analyze the source."));
+                }
+                if (result.Status !=
+                        SqlServerDdlWorkerStatus.Success ||
+                    !SqlServerWorkerClient.TrySanitizeDdlReport(
+                        result.Report,
+                        targetCSharpDbVersion,
+                        script,
+                        out CSharpDbDdlCompatibilityReport?
+                            sanitizedReport))
+                {
+                    throw new MigrationCliSafeException(
+                        "MIG-TSQL-CLI-ADAPTER-001",
+                        "The optional T-SQL DDL analyzer is unavailable or incompatible.",
+                        new InvalidDataException(
+                            "The T-SQL worker returned an invalid report contract."));
+                }
+
+                report = sanitizedReport!;
+            }
             ArgumentNullException.ThrowIfNull(report);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (MigrationCliSafeException)
         {
             throw;
         }
@@ -2103,8 +2165,12 @@ internal static class MigrationCommandRunner
             IsRecoverableCliException(analysisError))
         {
             throw new MigrationCliSafeException(
-                "MIG-CSHARPDB-DDL-CHECK-001",
-                "The DDL compatibility proof could not be produced safely.",
+                isTsqlDialect
+                    ? "MIG-TSQL-CLI-DDL-CHECK-001"
+                    : "MIG-CSHARPDB-DDL-CHECK-001",
+                isTsqlDialect
+                    ? "The T-SQL DDL compatibility proof could not be produced safely."
+                    : "The DDL compatibility proof could not be produced safely.",
                 analysisError);
         }
 
@@ -2173,54 +2239,62 @@ internal static class MigrationCommandRunner
             throw new DdlScriptLimitException();
         }
 
-        using var payload = new MemoryStream();
-        byte[] buffer = new byte[64 * 1024];
-        long totalBytes = 0;
+        int maximumBytes =
+            SqlScriptParserOptions.HardMaxScriptUtf8Bytes;
+        byte[] payload =
+            ArrayPool<byte>.Shared.Rent(maximumBytes);
+        byte[] overflowProbe = new byte[1];
+        int totalBytes = 0;
         try
         {
-            while (true)
+            while (totalBytes < maximumBytes)
             {
                 ct.ThrowIfCancellationRequested();
                 int read = await stream.ReadAsync(
-                    buffer.AsMemory(),
+                    payload.AsMemory(
+                        totalBytes,
+                        Math.Min(
+                            64 * 1024,
+                            maximumBytes - totalBytes)),
                     ct);
                 if (read == 0)
                     break;
-                if (totalBytes >
-                    SqlScriptParserOptions.HardMaxScriptUtf8Bytes - read)
-                {
-                    throw new DdlScriptLimitException();
-                }
 
-                payload.Write(buffer, 0, read);
                 totalBytes += read;
             }
-        }
-        finally
-        {
-            Array.Clear(buffer);
-        }
+            if (totalBytes == maximumBytes)
+            {
+                ct.ThrowIfCancellationRequested();
+                int extra = await stream.ReadAsync(
+                    overflowProbe.AsMemory(),
+                    ct);
+                if (extra != 0)
+                    throw new DdlScriptLimitException();
+            }
 
-        ct.ThrowIfCancellationRequested();
-        int payloadLength = checked((int)payload.Length);
-        ReadOnlySpan<byte> bytes =
-            payload.GetBuffer().AsSpan(0, payloadLength);
-        if (bytes.Length >= 3 &&
-            bytes[0] == 0xEF &&
-            bytes[1] == 0xBB &&
-            bytes[2] == 0xBF)
-        {
-            bytes = bytes[3..];
-        }
-
-        try
-        {
+            ct.ThrowIfCancellationRequested();
+            ReadOnlySpan<byte> bytes =
+                payload.AsSpan(0, totalBytes);
+            if (bytes.Length >= 3 &&
+                bytes[0] == 0xEF &&
+                bytes[1] == 0xBB &&
+                bytes[2] == 0xBF)
+            {
+                bytes = bytes[3..];
+            }
+            if (Utf8NoBomStrict.GetCharCount(bytes) >
+                SqlScriptParserOptions.HardMaxScriptCharacters)
+            {
+                throw new DdlScriptLimitException();
+            }
             return Utf8NoBomStrict.GetString(bytes);
         }
         finally
         {
-            CryptographicOperations.ZeroMemory(
-                payload.GetBuffer().AsSpan(0, payloadLength));
+            CryptographicOperations.ZeroMemory(overflowProbe);
+            ArrayPool<byte>.Shared.Return(
+                payload,
+                clearArray: true);
         }
     }
 
@@ -2234,6 +2308,8 @@ internal static class MigrationCommandRunner
         await output.WriteLineAsync(
             $"Status: {CliToken(report.Status)}");
         await output.WriteLineAsync($"Dialect: {report.Dialect}");
+        await output.WriteLineAsync(
+            $"Source grammar: {report.SourceGrammar}");
         await output.WriteLineAsync(
             $"Target CSharpDB version: {report.TargetCSharpDbVersion}");
         await output.WriteLineAsync(

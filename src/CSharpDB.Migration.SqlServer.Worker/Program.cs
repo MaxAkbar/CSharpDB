@@ -19,6 +19,7 @@ try
 {
     return await SqlServerWorkerRunner.RunAsync(
         args,
+        Console.OpenStandardInput(),
         Console.Out,
         Console.Error,
         SqlServerWorkerDependencies.Default,

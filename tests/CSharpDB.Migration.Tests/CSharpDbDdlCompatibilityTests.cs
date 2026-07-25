@@ -24,6 +24,11 @@ public sealed class CSharpDbDdlCompatibilityTests
         CSharpDbDdlCompatibilityReport report =
             await AnalyzeAsync(script);
 
+        Assert.Equal(
+            CSharpDbDdlCompatibilityReport.CurrentFormat,
+            report.Format);
+        Assert.Equal("csharpdb", report.Dialect);
+        Assert.Equal("csharpdb-sql/v1", report.SourceGrammar);
         Assert.True(
             report.Status == MigrationCompatibilityStatus.Compatible,
             Serialize(report));

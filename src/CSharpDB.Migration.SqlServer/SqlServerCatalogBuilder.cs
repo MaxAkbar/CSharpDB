@@ -883,23 +883,7 @@ internal static partial class SqlServerCatalogBuilder
     }
 
     private static string LogicalType(string systemTypeName) =>
-        systemTypeName.ToLowerInvariant() switch
-        {
-            "bigint" or "int" or "smallint" or "tinyint" => "signedInteger",
-            "bit" => "boolean",
-            "decimal" or "numeric" or "money" or "smallmoney" => "decimal",
-            "float" or "real" => "floatingPoint",
-            "char" or "varchar" or "nchar" or "nvarchar" or "text" or "ntext" or
-                "sysname" => "text",
-            "binary" or "varbinary" or "image" => "binary",
-            "uniqueidentifier" => "guid",
-            "date" => "date",
-            "time" => "time",
-            "datetime" or "datetime2" or "smalldatetime" => "dateTime",
-            "datetimeoffset" => "dateTimeOffset",
-            "json" => "json",
-            _ => "native",
-        };
+        SqlServerTypeSemantics.LogicalType(systemTypeName);
 
     private static string FormatNativeType(SqlServerColumnMetadata column)
     {
@@ -931,8 +915,7 @@ internal static partial class SqlServerCatalogBuilder
         type is "binary" or "varbinary" or "char" or "varchar" or "nchar" or "nvarchar";
 
     private static bool IsRowVersion(string type) =>
-        type.Equals("timestamp", StringComparison.OrdinalIgnoreCase) ||
-        type.Equals("rowversion", StringComparison.OrdinalIgnoreCase);
+        SqlServerTypeSemantics.IsRowVersion(type);
 
     private static bool HasSpecialTableShape(SqlServerTableMetadata table) =>
         table.IsMemoryOptimized ||

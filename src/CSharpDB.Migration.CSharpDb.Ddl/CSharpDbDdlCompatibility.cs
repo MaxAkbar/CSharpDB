@@ -85,6 +85,8 @@ public sealed record CSharpDbDdlCompatibilityReport
 
     public string Dialect { get; init; } = "csharpdb";
 
+    public string SourceGrammar { get; init; } = "csharpdb-sql/v1";
+
     public required string TargetCSharpDbVersion { get; init; }
 
     public required string CapabilityDigest { get; init; }
@@ -362,12 +364,82 @@ public static class CSharpDbDdlCompatibilityAnalyzer
                 lowering.Diagnostics);
         }
 
+        return await ProveLoweredAsync(
+            capabilities,
+            lowering.Catalog,
+            dialect: "csharpdb",
+            sourceGrammar: "csharpdb-sql/v1",
+            scriptDigest,
+            parsed.Count,
+            lowering.RequiresRewrite,
+            retainedStatusAfterScratch: null,
+            retainedRuleAfterScratch: null,
+            lowering.Statements,
+            lowering.Diagnostics,
+            options,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Runs the target-specific half of the DDL proof for a fully lowered,
+    /// bounded source catalog. Source adapters remain responsible for parsing,
+    /// allowlisting, reference resolution, source semantics, and sanitizing
+    /// statement diagnostics before this boundary.
+    /// </summary>
+    internal static async ValueTask<CSharpDbDdlCompatibilityReport>
+        ProveLoweredAsync(
+            CSharpDbCapabilityCatalog capabilities,
+            MigrationCatalog catalog,
+            string dialect,
+            string sourceGrammar,
+            string scriptDigest,
+            int statementCount,
+            bool requiresRewrite,
+            MigrationCompatibilityStatus? retainedStatusAfterScratch,
+            string? retainedRuleAfterScratch,
+            IReadOnlyList<CSharpDbDdlCompatibilityStatement> statements,
+            IReadOnlyList<CSharpDbDdlCompatibilityDiagnostic> diagnostics,
+            CSharpDbDdlCompatibilityOptions options,
+            CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(capabilities);
+        ArgumentNullException.ThrowIfNull(catalog);
+        ArgumentException.ThrowIfNullOrWhiteSpace(dialect);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceGrammar);
+        ArgumentException.ThrowIfNullOrWhiteSpace(scriptDigest);
+        ArgumentNullException.ThrowIfNull(statements);
+        ArgumentNullException.ThrowIfNull(diagnostics);
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(options.PreviewOptions);
+        ArgumentNullException.ThrowIfNull(options.ScratchOptions);
+        if (statementCount <= 0 || statements.Count != statementCount)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(statementCount),
+                "A lowered proof must retain exactly one result per source statement.");
+        }
+        if (retainedStatusAfterScratch is not null &&
+            retainedStatusAfterScratch !=
+            MigrationCompatibilityStatus.Conditional)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(retainedStatusAfterScratch),
+                "Only a source-semantic Conditional result may survive a passing scratch proof.");
+        }
+        if ((retainedStatusAfterScratch is null) !=
+            (retainedRuleAfterScratch is null))
+        {
+            throw new ArgumentException(
+                "A retained source-semantic result requires both status and rule.");
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
         MigrationPlan plan;
         CSharpDbDdlPreview preview;
         try
         {
             plan = new MigrationPlanner(capabilities).CreatePlan(
-                lowering.Catalog);
+                catalog);
             cancellationToken.ThrowIfCancellationRequested();
             if (plan.Objects.Any(item => !item.Included))
             {
@@ -377,24 +449,26 @@ public static class CSharpDbDdlCompatibilityAnalyzer
                     MigrationCompatibilityStatus.Unsupported,
                     MigrationEvidenceLevel.CapabilityMatched,
                     CapabilityRuleId,
-                    parsed.Count,
+                    statementCount,
                     SetStatementOutcome(
-                        lowering.Statements,
+                        statements,
                         MigrationCompatibilityStatus.Unsupported,
                         MigrationEvidenceLevel.CapabilityMatched,
                         CapabilityRuleId),
                     AppendDiagnostic(
-                        lowering.Diagnostics,
+                        diagnostics,
                         CapabilityRuleId,
                         MigrationCompatibilityStatus.Unsupported,
                         MigrationEvidenceLevel.CapabilityMatched,
                         "At least one schema object is not proven by the target capability catalog.",
-                        "Remove or rewrite the unproven schema feature."));
+                        "Remove or rewrite the unproven schema feature."),
+                    dialect: dialect,
+                    sourceGrammar: sourceGrammar);
             }
 
             preview = CSharpDbDdlPreviewBuilder.BuildBounded(
                 plan,
-                lowering.Catalog,
+                catalog,
                 options.PreviewOptions,
                 cancellationToken: cancellationToken);
         }
@@ -411,14 +485,14 @@ public static class CSharpDbDdlCompatibilityAnalyzer
                 MigrationCompatibilityStatus.Unknown,
                 MigrationEvidenceLevel.CapabilityMatched,
                 RenderLimitRuleId,
-                parsed.Count,
+                statementCount,
                 SetStatementOutcome(
-                    lowering.Statements,
+                    statements,
                     MigrationCompatibilityStatus.Unknown,
                     MigrationEvidenceLevel.CapabilityMatched,
                     RenderLimitRuleId),
                 AppendDiagnostic(
-                    lowering.Diagnostics,
+                    diagnostics,
                     RenderLimitRuleId,
                     MigrationCompatibilityStatus.Unknown,
                     MigrationEvidenceLevel.CapabilityMatched,
@@ -426,7 +500,9 @@ public static class CSharpDbDdlCompatibilityAnalyzer
                     "Reduce the script or split it into independently reviewed bounded scripts."),
                 catalogDigest:
                     MigrationArtifactSerializer.ComputeCatalogDigest(
-                        lowering.Catalog));
+                        catalog),
+                dialect: dialect,
+                sourceGrammar: sourceGrammar);
         }
         catch (Exception error) when (IsRecoverable(error))
         {
@@ -436,24 +512,26 @@ public static class CSharpDbDdlCompatibilityAnalyzer
                 MigrationCompatibilityStatus.Unknown,
                 MigrationEvidenceLevel.Parsed,
                 InternalRuleId,
-                parsed.Count,
+                statementCount,
                 SetStatementOutcome(
-                    lowering.Statements,
+                    statements,
                     MigrationCompatibilityStatus.Unknown,
                     MigrationEvidenceLevel.Parsed,
                     InternalRuleId),
                 AppendDiagnostic(
-                    lowering.Diagnostics,
+                    diagnostics,
                     InternalRuleId,
                     MigrationCompatibilityStatus.Unknown,
                     MigrationEvidenceLevel.Parsed,
                     "The candidate schema could not be bound safely.",
-                    "Review the reported supported subset and retry."));
+                    "Review the reported supported subset and retry."),
+                dialect: dialect,
+                sourceGrammar: sourceGrammar);
         }
 
         cancellationToken.ThrowIfCancellationRequested();
         IReadOnlyDictionary<string, MigrationCatalogObject>
-            sourceObjects = lowering.Catalog.Objects.ToDictionary(
+            sourceObjects = catalog.Objects.ToDictionary(
                 item => item.ObjectId,
                 StringComparer.Ordinal);
         bool renamed = false;
@@ -473,14 +551,14 @@ public static class CSharpDbDdlCompatibilityAnalyzer
                 break;
             }
         }
-        bool rewritten = lowering.RequiresRewrite || renamed;
+        bool rewritten = requiresRewrite || renamed;
 
         CSharpDbDdlScratchValidationReport scratch;
         try
         {
             scratch = await CSharpDbDdlScratchValidator.ValidateAsync(
                 plan,
-                lowering.Catalog,
+                catalog,
                 preview,
                 options.ScratchOptions,
                 cancellationToken).ConfigureAwait(false);
@@ -498,20 +576,22 @@ public static class CSharpDbDdlCompatibilityAnalyzer
                 MigrationCompatibilityStatus.Unknown,
                 MigrationEvidenceLevel.Bound,
                 ScratchRejectedRuleId,
-                parsed.Count,
+                statementCount,
                 SetStatementOutcome(
-                    lowering.Statements,
+                    statements,
                     MigrationCompatibilityStatus.Unknown,
                     MigrationEvidenceLevel.Bound,
                     ScratchRejectedRuleId),
                 AppendDiagnostic(
-                    lowering.Diagnostics,
+                    diagnostics,
                     ScratchRejectedRuleId,
                     MigrationCompatibilityStatus.Unknown,
                     MigrationEvidenceLevel.Bound,
                     "The isolated scratch proof could not be completed safely.",
                     "Review the candidate schema and retry."),
-                preview);
+                preview,
+                dialect: dialect,
+                sourceGrammar: sourceGrammar);
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -529,15 +609,15 @@ public static class CSharpDbDdlCompatibilityAnalyzer
                 MigrationCompatibilityStatus.Unknown,
                 scratch.HighestEvidence ?? MigrationEvidenceLevel.Bound,
                 ruleId,
-                parsed.Count,
+                statementCount,
                 SetStatementOutcome(
-                    lowering.Statements,
+                    statements,
                     MigrationCompatibilityStatus.Unknown,
                     scratch.HighestEvidence ??
                     MigrationEvidenceLevel.Bound,
                     ruleId),
                 AppendDiagnostic(
-                    lowering.Diagnostics,
+                    diagnostics,
                     ruleId,
                     MigrationCompatibilityStatus.Unknown,
                     scratch.HighestEvidence ??
@@ -547,35 +627,45 @@ public static class CSharpDbDdlCompatibilityAnalyzer
                         : "The isolated scratch proof rejected the candidate schema.",
                     "Treat the script as unproven and review the reported evidence."),
                 preview,
-                scratch);
+                scratch,
+                dialect: dialect,
+                sourceGrammar: sourceGrammar);
         }
 
-        MigrationCompatibilityStatus finalStatus = rewritten
-            ? MigrationCompatibilityStatus.CompatibleWithRewrite
-            : MigrationCompatibilityStatus.Compatible;
-        string finalRule = rewritten ? RewriteRuleId : ScratchEqualRuleId;
-        IReadOnlyList<CSharpDbDdlCompatibilityDiagnostic> diagnostics =
+        MigrationCompatibilityStatus finalStatus =
+            retainedStatusAfterScratch ??
+            (rewritten
+                ? MigrationCompatibilityStatus.CompatibleWithRewrite
+                : MigrationCompatibilityStatus.Compatible);
+        string finalRule = retainedRuleAfterScratch ??
+            (rewritten ? RewriteRuleId : ScratchEqualRuleId);
+        IReadOnlyList<CSharpDbDdlCompatibilityDiagnostic> finalDiagnostics =
             rewritten
                 ? AppendDiagnostic(
-                    lowering.Diagnostics,
+                    diagnostics,
                     RewriteRuleId,
                     finalStatus,
                     MigrationEvidenceLevel.ScratchExecuted,
                     "The proven candidate requires a deterministic canonical rewrite.",
                     "Review the generated migration plan before any apply workflow.",
                     MigrationDiagnosticSeverity.Warning)
-                : lowering.Diagnostics;
+                : diagnostics;
         int actionCount = preview.Stages.Sum(stage => stage.Actions.Count);
         return new CSharpDbDdlCompatibilityReport
         {
+            Dialect = dialect,
+            SourceGrammar = sourceGrammar,
             TargetCSharpDbVersion = capabilities.TargetCSharpDbVersion,
             CapabilityDigest = capabilities.Digest,
             ScriptDigest = scriptDigest,
             Status = finalStatus,
             HighestEvidence = MigrationEvidenceLevel.ScratchExecuted,
             RuleId = finalRule,
-            StatementCount = parsed.Count,
-            ProvenStatementCount = parsed.Count,
+            StatementCount = statementCount,
+            ProvenStatementCount =
+                finalStatus == MigrationCompatibilityStatus.Conditional
+                    ? 0
+                    : statementCount,
             CandidateActionCount = actionCount,
             CatalogDigest = preview.CatalogDigest,
             PlanContractDigest = preview.PlanContractDigest,
@@ -583,16 +673,16 @@ public static class CSharpDbDdlCompatibilityAnalyzer
             ExpectedSchemaDigest = scratch.ExpectedSchemaDigest,
             ActualSchemaDigest = scratch.ActualSchemaDigest,
             Statements = SetStatementOutcome(
-                lowering.Statements,
+                statements,
                 finalStatus,
                 MigrationEvidenceLevel.ScratchExecuted,
                 finalRule),
-            Diagnostics = diagnostics,
+            Diagnostics = finalDiagnostics,
             Differences = scratch.Differences,
         };
     }
 
-    private static CSharpDbDdlCompatibilityReport Failure(
+    internal static CSharpDbDdlCompatibilityReport Failure(
         CSharpDbCapabilityCatalog capabilities,
         string scriptDigest,
         MigrationCompatibilityStatus status,
@@ -603,9 +693,13 @@ public static class CSharpDbDdlCompatibilityAnalyzer
         IReadOnlyList<CSharpDbDdlCompatibilityDiagnostic> diagnostics,
         CSharpDbDdlPreview? preview = null,
         CSharpDbDdlScratchValidationReport? scratch = null,
-        string? catalogDigest = null) =>
+        string? catalogDigest = null,
+        string dialect = "csharpdb",
+        string sourceGrammar = "csharpdb-sql/v1") =>
         new()
         {
+            Dialect = dialect,
+            SourceGrammar = sourceGrammar,
             TargetCSharpDbVersion = capabilities.TargetCSharpDbVersion,
             CapabilityDigest = capabilities.Digest,
             ScriptDigest = scriptDigest,

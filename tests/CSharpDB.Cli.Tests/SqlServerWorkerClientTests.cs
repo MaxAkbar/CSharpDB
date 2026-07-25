@@ -13,6 +13,8 @@ public sealed class SqlServerWorkerClientTests
     private const string PidFileEnvironment =
         "CSHARPDB_TEST_SQLSERVER_WORKER_PID_FILE";
     private const string WorkerSecret = "worker-stderr-secret";
+    private const string DdlDiagnosticSecret =
+        "Password=ddl-worker-diagnostic-secret";
 #if DEBUG
     private const string BuildConfiguration = "Debug";
 #else
@@ -353,6 +355,506 @@ public sealed class SqlServerWorkerClientTests
         }
     }
 
+    [Fact]
+    public async Task DdlCheck_MissingWorkerReturnsSanitizedAdapterFailure()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        using var installation =
+            new WorkerInstallation(installHarness: false);
+        string directory = CreateTempDirectory();
+        string scriptPath = Path.Combine(directory, "private-input.sql");
+        try
+        {
+            await File.WriteAllTextAsync(
+                scriptPath,
+                "CREATE TABLE [private_name] (id int);",
+                ct);
+            var output = new StringWriter();
+            var error = new StringWriter();
+
+            int exitCode = await RunDdlCheckAsync(
+                scriptPath,
+                output,
+                error,
+                ct);
+
+            Assert.Equal(
+                InspectorCommandRunner.ExitError,
+                exitCode);
+            Assert.Contains(
+                "MIG-TSQL-CLI-ADAPTER-001",
+                error.ToString(),
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                "private_name",
+                error.ToString(),
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                scriptPath,
+                error.ToString(),
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Empty(output.ToString());
+        }
+        finally
+        {
+            TryDeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public async Task DdlCheck_ValidWorkerReportIsDigestBoundAndRendered()
+    {
+        const string secret = "PrivateWorkerInput_93C1";
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        using var installation =
+            new WorkerInstallation(installHarness: true);
+        using var mode =
+            new EnvironmentScope(ModeEnvironment, "ddl-success");
+        string directory = CreateTempDirectory();
+        string scriptPath = Path.Combine(directory, "private-input.sql");
+        try
+        {
+            await File.WriteAllTextAsync(
+                scriptPath,
+                $"CREATE TABLE [{secret}] (id int);",
+                ct);
+            var output = new StringWriter();
+            var error = new StringWriter();
+
+            int exitCode = await RunDdlCheckAsync(
+                scriptPath,
+                output,
+                error,
+                ct);
+
+            Assert.Equal(
+                InspectorCommandRunner.ExitWarn,
+                exitCode);
+            Assert.Empty(error.ToString());
+            Assert.Contains(
+                "Dialect: tsql",
+                output.ToString(),
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "Source grammar: tsql160",
+                output.ToString(),
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "Status: compatible-with-rewrite",
+                output.ToString(),
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                secret,
+                output.ToString(),
+                StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(
+                scriptPath,
+                output.ToString(),
+                StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            TryDeleteDirectory(directory);
+        }
+    }
+
+    [Theory]
+    [InlineData("text")]
+    [InlineData("json")]
+    public async Task DdlCheck_HostileDiagnosticProseIsReplacedBeforeRendering(
+        string format)
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        using var installation =
+            new WorkerInstallation(installHarness: true);
+        using var mode = new EnvironmentScope(
+            ModeEnvironment,
+            "ddl-malicious-diagnostic-prose");
+        string directory = CreateTempDirectory();
+        string scriptPath = Path.Combine(directory, "private-input.sql");
+        try
+        {
+            await File.WriteAllTextAsync(
+                scriptPath,
+                "CREATE TABLE [private_data] (id int);",
+                ct);
+            var output = new StringWriter();
+            var error = new StringWriter();
+
+            int exitCode = await RunDdlCheckAsync(
+                scriptPath,
+                output,
+                error,
+                ct,
+                format);
+
+            Assert.Equal(
+                InspectorCommandRunner.ExitWarn,
+                exitCode);
+            Assert.Empty(error.ToString());
+            string rendered = output.ToString();
+            Assert.Contains(
+                "The proven candidate requires a deterministic canonical rewrite.",
+                rendered,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "Review the generated migration plan before any apply workflow.",
+                rendered,
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                DdlDiagnosticSecret,
+                rendered,
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                "DROP TABLE",
+                rendered,
+                StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(
+                "INJECTED-CONTROL",
+                rendered,
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                "\u001b",
+                rendered,
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                "\\u001b",
+                rendered,
+                StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(
+                "\0",
+                rendered,
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                "\\u0000",
+                rendered,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            TryDeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public async Task DdlCheck_RepeatedWorkerProofIsDeterministic()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        using var installation =
+            new WorkerInstallation(installHarness: true);
+        using var mode =
+            new EnvironmentScope(ModeEnvironment, "ddl-success");
+        string directory = CreateTempDirectory();
+        string scriptPath = Path.Combine(directory, "input.sql");
+        try
+        {
+            await File.WriteAllTextAsync(
+                scriptPath,
+                "CREATE TABLE [t] (id int);",
+                ct);
+            var firstOutput = new StringWriter();
+            var firstError = new StringWriter();
+            var secondOutput = new StringWriter();
+            var secondError = new StringWriter();
+
+            int firstCode = await RunDdlCheckAsync(
+                scriptPath,
+                firstOutput,
+                firstError,
+                ct);
+            int secondCode = await RunDdlCheckAsync(
+                scriptPath,
+                secondOutput,
+                secondError,
+                ct);
+
+            Assert.Equal(firstCode, secondCode);
+            Assert.Equal(
+                firstOutput.ToString(),
+                secondOutput.ToString());
+            Assert.Equal(
+                firstError.ToString(),
+                secondError.ToString());
+        }
+        finally
+        {
+            TryDeleteDirectory(directory);
+        }
+    }
+
+    [Theory]
+    [InlineData("ddl-bad-header")]
+    [InlineData("ddl-invalid-utf8")]
+    [InlineData("ddl-wrong-format")]
+    [InlineData("ddl-wrong-dialect")]
+    [InlineData("ddl-wrong-grammar")]
+    [InlineData("ddl-wrong-target")]
+    [InlineData("ddl-wrong-digest")]
+    [InlineData("ddl-wrong-capability")]
+    [InlineData("ddl-contradictory-success-diagnostic")]
+    [InlineData("ddl-overclaim-compatible")]
+    [InlineData("ddl-null-statement")]
+    [InlineData("ddl-null-diagnostic")]
+    [InlineData("ddl-null-difference")]
+    [InlineData("ddl-internal-error")]
+    public async Task DdlCheck_IncompatibleWorkerOutputFailsClosed(
+        string modeValue)
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        using var installation =
+            new WorkerInstallation(installHarness: true);
+        using var mode =
+            new EnvironmentScope(ModeEnvironment, modeValue);
+        string directory = CreateTempDirectory();
+        string scriptPath = Path.Combine(directory, "input.sql");
+        try
+        {
+            await File.WriteAllTextAsync(
+                scriptPath,
+                "CREATE TABLE [t] (id int);",
+                ct);
+            var output = new StringWriter();
+            var error = new StringWriter();
+
+            int exitCode = await RunDdlCheckAsync(
+                scriptPath,
+                output,
+                error,
+                ct);
+
+            Assert.Equal(
+                InspectorCommandRunner.ExitError,
+                exitCode);
+            Assert.Contains(
+                "MIG-TSQL-CLI-ADAPTER-001",
+                error.ToString(),
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                DdlDiagnosticSecret,
+                error.ToString(),
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                WorkerSecret,
+                error.ToString(),
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                "DROP TABLE",
+                error.ToString(),
+                StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(
+                "\u001b",
+                error.ToString(),
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                "\0",
+                error.ToString(),
+                StringComparison.Ordinal);
+            Assert.Empty(output.ToString());
+        }
+        finally
+        {
+            TryDeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public async Task DdlCheck_WorkerAnalysisFailureIgnoresStderr()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        using var installation =
+            new WorkerInstallation(installHarness: true);
+        using var mode =
+            new EnvironmentScope(
+                ModeEnvironment,
+                "ddl-analysis-error");
+        string directory = CreateTempDirectory();
+        string scriptPath = Path.Combine(directory, "input.sql");
+        try
+        {
+            await File.WriteAllTextAsync(
+                scriptPath,
+                "CREATE TABLE [t] (id int);",
+                ct);
+            var output = new StringWriter();
+            var error = new StringWriter();
+
+            int exitCode = await RunDdlCheckAsync(
+                scriptPath,
+                output,
+                error,
+                ct);
+
+            Assert.Equal(
+                InspectorCommandRunner.ExitError,
+                exitCode);
+            Assert.Contains(
+                "MIG-TSQL-CLI-DDL-CHECK-001",
+                error.ToString(),
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                WorkerSecret,
+                error.ToString(),
+                StringComparison.Ordinal);
+            Assert.Empty(output.ToString());
+        }
+        finally
+        {
+            TryDeleteDirectory(directory);
+        }
+    }
+
+    [Theory]
+    [InlineData("ddl-stdout-overflow")]
+    [InlineData("ddl-stderr-overflow")]
+    public async Task DdlCheck_BoundedWorkerOutputViolationFailsClosed(
+        string modeValue)
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        using var installation =
+            new WorkerInstallation(installHarness: true);
+        using var mode =
+            new EnvironmentScope(ModeEnvironment, modeValue);
+        string directory = CreateTempDirectory();
+        string scriptPath = Path.Combine(directory, "input.sql");
+        try
+        {
+            await File.WriteAllTextAsync(
+                scriptPath,
+                "CREATE TABLE [t] (id int);",
+                ct);
+            var output = new StringWriter();
+            var error = new StringWriter();
+
+            int exitCode = await RunDdlCheckAsync(
+                scriptPath,
+                output,
+                error,
+                ct);
+
+            Assert.Equal(
+                InspectorCommandRunner.ExitError,
+                exitCode);
+            Assert.Contains(
+                "MIG-TSQL-CLI-ADAPTER-001",
+                error.ToString(),
+                StringComparison.Ordinal);
+            Assert.Empty(output.ToString());
+        }
+        finally
+        {
+            TryDeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public async Task DdlCheck_CancellationKillsWorkerProcessTree()
+    {
+        using var installation =
+            new WorkerInstallation(installHarness: true);
+        using var mode =
+            new EnvironmentScope(ModeEnvironment, "ddl-hang-tree");
+        string directory = CreateTempDirectory();
+        string scriptPath = Path.Combine(directory, "input.sql");
+        string pidPath = Path.Combine(directory, "worker-pids.txt");
+        using var pidFile =
+            new EnvironmentScope(PidFileEnvironment, pidPath);
+        using var cancellation = new CancellationTokenSource();
+        var output = new StringWriter();
+        var error = new StringWriter();
+        int[] processIds = [];
+
+        try
+        {
+            await File.WriteAllTextAsync(
+                scriptPath,
+                "CREATE TABLE [t] (id int);",
+                TestContext.Current.CancellationToken);
+            Task<int> run = RunDdlCheckAsync(
+                    scriptPath,
+                    output,
+                    error,
+                    cancellation.Token)
+                .AsTask();
+            processIds = await WaitForProcessIdsAsync(
+                pidPath,
+                expectedCount: 2,
+                TestContext.Current.CancellationToken);
+
+            cancellation.Cancel();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                async () => await run);
+            await WaitForProcessesToExitAsync(
+                processIds,
+                TestContext.Current.CancellationToken);
+            Assert.Empty(output.ToString());
+            Assert.Empty(error.ToString());
+        }
+        finally
+        {
+            cancellation.Cancel();
+            foreach (int processId in processIds)
+                TryKill(processId);
+            TryDeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public async Task DdlCheck_OutputViolationKillsWorkerProcessTree()
+    {
+        using var installation =
+            new WorkerInstallation(installHarness: true);
+        using var mode = new EnvironmentScope(
+            ModeEnvironment,
+            "ddl-stdout-overflow-tree");
+        string directory = CreateTempDirectory();
+        string scriptPath = Path.Combine(directory, "input.sql");
+        string pidPath = Path.Combine(directory, "worker-pids.txt");
+        using var pidFile =
+            new EnvironmentScope(PidFileEnvironment, pidPath);
+        var output = new StringWriter();
+        var error = new StringWriter();
+        int[] processIds = [];
+
+        try
+        {
+            await File.WriteAllTextAsync(
+                scriptPath,
+                "CREATE TABLE [t] (id int);",
+                TestContext.Current.CancellationToken);
+            Task<int> run = RunDdlCheckAsync(
+                    scriptPath,
+                    output,
+                    error,
+                    TestContext.Current.CancellationToken)
+                .AsTask();
+            processIds = await WaitForProcessIdsAsync(
+                pidPath,
+                expectedCount: 2,
+                TestContext.Current.CancellationToken);
+
+            int exitCode = await run;
+
+            Assert.Equal(
+                InspectorCommandRunner.ExitError,
+                exitCode);
+            Assert.Contains(
+                "MIG-TSQL-CLI-ADAPTER-001",
+                error.ToString(),
+                StringComparison.Ordinal);
+            await WaitForProcessesToExitAsync(
+                processIds,
+                TestContext.Current.CancellationToken);
+            Assert.Empty(output.ToString());
+        }
+        finally
+        {
+            foreach (int processId in processIds)
+                TryKill(processId);
+            TryDeleteDirectory(directory);
+        }
+    }
+
     private static ValueTask<int> RunInspectAsync(
         string catalogPath,
         TextWriter output,
@@ -365,6 +867,29 @@ public sealed class SqlServerWorkerClientTests
                 "--connection-env", ConnectionEnvironment,
                 "--out", catalogPath,
             ],
+            output,
+            error,
+            cancellationToken);
+
+    private static ValueTask<int> RunDdlCheckAsync(
+        string scriptPath,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken,
+        string? format = null) =>
+        MigrationCommandRunner.RunAsync(
+            format is null
+                ?
+                [
+                    "migrate", "ddl-check", scriptPath,
+                    "--dialect", "tsql",
+                ]
+                :
+                [
+                    "migrate", "ddl-check", scriptPath,
+                    "--dialect", "tsql",
+                    "--format", format,
+                ],
             output,
             error,
             cancellationToken);
