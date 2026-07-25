@@ -4,6 +4,7 @@
     <File Path="scripts/Publish-CSharpDbDaemonRelease.ps1" />
     <File Path="scripts/Publish-CSharpDbAdminStorePackage.ps1" />
     <File Path="scripts/Start-CSharpDbAdminAndDaemon.ps1" />
+    <File Path="scripts/Test-MySqlMigrationIsolation.ps1" />
     <File Path="scripts/Test-SqlServerMigrationIsolation.ps1" />
   </Folder>
   <Folder Name="/deploy/daemon/windows/">
@@ -47,6 +48,7 @@
     <Project Path="src/CSharpDB.Migration.CSharpDb/CSharpDB.Migration.CSharpDb.csproj" />
     <Project Path="src/CSharpDB.Migration.Files/CSharpDB.Migration.Files.csproj" />
     <Project Path="src/CSharpDB.Migration.LiteDb/CSharpDB.Migration.LiteDb.csproj" />
+    <Project Path="src/CSharpDB.Migration.MySql/CSharpDB.Migration.MySql.csproj" />
     <Project Path="src/CSharpDB.Migration.SqlServer/CSharpDB.Migration.SqlServer.csproj" />
     <Project Path="src/CSharpDB.Migration.SqlServer.Worker/CSharpDB.Migration.SqlServer.Worker.csproj" />
     <Project Path="src/CSharpDB.Migration.Sqlite/CSharpDB.Migration.Sqlite.csproj" />
@@ -75,6 +77,7 @@
     <Project Path="tests/CSharpDB.Migration.Tests/CSharpDB.Migration.Tests.csproj" />
     <Project Path="tests/CSharpDB.Migration.Files.Tests/CSharpDB.Migration.Files.Tests.csproj" />
     <Project Path="tests/CSharpDB.Migration.LiteDb.Tests/CSharpDB.Migration.LiteDb.Tests.csproj" />
+    <Project Path="tests/CSharpDB.Migration.MySql.Tests/CSharpDB.Migration.MySql.Tests.csproj" />
     <Project Path="tests/CSharpDB.Migration.SqlServer.Tests/CSharpDB.Migration.SqlServer.Tests.csproj" />
     <Project Path="tests/CSharpDB.Migration.SqlServer.WorkerHarness/CSharpDB.Migration.SqlServer.WorkerHarness.csproj" />
     <Project Path="tests/CSharpDB.Migration.Sqlite.Tests/CSharpDB.Migration.Sqlite.Tests.csproj" />

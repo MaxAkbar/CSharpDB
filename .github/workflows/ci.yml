@@ -69,6 +69,7 @@ jobs:
             tests/CSharpDB.DevOps.Tests/CSharpDB.DevOps.Tests.csproj
             tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj
             tests/CSharpDB.Migration.Files.Tests/CSharpDB.Migration.Files.Tests.csproj
+            tests/CSharpDB.Migration.MySql.Tests/CSharpDB.Migration.MySql.Tests.csproj
             tests/CSharpDB.Migration.SqlServer.Tests/CSharpDB.Migration.SqlServer.Tests.csproj
             tests/CSharpDB.Migration.Tests/CSharpDB.Migration.Tests.csproj
             tests/CSharpDB.Pipelines.Tests/CSharpDB.Pipelines.Tests.csproj
@@ -83,6 +84,10 @@ jobs:
       - name: Verify SQL Server migration adapter isolation
         shell: pwsh
         run: ./scripts/Test-SqlServerMigrationIsolation.ps1 -Configuration Release -NoRestore
+
+      - name: Verify MySQL migration adapter isolation
+        shell: pwsh
+        run: ./scripts/Test-MySqlMigrationIsolation.ps1 -Configuration Release -NoRestore
 
       - name: Test CSharpDB.Tests
         shell: bash
