@@ -42,7 +42,7 @@ function Invoke-DotNetPublish {
         '--nologo',
         '-o',
         $Destination,
-        '-p:GenerateDependencyFile=true',
+        '-p:UseAppHost=true',
         '--self-contained',
         'false'
     )
@@ -59,20 +59,35 @@ function Invoke-DotNetPublish {
 function Assert-NoMySqlAssets {
     param(
         [Parameter(Mandatory = $true)]
-        [string] $Directory
+        [string] $Directory,
+
+        [string] $ExcludedDirectory
     )
 
     $forbidden = @(
         'CSharpDB.Migration.MySql',
         'MySqlConnector'
     )
+
     $files = @(Get-ChildItem -LiteralPath $Directory -File -Recurse)
+    if (-not [string]::IsNullOrWhiteSpace($ExcludedDirectory)) {
+        $excludedPrefix = [System.IO.Path]::GetFullPath(
+            $ExcludedDirectory).TrimEnd(
+                [System.IO.Path]::DirectorySeparatorChar,
+                [System.IO.Path]::AltDirectorySeparatorChar) +
+            [System.IO.Path]::DirectorySeparatorChar
+        $files = @($files | Where-Object {
+            -not $_.FullName.StartsWith(
+                $excludedPrefix,
+                [StringComparison]::OrdinalIgnoreCase)
+        })
+    }
     foreach ($token in $forbidden) {
         $matchingFiles = @($files | Where-Object {
             $_.Name.Contains($token, [StringComparison]::OrdinalIgnoreCase)
         })
         if ($matchingFiles.Count -gt 0) {
-            throw "The base CLI output contains MySQL-only asset '$token'."
+            throw "The inspected host output contains MySQL-only asset '$token'."
         }
     }
 
@@ -84,13 +99,49 @@ function Assert-NoMySqlAssets {
         $content = [System.IO.File]::ReadAllText($dependencyFile.FullName)
         foreach ($token in $forbidden) {
             if ($content.Contains($token, [StringComparison]::OrdinalIgnoreCase)) {
-                throw "The base CLI dependency graph contains MySQL-only dependency '$token'."
+                throw "The inspected host dependency graph contains MySQL-only dependency '$token'."
             }
         }
     }
 }
 
-function Assert-ReviewedAdapterPackageClosure {
+function Assert-CommandFailure {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Executable,
+
+        [Parameter(Mandatory = $true)]
+        [string] $ConnectionEnvironmentName,
+
+        [Parameter(Mandatory = $true)]
+        [string] $OutputPath,
+
+        [Parameter(Mandatory = $true)]
+        [string] $ExpectedCode
+    )
+
+    $commandOutput = @(
+        & $Executable `
+            migrate inspect `
+            --source mysql `
+            --connection-env $ConnectionEnvironmentName `
+            --out $OutputPath 2>&1
+    )
+    $exitCode = $LASTEXITCODE
+    $text = $commandOutput -join [Environment]::NewLine
+
+    if ($exitCode -ne 2) {
+        throw "Expected MySQL inspection to fail with exit code 2, but received $exitCode."
+    }
+    if (-not $text.Contains($ExpectedCode, [StringComparison]::Ordinal)) {
+        throw "MySQL inspection did not report the stable code $ExpectedCode."
+    }
+    if (Test-Path -LiteralPath $OutputPath) {
+        throw 'A failed MySQL inspection published a catalog artifact.'
+    }
+}
+
+function Assert-ReviewedWorkerPackageClosure {
     param(
         [Parameter(Mandatory = $true)]
         [string] $DependencyPath,
@@ -122,7 +173,7 @@ function Assert-ReviewedAdapterPackageClosure {
             -ReferenceObject $expectedPackages `
             -DifferenceObject $actualPackages `
             -CaseSensitive
-        throw "The MySQL adapter package closure differs from the reviewed inventory: $($difference.InputObject -join ', ')"
+        throw "The MySQL worker package closure differs from the reviewed inventory: $($difference.InputObject -join ', ')"
     }
 
     $notice = [System.IO.File]::ReadAllText($NoticePath)
@@ -144,42 +195,62 @@ function Assert-ReviewedAdapterPackageClosure {
 
 try {
     $baseOutput = Join-Path $workspace 'base'
-    $adapterOutput = Join-Path $workspace 'adapter'
+    $bundleOutput = Join-Path $workspace 'bundle'
     [System.IO.Directory]::CreateDirectory($baseOutput) | Out-Null
-    [System.IO.Directory]::CreateDirectory($adapterOutput) | Out-Null
 
     Invoke-DotNetPublish `
         -Project (Join-Path $root 'src/CSharpDB.Cli/CSharpDB.Cli.csproj') `
         -Destination $baseOutput
-    Invoke-DotNetPublish `
-        -Project (Join-Path $root 'src/CSharpDB.Migration.MySql/CSharpDB.Migration.MySql.csproj') `
-        -Destination $adapterOutput
+
+    $publishArguments = @{
+        OutputPath = $bundleOutput
+        Configuration = $Configuration
+    }
+    if ($NoRestore) {
+        $publishArguments['NoRestore'] = $true
+    }
+    & (Join-Path $PSScriptRoot 'Publish-CSharpDbMySqlMigrationBundle.ps1') `
+        @publishArguments
 
     Assert-NoMySqlAssets -Directory $baseOutput
 
-    $dependencyPath = Join-Path `
-        $adapterOutput `
-        'CSharpDB.Migration.MySql.deps.json'
-    $noticePath = Join-Path `
-        $root `
-        'src/CSharpDB.Migration.MySql/THIRD-PARTY-NOTICES.md'
-    $requiredAdapterFiles = @(
-        (Join-Path $adapterOutput 'CSharpDB.Migration.MySql.dll'),
-        (Join-Path $adapterOutput 'MySqlConnector.dll'),
-        (Join-Path $adapterOutput 'Microsoft.Extensions.DependencyInjection.Abstractions.dll'),
-        (Join-Path $adapterOutput 'Microsoft.Extensions.Logging.Abstractions.dll'),
-        $dependencyPath,
-        $noticePath
+    $workerOutput = Join-Path $bundleOutput 'adapters/mysql'
+    $requiredWorkerFiles = @(
+        (Join-Path $bundleOutput 'LICENSE'),
+        (Join-Path $workerOutput 'CSharpDB.Migration.MySql.dll'),
+        (Join-Path $workerOutput 'MySqlConnector.dll'),
+        (Join-Path $workerOutput 'Microsoft.Extensions.DependencyInjection.Abstractions.dll'),
+        (Join-Path $workerOutput 'Microsoft.Extensions.Logging.Abstractions.dll'),
+        (Join-Path $workerOutput 'THIRD-PARTY-NOTICES.md'),
+        (Join-Path $workerOutput 'csharpdb-migration-mysql-worker.deps.json')
     )
-    foreach ($requiredFile in $requiredAdapterFiles) {
+    foreach ($requiredFile in $requiredWorkerFiles) {
         if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
-            throw "The optional MySQL adapter output is missing $requiredFile."
+            throw "The optional MySQL worker output is missing $requiredFile."
         }
     }
 
-    Assert-ReviewedAdapterPackageClosure `
-        -DependencyPath $dependencyPath `
-        -NoticePath $noticePath
+    Assert-ReviewedWorkerPackageClosure `
+        -DependencyPath (Join-Path $workerOutput 'csharpdb-migration-mysql-worker.deps.json') `
+        -NoticePath (Join-Path $workerOutput 'THIRD-PARTY-NOTICES.md')
+
+    Assert-NoMySqlAssets `
+        -Directory $bundleOutput `
+        -ExcludedDirectory $workerOutput
+
+    $cliName = if ($IsWindows) { 'csharpdb.exe' } else { 'csharpdb' }
+    $missingConnectionName =
+        'CSHARPDB_PHASE7B4_MISSING_' + [Guid]::NewGuid().ToString('N')
+    Assert-CommandFailure `
+        -Executable (Join-Path $baseOutput $cliName) `
+        -ConnectionEnvironmentName $missingConnectionName `
+        -OutputPath (Join-Path $workspace 'base-catalog.json') `
+        -ExpectedCode 'MIG-MYSQL-CLI-ADAPTER-001'
+    Assert-CommandFailure `
+        -Executable (Join-Path $bundleOutput $cliName) `
+        -ConnectionEnvironmentName $missingConnectionName `
+        -OutputPath (Join-Path $workspace 'bundle-catalog.json') `
+        -ExpectedCode 'MIG-MYSQL-CLI-CONNECTION-001'
 
     Write-Host 'MySQL migration adapter isolation is valid.'
 }

@@ -18,6 +18,8 @@
     <ProjectReference Include="..\..\src\CSharpDB.Migration.Files\CSharpDB.Migration.Files.csproj" />
     <ProjectReference Include="..\CSharpDB.Migration.SqlServer.WorkerHarness\CSharpDB.Migration.SqlServer.WorkerHarness.csproj"
                       ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\CSharpDB.Migration.MySql.WorkerHarness\CSharpDB.Migration.MySql.WorkerHarness.csproj"
+                      ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <ItemGroup>

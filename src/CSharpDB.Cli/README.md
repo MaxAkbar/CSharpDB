@@ -116,6 +116,7 @@ csharpdb migrate inspect --source json --input <source.json|source.ndjson> --pac
 csharpdb migrate inspect --source json --input <source.json|source.ndjson> --typed-intent <source.csdbjson-intent.json> --expected-intent-manifest-digest <sha256:...> --package <source.csdbjson> --out <catalog.json> [--framing root-array|ndjson] [--table <name>] [--sample-rows <count>] [--source-id <label>] [--workspace <directory>] [--max-source-bytes <count>]
 csharpdb migrate inspect --source sqlite --input <source.db> --package <source.csdbsqlite> --out <catalog.json> [--profile-sample-size <count>] [--max-source-bytes <count>]
 csharpdb migrate inspect --source sqlserver --connection-env <name> --out <catalog.json>
+csharpdb migrate inspect --source mysql --connection-env <name> --out <catalog.json>
 csharpdb migrate plan <catalog.json> --out <plan.json> [--profile preserve|queryable] [--accept-exclusions all|<id,...>] [--accept-diagnostics <id,...>] [--reject-mode fail-fast|deterministic --reject-rules all|<id,...> --max-rejected-rows-per-batch <count> --max-rejected-rows-per-run <count> --max-reject-evidence-value-bytes <count> --max-reject-evidence-bytes-per-batch <count> --max-reject-evidence-bytes-per-run <count> --max-reject-artifact-bytes <count>]
 csharpdb migrate preview <plan.json> --catalog <catalog.json> [--ddl|--scratch] [--format text|json]
 csharpdb migrate apply <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite> --expected-manifest-digest <sha256:...> --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]
@@ -126,9 +127,9 @@ csharpdb migrate export <retained-snapshot.db> --format json|ndjson --table <phy
 
 Inspection supports the immutable synthetic qualification source, strict CSV,
 untyped retained JSON package v1, explicitly selected typed JSON package v2,
-SQLite, and schema-only SQL Server readiness analysis. CSV inspection freezes
-the raw bytes and complete reader and
-inference policy into one no-overwrite `.csdbcsv` package. JSON inspection does
+SQLite, and schema-only SQL Server and MySQL readiness analysis. CSV inspection
+freezes the raw bytes and complete reader and inference policy into one
+no-overwrite `.csdbcsv` package. JSON inspection does
 the same for root-array JSON or NDJSON-compatible whitespace-separated
 top-level values in one no-overwrite `.csdbjson` package. Both JSON package
 versions use that extension; the catalog's versioned schema facets select the
@@ -138,18 +139,21 @@ native catalog plus sampled storage-class profile to the package SHA-256.
 SQLite backup creation is incrementally cancellable and defaults to a 1 TiB
 retained-snapshot ceiling; `--max-source-bytes` can select a smaller bound.
 
-SQL Server inspection accepts only the name of an environment variable through
-`--connection-env`; a raw connection string is never a command-line argument.
+SQL Server and MySQL inspection accept only the name of an environment variable
+through `--connection-env`; a raw connection string is never a command-line
+argument.
 The generic host first resolves its fixed sibling worker and passes only the
 safe environment-variable name across the process boundary. The worker alone
 resolves the value from the inherited environment; the host code never reads
 or materializes it. The value is not written to the catalog, process arguments,
 process protocol, or command output, and should identify a dedicated
-least-privilege, read-only metadata login. The catalog destination uses
+least-privilege, read-only metadata login. Each provider uses a separate fixed
+worker directory and process protocol. The catalog destination uses
 create-new publication and is never overwritten. This checkpoint inventories
 and analyzes schema only: it neither reads application rows nor writes to SQL
-Server or a CSharpDB target. Cancellation terminates the worker process tree,
-including a ScriptDom parse call that cannot observe cooperative cancellation.
+Server, MySQL, or a CSharpDB target. Cancellation terminates the worker process
+tree. For SQL Server, this also contains a ScriptDom parse call that cannot
+observe cooperative cancellation.
 
 Pass both `--typed-intent` and
 `--expected-intent-manifest-digest` to select v2. The canonical sidecar must
@@ -197,6 +201,7 @@ Supported migration-source matrix:
 | Typed JSON v2 | Source- and intent-pinned `.csdbjson` | Explicit typed table contract | Fail-fast |
 | SQLite v1 | Coherent online backup in `.csdbsqlite` | Tier 1 native catalog and rowid streaming | Fail-fast |
 | SQL Server readiness | Live best-effort, schema-only metadata inspection | Inventory, compatibility, planning, and target DDL assurance only | No data route |
+| MySQL readiness | Live best-effort, schema-only metadata inspection | Inventory, compatibility, planning, and target DDL assurance only | No data route |
 
 SQLite catalogs record the adapter, Microsoft.Data.Sqlite assembly, native
 SQLite engine, compile-option digest, database text encoding, profile coverage,
@@ -230,6 +235,20 @@ csharpdb migrate preview .\plan.json --catalog .\catalog.json --ddl
 csharpdb migrate preview .\plan.json --catalog .\catalog.json --scratch --format json
 ```
 
+Example MySQL schema-readiness workflow:
+
+```powershell
+# Use the optional MySQL migration bundle. A base-only csharpdb
+# distribution reports MIG-MYSQL-CLI-ADAPTER-001 for this source.
+# Populate CSHARPDB_MYSQL_SOURCE through your secret manager or protected
+# process environment; do not put the connection string in scripts.
+csharpdb migrate inspect --source mysql --connection-env CSHARPDB_MYSQL_SOURCE --out .\catalog.json
+csharpdb migrate plan .\catalog.json --out .\plan.json
+csharpdb migrate preview .\plan.json --catalog .\catalog.json
+csharpdb migrate preview .\plan.json --catalog .\catalog.json --ddl
+csharpdb migrate preview .\plan.json --catalog .\catalog.json --scratch --format json
+```
+
 The default preview remains the compact
 `csharpdb-migration-preview/v1` planning summary. `--ddl` is the only mode that
 prints exact target SQL and typed collection actions. `--scratch` instead
@@ -237,7 +256,7 @@ prints the sanitized `csharpdb-ddl-scratch-validation/v1` report containing
 digests, stable rule/action identifiers, counts, and evidence level, but no SQL
 or object names. The modes are mutually exclusive. A successful scratch run
 does not approve exclusions, clear diagnostics, establish source semantic
-equivalence, or make a blocked SQL Server plan ready.
+equivalence, or make a blocked SQL Server or MySQL plan ready.
 Each catalog and plan consumed by the explicit `--ddl` or `--scratch` path is
 limited to 64 MiB before contract validation; rendered action count,
 per-action SQL, and aggregate SQL bytes have separate fixed production
@@ -251,6 +270,17 @@ SQL Server bundle places that dependency closure only beneath
 SQL Server route with `MIG-SQLSERVER-CLI-ADAPTER-001`; other migration commands
 remain provider-independent. This packaging boundary does not qualify a live
 server, runtime identifier, authentication mode, or shipping connector.
+
+The base CLI also has no MySQL project reference and its output contains no
+MySqlConnector assets. The non-packable MySQL bundle places that dependency
+closure only beneath `adapters/mysql`, with a fixed companion executable using
+`csharpdb-mysql-worker/v1`. A missing or incompatible worker fails only the
+MySQL route with `MIG-MYSQL-CLI-ADAPTER-001`; other migration commands remain
+provider-independent. MySQL inspect, generic plan, and preview are available,
+but no MySQL data package, apply, resume, validate, or readiness-promotion route
+exists. Live MySQL 8.0/8.4, Docker, published-runtime, restricted-account, and
+TLS-mode qualification remain deferred. The wider migration roadmap also
+defers Access and disposable-Windows-VM qualification.
 
 Common CSV delimiter detection is automatic; `--delimiter` supplies the only
 candidate when an explicit convention is required. CSV defaults are strict
@@ -392,8 +422,11 @@ checkpoint, and is not consulted to decide which batches `--resume` skips.
 - `MaintenanceCommandRunner.cs` - maintenance commands
 - `DevOpsCommandRunner.cs` - schema compare commands
 - `PipelineCommandRunner.cs` - ETL package and catalog commands
-- `MigrationCommandRunner.cs` - migration inspect, plan, bounded DDL/scratch preview, apply, resume, validate, retained CSV/JSON/SQLite, schema-only SQL Server analysis, and CSV/JSON/NDJSON export commands
+- `MigrationCommandRunner.cs` - migration inspect, plan, bounded DDL/scratch
+  preview, apply, resume, validate, retained CSV/JSON/SQLite, schema-only SQL
+  Server/MySQL analysis, and CSV/JSON/NDJSON export commands
 - `SqlServerWorkerClient.cs` - bounded fixed-path protocol client for the optional SQL Server inspection worker
+- `MySqlWorkerClient.cs` - bounded fixed-path protocol client for the optional MySQL inspection worker
 - `CliConsole.cs` and `TableFormatter.cs` - terminal formatting helpers
 
 ## Build And Test
@@ -401,7 +434,9 @@ checkpoint, and is not consulted to decide which batches `--resume` skips.
 ```powershell
 dotnet build src/CSharpDB.Cli/CSharpDB.Cli.csproj
 dotnet test tests/CSharpDB.Cli.Tests/CSharpDB.Cli.Tests.csproj
+dotnet test tests/CSharpDB.Migration.MySql.Tests/CSharpDB.Migration.MySql.Tests.csproj
 dotnet test tests/CSharpDB.Migration.SqlServer.Tests/CSharpDB.Migration.SqlServer.Tests.csproj
+.\scripts\Test-MySqlMigrationIsolation.ps1 -Configuration Release
 .\scripts\Test-SqlServerMigrationIsolation.ps1 -Configuration Release
 ```
 
@@ -418,6 +453,7 @@ dotnet test tests/CSharpDB.Migration.SqlServer.Tests/CSharpDB.Migration.SqlServe
 - `CSharpDB.Storage.Diagnostics`
 - `Spectre.Console`
 
-The base CLI deliberately does not reference
-`CSharpDB.Migration.SqlServer`. The optional bundle's worker owns that
-reference together with Microsoft.Data.SqlClient and ScriptDom.
+The base CLI deliberately references neither `CSharpDB.Migration.MySql` nor
+`CSharpDB.Migration.SqlServer`. The optional bundles' workers own those
+references together with MySqlConnector or Microsoft.Data.SqlClient and
+ScriptDom, respectively.

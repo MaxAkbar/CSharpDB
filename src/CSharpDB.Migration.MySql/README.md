@@ -1,10 +1,12 @@
 # CSharpDB MySQL migration analyzer
 
 This optional, non-packable project is the bounded MySQL schema-readiness
-analyzer for the CSharpDB migration tooling. Phase 7B.3 is schema-only: it
+analyzer for the CSharpDB migration tooling. Phase 7B.4 is schema-only: it
 opens one selected database, reads fixed server-variable and
 `INFORMATION_SCHEMA` projections, retains bounded `SHOW CREATE TABLE`
-evidence, and builds the source snapshot used by the migration planner.
+evidence, and builds the source snapshot used by the migration planner. The
+generic CLI does not reference this project; the non-packable MySQL
+distribution runs it in a fixed companion worker.
 
 The checkpoint inventories tables, columns and column-default evidence,
 primary and unique keys, foreign keys, checks, index variants, views and their
@@ -12,8 +14,9 @@ output columns, triggers, stored procedures and functions, and routine
 parameters and function return rows. Programmable definitions are inventory
 evidence only. They are not parsed, bound, lowered, scratch-executed, or
 promoted to target SQL. It does not read application rows, execute
-caller-supplied SQL, write to the source, create a target, or provide a CLI or
-companion worker.
+caller-supplied SQL, write to the source, create a target, or copy or validate
+application data. The optional CLI path exposes inspection, generic planning,
+and bounded preview only.
 
 ## Qualified scope
 
@@ -23,10 +26,33 @@ servers, but driver connectivity is not qualification. The analyzer records
 server version and version-comment evidence so non-Oracle variants can be
 reported as unqualified instead of being treated as equivalent.
 
-Phase 7B.3 has deterministic reader and catalog tests but no live-server
-qualification claim. MySQL 8.0 and 8.4 live fixtures, restricted-account
-permission coverage, TLS modes, platforms, and published-runtime smoke tests
+Phase 7B.4 has deterministic reader, catalog, process-protocol, and packaging
+tests but no live-server qualification claim. MySQL 8.0 and 8.4 live fixtures,
+restricted-account permission coverage, TLS modes, platforms, and
+published-runtime smoke tests
 must be qualified before this adapter becomes packable or shipping software.
+
+## CLI and worker boundary
+
+The optional bundle places the fixed
+`csharpdb-migration-mysql-worker` companion and its complete MySqlConnector
+dependency closure beneath `adapters/mysql`. The generic host resolves only
+that sibling path and communicates through `csharpdb-mysql-worker/v1`. The
+base CLI output and dependency graph remain free of this project and
+MySqlConnector.
+
+The CLI accepts only the safe name of an inherited environment variable
+through `--connection-env`; it never accepts, reads, logs, or sends a raw
+connection string. The worker alone resolves the value and returns a bounded
+catalog through the fixed protocol. Public errors are stable and sanitized,
+standard error is bounded and not relayed, catalog output is limited to
+64 MiB, and cancellation terminates the worker process tree.
+
+The supported workflow is `migrate inspect --source mysql`, generic
+`migrate plan`, and normal, DDL, or scratch `migrate preview`. MySQL remains a
+schema-readiness route with non-overrideable blockers: it has no retained data
+package, importer, apply, resume, validate, activation, or readiness-promotion
+path. A preview or successful scratch comparison does not make the plan ready.
 
 ## Connection policy
 
@@ -117,9 +143,12 @@ instead of being simplified silently.
 
 Detailed partition metadata, Event Scheduler definitions and schedules,
 complete programmable dependency proof, application rows and validation, a
-data importer, CLI/worker packaging, and live restricted-account qualification
-remain follow-on work. Their absence is represented by non-overrideable
-readiness diagnostics; this offline catalog is not migration approval.
+data importer, and live restricted-account qualification remain follow-on
+work. Their absence is represented by non-overrideable readiness diagnostics;
+this catalog is not migration approval. Live MySQL 8.0/8.4, Docker,
+published-runtime, restricted-account, and TLS-mode qualification remain
+deferred. The wider migration roadmap also defers Access and
+disposable-Windows-VM qualification.
 
 MySQL `BIT` remains unsupported because its width and bit-string conversion
 semantics are not equivalent to a generic binary mapping. MySQL `TIME` also
@@ -129,6 +158,7 @@ time-of-day semantic type.
 ## Dependencies
 
 MySqlConnector 2.6.1 is pinned directly and is managed-only. The reviewed
-`net10.0` worker-free runtime package closure is recorded in
-`THIRD-PARTY-NOTICES.md`. This project deliberately does not reference
-Oracle's `MySql.Data` package or optional MariaDB authentication extensions.
+`net10.0` worker runtime package closure is recorded in
+`THIRD-PARTY-NOTICES.md` and accompanies the optional worker distribution.
+This project deliberately does not reference Oracle's `MySql.Data` package or
+optional MariaDB authentication extensions.

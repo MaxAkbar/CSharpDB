@@ -11,6 +11,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\CSharpDB.Migration.MySql\CSharpDB.Migration.MySql.csproj" />
+    <ProjectReference Include="..\..\src\CSharpDB.Migration.MySql.Worker\CSharpDB.Migration.MySql.Worker.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Migration.CSharpDb\CSharpDB.Migration.CSharpDb.csproj" />
   </ItemGroup>
 

@@ -21,6 +21,7 @@ internal static class MigrationCommandRunner
         "       csharpdb migrate inspect --source json --input <source.json|source.ndjson> --package <source.csdbjson> --out <catalog.json> [--framing root-array|ndjson] [--table <name>] [--sample-rows <count>] [--source-id <label>] [--workspace <directory>] [--max-source-bytes <count>] [--typed-intent <source.csdbjson-intent.json> --expected-intent-manifest-digest <sha256:...>]\n" +
         "       csharpdb migrate inspect --source sqlite --input <source.db> --package <snapshot.csdbsqlite> --out <catalog.json> [--profile-sample-size <count>] [--max-source-bytes <count>]\n" +
         "       csharpdb migrate inspect --source sqlserver --connection-env <name> --out <catalog.json>\n" +
+        "       csharpdb migrate inspect --source mysql --connection-env <name> --out <catalog.json>\n" +
         "       csharpdb migrate plan <catalog.json> --out <plan.json> [--profile preserve|queryable] [--accept-exclusions all|<id,...>] [--accept-diagnostics <id,...>] [--reject-mode fail-fast|deterministic --reject-rules all|<id,...> --max-rejected-rows-per-batch <count> --max-rejected-rows-per-run <count> --max-reject-evidence-value-bytes <count> --max-reject-evidence-bytes-per-batch <count> --max-reject-evidence-bytes-per-run <count> --max-reject-artifact-bytes <count>]\n" +
         "       csharpdb migrate preview <plan.json> --catalog <catalog.json> [--ddl|--scratch] [--format text|json]\n" +
         "       csharpdb migrate apply <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
@@ -95,6 +96,8 @@ internal static class MigrationCommandRunner
         ArgumentNullException.ThrowIfNull(dependencies);
         ArgumentNullException.ThrowIfNull(
             dependencies.InspectSqlServerAsync);
+        ArgumentNullException.ThrowIfNull(
+            dependencies.InspectMySqlAsync);
         ArgumentNullException.ThrowIfNull(
             dependencies.BuildCSharpDbDdlPreview);
         ArgumentNullException.ThrowIfNull(
@@ -628,6 +631,19 @@ internal static class MigrationCommandRunner
                 dependencies,
                 ct);
         }
+        if (string.Equals(
+                source,
+                "mysql",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return await RunMySqlInspectAsync(
+                options,
+                outputValue,
+                output,
+                error,
+                dependencies,
+                ct);
+        }
 
         return await OptionErrorAsync(
             "Unsupported migration source.",
@@ -773,6 +789,149 @@ internal static class MigrationCommandRunner
             throw new MigrationCliSafeException(
                 "MIG-SQLSERVER-CLI-INSPECT-001",
                 "The SQL Server schema could not be inspected or published safely.",
+                inspectionError);
+        }
+    }
+
+    private static async ValueTask<int> RunMySqlInspectAsync(
+        IReadOnlyDictionary<string, string> options,
+        string outputValue,
+        TextWriter output,
+        TextWriter error,
+        MigrationCommandDependencies dependencies,
+        CancellationToken ct)
+    {
+        if (!RequireOnly(
+                options,
+                ["--source", "--connection-env", "--out"],
+                out string? parseError))
+        {
+            return await OptionErrorAsync(
+                "The MySQL inspect command contains an unsupported option.",
+                error);
+        }
+        if (!options.TryGetValue(
+                "--connection-env",
+                out string? environmentVariableName))
+        {
+            return await OptionErrorAsync(
+                "Missing required option --connection-env.",
+                error);
+        }
+        if (!IsSafeEnvironmentVariableName(environmentVariableName))
+        {
+            return await OptionErrorAsync(
+                "The MySQL connection environment variable name is invalid.",
+                error);
+        }
+        if (string.IsNullOrWhiteSpace(outputValue))
+        {
+            return await OptionErrorAsync(
+                "The MySQL catalog path cannot be blank.",
+                error);
+        }
+
+        string outputPath;
+        try
+        {
+            outputPath = Path.GetFullPath(outputValue);
+        }
+        catch (Exception pathError) when (
+            pathError is ArgumentException or NotSupportedException or
+                PathTooLongException)
+        {
+            throw new MigrationCliSafeException(
+                "MIG-MYSQL-CLI-PATH-001",
+                "The MySQL catalog path is invalid.",
+                pathError);
+        }
+        if (File.Exists(outputPath) || Directory.Exists(outputPath))
+        {
+            return await OptionErrorAsync(
+                "The MySQL catalog destination already exists.",
+                error);
+        }
+
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            string targetCSharpDbVersion =
+                CSharpDbCapabilityCatalogLoader.CurrentTargetVersion;
+            MySqlWorkerResult result =
+                await dependencies.InspectMySqlAsync(
+                        environmentVariableName,
+                        targetCSharpDbVersion,
+                        ct)
+                    .ConfigureAwait(false);
+            ArgumentNullException.ThrowIfNull(result);
+
+            if (result.Status is MySqlWorkerStatus.Missing or
+                MySqlWorkerStatus.Incompatible)
+            {
+                throw new MigrationCliSafeException(
+                    "MIG-MYSQL-CLI-ADAPTER-001",
+                    "The optional MySQL inspection adapter is unavailable or incompatible.",
+                    new InvalidOperationException(
+                        "The MySQL worker boundary is unavailable."));
+            }
+            if (result.Status == MySqlWorkerStatus.ConnectionUnavailable)
+            {
+                throw new MigrationCliSafeException(
+                    "MIG-MYSQL-CLI-CONNECTION-001",
+                    "The MySQL connection could not be acquired by the optional adapter.",
+                    new InvalidOperationException(
+                        "MySQL connection material was unavailable."));
+            }
+            if (result.Status == MySqlWorkerStatus.InspectionFailed)
+            {
+                throw new MigrationCliSafeException(
+                    "MIG-MYSQL-CLI-INSPECT-001",
+                    "The MySQL schema could not be inspected or published safely.",
+                    new InvalidOperationException(
+                        "The MySQL worker could not inspect the source."));
+            }
+            if (result.Status != MySqlWorkerStatus.Success ||
+                result.Catalog is null ||
+                result.Catalog.Source.Kind != MigrationSourceKind.MySql ||
+                !string.Equals(
+                    result.Catalog.TargetCSharpDbVersion,
+                    targetCSharpDbVersion,
+                    StringComparison.Ordinal))
+            {
+                throw new MigrationCliSafeException(
+                    "MIG-MYSQL-CLI-ADAPTER-001",
+                    "The optional MySQL inspection adapter is unavailable or incompatible.",
+                    new InvalidDataException(
+                        "The MySQL worker returned an invalid contract."));
+            }
+
+            MigrationCatalog catalog = result.Catalog;
+
+            string serialized =
+                MigrationArtifactSerializer.SerializeCatalog(catalog);
+            await WriteNewArtifactAsync(outputPath, serialized, ct);
+
+            int exitCode = catalog.Diagnostics.Count == 0
+                ? InspectorCommandRunner.ExitOk
+                : InspectorCommandRunner.ExitWarn;
+            await output.WriteLineAsync(
+                $"Status: {StatusLabel(exitCode)} | catalog={outputPath} | objects={catalog.Objects.Count} | diagnostics={catalog.Diagnostics.Count}");
+            return exitCode;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (MigrationCliSafeException)
+        {
+            throw;
+        }
+        catch (Exception inspectionError) when (
+            IsRecoverableCliException(inspectionError))
+        {
+            throw new MigrationCliSafeException(
+                "MIG-MYSQL-CLI-INSPECT-001",
+                "The MySQL schema could not be inspected or published safely.",
                 inspectionError);
         }
     }

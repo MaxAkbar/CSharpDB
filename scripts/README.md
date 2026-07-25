@@ -244,6 +244,42 @@ Default runtimes:
 Outputs are written under `artifacts\daemon-release` unless `-OutputRoot` is
 provided.
 
+### `Publish-CSharpDbMySqlMigrationBundle.ps1`
+
+Use this to produce the non-packable MySQL schema-analysis distribution. The
+generic `csharpdb` host is published at the bundle root. MySqlConnector and its
+supporting dependencies are published only beneath `adapters/mysql`, alongside
+the fixed companion worker, the resolved dependency inventory, and the
+applicable third-party license notices.
+
+The destination must be absent or empty. Output is intentionally
+framework-dependent; self-contained output is excluded until its runtime
+license and notice closure is audited. A runtime identifier may be selected
+for a qualification-only framework-dependent build, but doing so does not
+qualify that runtime or a live MySQL version.
+
+```powershell
+.\scripts\Publish-CSharpDbMySqlMigrationBundle.ps1 `
+  -OutputPath artifacts\mysql-migration-local `
+  -Configuration Release
+```
+
+### `Test-MySqlMigrationIsolation.ps1`
+
+Use this provider-absent packaging check after restore. It publishes the base
+CLI and optional MySQL bundle separately, proves the base dependency graph
+contains no MySQL adapter or provider assets, proves the provider closure stays
+under the worker directory, and exercises stable adapter-absent and
+connection-absent failures without contacting a server. The bundled failure
+also confirms that the fixed-path worker and
+`csharpdb-mysql-worker/v1` protocol are usable.
+
+```powershell
+.\scripts\Test-MySqlMigrationIsolation.ps1 `
+  -Configuration Release `
+  -NoRestore
+```
+
 ### `Publish-CSharpDbSqlServerMigrationBundle.ps1`
 
 Use this to produce the non-packable SQL Server schema-analysis distribution.

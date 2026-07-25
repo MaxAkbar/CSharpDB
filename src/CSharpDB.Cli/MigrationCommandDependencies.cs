@@ -17,6 +17,15 @@ internal sealed record MigrationCommandDependencies
         SqlServerWorkerClient.InspectAsync;
 
     internal Func<
+        string,
+        string,
+        CancellationToken,
+        ValueTask<MySqlWorkerResult>>
+    InspectMySqlAsync
+    { get; init; } =
+        MySqlWorkerClient.InspectAsync;
+
+    internal Func<
         MigrationPlan,
         MigrationCatalog,
         CancellationToken,
