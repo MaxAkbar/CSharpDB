@@ -6,22 +6,53 @@ internal static class MySqlTestSnapshot
 {
     public const string SecretGenerationExpression =
         "(`Amount` * 2 /* NeverPersistThisMySqlExpression */)";
+    public const string SecretCheckClause =
+        "(`Amount` > 0 /* NeverPersistThisMySqlCheck */)";
+    public const string SecretFunctionalIndexExpression =
+        "(lower(`Customer`) /* NeverPersistThisMySqlIndexExpression */)";
+    public const string SecretShowCreateMarker =
+        "NeverPersistThisMySqlShowCreate";
 
     public static MySqlCatalogSnapshot Create(
         MySqlServerMetadata? server = null,
         MySqlSessionMetadata? session = null,
         MySqlDatabaseMetadata? database = null,
         IEnumerable<MySqlTableMetadata>? tables = null,
-        IEnumerable<MySqlColumnMetadata>? columns = null) =>
-        new(
+        IEnumerable<MySqlColumnMetadata>? columns = null,
+        IEnumerable<MySqlTableDefinitionMetadata>? tableDefinitions = null,
+        IEnumerable<MySqlKeyMetadata>? keys = null,
+        IEnumerable<MySqlKeyColumnMetadata>? keyColumns = null,
+        IEnumerable<MySqlForeignKeyMetadata>? foreignKeys = null,
+        IEnumerable<MySqlForeignKeyColumnMetadata>? foreignKeyColumns = null,
+        IEnumerable<MySqlCheckMetadata>? checks = null,
+        IEnumerable<MySqlIndexMetadata>? indexes = null,
+        IEnumerable<MySqlIndexPartMetadata>? indexParts = null)
+    {
+        IReadOnlyList<MySqlTableMetadata> resolvedTables =
+            tables?.ToArray() ?? Tables();
+        IReadOnlyList<MySqlColumnMetadata> resolvedColumns =
+            columns?.ToArray() ?? Columns();
+        bool usesDefaultStructure = tables is null && columns is null;
+
+        return new(
             endpointDigest:
                 "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             providerVersion: "2.6.1",
             server ?? Server(),
             session ?? Session(),
             database ?? Database(),
-            tables ?? Tables(),
-            columns ?? Columns());
+            resolvedTables,
+            resolvedColumns,
+            tableDefinitions ?? TableDefinitions(resolvedTables),
+            keys ?? (usesDefaultStructure ? Keys() : []),
+            keyColumns ?? (usesDefaultStructure ? KeyColumns() : []),
+            foreignKeys ?? (usesDefaultStructure ? ForeignKeys() : []),
+            foreignKeyColumns ??
+                (usesDefaultStructure ? ForeignKeyColumns() : []),
+            checks ?? (usesDefaultStructure ? Checks() : []),
+            indexes ?? (usesDefaultStructure ? Indexes() : []),
+            indexParts ?? (usesDefaultStructure ? IndexParts() : []));
+    }
 
     public static MySqlServerMetadata Server() =>
         new(
@@ -38,7 +69,8 @@ internal static class MySqlTestSnapshot
             SqlMode: "STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION",
             CharacterSetConnection: "utf8mb4",
             CollationConnection: "utf8mb4_0900_ai_ci",
-            TimeZone: "+00:00");
+            TimeZone: "+00:00",
+            SqlQuoteShowCreate: true);
 
     public static MySqlDatabaseMetadata Database() =>
         new(
@@ -123,6 +155,158 @@ internal static class MySqlTestSnapshot
         Column("Archive", 1, "ArchiveId", "int", nullable: false),
     ];
 
+    public static IReadOnlyList<MySqlTableDefinitionMetadata> TableDefinitions(
+        IEnumerable<MySqlTableMetadata>? tables = null) =>
+        (tables ?? Tables())
+            .Select(table => TableDefinition(table.SchemaName, table.Name))
+            .ToArray();
+
+    public static IReadOnlyList<MySqlKeyMetadata> Keys() =>
+    [
+        Key("Orders", "PRIMARY", "PRIMARY KEY"),
+        Key("Orders", "UQ_Orders_Amount_Customer", "UNIQUE"),
+        Key("Archive", "PRIMARY", "PRIMARY KEY"),
+    ];
+
+    public static IReadOnlyList<MySqlKeyColumnMetadata> KeyColumns() =>
+    [
+        KeyColumn("Orders", "PRIMARY", 1, "Id"),
+        KeyColumn("Orders", "UQ_Orders_Amount_Customer", 1, "Amount"),
+        KeyColumn("Orders", "UQ_Orders_Amount_Customer", 2, "Customer"),
+        KeyColumn("Archive", "PRIMARY", 1, "ArchiveId"),
+    ];
+
+    public static IReadOnlyList<MySqlForeignKeyMetadata> ForeignKeys() =>
+    [
+        ForeignKey(
+            tableName: "Archive",
+            name: "FK_Archive_Orders",
+            referencedTableName: "Orders",
+            uniqueConstraintName: "PRIMARY",
+            deleteRule: "CASCADE"),
+    ];
+
+    public static IReadOnlyList<MySqlForeignKeyColumnMetadata>
+        ForeignKeyColumns() =>
+    [
+        ForeignKeyColumn(
+            tableName: "Archive",
+            constraintName: "FK_Archive_Orders",
+            ordinal: 1,
+            columnName: "ArchiveId",
+            referencedTableName: "Orders",
+            referencedColumnName: "Id",
+            positionInUniqueConstraint: 1),
+    ];
+
+    public static IReadOnlyList<MySqlCheckMetadata> Checks() =>
+    [
+        Check(
+            tableName: "Orders",
+            name: "CK_Orders_Amount",
+            clause: SecretCheckClause),
+    ];
+
+    public static IReadOnlyList<MySqlIndexMetadata> Indexes() =>
+    [
+        Index("Orders", "PRIMARY", unique: true),
+        Index("Orders", "UQ_Orders_Amount_Customer", unique: true),
+        Index("Orders", "IX_Orders_Amount_Customer"),
+        Index("Archive", "PRIMARY", unique: true),
+    ];
+
+    public static IReadOnlyList<MySqlIndexPartMetadata> IndexParts() =>
+    [
+        IndexPart("Orders", "PRIMARY", 1, columnName: "Id"),
+        IndexPart(
+            "Orders",
+            "UQ_Orders_Amount_Customer",
+            1,
+            columnName: "Amount"),
+        IndexPart(
+            "Orders",
+            "UQ_Orders_Amount_Customer",
+            2,
+            columnName: "Customer"),
+        IndexPart(
+            "Orders",
+            "IX_Orders_Amount_Customer",
+            1,
+            columnName: "Amount"),
+        IndexPart(
+            "Orders",
+            "IX_Orders_Amount_Customer",
+            2,
+            columnName: "Customer"),
+        IndexPart("Archive", "PRIMARY", 1, columnName: "ArchiveId"),
+    ];
+
+    public static MySqlCatalogSnapshot CreateSupportedRelational() =>
+        Create(
+            tables:
+            [
+                Table("Parent", collation: null),
+                Table("Child", collation: null),
+            ],
+            columns:
+            [
+                Column("Parent", 1, "Id", "int", nullable: false),
+                Column("Parent", 2, "Code", "int", nullable: false),
+                Column("Child", 1, "Id", "int", nullable: false),
+                Column("Child", 2, "ParentId", "int", nullable: false),
+            ],
+            keys:
+            [
+                Key("Parent", "PRIMARY", "PRIMARY KEY"),
+                Key("Child", "PRIMARY", "PRIMARY KEY"),
+                Key("Child", "UQ_Child_ParentId", "UNIQUE"),
+            ],
+            keyColumns:
+            [
+                KeyColumn("Parent", "PRIMARY", 1, "Id"),
+                KeyColumn("Child", "PRIMARY", 1, "Id"),
+                KeyColumn("Child", "UQ_Child_ParentId", 1, "ParentId"),
+            ],
+            foreignKeys:
+            [
+                ForeignKey(
+                    tableName: "Child",
+                    name: "FK_Child_Parent",
+                    referencedTableName: "Parent",
+                    uniqueConstraintName: "PRIMARY",
+                    deleteRule: "CASCADE"),
+            ],
+            foreignKeyColumns:
+            [
+                ForeignKeyColumn(
+                    tableName: "Child",
+                    constraintName: "FK_Child_Parent",
+                    ordinal: 1,
+                    columnName: "ParentId",
+                    referencedTableName: "Parent",
+                    referencedColumnName: "Id",
+                    positionInUniqueConstraint: 1),
+            ],
+            checks: [],
+            indexes:
+            [
+                Index("Parent", "PRIMARY", unique: true),
+                Index("Parent", "IX_Parent_Code"),
+                Index("Child", "PRIMARY", unique: true),
+                Index("Child", "UQ_Child_ParentId", unique: true),
+            ],
+            indexParts:
+            [
+                IndexPart("Parent", "PRIMARY", 1, columnName: "Id"),
+                IndexPart("Parent", "IX_Parent_Code", 1, columnName: "Code"),
+                IndexPart("Child", "PRIMARY", 1, columnName: "Id"),
+                IndexPart(
+                    "Child",
+                    "UQ_Child_ParentId",
+                    1,
+                    columnName: "ParentId"),
+            ]);
+
     public static MySqlTableMetadata Table(
         string name,
         string tableType = "BASE TABLE",
@@ -139,6 +323,142 @@ internal static class MySqlTestSnapshot
             TableCollation: collation,
             CreateOptions: createOptions,
             IsPartitioned: partitioned);
+
+    public static MySqlTableDefinitionMetadata TableDefinition(
+        string schemaName,
+        string tableName,
+        string? definition = null)
+    {
+        string resolvedDefinition = definition ??
+            $"CREATE TABLE `{tableName}` (`id` int) " +
+            $"/* {SecretShowCreateMarker}:{tableName} */";
+        return new(
+            SchemaName: schemaName,
+            TableName: tableName,
+            DefinitionBytes:
+                System.Text.Encoding.UTF8.GetByteCount(resolvedDefinition),
+            Definition: resolvedDefinition);
+    }
+
+    public static MySqlKeyMetadata Key(
+        string tableName,
+        string name,
+        string constraintType = "UNIQUE",
+        string schemaName = "SourceDb") =>
+        new(
+            SchemaName: schemaName,
+            TableName: tableName,
+            Name: name,
+            ConstraintType: constraintType);
+
+    public static MySqlKeyColumnMetadata KeyColumn(
+        string tableName,
+        string constraintName,
+        int ordinal,
+        string columnName,
+        string schemaName = "SourceDb") =>
+        new(
+            SchemaName: schemaName,
+            TableName: tableName,
+            ConstraintName: constraintName,
+            OrdinalPosition: ordinal,
+            ColumnName: columnName);
+
+    public static MySqlForeignKeyMetadata ForeignKey(
+        string tableName,
+        string name,
+        string referencedTableName,
+        string? uniqueConstraintName,
+        string matchOption = "NONE",
+        string updateRule = "NO ACTION",
+        string deleteRule = "NO ACTION",
+        string schemaName = "SourceDb",
+        string referencedSchemaName = "SourceDb",
+        string? uniqueConstraintSchemaName = "SourceDb") =>
+        new(
+            SchemaName: schemaName,
+            TableName: tableName,
+            Name: name,
+            ReferencedSchemaName: referencedSchemaName,
+            ReferencedTableName: referencedTableName,
+            UniqueConstraintSchemaName: uniqueConstraintSchemaName,
+            UniqueConstraintName: uniqueConstraintName,
+            MatchOption: matchOption,
+            UpdateRule: updateRule,
+            DeleteRule: deleteRule);
+
+    public static MySqlForeignKeyColumnMetadata ForeignKeyColumn(
+        string tableName,
+        string constraintName,
+        int ordinal,
+        string columnName,
+        string referencedTableName,
+        string referencedColumnName,
+        int? positionInUniqueConstraint,
+        string schemaName = "SourceDb",
+        string referencedSchemaName = "SourceDb") =>
+        new(
+            SchemaName: schemaName,
+            TableName: tableName,
+            ConstraintName: constraintName,
+            OrdinalPosition: ordinal,
+            ColumnName: columnName,
+            PositionInUniqueConstraint: positionInUniqueConstraint,
+            ReferencedSchemaName: referencedSchemaName,
+            ReferencedTableName: referencedTableName,
+            ReferencedColumnName: referencedColumnName);
+
+    public static MySqlCheckMetadata Check(
+        string tableName,
+        string name,
+        string clause,
+        bool enforced = true,
+        string schemaName = "SourceDb") =>
+        new(
+            SchemaName: schemaName,
+            TableName: tableName,
+            Name: name,
+            IsEnforced: enforced,
+            ClauseBytes: System.Text.Encoding.UTF8.GetByteCount(clause),
+            Clause: clause);
+
+    public static MySqlIndexMetadata Index(
+        string tableName,
+        string name,
+        bool unique = false,
+        string indexType = "BTREE",
+        bool visible = true,
+        string schemaName = "SourceDb") =>
+        new(
+            SchemaName: schemaName,
+            TableName: tableName,
+            Name: name,
+            IsUnique: unique,
+            IndexType: indexType,
+            IsVisible: visible);
+
+    public static MySqlIndexPartMetadata IndexPart(
+        string tableName,
+        string indexName,
+        int sequence,
+        string? columnName = null,
+        string? sortDirection = "A",
+        long? prefixLength = null,
+        string? expression = null,
+        string schemaName = "SourceDb") =>
+        new(
+            SchemaName: schemaName,
+            TableName: tableName,
+            IndexName: indexName,
+            Sequence: sequence,
+            ColumnName: columnName,
+            SortDirection: sortDirection,
+            PrefixLength: prefixLength,
+            ExpressionBytes:
+                expression is null
+                    ? null
+                    : System.Text.Encoding.UTF8.GetByteCount(expression),
+            Expression: expression);
 
     public static MySqlColumnMetadata Column(
         string tableName,

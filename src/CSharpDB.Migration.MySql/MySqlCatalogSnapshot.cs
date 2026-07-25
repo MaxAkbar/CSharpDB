@@ -15,7 +15,15 @@ internal sealed class MySqlCatalogSnapshot
         MySqlSessionMetadata session,
         MySqlDatabaseMetadata database,
         IEnumerable<MySqlTableMetadata> tables,
-        IEnumerable<MySqlColumnMetadata> columns)
+        IEnumerable<MySqlColumnMetadata> columns,
+        IEnumerable<MySqlTableDefinitionMetadata>? tableDefinitions = null,
+        IEnumerable<MySqlKeyMetadata>? keys = null,
+        IEnumerable<MySqlKeyColumnMetadata>? keyColumns = null,
+        IEnumerable<MySqlForeignKeyMetadata>? foreignKeys = null,
+        IEnumerable<MySqlForeignKeyColumnMetadata>? foreignKeyColumns = null,
+        IEnumerable<MySqlCheckMetadata>? checks = null,
+        IEnumerable<MySqlIndexMetadata>? indexes = null,
+        IEnumerable<MySqlIndexPartMetadata>? indexParts = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(endpointDigest);
         ArgumentException.ThrowIfNullOrWhiteSpace(providerVersion);
@@ -32,6 +40,14 @@ internal sealed class MySqlCatalogSnapshot
         Database = database;
         Tables = new ReadOnlyCollection<MySqlTableMetadata>(tables.ToArray());
         Columns = new ReadOnlyCollection<MySqlColumnMetadata>(columns.ToArray());
+        TableDefinitions = ReadOnly(tableDefinitions);
+        Keys = ReadOnly(keys);
+        KeyColumns = ReadOnly(keyColumns);
+        ForeignKeys = ReadOnly(foreignKeys);
+        ForeignKeyColumns = ReadOnly(foreignKeyColumns);
+        Checks = ReadOnly(checks);
+        Indexes = ReadOnly(indexes);
+        IndexParts = ReadOnly(indexParts);
     }
 
     public string EndpointDigest { get; }
@@ -47,6 +63,25 @@ internal sealed class MySqlCatalogSnapshot
     public IReadOnlyList<MySqlTableMetadata> Tables { get; }
 
     public IReadOnlyList<MySqlColumnMetadata> Columns { get; }
+
+    public IReadOnlyList<MySqlTableDefinitionMetadata> TableDefinitions { get; }
+
+    public IReadOnlyList<MySqlKeyMetadata> Keys { get; }
+
+    public IReadOnlyList<MySqlKeyColumnMetadata> KeyColumns { get; }
+
+    public IReadOnlyList<MySqlForeignKeyMetadata> ForeignKeys { get; }
+
+    public IReadOnlyList<MySqlForeignKeyColumnMetadata> ForeignKeyColumns { get; }
+
+    public IReadOnlyList<MySqlCheckMetadata> Checks { get; }
+
+    public IReadOnlyList<MySqlIndexMetadata> Indexes { get; }
+
+    public IReadOnlyList<MySqlIndexPartMetadata> IndexParts { get; }
+
+    private static IReadOnlyList<T> ReadOnly<T>(IEnumerable<T>? values) =>
+        new ReadOnlyCollection<T>((values ?? []).ToArray());
 }
 
 internal sealed record MySqlServerMetadata(
@@ -62,7 +97,8 @@ internal sealed record MySqlSessionMetadata(
     string SqlMode,
     string CharacterSetConnection,
     string CollationConnection,
-    string TimeZone);
+    string TimeZone,
+    bool? SqlQuoteShowCreate = null);
 
 internal sealed record MySqlDatabaseMetadata(
     string Name,
@@ -103,3 +139,72 @@ internal sealed record MySqlColumnMetadata(
     long? GenerationExpressionBytes,
     string? GenerationExpression,
     bool IsInvisible);
+
+internal sealed record MySqlTableDefinitionMetadata(
+    string SchemaName,
+    string TableName,
+    long DefinitionBytes,
+    string Definition);
+
+internal sealed record MySqlKeyMetadata(
+    string SchemaName,
+    string TableName,
+    string Name,
+    string ConstraintType);
+
+internal sealed record MySqlKeyColumnMetadata(
+    string SchemaName,
+    string TableName,
+    string ConstraintName,
+    int OrdinalPosition,
+    string ColumnName);
+
+internal sealed record MySqlForeignKeyMetadata(
+    string SchemaName,
+    string TableName,
+    string Name,
+    string ReferencedSchemaName,
+    string ReferencedTableName,
+    string? UniqueConstraintSchemaName,
+    string? UniqueConstraintName,
+    string MatchOption,
+    string UpdateRule,
+    string DeleteRule);
+
+internal sealed record MySqlForeignKeyColumnMetadata(
+    string SchemaName,
+    string TableName,
+    string ConstraintName,
+    int OrdinalPosition,
+    string ColumnName,
+    int? PositionInUniqueConstraint,
+    string ReferencedSchemaName,
+    string ReferencedTableName,
+    string ReferencedColumnName);
+
+internal sealed record MySqlCheckMetadata(
+    string SchemaName,
+    string TableName,
+    string Name,
+    bool IsEnforced,
+    long ClauseBytes,
+    string Clause);
+
+internal sealed record MySqlIndexMetadata(
+    string SchemaName,
+    string TableName,
+    string Name,
+    bool IsUnique,
+    string IndexType,
+    bool IsVisible);
+
+internal sealed record MySqlIndexPartMetadata(
+    string SchemaName,
+    string TableName,
+    string IndexName,
+    int Sequence,
+    string? ColumnName,
+    string? SortDirection,
+    long? PrefixLength,
+    long? ExpressionBytes,
+    string? Expression);

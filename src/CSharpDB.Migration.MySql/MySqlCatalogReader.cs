@@ -6,7 +6,7 @@ using MySqlConnector;
 
 namespace CSharpDB.Migration.MySql;
 
-internal sealed class MySqlCatalogReader : IMySqlCatalogReader
+internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
 {
     private const uint ConnectionTimeoutSeconds = 30;
     private const uint CommandTimeoutSeconds = 30;
@@ -27,7 +27,16 @@ internal sealed class MySqlCatalogReader : IMySqlCatalogReader
             @@session.time_zone,
             @@session.character_set_database,
             @@session.collation_database,
-            DATABASE();
+            (
+                SELECT s.SCHEMA_NAME
+                FROM INFORMATION_SCHEMA.SCHEMATA AS s
+                WHERE s.SCHEMA_NAME = DATABASE()
+                ORDER BY
+                    (BINARY s.SCHEMA_NAME = BINARY DATABASE()) DESC,
+                    BINARY s.SCHEMA_NAME
+                LIMIT 1
+            ),
+            @@session.sql_quote_show_create;
         """;
 
     internal const string TablesQuery =
@@ -40,7 +49,7 @@ internal sealed class MySqlCatalogReader : IMySqlCatalogReader
             TABLE_COLLATION,
             CREATE_OPTIONS
         FROM INFORMATION_SCHEMA.TABLES
-        WHERE TABLE_SCHEMA = @database_name
+        WHERE BINARY TABLE_SCHEMA = BINARY @database_name
         ORDER BY
             BINARY TABLE_SCHEMA,
             BINARY TABLE_NAME,
@@ -68,15 +77,16 @@ internal sealed class MySqlCatalogReader : IMySqlCatalogReader
             c.NUMERIC_PRECISION,
             c.NUMERIC_SCALE,
             c.DATETIME_PRECISION,
+            OCTET_LENGTH(c.COLUMN_TYPE),
             c.COLUMN_TYPE,
             c.EXTRA,
-            c.GENERATION_EXPRESSION,
-            OCTET_LENGTH(c.GENERATION_EXPRESSION)
+            OCTET_LENGTH(c.GENERATION_EXPRESSION),
+            c.GENERATION_EXPRESSION
         FROM INFORMATION_SCHEMA.COLUMNS AS c
         INNER JOIN INFORMATION_SCHEMA.TABLES AS t
-            ON t.TABLE_SCHEMA = c.TABLE_SCHEMA
-           AND t.TABLE_NAME = c.TABLE_NAME
-        WHERE c.TABLE_SCHEMA = @database_name
+            ON BINARY t.TABLE_SCHEMA = BINARY c.TABLE_SCHEMA
+           AND BINARY t.TABLE_NAME = BINARY c.TABLE_NAME
+        WHERE BINARY c.TABLE_SCHEMA = BINARY @database_name
           AND t.TABLE_TYPE = 'BASE TABLE'
         ORDER BY
             BINARY c.TABLE_SCHEMA,
@@ -92,10 +102,17 @@ internal sealed class MySqlCatalogReader : IMySqlCatalogReader
             GeneratedInvisiblePrimaryKeyVisibilityQuery,
             TablesQuery,
             ColumnsQuery,
+            KeysQuery,
+            KeyColumnsQuery,
+            ForeignKeysQuery,
+            ForeignKeyColumnsQuery,
+            ChecksQuery,
+            IndexesQuery,
+            LegacyIndexesQuery,
+            UnqualifiedIndexesQuery,
         ]);
 
     private readonly string connectionString;
-    private readonly string databaseName;
     private readonly string endpointDigest;
 
     public MySqlCatalogReader(string connectionString)
@@ -177,7 +194,6 @@ internal sealed class MySqlCatalogReader : IMySqlCatalogReader
         if (settings.CancellationTimeout is <= 0 or > CancellationTimeoutSeconds)
             settings.CancellationTimeout = CancellationTimeoutSeconds;
 
-        databaseName = settings.Database;
         this.connectionString = settings.ConnectionString;
         Policy = new MySqlConnectionPolicy(
             settings.Pooling,
@@ -235,17 +251,90 @@ internal sealed class MySqlCatalogReader : IMySqlCatalogReader
         (IReadOnlyList<MySqlTableMetadata> tables, int viewCount) =
             await ReadTablesAsync(
                     connection,
+                    selectedDatabase,
                     budget,
                     limits,
                     cancellationToken)
                 .ConfigureAwait(false);
         IReadOnlyList<MySqlColumnMetadata> columns = await ReadColumnsAsync(
                 connection,
+                selectedDatabase,
                 tables,
                 budget,
                 limits,
                 cancellationToken)
             .ConfigureAwait(false);
+        IReadOnlyList<MySqlKeyMetadata> keys = await ReadKeysAsync(
+                connection,
+                selectedDatabase,
+                tables,
+                budget,
+                limits,
+                cancellationToken)
+            .ConfigureAwait(false);
+        IReadOnlyList<MySqlKeyColumnMetadata> keyColumns =
+            await ReadKeyColumnsAsync(
+                    connection,
+                    selectedDatabase,
+                    tables,
+                    columns,
+                    keys,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        IReadOnlyList<MySqlForeignKeyMetadata> foreignKeys =
+            await ReadForeignKeysAsync(
+                    connection,
+                    selectedDatabase,
+                    tables,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        IReadOnlyList<MySqlForeignKeyColumnMetadata> foreignKeyColumns =
+            await ReadForeignKeyColumnsAsync(
+                    connection,
+                    selectedDatabase,
+                    tables,
+                    columns,
+                    foreignKeys,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        IReadOnlyList<MySqlCheckMetadata> checks =
+            ShouldReadCheckConstraints(server)
+                ? await ReadChecksAsync(
+                        connection,
+                        selectedDatabase,
+                        tables,
+                        budget,
+                        limits,
+                        cancellationToken)
+                    .ConfigureAwait(false)
+                : [];
+        (
+            IReadOnlyList<MySqlIndexMetadata> indexes,
+            IReadOnlyList<MySqlIndexPartMetadata> indexParts
+        ) = await ReadIndexesAsync(
+                connection,
+                selectedDatabase,
+                tables,
+                columns,
+                server,
+                budget,
+                limits,
+                cancellationToken)
+            .ConfigureAwait(false);
+        IReadOnlyList<MySqlTableDefinitionMetadata> tableDefinitions =
+            await ReadTableDefinitionsAsync(
+                    connection,
+                    tables,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
 
         return new MySqlCatalogSnapshot(
             endpointDigest,
@@ -258,7 +347,15 @@ internal sealed class MySqlCatalogReader : IMySqlCatalogReader
                 defaultCollation,
                 viewCount),
             tables,
-            columns);
+            columns,
+            tableDefinitions,
+            keys,
+            keyColumns,
+            foreignKeys,
+            foreignKeyColumns,
+            checks,
+            indexes,
+            indexParts);
     }
 
     private async ValueTask<(
@@ -300,6 +397,7 @@ internal sealed class MySqlCatalogReader : IMySqlCatalogReader
             12,
             budget,
             isName: true);
+        bool sqlQuoteShowCreate = RequiredBoolean(reader, 13);
 
         if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             throw InvalidProviderMetadata();
@@ -317,7 +415,8 @@ internal sealed class MySqlCatalogReader : IMySqlCatalogReader
                 sqlMode,
                 characterSetConnection,
                 collationConnection,
-                timeZone),
+                timeZone,
+                sqlQuoteShowCreate),
             defaultCharacterSet,
             defaultCollation,
             selectedDatabase);
@@ -346,12 +445,13 @@ internal sealed class MySqlCatalogReader : IMySqlCatalogReader
 
     private async ValueTask<(IReadOnlyList<MySqlTableMetadata>, int)> ReadTablesAsync(
         MySqlConnection connection,
+        string selectedDatabase,
         ReaderBudget budget,
         MySqlInspectionLimits limits,
         CancellationToken cancellationToken)
     {
         await using MySqlCommand command = Command(connection, TablesQuery);
-        AddDatabaseParameter(command);
+        AddDatabaseParameter(command, selectedDatabase);
         await using MySqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SingleResult,
                 cancellationToken)
@@ -361,12 +461,20 @@ internal sealed class MySqlCatalogReader : IMySqlCatalogReader
         int viewCount = 0;
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
+            budget.AddStructuralRow();
             string schemaName = RequiredString(reader, 0, budget, isName: true);
             string name = RequiredString(reader, 1, budget, isName: true);
             string tableType = RequiredString(reader, 2, budget);
             string? engine = OptionalString(reader, 3, budget);
             string? tableCollation = OptionalString(reader, 4, budget);
             string? createOptions = OptionalString(reader, 5, budget);
+            if (!string.Equals(
+                    schemaName,
+                    selectedDatabase,
+                    StringComparison.Ordinal))
+            {
+                throw InvalidProviderMetadata();
+            }
 
             if (string.Equals(tableType, "VIEW", StringComparison.Ordinal))
             {
@@ -403,6 +511,7 @@ internal sealed class MySqlCatalogReader : IMySqlCatalogReader
 
     private async ValueTask<IReadOnlyList<MySqlColumnMetadata>> ReadColumnsAsync(
         MySqlConnection connection,
+        string selectedDatabase,
         IReadOnlyList<MySqlTableMetadata> tables,
         ReaderBudget budget,
         MySqlInspectionLimits limits,
@@ -412,8 +521,9 @@ internal sealed class MySqlCatalogReader : IMySqlCatalogReader
             tables.Select(static table => table.SchemaName + "\0" + table.Name),
             StringComparer.Ordinal);
         var columnIdentities = new HashSet<string>(StringComparer.Ordinal);
+        var columnNameIdentities = new HashSet<string>(StringComparer.Ordinal);
         await using MySqlCommand command = Command(connection, ColumnsQuery);
-        AddDatabaseParameter(command);
+        AddDatabaseParameter(command, selectedDatabase);
         await using MySqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SingleResult,
                 cancellationToken)
@@ -423,6 +533,7 @@ internal sealed class MySqlCatalogReader : IMySqlCatalogReader
         {
             if (columns.Count >= limits.MaxColumns)
                 throw LimitExceeded("column");
+            budget.AddStructuralRow();
 
             string schemaName = RequiredString(reader, 0, budget, isName: true);
             string tableName = RequiredString(reader, 1, budget, isName: true);
@@ -442,15 +553,20 @@ internal sealed class MySqlCatalogReader : IMySqlCatalogReader
             int? numericPrecision = OptionalInt32(reader, 9);
             int? numericScale = OptionalInt32(reader, 10);
             int? dateTimePrecision = OptionalInt32(reader, 11);
-            string columnType = RequiredString(reader, 12, budget);
+            long? sourceColumnTypeBytes = OptionalInt64(reader, 12);
+            budget.PreflightColumnType(sourceColumnTypeBytes);
+            if (reader.IsDBNull(13))
+                throw InvalidProviderMetadata();
+            string columnType = reader.GetString(13);
             long columnTypeBytes = budget.ValidateColumnType(
                 columnType,
-                limits);
-            string extra = RequiredString(reader, 13, budget);
-            string? generationExpression = reader.IsDBNull(14)
-                ? null
-                : reader.GetString(14);
+                sourceColumnTypeBytes);
+            string extra = RequiredString(reader, 14, budget);
             long? sourceExpressionBytes = OptionalInt64(reader, 15);
+            budget.PreflightExpression(sourceExpressionBytes);
+            string? generationExpression = reader.IsDBNull(16)
+                ? null
+                : reader.GetString(16);
 
             string generationKind = GenerationKind(extra);
             bool isGenerated = !string.Equals(
@@ -476,7 +592,10 @@ internal sealed class MySqlCatalogReader : IMySqlCatalogReader
             string columnIdentity =
                 schemaName + "\0" + tableName + "\0" +
                 ordinalPosition.ToString(CultureInfo.InvariantCulture);
-            if (!columnIdentities.Add(columnIdentity))
+            string columnNameIdentity =
+                schemaName + "\0" + tableName + "\0" + name;
+            if (!columnIdentities.Add(columnIdentity) ||
+                !columnNameIdentities.Add(columnNameIdentity))
                 throw InvalidProviderMetadata();
 
             bool numeric = IsNumericType(dataType);
@@ -509,12 +628,14 @@ internal sealed class MySqlCatalogReader : IMySqlCatalogReader
         return columns.AsReadOnly();
     }
 
-    private void AddDatabaseParameter(MySqlCommand command)
+    private static void AddDatabaseParameter(
+        MySqlCommand command,
+        string selectedDatabase)
     {
         MySqlParameter parameter = command.Parameters.Add(
             "@database_name",
             MySqlDbType.VarChar);
-        parameter.Value = databaseName;
+        parameter.Value = selectedDatabase;
     }
 
     private static MySqlCommand Command(
@@ -542,12 +663,13 @@ internal sealed class MySqlCatalogReader : IMySqlCatalogReader
     private static string? OptionalString(
         MySqlDataReader reader,
         int ordinal,
-        ReaderBudget budget)
+        ReaderBudget budget,
+        bool isName = false)
     {
         if (reader.IsDBNull(ordinal))
             return null;
         string value = reader.GetString(ordinal);
-        budget.Add(value);
+        budget.Add(value, isName);
         return value;
     }
 
@@ -573,6 +695,17 @@ internal sealed class MySqlCatalogReader : IMySqlCatalogReader
             : Convert.ToInt32(
                 reader.GetValue(ordinal),
                 CultureInfo.InvariantCulture);
+
+    private static bool RequiredBoolean(MySqlDataReader reader, int ordinal)
+    {
+        int value = RequiredInt32(reader, ordinal);
+        return value switch
+        {
+            0 => false,
+            1 => true,
+            _ => throw InvalidProviderMetadata(),
+        };
+    }
 
     private static bool ParseYesNo(string value) =>
         value switch
@@ -707,8 +840,10 @@ internal sealed class MySqlCatalogReader : IMySqlCatalogReader
         private static readonly UTF8Encoding s_utf8 =
             new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
         private readonly MySqlInspectionLimits limits;
+        private long definitionBytes;
         private long expressionBytes;
         private long metadataBytes;
+        private int structuralRows;
 
         public ReaderBudget(MySqlInspectionLimits limits)
         {
@@ -724,17 +859,55 @@ internal sealed class MySqlCatalogReader : IMySqlCatalogReader
             return bytes;
         }
 
+        public void PreflightColumnType(long? sourceBytes)
+        {
+            if (sourceBytes is null or < 0)
+                throw InvalidProviderMetadata();
+            if (sourceBytes > limits.MaxColumnTypeBytes)
+                throw LimitExceeded("column type byte");
+        }
+
         public long ValidateColumnType(
             string value,
-            MySqlInspectionLimits inspectionLimits)
+            long? sourceBytes)
         {
             int bytes = ByteCount(value);
-            if (bytes > inspectionLimits.MaxColumnTypeBytes)
-                throw LimitExceeded("column type byte");
+            PreflightColumnType(sourceBytes);
+            if (sourceBytes != bytes)
+                throw InvalidProviderMetadata();
+            AddMetadata(bytes);
             return bytes;
         }
 
+        public void PreflightExpression(long? sourceBytes)
+        {
+            if (sourceBytes is null)
+                return;
+            if (sourceBytes < 0)
+                throw InvalidProviderMetadata();
+            if (sourceBytes > limits.MaxExpressionBytes)
+                throw LimitExceeded("expression byte");
+            if (sourceBytes >
+                limits.MaxExpressionBytesTotal - expressionBytes)
+            {
+                throw LimitExceeded("aggregate expression byte");
+            }
+        }
+
         public long AddExpression(string value, long? sourceBytes)
+        {
+            PreflightExpression(sourceBytes);
+            int bytes = ByteCount(value);
+            if (sourceBytes is null || sourceBytes.Value != bytes)
+            {
+                throw InvalidProviderMetadata();
+            }
+            expressionBytes = checked(expressionBytes + bytes);
+            AddMetadata(bytes);
+            return bytes;
+        }
+
+        public long AddDefinition(string value, long? sourceBytes)
         {
             int bytes = ByteCount(value);
             if (sourceBytes is null || sourceBytes < 0 ||
@@ -742,13 +915,20 @@ internal sealed class MySqlCatalogReader : IMySqlCatalogReader
             {
                 throw InvalidProviderMetadata();
             }
-            if (bytes > limits.MaxExpressionBytes)
-                throw LimitExceeded("expression byte");
-            expressionBytes = checked(expressionBytes + bytes);
-            if (expressionBytes > limits.MaxExpressionBytesTotal)
-                throw LimitExceeded("aggregate expression byte");
+            if (bytes > limits.MaxDefinitionBytes)
+                throw LimitExceeded("definition byte");
+            definitionBytes = checked(definitionBytes + bytes);
+            if (definitionBytes > limits.MaxDefinitionBytesTotal)
+                throw LimitExceeded("aggregate definition byte");
             AddMetadata(bytes);
             return bytes;
+        }
+
+        public void AddStructuralRow()
+        {
+            structuralRows = checked(structuralRows + 1);
+            if (structuralRows > limits.MaxStructuralRowsTotal)
+                throw LimitExceeded("aggregate structural row");
         }
 
         private static int ByteCount(string value)

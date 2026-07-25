@@ -11,10 +11,18 @@ public sealed class MySqlCatalogReaderTests
     private const string Secret = "DistinctiveMySqlReaderPassword-42";
     private static readonly string[] s_auditedCommandDigests =
     [
-        "b12c2730f1e7a007180a8fc65560555111628073adb4248dbe57cf22fa7f9a38",
+        "641f2d86df777729c77204993ebb125eaa21c9e363d267e75180434ed4f00bb1",
         "5456ee05ea9f9eeefdb08cc30e345962a2de7d8df0dd61ce27b080d2b6471c7c",
-        "68146a0e02ded98f428bbd6d5a090196c6e126c9b2a74ef1906376933fc5cbfd",
-        "4d83896c4248c0a6fd3d55145e983e42edb256c5b2d45fa26cc917a6d1a9ede2",
+        "ea21132749e445022a591add54037d00a87b477c98c18cb9bbe2f42454812e7c",
+        "260dc275ea4a8f8bd3d48ae0dd7cc03361d48c2018e1bffea65f5b260e42a2f9",
+        "025dada3390acf714b4136131926f5d95766e8020af03693d9b3fdcdb60d7f99",
+        "77017fb089d66b4eb0e00ddef156fa32d73e7f9be10a2ccf1671a13d945fb9b6",
+        "f9f5cacbc5376060306f156ff3f0b98c65c4abea7b6ffea06d4ddc33879f9a06",
+        "9609599dbb325bd9253f3d37aeb51c153a05c99627813326aaa016c1e2811b54",
+        "0f8b164fd063d4bf0c95a808b82e9548fe1774054814f0bd08f81c15d5c0443e",
+        "486cec1707cf49bb5c8ad1af9fa4a2e3f28661d8a1711571735b64a030430a01",
+        "ab484bab80e361c6967b346c6a293598b39e0ae8b4c00eed86a400523093f17b",
+        "dad175f33479cb37a556e350cff20874f2955b1718eef88ca6d492097f5e9ad5",
     ];
 
     [Fact]
@@ -216,7 +224,7 @@ public sealed class MySqlCatalogReaderTests
     [Fact]
     public void CatalogCommandsAreFixedBoundedMetadataSelects()
     {
-        Assert.Equal(4, MySqlCatalogReader.CommandTexts.Count);
+        Assert.Equal(12, MySqlCatalogReader.CommandTexts.Count);
         foreach (string command in MySqlCatalogReader.CommandTexts)
         {
             Assert.StartsWith(
@@ -237,19 +245,44 @@ public sealed class MySqlCatalogReaderTests
             MySqlCatalogReader.ServerAndDatabaseQuery,
             StringComparison.Ordinal);
         Assert.Contains(
+            "INFORMATION_SCHEMA.SCHEMATA",
+            MySqlCatalogReader.ServerAndDatabaseQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "BINARY s.SCHEMA_NAME = BINARY DATABASE()",
+            MySqlCatalogReader.ServerAndDatabaseQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
             "@@session.show_gipk_in_create_table_and_information_schema",
             MySqlCatalogReader.GeneratedInvisiblePrimaryKeyVisibilityQuery,
             StringComparison.Ordinal);
-        Assert.Equal(
-            1,
-            CountOccurrences(
-                MySqlCatalogReader.TablesQuery,
-                "@database_name"));
-        Assert.Equal(
-            1,
-            CountOccurrences(
-                MySqlCatalogReader.ColumnsQuery,
-                "@database_name"));
+        Assert.Contains(
+            "@@session.sql_quote_show_create",
+            MySqlCatalogReader.ServerAndDatabaseQuery,
+            StringComparison.Ordinal);
+        string[] databaseScopedQueries =
+        [
+            MySqlCatalogReader.TablesQuery,
+            MySqlCatalogReader.ColumnsQuery,
+            MySqlCatalogReader.KeysQuery,
+            MySqlCatalogReader.KeyColumnsQuery,
+            MySqlCatalogReader.ForeignKeysQuery,
+            MySqlCatalogReader.ForeignKeyColumnsQuery,
+            MySqlCatalogReader.ChecksQuery,
+            MySqlCatalogReader.IndexesQuery,
+            MySqlCatalogReader.LegacyIndexesQuery,
+            MySqlCatalogReader.UnqualifiedIndexesQuery,
+        ];
+        Assert.All(
+            databaseScopedQueries,
+            static query =>
+            {
+                Assert.Equal(1, CountOccurrences(query, "@database_name"));
+                Assert.Contains(
+                    "BINARY @database_name",
+                    query,
+                    StringComparison.Ordinal);
+            });
         Assert.Contains(
             "INFORMATION_SCHEMA.TABLES",
             MySqlCatalogReader.TablesQuery,
@@ -263,12 +296,74 @@ public sealed class MySqlCatalogReaderTests
             MySqlCatalogReader.ColumnsQuery,
             StringComparison.Ordinal);
         Assert.Contains(
+            "OCTET_LENGTH(c.COLUMN_TYPE)",
+            MySqlCatalogReader.ColumnsQuery,
+            StringComparison.Ordinal);
+        Assert.True(
+            MySqlCatalogReader.ColumnsQuery.IndexOf(
+                "OCTET_LENGTH(c.COLUMN_TYPE)",
+                StringComparison.Ordinal) <
+            MySqlCatalogReader.ColumnsQuery.IndexOf(
+                "c.COLUMN_TYPE,",
+                StringComparison.Ordinal));
+        Assert.Contains(
             "OCTET_LENGTH(c.GENERATION_EXPRESSION)",
             MySqlCatalogReader.ColumnsQuery,
             StringComparison.Ordinal);
         Assert.Contains(
             "t.TABLE_TYPE = 'BASE TABLE'",
             MySqlCatalogReader.ColumnsQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "INFORMATION_SCHEMA.TABLE_CONSTRAINTS",
+            MySqlCatalogReader.KeysQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "INFORMATION_SCHEMA.KEY_COLUMN_USAGE",
+            MySqlCatalogReader.KeyColumnsQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS",
+            MySqlCatalogReader.ForeignKeysQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "kcu.POSITION_IN_UNIQUE_CONSTRAINT",
+            MySqlCatalogReader.ForeignKeyColumnsQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "OCTET_LENGTH(cc.CHECK_CLAUSE)",
+            MySqlCatalogReader.ChecksQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "INFORMATION_SCHEMA.STATISTICS",
+            MySqlCatalogReader.IndexesQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "OCTET_LENGTH(s.EXPRESSION)",
+            MySqlCatalogReader.IndexesQuery,
+            StringComparison.Ordinal);
+        Assert.True(
+            MySqlCatalogReader.IndexesQuery.IndexOf(
+                "OCTET_LENGTH(s.EXPRESSION)",
+                StringComparison.Ordinal) <
+            MySqlCatalogReader.IndexesQuery.LastIndexOf(
+                "s.EXPRESSION",
+                StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            "s.EXPRESSION",
+            MySqlCatalogReader.LegacyIndexesQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "CONVERT(NULL, CHAR)",
+            MySqlCatalogReader.LegacyIndexesQuery,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "s.IS_VISIBLE",
+            MySqlCatalogReader.UnqualifiedIndexesQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "'YES'",
+            MySqlCatalogReader.UnqualifiedIndexesQuery,
             StringComparison.Ordinal);
 
         string commands = string.Join("\n", MySqlCatalogReader.CommandTexts);
@@ -285,6 +380,9 @@ public sealed class MySqlCatalogReaderTests
         Assert.DoesNotContain("CREATE_TIME", commands, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("UPDATE_TIME", commands, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("CHECK_TIME", commands, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("CARDINALITY", commands, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("TABLE_COMMENT", commands, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("INDEX_COMMENT", commands, StringComparison.OrdinalIgnoreCase);
 
         string[] actualDigests = MySqlCatalogReader.CommandTexts
             .Select(static command =>
@@ -293,6 +391,76 @@ public sealed class MySqlCatalogReaderTests
                     .ToLowerInvariant())
             .ToArray();
         Assert.Equal(s_auditedCommandDigests, actualDigests);
+    }
+
+    [Theory]
+    [InlineData("8.0.12", "MySQL Community Server - GPL", "legacy")]
+    [InlineData("8.0.13", "MySQL Community Server - GPL", "current")]
+    [InlineData("8.4.5", "MySQL Enterprise Server - Commercial", "current")]
+    [InlineData("5.7.44", "MySQL Community Server - GPL", "unqualified")]
+    [InlineData("10.11.8-MariaDB", "mariadb.org binary distribution", "unqualified")]
+    [InlineData("8.0.mysql_aurora.3.08.0", "Amazon Aurora MySQL", "unqualified")]
+    public void FunctionalIndexProjectionIsVersionAndVariantBounded(
+        string version,
+        string versionComment,
+        string projection)
+    {
+        MySqlServerMetadata server = MySqlTestSnapshot.Server() with
+        {
+            Version = version,
+            VersionComment = versionComment,
+        };
+
+        Assert.Equal(
+            projection switch
+            {
+                "current" => MySqlCatalogReader.IndexesQuery,
+                "legacy" => MySqlCatalogReader.LegacyIndexesQuery,
+                _ => MySqlCatalogReader.UnqualifiedIndexesQuery,
+            },
+            MySqlCatalogReader.SelectIndexesQuery(server));
+    }
+
+    [Theory]
+    [InlineData("8.0.15", "MySQL Community Server - GPL", false)]
+    [InlineData("8.0.16", "MySQL Community Server - GPL", true)]
+    [InlineData("8.4.5", "MySQL Enterprise Server - Commercial", true)]
+    [InlineData("10.11.8-MariaDB", "mariadb.org binary distribution", false)]
+    [InlineData("8.0.mysql_aurora.3.08.0", "Amazon Aurora MySQL", false)]
+    public void CheckInventoryIsVersionAndVariantBounded(
+        string version,
+        string versionComment,
+        bool expected)
+    {
+        MySqlServerMetadata server = MySqlTestSnapshot.Server() with
+        {
+            Version = version,
+            VersionComment = versionComment,
+        };
+
+        Assert.Equal(
+            expected,
+            MySqlCatalogReader.ShouldReadCheckConstraints(server));
+    }
+
+    [Fact]
+    public void ShowCreateIdentifiersAreQuotedAsData()
+    {
+        const string schema = "Source`; DROP DATABASE Important; --";
+        const string table = "Order`; SELECT SLEEP(99); --";
+
+        string command = MySqlCatalogReader.BuildShowCreateTableCommand(
+            schema,
+            table);
+
+        Assert.Equal(
+            "SHOW CREATE TABLE " +
+            "`Source``; DROP DATABASE Important; --`." +
+            "`Order``; SELECT SLEEP(99); --`;",
+            command);
+        Assert.Equal("`a``b;c`", MySqlCatalogReader.QuoteIdentifier("a`b;c"));
+        Assert.Throws<ArgumentException>(
+            () => MySqlCatalogReader.QuoteIdentifier(string.Empty));
     }
 
     private static Regex MutatingStatement() =>
