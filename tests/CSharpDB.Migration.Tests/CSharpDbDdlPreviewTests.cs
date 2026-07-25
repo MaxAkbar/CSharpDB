@@ -327,6 +327,124 @@ public sealed class CSharpDbDdlPreviewTests
     }
 
     [Fact]
+    public async Task AttachBounded_BuildsAndAttachesAuthoritativeDigest()
+    {
+        MigrationCatalog catalog = await InspectSyntheticAsync();
+        MigrationPlan plan = ReadyPlan(catalog);
+
+        MigrationPlan attached =
+            CSharpDbDdlPreviewBuilder.BuildAndAttachGeneratedDdlDigestBounded(
+                plan,
+                catalog,
+                cancellationToken: Ct);
+        CSharpDbDdlPreview preview =
+            CSharpDbDdlPreviewBuilder.BuildBounded(
+                attached,
+                catalog,
+                cancellationToken: Ct);
+
+        Assert.NotNull(attached.GeneratedDdlDigest);
+        Assert.Equal(
+            preview.GeneratedDdlDigest,
+            attached.GeneratedDdlDigest);
+        Assert.Null(plan.GeneratedDdlDigest);
+        Assert.Single(
+            typeof(CSharpDbDdlPreviewBuilder)
+                .GetMethods(BindingFlags.Static | BindingFlags.Public),
+            method => method.Name == nameof(
+                CSharpDbDdlPreviewBuilder
+                    .BuildAndAttachGeneratedDdlDigestBounded));
+        MigrationPlanReadinessValidator.ValidateForApply(attached, catalog);
+    }
+
+    [Fact]
+    public async Task AttachBounded_IsDeterministicAndPreservesMatchingDigest()
+    {
+        MigrationCatalog catalog = await InspectSyntheticAsync();
+        MigrationPlan plan = ReadyPlan(catalog);
+
+        MigrationPlan first =
+            CSharpDbDdlPreviewBuilder.BuildAndAttachGeneratedDdlDigestBounded(
+                plan,
+                catalog,
+                cancellationToken: Ct);
+        MigrationPlan repeated =
+            CSharpDbDdlPreviewBuilder.BuildAndAttachGeneratedDdlDigestBounded(
+                plan,
+                catalog,
+                cancellationToken: Ct);
+        MigrationPlan preserved =
+            CSharpDbDdlPreviewBuilder.BuildAndAttachGeneratedDdlDigestBounded(
+                first,
+                catalog,
+                cancellationToken: Ct);
+
+        Assert.Equal(first.GeneratedDdlDigest, repeated.GeneratedDdlDigest);
+        Assert.Same(first, preserved);
+    }
+
+    [Fact]
+    public async Task AttachBounded_RejectsConflictingExistingDigest()
+    {
+        MigrationCatalog catalog = await InspectSyntheticAsync();
+        MigrationPlan plan = ReadyPlan(catalog) with
+        {
+            GeneratedDdlDigest = new string('0', 64),
+        };
+
+        InvalidDataException error = Assert.Throws<InvalidDataException>(() =>
+            CSharpDbDdlPreviewBuilder.BuildAndAttachGeneratedDdlDigestBounded(
+                plan,
+                catalog,
+                cancellationToken: Ct));
+
+        Assert.Contains(
+            "different generated DDL digest",
+            error.Message,
+            StringComparison.Ordinal);
+        Assert.Equal(new string('0', 64), plan.GeneratedDdlDigest);
+    }
+
+    [Fact]
+    public async Task AttachBounded_HonorsRenderLimits()
+    {
+        MigrationCatalog catalog = await InspectSyntheticAsync();
+        MigrationPlan plan = ReadyPlan(catalog);
+
+        CSharpDbDdlPreviewLimitException error =
+            Assert.Throws<CSharpDbDdlPreviewLimitException>(() =>
+                CSharpDbDdlPreviewBuilder.BuildAndAttachGeneratedDdlDigestBounded(
+                    plan,
+                    catalog,
+                    CSharpDbDdlPreviewBuildOptions.Default with
+                    {
+                        MaxActionCount = 1,
+                    },
+                    cancellationToken: Ct));
+
+        Assert.Equal(
+            CSharpDbDdlPreviewLimitKind.ActionCount,
+            error.Kind);
+        Assert.Null(plan.GeneratedDdlDigest);
+    }
+
+    [Fact]
+    public void AttachBounded_HonorsPreCancellation()
+    {
+        MigrationCatalog catalog = CollectionCatalog();
+        MigrationPlan plan = ReadyPlan(catalog);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        Assert.Throws<OperationCanceledException>(() =>
+            CSharpDbDdlPreviewBuilder.BuildAndAttachGeneratedDdlDigestBounded(
+                plan,
+                catalog,
+                cancellationToken: cancellation.Token));
+        Assert.Null(plan.GeneratedDdlDigest);
+    }
+
+    [Fact]
     public async Task Attach_SealsAValidatedPlanWithoutChangingThePreviewDigest()
     {
         MigrationCatalog catalog = await InspectSyntheticAsync();

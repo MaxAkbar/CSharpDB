@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using CSharpDB.Engine;
 using CSharpDB.Migration;
+using CSharpDB.Migration.CSharpDb;
 using CSharpDB.Migration.Files.Csv;
 using CSharpDB.Migration.Validation;
 
@@ -517,9 +518,17 @@ public sealed class CsvMigrationCommandRunnerTests
         CsvArtifacts strict = await CreateCsvApplyReadyArtifactsAsync(workspace.Root);
         MigrationCatalog catalog = MigrationArtifactSerializer.DeserializeCatalog(
             await File.ReadAllTextAsync(strict.CatalogPath, Cancellation));
-        MigrationPlan expectedStrict = new MigrationPlanner().CreatePlan(
-            catalog,
-            new MigrationPlanningOptions { AcceptAllExclusions = true });
+        MigrationPlan expectedStrict =
+            CSharpDbDdlPreviewBuilder
+                .BuildAndAttachGeneratedDdlDigestBounded(
+                    new MigrationPlanner().CreatePlan(
+                        catalog,
+                        new MigrationPlanningOptions
+                        {
+                            AcceptAllExclusions = true,
+                        }),
+                    catalog,
+                    cancellationToken: Cancellation);
         string strictJson = await File.ReadAllTextAsync(strict.PlanPath, Cancellation);
 
         Assert.Equal(
@@ -614,6 +623,9 @@ public sealed class CsvMigrationCommandRunnerTests
         Assert.NotEqual(
             MigrationArtifactSerializer.ComputePlanDigest(expectedStrict),
             MigrationArtifactSerializer.ComputePlanDigest(deterministic));
+        Assert.Equal(
+            expectedStrict.GeneratedDdlDigest,
+            deterministic.GeneratedDdlDigest);
 
         string[] allRulesPolicy = completePolicy.ToArray();
         allRulesPolicy[3] = "all";

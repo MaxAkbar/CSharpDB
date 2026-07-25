@@ -25,13 +25,17 @@ order is unambiguous. Its versioned digest covers only migrated schema actions,
 not internal migration bookkeeping tables, and is independent of the plan
 digest so it remains stable after attachment. A plan stores only the digest;
 when present, the staged target recomputes and verifies it before creating or
-resuming a target. Legacy plans without a preview digest remain accepted.
-Operator-facing callers use `BuildBounded`, whose configurable action,
-per-action SQL, and aggregate UTF-8 limits cannot exceed production ceilings.
-The renderer enforces those limits incrementally before retaining each action
-and reports a stable, sanitized limit kind without publishing SQL or names.
-Those are render-action limits, not plan/catalog acquisition or preprocessing
-limits; callers must bound and validate those inputs separately.
+resuming a target. `BuildAndAttachGeneratedDdlDigestBounded` performs one
+authoritative bounded render and returns the sealed plan without retaining the
+SQL. Legacy externally authored plans without a preview digest remain accepted
+for compatibility, while newly CLI-authored plans are always sealed.
+Operator-facing preview callers use `BuildBounded`; both bounded entry points
+enforce configurable action, per-action SQL, and aggregate UTF-8 limits that
+cannot exceed production ceilings. The renderer enforces those limits
+incrementally before retaining each action and reports a stable, sanitized
+limit kind without publishing SQL or names. Those are render-action limits,
+not plan/catalog acquisition or preprocessing limits; callers must bound and
+validate those inputs separately.
 
 `CSharpDbDdlScratchValidator` verifies that reviewed preview with bounded
 aggregate and parser limits, parses each SQL action once with `CSharpDB.Sql`,

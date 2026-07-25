@@ -154,6 +154,16 @@ public sealed class MigrationDdlPreviewCommandRunnerTests
             Assert.Matches(
                 "^[0-9a-f]{64}$",
                 root.GetProperty("generatedDdlDigest").GetString());
+            MigrationCatalog catalog =
+                MigrationArtifactSerializer.DeserializeCatalog(
+                    await File.ReadAllTextAsync(catalogPath, ct));
+            MigrationPlan plan =
+                MigrationArtifactSerializer.DeserializePlan(
+                    await File.ReadAllTextAsync(planPath, ct),
+                    catalog);
+            Assert.Equal(
+                plan.GeneratedDdlDigest,
+                root.GetProperty("generatedDdlDigest").GetString());
             Assert.Contains(
                 root.GetProperty("stages")
                     .EnumerateArray()
@@ -190,6 +200,199 @@ public sealed class MigrationDdlPreviewCommandRunnerTests
                 text,
                 StringComparison.Ordinal);
             Assert.True(string.IsNullOrWhiteSpace(textError));
+        }
+        finally
+        {
+            DeleteDirectoryIfExists(directory);
+        }
+    }
+
+    [Theory]
+    [InlineData("--ddl", "csharpdb-ddl-preview/v1")]
+    [InlineData(
+        "--scratch",
+        "csharpdb-ddl-scratch-validation/v1")]
+    public async Task ExplicitPreview_LegacyUnsealedPlanRemainsReadable(
+        string mode,
+        string expectedFormat)
+    {
+        string directory = NewTempDirectory();
+        try
+        {
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            (string catalogPath, string planPath) =
+                await CreateArtifactsAsync(directory, ct);
+            MigrationCatalog catalog =
+                MigrationArtifactSerializer.DeserializeCatalog(
+                    await File.ReadAllTextAsync(catalogPath, ct));
+            MigrationPlan sealedPlan =
+                MigrationArtifactSerializer.DeserializePlan(
+                    await File.ReadAllTextAsync(planPath, ct),
+                    catalog);
+            Assert.NotNull(sealedPlan.GeneratedDdlDigest);
+            MigrationPlan legacyPlan = sealedPlan with
+            {
+                GeneratedDdlDigest = null,
+            };
+            await File.WriteAllTextAsync(
+                planPath,
+                MigrationArtifactSerializer.SerializePlan(
+                    legacyPlan,
+                    catalog),
+                ct);
+
+            (int code, string output, string error) =
+                await RunPreviewAsync(
+                    planPath,
+                    catalogPath,
+                    [mode, "--format", "json"],
+                    ct);
+
+            Assert.Equal(InspectorCommandRunner.ExitWarn, code);
+            using JsonDocument document = JsonDocument.Parse(output);
+            Assert.Equal(
+                expectedFormat,
+                document.RootElement.GetProperty("format").GetString());
+            Assert.Matches(
+                "^[0-9a-f]{64}$",
+                document.RootElement
+                    .GetProperty("generatedDdlDigest")
+                    .GetString());
+            Assert.True(string.IsNullOrWhiteSpace(error));
+        }
+        finally
+        {
+            DeleteDirectoryIfExists(directory);
+        }
+    }
+
+    [Fact]
+    public async Task DdlPreview_RejectsTamperedAttachedDigestBeforeOutput()
+    {
+        string directory = NewTempDirectory();
+        try
+        {
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            (string catalogPath, string planPath) =
+                await CreateArtifactsAsync(directory, ct);
+            MigrationCatalog catalog =
+                MigrationArtifactSerializer.DeserializeCatalog(
+                    await File.ReadAllTextAsync(catalogPath, ct));
+            MigrationPlan plan =
+                MigrationArtifactSerializer.DeserializePlan(
+                    await File.ReadAllTextAsync(planPath, ct),
+                    catalog);
+            Assert.NotNull(plan.GeneratedDdlDigest);
+            string tamperedDigest =
+                string.Equals(
+                    plan.GeneratedDdlDigest,
+                    new string('0', 64),
+                    StringComparison.Ordinal)
+                    ? new string('1', 64)
+                    : new string('0', 64);
+            MigrationPlan tampered = plan with
+            {
+                GeneratedDdlDigest = tamperedDigest,
+            };
+            await File.WriteAllTextAsync(
+                planPath,
+                MigrationArtifactSerializer.SerializePlan(
+                    tampered,
+                    catalog),
+                ct);
+            var output = new StringWriter();
+            var error = new StringWriter();
+
+            int code = await MigrationCommandRunner.RunAsync(
+                [
+                    "migrate",
+                    "preview",
+                    planPath,
+                    "--catalog",
+                    catalogPath,
+                    "--ddl",
+                ],
+                output,
+                error,
+                ct);
+
+            Assert.Equal(InspectorCommandRunner.ExitError, code);
+            Assert.True(string.IsNullOrWhiteSpace(output.ToString()));
+            Assert.Contains(
+                "MIG-CSHARPDB-DDL-PREVIEW-001",
+                error.ToString(),
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                "CREATE TABLE",
+                error.ToString(),
+                StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            DeleteDirectoryIfExists(directory);
+        }
+    }
+
+    [Fact]
+    public async Task DdlPreview_RejectsMismatchedRenderedBindingBeforeOutput()
+    {
+        string directory = NewTempDirectory();
+        try
+        {
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            (string catalogPath, string planPath) =
+                await CreateArtifactsAsync(directory, ct);
+            MigrationCatalog catalog =
+                MigrationArtifactSerializer.DeserializeCatalog(
+                    await File.ReadAllTextAsync(catalogPath, ct));
+            MigrationPlan plan =
+                MigrationArtifactSerializer.DeserializePlan(
+                    await File.ReadAllTextAsync(planPath, ct),
+                    catalog);
+            CSharpDbDdlPreview preview =
+                CSharpDbDdlPreviewBuilder.BuildBounded(
+                    plan,
+                    catalog,
+                    cancellationToken: ct);
+            string mismatchedDigest =
+                string.Equals(
+                    preview.GeneratedDdlDigest,
+                    new string('0', 64),
+                    StringComparison.Ordinal)
+                    ? new string('1', 64)
+                    : new string('0', 64);
+            MigrationCommandDependencies dependencies =
+                MigrationCommandDependencies.Default with
+                {
+                    BuildCSharpDbDdlPreview =
+                        (_, _, _) => preview with
+                        {
+                            GeneratedDdlDigest = mismatchedDigest,
+                        },
+                };
+            var output = new StringWriter();
+            var error = new StringWriter();
+
+            int code = await MigrationCommandRunner.RunAsync(
+                [
+                    "migrate",
+                    "preview",
+                    planPath,
+                    "--catalog",
+                    catalogPath,
+                    "--ddl",
+                ],
+                output,
+                error,
+                dependencies,
+                ct);
+
+            Assert.Equal(InspectorCommandRunner.ExitError, code);
+            Assert.True(string.IsNullOrWhiteSpace(output.ToString()));
+            Assert.Contains(
+                "MIG-CSHARPDB-DDL-PREVIEW-001",
+                error.ToString(),
+                StringComparison.Ordinal);
         }
         finally
         {
@@ -424,7 +627,8 @@ public sealed class MigrationDdlPreviewCommandRunnerTests
                     directory,
                     "unrenderable",
                     InspectorCommandRunner.ExitOk,
-                    ct);
+                    ct,
+                    sealPlan: false);
             var output = new StringWriter();
             var error = new StringWriter();
 
@@ -899,7 +1103,8 @@ public sealed class MigrationDdlPreviewCommandRunnerTests
             string directory,
             string prefix,
             int expectedPlanCode,
-            CancellationToken ct)
+            CancellationToken ct,
+            bool sealPlan = true)
     {
         string catalogPath =
             Path.Combine(directory, $"{prefix}-catalog.json");
@@ -909,6 +1114,14 @@ public sealed class MigrationDdlPreviewCommandRunnerTests
             catalogPath,
             MigrationArtifactSerializer.SerializeCatalog(catalog),
             ct);
+        MigrationCommandDependencies dependencies =
+            sealPlan
+                ? MigrationCommandDependencies.Default
+                : MigrationCommandDependencies.Default with
+                {
+                    SealCSharpDbMigrationPlan =
+                        static (plan, _, _) => plan,
+                };
         int planCode = await MigrationCommandRunner.RunAsync(
             [
                 "migrate",
@@ -919,8 +1132,17 @@ public sealed class MigrationDdlPreviewCommandRunnerTests
             ],
             TextWriter.Null,
             TextWriter.Null,
+            dependencies,
             ct);
         Assert.Equal(expectedPlanCode, planCode);
+        if (!sealPlan)
+        {
+            MigrationPlan legacyPlan =
+                MigrationArtifactSerializer.DeserializePlan(
+                    await File.ReadAllTextAsync(planPath, ct),
+                    catalog);
+            Assert.Null(legacyPlan.GeneratedDdlDigest);
+        }
         return (catalogPath, planPath);
     }
 

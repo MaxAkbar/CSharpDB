@@ -165,6 +165,16 @@ validation require the package pin through `--expected-manifest-digest`.
 The original CSV, JSON, or live SQLite path is not retained and is never
 reopened after inspection.
 
+Planning accepts a strict UTF-8 catalog artifact of at most 64 MiB. Before a
+plan is published, the CLI renders the selected CSharpDB schema actions once
+under the production action and SQL-size ceilings and stores their lowercase
+SHA-256 digest in the plan. Rendered SQL is not stored. A cancellation, input
+limit, render limit, or sealing failure occurs before plan publication and
+does not replace an existing output. The serialized plan is also capped at
+64 MiB so every published plan remains consumable by the explicit preview
+path. Legacy plans without this optional binding remain readable, but every
+plan authored by this CLI includes it.
+
 SQLite Tier 1 replays visible scalar columns from ordinary UTF-8 rowid tables in
 signed rowid order. It preserves null, integer, finite real, UTF-8 text, and
 BLOB values exactly, validates every emitted resume boundary, and supports
@@ -227,7 +237,7 @@ equivalence, or make a blocked SQL Server plan ready.
 Each catalog and plan consumed by the explicit `--ddl` or `--scratch` path is
 limited to 64 MiB before contract validation; rendered action count,
 per-action SQL, and aggregate SQL bytes have separate fixed production
-ceilings.
+ceilings. The regenerated DDL digest must match the binding in a sealed plan.
 
 The SQL Server project reference currently belongs to this non-packable proof
 CLI. Optional adapter/package isolation and published-runtime qualification

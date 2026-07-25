@@ -231,8 +231,9 @@ public static class CSharpDbDdlPreviewBuilder
     /// <summary>
     /// Renders the same preview as <see cref="Build"/>, while enforcing
     /// incremental action and SQL-size limits before each rendered action is
-    /// retained. Operator-facing callers must separately bound plan/catalog
-    /// acquisition and preprocessing.
+    /// retained. When the plan already contains a generated DDL digest, the
+    /// regenerated preview must match that binding. Operator-facing callers
+    /// must separately bound plan/catalog acquisition and preprocessing.
     /// </summary>
     public static CSharpDbDdlPreview BuildBounded(
         MigrationPlan plan,
@@ -255,12 +256,17 @@ public static class CSharpDbDdlPreviewBuilder
                 options.MaxAggregateSqlUtf8Bytes));
         try
         {
-            return BuildCore(
+            CSharpDbDdlPreview preview = BuildCore(
                 plan,
                 catalog,
                 mappingPolicy,
                 budget,
                 cancellationToken);
+            ValidateGeneratedDdlDigestBinding(
+                plan,
+                preview.GeneratedDdlDigest,
+                cancellationToken);
+            return preview;
         }
         catch (CSharpDbDdlRenderLimitException error)
         {
@@ -277,6 +283,31 @@ public static class CSharpDbDdlPreviewBuilder
                         "Unknown CSharpDB DDL preview render limit kind."),
                 });
         }
+    }
+
+    /// <summary>
+    /// Renders authoritative DDL once under the bounded production limits and
+    /// attaches the resulting digest to the plan. An identical existing digest
+    /// is preserved; a conflicting existing digest is rejected.
+    /// </summary>
+    public static MigrationPlan BuildAndAttachGeneratedDdlDigestBounded(
+        MigrationPlan plan,
+        MigrationCatalog catalog,
+        CSharpDbDdlPreviewBuildOptions? options = null,
+        IDataTypeMappingProvider? mappingPolicy = null,
+        CancellationToken cancellationToken = default)
+    {
+        CSharpDbDdlPreview preview = BuildBounded(
+            plan,
+            catalog,
+            options,
+            mappingPolicy,
+            cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        return AttachAuthoritativeGeneratedDdlDigest(
+            plan,
+            preview.GeneratedDdlDigest,
+            cancellationToken);
     }
 
     private static CSharpDbDdlPreview BuildCore(
@@ -444,19 +475,46 @@ public static class CSharpDbDdlPreviewBuilder
                 "The CSharpDB DDL preview does not match the supplied plan and catalog.");
         }
 
+        return AttachAuthoritativeGeneratedDdlDigest(
+            plan,
+            actual.GeneratedDdlDigest,
+            cancellationToken);
+    }
+
+    private static MigrationPlan AttachAuthoritativeGeneratedDdlDigest(
+        MigrationPlan plan,
+        string generatedDdlDigest,
+        CancellationToken cancellationToken)
+    {
+        ValidateGeneratedDdlDigestBinding(
+            plan,
+            generatedDdlDigest,
+            cancellationToken);
+
+        if (plan.GeneratedDdlDigest is not null)
+            return plan;
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return plan with
+        {
+            GeneratedDdlDigest = generatedDdlDigest,
+        };
+    }
+
+    private static void ValidateGeneratedDdlDigestBinding(
+        MigrationPlan plan,
+        string generatedDdlDigest,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         if (plan.GeneratedDdlDigest is not null &&
             !FixedTimeDigestEquals(
                 plan.GeneratedDdlDigest,
-                actual.GeneratedDdlDigest))
+                generatedDdlDigest))
         {
             throw new InvalidDataException(
                 "The migration plan already contains a different generated DDL digest.");
         }
-
-        return plan with
-        {
-            GeneratedDdlDigest = actual.GeneratedDdlDigest,
-        };
     }
 
     internal static void ValidateAttachedGeneratedDdlDigest(

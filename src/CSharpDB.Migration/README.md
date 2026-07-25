@@ -103,6 +103,14 @@ csharpdb migrate apply plan.json --catalog catalog.json --target staged.csdb --o
 csharpdb migrate validate plan.json --catalog catalog.json --target staged.csdb --out validation.json [--level schema|count|checksum] [--spill-dir directory] [--format text|json]
 ```
 
+`migrate plan` reads the catalog through a strict UTF-8, 64 MiB contract
+boundary and performs one bounded authoritative target-schema render before
+publishing. Every newly CLI-authored plan retains the lowercase SHA-256 digest
+of those exact ordered CSharpDB schema actions, but never the SQL itself.
+The serialized plan must also fit the 64 MiB contract boundary. Apply and
+resume recompute the DDL binding before target creation. Legacy external plans
+without the optional digest remain readable for compatibility.
+
 `validate` reads schema, counts, and rows from one source snapshot and one target
 snapshot. Checksum validation uses bounded temporary spill space and removes its
 owned workspace on success, cancellation, or failure. A passing report is

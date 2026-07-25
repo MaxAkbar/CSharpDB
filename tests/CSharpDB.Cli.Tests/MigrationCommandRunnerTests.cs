@@ -1,5 +1,6 @@
 using System.Text.Json;
 using CSharpDB.Migration;
+using CSharpDB.Migration.CSharpDb;
 
 namespace CSharpDB.Cli.Tests;
 
@@ -93,6 +94,29 @@ public sealed class MigrationCommandRunnerTests
                 await File.ReadAllTextAsync(planPath, ct),
                 catalog);
             Assert.Equal(catalog.Objects.Count, plan.Objects.Count);
+            Assert.Matches("^[0-9a-f]{64}$", plan.GeneratedDdlDigest);
+            Assert.Equal(
+                CSharpDbDdlPreviewBuilder.BuildBounded(
+                    plan,
+                    catalog,
+                    cancellationToken: ct).GeneratedDdlDigest,
+                plan.GeneratedDdlDigest);
+            using (JsonDocument planDocument = JsonDocument.Parse(
+                await File.ReadAllTextAsync(planPath, ct)))
+            {
+                Assert.Equal(
+                    plan.GeneratedDdlDigest,
+                    planDocument.RootElement
+                        .GetProperty("payload")
+                        .GetProperty("generatedDdlDigest")
+                        .GetString());
+                Assert.False(
+                    planDocument.RootElement
+                        .GetProperty("payload")
+                        .TryGetProperty(
+                        "stages",
+                        out _));
+            }
 
             output.GetStringBuilder().Clear();
             int previewCode = await MigrationCommandRunner.RunAsync(
@@ -107,6 +131,344 @@ public sealed class MigrationCommandRunnerTests
             Assert.Contains("[excluded]", output.ToString(), StringComparison.Ordinal);
             Assert.Contains("MIG-TYPE-UNSUPPORTED-001", output.ToString(), StringComparison.Ordinal);
             Assert.True(string.IsNullOrWhiteSpace(error.ToString()));
+        }
+        finally
+        {
+            DeleteDirectoryIfExists(directory);
+        }
+    }
+
+    [Fact]
+    public async Task Plan_SealingFailureIsSanitizedAndDoesNotPublish()
+    {
+        string directory = NewTempDirectory();
+        string catalogPath = Path.Combine(directory, "catalog.json");
+        string planPath = Path.Combine(directory, "plan.json");
+        byte[] sentinel = "existing-plan-sentinel"u8.ToArray();
+        const string sensitiveFailure =
+            "CREATE TABLE [private_customer]; Password=never-print-this";
+
+        try
+        {
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            await MigrationCommandRunner.RunAsync(
+                [
+                    "migrate", "inspect",
+                    "--source", "synthetic",
+                    "--out", catalogPath,
+                ],
+                TextWriter.Null,
+                TextWriter.Null,
+                ct);
+            await File.WriteAllBytesAsync(planPath, sentinel, ct);
+            MigrationCommandDependencies dependencies =
+                MigrationCommandDependencies.Default with
+                {
+                    SealCSharpDbMigrationPlan = (_, _, _) =>
+                        throw new InvalidDataException(sensitiveFailure),
+                };
+            var output = new StringWriter();
+            var error = new StringWriter();
+
+            int code = await MigrationCommandRunner.RunAsync(
+                ["migrate", "plan", catalogPath, "--out", planPath],
+                output,
+                error,
+                dependencies,
+                ct);
+
+            Assert.Equal(InspectorCommandRunner.ExitError, code);
+            Assert.Equal(
+                sentinel,
+                await File.ReadAllBytesAsync(planPath, ct));
+            Assert.True(string.IsNullOrWhiteSpace(output.ToString()));
+            Assert.Contains(
+                "MIG-CSHARPDB-PLAN-DDL-001",
+                error.ToString(),
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                sensitiveFailure,
+                error.ToString(),
+                StringComparison.Ordinal);
+            Assert.Equal(
+                [
+                    Path.GetFileName(catalogPath),
+                    Path.GetFileName(planPath),
+                ],
+                Directory.EnumerateFiles(directory)
+                    .Select(path => Path.GetFileName(path)!)
+                    .Order(StringComparer.Ordinal)
+                    .ToArray());
+        }
+        finally
+        {
+            DeleteDirectoryIfExists(directory);
+        }
+    }
+
+    [Fact]
+    public async Task Plan_DdlLimitFailureIsSanitizedAndPreservesExistingOutput()
+    {
+        string directory = NewTempDirectory();
+        string catalogPath = Path.Combine(directory, "catalog.json");
+        string planPath = Path.Combine(directory, "plan.json");
+        byte[] sentinel = "existing-plan-sentinel"u8.ToArray();
+
+        try
+        {
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            await MigrationCommandRunner.RunAsync(
+                [
+                    "migrate", "inspect",
+                    "--source", "synthetic",
+                    "--out", catalogPath,
+                ],
+                TextWriter.Null,
+                TextWriter.Null,
+                ct);
+            await File.WriteAllBytesAsync(planPath, sentinel, ct);
+            MigrationCommandDependencies dependencies =
+                MigrationCommandDependencies.Default with
+                {
+                    SealCSharpDbMigrationPlan =
+                        (plan, catalog, cancellationToken) =>
+                            CSharpDbDdlPreviewBuilder
+                                .BuildAndAttachGeneratedDdlDigestBounded(
+                                    plan,
+                                    catalog,
+                                    new CSharpDbDdlPreviewBuildOptions
+                                    {
+                                        MaxActionCount = 1,
+                                    },
+                                    cancellationToken: cancellationToken),
+                };
+            var output = new StringWriter();
+            var error = new StringWriter();
+
+            int code = await MigrationCommandRunner.RunAsync(
+                ["migrate", "plan", catalogPath, "--out", planPath],
+                output,
+                error,
+                dependencies,
+                ct);
+
+            Assert.Equal(InspectorCommandRunner.ExitError, code);
+            Assert.Equal(
+                sentinel,
+                await File.ReadAllBytesAsync(planPath, ct));
+            Assert.True(string.IsNullOrWhiteSpace(output.ToString()));
+            Assert.Contains(
+                "MIG-CSHARPDB-PLAN-DDL-LIMIT-001",
+                error.ToString(),
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                "CREATE TABLE",
+                error.ToString(),
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Empty(
+                Directory.EnumerateFiles(
+                    directory,
+                    ".csharpdb-migration-*.tmp",
+                    SearchOption.TopDirectoryOnly));
+        }
+        finally
+        {
+            DeleteDirectoryIfExists(directory);
+        }
+    }
+
+    [Fact]
+    public async Task Plan_OversizedCatalogIsRejectedBeforeSealingOrPublication()
+    {
+        string directory = NewTempDirectory();
+        string catalogPath = Path.Combine(directory, "catalog.json");
+        string planPath = Path.Combine(directory, "plan.json");
+        byte[] sentinel = "existing-plan-sentinel"u8.ToArray();
+        bool sealerCalled = false;
+
+        try
+        {
+            await using (var stream = new FileStream(
+                catalogPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None))
+            {
+                stream.SetLength((64L * 1024 * 1024) + 1);
+            }
+            await File.WriteAllBytesAsync(
+                planPath,
+                sentinel,
+                TestContext.Current.CancellationToken);
+            MigrationCommandDependencies dependencies =
+                MigrationCommandDependencies.Default with
+                {
+                    SealCSharpDbMigrationPlan =
+                        (plan, _, _) =>
+                        {
+                            sealerCalled = true;
+                            return plan;
+                        },
+                };
+            var output = new StringWriter();
+            var error = new StringWriter();
+
+            int code = await MigrationCommandRunner.RunAsync(
+                ["migrate", "plan", catalogPath, "--out", planPath],
+                output,
+                error,
+                dependencies,
+                TestContext.Current.CancellationToken);
+
+            Assert.Equal(InspectorCommandRunner.ExitError, code);
+            Assert.False(sealerCalled);
+            Assert.Equal(
+                sentinel,
+                await File.ReadAllBytesAsync(
+                    planPath,
+                    TestContext.Current.CancellationToken));
+            Assert.True(string.IsNullOrWhiteSpace(output.ToString()));
+            Assert.Contains(
+                "MIG-CSHARPDB-PLAN-ARTIFACT-001",
+                error.ToString(),
+                StringComparison.Ordinal);
+            Assert.Empty(
+                Directory.EnumerateFiles(
+                    directory,
+                    ".csharpdb-migration-*.tmp",
+                    SearchOption.TopDirectoryOnly));
+        }
+        finally
+        {
+            DeleteDirectoryIfExists(directory);
+        }
+    }
+
+    [Fact]
+    public async Task Plan_OversizedSerializedArtifactPreservesExistingOutput()
+    {
+        string directory = NewTempDirectory();
+        string catalogPath = Path.Combine(directory, "catalog.json");
+        string planPath = Path.Combine(directory, "plan.json");
+        byte[] sentinel = "existing-plan-sentinel"u8.ToArray();
+        int oversizedThreeByteCharacterCount =
+            checked((int)((64L * 1024 * 1024) / 3) + 1);
+
+        try
+        {
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            await MigrationCommandRunner.RunAsync(
+                [
+                    "migrate", "inspect",
+                    "--source", "synthetic",
+                    "--out", catalogPath,
+                ],
+                TextWriter.Null,
+                TextWriter.Null,
+                ct);
+            await File.WriteAllBytesAsync(planPath, sentinel, ct);
+            MigrationCommandDependencies dependencies =
+                MigrationCommandDependencies.Default with
+                {
+                    SerializeMigrationPlan = (_, _) =>
+                        new string(
+                            '\u0800',
+                            oversizedThreeByteCharacterCount),
+                };
+            var output = new StringWriter();
+            var error = new StringWriter();
+
+            int code = await MigrationCommandRunner.RunAsync(
+                ["migrate", "plan", catalogPath, "--out", planPath],
+                output,
+                error,
+                dependencies,
+                ct);
+
+            Assert.Equal(InspectorCommandRunner.ExitError, code);
+            Assert.Equal(
+                sentinel,
+                await File.ReadAllBytesAsync(planPath, ct));
+            Assert.True(string.IsNullOrWhiteSpace(output.ToString()));
+            Assert.Contains(
+                "MIG-CSHARPDB-PLAN-ARTIFACT-LIMIT-001",
+                error.ToString(),
+                StringComparison.Ordinal);
+            Assert.Empty(
+                Directory.EnumerateFiles(
+                    directory,
+                    ".csharpdb-migration-*.tmp",
+                    SearchOption.TopDirectoryOnly));
+        }
+        finally
+        {
+            DeleteDirectoryIfExists(directory);
+        }
+    }
+
+    [Fact]
+    public async Task Plan_CancellationDuringSealingDoesNotPublish()
+    {
+        string directory = NewTempDirectory();
+        string catalogPath = Path.Combine(directory, "catalog.json");
+        string planPath = Path.Combine(directory, "plan.json");
+        byte[] sentinel = "existing-plan-sentinel"u8.ToArray();
+        using var cancellation = new CancellationTokenSource();
+
+        try
+        {
+            await MigrationCommandRunner.RunAsync(
+                [
+                    "migrate", "inspect",
+                    "--source", "synthetic",
+                    "--out", catalogPath,
+                ],
+                TextWriter.Null,
+                TextWriter.Null,
+                TestContext.Current.CancellationToken);
+            await File.WriteAllBytesAsync(
+                planPath,
+                sentinel,
+                TestContext.Current.CancellationToken);
+            MigrationCommandDependencies dependencies =
+                MigrationCommandDependencies.Default with
+                {
+                    SealCSharpDbMigrationPlan =
+                        (_, _, cancellationToken) =>
+                        {
+                            cancellation.Cancel();
+                            cancellationToken.ThrowIfCancellationRequested();
+                            throw new InvalidOperationException(
+                                "The canceled sealer must not return.");
+                        },
+                };
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                async () => await MigrationCommandRunner.RunAsync(
+                    [
+                        "migrate", "plan",
+                        catalogPath,
+                        "--out", planPath,
+                    ],
+                    TextWriter.Null,
+                    TextWriter.Null,
+                    dependencies,
+                    cancellation.Token));
+
+            Assert.Equal(
+                sentinel,
+                await File.ReadAllBytesAsync(
+                    planPath,
+                    TestContext.Current.CancellationToken));
+            Assert.Equal(
+                [
+                    Path.GetFileName(catalogPath),
+                    Path.GetFileName(planPath),
+                ],
+                Directory.EnumerateFiles(directory)
+                    .Select(path => Path.GetFileName(path)!)
+                    .Order(StringComparer.Ordinal)
+                    .ToArray());
         }
         finally
         {
@@ -700,7 +1062,7 @@ public sealed class MigrationCommandRunnerTests
             Assert.Equal(
                 new[] { Path.GetFileName(catalogPath), Path.GetFileName(planPath) },
                 Directory.EnumerateFiles(directory)
-                    .Select(Path.GetFileName)
+                    .Select(path => Path.GetFileName(path)!)
                     .Order(StringComparer.Ordinal)
                     .ToArray());
         }

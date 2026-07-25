@@ -64,7 +64,7 @@ internal static class MigrationCommandRunner
         "csharpdb-sqlite-catalog-v1";
     private const string SqliteCatalogRouteOnlyMessage =
         "This CLI route supports only SQLite catalog contract v1.";
-    private const long MaxExplicitPreviewArtifactBytes =
+    private const long MaxMigrationContractArtifactBytes =
         64L * 1024 * 1024;
 
     public static bool IsKnownCommand(string? arg) =>
@@ -99,6 +99,10 @@ internal static class MigrationCommandRunner
             dependencies.CreateSqlServerInspector);
         ArgumentNullException.ThrowIfNull(
             dependencies.BuildCSharpDbDdlPreview);
+        ArgumentNullException.ThrowIfNull(
+            dependencies.SealCSharpDbMigrationPlan);
+        ArgumentNullException.ThrowIfNull(
+            dependencies.SerializeMigrationPlan);
 
         if (args.Length < 2 || !IsKnownCommand(args[0]))
             return await UsageAsync(error);
@@ -113,7 +117,12 @@ internal static class MigrationCommandRunner
                     error,
                     dependencies,
                     ct),
-                "plan" => await RunPlanAsync(args, output, error, ct),
+                "plan" => await RunPlanAsync(
+                    args,
+                    output,
+                    error,
+                    dependencies,
+                    ct),
                 "preview" => await RunPreviewAsync(
                     args,
                     output,
@@ -1479,6 +1488,7 @@ internal static class MigrationCommandRunner
         string[] args,
         TextWriter output,
         TextWriter error,
+        MigrationCommandDependencies dependencies,
         CancellationToken ct)
     {
         if (args.Length < 3 || args[2].StartsWith("--", StringComparison.Ordinal))
@@ -1557,8 +1567,26 @@ internal static class MigrationCommandRunner
         {
             return await OptionErrorAsync(parseError!, error);
         }
-        MigrationCatalog catalog = MigrationArtifactSerializer.DeserializeCatalog(
-            await File.ReadAllTextAsync(catalogPath, ct));
+        MigrationCatalog catalog;
+        try
+        {
+            catalog = MigrationArtifactSerializer.DeserializeCatalog(
+                await ReadBoundedMigrationContractArtifactAsync(
+                    catalogPath,
+                    ct));
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception artifactError) when (
+            IsRecoverableCliException(artifactError))
+        {
+            throw new MigrationCliSafeException(
+                "MIG-CSHARPDB-PLAN-ARTIFACT-001",
+                "The migration catalog could not be loaded safely for planning.",
+                artifactError);
+        }
         if (catalog.Source.Kind == MigrationSourceKind.Json &&
             ClassifyJsonCatalog(
                 catalog,
@@ -1593,9 +1621,83 @@ internal static class MigrationCommandRunner
                 AcceptedExclusionObjectIds = acceptedExclusionObjectIds,
                 AcceptAllExclusions = acceptAllExclusions,
             });
+        try
+        {
+            plan = dependencies.SealCSharpDbMigrationPlan(
+                plan,
+                catalog,
+                ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (CSharpDbDdlPreviewLimitException limitError)
+        {
+            throw new MigrationCliSafeException(
+                "MIG-CSHARPDB-PLAN-DDL-LIMIT-001",
+                "The migration plan's CSharpDB DDL exceeded a production safety limit.",
+                limitError);
+        }
+        catch (Exception sealingError) when (
+            IsRecoverableCliException(sealingError))
+        {
+            throw new MigrationCliSafeException(
+                "MIG-CSHARPDB-PLAN-DDL-001",
+                "The migration plan could not be sealed to its CSharpDB DDL safely.",
+                sealingError);
+        }
+        string serializedPlan;
+        try
+        {
+            serializedPlan =
+                dependencies.SerializeMigrationPlan(plan, catalog) ??
+                throw new InvalidDataException(
+                    "Migration plan serialization returned no content.");
+            ct.ThrowIfCancellationRequested();
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception serializationError) when (
+            IsRecoverableCliException(serializationError))
+        {
+            throw new MigrationCliSafeException(
+                "MIG-CSHARPDB-PLAN-ARTIFACT-001",
+                "The sealed migration plan could not be serialized safely.",
+                serializationError);
+        }
+
+        bool serializedPlanExceedsLimit;
+        try
+        {
+            serializedPlanExceedsLimit =
+                ExceedsStrictUtf8ByteLimit(
+                    serializedPlan,
+                    MaxMigrationContractArtifactBytes,
+                    ct);
+        }
+        catch (EncoderFallbackException encodingError)
+        {
+            throw new MigrationCliSafeException(
+                "MIG-CSHARPDB-PLAN-ARTIFACT-001",
+                "The sealed migration plan could not be encoded safely.",
+                encodingError);
+        }
+        ct.ThrowIfCancellationRequested();
+        if (serializedPlanExceedsLimit)
+        {
+            throw new MigrationCliSafeException(
+                "MIG-CSHARPDB-PLAN-ARTIFACT-LIMIT-001",
+                "The sealed migration plan exceeds the migration contract artifact limit.",
+                new InvalidDataException(
+                    "The sealed migration plan exceeds its byte limit."));
+        }
+
         await WriteArtifactAsync(
             outputPath,
-            MigrationArtifactSerializer.SerializePlan(plan, catalog),
+            serializedPlan,
             ct);
 
         MigrationPlanReadiness readiness = MigrationPlanReadinessValidator.Evaluate(plan, catalog);
@@ -1780,7 +1882,7 @@ internal static class MigrationCommandRunner
         string catalogPath = Path.GetFullPath(catalogValue);
         MigrationCatalog catalog =
             MigrationArtifactSerializer.DeserializeCatalog(
-                await ReadBoundedExplicitPreviewArtifactAsync(
+                await ReadBoundedMigrationContractArtifactAsync(
                     catalogPath,
                     ct));
         if (catalog.Source.Kind == MigrationSourceKind.Sqlite &&
@@ -1791,7 +1893,7 @@ internal static class MigrationCommandRunner
                 error);
         }
         MigrationPlan plan = MigrationArtifactSerializer.DeserializePlan(
-            await ReadBoundedExplicitPreviewArtifactAsync(
+            await ReadBoundedMigrationContractArtifactAsync(
                 planPath,
                 ct),
             catalog);
@@ -1805,6 +1907,7 @@ internal static class MigrationCommandRunner
                 plan,
                 catalog,
                 ct);
+        ValidateExplicitPreviewBinding(plan, ddlPreview);
 
         if (includeDdl)
         {
@@ -1846,8 +1949,25 @@ internal static class MigrationCommandRunner
                 : InspectorCommandRunner.ExitError;
     }
 
+    private static void ValidateExplicitPreviewBinding(
+        MigrationPlan plan,
+        CSharpDbDdlPreview preview)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentNullException.ThrowIfNull(preview);
+        if (plan.GeneratedDdlDigest is not null &&
+            !string.Equals(
+                plan.GeneratedDdlDigest,
+                preview.GeneratedDdlDigest,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "The explicit CSharpDB preview does not match the sealed migration plan.");
+        }
+    }
+
     private static async ValueTask<string>
-        ReadBoundedExplicitPreviewArtifactAsync(
+        ReadBoundedMigrationContractArtifactAsync(
             string path,
             CancellationToken ct)
     {
@@ -1860,10 +1980,10 @@ internal static class MigrationCommandRunner
             bufferSize: 4096,
             FileOptions.Asynchronous | FileOptions.SequentialScan);
         if (stream.CanSeek &&
-            stream.Length > MaxExplicitPreviewArtifactBytes)
+            stream.Length > MaxMigrationContractArtifactBytes)
         {
             throw new InvalidDataException(
-                "The explicit preview artifact exceeds its byte limit.");
+                "The migration contract artifact exceeds its byte limit.");
         }
         using var payload = new MemoryStream();
         byte[] buffer = new byte[64 * 1024];
@@ -1877,10 +1997,10 @@ internal static class MigrationCommandRunner
             if (read == 0)
                 break;
             if (totalBytes >
-                MaxExplicitPreviewArtifactBytes - read)
+                MaxMigrationContractArtifactBytes - read)
             {
                 throw new InvalidDataException(
-                    "The explicit preview artifact exceeds its byte limit.");
+                    "The migration contract artifact exceeds its byte limit.");
             }
 
             payload.Write(buffer, 0, read);
@@ -1899,6 +2019,62 @@ internal static class MigrationCommandRunner
             bytes = bytes[3..];
         }
         return Utf8NoBomStrict.GetString(bytes);
+    }
+
+    private static bool ExceedsStrictUtf8ByteLimit(
+        string content,
+        long byteLimit,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        if (byteLimit < 0)
+            throw new ArgumentOutOfRangeException(nameof(byteLimit));
+
+        long byteCount = 0;
+        for (int index = 0; index < content.Length; index++)
+        {
+            if ((index & 0x3FFF) == 0)
+                ct.ThrowIfCancellationRequested();
+
+            char character = content[index];
+            int encodedBytes;
+            if (character <= '\u007F')
+            {
+                encodedBytes = 1;
+            }
+            else if (character <= '\u07FF')
+            {
+                encodedBytes = 2;
+            }
+            else if (char.IsHighSurrogate(character))
+            {
+                if (index + 1 >= content.Length ||
+                    !char.IsLowSurrogate(content[index + 1]))
+                {
+                    throw new EncoderFallbackException(
+                        "The migration contract artifact contains invalid UTF-16.");
+                }
+
+                index++;
+                encodedBytes = 4;
+            }
+            else if (char.IsLowSurrogate(character))
+            {
+                throw new EncoderFallbackException(
+                    "The migration contract artifact contains invalid UTF-16.");
+            }
+            else
+            {
+                encodedBytes = 3;
+            }
+
+            if (byteCount > byteLimit - encodedBytes)
+                return true;
+            byteCount += encodedBytes;
+        }
+
+        ct.ThrowIfCancellationRequested();
+        return false;
     }
 
     private static async ValueTask<int> RunApplyAsync(

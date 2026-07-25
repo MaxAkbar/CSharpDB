@@ -702,6 +702,62 @@ public sealed class SqlServerMigrationCommandRunnerTests
         }
     }
 
+    [Fact]
+    public async Task Plan_SqlServerCatalogIsSealedWithoutPromotingReadiness()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string directory = CreateTempDirectory();
+        string catalogPath = Path.Combine(directory, "catalog.json");
+        string planPath = Path.Combine(directory, "plan.json");
+
+        try
+        {
+            MigrationCatalog catalog =
+                await CreateSqlServerCatalogAsync(
+                    includeDiagnostic: true,
+                    ct);
+            await File.WriteAllTextAsync(
+                catalogPath,
+                MigrationArtifactSerializer.SerializeCatalog(catalog),
+                ct);
+
+            int exitCode = await MigrationCommandRunner.RunAsync(
+                [
+                    "migrate", "plan",
+                    catalogPath,
+                    "--out", planPath,
+                ],
+                TextWriter.Null,
+                TextWriter.Null,
+                ct);
+
+            string artifact = await File.ReadAllTextAsync(planPath, ct);
+            MigrationPlan plan =
+                MigrationArtifactSerializer.DeserializePlan(
+                    artifact,
+                    catalog);
+            MigrationPlanReadiness readiness =
+                MigrationPlanReadinessValidator.Evaluate(plan, catalog);
+
+            Assert.Equal(InspectorCommandRunner.ExitWarn, exitCode);
+            Assert.Matches(
+                "^[0-9a-f]{64}$",
+                plan.GeneratedDdlDigest);
+            Assert.Equal(
+                MigrationPlanReadinessStatus.RequiresApproval,
+                readiness.Status);
+            Assert.DoesNotContain(
+                "CREATE TABLE",
+                artifact,
+                StringComparison.OrdinalIgnoreCase);
+            AssertSecretAbsent(artifact);
+        }
+        finally
+        {
+            TryDeleteDirectory(directory);
+        }
+    }
+
     private static async ValueTask<MigrationCatalog> CreateSqlServerCatalogAsync(
         bool includeDiagnostic,
         CancellationToken ct)

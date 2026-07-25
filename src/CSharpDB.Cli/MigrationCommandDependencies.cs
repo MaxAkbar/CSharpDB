@@ -28,4 +28,22 @@ internal sealed record MigrationCommandDependencies
                 plan,
                 catalog,
                 cancellationToken: cancellationToken);
+
+    internal Func<
+        MigrationPlan,
+        MigrationCatalog,
+        CancellationToken,
+        MigrationPlan> SealCSharpDbMigrationPlan { get; init; } =
+        static (plan, catalog, cancellationToken) =>
+            CSharpDbDdlPreviewBuilder.BuildAndAttachGeneratedDdlDigestBounded(
+                plan,
+                catalog,
+                cancellationToken: cancellationToken);
+
+    internal Func<MigrationPlan, MigrationCatalog, string>
+        SerializeMigrationPlan { get; init; } =
+        static (plan, catalog) =>
+            MigrationArtifactSerializer.SerializePlan(
+                plan,
+                catalog);
 }
