@@ -64,6 +64,10 @@ jobs:
       - name: Test
         run: dotnet test CSharpDB.slnx -c Release --no-build --verbosity minimal
 
+      - name: Verify EF Core migration analyzer package boundary
+        shell: pwsh
+        run: ./scripts/Test-EfCoreMigrationTool.ps1 -Configuration Release -NoRestore
+
   publish-nuget:
     name: Publish NuGet
     needs: build-and-test
@@ -152,6 +156,16 @@ jobs:
             -FeedPath artifacts/nuget `
             -Version "${{ steps.version.outputs.version }}"
 
+      - name: Pack EF Core migration analyzer
+        run: dotnet pack src/CSharpDB.EntityFrameworkCore.Tools/CSharpDB.EntityFrameworkCore.Tools.csproj -c Release -o artifacts/nuget -p:Version="${{ steps.version.outputs.version }}"
+
+      - name: Qualify packed EF Core migration analyzer
+        shell: pwsh
+        run: |
+          ./scripts/Test-EfCoreMigrationTool.ps1 `
+            -FeedPath artifacts/nuget `
+            -Version "${{ steps.version.outputs.version }}"
+
       - name: NuGet login through Trusted Publishing
         id: nuget-login
         uses: NuGet/login@v1
@@ -186,6 +200,7 @@ jobs:
               'CSharpDB.CodeModules',
               'CSharpDB.Data',
               'CSharpDB.EntityFrameworkCore',
+              'CSharpDB.EntityFrameworkCore.Tools',
               'CSharpDB'
             )
 

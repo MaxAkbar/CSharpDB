@@ -68,6 +68,7 @@ jobs:
             tests/CSharpDB.Data.Tests/CSharpDB.Data.Tests.csproj
             tests/CSharpDB.DevOps.Tests/CSharpDB.DevOps.Tests.csproj
             tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj
+            tests/CSharpDB.EntityFrameworkCore.Tools.Tests/CSharpDB.EntityFrameworkCore.Tools.Tests.csproj
             tests/CSharpDB.Migration.Files.Tests/CSharpDB.Migration.Files.Tests.csproj
             tests/CSharpDB.Migration.MySql.Tests/CSharpDB.Migration.MySql.Tests.csproj
             tests/CSharpDB.Migration.SqlServer.Tests/CSharpDB.Migration.SqlServer.Tests.csproj
@@ -88,6 +89,10 @@ jobs:
       - name: Verify MySQL migration adapter isolation
         shell: pwsh
         run: ./scripts/Test-MySqlMigrationIsolation.ps1 -Configuration Release -NoRestore
+
+      - name: Verify EF Core migration analyzer package boundary
+        shell: pwsh
+        run: ./scripts/Test-EfCoreMigrationTool.ps1 -Configuration Release -NoRestore
 
       - name: Test CSharpDB.Tests
         shell: bash
@@ -246,6 +251,9 @@ jobs:
       - name: Qualify packed EF Core provider
         shell: pwsh
         run: ./scripts/Test-EfCoreNuGetPackage.ps1 -FeedPath artifacts/nuget
+
+      - name: Pack EF Core migration analyzer
+        run: dotnet pack src/CSharpDB.EntityFrameworkCore.Tools/CSharpDB.EntityFrameworkCore.Tools.csproj -c Release -o artifacts/nuget
 
       - name: Upload NuGet artifacts
         uses: actions/upload-artifact@v7

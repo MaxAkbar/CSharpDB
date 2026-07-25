@@ -182,6 +182,13 @@ CSharpDB is more than an embedded SQL engine. The same database can be used thro
 
 CSharpDB includes a first-party embedded EF Core 10 provider for file-backed and private in-memory databases. It supports application-managed concurrency tokens plus one engine-generated nonnullable `byte[]` `[Timestamp]`/`IsRowVersion()` property per table. The opaque eight-byte token is a per-row revision that advances for every successful update, including raw SQL and trigger-issued updates; it is not SQL Server's database-wide counter, and standalone add/alter rowversion migrations remain unsupported. Conventional optional scalar and composite relationships support EF Core's default `ClientSetNull`: EF clears nullable FK components for tracked dependents, while a restrictive database constraint protects unloaded dependents. Database-side `DeleteBehavior.SetNull` remains unsupported.
 
+The separate [`csharpdb-ef` migration analyzer](src/CSharpDB.EntityFrameworkCore.Tools/README.md)
+can inspect a restored `net10.0` project's compiled migration chain through the
+provider's real design-time services and SQL generator without adding EF Core
+design dependencies to the base CLI. Its first release reports bounded
+generation evidence only; isolated scratch-chain execution remains a later
+proof tier.
+
 The supported ASP.NET Core Identity configuration is deliberately bounded to Identity
 schema v1 with `IdentityUser<int>` and `IdentityRole<int>`. Its standard
 user, role, claim, login, token, role-membership, concurrency, transaction,

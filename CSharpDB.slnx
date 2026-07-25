@@ -61,6 +61,7 @@
     <Project Path="src/CSharpDB.Cli/CSharpDB.Cli.csproj" />
     <Project Path="src/CSharpDB.Data/CSharpDB.Data.csproj" />
     <Project Path="src/CSharpDB.EntityFrameworkCore/CSharpDB.EntityFrameworkCore.csproj" />
+    <Project Path="src/CSharpDB.EntityFrameworkCore.Tools/CSharpDB.EntityFrameworkCore.Tools.csproj" />
     <Project Path="src/CSharpDB.Admin/CSharpDB.Admin.csproj" />
     <Project Path="src/CSharpDB.Admin.Desktop/CSharpDB.Admin.Desktop.csproj" />
     <Project Path="src/CSharpDB.Admin.Forms/CSharpDB.Admin.Forms.csproj" />
@@ -74,6 +75,8 @@
     <Project Path="tests/CSharpDB.Pipelines.Tests/CSharpDB.Pipelines.Tests.csproj" />
     <Project Path="tests/CSharpDB.Data.Tests/CSharpDB.Data.Tests.csproj" />
     <Project Path="tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj" />
+    <Project Path="tests/CSharpDB.EntityFrameworkCore.Tools.Fixtures/CSharpDB.EntityFrameworkCore.Tools.Fixtures.csproj" />
+    <Project Path="tests/CSharpDB.EntityFrameworkCore.Tools.Tests/CSharpDB.EntityFrameworkCore.Tools.Tests.csproj" />
     <Project Path="tests/CSharpDB.Cli.Tests/CSharpDB.Cli.Tests.csproj" />
     <Project Path="tests/CSharpDB.DevOps.Tests/CSharpDB.DevOps.Tests.csproj" />
     <Project Path="tests/CSharpDB.Migration.CrashHarness/CSharpDB.Migration.CrashHarness.csproj" />

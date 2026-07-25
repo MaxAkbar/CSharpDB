@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <Import Project="..\TestDefaults.props" />
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\CSharpDB.EntityFrameworkCore.Tools\CSharpDB.EntityFrameworkCore.Tools.csproj" />
+    <ProjectReference Include="..\..\src\CSharpDB.Migration\CSharpDB.Migration.csproj" />
+    <ProjectReference Include="..\CSharpDB.EntityFrameworkCore.Tools.Fixtures\CSharpDB.EntityFrameworkCore.Tools.Fixtures.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design"
+                      Version="$(CSharpDbQualifiedEfCoreVersion)"
+                      PrivateAssets="all">
+      <IncludeAssets>runtime</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+</Project>

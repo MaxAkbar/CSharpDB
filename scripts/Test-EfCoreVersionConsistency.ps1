@@ -147,8 +147,54 @@ if ($validationErrors.Count -gt 0) {
     throw "EF Core version validation failed:`n - $($validationErrors -join "`n - ")"
 }
 
+$hardCodedQualifiedVersionPattern =
+    'QualifiedEfCoreVersion\s*=\s*"\d+(?:\.\d+){2}(?:[-+][^"]+)?'
+$sourceRoots = @(
+    "src/CSharpDB.EntityFrameworkCore.Tools",
+    "tests/CSharpDB.EntityFrameworkCore.Tools.Tests"
+)
+foreach ($sourceRoot in $sourceRoots) {
+    $sourceRootPath = Join-Path $repositoryRootPath $sourceRoot
+    if (-not (Test-Path -LiteralPath $sourceRootPath -PathType Container)) {
+        continue
+    }
+
+    foreach ($sourcePath in [System.IO.Directory]::EnumerateFiles(
+            $sourceRootPath,
+            "*.cs",
+            [System.IO.SearchOption]::AllDirectories)) {
+        $relativeSourcePath =
+            [System.IO.Path]::GetRelativePath($sourceRootPath, $sourcePath)
+        $pathSegments = $relativeSourcePath.Split(
+            [System.IO.Path]::DirectorySeparatorChar,
+            [System.StringSplitOptions]::RemoveEmptyEntries)
+        if ($pathSegments -contains "bin" -or $pathSegments -contains "obj") {
+            continue
+        }
+
+        $sourceText = [System.IO.File]::ReadAllText($sourcePath)
+        $versionAssignmentMatch = [System.Text.RegularExpressions.Regex]::Match(
+            $sourceText,
+            $hardCodedQualifiedVersionPattern)
+        if (-not $versionAssignmentMatch.Success) {
+            continue
+        }
+
+        $lineNumber =
+            [System.Text.RegularExpressions.Regex]::Matches(
+                $sourceText.Substring(0, $versionAssignmentMatch.Index),
+                "`n").Count + 1
+        $repositoryRelativePath =
+            [System.IO.Path]::GetRelativePath($repositoryRootPath, $sourcePath)
+        throw (
+            "$repositoryRelativePath`:$lineNumber hard-codes QualifiedEfCoreVersion; " +
+            "derive it from Microsoft.EntityFrameworkCore.Infrastructure.ProductInfo.GetVersion()."
+        )
+    }
+}
+
 Write-Host (
-    "EF Core version validation passed: {0} package references use {1} ({2}), matching dotnet-ef." -f
+    "EF Core version validation passed: {0} package references use {1} ({2}), matching dotnet-ef; analyzer reports derive the runtime version." -f
     $qualifiedReferences.Count,
     $qualifiedVersionExpression,
     $qualifiedVersion

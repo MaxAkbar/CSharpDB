@@ -244,6 +244,26 @@ to serialize concurrent migration runs across processes. Idempotent scripts
 guard migration commands with history-table checks, so one script can be
 applied to empty, partially migrated, or current databases.
 
+For adoption review, the separate
+[`csharpdb-ef` tool](../CSharpDB.EntityFrameworkCore.Tools/README.md) analyzes a
+restored, single-target `net10.0` project's compiled migrations with the
+provider active:
+
+```bash
+dotnet csharpdb-ef analyze \
+  --project ./MyApp.csproj \
+  --context MyApp.Data.AppDbContext
+```
+
+The first analyzer tier inspects ordered `Up` and `Down` operations and runs
+the provider's real migration SQL generator in a bounded child process. The
+tool does not request a connection to, or migration of, the configured
+database, and it deliberately reports successful generation as conditional
+evidence until the migration chain has also passed isolated scratch execution.
+Building the project and EF Core design-time context creation can execute
+trusted application code—including code that performs its own side effects;
+see the tool guide for the complete boundary.
+
 Provider versions before 4.2.0 emitted create-time foreign keys inline, so the
 engine assigned generated constraint names. Before dropping one of those
 legacy constraints, query `sys.foreign_keys` for its stored name and use that

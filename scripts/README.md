@@ -314,6 +314,34 @@ and connection-absent failures without contacting a server.
   -NoRestore
 ```
 
+### `Test-EfCoreMigrationTool.ps1`
+
+Use this after restore to qualify the packaged `csharpdb-ef` tool boundary. It
+packs and installs the tool into a validated repository-local temporary
+workspace, analyzes the compiled valid and unsupported fixtures, checks the
+generation-only exit/status contract, and proves target-controlled console
+output does not escape into the JSON report. It also checks the Web SDK minimal
+sample without creating `sample.db`, then publishes the base `csharpdb` CLI and
+verifies that the separate analyzer and EF Core design-time dependencies did
+not enter that dependency graph.
+
+```powershell
+.\scripts\Test-EfCoreMigrationTool.ps1 `
+  -Configuration Release `
+  -NoRestore
+```
+
+To qualify the exact tool package produced by a release pack, supply both its
+local feed and version. This mode does not repack the project; it verifies the
+selected nupkg identity and hash, installs only from that feed, and runs the
+same checks.
+
+```powershell
+.\scripts\Test-EfCoreMigrationTool.ps1 `
+  -FeedPath artifacts/nuget `
+  -Version 4.3.0
+```
+
 ### `Publish-CSharpDbAdminStorePackage.ps1`
 
 Use this on Windows when preparing the Microsoft Store package for CSharpDB
