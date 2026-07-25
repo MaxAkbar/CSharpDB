@@ -192,6 +192,22 @@ public sealed class SqlServerTargetPreviewIntegrationTests
             assessment,
             MigrationObjectKind.Routine,
             "usp_CycleA");
+        AssertExcluded(
+            assessment,
+            MigrationObjectKind.Index,
+            "CUX_OrderSummary_Id");
+        AssertExcluded(
+            assessment,
+            MigrationObjectKind.Index,
+            "$fulltext");
+        AssertExcluded(
+            assessment,
+            MigrationObjectKind.Other,
+            "MigrationSearch");
+        AssertExcluded(
+            assessment,
+            MigrationObjectKind.Other,
+            "PF_Orders_Customer");
         AssertIncluded(
             assessment,
             MigrationObjectKind.Table,
@@ -220,6 +236,26 @@ public sealed class SqlServerTargetPreviewIntegrationTests
             StringComparison.Ordinal);
         Assert.DoesNotContain(
             SqlServerTestSnapshot.SecretModuleDefinition,
+            publishedPreview,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            SqlServerTestSnapshot.SecretPartitionBoundary,
+            publishedPreview,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            SqlServerTestSnapshot.SecretPartitionBoundaryHex,
+            publishedPreview,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "CUX_OrderSummary_Id",
+            publishedPreview,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "MigrationSearch",
+            publishedPreview,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "PF_Orders_Customer",
             publishedPreview,
             StringComparison.Ordinal);
     }
@@ -293,7 +329,19 @@ public sealed class SqlServerTargetPreviewIntegrationTests
             source.Routines.Reverse(),
             source.Modules.Reverse(),
             source.Parameters.Reverse(),
-            Reverse(source.ExpressionDependencyAudit));
+            Reverse(source.ExpressionDependencyAudit),
+            source.FullTextCatalogs.Reverse(),
+            source.FullTextStoplists.Reverse(),
+            source.SearchPropertyLists.Reverse(),
+            source.FullTextIndexes.Reverse(),
+            source.FullTextIndexColumns.Reverse(),
+            source.DataSpaces.Reverse(),
+            source.PartitionSchemes.Reverse(),
+            source.PartitionSchemeDestinations.Reverse(),
+            source.PartitionFunctions.Reverse(),
+            source.PartitionParameters.Reverse(),
+            source.PartitionRangeValues.Reverse(),
+            source.IndexPartitions.Reverse());
 
     private static SqlServerPermissionAuditMetadata Reverse(
         SqlServerPermissionAuditMetadata source) =>

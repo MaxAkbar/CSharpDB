@@ -238,6 +238,7 @@ internal static partial class SqlServerCatalogBuilder
 
         var indexObjectIds = new Dictionary<(int ObjectId, int IndexId), string>();
         foreach (SqlServerIndexMetadata index in snapshot.Indexes
+                     .Where(item => tablesByObjectId.ContainsKey(item.ObjectId))
                      .OrderBy(static item => item.ObjectId)
                      .ThenBy(static item => item.IndexId))
         {
@@ -781,8 +782,10 @@ internal static partial class SqlServerCatalogBuilder
         foreach (SqlServerIndexMetadata index in snapshot.Indexes)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!tableIds.Contains(index.ObjectId) ||
-                index.IndexId <= 0 ||
+            if (!tableIds.Contains(index.ObjectId))
+                continue;
+
+            if (index.IndexId <= 0 ||
                 index.Type == 0 ||
                 !indexes.TryAdd((index.ObjectId, index.IndexId), index))
             {
@@ -827,6 +830,9 @@ internal static partial class SqlServerCatalogBuilder
         foreach (SqlServerIndexColumnMetadata column in snapshot.IndexColumns)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (!tableIds.Contains(column.ObjectId))
+                continue;
+
             if (!indexes.TryGetValue(
                     (column.ObjectId, column.IndexId),
                     out SqlServerIndexMetadata? index) ||

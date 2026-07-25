@@ -6,7 +6,7 @@ namespace CSharpDB.Migration.SqlServer;
 
 internal static partial class SqlServerCatalogBuilder
 {
-    public const string CatalogContract = "csharpdb-sqlserver-catalog/v4";
+    public const string CatalogContract = "csharpdb-sqlserver-catalog/v5";
 
     private static readonly UTF8Encoding s_strictUtf8 =
         new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
@@ -52,7 +52,8 @@ internal static partial class SqlServerCatalogBuilder
             snapshot.Tables.Count +
             snapshot.Columns.Count +
             RelationalObjectCapacity(snapshot) +
-            ProgrammableObjectCapacity(snapshot));
+            ProgrammableObjectCapacity(snapshot) +
+            PhysicalObjectCapacity(snapshot));
         var diagnostics = new List<MigrationDiagnostic>();
 
         string databaseId = ObjectId("database", snapshot.Database.Name);
@@ -137,6 +138,54 @@ internal static partial class SqlServerCatalogBuilder
                 Facet(
                     "sqlServerExpressionDependencyAuditDigest",
                     ExpressionDependencyAuditDigest(snapshot.ExpressionDependencyAudit)),
+                Facet(
+                    "sqlServerIndexedViewIndexCount",
+                    Invariant(CountIndexedViewIndexes(snapshot))),
+                Facet(
+                    "sqlServerFullTextCatalogCount",
+                    Invariant(snapshot.FullTextCatalogs.Count)),
+                Facet(
+                    "sqlServerFullTextStoplistCount",
+                    Invariant(snapshot.FullTextStoplists.Count)),
+                Facet(
+                    "sqlServerSearchPropertyListCount",
+                    Invariant(snapshot.SearchPropertyLists.Count)),
+                Facet(
+                    "sqlServerFullTextIndexCount",
+                    Invariant(snapshot.FullTextIndexes.Count)),
+                Facet(
+                    "sqlServerFullTextIndexColumnCount",
+                    Invariant(snapshot.FullTextIndexColumns.Count)),
+                Facet(
+                    "sqlServerDataSpaceCount",
+                    Invariant(snapshot.DataSpaces.Count)),
+                Facet(
+                    "sqlServerPartitionFunctionCount",
+                    Invariant(snapshot.PartitionFunctions.Count)),
+                Facet(
+                    "sqlServerPartitionSchemeCount",
+                    Invariant(snapshot.PartitionSchemes.Count)),
+                Facet(
+                    "sqlServerPartitionParameterCount",
+                    Invariant(snapshot.PartitionParameters.Count)),
+                Facet(
+                    "sqlServerPartitionBoundaryCount",
+                    Invariant(snapshot.PartitionRangeValues.Count)),
+                Facet(
+                    "sqlServerPartitionDestinationCount",
+                    Invariant(snapshot.PartitionSchemeDestinations.Count)),
+                Facet(
+                    "sqlServerPhysicalPartitionCount",
+                    Invariant(snapshot.IndexPartitions.Count)),
+                Facet(
+                    "sqlServerIndexedViewIndexInventoryStatus",
+                    PhysicalInventoryStatus(visibility)),
+                Facet(
+                    "sqlServerFullTextInventoryStatus",
+                    PhysicalInventoryStatus(visibility)),
+                Facet(
+                    "sqlServerPartitionStorageInventoryStatus",
+                    PhysicalInventoryStatus(visibility)),
             ],
         });
 
@@ -151,8 +200,8 @@ internal static partial class SqlServerCatalogBuilder
             MigrationDiagnosticSeverity.Error,
             MigrationCompatibilityStatus.Unknown,
             "This checkpoint is an intentionally partial SQL Server inventory.",
-            "Schemas, user tables, columns, defaults, identity, computed-column facts, keys, foreign keys, checks, table indexes, sequences, views, view columns, triggers and events, routines, module-definition evidence, parameters, and catalog expression-dependency rows are inventoried. Available module bodies receive bounded syntax analysis but are not bound, lowered, or source-semantically proven; SQL Server's dependency catalog has documented coverage gaps; indexed-view details, full-text indexes, and physical partition or storage layouts remain absent.",
-            "Complete remaining physical inventory, isolate the optional adapter for packaging, and finish live qualification before relying on the analyzer for migration approval.",
+            "Bounded indexed-view indexes, full-text configuration, data spaces, partition definitions, and per-index partition compression facts are now inventoried. Raw partition boundary values, full-text stopwords and registered property definitions, allocation and file placement, physical sizes, row estimates, and other volatile operational state are intentionally not retained. SQL definitions remain syntax-only evidence; binding, lowering, source-semantic proof, optional-package isolation, and live qualification are still pending.",
+            "Complete the remaining subtype-specific inventory and semantic proof, isolate the optional adapter for packaging, and finish live qualification before relying on the analyzer for migration approval.",
             canOverride: false));
 
         var schemasById =
@@ -209,6 +258,12 @@ internal static partial class SqlServerCatalogBuilder
                     Facet("sqlServerTemporalType", table.TemporalType),
                     Facet("sqlServerGraphNode", Boolean(table.IsNode)),
                     Facet("sqlServerGraphEdge", Boolean(table.IsEdge)),
+                    Facet(
+                        "sqlServerLobDataSpaceId",
+                        Invariant(table.LobDataSpaceId)),
+                    Facet(
+                        "sqlServerFileStreamDataSpaceId",
+                        Invariant(table.FileStreamDataSpaceId)),
                     Facet(
                         "sqlServerPermissionViewDefinition",
                         NullableBoolean(table.HasViewDefinition)),
@@ -354,6 +409,17 @@ internal static partial class SqlServerCatalogBuilder
             diagnostics,
             cancellationToken);
 
+        AddPhysicalObjects(
+            snapshot,
+            scriptDomAnalysis,
+            databaseId,
+            schemasById,
+            tablesByObjectId,
+            columnsByCatalogId,
+            objects,
+            diagnostics,
+            cancellationToken);
+
         string fingerprint = "sha256:" + ComputeSnapshotDigest(snapshot);
         var catalog = new MigrationCatalog
         {
@@ -399,6 +465,8 @@ internal static partial class SqlServerCatalogBuilder
             throw LimitExceeded("column count");
         ValidateRelationalCounts(snapshot, limits);
         ValidateProgrammableCounts(snapshot, limits);
+        ValidatePhysicalCounts(snapshot, limits);
+        ValidateAggregateStructuralCount(snapshot, limits);
         if (snapshot.Instance.ProductMajorVersion <= 0)
             throw new SqlServerMigrationException("SQL Server returned an invalid product major version.");
         if (snapshot.Database.DatabaseId <= 0)
@@ -493,6 +561,14 @@ internal static partial class SqlServerCatalogBuilder
             tableIds,
             columnIds,
             budget,
+            cancellationToken);
+        ValidatePhysicalSnapshot(
+            snapshot,
+            schemaIds,
+            tableIds,
+            columnIds,
+            budget,
+            limits,
             cancellationToken);
     }
 
@@ -1007,6 +1083,8 @@ internal static partial class SqlServerCatalogBuilder
                 yield return Boolean(table.IsNode);
                 yield return Boolean(table.IsEdge);
                 yield return NullableBoolean(table.HasViewDefinition);
+                yield return Invariant(table.LobDataSpaceId);
+                yield return Invariant(table.FileStreamDataSpaceId);
             }
             foreach (SqlServerColumnMetadata column in snapshot.Columns
                          .OrderBy(static item => item.ObjectId)
@@ -1054,10 +1132,12 @@ internal static partial class SqlServerCatalogBuilder
                 yield return field;
             foreach (string? field in ProgrammableSnapshotFields(snapshot))
                 yield return field;
+            foreach (string? field in PhysicalSnapshotFields(snapshot))
+                yield return field;
         }
 
         return SqlServerStableDigest.Sequence(
-            "csharpdb-sqlserver-snapshot/v3",
+            "csharpdb-sqlserver-snapshot/v4",
             Fields());
     }
 

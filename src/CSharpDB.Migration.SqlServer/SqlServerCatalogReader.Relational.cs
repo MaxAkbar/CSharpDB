@@ -81,11 +81,12 @@ internal sealed partial class SqlServerCatalogReader
             i.suppress_dup_key_messages,
             i.optimize_for_sequential_key
         FROM sys.indexes AS i
-        INNER JOIN sys.tables AS t
-            ON t.object_id = i.object_id
+        INNER JOIN sys.objects AS o
+            ON o.object_id = i.object_id
         LEFT JOIN sys.data_spaces AS ds
             ON ds.data_space_id = i.data_space_id
-        WHERE t.is_ms_shipped = 0
+        WHERE o.is_ms_shipped = 0
+          AND o.type IN (N'U', N'V')
           AND i.index_id > 0
         ORDER BY i.object_id, i.index_id;
         """;
@@ -105,9 +106,10 @@ internal sealed partial class SqlServerCatalogReader
         INNER JOIN sys.indexes AS i
             ON i.object_id = ic.object_id
            AND i.index_id = ic.index_id
-        INNER JOIN sys.tables AS t
-            ON t.object_id = ic.object_id
-        WHERE t.is_ms_shipped = 0
+        INNER JOIN sys.objects AS o
+            ON o.object_id = ic.object_id
+        WHERE o.is_ms_shipped = 0
+          AND o.type IN (N'U', N'V')
           AND i.index_id > 0
         ORDER BY ic.object_id, ic.index_id, ic.index_column_id;
         """;

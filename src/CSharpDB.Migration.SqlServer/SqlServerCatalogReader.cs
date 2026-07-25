@@ -105,7 +105,9 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
                         N'.' +
                         QUOTENAME(t.name),
                     N'OBJECT',
-                    N'VIEW DEFINITION'))
+                    N'VIEW DEFINITION')),
+            COALESCE(t.lob_data_space_id, 0),
+            COALESCE(t.filestream_data_space_id, 0)
         FROM sys.tables AS t
         WHERE t.is_ms_shipped = 0
         ORDER BY t.object_id;
@@ -192,6 +194,20 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
             ModulesQuery,
             ParametersQuery,
             ExpressionDependenciesQuery,
+            FullTextCatalogsQuery,
+            FullTextStoplistsQuery,
+            SearchPropertyListsQuery,
+            FullTextIndexesQuery,
+            FullTextIndexesV17Query,
+            FullTextIndexColumnsQuery,
+            DataSpacesQuery,
+            PartitionSchemesQuery,
+            PartitionSchemeDestinationsQuery,
+            PartitionFunctionsQuery,
+            PartitionParametersQuery,
+            PartitionRangeValuesQuery,
+            IndexPartitionsQuery,
+            IndexPartitionsV16Query,
         ]);
 
     private readonly string connectionString;
@@ -336,6 +352,93 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
                     limits,
                     cancellationToken)
                 .ConfigureAwait(false);
+        IReadOnlyList<SqlServerFullTextCatalogMetadata> fullTextCatalogs =
+            await ReadFullTextCatalogsAsync(
+                    connection,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        IReadOnlyList<SqlServerFullTextStoplistMetadata> fullTextStoplists =
+            await ReadFullTextStoplistsAsync(
+                    connection,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        IReadOnlyList<SqlServerSearchPropertyListMetadata> searchPropertyLists =
+            await ReadSearchPropertyListsAsync(
+                    connection,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        IReadOnlyList<SqlServerFullTextIndexMetadata> fullTextIndexes =
+            await ReadFullTextIndexesAsync(
+                    connection,
+                    instance,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        IReadOnlyList<SqlServerFullTextIndexColumnMetadata> fullTextIndexColumns =
+            await ReadFullTextIndexColumnsAsync(
+                    connection,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        IReadOnlyList<SqlServerDataSpaceMetadata> dataSpaces =
+            await ReadDataSpacesAsync(
+                    connection,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        IReadOnlyList<SqlServerPartitionSchemeMetadata> partitionSchemes =
+            await ReadPartitionSchemesAsync(
+                    connection,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        IReadOnlyList<SqlServerPartitionSchemeDestinationMetadata>
+            partitionSchemeDestinations =
+                await ReadPartitionSchemeDestinationsAsync(
+                        connection,
+                        budget,
+                        limits,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+        IReadOnlyList<SqlServerPartitionFunctionMetadata> partitionFunctions =
+            await ReadPartitionFunctionsAsync(
+                    connection,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        IReadOnlyList<SqlServerPartitionParameterMetadata> partitionParameters =
+            await ReadPartitionParametersAsync(
+                    connection,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        IReadOnlyList<SqlServerPartitionRangeValueMetadata> partitionRangeValues =
+            await ReadPartitionRangeValuesAsync(
+                    connection,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        IReadOnlyList<SqlServerIndexPartitionMetadata> indexPartitions =
+            await ReadIndexPartitionsAsync(
+                    connection,
+                    instance,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
         IReadOnlyList<SqlServerForeignKeyMetadata> foreignKeys =
             await ReadForeignKeysAsync(
                     connection,
@@ -454,7 +557,19 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
             routines,
             modules,
             parameters,
-            expressionDependencyAudit);
+            expressionDependencyAudit,
+            fullTextCatalogs,
+            fullTextStoplists,
+            searchPropertyLists,
+            fullTextIndexes,
+            fullTextIndexColumns,
+            dataSpaces,
+            partitionSchemes,
+            partitionSchemeDestinations,
+            partitionFunctions,
+            partitionParameters,
+            partitionRangeValues,
+            indexPartitions);
     }
 
     internal static void EnsureSupportedProductMajorVersion(
@@ -571,7 +686,9 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
                 RequiredString(reader, 6, budget),
                 RequiredBoolean(reader, 7),
                 RequiredBoolean(reader, 8),
-                OptionalBoolean(reader, 9)));
+                OptionalBoolean(reader, 9),
+                RequiredInt32(reader, 10),
+                RequiredInt32(reader, 11)));
         }
         return tables.AsReadOnly();
     }
@@ -754,6 +871,11 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
         reader.IsDBNull(ordinal)
             ? null
             : Convert.ToInt32(reader.GetValue(ordinal), CultureInfo.InvariantCulture);
+
+    private static byte? OptionalByte(SqlDataReader reader, int ordinal) =>
+        reader.IsDBNull(ordinal)
+            ? null
+            : Convert.ToByte(reader.GetValue(ordinal), CultureInfo.InvariantCulture);
 
     private static bool RequiredBoolean(SqlDataReader reader, int ordinal)
     {

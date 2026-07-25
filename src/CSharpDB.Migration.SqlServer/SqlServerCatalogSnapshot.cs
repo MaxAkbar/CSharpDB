@@ -32,7 +32,20 @@ internal sealed class SqlServerCatalogSnapshot
         IEnumerable<SqlServerRoutineMetadata>? routines = null,
         IEnumerable<SqlServerModuleMetadata>? modules = null,
         IEnumerable<SqlServerParameterMetadata>? parameters = null,
-        SqlServerExpressionDependencyAuditMetadata? expressionDependencyAudit = null)
+        SqlServerExpressionDependencyAuditMetadata? expressionDependencyAudit = null,
+        IEnumerable<SqlServerFullTextCatalogMetadata>? fullTextCatalogs = null,
+        IEnumerable<SqlServerFullTextStoplistMetadata>? fullTextStoplists = null,
+        IEnumerable<SqlServerSearchPropertyListMetadata>? searchPropertyLists = null,
+        IEnumerable<SqlServerFullTextIndexMetadata>? fullTextIndexes = null,
+        IEnumerable<SqlServerFullTextIndexColumnMetadata>? fullTextIndexColumns = null,
+        IEnumerable<SqlServerDataSpaceMetadata>? dataSpaces = null,
+        IEnumerable<SqlServerPartitionSchemeMetadata>? partitionSchemes = null,
+        IEnumerable<SqlServerPartitionSchemeDestinationMetadata>?
+            partitionSchemeDestinations = null,
+        IEnumerable<SqlServerPartitionFunctionMetadata>? partitionFunctions = null,
+        IEnumerable<SqlServerPartitionParameterMetadata>? partitionParameters = null,
+        IEnumerable<SqlServerPartitionRangeValueMetadata>? partitionRangeValues = null,
+        IEnumerable<SqlServerIndexPartitionMetadata>? indexPartitions = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(endpointDigest);
         ArgumentException.ThrowIfNullOrWhiteSpace(providerVersion);
@@ -70,6 +83,18 @@ internal sealed class SqlServerCatalogSnapshot
         ExpressionDependencyAudit = Copy(
             expressionDependencyAudit ??
             SqlServerExpressionDependencyAuditMetadata.NotAttempted);
+        FullTextCatalogs = Copy(fullTextCatalogs);
+        FullTextStoplists = Copy(fullTextStoplists);
+        SearchPropertyLists = Copy(searchPropertyLists);
+        FullTextIndexes = Copy(fullTextIndexes);
+        FullTextIndexColumns = Copy(fullTextIndexColumns);
+        DataSpaces = Copy(dataSpaces);
+        PartitionSchemes = Copy(partitionSchemes);
+        PartitionSchemeDestinations = Copy(partitionSchemeDestinations);
+        PartitionFunctions = Copy(partitionFunctions);
+        PartitionParameters = Copy(partitionParameters);
+        PartitionRangeValues = Copy(partitionRangeValues);
+        IndexPartitions = Copy(indexPartitions);
     }
 
     public string EndpointDigest { get; }
@@ -119,6 +144,32 @@ internal sealed class SqlServerCatalogSnapshot
     public IReadOnlyList<SqlServerParameterMetadata> Parameters { get; }
 
     public SqlServerExpressionDependencyAuditMetadata ExpressionDependencyAudit { get; }
+
+    public IReadOnlyList<SqlServerFullTextCatalogMetadata> FullTextCatalogs { get; }
+
+    public IReadOnlyList<SqlServerFullTextStoplistMetadata> FullTextStoplists { get; }
+
+    public IReadOnlyList<SqlServerSearchPropertyListMetadata> SearchPropertyLists { get; }
+
+    public IReadOnlyList<SqlServerFullTextIndexMetadata> FullTextIndexes { get; }
+
+    public IReadOnlyList<SqlServerFullTextIndexColumnMetadata> FullTextIndexColumns { get; }
+
+    public IReadOnlyList<SqlServerDataSpaceMetadata> DataSpaces { get; }
+
+    public IReadOnlyList<SqlServerPartitionSchemeMetadata> PartitionSchemes { get; }
+
+    public IReadOnlyList<SqlServerPartitionSchemeDestinationMetadata>
+        PartitionSchemeDestinations
+    { get; }
+
+    public IReadOnlyList<SqlServerPartitionFunctionMetadata> PartitionFunctions { get; }
+
+    public IReadOnlyList<SqlServerPartitionParameterMetadata> PartitionParameters { get; }
+
+    public IReadOnlyList<SqlServerPartitionRangeValueMetadata> PartitionRangeValues { get; }
+
+    public IReadOnlyList<SqlServerIndexPartitionMetadata> IndexPartitions { get; }
 
     private static IReadOnlyList<T> Copy<T>(IEnumerable<T>? items) =>
         new ReadOnlyCollection<T>((items ?? []).ToArray());
@@ -180,7 +231,9 @@ internal sealed record SqlServerTableMetadata(
     string TemporalType,
     bool IsNode,
     bool IsEdge,
-    bool? HasViewDefinition = null);
+    bool? HasViewDefinition = null,
+    int LobDataSpaceId = 0,
+    int FileStreamDataSpaceId = 0);
 
 internal sealed record SqlServerColumnMetadata(
     int ObjectId,
@@ -258,6 +311,100 @@ internal sealed record SqlServerIndexColumnMetadata(
     byte PartitionOrdinal,
     bool IsDescending,
     bool IsIncluded);
+
+internal sealed record SqlServerFullTextCatalogMetadata(
+    int FullTextCatalogId,
+    string Name,
+    bool IsDefault,
+    bool IsAccentSensitivityOn,
+    int DataSpaceId);
+
+internal sealed record SqlServerFullTextStoplistMetadata(
+    int StoplistId,
+    string Name);
+
+internal sealed record SqlServerSearchPropertyListMetadata(
+    int PropertyListId,
+    string Name);
+
+internal sealed record SqlServerFullTextIndexMetadata(
+    int ObjectId,
+    int UniqueIndexId,
+    int? IndexVersion,
+    int FullTextCatalogId,
+    bool IsEnabled,
+    string ChangeTrackingState,
+    string ChangeTrackingStateDescription,
+    int? StoplistId,
+    int DataSpaceId,
+    int? PropertyListId);
+
+internal sealed record SqlServerFullTextIndexColumnMetadata(
+    int ObjectId,
+    int ColumnId,
+    int? TypeColumnId,
+    int LanguageId,
+    bool StatisticalSemantics);
+
+internal sealed record SqlServerDataSpaceMetadata(
+    int DataSpaceId,
+    string Name,
+    string Type,
+    string TypeDescription,
+    bool IsDefault,
+    bool IsSystem,
+    bool? IsReadOnly);
+
+internal sealed record SqlServerPartitionSchemeMetadata(
+    int DataSpaceId,
+    int FunctionId);
+
+internal sealed record SqlServerPartitionSchemeDestinationMetadata(
+    int PartitionSchemeId,
+    int DestinationId,
+    int DataSpaceId);
+
+internal sealed record SqlServerPartitionFunctionMetadata(
+    int FunctionId,
+    string Name,
+    int Fanout,
+    bool BoundaryValueOnRight,
+    bool IsSystem);
+
+internal sealed record SqlServerPartitionParameterMetadata(
+    int FunctionId,
+    int ParameterId,
+    string TypeSchema,
+    string TypeName,
+    string SystemTypeName,
+    short MaxLength,
+    byte Precision,
+    byte Scale,
+    string? Collation);
+
+internal sealed record SqlServerPartitionRangeValueMetadata(
+    int FunctionId,
+    int BoundaryId,
+    int ParameterId,
+    bool IsNull,
+    string? BaseType,
+    int? MaxLength,
+    byte? Precision,
+    byte? Scale,
+    string? Collation,
+    int? ValueBytes,
+    string? ValueHex);
+
+internal sealed record SqlServerIndexPartitionMetadata(
+    int ObjectId,
+    int IndexId,
+    int PartitionNumber,
+    byte DataCompression,
+    string DataCompressionDescription,
+    bool? XmlCompression,
+    string? XmlCompressionDescription,
+    int? DefinitionDataSpaceId,
+    int? StorageDataSpaceId);
 
 internal sealed record SqlServerForeignKeyMetadata(
     int ObjectId,

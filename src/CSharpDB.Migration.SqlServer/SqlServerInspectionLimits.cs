@@ -24,11 +24,24 @@ internal sealed record SqlServerInspectionLimits
     public const int MaximumModules = 40_000;
     public const int MaximumParameters = 80_000;
     public const int MaximumExpressionDependencies = 160_000;
+    public const int MaximumFullTextCatalogs = 4_096;
+    public const int MaximumFullTextStoplists = 4_096;
+    public const int MaximumSearchPropertyLists = 4_096;
+    public const int MaximumFullTextIndexes = 10_000;
+    public const int MaximumFullTextIndexColumns = 20_000;
+    public const int MaximumDataSpaces = 4_096;
+    public const int MaximumPartitionSchemes = 4_096;
+    public const int MaximumPartitionSchemeDestinations = 160_000;
+    public const int MaximumPartitionFunctions = 4_096;
+    public const int MaximumPartitionParameters = 4_096;
+    public const int MaximumPartitionRangeValues = 160_000;
+    public const int MaximumIndexPartitions = 160_000;
     public const int MaximumUserTokens = 4_096;
     public const int MaximumPermissionDenials = 32_768;
     public const int MaximumStructuralRowsTotal = 500_000;
     public const int MaximumPermissionRowsTotal = 65_536;
     public const int MaximumNameBytes = 128 * 4;
+    public const int MaximumPartitionBoundaryBytes = 8_016;
     public const int MaximumExpressionBytes = 1024 * 1024;
     public const long MaximumExpressionBytesTotal = 64L * 1024 * 1024;
     public const long MaximumMetadataBytes = 128L * 1024 * 1024;
@@ -63,11 +76,28 @@ internal sealed record SqlServerInspectionLimits
     public int MaxParameters { get; init; } = MaximumParameters;
     public int MaxExpressionDependencies { get; init; } =
         MaximumExpressionDependencies;
+    public int MaxFullTextCatalogs { get; init; } = MaximumFullTextCatalogs;
+    public int MaxFullTextStoplists { get; init; } = MaximumFullTextStoplists;
+    public int MaxSearchPropertyLists { get; init; } = MaximumSearchPropertyLists;
+    public int MaxFullTextIndexes { get; init; } = MaximumFullTextIndexes;
+    public int MaxFullTextIndexColumns { get; init; } =
+        MaximumFullTextIndexColumns;
+    public int MaxDataSpaces { get; init; } = MaximumDataSpaces;
+    public int MaxPartitionSchemes { get; init; } = MaximumPartitionSchemes;
+    public int MaxPartitionSchemeDestinations { get; init; } =
+        MaximumPartitionSchemeDestinations;
+    public int MaxPartitionFunctions { get; init; } = MaximumPartitionFunctions;
+    public int MaxPartitionParameters { get; init; } = MaximumPartitionParameters;
+    public int MaxPartitionRangeValues { get; init; } =
+        MaximumPartitionRangeValues;
+    public int MaxIndexPartitions { get; init; } = MaximumIndexPartitions;
     public int MaxUserTokens { get; init; } = MaximumUserTokens;
     public int MaxPermissionDenials { get; init; } = MaximumPermissionDenials;
     public int MaxStructuralRowsTotal { get; init; } = MaximumStructuralRowsTotal;
     public int MaxPermissionRowsTotal { get; init; } = MaximumPermissionRowsTotal;
     public int MaxNameBytes { get; init; } = MaximumNameBytes;
+    public int MaxPartitionBoundaryBytes { get; init; } =
+        MaximumPartitionBoundaryBytes;
     public int MaxExpressionBytes { get; init; } = MaximumExpressionBytes;
     public long MaxExpressionBytesTotal { get; init; } = MaximumExpressionBytesTotal;
     public long MaxMetadataBytes { get; init; } = MaximumMetadataBytes;
@@ -119,6 +149,51 @@ internal sealed record SqlServerInspectionLimits
             nameof(MaxExpressionDependencies),
             MaxExpressionDependencies,
             MaximumExpressionDependencies);
+        Validate(
+            nameof(MaxFullTextCatalogs),
+            MaxFullTextCatalogs,
+            MaximumFullTextCatalogs);
+        Validate(
+            nameof(MaxFullTextStoplists),
+            MaxFullTextStoplists,
+            MaximumFullTextStoplists);
+        Validate(
+            nameof(MaxSearchPropertyLists),
+            MaxSearchPropertyLists,
+            MaximumSearchPropertyLists);
+        Validate(
+            nameof(MaxFullTextIndexes),
+            MaxFullTextIndexes,
+            MaximumFullTextIndexes);
+        Validate(
+            nameof(MaxFullTextIndexColumns),
+            MaxFullTextIndexColumns,
+            MaximumFullTextIndexColumns);
+        Validate(nameof(MaxDataSpaces), MaxDataSpaces, MaximumDataSpaces);
+        Validate(
+            nameof(MaxPartitionSchemes),
+            MaxPartitionSchemes,
+            MaximumPartitionSchemes);
+        Validate(
+            nameof(MaxPartitionSchemeDestinations),
+            MaxPartitionSchemeDestinations,
+            MaximumPartitionSchemeDestinations);
+        Validate(
+            nameof(MaxPartitionFunctions),
+            MaxPartitionFunctions,
+            MaximumPartitionFunctions);
+        Validate(
+            nameof(MaxPartitionParameters),
+            MaxPartitionParameters,
+            MaximumPartitionParameters);
+        Validate(
+            nameof(MaxPartitionRangeValues),
+            MaxPartitionRangeValues,
+            MaximumPartitionRangeValues);
+        Validate(
+            nameof(MaxIndexPartitions),
+            MaxIndexPartitions,
+            MaximumIndexPartitions);
         Validate(nameof(MaxUserTokens), MaxUserTokens, MaximumUserTokens);
         Validate(
             nameof(MaxPermissionDenials),
@@ -133,6 +208,10 @@ internal sealed record SqlServerInspectionLimits
             MaxPermissionRowsTotal,
             MaximumPermissionRowsTotal);
         Validate(nameof(MaxNameBytes), MaxNameBytes, MaximumNameBytes);
+        Validate(
+            nameof(MaxPartitionBoundaryBytes),
+            MaxPartitionBoundaryBytes,
+            MaximumPartitionBoundaryBytes);
         Validate(nameof(MaxExpressionBytes), MaxExpressionBytes, MaximumExpressionBytes);
         Validate(
             nameof(MaxExpressionBytesTotal),

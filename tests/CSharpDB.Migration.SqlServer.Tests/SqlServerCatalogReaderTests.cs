@@ -12,13 +12,13 @@ public sealed partial class SqlServerCatalogReaderTests
     [
         "f6e73d8ec4a4cb3f666b83aaeef5933aa27dec8f255dfda0771951361f9c5946",
         "7e796bfce6b9d4330e68d662c0928feba19f636aab0fe37e13910882c3d0d72a",
-        "0b5dac4b7e0cbc8beca983743f02bce0d7b801bf6a73c99b7d339c95f0e224dd",
+        "5d5ced4675ed6117d78ecc5475bbe214d106e38ba32d655ef742099a07d2e79b",
         "cd178870a4583120c033a3ce1460f6d42d98a88d16e6120939858d9d1d6feafe",
         "2072d04734b060c00d79bdac0099e018780157368ea153eb8d15018aa08a6216",
         "e3b65500b75b0aa66e2beb81fa5a847c90300929f153810aaea85de1c23b6aca",
         "13a0d89c0c528d48c9bd1740c4e4395ba71d314ed8195d389241c9c88e8987f1",
-        "862d93cced51b5610b76b05c0a116e6f9a4f546154ea23d297cd43bf945fc794",
-        "b1504a1b2b4a253cd4439db05002c9096ab1ac748753d8a348265bde0c2408d7",
+        "ae23f8d31326fadfdfbceff64ad9090968479e7e1652c2fbf3d472bb41b0919f",
+        "6b5122618c9eed2c99c943d76ffc116a6e7eb85c4d710dd918f7fb9caea454b8",
         "67300ecd636451a5436093d1337ad572f582f6247e0e98a2e6d0109699d5dfa8",
         "adb505bd36ea55f724a25f7696d5bcd7ef47f2340f26ff5af488456aea5aecfa",
         "4d8728fd4cd5894a561f0eaf2bdeb52635703a81936986b39c845319503fd0a3",
@@ -32,6 +32,20 @@ public sealed partial class SqlServerCatalogReaderTests
         "6e2e92e4c0c9ebf4badf8c90b7f00dd43836c431897f669bffecf4bfe1ce42b5",
         "aa27c56da5750d42955456a99854f24cb03b3546d02c4b4e4e46c72328ca444f",
         "8bee27739a5cf3f76bb5e3a9734ef6e2f4306699f237366658f789458a0e896e",
+        "787025109ebd799bfad6d8be9d7b1b0ecf618139f04291f6ec26732e81cf4247",
+        "0ad808d119751037726f3b62dee3869717bfaccbe70012c59b5e3b739c90a991",
+        "b4d99a92550b78c8742401aebd93d0f900c82fb3d6e7336248f7ac50e82f8834",
+        "f71ed19eea84c484baa9afa93609c4e1e78d2e26739753e786de358aaaf1cdf2",
+        "15d84cbfd377f2c7bb37376aa71babf50de4d1bb7080b44fe0af90f7207a2968",
+        "70e5f9d79063af63ddc6d735ee2f9fd4de1f471e394540f811f76730bb71f31b",
+        "6d56a05e012d2516ab55f98d9136129ecdbb6e66705830ee1f559a0eef722001",
+        "adfb4a33d111111d6e3bb3b469d134c4794240105f845a86728743de1582b34f",
+        "372637f7e00918cfd7672e78f57a3bdcb14931926f0b86056f89367f2644db2c",
+        "0fa6cfe028e248bd42db8529cccc8a4b78e57b4bf51acd6423a4d24b48c9b353",
+        "245163800892637b96482c86705a3e952e425fc1dd0f744c928a97f841c67c54",
+        "2589e8949d70a6b92d403ca1bf2dc0da093b3356c83037bde94d59fe34e345e9",
+        "6e96af93cfc1bdae045139dcbc89e0cf2ac7a8c402962d6cf03978c09d84d020",
+        "5fd5cdcbb49e1cfcb542914c5b2d495f43201aadd90e3a064c7b15f47c4739a2",
     ];
 
     [Fact]
@@ -139,7 +153,7 @@ public sealed partial class SqlServerCatalogReaderTests
     [Fact]
     public void CatalogCommandsAreStaticSelectOnlyAndPreflightLargeExpressions()
     {
-        Assert.Equal(22, SqlServerCatalogReader.CommandTexts.Count);
+        Assert.Equal(36, SqlServerCatalogReader.CommandTexts.Count);
         foreach (string command in SqlServerCatalogReader.CommandTexts)
         {
             Assert.StartsWith(
@@ -269,6 +283,82 @@ public sealed partial class SqlServerCatalogReaderTests
         Assert.DoesNotContain(
             "modify_date",
             SqlServerCatalogReader.ModulesQuery,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(
+            "o.type IN (N'U', N'V')",
+            SqlServerCatalogReader.IndexesQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "CONVERT(int, NULL)",
+            SqlServerCatalogReader.FullTextIndexesQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "fulltext_index.index_version",
+            SqlServerCatalogReader.FullTextIndexesV17Query,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "o.type IN (N'U', N'V')",
+            SqlServerCatalogReader.FullTextIndexesQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "o.type IN (N'U', N'V')",
+            SqlServerCatalogReader.FullTextIndexColumnsQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "SQL_VARIANT_PROPERTY",
+            SqlServerCatalogReader.PartitionRangeValuesQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "DATALENGTH(CONVERT(varbinary(max), range_value.value))",
+            SqlServerCatalogReader.PartitionRangeValuesQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "CONVERT(bit, NULL)",
+            SqlServerCatalogReader.IndexPartitionsQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "CONVERT(varchar(3), NULL)",
+            SqlServerCatalogReader.IndexPartitionsQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "partition.xml_compression",
+            SqlServerCatalogReader.IndexPartitionsV16Query,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "partition.index_id",
+            SqlServerCatalogReader.IndexPartitionsQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "NULLIF(index_definition.data_space_id, 0)",
+            SqlServerCatalogReader.IndexPartitionsQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "NULLIF(index_definition.data_space_id, 0)",
+            SqlServerCatalogReader.IndexPartitionsV16Query,
+            StringComparison.Ordinal);
+
+        string physicalCommands = string.Join(
+            "\n",
+            SqlServerCatalogReader.CommandTexts.Skip(22));
+        Assert.DoesNotContain(
+            "sys.database_files",
+            physicalCommands,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            "sys.allocation_units",
+            physicalCommands,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            "dm_db_",
+            physicalCommands,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            "crawl",
+            physicalCommands,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            "stopword",
+            physicalCommands,
             StringComparison.OrdinalIgnoreCase);
 
         string[] actualDigests = SqlServerCatalogReader.CommandTexts

@@ -4,13 +4,16 @@ This optional project is the bounded SQL Server readiness analyzer for the
 CSharpDB migration tooling. It inspects server and database facts plus schemas,
 ordinary user tables, columns, defaults, identity and computed-column metadata,
 primary and unique keys, foreign keys, check constraints, table indexes, and
-sequences. It also inventories user views, database and object triggers,
-procedures and functions, routine parameters, bounded SQL module facts, trigger
-events, and declared SQL expression dependencies. It does not copy SQL Server
-rows or write to either the source or a CSharpDB target. Available default,
-computed-column, check, filtered-index, and SQL module definitions receive
-bounded, syntax-only ScriptDom analysis. Parsing does not imply that an
-expression or module has been bound, lowered, or accepted by CSharpDB.
+sequences. It also inventories user views, indexed-view backing indexes,
+database and object triggers, procedures and functions, routine parameters,
+bounded SQL module facts, trigger events, declared SQL expression dependencies,
+full-text catalogs and index configuration, data spaces, partition
+functions/schemes/destinations, and per-heap/index partition compression facts.
+It does not copy SQL Server rows or write to either the source or a CSharpDB
+target. Available default, computed-column, check, filtered-index, and SQL
+module definitions receive bounded, syntax-only ScriptDom analysis. Parsing
+does not imply that an expression or module has been bound, lowered, or
+accepted by CSharpDB.
 
 The reader requires product major version 15 or later. It rejects pre-2019
 engines immediately after the server/database preflight, before running any
@@ -37,10 +40,15 @@ environment variable, generic planning sealed to the bounded target DDL
 digest, bounded exact CSharpDB DDL preview, and sanitized in-memory scratch
 evidence. It does not accept a raw connection string argument, copy rows,
 apply DDL, open an existing target, or promote the analyzer's blocked
-readiness. Indexed-view physical details, full-text and physical partition
-inventory, optional adapter/package isolation, and live server qualification
-are later Phase 7A checkpoints. A SQL Server data importer is a separately
-approved follow-on.
+readiness. The offline physical inventory deliberately omits raw partition
+boundary values, full-text stopwords and registered property definitions,
+database file names and paths, allocation details, physical sizes, row
+estimates, crawl state, and other volatile operational facts. Subtype-specific
+XML, spatial, hash, columnstore, and SQL Server 2025 JSON-index configuration,
+optional adapter/package isolation, and live server qualification remain later
+Phase 7A checkpoints. Disposable-VM and restricted-login qualification remain
+deferred; no offline fixture is described as live evidence. A SQL Server data
+importer is a separately approved follow-on.
 
 ## Read-only and security boundary
 
@@ -111,20 +119,23 @@ Fixed ceilings currently allow at most 4,096 schemas, 10,000 tables, and
 20,000 columns, with independent and aggregate ceilings for keys, indexes,
 index columns, foreign keys, foreign-key columns, checks, sequences, effective
 tokens, denials, views, triggers, trigger events, routines, parameters, modules,
-and expression dependencies. Additional ceilings cover names, individual and
-aggregate expressions, and total retained metadata. Crossing a reader or
-retained-metadata ceiling fails the inspection rather than returning a
-truncated catalog. Default, computed, check, index-filter, and SQL module text
-is read and hashed only in memory; ScriptDom analysis is additionally bounded
-by fixed input, token, nesting, AST-node, statement, and parse-error ceilings.
-A per-definition parser ceiling becomes an explicit compatibility blocker;
+expression dependencies, full-text catalogs/stoplists/property lists/indexes
+and columns, data spaces, partition functions/parameters/ranges/schemes and
+destinations, and heap/index partitions. Additional ceilings cover names,
+individual and aggregate expressions, partition-boundary bytes, and total
+retained metadata. Crossing a reader or retained-metadata ceiling fails the
+inspection rather than returning a truncated catalog. Default, computed,
+check, index-filter, and SQL module text plus partition-boundary bytes are read
+and hashed only in memory; ScriptDom analysis is additionally bounded by fixed
+input, token, nesting, AST-node, statement, and parse-error ceilings. A
+per-definition parser ceiling becomes an explicit compatibility blocker;
 crossing an aggregate parser ceiling fails the inspection. Durable facets
 retain only fixed parser status, dialect, root, count, error-number,
 source-position, and digest facts rather than raw SQL, token text, identifier
-text, literals, comments, or parser messages. A syntactically parsed definition
-remains blocked until later binding, lowering, and target proof. Unresolved,
-external, ambiguous, or cyclic dependency shapes remain explicit blockers
-rather than invented executable ordering.
+text, literals, comments, parser messages, or raw partition values. A
+syntactically parsed definition remains blocked until later binding, lowering,
+and target proof. Unresolved, external, ambiguous, or cyclic dependency shapes
+remain explicit blockers rather than invented executable ordering.
 
 ScriptDom does not expose a cancellation hook inside its parse call.
 Cancellation is checked during input reading and bounded AST traversal, and

@@ -17,6 +17,12 @@ internal static class SqlServerTestSnapshot
         "CREATE VIEW [dbo].[OrderSummary] AS SELECT [Id], [Amount] " +
         "FROM [dbo].[Orders] WHERE N'ModulePassword=NeverPersistThis'<>N''";
 
+    public const string SecretPartitionBoundary =
+        "PartitionPassword=NeverPersistThis";
+
+    public const string SecretPartitionBoundaryHex =
+        "50006100720074006900740069006f006e00500061007300730077006f00720064003d004e00650076006500720050006500720073006900730074005400680069007300";
+
     public static SqlServerCatalogSnapshot Create(
         SqlServerInstanceMetadata? instance = null,
         SqlServerDatabaseMetadata? database = null,
@@ -39,7 +45,24 @@ internal static class SqlServerTestSnapshot
         IEnumerable<SqlServerRoutineMetadata>? routines = null,
         IEnumerable<SqlServerModuleMetadata>? modules = null,
         IEnumerable<SqlServerParameterMetadata>? parameters = null,
-        SqlServerExpressionDependencyAuditMetadata? expressionDependencyAudit = null)
+        SqlServerExpressionDependencyAuditMetadata? expressionDependencyAudit = null,
+        IEnumerable<SqlServerFullTextCatalogMetadata>? fullTextCatalogs = null,
+        IEnumerable<SqlServerFullTextStoplistMetadata>? fullTextStoplists = null,
+        IEnumerable<SqlServerSearchPropertyListMetadata>? searchPropertyLists = null,
+        IEnumerable<SqlServerFullTextIndexMetadata>? fullTextIndexes = null,
+        IEnumerable<SqlServerFullTextIndexColumnMetadata>?
+            fullTextIndexColumns = null,
+        IEnumerable<SqlServerDataSpaceMetadata>? dataSpaces = null,
+        IEnumerable<SqlServerPartitionSchemeMetadata>? partitionSchemes = null,
+        IEnumerable<SqlServerPartitionSchemeDestinationMetadata>?
+            partitionSchemeDestinations = null,
+        IEnumerable<SqlServerPartitionFunctionMetadata>?
+            partitionFunctions = null,
+        IEnumerable<SqlServerPartitionParameterMetadata>?
+            partitionParameters = null,
+        IEnumerable<SqlServerPartitionRangeValueMetadata>?
+            partitionRangeValues = null,
+        IEnumerable<SqlServerIndexPartitionMetadata>? indexPartitions = null)
     {
         bool usesDefaultStructure =
             schemas is null &&
@@ -80,7 +103,30 @@ internal static class SqlServerTestSnapshot
                         ? new SqlServerExpressionDependencyAuditMetadata(
                             [],
                             Attempted: true)
-                        : SqlServerExpressionDependencyAuditMetadata.NotAttempted));
+                        : SqlServerExpressionDependencyAuditMetadata.NotAttempted),
+            fullTextCatalogs ??
+                (usesDefaultStructure ? FullTextCatalogs() : []),
+            fullTextStoplists ??
+                (usesDefaultStructure ? FullTextStoplists() : []),
+            searchPropertyLists ??
+                (usesDefaultStructure ? SearchPropertyLists() : []),
+            fullTextIndexes ??
+                (usesDefaultStructure ? FullTextIndexes() : []),
+            fullTextIndexColumns ??
+                (usesDefaultStructure ? FullTextIndexColumns() : []),
+            dataSpaces ?? (usesDefaultStructure ? DataSpaces() : []),
+            partitionSchemes ??
+                (usesDefaultStructure ? PartitionSchemes() : []),
+            partitionSchemeDestinations ??
+                (usesDefaultStructure ? PartitionSchemeDestinations() : []),
+            partitionFunctions ??
+                (usesDefaultStructure ? PartitionFunctions() : []),
+            partitionParameters ??
+                (usesDefaultStructure ? PartitionParameters() : []),
+            partitionRangeValues ??
+                (usesDefaultStructure ? PartitionRangeValues() : []),
+            indexPartitions ??
+                (usesDefaultStructure ? IndexPartitions() : []));
     }
 
     public static SqlServerInstanceMetadata Instance() =>
@@ -121,14 +167,16 @@ internal static class SqlServerTestSnapshot
 
     public static IReadOnlyList<SqlServerTableMetadata> Tables() =>
     [
-        OrdinaryTable(100, 1, "Orders"),
-        OrdinaryTable(200, 5, "Archive"),
+        OrdinaryTable(100, 1, "Orders", lobDataSpaceId: 1),
+        OrdinaryTable(200, 5, "Archive", lobDataSpaceId: 1),
     ];
 
     public static SqlServerTableMetadata OrdinaryTable(
         int objectId,
         int schemaId,
-        string name) =>
+        string name,
+        int lobDataSpaceId = 0,
+        int fileStreamDataSpaceId = 0) =>
         new(
             ObjectId: objectId,
             SchemaId: schemaId,
@@ -139,7 +187,9 @@ internal static class SqlServerTestSnapshot
             TemporalType: "NON_TEMPORAL_TABLE",
             IsNode: false,
             IsEdge: false,
-            HasViewDefinition: true);
+            HasViewDefinition: true,
+            LobDataSpaceId: lobDataSpaceId,
+            FileStreamDataSpaceId: fileStreamDataSpaceId);
 
     public static IReadOnlyList<SqlServerColumnMetadata> Columns() =>
     [
@@ -292,33 +342,61 @@ internal static class SqlServerTestSnapshot
             indexId: 1,
             name: "PK_Orders",
             unique: true,
-            primaryKey: true),
+            primaryKey: true,
+            dataSpaceId: 1,
+            dataSpaceName: "PRIMARY",
+            dataSpaceType: "ROWS_FILEGROUP"),
         Index(
             objectId: 100,
             indexId: 2,
             name: "UQ_Orders_OptionalCode",
             unique: true,
-            uniqueConstraint: true),
+            uniqueConstraint: true,
+            dataSpaceId: 1,
+            dataSpaceName: "PRIMARY",
+            dataSpaceType: "ROWS_FILEGROUP"),
         Index(
             objectId: 100,
             indexId: 3,
-            name: "IX_Orders_Customer"),
+            name: "IX_Orders_Customer",
+            dataSpaceId: 1,
+            dataSpaceName: "PRIMARY",
+            dataSpaceType: "ROWS_FILEGROUP"),
         Index(
             objectId: 100,
             indexId: 4,
             name: "UX_Orders_Customer",
-            unique: true),
+            unique: true,
+            dataSpaceId: 1,
+            dataSpaceName: "PRIMARY",
+            dataSpaceType: "ROWS_FILEGROUP"),
         Index(
             objectId: 100,
             indexId: 5,
             name: "IX_Orders_Amount_Filtered",
-            filterDefinition: SecretFilterDefinition),
+            filterDefinition: SecretFilterDefinition,
+            dataSpaceId: 10,
+            dataSpaceName: "PS_Orders_Customer",
+            dataSpaceType: "PARTITION_SCHEME"),
         Index(
             objectId: 200,
             indexId: 1,
             name: "CX_Archive_ArchiveId",
             type: 1,
-            typeDescription: "CLUSTERED"),
+            typeDescription: "CLUSTERED",
+            dataSpaceId: 1,
+            dataSpaceName: "PRIMARY",
+            dataSpaceType: "ROWS_FILEGROUP"),
+        Index(
+            objectId: 5_000,
+            indexId: 1,
+            name: "CUX_OrderSummary_Id",
+            type: 1,
+            typeDescription: "CLUSTERED",
+            unique: true,
+            dataSpaceId: 1,
+            dataSpaceName: "PRIMARY",
+            dataSpaceType: "ROWS_FILEGROUP"),
     ];
 
     public static IReadOnlyList<SqlServerIndexColumnMetadata> IndexColumns() =>
@@ -334,7 +412,8 @@ internal static class SqlServerTestSnapshot
             1,
             2,
             keyOrdinal: 1,
-            descending: true),
+            descending: true,
+            partitionOrdinal: 1),
         IndexColumn(
             100,
             5,
@@ -343,6 +422,224 @@ internal static class SqlServerTestSnapshot
             keyOrdinal: 0,
             included: true),
         IndexColumn(200, 1, 1, 1, keyOrdinal: 1),
+        IndexColumn(5_000, 1, 1, 1, keyOrdinal: 1),
+    ];
+
+    public static IReadOnlyList<SqlServerFullTextCatalogMetadata>
+        FullTextCatalogs() =>
+    [
+        new(
+            FullTextCatalogId: 1,
+            Name: "MigrationSearch",
+            IsDefault: true,
+            IsAccentSensitivityOn: true,
+            DataSpaceId: 1),
+    ];
+
+    public static IReadOnlyList<SqlServerFullTextStoplistMetadata>
+        FullTextStoplists() =>
+    [
+        new(
+            StoplistId: 10,
+            Name: "MigrationStoplist"),
+    ];
+
+    public static IReadOnlyList<SqlServerSearchPropertyListMetadata>
+        SearchPropertyLists() =>
+    [
+        new(
+            PropertyListId: 20,
+            Name: "MigrationProperties"),
+    ];
+
+    public static IReadOnlyList<SqlServerFullTextIndexMetadata>
+        FullTextIndexes() =>
+    [
+        new(
+            ObjectId: 100,
+            UniqueIndexId: 1,
+            IndexVersion: null,
+            FullTextCatalogId: 1,
+            IsEnabled: true,
+            ChangeTrackingState: "A",
+            ChangeTrackingStateDescription: "AUTO",
+            StoplistId: 10,
+            DataSpaceId: 1,
+            PropertyListId: 20),
+    ];
+
+    public static IReadOnlyList<SqlServerFullTextIndexColumnMetadata>
+        FullTextIndexColumns() =>
+    [
+        new(
+            ObjectId: 100,
+            ColumnId: 3,
+            TypeColumnId: null,
+            LanguageId: 1033,
+            StatisticalSemantics: true),
+    ];
+
+    public static IReadOnlyList<SqlServerDataSpaceMetadata> DataSpaces() =>
+    [
+        new(
+            DataSpaceId: 1,
+            Name: "PRIMARY",
+            Type: "FG",
+            TypeDescription: "ROWS_FILEGROUP",
+            IsDefault: true,
+            IsSystem: false,
+            IsReadOnly: false),
+        new(
+            DataSpaceId: 10,
+            Name: "PS_Orders_Customer",
+            Type: "PS",
+            TypeDescription: "PARTITION_SCHEME",
+            IsDefault: false,
+            IsSystem: false,
+            IsReadOnly: null),
+        new(
+            DataSpaceId: 11,
+            Name: "ARCHIVE",
+            Type: "FG",
+            TypeDescription: "ROWS_FILEGROUP",
+            IsDefault: false,
+            IsSystem: false,
+            IsReadOnly: true),
+    ];
+
+    public static IReadOnlyList<SqlServerPartitionSchemeMetadata>
+        PartitionSchemes() =>
+    [
+        new(
+            DataSpaceId: 10,
+            FunctionId: 30),
+    ];
+
+    public static IReadOnlyList<SqlServerPartitionSchemeDestinationMetadata>
+        PartitionSchemeDestinations() =>
+    [
+        new(
+            PartitionSchemeId: 10,
+            DestinationId: 1,
+            DataSpaceId: 1),
+        new(
+            PartitionSchemeId: 10,
+            DestinationId: 2,
+            DataSpaceId: 11),
+    ];
+
+    public static IReadOnlyList<SqlServerPartitionFunctionMetadata>
+        PartitionFunctions() =>
+    [
+        new(
+            FunctionId: 30,
+            Name: "PF_Orders_Customer",
+            Fanout: 2,
+            BoundaryValueOnRight: true,
+            IsSystem: false),
+    ];
+
+    public static IReadOnlyList<SqlServerPartitionParameterMetadata>
+        PartitionParameters() =>
+    [
+        new(
+            FunctionId: 30,
+            ParameterId: 1,
+            TypeSchema: "sys",
+            TypeName: "nvarchar",
+            SystemTypeName: "nvarchar",
+            MaxLength: 200,
+            Precision: 0,
+            Scale: 0,
+            Collation: "Latin1_General_100_CI_AS_SC_UTF8"),
+    ];
+
+    public static IReadOnlyList<SqlServerPartitionRangeValueMetadata>
+        PartitionRangeValues() =>
+    [
+        new(
+            FunctionId: 30,
+            BoundaryId: 1,
+            ParameterId: 1,
+            IsNull: false,
+            BaseType: "nvarchar",
+            MaxLength: 68,
+            Precision: 0,
+            Scale: 0,
+            Collation: "Latin1_General_100_CI_AS_SC_UTF8",
+            ValueBytes: 68,
+            ValueHex: SecretPartitionBoundaryHex),
+    ];
+
+    public static IReadOnlyList<SqlServerIndexPartitionMetadata>
+        IndexPartitions() =>
+    [
+        IndexPartition(
+            100,
+            0,
+            1,
+            definitionDataSpaceId: 10,
+            storageDataSpaceId: 1),
+        IndexPartition(
+            100,
+            0,
+            2,
+            definitionDataSpaceId: 10,
+            storageDataSpaceId: 11),
+        IndexPartition(
+            100,
+            1,
+            1,
+            definitionDataSpaceId: 1,
+            storageDataSpaceId: 1),
+        IndexPartition(
+            100,
+            2,
+            1,
+            definitionDataSpaceId: 1,
+            storageDataSpaceId: 1),
+        IndexPartition(
+            100,
+            3,
+            1,
+            definitionDataSpaceId: 1,
+            storageDataSpaceId: 1),
+        IndexPartition(
+            100,
+            4,
+            1,
+            definitionDataSpaceId: 1,
+            storageDataSpaceId: 1),
+        IndexPartition(
+            100,
+            5,
+            1,
+            dataCompression: 1,
+            dataCompressionDescription: "ROW",
+            definitionDataSpaceId: 10,
+            storageDataSpaceId: 1),
+        IndexPartition(
+            100,
+            5,
+            2,
+            dataCompression: 2,
+            dataCompressionDescription: "PAGE",
+            xmlCompression: true,
+            xmlCompressionDescription: "ON",
+            definitionDataSpaceId: 10,
+            storageDataSpaceId: 11),
+        IndexPartition(
+            200,
+            1,
+            1,
+            definitionDataSpaceId: 1,
+            storageDataSpaceId: 1),
+        IndexPartition(
+            5_000,
+            1,
+            1,
+            definitionDataSpaceId: 1,
+            storageDataSpaceId: 1),
     ];
 
     public static IReadOnlyList<SqlServerForeignKeyMetadata> ForeignKeys() =>
@@ -466,7 +763,7 @@ internal static class SqlServerTestSnapshot
             HasUncheckedAssemblyData: false,
             WithCheckOption: true,
             IsDateCorrelationView: false,
-            IsIndexed: false,
+            IsIndexed: true,
             HasViewDefinition: true,
             LedgerViewType: 0,
             LedgerViewTypeDescription: "NON_LEDGER_VIEW",
@@ -608,7 +905,8 @@ internal static class SqlServerTestSnapshot
             name: "OrderSummary",
             objectType: "V",
             objectTypeDescription: "VIEW",
-            definition: SecretModuleDefinition),
+            definition: SecretModuleDefinition,
+            isSchemaBound: true),
         Module(
             objectId: 6_000,
             name: "TR_Orders_Audit",
@@ -788,7 +1086,8 @@ internal static class SqlServerTestSnapshot
         int schemaId = 1,
         int parentObjectId = 0,
         bool nullOnNullInput = false,
-        bool? isEncrypted = false) =>
+        bool? isEncrypted = false,
+        bool isSchemaBound = false) =>
         new(
             ObjectId: objectId,
             SchemaId: schemaId,
@@ -803,7 +1102,7 @@ internal static class SqlServerTestSnapshot
             Definition: definition,
             UsesAnsiNulls: true,
             UsesQuotedIdentifier: true,
-            IsSchemaBound: false,
+            IsSchemaBound: isSchemaBound,
             UsesDatabaseCollation: false,
             IsRecompiled: false,
             NullOnNullInput: nullOnNullInput,
@@ -971,7 +1270,10 @@ internal static class SqlServerTestSnapshot
         bool disabled = false,
         bool hypothetical = false,
         bool ignoreDuplicateKey = false,
-        string? filterDefinition = null) =>
+        string? filterDefinition = null,
+        int dataSpaceId = 0,
+        string? dataSpaceName = null,
+        string? dataSpaceType = null) =>
         new(
             ObjectId: objectId,
             IndexId: indexId,
@@ -979,9 +1281,9 @@ internal static class SqlServerTestSnapshot
             Type: type,
             TypeDescription: typeDescription,
             IsUnique: unique,
-            DataSpaceId: 1,
-            DataSpaceName: "PRIMARY",
-            DataSpaceType: "ROWS_FILEGROUP",
+            DataSpaceId: dataSpaceId,
+            DataSpaceName: dataSpaceName,
+            DataSpaceType: dataSpaceType,
             IgnoreDuplicateKey: ignoreDuplicateKey,
             IsPrimaryKey: primaryKey,
             IsUniqueConstraint: uniqueConstraint,
@@ -1008,16 +1310,38 @@ internal static class SqlServerTestSnapshot
         int columnId,
         byte keyOrdinal,
         bool descending = false,
-        bool included = false) =>
+        bool included = false,
+        byte partitionOrdinal = 0) =>
         new(
             ObjectId: objectId,
             IndexId: indexId,
             IndexColumnId: indexColumnId,
             ColumnId: columnId,
             KeyOrdinal: keyOrdinal,
-            PartitionOrdinal: 0,
+            PartitionOrdinal: partitionOrdinal,
             IsDescending: descending,
             IsIncluded: included);
+
+    public static SqlServerIndexPartitionMetadata IndexPartition(
+        int objectId,
+        int indexId,
+        int partitionNumber,
+        byte dataCompression = 0,
+        string dataCompressionDescription = "NONE",
+        bool? xmlCompression = false,
+        string? xmlCompressionDescription = "OFF",
+        int? definitionDataSpaceId = null,
+        int? storageDataSpaceId = null) =>
+        new(
+            ObjectId: objectId,
+            IndexId: indexId,
+            PartitionNumber: partitionNumber,
+            DataCompression: dataCompression,
+            DataCompressionDescription: dataCompressionDescription,
+            XmlCompression: xmlCompression,
+            XmlCompressionDescription: xmlCompressionDescription,
+            DefinitionDataSpaceId: definitionDataSpaceId,
+            StorageDataSpaceId: storageDataSpaceId);
 
     public static SqlServerCheckMetadata Check(
         int objectId,

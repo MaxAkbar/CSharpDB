@@ -3,12 +3,12 @@ using CSharpDB.Migration.SqlServer;
 
 namespace CSharpDB.Migration.SqlServer.Tests;
 
-public sealed class SqlServerCatalogBuilderTests
+public sealed partial class SqlServerCatalogBuilderTests
 {
     private const string GoldenCatalogDigest =
-        "01f6771dd4a37c6f25ea9ad5dd2321c7fd3ed9b7ddff8b4093bd05696608134e";
+        "090953b25bf4072c7057e49b60dbd19400cd77e5bac923c413243395c1cdd9e6";
     private const string GoldenSourceFingerprint =
-        "sha256:e5462dfef903f758173295c7fd5f66b0c4c98181c96638a92f67eba374a1af03";
+        "sha256:cfe7ec13981a125d9443915c8b554118261fe39633c21cb80e19707be058db5d";
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
@@ -161,7 +161,19 @@ public sealed class SqlServerCatalogBuilderTests
             ordered.Routines.Reverse(),
             ordered.Modules.Reverse(),
             ordered.Parameters.Reverse(),
-            Reverse(ordered.ExpressionDependencyAudit));
+            Reverse(ordered.ExpressionDependencyAudit),
+            ordered.FullTextCatalogs.Reverse(),
+            ordered.FullTextStoplists.Reverse(),
+            ordered.SearchPropertyLists.Reverse(),
+            ordered.FullTextIndexes.Reverse(),
+            ordered.FullTextIndexColumns.Reverse(),
+            ordered.DataSpaces.Reverse(),
+            ordered.PartitionSchemes.Reverse(),
+            ordered.PartitionSchemeDestinations.Reverse(),
+            ordered.PartitionFunctions.Reverse(),
+            ordered.PartitionParameters.Reverse(),
+            ordered.PartitionRangeValues.Reverse(),
+            ordered.IndexPartitions.Reverse());
 
         Assert.Equal(
             MigrationArtifactSerializer.SerializeCatalog(Build(ordered)),
@@ -1883,7 +1895,24 @@ public sealed class SqlServerCatalogBuilderTests
         IEnumerable<SqlServerRoutineMetadata>? routines = null,
         IEnumerable<SqlServerModuleMetadata>? modules = null,
         IEnumerable<SqlServerParameterMetadata>? parameters = null,
-        SqlServerExpressionDependencyAuditMetadata? expressionDependencyAudit = null) =>
+        SqlServerExpressionDependencyAuditMetadata? expressionDependencyAudit = null,
+        IEnumerable<SqlServerFullTextCatalogMetadata>? fullTextCatalogs = null,
+        IEnumerable<SqlServerFullTextStoplistMetadata>? fullTextStoplists = null,
+        IEnumerable<SqlServerSearchPropertyListMetadata>? searchPropertyLists = null,
+        IEnumerable<SqlServerFullTextIndexMetadata>? fullTextIndexes = null,
+        IEnumerable<SqlServerFullTextIndexColumnMetadata>?
+            fullTextIndexColumns = null,
+        IEnumerable<SqlServerDataSpaceMetadata>? dataSpaces = null,
+        IEnumerable<SqlServerPartitionSchemeMetadata>? partitionSchemes = null,
+        IEnumerable<SqlServerPartitionSchemeDestinationMetadata>?
+            partitionSchemeDestinations = null,
+        IEnumerable<SqlServerPartitionFunctionMetadata>?
+            partitionFunctions = null,
+        IEnumerable<SqlServerPartitionParameterMetadata>?
+            partitionParameters = null,
+        IEnumerable<SqlServerPartitionRangeValueMetadata>?
+            partitionRangeValues = null,
+        IEnumerable<SqlServerIndexPartitionMetadata>? indexPartitions = null) =>
         new(
             source.EndpointDigest,
             source.ProviderVersion,
@@ -1908,7 +1937,19 @@ public sealed class SqlServerCatalogBuilderTests
             routines ?? source.Routines,
             modules ?? source.Modules,
             parameters ?? source.Parameters,
-            expressionDependencyAudit ?? source.ExpressionDependencyAudit);
+            expressionDependencyAudit ?? source.ExpressionDependencyAudit,
+            fullTextCatalogs ?? source.FullTextCatalogs,
+            fullTextStoplists ?? source.FullTextStoplists,
+            searchPropertyLists ?? source.SearchPropertyLists,
+            fullTextIndexes ?? source.FullTextIndexes,
+            fullTextIndexColumns ?? source.FullTextIndexColumns,
+            dataSpaces ?? source.DataSpaces,
+            partitionSchemes ?? source.PartitionSchemes,
+            partitionSchemeDestinations ?? source.PartitionSchemeDestinations,
+            partitionFunctions ?? source.PartitionFunctions,
+            partitionParameters ?? source.PartitionParameters,
+            partitionRangeValues ?? source.PartitionRangeValues,
+            indexPartitions ?? source.IndexPartitions);
 
     private static void AssertDigestChanges(
         string expected,

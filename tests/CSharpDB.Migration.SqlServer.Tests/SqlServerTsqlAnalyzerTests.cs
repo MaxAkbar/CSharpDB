@@ -719,5 +719,17 @@ public sealed class SqlServerTsqlAnalyzerTests
             source.Routines,
             modules ?? source.Modules,
             source.Parameters,
-            source.ExpressionDependencyAudit);
+            source.ExpressionDependencyAudit,
+            source.FullTextCatalogs,
+            source.FullTextStoplists,
+            source.SearchPropertyLists,
+            source.FullTextIndexes,
+            source.FullTextIndexColumns,
+            source.DataSpaces,
+            source.PartitionSchemes,
+            source.PartitionSchemeDestinations,
+            source.PartitionFunctions,
+            source.PartitionParameters,
+            source.PartitionRangeValues,
+            source.IndexPartitions);
 }
