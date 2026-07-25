@@ -6,9 +6,9 @@ namespace CSharpDB.Migration.MySql.Tests;
 public sealed class MySqlCatalogBuilderTests
 {
     private const string GoldenCatalogDigest =
-        "bc3159102b9f7f620693ba9c1d4f48387cfea33b3017a06e54e20e8f2e6d9367";
+        "dd44ede1cce55dfa73b5f87439726098e2030aa36fc1be81fb5a7aa75f345ae4";
     private const string GoldenSourceFingerprint =
-        "sha256:09483d05dd9cde67f38d82c134017762391e69a04b859583c9a053a38ffee10e";
+        "sha256:f109bb449e192312533704d8e2bde3a18dc23700e420c4c3ab4cbedfe9aa0266";
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
@@ -703,7 +703,7 @@ public sealed class MySqlCatalogBuilderTests
             partitioned: true);
         MySqlDatabaseMetadata database = MySqlTestSnapshot.Database() with
         {
-            ViewCount = 1,
+            ViewCount = 0,
         };
         MySqlServerMetadata server = MySqlTestSnapshot.Server() with
         {
@@ -737,7 +737,6 @@ public sealed class MySqlCatalogBuilderTests
             .ToArray();
 
         Assert.Contains("MIG-MYSQL-IDENTIFIER-CASE-SEMANTICS-001", rules);
-        Assert.Contains("MIG-MYSQL-VIEW-INVENTORY-DEFERRED-001", rules);
         Assert.Contains("MIG-MYSQL-STORAGE-ENGINE-UNQUALIFIED-001", rules);
         Assert.Contains("MIG-MYSQL-PARTITIONING-DEFERRED-001", rules);
         Assert.Contains("MIG-MYSQL-GENERATED-COLUMN-DEFERRED-001", rules);
@@ -747,7 +746,6 @@ public sealed class MySqlCatalogBuilderTests
             catalog.Diagnostics.Where(static item =>
                 item.RuleId is
                     "MIG-MYSQL-IDENTIFIER-CASE-SEMANTICS-001" or
-                    "MIG-MYSQL-VIEW-INVENTORY-DEFERRED-001" or
                     "MIG-MYSQL-STORAGE-ENGINE-UNQUALIFIED-001" or
                     "MIG-MYSQL-PARTITIONING-DEFERRED-001" or
                     "MIG-MYSQL-GENERATED-COLUMN-DEFERRED-001" or

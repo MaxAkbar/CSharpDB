@@ -36,7 +36,8 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
                     BINARY s.SCHEMA_NAME
                 LIMIT 1
             ),
-            @@session.sql_quote_show_create;
+            @@session.sql_quote_show_create,
+            @@session.explicit_defaults_for_timestamp;
         """;
 
     internal const string TablesQuery =
@@ -81,7 +82,9 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
             c.COLUMN_TYPE,
             c.EXTRA,
             OCTET_LENGTH(c.GENERATION_EXPRESSION),
-            c.GENERATION_EXPRESSION
+            c.GENERATION_EXPRESSION,
+            OCTET_LENGTH(c.COLUMN_DEFAULT),
+            c.COLUMN_DEFAULT
         FROM INFORMATION_SCHEMA.COLUMNS AS c
         INNER JOIN INFORMATION_SCHEMA.TABLES AS t
             ON BINARY t.TABLE_SCHEMA = BINARY c.TABLE_SCHEMA
@@ -110,6 +113,11 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
             IndexesQuery,
             LegacyIndexesQuery,
             UnqualifiedIndexesQuery,
+            ViewsQuery,
+            ViewColumnsQuery,
+            TriggersQuery,
+            RoutinesQuery,
+            RoutineParametersQuery,
         ]);
 
     private readonly string connectionString;
@@ -248,7 +256,10 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
             ShowGeneratedInvisiblePrimaryKey =
                 showGeneratedInvisiblePrimaryKey,
         };
-        (IReadOnlyList<MySqlTableMetadata> tables, int viewCount) =
+        (
+            IReadOnlyList<MySqlTableMetadata> tables,
+            IReadOnlyList<MySqlViewMetadata> visibleViews
+        ) =
             await ReadTablesAsync(
                     connection,
                     selectedDatabase,
@@ -264,6 +275,49 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
                 limits,
                 cancellationToken)
             .ConfigureAwait(false);
+        IReadOnlyList<MySqlViewMetadata> views = await ReadViewsAsync(
+                connection,
+                selectedDatabase,
+                visibleViews,
+                budget,
+                limits,
+                cancellationToken)
+            .ConfigureAwait(false);
+        IReadOnlyList<MySqlViewColumnMetadata> viewColumns =
+            await ReadViewColumnsAsync(
+                    connection,
+                    selectedDatabase,
+                    views,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        IReadOnlyList<MySqlTriggerMetadata> triggers =
+            await ReadTriggersAsync(
+                    connection,
+                    selectedDatabase,
+                    tables,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        IReadOnlyList<MySqlRoutineMetadata> routines =
+            await ReadRoutinesAsync(
+                    connection,
+                    selectedDatabase,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        IReadOnlyList<MySqlRoutineParameterMetadata> routineParameters =
+            await ReadRoutineParametersAsync(
+                    connection,
+                    selectedDatabase,
+                    routines,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
         IReadOnlyList<MySqlKeyMetadata> keys = await ReadKeysAsync(
                 connection,
                 selectedDatabase,
@@ -345,7 +399,7 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
                 selectedDatabase,
                 defaultCharacterSet,
                 defaultCollation,
-                viewCount),
+                views.Count),
             tables,
             columns,
             tableDefinitions,
@@ -355,7 +409,12 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
             foreignKeyColumns,
             checks,
             indexes,
-            indexParts);
+            indexParts,
+            views,
+            viewColumns,
+            triggers,
+            routines,
+            routineParameters);
     }
 
     private async ValueTask<(
@@ -398,6 +457,7 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
             budget,
             isName: true);
         bool sqlQuoteShowCreate = RequiredBoolean(reader, 13);
+        bool explicitDefaultsForTimestamp = RequiredBoolean(reader, 14);
 
         if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             throw InvalidProviderMetadata();
@@ -416,7 +476,8 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
                 characterSetConnection,
                 collationConnection,
                 timeZone,
-                sqlQuoteShowCreate),
+                sqlQuoteShowCreate,
+                explicitDefaultsForTimestamp),
             defaultCharacterSet,
             defaultCollation,
             selectedDatabase);
@@ -443,7 +504,9 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
         };
     }
 
-    private async ValueTask<(IReadOnlyList<MySqlTableMetadata>, int)> ReadTablesAsync(
+    private async ValueTask<(
+        IReadOnlyList<MySqlTableMetadata> Tables,
+        IReadOnlyList<MySqlViewMetadata> Views)> ReadTablesAsync(
         MySqlConnection connection,
         string selectedDatabase,
         ReaderBudget budget,
@@ -453,12 +516,12 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
         await using MySqlCommand command = Command(connection, TablesQuery);
         AddDatabaseParameter(command, selectedDatabase);
         await using MySqlDataReader reader = await command.ExecuteReaderAsync(
-                CommandBehavior.SingleResult,
+                CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
                 cancellationToken)
             .ConfigureAwait(false);
         var tables = new List<MySqlTableMetadata>();
+        var views = new List<MySqlViewMetadata>();
         var identities = new HashSet<string>(StringComparer.Ordinal);
-        int viewCount = 0;
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             budget.AddStructuralRow();
@@ -476,11 +539,25 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
                 throw InvalidProviderMetadata();
             }
 
+            string identity = schemaName + "\0" + name;
+            if (!identities.Add(identity))
+                throw InvalidProviderMetadata();
+
             if (string.Equals(tableType, "VIEW", StringComparison.Ordinal))
             {
-                viewCount = checked(viewCount + 1);
-                if (viewCount > limits.MaxViews)
+                if (views.Count >= limits.MaxViews)
                     throw LimitExceeded("view");
+                views.Add(new MySqlViewMetadata(
+                    schemaName,
+                    name,
+                    MetadataVisible: false,
+                    DefinitionBytes: null,
+                    Definition: null,
+                    CheckOption: null,
+                    IsUpdatable: null,
+                    SecurityType: null,
+                    CharacterSetClient: null,
+                    CollationConnection: null));
                 continue;
             }
             if (!string.Equals(
@@ -493,9 +570,6 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
             if (tables.Count >= limits.MaxTables)
                 throw LimitExceeded("table");
 
-            string identity = schemaName + "\0" + name;
-            if (!identities.Add(identity))
-                throw InvalidProviderMetadata();
             tables.Add(
                 new MySqlTableMetadata(
                     schemaName,
@@ -506,7 +580,7 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
                     createOptions,
                     HasToken(createOptions, "partitioned")));
         }
-        return (tables.AsReadOnly(), viewCount);
+        return (tables.AsReadOnly(), views.AsReadOnly());
     }
 
     private async ValueTask<IReadOnlyList<MySqlColumnMetadata>> ReadColumnsAsync(
@@ -525,7 +599,7 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
         await using MySqlCommand command = Command(connection, ColumnsQuery);
         AddDatabaseParameter(command, selectedDatabase);
         await using MySqlDataReader reader = await command.ExecuteReaderAsync(
-                CommandBehavior.SingleResult,
+                CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
                 cancellationToken)
             .ConfigureAwait(false);
         var columns = new List<MySqlColumnMetadata>();
@@ -563,10 +637,21 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
                 sourceColumnTypeBytes);
             string extra = RequiredString(reader, 14, budget);
             long? sourceExpressionBytes = OptionalInt64(reader, 15);
+            bool hasGenerationExpression = !reader.IsDBNull(16);
+            if (hasGenerationExpression && sourceExpressionBytes is null)
+                throw InvalidProviderMetadata();
             budget.PreflightExpression(sourceExpressionBytes);
-            string? generationExpression = reader.IsDBNull(16)
-                ? null
-                : reader.GetString(16);
+            string? generationExpression = hasGenerationExpression
+                ? reader.GetString(16)
+                : null;
+            long? sourceDefaultBytes = OptionalInt64(reader, 17);
+            bool hasDefaultValue = !reader.IsDBNull(18);
+            if (hasDefaultValue && sourceDefaultBytes is null)
+                throw InvalidProviderMetadata();
+            budget.PreflightExpression(sourceDefaultBytes);
+            string? defaultValue = hasDefaultValue
+                ? reader.GetString(18)
+                : null;
 
             string generationKind = GenerationKind(extra);
             bool isGenerated = !string.Equals(
@@ -587,6 +672,19 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
                 expressionBytes = budget.AddExpression(
                     generationExpression,
                     sourceExpressionBytes);
+            }
+
+            long? defaultBytes = null;
+            if (defaultValue is null)
+            {
+                if (sourceDefaultBytes is not null)
+                    throw InvalidProviderMetadata();
+            }
+            else
+            {
+                defaultBytes = budget.AddExpression(
+                    defaultValue,
+                    sourceDefaultBytes);
             }
 
             string columnIdentity =
@@ -623,7 +721,15 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
                     generationKind,
                     expressionBytes,
                     generationExpression,
-                    HasToken(extra, "invisible")));
+                    HasToken(extra, "invisible"),
+                    defaultBytes,
+                    defaultValue,
+                    HasToken(extra, "DEFAULT_GENERATED"),
+                    HasSequence(
+                        extra,
+                        "on",
+                        "update",
+                        "CURRENT_TIMESTAMP")));
         }
         return columns.AsReadOnly();
     }
@@ -745,6 +851,61 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
             }
         }
         return false;
+    }
+
+    private static bool HasSequence(
+        string value,
+        params string[] expected)
+    {
+        string[] tokens = Tokens(value);
+        if (expected.Length == 0 || expected.Length > tokens.Length)
+            return false;
+        for (int start = 0; start <= tokens.Length - expected.Length; start++)
+        {
+            bool matches = true;
+            for (int offset = 0; offset < expected.Length; offset++)
+            {
+                if (!SequenceTokenEquals(
+                        tokens[start + offset],
+                        expected[offset]))
+                {
+                    matches = false;
+                    break;
+                }
+            }
+            if (matches)
+                return true;
+        }
+        return false;
+    }
+
+    private static bool SequenceTokenEquals(
+        string actual,
+        string expected)
+    {
+        if (string.Equals(
+                actual,
+                expected,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+        const string currentTimestamp = "CURRENT_TIMESTAMP";
+        if (!string.Equals(
+                expected,
+                currentTimestamp,
+                StringComparison.OrdinalIgnoreCase) ||
+            !actual.StartsWith(
+                currentTimestamp + "(",
+                StringComparison.OrdinalIgnoreCase) ||
+            !actual.EndsWith(')'))
+        {
+            return false;
+        }
+
+        string precision = actual[(currentTimestamp.Length + 1)..^1];
+        return precision.Length == 0 ||
+               precision.Length == 1 && precision[0] is >= '0' and <= '6';
     }
 
     private static bool HasToken(string? value, string expected) =>
@@ -907,19 +1068,31 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
             return bytes;
         }
 
+        public void PreflightDefinition(long? sourceBytes)
+        {
+            if (sourceBytes is null)
+                return;
+            if (sourceBytes < 0)
+                throw InvalidProviderMetadata();
+            if (sourceBytes > limits.MaxDefinitionBytes)
+                throw LimitExceeded("definition byte");
+            if (sourceBytes >
+                limits.MaxDefinitionBytesTotal - definitionBytes)
+            {
+                throw LimitExceeded("aggregate definition byte");
+            }
+        }
+
         public long AddDefinition(string value, long? sourceBytes)
         {
+            PreflightDefinition(sourceBytes);
             int bytes = ByteCount(value);
             if (sourceBytes is null || sourceBytes < 0 ||
                 sourceBytes.Value != bytes)
             {
                 throw InvalidProviderMetadata();
             }
-            if (bytes > limits.MaxDefinitionBytes)
-                throw LimitExceeded("definition byte");
             definitionBytes = checked(definitionBytes + bytes);
-            if (definitionBytes > limits.MaxDefinitionBytesTotal)
-                throw LimitExceeded("aggregate definition byte");
             AddMetadata(bytes);
             return bytes;
         }

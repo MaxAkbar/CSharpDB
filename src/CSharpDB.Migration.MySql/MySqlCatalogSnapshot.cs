@@ -23,7 +23,12 @@ internal sealed class MySqlCatalogSnapshot
         IEnumerable<MySqlForeignKeyColumnMetadata>? foreignKeyColumns = null,
         IEnumerable<MySqlCheckMetadata>? checks = null,
         IEnumerable<MySqlIndexMetadata>? indexes = null,
-        IEnumerable<MySqlIndexPartMetadata>? indexParts = null)
+        IEnumerable<MySqlIndexPartMetadata>? indexParts = null,
+        IEnumerable<MySqlViewMetadata>? views = null,
+        IEnumerable<MySqlViewColumnMetadata>? viewColumns = null,
+        IEnumerable<MySqlTriggerMetadata>? triggers = null,
+        IEnumerable<MySqlRoutineMetadata>? routines = null,
+        IEnumerable<MySqlRoutineParameterMetadata>? routineParameters = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(endpointDigest);
         ArgumentException.ThrowIfNullOrWhiteSpace(providerVersion);
@@ -48,6 +53,11 @@ internal sealed class MySqlCatalogSnapshot
         Checks = ReadOnly(checks);
         Indexes = ReadOnly(indexes);
         IndexParts = ReadOnly(indexParts);
+        Views = ReadOnly(views);
+        ViewColumns = ReadOnly(viewColumns);
+        Triggers = ReadOnly(triggers);
+        Routines = ReadOnly(routines);
+        RoutineParameters = ReadOnly(routineParameters);
     }
 
     public string EndpointDigest { get; }
@@ -80,6 +90,16 @@ internal sealed class MySqlCatalogSnapshot
 
     public IReadOnlyList<MySqlIndexPartMetadata> IndexParts { get; }
 
+    public IReadOnlyList<MySqlViewMetadata> Views { get; }
+
+    public IReadOnlyList<MySqlViewColumnMetadata> ViewColumns { get; }
+
+    public IReadOnlyList<MySqlTriggerMetadata> Triggers { get; }
+
+    public IReadOnlyList<MySqlRoutineMetadata> Routines { get; }
+
+    public IReadOnlyList<MySqlRoutineParameterMetadata> RoutineParameters { get; }
+
     private static IReadOnlyList<T> ReadOnly<T>(IEnumerable<T>? values) =>
         new ReadOnlyCollection<T>((values ?? []).ToArray());
 }
@@ -98,7 +118,8 @@ internal sealed record MySqlSessionMetadata(
     string CharacterSetConnection,
     string CollationConnection,
     string TimeZone,
-    bool? SqlQuoteShowCreate = null);
+    bool? SqlQuoteShowCreate = null,
+    bool? ExplicitDefaultsForTimestamp = null);
 
 internal sealed record MySqlDatabaseMetadata(
     string Name,
@@ -138,7 +159,11 @@ internal sealed record MySqlColumnMetadata(
     string GenerationKind,
     long? GenerationExpressionBytes,
     string? GenerationExpression,
-    bool IsInvisible);
+    bool IsInvisible,
+    long? DefaultBytes = null,
+    string? DefaultValue = null,
+    bool IsDefaultGenerated = false,
+    bool HasOnUpdateCurrentTimestamp = false);
 
 internal sealed record MySqlTableDefinitionMetadata(
     string SchemaName,
@@ -208,3 +233,83 @@ internal sealed record MySqlIndexPartMetadata(
     long? PrefixLength,
     long? ExpressionBytes,
     string? Expression);
+
+internal sealed record MySqlViewMetadata(
+    string SchemaName,
+    string Name,
+    bool MetadataVisible,
+    long? DefinitionBytes,
+    string? Definition,
+    string? CheckOption,
+    bool? IsUpdatable,
+    string? SecurityType,
+    string? CharacterSetClient,
+    string? CollationConnection);
+
+internal sealed record MySqlViewColumnMetadata(
+    string SchemaName,
+    string ViewName,
+    int OrdinalPosition,
+    string Name,
+    string DataType,
+    bool IsNullable,
+    string? CharacterSetName,
+    string? CollationName,
+    long? CharacterMaximumLength,
+    int? NumericPrecision,
+    int? NumericScale,
+    int? DateTimePrecision,
+    long ColumnTypeBytes,
+    string ColumnType);
+
+internal sealed record MySqlTriggerMetadata(
+    string SchemaName,
+    string Name,
+    string EventManipulation,
+    string EventObjectSchema,
+    string EventObjectTable,
+    int ActionOrder,
+    long ActionStatementBytes,
+    string ActionStatement,
+    string ActionOrientation,
+    string ActionTiming,
+    string SqlMode,
+    string CharacterSetClient,
+    string CollationConnection,
+    string DatabaseCollation);
+
+internal sealed record MySqlRoutineMetadata(
+    string SchemaName,
+    string SpecificName,
+    string Name,
+    string RoutineType,
+    string? DataType,
+    long? DtdIdentifierBytes,
+    string? DtdIdentifier,
+    string RoutineBody,
+    long? DefinitionBytes,
+    string? Definition,
+    bool IsDeterministic,
+    string SqlDataAccess,
+    string SecurityType,
+    string SqlMode,
+    string CharacterSetClient,
+    string CollationConnection,
+    string DatabaseCollation);
+
+internal sealed record MySqlRoutineParameterMetadata(
+    string SchemaName,
+    string SpecificName,
+    string RoutineType,
+    int OrdinalPosition,
+    string? Mode,
+    string? Name,
+    string DataType,
+    long DtdIdentifierBytes,
+    string DtdIdentifier,
+    string? CharacterSetName,
+    string? CollationName,
+    long? CharacterMaximumLength,
+    int? NumericPrecision,
+    int? NumericScale,
+    int? DateTimePrecision);

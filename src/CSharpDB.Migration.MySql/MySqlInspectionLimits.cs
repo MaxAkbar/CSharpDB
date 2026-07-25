@@ -17,6 +17,10 @@ internal sealed record MySqlInspectionLimits
     public const int MaximumIndexes = 40_000;
     public const int MaximumIndexParts = 160_000;
     public const int MaximumViews = 10_000;
+    public const int MaximumViewColumns = 100_000;
+    public const int MaximumTriggers = 20_000;
+    public const int MaximumRoutines = 20_000;
+    public const int MaximumRoutineParameters = 80_000;
     public const int MaximumStructuralRowsTotal = 500_000;
     public const int MaximumNameBytes = 64 * 4;
     public const int MaximumColumnTypeBytes = 1024 * 1024;
@@ -49,6 +53,15 @@ internal sealed record MySqlInspectionLimits
     public int MaxIndexParts { get; init; } = MaximumIndexParts;
 
     public int MaxViews { get; init; } = MaximumViews;
+
+    public int MaxViewColumns { get; init; } = MaximumViewColumns;
+
+    public int MaxTriggers { get; init; } = MaximumTriggers;
+
+    public int MaxRoutines { get; init; } = MaximumRoutines;
+
+    public int MaxRoutineParameters { get; init; } =
+        MaximumRoutineParameters;
 
     public int MaxStructuralRowsTotal { get; init; } =
         MaximumStructuralRowsTotal;
@@ -88,6 +101,16 @@ internal sealed record MySqlInspectionLimits
         Validate(nameof(MaxIndexes), MaxIndexes, MaximumIndexes);
         Validate(nameof(MaxIndexParts), MaxIndexParts, MaximumIndexParts);
         Validate(nameof(MaxViews), MaxViews, MaximumViews);
+        Validate(
+            nameof(MaxViewColumns),
+            MaxViewColumns,
+            MaximumViewColumns);
+        Validate(nameof(MaxTriggers), MaxTriggers, MaximumTriggers);
+        Validate(nameof(MaxRoutines), MaxRoutines, MaximumRoutines);
+        Validate(
+            nameof(MaxRoutineParameters),
+            MaxRoutineParameters,
+            MaximumRoutineParameters);
         Validate(
             nameof(MaxStructuralRowsTotal),
             MaxStructuralRowsTotal,

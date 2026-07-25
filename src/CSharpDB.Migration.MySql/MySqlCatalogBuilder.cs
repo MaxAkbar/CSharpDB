@@ -6,7 +6,7 @@ namespace CSharpDB.Migration.MySql;
 
 internal static partial class MySqlCatalogBuilder
 {
-    public const string CatalogContract = "csharpdb-mysql-catalog/v2";
+    public const string CatalogContract = "csharpdb-mysql-catalog/v3";
 
     private static readonly UTF8Encoding s_strictUtf8 =
         new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
@@ -29,7 +29,8 @@ internal static partial class MySqlCatalogBuilder
             2 +
             snapshot.Tables.Count +
             snapshot.Columns.Count +
-            RelationalObjectCapacity(snapshot));
+            RelationalObjectCapacity(snapshot) +
+            ProgrammableObjectCapacity(snapshot));
         var diagnostics = new List<MigrationDiagnostic>();
 
         string databaseId = ObjectId("database", snapshot.Database.Name);
@@ -58,6 +59,10 @@ internal static partial class MySqlCatalogBuilder
                 Facet(
                     "mysqlSqlQuoteShowCreate",
                     NullableBoolean(snapshot.Session.SqlQuoteShowCreate)),
+                Facet(
+                    "mysqlExplicitDefaultsForTimestamp",
+                    NullableBoolean(
+                        snapshot.Session.ExplicitDefaultsForTimestamp)),
                 Facet(
                     "mysqlCharacterSetConnection",
                     snapshot.Session.CharacterSetConnection),
@@ -91,7 +96,15 @@ internal static partial class MySqlCatalogBuilder
                 Facet(
                     "mysqlIndexPartCount",
                     Invariant(snapshot.IndexParts.Count)),
-                Facet("mysqlViewCount", Invariant(snapshot.Database.ViewCount)),
+                Facet("mysqlViewCount", Invariant(snapshot.Views.Count)),
+                Facet(
+                    "mysqlViewColumnCount",
+                    Invariant(snapshot.ViewColumns.Count)),
+                Facet("mysqlTriggerCount", Invariant(snapshot.Triggers.Count)),
+                Facet("mysqlRoutineCount", Invariant(snapshot.Routines.Count)),
+                Facet(
+                    "mysqlRoutineParameterCount",
+                    Invariant(snapshot.RoutineParameters.Count)),
             ],
         });
         objects.Add(new MigrationCatalogObject
@@ -221,6 +234,7 @@ internal static partial class MySqlCatalogBuilder
             };
             AddLogicalFacets(facets, column);
             AddGenerationFacets(facets, column);
+            AddDefaultFacets(facets, column);
             objects.Add(new MigrationCatalogObject
             {
                 ObjectId = columnId,
@@ -242,6 +256,13 @@ internal static partial class MySqlCatalogBuilder
             snapshot,
             tablesByIdentity,
             columnsByIdentity,
+            objects,
+            diagnostics,
+            cancellationToken);
+        AddProgrammableObjects(
+            snapshot,
+            namespaceId,
+            tablesByIdentity,
             objects,
             diagnostics,
             cancellationToken);
@@ -311,10 +332,12 @@ internal static partial class MySqlCatalogBuilder
         if (snapshot.Columns.Count > limits.MaxColumns)
             throw LimitExceeded("column count");
         ValidateRelationalCounts(snapshot, limits);
+        ValidateProgrammableCounts(snapshot, limits);
         if (snapshot.Database.ViewCount < 0 ||
-            snapshot.Database.ViewCount > limits.MaxViews)
+            snapshot.Database.ViewCount > limits.MaxViews ||
+            snapshot.Database.ViewCount != snapshot.Views.Count)
         {
-            throw LimitExceeded("view count");
+            throw InvalidSnapshot("inconsistent view count metadata");
         }
         if (!IsSha256(snapshot.EndpointDigest))
         {
@@ -422,12 +445,18 @@ internal static partial class MySqlCatalogBuilder
                 throw InvalidSnapshot("invalid numeric column metadata");
             }
             ValidateGeneration(column, budget);
+            ValidateDefault(column, budget);
         }
 
         ValidateRelationalSnapshot(
             snapshot,
             tableIdentities,
             columnNames,
+            budget,
+            cancellationToken);
+        ValidateProgrammableSnapshot(
+            snapshot,
+            tableIdentities,
             budget,
             cancellationToken);
     }
@@ -540,18 +569,37 @@ internal static partial class MySqlCatalogBuilder
                 occurrenceKey: NullableBoolean(
                     snapshot.Session.SqlQuoteShowCreate)));
         }
-        if (snapshot.Database.ViewCount > 0)
+        if (snapshot.Session.ExplicitDefaultsForTimestamp != true)
         {
             diagnostics.Add(Diagnostic(
                 databaseId,
-                "MIG-MYSQL-VIEW-INVENTORY-DEFERRED-001",
+                "MIG-MYSQL-IMPLICIT-TIMESTAMP-DEFAULTS-001",
                 MigrationDiagnosticSeverity.Error,
                 MigrationCompatibilityStatus.Unknown,
-                "MySQL views exist but are not inventoried by this checkpoint.",
-                "The bounded table scan counted views without retaining their definitions or dependencies.",
-                "Inventory and analyze each view before migration approval.",
+                "Legacy implicit TIMESTAMP defaults are not ruled out.",
+                "The inspection session did not prove explicit_defaults_for_timestamp=ON. MySQL can otherwise synthesize initialization and update behavior that is not fully represented by INFORMATION_SCHEMA default text.",
+                "Enable explicit_defaults_for_timestamp and inspect again, or review every TIMESTAMP column against its SHOW CREATE evidence.",
                 canOverride: false,
-                occurrenceKey: Invariant(snapshot.Database.ViewCount)));
+                occurrenceKey: NullableBoolean(
+                    snapshot.Session.ExplicitDefaultsForTimestamp)));
+        }
+        int ambiguousNullDefaults = snapshot.Columns.Count(
+            static column =>
+                column.IsNullable &&
+                !column.IsGenerated &&
+                column.DefaultValue is null);
+        if (ambiguousNullDefaults > 0)
+        {
+            diagnostics.Add(Diagnostic(
+                databaseId,
+                "MIG-MYSQL-NULL-DEFAULT-AMBIGUITY-001",
+                MigrationDiagnosticSeverity.Error,
+                MigrationCompatibilityStatus.Unknown,
+                "INFORMATION_SCHEMA cannot distinguish every absent default from an explicit NULL default.",
+                "COLUMN_DEFAULT is NULL both when a column has no DEFAULT clause and when its default is explicitly NULL. The bounded catalog therefore does not infer target default behavior for these columns.",
+                "Reconcile the affected columns against bounded SHOW CREATE evidence before approving target defaults.",
+                canOverride: false,
+                occurrenceKey: Invariant(ambiguousNullDefaults)));
         }
         diagnostics.Add(Diagnostic(
             databaseId,
@@ -559,8 +607,8 @@ internal static partial class MySqlCatalogBuilder
             MigrationDiagnosticSeverity.Error,
             MigrationCompatibilityStatus.Unknown,
             "This checkpoint is an intentionally partial MySQL inventory.",
-            "Phase 7B.2 inventories bounded base tables, columns, keys, foreign keys, checks, indexes, and digest-only SHOW CREATE evidence. Defaults, partitions beyond detection, views, triggers, routines, query semantics, and source rows are not yet complete.",
-            "Complete the programmable-object and row-semantics checkpoints before using this catalog for migration approval.",
+            "Phase 7B.3 inventories bounded base tables, columns, default evidence, keys, foreign keys, checks, indexes, views, triggers, routines, parameters, and digest-only SQL-body evidence. Partitions beyond detection, events, dependencies, query semantics, source rows, and live qualification remain deferred.",
+            "Complete dependency, row-semantics, and live-source qualification before using this catalog for migration approval.",
             canOverride: false));
         diagnostics.Add(Diagnostic(
             databaseId,
@@ -658,6 +706,7 @@ internal static partial class MySqlCatalogBuilder
                 "Materialize the value or complete bounded expression analysis and target validation.",
                 canOverride: false));
         }
+        AddDefaultDiagnostics(column, columnId, diagnostics);
         if (column.IsInvisible)
         {
             diagnostics.Add(Diagnostic(
@@ -925,6 +974,8 @@ internal static partial class MySqlCatalogBuilder
                 snapshot.Server.ShowGeneratedInvisiblePrimaryKey);
             yield return snapshot.Session.SqlMode;
             yield return NullableBoolean(snapshot.Session.SqlQuoteShowCreate);
+            yield return NullableBoolean(
+                snapshot.Session.ExplicitDefaultsForTimestamp);
             yield return snapshot.Session.CharacterSetConnection;
             yield return snapshot.Session.CollationConnection;
             yield return snapshot.Session.TimeZone;
@@ -975,13 +1026,23 @@ internal static partial class MySqlCatalogBuilder
                         "csharpdb-mysql-generation-expression/v1",
                         column.GenerationExpression);
                 yield return Boolean(column.IsInvisible);
+                yield return NullableInvariant(column.DefaultBytes);
+                yield return column.DefaultValue is null
+                    ? null
+                    : MySqlStableDigest.Text(
+                        "csharpdb-mysql-column-default/v1",
+                        column.DefaultValue);
+                yield return Boolean(column.IsDefaultGenerated);
+                yield return Boolean(column.HasOnUpdateCurrentTimestamp);
             }
             foreach (string? field in RelationalSnapshotFields(snapshot))
+                yield return field;
+            foreach (string? field in ProgrammableSnapshotFields(snapshot))
                 yield return field;
         }
 
         return MySqlStableDigest.Sequence(
-            "csharpdb-mysql-snapshot/v2",
+            "csharpdb-mysql-snapshot/v3",
             Fields());
     }
 
@@ -1245,6 +1306,21 @@ internal static partial class MySqlCatalogBuilder
                 throw InvalidSnapshot("inconsistent text byte metadata");
             if (bytes > maximumBytes)
                 throw LimitExceeded(category);
+        }
+
+        public void AddColumnTypeText(
+            string value,
+            long sourceBytes)
+        {
+            if (sourceBytes < 0)
+                throw InvalidSnapshot("negative type-text byte metadata");
+            if (sourceBytes > limits.MaxColumnTypeBytes)
+                throw LimitExceeded("column type byte");
+            long before = metadataBytes;
+            Add(value);
+            long bytes = checked(metadataBytes - before);
+            if (sourceBytes != bytes)
+                throw InvalidSnapshot("inconsistent type-text byte metadata");
         }
     }
 }

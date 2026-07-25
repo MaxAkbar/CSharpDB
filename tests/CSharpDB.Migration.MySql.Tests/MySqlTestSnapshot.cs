@@ -12,6 +12,21 @@ internal static class MySqlTestSnapshot
         "(lower(`Customer`) /* NeverPersistThisMySqlIndexExpression */)";
     public const string SecretShowCreateMarker =
         "NeverPersistThisMySqlShowCreate";
+    public const string SecretDefinerIdentity =
+        "NeverPersistUser@NeverPersistHost";
+    public const string SecretDefaultValue =
+        "NeverPersistThisMySqlDefault";
+    public const string SecretViewDefinition =
+        "select `Orders`.`Id` AS `Id` from `SourceDb`.`Orders` " +
+        "/* NeverPersistThisMySqlView */";
+    public const string SecretTriggerStatement =
+        "SET NEW.`Customer` = CONCAT(NEW.`Customer`, " +
+        "'NeverPersistThisMySqlTrigger')";
+    public const string SecretProcedureDefinition =
+        "BEGIN SELECT 'NeverPersistThisMySqlProcedure'; END";
+    public const string SecretFunctionDefinition =
+        "RETURN CONCAT(value, 'NeverPersistThisMySqlFunction:" +
+        SecretDefinerIdentity + "')";
 
     public static MySqlCatalogSnapshot Create(
         MySqlServerMetadata? server = null,
@@ -26,13 +41,22 @@ internal static class MySqlTestSnapshot
         IEnumerable<MySqlForeignKeyColumnMetadata>? foreignKeyColumns = null,
         IEnumerable<MySqlCheckMetadata>? checks = null,
         IEnumerable<MySqlIndexMetadata>? indexes = null,
-        IEnumerable<MySqlIndexPartMetadata>? indexParts = null)
+        IEnumerable<MySqlIndexPartMetadata>? indexParts = null,
+        IEnumerable<MySqlViewMetadata>? views = null,
+        IEnumerable<MySqlViewColumnMetadata>? viewColumns = null,
+        IEnumerable<MySqlTriggerMetadata>? triggers = null,
+        IEnumerable<MySqlRoutineMetadata>? routines = null,
+        IEnumerable<MySqlRoutineParameterMetadata>? routineParameters = null)
     {
         IReadOnlyList<MySqlTableMetadata> resolvedTables =
             tables?.ToArray() ?? Tables();
         IReadOnlyList<MySqlColumnMetadata> resolvedColumns =
             columns?.ToArray() ?? Columns();
+        IReadOnlyList<MySqlViewMetadata> resolvedViews =
+            views?.ToArray() ?? [];
         bool usesDefaultStructure = tables is null && columns is null;
+        MySqlDatabaseMetadata resolvedDatabase =
+            database ?? Database() with { ViewCount = resolvedViews.Count };
 
         return new(
             endpointDigest:
@@ -40,7 +64,7 @@ internal static class MySqlTestSnapshot
             providerVersion: "2.6.1",
             server ?? Server(),
             session ?? Session(),
-            database ?? Database(),
+            resolvedDatabase,
             resolvedTables,
             resolvedColumns,
             tableDefinitions ?? TableDefinitions(resolvedTables),
@@ -51,7 +75,12 @@ internal static class MySqlTestSnapshot
                 (usesDefaultStructure ? ForeignKeyColumns() : []),
             checks ?? (usesDefaultStructure ? Checks() : []),
             indexes ?? (usesDefaultStructure ? Indexes() : []),
-            indexParts ?? (usesDefaultStructure ? IndexParts() : []));
+            indexParts ?? (usesDefaultStructure ? IndexParts() : []),
+            resolvedViews,
+            viewColumns ?? [],
+            triggers ?? [],
+            routines ?? [],
+            routineParameters ?? []);
     }
 
     public static MySqlServerMetadata Server() =>
@@ -70,7 +99,8 @@ internal static class MySqlTestSnapshot
             CharacterSetConnection: "utf8mb4",
             CollationConnection: "utf8mb4_0900_ai_ci",
             TimeZone: "+00:00",
-            SqlQuoteShowCreate: true);
+            SqlQuoteShowCreate: true,
+            ExplicitDefaultsForTimestamp: true);
 
     public static MySqlDatabaseMetadata Database() =>
         new(
@@ -307,6 +337,137 @@ internal static class MySqlTestSnapshot
                     columnName: "ParentId"),
             ]);
 
+    public static MySqlCatalogSnapshot CreateProgrammableInventory() =>
+        Create(
+            database: Database() with { ViewCount = 2 },
+            columns:
+            [
+                .. Columns(),
+                Column(
+                    "Archive",
+                    2,
+                    "LiteralDefault",
+                    "varchar",
+                    characterMaximumLength: 64,
+                    characterSetName: "utf8mb4",
+                    collationName: "utf8mb4_0900_ai_ci",
+                    defaultValue: SecretDefaultValue),
+                Column(
+                    "Archive",
+                    3,
+                    "ExpressionDefault",
+                    "timestamp",
+                    nullable: false,
+                    dateTimePrecision: 6,
+                    defaultValue: "CURRENT_TIMESTAMP(6)",
+                    defaultGenerated: true),
+                Column(
+                    "Archive",
+                    4,
+                    "UpdatedAt",
+                    "timestamp",
+                    nullable: false,
+                    dateTimePrecision: 6,
+                    defaultValue: "CURRENT_TIMESTAMP(6)",
+                    defaultGenerated: true,
+                    onUpdateCurrentTimestamp: true),
+            ],
+            views: Views(),
+            viewColumns: ViewColumns(),
+            triggers: Triggers(),
+            routines: Routines(),
+            routineParameters: RoutineParameters());
+
+    public static IReadOnlyList<MySqlViewMetadata> Views() =>
+    [
+        View(
+            "VisibleOrders",
+            metadataVisible: true,
+            definition: SecretViewDefinition,
+            checkOption: "NONE",
+            updatable: true,
+            securityType: "DEFINER"),
+        View(
+            "FilteredOrders",
+            metadataVisible: false,
+            definition: null),
+    ];
+
+    public static IReadOnlyList<MySqlViewColumnMetadata> ViewColumns() =>
+    [
+        ViewColumn("VisibleOrders", 1, "Id", "bigint", nullable: false),
+        ViewColumn(
+            "VisibleOrders",
+            2,
+            "Customer",
+            "varchar",
+            characterMaximumLength: 100,
+            characterSetName: "utf8mb4",
+            collationName: "utf8mb4_0900_ai_ci"),
+        ViewColumn("FilteredOrders", 1, "Id", "bigint", nullable: false),
+    ];
+
+    public static IReadOnlyList<MySqlTriggerMetadata> Triggers() =>
+    [
+        Trigger(
+            "Orders",
+            "TR_Orders_Customer",
+            actionStatement: SecretTriggerStatement),
+    ];
+
+    public static IReadOnlyList<MySqlRoutineMetadata> Routines() =>
+    [
+        Routine(
+            specificName: "RefreshArchive",
+            name: "RefreshArchive",
+            routineType: "PROCEDURE",
+            definition: SecretProcedureDefinition),
+        Routine(
+            specificName: "NormalizeCustomer",
+            name: "NormalizeCustomer",
+            routineType: "FUNCTION",
+            dataType: "varchar",
+            dtdIdentifier: "varchar(100)",
+            definition: SecretFunctionDefinition,
+            deterministic: true,
+            sqlDataAccess: "NO SQL"),
+    ];
+
+    public static IReadOnlyList<MySqlRoutineParameterMetadata>
+        RoutineParameters() =>
+    [
+        RoutineParameter(
+            specificName: "RefreshArchive",
+            routineType: "PROCEDURE",
+            ordinal: 1,
+            mode: "IN",
+            name: "cutoff_id",
+            dataType: "bigint",
+            dtdIdentifier: "bigint"),
+        RoutineParameter(
+            specificName: "NormalizeCustomer",
+            routineType: "FUNCTION",
+            ordinal: 0,
+            mode: null,
+            name: null,
+            dataType: "varchar",
+            dtdIdentifier: "varchar(100)",
+            characterMaximumLength: 100,
+            characterSetName: "utf8mb4",
+            collationName: "utf8mb4_0900_ai_ci"),
+        RoutineParameter(
+            specificName: "NormalizeCustomer",
+            routineType: "FUNCTION",
+            ordinal: 1,
+            mode: "IN",
+            name: "value",
+            dataType: "varchar",
+            dtdIdentifier: "varchar(100)",
+            characterMaximumLength: 100,
+            characterSetName: "utf8mb4",
+            collationName: "utf8mb4_0900_ai_ci"),
+    ];
+
     public static MySqlTableMetadata Table(
         string name,
         string tableType = "BASE TABLE",
@@ -460,6 +621,169 @@ internal static class MySqlTestSnapshot
                     : System.Text.Encoding.UTF8.GetByteCount(expression),
             Expression: expression);
 
+    public static MySqlViewMetadata View(
+        string name,
+        bool metadataVisible,
+        string? definition,
+        string? checkOption = null,
+        bool? updatable = null,
+        string? securityType = null,
+        string? characterSetClient = null,
+        string? collationConnection = null,
+        string schemaName = "SourceDb") =>
+        new(
+            SchemaName: schemaName,
+            Name: name,
+            MetadataVisible: metadataVisible,
+            DefinitionBytes:
+                definition is null
+                    ? null
+                    : System.Text.Encoding.UTF8.GetByteCount(definition),
+            Definition: definition,
+            CheckOption: checkOption,
+            IsUpdatable: updatable,
+            SecurityType: securityType,
+            CharacterSetClient: characterSetClient ??
+                (metadataVisible ? "utf8mb4" : null),
+            CollationConnection: collationConnection ??
+                (metadataVisible ? "utf8mb4_0900_ai_ci" : null));
+
+    public static MySqlViewColumnMetadata ViewColumn(
+        string viewName,
+        int ordinal,
+        string name,
+        string dataType,
+        bool nullable = true,
+        string? characterSetName = null,
+        string? collationName = null,
+        long? characterMaximumLength = null,
+        int? numericPrecision = null,
+        int? numericScale = null,
+        int? dateTimePrecision = null,
+        string? columnType = null,
+        string schemaName = "SourceDb")
+    {
+        string resolvedColumnType = columnType ?? FormatColumnType(
+            dataType,
+            characterMaximumLength,
+            numericPrecision,
+            numericScale,
+            dateTimePrecision,
+            unsigned: false,
+            zerofill: false,
+            tinyIntOne: false);
+        return new(
+            SchemaName: schemaName,
+            ViewName: viewName,
+            OrdinalPosition: ordinal,
+            Name: name,
+            DataType: dataType,
+            IsNullable: nullable,
+            CharacterSetName: characterSetName,
+            CollationName: collationName,
+            CharacterMaximumLength: characterMaximumLength,
+            NumericPrecision: numericPrecision,
+            NumericScale: numericScale,
+            DateTimePrecision: dateTimePrecision,
+            ColumnTypeBytes:
+                System.Text.Encoding.UTF8.GetByteCount(resolvedColumnType),
+            ColumnType: resolvedColumnType);
+    }
+
+    public static MySqlTriggerMetadata Trigger(
+        string tableName,
+        string name,
+        string actionStatement,
+        string eventManipulation = "UPDATE",
+        int actionOrder = 1,
+        string actionOrientation = "ROW",
+        string actionTiming = "BEFORE",
+        string schemaName = "SourceDb") =>
+        new(
+            SchemaName: schemaName,
+            Name: name,
+            EventManipulation: eventManipulation,
+            EventObjectSchema: schemaName,
+            EventObjectTable: tableName,
+            ActionOrder: actionOrder,
+            ActionStatementBytes:
+                System.Text.Encoding.UTF8.GetByteCount(actionStatement),
+            ActionStatement: actionStatement,
+            ActionOrientation: actionOrientation,
+            ActionTiming: actionTiming,
+            SqlMode: "STRICT_TRANS_TABLES",
+            CharacterSetClient: "utf8mb4",
+            CollationConnection: "utf8mb4_0900_ai_ci",
+            DatabaseCollation: "utf8mb4_0900_ai_ci");
+
+    public static MySqlRoutineMetadata Routine(
+        string specificName,
+        string name,
+        string routineType,
+        string? definition,
+        string? dataType = null,
+        string? dtdIdentifier = null,
+        bool deterministic = false,
+        string sqlDataAccess = "CONTAINS SQL",
+        string schemaName = "SourceDb") =>
+        new(
+            SchemaName: schemaName,
+            SpecificName: specificName,
+            Name: name,
+            RoutineType: routineType,
+            DataType: dataType,
+            DtdIdentifierBytes:
+                dtdIdentifier is null
+                    ? null
+                    : System.Text.Encoding.UTF8.GetByteCount(dtdIdentifier),
+            DtdIdentifier: dtdIdentifier,
+            RoutineBody: "SQL",
+            DefinitionBytes:
+                definition is null
+                    ? null
+                    : System.Text.Encoding.UTF8.GetByteCount(definition),
+            Definition: definition,
+            IsDeterministic: deterministic,
+            SqlDataAccess: sqlDataAccess,
+            SecurityType: "DEFINER",
+            SqlMode: "STRICT_TRANS_TABLES",
+            CharacterSetClient: "utf8mb4",
+            CollationConnection: "utf8mb4_0900_ai_ci",
+            DatabaseCollation: "utf8mb4_0900_ai_ci");
+
+    public static MySqlRoutineParameterMetadata RoutineParameter(
+        string specificName,
+        string routineType,
+        int ordinal,
+        string? mode,
+        string? name,
+        string dataType,
+        string dtdIdentifier,
+        string? characterSetName = null,
+        string? collationName = null,
+        long? characterMaximumLength = null,
+        int? numericPrecision = null,
+        int? numericScale = null,
+        int? dateTimePrecision = null,
+        string schemaName = "SourceDb") =>
+        new(
+            SchemaName: schemaName,
+            SpecificName: specificName,
+            RoutineType: routineType,
+            OrdinalPosition: ordinal,
+            Mode: mode,
+            Name: name,
+            DataType: dataType,
+            DtdIdentifierBytes:
+                System.Text.Encoding.UTF8.GetByteCount(dtdIdentifier),
+            DtdIdentifier: dtdIdentifier,
+            CharacterSetName: characterSetName,
+            CollationName: collationName,
+            CharacterMaximumLength: characterMaximumLength,
+            NumericPrecision: numericPrecision,
+            NumericScale: numericScale,
+            DateTimePrecision: dateTimePrecision);
+
     public static MySqlColumnMetadata Column(
         string tableName,
         int ordinal,
@@ -480,6 +804,9 @@ internal static class MySqlTestSnapshot
         string generationKind = "NEVER",
         string? generationExpression = null,
         bool invisible = false,
+        string? defaultValue = null,
+        bool defaultGenerated = false,
+        bool onUpdateCurrentTimestamp = false,
         string schemaName = "SourceDb",
         string? columnType = null)
     {
@@ -520,7 +847,14 @@ internal static class MySqlTestSnapshot
                     ? null
                     : System.Text.Encoding.UTF8.GetByteCount(generationExpression),
             GenerationExpression: generationExpression,
-            IsInvisible: invisible);
+            IsInvisible: invisible,
+            DefaultBytes:
+                defaultValue is null
+                    ? null
+                    : System.Text.Encoding.UTF8.GetByteCount(defaultValue),
+            DefaultValue: defaultValue,
+            IsDefaultGenerated: defaultGenerated,
+            HasOnUpdateCurrentTimestamp: onUpdateCurrentTimestamp);
     }
 
     private static string FormatColumnType(

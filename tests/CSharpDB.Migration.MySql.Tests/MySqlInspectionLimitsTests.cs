@@ -69,6 +69,28 @@ public sealed class MySqlInspectionLimitsTests
         Assert.Throws<ArgumentOutOfRangeException>(
             () => (MySqlInspectionLimits.Default with
             {
+                MaxViewColumns =
+                    MySqlInspectionLimits.MaximumViewColumns + 1,
+            }).Validate());
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => (MySqlInspectionLimits.Default with
+            {
+                MaxTriggers = MySqlInspectionLimits.MaximumTriggers + 1,
+            }).Validate());
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => (MySqlInspectionLimits.Default with
+            {
+                MaxRoutines = MySqlInspectionLimits.MaximumRoutines + 1,
+            }).Validate());
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => (MySqlInspectionLimits.Default with
+            {
+                MaxRoutineParameters =
+                    MySqlInspectionLimits.MaximumRoutineParameters + 1,
+            }).Validate());
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => (MySqlInspectionLimits.Default with
+            {
                 MaxStructuralRowsTotal =
                     MySqlInspectionLimits.MaximumStructuralRowsTotal + 1,
             }).Validate());
