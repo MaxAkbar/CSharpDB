@@ -181,6 +181,15 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
             KeysQuery,
             IndexesQuery,
             IndexColumnsQuery,
+            IndexColumnsV16Query,
+            IndexColumnsV17Query,
+            XmlIndexesQuery,
+            SelectiveXmlIndexPathsQuery,
+            SpatialIndexesQuery,
+            SpatialIndexTessellationsQuery,
+            HashIndexesQuery,
+            JsonIndexesV17Query,
+            JsonIndexPathsV17Query,
             ForeignKeysQuery,
             ForeignKeyColumnsQuery,
             ChecksQuery,
@@ -348,6 +357,60 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
         IReadOnlyList<SqlServerIndexColumnMetadata> indexColumns =
             await ReadIndexColumnsAsync(
                     connection,
+                    instance,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        IReadOnlyList<SqlServerXmlIndexMetadata> xmlIndexes =
+            await ReadXmlIndexesAsync(
+                    connection,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        IReadOnlyList<SqlServerSelectiveXmlIndexPathMetadata>
+            selectiveXmlIndexPaths =
+                await ReadSelectiveXmlIndexPathsAsync(
+                        connection,
+                        budget,
+                        limits,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+        IReadOnlyList<SqlServerSpatialIndexMetadata> spatialIndexes =
+            await ReadSpatialIndexesAsync(
+                    connection,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        IReadOnlyList<SqlServerSpatialIndexTessellationMetadata>
+            spatialIndexTessellations =
+                await ReadSpatialIndexTessellationsAsync(
+                        connection,
+                        budget,
+                        limits,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+        IReadOnlyList<SqlServerHashIndexMetadata> hashIndexes =
+            await ReadHashIndexesAsync(
+                    connection,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        IReadOnlyList<SqlServerJsonIndexMetadata> jsonIndexes =
+            await ReadJsonIndexesAsync(
+                    connection,
+                    instance,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        IReadOnlyList<SqlServerJsonIndexPathMetadata> jsonIndexPaths =
+            await ReadJsonIndexPathsAsync(
+                    connection,
+                    instance,
                     budget,
                     limits,
                     cancellationToken)
@@ -569,7 +632,14 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
             partitionFunctions,
             partitionParameters,
             partitionRangeValues,
-            indexPartitions);
+            indexPartitions,
+            xmlIndexes,
+            selectiveXmlIndexPaths,
+            spatialIndexes,
+            spatialIndexTessellations,
+            hashIndexes,
+            jsonIndexes,
+            jsonIndexPaths);
     }
 
     internal static void EnsureSupportedProductMajorVersion(
@@ -872,10 +942,20 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
             ? null
             : Convert.ToInt32(reader.GetValue(ordinal), CultureInfo.InvariantCulture);
 
+    private static short? OptionalInt16(SqlDataReader reader, int ordinal) =>
+        reader.IsDBNull(ordinal)
+            ? null
+            : Convert.ToInt16(reader.GetValue(ordinal), CultureInfo.InvariantCulture);
+
     private static byte? OptionalByte(SqlDataReader reader, int ordinal) =>
         reader.IsDBNull(ordinal)
             ? null
             : Convert.ToByte(reader.GetValue(ordinal), CultureInfo.InvariantCulture);
+
+    private static double? OptionalDouble(SqlDataReader reader, int ordinal) =>
+        reader.IsDBNull(ordinal)
+            ? null
+            : Convert.ToDouble(reader.GetValue(ordinal), CultureInfo.InvariantCulture);
 
     private static bool RequiredBoolean(SqlDataReader reader, int ordinal)
     {

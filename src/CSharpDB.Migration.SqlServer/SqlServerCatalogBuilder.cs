@@ -6,7 +6,7 @@ namespace CSharpDB.Migration.SqlServer;
 
 internal static partial class SqlServerCatalogBuilder
 {
-    public const string CatalogContract = "csharpdb-sqlserver-catalog/v5";
+    public const string CatalogContract = "csharpdb-sqlserver-catalog/v6";
 
     private static readonly UTF8Encoding s_strictUtf8 =
         new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
@@ -178,6 +178,30 @@ internal static partial class SqlServerCatalogBuilder
                     "sqlServerPhysicalPartitionCount",
                     Invariant(snapshot.IndexPartitions.Count)),
                 Facet(
+                    "sqlServerXmlIndexCount",
+                    Invariant(snapshot.XmlIndexes.Count)),
+                Facet(
+                    "sqlServerSelectiveXmlIndexPathCount",
+                    Invariant(snapshot.SelectiveXmlIndexPaths.Count)),
+                Facet(
+                    "sqlServerSpatialIndexCount",
+                    Invariant(snapshot.SpatialIndexes.Count)),
+                Facet(
+                    "sqlServerSpatialIndexTessellationCount",
+                    Invariant(snapshot.SpatialIndexTessellations.Count)),
+                Facet(
+                    "sqlServerHashIndexCount",
+                    Invariant(snapshot.HashIndexes.Count)),
+                Facet(
+                    "sqlServerColumnstoreIndexCount",
+                    Invariant(CountColumnstoreIndexes(snapshot))),
+                Facet(
+                    "sqlServerJsonIndexCount",
+                    Invariant(snapshot.JsonIndexes.Count)),
+                Facet(
+                    "sqlServerJsonIndexPathCount",
+                    Invariant(snapshot.JsonIndexPaths.Count)),
+                Facet(
                     "sqlServerIndexedViewIndexInventoryStatus",
                     PhysicalInventoryStatus(visibility)),
                 Facet(
@@ -185,6 +209,9 @@ internal static partial class SqlServerCatalogBuilder
                     PhysicalInventoryStatus(visibility)),
                 Facet(
                     "sqlServerPartitionStorageInventoryStatus",
+                    PhysicalInventoryStatus(visibility)),
+                Facet(
+                    "sqlServerIndexSubtypeInventoryStatus",
                     PhysicalInventoryStatus(visibility)),
             ],
         });
@@ -200,8 +227,8 @@ internal static partial class SqlServerCatalogBuilder
             MigrationDiagnosticSeverity.Error,
             MigrationCompatibilityStatus.Unknown,
             "This checkpoint is an intentionally partial SQL Server inventory.",
-            "Bounded indexed-view indexes, full-text configuration, data spaces, partition definitions, and per-index partition compression facts are now inventoried. Raw partition boundary values, full-text stopwords and registered property definitions, allocation and file placement, physical sizes, row estimates, and other volatile operational state are intentionally not retained. SQL definitions remain syntax-only evidence; binding, lowering, source-semantic proof, optional-package isolation, and live qualification are still pending.",
-            "Complete the remaining subtype-specific inventory and semantic proof, isolate the optional adapter for packaging, and finish live qualification before relying on the analyzer for migration approval.",
+            "Bounded indexed-view indexes, full-text configuration, data spaces, partition definitions, per-index partition compression, and XML, spatial, hash, columnstore, and SQL Server 2025 JSON index configuration are now inventoried. Raw XML and JSON paths remain in memory only and are retained durably as bounded length and domain-separated digest facts. Raw partition boundary values, full-text stopwords and registered property definitions, allocation and file placement, physical sizes, row estimates, and other volatile operational state are intentionally not retained. SQL definitions remain syntax-only evidence; binding, lowering, source-semantic proof, optional-package isolation, and live qualification are still pending.",
+            "Complete semantic proof, isolate the optional adapter for packaging, and finish live qualification before relying on the analyzer for migration approval.",
             canOverride: false));
 
         var schemasById =
@@ -1134,10 +1161,12 @@ internal static partial class SqlServerCatalogBuilder
                 yield return field;
             foreach (string? field in PhysicalSnapshotFields(snapshot))
                 yield return field;
+            foreach (string? field in IndexSubtypeSnapshotFields(snapshot))
+                yield return field;
         }
 
         return SqlServerStableDigest.Sequence(
-            "csharpdb-sqlserver-snapshot/v4",
+            "csharpdb-sqlserver-snapshot/v5",
             Fields());
     }
 

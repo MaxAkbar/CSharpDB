@@ -18,7 +18,16 @@ public sealed partial class SqlServerCatalogReaderTests
         "e3b65500b75b0aa66e2beb81fa5a847c90300929f153810aaea85de1c23b6aca",
         "13a0d89c0c528d48c9bd1740c4e4395ba71d314ed8195d389241c9c88e8987f1",
         "ae23f8d31326fadfdfbceff64ad9090968479e7e1652c2fbf3d472bb41b0919f",
-        "6b5122618c9eed2c99c943d76ffc116a6e7eb85c4d710dd918f7fb9caea454b8",
+        "786e48e73dc2a8cec52624c46c655337a981b4144fb512fba8f550435375c548",
+        "27fe21f5e9d363be319a421455937b637935d06d494a1b3283ec3a569291d6f8",
+        "84b72a2c9f9a3dce396ae1a9e73048102b546d5b935422a27dc86c18e39fc6e9",
+        "451e5c84e4d966cb40fd50cd9c62b3ab51d4139c873f9b3428b8f2fa4abc3e2b",
+        "2ef5ff53c8dea22c256081e1bb7d6801dd4e0c53c53b24d645a3fb16268694d9",
+        "2013abfc41a039cd8b18a4d93d00da417d691aca92c2bf56177591454a51e36c",
+        "9acb5a1e2942b190d7a47a3542a1a1b21b21f2c67c1c0e722038a8448a931953",
+        "cbccd2e01587561fe2208a686bc9f1168c7ea5f0c5821817f9c318c895424144",
+        "e2375a12e570f67ce0f029077556541f9e0ef770251294a78b986157c66ab31a",
+        "4d155a373148308e7a0cd739c664c4b553c941df4383380664688e2590ed2ca2",
         "67300ecd636451a5436093d1337ad572f582f6247e0e98a2e6d0109699d5dfa8",
         "adb505bd36ea55f724a25f7696d5bcd7ef47f2340f26ff5af488456aea5aecfa",
         "4d8728fd4cd5894a561f0eaf2bdeb52635703a81936986b39c845319503fd0a3",
@@ -153,7 +162,7 @@ public sealed partial class SqlServerCatalogReaderTests
     [Fact]
     public void CatalogCommandsAreStaticSelectOnlyAndPreflightLargeExpressions()
     {
-        Assert.Equal(36, SqlServerCatalogReader.CommandTexts.Count);
+        Assert.Equal(45, SqlServerCatalogReader.CommandTexts.Count);
         foreach (string command in SqlServerCatalogReader.CommandTexts)
         {
             Assert.StartsWith(
@@ -288,6 +297,64 @@ public sealed partial class SqlServerCatalogReaderTests
             "o.type IN (N'U', N'V')",
             SqlServerCatalogReader.IndexesQuery,
             StringComparison.Ordinal);
+        Assert.Equal(
+            2,
+            CountOccurrences(
+                SqlServerCatalogReader.IndexColumnsQuery,
+                "CONVERT(tinyint, NULL)"));
+        Assert.Contains(
+            "ic.column_store_order_ordinal",
+            SqlServerCatalogReader.IndexColumnsV16Query,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "ic.data_clustering_ordinal",
+            SqlServerCatalogReader.IndexColumnsV16Query,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "ic.column_store_order_ordinal",
+            SqlServerCatalogReader.IndexColumnsV17Query,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "ic.data_clustering_ordinal",
+            SqlServerCatalogReader.IndexColumnsV17Query,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "sys.xml_indexes",
+            SqlServerCatalogReader.XmlIndexesQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "DATALENGTH(path.path)",
+            SqlServerCatalogReader.SelectiveXmlIndexPathsQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "sys.spatial_indexes",
+            SqlServerCatalogReader.SpatialIndexesQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "sys.spatial_index_tessellations",
+            SqlServerCatalogReader.SpatialIndexTessellationsQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "sys.hash_indexes",
+            SqlServerCatalogReader.HashIndexesQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "sys.json_indexes",
+            SqlServerCatalogReader.JsonIndexesV17Query,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "sys.json_index_paths",
+            SqlServerCatalogReader.JsonIndexPathsV17Query,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "ROW_NUMBER() OVER",
+            SqlServerCatalogReader.JsonIndexPathsV17Query,
+            StringComparison.Ordinal);
+        Assert.Equal(
+            2,
+            CountOccurrences(
+                SqlServerCatalogReader.JsonIndexPathsV17Query,
+                "CONVERT(varbinary(8000), path.path)"));
         Assert.Contains(
             "CONVERT(int, NULL)",
             SqlServerCatalogReader.FullTextIndexesQuery,
@@ -339,7 +406,7 @@ public sealed partial class SqlServerCatalogReaderTests
 
         string physicalCommands = string.Join(
             "\n",
-            SqlServerCatalogReader.CommandTexts.Skip(22));
+            SqlServerCatalogReader.CommandTexts);
         Assert.DoesNotContain(
             "sys.database_files",
             physicalCommands,
@@ -358,6 +425,26 @@ public sealed partial class SqlServerCatalogReaderTests
             StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(
             "stopword",
+            physicalCommands,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            "sys.column_store_segments",
+            physicalCommands,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            "sys.column_store_row_groups",
+            physicalCommands,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            "dm_db_column_store",
+            physicalCommands,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            "row_count",
+            physicalCommands,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            "deleted_rows",
             physicalCommands,
             StringComparison.OrdinalIgnoreCase);
 
@@ -392,4 +479,7 @@ public sealed partial class SqlServerCatalogReaderTests
         @"\b(INSERT|UPDATE|DELETE|MERGE|ALTER|CREATE|DROP|TRUNCATE|EXEC|EXECUTE)\b",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex MutatingStatement();
+
+    private static int CountOccurrences(string value, string token) =>
+        value.Split(token, StringSplitOptions.None).Length - 1;
 }

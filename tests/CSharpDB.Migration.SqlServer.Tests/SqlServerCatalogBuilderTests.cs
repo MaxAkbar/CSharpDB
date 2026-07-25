@@ -6,9 +6,9 @@ namespace CSharpDB.Migration.SqlServer.Tests;
 public sealed partial class SqlServerCatalogBuilderTests
 {
     private const string GoldenCatalogDigest =
-        "090953b25bf4072c7057e49b60dbd19400cd77e5bac923c413243395c1cdd9e6";
+        "44b9a2152c8c66d227a6980231d32f58746ffc95520a69453180e2158a7bb91b";
     private const string GoldenSourceFingerprint =
-        "sha256:cfe7ec13981a125d9443915c8b554118261fe39633c21cb80e19707be058db5d";
+        "sha256:e1e941fd00e4b3bb125dd0763342e2dda62783e09629d7c593ff06c82f9107ae";
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
@@ -173,7 +173,14 @@ public sealed partial class SqlServerCatalogBuilderTests
             ordered.PartitionFunctions.Reverse(),
             ordered.PartitionParameters.Reverse(),
             ordered.PartitionRangeValues.Reverse(),
-            ordered.IndexPartitions.Reverse());
+            ordered.IndexPartitions.Reverse(),
+            ordered.XmlIndexes.Reverse(),
+            ordered.SelectiveXmlIndexPaths.Reverse(),
+            ordered.SpatialIndexes.Reverse(),
+            ordered.SpatialIndexTessellations.Reverse(),
+            ordered.HashIndexes.Reverse(),
+            ordered.JsonIndexes.Reverse(),
+            ordered.JsonIndexPaths.Reverse());
 
         Assert.Equal(
             MigrationArtifactSerializer.SerializeCatalog(Build(ordered)),
@@ -1912,7 +1919,16 @@ public sealed partial class SqlServerCatalogBuilderTests
             partitionParameters = null,
         IEnumerable<SqlServerPartitionRangeValueMetadata>?
             partitionRangeValues = null,
-        IEnumerable<SqlServerIndexPartitionMetadata>? indexPartitions = null) =>
+        IEnumerable<SqlServerIndexPartitionMetadata>? indexPartitions = null,
+        IEnumerable<SqlServerXmlIndexMetadata>? xmlIndexes = null,
+        IEnumerable<SqlServerSelectiveXmlIndexPathMetadata>?
+            selectiveXmlIndexPaths = null,
+        IEnumerable<SqlServerSpatialIndexMetadata>? spatialIndexes = null,
+        IEnumerable<SqlServerSpatialIndexTessellationMetadata>?
+            spatialIndexTessellations = null,
+        IEnumerable<SqlServerHashIndexMetadata>? hashIndexes = null,
+        IEnumerable<SqlServerJsonIndexMetadata>? jsonIndexes = null,
+        IEnumerable<SqlServerJsonIndexPathMetadata>? jsonIndexPaths = null) =>
         new(
             source.EndpointDigest,
             source.ProviderVersion,
@@ -1949,7 +1965,14 @@ public sealed partial class SqlServerCatalogBuilderTests
             partitionFunctions ?? source.PartitionFunctions,
             partitionParameters ?? source.PartitionParameters,
             partitionRangeValues ?? source.PartitionRangeValues,
-            indexPartitions ?? source.IndexPartitions);
+            indexPartitions ?? source.IndexPartitions,
+            xmlIndexes ?? source.XmlIndexes,
+            selectiveXmlIndexPaths ?? source.SelectiveXmlIndexPaths,
+            spatialIndexes ?? source.SpatialIndexes,
+            spatialIndexTessellations ?? source.SpatialIndexTessellations,
+            hashIndexes ?? source.HashIndexes,
+            jsonIndexes ?? source.JsonIndexes,
+            jsonIndexPaths ?? source.JsonIndexPaths);
 
     private static void AssertDigestChanges(
         string expected,

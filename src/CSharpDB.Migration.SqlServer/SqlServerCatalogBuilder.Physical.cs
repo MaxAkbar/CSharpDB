@@ -25,7 +25,8 @@ internal static partial class SqlServerCatalogBuilder
             snapshot.PartitionRangeValues.Count +
             snapshot.PartitionSchemes.Count +
             snapshot.PartitionSchemeDestinations.Count +
-            snapshot.IndexPartitions.Count);
+            snapshot.IndexPartitions.Count +
+            IndexSubtypeObjectCapacity(snapshot));
 
     private static int CountIndexedViewIndexes(SqlServerCatalogSnapshot snapshot)
     {
@@ -111,6 +112,14 @@ internal static partial class SqlServerCatalogBuilder
         AddIndexedViewObjects(
             snapshot,
             scriptDomAnalysis,
+            relations,
+            columns,
+            nativeIndexObjectIds,
+            objects,
+            diagnostics,
+            cancellationToken);
+        AddIndexSubtypeObjects(
+            snapshot,
             relations,
             columns,
             nativeIndexObjectIds,
@@ -1216,6 +1225,7 @@ internal static partial class SqlServerCatalogBuilder
             throw LimitExceeded("partition range-value count");
         if (snapshot.IndexPartitions.Count > limits.MaxIndexPartitions)
             throw LimitExceeded("index-partition count");
+        ValidateIndexSubtypeCounts(snapshot, limits);
     }
 
     private static void ValidateAggregateStructuralCount(
@@ -1249,7 +1259,14 @@ internal static partial class SqlServerCatalogBuilder
             snapshot.PartitionFunctions.Count +
             snapshot.PartitionParameters.Count +
             snapshot.PartitionRangeValues.Count +
-            snapshot.IndexPartitions.Count);
+            snapshot.IndexPartitions.Count +
+            snapshot.XmlIndexes.Count +
+            snapshot.SelectiveXmlIndexPaths.Count +
+            snapshot.SpatialIndexes.Count +
+            snapshot.SpatialIndexTessellations.Count +
+            snapshot.HashIndexes.Count +
+            snapshot.JsonIndexes.Count +
+            snapshot.JsonIndexPaths.Count);
         if (structuralRows > limits.MaxStructuralRowsTotal)
             throw LimitExceeded("aggregate structural-row count");
     }
@@ -1286,6 +1303,13 @@ internal static partial class SqlServerCatalogBuilder
             views,
             viewColumnIds,
             budget,
+            cancellationToken);
+        ValidateIndexSubtypeSnapshot(
+            snapshot,
+            tableIds,
+            tableColumnIds,
+            budget,
+            limits,
             cancellationToken);
 
         var dataSpaces = new Dictionary<int, SqlServerDataSpaceMetadata>();

@@ -9,6 +9,11 @@ database and object triggers, procedures and functions, routine parameters,
 bounded SQL module facts, trigger events, declared SQL expression dependencies,
 full-text catalogs and index configuration, data spaces, partition
 functions/schemes/destinations, and per-heap/index partition compression facts.
+The offline index inventory also retains XML-index subtype and reference facts,
+bounded selective-XML path metadata, spatial tessellation configuration,
+memory-optimized hash bucket counts, columnstore ordering and SQL Server 2025
+data-clustering ordinals, and SQL Server 2025 JSON-index options and bounded
+path metadata.
 It does not copy SQL Server rows or write to either the source or a CSharpDB
 target. Available default, computed-column, check, filtered-index, and SQL
 module definitions receive bounded, syntax-only ScriptDom analysis. Parsing
@@ -44,11 +49,14 @@ readiness. The offline physical inventory deliberately omits raw partition
 boundary values, full-text stopwords and registered property definitions,
 database file names and paths, allocation details, physical sizes, row
 estimates, crawl state, and other volatile operational facts. Subtype-specific
-XML, spatial, hash, columnstore, and SQL Server 2025 JSON-index configuration,
-optional adapter/package isolation, and live server qualification remain later
-Phase 7A checkpoints. Disposable-VM and restricted-login qualification remain
-deferred; no offline fixture is described as live evidence. A SQL Server data
-importer is a separately approved follow-on.
+XML and JSON path text is read only under fixed byte ceilings and retained in
+artifacts as domain-separated digests and lengths, not raw path text. The
+subtype inventory does not query columnstore segments or row groups, dynamic
+management views, allocation details, or row counts. Optional adapter/package
+isolation and live server qualification remain later Phase 7A checkpoints.
+Disposable-VM and restricted-login qualification remain deferred; no offline
+fixture is described as live evidence. A SQL Server data importer is a
+separately approved follow-on.
 
 ## Read-only and security boundary
 
@@ -121,12 +129,14 @@ index columns, foreign keys, foreign-key columns, checks, sequences, effective
 tokens, denials, views, triggers, trigger events, routines, parameters, modules,
 expression dependencies, full-text catalogs/stoplists/property lists/indexes
 and columns, data spaces, partition functions/parameters/ranges/schemes and
-destinations, and heap/index partitions. Additional ceilings cover names,
-individual and aggregate expressions, partition-boundary bytes, and total
-retained metadata. Crossing a reader or retained-metadata ceiling fails the
-inspection rather than returning a truncated catalog. Default, computed,
-check, index-filter, and SQL module text plus partition-boundary bytes are read
-and hashed only in memory; ScriptDom analysis is additionally bounded by fixed
+destinations, heap/index partitions, XML indexes and promoted paths, spatial
+indexes and tessellations, hash indexes, and SQL Server 2025 JSON indexes and
+paths. Additional ceilings cover names, individual index paths, individual and
+aggregate expressions, partition-boundary bytes, and total retained metadata.
+Crossing a reader or retained-metadata ceiling fails the inspection rather than
+returning a truncated catalog. Default, computed, check, index-filter, and SQL
+module text, XML/JSON index paths, plus partition-boundary bytes are read and
+hashed only in memory; ScriptDom analysis is additionally bounded by fixed
 input, token, nesting, AST-node, statement, and parse-error ceilings. A
 per-definition parser ceiling becomes an explicit compatibility blocker;
 crossing an aggregate parser ceiling fails the inspection. Durable facets

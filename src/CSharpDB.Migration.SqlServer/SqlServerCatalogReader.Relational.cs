@@ -101,7 +101,59 @@ internal sealed partial class SqlServerCatalogReader
             ic.key_ordinal,
             ic.partition_ordinal,
             ic.is_descending_key,
-            ic.is_included_column
+            ic.is_included_column,
+            CONVERT(tinyint, NULL),
+            CONVERT(tinyint, NULL)
+        FROM sys.index_columns AS ic
+        INNER JOIN sys.indexes AS i
+            ON i.object_id = ic.object_id
+           AND i.index_id = ic.index_id
+        INNER JOIN sys.objects AS o
+            ON o.object_id = ic.object_id
+        WHERE o.is_ms_shipped = 0
+          AND o.type IN (N'U', N'V')
+          AND i.index_id > 0
+        ORDER BY ic.object_id, ic.index_id, ic.index_column_id;
+        """;
+
+    internal const string IndexColumnsV16Query =
+        """
+        SELECT
+            ic.object_id,
+            ic.index_id,
+            ic.index_column_id,
+            ic.column_id,
+            ic.key_ordinal,
+            ic.partition_ordinal,
+            ic.is_descending_key,
+            ic.is_included_column,
+            ic.column_store_order_ordinal,
+            CONVERT(tinyint, NULL)
+        FROM sys.index_columns AS ic
+        INNER JOIN sys.indexes AS i
+            ON i.object_id = ic.object_id
+           AND i.index_id = ic.index_id
+        INNER JOIN sys.objects AS o
+            ON o.object_id = ic.object_id
+        WHERE o.is_ms_shipped = 0
+          AND o.type IN (N'U', N'V')
+          AND i.index_id > 0
+        ORDER BY ic.object_id, ic.index_id, ic.index_column_id;
+        """;
+
+    internal const string IndexColumnsV17Query =
+        """
+        SELECT
+            ic.object_id,
+            ic.index_id,
+            ic.index_column_id,
+            ic.column_id,
+            ic.key_ordinal,
+            ic.partition_ordinal,
+            ic.is_descending_key,
+            ic.is_included_column,
+            ic.column_store_order_ordinal,
+            ic.data_clustering_ordinal
         FROM sys.index_columns AS ic
         INNER JOIN sys.indexes AS i
             ON i.object_id = ic.object_id
@@ -416,12 +468,19 @@ internal sealed partial class SqlServerCatalogReader
     private static async ValueTask<IReadOnlyList<SqlServerIndexColumnMetadata>>
         ReadIndexColumnsAsync(
             SqlConnection connection,
+            SqlServerInstanceMetadata instance,
             ReaderBudget budget,
             SqlServerInspectionLimits limits,
             CancellationToken cancellationToken)
     {
         var columns = new List<SqlServerIndexColumnMetadata>();
-        await using SqlCommand command = Command(connection, IndexColumnsQuery);
+        string commandText = instance.ProductMajorVersion switch
+        {
+            >= 17 => IndexColumnsV17Query,
+            >= 16 => IndexColumnsV16Query,
+            _ => IndexColumnsQuery,
+        };
+        await using SqlCommand command = Command(connection, commandText);
         await using SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
                 cancellationToken)
@@ -439,7 +498,9 @@ internal sealed partial class SqlServerCatalogReader
                 RequiredByte(reader, 4),
                 RequiredByte(reader, 5),
                 RequiredBoolean(reader, 6),
-                RequiredBoolean(reader, 7)));
+                RequiredBoolean(reader, 7),
+                OptionalByte(reader, 8),
+                OptionalByte(reader, 9)));
         }
         return columns.AsReadOnly();
     }

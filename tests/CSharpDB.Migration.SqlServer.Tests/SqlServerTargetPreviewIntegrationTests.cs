@@ -260,6 +260,127 @@ public sealed class SqlServerTargetPreviewIntegrationTests
             StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task SpecializedIndexInventoryNeverBecomesOrdinaryTargetDdl()
+    {
+        Assessment assessment = await AssessAsync(
+            SqlServerTestSnapshot.CreateSpecializedIndexes(),
+            Ct);
+
+        Assert.Equal(
+            MigrationPlanReadinessStatus.Blocked,
+            assessment.Preview.Readiness.Status);
+        Assert.Equal(
+            CSharpDbDdlScratchValidationStatus.Passed,
+            assessment.Report.Status);
+        Assert.Equal(
+            MigrationEvidenceLevel.ScratchExecuted,
+            assessment.Report.HighestEvidence);
+
+        string[] indexNames =
+        [
+            "PXML_XmlDocuments",
+            "SXML_XmlDocuments_Path",
+            "SXI_XmlDocuments",
+            "SSXI_XmlDocuments_Path",
+            "SIX_SpatialDocuments",
+            "HIX_MemoryDocuments",
+            "CCI_ColumnStoreFacts",
+            "NCCI_ColumnStoreProjection",
+            "JIX_JsonDocuments",
+        ];
+        foreach (string indexName in indexNames)
+        {
+            AssertExcluded(
+                assessment,
+                MigrationObjectKind.Index,
+                indexName);
+        }
+
+        string[] configurationClasses =
+        [
+            "xml-index-config",
+            "selective-xml-index-path",
+            "spatial-index-config",
+            "spatial-index-tessellation",
+            "hash-index-config",
+            "columnstore-index-config",
+            "columnstore-index-column",
+            "json-index-config",
+            "json-index-path",
+        ];
+        MigrationCatalogObject[] configurationObjects =
+            assessment.Catalog.Objects
+                .Where(item =>
+                    item.Kind == MigrationObjectKind.Other &&
+                    CatalogFacet(
+                        item,
+                        "sqlServerObjectClass") is string objectClass &&
+                    configurationClasses.Contains(
+                        objectClass,
+                        StringComparer.Ordinal))
+                .ToArray();
+        Assert.NotEmpty(configurationObjects);
+        Assert.All(
+            configurationObjects,
+            configuration =>
+            {
+                MigrationPlanObject planned = Assert.Single(
+                    assessment.Plan.Objects,
+                    item => item.SourceObjectId ==
+                        configuration.ObjectId);
+                Assert.False(planned.Included);
+            });
+
+        CSharpDbDdlPreviewStage secondaryIndexes =
+            assessment.Preview.Stages.Single(stage =>
+                stage.Stage == MigrationSchemaStage.SecondaryIndexes);
+        string publishedPreview =
+            JsonSerializer.Serialize(assessment.Preview);
+        foreach (string indexName in indexNames)
+        {
+            Assert.DoesNotContain(
+                indexName,
+                publishedPreview,
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                secondaryIndexes.Actions,
+                action => action.Sql?.Contains(
+                    indexName,
+                    StringComparison.Ordinal) == true);
+        }
+        Assert.DoesNotContain(
+            SqlServerTestSnapshot.SecretSelectiveXmlPath,
+            publishedPreview,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            SqlServerTestSnapshot.SecretJsonIndexPath,
+            publishedPreview,
+            StringComparison.Ordinal);
+
+        MigrationPlan approvedExclusions =
+            new MigrationPlanner().CreatePlan(
+                assessment.Catalog,
+                new MigrationPlanningOptions
+                {
+                    AcceptAllExclusions = true,
+                });
+        CSharpDbDdlPreview approvedPreview =
+            CSharpDbDdlPreviewBuilder.Build(
+                approvedExclusions,
+                assessment.Catalog,
+                cancellationToken: Ct);
+        Assert.Equal(
+            MigrationPlanReadinessStatus.Blocked,
+            approvedPreview.Readiness.Status);
+        Assert.Contains(
+            assessment.Catalog.Diagnostics.Single(diagnostic =>
+                diagnostic.RuleId ==
+                    "MIG-SQLSERVER-INVENTORY-PARTIAL-001")
+                .DiagnosticId,
+            approvedPreview.Readiness.BlockingDiagnosticIds);
+    }
+
     private static async ValueTask<Assessment> AssessAsync(
         SqlServerCatalogSnapshot snapshot,
         CancellationToken cancellationToken,
@@ -341,7 +462,14 @@ public sealed class SqlServerTargetPreviewIntegrationTests
             source.PartitionFunctions.Reverse(),
             source.PartitionParameters.Reverse(),
             source.PartitionRangeValues.Reverse(),
-            source.IndexPartitions.Reverse());
+            source.IndexPartitions.Reverse(),
+            source.XmlIndexes.Reverse(),
+            source.SelectiveXmlIndexPaths.Reverse(),
+            source.SpatialIndexes.Reverse(),
+            source.SpatialIndexTessellations.Reverse(),
+            source.HashIndexes.Reverse(),
+            source.JsonIndexes.Reverse(),
+            source.JsonIndexPaths.Reverse());
 
     private static SqlServerPermissionAuditMetadata Reverse(
         SqlServerPermissionAuditMetadata source) =>
@@ -365,6 +493,15 @@ public sealed class SqlServerTargetPreviewIntegrationTests
             character => Assert.True(
                 character is >= '0' and <= '9' or >= 'a' and <= 'f'));
     }
+
+    private static string? CatalogFacet(
+        MigrationCatalogObject item,
+        string name) =>
+        item.Facets.SingleOrDefault(facet =>
+            string.Equals(
+                facet.Name,
+                name,
+                StringComparison.Ordinal))?.Value;
 
     private static void AssertExcluded(
         Assessment assessment,

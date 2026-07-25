@@ -731,5 +731,12 @@ public sealed class SqlServerTsqlAnalyzerTests
             source.PartitionFunctions,
             source.PartitionParameters,
             source.PartitionRangeValues,
-            source.IndexPartitions);
+            source.IndexPartitions,
+            source.XmlIndexes,
+            source.SelectiveXmlIndexPaths,
+            source.SpatialIndexes,
+            source.SpatialIndexTessellations,
+            source.HashIndexes,
+            source.JsonIndexes,
+            source.JsonIndexPaths);
 }

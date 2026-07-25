@@ -23,6 +23,12 @@ internal static class SqlServerTestSnapshot
     public const string SecretPartitionBoundaryHex =
         "50006100720074006900740069006f006e00500061007300730077006f00720064003d004e00650076006500720050006500720073006900730074005400680069007300";
 
+    public const string SecretSelectiveXmlPath =
+        "/orders/order[@token=\"XmlPathPassword=NeverPersistThis\"]";
+
+    public const string SecretJsonIndexPath =
+        "$.customers[?(@.token == \"JsonPathPassword=NeverPersistThis\")]";
+
     public static SqlServerCatalogSnapshot Create(
         SqlServerInstanceMetadata? instance = null,
         SqlServerDatabaseMetadata? database = null,
@@ -62,7 +68,16 @@ internal static class SqlServerTestSnapshot
             partitionParameters = null,
         IEnumerable<SqlServerPartitionRangeValueMetadata>?
             partitionRangeValues = null,
-        IEnumerable<SqlServerIndexPartitionMetadata>? indexPartitions = null)
+        IEnumerable<SqlServerIndexPartitionMetadata>? indexPartitions = null,
+        IEnumerable<SqlServerXmlIndexMetadata>? xmlIndexes = null,
+        IEnumerable<SqlServerSelectiveXmlIndexPathMetadata>?
+            selectiveXmlIndexPaths = null,
+        IEnumerable<SqlServerSpatialIndexMetadata>? spatialIndexes = null,
+        IEnumerable<SqlServerSpatialIndexTessellationMetadata>?
+            spatialIndexTessellations = null,
+        IEnumerable<SqlServerHashIndexMetadata>? hashIndexes = null,
+        IEnumerable<SqlServerJsonIndexMetadata>? jsonIndexes = null,
+        IEnumerable<SqlServerJsonIndexPathMetadata>? jsonIndexPaths = null)
     {
         bool usesDefaultStructure =
             schemas is null &&
@@ -126,7 +141,14 @@ internal static class SqlServerTestSnapshot
             partitionRangeValues ??
                 (usesDefaultStructure ? PartitionRangeValues() : []),
             indexPartitions ??
-                (usesDefaultStructure ? IndexPartitions() : []));
+                (usesDefaultStructure ? IndexPartitions() : []),
+            xmlIndexes ?? [],
+            selectiveXmlIndexPaths ?? [],
+            spatialIndexes ?? [],
+            spatialIndexTessellations ?? [],
+            hashIndexes ?? [],
+            jsonIndexes ?? [],
+            jsonIndexPaths ?? []);
     }
 
     public static SqlServerInstanceMetadata Instance() =>
@@ -1258,6 +1280,437 @@ internal static class SqlServerTestSnapshot
             sequences: []);
     }
 
+    public static SqlServerCatalogSnapshot CreateSpecializedIndexes()
+    {
+        const int xmlTableId = 300;
+        const int spatialTableId = 400;
+        const int hashTableId = 500;
+        const int clusteredColumnStoreTableId = 600;
+        const int nonclusteredColumnStoreTableId = 700;
+        const int jsonTableId = 800;
+
+        IReadOnlyList<SqlServerTableMetadata> tables =
+        [
+            OrdinaryTable(xmlTableId, 1, "XmlDocuments"),
+            OrdinaryTable(spatialTableId, 1, "SpatialDocuments"),
+            new(
+                ObjectId: hashTableId,
+                SchemaId: 1,
+                Name: "MemoryDocuments",
+                IsMemoryOptimized: true,
+                Durability: "SCHEMA_AND_DATA",
+                IsFileTable: false,
+                TemporalType: "NON_TEMPORAL_TABLE",
+                IsNode: false,
+                IsEdge: false,
+                HasViewDefinition: true),
+            OrdinaryTable(
+                clusteredColumnStoreTableId,
+                1,
+                "ColumnStoreFacts"),
+            OrdinaryTable(
+                nonclusteredColumnStoreTableId,
+                1,
+                "ColumnStoreProjection"),
+            OrdinaryTable(jsonTableId, 1, "JsonDocuments"),
+        ];
+        IReadOnlyList<SqlServerColumnMetadata> columns =
+        [
+            Column(
+                xmlTableId,
+                1,
+                "DocumentId",
+                "int",
+                "int",
+                4,
+                10,
+                nullable: false),
+            Column(
+                xmlTableId,
+                2,
+                "Payload",
+                "xml",
+                "xml",
+                -1,
+                0),
+            Column(
+                spatialTableId,
+                1,
+                "DocumentId",
+                "int",
+                "int",
+                4,
+                10,
+                nullable: false),
+            Column(
+                spatialTableId,
+                2,
+                "Location",
+                "geometry",
+                "geometry",
+                -1,
+                0),
+            Column(
+                hashTableId,
+                1,
+                "DocumentId",
+                "int",
+                "int",
+                4,
+                10,
+                nullable: false),
+            Column(
+                hashTableId,
+                2,
+                "LookupKey",
+                "bigint",
+                "bigint",
+                8,
+                19,
+                nullable: false),
+            Column(
+                clusteredColumnStoreTableId,
+                1,
+                "FactId",
+                "bigint",
+                "bigint",
+                8,
+                19,
+                nullable: false),
+            Column(
+                clusteredColumnStoreTableId,
+                2,
+                "Amount",
+                "bigint",
+                "bigint",
+                8,
+                19,
+                nullable: false),
+            Column(
+                clusteredColumnStoreTableId,
+                3,
+                "Segment",
+                "nvarchar",
+                "nvarchar",
+                200,
+                0,
+                nullable: false),
+            Column(
+                nonclusteredColumnStoreTableId,
+                1,
+                "ProjectionId",
+                "bigint",
+                "bigint",
+                8,
+                19,
+                nullable: false),
+            Column(
+                nonclusteredColumnStoreTableId,
+                2,
+                "ProjectionValue",
+                "bigint",
+                "bigint",
+                8,
+                19,
+                nullable: false),
+            Column(
+                jsonTableId,
+                1,
+                "DocumentId",
+                "int",
+                "int",
+                4,
+                10,
+                nullable: false),
+            Column(
+                jsonTableId,
+                2,
+                "Payload",
+                "json",
+                "json",
+                -1,
+                0),
+        ];
+        IReadOnlyList<SqlServerIndexMetadata> indexes =
+        [
+            Index(xmlTableId, 1, "PXML_XmlDocuments", 3, "XML",
+                dataSpaceId: 1, dataSpaceName: "PRIMARY",
+                dataSpaceType: "ROWS_FILEGROUP"),
+            Index(xmlTableId, 2, "SXML_XmlDocuments_Path", 3, "XML",
+                dataSpaceId: 1, dataSpaceName: "PRIMARY",
+                dataSpaceType: "ROWS_FILEGROUP"),
+            Index(xmlTableId, 3, "SXI_XmlDocuments", 3, "XML",
+                dataSpaceId: 1, dataSpaceName: "PRIMARY",
+                dataSpaceType: "ROWS_FILEGROUP"),
+            Index(xmlTableId, 4, "SSXI_XmlDocuments_Path", 3, "XML",
+                dataSpaceId: 1, dataSpaceName: "PRIMARY",
+                dataSpaceType: "ROWS_FILEGROUP"),
+            Index(spatialTableId, 1, "SIX_SpatialDocuments", 4, "SPATIAL",
+                dataSpaceId: 1, dataSpaceName: "PRIMARY",
+                dataSpaceType: "ROWS_FILEGROUP"),
+            Index(hashTableId, 1, "HIX_MemoryDocuments", 7,
+                "NONCLUSTERED HASH"),
+            Index(
+                clusteredColumnStoreTableId,
+                1,
+                "CCI_ColumnStoreFacts",
+                5,
+                "CLUSTERED COLUMNSTORE",
+                dataSpaceId: 1,
+                dataSpaceName: "PRIMARY",
+                dataSpaceType: "ROWS_FILEGROUP"),
+            Index(
+                nonclusteredColumnStoreTableId,
+                1,
+                "NCCI_ColumnStoreProjection",
+                6,
+                "NONCLUSTERED COLUMNSTORE",
+                dataSpaceId: 1,
+                dataSpaceName: "PRIMARY",
+                dataSpaceType: "ROWS_FILEGROUP"),
+            Index(jsonTableId, 1, "JIX_JsonDocuments", 9, "JSON",
+                dataSpaceId: 1, dataSpaceName: "PRIMARY",
+                dataSpaceType: "ROWS_FILEGROUP"),
+        ];
+        IReadOnlyList<SqlServerIndexColumnMetadata> indexColumns =
+        [
+            IndexColumn(
+                xmlTableId,
+                1,
+                1,
+                2,
+                keyOrdinal: 0,
+                dataClusteringOrdinal: 0),
+            IndexColumn(
+                xmlTableId,
+                2,
+                1,
+                2,
+                keyOrdinal: 0,
+                dataClusteringOrdinal: 0),
+            IndexColumn(
+                xmlTableId,
+                3,
+                1,
+                2,
+                keyOrdinal: 0,
+                dataClusteringOrdinal: 0),
+            IndexColumn(
+                xmlTableId,
+                4,
+                1,
+                2,
+                keyOrdinal: 0,
+                dataClusteringOrdinal: 0),
+            IndexColumn(
+                spatialTableId,
+                1,
+                1,
+                2,
+                keyOrdinal: 0,
+                dataClusteringOrdinal: 0),
+            IndexColumn(
+                hashTableId,
+                1,
+                1,
+                2,
+                keyOrdinal: 1,
+                dataClusteringOrdinal: 0),
+            IndexColumn(
+                clusteredColumnStoreTableId,
+                1,
+                1,
+                1,
+                keyOrdinal: 0,
+                included: true,
+                dataClusteringOrdinal: 0),
+            IndexColumn(
+                clusteredColumnStoreTableId,
+                1,
+                2,
+                2,
+                keyOrdinal: 0,
+                included: true,
+                columnStoreOrderOrdinal: 1,
+                dataClusteringOrdinal: 1),
+            IndexColumn(
+                clusteredColumnStoreTableId,
+                1,
+                3,
+                3,
+                keyOrdinal: 0,
+                included: true,
+                columnStoreOrderOrdinal: 2,
+                dataClusteringOrdinal: 2),
+            IndexColumn(
+                nonclusteredColumnStoreTableId,
+                1,
+                1,
+                1,
+                keyOrdinal: 0,
+                included: true,
+                dataClusteringOrdinal: 0),
+            IndexColumn(
+                nonclusteredColumnStoreTableId,
+                1,
+                2,
+                2,
+                keyOrdinal: 0,
+                included: true,
+                dataClusteringOrdinal: 0),
+            IndexColumn(
+                jsonTableId,
+                1,
+                1,
+                2,
+                keyOrdinal: 0,
+                dataClusteringOrdinal: 0),
+        ];
+        IReadOnlyList<SqlServerXmlIndexMetadata> xmlIndexes =
+        [
+            new(
+                xmlTableId,
+                1,
+                UsingXmlIndexId: null,
+                SecondaryType: null,
+                SecondaryTypeDescription: null,
+                XmlIndexType: 0,
+                XmlIndexTypeDescription: "PRIMARY_XML",
+                PathId: null),
+            new(
+                xmlTableId,
+                2,
+                UsingXmlIndexId: 1,
+                SecondaryType: "P",
+                SecondaryTypeDescription: "PATH",
+                XmlIndexType: 1,
+                XmlIndexTypeDescription: "SECONDARY_XML",
+                PathId: null),
+            new(
+                xmlTableId,
+                3,
+                UsingXmlIndexId: null,
+                SecondaryType: null,
+                SecondaryTypeDescription: null,
+                XmlIndexType: 2,
+                XmlIndexTypeDescription: "SELECTIVE_XML",
+                PathId: null),
+            new(
+                xmlTableId,
+                4,
+                UsingXmlIndexId: 3,
+                SecondaryType: null,
+                SecondaryTypeDescription: null,
+                XmlIndexType: 3,
+                XmlIndexTypeDescription: "SECONDARY_SELECTIVE_XML",
+                PathId: 9),
+        ];
+        IReadOnlyList<SqlServerSelectiveXmlIndexPathMetadata> xmlPaths =
+        [
+            new(
+                xmlTableId,
+                3,
+                PathId: 9,
+                PathBytes: checked(SecretSelectiveXmlPath.Length * 2),
+                Path: SecretSelectiveXmlPath,
+                Name: "CustomerToken",
+                PathType: 0,
+                PathTypeDescription: "XQUERY",
+                XmlComponentId: null,
+                XQueryTypeDescription: "xs:string",
+                IsXQueryTypeInferred: false,
+                XQueryMaximumLength: 128,
+                IsXQueryMaximumLengthInferred: false,
+                IsNode: false,
+                SystemTypeId: null,
+                UserTypeId: null,
+                MaxLength: null,
+                Precision: null,
+                Scale: null,
+                Collation: null,
+                IsSingleton: null),
+        ];
+        IReadOnlyList<SqlServerJsonIndexPathMetadata> jsonPaths =
+        [
+            new(
+                jsonTableId,
+                1,
+                PathOrdinal: 1,
+                PathBytes: 1,
+                Path: "$"),
+            new(
+                jsonTableId,
+                1,
+                PathOrdinal: 2,
+                PathBytes: SecretJsonIndexPath.Length,
+                Path: SecretJsonIndexPath),
+        ];
+
+        return Create(
+            instance: Instance() with
+            {
+                ProductMajorVersion = 17,
+                ProductVersion = "17.0.1000.1",
+            },
+            database: Database() with { CompatibilityLevel = 170 },
+            schemas: [new(1, "dbo", HasViewDefinition: true)],
+            tables: tables,
+            columns: columns,
+            indexes: indexes,
+            indexColumns: indexColumns,
+            dataSpaces:
+            [
+                new(
+                    DataSpaceId: 1,
+                    Name: "PRIMARY",
+                    Type: "FG",
+                    TypeDescription: "ROWS_FILEGROUP",
+                    IsDefault: true,
+                    IsSystem: false,
+                    IsReadOnly: false),
+            ],
+            xmlIndexes: xmlIndexes,
+            selectiveXmlIndexPaths: xmlPaths,
+            spatialIndexes:
+            [
+                new(
+                    spatialTableId,
+                    1,
+                    SpatialIndexType: 1,
+                    SpatialIndexTypeDescription: "GEOMETRY",
+                    TessellationScheme: "GEOMETRY_GRID"),
+            ],
+            spatialIndexTessellations:
+            [
+                new(
+                    spatialTableId,
+                    1,
+                    TessellationScheme: "GEOMETRY_GRID",
+                    BoundingBoxXMin: -180,
+                    BoundingBoxYMin: -90,
+                    BoundingBoxXMax: 180,
+                    BoundingBoxYMax: 90,
+                    Level1Grid: 16,
+                    Level1GridDescription: "LOW",
+                    Level2Grid: 64,
+                    Level2GridDescription: "MEDIUM",
+                    Level3Grid: 256,
+                    Level3GridDescription: "HIGH",
+                    Level4Grid: 16,
+                    Level4GridDescription: "LOW",
+                    CellsPerObject: 16),
+            ],
+            hashIndexes: [new(hashTableId, 1, BucketCount: 1_024)],
+            jsonIndexes:
+            [
+                new(
+                    jsonTableId,
+                    1,
+                    OptimizeForArraySearch: true),
+            ],
+            jsonIndexPaths: jsonPaths);
+    }
+
     public static SqlServerIndexMetadata Index(
         int objectId,
         int indexId,
@@ -1311,7 +1764,9 @@ internal static class SqlServerTestSnapshot
         byte keyOrdinal,
         bool descending = false,
         bool included = false,
-        byte partitionOrdinal = 0) =>
+        byte partitionOrdinal = 0,
+        byte? columnStoreOrderOrdinal = 0,
+        byte? dataClusteringOrdinal = null) =>
         new(
             ObjectId: objectId,
             IndexId: indexId,
@@ -1320,7 +1775,9 @@ internal static class SqlServerTestSnapshot
             KeyOrdinal: keyOrdinal,
             PartitionOrdinal: partitionOrdinal,
             IsDescending: descending,
-            IsIncluded: included);
+            IsIncluded: included,
+            ColumnStoreOrderOrdinal: columnStoreOrderOrdinal,
+            DataClusteringOrdinal: dataClusteringOrdinal);
 
     public static SqlServerIndexPartitionMetadata IndexPartition(
         int objectId,

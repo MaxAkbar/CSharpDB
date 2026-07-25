@@ -36,11 +36,19 @@ internal sealed record SqlServerInspectionLimits
     public const int MaximumPartitionParameters = 4_096;
     public const int MaximumPartitionRangeValues = 160_000;
     public const int MaximumIndexPartitions = 160_000;
+    public const int MaximumXmlIndexes = MaximumIndexes;
+    public const int MaximumSelectiveXmlIndexPaths = MaximumIndexColumns;
+    public const int MaximumSpatialIndexes = MaximumIndexes;
+    public const int MaximumSpatialIndexTessellations = MaximumIndexes;
+    public const int MaximumHashIndexes = MaximumIndexes;
+    public const int MaximumJsonIndexes = MaximumIndexes;
+    public const int MaximumJsonIndexPaths = MaximumIndexColumns;
     public const int MaximumUserTokens = 4_096;
     public const int MaximumPermissionDenials = 32_768;
     public const int MaximumStructuralRowsTotal = 500_000;
     public const int MaximumPermissionRowsTotal = 65_536;
     public const int MaximumNameBytes = 128 * 4;
+    public const int MaximumIndexPathBytes = 8_000;
     public const int MaximumPartitionBoundaryBytes = 8_016;
     public const int MaximumExpressionBytes = 1024 * 1024;
     public const long MaximumExpressionBytesTotal = 64L * 1024 * 1024;
@@ -91,11 +99,21 @@ internal sealed record SqlServerInspectionLimits
     public int MaxPartitionRangeValues { get; init; } =
         MaximumPartitionRangeValues;
     public int MaxIndexPartitions { get; init; } = MaximumIndexPartitions;
+    public int MaxXmlIndexes { get; init; } = MaximumXmlIndexes;
+    public int MaxSelectiveXmlIndexPaths { get; init; } =
+        MaximumSelectiveXmlIndexPaths;
+    public int MaxSpatialIndexes { get; init; } = MaximumSpatialIndexes;
+    public int MaxSpatialIndexTessellations { get; init; } =
+        MaximumSpatialIndexTessellations;
+    public int MaxHashIndexes { get; init; } = MaximumHashIndexes;
+    public int MaxJsonIndexes { get; init; } = MaximumJsonIndexes;
+    public int MaxJsonIndexPaths { get; init; } = MaximumJsonIndexPaths;
     public int MaxUserTokens { get; init; } = MaximumUserTokens;
     public int MaxPermissionDenials { get; init; } = MaximumPermissionDenials;
     public int MaxStructuralRowsTotal { get; init; } = MaximumStructuralRowsTotal;
     public int MaxPermissionRowsTotal { get; init; } = MaximumPermissionRowsTotal;
     public int MaxNameBytes { get; init; } = MaximumNameBytes;
+    public int MaxIndexPathBytes { get; init; } = MaximumIndexPathBytes;
     public int MaxPartitionBoundaryBytes { get; init; } =
         MaximumPartitionBoundaryBytes;
     public int MaxExpressionBytes { get; init; } = MaximumExpressionBytes;
@@ -194,6 +212,25 @@ internal sealed record SqlServerInspectionLimits
             nameof(MaxIndexPartitions),
             MaxIndexPartitions,
             MaximumIndexPartitions);
+        Validate(nameof(MaxXmlIndexes), MaxXmlIndexes, MaximumXmlIndexes);
+        Validate(
+            nameof(MaxSelectiveXmlIndexPaths),
+            MaxSelectiveXmlIndexPaths,
+            MaximumSelectiveXmlIndexPaths);
+        Validate(
+            nameof(MaxSpatialIndexes),
+            MaxSpatialIndexes,
+            MaximumSpatialIndexes);
+        Validate(
+            nameof(MaxSpatialIndexTessellations),
+            MaxSpatialIndexTessellations,
+            MaximumSpatialIndexTessellations);
+        Validate(nameof(MaxHashIndexes), MaxHashIndexes, MaximumHashIndexes);
+        Validate(nameof(MaxJsonIndexes), MaxJsonIndexes, MaximumJsonIndexes);
+        Validate(
+            nameof(MaxJsonIndexPaths),
+            MaxJsonIndexPaths,
+            MaximumJsonIndexPaths);
         Validate(nameof(MaxUserTokens), MaxUserTokens, MaximumUserTokens);
         Validate(
             nameof(MaxPermissionDenials),
@@ -208,6 +245,10 @@ internal sealed record SqlServerInspectionLimits
             MaxPermissionRowsTotal,
             MaximumPermissionRowsTotal);
         Validate(nameof(MaxNameBytes), MaxNameBytes, MaximumNameBytes);
+        Validate(
+            nameof(MaxIndexPathBytes),
+            MaxIndexPathBytes,
+            MaximumIndexPathBytes);
         Validate(
             nameof(MaxPartitionBoundaryBytes),
             MaxPartitionBoundaryBytes,

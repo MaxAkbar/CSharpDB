@@ -45,7 +45,16 @@ internal sealed class SqlServerCatalogSnapshot
         IEnumerable<SqlServerPartitionFunctionMetadata>? partitionFunctions = null,
         IEnumerable<SqlServerPartitionParameterMetadata>? partitionParameters = null,
         IEnumerable<SqlServerPartitionRangeValueMetadata>? partitionRangeValues = null,
-        IEnumerable<SqlServerIndexPartitionMetadata>? indexPartitions = null)
+        IEnumerable<SqlServerIndexPartitionMetadata>? indexPartitions = null,
+        IEnumerable<SqlServerXmlIndexMetadata>? xmlIndexes = null,
+        IEnumerable<SqlServerSelectiveXmlIndexPathMetadata>?
+            selectiveXmlIndexPaths = null,
+        IEnumerable<SqlServerSpatialIndexMetadata>? spatialIndexes = null,
+        IEnumerable<SqlServerSpatialIndexTessellationMetadata>?
+            spatialIndexTessellations = null,
+        IEnumerable<SqlServerHashIndexMetadata>? hashIndexes = null,
+        IEnumerable<SqlServerJsonIndexMetadata>? jsonIndexes = null,
+        IEnumerable<SqlServerJsonIndexPathMetadata>? jsonIndexPaths = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(endpointDigest);
         ArgumentException.ThrowIfNullOrWhiteSpace(providerVersion);
@@ -95,6 +104,13 @@ internal sealed class SqlServerCatalogSnapshot
         PartitionParameters = Copy(partitionParameters);
         PartitionRangeValues = Copy(partitionRangeValues);
         IndexPartitions = Copy(indexPartitions);
+        XmlIndexes = Copy(xmlIndexes);
+        SelectiveXmlIndexPaths = Copy(selectiveXmlIndexPaths);
+        SpatialIndexes = Copy(spatialIndexes);
+        SpatialIndexTessellations = Copy(spatialIndexTessellations);
+        HashIndexes = Copy(hashIndexes);
+        JsonIndexes = Copy(jsonIndexes);
+        JsonIndexPaths = Copy(jsonIndexPaths);
     }
 
     public string EndpointDigest { get; }
@@ -170,6 +186,24 @@ internal sealed class SqlServerCatalogSnapshot
     public IReadOnlyList<SqlServerPartitionRangeValueMetadata> PartitionRangeValues { get; }
 
     public IReadOnlyList<SqlServerIndexPartitionMetadata> IndexPartitions { get; }
+
+    public IReadOnlyList<SqlServerXmlIndexMetadata> XmlIndexes { get; }
+
+    public IReadOnlyList<SqlServerSelectiveXmlIndexPathMetadata>
+        SelectiveXmlIndexPaths
+    { get; }
+
+    public IReadOnlyList<SqlServerSpatialIndexMetadata> SpatialIndexes { get; }
+
+    public IReadOnlyList<SqlServerSpatialIndexTessellationMetadata>
+        SpatialIndexTessellations
+    { get; }
+
+    public IReadOnlyList<SqlServerHashIndexMetadata> HashIndexes { get; }
+
+    public IReadOnlyList<SqlServerJsonIndexMetadata> JsonIndexes { get; }
+
+    public IReadOnlyList<SqlServerJsonIndexPathMetadata> JsonIndexPaths { get; }
 
     private static IReadOnlyList<T> Copy<T>(IEnumerable<T>? items) =>
         new ReadOnlyCollection<T>((items ?? []).ToArray());
@@ -310,7 +344,84 @@ internal sealed record SqlServerIndexColumnMetadata(
     byte KeyOrdinal,
     byte PartitionOrdinal,
     bool IsDescending,
-    bool IsIncluded);
+    bool IsIncluded,
+    byte? ColumnStoreOrderOrdinal = null,
+    byte? DataClusteringOrdinal = null);
+
+internal sealed record SqlServerXmlIndexMetadata(
+    int ObjectId,
+    int IndexId,
+    int? UsingXmlIndexId,
+    string? SecondaryType,
+    string? SecondaryTypeDescription,
+    byte XmlIndexType,
+    string XmlIndexTypeDescription,
+    int? PathId);
+
+internal sealed record SqlServerSelectiveXmlIndexPathMetadata(
+    int ObjectId,
+    int IndexId,
+    int PathId,
+    int PathBytes,
+    string Path,
+    string Name,
+    byte PathType,
+    string PathTypeDescription,
+    int? XmlComponentId,
+    string? XQueryTypeDescription,
+    bool? IsXQueryTypeInferred,
+    short? XQueryMaximumLength,
+    bool? IsXQueryMaximumLengthInferred,
+    bool? IsNode,
+    byte? SystemTypeId,
+    int? UserTypeId,
+    short? MaxLength,
+    byte? Precision,
+    byte? Scale,
+    string? Collation,
+    bool? IsSingleton);
+
+internal sealed record SqlServerSpatialIndexMetadata(
+    int ObjectId,
+    int IndexId,
+    byte SpatialIndexType,
+    string SpatialIndexTypeDescription,
+    string TessellationScheme);
+
+internal sealed record SqlServerSpatialIndexTessellationMetadata(
+    int ObjectId,
+    int IndexId,
+    string TessellationScheme,
+    double? BoundingBoxXMin,
+    double? BoundingBoxYMin,
+    double? BoundingBoxXMax,
+    double? BoundingBoxYMax,
+    short? Level1Grid,
+    string? Level1GridDescription,
+    short? Level2Grid,
+    string? Level2GridDescription,
+    short? Level3Grid,
+    string? Level3GridDescription,
+    short? Level4Grid,
+    string? Level4GridDescription,
+    int? CellsPerObject);
+
+internal sealed record SqlServerHashIndexMetadata(
+    int ObjectId,
+    int IndexId,
+    int BucketCount);
+
+internal sealed record SqlServerJsonIndexMetadata(
+    int ObjectId,
+    int IndexId,
+    bool OptimizeForArraySearch);
+
+internal sealed record SqlServerJsonIndexPathMetadata(
+    int ObjectId,
+    int IndexId,
+    int PathOrdinal,
+    int PathBytes,
+    string Path);
 
 internal sealed record SqlServerFullTextCatalogMetadata(
     int FullTextCatalogId,

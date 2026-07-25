@@ -258,21 +258,38 @@ internal static partial class SqlServerCatalogBuilder
                 .OrderBy(static item => item.KeyOrdinal)
                 .ThenBy(static item => item.IndexColumnId)
                 .ToArray();
-            bool completeMembership =
-                keyColumns.Length > 0 &&
-                HasContiguousKeyOrdinals(keyColumns) &&
-                keyColumns
+            SqlServerIndexColumnMetadata[] memberColumns =
+                UsesDirectIndexColumnMembership(index)
+                    ? allColumns
+                        .Where(item =>
+                            item.ColumnId > 0 &&
+                            (index.Type is 5 or 6 ||
+                             item.PartitionOrdinal == 0))
+                        .OrderBy(static item => item.IndexColumnId)
+                        .ToArray()
+                    : keyColumns;
+            bool completeMembership = UsesDirectIndexColumnMembership(index)
+                ? HasCompleteDirectIndexColumnMembership(
+                    index,
+                    allColumns,
+                    memberColumns,
+                    columnsByCatalogId)
+                : keyColumns.Length > 0 &&
+                  HasContiguousKeyOrdinals(keyColumns) &&
+                  keyColumns
                     .Select(static item => item.ColumnId)
                     .Distinct()
                     .Count() == keyColumns.Length &&
-                keyColumns.All(item => columnsByCatalogId.ContainsKey(
-                    (item.ObjectId, item.ColumnId)));
+                  keyColumns.All(item => columnsByCatalogId.ContainsKey(
+                      (item.ObjectId, item.ColumnId)));
             bool hasUnresolvedPhysicalColumn = allColumns.Any(item =>
                 !IsHeapRid(index, item) &&
                 (item.ColumnId <= 0 ||
                  !columnsByCatalogId.ContainsKey((item.ObjectId, item.ColumnId)))) ||
                 allColumns.Any(item => IsUnclassifiedRowstoreColumn(index, item));
-            bool hasIncludedColumns = allColumns.Any(static item => item.IsIncluded);
+            bool hasIncludedColumns =
+                index.Type is not (5 or 6) &&
+                allColumns.Any(static item => item.IsIncluded);
             bool hasDescendingKeys = keyColumns.Any(static item => item.IsDescending);
             bool isPartitioned = allColumns.Any(static item => item.PartitionOrdinal > 0);
             bool nullableUnique = index.IsUnique &&
@@ -336,8 +353,9 @@ internal static partial class SqlServerCatalogBuilder
                     filterAnalysis);
             }
 
-            (SqlServerIndexColumnMetadata IndexColumn, string Id)[] resolvedKeyColumns =
-                keyColumns
+            (SqlServerIndexColumnMetadata IndexColumn, string Id)[]
+                resolvedMemberColumns =
+                memberColumns
                     .Where(item => columnsByCatalogId.ContainsKey(
                         (item.ObjectId, item.ColumnId)))
                     .Select(item => (
@@ -359,7 +377,7 @@ internal static partial class SqlServerCatalogBuilder
                 SourceNamespace = schema.Name,
                 SourceName = index.Name,
                 Facets = facets.AsReadOnly(),
-                Members = resolvedKeyColumns
+                Members = resolvedMemberColumns
                     .Select((item, ordinal) => Member(
                         item.Id,
                         MigrationObjectReferenceRoles.Column,
@@ -1225,6 +1243,8 @@ internal static partial class SqlServerCatalogBuilder
             yield return Invariant(column.PartitionOrdinal);
             yield return Boolean(column.IsDescending);
             yield return Boolean(column.IsIncluded);
+            yield return OptionalInvariant(column.ColumnStoreOrderOrdinal);
+            yield return OptionalInvariant(column.DataClusteringOrdinal);
         }
         foreach (SqlServerForeignKeyMetadata foreignKey in snapshot.ForeignKeys
                      .OrderBy(static item => item.ParentObjectId)
@@ -1343,6 +1363,17 @@ internal static partial class SqlServerCatalogBuilder
             index.OptimizeForSequentialKey)));
         facets.Add(Facet("sqlServerPartitioned", Boolean(
             columns.Any(static item => item.PartitionOrdinal > 0))));
+        if (index.Type is 5 or 6)
+        {
+            facets.Add(Facet(
+                "sqlServerColumnStoreOrdered",
+                Boolean(columns.Any(static item =>
+                    item.ColumnStoreOrderOrdinal > 0))));
+            facets.Add(Facet(
+                "sqlServerColumnStoreDataClustered",
+                Boolean(columns.Any(static item =>
+                    item.DataClusteringOrdinal > 0))));
+        }
         if (columns.Any(item => IsHeapRid(index, item)))
             facets.Add(Facet("sqlServerHeapRid", "true"));
     }
@@ -1403,6 +1434,42 @@ internal static partial class SqlServerCatalogBuilder
         columns
             .Select(static item => (int)item.KeyOrdinal)
             .SequenceEqual(Enumerable.Range(1, columns.Count));
+
+    private static bool UsesDirectIndexColumnMembership(
+        SqlServerIndexMetadata index) =>
+        index.Type is 3 or 4 or 5 or 6 or 9;
+
+    private static bool HasCompleteDirectIndexColumnMembership(
+        SqlServerIndexMetadata index,
+        IReadOnlyList<SqlServerIndexColumnMetadata> allColumns,
+        IReadOnlyList<SqlServerIndexColumnMetadata> memberColumns,
+        IReadOnlyDictionary<
+            (int ObjectId, int ColumnId),
+            (SqlServerColumnMetadata Metadata, string Id)> columnsByCatalogId)
+    {
+        if (memberColumns.Count == 0 ||
+            allColumns.Any(item =>
+                item.ColumnId <= 0 ||
+                item.KeyOrdinal != 0 ||
+                item.IsDescending ||
+                !columnsByCatalogId.ContainsKey((item.ObjectId, item.ColumnId))) ||
+            memberColumns
+                .Select(static item => item.ColumnId)
+                .Distinct()
+                .Count() != memberColumns.Count ||
+            memberColumns.Any(item =>
+                !columnsByCatalogId.ContainsKey((item.ObjectId, item.ColumnId))))
+        {
+            return false;
+        }
+
+        if (index.Type is 3 or 4 or 9)
+            return memberColumns.Count == 1 &&
+                   memberColumns.All(static item => !item.IsIncluded);
+
+        return index.Type is 5 or 6 &&
+               memberColumns.All(static item => item.IsIncluded);
+    }
 
     private static bool HasUnsupportedConstraintBackingShape(
         SqlServerIndexMetadata index,
