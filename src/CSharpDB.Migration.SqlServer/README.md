@@ -1,7 +1,9 @@
 # CSharpDB.Migration.SqlServer
 
 This optional project is the bounded SQL Server readiness analyzer for the
-CSharpDB migration tooling. It inspects server and database facts plus schemas,
+CSharpDB migration tooling. The generic CLI does not reference it; the
+non-packable SQL Server distribution runs it in a fixed companion worker. It
+inspects server and database facts plus schemas,
 ordinary user tables, columns, defaults, identity and computed-column metadata,
 primary and unique keys, foreign keys, check constraints, table indexes, and
 sequences. It also inventories user views, indexed-view backing indexes,
@@ -40,23 +42,27 @@ the exact CSharpDB DDL renderer, and a transactionally isolated in-memory
 scratch catalog comparison. That proof does not promote the partial SQL Server
 inventory from `Blocked`, establish source semantics, or write a
 caller-supplied, existing, or durable target.
-The non-packable proof CLI now exposes schema-only inspection through a named
-environment variable, generic planning sealed to the bounded target DDL
-digest, bounded exact CSharpDB DDL preview, and sanitized in-memory scratch
-evidence. It does not accept a raw connection string argument, copy rows,
-apply DDL, open an existing target, or promote the analyzer's blocked
-readiness. The offline physical inventory deliberately omits raw partition
+The non-packable proof CLI exposes schema-only inspection through a named
+environment variable and the isolated worker, generic planning sealed to the
+bounded target DDL digest, bounded exact CSharpDB DDL preview, and sanitized
+in-memory scratch evidence. The worker resolves the connection value itself;
+the value is never placed on the command line or process protocol. The surface
+does not accept a raw connection string argument, copy rows, apply DDL, open
+an existing target, or promote the analyzer's blocked readiness. The offline
+physical inventory deliberately omits raw partition
 boundary values, full-text stopwords and registered property definitions,
 database file names and paths, allocation details, physical sizes, row
 estimates, crawl state, and other volatile operational facts. Subtype-specific
 XML and JSON path text is read only under fixed byte ceilings and retained in
 artifacts as domain-separated digests and lengths, not raw path text. The
 subtype inventory does not query columnstore segments or row groups, dynamic
-management views, allocation details, or row counts. Optional adapter/package
-isolation and live server qualification remain later Phase 7A checkpoints.
-Disposable-VM and restricted-login qualification remain deferred; no offline
-fixture is described as live evidence. A SQL Server data importer is a
-separately approved follow-on.
+management views, allocation details, or row counts. The base CLI output and
+dependency graph now exclude this adapter, SqlClient, ScriptDom, SNI, and
+their authentication closure; those assets live only beneath the optional
+worker directory. Live server and published-runtime qualification remain later
+Phase 7A work. Disposable-VM and restricted-login qualification remain
+deferred; no offline fixture is described as live evidence. A SQL Server data
+importer is a separately approved follow-on.
 
 ## Read-only and security boundary
 
@@ -86,13 +92,16 @@ Only sysadmin membership currently promotes visibility to complete; a clean
 least-privilege result remains `Unknown` until the live restricted-account
 qualification lane passes.
 
-The caller supplies connection material at runtime. Raw connection strings,
-account names, access material, and endpoints are not written to migration
-artifacts. The selected database name remains visible as required catalog
-metadata, while the durable source identity uses a one-way digest of the
-normalized endpoint and database scope. Public adapter errors are generic;
-provider exceptions are not retained because their text can contain connection
-material.
+In the optional CLI distribution, the caller supplies connection material in
+the named worker environment variable at runtime, and the base CLI passes only
+that variable's safe name. Direct SDK callers instead pass the connection
+string in memory to `SqlServerMigrationSourceInspector`. Raw connection
+strings, account names, access material, and endpoints are not placed on worker
+arguments or written to migration artifacts. The selected database name
+remains visible as required catalog metadata, while the durable source identity
+uses a one-way digest of the normalized endpoint and database scope. Public
+adapter and worker errors are generic; provider exceptions and worker standard
+error are not relayed because their text can contain connection material.
 
 `Microsoft.Data.SqlClient` 7.0.2 keeps encryption mandatory by default. This
 adapter never enables `TrustServerCertificate` or weakens a stricter caller
@@ -104,16 +113,19 @@ setting. Authentication modes that require
 The project targets `net10.0` and does not bundle a SQL Server engine or other
 server-side native runtime. Microsoft.Data.SqlClient brings its own managed and
 platform transport dependencies, including transitive SNI runtime assets where
-the package requires them. Those assets remain isolated in this optional
-adapter.
+the package requires them. The generic CLI has no SQL Server project or package
+reference. Bundle publication places this complete provider closure, its
+resolved dependency inventory, and the applicable third-party license notices
+only in `adapters/sqlserver` with the fixed worker.
 
-This checkpoint has build and provider-absent unit coverage on the current
-Windows x64 development lane only. No Windows x86/Arm64, Linux, macOS,
-container, integrated-authentication, Kerberos, client-certificate, or
-platform-specific SNI lane is publicly qualified yet. Before the adapter is
-packable, every advertised RID/bitness and authentication/certificate mode
-must pass a published-output smoke test plus a live least-privilege SQL Server
-fixture. A successful compile or TCP connection is not qualification evidence.
+This checkpoint has provider-absent unit, process-protocol, dependency-graph,
+and published-output isolation coverage. It is not live runtime qualification.
+No Windows x86/Arm64, Linux, macOS, container, integrated-authentication,
+Kerberos, client-certificate, or platform-specific SNI lane is publicly
+qualified yet. Before the adapter is packable, every advertised RID/bitness
+and authentication/certificate mode must pass a published-output smoke test
+plus a live least-privilege SQL Server fixture. A successful compile, bundle
+smoke test, or TCP connection is not qualification evidence.
 
 ## Consistency and bounds
 
@@ -149,12 +161,21 @@ remain explicit blockers rather than invented executable ordering.
 
 ScriptDom does not expose a cancellation hook inside its parse call.
 Cancellation is checked during input reading and bounded AST traversal, and
-before and after parsing. Isolation in a killable worker remains a prerequisite
-before qualifying hostile-source parsing for shipping use.
+before and after parsing. The optional CLI distribution now runs parsing in a
+killable companion worker; cancellation or a process-protocol limit terminates
+that process tree. This closes the non-cooperative parse gap for the CLI path,
+but direct SDK use remains in-process and hostile-source parsing still requires
+the deferred published-runtime and live-server qualification before any
+shipping claim.
 Sequence fingerprints retain only static definition facts and exclude volatile
 current, last-used, and exhaustion values.
 
-## Dependency
+## Dependencies
 
-Microsoft.Data.SqlClient and Microsoft.SqlServer.TransactSql.ScriptDom are used
-under the MIT License. See `THIRD-PARTY-NOTICES.md`.
+The resolved worker package closure is inventoried in
+`THIRD-PARTY-NOTICES.md`. Its MIT-licensed packages include
+Microsoft.Data.SqlClient and Microsoft.SqlServer.TransactSql.ScriptDom.
+Microsoft.Data.SqlClient.SNI.runtime 6.0.2 is not MIT; its separate Microsoft
+Software License Terms accompany the worker under `licenses/`. This remains a
+non-packable, non-shipping distribution pending the deferred runtime, live
+server, and legal qualification lanes.

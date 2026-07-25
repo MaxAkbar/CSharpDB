@@ -20,32 +20,25 @@ public sealed class SqlServerMigrationCommandRunnerTests
         CancellationToken ct = TestContext.Current.CancellationToken;
         string directory = CreateTempDirectory();
         string catalogPath = Path.Combine(directory, "catalog.json");
-        MigrationInspectionRequest? capturedRequest = null;
         string? capturedEnvironmentName = null;
-        string? capturedConnectionString = null;
+        string? capturedTargetVersion = null;
 
         try
         {
             MigrationCatalog catalog =
                 await CreateSqlServerCatalogAsync(includeDiagnostic, ct);
-            var inspector = new FakeInspector(
-                (request, cancellationToken) =>
-                {
-                    capturedRequest = request;
-                    cancellationToken.ThrowIfCancellationRequested();
-                    return ValueTask.FromResult(catalog);
-                });
             var dependencies = new MigrationCommandDependencies
             {
-                ReadEnvironmentVariable = name =>
+                InspectSqlServerAsync = (
+                    environmentName,
+                    targetVersion,
+                    cancellationToken) =>
                 {
-                    capturedEnvironmentName = name;
-                    return SecretConnectionString;
-                },
-                CreateSqlServerInspector = connectionString =>
-                {
-                    capturedConnectionString = connectionString;
-                    return inspector;
+                    capturedEnvironmentName = environmentName;
+                    capturedTargetVersion = targetVersion;
+                    cancellationToken.ThrowIfCancellationRequested();
+                    return ValueTask.FromResult(
+                        SqlServerWorkerResult.Success(catalog));
                 },
             };
             var output = new StringWriter();
@@ -65,12 +58,9 @@ public sealed class SqlServerMigrationCommandRunnerTests
 
             Assert.Equal(expectedExitCode, exitCode);
             Assert.Equal(EnvironmentVariableName, capturedEnvironmentName);
-            Assert.Equal(SecretConnectionString, capturedConnectionString);
-            Assert.NotNull(capturedRequest);
             Assert.Equal(
                 CSharpDbCapabilityCatalogLoader.CurrentTargetVersion,
-                capturedRequest.TargetCSharpDbVersion);
-            Assert.False(capturedRequest.IncludeProfile);
+                capturedTargetVersion);
             Assert.True(File.Exists(catalogPath));
 
             string artifact = await File.ReadAllTextAsync(catalogPath, ct);
@@ -100,22 +90,27 @@ public sealed class SqlServerMigrationCommandRunnerTests
         CancellationToken ct = TestContext.Current.CancellationToken;
         string directory = CreateTempDirectory();
         string catalogPath = Path.Combine(directory, "catalog.json");
-        bool inspectorFactoryCalled = false;
+        bool workerCalled = false;
 
         try
         {
             var dependencies = new MigrationCommandDependencies
             {
-                ReadEnvironmentVariable = name =>
+                InspectSqlServerAsync = (
+                    name,
+                    targetVersion,
+                    cancellationToken) =>
                 {
                     Assert.Equal(EnvironmentVariableName, name);
-                    return connectionString;
-                },
-                CreateSqlServerInspector = _ =>
-                {
-                    inspectorFactoryCalled = true;
-                    throw new InvalidOperationException(
-                        "The inspector factory must not be called.");
+                    Assert.Equal(
+                        CSharpDbCapabilityCatalogLoader.CurrentTargetVersion,
+                        targetVersion);
+                    Assert.True(string.IsNullOrWhiteSpace(connectionString));
+                    cancellationToken.ThrowIfCancellationRequested();
+                    workerCalled = true;
+                    return ValueTask.FromResult(
+                        SqlServerWorkerResult.Failure(
+                            SqlServerWorkerStatus.ConnectionUnavailable));
                 },
             };
             var output = new StringWriter();
@@ -134,7 +129,7 @@ public sealed class SqlServerMigrationCommandRunnerTests
                 ct);
 
             Assert.Equal(InspectorCommandRunner.ExitError, exitCode);
-            Assert.False(inspectorFactoryCalled);
+            Assert.True(workerCalled);
             Assert.False(File.Exists(catalogPath));
             Assert.True(string.IsNullOrWhiteSpace(output.ToString()));
             Assert.Contains(
@@ -165,23 +160,17 @@ public sealed class SqlServerMigrationCommandRunnerTests
         CancellationToken ct = TestContext.Current.CancellationToken;
         string directory = CreateTempDirectory();
         string catalogPath = Path.Combine(directory, "catalog.json");
-        bool environmentRead = false;
-        bool inspectorFactoryCalled = false;
+        bool workerCalled = false;
 
         try
         {
             var dependencies = new MigrationCommandDependencies
             {
-                ReadEnvironmentVariable = _ =>
+                InspectSqlServerAsync = (_, _, _) =>
                 {
-                    environmentRead = true;
-                    return SecretConnectionString;
-                },
-                CreateSqlServerInspector = _ =>
-                {
-                    inspectorFactoryCalled = true;
+                    workerCalled = true;
                     throw new InvalidOperationException(
-                        "The inspector factory must not be called.");
+                        "The worker must not be called.");
                 },
             };
             var output = new StringWriter();
@@ -200,8 +189,7 @@ public sealed class SqlServerMigrationCommandRunnerTests
                 ct);
 
             Assert.Equal(InspectorCommandRunner.ExitUsage, exitCode);
-            Assert.False(environmentRead);
-            Assert.False(inspectorFactoryCalled);
+            Assert.False(workerCalled);
             Assert.False(File.Exists(catalogPath));
             Assert.True(string.IsNullOrWhiteSpace(output.ToString()));
             Assert.Contains(
@@ -231,20 +219,18 @@ public sealed class SqlServerMigrationCommandRunnerTests
         string directory = CreateTempDirectory();
         string catalogPath = Path.Combine(directory, "catalog.json");
         string overlongName = "A" + new string('B', 128);
-        bool environmentRead = false;
+        bool workerCalled = false;
 
         try
         {
             var dependencies = new MigrationCommandDependencies
             {
-                ReadEnvironmentVariable = _ =>
+                InspectSqlServerAsync = (_, _, _) =>
                 {
-                    environmentRead = true;
-                    return SecretConnectionString;
-                },
-                CreateSqlServerInspector = _ =>
+                    workerCalled = true;
                     throw new InvalidOperationException(
-                        "The inspector factory must not be called."),
+                        "The worker must not be called.");
+                },
             };
             var output = new StringWriter();
             var error = new StringWriter();
@@ -262,7 +248,7 @@ public sealed class SqlServerMigrationCommandRunnerTests
                 ct);
 
             Assert.Equal(InspectorCommandRunner.ExitUsage, exitCode);
-            Assert.False(environmentRead);
+            Assert.False(workerCalled);
             Assert.False(File.Exists(catalogPath));
             Assert.DoesNotContain(
                 overlongName,
@@ -284,17 +270,15 @@ public sealed class SqlServerMigrationCommandRunnerTests
         string catalogPath = Path.Combine(directory, "catalog.json");
         const string rawConnection =
             "Server=private.example;Password=review-secret";
-        bool environmentRead = false;
+        bool workerCalled = false;
         var dependencies = new MigrationCommandDependencies
         {
-            ReadEnvironmentVariable = _ =>
+            InspectSqlServerAsync = (_, _, _) =>
             {
-                environmentRead = true;
-                return SecretConnectionString;
-            },
-            CreateSqlServerInspector = _ =>
+                workerCalled = true;
                 throw new InvalidOperationException(
-                    "The inspector factory must not be called."),
+                    "The worker must not be called.");
+            },
         };
 
         try
@@ -343,7 +327,7 @@ public sealed class SqlServerMigrationCommandRunnerTests
             Assert.Equal(InspectorCommandRunner.ExitUsage, positionalCode);
             Assert.Equal(InspectorCommandRunner.ExitUsage, optionCode);
             Assert.Equal(InspectorCommandRunner.ExitUsage, sourceCode);
-            Assert.False(environmentRead);
+            Assert.False(workerCalled);
             Assert.True(
                 string.IsNullOrWhiteSpace(positionalOutput.ToString()));
             Assert.True(
@@ -390,12 +374,10 @@ public sealed class SqlServerMigrationCommandRunnerTests
 
         try
         {
-            var inspector = new FakeInspector(
-                (_, _) => throw new InvalidOperationException(maliciousMessage));
             var dependencies = new MigrationCommandDependencies
             {
-                ReadEnvironmentVariable = _ => SecretConnectionString,
-                CreateSqlServerInspector = _ => inspector,
+                InspectSqlServerAsync = (_, _, _) =>
+                    throw new InvalidOperationException(maliciousMessage),
             };
             var output = new StringWriter();
             var error = new StringWriter();
@@ -437,10 +419,11 @@ public sealed class SqlServerMigrationCommandRunnerTests
     }
 
     [Theory]
-    [InlineData("environment", "MIG-SQLSERVER-CLI-CONNECTION-001")]
-    [InlineData("factory", "MIG-SQLSERVER-CLI-INSPECT-001")]
+    [InlineData("connection", "MIG-SQLSERVER-CLI-CONNECTION-001")]
+    [InlineData("inspection", "MIG-SQLSERVER-CLI-INSPECT-001")]
+    [InlineData("incompatible", "MIG-SQLSERVER-CLI-ADAPTER-001")]
     public async Task Inspect_SecretBearingSetupFailureIsSanitized(
-        string failureStage,
+        string workerState,
         string expectedCode)
     {
         CancellationToken ct = TestContext.Current.CancellationToken;
@@ -453,17 +436,24 @@ public sealed class SqlServerMigrationCommandRunnerTests
         {
             var dependencies = new MigrationCommandDependencies
             {
-                ReadEnvironmentVariable = _ =>
-                    failureStage == "environment"
-                        ? throw new InvalidOperationException(
-                            maliciousMessage)
-                        : SecretConnectionString,
-                CreateSqlServerInspector = _ =>
-                    failureStage == "factory"
-                        ? throw new InvalidOperationException(
-                            maliciousMessage)
-                        : throw new InvalidOperationException(
-                            "Unexpected test stage."),
+                InspectSqlServerAsync = (_, _, cancellationToken) =>
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    _ = maliciousMessage;
+                    SqlServerWorkerStatus workerStatus = workerState switch
+                    {
+                        "connection" =>
+                            SqlServerWorkerStatus.ConnectionUnavailable,
+                        "inspection" =>
+                            SqlServerWorkerStatus.InspectionFailed,
+                        "incompatible" =>
+                            SqlServerWorkerStatus.Incompatible,
+                        _ => throw new InvalidOperationException(
+                            "Unexpected test worker state."),
+                    };
+                    return ValueTask.FromResult(
+                        SqlServerWorkerResult.Failure(workerStatus));
+                },
             };
             var output = new StringWriter();
             var error = new StringWriter();
@@ -514,17 +504,15 @@ public sealed class SqlServerMigrationCommandRunnerTests
                 await CreateSqlServerCatalogAsync(
                     includeDiagnostic: false,
                     ct);
-            var inspector = new FakeInspector(
-                (_, cancellationToken) =>
+            var dependencies = new MigrationCommandDependencies
+            {
+                InspectSqlServerAsync = (_, _, cancellationToken) =>
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     File.WriteAllBytes(catalogPath, sentinel);
-                    return ValueTask.FromResult(catalog);
-                });
-            var dependencies = new MigrationCommandDependencies
-            {
-                ReadEnvironmentVariable = _ => SecretConnectionString,
-                CreateSqlServerInspector = _ => inspector,
+                    return ValueTask.FromResult(
+                        SqlServerWorkerResult.Success(catalog));
+                },
             };
             var output = new StringWriter();
             var error = new StringWriter();
@@ -568,8 +556,7 @@ public sealed class SqlServerMigrationCommandRunnerTests
     {
         string directory = CreateTempDirectory();
         string catalogPath = Path.Combine(directory, "catalog.json");
-        bool environmentRead = false;
-        bool inspectorFactoryCalled = false;
+        bool workerCalled = false;
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
 
@@ -577,16 +564,11 @@ public sealed class SqlServerMigrationCommandRunnerTests
         {
             var dependencies = new MigrationCommandDependencies
             {
-                ReadEnvironmentVariable = _ =>
+                InspectSqlServerAsync = (_, _, _) =>
                 {
-                    environmentRead = true;
-                    return SecretConnectionString;
-                },
-                CreateSqlServerInspector = _ =>
-                {
-                    inspectorFactoryCalled = true;
+                    workerCalled = true;
                     throw new InvalidOperationException(
-                        "The inspector factory must not be called.");
+                        "The worker must not be called.");
                 },
             };
             var output = new StringWriter();
@@ -605,8 +587,7 @@ public sealed class SqlServerMigrationCommandRunnerTests
                     dependencies,
                     cancellation.Token));
 
-            Assert.False(environmentRead);
-            Assert.False(inspectorFactoryCalled);
+            Assert.False(workerCalled);
             Assert.False(File.Exists(catalogPath));
             Assert.True(string.IsNullOrWhiteSpace(output.ToString()));
             Assert.True(string.IsNullOrWhiteSpace(error.ToString()));
@@ -624,30 +605,20 @@ public sealed class SqlServerMigrationCommandRunnerTests
         CancellationToken ct = TestContext.Current.CancellationToken;
         string directory = CreateTempDirectory();
         string catalogPath = Path.Combine(directory, "catalog.json");
-        int environmentReads = 0;
-        int inspectorCreations = 0;
+        int workerCalls = 0;
 
         try
         {
             MigrationCatalog catalog =
                 await CreateSqlServerCatalogAsync(includeDiagnostic: false, ct);
-            var inspector = new FakeInspector(
-                (_, cancellationToken) =>
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    return ValueTask.FromResult(catalog);
-                });
             var dependencies = new MigrationCommandDependencies
             {
-                ReadEnvironmentVariable = _ =>
+                InspectSqlServerAsync = (_, _, cancellationToken) =>
                 {
-                    environmentReads++;
-                    return SecretConnectionString;
-                },
-                CreateSqlServerInspector = _ =>
-                {
-                    inspectorCreations++;
-                    return inspector;
+                    workerCalls++;
+                    cancellationToken.ThrowIfCancellationRequested();
+                    return ValueTask.FromResult(
+                        SqlServerWorkerResult.Success(catalog));
                 },
             };
 
@@ -680,8 +651,7 @@ public sealed class SqlServerMigrationCommandRunnerTests
 
             Assert.Equal(InspectorCommandRunner.ExitOk, firstExitCode);
             Assert.Equal(InspectorCommandRunner.ExitUsage, retryExitCode);
-            Assert.Equal(1, environmentReads);
-            Assert.Equal(1, inspectorCreations);
+            Assert.Equal(1, workerCalls);
             Assert.Equal(
                 firstArtifact,
                 await File.ReadAllBytesAsync(catalogPath, ct));
@@ -840,19 +810,4 @@ public sealed class SqlServerMigrationCommandRunnerTests
         }
     }
 
-    private sealed class FakeInspector(
-        Func<
-            MigrationInspectionRequest,
-            CancellationToken,
-            ValueTask<MigrationCatalog>> inspect)
-        : IMigrationSourceInspector
-    {
-        public MigrationSourceKind SourceKind =>
-            MigrationSourceKind.SqlServer;
-
-        public ValueTask<MigrationCatalog> InspectAsync(
-            MigrationInspectionRequest request,
-            CancellationToken cancellationToken = default) =>
-            inspect(request, cancellationToken);
-    }
 }

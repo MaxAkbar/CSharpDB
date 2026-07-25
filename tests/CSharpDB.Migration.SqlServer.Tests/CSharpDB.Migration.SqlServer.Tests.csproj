@@ -12,6 +12,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\CSharpDB.Migration.CSharpDb\CSharpDB.Migration.CSharpDb.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Migration.SqlServer\CSharpDB.Migration.SqlServer.csproj" />
+    <ProjectReference Include="..\..\src\CSharpDB.Migration.SqlServer.Worker\CSharpDB.Migration.SqlServer.Worker.csproj" />
   </ItemGroup>
 
 </Project>

@@ -6,7 +6,7 @@ namespace CSharpDB.Migration.SqlServer.Tests;
 public sealed partial class SqlServerCatalogBuilderTests
 {
     private const string GoldenCatalogDigest =
-        "44b9a2152c8c66d227a6980231d32f58746ffc95520a69453180e2158a7bb91b";
+        "79185b741a1211e2ec5b997339f5093385343825a1e1e765b3278205fbfd1bb5";
     private const string GoldenSourceFingerprint =
         "sha256:e1e941fd00e4b3bb125dd0763342e2dda62783e09629d7c593ff06c82f9107ae";
 

@@ -227,8 +227,8 @@ internal static partial class SqlServerCatalogBuilder
             MigrationDiagnosticSeverity.Error,
             MigrationCompatibilityStatus.Unknown,
             "This checkpoint is an intentionally partial SQL Server inventory.",
-            "Bounded indexed-view indexes, full-text configuration, data spaces, partition definitions, per-index partition compression, and XML, spatial, hash, columnstore, and SQL Server 2025 JSON index configuration are now inventoried. Raw XML and JSON paths remain in memory only and are retained durably as bounded length and domain-separated digest facts. Raw partition boundary values, full-text stopwords and registered property definitions, allocation and file placement, physical sizes, row estimates, and other volatile operational state are intentionally not retained. SQL definitions remain syntax-only evidence; binding, lowering, source-semantic proof, optional-package isolation, and live qualification are still pending.",
-            "Complete semantic proof, isolate the optional adapter for packaging, and finish live qualification before relying on the analyzer for migration approval.",
+            "Bounded indexed-view indexes, full-text configuration, data spaces, partition definitions, per-index partition compression, and XML, spatial, hash, columnstore, and SQL Server 2025 JSON index configuration are now inventoried. Raw XML and JSON paths remain in memory only and are retained durably as bounded length and domain-separated digest facts. Raw partition boundary values, full-text stopwords and registered property definitions, allocation and file placement, physical sizes, row estimates, and other volatile operational state are intentionally not retained. SQL definitions remain syntax-only evidence; binding, lowering, source-semantic proof, and live qualification are still pending.",
+            "Complete semantic proof and finish live qualification before relying on the analyzer for migration approval.",
             canOverride: false));
 
         var schemasById =

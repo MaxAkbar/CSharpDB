@@ -94,9 +94,7 @@ internal static class MigrationCommandRunner
         ArgumentNullException.ThrowIfNull(error);
         ArgumentNullException.ThrowIfNull(dependencies);
         ArgumentNullException.ThrowIfNull(
-            dependencies.ReadEnvironmentVariable);
-        ArgumentNullException.ThrowIfNull(
-            dependencies.CreateSqlServerInspector);
+            dependencies.InspectSqlServerAsync);
         ArgumentNullException.ThrowIfNull(
             dependencies.BuildCSharpDbDdlPreview);
         ArgumentNullException.ThrowIfNull(
@@ -695,59 +693,60 @@ internal static class MigrationCommandRunner
                 error);
         }
 
-        string? connectionString;
         try
         {
             ct.ThrowIfCancellationRequested();
-            connectionString =
-                dependencies.ReadEnvironmentVariable(environmentVariableName);
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception environmentError) when (
-            IsRecoverableCliException(environmentError))
-        {
-            throw new MigrationCliSafeException(
-                "MIG-SQLSERVER-CLI-CONNECTION-001",
-                "The SQL Server connection could not be acquired from the environment.",
-                environmentError);
-        }
-        if (string.IsNullOrWhiteSpace(connectionString))
-        {
-            throw new MigrationCliSafeException(
-                "MIG-SQLSERVER-CLI-CONNECTION-001",
-                "The SQL Server connection environment variable is unset or blank.",
-                new InvalidOperationException(
-                    "SQL Server connection material was unavailable."));
-        }
+            string targetCSharpDbVersion =
+                CSharpDbCapabilityCatalogLoader.CurrentTargetVersion;
+            SqlServerWorkerResult result =
+                await dependencies.InspectSqlServerAsync(
+                        environmentVariableName,
+                        targetCSharpDbVersion,
+                        ct)
+                    .ConfigureAwait(false);
+            ArgumentNullException.ThrowIfNull(result);
 
-        try
-        {
-            ct.ThrowIfCancellationRequested();
-            IMigrationSourceInspector inspector =
-                dependencies.CreateSqlServerInspector(connectionString);
-            if (inspector is null ||
-                inspector.SourceKind != MigrationSourceKind.SqlServer)
+            if (result.Status is SqlServerWorkerStatus.Missing or
+                SqlServerWorkerStatus.Incompatible)
             {
-                throw new InvalidDataException(
-                    "The SQL Server inspector contract is invalid.");
+                throw new MigrationCliSafeException(
+                    "MIG-SQLSERVER-CLI-ADAPTER-001",
+                    "The optional SQL Server inspection adapter is unavailable or incompatible.",
+                    new InvalidOperationException(
+                        "The SQL Server worker boundary is unavailable."));
+            }
+            if (result.Status == SqlServerWorkerStatus.ConnectionUnavailable)
+            {
+                throw new MigrationCliSafeException(
+                    "MIG-SQLSERVER-CLI-CONNECTION-001",
+                    "The SQL Server connection could not be acquired by the optional adapter.",
+                    new InvalidOperationException(
+                        "SQL Server connection material was unavailable."));
+            }
+            if (result.Status == SqlServerWorkerStatus.InspectionFailed)
+            {
+                throw new MigrationCliSafeException(
+                    "MIG-SQLSERVER-CLI-INSPECT-001",
+                    "The SQL Server schema could not be inspected or published safely.",
+                    new InvalidOperationException(
+                        "The SQL Server worker could not inspect the source."));
+            }
+            if (result.Status != SqlServerWorkerStatus.Success ||
+                result.Catalog is null ||
+                result.Catalog.Source.Kind != MigrationSourceKind.SqlServer ||
+                !string.Equals(
+                    result.Catalog.TargetCSharpDbVersion,
+                    targetCSharpDbVersion,
+                    StringComparison.Ordinal))
+            {
+                throw new MigrationCliSafeException(
+                    "MIG-SQLSERVER-CLI-ADAPTER-001",
+                    "The optional SQL Server inspection adapter is unavailable or incompatible.",
+                    new InvalidDataException(
+                        "The SQL Server worker returned an invalid contract."));
             }
 
-            MigrationCatalog catalog = await inspector.InspectAsync(
-                new MigrationInspectionRequest
-                {
-                    TargetCSharpDbVersion =
-                        CSharpDbCapabilityCatalogLoader.CurrentTargetVersion,
-                    IncludeProfile = false,
-                },
-                ct);
-            if (catalog.Source.Kind != MigrationSourceKind.SqlServer)
-            {
-                throw new InvalidDataException(
-                    "The SQL Server inspector returned another source kind.");
-            }
+            MigrationCatalog catalog = result.Catalog;
 
             string serialized =
                 MigrationArtifactSerializer.SerializeCatalog(catalog);
@@ -761,6 +760,10 @@ internal static class MigrationCommandRunner
             return exitCode;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (MigrationCliSafeException)
         {
             throw;
         }

@@ -1,8 +1,10 @@
 <Solution>
   <Folder Name="/scripts/">
+    <File Path="scripts/Publish-CSharpDbSqlServerMigrationBundle.ps1" />
     <File Path="scripts/Publish-CSharpDbDaemonRelease.ps1" />
     <File Path="scripts/Publish-CSharpDbAdminStorePackage.ps1" />
     <File Path="scripts/Start-CSharpDbAdminAndDaemon.ps1" />
+    <File Path="scripts/Test-SqlServerMigrationIsolation.ps1" />
   </Folder>
   <Folder Name="/deploy/daemon/windows/">
     <File Path="deploy/daemon/windows/install-csharpdb-daemon.ps1" />
@@ -46,6 +48,7 @@
     <Project Path="src/CSharpDB.Migration.Files/CSharpDB.Migration.Files.csproj" />
     <Project Path="src/CSharpDB.Migration.LiteDb/CSharpDB.Migration.LiteDb.csproj" />
     <Project Path="src/CSharpDB.Migration.SqlServer/CSharpDB.Migration.SqlServer.csproj" />
+    <Project Path="src/CSharpDB.Migration.SqlServer.Worker/CSharpDB.Migration.SqlServer.Worker.csproj" />
     <Project Path="src/CSharpDB.Migration.Sqlite/CSharpDB.Migration.Sqlite.csproj" />
     <Project Path="src/CSharpDB.Sql/CSharpDB.Sql.csproj" />
     <Project Path="src/CSharpDB.Storage/CSharpDB.Storage.csproj" />
@@ -73,6 +76,7 @@
     <Project Path="tests/CSharpDB.Migration.Files.Tests/CSharpDB.Migration.Files.Tests.csproj" />
     <Project Path="tests/CSharpDB.Migration.LiteDb.Tests/CSharpDB.Migration.LiteDb.Tests.csproj" />
     <Project Path="tests/CSharpDB.Migration.SqlServer.Tests/CSharpDB.Migration.SqlServer.Tests.csproj" />
+    <Project Path="tests/CSharpDB.Migration.SqlServer.WorkerHarness/CSharpDB.Migration.SqlServer.WorkerHarness.csproj" />
     <Project Path="tests/CSharpDB.Migration.Sqlite.Tests/CSharpDB.Migration.Sqlite.Tests.csproj" />
     <Project Path="tests/CSharpDB.Api.Tests/CSharpDB.Api.Tests.csproj" />
     <Project Path="tests/CSharpDB.Daemon.Tests/CSharpDB.Daemon.Tests.csproj" />

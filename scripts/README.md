@@ -244,6 +244,40 @@ Default runtimes:
 Outputs are written under `artifacts\daemon-release` unless `-OutputRoot` is
 provided.
 
+### `Publish-CSharpDbSqlServerMigrationBundle.ps1`
+
+Use this to produce the non-packable SQL Server schema-analysis distribution.
+The generic `csharpdb` host is published at the bundle root. SqlClient,
+ScriptDom, SNI, and authentication dependencies are published only beneath
+`adapters/sqlserver`, alongside the fixed companion worker, the resolved
+dependency inventory, and the applicable third-party license notices.
+
+The destination must be absent or empty. Output is intentionally
+framework-dependent; self-contained output is excluded until its runtime
+license and notice closure is audited. A runtime identifier may be selected
+for a qualification-only framework-dependent build, but doing so does not
+qualify that runtime or a live SQL Server version.
+
+```powershell
+.\scripts\Publish-CSharpDbSqlServerMigrationBundle.ps1 `
+  -OutputPath artifacts\sqlserver-migration-local `
+  -Configuration Release
+```
+
+### `Test-SqlServerMigrationIsolation.ps1`
+
+Use this provider-absent packaging check after restore. It publishes the base
+CLI and the optional SQL Server bundle separately, proves the base dependency
+graph contains no SQL Server adapter or provider assets, proves the provider
+closure stays under the worker directory, and exercises stable adapter-absent
+and connection-absent failures without contacting a server.
+
+```powershell
+.\scripts\Test-SqlServerMigrationIsolation.ps1 `
+  -Configuration Release `
+  -NoRestore
+```
+
 ### `Publish-CSharpDbAdminStorePackage.ps1`
 
 Use this on Windows when preparing the Microsoft Store package for CSharpDB

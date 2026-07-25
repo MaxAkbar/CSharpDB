@@ -140,14 +140,16 @@ retained-snapshot ceiling; `--max-source-bytes` can select a smaller bound.
 
 SQL Server inspection accepts only the name of an environment variable through
 `--connection-env`; a raw connection string is never a command-line argument.
-The resolved value is held in memory, is not written to the catalog or command
-output, and should identify a dedicated least-privilege, read-only metadata
-login. The catalog destination uses create-new publication and is never
-overwritten. This checkpoint inventories and analyzes schema only: it neither
-reads application rows nor writes to SQL Server or a CSharpDB target.
-For migration commands, the first Ctrl+C requests cooperative cancellation and
-the second retains the console's normal force-termination behavior if a bounded
-provider operation has not returned.
+The generic host first resolves its fixed sibling worker and passes only the
+safe environment-variable name across the process boundary. The worker alone
+resolves the value from the inherited environment; the host code never reads
+or materializes it. The value is not written to the catalog, process arguments,
+process protocol, or command output, and should identify a dedicated
+least-privilege, read-only metadata login. The catalog destination uses
+create-new publication and is never overwritten. This checkpoint inventories
+and analyzes schema only: it neither reads application rows nor writes to SQL
+Server or a CSharpDB target. Cancellation terminates the worker process tree,
+including a ScriptDom parse call that cannot observe cooperative cancellation.
 
 Pass both `--typed-intent` and
 `--expected-intent-manifest-digest` to select v2. The canonical sidecar must
@@ -217,6 +219,8 @@ csharpdb migrate validate .\plan.json --catalog .\catalog.json --source-package 
 Example SQL Server schema-readiness workflow:
 
 ```powershell
+# Use the optional SQL Server migration bundle. A base-only csharpdb
+# distribution reports MIG-SQLSERVER-CLI-ADAPTER-001 for this source.
 # Populate CSHARPDB_SQLSERVER_SOURCE through your secret manager or protected
 # process environment; do not put the connection string in scripts.
 csharpdb migrate inspect --source sqlserver --connection-env CSHARPDB_SQLSERVER_SOURCE --out .\catalog.json
@@ -239,9 +243,14 @@ limited to 64 MiB before contract validation; rendered action count,
 per-action SQL, and aggregate SQL bytes have separate fixed production
 ceilings. The regenerated DDL digest must match the binding in a sealed plan.
 
-The SQL Server project reference currently belongs to this non-packable proof
-CLI. Optional adapter/package isolation and published-runtime qualification
-remain required before this surface can be treated as a shipping connector.
+The base CLI has no SQL Server project reference and its output contains no
+SqlClient, ScriptDom, SNI, or related authentication assets. The non-packable
+SQL Server bundle places that dependency closure only beneath
+`adapters/sqlserver`, with a fixed companion executable using
+`csharpdb-sqlserver-worker/v1`. A missing or incompatible worker fails only the
+SQL Server route with `MIG-SQLSERVER-CLI-ADAPTER-001`; other migration commands
+remain provider-independent. This packaging boundary does not qualify a live
+server, runtime identifier, authentication mode, or shipping connector.
 
 Common CSV delimiter detection is automatic; `--delimiter` supplies the only
 candidate when an explicit convention is required. CSV defaults are strict
@@ -384,6 +393,7 @@ checkpoint, and is not consulted to decide which batches `--resume` skips.
 - `DevOpsCommandRunner.cs` - schema compare commands
 - `PipelineCommandRunner.cs` - ETL package and catalog commands
 - `MigrationCommandRunner.cs` - migration inspect, plan, bounded DDL/scratch preview, apply, resume, validate, retained CSV/JSON/SQLite, schema-only SQL Server analysis, and CSV/JSON/NDJSON export commands
+- `SqlServerWorkerClient.cs` - bounded fixed-path protocol client for the optional SQL Server inspection worker
 - `CliConsole.cs` and `TableFormatter.cs` - terminal formatting helpers
 
 ## Build And Test
@@ -391,6 +401,8 @@ checkpoint, and is not consulted to decide which batches `--resume` skips.
 ```powershell
 dotnet build src/CSharpDB.Cli/CSharpDB.Cli.csproj
 dotnet test tests/CSharpDB.Cli.Tests/CSharpDB.Cli.Tests.csproj
+dotnet test tests/CSharpDB.Migration.SqlServer.Tests/CSharpDB.Migration.SqlServer.Tests.csproj
+.\scripts\Test-SqlServerMigrationIsolation.ps1 -Configuration Release
 ```
 
 ## Dependencies
@@ -398,7 +410,14 @@ dotnet test tests/CSharpDB.Cli.Tests/CSharpDB.Cli.Tests.csproj
 - `CSharpDB.Client`
 - `CSharpDB.DevOps`
 - `CSharpDB.Engine`
+- `CSharpDB.Migration`
+- `CSharpDB.Migration.CSharpDb`
 - `CSharpDB.Migration.Files`
+- `CSharpDB.Migration.Sqlite`
 - `CSharpDB.Sql`
 - `CSharpDB.Storage.Diagnostics`
 - `Spectre.Console`
+
+The base CLI deliberately does not reference
+`CSharpDB.Migration.SqlServer`. The optional bundle's worker owns that
+reference together with Microsoft.Data.SqlClient and ScriptDom.
