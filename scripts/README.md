@@ -319,11 +319,22 @@ and connection-absent failures without contacting a server.
 Use this after restore to qualify the packaged `csharpdb-ef` tool boundary. It
 packs and installs the tool into a validated repository-local temporary
 workspace, analyzes the compiled valid and unsupported fixtures, checks the
-generation-only exit/status contract, and proves target-controlled console
-output does not escape into the JSON report. It also checks the Web SDK minimal
-sample without creating `sample.db`, then publishes the base `csharpdb` CLI and
-verifies that the separate analyzer and EF Core design-time dependencies did
-not enter that dependency graph.
+unchanged generation-only exit/status contract, and proves target-controlled
+console output does not escape into the JSON report. A separate `--scratch`
+lane executes the valid two-prefix chain, requires
+`Compatible`/`ScratchExecuted` evidence, verifies apply/down/reapply and two
+analyzer-owned guarded replays built from retained `Up` command payloads, and
+checks that no configured, sample, temporary database, WAL, journal, or lock
+artifact is left behind. It also checks the Web SDK minimal sample without
+creating `sample.db`, then publishes the base `csharpdb` CLI and verifies that
+the separate analyzer and EF Core design-time dependencies did not enter that
+dependency graph. A Raw SQL scratch request separately pins the blocked
+envelope, zero execution evidence, and `Conditional` exit code `1`.
+
+The scratch lane proves only an empty private-memory database. It does not
+qualify existing-row conversions, file/WAL persistence, configured
+`IMigrator`, `IMigrator.GenerateScript`, EF-generated idempotent scripts,
+migration-history behavior, migration locks, or interceptors.
 
 ```powershell
 .\scripts\Test-EfCoreMigrationTool.ps1 `

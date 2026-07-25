@@ -16,12 +16,17 @@ internal static class EfCoreAnalyzeCommandRunner
         "Usage:\n" +
         "  dotnet csharpdb-ef analyze --project <project.csproj> " +
         "--context <fully-qualified-or-unique-simple-name> " +
-        "[--format text|json]";
+        "[--scratch] [--format text|json]";
 
     internal const string ExecutionWarning =
         "Warning: Building the selected project and creating its EF Core " +
         "design-time context can execute application code. The tooling " +
         "does not ask the provider to open the configured database.";
+
+    internal const string ScratchExecutionWarning =
+        "Scratch mode executes retained migration SQL only against " +
+        "tool-owned private-memory CSharpDB databases. It does not validate " +
+        "existing application data or file-backed persistence.";
 
     private static readonly JsonSerializerOptions JsonOptions =
         CreateJsonOptions();
@@ -63,46 +68,73 @@ internal static class EfCoreAnalyzeCommandRunner
         }
 
         await error.WriteLineAsync(ExecutionWarning);
+        if (options.Scratch)
+            await error.WriteLineAsync(ScratchExecutionWarning);
         cancellationToken.ThrowIfCancellationRequested();
 
         EfCoreWorkerClientResult result =
             await EfCoreWorkerClient.AnalyzeProjectAsync(
                     projectPath!,
                     options.Context,
+                    options.Scratch
+                        ? EfCoreAnalysisMode.Scratch
+                        : EfCoreAnalysisMode.Generation,
                     cancellationToken)
                 .ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
         if (result.Status != EfCoreWorkerClientStatus.Success ||
-            result.Report is null)
+            !options.Scratch && result.Report is null ||
+            options.Scratch && result.ScratchReport is null)
         {
             await WriteWorkerFailureAsync(error, result.Status);
             return ExitError;
         }
 
-        EfCoreMigrationAnalysisReport report = result.Report;
         if (string.Equals(
                 options.Format,
                 "json",
                 StringComparison.OrdinalIgnoreCase))
         {
-            string json = JsonSerializer.Serialize(
-                report,
-                JsonOptions);
+            string json = options.Scratch
+                ? JsonSerializer.Serialize(
+                    result.ScratchReport!,
+                    JsonOptions)
+                : JsonSerializer.Serialize(
+                    result.Report!,
+                    JsonOptions);
             cancellationToken.ThrowIfCancellationRequested();
             await output.WriteLineAsync(json);
         }
         else
         {
-            await WriteTextReportAsync(
-                output,
-                report,
-                cancellationToken);
+            if (options.Scratch)
+            {
+                await WriteScratchTextReportAsync(
+                    output,
+                    result.ScratchReport!,
+                    cancellationToken);
+            }
+            else
+            {
+                await WriteTextReportAsync(
+                    output,
+                    result.Report!,
+                    cancellationToken);
+            }
         }
         cancellationToken.ThrowIfCancellationRequested();
 
-        return report.Status == MigrationCompatibilityStatus.Conditional
-            ? ExitConditional
-            : ExitError;
+        MigrationCompatibilityStatus status = options.Scratch
+            ? result.ScratchReport!.Status
+            : result.Report!.Status;
+        return status switch
+        {
+            MigrationCompatibilityStatus.Compatible
+                when options.Scratch => 0,
+            MigrationCompatibilityStatus.Conditional =>
+                ExitConditional,
+            _ => ExitError,
+        };
     }
 
     private static bool TryParse(
@@ -125,6 +157,7 @@ internal static class EfCoreAnalyzeCommandRunner
         var values =
             new Dictionary<string, string>(
                 StringComparer.OrdinalIgnoreCase);
+        bool scratch = false;
         for (int i = 1; i < args.Count; i++)
         {
             string option = args[i];
@@ -133,6 +166,19 @@ internal static class EfCoreAnalyzeCommandRunner
                 error =
                     "The command contains an unexpected positional argument.";
                 return false;
+            }
+            if (string.Equals(
+                    option,
+                    "--scratch",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                if (scratch)
+                {
+                    error = "The command contains a duplicate option.";
+                    return false;
+                }
+                scratch = true;
+                continue;
             }
             if (option is not ("--project" or "--context" or "--format"))
             {
@@ -188,7 +234,8 @@ internal static class EfCoreAnalyzeCommandRunner
         options = new AnalyzeOptions(
             project,
             context,
-            format.ToLowerInvariant());
+            format.ToLowerInvariant(),
+            scratch);
         return true;
     }
 
@@ -294,6 +341,57 @@ internal static class EfCoreAnalyzeCommandRunner
         }
     }
 
+    private static async ValueTask WriteScratchTextReportAsync(
+        TextWriter output,
+        EfCoreMigrationScratchAnalysisReport report,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        EfCoreMigrationScratchChainProof proof =
+            report.ScratchChain;
+        await output.WriteLineAsync(
+            "CSharpDB EF Core scratch-chain analysis");
+        await output.WriteLineAsync(
+            $"Outcome: {CliToken(report.Outcome)}");
+        await output.WriteLineAsync(
+            $"Status: {CliToken(report.Status)}");
+        await output.WriteLineAsync(
+            $"Evidence: {CliToken(report.HighestEvidence)}");
+        await output.WriteLineAsync($"Rule: {report.RuleId}");
+        await output.WriteLineAsync(
+            $"Scope: {CliToken(proof.ProofScope)}");
+        await output.WriteLineAsync(
+            $"Algorithm: {proof.Algorithm}");
+        await output.WriteLineAsync(
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"Scratch counts: prefixes={proof.PrefixCount} | applied={proof.AppliedPrefixCount} | schema-verified={proof.SchemaVerifiedPrefixCount} | down={proof.DownPrefixCount} | reapplied={proof.ReappliedPrefixCount} | round-trip={proof.RoundTripVerifiedPrefixCount} | idempotent-applies={proof.IdempotentApplyCount} | commands={proof.ExecutedCommandCount}"));
+        await output.WriteLineAsync(
+            $"Executed SQL digest: {proof.ExecutedSqlDigest ?? "none"}");
+        await output.WriteLineAsync(
+            $"Idempotent SQL digest: {proof.IdempotentSqlDigest ?? "none"}");
+        await output.WriteLineAsync(
+            $"Data preflight completed: {BoolToken(proof.DataPreflightCompleted)}");
+        await output.WriteLineAsync(
+            $"Resources disposed: {BoolToken(proof.ResourcesDisposed)}");
+
+        foreach (EfCoreMigrationScratchPrefixEvidence prefix in
+                 proof.Prefixes)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await output.WriteLineAsync(
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"Scratch prefix: ordinal={prefix.Ordinal} | migration={prefix.MigrationOrdinal} | status={CliToken(prefix.Status)} | evidence={CliToken(prefix.Evidence)} | rule={prefix.RuleId} | expected-schema={prefix.ExpectedSchemaDigest} | applied-schema={prefix.AppliedSchemaDigest ?? "none"} | down-schema={prefix.DownSchemaDigest ?? "none"} | reapplied-schema={prefix.ReappliedSchemaDigest ?? "none"}"));
+        }
+
+        await output.WriteLineAsync("Generation preflight:");
+        await WriteTextReportAsync(
+            output,
+            report.GenerationPreflight,
+            cancellationToken);
+    }
+
     private static async ValueTask WriteWorkerFailureAsync(
         TextWriter error,
         EfCoreWorkerClientStatus status)
@@ -373,5 +471,6 @@ internal static class EfCoreAnalyzeCommandRunner
     private sealed record AnalyzeOptions(
         string Project,
         string Context,
-        string Format);
+        string Format,
+        bool Scratch);
 }

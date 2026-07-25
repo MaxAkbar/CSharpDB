@@ -45,8 +45,27 @@ internal sealed record EfCoreWorkerDependencies
         init;
     } = EfCoreMigrationAnalyzer.AnalyzeAsync;
 
+    internal Func<
+        EfCoreMigrationAnalysisRequest,
+        CancellationToken,
+        ValueTask<EfCoreMigrationScratchAnalysisReport>>
+        AnalyzeScratchAsync
+    {
+        get;
+        init;
+    } = EfCoreMigrationAnalyzer.AnalyzeScratchAsync;
+
     internal Func<EfCoreMigrationAnalysisReport, string>
         SerializeReport
+    {
+        get;
+        init;
+    } = static report => JsonSerializer.Serialize(
+        report,
+        EfCoreWorkerRunner.JsonOptions);
+
+    internal Func<EfCoreMigrationScratchAnalysisReport, string>
+        SerializeScratchReport
     {
         get;
         init;
@@ -67,10 +86,10 @@ internal sealed record EfCoreWorkerDependencies
 internal static class EfCoreWorkerRunner
 {
     internal const string Protocol =
-        "csharpdb-ef-worker/v1";
+        "csharpdb-ef-worker/v2";
     internal const string SuccessHeader = Protocol + "\n";
     internal const string RequestFormat =
-        EfCoreMigrationAnalysisRequest.CurrentFormat;
+        "csharpdb-ef-worker-request/v2";
     internal const int ExitSuccess = 0;
     internal const int ExitIncompatible = 10;
     internal const int ExitInputLimit = 12;
@@ -115,7 +134,9 @@ internal static class EfCoreWorkerRunner
                 EfCoreWorkerErrorCode.Incompatible);
         }
         if (dependencies.AnalyzeAsync is null ||
+            dependencies.AnalyzeScratchAsync is null ||
             dependencies.SerializeReport is null ||
+            dependencies.SerializeScratchReport is null ||
             dependencies.SerializeError is null)
         {
             return await FailAsync(
@@ -157,18 +178,31 @@ internal static class EfCoreWorkerRunner
                 EfCoreWorkerErrorCode.Incompatible);
         }
 
-        EfCoreMigrationAnalysisReport report;
+        string serialized;
         try
         {
-            report = await dependencies.AnalyzeAsync(
+            var analysisRequest =
                 new EfCoreMigrationAnalysisRequest
                 {
                     AssemblyPath = request.AssemblyPath,
-                    AssemblyDigest =
-                        request.AssemblyDigest,
+                    AssemblyDigest = request.AssemblyDigest,
                     Context = request.Context,
-                },
-                cancellationToken);
+                };
+            serialized = request.Mode switch
+            {
+                EfCoreAnalysisMode.Generation =>
+                    dependencies.SerializeReport(
+                        await dependencies.AnalyzeAsync(
+                            analysisRequest,
+                            cancellationToken)),
+                EfCoreAnalysisMode.Scratch =>
+                    dependencies.SerializeScratchReport(
+                        await dependencies.AnalyzeScratchAsync(
+                            analysisRequest,
+                            cancellationToken)),
+                _ => throw new EfCoreAnalysisException(
+                    EfCoreAnalysisFailureKind.InvalidRequest),
+            };
         }
         catch (OperationCanceledException)
             when (cancellationToken.IsCancellationRequested)
@@ -197,11 +231,8 @@ internal static class EfCoreWorkerRunner
                 EfCoreWorkerErrorCode.InternalFailure);
         }
 
-        string serialized;
         try
         {
-            serialized =
-                dependencies.SerializeReport(report);
             if (string.IsNullOrEmpty(serialized) ||
                 StrictUtf8.GetByteCount(SuccessHeader) >
                     MaxOutputBytes -
@@ -360,6 +391,7 @@ internal static class EfCoreWorkerRunner
             if (!seen.Add(property.Name) ||
                 property.Name is not (
                     "format" or
+                    "mode" or
                     "assemblyPath" or
                     "assemblyDigest" or
                     "context"))
@@ -367,7 +399,7 @@ internal static class EfCoreWorkerRunner
                 throw new JsonException();
             }
         }
-        if (seen.Count != 4)
+        if (seen.Count != 5)
             throw new JsonException();
 
         WorkerRequest? request =
@@ -378,6 +410,7 @@ internal static class EfCoreWorkerRunner
                 request.Format,
                 RequestFormat,
                 StringComparison.Ordinal) ||
+            !Enum.IsDefined(request.Mode) ||
             string.IsNullOrWhiteSpace(
                 request.AssemblyPath) ||
             string.IsNullOrWhiteSpace(
@@ -475,6 +508,8 @@ internal static class EfCoreWorkerRunner
     private sealed record WorkerRequest
     {
         public required string Format { get; init; }
+
+        public required EfCoreAnalysisMode Mode { get; init; }
 
         public required string AssemblyPath { get; init; }
 

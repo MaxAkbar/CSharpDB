@@ -108,4 +108,57 @@ public sealed class EfCoreAnalyzeCommandRunnerTests
             error.ToString(),
             StringComparison.Ordinal);
     }
+
+    [Fact]
+    public async Task RunAsync_AcceptsValuelessScratchOption()
+    {
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        int exitCode = await EfCoreAnalyzeCommandRunner.RunAsync(
+            [
+                "analyze",
+                "--project",
+                "missing.csproj",
+                "--context",
+                "AppDbContext",
+                "--scratch",
+            ],
+            output,
+            error,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(EfCoreAnalyzeCommandRunner.ExitError, exitCode);
+        Assert.DoesNotContain(
+            "CSHARPDB-EF-USAGE-001",
+            error.ToString(),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RunAsync_RejectsDuplicateScratchOption()
+    {
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        int exitCode = await EfCoreAnalyzeCommandRunner.RunAsync(
+            [
+                "analyze",
+                "--project",
+                "missing.csproj",
+                "--context",
+                "AppDbContext",
+                "--scratch",
+                "--scratch",
+            ],
+            output,
+            error,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(EfCoreAnalyzeCommandRunner.ExitUsage, exitCode);
+        Assert.Contains(
+            "CSHARPDB-EF-USAGE-001",
+            error.ToString(),
+            StringComparison.Ordinal);
+    }
 }

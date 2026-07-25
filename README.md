@@ -185,9 +185,14 @@ CSharpDB includes a first-party embedded EF Core 10 provider for file-backed and
 The separate [`csharpdb-ef` migration analyzer](src/CSharpDB.EntityFrameworkCore.Tools/README.md)
 can inspect a restored `net10.0` project's compiled migration chain through the
 provider's real design-time services and SQL generator without adding EF Core
-design dependencies to the base CLI. Its first release reports bounded
-generation evidence only; isolated scratch-chain execution remains a later
-proof tier.
+design dependencies to the base CLI. Generation-only analysis remains the
+default. Its explicit `--scratch` tier applies every supported migration prefix
+to tool-owned private-memory databases, checks normalized schema and history
+after apply/down/reapply, and twice runs an analyzer-owned guarded replay built
+from retained `Up` command payloads. A pass is empty-database evidence only: it
+does not validate existing-row conversions, file/WAL persistence, configured
+migration history, locks, interceptors, `IMigrator`, or
+`IMigrator.GenerateScript` behavior.
 
 The supported ASP.NET Core Identity configuration is deliberately bounded to Identity
 schema v1 with `IdentityUser<int>` and `IdentityRole<int>`. Its standard

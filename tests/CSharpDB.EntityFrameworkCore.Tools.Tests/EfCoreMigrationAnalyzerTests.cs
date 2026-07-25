@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text.Json;
 using CSharpDB.EntityFrameworkCore.Tools.Fixtures;
 using CSharpDB.Migration;
 
@@ -6,6 +7,161 @@ namespace CSharpDB.EntityFrameworkCore.Tools.Tests;
 
 public sealed class EfCoreMigrationAnalyzerTests
 {
+    [Fact]
+    public async Task AnalyzeScratchAsync_ExecutesEveryFixturePrefix()
+    {
+        EfCoreMigrationScratchAnalysisReport report =
+            await AnalyzeScratchAsync<FixtureContext>();
+
+        Assert.True(
+            report.Outcome ==
+                EfCoreMigrationScratchAnalysisOutcome.Passed,
+            JsonSerializer.Serialize(report));
+        Assert.Equal(
+            MigrationCompatibilityStatus.Compatible,
+            report.Status);
+        Assert.Equal(
+            MigrationEvidenceLevel.ScratchExecuted,
+            report.HighestEvidence);
+        Assert.Equal(2, report.ScratchChain.PrefixCount);
+        Assert.Equal(2, report.ScratchChain.AppliedPrefixCount);
+        Assert.Equal(
+            2,
+            report.ScratchChain.SchemaVerifiedPrefixCount);
+        Assert.Equal(
+            2,
+            report.ScratchChain.RoundTripVerifiedPrefixCount);
+        Assert.Equal(2, report.ScratchChain.IdempotentApplyCount);
+        Assert.Equal(2, report.ScratchChain.Prefixes.Count);
+        Assert.True(report.ScratchChain.ResourcesDisposed);
+        Assert.False(report.ScratchChain.DataPreflightCompleted);
+
+        Assert.True(EfCoreScratchReportSanitizer.TrySanitize(
+            report,
+            report.GenerationPreflight.AssemblyDigest,
+            typeof(FixtureContext).FullName!,
+            out EfCoreMigrationScratchAnalysisReport? sanitized));
+        Assert.NotNull(sanitized);
+
+        Assert.False(EfCoreScratchReportSanitizer.TrySanitize(
+            report with
+            {
+                Outcome =
+                    EfCoreMigrationScratchAnalysisOutcome.Blocked,
+            },
+            report.GenerationPreflight.AssemblyDigest,
+            typeof(FixtureContext).FullName!,
+            out _));
+        Assert.False(EfCoreScratchReportSanitizer.TrySanitize(
+            report with
+            {
+                ScratchChain = report.ScratchChain with
+                {
+                    SecondIdempotentSchemaDigest =
+                        new string('a', 64),
+                },
+            },
+            report.GenerationPreflight.AssemblyDigest,
+            typeof(FixtureContext).FullName!,
+            out _));
+        Assert.False(EfCoreScratchReportSanitizer.TrySanitize(
+            report with
+            {
+                ScratchChain = report.ScratchChain with
+                {
+                    Algorithm = "forged",
+                },
+            },
+            report.GenerationPreflight.AssemblyDigest,
+            typeof(FixtureContext).FullName!,
+            out _));
+        Assert.False(EfCoreScratchReportSanitizer.TrySanitize(
+            report with
+            {
+                ScratchChain = report.ScratchChain with
+                {
+                    DataPreflightCompleted = true,
+                },
+            },
+            report.GenerationPreflight.AssemblyDigest,
+            typeof(FixtureContext).FullName!,
+            out _));
+
+        EfCoreMigrationScratchAnalysisReport partialIdempotentFailure =
+            report with
+            {
+                Outcome =
+                    EfCoreMigrationScratchAnalysisOutcome.Failed,
+                Status = MigrationCompatibilityStatus.Unknown,
+                RuleId =
+                    EfCoreMigrationScratchAnalysisRules
+                        .IdempotenceFailed,
+                ScratchChain = report.ScratchChain with
+                {
+                    Outcome =
+                        EfCoreMigrationScratchAnalysisOutcome.Failed,
+                    IdempotentApplyCount = 1,
+                    IdempotentCommandCount =
+                        report.ScratchChain
+                            .IdempotentCommandCount / 2,
+                    FirstIdempotentSchemaDigest = null,
+                    FirstIdempotentHistoryDigest = null,
+                    SecondIdempotentSchemaDigest = null,
+                    SecondIdempotentHistoryDigest = null,
+                },
+            };
+        Assert.True(EfCoreScratchReportSanitizer.TrySanitize(
+            partialIdempotentFailure,
+            report.GenerationPreflight.AssemblyDigest,
+            typeof(FixtureContext).FullName!,
+            out _));
+        Assert.False(EfCoreScratchReportSanitizer.TrySanitize(
+            partialIdempotentFailure with
+            {
+                ScratchChain =
+                    partialIdempotentFailure.ScratchChain with
+                    {
+                        FirstIdempotentSchemaDigest =
+                            "TOP-SECRET",
+                        FirstIdempotentHistoryDigest =
+                            "TOP-SECRET",
+                    },
+            },
+            report.GenerationPreflight.AssemblyDigest,
+            typeof(FixtureContext).FullName!,
+            out _));
+    }
+
+    [Fact]
+    public async Task AnalyzeScratchAsync_RejectsSqlGenerationServiceOverrides()
+    {
+        EfCoreAnalysisException generatorException =
+            await Assert.ThrowsAsync<EfCoreAnalysisException>(
+                async () =>
+                    await AnalyzeScratchAsync<
+                        ScratchSqlGeneratorOverrideFixtureContext>());
+        EfCoreAnalysisException dependencyException =
+            await Assert.ThrowsAsync<EfCoreAnalysisException>(
+                async () =>
+                    await AnalyzeScratchAsync<
+                        ScratchSqlGenerationDependencyOverrideFixtureContext>());
+        EfCoreAnalysisException customExtensionException =
+            await Assert.ThrowsAsync<EfCoreAnalysisException>(
+                async () =>
+                    await AnalyzeScratchAsync<
+                        ScratchCustomOptionsExtensionFixtureContext>());
+
+        Assert.Equal(
+            EfCoreAnalysisFailureKind.AnalysisFailed,
+            generatorException.Kind);
+        Assert.Equal(
+            EfCoreAnalysisFailureKind.AnalysisFailed,
+            dependencyException.Kind);
+        Assert.Equal(
+            EfCoreAnalysisFailureKind.AnalysisFailed,
+            customExtensionException.Kind);
+    }
+
     [Fact]
     public async Task AnalyzeAsync_LoadsFactorylessGenericHostWithTargetOnlyHosting()
     {
@@ -150,6 +306,27 @@ public sealed class EfCoreMigrationAnalyzerTests
     private static async ValueTask<EfCoreMigrationAnalysisReport>
         AnalyzeAsync<TContext>()
     {
+        EfCoreMigrationAnalysisRequest request =
+            await CreateRequestAsync<TContext>();
+        return await EfCoreMigrationAnalyzer.AnalyzeAsync(
+            request,
+            TestContext.Current.CancellationToken);
+    }
+
+    private static async ValueTask<
+        EfCoreMigrationScratchAnalysisReport>
+        AnalyzeScratchAsync<TContext>()
+    {
+        EfCoreMigrationAnalysisRequest request =
+            await CreateRequestAsync<TContext>();
+        return await EfCoreMigrationAnalyzer.AnalyzeScratchAsync(
+            request,
+            TestContext.Current.CancellationToken);
+    }
+
+    private static async ValueTask<EfCoreMigrationAnalysisRequest>
+        CreateRequestAsync<TContext>()
+    {
         string assemblyPath = typeof(TContext).Assembly.Location;
         byte[] assemblyBytes =
             await File.ReadAllBytesAsync(
@@ -159,13 +336,11 @@ public sealed class EfCoreMigrationAnalyzerTests
                 SHA256.HashData(assemblyBytes))
             .ToLowerInvariant();
 
-        return await EfCoreMigrationAnalyzer.AnalyzeAsync(
-            new EfCoreMigrationAnalysisRequest
-            {
-                AssemblyPath = assemblyPath,
-                AssemblyDigest = assemblyDigest,
-                Context = typeof(TContext).FullName!,
-            },
-            TestContext.Current.CancellationToken);
+        return new EfCoreMigrationAnalysisRequest
+        {
+            AssemblyPath = assemblyPath,
+            AssemblyDigest = assemblyDigest,
+            Context = typeof(TContext).FullName!,
+        };
     }
 }

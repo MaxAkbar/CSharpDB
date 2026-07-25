@@ -10,6 +10,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using CSharpDB.Migration;
+using CSharpDB.Migration.Validation;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 
 namespace CSharpDB.EntityFrameworkCore.Tools;
@@ -34,6 +35,12 @@ internal sealed record EfCoreWorkerClientResult
 
     internal EfCoreMigrationAnalysisReport? Report { get; init; }
 
+    internal EfCoreMigrationScratchAnalysisReport? ScratchReport
+    {
+        get;
+        init;
+    }
+
     internal static EfCoreWorkerClientResult Success(
         EfCoreMigrationAnalysisReport report)
     {
@@ -42,6 +49,17 @@ internal sealed record EfCoreWorkerClientResult
         {
             Status = EfCoreWorkerClientStatus.Success,
             Report = report,
+        };
+    }
+
+    internal static EfCoreWorkerClientResult Success(
+        EfCoreMigrationScratchAnalysisReport report)
+    {
+        ArgumentNullException.ThrowIfNull(report);
+        return new EfCoreWorkerClientResult
+        {
+            Status = EfCoreWorkerClientStatus.Success,
+            ScratchReport = report,
         };
     }
 
@@ -57,8 +75,8 @@ internal sealed record EfCoreWorkerClientResult
 
 internal static class EfCoreWorkerClient
 {
-    internal const string ProtocolV1 = "csharpdb-ef-worker/v1";
-    internal const string RequestFormatV1 =
+    internal const string ProtocolV2 = "csharpdb-ef-worker/v2";
+    internal const string RequestFormatV2 =
         EfCoreWorkerRunner.RequestFormat;
     internal const long MaxAssemblyBytes = 128L * 1024 * 1024;
     internal const long MaxWorkerReportBytes = 8L * 1024 * 1024;
@@ -78,7 +96,7 @@ internal static class EfCoreWorkerClient
         encoderShouldEmitUTF8Identifier: false,
         throwOnInvalidBytes: true);
     private static readonly byte[] SuccessHeaderBytes =
-        StrictUtf8.GetBytes(ProtocolV1 + "\n");
+        StrictUtf8.GetBytes(ProtocolV2 + "\n");
     private static readonly JsonSerializerOptions WorkerJsonOptions =
         CreateWorkerJsonOptions();
 
@@ -178,10 +196,13 @@ internal static class EfCoreWorkerClient
         AnalyzeProjectAsync(
             string projectPath,
             string contextName,
+            EfCoreAnalysisMode mode,
             CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(projectPath);
         ArgumentException.ThrowIfNullOrWhiteSpace(contextName);
+        if (!Enum.IsDefined(mode))
+            throw new ArgumentOutOfRangeException(nameof(mode));
         cancellationToken.ThrowIfCancellationRequested();
 
         string? dotnetPath = ResolveDotnetHostPath();
@@ -306,6 +327,7 @@ internal static class EfCoreWorkerClient
                 assemblyPath!,
                 assemblyDigest,
                 contextName,
+                mode,
                 cancellationToken)
             .ConfigureAwait(false);
     }
@@ -360,6 +382,7 @@ internal static class EfCoreWorkerClient
             string assemblyPath,
             string assemblyDigest,
             string contextName,
+            EfCoreAnalysisMode mode,
             CancellationToken cancellationToken)
     {
         string? entryAssemblyPath = GetEntryAssemblyPath();
@@ -373,9 +396,10 @@ internal static class EfCoreWorkerClient
         try
         {
             request = JsonSerializer.SerializeToUtf8Bytes(
-                new EfCoreMigrationAnalysisRequest
+                new WorkerClientRequest
                 {
-                    Format = RequestFormatV1,
+                    Format = RequestFormatV2,
+                    Mode = mode,
                     AssemblyPath = assemblyPath,
                     AssemblyDigest = assemblyDigest,
                     Context = contextName,
@@ -405,7 +429,7 @@ internal static class EfCoreWorkerClient
                         entryAssemblyPath,
                         "--worker",
                         "--protocol",
-                        ProtocolV1,
+                        ProtocolV2,
                         "--target-version",
                         CSharpDbCapabilityCatalogLoader
                             .CurrentTargetVersion,
@@ -437,14 +461,20 @@ internal static class EfCoreWorkerClient
                             result.StandardOutput,
                             assemblyDigest,
                             contextName,
+                            mode,
                             out EfCoreMigrationAnalysisReport?
-                                sanitized))
+                                sanitized,
+                            out EfCoreMigrationScratchAnalysisReport?
+                                sanitizedScratch))
                     {
                         return EfCoreWorkerClientResult.Failure(
                             EfCoreWorkerClientStatus.WorkerIncompatible);
                     }
 
-                    return EfCoreWorkerClientResult.Success(sanitized!);
+                    return mode == EfCoreAnalysisMode.Generation
+                        ? EfCoreWorkerClientResult.Success(sanitized!)
+                        : EfCoreWorkerClientResult.Success(
+                            sanitizedScratch!);
                 }
 
                 return EfCoreWorkerClientResult.Failure(
@@ -472,12 +502,15 @@ internal static class EfCoreWorkerClient
         byte[] payload,
         string expectedAssemblyDigest,
         string expectedContextName,
-        out EfCoreMigrationAnalysisReport? sanitized)
+        EfCoreAnalysisMode mode,
+        out EfCoreMigrationAnalysisReport? sanitized,
+        out EfCoreMigrationScratchAnalysisReport? sanitizedScratch)
     {
         // The worker contract is validated and reconstructed here rather than
         // being rendered directly. The exact reconstruction follows the
         // shared report records in the analyzer implementation.
         sanitized = null;
+        sanitizedScratch = null;
         try
         {
             if (payload.Length <= SuccessHeaderBytes.Length ||
@@ -488,18 +521,36 @@ internal static class EfCoreWorkerClient
                 return false;
             }
 
-            EfCoreMigrationAnalysisReport? report =
-                JsonSerializer.Deserialize<EfCoreMigrationAnalysisReport>(
-                    payload.AsSpan(SuccessHeaderBytes.Length),
-                    WorkerJsonOptions);
-            if (report is null)
+            ReadOnlySpan<byte> body =
+                payload.AsSpan(SuccessHeaderBytes.Length);
+            if (mode == EfCoreAnalysisMode.Generation)
+            {
+                EfCoreMigrationAnalysisReport? report =
+                    JsonSerializer
+                        .Deserialize<EfCoreMigrationAnalysisReport>(
+                            body,
+                            WorkerJsonOptions);
+                return report is not null &&
+                    EfCoreReportSanitizer.TrySanitize(
+                        report,
+                        expectedAssemblyDigest,
+                        expectedContextName,
+                        out sanitized);
+            }
+            if (mode != EfCoreAnalysisMode.Scratch)
                 return false;
 
-            return EfCoreReportSanitizer.TrySanitize(
-                report,
-                expectedAssemblyDigest,
-                expectedContextName,
-                out sanitized);
+            EfCoreMigrationScratchAnalysisReport? scratchReport =
+                JsonSerializer
+                    .Deserialize<EfCoreMigrationScratchAnalysisReport>(
+                        body,
+                        WorkerJsonOptions);
+            return scratchReport is not null &&
+                EfCoreScratchReportSanitizer.TrySanitize(
+                    scratchReport,
+                    expectedAssemblyDigest,
+                    expectedContextName,
+                    out sanitizedScratch);
         }
         catch (Exception exception) when (
             exception is DecoderFallbackException or JsonException or
@@ -802,6 +853,15 @@ internal static class EfCoreWorkerClient
         foreach (string argument in arguments)
             startInfo.ArgumentList.Add(argument);
         ConfigureScrubbedEnvironment(startInfo);
+        if (arguments.Contains(
+                "--worker",
+                StringComparer.Ordinal))
+        {
+            // 0x18000000 = 384 MiB. This applies a managed-heap ceiling on
+            // every supported OS in addition to the Windows job-object cap.
+            startInfo.Environment["DOTNET_GCHeapHardLimit"] =
+                "18000000";
+        }
 
         using var process = new Process { StartInfo = startInfo };
         try
@@ -1271,6 +1331,19 @@ internal static class EfCoreWorkerClient
                 JsonNamingPolicy.CamelCase,
                 allowIntegerValues: false));
         return options;
+    }
+
+    private sealed record WorkerClientRequest
+    {
+        public required string Format { get; init; }
+
+        public required EfCoreAnalysisMode Mode { get; init; }
+
+        public required string AssemblyPath { get; init; }
+
+        public required string AssemblyDigest { get; init; }
+
+        public string? Context { get; init; }
     }
 
     private sealed record ProjectProperties(
@@ -2065,4 +2138,547 @@ internal static class EfCoreReportSanitizer
         MigrationCompatibilityStatus Status,
         int? MigrationOrdinal,
         int? OperationOrdinal);
+}
+
+internal static class EfCoreScratchReportSanitizer
+{
+    internal const int MaxScratchMigrations = 128;
+    private const int MaxScratchCommands =
+        EfCoreMigrationAnalyzer.MaxCommands * 4;
+
+    internal static bool TrySanitize(
+        EfCoreMigrationScratchAnalysisReport report,
+        string expectedAssemblyDigest,
+        string expectedContextSelector,
+        out EfCoreMigrationScratchAnalysisReport? sanitized)
+    {
+        sanitized = null;
+        ArgumentNullException.ThrowIfNull(report);
+
+        if (!EfCoreReportSanitizer.TrySanitize(
+                report.GenerationPreflight,
+                expectedAssemblyDigest,
+                expectedContextSelector,
+                out EfCoreMigrationAnalysisReport? generation) ||
+            generation is null ||
+            report.ScratchChain is null ||
+            report.Diagnostics is null ||
+            report.Diagnostics.Count != 0)
+        {
+            return false;
+        }
+
+        EfCoreMigrationScratchChainProof proof =
+            report.ScratchChain;
+        if (!string.Equals(
+                report.Format,
+                EfCoreMigrationScratchAnalysisReport.CurrentFormat,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                proof.Format,
+                EfCoreMigrationScratchChainProof.CurrentFormat,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                proof.Algorithm,
+                EfCoreMigrationScratchChainProof.EmptyChainAlgorithm,
+                StringComparison.Ordinal) ||
+            proof.ProofScope !=
+                EfCoreMigrationScratchProofScope.EmptyDatabase ||
+            proof.DataPreflightCompleted ||
+            report.Outcome != proof.Outcome ||
+            proof.PrefixCount != generation.MigrationCount ||
+            proof.PrefixCount is < 0 or >
+                EfCoreMigrationAnalyzer.MaxMigrations ||
+            proof.AppliedPrefixCount is < 0 ||
+            proof.AppliedPrefixCount > proof.PrefixCount ||
+            proof.SchemaVerifiedPrefixCount is < 0 ||
+            proof.SchemaVerifiedPrefixCount >
+                proof.AppliedPrefixCount ||
+            proof.DownPrefixCount is < 0 ||
+            proof.DownPrefixCount > proof.AppliedPrefixCount ||
+            proof.ReappliedPrefixCount is < 0 ||
+            proof.ReappliedPrefixCount > proof.DownPrefixCount ||
+            proof.RoundTripVerifiedPrefixCount is < 0 ||
+            proof.RoundTripVerifiedPrefixCount >
+                proof.ReappliedPrefixCount ||
+            proof.IdempotentApplyCount is < 0 or > 2 ||
+            proof.ExecutedCommandCount is < 0 or >
+                MaxScratchCommands ||
+            proof.IdempotentCommandCount is < 0 or >
+                MaxScratchCommands ||
+            proof.Prefixes is null ||
+            proof.Prefixes.Count >
+                proof.SchemaVerifiedPrefixCount ||
+            !proof.ResourcesDisposed ||
+            !IsDigestPresentExactlyForCount(
+                proof.ExecutedSqlDigest,
+                proof.ExecutedCommandCount) ||
+            !IsDigestPresentExactlyForCount(
+                proof.IdempotentSqlDigest,
+                proof.IdempotentCommandCount))
+        {
+            return false;
+        }
+
+        return proof.Outcome switch
+        {
+            EfCoreMigrationScratchAnalysisOutcome.Passed =>
+                TrySanitizePassed(
+                    report,
+                    generation,
+                    proof,
+                    out sanitized),
+            EfCoreMigrationScratchAnalysisOutcome.Blocked =>
+                TrySanitizeBlocked(
+                    report,
+                    generation,
+                    proof,
+                    out sanitized),
+            EfCoreMigrationScratchAnalysisOutcome.Failed =>
+                TrySanitizeFailed(
+                    report,
+                    generation,
+                    proof,
+                    out sanitized),
+            _ => false,
+        };
+    }
+
+    private static bool TrySanitizePassed(
+        EfCoreMigrationScratchAnalysisReport report,
+        EfCoreMigrationAnalysisReport generation,
+        EfCoreMigrationScratchChainProof proof,
+        out EfCoreMigrationScratchAnalysisReport? sanitized)
+    {
+        sanitized = null;
+        if (proof.PrefixCount is <= 0 or > MaxScratchMigrations ||
+            report.Status != MigrationCompatibilityStatus.Compatible ||
+            report.HighestEvidence !=
+                MigrationEvidenceLevel.ScratchExecuted ||
+            !string.Equals(
+                report.RuleId,
+                EfCoreMigrationScratchAnalysisRules.ScratchPassed,
+                StringComparison.Ordinal) ||
+            generation.Status !=
+                MigrationCompatibilityStatus.Conditional ||
+            proof.AppliedPrefixCount != proof.PrefixCount ||
+            proof.SchemaVerifiedPrefixCount != proof.PrefixCount ||
+            proof.DownPrefixCount != proof.PrefixCount ||
+            proof.ReappliedPrefixCount != proof.PrefixCount ||
+            proof.RoundTripVerifiedPrefixCount != proof.PrefixCount ||
+            proof.IdempotentApplyCount != 2 ||
+            proof.ExecutedCommandCount <= 0 ||
+            proof.IdempotentCommandCount <= 0 ||
+            proof.Prefixes.Count != proof.PrefixCount ||
+            !AllIdempotentDigestsPresent(proof))
+        {
+            return false;
+        }
+
+        if (!TryCopyVerifiedPrefixes(
+                generation,
+                proof,
+                out IReadOnlyList<
+                    EfCoreMigrationScratchPrefixEvidence> prefixes))
+        {
+            return false;
+        }
+
+        EfCoreMigrationScratchPrefixEvidence last =
+            prefixes[^1];
+        if (!string.Equals(
+                proof.FirstIdempotentSchemaDigest,
+                last.ExpectedSchemaDigest,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                proof.SecondIdempotentSchemaDigest,
+                last.ExpectedSchemaDigest,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                proof.FirstIdempotentHistoryDigest,
+                last.ExpectedHistoryDigest,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                proof.SecondIdempotentHistoryDigest,
+                last.ExpectedHistoryDigest,
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        sanitized = Rebuild(
+            report,
+            generation,
+            proof,
+            prefixes);
+        return true;
+    }
+
+    private static bool TrySanitizeBlocked(
+        EfCoreMigrationScratchAnalysisReport report,
+        EfCoreMigrationAnalysisReport generation,
+        EfCoreMigrationScratchChainProof proof,
+        out EfCoreMigrationScratchAnalysisReport? sanitized)
+    {
+        sanitized = null;
+        if (report.Status != generation.Status ||
+            report.HighestEvidence != MigrationEvidenceLevel.Bound ||
+            !string.Equals(
+                report.RuleId,
+                EfCoreMigrationScratchAnalysisRules
+                    .GenerationPreflightBlocked,
+                StringComparison.Ordinal) ||
+            proof.AppliedPrefixCount != 0 ||
+            proof.SchemaVerifiedPrefixCount != 0 ||
+            proof.DownPrefixCount != 0 ||
+            proof.ReappliedPrefixCount != 0 ||
+            proof.RoundTripVerifiedPrefixCount != 0 ||
+            proof.IdempotentApplyCount != 0 ||
+            proof.ExecutedCommandCount != 0 ||
+            proof.IdempotentCommandCount != 0 ||
+            proof.ExecutedSqlDigest is not null ||
+            proof.IdempotentSqlDigest is not null ||
+            proof.Prefixes.Count != 0 ||
+            AnyIdempotentDigestPresent(proof))
+        {
+            return false;
+        }
+
+        sanitized = Rebuild(
+            report,
+            generation,
+            proof,
+            []);
+        return true;
+    }
+
+    private static bool TrySanitizeFailed(
+        EfCoreMigrationScratchAnalysisReport report,
+        EfCoreMigrationAnalysisReport generation,
+        EfCoreMigrationScratchChainProof proof,
+        out EfCoreMigrationScratchAnalysisReport? sanitized)
+    {
+        sanitized = null;
+        if (report.Status != MigrationCompatibilityStatus.Unknown ||
+            report.HighestEvidence !=
+                (proof.ExecutedCommandCount == 0
+                    ? MigrationEvidenceLevel.Bound
+                    : MigrationEvidenceLevel.ScratchExecuted) ||
+            !IsFailureRule(report.RuleId) ||
+            generation.Status !=
+                MigrationCompatibilityStatus.Conditional ||
+            proof.Prefixes.Count !=
+                proof.RoundTripVerifiedPrefixCount ||
+            !AreOptionalIdempotentDigestsCoherent(proof))
+        {
+            return false;
+        }
+
+        if (!IsFailureStageCoherent(report.RuleId, proof) ||
+            !TryCopyVerifiedPrefixes(
+                generation,
+                proof,
+                out IReadOnlyList<
+                    EfCoreMigrationScratchPrefixEvidence> prefixes))
+        {
+            return false;
+        }
+
+        sanitized = Rebuild(
+            report,
+            generation,
+            proof,
+            prefixes);
+        return true;
+    }
+
+    private static bool TryCopyVerifiedPrefixes(
+        EfCoreMigrationAnalysisReport generation,
+        EfCoreMigrationScratchChainProof proof,
+        out IReadOnlyList<
+            EfCoreMigrationScratchPrefixEvidence> sanitized)
+    {
+        sanitized = [];
+        IReadOnlyList<string> migrationIds =
+            generation.Migrations
+                .Select(static migration => migration.MigrationId)
+                .ToArray();
+        string emptySchemaDigest =
+            MigrationNormalizedSchemaContract.Create([]).Digest;
+        var prefixes =
+            new List<EfCoreMigrationScratchPrefixEvidence>(
+                proof.Prefixes.Count);
+        for (int index = 0;
+             index < proof.Prefixes.Count;
+             index++)
+        {
+            EfCoreMigrationScratchPrefixEvidence? prefix =
+                proof.Prefixes[index];
+            string expectedHistory =
+                EfCoreScratchEvidenceDigest.History(
+                    migrationIds,
+                    index + 1);
+            string expectedDownHistory =
+                EfCoreScratchEvidenceDigest.History(
+                    migrationIds,
+                    index);
+            string expectedDownSchema = index == 0
+                ? emptySchemaDigest
+                : proof.Prefixes[index - 1]
+                    .ExpectedSchemaDigest;
+            if (prefix is null ||
+                prefix.Ordinal != index ||
+                prefix.MigrationOrdinal != index ||
+                prefix.Status !=
+                    MigrationCompatibilityStatus.Compatible ||
+                prefix.Evidence !=
+                    MigrationEvidenceLevel.ScratchExecuted ||
+                !string.Equals(
+                    prefix.RuleId,
+                    EfCoreMigrationScratchAnalysisRules
+                        .ScratchPassed,
+                    StringComparison.Ordinal) ||
+                !IsCanonicalSha256(prefix.ExpectedSchemaDigest) ||
+                !string.Equals(
+                    prefix.ExpectedHistoryDigest,
+                    expectedHistory,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    prefix.AppliedSchemaDigest,
+                    prefix.ExpectedSchemaDigest,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    prefix.AppliedHistoryDigest,
+                    expectedHistory,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    prefix.DownSchemaDigest,
+                    expectedDownSchema,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    prefix.DownHistoryDigest,
+                    expectedDownHistory,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    prefix.ReappliedSchemaDigest,
+                    prefix.ExpectedSchemaDigest,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    prefix.ReappliedHistoryDigest,
+                    expectedHistory,
+                    StringComparison.Ordinal))
+            {
+                return false;
+            }
+            prefixes.Add(CopyPrefix(prefix));
+        }
+
+        sanitized = prefixes;
+        return true;
+    }
+
+    private static bool IsFailureStageCoherent(
+        string ruleId,
+        EfCoreMigrationScratchChainProof proof)
+    {
+        if (proof.IdempotentApplyCount == 0 &&
+            proof.IdempotentCommandCount != 0)
+        {
+            return false;
+        }
+        if (proof.IdempotentApplyCount > 0 &&
+            proof.IdempotentCommandCount == 0)
+        {
+            return false;
+        }
+
+        return ruleId switch
+        {
+            EfCoreMigrationScratchAnalysisRules.SchemaDifferent =>
+                (proof.AppliedPrefixCount == 0 &&
+                 proof.SchemaVerifiedPrefixCount == 0 &&
+                 proof.DownPrefixCount == 0 &&
+                 proof.ReappliedPrefixCount == 0) ||
+                (proof.AppliedPrefixCount ==
+                     proof.SchemaVerifiedPrefixCount + 1 &&
+                 proof.DownPrefixCount ==
+                     proof.RoundTripVerifiedPrefixCount &&
+                 proof.ReappliedPrefixCount ==
+                     proof.RoundTripVerifiedPrefixCount),
+            EfCoreMigrationScratchAnalysisRules
+                .RoundTripDifferent =>
+                proof.SchemaVerifiedPrefixCount ==
+                    proof.AppliedPrefixCount &&
+                proof.DownPrefixCount ==
+                    proof.RoundTripVerifiedPrefixCount + 1 &&
+                (proof.ReappliedPrefixCount ==
+                    proof.RoundTripVerifiedPrefixCount ||
+                 proof.ReappliedPrefixCount ==
+                    proof.RoundTripVerifiedPrefixCount + 1),
+            EfCoreMigrationScratchAnalysisRules
+                .IdempotenceFailed =>
+                proof.AppliedPrefixCount == proof.PrefixCount &&
+                proof.SchemaVerifiedPrefixCount ==
+                    proof.PrefixCount &&
+                proof.DownPrefixCount == proof.PrefixCount &&
+                proof.ReappliedPrefixCount ==
+                    proof.PrefixCount &&
+                proof.RoundTripVerifiedPrefixCount ==
+                    proof.PrefixCount,
+            EfCoreMigrationScratchAnalysisRules
+                .ScratchExecutionFailed or
+            EfCoreMigrationScratchAnalysisRules.AnalysisLimit =>
+                true,
+            _ => false,
+        };
+    }
+
+    private static EfCoreMigrationScratchAnalysisReport Rebuild(
+        EfCoreMigrationScratchAnalysisReport report,
+        EfCoreMigrationAnalysisReport generation,
+        EfCoreMigrationScratchChainProof proof,
+        IReadOnlyList<EfCoreMigrationScratchPrefixEvidence> prefixes) =>
+        new()
+        {
+            Outcome = proof.Outcome,
+            Status = report.Status,
+            HighestEvidence = report.HighestEvidence,
+            RuleId = report.RuleId,
+            GenerationPreflight = generation,
+            ScratchChain = new EfCoreMigrationScratchChainProof
+            {
+                Outcome = proof.Outcome,
+                PrefixCount = proof.PrefixCount,
+                AppliedPrefixCount = proof.AppliedPrefixCount,
+                SchemaVerifiedPrefixCount =
+                    proof.SchemaVerifiedPrefixCount,
+                DownPrefixCount = proof.DownPrefixCount,
+                ReappliedPrefixCount =
+                    proof.ReappliedPrefixCount,
+                RoundTripVerifiedPrefixCount =
+                    proof.RoundTripVerifiedPrefixCount,
+                IdempotentApplyCount =
+                    proof.IdempotentApplyCount,
+                ExecutedCommandCount =
+                    proof.ExecutedCommandCount,
+                IdempotentCommandCount =
+                    proof.IdempotentCommandCount,
+                ExecutedSqlDigest = proof.ExecutedSqlDigest,
+                IdempotentSqlDigest = proof.IdempotentSqlDigest,
+                FirstIdempotentSchemaDigest =
+                    proof.FirstIdempotentSchemaDigest,
+                FirstIdempotentHistoryDigest =
+                    proof.FirstIdempotentHistoryDigest,
+                SecondIdempotentSchemaDigest =
+                    proof.SecondIdempotentSchemaDigest,
+                SecondIdempotentHistoryDigest =
+                    proof.SecondIdempotentHistoryDigest,
+                ResourcesDisposed = true,
+                Prefixes = prefixes,
+            },
+            Diagnostics = [],
+        };
+
+    private static EfCoreMigrationScratchPrefixEvidence CopyPrefix(
+        EfCoreMigrationScratchPrefixEvidence prefix) =>
+        new()
+        {
+            Ordinal = prefix.Ordinal,
+            MigrationOrdinal = prefix.MigrationOrdinal,
+            Status = prefix.Status,
+            Evidence = prefix.Evidence,
+            RuleId = prefix.RuleId,
+            ExpectedSchemaDigest = prefix.ExpectedSchemaDigest,
+            ExpectedHistoryDigest = prefix.ExpectedHistoryDigest,
+            AppliedSchemaDigest = prefix.AppliedSchemaDigest,
+            AppliedHistoryDigest = prefix.AppliedHistoryDigest,
+            DownSchemaDigest = prefix.DownSchemaDigest,
+            DownHistoryDigest = prefix.DownHistoryDigest,
+            ReappliedSchemaDigest =
+                prefix.ReappliedSchemaDigest,
+            ReappliedHistoryDigest =
+                prefix.ReappliedHistoryDigest,
+        };
+
+    private static bool IsFailureRule(string? ruleId) =>
+        ruleId is
+            EfCoreMigrationScratchAnalysisRules
+                .ScratchExecutionFailed or
+            EfCoreMigrationScratchAnalysisRules.SchemaDifferent or
+            EfCoreMigrationScratchAnalysisRules
+                .RoundTripDifferent or
+            EfCoreMigrationScratchAnalysisRules
+                .IdempotenceFailed or
+            EfCoreMigrationScratchAnalysisRules.AnalysisLimit;
+
+    private static bool AllIdempotentDigestsPresent(
+        EfCoreMigrationScratchChainProof proof) =>
+        IsCanonicalSha256(proof.FirstIdempotentSchemaDigest) &&
+        IsCanonicalSha256(proof.FirstIdempotentHistoryDigest) &&
+        IsCanonicalSha256(proof.SecondIdempotentSchemaDigest) &&
+        IsCanonicalSha256(proof.SecondIdempotentHistoryDigest);
+
+    private static bool AnyIdempotentDigestPresent(
+        EfCoreMigrationScratchChainProof proof) =>
+        proof.FirstIdempotentSchemaDigest is not null ||
+        proof.FirstIdempotentHistoryDigest is not null ||
+        proof.SecondIdempotentSchemaDigest is not null ||
+        proof.SecondIdempotentHistoryDigest is not null;
+
+    private static bool AreOptionalIdempotentDigestsCoherent(
+        EfCoreMigrationScratchChainProof proof)
+    {
+        bool firstSchema =
+            proof.FirstIdempotentSchemaDigest is not null;
+        bool firstHistory =
+            proof.FirstIdempotentHistoryDigest is not null;
+        bool secondSchema =
+            proof.SecondIdempotentSchemaDigest is not null;
+        bool secondHistory =
+            proof.SecondIdempotentHistoryDigest is not null;
+        if (firstSchema != firstHistory ||
+            secondSchema != secondHistory ||
+            firstSchema &&
+                (!IsCanonicalSha256(
+                    proof.FirstIdempotentSchemaDigest) ||
+                 !IsCanonicalSha256(
+                    proof.FirstIdempotentHistoryDigest)) ||
+            secondSchema &&
+                (!IsCanonicalSha256(
+                    proof.SecondIdempotentSchemaDigest) ||
+                 !IsCanonicalSha256(
+                    proof.SecondIdempotentHistoryDigest)) ||
+            firstSchema && proof.IdempotentApplyCount < 1 ||
+            secondSchema &&
+                (proof.IdempotentApplyCount < 2 || !firstSchema) ||
+            proof.IdempotentApplyCount == 0 &&
+                AnyIdempotentDigestPresent(proof))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool IsDigestPresentExactlyForCount(
+        string? digest,
+        int count) =>
+        count == 0
+            ? digest is null
+            : IsCanonicalSha256(digest);
+
+    private static bool IsCanonicalSha256(string? value)
+    {
+        if (value is null || value.Length != 64)
+            return false;
+        foreach (char character in value)
+        {
+            if (character is not (>= '0' and <= '9') and
+                not (>= 'a' and <= 'f'))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
 }

@@ -38,14 +38,16 @@ internal sealed class EfCoreAnalysisException : Exception
 }
 
 /// <summary>
-/// Performs bounded, generation-only analysis of compiled EF Core migrations.
+/// Performs bounded analysis of compiled EF Core migrations.
 /// </summary>
 /// <remarks>
 /// This in-process API executes compiled application code. Loading the
 /// assembly, creating its design-time context, initializing models, and
 /// reading migration operations can run module initializers, factories,
-/// application host setup, constructors, and migration methods. Call it only
-/// for trusted applications and prefer the isolated worker entry point.
+/// application host setup, constructors, and migration methods. Generation
+/// analysis never opens the configured database. Explicit scratch analysis
+/// executes only against tool-owned private-memory databases. Call either API
+/// only for trusted applications and prefer the isolated worker entry point.
 /// </remarks>
 public static class EfCoreMigrationAnalyzer
 {
@@ -77,6 +79,41 @@ public static class EfCoreMigrationAnalyzer
     public static async ValueTask<EfCoreMigrationAnalysisReport> AnalyzeAsync(
         EfCoreMigrationAnalysisRequest request,
         CancellationToken cancellationToken = default)
+    {
+        LoadedAnalysis analysis = await AnalyzeRequestAsync(
+            request,
+            scratchRequested: false,
+            cancellationToken);
+        return analysis.Generation;
+    }
+
+    /// <summary>
+    /// Loads and analyzes one compiled migration chain, then executes eligible
+    /// migrations only against tool-owned private-memory CSharpDB databases.
+    /// </summary>
+    /// <remarks>
+    /// This method executes trusted application code while discovering the
+    /// compiled context and migrations. It never obtains or opens the selected
+    /// context's configured connection.
+    /// </remarks>
+    public static async ValueTask<EfCoreMigrationScratchAnalysisReport>
+        AnalyzeScratchAsync(
+            EfCoreMigrationAnalysisRequest request,
+            CancellationToken cancellationToken = default)
+    {
+        LoadedAnalysis analysis = await AnalyzeRequestAsync(
+            request,
+            scratchRequested: true,
+            cancellationToken);
+        return analysis.Scratch ??
+            throw new EfCoreAnalysisException(
+                EfCoreAnalysisFailureKind.AnalysisFailed);
+    }
+
+    private static async ValueTask<LoadedAnalysis> AnalyzeRequestAsync(
+        EfCoreMigrationAnalysisRequest request,
+        bool scratchRequested,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
         ValidateRequest(request);
@@ -111,6 +148,7 @@ public static class EfCoreMigrationAnalyzer
                 designAssembly,
                 request.Context,
                 assemblyDigest,
+                scratchRequested,
                 cancellationToken);
         }
         catch (OperationCanceledException)
@@ -134,12 +172,13 @@ public static class EfCoreMigrationAnalyzer
         }
     }
 
-    private static async ValueTask<EfCoreMigrationAnalysisReport>
+    private static async ValueTask<LoadedAnalysis>
         AnalyzeLoadedAssemblyAsync(
             Assembly assembly,
             Assembly designAssembly,
             string? contextSelector,
             string assemblyDigest,
+            bool scratchRequested,
             CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -165,25 +204,21 @@ public static class EfCoreMigrationAnalyzer
                 EfCoreAnalysisFailureKind.AnalysisFailed);
         }
 
+        EnsureCanonicalProviderConfiguration(context);
         IMigrationsAssembly migrationsAssembly =
             context.GetService<IMigrationsAssembly>();
+        await using DbContext providerServicesContext =
+            CreateProviderServicesContext();
         IMigrationsSqlGenerator sqlGenerator =
-            context.GetService<IMigrationsSqlGenerator>();
+            providerServicesContext
+                .GetService<IMigrationsSqlGenerator>();
         IModelRuntimeInitializer modelInitializer =
-            context.GetService<IModelRuntimeInitializer>();
-        Type sqlGeneratorType = sqlGenerator.GetType();
-        if (!string.Equals(
-                sqlGeneratorType.FullName,
-                "CSharpDB.EntityFrameworkCore.Migrations.Internal.CSharpDbMigrationsSqlGenerator",
-                StringComparison.Ordinal) ||
-            sqlGeneratorType.Assembly !=
-                typeof(
-                    CSharpDbDbContextOptionsBuilderExtensions)
-                    .Assembly)
-        {
-            throw new EfCoreAnalysisException(
-                EfCoreAnalysisFailureKind.AnalysisFailed);
-        }
+            providerServicesContext
+                .GetService<IModelRuntimeInitializer>();
+        IMigrationsModelDiffer modelDiffer =
+            providerServicesContext
+                .GetService<IMigrationsModelDiffer>();
+        EnsureCanonicalSqlGenerator(sqlGenerator);
 
         IReadOnlyDictionary<string, TypeInfo>
             configuredMigrations =
@@ -205,6 +240,10 @@ public static class EfCoreMigrationAnalyzer
         var migrations =
             new List<EfCoreMigrationAnalysisMigration>(
                 migrationTypes.Length);
+        var scratchInputs =
+            new List<EfCoreScratchMigrationInput>(
+                migrationTypes.Length);
+        bool scratchInputComplete = true;
         using var chainDigest =
             new FramedDigestAccumulator(
                 EfCoreMigrationAnalysisDigestDomains.Chain);
@@ -243,6 +282,22 @@ public static class EfCoreMigrationAnalyzer
                     declaredTargetModel,
                     designTime: true,
                     validationLogger: null);
+            if (targetModel is null)
+            {
+                scratchInputComplete = false;
+            }
+            else
+            {
+                scratchInputs.Add(
+                    new EfCoreScratchMigrationInput
+                    {
+                        Ordinal = migrationOrdinal,
+                        MigrationId = migrationEntry.Key,
+                        UpOperations = upOperations.ToArray(),
+                        DownOperations = downOperations.ToArray(),
+                        TargetModel = targetModel,
+                    });
+            }
 
             int migrationOperationCount = checked(
                 upOperations.Count + downOperations.Count);
@@ -363,7 +418,7 @@ public static class EfCoreMigrationAnalyzer
 
         CSharpDbCapabilityCatalog capabilities =
             CSharpDbCapabilityCatalogLoader.LoadEmbedded();
-        return new EfCoreMigrationAnalysisReport
+        var generation = new EfCoreMigrationAnalysisReport
         {
             TargetCSharpDbVersion =
                 capabilities.TargetCSharpDbVersion,
@@ -384,6 +439,81 @@ public static class EfCoreMigrationAnalyzer
             Migrations = migrations,
             Diagnostics = diagnostics,
         };
+        if (!scratchRequested)
+            return new LoadedAnalysis(generation, Scratch: null);
+
+        if (!CanExecuteScratch(
+                generation,
+                scratchInputs,
+                scratchInputComplete))
+        {
+            return new LoadedAnalysis(
+                generation,
+                CreateBlockedScratchReport(generation));
+        }
+
+        EfCoreScratchChainValidationResult validation =
+            await EfCoreScratchChainValidator.ValidateAsync(
+                scratchInputs,
+                sqlGenerator,
+                modelDiffer,
+                cancellationToken);
+        return new LoadedAnalysis(
+            generation,
+            CreateScratchReport(generation, validation));
+    }
+
+    private static void EnsureCanonicalSqlGenerator(
+        IMigrationsSqlGenerator sqlGenerator)
+    {
+        Type sqlGeneratorType = sqlGenerator.GetType();
+        if (!string.Equals(
+                sqlGeneratorType.FullName,
+                "CSharpDB.EntityFrameworkCore.Migrations.Internal.CSharpDbMigrationsSqlGenerator",
+                StringComparison.Ordinal) ||
+            sqlGeneratorType.Assembly !=
+                typeof(
+                    CSharpDbDbContextOptionsBuilderExtensions)
+                    .Assembly)
+        {
+            throw new EfCoreAnalysisException(
+                EfCoreAnalysisFailureKind.AnalysisFailed);
+        }
+    }
+
+    private static void EnsureCanonicalProviderConfiguration(
+        DbContext context)
+    {
+        IDbContextOptions options =
+            context.GetService<IDbContextOptions>();
+        CoreOptionsExtension? coreOptions =
+            options.FindExtension<CoreOptionsExtension>();
+        if (options.Extensions.Any(static extension =>
+                !IsCanonicalOptionsExtension(extension)) ||
+            coreOptions?.InternalServiceProvider is not null ||
+            coreOptions?.ReplacedServices is { Count: > 0 })
+        {
+            throw new EfCoreAnalysisException(
+                EfCoreAnalysisFailureKind.AnalysisFailed);
+        }
+
+        EnsureCanonicalSqlGenerator(
+            context.GetService<IMigrationsSqlGenerator>());
+    }
+
+    private static bool IsCanonicalOptionsExtension(
+        IDbContextOptionsExtension extension)
+    {
+        Type extensionType = extension.GetType();
+        return extensionType == typeof(CoreOptionsExtension) ||
+            string.Equals(
+                extensionType.FullName,
+                "CSharpDB.EntityFrameworkCore.Infrastructure.Internal.CSharpDbOptionsExtension",
+                StringComparison.Ordinal) &&
+            extensionType.Assembly ==
+                typeof(
+                    CSharpDbDbContextOptionsBuilderExtensions)
+                    .Assembly;
     }
 
     private static async ValueTask AnalyzeDirectionAsync(
@@ -965,6 +1095,25 @@ public static class EfCoreMigrationAnalyzer
         }
     }
 
+    private static DbContext CreateProviderServicesContext()
+    {
+        try
+        {
+            DbContextOptions options =
+                new DbContextOptionsBuilder()
+                    .UseCSharpDb(
+                        "Data Source=:memory:;Pooling=false")
+                    .Options;
+            return new DbContext(options);
+        }
+        catch (Exception exception)
+            when (IsRecoverable(exception))
+        {
+            throw new EfCoreAnalysisException(
+                EfCoreAnalysisFailureKind.AnalysisFailed);
+        }
+    }
+
     private static Assembly LoadDesignAssembly()
     {
         try
@@ -1352,6 +1501,77 @@ public static class EfCoreMigrationAnalyzer
             _ => throw new EfCoreAnalysisException(
                 EfCoreAnalysisFailureKind.AnalysisFailed),
         };
+
+    private static bool CanExecuteScratch(
+        EfCoreMigrationAnalysisReport generation,
+        IReadOnlyList<EfCoreScratchMigrationInput> inputs,
+        bool inputComplete) =>
+        inputComplete &&
+        generation.Status ==
+            MigrationCompatibilityStatus.Conditional &&
+        generation.MigrationCount is > 0 and <=
+            EfCoreScratchChainValidator.MaxMigrations &&
+        inputs.Count == generation.MigrationCount &&
+        generation.Migrations.All(static migration =>
+            migration.UpOperationCount > 0 &&
+            migration.DownOperationCount > 0 &&
+            migration.CommandCount > 0 &&
+            migration.Operations.All(static operation =>
+                operation.Status ==
+                    MigrationCompatibilityStatus.Conditional &&
+                operation.Kind !=
+                    EfCoreMigrationOperationKind.RawSql));
+
+    private static EfCoreMigrationScratchAnalysisReport
+        CreateScratchReport(
+            EfCoreMigrationAnalysisReport generation,
+            EfCoreScratchChainValidationResult validation)
+    {
+        bool passed = validation.Outcome ==
+            EfCoreMigrationScratchAnalysisOutcome.Passed;
+        MigrationEvidenceLevel evidence = passed ||
+            validation.Proof.ExecutedCommandCount > 0
+            ? MigrationEvidenceLevel.ScratchExecuted
+            : MigrationEvidenceLevel.Bound;
+        return new EfCoreMigrationScratchAnalysisReport
+        {
+            Outcome = validation.Outcome,
+            Status = passed
+                ? MigrationCompatibilityStatus.Compatible
+                : MigrationCompatibilityStatus.Unknown,
+            HighestEvidence = evidence,
+            RuleId = validation.RuleId,
+            GenerationPreflight = generation,
+            ScratchChain = validation.Proof,
+            Diagnostics = [],
+        };
+    }
+
+    private static EfCoreMigrationScratchAnalysisReport
+        CreateBlockedScratchReport(
+            EfCoreMigrationAnalysisReport generation) =>
+        new()
+        {
+            Outcome =
+                EfCoreMigrationScratchAnalysisOutcome.Blocked,
+            Status = generation.Status,
+            HighestEvidence = MigrationEvidenceLevel.Bound,
+            RuleId = EfCoreMigrationScratchAnalysisRules
+                .GenerationPreflightBlocked,
+            GenerationPreflight = generation,
+            ScratchChain = new EfCoreMigrationScratchChainProof
+            {
+                Outcome =
+                    EfCoreMigrationScratchAnalysisOutcome.Blocked,
+                PrefixCount = generation.MigrationCount,
+                ResourcesDisposed = true,
+            },
+            Diagnostics = [],
+        };
+
+    private sealed record LoadedAnalysis(
+        EfCoreMigrationAnalysisReport Generation,
+        EfCoreMigrationScratchAnalysisReport? Scratch);
 
     private sealed record OperationResult(
         EfCoreMigrationOperationKind Kind,

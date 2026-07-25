@@ -54,6 +54,74 @@ public sealed class EfCoreWorkerRunnerTests
     }
 
     [Fact]
+    public async Task RunAsync_ScratchRequestWritesOnlyScratchEnvelope()
+    {
+        EfCoreMigrationAnalysisReport generation =
+            CreateCoherentReport();
+        var expected =
+            new EfCoreMigrationScratchAnalysisReport
+            {
+                Outcome =
+                    EfCoreMigrationScratchAnalysisOutcome.Blocked,
+                Status = generation.Status,
+                HighestEvidence = MigrationEvidenceLevel.Bound,
+                RuleId = EfCoreMigrationScratchAnalysisRules
+                    .GenerationPreflightBlocked,
+                GenerationPreflight = generation,
+                ScratchChain =
+                    new EfCoreMigrationScratchChainProof
+                    {
+                        Outcome =
+                            EfCoreMigrationScratchAnalysisOutcome
+                                .Blocked,
+                        PrefixCount = generation.MigrationCount,
+                        ResourcesDisposed = true,
+                    },
+            };
+        var dependencies = new EfCoreWorkerDependencies
+        {
+            AnalyzeScratchAsync = (request, cancellationToken) =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                Assert.Equal(
+                    generation.AssemblyDigest,
+                    request.AssemblyDigest);
+                return ValueTask.FromResult(expected);
+            },
+        };
+        using var input = RequestStream(
+            generation.AssemblyDigest,
+            generation.Context,
+            EfCoreAnalysisMode.Scratch);
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        int exitCode = await EfCoreWorkerRunner.RunAsync(
+            ValidArguments,
+            input,
+            output,
+            error,
+            dependencies,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(EfCoreWorkerRunner.ExitSuccess, exitCode);
+        Assert.Empty(error.ToString());
+        string framed = output.ToString();
+        EfCoreMigrationScratchAnalysisReport? actual =
+            JsonSerializer
+                .Deserialize<EfCoreMigrationScratchAnalysisReport>(
+                    framed[EfCoreWorkerRunner.SuccessHeader.Length..],
+                    EfCoreWorkerRunner.JsonOptions);
+        Assert.NotNull(actual);
+        Assert.Equal(
+            EfCoreMigrationScratchAnalysisOutcome.Blocked,
+            actual.Outcome);
+        Assert.Equal(
+            generation.AssemblyDigest,
+            actual.GenerationPreflight.AssemblyDigest);
+    }
+
+    [Fact]
     public async Task RunAsync_MalformedInputUsesFixedError()
     {
         const string secret = "TOP-SECRET-WORKER-INPUT";
@@ -278,12 +346,15 @@ public sealed class EfCoreWorkerRunnerTests
 
     private static MemoryStream RequestStream(
         string assemblyDigest,
-        string context)
+        string context,
+        EfCoreAnalysisMode mode =
+            EfCoreAnalysisMode.Generation)
     {
         string json = JsonSerializer.Serialize(
             new
             {
                 format = EfCoreWorkerRunner.RequestFormat,
+                mode,
                 assemblyPath = Path.GetFullPath("fixture.dll"),
                 assemblyDigest,
                 context,

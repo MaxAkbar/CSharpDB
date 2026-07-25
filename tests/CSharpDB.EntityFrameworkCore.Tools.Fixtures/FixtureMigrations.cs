@@ -44,6 +44,26 @@ public sealed class InitialCreate : Migration
     {
         migrationBuilder.DropTable(name: "widgets");
     }
+
+    protected override void BuildTargetModel(
+        ModelBuilder modelBuilder)
+    {
+        modelBuilder.HasAnnotation(
+            "ProductVersion",
+            "10.0.10");
+
+        modelBuilder.Entity<FixtureWidget>(entity =>
+        {
+            entity.ToTable("widgets");
+            entity.HasKey(widget => widget.Id)
+                .HasName("pk_widgets");
+            entity.Property(widget => widget.Id)
+                .HasColumnType("INTEGER");
+            entity.Property(widget => widget.Name)
+                .HasColumnType("TEXT")
+                .IsRequired();
+        });
+    }
 }
 
 [DbContext(typeof(FixtureContext))]
@@ -71,6 +91,30 @@ public sealed class AddTagAndIndex : Migration
         migrationBuilder.DropColumn(
             name: "Tag",
             table: "widgets");
+    }
+
+    protected override void BuildTargetModel(
+        ModelBuilder modelBuilder)
+    {
+        modelBuilder.HasAnnotation(
+            "ProductVersion",
+            "10.0.10");
+
+        modelBuilder.Entity<FixtureWidget>(entity =>
+        {
+            entity.ToTable("widgets");
+            entity.HasKey(widget => widget.Id)
+                .HasName("pk_widgets");
+            entity.Property(widget => widget.Id)
+                .HasColumnType("INTEGER");
+            entity.Property(widget => widget.Name)
+                .HasColumnType("TEXT")
+                .IsRequired();
+            entity.Property(widget => widget.Tag)
+                .HasColumnType("TEXT");
+            entity.HasIndex(widget => widget.Name)
+                .HasDatabaseName("ix_widgets_name");
+        });
     }
 }
 

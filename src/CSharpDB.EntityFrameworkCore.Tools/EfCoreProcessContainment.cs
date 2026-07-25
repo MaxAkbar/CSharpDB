@@ -8,8 +8,9 @@ namespace CSharpDB.EntityFrameworkCore.Tools;
 /// <summary>
 /// Owns the operating-system containment applied to one tool child process.
 /// On Windows, closing the job terminates the complete child tree and every
-/// process in the job is capped at 512 MiB. Other platforms rely on explicit
-/// process-tree termination by the caller.
+/// process in the job is capped at 512 MiB. The worker host also configures a
+/// cross-platform managed-heap ceiling; non-Windows process trees rely on
+/// explicit termination by the caller.
 /// </summary>
 internal sealed class EfCoreProcessContainment : IDisposable
 {
