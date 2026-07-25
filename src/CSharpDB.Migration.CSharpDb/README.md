@@ -47,6 +47,29 @@ publishes rendered SQL, object names, ASTs, or parser/engine messages. A pass
 is scratch-execution and schema-shape evidence only. It is not source semantic
 equivalence and does not claim that view or trigger bodies were bound.
 
+## Phase 6B.1: CSharpDB-ready DDL proof
+
+`CSharpDbDdlCompatibilityAnalyzer` accepts one strict, bounded CSharpDB SQL
+script. Its initial explicit allowlist is persistent `CREATE TABLE` plus
+simple `CREATE INDEX`. Unsupported statements and unproven table or index
+features produce stable, span-based diagnostics and stop before scratch
+execution; supported statements are never extracted from an otherwise
+unsupported script and proven in isolation.
+
+For a completely supported script, the analyzer lowers the schema into the
+migration catalog, evaluates the versioned target capability rules, renders
+candidate CSharpDB DDL, parses it through `CSharpDB.Sql`, executes it only in a
+new in-memory scratch database, and compares the resulting normalized schema
+with the intended model. The deterministic report exposes only sanitized
+digests, counts, source spans, stable rule identifiers, status, and evidence
+level. It does not expose SQL, paths, object names, ASTs, or raw parser and
+engine messages.
+
+This analyzer has no existing-target or auto-apply path. It does not create a
+database file, modify a migration plan, or install a generated rewrite. Phase
+6B.2 will add a separately bounded T-SQL lowering subset; MySQL, SQLite, and
+other source dialects remain fail-closed deferrals.
+
 Apply stops at `awaiting-validation`. Activation accepts only a permit derived
 from a coherent, published, passing validation report and persists its receipt
 atomically. One immutable validation reader snapshot exposes the complete

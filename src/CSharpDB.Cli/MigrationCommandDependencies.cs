@@ -39,6 +39,17 @@ internal sealed record MigrationCommandDependencies
                 cancellationToken: cancellationToken);
 
     internal Func<
+        string,
+        CancellationToken,
+        ValueTask<CSharpDbDdlCompatibilityReport>>
+    AnalyzeCSharpDbDdlAsync
+    { get; init; } =
+        static (script, cancellationToken) =>
+            CSharpDbDdlCompatibilityAnalyzer.AnalyzeAsync(
+                script,
+                cancellationToken: cancellationToken);
+
+    internal Func<
         MigrationPlan,
         MigrationCatalog,
         CancellationToken,

@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Runtime.ExceptionServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -10,6 +11,7 @@ using CSharpDB.Migration.Files.Csv;
 using CSharpDB.Migration.Files.Json;
 using CSharpDB.Migration.Sqlite;
 using CSharpDB.Migration.Validation;
+using CSharpDB.Sql;
 
 namespace CSharpDB.Cli;
 
@@ -22,6 +24,7 @@ internal static class MigrationCommandRunner
         "       csharpdb migrate inspect --source sqlite --input <source.db> --package <snapshot.csdbsqlite> --out <catalog.json> [--profile-sample-size <count>] [--max-source-bytes <count>]\n" +
         "       csharpdb migrate inspect --source sqlserver --connection-env <name> --out <catalog.json>\n" +
         "       csharpdb migrate inspect --source mysql --connection-env <name> --out <catalog.json>\n" +
+        "       csharpdb migrate ddl-check <file.sql> --dialect csharpdb [--format text|json]\n" +
         "       csharpdb migrate plan <catalog.json> --out <plan.json> [--profile preserve|queryable] [--accept-exclusions all|<id,...>] [--accept-diagnostics <id,...>] [--reject-mode fail-fast|deterministic --reject-rules all|<id,...> --max-rejected-rows-per-batch <count> --max-rejected-rows-per-run <count> --max-reject-evidence-value-bytes <count> --max-reject-evidence-bytes-per-batch <count> --max-reject-evidence-bytes-per-run <count> --max-reject-artifact-bytes <count>]\n" +
         "       csharpdb migrate preview <plan.json> --catalog <catalog.json> [--ddl|--scratch] [--format text|json]\n" +
         "       csharpdb migrate apply <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
@@ -101,6 +104,8 @@ internal static class MigrationCommandRunner
         ArgumentNullException.ThrowIfNull(
             dependencies.BuildCSharpDbDdlPreview);
         ArgumentNullException.ThrowIfNull(
+            dependencies.AnalyzeCSharpDbDdlAsync);
+        ArgumentNullException.ThrowIfNull(
             dependencies.SealCSharpDbMigrationPlan);
         ArgumentNullException.ThrowIfNull(
             dependencies.SerializeMigrationPlan);
@@ -125,6 +130,12 @@ internal static class MigrationCommandRunner
                     dependencies,
                     ct),
                 "preview" => await RunPreviewAsync(
+                    args,
+                    output,
+                    error,
+                    dependencies,
+                    ct),
+                "ddl-check" => await RunDdlCheckAsync(
                     args,
                     output,
                     error,
@@ -1974,6 +1985,347 @@ internal static class MigrationCommandRunner
                 "The explicit CSharpDB preview could not be produced safely.",
                 previewError);
         }
+    }
+
+    private static async ValueTask<int> RunDdlCheckAsync(
+        string[] args,
+        TextWriter output,
+        TextWriter error,
+        MigrationCommandDependencies dependencies,
+        CancellationToken ct)
+    {
+        if (args.Length < 3 ||
+            args[2].StartsWith("--", StringComparison.Ordinal) ||
+            string.IsNullOrWhiteSpace(args[2]))
+        {
+            return await OptionErrorAsync(
+                "Missing DDL script path.",
+                error);
+        }
+        if (!TryParseOptions(
+                args,
+                3,
+                out Dictionary<string, string> options,
+                out string? parseError))
+        {
+            return await OptionErrorAsync(
+                SafeDdlCheckOptionError(parseError!),
+                error);
+        }
+        if (!RequireOnly(
+                options,
+                ["--dialect", "--format"],
+                out parseError))
+        {
+            return await OptionErrorAsync(
+                "The DDL compatibility command contains an unsupported option.",
+                error);
+        }
+        if (!options.TryGetValue("--dialect", out string? dialect) ||
+            string.IsNullOrWhiteSpace(dialect))
+        {
+            return await OptionErrorAsync(
+                "Missing required option --dialect.",
+                error);
+        }
+        if (!string.Equals(
+                dialect,
+                "csharpdb",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return await OptionErrorAsync(
+                "This DDL compatibility command supports only the csharpdb dialect.",
+                error);
+        }
+
+        string format = options.GetValueOrDefault("--format", "text");
+        if (!string.Equals(
+                format,
+                "text",
+                StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(
+                format,
+                "json",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return await OptionErrorAsync(
+                "Unsupported DDL compatibility output format.",
+                error);
+        }
+
+        string script;
+        try
+        {
+            script = await ReadBoundedDdlScriptAsync(
+                args[2],
+                ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (DdlScriptLimitException limitError)
+        {
+            throw new MigrationCliSafeException(
+                "MIG-CSHARPDB-DDL-CHECK-LIMIT-001",
+                "The DDL script exceeds the production byte limit.",
+                limitError);
+        }
+        catch (DecoderFallbackException encodingError)
+        {
+            throw new MigrationCliSafeException(
+                "MIG-CSHARPDB-DDL-CHECK-ENCODING-001",
+                "The DDL script is not valid UTF-8.",
+                encodingError);
+        }
+        catch (Exception readError) when (
+            IsRecoverableCliException(readError))
+        {
+            throw new MigrationCliSafeException(
+                "MIG-CSHARPDB-DDL-CHECK-READ-001",
+                "The DDL script could not be read safely.",
+                readError);
+        }
+
+        CSharpDbDdlCompatibilityReport report;
+        try
+        {
+            report = await dependencies.AnalyzeCSharpDbDdlAsync(
+                script,
+                ct);
+            ArgumentNullException.ThrowIfNull(report);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception analysisError) when (
+            IsRecoverableCliException(analysisError))
+        {
+            throw new MigrationCliSafeException(
+                "MIG-CSHARPDB-DDL-CHECK-001",
+                "The DDL compatibility proof could not be produced safely.",
+                analysisError);
+        }
+
+        if (string.Equals(
+                format,
+                "json",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            ct.ThrowIfCancellationRequested();
+            string json = JsonSerializer.Serialize(report, JsonOptions);
+            ct.ThrowIfCancellationRequested();
+            await output.WriteLineAsync(
+                json);
+        }
+        else
+        {
+            await WriteTextDdlCompatibilityAsync(
+                output,
+                report,
+                ct);
+        }
+        ct.ThrowIfCancellationRequested();
+
+        return DdlCompatibilityExitCode(report.Status);
+    }
+
+    private static string SafeDdlCheckOptionError(string error)
+    {
+        if (error.StartsWith(
+                "Duplicate option",
+                StringComparison.Ordinal))
+        {
+            return "Duplicate option in the DDL compatibility command.";
+        }
+        if (error.StartsWith(
+                "Missing value for",
+                StringComparison.Ordinal))
+        {
+            return "A DDL compatibility option is missing its value.";
+        }
+        if (error.StartsWith(
+                "Unexpected positional argument",
+                StringComparison.Ordinal))
+        {
+            return "The DDL compatibility command contains an unexpected positional argument.";
+        }
+
+        return "The DDL compatibility options are invalid.";
+    }
+
+    private static async ValueTask<string> ReadBoundedDdlScriptAsync(
+        string path,
+        CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        await using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            bufferSize: 4096,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        if (stream.CanSeek &&
+            stream.Length > SqlScriptParserOptions.HardMaxScriptUtf8Bytes)
+        {
+            throw new DdlScriptLimitException();
+        }
+
+        using var payload = new MemoryStream();
+        byte[] buffer = new byte[64 * 1024];
+        long totalBytes = 0;
+        try
+        {
+            while (true)
+            {
+                ct.ThrowIfCancellationRequested();
+                int read = await stream.ReadAsync(
+                    buffer.AsMemory(),
+                    ct);
+                if (read == 0)
+                    break;
+                if (totalBytes >
+                    SqlScriptParserOptions.HardMaxScriptUtf8Bytes - read)
+                {
+                    throw new DdlScriptLimitException();
+                }
+
+                payload.Write(buffer, 0, read);
+                totalBytes += read;
+            }
+        }
+        finally
+        {
+            Array.Clear(buffer);
+        }
+
+        ct.ThrowIfCancellationRequested();
+        int payloadLength = checked((int)payload.Length);
+        ReadOnlySpan<byte> bytes =
+            payload.GetBuffer().AsSpan(0, payloadLength);
+        if (bytes.Length >= 3 &&
+            bytes[0] == 0xEF &&
+            bytes[1] == 0xBB &&
+            bytes[2] == 0xBF)
+        {
+            bytes = bytes[3..];
+        }
+
+        try
+        {
+            return Utf8NoBomStrict.GetString(bytes);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(
+                payload.GetBuffer().AsSpan(0, payloadLength));
+        }
+    }
+
+    private static async ValueTask WriteTextDdlCompatibilityAsync(
+        TextWriter output,
+        CSharpDbDdlCompatibilityReport report,
+        CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        await output.WriteLineAsync($"Format: {report.Format}");
+        await output.WriteLineAsync(
+            $"Status: {CliToken(report.Status)}");
+        await output.WriteLineAsync($"Dialect: {report.Dialect}");
+        await output.WriteLineAsync(
+            $"Target CSharpDB version: {report.TargetCSharpDbVersion}");
+        await output.WriteLineAsync(
+            $"Highest evidence: {CliToken(report.HighestEvidence)}");
+        await output.WriteLineAsync($"Rule ID: {report.RuleId}");
+        await output.WriteLineAsync(
+            $"Statements: total={report.StatementCount} | proven={report.ProvenStatementCount} | candidate-actions={report.CandidateActionCount}");
+        await output.WriteLineAsync(
+            $"Capability digest: {report.CapabilityDigest}");
+        await output.WriteLineAsync(
+            $"Script digest: {report.ScriptDigest}");
+        await output.WriteLineAsync(
+            $"Catalog digest: {DigestOrNone(report.CatalogDigest)}");
+        await output.WriteLineAsync(
+            $"Plan contract digest: {DigestOrNone(report.PlanContractDigest)}");
+        await output.WriteLineAsync(
+            $"Generated DDL digest: {DigestOrNone(report.GeneratedDdlDigest)}");
+        await output.WriteLineAsync(
+            $"Expected schema digest: {DigestOrNone(report.ExpectedSchemaDigest)}");
+        await output.WriteLineAsync(
+            $"Actual schema digest: {DigestOrNone(report.ActualSchemaDigest)}");
+
+        foreach (var statement in report.Statements)
+        {
+            ct.ThrowIfCancellationRequested();
+            await output.WriteLineAsync(
+                $"Statement: index={statement.Index} | kind={statement.Kind} | status={CliToken(statement.Status)} | evidence={CliToken(statement.Evidence)} | rule={statement.RuleId} | span={FormatSourceSpan(statement.Span)}");
+        }
+        foreach (var diagnostic in report.Diagnostics)
+        {
+            ct.ThrowIfCancellationRequested();
+            await output.WriteLineAsync(
+                $"Diagnostic: ordinal={diagnostic.Ordinal} | id={diagnostic.DiagnosticId} | rule={diagnostic.RuleId} | severity={CliToken(diagnostic.Severity)} | status={CliToken(diagnostic.Status)} | evidence={CliToken(diagnostic.Evidence)} | statement={NullableIntOrNone(diagnostic.StatementIndex)} | span={FormatSourceSpan(diagnostic.SourceSpan)} | summary={diagnostic.Summary} | remediation={diagnostic.Remediation ?? "none"}");
+        }
+        foreach (var difference in report.Differences)
+        {
+            ct.ThrowIfCancellationRequested();
+            await output.WriteLineAsync(
+                $"Difference: ordinal={difference.Ordinal} | object={difference.ObjectIdentityDigest} | kind={CliToken(difference.Kind)} | expected={DigestOrNone(difference.ExpectedDefinitionDigest)} | actual={DigestOrNone(difference.ActualDefinitionDigest)}");
+        }
+    }
+
+    private static int DdlCompatibilityExitCode(
+        MigrationCompatibilityStatus status) =>
+        status switch
+        {
+            MigrationCompatibilityStatus.Compatible =>
+                InspectorCommandRunner.ExitOk,
+            MigrationCompatibilityStatus.CompatibleWithRewrite or
+            MigrationCompatibilityStatus.Conditional =>
+                InspectorCommandRunner.ExitWarn,
+            MigrationCompatibilityStatus.Unsupported or
+            MigrationCompatibilityStatus.Unknown =>
+                InspectorCommandRunner.ExitError,
+            _ => throw new InvalidDataException(
+                "The DDL compatibility report has an unknown status."),
+        };
+
+    private static string DigestOrNone(string? digest) =>
+        digest ?? "none";
+
+    private static string NullableIntOrNone(int? value) =>
+        value?.ToString(CultureInfo.InvariantCulture) ?? "none";
+
+    private static string FormatSourceSpan(
+        MigrationSourceSpan? span) =>
+        span is null
+            ? "none"
+            : string.Create(
+                CultureInfo.InvariantCulture,
+                $"start:{NullableIntOrNone(span.Start)},length:{NullableIntOrNone(span.Length)},line:{NullableIntOrNone(span.Line)},column:{NullableIntOrNone(span.Column)}");
+
+    private static string CliToken<T>(T? value)
+        where T : struct, Enum =>
+        value is null
+            ? "none"
+            : CliToken(value.Value);
+
+    private static string CliToken<T>(T value)
+        where T : struct, Enum
+    {
+        string name = value.ToString();
+        var result = new StringBuilder(name.Length + 4);
+        for (int index = 0; index < name.Length; index++)
+        {
+            char character = name[index];
+            if (index > 0 && char.IsUpper(character))
+                result.Append('-');
+            result.Append(char.ToLowerInvariant(character));
+        }
+
+        return result.ToString();
     }
 
     private static async ValueTask<int> RunDefaultPreviewAsync(
@@ -4755,6 +5107,10 @@ internal static class MigrationCommandRunner
         }
 
         internal string Code { get; }
+    }
+
+    private sealed class DdlScriptLimitException : Exception
+    {
     }
 
     private sealed class MigrationSourceLease : IAsyncDisposable

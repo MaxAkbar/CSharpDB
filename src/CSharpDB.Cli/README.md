@@ -117,6 +117,7 @@ csharpdb migrate inspect --source json --input <source.json|source.ndjson> --typ
 csharpdb migrate inspect --source sqlite --input <source.db> --package <source.csdbsqlite> --out <catalog.json> [--profile-sample-size <count>] [--max-source-bytes <count>]
 csharpdb migrate inspect --source sqlserver --connection-env <name> --out <catalog.json>
 csharpdb migrate inspect --source mysql --connection-env <name> --out <catalog.json>
+csharpdb migrate ddl-check <file.sql> --dialect csharpdb [--format text|json]
 csharpdb migrate plan <catalog.json> --out <plan.json> [--profile preserve|queryable] [--accept-exclusions all|<id,...>] [--accept-diagnostics <id,...>] [--reject-mode fail-fast|deterministic --reject-rules all|<id,...> --max-rejected-rows-per-batch <count> --max-rejected-rows-per-run <count> --max-reject-evidence-value-bytes <count> --max-reject-evidence-bytes-per-batch <count> --max-reject-evidence-bytes-per-run <count> --max-reject-artifact-bytes <count>]
 csharpdb migrate preview <plan.json> --catalog <catalog.json> [--ddl|--scratch] [--format text|json]
 csharpdb migrate apply <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite> --expected-manifest-digest <sha256:...> --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]
@@ -170,6 +171,23 @@ independently trusted change record or CI parameter. Apply, resume, and
 validation require the package pin through `--expected-manifest-digest`.
 The original CSV, JSON, or live SQLite path is not retained and is never
 reopened after inspection.
+
+Phase 6B.1 adds a CSharpDB-ready DDL proof command. It reads one strict,
+bounded UTF-8 script and initially allowlists persistent `CREATE TABLE`
+statements and simple `CREATE INDEX` statements. Every other statement or
+unproven feature fails closed with a stable diagnostic; the checker never
+silently omits an unsupported statement or proves only a supported prefix.
+It lowers the complete supported script through the migration model, renders
+candidate target DDL, and proves the resulting normalized schema in a new,
+isolated in-memory scratch database.
+
+The command writes only deterministic, sanitized text or JSON evidence to
+standard output. Reports contain digests, counts, source spans, stable rule
+identifiers, compatibility status, and the attained evidence level, but not
+the script text, input path, object names, or raw parser and engine messages.
+It never opens an existing target, creates a target file, applies a rewrite,
+or promotes a migration plan. Generated DDL remains review-only. Phase 6B.2
+will add a separately bounded T-SQL subset; other dialects remain deferred.
 
 Planning accepts a strict UTF-8 catalog artifact of at most 64 MiB. Before a
 plan is published, the CLI renders the selected CSharpDB schema actions once
