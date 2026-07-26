@@ -361,6 +361,7 @@ internal static class SqlServerRetainedReadSql
                 THROW 51000, N'The retained SQL Server table identity changed.', 1;
             SELECT
             """);
+        sql.AppendLine();
         for (int index = 0;
              index < table.Columns.Count;
              index++)

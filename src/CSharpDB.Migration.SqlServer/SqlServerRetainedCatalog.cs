@@ -380,13 +380,13 @@ internal static class SqlServerRetainedCatalog
                     databaseObjectId,
                     null)[..16]),
             RuleId = RetainedQualificationRule,
-            Severity = MigrationDiagnosticSeverity.Warning,
-            Status = MigrationCompatibilityStatus.Conditional,
+            Severity = MigrationDiagnosticSeverity.Error,
+            Status = MigrationCompatibilityStatus.Unknown,
             Evidence = MigrationEvidenceLevel.Bound,
             Summary =
                 "The retained SQL Server package has not completed live qualification.",
             Explanation =
-                "The package is content-addressed and was captured inside one SQL Server SNAPSHOT transaction, but published-runtime, platform, authentication, least-privilege, and live differential qualification remain deferred.",
+                "The package is content-addressed and was captured inside one SQL Server SNAPSHOT transaction. The restricted metadata proof has passed against SQL Server 2019 LocalDB, but exact supported editions, published runtime, platform, authentication, and live differential qualification remain deferred.",
             ObjectId = databaseObjectId,
             Remediation =
                 "Run the retained SQL Server package through the applicable live qualification matrix before treating this adapter as shipping-qualified.",

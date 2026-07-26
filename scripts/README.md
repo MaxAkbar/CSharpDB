@@ -247,16 +247,21 @@ provided.
 ### `Publish-CSharpDbMigrationRelease.ps1`
 
 Use this to create the installable combined migration CLI archives for
-v4.3.0. It composes the reviewed SQL Server and MySQL bundle publishers instead
-of rebuilding either provider layout itself.
+v4.3.0. It composes the reviewed SQL Server and MySQL bundle publishers for
+every runtime and the reviewed Microsoft Access bundle publisher for
+`win-x64`, instead of rebuilding any provider layout itself.
 
 What it does:
 
-- publishes both audited framework-dependent bundles for every selected RID
-- verifies the two base CLI roots have identical file sets, lengths, and
-  SHA-256 digests before merging anything
+- publishes the SQL Server and MySQL audited framework-dependent bundles for
+  every selected RID, plus the Windows-only Access bundle for `win-x64`
+- verifies every applicable bundle's base CLI root has identical file sets,
+  lengths, and SHA-256 digests before merging anything
 - preserves the fixed workers and all provider notices/licenses beneath
-  `adapters/sqlserver` and `adapters/mysql`
+  `adapters/sqlserver`, `adapters/mysql`, and, on Windows only,
+  `adapters/access`
+- rejects Access assemblies, `System.Data.OleDb`, and the Access adapter
+  directory from Linux and macOS stages
 - verifies the CLI and workers target `Microsoft.NETCore.App` 10.x and rejects
   accidental self-contained runtime files
 - adds the safe Windows and POSIX installers from `deploy/migration-tool`
@@ -289,13 +294,48 @@ links or reparse points in the output path, its existing ancestors, and
 directories it would replace.
 
 These releases are framework-dependent and require the Microsoft .NET 10
-runtime. A RID-specific archive is not a claim of runtime, authentication, TLS,
-or live SQL Server/MySQL qualification. Each extracted archive includes
-`README.md`, `LICENSE`, and installers under `install/windows` and
-`install/posix`. The installers copy into a caller-selected directory, do not
-overwrite a nonempty destination without explicit force, do not create a
-service or require administrator access by default, and print optional `PATH`
-setup instructions without changing `PATH`.
+runtime. A RID-specific archive is not a claim of runtime, authentication,
+TLS, or live Access/SQL Server/MySQL qualification. Each extracted archive
+includes `README.md`, `LICENSE`, and installers under `install/windows` and
+`install/posix`. The Windows installer requires the complete Access adapter in
+the `win-x64` archive. The POSIX installer has no Access dependency. Both copy
+into a caller-selected directory, do not overwrite a nonempty destination
+without explicit force, do not create a service or require administrator
+access by default, and print optional `PATH` setup instructions without
+changing `PATH`.
+
+### `Publish-CSharpDbAccessMigrationBundle.ps1`
+
+Use this to produce the non-packable, Windows-only Microsoft Access capture
+distribution. The generic `csharpdb` host remains provider-free at the bundle
+root. `System.Data.OleDb` and the reviewed support closure are published only
+beneath `adapters/access`, alongside the fixed companion worker and
+`THIRD-PARTY-NOTICES.md`.
+
+The destination must be absent or empty. Output is framework-dependent and
+restricted to `win-x64`. The Microsoft Access Database Engine (ACE) is an
+external, bitness-sensitive prerequisite that CSharpDB does not redistribute
+or install. Publishing the adapter does not complete its deferred live
+qualification matrix.
+
+```powershell
+.\scripts\Publish-CSharpDbAccessMigrationBundle.ps1 `
+  -OutputPath artifacts\access-migration-local `
+  -Configuration Release
+```
+
+### `Test-AccessMigrationIsolation.ps1`
+
+Use this Windows-only provider-boundary check after restore. It publishes the
+base CLI and optional Access bundle separately, proves the base dependency
+graph contains no Access adapter or OLE DB assets, proves the provider closure
+stays beneath `adapters/access`, and exercises stable worker-absent and
+provider/capture failure paths without requiring a valid Access database.
+
+```powershell
+.\scripts\Test-AccessMigrationIsolation.ps1 `
+  -Configuration Release
+```
 
 ### `Publish-CSharpDbMySqlMigrationBundle.ps1`
 
@@ -329,8 +369,7 @@ also confirms that the fixed-path worker and
 
 ```powershell
 .\scripts\Test-MySqlMigrationIsolation.ps1 `
-  -Configuration Release `
-  -NoRestore
+  -Configuration Release
 ```
 
 ### `Publish-CSharpDbSqlServerMigrationBundle.ps1`
@@ -372,8 +411,7 @@ and connection-absent failures without contacting a server.
 
 ```powershell
 .\scripts\Test-SqlServerMigrationIsolation.ps1 `
-  -Configuration Release `
-  -NoRestore
+  -Configuration Release
 ```
 
 ### `Test-EfCoreMigrationTool.ps1`

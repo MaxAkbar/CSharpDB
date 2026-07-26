@@ -50,6 +50,21 @@ internal sealed record MigrationCommandDependencies
         MySqlWorkerClient.CaptureAsync;
 
     internal Func<
+        string,
+        string,
+        string,
+        string,
+        bool,
+        int,
+        long,
+        long,
+        CancellationToken,
+        ValueTask<AccessCaptureWorkerResult>>
+    CaptureAccessAsync
+    { get; init; } =
+        AccessWorkerClient.CaptureAsync;
+
+    internal Func<
         MigrationPlan,
         MigrationCatalog,
         CancellationToken,
@@ -81,6 +96,17 @@ internal sealed record MigrationCommandDependencies
     AnalyzeTsqlDdlAsync
     { get; init; } =
         SqlServerWorkerClient.AnalyzeDdlAsync;
+
+    internal Func<
+        string,
+        string,
+        int,
+        string,
+        CancellationToken,
+        ValueTask<SqlServerQueryWorkerResult>>
+    AnalyzeTsqlQueryAsync
+    { get; init; } =
+        SqlServerWorkerClient.AnalyzeQueryAsync;
 
     internal Func<
         MigrationPlan,

@@ -133,6 +133,10 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
                             N'DATABASE',
                             N'AL' +
                                 N'TER ANY SECURITY POLICY') = 1
+                      OR HAS_PERMS_BY_NAME(
+                            DB_NAME(),
+                            N'DATABASE',
+                            N'VIEW DEFINITION') = 1
                     THEN 1
                     ELSE 0
                 END)

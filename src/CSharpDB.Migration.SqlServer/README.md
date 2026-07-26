@@ -37,13 +37,13 @@ diagnostic. Azure SQL Database, Azure SQL Managed Instance, Synapse, Fabric,
 and other compatible services are not silently treated as equivalent to the
 intended on-premises products.
 
-The schema-readiness checkpoint remains intentionally blocked. Available SQL definitions are
+The schema-readiness checkpoint remains intentionally bounded. Available SQL definitions are
 parsed only for bounded syntax and expected-root evidence; they are not bound,
 rewritten, or differentially validated. The proven ordinary relational subset
 now has an offline integration proof through the generic migration planner,
 the exact CSharpDB DDL renderer, and a transactionally isolated in-memory
-scratch catalog comparison. That proof does not promote the partial SQL Server
-inventory from `Blocked`, establish source semantics, or write a
+scratch catalog comparison. That proof does not establish source query
+semantics or write a
 caller-supplied, existing, or durable target.
 The non-NuGet CLI adapter exposes schema-only inspection when `--package` is
 omitted and bounded retained row capture when it is supplied, always through a
@@ -63,8 +63,9 @@ subtype inventory does not query columnstore segments or row groups, dynamic
 management views, allocation details, or row counts. The base CLI output and
 dependency graph now exclude this adapter, SqlClient, ScriptDom, SNI, and
 their authentication closure; those assets live only beneath the optional
-worker directory. Live server and published-runtime qualification remain later
-Phase 7A work. Disposable-VM and restricted-login qualification remain
+worker directory. Broad live-server and published-runtime qualification remain
+later Phase 7A work. The restricted-login proof has passed on SQL Server 2019
+Express LocalDB, while the disposable-VM edition/version matrix remains
 deferred; no offline fixture is described as live evidence.
 
 ## Phase 6B.2: standalone T-SQL DDL proof
@@ -220,9 +221,14 @@ each visible schema, table, view, and routine, and probes
 `VIEW SECURITY DEFINITION` on SQL Server 2022 and later. Trigger metadata
 visibility follows its parent database, table, or view. A detected denial,
 missing definition access, or changed permission snapshot blocks completeness.
-Only sysadmin membership currently promotes visibility to complete; a clean
-least-privilege result remains `Unknown` until the live restricted-account
-qualification lane passes.
+A non-sysadmin result promotes visibility to complete only when all of the
+following positive proof remains stable across the inventory: database-level
+definition visibility, SQL-expression-dependency access, SQL Server 2022+
+security-definition visibility where applicable, per-object definition probes,
+complete row-level-security inventory, and matching before-and-after effective
+token and applicable `DENY` audits. A missing, false, drifting, or denied fact
+remains `Unknown` or `Incomplete` and blocks the retained route. Do not grant
+`sysadmin` to bypass this proof.
 
 In the optional CLI distribution, the caller supplies connection material in
 the named worker environment variable at runtime, and the base CLI passes only
@@ -251,7 +257,15 @@ resolved dependency inventory, and the applicable third-party license notices
 only in `adapters/sqlserver` with the fixed worker.
 
 This checkpoint has provider-absent unit, process-protocol, dependency-graph,
-and published-output isolation coverage. It is not live runtime qualification.
+and published-output isolation coverage. The environment-gated
+`SqlServerLeastPrivilegeLiveQualificationTests` additionally creates a
+restricted login and disposable database, proves complete metadata visibility,
+captures and reopens a retained package, and verifies that an object-level
+`DENY` fails closed. Set
+`CSHARPDB_SQLSERVER_LIVE_ADMIN_CONNECTION` to an administrator connection for
+an isolated qualification instance to run it. The repository has executed this
+proof against SQL Server 2019 Express LocalDB; that single lane is not the full
+published-runtime qualification matrix.
 No Windows x86/Arm64, Linux, macOS, container, integrated-authentication,
 Kerberos, client-certificate, or platform-specific SNI lane is publicly
 qualified yet. Before the adapter is packable, every advertised RID/bitness
@@ -346,12 +360,14 @@ source values.
 The retained catalog removes only the analyzer's schema-only
 `MIG-SQLSERVER-INVENTORY-PARTIAL-001` and
 `MIG-SQLSERVER-LIVE-QUALIFICATION-PENDING-001` diagnostics, preserves every
-other object and diagnostic, and adds one bound warning that live platform,
-authentication, least-privilege, and differential qualification is still
-deferred. Offline tests cover admissibility, ordering, identifier quoting,
-scalar canonicalization, limits, catalog transformation, source disposal,
-package verification, and replay. They do not constitute live SQL Server
-qualification.
+other object and diagnostic, and adds one non-overrideable `Unknown` blocker
+while the advertised edition/version, published-runtime, platform,
+authentication, and differential matrix remains deferred. The environment-
+gated restricted-login test has passed on SQL Server 2019 Express LocalDB;
+offline tests cover admissibility, ordering, identifier quoting, scalar
+canonicalization, limits, catalog transformation, source disposal, package
+verification, and replay. Neither result constitutes the full advertised live
+SQL Server qualification.
 
 ## Dependencies
 

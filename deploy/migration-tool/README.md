@@ -1,17 +1,23 @@
 # CSharpDB Migration CLI
 
-This archive contains the generic `csharpdb` migration CLI plus the fixed
-SQL Server and MySQL workers under:
+This archive contains the generic `csharpdb` migration CLI plus the fixed SQL
+Server and MySQL workers. The `win-x64` archive also contains the Windows-only
+Microsoft Access worker:
 
 ```text
 adapters/
   sqlserver/
   mysql/
+  access/       # win-x64 only
 ```
 
 Keep that layout intact. Each adapter directory contains its own
 `THIRD-PARTY-NOTICES.md` and applicable `licenses/` files; those notices and
 licenses must remain with redistributed or installed copies.
+
+Linux and macOS archives do not contain `adapters/access`, Access assemblies,
+or `System.Data.OleDb`. Their POSIX installer does not require or install the
+Access adapter.
 
 ## Runtime requirement
 
@@ -29,9 +35,9 @@ authentication, TLS, or live-provider qualification.
 ## Verify the download
 
 Before extraction, compare the archive's SHA-256 digest with its entry in the
-release `SHA256SUMS.txt`. Keep migration package digests in an independently
-trusted record as described by the migration commands; an archive checksum is
-not a substitute for a source-package digest.
+GitHub release asset `MIGRATION-SHA256SUMS.txt`. Keep migration package digests
+in an independently trusted record as described by the migration commands; an
+archive checksum is not a substitute for a source-package digest.
 
 ## Install on Windows
 
@@ -47,6 +53,13 @@ overwrite colliding files in an existing directory. The script does not
 request administrator access, create a service, or change `PATH`. The
 extracted release and destination paths must not pass through links or
 reparse points.
+
+The Access adapter requires a separately installed,
+process-bitness-compatible Microsoft Access Database Engine (ACE). CSharpDB
+does not redistribute or install ACE. Access capture accepts supported
+unencrypted local `.mdb` and `.accdb` files, but remains evaluation-only until
+its declared Windows, ACE, file-format, and process-bitness qualification
+matrix is complete.
 
 ## Install on Linux or macOS
 
@@ -70,10 +83,10 @@ installing it.
 
 Pass database credentials only through the environment variable named by
 `--connection-env`; never put a connection string directly in command text.
-Retained `.csdbsqlserver` and `.csdbmysql` packages contain plaintext-sensitive
-source data. Protect them with source-equivalent access, retention, and
-deletion controls, and store each expected package digest separately from the
-package.
+Retained `.csdbsqlserver`, `.csdbmysql`, and `.csdbaccess` packages contain
+plaintext-sensitive source data. Protect them with source-equivalent access,
+retention, and deletion controls, and store each expected package digest
+separately from the package.
 
 The retained MySQL v1 path uses a dedicated read-only account with direct
 schema-level `SELECT` on the selected database's ordinary base tables. It does
@@ -81,6 +94,6 @@ not require `TRIGGER`, `EXECUTE`, or `SHOW VIEW`. Programmable objects remain
 outside retained v1.
 
 These archives provide the reviewed package and process boundaries. They do
-not claim broad live SQL Server or MySQL qualification. Consult the migration
-catalog diagnostics and complete the applicable live qualification matrix
-before treating a provider path as shipping-qualified.
+not claim broad live Access, SQL Server, or MySQL qualification. Consult the
+migration catalog diagnostics and complete the applicable live qualification
+matrix before treating a provider path as shipping-qualified.

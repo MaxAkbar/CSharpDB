@@ -13,12 +13,14 @@ using System.Text.Json.Serialization;
 using CSharpDB.Engine;
 using CSharpDB.Migration;
 using CSharpDB.Migration.CSharpDb;
+using CSharpDB.Migration.Compatibility;
 using CSharpDB.Migration.Files.Csv;
 using CSharpDB.Migration.Files.Json;
 using CSharpDB.Migration.LiteDb;
 using CSharpDB.Migration.Retained;
 using CSharpDB.Migration.Sqlite;
 using CSharpDB.Migration.Validation;
+using CSharpDB.Primitives;
 using CSharpDB.Sql;
 
 namespace CSharpDB.Cli;
@@ -31,13 +33,17 @@ internal static class MigrationCommandRunner
         "       csharpdb migrate inspect --source json --input <source.json|source.ndjson> --package <source.csdbjson> --out <catalog.json> [--framing root-array|ndjson] [--table <name>] [--sample-rows <count>] [--source-id <label>] [--workspace <directory>] [--max-source-bytes <count>] [--typed-intent <source.csdbjson-intent.json> --expected-intent-manifest-digest <sha256:...>]\n" +
         "       csharpdb migrate inspect --source sqlite --input <source.db> --package <snapshot.csdbsqlite> --out <catalog.json> [--profile-sample-size <count>] [--max-source-bytes <count>]\n" +
         "       csharpdb migrate inspect --source litedb --input <source.db> --package <snapshot.csdblitedb> --out <catalog.json> [--profile-sample-size <count>] [--max-source-bytes <count>]\n" +
+        "       csharpdb migrate inspect --source access --input <source.mdb|source.accdb> --package <snapshot.csdbaccess> --out <catalog.json> [--provider ace16|ace12] [--allow-ace12-fallback] [--command-timeout-seconds <1..3600>] [--max-source-bytes <count>] [--max-package-bytes <count>]\n" +
         "       csharpdb migrate inspect --source sqlserver --connection-env <name> --out <catalog.json> [--package <snapshot.csdbsqlserver> --max-source-bytes <count> --table-timeout-seconds <1..86400>]\n" +
         "       csharpdb migrate inspect --source mysql --connection-env <name> --out <catalog.json> [--package <snapshot.csdbmysql> --max-source-bytes <count> --table-timeout-seconds <1..86400>]\n" +
         "       csharpdb migrate ddl-check <file.sql> --dialect csharpdb|tsql [--format text|json]\n" +
+        "       csharpdb migrate type-map <catalog.json> --out <report> [--profile preserve|queryable|custom --custom-map <map.json>] [--format text|json]\n" +
+        "       csharpdb migrate query-check <query.sql> --dialect csharpdb|tsql|mysql|sqlite|access --out <report> [--query-id <id>] [--compatibility-level 150|160|170] [--format text|json]\n" +
         "       csharpdb migrate plan <catalog.json> --out <plan.json> [--profile preserve|queryable] [--accept-exclusions all|<id,...>] [--accept-diagnostics <id,...>] [--reject-mode fail-fast|deterministic --reject-rules all|<id,...> --max-rejected-rows-per-batch <count> --max-rejected-rows-per-run <count> --max-reject-evidence-value-bytes <count> --max-reject-evidence-bytes-per-batch <count> --max-reject-evidence-bytes-per-run <count> --max-reject-artifact-bytes <count>]\n" +
         "       csharpdb migrate preview <plan.json> --catalog <catalog.json> [--ddl|--scratch] [--format text|json]\n" +
-        "       csharpdb migrate apply <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite|source.csdblitedb|source.csdbsqlserver|source.csdbmysql> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
-        "       csharpdb migrate validate <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite|source.csdblitedb|source.csdbsqlserver|source.csdbmysql> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
+        "       csharpdb migrate apply <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite|source.csdblitedb|source.csdbaccess|source.csdbsqlserver|source.csdbmysql> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
+        "       csharpdb migrate validate <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite|source.csdblitedb|source.csdbaccess|source.csdbsqlserver|source.csdbmysql> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
+        "       csharpdb migrate snapshot <source.csdb> --out <retained-snapshot.db> --offline [--workspace <directory>] [--max-database-bytes <count>] [--max-wal-bytes <count>] [--max-snapshot-bytes <count>] [--json]\n" +
         "       csharpdb migrate export <retained-snapshot.db> --format csv --table <physical-table> --out <table.csv> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1|spreadsheet-safe-lossy-v1] [--max-data-bytes <count>] [--max-decoded-blob-bytes <count>] [--checkpoint-row-interval <count>] [--json]\n" +
         "       csharpdb migrate export <retained-snapshot.db> --format json|ndjson --table <physical-table> --out <table.json|table.ndjson> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1] [--max-data-bytes <count>] [--max-decoded-blob-bytes <count>] [--checkpoint-row-interval <count>] [--json]";
 
@@ -117,6 +123,22 @@ internal static class MigrationCommandRunner
         "liteDbCatalogContract";
     private const string LiteDbCatalogRouteOnlyMessage =
         "This CLI route supports only LiteDB catalog contract v1.";
+    private const string AccessCatalogFacet =
+        "accessCatalogContract";
+    private const string AccessCatalogContract =
+        "csharpdb-access-catalog/v1";
+    private const string AccessRetainedDataFacet =
+        "accessRetainedDataContract";
+    private const string AccessRetainedDataContract =
+        "csharpdb-access-retained-data/v1";
+    private const string AccessRetainedContentDigestFacet =
+        "accessRetainedContentDigest";
+    private const string AccessRetainedSnapshotIdentityFacet =
+        "accessRetainedSnapshotIdentity";
+    private const string AccessRetainedSnapshotIdentityPrefix =
+        "access-retained:";
+    private const string AccessLiveQualificationRule =
+        "MIG-ACCESS-LIVE-QUALIFICATION-PENDING-001";
     private const long MaxMigrationContractArtifactBytes =
         64L * 1024 * 1024;
 
@@ -152,6 +174,8 @@ internal static class MigrationCommandRunner
             dependencies.InspectMySqlAsync);
         ArgumentNullException.ThrowIfNull(
             dependencies.CaptureMySqlAsync);
+        ArgumentNullException.ThrowIfNull(
+            dependencies.CaptureAccessAsync);
         ArgumentNullException.ThrowIfNull(
             dependencies.BuildCSharpDbDdlPreview);
         ArgumentNullException.ThrowIfNull(
@@ -194,8 +218,20 @@ internal static class MigrationCommandRunner
                     error,
                     dependencies,
                     ct),
+                "type-map" => await RunTypeMapAsync(
+                    args,
+                    output,
+                    error,
+                    ct),
+                "query-check" => await RunQueryCheckAsync(
+                    args,
+                    output,
+                    error,
+                    dependencies,
+                    ct),
                 "apply" => await RunApplyAsync(args, output, error, ct),
                 "validate" => await RunValidateAsync(args, output, error, ct),
+                "snapshot" => await RunSnapshotAsync(args, output, error, ct),
                 "export" => await RunExportAsync(args, output, error, ct),
                 _ => await UnsupportedVerbAsync(args[1], error),
             };
@@ -231,6 +267,169 @@ internal static class MigrationCommandRunner
             await error.WriteLineAsync($"Error: {message}");
             return InspectorCommandRunner.ExitError;
         }
+    }
+
+    private static async ValueTask<int> RunSnapshotAsync(
+        string[] args,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken ct)
+    {
+        if (args.Length < 3 ||
+            args[2].StartsWith("--", StringComparison.Ordinal) ||
+            string.IsNullOrWhiteSpace(args[2]))
+        {
+            return await OptionErrorAsync(
+                "Missing source CSharpDB database path.",
+                error);
+        }
+        if (!TryParseOptions(
+                args,
+                3,
+                ["--offline", "--json"],
+                out Dictionary<string, string> options,
+                out string? parseError))
+        {
+            return await OptionErrorAsync(parseError!, error);
+        }
+        if (!RequireOnly(
+                options,
+                [
+                    "--out",
+                    "--offline",
+                    "--workspace",
+                    "--max-database-bytes",
+                    "--max-wal-bytes",
+                    "--max-snapshot-bytes",
+                    "--json",
+                ],
+                out parseError))
+        {
+            return await OptionErrorAsync(parseError!, error);
+        }
+        if (!options.ContainsKey("--offline"))
+        {
+            return await OptionErrorAsync(
+                "Snapshot capture is offline. Close every writer, then pass --offline to confirm the source is quiesced.",
+                error);
+        }
+        if (!options.TryGetValue("--out", out string? destinationValue) ||
+            string.IsNullOrWhiteSpace(destinationValue))
+        {
+            return await OptionErrorAsync(
+                "Missing required option --out.",
+                error);
+        }
+
+        long maxDatabaseBytes =
+            RetainedDatabaseSnapshotOptions.DefaultMaxDatabaseBytes;
+        if (options.TryGetValue(
+                "--max-database-bytes",
+                out string? maxDatabaseValue) &&
+            !TryParsePositiveLong(maxDatabaseValue, out maxDatabaseBytes))
+        {
+            return await OptionErrorAsync(
+                "The snapshot database-byte limit must be a positive 64-bit integer.",
+                error);
+        }
+
+        long maxWalBytes =
+            RetainedDatabaseSnapshotOptions.DefaultMaxWalBytes;
+        if (options.TryGetValue(
+                "--max-wal-bytes",
+                out string? maxWalValue) &&
+            !TryParsePositiveLong(maxWalValue, out maxWalBytes))
+        {
+            return await OptionErrorAsync(
+                "The snapshot WAL-byte limit must be a positive 64-bit integer.",
+                error);
+        }
+
+        long maxSnapshotBytes =
+            RetainedDatabaseSnapshotOptions.DefaultMaxSnapshotBytes;
+        if (options.TryGetValue(
+                "--max-snapshot-bytes",
+                out string? maxSnapshotValue) &&
+            !TryParsePositiveLong(maxSnapshotValue, out maxSnapshotBytes))
+        {
+            return await OptionErrorAsync(
+                "The retained snapshot-byte limit must be a positive 64-bit integer.",
+                error);
+        }
+
+        string sourcePath = Path.GetFullPath(args[2]);
+        string destinationPath = Path.GetFullPath(destinationValue);
+        string? workspacePath = null;
+        if (options.TryGetValue("--workspace", out string? workspaceValue))
+        {
+            if (string.IsNullOrWhiteSpace(workspaceValue))
+            {
+                return await OptionErrorAsync(
+                    "The snapshot workspace path cannot be blank.",
+                    error);
+            }
+            workspacePath = Path.GetFullPath(workspaceValue);
+        }
+
+        if (HasWindowsDosAliasSegment(sourcePath) ||
+            HasWindowsDosAliasSegment(destinationPath) ||
+            (workspacePath is not null &&
+             HasWindowsDosAliasSegment(workspacePath)))
+        {
+            return await OptionErrorAsync(
+                "Windows DOS short-name aliases cannot be used for snapshot capture paths.",
+                error);
+        }
+        if (ContainsEquivalentResolvedPaths([sourcePath, destinationPath]))
+        {
+            return await OptionErrorAsync(
+                "Source database and retained snapshot must use different files.",
+                error);
+        }
+
+        RetainedDatabaseSnapshotReceipt receipt =
+            await RetainedDatabaseSnapshot.CaptureAsync(
+                sourcePath,
+                destinationPath,
+                databaseOptions: null,
+                new RetainedDatabaseSnapshotOptions
+                {
+                    WorkspacePath = workspacePath,
+                    MaxDatabaseBytes = maxDatabaseBytes,
+                    MaxWalBytes = maxWalBytes,
+                    MaxSnapshotBytes = maxSnapshotBytes,
+                },
+                ct)
+                .ConfigureAwait(false);
+
+        if (options.ContainsKey("--json"))
+        {
+            var report = new
+            {
+                Format = "csharpdb-migration-snapshot-result/v1",
+                Status = "complete",
+                SourcePath = sourcePath,
+                receipt.SnapshotPath,
+                receipt.SnapshotIdentity,
+                receipt.ByteLength,
+                receipt.Sha256,
+                SourceState = "offline-confirmed",
+                PublicationState = "published",
+            };
+            await output.WriteLineAsync(
+                JsonSerializer.Serialize(report, JsonOptions));
+        }
+        else
+        {
+            await output.WriteLineAsync(
+                $"Status: OK | sourceState=offline-confirmed | " +
+                $"snapshot={receipt.SnapshotPath} | " +
+                $"snapshotIdentity={receipt.SnapshotIdentity} | " +
+                $"bytes={receipt.ByteLength} | digest={receipt.Sha256} | " +
+                "publicationState=published");
+        }
+
+        return InspectorCommandRunner.ExitOk;
     }
 
     private static async ValueTask<int> RunExportAsync(
@@ -330,6 +529,14 @@ internal static class MigrationCommandRunner
                 "Retained snapshot, data output, and manifest must use different files.",
                 error);
         }
+        if (!TryGetExportPublicationCapability(
+                OperatingSystem.IsWindows(),
+                out string capabilityDiagnostic))
+        {
+            await error.WriteLineAsync(
+                $"Error: MIG-EXPORT-PLATFORM-001: {capabilityDiagnostic}");
+            return InspectorCommandRunner.ExitError;
+        }
 
         return exportFormat == "csv"
             ? await RunCsvExportAsync(
@@ -355,6 +562,23 @@ internal static class MigrationCommandRunner
                 output,
                 error,
                 ct);
+    }
+
+    internal static bool TryGetExportPublicationCapability(
+        bool isWindows,
+        out string diagnostic)
+    {
+        if (isWindows)
+        {
+            diagnostic = string.Empty;
+            return true;
+        }
+
+        diagnostic =
+            "CSV/JSON export publication currently requires Windows. " +
+            "The qualified resumable publisher depends on handle-bound parent-directory validation " +
+            "and atomic no-replace pair publication; an equivalent Unix substrate has not been qualified.";
+        return false;
     }
 
     private static async ValueTask<int> RunCsvExportAsync(
@@ -636,7 +860,7 @@ internal static class MigrationCommandRunner
         if (!TryParseOptions(
                 args,
                 2,
-                ["--no-header"],
+                ["--no-header", "--allow-ace12-fallback"],
                 out Dictionary<string, string> options,
                 out string? parseError))
         {
@@ -689,6 +913,16 @@ internal static class MigrationCommandRunner
                 outputValue,
                 output,
                 error,
+                ct);
+        }
+        if (string.Equals(source, "access", StringComparison.OrdinalIgnoreCase))
+        {
+            return await RunAccessInspectAsync(
+                options,
+                outputValue,
+                output,
+                error,
+                dependencies,
                 ct);
         }
         if (string.Equals(
@@ -2315,6 +2549,427 @@ internal static class MigrationCommandRunner
         }
     }
 
+    private static async ValueTask<int> RunAccessInspectAsync(
+        IReadOnlyDictionary<string, string> options,
+        string outputValue,
+        TextWriter output,
+        TextWriter error,
+        MigrationCommandDependencies dependencies,
+        CancellationToken ct)
+    {
+        if (!RequireOnly(
+                options,
+                [
+                    "--source",
+                    "--input",
+                    "--package",
+                    "--out",
+                    "--provider",
+                    "--allow-ace12-fallback",
+                    "--command-timeout-seconds",
+                    "--max-source-bytes",
+                    "--max-package-bytes",
+                ],
+                out string? parseError))
+        {
+            return await OptionErrorAsync(
+                "The Microsoft Access inspect command contains an unsupported option.",
+                error);
+        }
+        if (!options.TryGetValue("--input", out string? inputValue))
+        {
+            return await OptionErrorAsync(
+                "Missing required option --input.",
+                error);
+        }
+        if (!options.TryGetValue("--package", out string? packageValue))
+        {
+            return await OptionErrorAsync(
+                "Missing required option --package.",
+                error);
+        }
+        if (string.IsNullOrWhiteSpace(inputValue) ||
+            string.IsNullOrWhiteSpace(packageValue) ||
+            string.IsNullOrWhiteSpace(outputValue))
+        {
+            return await OptionErrorAsync(
+                "Microsoft Access input, retained package, and catalog paths cannot be blank.",
+                error);
+        }
+
+        string provider =
+            options.GetValueOrDefault("--provider", "ace16")
+                .ToLowerInvariant() switch
+            {
+                "ace16" => "ace16",
+                "ace12" => "ace12",
+                _ => string.Empty,
+            };
+        if (provider.Length == 0)
+        {
+            return await OptionErrorAsync(
+                "Microsoft Access provider must be ace16 or ace12.",
+                error);
+        }
+        if (provider == "ace12" &&
+            options.ContainsKey("--allow-ace12-fallback"))
+        {
+            return await OptionErrorAsync(
+                "--allow-ace12-fallback applies only when ace16 is selected.",
+                error);
+        }
+
+        int commandTimeoutSeconds =
+            AccessWorkerClient
+                .DefaultCommandTimeoutSeconds;
+        if (options.TryGetValue(
+                "--command-timeout-seconds",
+                out string? timeoutValue) &&
+            (!TryParsePositiveInt(
+                 timeoutValue,
+                 out commandTimeoutSeconds) ||
+             commandTimeoutSeconds >
+                 AccessWorkerClient
+                     .MaxCommandTimeoutSeconds))
+        {
+            return await OptionErrorAsync(
+                "The Microsoft Access command timeout must be an integer from 1 through 3600.",
+                error);
+        }
+
+        long maxSourceBytes =
+            AccessWorkerClient
+                .DefaultMaxSourceBytes;
+        if (options.TryGetValue(
+                "--max-source-bytes",
+                out string? sourceLimitValue) &&
+            (!TryParsePositiveLong(
+                 sourceLimitValue,
+                 out maxSourceBytes) ||
+             maxSourceBytes >
+                 AccessWorkerClient
+                     .HardMaxSourceBytes))
+        {
+            return await OptionErrorAsync(
+                "The Microsoft Access source byte limit must be a positive integer no larger than 64 GiB.",
+                error);
+        }
+        long maxPackageBytes =
+            AccessWorkerClient
+                .DefaultMaxPackageBytes;
+        if (options.TryGetValue(
+                "--max-package-bytes",
+                out string? packageLimitValue) &&
+            (!TryParsePositiveLong(
+                 packageLimitValue,
+                 out maxPackageBytes) ||
+             maxPackageBytes >
+                 AccessWorkerClient
+                     .HardMaxPackageBytes))
+        {
+            return await OptionErrorAsync(
+                "The Microsoft Access package byte limit must be a positive integer no larger than 256 GiB.",
+                error);
+        }
+
+        string inputPath;
+        string packagePath;
+        string outputPath;
+        try
+        {
+            inputPath = Path.GetFullPath(inputValue);
+            packagePath = Path.GetFullPath(packageValue);
+            outputPath = Path.GetFullPath(outputValue);
+        }
+        catch (Exception pathError) when (
+            pathError is ArgumentException or
+                NotSupportedException or
+                PathTooLongException)
+        {
+            throw new MigrationCliSafeException(
+                "MIG-ACCESS-CLI-PATH-001",
+                "The Microsoft Access migration paths are invalid.",
+                pathError);
+        }
+
+        bool pathsCollide;
+        try
+        {
+            pathsCollide = ContainsEquivalentResolvedPaths(
+                [inputPath, packagePath, outputPath]);
+        }
+        catch (Exception pathError) when (
+            pathError is IOException or
+                UnauthorizedAccessException or
+                ArgumentException or
+                NotSupportedException)
+        {
+            throw new MigrationCliSafeException(
+                "MIG-ACCESS-CLI-PATH-001",
+                "The Microsoft Access migration paths could not be verified safely.",
+                pathError);
+        }
+        if (pathsCollide)
+        {
+            return await OptionErrorAsync(
+                "Microsoft Access input, retained package, and catalog output must use different files.",
+                error);
+        }
+        if (File.Exists(packagePath) ||
+            Directory.Exists(packagePath))
+        {
+            return await OptionErrorAsync(
+                "The Microsoft Access retained package destination already exists.",
+                error);
+        }
+        if (File.Exists(outputPath) ||
+            Directory.Exists(outputPath))
+        {
+            return await OptionErrorAsync(
+                "The Microsoft Access catalog destination already exists.",
+                error);
+        }
+
+        string? packageParent =
+            Path.GetDirectoryName(packagePath);
+        if (string.IsNullOrEmpty(packageParent) ||
+            !Directory.Exists(packageParent))
+        {
+            return await OptionErrorAsync(
+                "The Microsoft Access retained package parent must be an existing caller-controlled directory.",
+                error);
+        }
+
+        RetainedCaptureDirectoryLease
+            packageParentLease;
+        try
+        {
+            packageParentLease =
+                RetainedCaptureDirectoryLease.Open(
+                    packageParent);
+        }
+        catch (Exception pathError) when (
+            pathError is IOException or
+                UnauthorizedAccessException or
+                ArgumentException or
+                NotSupportedException)
+        {
+            throw new MigrationCliSafeException(
+                "MIG-ACCESS-CLI-PATH-001",
+                "The Microsoft Access retained package directory is not a safe caller-controlled local directory.",
+                pathError);
+        }
+
+        using (packageParentLease)
+        {
+            bool packagePublished = false;
+            bool catalogPublished = false;
+            SqlServerCaptureWorkspace? workspace =
+                null;
+            try
+            {
+                packageParentLease.AssertUnchanged();
+                workspace =
+                    SqlServerCaptureWorkspace.Create(
+                        packageParent,
+                        AccessWorkerClient
+                            .CaptureWorkspacePrefix,
+                        AccessWorkerClient
+                            .CaptureOutputFileName,
+                        packageParentLease);
+                AccessCaptureWorkerResult workerResult =
+                    await dependencies.CaptureAccessAsync(
+                            inputPath,
+                            CSharpDbCapabilityCatalogLoader
+                                .CurrentTargetVersion,
+                            workspace.CapturePath,
+                            provider,
+                            options.ContainsKey(
+                                "--allow-ace12-fallback"),
+                            commandTimeoutSeconds,
+                            maxSourceBytes,
+                            maxPackageBytes,
+                            ct)
+                        .ConfigureAwait(false);
+                ArgumentNullException.ThrowIfNull(
+                    workerResult);
+                packageParentLease.AssertUnchanged();
+                workspace.AssertUnchanged();
+
+                switch (workerResult.Status)
+                {
+                    case AccessCaptureWorkerStatus
+                        .Missing:
+                    case AccessCaptureWorkerStatus
+                        .Incompatible:
+                        throw new MigrationCliSafeException(
+                            "MIG-ACCESS-CLI-ADAPTER-001",
+                            "The optional Microsoft Access capture adapter is unavailable or incompatible.",
+                            new InvalidOperationException(
+                                "The Microsoft Access capture worker boundary is unavailable."));
+                    case AccessCaptureWorkerStatus
+                        .UnsupportedPlatform:
+                        throw new MigrationCliSafeException(
+                            "MIG-ACCESS-CLI-INSPECT-001",
+                            "Microsoft Access capture requires Windows.",
+                            new PlatformNotSupportedException());
+                    case AccessCaptureWorkerStatus
+                        .ProviderUnavailable:
+                        throw new MigrationCliSafeException(
+                            "MIG-ACCESS-CLI-INSPECT-001",
+                            "The selected process-matched ACE OLE DB provider is unavailable.",
+                            new InvalidOperationException(
+                                "The Access provider is unavailable."));
+                    case AccessCaptureWorkerStatus
+                        .LimitExceeded:
+                        throw new MigrationCliSafeException(
+                            "MIG-ACCESS-CLI-CAPTURE-LIMIT-001",
+                            "The Microsoft Access retained capture exceeded a configured safety limit.",
+                            new InvalidDataException(
+                                "The Access worker crossed a retained-source limit."));
+                    case AccessCaptureWorkerStatus
+                        .CaptureFailed:
+                        throw new MigrationCliSafeException(
+                            "MIG-ACCESS-CLI-INSPECT-001",
+                            "The Microsoft Access source could not be captured or inspected safely.",
+                            new InvalidOperationException(
+                                "The Access worker could not retain the source."));
+                }
+                if (workerResult.Status !=
+                        AccessCaptureWorkerStatus
+                            .Success ||
+                    workerResult.Receipt is null)
+                {
+                    throw new MigrationCliSafeException(
+                        "MIG-ACCESS-CLI-ADAPTER-001",
+                        "The optional Microsoft Access capture adapter is unavailable or incompatible.",
+                        new InvalidDataException(
+                            "The Access capture worker returned an invalid contract."));
+                }
+
+                AccessCaptureReceipt receipt =
+                    workerResult.Receipt;
+                MigrationCatalog catalog;
+                await using (
+                    RetainedMigrationPackageSession
+                        session =
+                        await RetainedMigrationPackageSession
+                            .OpenAsync(
+                                workspace.CapturePath,
+                                new RetainedMigrationPackageOpenOptions
+                                {
+                                    ExpectedPackageDigest =
+                                        receipt
+                                            .PackageDigest,
+                                    WorkspacePath =
+                                        workspace
+                                            .VerificationWorkspacePath,
+                                    MaxPackageBytes =
+                                        maxPackageBytes,
+                                },
+                                ct)
+                            .ConfigureAwait(false))
+                {
+                    ValidateAccessCaptureSession(
+                        session,
+                        receipt);
+                    catalog = session.Catalog;
+                }
+
+                ct.ThrowIfCancellationRequested();
+                packageParentLease.AssertUnchanged();
+                workspace.AssertUnchanged();
+                File.Move(
+                    workspace.CapturePath,
+                    packagePath,
+                    overwrite: false);
+                packagePublished = true;
+                packageParentLease.AssertUnchanged();
+
+                workspace.Dispose();
+                workspace = null;
+                await WriteNewArtifactAsync(
+                    outputPath,
+                    MigrationArtifactSerializer
+                        .SerializeCatalog(catalog),
+                    ct);
+                catalogPublished = true;
+
+                int exitCode =
+                    catalog.Diagnostics.Count == 0
+                        ? InspectorCommandRunner.ExitOk
+                        : InspectorCommandRunner.ExitWarn;
+                await output.WriteLineAsync(
+                    $"Status: {StatusLabel(exitCode)} | catalog={outputPath} | package={packagePath} | packageDigest={receipt.PackageDigest} | objects={catalog.Objects.Count} | tables={receipt.TableCount} | rows={receipt.RowCount} | diagnostics={catalog.Diagnostics.Count} | applyReady=false");
+                return exitCode;
+            }
+            catch (Exception operationFailure)
+            {
+                Exception failure = operationFailure;
+                if (workspace is not null)
+                {
+                    try
+                    {
+                        workspace.Dispose();
+                        workspace = null;
+                    }
+                    catch (
+                        RetainedCaptureWorkspaceCleanupException
+                            cleanupFailure)
+                    {
+                        failure = new
+                            RetainedCaptureWorkspaceCleanupException(
+                                operationFailure,
+                                cleanupFailure);
+                    }
+                }
+
+                if (failure is
+                    RetainedCaptureWorkspaceCleanupException)
+                {
+                    throw new MigrationCliSafeException(
+                        "MIG-ACCESS-CLI-CLEANUP-001",
+                        packagePublished
+                            ? "The Microsoft Access retained package was published, but private capture workspace cleanup failed; the package was preserved and the catalog was not published."
+                            : "Microsoft Access capture failed and its private workspace could not be cleaned safely; no final artifacts were published.",
+                        failure);
+                }
+                if (packagePublished &&
+                    !catalogPublished)
+                {
+                    throw new MigrationCliSafeException(
+                        "MIG-ACCESS-CLI-CATALOG-001",
+                        "Microsoft Access catalog publication failed after the retained package was published; the package was preserved.",
+                        failure);
+                }
+                if (failure is
+                    MigrationCliSafeException or
+                    OperationCanceledException)
+                {
+                    ExceptionDispatchInfo.Capture(
+                        failure).Throw();
+                }
+                if (failure is
+                    RetainedMigrationPackageException)
+                {
+                    throw new MigrationCliSafeException(
+                        "MIG-ACCESS-CLI-PACKAGE-001",
+                        "The Microsoft Access retained package could not be verified safely.",
+                        failure);
+                }
+                if (IsRecoverableCliException(
+                        failure))
+                {
+                    throw new MigrationCliSafeException(
+                        "MIG-ACCESS-CLI-INSPECT-001",
+                        "The Microsoft Access source could not be captured or inspected safely.",
+                        failure);
+                }
+                throw;
+            }
+        }
+    }
+
     private static async ValueTask<int> RunCsvInspectAsync(
         IReadOnlyDictionary<string, string> options,
         string outputValue,
@@ -3314,6 +3969,562 @@ internal static class MigrationCommandRunner
         ct.ThrowIfCancellationRequested();
 
         return DdlCompatibilityExitCode(report.Status);
+    }
+
+    private static async ValueTask<int> RunTypeMapAsync(
+        string[] args,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken ct)
+    {
+        if (args.Length < 3 ||
+            args[2].StartsWith("--", StringComparison.Ordinal) ||
+            string.IsNullOrWhiteSpace(args[2]))
+        {
+            return await OptionErrorAsync(
+                "Missing migration catalog path.",
+                error);
+        }
+        if (!TryParseOptions(
+                args,
+                3,
+                out Dictionary<string, string> options,
+                out string? parseError))
+        {
+            return await OptionErrorAsync(parseError!, error);
+        }
+        if (!RequireOnly(
+                options,
+                ["--out", "--profile", "--custom-map", "--format"],
+                out parseError))
+        {
+            return await OptionErrorAsync(
+                "The data type mapping command contains an unsupported option.",
+                error);
+        }
+        if (!options.TryGetValue("--out", out string? outputValue) ||
+            string.IsNullOrWhiteSpace(outputValue))
+        {
+            return await OptionErrorAsync(
+                "Missing required option --out.",
+                error);
+        }
+
+        MigrationMappingProfile profile =
+            options.GetValueOrDefault("--profile", "preserve")
+                .ToLowerInvariant() switch
+            {
+                "preserve" => MigrationMappingProfile.Preserve,
+                "queryable" => MigrationMappingProfile.Queryable,
+                "custom" => MigrationMappingProfile.Custom,
+                _ => (MigrationMappingProfile)(-1),
+            };
+        if (!Enum.IsDefined(profile))
+        {
+            return await OptionErrorAsync(
+                "Unsupported data type mapping profile.",
+                error);
+        }
+
+        bool hasCustomMap = options.TryGetValue(
+            "--custom-map",
+            out string? customMapValue);
+        if (profile == MigrationMappingProfile.Custom && !hasCustomMap)
+        {
+            return await OptionErrorAsync(
+                "The custom data type mapping profile requires --custom-map.",
+                error);
+        }
+        if (profile != MigrationMappingProfile.Custom && hasCustomMap)
+        {
+            return await OptionErrorAsync(
+                "--custom-map can be used only with the custom data type mapping profile.",
+                error);
+        }
+
+        string format = options.GetValueOrDefault("--format", "text");
+        if (!IsCompatibilityOutputFormat(format))
+        {
+            return await OptionErrorAsync(
+                "Unsupported data type mapping output format.",
+                error);
+        }
+
+        string catalogPath = Path.GetFullPath(args[2]);
+        string outputPath = Path.GetFullPath(outputValue);
+        string? customMapPath = hasCustomMap
+            ? Path.GetFullPath(customMapValue!)
+            : null;
+        var protectedPaths = new List<string>
+        {
+            catalogPath,
+            outputPath,
+        };
+        if (customMapPath is not null)
+            protectedPaths.Add(customMapPath);
+        if (ContainsEquivalentPaths(protectedPaths))
+        {
+            return await OptionErrorAsync(
+                "The catalog, custom map, and report must use different files.",
+                error);
+        }
+
+        MigrationCatalog catalog;
+        try
+        {
+            catalog = MigrationArtifactSerializer.DeserializeCatalog(
+                await ReadBoundedMigrationContractArtifactAsync(
+                    catalogPath,
+                    ct));
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception artifactError) when (
+            IsRecoverableCliException(artifactError))
+        {
+            throw new MigrationCliSafeException(
+                "MIG-TYPE-MAP-CATALOG-001",
+                "The migration catalog could not be loaded safely for data type mapping.",
+                artifactError);
+        }
+
+        IReadOnlyDictionary<string, DbType> customTargetTypes =
+            new Dictionary<string, DbType>(StringComparer.Ordinal);
+        if (customMapPath is not null)
+        {
+            try
+            {
+                customTargetTypes = ParseCustomTypeMap(
+                    await ReadBoundedMigrationContractArtifactAsync(
+                        customMapPath,
+                        ct));
+            }
+            catch (OperationCanceledException) when (
+                ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception mapError) when (
+                IsRecoverableCliException(mapError))
+            {
+                throw new MigrationCliSafeException(
+                    "MIG-TYPE-MAP-CUSTOM-001",
+                    "The custom data type map could not be loaded safely.",
+                    mapError);
+            }
+        }
+
+        DataTypeMappingReport report;
+        try
+        {
+            report = new DataTypeMappingReportService().Create(
+                catalog,
+                new DataTypeMappingReportOptions
+                {
+                    Profile = profile,
+                    CustomTargetTypes = customTargetTypes,
+                });
+        }
+        catch (Exception mappingError) when (
+            IsRecoverableCliException(mappingError))
+        {
+            throw new MigrationCliSafeException(
+                "MIG-TYPE-MAP-ANALYSIS-001",
+                "The data type mapping report could not be produced safely.",
+                mappingError);
+        }
+
+        string rendered = string.Equals(
+                format,
+                "json",
+                StringComparison.OrdinalIgnoreCase)
+            ? CompatibilityReportFormatter.ToJson(report)
+            : CompatibilityReportFormatter.ToText(report);
+        await WriteNewCompatibilityArtifactAsync(
+            outputPath,
+            rendered,
+            "MIG-TYPE-MAP-OUTPUT-001",
+            "The data type mapping report could not be published without overwriting an existing file.",
+            ct);
+        await output.WriteLineAsync(
+            $"Data type mapping report: total={report.Summary.Total} | exact={report.Summary.Exact} | lossless-reencoded={report.Summary.LosslessReencoded} | lossy={report.Summary.Lossy} | unsupported={report.Summary.Unsupported} | full-stream-validation={report.Summary.RequiresFullStreamValidation}");
+
+        if (report.Summary.Unsupported != 0)
+            return InspectorCommandRunner.ExitError;
+        if (report.Summary.Lossy != 0 ||
+            report.Summary.RequiresFullStreamValidation != 0)
+        {
+            return InspectorCommandRunner.ExitWarn;
+        }
+        return InspectorCommandRunner.ExitOk;
+    }
+
+    private static async ValueTask<int> RunQueryCheckAsync(
+        string[] args,
+        TextWriter output,
+        TextWriter error,
+        MigrationCommandDependencies dependencies,
+        CancellationToken ct)
+    {
+        if (args.Length < 3 ||
+            args[2].StartsWith("--", StringComparison.Ordinal) ||
+            string.IsNullOrWhiteSpace(args[2]))
+        {
+            return await OptionErrorAsync(
+                "Missing query file path.",
+                error);
+        }
+        if (!TryParseOptions(
+                args,
+                3,
+                out Dictionary<string, string> options,
+                out string? parseError))
+        {
+            return await OptionErrorAsync(parseError!, error);
+        }
+        if (!RequireOnly(
+                options,
+                [
+                    "--dialect",
+                    "--out",
+                    "--query-id",
+                    "--compatibility-level",
+                    "--format",
+                ],
+                out parseError))
+        {
+            return await OptionErrorAsync(
+                "The query compatibility command contains an unsupported option.",
+                error);
+        }
+        if (!options.TryGetValue("--dialect", out string? dialectValue) ||
+            string.IsNullOrWhiteSpace(dialectValue))
+        {
+            return await OptionErrorAsync(
+                "Missing required option --dialect.",
+                error);
+        }
+        if (!options.TryGetValue("--out", out string? outputValue) ||
+            string.IsNullOrWhiteSpace(outputValue))
+        {
+            return await OptionErrorAsync(
+                "Missing required option --out.",
+                error);
+        }
+
+        QuerySourceDialect dialect =
+            dialectValue.ToLowerInvariant() switch
+            {
+                "csharpdb" => QuerySourceDialect.CSharpDb,
+                "tsql" => QuerySourceDialect.SqlServerTsql,
+                "mysql" => QuerySourceDialect.MySql,
+                "sqlite" => QuerySourceDialect.Sqlite,
+                "access" => QuerySourceDialect.Access,
+                _ => (QuerySourceDialect)(-1),
+            };
+        if (!Enum.IsDefined(dialect))
+        {
+            return await OptionErrorAsync(
+                "Unsupported query source dialect.",
+                error);
+        }
+
+        int compatibilityLevel = 160;
+        if (options.TryGetValue(
+                "--compatibility-level",
+                out string? compatibilityValue))
+        {
+            if (dialect != QuerySourceDialect.SqlServerTsql)
+            {
+                return await OptionErrorAsync(
+                    "--compatibility-level can be used only with the tsql dialect.",
+                    error);
+            }
+            if (!int.TryParse(
+                    compatibilityValue,
+                    NumberStyles.None,
+                    CultureInfo.InvariantCulture,
+                    out compatibilityLevel) ||
+                compatibilityLevel is not (150 or 160 or 170))
+            {
+                return await OptionErrorAsync(
+                    "SQL Server compatibility level must be 150, 160, or 170.",
+                    error);
+            }
+        }
+
+        string format = options.GetValueOrDefault("--format", "text");
+        if (!IsCompatibilityOutputFormat(format))
+        {
+            return await OptionErrorAsync(
+                "Unsupported query compatibility output format.",
+                error);
+        }
+
+        string queryPath = Path.GetFullPath(args[2]);
+        string outputPath = Path.GetFullPath(outputValue);
+        if (PathsAreEquivalent(queryPath, outputPath))
+        {
+            return await OptionErrorAsync(
+                "The query input and compatibility report must use different files.",
+                error);
+        }
+        string queryId = options.GetValueOrDefault(
+            "--query-id",
+            Path.GetFileNameWithoutExtension(queryPath));
+        if (string.IsNullOrWhiteSpace(queryId))
+        {
+            return await OptionErrorAsync(
+                "The query id must not be empty.",
+                error);
+        }
+
+        string query;
+        try
+        {
+            query = await ReadBoundedDdlScriptAsync(
+                queryPath,
+                ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (DdlScriptLimitException limitError)
+        {
+            throw new MigrationCliSafeException(
+                "MIG-QUERY-CLI-LIMIT-001",
+                "The query exceeds a production size limit.",
+                limitError);
+        }
+        catch (DecoderFallbackException encodingError)
+        {
+            throw new MigrationCliSafeException(
+                "MIG-QUERY-CLI-ENCODING-001",
+                "The query is not valid UTF-8.",
+                encodingError);
+        }
+        catch (Exception readError) when (
+            IsRecoverableCliException(readError))
+        {
+            throw new MigrationCliSafeException(
+                "MIG-QUERY-CLI-READ-001",
+                "The query could not be read safely.",
+                readError);
+        }
+
+        QueryCompatibilityReport report;
+        try
+        {
+            if (dialect == QuerySourceDialect.SqlServerTsql)
+            {
+                string targetVersion =
+                    CSharpDbCapabilityCatalogLoader
+                        .CurrentTargetVersion;
+                SqlServerQueryWorkerResult result =
+                    await dependencies.AnalyzeTsqlQueryAsync(
+                        query,
+                        queryId,
+                        compatibilityLevel,
+                        targetVersion,
+                        ct);
+                ArgumentNullException.ThrowIfNull(result);
+                if (result.Status is
+                    SqlServerQueryWorkerStatus.Missing or
+                    SqlServerQueryWorkerStatus.Incompatible)
+                {
+                    throw new MigrationCliSafeException(
+                        "MIG-TSQL-CLI-ADAPTER-001",
+                        "The optional T-SQL query analyzer is unavailable or incompatible.",
+                        new InvalidOperationException(
+                            "The T-SQL worker boundary is unavailable."));
+                }
+                if (result.Status ==
+                    SqlServerQueryWorkerStatus.AnalysisFailed)
+                {
+                    throw new MigrationCliSafeException(
+                        "MIG-TSQL-CLI-QUERY-CHECK-001",
+                        "The T-SQL query compatibility report could not be produced safely.",
+                        new InvalidOperationException(
+                            "The T-SQL worker could not analyze the source."));
+                }
+                if (result.Status !=
+                        SqlServerQueryWorkerStatus.Success ||
+                    !SqlServerWorkerClient.TrySanitizeQueryReport(
+                        result.Report,
+                        targetVersion,
+                        queryId,
+                        query,
+                        out QueryCompatibilityReport?
+                            sanitizedReport))
+                {
+                    throw new MigrationCliSafeException(
+                        "MIG-TSQL-CLI-ADAPTER-001",
+                        "The optional T-SQL query analyzer is unavailable or incompatible.",
+                        new InvalidDataException(
+                            "The T-SQL worker returned an invalid report contract."));
+                }
+
+                report = sanitizedReport!;
+            }
+            else
+            {
+                report = new QueryCompatibilityAnalyzer().Analyze(
+                    new QueryCompatibilityRequest
+                    {
+                        SqlServerCompatibilityLevel =
+                            compatibilityLevel,
+                        Queries =
+                        [
+                            new QueryCompatibilityInput
+                            {
+                                QueryId = queryId,
+                                SourceDialect = dialect,
+                                Sql = query,
+                            },
+                        ],
+                    },
+                    ct);
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (MigrationCliSafeException)
+        {
+            throw;
+        }
+        catch (Exception analysisError) when (
+            IsRecoverableCliException(analysisError))
+        {
+            throw new MigrationCliSafeException(
+                dialect == QuerySourceDialect.SqlServerTsql
+                    ? "MIG-TSQL-CLI-QUERY-CHECK-001"
+                    : "MIG-QUERY-CLI-ANALYSIS-001",
+                dialect == QuerySourceDialect.SqlServerTsql
+                    ? "The T-SQL query compatibility report could not be produced safely."
+                    : "The query compatibility report could not be produced safely.",
+                analysisError);
+        }
+
+        string rendered = string.Equals(
+                format,
+                "json",
+                StringComparison.OrdinalIgnoreCase)
+            ? CompatibilityReportFormatter.ToJson(report)
+            : CompatibilityReportFormatter.ToText(report);
+        await WriteNewCompatibilityArtifactAsync(
+            outputPath,
+            rendered,
+            "MIG-QUERY-CLI-OUTPUT-001",
+            "The query compatibility report could not be published without overwriting an existing file.",
+            ct);
+        await output.WriteLineAsync(
+            $"Query compatibility report: total={report.Summary.Total} | compatible={report.Summary.Compatible} | rewrite={report.Summary.CompatibleWithRewrite} | conditional={report.Summary.Conditional} | unsupported={report.Summary.Unsupported} | unknown={report.Summary.Unknown}");
+
+        if (report.Summary.Unsupported != 0 ||
+            report.Summary.Unknown != 0)
+        {
+            return InspectorCommandRunner.ExitError;
+        }
+        if (report.Summary.CompatibleWithRewrite != 0 ||
+            report.Summary.Conditional != 0)
+        {
+            return InspectorCommandRunner.ExitWarn;
+        }
+        return InspectorCommandRunner.ExitOk;
+    }
+
+    private static bool IsCompatibilityOutputFormat(string format) =>
+        string.Equals(
+            format,
+            "text",
+            StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(
+            format,
+            "json",
+            StringComparison.OrdinalIgnoreCase);
+
+    private static IReadOnlyDictionary<string, DbType>
+        ParseCustomTypeMap(string payload)
+    {
+        using JsonDocument document = JsonDocument.Parse(
+            payload,
+            new JsonDocumentOptions
+            {
+                AllowTrailingCommas = false,
+                CommentHandling = JsonCommentHandling.Disallow,
+                MaxDepth = 32,
+            });
+        if (document.RootElement.ValueKind != JsonValueKind.Object)
+        {
+            throw new InvalidDataException(
+                "The custom data type map must be a JSON object.");
+        }
+
+        var mappings =
+            new Dictionary<string, DbType>(StringComparer.Ordinal);
+        foreach (JsonProperty property in
+                 document.RootElement.EnumerateObject())
+        {
+            if (mappings.Count >= 100_000)
+            {
+                throw new InvalidDataException(
+                    "The custom data type map exceeds its entry limit.");
+            }
+            if (property.Value.ValueKind != JsonValueKind.String ||
+                !Enum.TryParse(
+                    property.Value.GetString(),
+                    ignoreCase: true,
+                    out DbType targetType) ||
+                !Enum.IsDefined(targetType) ||
+                targetType is not (
+                    DbType.Integer or
+                    DbType.Real or
+                    DbType.Text or
+                    DbType.Blob))
+            {
+                throw new InvalidDataException(
+                    $"Custom target type for '{property.Name}' is invalid.");
+            }
+            if (!mappings.TryAdd(property.Name, targetType))
+            {
+                throw new InvalidDataException(
+                    $"The custom data type map contains duplicate object id '{property.Name}'.");
+            }
+        }
+        return mappings;
+    }
+
+    private static async ValueTask WriteNewCompatibilityArtifactAsync(
+        string outputPath,
+        string content,
+        string code,
+        string message,
+        CancellationToken ct)
+    {
+        try
+        {
+            await WriteNewArtifactAsync(
+                outputPath,
+                content,
+                ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception outputError) when (
+            IsRecoverableCliException(outputError))
+        {
+            throw new MigrationCliSafeException(
+                code,
+                message,
+                outputError);
+        }
     }
 
     private static string SafeDdlCheckOptionError(string error)
@@ -5253,6 +6464,13 @@ internal static class MigrationCommandRunner
             error = LiteDbCatalogRouteOnlyMessage;
             return false;
         }
+        if (catalog.Source.Kind == MigrationSourceKind.Access &&
+            !IsRetainedAccessCatalog(catalog))
+        {
+            error =
+                "This Microsoft Access catalog is not a retained Access package catalog and has no row replay route.";
+            return false;
+        }
         if (catalog.Source.Kind ==
                 MigrationSourceKind.SqlServer &&
             !IsRetainedSqlServerCatalog(catalog))
@@ -5275,6 +6493,7 @@ internal static class MigrationCommandRunner
             MigrationSourceKind.Json or
             MigrationSourceKind.Sqlite or
             MigrationSourceKind.LiteDb or
+            MigrationSourceKind.Access or
             MigrationSourceKind.SqlServer or
             MigrationSourceKind.MySql)
         {
@@ -5284,6 +6503,8 @@ internal static class MigrationCommandRunner
                 MigrationSourceKind.Json => "JSON",
                 MigrationSourceKind.Sqlite => "SQLite",
                 MigrationSourceKind.LiteDb => "LiteDB",
+                MigrationSourceKind.Access =>
+                    "Microsoft Access",
                 MigrationSourceKind.SqlServer =>
                     "SQL Server",
                 MigrationSourceKind.MySql => "MySQL",
@@ -5713,6 +6934,82 @@ internal static class MigrationCommandRunner
                     try
                     {
                         await liteDbSession
+                            .DisposeAsync();
+                    }
+                    catch (Exception cleanupFailure)
+                    {
+                        throw new AggregateException(
+                            operationFailure,
+                            cleanupFailure);
+                    }
+
+                    ExceptionDispatchInfo.Capture(
+                        operationFailure).Throw();
+                    throw;
+                }
+
+            case MigrationSourceKind.Access:
+                if (!IsRetainedAccessCatalog(catalog))
+                {
+                    throw new NotSupportedException(
+                        "This Microsoft Access catalog has no retained row route.");
+                }
+
+                long accessMaxSourceBytes =
+                    new RetainedMigrationPackageOpenOptions
+                    {
+                        ExpectedPackageDigest =
+                            options[
+                                "--expected-manifest-digest"],
+                    }.MaxPackageBytes;
+                if (options.TryGetValue(
+                        "--max-source-bytes",
+                        out string? accessMaxSourceBytesValue))
+                {
+                    _ = TryParseSourceByteLimit(
+                        accessMaxSourceBytesValue,
+                        out accessMaxSourceBytes);
+                }
+
+                RetainedMigrationPackageSession?
+                    accessSession = null;
+                try
+                {
+                    accessSession =
+                        await RetainedMigrationPackageSession
+                            .OpenAsync(
+                                Path.GetFullPath(
+                                    options[
+                                        "--source-package"]),
+                                new RetainedMigrationPackageOpenOptions
+                                {
+                                    ExpectedPackageDigest =
+                                        options[
+                                            "--expected-manifest-digest"],
+                                    WorkspacePath =
+                                        options.GetValueOrDefault(
+                                            "--workspace"),
+                                    MaxPackageBytes =
+                                        accessMaxSourceBytes,
+                                },
+                                ct);
+                    ValidateOpenedAccessSource(
+                        catalog,
+                        accessSession);
+                    return new MigrationSourceLease(
+                        accessSession.DataSource,
+                        accessSession,
+                        new MigrationSourcePackageMetadata(
+                            RetainedMigrationPackageContract
+                                .Format,
+                            accessSession.PackageDigest));
+                }
+                catch (Exception operationFailure) when (
+                    accessSession is not null)
+                {
+                    try
+                    {
+                        await accessSession
                             .DisposeAsync();
                     }
                     catch (Exception cleanupFailure)
@@ -6162,6 +7459,193 @@ internal static class MigrationCommandRunner
         }
 
         ValidateOpenedSource(catalog, session.DataSource);
+    }
+
+    private static void ValidateAccessCaptureSession(
+        RetainedMigrationPackageSession session,
+        AccessCaptureReceipt receipt)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        ArgumentNullException.ThrowIfNull(receipt);
+        ValidateOpenedAccessSource(
+            session.Catalog,
+            session);
+
+        long manifestRows = 0;
+        foreach (RetainedMigrationPackageTableManifest table in
+                 session.Manifest.Tables)
+        {
+            manifestRows = checked(
+                manifestRows + table.RowCount);
+        }
+        if (!string.Equals(
+                session.PackageDigest,
+                receipt.PackageDigest,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                session.Manifest.CatalogDigest,
+                receipt.CatalogDigest,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                session.Manifest.SnapshotIdentity,
+                receipt.SnapshotIdentity,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                session.DataSource.SnapshotIdentity,
+                receipt.SnapshotIdentity,
+                StringComparison.Ordinal) ||
+            session.Manifest.Tables.Count !=
+                receipt.TableCount ||
+            manifestRows != receipt.RowCount)
+        {
+            throw new InvalidDataException(
+                "The retained Microsoft Access package does not match the worker capture receipt.");
+        }
+    }
+
+    private static void ValidateOpenedAccessSource(
+        MigrationCatalog catalog,
+        RetainedMigrationPackageSession session)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        ArgumentNullException.ThrowIfNull(session);
+        AccessRetainedManifestBindingValidator.Validate(
+            catalog,
+            session.Manifest);
+        AccessRetainedManifestBindingValidator.Validate(
+            session.Catalog,
+            session.Manifest);
+        string catalogDigest =
+            MigrationArtifactSerializer.ComputeCatalogDigest(
+                catalog);
+        string retainedCatalogDigest =
+            MigrationArtifactSerializer.ComputeCatalogDigest(
+                session.Catalog);
+        if (!IsRetainedAccessCatalog(catalog) ||
+            !IsRetainedAccessCatalog(session.Catalog) ||
+            !string.Equals(
+                session.Manifest.Format,
+                RetainedMigrationPackageContract.Format,
+                StringComparison.Ordinal) ||
+            session.Manifest.SourceKind !=
+                MigrationSourceKind.Access ||
+            !string.Equals(
+                catalogDigest,
+                retainedCatalogDigest,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                catalogDigest,
+                session.Manifest.CatalogDigest,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                session.Manifest.SourceIdentity,
+                catalog.Source.Identity,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                session.Manifest.SourceFingerprint,
+                catalog.Source.Fingerprint,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                session.Manifest.SnapshotIdentity,
+                session.DataSource.SnapshotIdentity,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "The retained Microsoft Access package catalog does not match the supplied catalog artifact.");
+        }
+
+        ValidateOpenedSource(
+            catalog,
+            session.DataSource);
+    }
+
+    private static bool IsRetainedAccessCatalog(
+        MigrationCatalog catalog)
+    {
+        if (catalog.Source.Kind != MigrationSourceKind.Access)
+            return false;
+        MigrationCatalogObject[] databases = catalog.Objects
+            .Where(static item =>
+                item.Kind == MigrationObjectKind.Database)
+            .ToArray();
+        if (databases.Length != 1)
+            return false;
+
+        MigrationCatalogObject database = databases[0];
+        if (!TryGetSingleFacetValue(
+                database.Facets,
+                AccessCatalogFacet,
+                out string catalogContract) ||
+            !TryGetSingleFacetValue(
+                database.Facets,
+                AccessRetainedDataFacet,
+                out string dataContract) ||
+            !TryGetSingleFacetValue(
+                database.Facets,
+                AccessRetainedContentDigestFacet,
+                out string contentDigest) ||
+            !TryGetSingleFacetValue(
+                database.Facets,
+                AccessRetainedSnapshotIdentityFacet,
+                out string snapshotIdentity))
+        {
+            return false;
+        }
+
+        MigrationDiagnostic[] qualification =
+            catalog.Diagnostics.Where(item =>
+                    string.Equals(
+                        item.RuleId,
+                        AccessLiveQualificationRule,
+                        StringComparison.Ordinal))
+                .ToArray();
+        return string.Equals(
+                catalogContract,
+                AccessCatalogContract,
+                StringComparison.Ordinal) &&
+            string.Equals(
+                dataContract,
+                AccessRetainedDataContract,
+                StringComparison.Ordinal) &&
+            IsCanonicalSha256(contentDigest) &&
+            IsCanonicalAccessSnapshotIdentity(
+                snapshotIdentity) &&
+            qualification.Length == 1 &&
+            qualification[0].Severity ==
+                MigrationDiagnosticSeverity.Error &&
+            qualification[0].Status ==
+                MigrationCompatibilityStatus.Unknown &&
+            qualification[0].Evidence ==
+                MigrationEvidenceLevel.Parsed &&
+            !qualification[0].CanOverride &&
+            string.Equals(
+                qualification[0].ObjectId,
+                database.ObjectId,
+                StringComparison.Ordinal);
+    }
+
+    private static bool IsCanonicalAccessSnapshotIdentity(
+        string value)
+    {
+        if (!value.StartsWith(
+                AccessRetainedSnapshotIdentityPrefix,
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+        ReadOnlySpan<char> digest = value.AsSpan(
+            AccessRetainedSnapshotIdentityPrefix.Length);
+        if (digest.Length != 64)
+            return false;
+        foreach (char character in digest)
+        {
+            if (character is not (>= '0' and <= '9') and
+                not (>= 'a' and <= 'f'))
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static void ValidateSqlServerCaptureSession(

@@ -22,8 +22,7 @@ Schema inference retains only per-column counters and candidate flags. It
 defaults ambiguous, sparse, mixed, empty, or lexically significant evidence to
 `Text`; sampled profiles report an unknown total and require later full-stream
 validation. `CsvMigrationSourceInspector` emits a validated shared migration
-catalog without claiming that a sampled prefix proves the unseen tail. See
-[`migration-csv-schema-inference.md`](../../docs/migration-csv-schema-inference.md).
+catalog without claiming that a sampled prefix proves the unseen tail.
 
 `CsvMigrationDataSource` validates every projected scalar, preserves request
 column order, splits before row or canonical-byte limits, and emits
@@ -35,14 +34,12 @@ kind, quote state, and decoded pre-normalization text. Accepted and rejected
 outcomes share one contiguous cursor interval, including all-reject batches.
 Parser, encoding, integrity, target-conversion, and resource-limit failures stay
 fatal.
-See [`migration-csv-data-source.md`](../../docs/migration-csv-data-source.md).
 
 `CsvSnapshotPackage` atomically retains the raw snapshot and exact reader,
 inference, source, and catalog policy for digest-pinned cross-process reopen.
 The CLI uses that boundary for inspect, apply, resume, and validation. A
 50,000-row CI fixture and isolated 100K/1M measurements qualify fixed live
-batches, exact resume/checksum behavior, bounded memory, and temporary cleanup;
-see [`migration-csv-performance.md`](../../docs/migration-csv-performance.md).
+batches, exact resume/checksum behavior, bounded memory, and temporary cleanup.
 
 The capability-qualified SDK validation path now replays accepted/rejected
 outcomes and compares them with the target snapshot's authoritative receipts
@@ -84,14 +81,7 @@ bytes, a fixed `_key`/`_doc` row bridge, isolated bounded cursors, and a
 privacy-safe full-snapshot catalog. Planning, staged apply/resume, and
 schema/count/checksum validation are qualified. Retained collection packaging
 and CLI routing, typed-v2 deterministic rejects, and typed export-intent
-generation are deferred enhancements. See
-[`migration-json-reader-foundation.md`](../../docs/migration-json-reader-foundation.md)
-and
-[`migration-json-table-schema.md`](../../docs/migration-json-table-schema.md),
-plus
-[`migration-json-data-source.md`](../../docs/migration-json-data-source.md)
-and
-[`migration-json-collection-projection.md`](../../docs/migration-json-collection-projection.md).
+generation are deferred enhancements.
 
 `JsonStreamingExporter` writes one ordered physical CSharpDB table as a
 compact root array or LF-terminated NDJSON without buffering the table. Its
@@ -140,8 +130,7 @@ Child-process kill/restart tests qualify all three checkpoint persistence
 cutoffs after journal authority exists for root-array JSON and NDJSON and all
 five publication cutoffs for both framings, including zero-byte empty NDJSON.
 The one-time restart-only adoption transition and disposable-VM hard-power
-qualification remain later gates. See
-[`migration-json-export-contract.md`](../../docs/migration-json-export-contract.md).
+qualification remain later gates.
 
 The typed `csharpdb-csv-export-manifest/v1` sidecar contract now binds a
 CSharpDB snapshot, ordered typed schema, fixed RFC 4180 codec, physical data
@@ -189,10 +178,7 @@ Abrupt hard-power qualification of checkpoint and publication namespace
 replacement remains open against the documented disposable-VM filesystem and
 cache matrix. The offline retained read-only CSharpDB snapshot can be reopened
 and verified across processes, and its physical table reader provides strictly
-ascending signed row IDs with an exclusive resume boundary. See
-[`migration-csv-export-contract.md`](../../docs/migration-csv-export-contract.md)
-and
-[`migration-csharpdb-retained-snapshot.md`](../../docs/migration-csharpdb-retained-snapshot.md),
-plus the
-[`migration-csv-export-power-loss-qualification.md`](../../docs/migration-csv-export-power-loss-qualification.md)
-runbook for the remaining external gate.
+ascending signed row IDs with an exclusive resume boundary. See the public
+[database migration guide](https://csharpdb.com/docs/database-migration.html)
+for the retained import/export commands, recovery contract, platform boundary,
+and remaining external qualification gates.

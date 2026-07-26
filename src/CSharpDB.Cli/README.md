@@ -116,25 +116,34 @@ csharpdb migrate inspect --source json --input <source.json|source.ndjson> --pac
 csharpdb migrate inspect --source json --input <source.json|source.ndjson> --typed-intent <source.csdbjson-intent.json> --expected-intent-manifest-digest <sha256:...> --package <source.csdbjson> --out <catalog.json> [--framing root-array|ndjson] [--table <name>] [--sample-rows <count>] [--source-id <label>] [--workspace <directory>] [--max-source-bytes <count>]
 csharpdb migrate inspect --source sqlite --input <source.db> --package <source.csdbsqlite> --out <catalog.json> [--profile-sample-size <count>] [--max-source-bytes <count>]
 csharpdb migrate inspect --source litedb --input <source.db> --package <source.csdblitedb> --out <catalog.json> [--profile-sample-size <count>] [--max-source-bytes <count>]
+csharpdb migrate inspect --source access --input <source.mdb|source.accdb> --package <source.csdbaccess> --out <catalog.json> [--provider ace16|ace12] [--allow-ace12-fallback] [--command-timeout-seconds <1..3600>] [--max-source-bytes <count>] [--max-package-bytes <count>]
 csharpdb migrate inspect --source sqlserver --connection-env <name> --out <catalog.json> [--package <source.csdbsqlserver> --max-source-bytes <count> --table-timeout-seconds <1..86400>]
 csharpdb migrate inspect --source mysql --connection-env <name> --out <catalog.json> [--package <source.csdbmysql> --max-source-bytes <count> --table-timeout-seconds <1..86400>]
 csharpdb migrate ddl-check <file.sql> --dialect csharpdb|tsql [--format text|json]
+csharpdb migrate type-map <catalog.json> --out <report> [--profile preserve|queryable|custom --custom-map <map.json>] [--format text|json]
+csharpdb migrate query-check <query.sql> --dialect csharpdb|tsql|mysql|sqlite|access --out <report> [--query-id <id>] [--compatibility-level 150|160|170] [--format text|json]
 csharpdb migrate plan <catalog.json> --out <plan.json> [--profile preserve|queryable] [--accept-exclusions all|<id,...>] [--accept-diagnostics <id,...>] [--reject-mode fail-fast|deterministic --reject-rules all|<id,...> --max-rejected-rows-per-batch <count> --max-rejected-rows-per-run <count> --max-reject-evidence-value-bytes <count> --max-reject-evidence-bytes-per-batch <count> --max-reject-evidence-bytes-per-run <count> --max-reject-artifact-bytes <count>]
 csharpdb migrate preview <plan.json> --catalog <catalog.json> [--ddl|--scratch] [--format text|json]
-csharpdb migrate apply <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite|source.csdblitedb|source.csdbsqlserver|source.csdbmysql> --expected-manifest-digest <sha256:...> [--workspace <directory>] [--max-source-bytes <count>] --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]
-csharpdb migrate validate <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite|source.csdblitedb|source.csdbsqlserver|source.csdbmysql> --expected-manifest-digest <sha256:...> [--workspace <directory>] [--max-source-bytes <count>] --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]
+csharpdb migrate apply <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite|source.csdblitedb|source.csdbaccess|source.csdbsqlserver|source.csdbmysql> --expected-manifest-digest <sha256:...> [--workspace <directory>] [--max-source-bytes <count>] --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]
+csharpdb migrate validate <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite|source.csdblitedb|source.csdbaccess|source.csdbsqlserver|source.csdbmysql> --expected-manifest-digest <sha256:...> [--workspace <directory>] [--max-source-bytes <count>] --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]
+csharpdb migrate snapshot <source.csdb> --out <retained-snapshot.db> --offline [--workspace <directory>] [--max-database-bytes <positive-int64>] [--max-wal-bytes <positive-int64>] [--max-snapshot-bytes <positive-int64>] [--json]
 csharpdb migrate export <retained-snapshot.db> --format csv --table <physical-table> --out <table.csv> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1|spreadsheet-safe-lossy-v1] [--max-data-bytes <positive-int64>] [--max-decoded-blob-bytes <positive-int32>] [--checkpoint-row-interval <positive-int64>] [--json]
 csharpdb migrate export <retained-snapshot.db> --format json|ndjson --table <physical-table> --out <table.json|table.ndjson> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1] [--max-data-bytes <positive-int64>] [--max-decoded-blob-bytes <positive-int32>] [--checkpoint-row-interval <positive-int64>] [--json]
 ```
 
 Inspection supports the immutable synthetic qualification source, strict CSV,
 untyped retained JSON package v1, explicitly selected typed JSON package v2,
-SQLite, LiteDB, SQL Server, and MySQL. SQL Server and MySQL inspection without
-`--package` remains a schema-only readiness route. Supplying `--package`
-instead creates a digest-pinned `.csdbsqlserver` or `.csdbmysql` retained
-capture. MySQL can proceed to offline apply, resume, and validation. SQL Server
-remains an evaluation capture lane because the current least-privilege metadata
-result is `Unknown` and blocks planning. CSV
+SQLite, LiteDB, Microsoft Access, SQL Server, and MySQL. Access inspection
+creates a digest-pinned `.csdbaccess` retained capture. SQL Server and MySQL
+inspection without `--package` remains a schema-only readiness route; supplying
+`--package` instead creates a digest-pinned `.csdbsqlserver` or `.csdbmysql`
+retained capture. MySQL can proceed to offline apply, resume, and validation. SQL Server
+remains an evaluation capture lane: the restricted-account metadata proof
+passes the SQL Server 2019 Express LocalDB fixture, but a separate
+non-overrideable diagnostic blocks planning until the supported-edition,
+published-runtime, platform, authentication, and differential matrix is
+complete. Microsoft Access is also evaluation-only until its Windows/ACE/file
+format/bitness VM matrix passes. CSV
 inspection freezes the raw bytes and complete reader and inference policy into
 one no-overwrite `.csdbcsv` package. JSON inspection does
 the same for root-array JSON or NDJSON-compatible whitespace-separated
@@ -162,9 +171,11 @@ or materializes it. The value is not written to the catalog, process arguments,
 process protocol, or command output, and should identify a dedicated
 least-privilege, read-only login with the required metadata visibility; retained
 SQL Server capture additionally needs `SELECT` access to the tables being
-captured. Complete SQL Server metadata visibility is currently proven only for
-`sysadmin`; a clean restricted account remains `Unknown` and blocks planning,
-so do not elevate an account to bypass that guard. Retained MySQL v1 uses a
+captured. Complete SQL Server metadata visibility can be proven for a strict
+non-`sysadmin` account when the audited database permissions and all per-object
+visibility evidence are complete; an object-level `DENY`, missing evidence, or
+permission drift fails closed. Do not elevate an account to bypass that guard.
+Retained MySQL v1 uses a
 dedicated read-only account with direct
 schema-level `SELECT` on the selected database's ordinary base tables; it does
 not require `TRIGGER`, `EXECUTE`, or `SHOW VIEW`. Each provider uses a separate
@@ -176,6 +187,26 @@ with `--package` reads rows into the provider's retained package. Neither route
 writes to SQL Server, MySQL, or a CSharpDB target. Cancellation terminates the
 worker process tree. For SQL Server, this also contains a ScriptDom parse call
 that cannot observe cooperative cancellation.
+
+Access capture resolves only the fixed optional Windows worker under
+`adapters/access`; the base CLI does not load ACE or `System.Data.OleDb`.
+Capture accepts local unencrypted `.mdb` and `.accdb` files, defaults to ACE 16,
+never uses Jet, and holds a read handle that denies writes and deletion for the
+complete retained capture. The catalog's
+`MIG-ACCESS-LIVE-QUALIFICATION-PENDING-001` diagnostic is non-overrideable and
+keeps plan/apply unavailable until the release VM matrix is complete.
+
+`migrate type-map` reports the exact planner mapping selected for every typed
+catalog object without changing the catalog. `migrate query-check` is a bounded,
+read-only static checker. CSharpDB analysis remains in the provider-neutral base
+tool; T-SQL parsing runs only in the optional SQL Server worker. MySQL, SQLite,
+and Access query dialects return `Unknown` until a qualified parser exists.
+Parse-level `Conditional` evidence does not claim schema binding, scratch
+execution, or semantic equivalence, and rewrite candidates are never applied.
+For `type-map --profile custom`, the custom-map file is one strict JSON object
+keyed by exact catalog object ID. Values are case-insensitive `integer`, `real`,
+`text`, or `blob`; unknown IDs, duplicate properties, comments, trailing
+commas, and invalid types are rejected.
 
 Pass both `--typed-intent` and
 `--expected-intent-manifest-digest` to select v2. The canonical sidecar must
@@ -439,7 +470,7 @@ prints the sanitized `csharpdb-ddl-scratch-validation/v1` report containing
 digests, stable rule/action identifiers, counts, and evidence level, but no SQL
 or object names. The modes are mutually exclusive. A successful scratch run
 does not approve exclusions, clear diagnostics, establish source semantic
-equivalence, or make a blocked SQL Server or MySQL plan ready.
+equivalence, or make a blocked Access or SQL Server plan ready.
 Each catalog and plan consumed by the explicit `--ddl` or `--scratch` path is
 limited to 64 MiB before contract validation; rendered action count,
 per-action SQL, and aggregate SQL bytes have separate fixed production
@@ -496,11 +527,11 @@ workspace, and never relays worker diagnostics. A missing or incompatible
 worker fails only the MySQL route with `MIG-MYSQL-CLI-ADAPTER-001`; other
 migration commands remain provider-independent.
 
-This retained-package route proves package, catalog, snapshot, and row binding;
-it does not claim broad live-server qualification. Live MySQL 8.0/8.4, Docker,
-published-runtime, restricted-account, and TLS-mode qualification remain
-deferred. The wider migration roadmap also defers Access and
-disposable-Windows-VM qualification.
+These retained-package routes prove package, catalog, snapshot, and row
+binding; they do not claim broad live-provider qualification. The Access
+Windows/ACE/file-format/bitness matrix and broader SQL Server and MySQL server,
+runtime, authentication, TLS, restricted-account, platform, and differential
+qualification remain deferred.
 
 Common CSV delimiter detection is automatic; `--delimiter` supplies the only
 candidate when an explicit convention is required. CSV defaults are strict
@@ -536,15 +567,46 @@ close. A process crash can leave an orphan; after confirming that no migration
 process is using it, inspect and remove it manually. Orphaned workspace data is
 not resumable state and must never be substituted for the retained package.
 
-CSV export accepts only an already retained CSharpDB snapshot. Capture
-and pin its canonical identity independently before invoking the command; the
-CLI does not turn a live database path into a retained source or derive a trust
-decision from the path alone. The default profile is `lossless-v1`.
+CSV and JSON export begin with an explicit offline snapshot of the source
+CSharpDB database. Close every writer before capture; `--offline` confirms that
+operator-controlled write freeze. The command recovers only a bounded private
+copy, publishes one clean retained snapshot with create-new semantics, and
+prints the canonical identity required by export:
+
+```powershell
+New-Item -ItemType Directory -Force .\snapshot-work | Out-Null
+
+$capture = csharpdb migrate snapshot .\app.csdb `
+  --out .\app.export-snapshot.db `
+  --offline `
+  --workspace .\snapshot-work `
+  --json | ConvertFrom-Json
+
+csharpdb migrate export .\app.export-snapshot.db `
+  --format csv `
+  --table users `
+  --out .\users.csv `
+  --manifest .\users.manifest.json `
+  --expected-snapshot-identity $capture.snapshotIdentity
+```
+
+The source database, retained destination, and optional workspace parent must
+be different caller-controlled paths. The destination parent and optional
+workspace parent must already exist and be link-free. Capture refuses to
+replace a retained snapshot or its WAL namespace. Defaults cap the source
+database and clean retained snapshot at 1 TiB and the WAL at 4 GiB; the three
+`--max-*-bytes` options can select smaller positive bounds. Capture is portable,
+but the current resumable CSV/JSON output publisher remains Windows-only.
+
+The default CSV profile is `lossless-v1`.
 `spreadsheet-safe-lossy-v1` is an explicit value-changing mitigation profile.
 The output CSV and manifest must be distinct siblings in one trusted,
 caller-controlled local Windows directory. UNC or mapped-network output paths,
 output links, junctions, reparse points, and devices, and non-Windows
-publication fail closed.
+publication fail closed with `MIG-EXPORT-PLATFORM-001`. The Windows-only
+boundary is intentional: the current qualified publisher depends on
+handle-bound parent-directory validation and atomic no-replace pair
+publication. An equivalent Unix publication substrate is not yet qualified.
 
 The exact same export command is also the resume command. A rerun requalifies
 the retained snapshot identity and private checkpoint journal, resumes only at
@@ -554,8 +616,8 @@ files are never overwritten or repaired. Text output reports the final paths,
 row and byte counts, content digests, and whether the CSV or manifest was
 reused; `--json` emits the same result as structured JSON.
 
-JSON and NDJSON export use the same independently pinned retained-snapshot
-boundary and durable resume workflow. `--format json` writes one compact root
+JSON and NDJSON export use the same CLI-created, identity-pinned retained
+snapshot and durable resume workflow. `--format json` writes one compact root
 array and `--format ndjson` writes one compact object plus LF per row. The
 exact same command is the resume command: a rerun requalifies the retained
 snapshot identity, physical table schema, private prepared data, and checkpoint
@@ -661,11 +723,14 @@ checkpoint, and is not consulted to decide which batches `--resume` skips.
 - `PipelineCommandRunner.cs` - ETL package and catalog commands
 - `MigrationCommandRunner.cs` - migration inspect, plan, bounded DDL/scratch
   preview, apply, resume, validate, retained
-  CSV/JSON/SQLite/LiteDB/MySQL, SQL Server candidate capture, schema-only
-  SQL Server/MySQL analysis, and CSV/JSON/NDJSON export commands
+  CSV/JSON/SQLite/LiteDB/MySQL/Access/SQL Server capture, schema analysis,
+  type mapping, DDL/query/EF compatibility checks, retained snapshots, and
+  CSV/JSON/NDJSON export commands
+- `AccessWorkerClient.cs` - bounded fixed-path protocol client for the optional
+  Windows Access capture worker
 - `SqlServerWorkerClient.cs` - bounded fixed-path protocol client for the
-  optional SQL Server inspection, retained capture, and standalone T-SQL DDL
-  worker routes
+  optional SQL Server inspection, retained capture, T-SQL query analysis, and
+  standalone T-SQL DDL worker routes
 - `MySqlWorkerClient.cs` - bounded fixed-path protocol client for the optional
   MySQL schema-inspection and retained-capture worker routes
 - `CliConsole.cs` and `TableFormatter.cs` - terminal formatting helpers
@@ -675,8 +740,12 @@ checkpoint, and is not consulted to decide which batches `--resume` skips.
 ```powershell
 dotnet build src/CSharpDB.Cli/CSharpDB.Cli.csproj
 dotnet test tests/CSharpDB.Cli.Tests/CSharpDB.Cli.Tests.csproj
+dotnet test tests/CSharpDB.Migration.Access.Tests/CSharpDB.Migration.Access.Tests.csproj
+dotnet test tests/CSharpDB.Migration.Compatibility.Tests/CSharpDB.Migration.Compatibility.Tests.csproj
+dotnet test tests/CSharpDB.Migration.DualRun.Tests/CSharpDB.Migration.DualRun.Tests.csproj
 dotnet test tests/CSharpDB.Migration.MySql.Tests/CSharpDB.Migration.MySql.Tests.csproj
 dotnet test tests/CSharpDB.Migration.SqlServer.Tests/CSharpDB.Migration.SqlServer.Tests.csproj
+.\scripts\Test-AccessMigrationIsolation.ps1 -Configuration Release
 .\scripts\Test-MySqlMigrationIsolation.ps1 -Configuration Release
 .\scripts\Test-SqlServerMigrationIsolation.ps1 -Configuration Release
 ```
@@ -688,14 +757,17 @@ dotnet test tests/CSharpDB.Migration.SqlServer.Tests/CSharpDB.Migration.SqlServe
 - `CSharpDB.Engine`
 - `CSharpDB.Migration`
 - `CSharpDB.Migration.CSharpDb`
+- `CSharpDB.Migration.Compatibility`
 - `CSharpDB.Migration.Files`
 - `CSharpDB.Migration.LiteDb`
+- `CSharpDB.Migration.Retained`
 - `CSharpDB.Migration.Sqlite`
 - `CSharpDB.Sql`
 - `CSharpDB.Storage.Diagnostics`
 - `Spectre.Console`
 
-The base CLI deliberately references neither `CSharpDB.Migration.MySql` nor
-`CSharpDB.Migration.SqlServer`. The optional bundles' workers own those
-references together with MySqlConnector or Microsoft.Data.SqlClient and
-ScriptDom, respectively.
+The base CLI deliberately references none of
+`CSharpDB.Migration.Access`, `CSharpDB.Migration.MySql`, or
+`CSharpDB.Migration.SqlServer`. Optional workers own those provider references
+together with System.Data.OleDb, MySqlConnector, or
+Microsoft.Data.SqlClient/ScriptDom, respectively.

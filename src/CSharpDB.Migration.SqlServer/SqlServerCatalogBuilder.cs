@@ -653,8 +653,8 @@ internal static partial class SqlServerCatalogBuilder
                 MigrationDiagnosticSeverity.Error,
                 MigrationCompatibilityStatus.Unknown,
                 "Complete SQL Server metadata visibility could not be established.",
-                "Only sysadmin membership currently proves complete visibility; database-level role and permission evidence can still be narrowed by an object- or schema-level DENY.",
-                "Treat this inventory as partial, or add an effective per-object permission scan before using a least-privilege result for planning.",
+                "A least-privilege proof requires stable before-and-after effective-token and DENY audits, database and per-object definition visibility, expression-dependency visibility, and complete row-level-security inventory.",
+                "Grant only the documented read-only metadata permissions, remove applicable metadata DENY entries, and inspect again. Do not grant sysadmin to bypass this guard.",
                 canOverride: false));
         }
 
@@ -1067,6 +1067,8 @@ internal static partial class SqlServerCatalogBuilder
 
         if (database.HasViewDefinition == false ||
             database.HasSelectSqlExpressionDependencies == false ||
+            snapshot.Instance.ProductMajorVersion >= 16 &&
+            database.HasViewSecurityDefinition == false ||
             snapshot.Schemas.Any(static item => item.HasViewDefinition == false) ||
             snapshot.Tables.Any(static item => item.HasViewDefinition == false) ||
             snapshot.Views.Any(static item => item.HasViewDefinition == false) ||
@@ -1077,6 +1079,27 @@ internal static partial class SqlServerCatalogBuilder
         {
             return MetadataVisibility.Incomplete;
         }
+
+        bool hasCompletePositiveProof =
+            database.HasViewDefinition == true &&
+            database.HasSelectSqlExpressionDependencies == true &&
+            (snapshot.Instance.ProductMajorVersion < 16 ||
+             database.HasViewSecurityDefinition == true) &&
+            snapshot.PermissionAuditBefore.Attempted &&
+            snapshot.PermissionAuditAfter.Attempted &&
+            PermissionAuditsEqual(
+                snapshot.PermissionAuditBefore,
+                snapshot.PermissionAuditAfter) &&
+            snapshot.ExpressionDependencyAudit.Attempted &&
+            snapshot.Schemas.All(static item => item.HasViewDefinition == true) &&
+            snapshot.Tables.All(static item =>
+                item.HasViewDefinition == true &&
+                item.IsRowLevelSecurityInventoryComplete) &&
+            snapshot.Views.All(static item => item.HasViewDefinition == true) &&
+            snapshot.Triggers.All(static item => item.HasViewDefinition == true) &&
+            snapshot.Routines.All(static item => item.HasViewDefinition == true);
+        if (hasCompletePositiveProof)
+            return MetadataVisibility.Complete;
 
         return MetadataVisibility.Unknown;
     }

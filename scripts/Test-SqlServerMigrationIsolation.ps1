@@ -510,6 +510,7 @@ try {
         -Executable (Join-Path $bundleOutput $cliName) `
         -ScriptPath $ddlPath
 
+    $global:LASTEXITCODE = 0
     Write-Host 'SQL Server migration adapter isolation is valid.'
 }
 finally {

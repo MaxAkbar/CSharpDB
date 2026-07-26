@@ -6,18 +6,20 @@ Builds framework-dependent combined CSharpDB migration CLI release archives.
 
 .DESCRIPTION
 Composes the reviewed SQL Server and MySQL migration bundle publishers for
-each selected runtime identifier. The script proves that both publishers
-produced the same base CLI bytes before it merges their fixed adapter
-directories, adds installation assets, creates one archive per runtime, and
-writes SHA256SUMS.txt.
+each selected runtime identifier and the Windows-only Access publisher for
+win-x64. The script proves that every applicable publisher produced the same
+base CLI bytes before it merges their fixed adapter directories, adds
+installation assets, creates one archive per runtime, and writes
+SHA256SUMS.txt.
 
 These archives require the .NET 10 runtime. Creating an archive does not
 qualify a runtime, live database version, authentication mode, or deployment
 environment.
 
-POSIX tar headers are host-independent: directories, the CLI, both workers,
-and the POSIX installer use mode 0755; all other regular files use mode 0644.
-Every emitted tarball is reopened and checked against that contract before its
+POSIX tar headers are host-independent: directories, the CLI, the SQL Server
+and MySQL workers, and the POSIX installer use mode 0755; all other regular
+files use mode 0644. Access assets are never staged for a POSIX runtime. Every
+emitted tarball is reopened and checked against that contract before its
 checksum is written.
 
 .PARAMETER Version
@@ -28,14 +30,14 @@ accepted and removed.
 Runtime identifiers to package. Defaults to win-x64, linux-x64, and osx-arm64.
 
 .PARAMETER Configuration
-Build configuration passed to both audited bundle publishers.
+Build configuration passed to every applicable audited bundle publisher.
 
 .PARAMETER OutputRoot
 Caller-selected root for publish, staging, and archive outputs. Defaults to
 artifacts/migration-release.
 
 .PARAMETER NoRestore
-Passes -NoRestore to both audited bundle publishers.
+Passes -NoRestore to every applicable audited bundle publisher.
 
 .PARAMETER Force
 Allows this script to replace its own nonempty publish, stage, and archive
@@ -292,7 +294,9 @@ function Assert-ByteIdenticalBaseRoots {
         [string] $SqlServerBundle,
 
         [Parameter(Mandatory = $true)]
-        [string] $MySqlBundle
+        [string] $MySqlBundle,
+
+        [string] $AccessBundle
     )
 
     $sqlServerManifest = @(
@@ -320,6 +324,34 @@ function Assert-ByteIdenticalBaseRoots {
                 [StringComparison]::Ordinal))
         {
             throw "The audited bundle publishers produced different base CLI bytes at '$($left.RelativePath)'."
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($AccessBundle)) {
+        $accessManifest = @(
+            Get-BaseRootManifest -BundleRoot $AccessBundle)
+        if ($sqlServerManifest.Count -ne $accessManifest.Count) {
+            throw 'The SQL Server and Access bundle base CLI file sets differ.'
+        }
+
+        for ($index = 0;
+             $index -lt $sqlServerManifest.Count;
+             $index++)
+        {
+            $left = $sqlServerManifest[$index]
+            $right = $accessManifest[$index]
+            if (-not [string]::Equals(
+                    $left.RelativePath,
+                    $right.RelativePath,
+                    [StringComparison]::Ordinal) -or
+                $left.Length -ne $right.Length -or
+                -not [string]::Equals(
+                    $left.Sha256,
+                    $right.Sha256,
+                    [StringComparison]::Ordinal))
+            {
+                throw "The audited Access bundle produced different base CLI bytes at '$($left.RelativePath)'."
+            }
         }
     }
 }
@@ -392,6 +424,61 @@ function Assert-FrameworkDependentStage {
         -Path (Join-Path $StageRoot 'adapters/sqlserver/csharpdb-migration-sqlserver-worker.runtimeconfig.json')
     Assert-DotNetTenRuntimeConfig `
         -Path (Join-Path $StageRoot 'adapters/mysql/csharpdb-migration-mysql-worker.runtimeconfig.json')
+    if ($TargetIsWindows) {
+        Assert-DotNetTenRuntimeConfig `
+            -Path (Join-Path $StageRoot 'adapters/access/csharpdb-migration-access-worker.runtimeconfig.json')
+    }
+    else {
+        $accessAdapter =
+            Join-Path $StageRoot 'adapters/access'
+        if (Test-Path -LiteralPath $accessAdapter) {
+            throw 'A POSIX migration release cannot contain the Windows-only Access adapter.'
+        }
+
+        $accessOnlyTokens = @(
+            'CSharpDB.Migration.Access',
+            'System.Data.OleDb',
+            'csharpdb-migration-access-worker'
+        )
+        $stagedFiles = @(
+            Get-ChildItem `
+                -LiteralPath $StageRoot `
+                -Recurse `
+                -File `
+                -Force)
+        foreach ($token in $accessOnlyTokens) {
+            $matchingFiles = @(
+                $stagedFiles |
+                    Where-Object {
+                        $_.Name.Contains(
+                            $token,
+                            [StringComparison]::OrdinalIgnoreCase)
+                    })
+            if ($matchingFiles.Count -gt 0) {
+                throw "A POSIX migration release contains the Windows-only Access asset '$token'."
+            }
+        }
+        foreach ($dependencyFile in @(
+            $stagedFiles |
+                Where-Object {
+                    $_.Name.EndsWith(
+                        '.deps.json',
+                        [StringComparison]::OrdinalIgnoreCase)
+                }))
+        {
+            $dependencyText =
+                [IO.File]::ReadAllText(
+                    $dependencyFile.FullName)
+            foreach ($token in $accessOnlyTokens) {
+                if ($dependencyText.Contains(
+                        $token,
+                        [StringComparison]::OrdinalIgnoreCase))
+                {
+                    throw "A POSIX migration release dependency graph contains the Windows-only Access dependency '$token'."
+                }
+            }
+        }
+    }
 
     $selfContainedRuntimeFiles = @(
         'hostfxr.dll',
@@ -433,6 +520,16 @@ function Assert-FrameworkDependentStage {
         (Join-Path $StageRoot 'install/windows/install-csharpdb-migration-tool.ps1'),
         (Join-Path $StageRoot 'install/posix/install-csharpdb-migration-tool.sh')
     )
+    if ($TargetIsWindows) {
+        $requiredFiles += @(
+            (Join-Path $StageRoot 'adapters/access/csharpdb-migration-access-worker.exe'),
+            (Join-Path $StageRoot 'adapters/access/CSharpDB.Migration.Access.dll'),
+            (Join-Path $StageRoot 'adapters/access/CSharpDB.Migration.Retained.dll'),
+            (Join-Path $StageRoot 'adapters/access/System.Data.OleDb.dll'),
+            (Join-Path $StageRoot 'adapters/access/THIRD-PARTY-NOTICES.md'),
+            (Join-Path $StageRoot 'adapters/access/csharpdb-migration-access-worker.deps.json')
+        )
+    }
     $missing = @(
         $requiredFiles |
             Where-Object {
@@ -690,6 +787,9 @@ $sqlServerPublisher = Join-Path `
 $mySqlPublisher = Join-Path `
     $PSScriptRoot `
     'Publish-CSharpDbMySqlMigrationBundle.ps1'
+$accessPublisher = Join-Path `
+    $PSScriptRoot `
+    'Publish-CSharpDbAccessMigrationBundle.ps1'
 $installAssets = Join-Path `
     $repoRoot `
     'deploy/migration-tool'
@@ -697,6 +797,7 @@ $installAssets = Join-Path `
 foreach ($requiredInput in @(
         $sqlServerPublisher,
         $mySqlPublisher,
+        $accessPublisher,
         (Join-Path $repoRoot 'LICENSE'),
         (Join-Path $installAssets 'README.md'),
         (Join-Path $installAssets 'windows/install-csharpdb-migration-tool.ps1'),
@@ -771,6 +872,9 @@ foreach ($managedDirectory in @(
 $createdArchives =
     [Collections.Generic.List[string]]::new()
 foreach ($rid in $resolvedRuntimes) {
+    $targetIsWindows = $rid.StartsWith(
+        'win-',
+        [StringComparison]::OrdinalIgnoreCase)
     $ridPublishRoot = Join-Path $publishRoot $rid
     $sqlServerBundle = Join-Path `
         $ridPublishRoot `
@@ -778,6 +882,9 @@ foreach ($rid in $resolvedRuntimes) {
     $mySqlBundle = Join-Path `
         $ridPublishRoot `
         'mysql'
+    $accessBundle = Join-Path `
+        $ridPublishRoot `
+        'access'
     $stageDirectory = Join-Path $stageRoot $rid
     Assert-ManagedChildPath `
         -Path $sqlServerBundle `
@@ -785,6 +892,11 @@ foreach ($rid in $resolvedRuntimes) {
     Assert-ManagedChildPath `
         -Path $mySqlBundle `
         -ManagedRoot $OutputRoot
+    if ($targetIsWindows) {
+        Assert-ManagedChildPath `
+            -Path $accessBundle `
+            -ManagedRoot $OutputRoot
+    }
     Assert-ManagedChildPath `
         -Path $stageDirectory `
         -ManagedRoot $OutputRoot
@@ -807,9 +919,23 @@ foreach ($rid in $resolvedRuntimes) {
         -OutputPath $mySqlBundle `
         @publisherArguments
 
+    if ($targetIsWindows) {
+        Write-Host "Publishing audited Microsoft Access migration bundle for $rid..."
+        & $accessPublisher `
+            -OutputPath $accessBundle `
+            @publisherArguments
+    }
+
+    $identityArguments = @{
+        SqlServerBundle = $sqlServerBundle
+        MySqlBundle = $mySqlBundle
+    }
+    if ($targetIsWindows) {
+        $identityArguments['AccessBundle'] =
+            $accessBundle
+    }
     Assert-ByteIdenticalBaseRoots `
-        -SqlServerBundle $sqlServerBundle `
-        -MySqlBundle $mySqlBundle
+        @identityArguments
 
     [IO.Directory]::CreateDirectory($stageDirectory) |
         Out-Null
@@ -831,6 +957,19 @@ foreach ($rid in $resolvedRuntimes) {
         -Destination $stageAdapters `
         -Recurse
 
+    if ($targetIsWindows) {
+        $stagedAccessAdapter = Join-Path `
+            $stageAdapters `
+            'access'
+        if (Test-Path -LiteralPath $stagedAccessAdapter) {
+            throw 'An audited bundle unexpectedly contained the Access adapter path.'
+        }
+        Copy-Item `
+            -LiteralPath (Join-Path $accessBundle 'adapters/access') `
+            -Destination $stageAdapters `
+            -Recurse
+    }
+
     Copy-Item `
         -LiteralPath (Join-Path $installAssets 'README.md') `
         -Destination (Join-Path $stageDirectory 'README.md')
@@ -843,9 +982,6 @@ foreach ($rid in $resolvedRuntimes) {
         "v$releaseVersion`n",
         [Text.UTF8Encoding]::new($false))
 
-    $targetIsWindows = $rid.StartsWith(
-        'win-',
-        [StringComparison]::OrdinalIgnoreCase)
     Assert-FrameworkDependentStage `
         -StageRoot $stageDirectory `
         -TargetIsWindows $targetIsWindows

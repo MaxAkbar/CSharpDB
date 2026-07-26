@@ -412,6 +412,14 @@ public sealed class SqlServerRetainedBindingTests
             sql,
             StringComparison.Ordinal);
         Assert.Contains(
+            "SELECT" + Environment.NewLine + "CONVERT",
+            sql,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "SELECTCONVERT",
+            sql,
+            StringComparison.Ordinal);
+        Assert.Contains(
             "FROM [d]]bo].[Odd]]Table]",
             sql,
             StringComparison.Ordinal);

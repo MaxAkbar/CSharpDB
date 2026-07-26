@@ -484,6 +484,7 @@ public sealed partial class SqlServerCatalogBuilderTests
                 IsSysAdmin = false,
                 IsDbOwner = false,
                 HasControl = false,
+                HasViewDefinition = null,
             },
             hashIndexes: []);
 

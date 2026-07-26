@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using CSharpDB.Migration.CSharpDb;
+using CSharpDB.Migration.Compatibility;
 using CSharpDB.Migration.SqlServer.Worker;
 
 namespace CSharpDB.Migration.SqlServer.Tests;
@@ -402,6 +403,78 @@ public sealed class SqlServerWorkerRunnerTests
             AssertInternalFailure(result);
             AssertSecretAbsent(result.Output, result.Error);
         }
+    }
+
+    [Fact]
+    public async Task QueryDefaultDependencies_ProduceValidatedTsqlReport()
+    {
+        CancellationToken ct =
+            TestContext.Current.CancellationToken;
+        const string query =
+            "SELECT TOP (10) id FROM widgets ORDER BY id;";
+
+        WorkerResult result = await RunQueryAsync(
+            Encoding.UTF8.GetBytes(query),
+            SqlServerWorkerDependencies.Default,
+            ct);
+
+        Assert.Equal(
+            SqlServerWorkerRunner.ExitSuccess,
+            result.ExitCode);
+        Assert.Equal(string.Empty, result.Error);
+        Assert.StartsWith(
+            SqlServerWorkerRunner.QuerySuccessHeader,
+            result.Output,
+            StringComparison.Ordinal);
+
+        string json = result.Output[
+            SqlServerWorkerRunner.QuerySuccessHeader.Length..];
+        using JsonDocument document =
+            JsonDocument.Parse(json);
+        JsonElement root = document.RootElement;
+        Assert.Equal(
+            QueryCompatibilityReportFormats.V1,
+            root.GetProperty("format").GetString());
+        JsonElement queryResult =
+            root.GetProperty("results")[0];
+        Assert.Equal(
+            "sqlserver-query",
+            queryResult.GetProperty("queryId").GetString());
+        Assert.Equal(
+            "sqlServerTsql",
+            queryResult
+                .GetProperty("sourceDialect")
+                .GetString());
+        Assert.Equal(
+            "tsql-top-integer-to-csharpdb-limit/v1",
+            queryResult
+                .GetProperty("rewrite")
+                .GetProperty("rewriteId")
+                .GetString());
+    }
+
+    [Fact]
+    public async Task QueryInvalidCompatibilityLevel_FailsClosed()
+    {
+        string[] args = ValidQueryArguments();
+        args[^1] = "140";
+
+        WorkerResult result = await RunQueryAsync(
+            args,
+            new MemoryStream(
+                "SELECT 1;"u8.ToArray(),
+                writable: false),
+            SqlServerWorkerDependencies.Default,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(
+            SqlServerWorkerRunner.ExitIncompatible,
+            result.ExitCode);
+        Assert.Equal(string.Empty, result.Output);
+        Assert.Equal(
+            SqlServerWorkerRunner.QueryProtocol +
+                ":error:incompatible\n",
+            result.Error);
     }
 
     [Fact]
@@ -1204,6 +1277,15 @@ public sealed class SqlServerWorkerRunnerTests
         CSharpDbCapabilityCatalogLoader.CurrentTargetVersion,
     ];
 
+    private static string[] ValidQueryArguments() =>
+    [
+        "--protocol", SqlServerWorkerRunner.QueryProtocol,
+        "--target-version",
+        CSharpDbCapabilityCatalogLoader.CurrentTargetVersion,
+        "--query-id", "sqlserver-query",
+        "--compatibility-level", "160",
+    ];
+
     private static CSharpDbDdlCompatibilityReport BuildDdlReport(
         string script) =>
         new()
@@ -1400,6 +1482,41 @@ public sealed class SqlServerWorkerRunnerTests
             new MemoryStream(input, writable: false),
             dependencies,
             cancellationToken);
+
+    private static ValueTask<WorkerResult> RunQueryAsync(
+        byte[] input,
+        SqlServerWorkerDependencies dependencies,
+        CancellationToken cancellationToken = default) =>
+        RunQueryAsync(
+            ValidQueryArguments(),
+            new MemoryStream(input, writable: false),
+            dependencies,
+            cancellationToken);
+
+    private static async ValueTask<WorkerResult> RunQueryAsync(
+        string[] args,
+        Stream input,
+        SqlServerWorkerDependencies dependencies,
+        CancellationToken cancellationToken = default)
+    {
+        await using (input)
+        {
+            var output = new StringWriter();
+            var error = new StringWriter();
+            int exitCode =
+                await SqlServerWorkerRunner.RunAsync(
+                    args,
+                    input,
+                    output,
+                    error,
+                    dependencies,
+                    cancellationToken);
+            return new WorkerResult(
+                exitCode,
+                output.ToString(),
+                error.ToString());
+        }
+    }
 
     private static async ValueTask<WorkerResult> RunDdlAsync(
         string[] args,

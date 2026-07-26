@@ -25,6 +25,7 @@ public sealed class MigrationWebsiteDocumentationTests
                      "JSON",
                      "SQLite",
                      "LiteDB",
+                     "Microsoft Access",
                      "SQL Server",
                      "MySQL",
                  })
@@ -42,6 +43,7 @@ public sealed class MigrationWebsiteDocumentationTests
                      ".csdbjson",
                      ".csdbsqlite",
                      ".csdblitedb",
+                     ".csdbaccess",
                      ".csdbsqlserver",
                      ".csdbmysql",
                  })
@@ -62,6 +64,13 @@ public sealed class MigrationWebsiteDocumentationTests
                      "--resume",
                      "csharpdb migrate validate",
                      "--level checksum",
+                     "csharpdb migrate snapshot",
+                     "csharpdb migrate export",
+                     "csharpdb migrate type-map",
+                     "csharpdb migrate query-check",
+                     "csharpdb migrate ddl-check",
+                     "dotnet csharpdb-ef analyze",
+                     "CSharpDB.Migration.DualRun",
                  })
         {
             Assert.Contains(
@@ -83,7 +92,7 @@ public sealed class MigrationWebsiteDocumentationTests
             guide,
             StringComparison.Ordinal);
         Assert.Contains(
-            "Broad live SQL Server and MySQL",
+            "Broad live Access, SQL Server, and MySQL",
             guide,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -111,7 +120,7 @@ public sealed class MigrationWebsiteDocumentationTests
             guide,
             StringComparison.Ordinal);
         Assert.Contains(
-            "stops after candidate capture and catalog review",
+            "currently stop after candidate capture and catalog review",
             guide,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -201,7 +210,7 @@ public sealed class MigrationWebsiteDocumentationTests
             releaseNotes,
             StringComparison.Ordinal);
         Assert.Contains(
-            "produced alongside the archives",
+            "`MIGRATION-SHA256SUMS.txt`",
             releaseNotes,
             StringComparison.Ordinal);
 
@@ -211,8 +220,33 @@ public sealed class MigrationWebsiteDocumentationTests
                 "www",
                 "downloads.html"));
         Assert.Contains(
-            "accompanying <code>SHA256SUMS.txt</code>",
+            "<code>MIGRATION-SHA256SUMS.txt</code>",
             downloads,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "CSharpDB.Migration.DualRun",
+            downloads,
+            StringComparison.Ordinal);
+
+        string blogIndex = File.ReadAllText(
+            Path.Combine(
+                repoRoot,
+                "www",
+                "blog",
+                "index.html"));
+        Assert.Contains(
+            "migrating-existing-data-to-csharpdb.html",
+            blogIndex,
+            StringComparison.Ordinal);
+        string migrationArticle = File.ReadAllText(
+            Path.Combine(
+                repoRoot,
+                "www",
+                "blog",
+                "migrating-existing-data-to-csharpdb.html"));
+        Assert.Contains(
+            "../docs/database-migration.html",
+            migrationArticle,
             StringComparison.Ordinal);
     }
 

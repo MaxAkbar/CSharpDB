@@ -8,8 +8,8 @@
     <RootNamespace>CSharpDB.Migration</RootNamespace>
     <PackageId>CSharpDB.Migration</PackageId>
     <Description>Shared migration catalogs, plans, diagnostics, mappings, and durable artifact contracts for CSharpDB.</Description>
-    <!-- Keep the package internal until the Phase 1 wire contracts and SDK interfaces are frozen. -->
-    <IsPackable>false</IsPackable>
+    <PackageTags>csharp;dotnet;embedded-database;migration;schema;validation</PackageTags>
+    <IsPackable>true</IsPackable>
   </PropertyGroup>
 
   <ItemGroup>

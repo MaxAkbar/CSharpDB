@@ -124,6 +124,9 @@ internal static class SqlServerScalarCodec
         }
 
         bool nullLength = reader.IsDBNull(lengthOrdinal);
+        long sourceBytes = nullLength
+            ? 0
+            : reader.GetInt64(lengthOrdinal);
         bool nullValue = reader.IsDBNull(valueOrdinal);
         if (nullLength != nullValue)
         {
@@ -145,7 +148,6 @@ internal static class SqlServerScalarCodec
                 0);
         }
 
-        long sourceBytes = reader.GetInt64(lengthOrdinal);
         if (sourceBytes < 0 || sourceBytes > maximumValueBytes)
         {
             throw new SqlServerRetainedCaptureLimitException(

@@ -893,7 +893,7 @@ public sealed partial class SqlServerCatalogBuilderTests
     [InlineData(true, false, true)]
     [InlineData(false, true, true)]
     [InlineData(false, false, true)]
-    public void BuildTreatsDatabaseLevelPermissionEvidenceAsUnknown(
+    public void BuildAcceptsCompleteStableNonSysadminMetadataProof(
         bool isDbOwner,
         bool hasControl,
         bool hasViewDefinition)
@@ -912,13 +912,11 @@ public sealed partial class SqlServerCatalogBuilderTests
             catalog.Objects,
             static item => item.Kind == MigrationObjectKind.Database);
 
-        Assert.Equal("unknown", Facet(databaseObject, "sqlServerMetadataVisibility"));
-        Assert.Contains(
+        Assert.Equal("complete", Facet(databaseObject, "sqlServerMetadataVisibility"));
+        Assert.DoesNotContain(
             catalog.Diagnostics,
             static item =>
-                item.RuleId == "MIG-SQLSERVER-METADATA-VISIBILITY-001" &&
-                item.Status == MigrationCompatibilityStatus.Unknown &&
-                !item.CanOverride);
+                item.RuleId == "MIG-SQLSERVER-METADATA-VISIBILITY-001");
     }
 
     [Fact]
@@ -1005,7 +1003,7 @@ public sealed partial class SqlServerCatalogBuilderTests
             columnDenied.Objects,
             static item => item.Kind == MigrationObjectKind.Database);
         Assert.Equal(
-            "unknown",
+            "complete",
             Facet(columnDeniedDatabase, "sqlServerMetadataVisibility"));
         Assert.DoesNotContain(
             columnDenied.Diagnostics,

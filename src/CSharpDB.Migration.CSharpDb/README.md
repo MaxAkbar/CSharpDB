@@ -126,8 +126,9 @@ batch receipt share one transaction. Physical `_col_` names are resolved for
 resume, schema capture, counts, and validation while normalized evidence keeps
 the logical `Collection` shape. Root-array and NDJSON qualification covers
 exact bytes, every transaction fault cutoff, reopen/resume, checksums,
-activation, and collection API access. See
-[`migration-json-collection-projection.md`](../../docs/migration-json-collection-projection.md).
+activation, and collection API access. The public
+[database migration guide](https://csharpdb.com/docs/database-migration.html)
+documents the operator-facing retained JSON routes.
 
 The bounded CLI can now request exact DDL or a separate sanitized scratch
 report, but it cannot apply that DDL or promote plan readiness. Identity,

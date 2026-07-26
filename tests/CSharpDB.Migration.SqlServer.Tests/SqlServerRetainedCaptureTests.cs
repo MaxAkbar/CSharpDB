@@ -167,10 +167,10 @@ public sealed class SqlServerRetainedCaptureTests
                         SqlServerRetainedCatalog
                             .RetainedQualificationRule);
             Assert.Equal(
-                MigrationDiagnosticSeverity.Warning,
+                MigrationDiagnosticSeverity.Error,
                 qualification.Severity);
             Assert.Equal(
-                MigrationCompatibilityStatus.Conditional,
+                MigrationCompatibilityStatus.Unknown,
                 qualification.Status);
             Assert.Equal(
                 MigrationEvidenceLevel.Bound,

@@ -385,6 +385,7 @@ try {
         -OutputPath (Join-Path $workspace 'bundle-capture-catalog.json') `
         -ExpectedCode 'MIG-MYSQL-CLI-CONNECTION-001'
 
+    $global:LASTEXITCODE = 0
     Write-Host 'MySQL migration adapter isolation is valid.'
 }
 finally {

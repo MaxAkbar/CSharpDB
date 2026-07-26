@@ -6,10 +6,10 @@
     <link rel="stylesheet" href="../css/style.css">
     <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
     <title>Move Data into CSharpDB — Database Migration Guide</title>
-    <meta name="description" content="Move data from CSV, JSON, SQLite, LiteDB, or MySQL into a staged CSharpDB database, and evaluate the bounded SQL Server candidate capture lane.">
+    <meta name="description" content="Move data from CSV, JSON, SQLite, LiteDB, or MySQL into staged CSharpDB; evaluate Access and SQL Server capture; and review compatibility evidence.">
     <link rel="canonical" href="https://csharpdb.com/docs/database-migration.html">
     <meta property="og:title" content="Move Data into CSharpDB — Database Migration Guide">
-    <meta property="og:description" content="A practical, recoverable workflow for moving data from CSV, JSON, SQLite, LiteDB, or MySQL into CSharpDB, with an explicit SQL Server candidate boundary.">
+    <meta property="og:description" content="A recoverable workflow for moving supported sources into CSharpDB, with evaluation-only Access and SQL Server capture and explicit qualification boundaries.">
     <meta property="og:url" content="https://csharpdb.com/docs/database-migration.html">
     <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
     <link rel="icon" type="image/png" href="../favicon.png">
@@ -18,7 +18,7 @@
         "@context": "https://schema.org",
         "@type": "TechArticle",
         "name": "Move Data into CSharpDB",
-        "description": "Move data from CSV, JSON, SQLite, LiteDB, or MySQL into a staged CSharpDB database, and evaluate the bounded SQL Server candidate capture lane.",
+        "description": "Move data from CSV, JSON, SQLite, LiteDB, or MySQL into staged CSharpDB; evaluate Access and SQL Server capture; and review compatibility evidence.",
         "url": "https://csharpdb.com/docs/database-migration.html",
         "isPartOf": {
             "@type": "WebSite",
@@ -33,8 +33,8 @@
     window.currentPage = 'docs'; window.pagePathPrefix = '../';
     window.pageConfig = {
         title: 'Move Data into CSharpDB',
-        description: 'A practical, recoverable workflow for moving data from CSV, JSON, SQLite, LiteDB, or MySQL into CSharpDB, with an explicit SQL Server candidate boundary.',
-        keywords: 'CSharpDB database migration, SQL Server to CSharpDB, MySQL to CSharpDB, SQLite to CSharpDB, LiteDB to CSharpDB, CSV import, JSON import',
+        description: 'A recoverable workflow for moving supported sources into CSharpDB, with evaluation-only Access and SQL Server capture and explicit qualification boundaries.',
+        keywords: 'CSharpDB database migration, SQL Server to CSharpDB, MySQL to CSharpDB, Access to CSharpDB, SQLite to CSharpDB, LiteDB to CSharpDB, CSV import, JSON import',
         canonicalPath: 'docs/database-migration.html',
         ogType: 'article',
     };
@@ -59,6 +59,9 @@
                             </ul>
                         </li>
                         <li><a href="#source-recipes">Source Recipes</a></li>
+                        <li><a href="#compatibility-tools">Mapping and Query Checks</a></li>
+                        <li><a href="#dual-run">Read-only Dual-run Validation</a></li>
+                        <li><a href="#export-csharpdb">Export CSharpDB to CSV or JSON</a></li>
                         <li><a href="#recovery">Recover an Interrupted Run</a></li>
                         <li><a href="#security">Protect Credentials and Data</a></li>
                         <li><a href="#limits">Current Limits</a></li>
@@ -83,7 +86,7 @@
                     <li><strong>Apply</strong> the reviewed plan to a new staged <code>.csdb</code> target. If interrupted, resume the same run.</li>
                     <li><strong>Validate</strong> schema, row counts, and checksums. The target is activated only after validation passes.</li>
                 </ol>
-                <p>SQL Server and MySQL credentials are needed only for capture. MySQL then uses the retained package without reconnecting to the source database. A SQL Server candidate package and catalog can be reviewed offline, but that lane stops after capture and catalog review: planning remains blocked until the restricted-account metadata proof and live qualification described below are completed.</p>
+                <p>SQL Server and MySQL credentials are needed only for capture. MySQL then uses the retained package without reconnecting to the source database. Access and SQL Server candidate packages can be reviewed offline, but those two lanes currently stop after capture and catalog review because their non-overrideable release-qualification diagnostics block planning.</p>
 
                 <h2 id="supported-sources">Source Lanes and Status</h2>
                 <table>
@@ -116,9 +119,14 @@
                             <td>Offline, quiesced snapshot of an unencrypted database</td>
                         </tr>
                         <tr>
+                            <td>Microsoft Access <code>.mdb</code> / <code>.accdb</code></td>
+                            <td><code>.csdbaccess</code></td>
+                            <td>Windows-only ACE capture for supported local tables; evaluation-only until the VM qualification matrix passes</td>
+                        </tr>
+                        <tr>
                             <td>SQL Server 2019 / 2022 / 2025 (on premises)</td>
                             <td><code>.csdbsqlserver</code></td>
-                            <td>Candidate snapshot-isolated capture for offline evaluation; not currently apply-ready under the documented least-privilege account</td>
+                            <td>Candidate snapshot-isolated capture for offline evaluation; restricted metadata proof exists, but the release matrix is not complete</td>
                         </tr>
                         <tr>
                             <td>MySQL 8.0 / 8.4</td>
@@ -131,7 +139,7 @@
                 <h2 id="before-you-start">Before You Start</h2>
 
                 <h3>Install the migration release</h3>
-                <p>The migration release is framework-dependent and requires the Microsoft .NET 10 runtime. Extract the archive for your platform and keep its layout intact: the <code>adapters/sqlserver</code> and <code>adapters/mysql</code> directories must remain beside the base CLI. Verify the archive against <code>SHA256SUMS.txt</code> before installation.</p>
+                <p>The migration release is framework-dependent and requires the Microsoft .NET 10 runtime. Extract the archive for your platform and keep its applicable adapter layout intact: <code>adapters/sqlserver</code> and <code>adapters/mysql</code> remain beside the base CLI on every platform, and the Windows archive also includes <code>adapters/access</code>. Verify the downloaded archive against <code>MIGRATION-SHA256SUMS.txt</code> from the same GitHub release before installation.</p>
                 <div class="code-block" data-title="Windows PowerShell"><pre><code>New-Item -ItemType Directory -Force `
   -Path "$env:LOCALAPPDATA\CSharpDB" | Out-Null
 
@@ -215,7 +223,7 @@ csharpdb migrate apply .\plan.json `
                 <p>Keep the plan, catalog, package digest, run report, validation report, and reviewed exclusions with the migration change record.</p>
 
                 <h2 id="source-recipes">Source Recipes</h2>
-                <p>For CSV, JSON/NDJSON, SQLite, LiteDB, and MySQL, use the common plan, preview, apply, and validation steps above after a successful capture. SQL Server currently stops after candidate capture and catalog review; do not proceed to plan or apply for that lane.</p>
+                <p>For CSV, JSON/NDJSON, SQLite, LiteDB, and MySQL, use the common plan, preview, apply, and validation steps above after a successful capture. Access and SQL Server currently stop after candidate capture and catalog review; their qualification diagnostics cannot be accepted or overridden.</p>
 
                 <h3>CSV</h3>
                 <div class="code-block" data-title="PowerShell"><pre><code>csharpdb migrate inspect `
@@ -261,6 +269,16 @@ csharpdb migrate inspect `
   --out .\catalog.json</code></pre></div>
                 <p>The v1 route requires an offline, quiesced, unencrypted LiteDB 5 database. Collections become CSharpDB document collections. Non-built-in LiteDB indexes are inventoried but excluded from automatic creation; review and recreate required indexes with CSharpDB semantics.</p>
 
+                <h3>Microsoft Access</h3>
+                <p>Access capture is a Windows-only optional adapter and requires a bitness-compatible Microsoft Access Database Engine. ACE 16 is the default; ACE 12 must be selected explicitly. Jet is never used. Close the source in Access and every other writer before capture.</p>
+                <div class="code-block" data-title="Windows PowerShell"><pre><code>csharpdb migrate inspect `
+  --source access `
+  --input .\legacy.accdb `
+  --provider ace16 `
+  --package .\source.csdbaccess `
+  --out .\catalog.json</code></pre></div>
+                <p>The retained route inventories supported local tables, columns, primary keys, and relationships, and reads rows in deterministic primary-key order. Linked tables, saved queries, forms, reports, macros, VBA, encrypted files, and unsupported scalar shapes are not silently translated. The catalog always contains <code>MIG-ACCESS-LIVE-QUALIFICATION-PENDING-001</code>, which blocks plan and apply until the disposable Windows VM matrix covers the supported <code>.mdb</code>/<code>.accdb</code>, ACE, and process-bitness combinations.</p>
+
                 <h3>SQL Server</h3>
                 <p>Put the connection string in a protected process environment variable or secret manager. It must select exactly one source database through <code>Initial Catalog</code>. For candidate capture, use a dedicated no-write account that can connect to that database, read the candidate tables, and view their definitions. Enable <code>ALLOW_SNAPSHOT_ISOLATION</code> for the database and confirm <code>snapshot_isolation_state = ON</code> before capture. These are capture-only prerequisites, not an apply-ready permission recipe. Pass only the environment variable name to the CLI:</p>
                 <div class="code-block" data-title="PowerShell"><pre><code>csharpdb migrate inspect `
@@ -270,7 +288,7 @@ csharpdb migrate inspect `
   --out .\catalog.json `
   --table-timeout-seconds 1800</code></pre></div>
                 <div class="callout callout-warning">
-                    <strong>SQL Server is currently an evaluation capture lane.</strong> The analyzer can prove complete metadata visibility only for <code>sysadmin</code>; a clean least-privilege read-only account remains <code>Unknown</code>, and that non-overrideable diagnostic blocks planning and apply. Do not grant <code>sysadmin</code> to bypass the guard. Complete the restricted-account proof and live qualification before treating this as an apply-ready source route.
+                    <strong>SQL Server is currently an evaluation capture lane.</strong> The analyzer now has a strict positive metadata-visibility proof for a non-<code>sysadmin</code> account with the required database metadata and table-read grants; that proof passed against SQL Server 2019 Express LocalDB, including a fail-closed object-level <code>DENY</code> test. The supported-edition, published-runtime, platform, authentication, and differential matrix is still incomplete, so <code>MIG-SQLSERVER-RETAINED-LIVE-QUALIFICATION-DEFERRED-001</code> remains non-overrideable and blocks planning and apply. Do not grant <code>sysadmin</code> to bypass a failed proof.
                 </div>
                 <p>The retained candidate lanes are on-premises SQL Server 2019, 2022, and 2025. Azure SQL Database, Azure SQL Managed Instance, Synapse, Fabric, and other compatible services require separate qualification. The source credential is not needed for offline package evaluation after capture.</p>
 
@@ -283,6 +301,108 @@ csharpdb migrate inspect `
   --out .\catalog.json `
   --table-timeout-seconds 1800</code></pre></div>
                 <p>The source credential is needed only for capture. Apply, resume, and validation reopen <code>source.csdbmysql</code> without reconnecting to MySQL.</p>
+
+                <h2 id="compatibility-tools">Review Type Mappings and Query Compatibility</h2>
+                <p>These commands are read-only report generators. They do not change a catalog, apply a rewrite, connect to the source, or create a target.</p>
+
+                <h3>Data type mapping report</h3>
+                <div class="code-block" data-title="PowerShell"><pre><code># Use the same preserve-first mapper used by migration planning.
+csharpdb migrate type-map .\catalog.json `
+  --profile preserve `
+  --format text `
+  --out .\type-map.txt
+
+# Machine-readable report for review automation.
+csharpdb migrate type-map .\catalog.json `
+  --profile queryable `
+  --format json `
+  --out .\type-map.json</code></pre></div>
+                <p>The report covers every typed catalog object and classifies the selected representation as exact, lossless re-encoding, lossy, or unsupported. A custom profile requires an explicit per-object mapping file. The file is one strict JSON object whose property names are exact catalog <code>objectId</code> values and whose string values are the case-insensitive persistent CSharpDB types <code>integer</code>, <code>real</code>, <code>text</code>, or <code>blob</code>:</p>
+                <div class="code-block" data-title="custom-map.json"><pre><code>{
+  "&lt;exact-column-object-id-from-catalog&gt;": "text",
+  "&lt;another-exact-column-object-id&gt;": "real"
+}</code></pre></div>
+                <p>Use the IDs printed in the catalog or type-map report. Unknown IDs, duplicate JSON properties, invalid type names, comments, and trailing commas are rejected. Generating a report does not approve a lossy conversion.</p>
+
+                <h3>DDL compatibility check</h3>
+                <div class="code-block" data-title="PowerShell"><pre><code># Native CSharpDB DDL
+csharpdb migrate ddl-check .\schema.sql `
+  --dialect csharpdb `
+  --format json
+
+# Bounded T-SQL lowering through the optional SQL Server worker
+csharpdb migrate ddl-check .\schema.sql `
+  --dialect tsql `
+  --format text</code></pre></div>
+                <p>The CSharpDB route checks one bounded UTF-8 script against the embedded, version-matched capability catalog and can prove supported persistent table and index actions. The T-SQL route runs behind the isolated SQL Server worker and reports bounded lowering candidates and unsupported constructs. It does not connect to SQL Server, execute against production, or automatically apply the generated CSharpDB DDL.</p>
+
+                <h3>Static query check</h3>
+                <div class="code-block" data-title="PowerShell"><pre><code># Native CSharpDB SQL
+csharpdb migrate query-check .\query.sql `
+  --dialect csharpdb `
+  --out .\query-check.txt
+
+# SQL Server 2019 grammar (compatibility level 150)
+csharpdb migrate query-check .\query.sql `
+  --dialect tsql `
+  --compatibility-level 150 `
+  --format json `
+  --out .\query-check.json</code></pre></div>
+                <p>The CSharpDB checker and optional SQL Server worker establish bounded parse-level evidence for one read-only statement. The only generated T-SQL candidate rewrite is a root integer <code>TOP</code> to CSharpDB <code>LIMIT</code>; it is never applied automatically. A <code>Conditional</code> result does not prove schema binding, execution, or equivalent results. MySQL, SQLite, and Access query dialects currently return <code>Unknown</code> rather than borrowing a different parser.</p>
+
+                <h3 id="ef-migration-analyzer">EF Core migration chain analysis</h3>
+                <p>The EF Core analyzer is a separate .NET tool so design-time dependencies and trusted application loading do not enter the base CLI:</p>
+                <div class="code-block" data-title="PowerShell"><pre><code>dotnet tool install --global CSharpDB.EntityFrameworkCore.Tools `
+  --version 4.3.0
+
+dotnet csharpdb-ef analyze `
+  --project .\MyApp.csproj `
+  --context MyApp.Data.AppDbContext `
+  --scratch `
+  --format json</code></pre></div>
+                <p>The default generation tier compiles the restored <code>net10.0</code> migration chain with the real CSharpDB provider, inspects <code>Up</code>/<code>Down</code> operations, generates provider SQL, and returns <code>Conditional</code> bound evidence. <code>--scratch</code> additionally executes every supported chain prefix, down/up step, and guarded replay only against tool-owned in-memory CSharpDB databases. A scratch pass proves the empty-database chain—not production data conversion, persistence, application deployment code, or configured-database safety. Treat the selected project as executable code. See the <a href="entity-framework-core.html">EF Core guide</a> for normal provider setup.</p>
+
+                <h2 id="dual-run">Read-only Dual-run Validation</h2>
+                <p>The <code>CSharpDB.Migration.DualRun</code> SDK compares a reviewed query pack against a read-only source snapshot and the staged CSharpDB target. It uses typed parameters, the same versioned canonical value encoding used by migration validation, ordered or duplicate-preserving unordered comparison, bounded resource limits, and digest-verified reports that omit SQL and data values.</p>
+                <div class="code-block" data-title=".NET CLI"><pre><code>dotnet add package CSharpDB.Migration.DualRun --version 4.3.0</code></pre></div>
+                <p>Dual-run is additional cutover evidence, not an import path and not a replacement for schema, row-count, and checksum validation. Both endpoint snapshot identities and the canonicalization contract must be recorded. Any provider error, timeout, safety rejection, incoherent snapshot, or resource-limit exhaustion is <code>Inconclusive</code>, never a pass. The generic ADO.NET source route requires both an exact reviewed query allowlist and a provider-enforced read-only connection.</p>
+                <p>Version 1 retains bounded row digests in memory and does not spill dual-run comparison state to disk. Set row and canonical-byte limits for the available memory. A provider can materialize a field before the SDK checks its cell limit, so this API is not a process-isolation boundary for untrusted providers or unrestricted query text.</p>
+                <div class="callout callout-info">
+                    <strong>Current surface:</strong> dual-run is a reusable NuGet SDK with a complete SQLite-to-CSharpDB example in its <a href="https://www.nuget.org/packages/CSharpDB.Migration.DualRun/4.3.0">package documentation</a>. A general live-database CLI is intentionally not exposed until provider-specific snapshot and read-only guarantees are qualified.
+                </div>
+
+                <h2 id="export-csharpdb">Export CSharpDB to CSV or JSON</h2>
+                <p>Export is a two-command, offline workflow. First close every writer and capture the normal CSharpDB database into an immutable retained snapshot. The capture result contains the exact <code>snapshotIdentity</code> required by the export command, so no SDK code or separate hash calculation is needed.</p>
+                <div class="code-block" data-title="Windows PowerShell"><pre><code>New-Item -ItemType Directory -Force .\snapshot-work | Out-Null
+
+$capture = csharpdb migrate snapshot .\app.csdb `
+  --out .\app.export-snapshot.db `
+  --offline `
+  --workspace .\snapshot-work `
+  --json | ConvertFrom-Json
+
+# Lossless CSV plus its source-bound manifest
+csharpdb migrate export .\app.export-snapshot.db `
+  --format csv `
+  --table users `
+  --out .\users.csv `
+  --manifest .\users.csv.manifest.json `
+  --expected-snapshot-identity $capture.snapshotIdentity
+
+# Or one compact JSON root array. Use --format ndjson for one object per line.
+csharpdb migrate export .\app.export-snapshot.db `
+  --format json `
+  --table users `
+  --out .\users.json `
+  --manifest .\users.json.manifest.json `
+  --expected-snapshot-identity $capture.snapshotIdentity</code></pre></div>
+                <ul>
+                    <li><code>--offline</code> is an explicit confirmation that the source is quiesced. Capture never opens or recovers the source for writing; recovery happens only on a bounded private copy.</li>
+                    <li>The retained snapshot and export files use create-new/no-overwrite publication. Choose new paths, keep the snapshot identity with the export record, and repeat the same export command to resume an interrupted run.</li>
+                    <li>Export operates on one physical table per command. Repeat the command for each required table.</li>
+                    <li>Retained snapshot capture is portable. Resumable CSV/JSON publication currently requires a trusted local Windows directory. Other platforms fail with <code>MIG-EXPORT-PLATFORM-001</code> because an equivalent handle-bound, atomic no-replace publication substrate is not yet qualified.</li>
+                    <li>CSV defaults to <code>lossless-v1</code>. The optional <code>spreadsheet-safe-lossy-v1</code> CSV profile intentionally changes formula-like text and must be selected explicitly. JSON and NDJSON support only <code>lossless-v1</code>.</li>
+                </ul>
 
                 <h2 id="recovery">Recover an Interrupted Run</h2>
                 <p>Repeat the exact apply binding—same plan, catalog, package, expected digest, and staged target—then add <code>--resume</code>:</p>
@@ -305,7 +425,7 @@ csharpdb migrate inspect `
                 <h2 id="security">Protect Credentials and Retained Data</h2>
                 <ul>
                     <li>Never put a SQL Server or MySQL connection string directly in command text. Use <code>--connection-env</code> with the name of a protected environment variable.</li>
-                    <li>Treat <code>.csdbsqlserver</code> and <code>.csdbmysql</code> as plaintext-sensitive source data. Apply source-equivalent access, retention, backup, and deletion controls.</li>
+                    <li>Treat <code>.csdbaccess</code>, <code>.csdbsqlserver</code>, and <code>.csdbmysql</code> as plaintext-sensitive source data. Apply source-equivalent access, retention, backup, and deletion controls.</li>
                     <li>Store the expected package digest in an independently trusted record. If an attacker can replace both a package and its pin, the pin provides no protection.</li>
                     <li>Create package and catalog outputs beneath existing, normalized local directories owned by the current user. The capture command rejects links, remote filesystems, directories with untrusted write/delete authority, and directory identity changes during publication.</li>
                     <li>Use a caller-controlled local workspace with private permissions. Do not put retained packages, workspaces, reject evidence, or spill files in a shared directory.</li>
@@ -314,10 +434,11 @@ csharpdb migrate inspect `
 
                 <h2 id="limits">Current Limits and Qualification Status</h2>
                 <div class="callout callout-info">
-                    <strong>Provider qualification remains explicit.</strong> The retained package, process isolation, deterministic replay, and offline validation paths are reviewed and tested. Broad live SQL Server and MySQL server, authentication, TLS, least-privilege, and published-runtime qualification is not claimed yet.
+                    <strong>Provider qualification remains explicit.</strong> The retained package, process isolation, deterministic replay, and offline validation paths are reviewed and tested. Broad live Access, SQL Server, and MySQL environment qualification is not claimed yet.
                 </div>
                 <ul>
-                    <li><strong>SQL Server:</strong> retained v1 implements a bounded relational schema and scalar row capture subset, but the current least-privilege metadata result remains <code>Unknown</code> and blocks planning. Unsupported features remain blocking diagnostics or reviewed exclusions.</li>
+                    <li><strong>Access:</strong> retained v1 supports bounded local-table capture through ACE on Windows, but its required VM matrix is deferred and the qualification diagnostic blocks planning.</li>
+                    <li><strong>SQL Server:</strong> retained v1 implements a bounded relational schema and scalar row capture subset. The strict restricted-account metadata proof passes in the LocalDB qualification fixture, while the broader live release matrix remains a blocking diagnostic. Unsupported features remain blocking diagnostics or reviewed exclusions.</li>
                     <li><strong>MySQL:</strong> retained v1 is limited to supported ordinary, nonpartitioned InnoDB base tables with deterministic integer key ordering and supported scalar columns. Programmable objects are outside this retained migration scope.</li>
                     <li><strong>Live test matrix:</strong> disposable Windows VM and broader live-provider qualification remain deferred. Do not interpret a successful offline package test as proof for every server, authentication, or TLS configuration.</li>
                     <li><strong>Source products:</strong> MariaDB, Aurora MySQL, Percona, TiDB, Vitess, and other MySQL-compatible products require separate qualification.</li>
@@ -335,7 +456,7 @@ csharpdb migrate inspect `
                     <tbody>
                         <tr>
                             <td>Adapter unavailable</td>
-                            <td>Restore the release layout so <code>adapters/sqlserver</code> and <code>adapters/mysql</code> remain beside the base CLI. Do not copy only the executable.</td>
+                            <td>Restore the release layout so the required optional adapter directory remains beside the base CLI. Access requires the Windows <code>adapters/access</code> component; SQL Server and MySQL use their matching adapter directories. Do not copy only the executable.</td>
                         </tr>
                         <tr>
                             <td>Catalog has blocking diagnostics</td>

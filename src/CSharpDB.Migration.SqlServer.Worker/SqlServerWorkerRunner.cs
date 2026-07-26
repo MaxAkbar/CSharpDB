@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using CSharpDB.Migration;
 using CSharpDB.Migration.CSharpDb;
+using CSharpDB.Migration.Compatibility;
 using CSharpDB.Migration.Retained;
 
 namespace CSharpDB.Migration.SqlServer.Worker;
@@ -82,6 +83,29 @@ internal sealed record SqlServerWorkerDependencies
         get;
         init;
     } = SqlServerWorkerRunner.SerializeDdlReport;
+
+    internal Func<
+        QueryCompatibilityRequest,
+        CancellationToken,
+        ValueTask<QueryCompatibilityReport>> AnalyzeQueryAsync
+    {
+        get;
+        init;
+    } = static (request, cancellationToken) =>
+        ValueTask.FromResult(
+            new SqlServerQueryCompatibilityAnalyzer().Analyze(
+                request,
+                cancellationToken));
+
+    internal Func<QueryCompatibilityReport, string>
+        SerializeQueryReport
+    {
+        get;
+        init;
+    } = static report =>
+        CompatibilityReportFormatter.ToJson(
+            report,
+            writeIndented: false);
 }
 
 internal static class SqlServerWorkerRunner
@@ -91,6 +115,9 @@ internal static class SqlServerWorkerRunner
     internal const string DdlProtocol =
         "csharpdb-sqlserver-ddl-worker/v1";
     internal const string DdlSuccessHeader = DdlProtocol + "\n";
+    internal const string QueryProtocol =
+        "csharpdb-sqlserver-query-worker/v1";
+    internal const string QuerySuccessHeader = QueryProtocol + "\n";
     internal const int ExitSuccess = 0;
     internal const int ExitIncompatible = 10;
     internal const int ExitConnectionUnavailable = 11;
@@ -102,6 +129,9 @@ internal static class SqlServerWorkerRunner
     internal const int MaxDdlInputCharacters =
         SqlServerTsqlDdlCompatibilityOptions.HardMaxScriptCharacters;
     internal const long MaxDdlReportBytes = 8L * 1024 * 1024;
+    internal const int MaxQueryInputBytes = 1024 * 1024;
+    internal const int MaxQueryInputCharacters = 1024 * 1024;
+    internal const long MaxQueryReportBytes = 8L * 1024 * 1024;
 
     private const string IncompatibleError =
         Protocol + ":error:incompatible";
@@ -117,6 +147,12 @@ internal static class SqlServerWorkerRunner
         DdlProtocol + ":error:analysis-failed";
     private const string DdlInternalFailureError =
         DdlProtocol + ":error:internal-failure";
+    private const string QueryIncompatibleError =
+        QueryProtocol + ":error:incompatible";
+    private const string QueryAnalysisFailureError =
+        QueryProtocol + ":error:analysis-failed";
+    private const string QueryInternalFailureError =
+        QueryProtocol + ":error:internal-failure";
     private static readonly UTF8Encoding StrictUtf8 =
         new(
             encoderShouldEmitUTF8Identifier: false,
@@ -167,6 +203,17 @@ internal static class SqlServerWorkerRunner
         if (IsDdlProtocol(args))
         {
             return await RunDdlAsync(
+                args,
+                input,
+                output,
+                error,
+                dependencies,
+                cancellationToken);
+        }
+
+        if (IsQueryProtocol(args))
+        {
+            return await RunQueryAsync(
                 args,
                 input,
                 output,
@@ -366,6 +413,304 @@ internal static class SqlServerWorkerRunner
             args[1],
             DdlProtocol,
             StringComparison.Ordinal);
+
+    private static bool IsQueryProtocol(IReadOnlyList<string> args) =>
+        args.Count >= 2 &&
+        string.Equals(
+            args[0],
+            "--protocol",
+            StringComparison.Ordinal) &&
+        string.Equals(
+            args[1],
+            QueryProtocol,
+            StringComparison.Ordinal);
+
+    private static async ValueTask<int> RunQueryAsync(
+        IReadOnlyList<string> args,
+        Stream input,
+        TextWriter output,
+        TextWriter error,
+        SqlServerWorkerDependencies dependencies,
+        CancellationToken cancellationToken)
+    {
+        if (!TryParseQueryInvocation(
+                args,
+                out string? targetVersion,
+                out string? queryId,
+                out int compatibilityLevel) ||
+            !string.Equals(
+                targetVersion,
+                CSharpDbCapabilityCatalogLoader.CurrentTargetVersion,
+                StringComparison.Ordinal))
+        {
+            return await FailAsync(
+                error,
+                ExitIncompatible,
+                QueryIncompatibleError);
+        }
+
+        if (dependencies.AnalyzeQueryAsync is null ||
+            dependencies.SerializeQueryReport is null ||
+            dependencies.MeasureUtf8Bytes is null)
+        {
+            return await FailAsync(
+                error,
+                ExitInternalFailure,
+                QueryInternalFailureError);
+        }
+
+        string query;
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            query = await ReadQueryInputAsync(
+                input,
+                cancellationToken);
+        }
+        catch (OperationCanceledException)
+            when (cancellationToken.IsCancellationRequested)
+        {
+            return await FailAsync(
+                error,
+                ExitInspectionFailure,
+                QueryAnalysisFailureError);
+        }
+        catch (Exception exception) when (
+            exception is DecoderFallbackException or
+                QueryInputLimitException)
+        {
+            return await FailAsync(
+                error,
+                ExitIncompatible,
+                QueryIncompatibleError);
+        }
+        catch
+        {
+            return await FailAsync(
+                error,
+                ExitInspectionFailure,
+                QueryAnalysisFailureError);
+        }
+
+        QueryCompatibilityReport report;
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            report = await dependencies.AnalyzeQueryAsync(
+                new QueryCompatibilityRequest
+                {
+                    TargetCSharpDbVersion = targetVersion!,
+                    SqlServerCompatibilityLevel =
+                        compatibilityLevel,
+                    Queries =
+                    [
+                        new QueryCompatibilityInput
+                        {
+                            QueryId = queryId!,
+                            SourceDialect =
+                                QuerySourceDialect.SqlServerTsql,
+                            Sql = query,
+                        },
+                    ],
+                },
+                cancellationToken);
+        }
+        catch (OperationCanceledException)
+            when (cancellationToken.IsCancellationRequested)
+        {
+            return await FailAsync(
+                error,
+                ExitInspectionFailure,
+                QueryAnalysisFailureError);
+        }
+        catch
+        {
+            return await FailAsync(
+                error,
+                ExitInspectionFailure,
+                QueryAnalysisFailureError);
+        }
+
+        string serialized;
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!IsValidQueryReport(
+                    report,
+                    targetVersion!,
+                    queryId!,
+                    query))
+            {
+                return await FailAsync(
+                    error,
+                    ExitInternalFailure,
+                    QueryInternalFailureError);
+            }
+
+            serialized =
+                dependencies.SerializeQueryReport(report);
+            if (string.IsNullOrEmpty(serialized) ||
+                dependencies.MeasureUtf8Bytes(serialized) >
+                    MaxQueryReportBytes)
+            {
+                return await FailAsync(
+                    error,
+                    ExitInternalFailure,
+                    QueryInternalFailureError);
+            }
+        }
+        catch (OperationCanceledException)
+            when (cancellationToken.IsCancellationRequested)
+        {
+            return await FailAsync(
+                error,
+                ExitInspectionFailure,
+                QueryAnalysisFailureError);
+        }
+        catch
+        {
+            return await FailAsync(
+                error,
+                ExitInternalFailure,
+                QueryInternalFailureError);
+        }
+
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await output.WriteAsync(
+                QuerySuccessHeader.AsMemory(),
+                cancellationToken);
+            await output.WriteAsync(
+                serialized.AsMemory(),
+                cancellationToken);
+            await output.FlushAsync(cancellationToken);
+            return ExitSuccess;
+        }
+        catch (OperationCanceledException)
+            when (cancellationToken.IsCancellationRequested)
+        {
+            return await FailAsync(
+                error,
+                ExitInspectionFailure,
+                QueryAnalysisFailureError);
+        }
+        catch
+        {
+            return await FailAsync(
+                error,
+                ExitInternalFailure,
+                QueryInternalFailureError);
+        }
+    }
+
+    private static bool TryParseQueryInvocation(
+        IReadOnlyList<string> args,
+        out string? targetVersion,
+        out string? queryId,
+        out int compatibilityLevel)
+    {
+        targetVersion = null;
+        queryId = null;
+        compatibilityLevel = 0;
+        if (args.Count != 8 ||
+            !string.Equals(
+                args[0],
+                "--protocol",
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                args[1],
+                QueryProtocol,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                args[2],
+                "--target-version",
+                StringComparison.Ordinal) ||
+            string.IsNullOrWhiteSpace(args[3]) ||
+            !string.Equals(
+                args[4],
+                "--query-id",
+                StringComparison.Ordinal) ||
+            string.IsNullOrWhiteSpace(args[5]) ||
+            args[5].Length > 256 ||
+            args[5].Any(char.IsControl) ||
+            !string.Equals(
+                args[6],
+                "--compatibility-level",
+                StringComparison.Ordinal) ||
+            !int.TryParse(
+                args[7],
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out compatibilityLevel) ||
+            compatibilityLevel is not (150 or 160 or 170))
+        {
+            return false;
+        }
+
+        targetVersion = args[3];
+        queryId = args[5];
+        return true;
+    }
+
+    private static async ValueTask<string> ReadQueryInputAsync(
+        Stream input,
+        CancellationToken cancellationToken)
+    {
+        byte[] readBuffer =
+            ArrayPool<byte>.Shared.Rent(64 * 1024);
+        byte[]? payload = null;
+        int payloadLength = 0;
+        try
+        {
+            payload =
+                ArrayPool<byte>.Shared.Rent(MaxQueryInputBytes);
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                int read = await input.ReadAsync(
+                    readBuffer.AsMemory(0, readBuffer.Length),
+                    cancellationToken);
+                if (read == 0)
+                    break;
+                if (payloadLength > MaxQueryInputBytes - read)
+                    throw new QueryInputLimitException();
+
+                readBuffer
+                    .AsSpan(0, read)
+                    .CopyTo(payload.AsSpan(payloadLength));
+                payloadLength += read;
+            }
+
+            ReadOnlySpan<byte> source =
+                payload.AsSpan(0, payloadLength);
+            if (source.StartsWith(Utf8Bom))
+                source = source[Utf8Bom.Length..];
+
+            cancellationToken.ThrowIfCancellationRequested();
+            int characterCount = StrictUtf8.GetCharCount(source);
+            if (characterCount > MaxQueryInputCharacters)
+                throw new QueryInputLimitException();
+
+            cancellationToken.ThrowIfCancellationRequested();
+            string query = StrictUtf8.GetString(source);
+            if (string.IsNullOrWhiteSpace(query))
+                throw new QueryInputLimitException();
+            return query;
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(
+                readBuffer,
+                clearArray: true);
+            if (payload is not null)
+            {
+                ArrayPool<byte>.Shared.Return(
+                    payload,
+                    clearArray: true);
+            }
+        }
+    }
 
     private static async ValueTask<int> RunDdlAsync(
         IReadOnlyList<string> args,
@@ -1653,6 +1998,239 @@ internal static class SqlServerWorkerRunner
             Column = span.Column,
         };
 
+    internal static bool IsValidQueryReport(
+        QueryCompatibilityReport? report,
+        string targetVersion,
+        string queryId,
+        string query)
+    {
+        CSharpDbCapabilityCatalog capabilities =
+            CSharpDbCapabilityCatalogLoader.LoadEmbedded(
+                targetVersion);
+        if (report is null ||
+            !string.Equals(
+                report.Format,
+                QueryCompatibilityReportFormats.V1,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                report.TargetCSharpDbVersion,
+                targetVersion,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                report.CapabilityDigest,
+                capabilities.Digest,
+                StringComparison.Ordinal) ||
+            !IsLowerHexSha256(report.CapabilityDigest) ||
+            report.Summary is null ||
+            report.Results is null ||
+            report.Results.Count != 1)
+        {
+            return false;
+        }
+
+        QueryCompatibilityResult? result = report.Results[0];
+        if (result is null ||
+            !string.Equals(
+                result.QueryId,
+                queryId,
+                StringComparison.Ordinal) ||
+            result.SourceDialect !=
+                QuerySourceDialect.SqlServerTsql ||
+            !string.Equals(
+                result.SourceDigest,
+                ComputeQueryDigest(query),
+                StringComparison.Ordinal) ||
+            !Enum.IsDefined(result.Status) ||
+            result.Evidence is { } evidence &&
+                !Enum.IsDefined(evidence) ||
+            result.Diagnostics is null ||
+            result.Diagnostics.Count == 0 ||
+            result.Diagnostics.Count > 200_000 ||
+            !IsValidQuerySummary(
+                report.Summary,
+                result.Status))
+        {
+            return false;
+        }
+
+        if (result.Rewrite is { } rewrite &&
+            (!string.Equals(
+                 rewrite.RewriteId,
+                 "tsql-top-integer-to-csharpdb-limit/v1",
+                 StringComparison.Ordinal) ||
+             string.IsNullOrWhiteSpace(
+                 rewrite.CandidateCSharpDbSql) ||
+             StrictUtf8.GetByteCount(
+                 rewrite.CandidateCSharpDbSql) >
+                 MaxQueryInputBytes ||
+             !string.Equals(
+                 rewrite.CandidateDigest,
+                 ComputeQueryDigest(
+                     rewrite.CandidateCSharpDbSql),
+                 StringComparison.Ordinal)))
+        {
+            return false;
+        }
+
+        var diagnosticIds =
+            new HashSet<string>(StringComparer.Ordinal);
+        foreach (MigrationDiagnostic? diagnostic
+                 in result.Diagnostics)
+        {
+            if (diagnostic is null ||
+                string.IsNullOrEmpty(
+                    diagnostic.DiagnosticId) ||
+                !diagnosticIds.Add(
+                    diagnostic.DiagnosticId) ||
+                diagnostic.DiagnosticId.Length != 30 ||
+                !diagnostic.DiagnosticId.StartsWith(
+                    "query:",
+                    StringComparison.Ordinal) ||
+                !IsLowerHex(
+                    diagnostic.DiagnosticId.AsSpan(6)) ||
+                !IsAllowedQueryRuleId(
+                    diagnostic.RuleId) ||
+                !Enum.IsDefined(diagnostic.Severity) ||
+                !Enum.IsDefined(diagnostic.Status) ||
+                !Enum.IsDefined(diagnostic.Evidence) ||
+                !string.Equals(
+                    diagnostic.ObjectId,
+                    queryId,
+                    StringComparison.Ordinal) ||
+                diagnostic.CanOverride ||
+                !IsBoundedQueryText(
+                    diagnostic.Summary,
+                    4_096) ||
+                !IsBoundedQueryText(
+                    diagnostic.Explanation,
+                    8_192) ||
+                diagnostic.Remediation is not null &&
+                    !IsBoundedQueryText(
+                        diagnostic.Remediation,
+                        8_192) ||
+                !IsValidQuerySpan(
+                    diagnostic.SourceSpan,
+                    query.Length))
+            {
+                return false;
+            }
+        }
+
+        return ExpectedQueryStatus(
+                result.Diagnostics) ==
+            result.Status;
+    }
+
+    private static bool IsValidQuerySummary(
+        QueryCompatibilityReportSummary summary,
+        MigrationCompatibilityStatus status) =>
+        summary.Total == 1 &&
+        summary.Compatible ==
+            (status == MigrationCompatibilityStatus.Compatible ? 1 : 0) &&
+        summary.CompatibleWithRewrite ==
+            (status ==
+                MigrationCompatibilityStatus.CompatibleWithRewrite
+                ? 1
+                : 0) &&
+        summary.Conditional ==
+            (status == MigrationCompatibilityStatus.Conditional ? 1 : 0) &&
+        summary.Unsupported ==
+            (status == MigrationCompatibilityStatus.Unsupported ? 1 : 0) &&
+        summary.Unknown ==
+            (status == MigrationCompatibilityStatus.Unknown ? 1 : 0);
+
+    private static bool IsAllowedQueryRuleId(string? ruleId) =>
+        ruleId is
+            QueryCompatibilityRuleIds.DialectUnqualified or
+            QueryCompatibilityRuleIds.InputLimitExceeded or
+            QueryCompatibilityRuleIds.SourceParseFailed or
+            QueryCompatibilityRuleIds.MultipleStatements or
+            QueryCompatibilityRuleIds.NotReadOnly or
+            QueryCompatibilityRuleIds.TargetParseFailed or
+            QueryCompatibilityRuleIds.BindingNotPerformed or
+            QueryCompatibilityRuleIds.NondeterministicFunction or
+            QueryCompatibilityRuleIds.UnboundFunction or
+            QueryCompatibilityRuleIds.NondeterministicLimit or
+            QueryCompatibilityRuleIds.TemporaryObject or
+            QueryCompatibilityRuleIds.SessionState or
+            QueryCompatibilityRuleIds.TopToLimitRewrite;
+
+    private static bool IsBoundedQueryText(
+        string? value,
+        int maximumLength) =>
+        value is { Length: > 0 } &&
+        value.Length <= maximumLength &&
+        !value.Any(char.IsControl);
+
+    private static MigrationCompatibilityStatus
+        ExpectedQueryStatus(
+            IReadOnlyList<MigrationDiagnostic> diagnostics)
+    {
+        if (diagnostics.Any(static item =>
+                item.Status ==
+                MigrationCompatibilityStatus.Unknown))
+        {
+            return MigrationCompatibilityStatus.Unknown;
+        }
+        if (diagnostics.Any(static item =>
+                item.Status ==
+                MigrationCompatibilityStatus.Unsupported))
+        {
+            return MigrationCompatibilityStatus.Unsupported;
+        }
+        return diagnostics.Any(static item =>
+                item.Status is
+                    MigrationCompatibilityStatus.Conditional or
+                    MigrationCompatibilityStatus.CompatibleWithRewrite)
+            ? MigrationCompatibilityStatus.Conditional
+            : MigrationCompatibilityStatus.Compatible;
+    }
+
+    private static bool IsValidQuerySpan(
+        MigrationSourceSpan? span,
+        int queryLength)
+    {
+        if (span is null)
+            return true;
+        if (span.SourceId is not null ||
+            span.Start is < 0 ||
+            span.Length is < 0 ||
+            span.Line is < 1 ||
+            span.Column is < 1)
+        {
+            return false;
+        }
+        if (span.Start is int start &&
+            start > queryLength)
+        {
+            return false;
+        }
+        return span.Start is not int spanStart ||
+            span.Length is not int length ||
+            spanStart <= queryLength - length;
+    }
+
+    private static string ComputeQueryDigest(string query) =>
+        Convert.ToHexString(
+                SHA256.HashData(
+                    StrictUtf8.GetBytes(query)))
+            .ToLowerInvariant();
+
+    private static bool IsLowerHex(
+        ReadOnlySpan<char> value)
+    {
+        foreach (char character in value)
+        {
+            if (character is not (
+                    >= '0' and <= '9' or
+                    >= 'a' and <= 'f'))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private static bool IsOptionalLowerHexSha256(string? value) =>
         value is null || IsLowerHexSha256(value);
 
@@ -1780,6 +2358,10 @@ internal static class SqlServerWorkerRunner
         string ScriptDigest);
 
     private sealed class DdlInputLimitException : Exception
+    {
+    }
+
+    private sealed class QueryInputLimitException : Exception
     {
     }
 

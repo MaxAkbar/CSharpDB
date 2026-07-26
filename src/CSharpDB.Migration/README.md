@@ -1,11 +1,24 @@
 # CSharpDB.Migration
 
 Shared, provider-neutral contracts for the CSharpDB migration assurance stack.
-The project remains non-packable until its wire contracts and public SDK
-interfaces complete an explicit freeze review.
+The versioned v1 artifact formats, canonicalization rules, and public contracts
+are published in the `CSharpDB.Migration` package. Incompatible wire changes
+require a new format or contract version rather than changing v1 in place.
 
-The project contains the Phase 1 planning vertical slice, the provider-neutral
-part of the Phase 2 staged-apply slice, and the Phase 3 validation core:
+## Install
+
+```powershell
+dotnet add package CSharpDB.Migration --version 4.3.0
+```
+
+Use this package when building a .NET tool or workflow that authors, validates,
+or consumes migration catalogs, plans, apply receipts, and validation reports.
+It provides provider-neutral planning, staged-apply, and validation contracts;
+source-provider drivers, isolated workers, and the end-user CLI are distributed
+separately.
+
+The package provides the provider-neutral planning, staged-apply, and validation
+core:
 
 - versioned catalog and plan artifact formats;
 - deterministic SHA-256 artifact envelopes;
@@ -58,8 +71,8 @@ part of the Phase 2 staged-apply slice, and the Phase 3 validation core:
   cannot be established; and
 - a report-before-activation contract that requires a published, canonical,
   semantically `Passed` report before the staged target can activate;
-- provisional inspector, streaming source, target, snapshot, and validator
-  interfaces while this project remains non-packable;
+- public inspector, streaming source, target, snapshot, and validator
+  interfaces with versioned durable artifacts;
 - an immutable awkward synthetic inspector, row source, and deterministic
   planner; and
 - structural validation, duplicate-property rejection, unknown-member
@@ -75,11 +88,11 @@ digest, planner, and name-mapping vectors. A wire-shape change requires a new
 artifact format version.
 
 Provider packages and provider-specific execution code do not belong here.
-CSV, SQLite, LiteDB, server, and Access dependencies remain in optional adapters described in
-[`docs/migration-tooling-phase-0-decisions.md`](../../docs/migration-tooling-phase-0-decisions.md).
+File, embedded-database, and server adapters remain in their corresponding
+`CSharpDB.Migration.*` projects; provider libraries are kept out of this
+package.
 
-Phase 1 is complete for the in-repository planning slice. Exact decimal,
-date/time, GUID, and identifier behavior is shared through
+Exact decimal, date/time, GUID, and identifier behavior is shared through
 `CSharpDB.Primitives` and version-bound in migration conversion descriptors.
 The target-specific implementation lives in `CSharpDB.Migration.CSharpDb`. It
 creates a new staged database atomically and stores accepted rows, canonical
@@ -88,20 +101,27 @@ permits deterministic rejects only when the source advertises the exact contract
 and complete rule registry and the target advertises the current digest and
 authoritative ledger capabilities. Validation still stops this path before
 report publication unless immutable source replay exactly matches the target
-snapshot's complete receipt and reject-ledger streams. The CLI remains
-fail-fast while the qualified SDK reject-artifact writer awaits an explicit
-operator-facing tolerant CLI workflow.
+snapshot's complete receipt and reject-ledger streams. The CLI defaults to
+fail-fast. Retained CSV and untyped retained JSON v1 can opt into the qualified
+deterministic-reject route only with an explicit plan policy, bounded reject
+limits, apply/validate opt-in, and a protected no-overwrite reject artifact.
 
-The current CLI proof surface is:
+The CLI hosts these contracts through one review-first workflow:
 
 ```text
-csharpdb migrate inspect --source synthetic --out catalog.json
-csharpdb migrate inspect --source sqlserver --connection-env ENV_NAME --out catalog.json
+csharpdb migrate inspect --source <csv|json|sqlite|litedb|access|sqlserver|mysql> ...
+csharpdb migrate type-map catalog.json --out type-map.json
+csharpdb migrate query-check query.sql --dialect <csharpdb|tsql|mysql|sqlite|access> --out query-report.json
 csharpdb migrate plan catalog.json --out plan.json [--profile preserve|queryable] [--accept-exclusions all|<id,...>]
 csharpdb migrate preview plan.json --catalog catalog.json [--ddl|--scratch] [--format text|json]
-csharpdb migrate apply plan.json --catalog catalog.json --target staged.csdb --out run.json [--resume] [--format text|json]
-csharpdb migrate validate plan.json --catalog catalog.json --target staged.csdb --out validation.json [--level schema|count|checksum] [--spill-dir directory] [--format text|json]
+csharpdb migrate apply plan.json --catalog catalog.json --source-package source.csdb* --target staged.csdb --out run.json [--resume]
+csharpdb migrate validate plan.json --catalog catalog.json --source-package source.csdb* --target staged.csdb --out validation.json [--level schema|count|checksum]
+csharpdb migrate snapshot source.csdb --out retained-snapshot.db --offline
+csharpdb migrate export retained-snapshot.db --format <csv|json|ndjson> ...
 ```
+
+See the [database migration guide](https://csharpdb.com/docs/database-migration.html)
+for exact commands, qualification boundaries, and recovery rules.
 
 `migrate plan` reads the catalog through a strict UTF-8, 64 MiB contract
 boundary and performs one bounded authoritative target-schema render before

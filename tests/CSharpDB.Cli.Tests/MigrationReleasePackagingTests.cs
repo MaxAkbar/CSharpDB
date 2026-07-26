@@ -21,6 +21,10 @@ public sealed class MigrationReleasePackagingTests
             repoRoot,
             "scripts",
             "Publish-CSharpDbMySqlMigrationBundle.ps1");
+        string accessPublisher = Read(
+            repoRoot,
+            "scripts",
+            "Publish-CSharpDbAccessMigrationBundle.ps1");
 
         Assert.Contains(
             "Publish-CSharpDbSqlServerMigrationBundle.ps1",
@@ -28,6 +32,10 @@ public sealed class MigrationReleasePackagingTests
             StringComparison.Ordinal);
         Assert.Contains(
             "Publish-CSharpDbMySqlMigrationBundle.ps1",
+            releaseScript,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Publish-CSharpDbAccessMigrationBundle.ps1",
             releaseScript,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -53,6 +61,9 @@ public sealed class MigrationReleasePackagingTests
         int mySqlPublishIndex = releaseScript.IndexOf(
             "& $mySqlPublisher",
             StringComparison.Ordinal);
+        int accessPublishIndex = releaseScript.IndexOf(
+            "& $accessPublisher",
+            StringComparison.Ordinal);
         int identityCheckIndex = releaseScript.LastIndexOf(
             "Assert-ByteIdenticalBaseRoots",
             StringComparison.Ordinal);
@@ -62,12 +73,18 @@ public sealed class MigrationReleasePackagingTests
         Assert.True(
             sqlPublishIndex >= 0 &&
             mySqlPublishIndex > sqlPublishIndex &&
-            identityCheckIndex > mySqlPublishIndex &&
+            accessPublishIndex > mySqlPublishIndex &&
+            identityCheckIndex > accessPublishIndex &&
             mergeIndex > identityCheckIndex,
-            "Both audited bundles must publish and pass the byte-identity check before adapter merging.");
+            "Every applicable audited bundle must publish and pass the byte-identity check before adapter merging.");
 
         foreach (string publisher in
-                 new[] { sqlServerPublisher, mySqlPublisher })
+                 new[]
+                 {
+                     sqlServerPublisher,
+                     mySqlPublisher,
+                     accessPublisher,
+                 })
         {
             Assert.Contains(
                 "Assert-ExistingPathHasNoReparsePoints",
@@ -90,6 +107,23 @@ public sealed class MigrationReleasePackagingTests
                 publisher,
                 StringComparison.Ordinal);
         }
+
+        Assert.Contains(
+            "[ValidateSet('win-x64')]",
+            accessPublisher,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Assert-NoAccessAssets",
+            accessPublisher,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Assert-ReviewedWorkerPackageClosure",
+            accessPublisher,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "System.Data.OleDb/10.0.9",
+            accessPublisher,
+            StringComparison.Ordinal);
 
         Assert.Contains(
             "Assert-DotNetTenRuntimeConfig",
@@ -146,6 +180,11 @@ public sealed class MigrationReleasePackagingTests
             "adapters/sqlserver/licenses/Microsoft.Data.SqlClient.SNI.runtime-6.0.2-LICENSE.txt",
             "adapters/mysql/csharpdb-migration-mysql-worker",
             "adapters/mysql/THIRD-PARTY-NOTICES.md",
+            "adapters/access/csharpdb-migration-access-worker",
+            "adapters/access/CSharpDB.Migration.Access.dll",
+            "adapters/access/CSharpDB.Migration.Retained.dll",
+            "adapters/access/System.Data.OleDb.dll",
+            "adapters/access/THIRD-PARTY-NOTICES.md",
             "install/windows/install-csharpdb-migration-tool.ps1",
             "install/posix/install-csharpdb-migration-tool.sh",
             "LICENSE",
@@ -162,6 +201,22 @@ public sealed class MigrationReleasePackagingTests
 
         Assert.Contains(
             "-LiteralPath (Join-Path $mySqlBundle 'adapters/mysql')",
+            script,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "-LiteralPath (Join-Path $accessBundle 'adapters/access')",
+            script,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "if ($targetIsWindows)",
+            script,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "A POSIX migration release cannot contain the Windows-only Access adapter.",
+            script,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "A POSIX migration release dependency graph contains the Windows-only Access dependency",
             script,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -207,6 +262,79 @@ public sealed class MigrationReleasePackagingTests
             tarModeCheckIndex > tarCreateIndex &&
             archiveRegistrationIndex > tarModeCheckIndex,
             "A POSIX tarball must pass its exact mode check before checksum registration.");
+    }
+
+    [Fact]
+    public void ReleaseWorkflow_PublishesMigrationArchivesAsReleaseAssets()
+    {
+        string repoRoot = FindRepoRoot();
+        string workflow = Read(
+            repoRoot,
+            ".github",
+            "workflows",
+            "release.yml");
+        string ciWorkflow = Read(
+            repoRoot,
+            ".github",
+            "workflows",
+            "ci.yml");
+
+        Assert.Contains("migration-archives:", workflow, StringComparison.Ordinal);
+        Assert.Contains("rid: win-x64", workflow, StringComparison.Ordinal);
+        Assert.Contains("rid: linux-x64", workflow, StringComparison.Ordinal);
+        Assert.Contains("rid: osx-arm64", workflow, StringComparison.Ordinal);
+        Assert.Contains(
+            "Publish-CSharpDbMigrationRelease.ps1",
+            workflow,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "RELEASE_TAG: ${{ github.ref_name }}",
+            workflow,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "name: migration-${{ matrix.rid }}",
+            workflow,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "needs: [publish-nuget, migration-archives,",
+            workflow,
+            StringComparison.Ordinal);
+        Assert.Contains("pattern: migration-*", workflow, StringComparison.Ordinal);
+        Assert.Contains(
+            "MIGRATION-SHA256SUMS.txt",
+            workflow,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "artifacts/migration/*",
+            workflow,
+            StringComparison.Ordinal);
+
+        int publishIndex = workflow.IndexOf(
+            "Publish-CSharpDbMigrationRelease.ps1",
+            StringComparison.Ordinal);
+        int uploadIndex = workflow.IndexOf(
+            "name: migration-${{ matrix.rid }}",
+            StringComparison.Ordinal);
+        int releaseIndex = workflow.IndexOf(
+            "artifacts/migration/*",
+            StringComparison.Ordinal);
+        Assert.True(
+            publishIndex >= 0 &&
+            uploadIndex > publishIndex &&
+            releaseIndex > uploadIndex,
+            "Migration archives must be published, uploaded, and then attached to the release.");
+
+        foreach (string provider in new[] { "Access", "SqlServer", "MySql" })
+        {
+            Assert.Contains(
+                $"Test-{provider}MigrationIsolation.ps1 -Configuration Release",
+                ciWorkflow,
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                $"Test-{provider}MigrationIsolation.ps1 -Configuration Release -NoRestore",
+                ciWorkflow,
+                StringComparison.Ordinal);
+        }
     }
 
     [Fact]
@@ -402,6 +530,35 @@ public sealed class MigrationReleasePackagingTests
         Assert.DoesNotContain("rm -rf", posix, StringComparison.Ordinal);
         Assert.DoesNotContain("sudo", posix, StringComparison.Ordinal);
         Assert.DoesNotContain("/etc/", posix, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "adapters/access",
+            posix,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "System.Data.OleDb",
+            posix,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "adapters/access/csharpdb-migration-access-worker.exe",
+            windows,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "adapters/access/CSharpDB.Migration.Access.dll",
+            windows,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "adapters/access/CSharpDB.Migration.Retained.dll",
+            windows,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "adapters/access/System.Data.OleDb.dll",
+            windows,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "adapters/access/THIRD-PARTY-NOTICES.md",
+            windows,
+            StringComparison.Ordinal);
 
         foreach (string installer in new[] { windows, posix })
         {
@@ -625,7 +782,27 @@ public sealed class MigrationReleasePackagingTests
             readme,
             StringComparison.Ordinal);
         Assert.Contains(
-            "not claim broad live SQL Server or MySQL qualification",
+            "MIGRATION-SHA256SUMS.txt",
+            readme,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "not claim broad live Access, SQL Server, or MySQL qualification",
+            readme,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "win-x64",
+            readme,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Linux and macOS archives do not contain `adapters/access`",
+            readme,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "does not redistribute or install ACE",
+            readme,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            ".csdbaccess",
             readme,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -663,7 +840,7 @@ public sealed class MigrationReleasePackagingTests
     {
         string executableSuffix =
             OperatingSystem.IsWindows() ? ".exe" : string.Empty;
-        IReadOnlyDictionary<string, string> files =
+        var files =
             new Dictionary<string, string>(StringComparer.Ordinal)
             {
                 [$"csharpdb{executableSuffix}"] = "release cli",
@@ -681,6 +858,21 @@ public sealed class MigrationReleasePackagingTests
                     "mysql notices",
                 ["redirect/payload.txt"] = "release payload",
             };
+        if (OperatingSystem.IsWindows())
+        {
+            files["adapters/access/csharpdb-migration-access-worker.exe"] =
+                "access worker";
+            files["adapters/access/CSharpDB.Migration.Access.dll"] =
+                "access adapter";
+            files["adapters/access/CSharpDB.Migration.Retained.dll"] =
+                "retained package reader";
+            files["adapters/access/System.Data.OleDb.dll"] =
+                "OLE DB provider bridge";
+            files["adapters/access/THIRD-PARTY-NOTICES.md"] =
+                "access notices";
+            files["adapters/access/csharpdb-migration-access-worker.deps.json"] =
+                "access dependencies";
+        }
 
         foreach ((string relative, string contents) in files)
         {

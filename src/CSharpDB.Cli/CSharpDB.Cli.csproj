@@ -24,6 +24,7 @@
     <ProjectReference Include="..\CSharpDB.Engine\CSharpDB.Engine.csproj" />
     <ProjectReference Include="..\CSharpDB.Migration\CSharpDB.Migration.csproj" />
     <ProjectReference Include="..\CSharpDB.Migration.CSharpDb\CSharpDB.Migration.CSharpDb.csproj" />
+    <ProjectReference Include="..\CSharpDB.Migration.Compatibility\CSharpDB.Migration.Compatibility.csproj" />
     <ProjectReference Include="..\CSharpDB.Migration.Files\CSharpDB.Migration.Files.csproj" />
     <ProjectReference Include="..\CSharpDB.Migration.LiteDb\CSharpDB.Migration.LiteDb.csproj" />
     <ProjectReference Include="..\CSharpDB.Migration.Retained\CSharpDB.Migration.Retained.csproj" />

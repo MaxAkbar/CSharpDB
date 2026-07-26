@@ -28,10 +28,48 @@ server version and version-comment evidence so non-Oracle variants can be
 reported as unqualified instead of being treated as equivalent.
 
 The provider has deterministic reader, catalog, retained-package,
-process-protocol, and adversarial lifecycle tests but no live-server
-qualification claim. MySQL 8.0 and 8.4 live fixtures, restricted-account
-permission coverage, TLS modes, platforms, and published-runtime smoke tests
-must be qualified before this adapter becomes packable or shipping software.
+process-protocol, and adversarial lifecycle tests. It also has an opt-in live
+least-privilege evidence test, described below, but no completed live-server
+qualification claim. MySQL 8.0 and 8.4 server tags, TLS modes, platforms, and
+published-runtime smoke tests must still be qualified before this adapter
+becomes packable or shipping software.
+
+### Opt-in least-privilege live evidence
+
+`MySqlLeastPrivilegeLiveQualificationTests` is disabled unless
+`CSHARPDB_MYSQL_LIVE_ADMIN_CONNECTION` contains an administrative connection
+string. The connection must select one Oracle MySQL 8.0 or 8.4 server, use
+`SslMode=Required` or a stronger certificate-verifying mode for TCP, and allow
+the test to create and drop a database, users, a role, and schema grants. Run:
+
+```powershell
+$env:CSHARPDB_MYSQL_LIVE_ADMIN_CONNECTION = '<secure admin connection string>'
+dotnet test tests/CSharpDB.Migration.MySql.Tests/CSharpDB.Migration.MySql.Tests.csproj --filter FullyQualifiedName~MySqlLeastPrivilegeLiveQualificationTests
+```
+
+The test creates unique disposable objects and removes them afterward. It
+proves that an account with the analyzer's exact four direct schema grants
+(`SELECT`, `SHOW VIEW`, `TRIGGER`, and `EXECUTE`) can inventory a table, view,
+trigger, and routines, removes the metadata-completeness diagnostic, and can
+capture retained rows. It also proves that the analyzer remains fail-closed on
+the separate live-qualification diagnostic and that equivalent privileges
+received only through an active role do not satisfy the direct-grantee proof
+or publish a retained package.
+
+These are the minimum direct grants used by the current full-analyzer proof,
+not a claim that the MySQL account is strictly read-only. In MySQL,
+`TRIGGER` and `EXECUTE` carry capabilities beyond metadata reads. The adapter
+does not exercise those capabilities, but a strictly read-only route for
+complete programmable-object metadata remains a qualification and design gap.
+Retained v1 avoids that wider grant set and requires only direct `SELECT`.
+
+This opt-in test is one evidence-acquisition lane, not the qualification
+matrix. A successful local run does not remove
+`MIG-MYSQL-LIVE-QUALIFICATION-PENDING-001` or
+`MIG-MYSQL-RETAINED-LIVE-QUALIFICATION-DEFERRED-001`, and it does not certify
+other server tags, authentication modes, TLS modes, operating systems, or the
+published worker bundle. Without the environment variable, the test reports
+as skipped.
 
 ## CLI and worker boundary
 
@@ -237,9 +275,10 @@ complete programmable dependency proof, unsupported row families, and live
 restricted-account qualification remain follow-on work. Their absence is
 represented by explicit availability facts and diagnostics; a retained
 catalog is not blanket migration approval. Live MySQL 8.0/8.4, Docker,
-published-runtime, restricted-account, and TLS-mode qualification remain
-deferred. The wider migration roadmap also defers Access and
-disposable-Windows-VM qualification.
+published-runtime, restricted-account matrix, and TLS-mode qualification
+remain deferred. The opt-in restricted-account test above is one evidence
+lane and does not complete that matrix. The wider migration roadmap also
+defers Access and disposable-Windows-VM qualification.
 
 MySQL `BIT` remains unsupported because its width and bit-string conversion
 semantics are not equivalent to a generic binary mapping. MySQL `TIME` also

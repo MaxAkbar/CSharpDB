@@ -69,6 +69,9 @@ jobs:
             tests/CSharpDB.DevOps.Tests/CSharpDB.DevOps.Tests.csproj
             tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj
             tests/CSharpDB.EntityFrameworkCore.Tools.Tests/CSharpDB.EntityFrameworkCore.Tools.Tests.csproj
+            tests/CSharpDB.Migration.Access.Tests/CSharpDB.Migration.Access.Tests.csproj
+            tests/CSharpDB.Migration.Compatibility.Tests/CSharpDB.Migration.Compatibility.Tests.csproj
+            tests/CSharpDB.Migration.DualRun.Tests/CSharpDB.Migration.DualRun.Tests.csproj
             tests/CSharpDB.Migration.Files.Tests/CSharpDB.Migration.Files.Tests.csproj
             tests/CSharpDB.Migration.MySql.Tests/CSharpDB.Migration.MySql.Tests.csproj
             tests/CSharpDB.Migration.SqlServer.Tests/CSharpDB.Migration.SqlServer.Tests.csproj
@@ -84,11 +87,16 @@ jobs:
 
       - name: Verify SQL Server migration adapter isolation
         shell: pwsh
-        run: ./scripts/Test-SqlServerMigrationIsolation.ps1 -Configuration Release -NoRestore
+        run: ./scripts/Test-SqlServerMigrationIsolation.ps1 -Configuration Release
 
       - name: Verify MySQL migration adapter isolation
         shell: pwsh
-        run: ./scripts/Test-MySqlMigrationIsolation.ps1 -Configuration Release -NoRestore
+        run: ./scripts/Test-MySqlMigrationIsolation.ps1 -Configuration Release
+
+      - name: Verify Microsoft Access migration adapter isolation
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/Test-AccessMigrationIsolation.ps1 -Configuration Release
 
       - name: Verify EF Core migration analyzer package boundary
         shell: pwsh
@@ -226,6 +234,8 @@ jobs:
             src/CSharpDB.Client/README.md \
             src/CSharpDB.CodeModules/README.md \
             src/CSharpDB.Data/README.md \
+            src/CSharpDB.Migration/README.md \
+            src/CSharpDB.Migration.DualRun/README.md \
             src/CSharpDB.EntityFrameworkCore/README.md
 
       - name: Pack projects
@@ -245,6 +255,8 @@ jobs:
           dotnet pack src/CSharpDB.Client/CSharpDB.Client.csproj -c Release -o artifacts/nuget
           dotnet pack src/CSharpDB.CodeModules/CSharpDB.CodeModules.csproj -c Release -o artifacts/nuget
           dotnet pack src/CSharpDB.Data/CSharpDB.Data.csproj -c Release -o artifacts/nuget
+          dotnet pack src/CSharpDB.Migration/CSharpDB.Migration.csproj -c Release -o artifacts/nuget
+          dotnet pack src/CSharpDB.Migration.DualRun/CSharpDB.Migration.DualRun.csproj -c Release -o artifacts/nuget
           dotnet pack src/CSharpDB.EntityFrameworkCore/CSharpDB.EntityFrameworkCore.csproj -c Release -o artifacts/nuget
           dotnet pack src/CSharpDB/CSharpDB.csproj -c Release -o artifacts/nuget
 
