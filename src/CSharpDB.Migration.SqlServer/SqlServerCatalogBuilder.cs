@@ -8,6 +8,12 @@ internal static partial class SqlServerCatalogBuilder
 {
     public const string CatalogContract = "csharpdb-sqlserver-catalog/v6";
 
+    internal const string RowLevelSecurityFilterFacet =
+        "sqlServerEnabledRowLevelSecurityFilter";
+
+    internal const string RowLevelSecurityInventoryCompleteFacet =
+        "sqlServerRowLevelSecurityInventoryComplete";
+
     private static readonly UTF8Encoding s_strictUtf8 =
         new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
@@ -292,6 +298,16 @@ internal static partial class SqlServerCatalogBuilder
                         "sqlServerFileStreamDataSpaceId",
                         Invariant(table.FileStreamDataSpaceId)),
                     Facet(
+                        RowLevelSecurityFilterFacet,
+                        Boolean(
+                            table
+                                .HasEnabledRowLevelSecurityFilter)),
+                    Facet(
+                        RowLevelSecurityInventoryCompleteFacet,
+                        Boolean(
+                            table
+                                .IsRowLevelSecurityInventoryComplete)),
+                    Facet(
                         "sqlServerPermissionViewDefinition",
                         NullableBoolean(table.HasViewDefinition)),
                 ],
@@ -307,6 +323,30 @@ internal static partial class SqlServerCatalogBuilder
                     "The table uses a SQL Server-specific storage or temporal shape.",
                     "Memory-optimized, non-schema-and-data durable, file, temporal, and graph tables are inventoried but are not in this analyzer checkpoint's supported CSharpDB subset.",
                     "Replace the feature with an ordinary disk-based table or provide a reviewed target design.",
+                    canOverride: false));
+            }
+            if (table.HasEnabledRowLevelSecurityFilter)
+            {
+                diagnostics.Add(Diagnostic(
+                    tableId,
+                    "MIG-SQLSERVER-RLS-FILTER-UNSUPPORTED-001",
+                    MigrationDiagnosticSeverity.Error,
+                    MigrationCompatibilityStatus.Unsupported,
+                    "The table has an enabled SQL Server row-level security filter.",
+                    "An enabled FILTER predicate changes SELECT visibility and can omit source rows for the migration principal, so retained capture cannot prove that a table scan is complete.",
+                    "Disable and independently review the security policy for the migration window, or migrate the table through a separately qualified complete-data export.",
+                    canOverride: false));
+            }
+            if (!table.IsRowLevelSecurityInventoryComplete)
+            {
+                diagnostics.Add(Diagnostic(
+                    tableId,
+                    "MIG-SQLSERVER-RLS-INVENTORY-INCOMPLETE-001",
+                    MigrationDiagnosticSeverity.Error,
+                    MigrationCompatibilityStatus.Unknown,
+                    "Complete row-level security metadata visibility could not be established for the table.",
+                    "The migration principal is neither sysadmin nor proven to hold ALTER ANY SECURITY POLICY, so hidden FILTER predicates cannot be ruled out.",
+                    "Inspect with complete security-policy metadata visibility before retaining rows from this table.",
                     canOverride: false));
             }
         }
@@ -1095,6 +1135,10 @@ internal static partial class SqlServerCatalogBuilder
                 yield return NullableBoolean(table.HasViewDefinition);
                 yield return Invariant(table.LobDataSpaceId);
                 yield return Invariant(table.FileStreamDataSpaceId);
+                yield return Boolean(
+                    table.HasEnabledRowLevelSecurityFilter);
+                yield return Boolean(
+                    table.IsRowLevelSecurityInventoryComplete);
             }
             foreach (SqlServerColumnMetadata column in snapshot.Columns
                          .OrderBy(static item => item.ObjectId)
@@ -1460,8 +1504,11 @@ internal static partial class SqlServerCatalogBuilder
         where T : IFormattable =>
         value.ToString(null, CultureInfo.InvariantCulture);
 
-    private static SqlServerMigrationException LimitExceeded(string category) =>
-        new($"SQL Server inspection exceeded the fixed {category} limit.");
+    private static SqlServerMigrationException LimitExceeded(
+        string category) =>
+        new(
+            $"SQL Server inspection exceeded the fixed {category} limit.",
+            SqlServerMigrationErrorCode.InspectionLimit);
 
     private enum MetadataVisibility
     {

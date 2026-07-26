@@ -1,7 +1,12 @@
 using System.Buffers;
+using System.ComponentModel;
 using System.Globalization;
 using System.Runtime.ExceptionServices;
+using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
+using System.Security.AccessControl;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -11,6 +16,7 @@ using CSharpDB.Migration.CSharpDb;
 using CSharpDB.Migration.Files.Csv;
 using CSharpDB.Migration.Files.Json;
 using CSharpDB.Migration.LiteDb;
+using CSharpDB.Migration.Retained;
 using CSharpDB.Migration.Sqlite;
 using CSharpDB.Migration.Validation;
 using CSharpDB.Sql;
@@ -25,13 +31,13 @@ internal static class MigrationCommandRunner
         "       csharpdb migrate inspect --source json --input <source.json|source.ndjson> --package <source.csdbjson> --out <catalog.json> [--framing root-array|ndjson] [--table <name>] [--sample-rows <count>] [--source-id <label>] [--workspace <directory>] [--max-source-bytes <count>] [--typed-intent <source.csdbjson-intent.json> --expected-intent-manifest-digest <sha256:...>]\n" +
         "       csharpdb migrate inspect --source sqlite --input <source.db> --package <snapshot.csdbsqlite> --out <catalog.json> [--profile-sample-size <count>] [--max-source-bytes <count>]\n" +
         "       csharpdb migrate inspect --source litedb --input <source.db> --package <snapshot.csdblitedb> --out <catalog.json> [--profile-sample-size <count>] [--max-source-bytes <count>]\n" +
-        "       csharpdb migrate inspect --source sqlserver --connection-env <name> --out <catalog.json>\n" +
+        "       csharpdb migrate inspect --source sqlserver --connection-env <name> --out <catalog.json> [--package <snapshot.csdbsqlserver> --max-source-bytes <count> --table-timeout-seconds <1..86400>]\n" +
         "       csharpdb migrate inspect --source mysql --connection-env <name> --out <catalog.json>\n" +
         "       csharpdb migrate ddl-check <file.sql> --dialect csharpdb|tsql [--format text|json]\n" +
         "       csharpdb migrate plan <catalog.json> --out <plan.json> [--profile preserve|queryable] [--accept-exclusions all|<id,...>] [--accept-diagnostics <id,...>] [--reject-mode fail-fast|deterministic --reject-rules all|<id,...> --max-rejected-rows-per-batch <count> --max-rejected-rows-per-run <count> --max-reject-evidence-value-bytes <count> --max-reject-evidence-bytes-per-batch <count> --max-reject-evidence-bytes-per-run <count> --max-reject-artifact-bytes <count>]\n" +
         "       csharpdb migrate preview <plan.json> --catalog <catalog.json> [--ddl|--scratch] [--format text|json]\n" +
-        "       csharpdb migrate apply <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite|source.csdblitedb> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
-        "       csharpdb migrate validate <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite|source.csdblitedb> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
+        "       csharpdb migrate apply <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite|source.csdblitedb|source.csdbsqlserver> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
+        "       csharpdb migrate validate <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite|source.csdblitedb|source.csdbsqlserver> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
         "       csharpdb migrate export <retained-snapshot.db> --format csv --table <physical-table> --out <table.csv> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1|spreadsheet-safe-lossy-v1] [--max-data-bytes <count>] [--max-decoded-blob-bytes <count>] [--checkpoint-row-interval <count>] [--json]\n" +
         "       csharpdb migrate export <retained-snapshot.db> --format json|ndjson --table <physical-table> --out <table.json|table.ndjson> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1] [--max-data-bytes <count>] [--max-decoded-blob-bytes <count>] [--checkpoint-row-interval <count>] [--json]";
 
@@ -40,6 +46,14 @@ internal static class MigrationCommandRunner
     private static readonly UTF8Encoding Utf8NoBomStrict = new(
         encoderShouldEmitUTF8Identifier: false,
         throwOnInvalidBytes: true);
+    private const string SqlServerRetainedCatalogFacet =
+        "sqlServerCatalogContract";
+    private const string SqlServerRetainedCatalogContract =
+        "csharpdb-sqlserver-retained-catalog/v1";
+    private const string SqlServerRetainedDataFacet =
+        "sqlServerDataContract";
+    private const string SqlServerRetainedDataContract =
+        "csharpdb-sqlserver-retained-data/v1";
     private static readonly StringComparison PathComparison =
         OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
         ? StringComparison.OrdinalIgnoreCase
@@ -689,7 +703,14 @@ internal static class MigrationCommandRunner
     {
         if (!RequireOnly(
                 options,
-                ["--source", "--connection-env", "--out"],
+                [
+                    "--source",
+                    "--connection-env",
+                    "--package",
+                    "--out",
+                    "--max-source-bytes",
+                    "--table-timeout-seconds",
+                ],
                 out string? parseError))
         {
             return await OptionErrorAsync(
@@ -708,6 +729,31 @@ internal static class MigrationCommandRunner
         {
             return await OptionErrorAsync(
                 "The SQL Server connection environment variable name is invalid.",
+                error);
+        }
+        bool hasPackage = options.TryGetValue(
+            "--package",
+            out string? packageValue);
+        if (!hasPackage &&
+            options.ContainsKey("--max-source-bytes"))
+        {
+            return await OptionErrorAsync(
+                "The SQL Server source byte limit requires --package.",
+                error);
+        }
+        if (!hasPackage &&
+            options.ContainsKey(
+                "--table-timeout-seconds"))
+        {
+            return await OptionErrorAsync(
+                "The SQL Server table timeout requires --package.",
+                error);
+        }
+        if (hasPackage &&
+            string.IsNullOrWhiteSpace(packageValue))
+        {
+            return await OptionErrorAsync(
+                "The SQL Server retained package path cannot be blank.",
                 error);
         }
         if (string.IsNullOrWhiteSpace(outputValue))
@@ -730,6 +776,18 @@ internal static class MigrationCommandRunner
                 "MIG-SQLSERVER-CLI-PATH-001",
                 "The SQL Server catalog path is invalid.",
                 pathError);
+        }
+        if (hasPackage)
+        {
+            return await RunSqlServerCaptureInspectAsync(
+                options,
+                environmentVariableName,
+                packageValue!,
+                outputPath,
+                output,
+                error,
+                dependencies,
+                ct);
         }
         if (File.Exists(outputPath) || Directory.Exists(outputPath))
         {
@@ -819,6 +877,320 @@ internal static class MigrationCommandRunner
                 "MIG-SQLSERVER-CLI-INSPECT-001",
                 "The SQL Server schema could not be inspected or published safely.",
                 inspectionError);
+        }
+    }
+
+    private static async ValueTask<int> RunSqlServerCaptureInspectAsync(
+        IReadOnlyDictionary<string, string> options,
+        string environmentVariableName,
+        string packageValue,
+        string outputPath,
+        TextWriter output,
+        TextWriter error,
+        MigrationCommandDependencies dependencies,
+        CancellationToken ct)
+    {
+        long maxSourceBytes =
+            new RetainedMigrationPackageWriteOptions().MaxPackageBytes;
+        if (options.TryGetValue(
+                "--max-source-bytes",
+                out string? maxSourceBytesValue) &&
+            (!TryParseSourceByteLimit(
+                 maxSourceBytesValue,
+                 out maxSourceBytes) ||
+             maxSourceBytes <= 0 ||
+             maxSourceBytes >
+                 SqlServerWorkerClient
+                     .HardMaxCapturePackageBytes))
+        {
+            return await OptionErrorAsync(
+                "The SQL Server source byte limit must be a positive 64-bit integer no larger than 256 GiB.",
+                error);
+        }
+        int tableTimeoutSeconds =
+            SqlServerWorkerClient
+                .DefaultCaptureTableTimeoutSeconds;
+        if (options.TryGetValue(
+                "--table-timeout-seconds",
+                out string? tableTimeoutValue) &&
+            (!int.TryParse(
+                 tableTimeoutValue,
+                 System.Globalization
+                     .NumberStyles.None,
+                 System.Globalization
+                     .CultureInfo.InvariantCulture,
+                 out tableTimeoutSeconds) ||
+             tableTimeoutSeconds <= 0 ||
+             tableTimeoutSeconds >
+                 SqlServerWorkerClient
+                     .MaxCaptureTableTimeoutSeconds))
+        {
+            return await OptionErrorAsync(
+                "The SQL Server table timeout must be an integer from 1 through 86400 seconds.",
+                error);
+        }
+
+        string packagePath;
+        try
+        {
+            packagePath = Path.GetFullPath(packageValue);
+        }
+        catch (Exception pathError) when (
+            pathError is ArgumentException or NotSupportedException or
+                PathTooLongException)
+        {
+            throw new MigrationCliSafeException(
+                "MIG-SQLSERVER-CLI-PATH-001",
+                "The SQL Server retained package path is invalid.",
+                pathError);
+        }
+
+        bool pathsCollide;
+        try
+        {
+            pathsCollide = ContainsEquivalentResolvedPaths(
+                [packagePath, outputPath]);
+        }
+        catch (Exception pathError) when (
+            pathError is IOException or UnauthorizedAccessException or
+                ArgumentException or NotSupportedException)
+        {
+            throw new MigrationCliSafeException(
+                "MIG-SQLSERVER-CLI-PATH-001",
+                "The SQL Server migration paths could not be verified safely.",
+                pathError);
+        }
+        if (pathsCollide)
+        {
+            return await OptionErrorAsync(
+                "The SQL Server retained package and catalog output must use different files.",
+                error);
+        }
+        if (File.Exists(packagePath) ||
+            Directory.Exists(packagePath))
+        {
+            return await OptionErrorAsync(
+                "The SQL Server retained package destination already exists.",
+                error);
+        }
+        if (File.Exists(outputPath) ||
+            Directory.Exists(outputPath))
+        {
+            return await OptionErrorAsync(
+                "The SQL Server catalog destination already exists.",
+                error);
+        }
+
+        string? packageParent = Path.GetDirectoryName(packagePath);
+        if (string.IsNullOrEmpty(packageParent) ||
+            !Directory.Exists(packageParent))
+        {
+            return await OptionErrorAsync(
+                "The SQL Server retained package parent must be an existing caller-controlled directory.",
+                error);
+        }
+        try
+        {
+            FileAttributes parentAttributes =
+                File.GetAttributes(packageParent);
+            if ((parentAttributes &
+                (FileAttributes.ReparsePoint |
+                 FileAttributes.Device)) != 0)
+            {
+                return await OptionErrorAsync(
+                    "The SQL Server retained package parent cannot be a link, reparse point, or device.",
+                    error);
+            }
+        }
+        catch (Exception pathError) when (
+            pathError is IOException or UnauthorizedAccessException or
+                ArgumentException or NotSupportedException)
+        {
+            throw new MigrationCliSafeException(
+                "MIG-SQLSERVER-CLI-PATH-001",
+                "The SQL Server retained package parent could not be verified safely.",
+                pathError);
+        }
+
+        bool packagePublished = false;
+        bool catalogPublished = false;
+        SqlServerCaptureWorkspace? workspace = null;
+        try
+        {
+            try
+            {
+                workspace =
+                    SqlServerCaptureWorkspace.Create(packageParent);
+                string targetCSharpDbVersion =
+                    CSharpDbCapabilityCatalogLoader.CurrentTargetVersion;
+                SqlServerCaptureWorkerResult workerResult =
+                    await dependencies.CaptureSqlServerAsync(
+                            environmentVariableName,
+                            targetCSharpDbVersion,
+                            workspace.CapturePath,
+                            maxSourceBytes,
+                            tableTimeoutSeconds,
+                            ct)
+                        .ConfigureAwait(false);
+                ArgumentNullException.ThrowIfNull(workerResult);
+
+                switch (workerResult.Status)
+                {
+                    case SqlServerCaptureWorkerStatus.Missing:
+                    case SqlServerCaptureWorkerStatus.Incompatible:
+                        throw new MigrationCliSafeException(
+                            "MIG-SQLSERVER-CLI-ADAPTER-001",
+                            "The optional SQL Server capture adapter is unavailable or incompatible.",
+                            new InvalidOperationException(
+                                "The SQL Server capture worker boundary is unavailable."));
+                    case SqlServerCaptureWorkerStatus.ConnectionUnavailable:
+                        throw new MigrationCliSafeException(
+                            "MIG-SQLSERVER-CLI-CONNECTION-001",
+                            "The SQL Server connection could not be acquired by the optional adapter.",
+                            new InvalidOperationException(
+                                "SQL Server connection material was unavailable."));
+                    case SqlServerCaptureWorkerStatus.LimitExceeded:
+                        throw new MigrationCliSafeException(
+                            "MIG-SQLSERVER-CLI-CAPTURE-LIMIT-001",
+                            "The SQL Server retained capture exceeded a configured safety limit.",
+                            new InvalidDataException(
+                                "The SQL Server capture worker crossed a retained-source limit."));
+                    case SqlServerCaptureWorkerStatus.CaptureFailed:
+                        throw new MigrationCliSafeException(
+                            "MIG-SQLSERVER-CLI-CAPTURE-001",
+                            "The SQL Server rows could not be captured safely.",
+                            new InvalidOperationException(
+                                "The SQL Server capture worker could not retain the source."));
+                }
+                if (workerResult.Status !=
+                        SqlServerCaptureWorkerStatus.Success ||
+                    workerResult.Receipt is null)
+                {
+                    throw new MigrationCliSafeException(
+                        "MIG-SQLSERVER-CLI-ADAPTER-001",
+                        "The optional SQL Server capture adapter is unavailable or incompatible.",
+                        new InvalidDataException(
+                            "The SQL Server capture worker returned an invalid contract."));
+                }
+
+                SqlServerCaptureReceipt receipt =
+                    workerResult.Receipt;
+                MigrationCatalog catalog;
+                await using (
+                    RetainedMigrationPackageSession session =
+                        await RetainedMigrationPackageSession
+                            .OpenAsync(
+                                workspace.CapturePath,
+                                new RetainedMigrationPackageOpenOptions
+                                {
+                                    ExpectedPackageDigest =
+                                        receipt.PackageDigest,
+                                    WorkspacePath =
+                                        workspace
+                                            .VerificationWorkspacePath,
+                                    MaxPackageBytes =
+                                        maxSourceBytes,
+                                },
+                                ct)
+                            .ConfigureAwait(false))
+                {
+                    ValidateSqlServerCaptureSession(
+                        session,
+                        receipt,
+                        targetCSharpDbVersion);
+                    catalog = session.Catalog;
+                }
+
+                ct.ThrowIfCancellationRequested();
+                File.Move(
+                    workspace.CapturePath,
+                    packagePath,
+                    overwrite: false);
+                packagePublished = true;
+
+                workspace.Dispose();
+                workspace = null;
+
+                await WriteNewArtifactAsync(
+                    outputPath,
+                    MigrationArtifactSerializer.SerializeCatalog(
+                        catalog),
+                    ct);
+                catalogPublished = true;
+
+                int exitCode = catalog.Diagnostics.Count == 0
+                    ? InspectorCommandRunner.ExitOk
+                    : InspectorCommandRunner.ExitWarn;
+                await output.WriteLineAsync(
+                    $"Status: {StatusLabel(exitCode)} | catalog={outputPath} | package={packagePath} | manifestDigest={receipt.PackageDigest} | tables={receipt.TableCount} | rows={receipt.RowCount} | objects={catalog.Objects.Count} | diagnostics={catalog.Diagnostics.Count}");
+                return exitCode;
+            }
+            catch (Exception operationFailure)
+            {
+                if (workspace is null)
+                    throw;
+
+                try
+                {
+                    workspace.Dispose();
+                    workspace = null;
+                }
+                catch (
+                    SqlServerCaptureWorkspaceCleanupException
+                        cleanupFailure)
+                {
+                    throw new SqlServerCaptureWorkspaceCleanupException(
+                        operationFailure,
+                        cleanupFailure);
+                }
+
+                throw;
+            }
+        }
+        catch (
+            SqlServerCaptureWorkspaceCleanupException
+                cleanupFailure)
+        {
+            string message = packagePublished
+                ? "The SQL Server retained package was published, but private capture workspace cleanup failed; the package was preserved and the catalog was not published."
+                : "SQL Server capture failed and its private workspace could not be cleaned safely; no final artifacts were published.";
+            throw new MigrationCliSafeException(
+                "MIG-SQLSERVER-CLI-CLEANUP-001",
+                message,
+                cleanupFailure);
+        }
+        catch (Exception operationFailure) when (
+            packagePublished &&
+            !catalogPublished)
+        {
+            throw new MigrationCliSafeException(
+                "MIG-SQLSERVER-CLI-CATALOG-001",
+                "SQL Server catalog publication failed after the retained package was published; the package was preserved.",
+                operationFailure);
+        }
+        catch (MigrationCliSafeException)
+        {
+            throw;
+        }
+        catch (OperationCanceledException) when (
+            ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (RetainedMigrationPackageException packageFailure)
+        {
+            throw new MigrationCliSafeException(
+                "MIG-SQLSERVER-CLI-PACKAGE-001",
+                "The SQL Server retained package could not be verified safely.",
+                packageFailure);
+        }
+        catch (Exception captureError) when (
+            IsRecoverableCliException(captureError))
+        {
+            throw new MigrationCliSafeException(
+                "MIG-SQLSERVER-CLI-CAPTURE-001",
+                "The SQL Server rows could not be captured or published safely.",
+                captureError);
         }
     }
 
@@ -4330,12 +4702,21 @@ internal static class MigrationCommandRunner
             error = LiteDbCatalogRouteOnlyMessage;
             return false;
         }
+        if (catalog.Source.Kind ==
+                MigrationSourceKind.SqlServer &&
+            !IsRetainedSqlServerCatalog(catalog))
+        {
+            error =
+                "This SQL Server catalog is schema-only and has no retained row route. Inspect the source again with --package before apply or data validation.";
+            return false;
+        }
 
         if (catalog.Source.Kind is
             MigrationSourceKind.Csv or
             MigrationSourceKind.Json or
             MigrationSourceKind.Sqlite or
-            MigrationSourceKind.LiteDb)
+            MigrationSourceKind.LiteDb or
+            MigrationSourceKind.SqlServer)
         {
             string sourceDescription = catalog.Source.Kind switch
             {
@@ -4343,6 +4724,8 @@ internal static class MigrationCommandRunner
                 MigrationSourceKind.Json => "JSON",
                 MigrationSourceKind.Sqlite => "SQLite",
                 MigrationSourceKind.LiteDb => "LiteDB",
+                MigrationSourceKind.SqlServer =>
+                    "SQL Server",
                 _ => "retained-source",
             };
             if (!hasPackage)
@@ -4783,6 +5166,84 @@ internal static class MigrationCommandRunner
                     throw;
                 }
 
+            case MigrationSourceKind.SqlServer:
+                if (!IsRetainedSqlServerCatalog(catalog))
+                {
+                    throw new NotSupportedException(
+                        "This SQL Server catalog is schema-only and has no retained row route.");
+                }
+
+                long sqlServerMaxSourceBytes =
+                    new RetainedMigrationPackageOpenOptions
+                    {
+                        ExpectedPackageDigest =
+                            options[
+                                "--expected-manifest-digest"],
+                    }.MaxPackageBytes;
+                if (options.TryGetValue(
+                        "--max-source-bytes",
+                        out string?
+                            sqlServerMaxSourceBytesValue))
+                {
+                    _ = TryParseSourceByteLimit(
+                        sqlServerMaxSourceBytesValue,
+                        out sqlServerMaxSourceBytes);
+                }
+
+                RetainedMigrationPackageSession?
+                    sqlServerSession = null;
+                try
+                {
+                    sqlServerSession =
+                        await RetainedMigrationPackageSession
+                            .OpenAsync(
+                                Path.GetFullPath(
+                                    options[
+                                        "--source-package"]),
+                                new RetainedMigrationPackageOpenOptions
+                                {
+                                    ExpectedPackageDigest =
+                                        options[
+                                            "--expected-manifest-digest"],
+                                    WorkspacePath =
+                                        options.GetValueOrDefault(
+                                            "--workspace"),
+                                    MaxPackageBytes =
+                                        sqlServerMaxSourceBytes,
+                                },
+                                ct);
+                    ValidateOpenedSqlServerSource(
+                        catalog,
+                        sqlServerSession);
+                    return new MigrationSourceLease(
+                        sqlServerSession.DataSource,
+                        sqlServerSession,
+                        new MigrationSourcePackageMetadata(
+                            RetainedMigrationPackageContract
+                                .Format,
+                            sqlServerSession
+                                .PackageDigest));
+                }
+                catch (Exception operationFailure) when (
+                    sqlServerSession is not null)
+                {
+                    try
+                    {
+                        await sqlServerSession
+                            .DisposeAsync();
+                    }
+                    catch (Exception cleanupFailure)
+                    {
+                        throw new AggregateException(
+                            operationFailure,
+                            cleanupFailure);
+                    }
+
+                    ExceptionDispatchInfo.Capture(
+                        operationFailure).Throw();
+                    throw;
+                }
+
             default:
                 throw new NotSupportedException(
                     $"Migration source '{catalog.Source.Kind}' is not registered in this CLI build.");
@@ -5062,6 +5523,157 @@ internal static class MigrationCommandRunner
         }
 
         ValidateOpenedSource(catalog, session.DataSource);
+    }
+
+    private static void ValidateSqlServerCaptureSession(
+        RetainedMigrationPackageSession session,
+        SqlServerCaptureReceipt receipt,
+        string targetCSharpDbVersion)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        ArgumentNullException.ThrowIfNull(receipt);
+        MigrationCatalog catalog = session.Catalog;
+        string catalogDigest =
+            MigrationArtifactSerializer.ComputeCatalogDigest(
+                catalog);
+        long rowCount = 0;
+        foreach (RetainedMigrationPackageTableManifest table
+                 in session.Manifest.Tables)
+        {
+            rowCount = checked(rowCount + table.RowCount);
+        }
+
+        if (catalog.Source.Kind != MigrationSourceKind.SqlServer ||
+            !IsRetainedSqlServerCatalog(catalog) ||
+            !string.Equals(
+                catalog.TargetCSharpDbVersion,
+                targetCSharpDbVersion,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                session.Manifest.Format,
+                RetainedMigrationPackageContract.Format,
+                StringComparison.Ordinal) ||
+            session.Manifest.SourceKind !=
+                MigrationSourceKind.SqlServer ||
+            !string.Equals(
+                session.PackageDigest,
+                receipt.PackageDigest,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                session.Manifest.CatalogDigest,
+                receipt.CatalogDigest,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                catalogDigest,
+                receipt.CatalogDigest,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                session.Manifest.SnapshotIdentity,
+                receipt.SnapshotIdentity,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                session.DataSource.SnapshotIdentity,
+                receipt.SnapshotIdentity,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                session.Manifest.SourceIdentity,
+                catalog.Source.Identity,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                session.Manifest.SourceFingerprint,
+                catalog.Source.Fingerprint,
+                StringComparison.Ordinal) ||
+            session.Manifest.Tables.Count !=
+                receipt.TableCount ||
+            rowCount != receipt.RowCount)
+        {
+            throw new InvalidDataException(
+                "The retained SQL Server package does not match the worker capture receipt.");
+        }
+
+        ValidateOpenedSource(catalog, session.DataSource);
+    }
+
+    private static void ValidateOpenedSqlServerSource(
+        MigrationCatalog catalog,
+        RetainedMigrationPackageSession session)
+    {
+        string catalogDigest =
+            MigrationArtifactSerializer.ComputeCatalogDigest(
+                catalog);
+        string retainedCatalogDigest =
+            MigrationArtifactSerializer.ComputeCatalogDigest(
+                session.Catalog);
+        if (!IsRetainedSqlServerCatalog(catalog) ||
+            !IsRetainedSqlServerCatalog(session.Catalog) ||
+            !string.Equals(
+                session.Manifest.Format,
+                RetainedMigrationPackageContract.Format,
+                StringComparison.Ordinal) ||
+            session.Manifest.SourceKind !=
+                MigrationSourceKind.SqlServer ||
+            !string.Equals(
+                catalogDigest,
+                retainedCatalogDigest,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                catalogDigest,
+                session.Manifest.CatalogDigest,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                session.Manifest.SourceIdentity,
+                catalog.Source.Identity,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                session.Manifest.SourceFingerprint,
+                catalog.Source.Fingerprint,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                session.Manifest.SnapshotIdentity,
+                session.DataSource.SnapshotIdentity,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "The retained SQL Server package catalog does not match the supplied catalog artifact.");
+        }
+
+        ValidateOpenedSource(catalog, session.DataSource);
+    }
+
+    private static bool IsRetainedSqlServerCatalog(
+        MigrationCatalog catalog)
+    {
+        if (catalog.Source.Kind != MigrationSourceKind.SqlServer)
+            return false;
+        MigrationCatalogObject[] databases = catalog.Objects
+            .Where(static item =>
+                item.Kind == MigrationObjectKind.Database)
+            .ToArray();
+        if (databases.Length != 1)
+            return false;
+
+        string? catalogContract = databases[0].Facets
+            .FirstOrDefault(facet =>
+                string.Equals(
+                    facet.Name,
+                    SqlServerRetainedCatalogFacet,
+                    StringComparison.Ordinal))
+            ?.Value;
+        string? dataContract = databases[0].Facets
+            .FirstOrDefault(facet =>
+                string.Equals(
+                    facet.Name,
+                    SqlServerRetainedDataFacet,
+                    StringComparison.Ordinal))
+            ?.Value;
+        return string.Equals(
+                catalogContract,
+                SqlServerRetainedCatalogContract,
+                StringComparison.Ordinal) &&
+            string.Equals(
+                dataContract,
+                SqlServerRetainedDataContract,
+                StringComparison.Ordinal);
     }
 
     private static void ValidateOpenedSource(
@@ -5497,6 +6109,535 @@ internal static class MigrationCommandRunner
         };
         options.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase, allowIntegerValues: false));
         return options;
+    }
+
+    internal sealed class SqlServerCaptureWorkspace : IDisposable
+    {
+        private const uint UnixPrivateDirectoryMode = 0x1C0; // 0700
+        private const uint UnixFileTypeMask = 0xF000;
+        private const uint UnixDirectoryType = 0x4000;
+        private const uint UnixModeMask = 0x0FFF;
+        private const int UnixAlreadyExists = 17;
+        private const int UnixPermissionDenied = 13;
+        private const int UnixAtSymlinkNoFollow = 0x0100;
+        private const uint LinuxStatxBasicStats = 0x07FF;
+        private const uint LinuxStatxRequired =
+            0x0001 | // STATX_TYPE
+            0x0002 | // STATX_MODE
+            0x0008;  // STATX_UID
+        private readonly string rootPath;
+        private int disposed;
+
+        private SqlServerCaptureWorkspace(
+            string rootPath,
+            string capturePath,
+            string verificationWorkspacePath)
+        {
+            this.rootPath = rootPath;
+            CapturePath = capturePath;
+            VerificationWorkspacePath =
+                verificationWorkspacePath;
+        }
+
+        internal string CapturePath { get; }
+
+        internal string VerificationWorkspacePath { get; }
+
+        internal static SqlServerCaptureWorkspace Create(
+            string parentPath)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(
+                parentPath);
+            string fullParent = Path.GetFullPath(parentPath);
+            for (int attempt = 0; attempt < 8; attempt++)
+            {
+                string root = Path.Combine(
+                    fullParent,
+                    SqlServerWorkerClient
+                        .CaptureWorkspacePrefix +
+                    Guid.NewGuid().ToString("N"));
+                if (Directory.Exists(root) ||
+                    File.Exists(root))
+                {
+                    continue;
+                }
+
+                SqlServerCaptureWorkspace? partial =
+                    null;
+                try
+                {
+                    CreatePrivateDirectoryExclusive(
+                        root);
+                    var created =
+                        new DirectoryInfo(root);
+                    partial =
+                        new SqlServerCaptureWorkspace(
+                            root,
+                            Path.Combine(
+                                root,
+                                SqlServerWorkerClient
+                                    .CaptureOutputFileName),
+                            Path.Combine(
+                                root,
+                                "verified"));
+                    if (!PathsAreEquivalent(
+                            created.FullName,
+                            root))
+                    {
+                        throw new IOException(
+                            "The SQL Server capture workspace resolved unexpectedly.");
+                    }
+                    FileAttributes rootAttributes =
+                        File.GetAttributes(root);
+                    if ((rootAttributes &
+                        (FileAttributes.ReparsePoint |
+                         FileAttributes.Device)) != 0)
+                    {
+                        throw new IOException(
+                            "The SQL Server capture workspace resolved to an unsafe filesystem object.");
+                    }
+                    string verification =
+                        partial.VerificationWorkspacePath;
+                    CreatePrivateDirectoryExclusive(
+                        verification);
+                    FileAttributes verificationAttributes =
+                        File.GetAttributes(verification);
+                    if ((verificationAttributes &
+                        (FileAttributes.ReparsePoint |
+                         FileAttributes.Device)) != 0)
+                    {
+                        throw new IOException(
+                            "The SQL Server verification workspace resolved to an unsafe filesystem object.");
+                    }
+                    return partial;
+                }
+                catch (Exception creationFailure) when (
+                    creationFailure is IOException or
+                        UnauthorizedAccessException)
+                {
+                    if (partial is not null)
+                    {
+                        try
+                        {
+                            partial.Dispose();
+                        }
+                        catch (
+                            SqlServerCaptureWorkspaceCleanupException
+                                cleanupFailure)
+                        {
+                            throw new SqlServerCaptureWorkspaceCleanupException(
+                                creationFailure,
+                                cleanupFailure);
+                        }
+                    }
+
+                    if (attempt >= 7)
+                        throw;
+                }
+            }
+
+            throw new IOException(
+                "A private SQL Server capture workspace could not be created.");
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref disposed, 1) != 0)
+                return;
+            try
+            {
+                FileAttributes attributes;
+                try
+                {
+                    attributes =
+                        File.GetAttributes(rootPath);
+                }
+                catch (Exception missingError) when (
+                    missingError is FileNotFoundException or
+                        DirectoryNotFoundException)
+                {
+                    return;
+                }
+                if ((attributes &
+                    (FileAttributes.ReparsePoint |
+                     FileAttributes.Device)) != 0)
+                {
+                    throw new IOException(
+                        "The SQL Server capture workspace changed into an unsafe filesystem object before cleanup.");
+                }
+                Directory.Delete(rootPath, recursive: true);
+            }
+            catch (Exception exception) when (
+                exception is IOException or
+                    UnauthorizedAccessException)
+            {
+                throw new SqlServerCaptureWorkspaceCleanupException(
+                    exception);
+            }
+        }
+
+        internal static void
+            CreatePrivateDirectoryExclusive(
+            string path)
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                byte[] descriptor =
+                    CreatePrivateWindowsSecurityDescriptor();
+                GCHandle descriptorHandle =
+                    GCHandle.Alloc(
+                        descriptor,
+                        GCHandleType.Pinned);
+                int error;
+                try
+                {
+                    var securityAttributes =
+                        new SecurityAttributes
+                        {
+                            Length = checked(
+                                (uint)Marshal.SizeOf<
+                                    SecurityAttributes>()),
+                            SecurityDescriptor =
+                                descriptorHandle
+                                    .AddrOfPinnedObject(),
+                        };
+                    if (CreateDirectoryW(
+                            path,
+                            ref securityAttributes))
+                    {
+                        return;
+                    }
+                    error =
+                        Marshal.GetLastPInvokeError();
+                }
+                finally
+                {
+                    descriptorHandle.Free();
+                    CryptographicOperations
+                        .ZeroMemory(descriptor);
+                }
+
+                Exception nativeFailure =
+                    new Win32Exception(error);
+                if (error == 5)
+                {
+                    throw new UnauthorizedAccessException(
+                        "Access to the SQL Server capture workspace parent was denied.",
+                        nativeFailure);
+                }
+                throw new IOException(
+                    "The private SQL Server capture workspace directory could not be created.",
+                    nativeFailure);
+            }
+
+            if (UnixMakeDirectory(
+                    path,
+                    UnixPrivateDirectoryMode) != 0)
+            {
+                int unixError =
+                    Marshal.GetLastPInvokeError();
+                Exception nativeFailure =
+                    new Win32Exception(unixError);
+                if (unixError == UnixAlreadyExists)
+                {
+                    throw new IOException(
+                        "The SQL Server capture workspace candidate already exists.",
+                        nativeFailure);
+                }
+                if (unixError is 1 or
+                    UnixPermissionDenied)
+                {
+                    throw new UnauthorizedAccessException(
+                        "Access to the SQL Server capture workspace parent was denied.",
+                        nativeFailure);
+                }
+                throw new IOException(
+                    "The private SQL Server capture workspace directory could not be created.",
+                    nativeFailure);
+            }
+
+            UnixFileMode privateMode =
+                UnixFileMode.UserRead |
+                UnixFileMode.UserWrite |
+                UnixFileMode.UserExecute;
+            try
+            {
+                File.SetUnixFileMode(path, privateMode);
+                VerifyPrivateUnixDirectory(path);
+            }
+            catch (Exception creationFailure)
+            {
+                try
+                {
+                    Directory.Delete(
+                        path,
+                        recursive: false);
+                }
+                catch (DirectoryNotFoundException)
+                {
+                }
+                catch (Exception cleanupFailure) when (
+                    cleanupFailure is IOException or
+                        UnauthorizedAccessException)
+                {
+                    throw new IOException(
+                        "The private SQL Server capture workspace could not be verified or cleaned safely.",
+                        new AggregateException(
+                            creationFailure,
+                            cleanupFailure));
+                }
+
+                ExceptionDispatchInfo.Capture(
+                    creationFailure).Throw();
+                throw;
+            }
+        }
+
+        [UnsupportedOSPlatform("windows")]
+        private static void VerifyPrivateUnixDirectory(
+            string path)
+        {
+            FileAttributes attributes =
+                File.GetAttributes(path);
+            if ((attributes & FileAttributes.Directory) == 0 ||
+                (attributes &
+                    (FileAttributes.ReparsePoint |
+                     FileAttributes.Device)) != 0)
+            {
+                throw new IOException(
+                    "The SQL Server capture workspace is not a real directory.");
+            }
+
+            UnixFileMode mode =
+                File.GetUnixFileMode(path);
+            UnixFileMode expectedMode =
+                UnixFileMode.UserRead |
+                UnixFileMode.UserWrite |
+                UnixFileMode.UserExecute;
+            if (mode != expectedMode)
+            {
+                throw new IOException(
+                    "The SQL Server capture workspace does not have owner-only Unix permissions.");
+            }
+
+            UnixDirectoryMetadata? metadata =
+                ReadUnixDirectoryMetadata(path);
+            if (metadata is null)
+                return;
+            if ((metadata.Value.Mode &
+                    UnixFileTypeMask) !=
+                    UnixDirectoryType ||
+                (metadata.Value.Mode &
+                    UnixModeMask) !=
+                    UnixPrivateDirectoryMode ||
+                metadata.Value.OwnerUserId !=
+                    UnixGetEffectiveUserId())
+            {
+                throw new IOException(
+                    "The SQL Server capture workspace Unix owner or mode is unsafe.");
+            }
+        }
+
+        private static UnixDirectoryMetadata?
+            ReadUnixDirectoryMetadata(string path)
+        {
+            if (OperatingSystem.IsLinux())
+            {
+                try
+                {
+                    if (LinuxStatx(
+                            -100,
+                            path,
+                            UnixAtSymlinkNoFollow,
+                            LinuxStatxBasicStats,
+                            out LinuxStatxBuffer metadata) != 0)
+                    {
+                        int error =
+                            Marshal.GetLastPInvokeError();
+                        if (error == 38)
+                            return null;
+                        throw new IOException(
+                            "The SQL Server capture workspace Unix identity could not be read.",
+                            new Win32Exception(error));
+                    }
+                    if ((metadata.Mask &
+                            LinuxStatxRequired) !=
+                            LinuxStatxRequired)
+                    {
+                        throw new IOException(
+                            "The SQL Server capture workspace Unix identity is incomplete.");
+                    }
+                    return new UnixDirectoryMetadata(
+                        metadata.Mode,
+                        metadata.UserId);
+                }
+                catch (EntryPointNotFoundException)
+                {
+                    return null;
+                }
+            }
+
+            if (OperatingSystem.IsMacOS())
+            {
+                if (DarwinFileStatus(
+                        path,
+                        out DarwinStatBuffer metadata) != 0)
+                {
+                    throw new IOException(
+                        "The SQL Server capture workspace Unix identity could not be read.",
+                        new Win32Exception(
+                            Marshal.GetLastPInvokeError()));
+                }
+                return new UnixDirectoryMetadata(
+                    metadata.Mode,
+                    metadata.UserId);
+            }
+
+            return null;
+        }
+
+        [SupportedOSPlatform("windows")]
+        private static byte[]
+            CreatePrivateWindowsSecurityDescriptor()
+        {
+            using WindowsIdentity identity =
+                WindowsIdentity.GetCurrent(
+                    TokenAccessLevels.Query);
+            SecurityIdentifier owner =
+                identity.User ??
+                throw new IOException(
+                    "The current Windows identity does not have a security identifier.");
+            var security =
+                new DirectorySecurity();
+            security.SetOwner(owner);
+            security.SetAccessRuleProtection(
+                isProtected: true,
+                preserveInheritance: false);
+            security.AddAccessRule(
+                new FileSystemAccessRule(
+                    owner,
+                    FileSystemRights.FullControl,
+                    InheritanceFlags.ContainerInherit |
+                    InheritanceFlags.ObjectInherit,
+                    PropagationFlags.None,
+                    AccessControlType.Allow));
+            return security
+                .GetSecurityDescriptorBinaryForm();
+        }
+
+        [DllImport(
+            "kernel32.dll",
+            EntryPoint = "CreateDirectoryW",
+            CharSet = CharSet.Unicode,
+            ExactSpelling = true,
+            SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool CreateDirectoryW(
+            string path,
+            ref SecurityAttributes
+                securityAttributes);
+
+        [DllImport(
+            "libc",
+            EntryPoint = "mkdir",
+            SetLastError = true)]
+        private static extern int UnixMakeDirectory(
+            [MarshalAs(UnmanagedType.LPUTF8Str)]
+            string path,
+            uint mode);
+
+        [DllImport(
+            "libc",
+            EntryPoint = "geteuid",
+            SetLastError = false)]
+        private static extern uint
+            UnixGetEffectiveUserId();
+
+        [DllImport(
+            "libc",
+            EntryPoint = "statx",
+            SetLastError = true)]
+        private static extern int LinuxStatx(
+            int directoryDescriptor,
+            [MarshalAs(UnmanagedType.LPUTF8Str)]
+            string path,
+            int flags,
+            uint mask,
+            out LinuxStatxBuffer metadata);
+
+        [DllImport(
+            "libc",
+            EntryPoint = "lstat",
+            SetLastError = true)]
+        private static extern int DarwinFileStatus(
+            [MarshalAs(UnmanagedType.LPUTF8Str)]
+            string path,
+            out DarwinStatBuffer metadata);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct SecurityAttributes
+        {
+            internal uint Length;
+
+            internal IntPtr SecurityDescriptor;
+
+            internal int InheritHandle;
+        }
+
+        private readonly record struct
+            UnixDirectoryMetadata(
+            uint Mode,
+            uint OwnerUserId);
+
+        [StructLayout(
+            LayoutKind.Explicit,
+            Size = 256)]
+        private struct LinuxStatxBuffer
+        {
+            [FieldOffset(0)]
+            internal uint Mask;
+
+            [FieldOffset(20)]
+            internal uint UserId;
+
+            [FieldOffset(28)]
+            internal ushort Mode;
+        }
+
+        [StructLayout(
+            LayoutKind.Explicit,
+            Size = 144)]
+        private struct DarwinStatBuffer
+        {
+            [FieldOffset(4)]
+            internal ushort Mode;
+
+            [FieldOffset(16)]
+            internal uint UserId;
+        }
+    }
+
+    private sealed class SqlServerCaptureWorkspaceCleanupException
+        : IOException
+    {
+        internal SqlServerCaptureWorkspaceCleanupException(
+            Exception cleanupFailure)
+            : base(
+                "The private SQL Server capture workspace could not be cleaned safely.",
+                cleanupFailure)
+        {
+        }
+
+        internal SqlServerCaptureWorkspaceCleanupException(
+            Exception operationFailure,
+            Exception cleanupFailure)
+            : base(
+                "The SQL Server capture operation and private workspace cleanup both failed.",
+                new AggregateException(
+                    operationFailure,
+                    cleanupFailure))
+        {
+        }
     }
 
     private sealed class MigrationCliSafeException : Exception

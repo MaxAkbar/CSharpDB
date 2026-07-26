@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>CSharpDB.Migration.Retained</AssemblyName>
+    <RootNamespace>CSharpDB.Migration.Retained</RootNamespace>
+    <Description>Provider-neutral retained row packages for the CSharpDB migration pipeline.</Description>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CSharpDB.Migration\CSharpDB.Migration.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="CSharpDB.Migration.Retained.Tests" />
+  </ItemGroup>
+
+</Project>

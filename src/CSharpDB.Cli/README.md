@@ -116,20 +116,23 @@ csharpdb migrate inspect --source json --input <source.json|source.ndjson> --pac
 csharpdb migrate inspect --source json --input <source.json|source.ndjson> --typed-intent <source.csdbjson-intent.json> --expected-intent-manifest-digest <sha256:...> --package <source.csdbjson> --out <catalog.json> [--framing root-array|ndjson] [--table <name>] [--sample-rows <count>] [--source-id <label>] [--workspace <directory>] [--max-source-bytes <count>]
 csharpdb migrate inspect --source sqlite --input <source.db> --package <source.csdbsqlite> --out <catalog.json> [--profile-sample-size <count>] [--max-source-bytes <count>]
 csharpdb migrate inspect --source litedb --input <source.db> --package <source.csdblitedb> --out <catalog.json> [--profile-sample-size <count>] [--max-source-bytes <count>]
-csharpdb migrate inspect --source sqlserver --connection-env <name> --out <catalog.json>
+csharpdb migrate inspect --source sqlserver --connection-env <name> --out <catalog.json> [--package <source.csdbsqlserver> --max-source-bytes <count> --table-timeout-seconds <1..86400>]
 csharpdb migrate inspect --source mysql --connection-env <name> --out <catalog.json>
 csharpdb migrate ddl-check <file.sql> --dialect csharpdb|tsql [--format text|json]
 csharpdb migrate plan <catalog.json> --out <plan.json> [--profile preserve|queryable] [--accept-exclusions all|<id,...>] [--accept-diagnostics <id,...>] [--reject-mode fail-fast|deterministic --reject-rules all|<id,...> --max-rejected-rows-per-batch <count> --max-rejected-rows-per-run <count> --max-reject-evidence-value-bytes <count> --max-reject-evidence-bytes-per-batch <count> --max-reject-evidence-bytes-per-run <count> --max-reject-artifact-bytes <count>]
 csharpdb migrate preview <plan.json> --catalog <catalog.json> [--ddl|--scratch] [--format text|json]
-csharpdb migrate apply <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite|source.csdblitedb> --expected-manifest-digest <sha256:...> [--workspace <directory>] [--max-source-bytes <count>] --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]
-csharpdb migrate validate <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite|source.csdblitedb> --expected-manifest-digest <sha256:...> [--workspace <directory>] [--max-source-bytes <count>] --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]
+csharpdb migrate apply <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite|source.csdblitedb|source.csdbsqlserver> --expected-manifest-digest <sha256:...> [--workspace <directory>] [--max-source-bytes <count>] --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]
+csharpdb migrate validate <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite|source.csdblitedb|source.csdbsqlserver> --expected-manifest-digest <sha256:...> [--workspace <directory>] [--max-source-bytes <count>] --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]
 csharpdb migrate export <retained-snapshot.db> --format csv --table <physical-table> --out <table.csv> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1|spreadsheet-safe-lossy-v1] [--max-data-bytes <positive-int64>] [--max-decoded-blob-bytes <positive-int32>] [--checkpoint-row-interval <positive-int64>] [--json]
 csharpdb migrate export <retained-snapshot.db> --format json|ndjson --table <physical-table> --out <table.json|table.ndjson> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1] [--max-data-bytes <positive-int64>] [--max-decoded-blob-bytes <positive-int32>] [--checkpoint-row-interval <positive-int64>] [--json]
 ```
 
 Inspection supports the immutable synthetic qualification source, strict CSV,
 untyped retained JSON package v1, explicitly selected typed JSON package v2,
-SQLite, LiteDB, and schema-only SQL Server and MySQL readiness analysis. CSV
+SQLite, LiteDB, SQL Server, and schema-only MySQL readiness analysis. SQL Server
+inspection without `--package` remains the schema-only readiness route.
+Supplying `--package` instead creates a digest-pinned `.csdbsqlserver` retained
+capture for offline apply, resume, and validation. CSV
 inspection freezes the raw bytes and complete reader and inference policy into
 one no-overwrite `.csdbcsv` package. JSON inspection does
 the same for root-array JSON or NDJSON-compatible whitespace-separated
@@ -155,13 +158,17 @@ safe environment-variable name across the process boundary. The worker alone
 resolves the value from the inherited environment; the host code never reads
 or materializes it. The value is not written to the catalog, process arguments,
 process protocol, or command output, and should identify a dedicated
-least-privilege, read-only metadata login. Each provider uses a separate fixed
-worker directory and process protocol. The catalog destination uses
-create-new publication and is never overwritten. This checkpoint inventories
-and analyzes schema only: it neither reads application rows nor writes to SQL
-Server, MySQL, or a CSharpDB target. Cancellation terminates the worker process
-tree. For SQL Server, this also contains a ScriptDom parse call that cannot
-observe cooperative cancellation.
+least-privilege, read-only login with the required metadata visibility; retained
+SQL Server capture additionally needs `SELECT` access to the tables being
+captured. Each provider uses a separate fixed worker directory and process
+protocol. Catalog and retained-package destinations use create-new publication
+and are never overwritten. SQL Server inspection without `--package` and the
+current MySQL route inventory and analyze schema only, without reading
+application rows. SQL Server inspection with `--package` reads rows into the
+retained package. Neither route writes to SQL Server, MySQL, or a CSharpDB
+target. Cancellation terminates the worker process tree. For SQL Server, this
+also contains a ScriptDom parse call that cannot observe cooperative
+cancellation.
 
 Pass both `--typed-intent` and
 `--expected-intent-manifest-digest` to select v2. The canonical sidecar must
@@ -271,7 +278,8 @@ Supported migration-source matrix:
 | Typed JSON v2 | Source- and intent-pinned `.csdbjson` | Explicit typed table contract | Fail-fast |
 | SQLite v1 | Coherent online backup in `.csdbsqlite` | Tier 1 native catalog and rowid streaming | Fail-fast |
 | LiteDB v1 | Offline/quiesced byte-for-byte snapshot in `.csdblitedb` | Tagged canonical BSON document-collection streaming | Fail-fast |
-| SQL Server readiness | Live best-effort, schema-only metadata inspection | Inventory, compatibility, planning, and target DDL assurance only | No data route |
+| SQL Server retained v1 | Snapshot-isolated capture in `.csdbsqlserver` | Bounded relational catalog and ordered row streaming | Fail-fast |
+| SQL Server readiness (without `--package`) | Live best-effort, schema-only metadata inspection | Inventory, compatibility, planning, and target DDL assurance only | No data route |
 | MySQL readiness | Live best-effort, schema-only metadata inspection | Inventory, compatibility, planning, and target DDL assurance only | No data route |
 
 SQLite catalogs record the adapter, Microsoft.Data.Sqlite assembly, native
@@ -350,6 +358,28 @@ csharpdb migrate preview .\plan.json --catalog .\catalog.json --ddl
 csharpdb migrate preview .\plan.json --catalog .\catalog.json --scratch --format json
 ```
 
+Add `--package` to inspect when rows must be retained for an offline data
+migration:
+
+```powershell
+csharpdb migrate inspect --source sqlserver --connection-env CSHARPDB_SQLSERVER_SOURCE --package .\source.csdbsqlserver --out .\catalog.json --max-source-bytes 274877906944 --table-timeout-seconds 1800
+# Copy the exact manifestDigest=sha256:... value from the successful status.
+$digest = 'sha256:<64-lowercase-hex>'
+
+csharpdb migrate plan .\catalog.json --out .\plan.json --accept-exclusions all
+csharpdb migrate apply .\plan.json --catalog .\catalog.json --source-package .\source.csdbsqlserver --expected-manifest-digest $digest --workspace . --target .\staged.csdb --out .\run.json
+csharpdb migrate apply .\plan.json --catalog .\catalog.json --source-package .\source.csdbsqlserver --expected-manifest-digest $digest --workspace . --target .\staged.csdb --out .\resume.json --resume
+csharpdb migrate validate .\plan.json --catalog .\catalog.json --source-package .\source.csdbsqlserver --expected-manifest-digest $digest --workspace . --target .\staged.csdb --out .\validation.json --level checksum --spill-dir .
+```
+
+The connection environment value is needed only by capture. Plan, preview,
+apply, resume, and validation reopen the digest-pinned retained package and do
+not reconnect to SQL Server. The default per-table row command timeout is
+1,800 seconds; `--table-timeout-seconds` accepts 1 through 86,400. The package
+ceiling defaults to 256 GiB and can only be lowered. A catalog produced without
+`--package` remains the existing schema-only v6 planning route and is rejected
+early by apply and data validation with instructions to inspect again.
+
 Example MySQL schema-readiness workflow:
 
 ```powershell
@@ -382,7 +412,20 @@ SqlClient, ScriptDom, SNI, or related authentication assets. The non-packable
 SQL Server bundle places that dependency closure only beneath
 `adapters/sqlserver`, with a fixed companion executable. Schema inspection
 uses `csharpdb-sqlserver-worker/v1`; standalone T-SQL DDL proof uses the
-separate `csharpdb-sqlserver-ddl-worker/v1` protocol. The DDL host passes only
+separate `csharpdb-sqlserver-ddl-worker/v1` protocol. Retained row capture is
+an explicit third route using the exact
+`csharpdb-sqlserver-capture-worker/v1` protocol. The host passes only the
+connection environment variable name, current target version, one fixed
+immediate-child private output path, package byte ceiling, and table timeout.
+The worker reads and immediately clears its inherited copy of the named
+connection value. Its bounded receipt contains only package/catalog digests,
+snapshot identity, byte count, table count, and row count. The CLI independently
+reopens and verifies the provider-neutral package before publication, removes
+the private workspace before publishing the catalog or reporting success, and
+never relays worker standard error. If catalog publication later fails, the
+already verified package remains published for diagnosis.
+
+The DDL host passes only
 the protocol and current target version as arguments and streams the strict,
 at-most-16-MiB script through redirected standard input, never an argument or
 temporary file. A leading UTF-8 BOM is removed before transmission and digest
@@ -397,7 +440,10 @@ A missing or incompatible inspection worker fails only that route with
 contract-invalid DDL worker fails the T-SQL route with
 `MIG-TSQL-CLI-ADAPTER-001`; a safe worker analysis failure uses
 `MIG-TSQL-CLI-DDL-CHECK-001`. Other migration commands remain
-provider-independent. This packaging boundary does not qualify a live server,
+provider-independent. Capture reports stable, sanitized connection, limit,
+package-verification, capture, cleanup, and catalog-publication error codes;
+credentials, SQL text, source values, and worker diagnostics are never copied
+into those messages. This packaging boundary does not qualify a live server,
 runtime identifier, authentication mode, or shipping connector.
 
 The base CLI also has no MySQL project reference and its output contains no
@@ -560,10 +606,11 @@ checkpoint, and is not consulted to decide which batches `--resume` skips.
 - `DevOpsCommandRunner.cs` - schema compare commands
 - `PipelineCommandRunner.cs` - ETL package and catalog commands
 - `MigrationCommandRunner.cs` - migration inspect, plan, bounded DDL/scratch
-  preview, apply, resume, validate, retained CSV/JSON/SQLite/LiteDB, schema-only
-  SQL Server/MySQL analysis, and CSV/JSON/NDJSON export commands
+  preview, apply, resume, validate, retained CSV/JSON/SQLite/LiteDB/SQL Server,
+  schema-only SQL Server/MySQL analysis, and CSV/JSON/NDJSON export commands
 - `SqlServerWorkerClient.cs` - bounded fixed-path protocol client for the
-  optional SQL Server inspection and standalone T-SQL DDL worker routes
+  optional SQL Server inspection, retained capture, and standalone T-SQL DDL
+  worker routes
 - `MySqlWorkerClient.cs` - bounded fixed-path protocol client for the optional MySQL inspection worker
 - `CliConsole.cs` and `TableFormatter.cs` - terminal formatting helpers
 

@@ -6,9 +6,9 @@ namespace CSharpDB.Migration.SqlServer.Tests;
 public sealed partial class SqlServerCatalogBuilderTests
 {
     private const string GoldenCatalogDigest =
-        "44d722df4b7e4ae2002a9377237e69a11b4f5013d26d0eabe347244378d5db2c";
+        "4f5b5e3e3a1e53b2a3bc44bd88ec1148cce91d888ac524d63e8fe56083ba3c8a";
     private const string GoldenSourceFingerprint =
-        "sha256:e1e941fd00e4b3bb125dd0763342e2dda62783e09629d7c593ff06c82f9107ae";
+        "sha256:9ca68e4d38d4caa4d6feeb034355a7ad75da5af6c7456d9bdefa7270f9a92c21";
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
@@ -38,7 +38,12 @@ public sealed partial class SqlServerCatalogBuilderTests
         Assert.StartsWith("sqlserver-database:", first.Source.Identity, StringComparison.Ordinal);
         Assert.DoesNotContain(snapshot.EndpointDigest, first.Source.Identity, StringComparison.Ordinal);
         Assert.StartsWith("sha256:", first.Source.Fingerprint, StringComparison.Ordinal);
-        Assert.Equal(GoldenSourceFingerprint, first.Source.Fingerprint);
+        Assert.True(
+            string.Equals(
+                GoldenSourceFingerprint,
+                first.Source.Fingerprint,
+                StringComparison.Ordinal),
+            $"SQL Server source fingerprint changed. Actual value: {first.Source.Fingerprint}");
 
         string serialized = MigrationArtifactSerializer.SerializeCatalog(first);
         Assert.DoesNotContain(

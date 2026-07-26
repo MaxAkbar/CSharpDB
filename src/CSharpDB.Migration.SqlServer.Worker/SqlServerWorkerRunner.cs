@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using CSharpDB.Migration;
 using CSharpDB.Migration.CSharpDb;
+using CSharpDB.Migration.Retained;
 
 namespace CSharpDB.Migration.SqlServer.Worker;
 
@@ -15,6 +16,9 @@ internal sealed record SqlServerWorkerDependencies
 
     internal Func<string, string?> ReadEnvironmentVariable { get; init; } =
         Environment.GetEnvironmentVariable;
+
+    internal Action<string> ClearEnvironmentVariable { get; init; } =
+        static name => Environment.SetEnvironmentVariable(name, null);
 
     internal Func<string, IMigrationSourceInspector> CreateInspector { get; init; } =
         static connectionString =>
@@ -31,6 +35,34 @@ internal sealed record SqlServerWorkerDependencies
                 encoderShouldEmitUTF8Identifier: false,
                 throwOnInvalidBytes: true)
             .GetByteCount(value);
+
+    internal Func<
+        string,
+        string,
+        long,
+        int,
+        CancellationToken,
+        ValueTask<RetainedMigrationPackageWriteResult>>
+        CaptureRetainedAsync
+    {
+        get;
+        init;
+    } = static (
+        connectionString,
+        outputPath,
+        maxPackageBytes,
+        rowCommandTimeoutSeconds,
+        cancellationToken) =>
+        SqlServerRetainedCapture.CaptureAsync(
+            connectionString,
+            outputPath,
+            new SqlServerRetainedCaptureOptions
+            {
+                MaxPackageBytes = maxPackageBytes,
+                RowCommandTimeoutSeconds =
+                    rowCommandTimeoutSeconds,
+            },
+            cancellationToken);
 
     internal Func<
         string,
@@ -122,6 +154,16 @@ internal static class SqlServerWorkerRunner
         ArgumentNullException.ThrowIfNull(error);
         ArgumentNullException.ThrowIfNull(dependencies);
 
+        if (SqlServerCaptureWorkerRunner.IsCaptureProtocol(args))
+        {
+            return await SqlServerCaptureWorkerRunner.RunAsync(
+                args,
+                output,
+                error,
+                dependencies,
+                cancellationToken);
+        }
+
         if (IsDdlProtocol(args))
         {
             return await RunDdlAsync(
@@ -156,6 +198,7 @@ internal static class SqlServerWorkerRunner
         }
 
         if (dependencies.ReadEnvironmentVariable is null ||
+            dependencies.ClearEnvironmentVariable is null ||
             dependencies.CreateInspector is null ||
             dependencies.SerializeCatalog is null ||
             dependencies.MeasureUtf8Bytes is null)
@@ -170,8 +213,17 @@ internal static class SqlServerWorkerRunner
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            connectionString =
-                dependencies.ReadEnvironmentVariable(environmentVariableName!);
+            try
+            {
+                connectionString =
+                    dependencies.ReadEnvironmentVariable(
+                        environmentVariableName!);
+            }
+            finally
+            {
+                dependencies.ClearEnvironmentVariable(
+                    environmentVariableName!);
+            }
         }
         catch (OperationCanceledException)
             when (cancellationToken.IsCancellationRequested)

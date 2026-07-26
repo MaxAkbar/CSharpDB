@@ -152,6 +152,85 @@ public sealed class CSharpDbTargetCapabilityEvaluatorTests
         AssertExcludedBy(first, "cap:fk:customers-upper:mismatched", "CSDB-FOREIGNKEY-001");
     }
 
+    [Fact]
+    public async Task Planner_ExcludesInventoriedTablesWithoutRetainedData()
+    {
+        MigrationCatalog source = await InspectAsync();
+        MigrationCatalogObject table = source.Objects.Single(
+            item => item.ObjectId == "syn:table:customers-upper");
+        MigrationCatalog catalog = source with
+        {
+            Objects = source.Objects
+                .Select(item => item.ObjectId == table.ObjectId
+                    ? item with
+                    {
+                        Facets =
+                        [
+                            .. item.Facets,
+                            Facet(
+                                MigrationDataAvailabilityContract
+                                    .AvailableFacet,
+                                "false"),
+                            Facet(
+                                MigrationDataAvailabilityContract
+                                    .UnavailableReasonFacet,
+                                "no deterministic source key"),
+                        ],
+                    }
+                    : item)
+                .ToArray(),
+        };
+
+        MigrationPlan plan = new MigrationPlanner().CreatePlan(catalog);
+
+        MigrationPlanObject excluded = Object(plan, table.ObjectId);
+        Assert.False(excluded.Included);
+        Assert.Contains(
+            "no deterministic source key",
+            excluded.ExclusionReason,
+            StringComparison.Ordinal);
+        Assert.All(
+            plan.Objects.Where(item =>
+                source.Objects.Any(sourceObject =>
+                    sourceObject.ParentObjectId == table.ObjectId &&
+                    sourceObject.ObjectId == item.SourceObjectId)),
+            item => Assert.False(item.Included));
+    }
+
+    [Fact]
+    public async Task Planner_RejectsMalformedRetainedDataAvailability()
+    {
+        MigrationCatalog source = await InspectAsync();
+        MigrationCatalogObject table = source.Objects.First(
+            item => item.Kind == MigrationObjectKind.Table);
+        MigrationCatalog catalog = source with
+        {
+            Objects = source.Objects
+                .Select(item => item.ObjectId == table.ObjectId
+                    ? item with
+                    {
+                        Facets =
+                        [
+                            .. item.Facets,
+                            Facet(
+                                MigrationDataAvailabilityContract
+                                    .AvailableFacet,
+                                "sometimes"),
+                        ],
+                    }
+                    : item)
+                .ToArray(),
+        };
+
+        MigrationPlan plan = new MigrationPlanner().CreatePlan(catalog);
+
+        Assert.False(Object(plan, table.ObjectId).Included);
+        Assert.Contains(
+            "availability",
+            Object(plan, table.ObjectId).ExclusionReason,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
     private static async Task<MigrationCatalog> InspectAsync() =>
         await new SyntheticMigrationSourceInspector().InspectAsync(
             new MigrationInspectionRequest

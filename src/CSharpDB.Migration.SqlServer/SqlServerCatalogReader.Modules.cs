@@ -370,14 +370,14 @@ internal sealed partial class SqlServerCatalogReader
 
     private static async ValueTask<IReadOnlyList<SqlServerViewMetadata>>
         ReadViewsAsync(
-            SqlConnection connection,
+            CatalogReadContext context,
             SqlServerInstanceMetadata instance,
             ReaderBudget budget,
             SqlServerInspectionLimits limits,
             CancellationToken cancellationToken)
     {
         var views = new List<SqlServerViewMetadata>();
-        await using (SqlCommand command = Command(connection, ViewsQuery))
+        await using (SqlCommand command = Command(context, ViewsQuery))
         await using (SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
                 cancellationToken)
@@ -411,7 +411,7 @@ internal sealed partial class SqlServerCatalogReader
 
         var ledgerFacts =
             new Dictionary<int, (byte Type, string Description, bool IsDropped)>();
-        await using (SqlCommand command = Command(connection, LedgerViewsQuery))
+        await using (SqlCommand command = Command(context, LedgerViewsQuery))
         await using (SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
                 cancellationToken)
@@ -461,13 +461,13 @@ internal sealed partial class SqlServerCatalogReader
 
     private static async ValueTask<IReadOnlyList<SqlServerViewColumnMetadata>>
         ReadViewColumnsAsync(
-            SqlConnection connection,
+            CatalogReadContext context,
             ReaderBudget budget,
             SqlServerInspectionLimits limits,
             CancellationToken cancellationToken)
     {
         var columns = new List<SqlServerViewColumnMetadata>();
-        await using SqlCommand command = Command(connection, ViewColumnsQuery);
+        await using SqlCommand command = Command(context, ViewColumnsQuery);
         await using SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
                 cancellationToken)
@@ -501,13 +501,13 @@ internal sealed partial class SqlServerCatalogReader
 
     private static async ValueTask<IReadOnlyList<SqlServerTriggerMetadata>>
         ReadTriggersAsync(
-            SqlConnection connection,
+            CatalogReadContext context,
             ReaderBudget budget,
             SqlServerInspectionLimits limits,
             CancellationToken cancellationToken)
     {
         var triggers = new List<SqlServerTriggerMetadata>();
-        await using SqlCommand command = Command(connection, TriggersQuery);
+        await using SqlCommand command = Command(context, TriggersQuery);
         await using SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
                 cancellationToken)
@@ -545,13 +545,13 @@ internal sealed partial class SqlServerCatalogReader
 
     private static async ValueTask<IReadOnlyList<SqlServerTriggerEventMetadata>>
         ReadTriggerEventsAsync(
-            SqlConnection connection,
+            CatalogReadContext context,
             ReaderBudget budget,
             SqlServerInspectionLimits limits,
             CancellationToken cancellationToken)
     {
         var events = new List<SqlServerTriggerEventMetadata>();
-        await using SqlCommand command = Command(connection, TriggerEventsQuery);
+        await using SqlCommand command = Command(context, TriggerEventsQuery);
         await using SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
                 cancellationToken)
@@ -575,13 +575,13 @@ internal sealed partial class SqlServerCatalogReader
 
     private static async ValueTask<IReadOnlyList<SqlServerRoutineMetadata>>
         ReadRoutinesAsync(
-            SqlConnection connection,
+            CatalogReadContext context,
             ReaderBudget budget,
             SqlServerInspectionLimits limits,
             CancellationToken cancellationToken)
     {
         var routines = new List<SqlServerRoutineMetadata>();
-        await using SqlCommand command = Command(connection, RoutinesQuery);
+        await using SqlCommand command = Command(context, RoutinesQuery);
         await using SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
                 cancellationToken)
@@ -608,13 +608,13 @@ internal sealed partial class SqlServerCatalogReader
 
     private static async ValueTask<IReadOnlyList<SqlServerModuleMetadata>>
         ReadModulesAsync(
-            SqlConnection connection,
+            CatalogReadContext context,
             ReaderBudget budget,
             SqlServerInspectionLimits limits,
             CancellationToken cancellationToken)
     {
         var modules = new List<SqlServerModuleMetadata>();
-        await using SqlCommand command = Command(connection, ModulesQuery);
+        await using SqlCommand command = Command(context, ModulesQuery);
         await using SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
                 cancellationToken)
@@ -661,13 +661,13 @@ internal sealed partial class SqlServerCatalogReader
 
     private static async ValueTask<IReadOnlyList<SqlServerParameterMetadata>>
         ReadParametersAsync(
-            SqlConnection connection,
+            CatalogReadContext context,
             ReaderBudget budget,
             SqlServerInspectionLimits limits,
             CancellationToken cancellationToken)
     {
         var parameters = new List<SqlServerParameterMetadata>();
-        await using SqlCommand command = Command(connection, ParametersQuery);
+        await using SqlCommand command = Command(context, ParametersQuery);
         await using SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
                 cancellationToken)
@@ -709,7 +709,7 @@ internal sealed partial class SqlServerCatalogReader
 
     private static async ValueTask<SqlServerExpressionDependencyAuditMetadata>
         ReadExpressionDependencyAuditAsync(
-            SqlConnection connection,
+            CatalogReadContext context,
             SqlServerDatabaseMetadata database,
             ReaderBudget budget,
             SqlServerInspectionLimits limits,
@@ -720,7 +720,7 @@ internal sealed partial class SqlServerCatalogReader
 
         var dependencies = new List<SqlServerExpressionDependencyMetadata>();
         await using SqlCommand command = Command(
-            connection,
+            context,
             ExpressionDependenciesQuery);
         await using SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,

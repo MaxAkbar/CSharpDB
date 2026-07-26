@@ -107,7 +107,35 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
                     N'OBJECT',
                     N'VIEW DEFINITION')),
             COALESCE(t.lob_data_space_id, 0),
-            COALESCE(t.filestream_data_space_id, 0)
+            COALESCE(t.filestream_data_space_id, 0),
+            CONVERT(
+                bit,
+                CASE
+                    WHEN EXISTS (
+                        SELECT 1
+                        FROM sys.security_predicates AS security_predicate
+                        INNER JOIN sys.security_policies AS security_policy
+                            ON security_policy.object_id =
+                                security_predicate.object_id
+                        WHERE security_predicate.target_object_id =
+                                t.object_id
+                          AND security_predicate.predicate_type = 0
+                          AND security_policy.is_enabled = 1)
+                    THEN 1
+                    ELSE 0
+                END),
+            CONVERT(
+                bit,
+                CASE
+                    WHEN IS_SRVROLEMEMBER(N'sysadmin') = 1
+                      OR HAS_PERMS_BY_NAME(
+                            DB_NAME(),
+                            N'DATABASE',
+                            N'AL' +
+                                N'TER ANY SECURITY POLICY') = 1
+                    THEN 1
+                    ELSE 0
+                END)
         FROM sys.tables AS t
         WHERE t.is_ms_shipped = 0
         ORDER BY t.object_id;
@@ -297,6 +325,9 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
 
     internal string EndpointDigest => endpointDigest;
 
+    internal SqlConnection CreateConnection() =>
+        new(connectionString);
+
     public async ValueTask<SqlServerCatalogSnapshot> ReadAsync(
         SqlServerInspectionLimits limits,
         CancellationToken cancellationToken)
@@ -305,19 +336,60 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
         limits.Validate();
         cancellationToken.ThrowIfCancellationRequested();
 
-        await using var connection = new SqlConnection(connectionString);
+        await using SqlConnection connection = CreateConnection();
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        return await ReadCoreAsync(
+                new CatalogReadContext(connection, null),
+                limits,
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    internal async ValueTask<SqlServerCatalogSnapshot> ReadAsync(
+        SqlConnection connection,
+        SqlTransaction transaction,
+        SqlServerInspectionLimits limits,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        ArgumentNullException.ThrowIfNull(transaction);
+        ArgumentNullException.ThrowIfNull(limits);
+        limits.Validate();
+        cancellationToken.ThrowIfCancellationRequested();
+        if (connection.State != ConnectionState.Open ||
+            !ReferenceEquals(transaction.Connection, connection) ||
+            transaction.IsolationLevel != IsolationLevel.Snapshot)
+        {
+            throw new ArgumentException(
+                "Catalog capture requires an active SNAPSHOT transaction on the supplied SQL Server connection.",
+                nameof(transaction));
+        }
+
+        return await ReadCoreAsync(
+                new CatalogReadContext(
+                    connection,
+                    transaction),
+                limits,
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async ValueTask<SqlServerCatalogSnapshot> ReadCoreAsync(
+        CatalogReadContext context,
+        SqlServerInspectionLimits limits,
+        CancellationToken cancellationToken)
+    {
         var budget = new ReaderBudget(limits);
         (SqlServerInstanceMetadata instance, SqlServerDatabaseMetadata database) =
             await ReadServerAndDatabaseAsync(
-                    connection,
+                    context,
                     budget,
                     cancellationToken)
                 .ConfigureAwait(false);
         EnsureSupportedProductMajorVersion(instance.ProductMajorVersion);
         SqlServerPermissionAuditMetadata permissionAuditBefore =
             await ReadPermissionAuditAsync(
-                    connection,
+                    context,
                     instance,
                     database,
                     budget,
@@ -325,38 +397,38 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
                     cancellationToken)
                 .ConfigureAwait(false);
         IReadOnlyList<SqlServerSchemaMetadata> schemas = await ReadSchemasAsync(
-                connection,
+                context,
                 budget,
                 limits,
                 cancellationToken)
             .ConfigureAwait(false);
         IReadOnlyList<SqlServerTableMetadata> tables = await ReadTablesAsync(
-                connection,
+                context,
                 budget,
                 limits,
                 cancellationToken)
             .ConfigureAwait(false);
         IReadOnlyList<SqlServerColumnMetadata> columns = await ReadColumnsAsync(
-                connection,
+                context,
                 budget,
                 limits,
                 cancellationToken)
             .ConfigureAwait(false);
         IReadOnlyList<SqlServerKeyMetadata> keys = await ReadKeysAsync(
-                connection,
+                context,
                 budget,
                 limits,
                 cancellationToken)
             .ConfigureAwait(false);
         IReadOnlyList<SqlServerIndexMetadata> indexes = await ReadIndexesAsync(
-                connection,
+                context,
                 budget,
                 limits,
                 cancellationToken)
             .ConfigureAwait(false);
         IReadOnlyList<SqlServerIndexColumnMetadata> indexColumns =
             await ReadIndexColumnsAsync(
-                    connection,
+                    context,
                     instance,
                     budget,
                     limits,
@@ -364,7 +436,7 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
                 .ConfigureAwait(false);
         IReadOnlyList<SqlServerXmlIndexMetadata> xmlIndexes =
             await ReadXmlIndexesAsync(
-                    connection,
+                    context,
                     budget,
                     limits,
                     cancellationToken)
@@ -372,14 +444,14 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
         IReadOnlyList<SqlServerSelectiveXmlIndexPathMetadata>
             selectiveXmlIndexPaths =
                 await ReadSelectiveXmlIndexPathsAsync(
-                        connection,
+                        context,
                         budget,
                         limits,
                         cancellationToken)
                     .ConfigureAwait(false);
         IReadOnlyList<SqlServerSpatialIndexMetadata> spatialIndexes =
             await ReadSpatialIndexesAsync(
-                    connection,
+                    context,
                     budget,
                     limits,
                     cancellationToken)
@@ -387,21 +459,21 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
         IReadOnlyList<SqlServerSpatialIndexTessellationMetadata>
             spatialIndexTessellations =
                 await ReadSpatialIndexTessellationsAsync(
-                        connection,
+                        context,
                         budget,
                         limits,
                         cancellationToken)
                     .ConfigureAwait(false);
         IReadOnlyList<SqlServerHashIndexMetadata> hashIndexes =
             await ReadHashIndexesAsync(
-                    connection,
+                    context,
                     budget,
                     limits,
                     cancellationToken)
                 .ConfigureAwait(false);
         IReadOnlyList<SqlServerJsonIndexMetadata> jsonIndexes =
             await ReadJsonIndexesAsync(
-                    connection,
+                    context,
                     instance,
                     budget,
                     limits,
@@ -409,7 +481,7 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
                 .ConfigureAwait(false);
         IReadOnlyList<SqlServerJsonIndexPathMetadata> jsonIndexPaths =
             await ReadJsonIndexPathsAsync(
-                    connection,
+                    context,
                     instance,
                     budget,
                     limits,
@@ -417,28 +489,28 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
                 .ConfigureAwait(false);
         IReadOnlyList<SqlServerFullTextCatalogMetadata> fullTextCatalogs =
             await ReadFullTextCatalogsAsync(
-                    connection,
+                    context,
                     budget,
                     limits,
                     cancellationToken)
                 .ConfigureAwait(false);
         IReadOnlyList<SqlServerFullTextStoplistMetadata> fullTextStoplists =
             await ReadFullTextStoplistsAsync(
-                    connection,
+                    context,
                     budget,
                     limits,
                     cancellationToken)
                 .ConfigureAwait(false);
         IReadOnlyList<SqlServerSearchPropertyListMetadata> searchPropertyLists =
             await ReadSearchPropertyListsAsync(
-                    connection,
+                    context,
                     budget,
                     limits,
                     cancellationToken)
                 .ConfigureAwait(false);
         IReadOnlyList<SqlServerFullTextIndexMetadata> fullTextIndexes =
             await ReadFullTextIndexesAsync(
-                    connection,
+                    context,
                     instance,
                     budget,
                     limits,
@@ -446,21 +518,21 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
                 .ConfigureAwait(false);
         IReadOnlyList<SqlServerFullTextIndexColumnMetadata> fullTextIndexColumns =
             await ReadFullTextIndexColumnsAsync(
-                    connection,
+                    context,
                     budget,
                     limits,
                     cancellationToken)
                 .ConfigureAwait(false);
         IReadOnlyList<SqlServerDataSpaceMetadata> dataSpaces =
             await ReadDataSpacesAsync(
-                    connection,
+                    context,
                     budget,
                     limits,
                     cancellationToken)
                 .ConfigureAwait(false);
         IReadOnlyList<SqlServerPartitionSchemeMetadata> partitionSchemes =
             await ReadPartitionSchemesAsync(
-                    connection,
+                    context,
                     budget,
                     limits,
                     cancellationToken)
@@ -468,35 +540,35 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
         IReadOnlyList<SqlServerPartitionSchemeDestinationMetadata>
             partitionSchemeDestinations =
                 await ReadPartitionSchemeDestinationsAsync(
-                        connection,
+                        context,
                         budget,
                         limits,
                         cancellationToken)
                     .ConfigureAwait(false);
         IReadOnlyList<SqlServerPartitionFunctionMetadata> partitionFunctions =
             await ReadPartitionFunctionsAsync(
-                    connection,
+                    context,
                     budget,
                     limits,
                     cancellationToken)
                 .ConfigureAwait(false);
         IReadOnlyList<SqlServerPartitionParameterMetadata> partitionParameters =
             await ReadPartitionParametersAsync(
-                    connection,
+                    context,
                     budget,
                     limits,
                     cancellationToken)
                 .ConfigureAwait(false);
         IReadOnlyList<SqlServerPartitionRangeValueMetadata> partitionRangeValues =
             await ReadPartitionRangeValuesAsync(
-                    connection,
+                    context,
                     budget,
                     limits,
                     cancellationToken)
                 .ConfigureAwait(false);
         IReadOnlyList<SqlServerIndexPartitionMetadata> indexPartitions =
             await ReadIndexPartitionsAsync(
-                    connection,
+                    context,
                     instance,
                     budget,
                     limits,
@@ -504,33 +576,33 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
                 .ConfigureAwait(false);
         IReadOnlyList<SqlServerForeignKeyMetadata> foreignKeys =
             await ReadForeignKeysAsync(
-                    connection,
+                    context,
                     budget,
                     limits,
                     cancellationToken)
                 .ConfigureAwait(false);
         IReadOnlyList<SqlServerForeignKeyColumnMetadata> foreignKeyColumns =
             await ReadForeignKeyColumnsAsync(
-                    connection,
+                    context,
                     budget,
                     limits,
                     cancellationToken)
                 .ConfigureAwait(false);
         IReadOnlyList<SqlServerCheckMetadata> checks = await ReadChecksAsync(
-                connection,
+                context,
                 budget,
                 limits,
                 cancellationToken)
             .ConfigureAwait(false);
         IReadOnlyList<SqlServerSequenceMetadata> sequences =
             await ReadSequencesAsync(
-                    connection,
+                    context,
                     budget,
                     limits,
                     cancellationToken)
                 .ConfigureAwait(false);
         IReadOnlyList<SqlServerViewMetadata> views = await ReadViewsAsync(
-                connection,
+                context,
                 instance,
                 budget,
                 limits,
@@ -538,49 +610,49 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
             .ConfigureAwait(false);
         IReadOnlyList<SqlServerViewColumnMetadata> viewColumns =
             await ReadViewColumnsAsync(
-                    connection,
+                    context,
                     budget,
                     limits,
                     cancellationToken)
                 .ConfigureAwait(false);
         IReadOnlyList<SqlServerTriggerMetadata> triggers =
             await ReadTriggersAsync(
-                    connection,
+                    context,
                     budget,
                     limits,
                     cancellationToken)
                 .ConfigureAwait(false);
         IReadOnlyList<SqlServerTriggerEventMetadata> triggerEvents =
             await ReadTriggerEventsAsync(
-                    connection,
+                    context,
                     budget,
                     limits,
                     cancellationToken)
                 .ConfigureAwait(false);
         IReadOnlyList<SqlServerRoutineMetadata> routines =
             await ReadRoutinesAsync(
-                    connection,
+                    context,
                     budget,
                     limits,
                     cancellationToken)
                 .ConfigureAwait(false);
         IReadOnlyList<SqlServerModuleMetadata> modules =
             await ReadModulesAsync(
-                    connection,
+                    context,
                     budget,
                     limits,
                     cancellationToken)
                 .ConfigureAwait(false);
         IReadOnlyList<SqlServerParameterMetadata> parameters =
             await ReadParametersAsync(
-                    connection,
+                    context,
                     budget,
                     limits,
                     cancellationToken)
                 .ConfigureAwait(false);
         SqlServerExpressionDependencyAuditMetadata expressionDependencyAudit =
             await ReadExpressionDependencyAuditAsync(
-                    connection,
+                    context,
                     database,
                     budget,
                     limits,
@@ -588,7 +660,7 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
                 .ConfigureAwait(false);
         SqlServerPermissionAuditMetadata permissionAuditAfter =
             await ReadPermissionAuditAsync(
-                    connection,
+                    context,
                     instance,
                     database,
                     budget,
@@ -655,11 +727,11 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
     private static async ValueTask<(
         SqlServerInstanceMetadata Instance,
         SqlServerDatabaseMetadata Database)> ReadServerAndDatabaseAsync(
-        SqlConnection connection,
+        CatalogReadContext context,
         ReaderBudget budget,
         CancellationToken cancellationToken)
     {
-        await using SqlCommand command = Command(connection, ServerAndDatabaseQuery);
+        await using SqlCommand command = Command(context, ServerAndDatabaseQuery);
         await using SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
                 cancellationToken)
@@ -707,13 +779,13 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
     }
 
     private static async ValueTask<IReadOnlyList<SqlServerSchemaMetadata>> ReadSchemasAsync(
-        SqlConnection connection,
+        CatalogReadContext context,
         ReaderBudget budget,
         SqlServerInspectionLimits limits,
         CancellationToken cancellationToken)
     {
         var schemas = new List<SqlServerSchemaMetadata>();
-        await using SqlCommand command = Command(connection, SchemasQuery);
+        await using SqlCommand command = Command(context, SchemasQuery);
         await using SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
                 cancellationToken)
@@ -731,13 +803,13 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
     }
 
     private static async ValueTask<IReadOnlyList<SqlServerTableMetadata>> ReadTablesAsync(
-        SqlConnection connection,
+        CatalogReadContext context,
         ReaderBudget budget,
         SqlServerInspectionLimits limits,
         CancellationToken cancellationToken)
     {
         var tables = new List<SqlServerTableMetadata>();
-        await using SqlCommand command = Command(connection, TablesQuery);
+        await using SqlCommand command = Command(context, TablesQuery);
         await using SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
                 cancellationToken)
@@ -758,19 +830,21 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
                 RequiredBoolean(reader, 8),
                 OptionalBoolean(reader, 9),
                 RequiredInt32(reader, 10),
-                RequiredInt32(reader, 11)));
+                RequiredInt32(reader, 11),
+                RequiredBoolean(reader, 12),
+                RequiredBoolean(reader, 13)));
         }
         return tables.AsReadOnly();
     }
 
     private static async ValueTask<IReadOnlyList<SqlServerColumnMetadata>> ReadColumnsAsync(
-        SqlConnection connection,
+        CatalogReadContext context,
         ReaderBudget budget,
         SqlServerInspectionLimits limits,
         CancellationToken cancellationToken)
     {
         var columns = new List<SqlServerColumnMetadata>();
-        await using SqlCommand command = Command(connection, ColumnsQuery);
+        await using SqlCommand command = Command(context, ColumnsQuery);
         await using SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
                 cancellationToken)
@@ -856,8 +930,10 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
         return columns.AsReadOnly();
     }
 
-    private static SqlCommand Command(SqlConnection connection, string commandText) =>
-        new(commandText, connection)
+    private static SqlCommand Command(
+        CatalogReadContext context,
+        string commandText) =>
+        new(commandText, context.Connection, context.Transaction)
         {
             CommandType = CommandType.Text,
             CommandTimeout = CommandTimeoutSeconds,
@@ -972,8 +1048,11 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
     private static SqlServerMigrationException InvalidProviderMetadata() =>
         new("SQL Server returned incomplete or invalid catalog metadata.");
 
-    private static SqlServerMigrationException LimitExceeded(string category) =>
-        new($"SQL Server inspection exceeded the fixed {category} limit.");
+    private static SqlServerMigrationException LimitExceeded(
+        string category) =>
+        new(
+            $"SQL Server inspection exceeded the fixed {category} limit.",
+            SqlServerMigrationErrorCode.InspectionLimit);
 
     private static string ProviderVersion()
     {
@@ -1060,6 +1139,10 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
                 throw LimitExceeded("aggregate permission row");
         }
     }
+
+    private readonly record struct CatalogReadContext(
+        SqlConnection Connection,
+        SqlTransaction? Transaction);
 }
 
 internal sealed record SqlServerConnectionPolicy(

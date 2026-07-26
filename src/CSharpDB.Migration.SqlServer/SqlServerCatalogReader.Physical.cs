@@ -274,13 +274,13 @@ internal sealed partial class SqlServerCatalogReader
     private static async ValueTask<
         IReadOnlyList<SqlServerFullTextCatalogMetadata>>
         ReadFullTextCatalogsAsync(
-            SqlConnection connection,
+            CatalogReadContext context,
             ReaderBudget budget,
             SqlServerInspectionLimits limits,
             CancellationToken cancellationToken)
     {
         var catalogs = new List<SqlServerFullTextCatalogMetadata>();
-        await using SqlCommand command = Command(connection, FullTextCatalogsQuery);
+        await using SqlCommand command = Command(context, FullTextCatalogsQuery);
         await using SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
                 cancellationToken)
@@ -303,13 +303,13 @@ internal sealed partial class SqlServerCatalogReader
     private static async ValueTask<
         IReadOnlyList<SqlServerFullTextStoplistMetadata>>
         ReadFullTextStoplistsAsync(
-            SqlConnection connection,
+            CatalogReadContext context,
             ReaderBudget budget,
             SqlServerInspectionLimits limits,
             CancellationToken cancellationToken)
     {
         var stoplists = new List<SqlServerFullTextStoplistMetadata>();
-        await using SqlCommand command = Command(connection, FullTextStoplistsQuery);
+        await using SqlCommand command = Command(context, FullTextStoplistsQuery);
         await using SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
                 cancellationToken)
@@ -329,14 +329,14 @@ internal sealed partial class SqlServerCatalogReader
     private static async ValueTask<
         IReadOnlyList<SqlServerSearchPropertyListMetadata>>
         ReadSearchPropertyListsAsync(
-            SqlConnection connection,
+            CatalogReadContext context,
             ReaderBudget budget,
             SqlServerInspectionLimits limits,
             CancellationToken cancellationToken)
     {
         var propertyLists = new List<SqlServerSearchPropertyListMetadata>();
         await using SqlCommand command = Command(
-            connection,
+            context,
             SearchPropertyListsQuery);
         await using SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
@@ -357,7 +357,7 @@ internal sealed partial class SqlServerCatalogReader
     private static async ValueTask<
         IReadOnlyList<SqlServerFullTextIndexMetadata>>
         ReadFullTextIndexesAsync(
-            SqlConnection connection,
+            CatalogReadContext context,
             SqlServerInstanceMetadata instance,
             ReaderBudget budget,
             SqlServerInspectionLimits limits,
@@ -367,7 +367,7 @@ internal sealed partial class SqlServerCatalogReader
         string commandText = instance.ProductMajorVersion >= 17
             ? FullTextIndexesV17Query
             : FullTextIndexesQuery;
-        await using SqlCommand command = Command(connection, commandText);
+        await using SqlCommand command = Command(context, commandText);
         await using SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
                 cancellationToken)
@@ -395,14 +395,14 @@ internal sealed partial class SqlServerCatalogReader
     private static async ValueTask<
         IReadOnlyList<SqlServerFullTextIndexColumnMetadata>>
         ReadFullTextIndexColumnsAsync(
-            SqlConnection connection,
+            CatalogReadContext context,
             ReaderBudget budget,
             SqlServerInspectionLimits limits,
             CancellationToken cancellationToken)
     {
         var columns = new List<SqlServerFullTextIndexColumnMetadata>();
         await using SqlCommand command = Command(
-            connection,
+            context,
             FullTextIndexColumnsQuery);
         await using SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
@@ -425,13 +425,13 @@ internal sealed partial class SqlServerCatalogReader
 
     private static async ValueTask<IReadOnlyList<SqlServerDataSpaceMetadata>>
         ReadDataSpacesAsync(
-            SqlConnection connection,
+            CatalogReadContext context,
             ReaderBudget budget,
             SqlServerInspectionLimits limits,
             CancellationToken cancellationToken)
     {
         var dataSpaces = new List<SqlServerDataSpaceMetadata>();
-        await using SqlCommand command = Command(connection, DataSpacesQuery);
+        await using SqlCommand command = Command(context, DataSpacesQuery);
         await using SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
                 cancellationToken)
@@ -456,13 +456,13 @@ internal sealed partial class SqlServerCatalogReader
     private static async ValueTask<
         IReadOnlyList<SqlServerPartitionSchemeMetadata>>
         ReadPartitionSchemesAsync(
-            SqlConnection connection,
+            CatalogReadContext context,
             ReaderBudget budget,
             SqlServerInspectionLimits limits,
             CancellationToken cancellationToken)
     {
         var schemes = new List<SqlServerPartitionSchemeMetadata>();
-        await using SqlCommand command = Command(connection, PartitionSchemesQuery);
+        await using SqlCommand command = Command(context, PartitionSchemesQuery);
         await using SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
                 cancellationToken)
@@ -482,7 +482,7 @@ internal sealed partial class SqlServerCatalogReader
     private static async ValueTask<
         IReadOnlyList<SqlServerPartitionSchemeDestinationMetadata>>
         ReadPartitionSchemeDestinationsAsync(
-            SqlConnection connection,
+            CatalogReadContext context,
             ReaderBudget budget,
             SqlServerInspectionLimits limits,
             CancellationToken cancellationToken)
@@ -490,7 +490,7 @@ internal sealed partial class SqlServerCatalogReader
         var destinations =
             new List<SqlServerPartitionSchemeDestinationMetadata>();
         await using SqlCommand command = Command(
-            connection,
+            context,
             PartitionSchemeDestinationsQuery);
         await using SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
@@ -512,14 +512,14 @@ internal sealed partial class SqlServerCatalogReader
     private static async ValueTask<
         IReadOnlyList<SqlServerPartitionFunctionMetadata>>
         ReadPartitionFunctionsAsync(
-            SqlConnection connection,
+            CatalogReadContext context,
             ReaderBudget budget,
             SqlServerInspectionLimits limits,
             CancellationToken cancellationToken)
     {
         var functions = new List<SqlServerPartitionFunctionMetadata>();
         await using SqlCommand command = Command(
-            connection,
+            context,
             PartitionFunctionsQuery);
         await using SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
@@ -543,14 +543,14 @@ internal sealed partial class SqlServerCatalogReader
     private static async ValueTask<
         IReadOnlyList<SqlServerPartitionParameterMetadata>>
         ReadPartitionParametersAsync(
-            SqlConnection connection,
+            CatalogReadContext context,
             ReaderBudget budget,
             SqlServerInspectionLimits limits,
             CancellationToken cancellationToken)
     {
         var parameters = new List<SqlServerPartitionParameterMetadata>();
         await using SqlCommand command = Command(
-            connection,
+            context,
             PartitionParametersQuery);
         await using SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
@@ -578,14 +578,14 @@ internal sealed partial class SqlServerCatalogReader
     private static async ValueTask<
         IReadOnlyList<SqlServerPartitionRangeValueMetadata>>
         ReadPartitionRangeValuesAsync(
-            SqlConnection connection,
+            CatalogReadContext context,
             ReaderBudget budget,
             SqlServerInspectionLimits limits,
             CancellationToken cancellationToken)
     {
         var values = new List<SqlServerPartitionRangeValueMetadata>();
         await using SqlCommand command = Command(
-            connection,
+            context,
             PartitionRangeValuesQuery);
         await using SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
@@ -622,7 +622,7 @@ internal sealed partial class SqlServerCatalogReader
     private static async ValueTask<
         IReadOnlyList<SqlServerIndexPartitionMetadata>>
         ReadIndexPartitionsAsync(
-            SqlConnection connection,
+            CatalogReadContext context,
             SqlServerInstanceMetadata instance,
             ReaderBudget budget,
             SqlServerInspectionLimits limits,
@@ -632,7 +632,7 @@ internal sealed partial class SqlServerCatalogReader
         string commandText = instance.ProductMajorVersion >= 16
             ? IndexPartitionsV16Query
             : IndexPartitionsQuery;
-        await using SqlCommand command = Command(connection, commandText);
+        await using SqlCommand command = Command(context, commandText);
         await using SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
                 cancellationToken)

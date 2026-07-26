@@ -26,8 +26,13 @@ internal sealed class CSharpDbTargetCapabilityEvaluator
     public string? GetExclusionReason(
         MigrationCatalogObject item,
         IReadOnlyDictionary<string, MigrationCatalogObject> objectsById,
-        IReadOnlyDictionary<string, MigrationTypeMapping> mappingsByObjectId) =>
-        item.Kind switch
+        IReadOnlyDictionary<string, MigrationTypeMapping> mappingsByObjectId)
+    {
+        string? availabilityReason = EvaluateDataAvailability(item);
+        if (availabilityReason is not null)
+            return availabilityReason;
+
+        return item.Kind switch
         {
             MigrationObjectKind.Collection => EvaluateCollection(item, objectsById, mappingsByObjectId),
             MigrationObjectKind.Column => EvaluateColumn(item, objectsById, mappingsByObjectId),
@@ -37,6 +42,38 @@ internal sealed class CSharpDbTargetCapabilityEvaluator
             MigrationObjectKind.Index => EvaluateIndex(item, objectsById, mappingsByObjectId),
             _ => null,
         };
+    }
+
+    private static string? EvaluateDataAvailability(
+        MigrationCatalogObject item)
+    {
+        if (item.Kind is not (
+                MigrationObjectKind.Table or
+                MigrationObjectKind.Collection))
+        {
+            return null;
+        }
+
+        string? value = Facet(
+            item,
+            MigrationDataAvailabilityContract.AvailableFacet);
+        if (value is null)
+            return null;
+        if (!bool.TryParse(value, out bool available))
+        {
+            return
+                $"Source data availability for '{item.ObjectId}' is invalid.";
+        }
+        if (available)
+            return null;
+
+        string? reason = Facet(
+            item,
+            MigrationDataAvailabilityContract.UnavailableReasonFacet);
+        return string.IsNullOrWhiteSpace(reason)
+            ? $"Source data for '{item.ObjectId}' is not present in the retained migration package."
+            : $"Source data for '{item.ObjectId}' is not present in the retained migration package: {reason}";
+    }
 
     private string? EvaluateCollection(
         MigrationCatalogObject collection,

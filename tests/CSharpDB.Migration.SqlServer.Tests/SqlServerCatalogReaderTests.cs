@@ -12,7 +12,7 @@ public sealed partial class SqlServerCatalogReaderTests
     [
         "f6e73d8ec4a4cb3f666b83aaeef5933aa27dec8f255dfda0771951361f9c5946",
         "7e796bfce6b9d4330e68d662c0928feba19f636aab0fe37e13910882c3d0d72a",
-        "5d5ced4675ed6117d78ecc5475bbe214d106e38ba32d655ef742099a07d2e79b",
+        "cd6a99d230e1377acb80c967196ed6e55cd20680d544a39cc611c0325c1e4f27",
         "cd178870a4583120c033a3ce1460f6d42d98a88d16e6120939858d9d1d6feafe",
         "2072d04734b060c00d79bdac0099e018780157368ea153eb8d15018aa08a6216",
         "e3b65500b75b0aa66e2beb81fa5a847c90300929f153810aaea85de1c23b6aca",
@@ -204,6 +204,34 @@ public sealed partial class SqlServerCatalogReaderTests
         Assert.Contains(
             "VIEW SECURITY DEFINITION",
             SqlServerCatalogReader.ServerAndDatabaseQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "sys.security_predicates",
+            SqlServerCatalogReader.TablesQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "sys.security_policies",
+            SqlServerCatalogReader.TablesQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "security_predicate.target_object_id",
+            SqlServerCatalogReader.TablesQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "security_predicate.predicate_type = 0",
+            SqlServerCatalogReader.TablesQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "security_policy.is_enabled = 1",
+            SqlServerCatalogReader.TablesQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "N'AL' +",
+            SqlServerCatalogReader.TablesQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "N'TER ANY SECURITY POLICY'",
+            SqlServerCatalogReader.TablesQuery,
             StringComparison.Ordinal);
         Assert.Contains(
             "sys.user_token",

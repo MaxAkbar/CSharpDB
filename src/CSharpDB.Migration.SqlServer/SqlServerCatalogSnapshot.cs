@@ -267,7 +267,9 @@ internal sealed record SqlServerTableMetadata(
     bool IsEdge,
     bool? HasViewDefinition = null,
     int LobDataSpaceId = 0,
-    int FileStreamDataSpaceId = 0);
+    int FileStreamDataSpaceId = 0,
+    bool HasEnabledRowLevelSecurityFilter = false,
+    bool IsRowLevelSecurityInventoryComplete = true);
 
 internal sealed record SqlServerColumnMetadata(
     int ObjectId,

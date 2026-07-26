@@ -47,6 +47,63 @@ internal sealed record SqlServerWorkerResult
     }
 }
 
+internal enum SqlServerCaptureWorkerStatus
+{
+    Success,
+    Missing,
+    Incompatible,
+    ConnectionUnavailable,
+    CaptureFailed,
+    LimitExceeded,
+}
+
+internal sealed record SqlServerCaptureReceipt
+{
+    internal const string CurrentFormat =
+        "csharpdb-sqlserver-capture-result/v1";
+
+    public required string Format { get; init; }
+
+    public required string PackageDigest { get; init; }
+
+    public required string CatalogDigest { get; init; }
+
+    public required string SnapshotIdentity { get; init; }
+
+    public long PackageBytes { get; init; }
+
+    public int TableCount { get; init; }
+
+    public long RowCount { get; init; }
+}
+
+internal sealed record SqlServerCaptureWorkerResult
+{
+    internal required SqlServerCaptureWorkerStatus Status { get; init; }
+
+    internal SqlServerCaptureReceipt? Receipt { get; init; }
+
+    internal static SqlServerCaptureWorkerResult Success(
+        SqlServerCaptureReceipt receipt)
+    {
+        ArgumentNullException.ThrowIfNull(receipt);
+        return new SqlServerCaptureWorkerResult
+        {
+            Status = SqlServerCaptureWorkerStatus.Success,
+            Receipt = receipt,
+        };
+    }
+
+    internal static SqlServerCaptureWorkerResult Failure(
+        SqlServerCaptureWorkerStatus status)
+    {
+        if (status == SqlServerCaptureWorkerStatus.Success)
+            throw new ArgumentOutOfRangeException(nameof(status));
+
+        return new SqlServerCaptureWorkerResult { Status = status };
+    }
+}
+
 internal enum SqlServerDdlWorkerStatus
 {
     Success,
@@ -87,8 +144,21 @@ internal static class SqlServerWorkerClient
     internal const string ProtocolV1 = "csharpdb-sqlserver-worker/v1";
     internal const string DdlProtocolV1 =
         "csharpdb-sqlserver-ddl-worker/v1";
+    internal const string CaptureProtocolV1 =
+        "csharpdb-sqlserver-capture-worker/v1";
+    internal const string CaptureOutputFileName =
+        "capture.csdbsqlserver";
+    internal const string CaptureWorkspacePrefix =
+        ".csharpdb-sqlserver-capture-";
     internal const long MaxCatalogBytes = 64L * 1024 * 1024;
     internal const long MaxDdlReportBytes = 8L * 1024 * 1024;
+    internal const long MaxCaptureResultBytes = 64L * 1024;
+    internal const long HardMaxCapturePackageBytes =
+        256L * 1024 * 1024 * 1024;
+    internal const int DefaultCaptureTableTimeoutSeconds =
+        1_800;
+    internal const int MaxCaptureTableTimeoutSeconds =
+        86_400;
     internal const long MaxStderrBytes = 64L * 1024;
     internal const int MaxDdlDifferenceCount = 200_000;
 
@@ -96,6 +166,7 @@ internal static class SqlServerWorkerClient
     private const int ExitConnectionUnavailable = 11;
     private const int ExitInspectionFailed = 12;
     private const int ExitInternalFailure = 13;
+    private const int ExitLimitExceeded = 14;
     private const string TsqlParseRuleId =
         "tsql.ddl.script.parse";
     private const string TsqlLimitRuleId =
@@ -118,10 +189,230 @@ internal static class SqlServerWorkerClient
         Encoding.ASCII.GetBytes(ProtocolV1 + "\n");
     private static readonly byte[] DdlHeaderBytes =
         Encoding.ASCII.GetBytes(DdlProtocolV1 + "\n");
+    private static readonly byte[] CaptureHeaderBytes =
+        Encoding.ASCII.GetBytes(CaptureProtocolV1 + "\n");
     private static readonly UTF8Encoding StrictUtf8 =
         new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
     private static readonly JsonSerializerOptions DdlJsonOptions =
         CreateDdlJsonOptions();
+    private static readonly JsonSerializerOptions CaptureJsonOptions =
+        CreateCaptureJsonOptions();
+
+    internal static async ValueTask<SqlServerCaptureWorkerResult> CaptureAsync(
+        string connectionEnvironmentVariableName,
+        string targetCSharpDbVersion,
+        string temporaryOutputPath,
+        long maxSourceBytes,
+        int tableTimeoutSeconds,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(
+            connectionEnvironmentVariableName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetCSharpDbVersion);
+        ArgumentException.ThrowIfNullOrWhiteSpace(temporaryOutputPath);
+        if (maxSourceBytes <= 0)
+            throw new ArgumentOutOfRangeException(nameof(maxSourceBytes));
+        if (tableTimeoutSeconds <= 0 ||
+            tableTimeoutSeconds >
+                MaxCaptureTableTimeoutSeconds)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(tableTimeoutSeconds));
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+
+        string fullOutputPath = Path.GetFullPath(temporaryOutputPath);
+        if (!string.Equals(
+                Path.GetFileName(fullOutputPath),
+                CaptureOutputFileName,
+                StringComparison.Ordinal) ||
+            File.Exists(fullOutputPath) ||
+            Directory.Exists(fullOutputPath))
+        {
+            return SqlServerCaptureWorkerResult.Failure(
+                SqlServerCaptureWorkerStatus.Incompatible);
+        }
+
+        string? captureDirectory = Path.GetDirectoryName(fullOutputPath);
+        if (string.IsNullOrEmpty(captureDirectory) ||
+            !Directory.Exists(captureDirectory) ||
+            !Path.GetFileName(captureDirectory).StartsWith(
+                CaptureWorkspacePrefix,
+                StringComparison.Ordinal))
+        {
+            return SqlServerCaptureWorkerResult.Failure(
+                SqlServerCaptureWorkerStatus.Incompatible);
+        }
+
+        string workerDirectory = Path.Combine(
+            AppContext.BaseDirectory,
+            "adapters",
+            "sqlserver");
+        string workerPath = Path.Combine(
+            workerDirectory,
+            OperatingSystem.IsWindows()
+                ? "csharpdb-migration-sqlserver-worker.exe"
+                : "csharpdb-migration-sqlserver-worker");
+        if (!File.Exists(workerPath))
+        {
+            return SqlServerCaptureWorkerResult.Failure(
+                SqlServerCaptureWorkerStatus.Missing);
+        }
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = workerPath,
+            WorkingDirectory = workerDirectory,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        startInfo.ArgumentList.Add("--protocol");
+        startInfo.ArgumentList.Add(CaptureProtocolV1);
+        startInfo.ArgumentList.Add("--connection-env");
+        startInfo.ArgumentList.Add(connectionEnvironmentVariableName);
+        startInfo.ArgumentList.Add("--target-version");
+        startInfo.ArgumentList.Add(targetCSharpDbVersion);
+        startInfo.ArgumentList.Add("--output");
+        startInfo.ArgumentList.Add(fullOutputPath);
+        startInfo.ArgumentList.Add("--max-source-bytes");
+        startInfo.ArgumentList.Add(
+            maxSourceBytes.ToString(
+                System.Globalization.CultureInfo.InvariantCulture));
+        startInfo.ArgumentList.Add(
+            "--table-timeout-seconds");
+        startInfo.ArgumentList.Add(
+            tableTimeoutSeconds.ToString(
+                System.Globalization.CultureInfo.InvariantCulture));
+
+        using var process = new Process { StartInfo = startInfo };
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!process.Start())
+            {
+                return SqlServerCaptureWorkerResult.Failure(
+                    SqlServerCaptureWorkerStatus.Missing);
+            }
+        }
+        catch (Exception exception) when (
+            exception is Win32Exception or IOException or
+                InvalidOperationException or UnauthorizedAccessException)
+        {
+            return SqlServerCaptureWorkerResult.Failure(
+                SqlServerCaptureWorkerStatus.Missing);
+        }
+
+        WorkerProcessContainment containment;
+        try
+        {
+            containment = WorkerProcessContainment.Attach(process);
+        }
+        catch (Exception exception) when (
+            exception is Win32Exception or IOException or
+                InvalidOperationException or NotSupportedException)
+        {
+            if (!await KillAndWaitAsync(process).ConfigureAwait(false))
+                throw new WorkerTerminationException();
+            return SqlServerCaptureWorkerResult.Failure(
+                SqlServerCaptureWorkerStatus.Incompatible);
+        }
+        using WorkerProcessContainment containmentScope = containment;
+
+        byte[] stdout;
+        using var processCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        Task<byte[]> stdoutTask = ReadBoundedAsync(
+            process.StandardOutput.BaseStream,
+            checked(
+                MaxCaptureResultBytes +
+                CaptureHeaderBytes.LongLength),
+            processCancellation.Token);
+        Task stderrTask = DrainBoundedAsync(
+            process.StandardError.BaseStream,
+            MaxStderrBytes,
+            processCancellation.Token);
+        Task exitTask = process.WaitForExitAsync(processCancellation.Token);
+
+        try
+        {
+            await ObserveAllAsync([stdoutTask, stderrTask, exitTask])
+                .ConfigureAwait(false);
+            stdout = await stdoutTask.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (
+            cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await TerminateAsync(
+                        process,
+                        containmentScope,
+                        processCancellation,
+                        stdoutTask,
+                        stderrTask,
+                        exitTask)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                ClearCompletedOutput(stdoutTask);
+            }
+            throw;
+        }
+        catch (Exception exception) when (
+            exception is WorkerOutputLimitException or IOException or
+                InvalidOperationException)
+        {
+            try
+            {
+                await TerminateAsync(
+                        process,
+                        containmentScope,
+                        processCancellation,
+                        stdoutTask,
+                        stderrTask,
+                        exitTask)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                ClearCompletedOutput(stdoutTask);
+            }
+            return SqlServerCaptureWorkerResult.Failure(
+                SqlServerCaptureWorkerStatus.Incompatible);
+        }
+
+        try
+        {
+            return process.ExitCode switch
+            {
+                0 => ParseCaptureSuccess(
+                    stdout,
+                    fullOutputPath,
+                    maxSourceBytes),
+                ExitConnectionUnavailable =>
+                    SqlServerCaptureWorkerResult.Failure(
+                        SqlServerCaptureWorkerStatus.ConnectionUnavailable),
+                ExitInspectionFailed =>
+                    SqlServerCaptureWorkerResult.Failure(
+                        SqlServerCaptureWorkerStatus.CaptureFailed),
+                ExitLimitExceeded =>
+                    SqlServerCaptureWorkerResult.Failure(
+                        SqlServerCaptureWorkerStatus.LimitExceeded),
+                ExitIncompatible or ExitInternalFailure =>
+                    SqlServerCaptureWorkerResult.Failure(
+                        SqlServerCaptureWorkerStatus.Incompatible),
+                _ => SqlServerCaptureWorkerResult.Failure(
+                    SqlServerCaptureWorkerStatus.Incompatible),
+            };
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(stdout);
+        }
+    }
 
     internal static async ValueTask<SqlServerDdlWorkerResult>
         AnalyzeDdlAsync(
@@ -531,6 +822,74 @@ internal static class SqlServerWorkerClient
         {
             return SqlServerWorkerResult.Failure(
                 SqlServerWorkerStatus.Incompatible);
+        }
+    }
+
+    private static SqlServerCaptureWorkerResult ParseCaptureSuccess(
+        byte[] stdout,
+        string temporaryOutputPath,
+        long maxSourceBytes)
+    {
+        if (stdout.Length <= CaptureHeaderBytes.Length ||
+            !stdout
+                .AsSpan(0, CaptureHeaderBytes.Length)
+                .SequenceEqual(CaptureHeaderBytes))
+        {
+            return SqlServerCaptureWorkerResult.Failure(
+                SqlServerCaptureWorkerStatus.Incompatible);
+        }
+
+        try
+        {
+            string json = StrictUtf8.GetString(
+                stdout,
+                CaptureHeaderBytes.Length,
+                stdout.Length - CaptureHeaderBytes.Length);
+            SqlServerCaptureReceipt? receipt =
+                JsonSerializer.Deserialize<SqlServerCaptureReceipt>(
+                    json,
+                    CaptureJsonOptions);
+            if (receipt is null ||
+                !string.Equals(
+                    receipt.Format,
+                    SqlServerCaptureReceipt.CurrentFormat,
+                    StringComparison.Ordinal) ||
+                !IsCanonicalPackageDigest(receipt.PackageDigest) ||
+                !IsLowerSha256(receipt.CatalogDigest) ||
+                string.IsNullOrWhiteSpace(receipt.SnapshotIdentity) ||
+                receipt.SnapshotIdentity.Length > 1_024 ||
+                receipt.PackageBytes <= 0 ||
+                receipt.PackageBytes > maxSourceBytes ||
+                receipt.TableCount < 0 ||
+                receipt.RowCount < 0)
+            {
+                return SqlServerCaptureWorkerResult.Failure(
+                    SqlServerCaptureWorkerStatus.Incompatible);
+            }
+
+            var package = new FileInfo(temporaryOutputPath);
+            package.Refresh();
+            if (!package.Exists ||
+                package.Length != receipt.PackageBytes ||
+                (package.Attributes &
+                    (FileAttributes.Directory |
+                     FileAttributes.ReparsePoint |
+                     FileAttributes.Device)) != 0)
+            {
+                return SqlServerCaptureWorkerResult.Failure(
+                    SqlServerCaptureWorkerStatus.Incompatible);
+            }
+
+            return SqlServerCaptureWorkerResult.Success(receipt);
+        }
+        catch (Exception exception) when (
+            exception is DecoderFallbackException or JsonException or
+                IOException or UnauthorizedAccessException or
+                ArgumentException or FormatException or OverflowException or
+                NotSupportedException)
+        {
+            return SqlServerCaptureWorkerResult.Failure(
+                SqlServerCaptureWorkerStatus.Incompatible);
         }
     }
 
@@ -1550,6 +1909,11 @@ internal static class SqlServerWorkerClient
         return true;
     }
 
+    private static bool IsCanonicalPackageDigest(string? value) =>
+        value is { Length: 71 } &&
+        value.StartsWith("sha256:", StringComparison.Ordinal) &&
+        IsLowerSha256(value[7..]);
+
     private static string ComputeDdlSourceDigest(
         ReadOnlySpan<byte> scriptBytes)
     {
@@ -1577,6 +1941,14 @@ internal static class SqlServerWorkerClient
                 allowIntegerValues: false));
         return options;
     }
+
+    private static JsonSerializerOptions CreateCaptureJsonOptions() =>
+        new(JsonSerializerDefaults.Web)
+        {
+            PropertyNameCaseInsensitive = false,
+            UnmappedMemberHandling =
+                JsonUnmappedMemberHandling.Disallow,
+        };
 
     private static async Task ObserveAllAsync(IReadOnlyList<Task> tasks)
     {

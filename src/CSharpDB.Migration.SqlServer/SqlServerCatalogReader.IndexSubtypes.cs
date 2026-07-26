@@ -145,13 +145,13 @@ internal sealed partial class SqlServerCatalogReader
 
     private static async ValueTask<IReadOnlyList<SqlServerXmlIndexMetadata>>
         ReadXmlIndexesAsync(
-            SqlConnection connection,
+            CatalogReadContext context,
             ReaderBudget budget,
             SqlServerInspectionLimits limits,
             CancellationToken cancellationToken)
     {
         var indexes = new List<SqlServerXmlIndexMetadata>();
-        await using SqlCommand command = Command(connection, XmlIndexesQuery);
+        await using SqlCommand command = Command(context, XmlIndexesQuery);
         await using SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
                 cancellationToken)
@@ -177,14 +177,14 @@ internal sealed partial class SqlServerCatalogReader
     private static async ValueTask<
         IReadOnlyList<SqlServerSelectiveXmlIndexPathMetadata>>
         ReadSelectiveXmlIndexPathsAsync(
-            SqlConnection connection,
+            CatalogReadContext context,
             ReaderBudget budget,
             SqlServerInspectionLimits limits,
             CancellationToken cancellationToken)
     {
         var paths = new List<SqlServerSelectiveXmlIndexPathMetadata>();
         await using SqlCommand command = Command(
-            connection,
+            context,
             SelectiveXmlIndexPathsQuery);
         await using SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
@@ -250,13 +250,13 @@ internal sealed partial class SqlServerCatalogReader
 
     private static async ValueTask<IReadOnlyList<SqlServerSpatialIndexMetadata>>
         ReadSpatialIndexesAsync(
-            SqlConnection connection,
+            CatalogReadContext context,
             ReaderBudget budget,
             SqlServerInspectionLimits limits,
             CancellationToken cancellationToken)
     {
         var indexes = new List<SqlServerSpatialIndexMetadata>();
-        await using SqlCommand command = Command(connection, SpatialIndexesQuery);
+        await using SqlCommand command = Command(context, SpatialIndexesQuery);
         await using SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
                 cancellationToken)
@@ -279,7 +279,7 @@ internal sealed partial class SqlServerCatalogReader
     private static async ValueTask<
         IReadOnlyList<SqlServerSpatialIndexTessellationMetadata>>
         ReadSpatialIndexTessellationsAsync(
-            SqlConnection connection,
+            CatalogReadContext context,
             ReaderBudget budget,
             SqlServerInspectionLimits limits,
             CancellationToken cancellationToken)
@@ -287,7 +287,7 @@ internal sealed partial class SqlServerCatalogReader
         var tessellations =
             new List<SqlServerSpatialIndexTessellationMetadata>();
         await using SqlCommand command = Command(
-            connection,
+            context,
             SpatialIndexTessellationsQuery);
         await using SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
@@ -321,13 +321,13 @@ internal sealed partial class SqlServerCatalogReader
 
     private static async ValueTask<IReadOnlyList<SqlServerHashIndexMetadata>>
         ReadHashIndexesAsync(
-            SqlConnection connection,
+            CatalogReadContext context,
             ReaderBudget budget,
             SqlServerInspectionLimits limits,
             CancellationToken cancellationToken)
     {
         var indexes = new List<SqlServerHashIndexMetadata>();
-        await using SqlCommand command = Command(connection, HashIndexesQuery);
+        await using SqlCommand command = Command(context, HashIndexesQuery);
         await using SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
                 cancellationToken)
@@ -347,7 +347,7 @@ internal sealed partial class SqlServerCatalogReader
 
     private static async ValueTask<IReadOnlyList<SqlServerJsonIndexMetadata>>
         ReadJsonIndexesAsync(
-            SqlConnection connection,
+            CatalogReadContext context,
             SqlServerInstanceMetadata instance,
             ReaderBudget budget,
             SqlServerInspectionLimits limits,
@@ -357,7 +357,7 @@ internal sealed partial class SqlServerCatalogReader
             return Array.Empty<SqlServerJsonIndexMetadata>();
 
         var indexes = new List<SqlServerJsonIndexMetadata>();
-        await using SqlCommand command = Command(connection, JsonIndexesV17Query);
+        await using SqlCommand command = Command(context, JsonIndexesV17Query);
         await using SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
                 cancellationToken)
@@ -377,7 +377,7 @@ internal sealed partial class SqlServerCatalogReader
 
     private static async ValueTask<IReadOnlyList<SqlServerJsonIndexPathMetadata>>
         ReadJsonIndexPathsAsync(
-            SqlConnection connection,
+            CatalogReadContext context,
             SqlServerInstanceMetadata instance,
             ReaderBudget budget,
             SqlServerInspectionLimits limits,
@@ -388,7 +388,7 @@ internal sealed partial class SqlServerCatalogReader
 
         var paths = new List<SqlServerJsonIndexPathMetadata>();
         await using SqlCommand command = Command(
-            connection,
+            context,
             JsonIndexPathsV17Query);
         await using SqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,

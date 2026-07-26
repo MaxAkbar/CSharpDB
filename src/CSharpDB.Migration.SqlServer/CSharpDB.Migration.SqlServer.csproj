@@ -13,6 +13,7 @@
   <ItemGroup>
     <ProjectReference Include="..\CSharpDB.Migration\CSharpDB.Migration.csproj" />
     <ProjectReference Include="..\CSharpDB.Migration.CSharpDb.Ddl\CSharpDB.Migration.CSharpDb.Ddl.csproj" />
+    <ProjectReference Include="..\CSharpDB.Migration.Retained\CSharpDB.Migration.Retained.csproj" />
     <PackageReference Include="Microsoft.Data.SqlClient" Version="7.0.2" />
     <PackageReference Include="Microsoft.SqlServer.TransactSql.ScriptDom" Version="180.59.2" />
   </ItemGroup>

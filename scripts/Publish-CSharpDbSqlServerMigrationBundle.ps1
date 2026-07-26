@@ -205,6 +205,7 @@ $requiredFiles = @(
     (Join-Path $output 'LICENSE'),
     (Join-Path $workerOutput $workerExecutableName),
     (Join-Path $workerOutput 'CSharpDB.Migration.CSharpDb.Ddl.dll'),
+    (Join-Path $workerOutput 'CSharpDB.Migration.Retained.dll'),
     (Join-Path $workerOutput 'CSharpDB.Migration.SqlServer.dll'),
     (Join-Path $workerOutput 'Microsoft.Data.SqlClient.dll'),
     (Join-Path $workerOutput 'Microsoft.SqlServer.TransactSql.ScriptDom.dll'),

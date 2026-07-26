@@ -146,6 +146,62 @@ function Assert-CommandFailure {
     }
 }
 
+function Assert-CaptureCommandFailure {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Executable,
+
+        [Parameter(Mandatory = $true)]
+        [string] $ConnectionEnvironmentName,
+
+        [Parameter(Mandatory = $true)]
+        [string] $PackagePath,
+
+        [Parameter(Mandatory = $true)]
+        [string] $CatalogPath,
+
+        [Parameter(Mandatory = $true)]
+        [string] $ExpectedCode
+    )
+
+    $commandOutput = @(
+        & $Executable `
+            migrate inspect `
+            --source sqlserver `
+            --connection-env $ConnectionEnvironmentName `
+            --package $PackagePath `
+            --out $CatalogPath `
+            --table-timeout-seconds 1 2>&1
+    )
+    $exitCode = $LASTEXITCODE
+    $text = $commandOutput -join [Environment]::NewLine
+
+    if ($exitCode -ne 2) {
+        throw "Expected SQL Server retained capture to fail with exit code 2, but received $exitCode."
+    }
+    if (-not $text.Contains($ExpectedCode, [StringComparison]::Ordinal)) {
+        throw "SQL Server retained capture did not report the stable code $ExpectedCode."
+    }
+    if ((Test-Path -LiteralPath $PackagePath) -or
+        (Test-Path -LiteralPath $CatalogPath))
+    {
+        throw 'A failed SQL Server retained capture published an artifact.'
+    }
+
+    $parent = [System.IO.Path]::GetDirectoryName(
+        [System.IO.Path]::GetFullPath($PackagePath))
+    $orphaned = @(
+        Get-ChildItem `
+            -LiteralPath $parent `
+            -Directory `
+            -Filter '.csharpdb-sqlserver-capture-*' `
+            -Force
+    )
+    if ($orphaned.Count -gt 0) {
+        throw "A failed SQL Server retained capture left a private workspace: $($orphaned.FullName -join ', ')"
+    }
+}
+
 function Assert-DdlCommandFailure {
     param(
         [Parameter(Mandatory = $true)]
@@ -322,6 +378,7 @@ try {
     $requiredWorkerFiles = @(
         (Join-Path $bundleOutput 'LICENSE'),
         (Join-Path $workerOutput 'CSharpDB.Migration.CSharpDb.Ddl.dll'),
+        (Join-Path $workerOutput 'CSharpDB.Migration.Retained.dll'),
         (Join-Path $workerOutput 'CSharpDB.Migration.SqlServer.dll'),
         (Join-Path $workerOutput 'Microsoft.Data.SqlClient.dll'),
         (Join-Path $workerOutput 'Microsoft.SqlServer.TransactSql.ScriptDom.dll'),
@@ -370,6 +427,18 @@ try {
         -Executable (Join-Path $bundleOutput $cliName) `
         -ConnectionEnvironmentName $missingConnectionName `
         -OutputPath (Join-Path $workspace 'bundle-catalog.json') `
+        -ExpectedCode 'MIG-SQLSERVER-CLI-CONNECTION-001'
+    Assert-CaptureCommandFailure `
+        -Executable (Join-Path $baseOutput $cliName) `
+        -ConnectionEnvironmentName $missingConnectionName `
+        -PackagePath (Join-Path $workspace 'base-source.csdbsqlserver') `
+        -CatalogPath (Join-Path $workspace 'base-retained-catalog.json') `
+        -ExpectedCode 'MIG-SQLSERVER-CLI-ADAPTER-001'
+    Assert-CaptureCommandFailure `
+        -Executable (Join-Path $bundleOutput $cliName) `
+        -ConnectionEnvironmentName $missingConnectionName `
+        -PackagePath (Join-Path $workspace 'bundle-source.csdbsqlserver') `
+        -CatalogPath (Join-Path $workspace 'bundle-retained-catalog.json') `
         -ExpectedCode 'MIG-SQLSERVER-CLI-CONNECTION-001'
 
     $ddlPath = Join-Path $workspace 'bounded-ddl.sql'

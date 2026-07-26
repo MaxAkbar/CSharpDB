@@ -356,6 +356,290 @@ public sealed class SqlServerWorkerClientTests
     }
 
     [Fact]
+    public async Task Capture_ValidWorkerPackageIsVerifiedAndPublished()
+    {
+        CancellationToken ct =
+            TestContext.Current.CancellationToken;
+        using var installation =
+            new WorkerInstallation(installHarness: true);
+        using var mode = new EnvironmentScope(
+            ModeEnvironment,
+            "capture-connection-check");
+        using var connection = new EnvironmentScope(
+            ConnectionEnvironment,
+            "Server=worker.example;Password=inherited-capture-secret");
+        string directory = CreateTempDirectory();
+        string packagePath =
+            Path.Combine(directory, "snapshot.csdbsqlserver");
+        string catalogPath =
+            Path.Combine(directory, "catalog.json");
+        try
+        {
+            var output = new StringWriter();
+            var error = new StringWriter();
+
+            int exitCode = await RunCaptureAsync(
+                packagePath,
+                catalogPath,
+                output,
+                error,
+                ct);
+
+            Assert.Equal(
+                InspectorCommandRunner.ExitOk,
+                exitCode);
+            Assert.True(File.Exists(packagePath));
+            Assert.True(File.Exists(catalogPath));
+            Assert.Contains(
+                "manifestDigest=sha256:",
+                output.ToString(),
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                "inherited-capture-secret",
+                output.ToString(),
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                "inherited-capture-secret",
+                error.ToString(),
+                StringComparison.Ordinal);
+            Assert.True(
+                string.IsNullOrWhiteSpace(
+                    error.ToString()));
+            MigrationCatalog catalog =
+                MigrationArtifactSerializer
+                    .DeserializeCatalog(
+                        await File.ReadAllTextAsync(
+                            catalogPath,
+                            ct));
+            Assert.Equal(
+                MigrationSourceKind.SqlServer,
+                catalog.Source.Kind);
+            Assert.Empty(
+                Directory.EnumerateDirectories(
+                    directory,
+                    SqlServerWorkerClient
+                        .CaptureWorkspacePrefix +
+                    "*",
+                    SearchOption.TopDirectoryOnly));
+        }
+        finally
+        {
+            TryDeleteDirectory(directory);
+        }
+    }
+
+    [Theory]
+    [InlineData(
+        "capture-connection-error",
+        "MIG-SQLSERVER-CLI-CONNECTION-001")]
+    [InlineData(
+        "capture-error",
+        "MIG-SQLSERVER-CLI-CAPTURE-001")]
+    [InlineData(
+        "capture-internal-error",
+        "MIG-SQLSERVER-CLI-ADAPTER-001")]
+    [InlineData(
+        "capture-limit-error",
+        "MIG-SQLSERVER-CLI-CAPTURE-LIMIT-001")]
+    public async Task Capture_WorkerFailureIsSanitizedAndLeavesNoArtifacts(
+        string modeValue,
+        string expectedCode)
+    {
+        CancellationToken ct =
+            TestContext.Current.CancellationToken;
+        using var installation =
+            new WorkerInstallation(installHarness: true);
+        using var mode =
+            new EnvironmentScope(
+                ModeEnvironment,
+                modeValue);
+        string directory = CreateTempDirectory();
+        string packagePath =
+            Path.Combine(directory, "snapshot.csdbsqlserver");
+        string catalogPath =
+            Path.Combine(directory, "catalog.json");
+        try
+        {
+            var output = new StringWriter();
+            var error = new StringWriter();
+
+            int exitCode = await RunCaptureAsync(
+                packagePath,
+                catalogPath,
+                output,
+                error,
+                ct);
+
+            Assert.Equal(
+                InspectorCommandRunner.ExitError,
+                exitCode);
+            Assert.Contains(
+                expectedCode,
+                error.ToString(),
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                WorkerSecret,
+                error.ToString(),
+                StringComparison.Ordinal);
+            Assert.True(
+                string.IsNullOrWhiteSpace(
+                    output.ToString()));
+            Assert.False(File.Exists(packagePath));
+            Assert.False(File.Exists(catalogPath));
+            Assert.Empty(
+                Directory.EnumerateDirectories(
+                    directory,
+                    SqlServerWorkerClient
+                        .CaptureWorkspacePrefix +
+                    "*",
+                    SearchOption.TopDirectoryOnly));
+        }
+        finally
+        {
+            TryDeleteDirectory(directory);
+        }
+    }
+
+    [Theory]
+    [InlineData("capture-bad-header")]
+    [InlineData("capture-invalid-utf8")]
+    [InlineData("capture-tampered")]
+    [InlineData("capture-truncated")]
+    [InlineData("capture-stdout-overflow")]
+    [InlineData("capture-stderr-overflow")]
+    public async Task Capture_InvalidOrUnboundedWorkerResultFailsClosed(
+        string modeValue)
+    {
+        CancellationToken ct =
+            TestContext.Current.CancellationToken;
+        using var installation =
+            new WorkerInstallation(installHarness: true);
+        using var mode =
+            new EnvironmentScope(
+                ModeEnvironment,
+                modeValue);
+        string directory = CreateTempDirectory();
+        string packagePath =
+            Path.Combine(directory, "snapshot.csdbsqlserver");
+        string catalogPath =
+            Path.Combine(directory, "catalog.json");
+        try
+        {
+            var output = new StringWriter();
+            var error = new StringWriter();
+
+            int exitCode = await RunCaptureAsync(
+                packagePath,
+                catalogPath,
+                output,
+                error,
+                ct);
+
+            Assert.Equal(
+                InspectorCommandRunner.ExitError,
+                exitCode);
+            Assert.Contains(
+                "MIG-SQLSERVER-CLI-",
+                error.ToString(),
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                WorkerSecret,
+                error.ToString(),
+                StringComparison.Ordinal);
+            Assert.True(
+                string.IsNullOrWhiteSpace(
+                    output.ToString()));
+            Assert.False(File.Exists(packagePath));
+            Assert.False(File.Exists(catalogPath));
+            Assert.Empty(
+                Directory.EnumerateDirectories(
+                    directory,
+                    SqlServerWorkerClient
+                        .CaptureWorkspacePrefix +
+                    "*",
+                    SearchOption.TopDirectoryOnly));
+        }
+        finally
+        {
+            TryDeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public async Task Capture_CancellationKillsWorkerTreeAndCleansWorkspace()
+    {
+        using var installation =
+            new WorkerInstallation(installHarness: true);
+        using var mode = new EnvironmentScope(
+            ModeEnvironment,
+            "capture-hang-tree");
+        string directory = CreateTempDirectory();
+        string packagePath =
+            Path.Combine(directory, "snapshot.csdbsqlserver");
+        string catalogPath =
+            Path.Combine(directory, "catalog.json");
+        string pidPath =
+            Path.Combine(directory, "capture-pids.txt");
+        using var pidFile =
+            new EnvironmentScope(
+                PidFileEnvironment,
+                pidPath);
+        using var cancellation =
+            new CancellationTokenSource();
+        var output = new StringWriter();
+        var error = new StringWriter();
+        int[] processIds = [];
+
+        try
+        {
+            Task<int> run = RunCaptureAsync(
+                    packagePath,
+                    catalogPath,
+                    output,
+                    error,
+                    cancellation.Token)
+                .AsTask();
+            processIds = await WaitForProcessIdsAsync(
+                pidPath,
+                expectedCount: 2,
+                TestContext.Current
+                    .CancellationToken);
+
+            cancellation.Cancel();
+
+            await Assert.ThrowsAnyAsync<
+                OperationCanceledException>(
+                async () => await run);
+            await WaitForProcessesToExitAsync(
+                processIds,
+                TestContext.Current
+                    .CancellationToken);
+            Assert.False(File.Exists(packagePath));
+            Assert.False(File.Exists(catalogPath));
+            Assert.True(
+                string.IsNullOrWhiteSpace(
+                    output.ToString()));
+            Assert.True(
+                string.IsNullOrWhiteSpace(
+                    error.ToString()));
+            Assert.Empty(
+                Directory.EnumerateDirectories(
+                    directory,
+                    SqlServerWorkerClient
+                        .CaptureWorkspacePrefix +
+                    "*",
+                    SearchOption.TopDirectoryOnly));
+        }
+        finally
+        {
+            cancellation.Cancel();
+            foreach (int processId in processIds)
+                TryKill(processId);
+            TryDeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
     public async Task DdlCheck_MissingWorkerReturnsSanitizedAdapterFailure()
     {
         CancellationToken ct = TestContext.Current.CancellationToken;
@@ -866,6 +1150,29 @@ public sealed class SqlServerWorkerClientTests
                 "--source", "sqlserver",
                 "--connection-env", ConnectionEnvironment,
                 "--out", catalogPath,
+            ],
+            output,
+            error,
+            cancellationToken);
+
+    private static ValueTask<int> RunCaptureAsync(
+        string packagePath,
+        string catalogPath,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken) =>
+        MigrationCommandRunner.RunAsync(
+            [
+                "migrate", "inspect",
+                "--source", "sqlserver",
+                "--connection-env",
+                ConnectionEnvironment,
+                "--package", packagePath,
+                "--out", catalogPath,
+                "--max-source-bytes",
+                (1024 * 1024).ToString(
+                    System.Globalization
+                        .CultureInfo.InvariantCulture),
             ],
             output,
             error,

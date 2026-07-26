@@ -299,6 +299,57 @@ shipping claim.
 Sequence fingerprints retain only static definition facts and exclude volatile
 current, last-used, and exhaustion values.
 
+## Retained row capture
+
+`SqlServerRetainedCapture.CaptureAsync` creates a provider-neutral retained
+migration package from the deliberately narrow SQL Server subset that can be
+read and replayed deterministically. Capture uses one non-pooled connection
+with read-only application intent and one `SNAPSHOT` transaction for both the
+catalog inventory and every retained row. The source database must report
+`snapshot_isolation_state` as `ON`; capture otherwise fails closed. The
+content digest becomes the retained catalog fingerprint, and the versioned
+snapshot identity is `sqlserver-retained:` followed by that digest.
+
+Only ordinary disk-based tables whose complete projected column set excludes
+identity, defaulted, computed, rowversion, user-defined, XML, generated,
+encrypted, masked, sparse, hidden, FILESTREAM, and other special column shapes
+are retained. Supported scalar projections are bounded, lossless integers,
+booleans, precision-38 decimals, binary32/binary64 floating point with explicit
+`binaryWidth`, strict Unicode text, binary, GUID, date, time, datetime, and
+datetime-offset values. A non-null integer primary key is preferred for the
+full `ORDER BY`; a safe non-null integer unique constraint is the only
+fallback. Heaps and tables without such an ordering key are cataloged with
+`migrationDataAvailable=false` and a stable
+`migrationDataUnavailableReason`; they are never scanned unordered.
+The table inventory also records enabled row-level-security `FILTER`
+predicates and whether the caller has complete security-policy metadata
+visibility. A table with an enabled filter, or one for which that inventory
+cannot be proven complete, is cataloged as retained-data unavailable and is
+never scanned. The corresponding analyzer evidence and diagnostics remain in
+the retained catalog.
+
+Caller-selectable ceilings bound tables, columns, rows per table, total rows,
+scalar bytes, row bytes, and package bytes. Per-table query timeout defaults
+to 1,800 seconds and is bounded from 1 through 86,400 seconds; cancellation is
+the primary operator stop. The retained envelope requires a row-byte bound of
+at least 5 and a package-byte bound of at least 13. Positive configured bounds
+below those minima, and configured or fixed capture-limit failures, use
+`SqlServerRetainedCaptureLimitException`. Cleanup always attempts rollback,
+transaction disposal, and connection disposal; provider-only cleanup failures
+do not replace a completed publication or an earlier capture failure. Public
+error text never includes connection material, SQL text, identifiers, or
+source values.
+
+The retained catalog removes only the analyzer's schema-only
+`MIG-SQLSERVER-INVENTORY-PARTIAL-001` and
+`MIG-SQLSERVER-LIVE-QUALIFICATION-PENDING-001` diagnostics, preserves every
+other object and diagnostic, and adds one bound warning that live platform,
+authentication, least-privilege, and differential qualification is still
+deferred. Offline tests cover admissibility, ordering, identifier quoting,
+scalar canonicalization, limits, catalog transformation, source disposal,
+package verification, and replay. They do not constitute live SQL Server
+qualification.
+
 ## Dependencies
 
 The resolved worker package closure is inventoried in
