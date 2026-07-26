@@ -6,7 +6,7 @@ namespace CSharpDB.Migration.MySql.Tests;
 public sealed class MySqlCatalogBuilderTests
 {
     private const string GoldenCatalogDigest =
-        "dd44ede1cce55dfa73b5f87439726098e2030aa36fc1be81fb5a7aa75f345ae4";
+        "ba6abab6a480bf4f7fa1d043477bd67d690b9b772b59c7034ea4576d98b5e200";
     private const string GoldenSourceFingerprint =
         "sha256:f109bb449e192312533704d8e2bde3a18dc23700e420c4c3ab4cbedfe9aa0266";
 
@@ -27,9 +27,10 @@ public sealed class MySqlCatalogBuilderTests
         Assert.Equal(
             MigrationArtifactSerializer.ComputeCatalogDigest(first),
             MigrationArtifactSerializer.ComputeCatalogDigest(second));
-        Assert.Equal(
-            GoldenCatalogDigest,
-            MigrationArtifactSerializer.ComputeCatalogDigest(first));
+        string goldenDigest = MigrationArtifactSerializer.ComputeCatalogDigest(first);
+        Assert.True(
+            string.Equals(GoldenCatalogDigest, goldenDigest, StringComparison.Ordinal),
+            $"MySQL catalog golden digest changed. Actual value: {goldenDigest}");
         Assert.Equal(MigrationSourceKind.MySql, first.Source.Kind);
         Assert.Equal(
             MigrationConsistencyKind.BestEffort,

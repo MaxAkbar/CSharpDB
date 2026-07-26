@@ -248,10 +248,12 @@ public sealed class CSharpDbValidationActivationTests
                 cancellationToken: Ct);
         await using IValidationSnapshot snapshot = await reopened.OpenValidationSnapshotAsync(Ct);
 
-        Assert.Equal(
+        string expectedIdentity =
             $"staged-target:{GoldenTargetIdentity}:awaiting-validation:outcomes:" +
-            "bb1406e8d43cd98bd50413955fc3266bb721ddd1d1fd2e11b01c928b2959892f",
-            snapshot.SnapshotIdentity);
+            "f9bc8debd0435a03472236172bde3d45200cf0fc92f1df9c357e289367b4ab35";
+        Assert.True(
+            string.Equals(expectedIdentity, snapshot.SnapshotIdentity, StringComparison.Ordinal),
+            $"Validation snapshot golden identity changed. Actual value: {snapshot.SnapshotIdentity}");
     }
 
     [Fact]

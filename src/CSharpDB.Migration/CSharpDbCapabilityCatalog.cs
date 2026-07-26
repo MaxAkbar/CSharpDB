@@ -102,10 +102,10 @@ public sealed record CSharpDbCapabilityCatalog
 
 public static class CSharpDbCapabilityCatalogLoader
 {
-    public const string CurrentTargetVersion = "4.2.0";
+    public const string CurrentTargetVersion = "4.3.0";
     public const string Format = "csharpdb-target-capabilities/v1";
 
-    private const string ResourceName = "CSharpDB.Migration.Capabilities.csharpdb-4.2.0.json";
+    private const string ResourceName = "CSharpDB.Migration.Capabilities.csharpdb-4.3.0.json";
 
     private static readonly JsonSerializerOptions s_options = CreateOptions();
     private static readonly Lazy<CSharpDbCapabilityCatalog> s_current = new(LoadCurrent);

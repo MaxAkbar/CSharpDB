@@ -704,7 +704,7 @@ public sealed class CsvSchemaInfererTests
         }
     }
 
-    private const string CurrentVersion = "4.2.0";
+    private const string CurrentVersion = "4.3.0";
 
     private static CsvColumnSchemaOverride Override(
         int index,

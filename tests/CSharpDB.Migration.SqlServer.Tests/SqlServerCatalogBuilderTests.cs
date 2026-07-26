@@ -6,7 +6,7 @@ namespace CSharpDB.Migration.SqlServer.Tests;
 public sealed partial class SqlServerCatalogBuilderTests
 {
     private const string GoldenCatalogDigest =
-        "79185b741a1211e2ec5b997339f5093385343825a1e1e765b3278205fbfd1bb5";
+        "44d722df4b7e4ae2002a9377237e69a11b4f5013d26d0eabe347244378d5db2c";
     private const string GoldenSourceFingerprint =
         "sha256:e1e941fd00e4b3bb125dd0763342e2dda62783e09629d7c593ff06c82f9107ae";
 
@@ -28,7 +28,9 @@ public sealed partial class SqlServerCatalogBuilderTests
             MigrationArtifactSerializer.ComputeCatalogDigest(first),
             MigrationArtifactSerializer.ComputeCatalogDigest(second));
         string goldenDigest = MigrationArtifactSerializer.ComputeCatalogDigest(first);
-        Assert.Equal(GoldenCatalogDigest, goldenDigest);
+        Assert.True(
+            string.Equals(GoldenCatalogDigest, goldenDigest, StringComparison.Ordinal),
+            $"SQL Server catalog golden digest changed. Actual value: {goldenDigest}");
         Assert.Equal(MigrationSourceKind.SqlServer, first.Source.Kind);
         Assert.Equal(MigrationConsistencyKind.BestEffort, first.Source.Consistency.Kind);
         Assert.Equal("16.0.4175.1", first.Source.SourceVersion);

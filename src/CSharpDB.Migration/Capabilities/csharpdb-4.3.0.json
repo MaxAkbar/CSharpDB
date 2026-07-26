@@ -1,6 +1,6 @@
 {
   "format": "csharpdb-target-capabilities/v1",
-  "targetCSharpDbVersion": "4.2.0",
+  "targetCSharpDbVersion": "4.3.0",
   "surface": "local-typed-engine",
   "maxIdentifierLength": 128,
   "identifiersCaseInsensitive": true,

@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text.Json;
 using CSharpDB.Primitives;
 
@@ -10,7 +11,7 @@ public sealed class MigrationPlannerTests
     {
         CSharpDbCapabilityCatalog capabilities = CSharpDbCapabilityCatalogLoader.LoadEmbedded();
 
-        Assert.Equal("4.2.0", capabilities.TargetCSharpDbVersion);
+        Assert.Equal("4.3.0", capabilities.TargetCSharpDbVersion);
         Assert.Equal("local-typed-engine", capabilities.Surface);
         Assert.Equal(SqlIdentifierRules.MaxLength, capabilities.MaxIdentifierLength);
         Assert.Equal(64, capabilities.Digest.Length);
@@ -25,6 +26,21 @@ public sealed class MigrationPlannerTests
         Assert.Equal(
             MigrationCompatibilityStatus.Conditional,
             capabilities.GetObjectStatus(MigrationObjectKind.Trigger));
+    }
+
+    [Fact]
+    public void EmbeddedCapabilities_AreBoundToThe430ReleaseAssembliesAndResource()
+    {
+        const string expectedVersion = "4.3.0";
+        Assembly migrationAssembly = typeof(CSharpDbCapabilityCatalogLoader).Assembly;
+        Assembly primitivesAssembly = typeof(DbType).Assembly;
+
+        Assert.Equal(expectedVersion, CSharpDbCapabilityCatalogLoader.CurrentTargetVersion);
+        Assert.Equal(expectedVersion, InformationalVersion(migrationAssembly));
+        Assert.Equal(expectedVersion, InformationalVersion(primitivesAssembly));
+        Assert.Contains(
+            $"CSharpDB.Migration.Capabilities.csharpdb-{expectedVersion}.json",
+            migrationAssembly.GetManifestResourceNames());
     }
 
     [Fact]
@@ -377,15 +393,29 @@ public sealed class MigrationPlannerTests
                 "synthetic-planning-v1.golden.json")));
         JsonElement root = golden.RootElement;
 
-        Assert.Equal(
-            root.GetProperty("catalogDigest").GetString(),
-            ReadArtifactDigest(MigrationArtifactSerializer.SerializeCatalog(catalog)));
-        Assert.Equal(
-            root.GetProperty("preservePlanDigest").GetString(),
-            ReadArtifactDigest(MigrationArtifactSerializer.SerializePlan(preserve, catalog)));
-        Assert.Equal(
-            root.GetProperty("queryablePlanDigest").GetString(),
-            ReadArtifactDigest(MigrationArtifactSerializer.SerializePlan(queryable, catalog)));
+        string catalogDigest =
+            ReadArtifactDigest(MigrationArtifactSerializer.SerializeCatalog(catalog));
+        string preservePlanDigest =
+            ReadArtifactDigest(MigrationArtifactSerializer.SerializePlan(preserve, catalog));
+        string queryablePlanDigest =
+            ReadArtifactDigest(MigrationArtifactSerializer.SerializePlan(queryable, catalog));
+
+        Assert.True(
+            string.Equals(
+                root.GetProperty("catalogDigest").GetString(),
+                catalogDigest,
+                StringComparison.Ordinal) &&
+            string.Equals(
+                root.GetProperty("preservePlanDigest").GetString(),
+                preservePlanDigest,
+                StringComparison.Ordinal) &&
+            string.Equals(
+                root.GetProperty("queryablePlanDigest").GetString(),
+                queryablePlanDigest,
+                StringComparison.Ordinal),
+            "Synthetic planning golden digests changed. Actual values: " +
+            $"catalog={catalogDigest}, preserve={preservePlanDigest}, " +
+            $"queryable={queryablePlanDigest}.");
     }
 
     [Fact]
@@ -516,6 +546,12 @@ public sealed class MigrationPlannerTests
                 .Select(item => item.SourceObjectId == replacement.SourceObjectId ? replacement : item)
                 .ToArray(),
         };
+
+    private static string InformationalVersion(Assembly assembly) =>
+        assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()!
+            .InformationalVersion
+            .Split('+', 2)[0];
 
     private static string ReadArtifactDigest(string json)
     {

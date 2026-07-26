@@ -11,6 +11,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\CSharpDB.Migration.Files\CSharpDB.Migration.Files.csproj" />
+    <ProjectReference Include="..\..\src\CSharpDB.Migration.CSharpDb\CSharpDB.Migration.CSharpDb.csproj" />
+    <ProjectReference Include="..\..\src\CSharpDB.Migration.CSharpDb.Ddl\CSharpDB.Migration.CSharpDb.Ddl.csproj" />
     <ProjectReference Include="..\CSharpDB.Migration.CrashHarness\CSharpDB.Migration.CrashHarness.csproj"
                       ReferenceOutputAssembly="false" />
   </ItemGroup>

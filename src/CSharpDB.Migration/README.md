@@ -12,7 +12,7 @@ part of the Phase 2 staged-apply slice, and the Phase 3 validation core:
 - source-neutral catalog objects with explicit containment, set-like
   dependencies, ordered role-qualified schema members, and safe source identity;
 - stable compatibility, evidence, diagnostic, and mapping states;
-- an embedded, digested CSharpDB 4.2.0 capability catalog tied to the installed
+- an embedded, digested CSharpDB 4.3.0 capability catalog tied to the installed
   Migration and Primitives binaries;
 - target plans bound to the source-catalog digest, capability digest, naming
   algorithm, and versioned mapping policy;
