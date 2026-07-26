@@ -46,7 +46,8 @@ internal static class MySqlTestSnapshot
         IEnumerable<MySqlViewColumnMetadata>? viewColumns = null,
         IEnumerable<MySqlTriggerMetadata>? triggers = null,
         IEnumerable<MySqlRoutineMetadata>? routines = null,
-        IEnumerable<MySqlRoutineParameterMetadata>? routineParameters = null)
+        IEnumerable<MySqlRoutineParameterMetadata>? routineParameters = null,
+        MySqlMetadataVisibilityProof? metadataVisibilityProof = null)
     {
         IReadOnlyList<MySqlTableMetadata> resolvedTables =
             tables?.ToArray() ?? Tables();
@@ -80,8 +81,27 @@ internal static class MySqlTestSnapshot
             viewColumns ?? [],
             triggers ?? [],
             routines ?? [],
-            routineParameters ?? []);
+            routineParameters ?? [],
+            metadataVisibilityProof);
     }
+
+    public static MySqlMetadataVisibilityProof
+        MetadataVisibilityProof(
+        bool select = true,
+        bool showView = true,
+        bool trigger = true,
+        bool execute = true,
+        bool attempted = true,
+        bool accountFormatSupported = true,
+        bool granteeMatched = true) =>
+        new(
+            attempted,
+            accountFormatSupported,
+            granteeMatched,
+            select,
+            showView,
+            trigger,
+            execute);
 
     public static MySqlServerMetadata Server() =>
         new(

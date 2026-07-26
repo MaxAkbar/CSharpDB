@@ -20,10 +20,67 @@ if (($temporaryParentItem.Attributes -band
 {
     throw "The isolation workspace parent cannot be a reparse point: $temporaryParent"
 }
+
+function Set-PrivateDirectory {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path
+    )
+
+    if ($IsWindows) {
+        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent(
+            [System.Security.Principal.TokenAccessLevels]::Query)
+        try {
+            $owner = $identity.User
+            if ($null -eq $owner) {
+                throw 'The current Windows identity does not have a SID.'
+            }
+            $security = [System.Security.AccessControl.DirectorySecurity]::new()
+            $security.SetOwner($owner)
+            $security.SetAccessRuleProtection($true, $false)
+            $trusted = @(
+                $owner,
+                [System.Security.Principal.SecurityIdentifier]::new(
+                    [System.Security.Principal.WellKnownSidType]::LocalSystemSid,
+                    $null),
+                [System.Security.Principal.SecurityIdentifier]::new(
+                    [System.Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid,
+                    $null)
+            )
+            foreach ($sid in $trusted) {
+                $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+                    $sid,
+                    [System.Security.AccessControl.FileSystemRights]::FullControl,
+                    [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+                        [System.Security.AccessControl.InheritanceFlags]::ObjectInherit,
+                    [System.Security.AccessControl.PropagationFlags]::None,
+                    [System.Security.AccessControl.AccessControlType]::Allow)
+                $security.AddAccessRule($rule)
+            }
+            [System.IO.FileSystemAclExtensions]::SetAccessControl(
+                [System.IO.DirectoryInfo]::new($Path),
+                $security)
+        }
+        finally {
+            $identity.Dispose()
+        }
+        return
+    }
+
+    $privateMode =
+        [System.IO.UnixFileMode]::UserRead -bor
+        [System.IO.UnixFileMode]::UserWrite -bor
+        [System.IO.UnixFileMode]::UserExecute
+    [System.IO.File]::SetUnixFileMode(
+        $Path,
+        [System.IO.UnixFileMode] $privateMode)
+}
+
 $workspace = Join-Path `
     $temporaryParent `
     ("sqlserver-migration-isolation-" + [Guid]::NewGuid().ToString('N'))
 [System.IO.Directory]::CreateDirectory($workspace) | Out-Null
+Set-PrivateDirectory -Path $workspace
 
 function Invoke-DotNetPublish {
     param(

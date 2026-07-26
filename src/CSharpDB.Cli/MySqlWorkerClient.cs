@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using CSharpDB.Migration;
 using Microsoft.Win32.SafeHandles;
 
@@ -43,20 +44,352 @@ internal sealed record MySqlWorkerResult
     }
 }
 
+internal enum MySqlCaptureWorkerStatus
+{
+    Success,
+    Missing,
+    Incompatible,
+    ConnectionUnavailable,
+    LimitExceeded,
+    CaptureFailed,
+}
+
+internal sealed record MySqlCaptureReceipt
+{
+    internal const string CurrentFormat =
+        "csharpdb-mysql-capture-result/v1";
+
+    public required string Format { get; init; }
+
+    public required string PackageDigest { get; init; }
+
+    public required string CatalogDigest { get; init; }
+
+    public required string SnapshotIdentity { get; init; }
+
+    public long PackageBytes { get; init; }
+
+    public int TableCount { get; init; }
+
+    public long RowCount { get; init; }
+}
+
+internal sealed record MySqlCaptureWorkerResult
+{
+    internal required MySqlCaptureWorkerStatus Status { get; init; }
+
+    internal MySqlCaptureReceipt? Receipt { get; init; }
+
+    internal static MySqlCaptureWorkerResult Success(
+        MySqlCaptureReceipt receipt)
+    {
+        ArgumentNullException.ThrowIfNull(receipt);
+        return new MySqlCaptureWorkerResult
+        {
+            Status = MySqlCaptureWorkerStatus.Success,
+            Receipt = receipt,
+        };
+    }
+
+    internal static MySqlCaptureWorkerResult Failure(
+        MySqlCaptureWorkerStatus status)
+    {
+        if (status == MySqlCaptureWorkerStatus.Success)
+            throw new ArgumentOutOfRangeException(nameof(status));
+
+        return new MySqlCaptureWorkerResult { Status = status };
+    }
+}
+
 internal static class MySqlWorkerClient
 {
     internal const string ProtocolV1 = "csharpdb-mysql-worker/v1";
+    internal const string CaptureProtocolV1 =
+        "csharpdb-mysql-capture-worker/v1";
+    internal const string CaptureOutputFileName =
+        "capture.csdbmysql";
+    internal const string CaptureWorkspacePrefix =
+        ".csharpdb-mysql-capture-";
     internal const long MaxCatalogBytes = 64L * 1024 * 1024;
+    internal const long MaxCaptureResultBytes = 64L * 1024;
+    internal const long HardMaxCapturePackageBytes =
+        256L * 1024 * 1024 * 1024;
+    internal const int DefaultCaptureTableTimeoutSeconds =
+        1_800;
+    internal const int MaxCaptureTableTimeoutSeconds =
+        86_400;
     internal const long MaxStderrBytes = 64L * 1024;
+    private const string CaptureSnapshotIdentityPrefix =
+        "mysql-retained:";
 
     private const int ExitIncompatible = 10;
     private const int ExitConnectionUnavailable = 11;
     private const int ExitInspectionFailed = 12;
     private const int ExitInternalFailure = 13;
+    private const int ExitLimitExceeded = 14;
     private static readonly byte[] HeaderBytes =
         Encoding.ASCII.GetBytes(ProtocolV1 + "\n");
+    private static readonly byte[] CaptureHeaderBytes =
+        Encoding.ASCII.GetBytes(CaptureProtocolV1 + "\n");
     private static readonly UTF8Encoding StrictUtf8 =
         new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+    private static readonly JsonSerializerOptions CaptureJsonOptions =
+        CreateCaptureJsonOptions();
+
+    internal static async ValueTask<MySqlCaptureWorkerResult> CaptureAsync(
+        string connectionEnvironmentVariableName,
+        string targetCSharpDbVersion,
+        string temporaryOutputPath,
+        long maxPackageBytes,
+        int tableTimeoutSeconds,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(
+            connectionEnvironmentVariableName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(
+            targetCSharpDbVersion);
+        ArgumentException.ThrowIfNullOrWhiteSpace(
+            temporaryOutputPath);
+        if (maxPackageBytes <= 0 ||
+            maxPackageBytes >
+                HardMaxCapturePackageBytes)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(maxPackageBytes));
+        }
+        if (tableTimeoutSeconds <= 0 ||
+            tableTimeoutSeconds >
+                MaxCaptureTableTimeoutSeconds)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(tableTimeoutSeconds));
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+
+        string fullOutputPath =
+            Path.GetFullPath(temporaryOutputPath);
+        if (!string.Equals(
+                Path.GetFileName(fullOutputPath),
+                CaptureOutputFileName,
+                StringComparison.Ordinal) ||
+            File.Exists(fullOutputPath) ||
+            Directory.Exists(fullOutputPath))
+        {
+            return MySqlCaptureWorkerResult.Failure(
+                MySqlCaptureWorkerStatus.Incompatible);
+        }
+
+        string? captureDirectory =
+            Path.GetDirectoryName(fullOutputPath);
+        if (string.IsNullOrEmpty(captureDirectory) ||
+            !Directory.Exists(captureDirectory) ||
+            !IsCaptureWorkspaceName(
+                Path.GetFileName(
+                    captureDirectory)))
+        {
+            return MySqlCaptureWorkerResult.Failure(
+                MySqlCaptureWorkerStatus.Incompatible);
+        }
+
+        string workerDirectory = Path.Combine(
+            AppContext.BaseDirectory,
+            "adapters",
+            "mysql");
+        string workerPath = Path.Combine(
+            workerDirectory,
+            OperatingSystem.IsWindows()
+                ? "csharpdb-migration-mysql-worker.exe"
+                : "csharpdb-migration-mysql-worker");
+        if (!File.Exists(workerPath))
+        {
+            return MySqlCaptureWorkerResult.Failure(
+                MySqlCaptureWorkerStatus.Missing);
+        }
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = workerPath,
+            WorkingDirectory = workerDirectory,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        startInfo.ArgumentList.Add("--protocol");
+        startInfo.ArgumentList.Add(CaptureProtocolV1);
+        startInfo.ArgumentList.Add("--connection-env");
+        startInfo.ArgumentList.Add(
+            connectionEnvironmentVariableName);
+        startInfo.ArgumentList.Add("--target-version");
+        startInfo.ArgumentList.Add(
+            targetCSharpDbVersion);
+        startInfo.ArgumentList.Add("--output");
+        startInfo.ArgumentList.Add(fullOutputPath);
+        startInfo.ArgumentList.Add(
+            "--max-source-bytes");
+        startInfo.ArgumentList.Add(
+            maxPackageBytes.ToString(
+                System.Globalization.CultureInfo
+                    .InvariantCulture));
+        startInfo.ArgumentList.Add(
+            "--table-timeout-seconds");
+        startInfo.ArgumentList.Add(
+            tableTimeoutSeconds.ToString(
+                System.Globalization.CultureInfo
+                    .InvariantCulture));
+
+        using var process =
+            new Process { StartInfo = startInfo };
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!process.Start())
+            {
+                return MySqlCaptureWorkerResult.Failure(
+                    MySqlCaptureWorkerStatus.Missing);
+            }
+        }
+        catch (Exception exception) when (
+            exception is Win32Exception or
+                IOException or
+                InvalidOperationException or
+                UnauthorizedAccessException)
+        {
+            return MySqlCaptureWorkerResult.Failure(
+                MySqlCaptureWorkerStatus.Missing);
+        }
+
+        WorkerProcessContainment containment;
+        try
+        {
+            containment =
+                WorkerProcessContainment.Attach(process);
+        }
+        catch (Exception exception) when (
+            exception is Win32Exception or
+                IOException or
+                InvalidOperationException or
+                NotSupportedException)
+        {
+            if (!await KillAndWaitAsync(process)
+                    .ConfigureAwait(false))
+            {
+                throw new WorkerTerminationException();
+            }
+            return MySqlCaptureWorkerResult.Failure(
+                MySqlCaptureWorkerStatus.Incompatible);
+        }
+        using WorkerProcessContainment
+            containmentScope = containment;
+
+        byte[] stdout;
+        using var processCancellation =
+            CancellationTokenSource
+                .CreateLinkedTokenSource(
+                    cancellationToken);
+        Task<byte[]> stdoutTask =
+            ReadBoundedAsync(
+                process.StandardOutput.BaseStream,
+                checked(
+                    MaxCaptureResultBytes +
+                    CaptureHeaderBytes.LongLength),
+                processCancellation.Token);
+        Task stderrTask = DrainBoundedAsync(
+            process.StandardError.BaseStream,
+            MaxStderrBytes,
+            processCancellation.Token);
+        Task exitTask =
+            process.WaitForExitAsync(
+                processCancellation.Token);
+
+        try
+        {
+            await ObserveAllAsync(
+                    [stdoutTask, stderrTask, exitTask])
+                .ConfigureAwait(false);
+            stdout = await stdoutTask
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (
+            cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await TerminateAsync(
+                        process,
+                        containmentScope,
+                        processCancellation,
+                        stdoutTask,
+                        stderrTask,
+                        exitTask)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                ClearCompletedOutput(stdoutTask);
+            }
+            throw;
+        }
+        catch (Exception exception) when (
+            exception is WorkerOutputLimitException or
+                IOException or
+                InvalidOperationException)
+        {
+            try
+            {
+                await TerminateAsync(
+                        process,
+                        containmentScope,
+                        processCancellation,
+                        stdoutTask,
+                        stderrTask,
+                        exitTask)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                ClearCompletedOutput(stdoutTask);
+            }
+            return MySqlCaptureWorkerResult.Failure(
+                MySqlCaptureWorkerStatus.Incompatible);
+        }
+
+        try
+        {
+            return process.ExitCode switch
+            {
+                0 => ParseCaptureSuccess(
+                    stdout,
+                    fullOutputPath,
+                    maxPackageBytes),
+                ExitConnectionUnavailable =>
+                    MySqlCaptureWorkerResult.Failure(
+                        MySqlCaptureWorkerStatus
+                            .ConnectionUnavailable),
+                ExitInspectionFailed =>
+                    MySqlCaptureWorkerResult.Failure(
+                        MySqlCaptureWorkerStatus
+                            .CaptureFailed),
+                ExitLimitExceeded =>
+                    MySqlCaptureWorkerResult.Failure(
+                        MySqlCaptureWorkerStatus
+                            .LimitExceeded),
+                ExitIncompatible or
+                    ExitInternalFailure =>
+                    MySqlCaptureWorkerResult.Failure(
+                        MySqlCaptureWorkerStatus
+                            .Incompatible),
+                _ => MySqlCaptureWorkerResult.Failure(
+                    MySqlCaptureWorkerStatus
+                        .Incompatible),
+            };
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(
+                stdout);
+        }
+    }
 
     internal static async ValueTask<MySqlWorkerResult> InspectAsync(
         string connectionEnvironmentVariableName,
@@ -220,6 +553,96 @@ internal static class MySqlWorkerClient
         }
     }
 
+    private static MySqlCaptureWorkerResult
+        ParseCaptureSuccess(
+        byte[] stdout,
+        string temporaryOutputPath,
+        long maxPackageBytes)
+    {
+        if (stdout.Length <=
+                CaptureHeaderBytes.Length ||
+            !stdout
+                .AsSpan(
+                    0,
+                    CaptureHeaderBytes.Length)
+                .SequenceEqual(
+                    CaptureHeaderBytes))
+        {
+            return MySqlCaptureWorkerResult.Failure(
+                MySqlCaptureWorkerStatus.Incompatible);
+        }
+
+        try
+        {
+            string json = StrictUtf8.GetString(
+                stdout,
+                CaptureHeaderBytes.Length,
+                stdout.Length -
+                    CaptureHeaderBytes.Length);
+            MySqlCaptureReceipt? receipt =
+                JsonSerializer.Deserialize<
+                    MySqlCaptureReceipt>(
+                    json,
+                    CaptureJsonOptions);
+            if (receipt is null ||
+                !string.Equals(
+                    receipt.Format,
+                    MySqlCaptureReceipt
+                        .CurrentFormat,
+                    StringComparison.Ordinal) ||
+                !IsCanonicalPackageDigest(
+                    receipt.PackageDigest) ||
+                !IsLowerSha256(
+                    receipt.CatalogDigest) ||
+                !IsCaptureSnapshotIdentity(
+                    receipt.SnapshotIdentity) ||
+                receipt.PackageBytes <= 0 ||
+                receipt.PackageBytes >
+                    maxPackageBytes ||
+                receipt.TableCount < 0 ||
+                receipt.RowCount < 0)
+            {
+                return MySqlCaptureWorkerResult
+                    .Failure(
+                        MySqlCaptureWorkerStatus
+                            .Incompatible);
+            }
+
+            var package = new FileInfo(
+                temporaryOutputPath);
+            package.Refresh();
+            if (!package.Exists ||
+                package.Length !=
+                    receipt.PackageBytes ||
+                (package.Attributes &
+                    (FileAttributes.Directory |
+                     FileAttributes.ReparsePoint |
+                     FileAttributes.Device)) != 0)
+            {
+                return MySqlCaptureWorkerResult
+                    .Failure(
+                        MySqlCaptureWorkerStatus
+                            .Incompatible);
+            }
+
+            return MySqlCaptureWorkerResult.Success(
+                receipt);
+        }
+        catch (Exception exception) when (
+            exception is DecoderFallbackException or
+                JsonException or
+                IOException or
+                UnauthorizedAccessException or
+                ArgumentException or
+                FormatException or
+                OverflowException or
+                NotSupportedException)
+        {
+            return MySqlCaptureWorkerResult.Failure(
+                MySqlCaptureWorkerStatus.Incompatible);
+        }
+    }
+
     private static MySqlWorkerResult ParseSuccess(
         byte[] stdout,
         string targetCSharpDbVersion)
@@ -260,6 +683,60 @@ internal static class MySqlWorkerClient
                 MySqlWorkerStatus.Incompatible);
         }
     }
+
+    private static bool IsCanonicalPackageDigest(
+        string? value) =>
+        value is { Length: 71 } &&
+        value.StartsWith(
+            "sha256:",
+            StringComparison.Ordinal) &&
+        IsLowerSha256(value[7..]);
+
+    private static bool IsCaptureSnapshotIdentity(
+        string? value) =>
+        value is not null &&
+        value.StartsWith(
+            CaptureSnapshotIdentityPrefix,
+            StringComparison.Ordinal) &&
+        IsCanonicalPackageDigest(
+            value[
+                CaptureSnapshotIdentityPrefix
+                    .Length..]);
+
+    private static bool IsCaptureWorkspaceName(
+        string name)
+    {
+        if (!name.StartsWith(
+                CaptureWorkspacePrefix,
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+        string suffix =
+            name[CaptureWorkspacePrefix.Length..];
+        return suffix.Length == 32 &&
+            suffix.All(static character =>
+                character is
+                    (>= '0' and <= '9') or
+                    (>= 'a' and <= 'f'));
+    }
+
+    private static bool IsLowerSha256(
+        string? value) =>
+        value is { Length: 64 } &&
+        value.All(static character =>
+            character is
+                (>= '0' and <= '9') or
+                (>= 'a' and <= 'f'));
+
+    private static JsonSerializerOptions
+        CreateCaptureJsonOptions() =>
+        new(JsonSerializerDefaults.Web)
+        {
+            PropertyNameCaseInsensitive = false,
+            UnmappedMemberHandling =
+                JsonUnmappedMemberHandling.Disallow,
+        };
 
     private static async Task ObserveAllAsync(IReadOnlyList<Task> tasks)
     {
@@ -420,6 +897,9 @@ internal static class MySqlWorkerClient
     private sealed class WorkerProcessContainment : IDisposable
     {
         private const uint KillOnJobClose = 0x00002000;
+        private const uint ProcessMemoryLimit = 0x00000100;
+        private const ulong WorkerMemoryLimitBytes =
+            512UL * 1024UL * 1024UL;
         private SafeFileHandle? job;
 
         private WorkerProcessContainment(SafeFileHandle? job)
@@ -444,8 +924,13 @@ internal static class MySqlWorkerClient
                 {
                     BasicLimitInformation = new JobObjectBasicLimitInformation
                     {
-                        LimitFlags = KillOnJobClose,
+                        LimitFlags =
+                            KillOnJobClose |
+                            ProcessMemoryLimit,
                     },
+                    ProcessMemoryLimit =
+                        new UIntPtr(
+                            WorkerMemoryLimitBytes),
                 };
                 if (!SetInformationJobObject(
                         job,

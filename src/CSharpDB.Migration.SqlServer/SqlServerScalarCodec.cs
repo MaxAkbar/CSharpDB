@@ -387,7 +387,9 @@ internal static class SqlServerScalarCodec
             throw new SqlServerMigrationException(
                 "SQL Server returned a nonfinite binary32 value.");
         }
-        return number.ToString("R", CultureInfo.InvariantCulture);
+        return ((double)number).ToString(
+            "R",
+            CultureInfo.InvariantCulture);
     }
 
     private static string Binary64Text(object value)

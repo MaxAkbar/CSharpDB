@@ -164,6 +164,7 @@ $requiredFiles = @(
     (Join-Path $output $(if ($targetIsWindows) { 'csharpdb.exe' } else { 'csharpdb' })),
     (Join-Path $output 'LICENSE'),
     (Join-Path $workerOutput $workerExecutableName),
+    (Join-Path $workerOutput 'CSharpDB.Migration.Retained.dll'),
     (Join-Path $workerOutput 'CSharpDB.Migration.MySql.dll'),
     (Join-Path $workerOutput 'MySqlConnector.dll'),
     (Join-Path $workerOutput 'Microsoft.Extensions.DependencyInjection.Abstractions.dll'),

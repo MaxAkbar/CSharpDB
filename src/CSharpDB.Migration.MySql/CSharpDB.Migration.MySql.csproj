@@ -12,6 +12,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\CSharpDB.Migration\CSharpDB.Migration.csproj" />
+    <ProjectReference Include="..\CSharpDB.Migration.Retained\CSharpDB.Migration.Retained.csproj" />
     <PackageReference Include="MySqlConnector" Version="2.6.1" />
   </ItemGroup>
 

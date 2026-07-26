@@ -7,11 +7,12 @@
     <Nullable>enable</Nullable>
     <AssemblyName>csharpdb-migration-mysql-worker</AssemblyName>
     <RootNamespace>CSharpDB.Migration.MySql.Worker</RootNamespace>
-    <Description>Isolated MySQL schema inspection worker for CSharpDB migration tooling.</Description>
+    <Description>Isolated MySQL schema inspection and retained-capture worker for CSharpDB migration tooling.</Description>
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\CSharpDB.Migration.Retained\CSharpDB.Migration.Retained.csproj" />
     <ProjectReference Include="..\CSharpDB.Migration.MySql\CSharpDB.Migration.MySql.csproj" />
   </ItemGroup>
 

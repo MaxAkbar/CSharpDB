@@ -66,6 +66,22 @@ public sealed class SqlServerScalarCodecTests
             "1.25",
             binary32.Value.CanonicalText);
 
+        SqlServerProjectedScalar widenedBinary32 =
+            SqlServerScalarCodec.Project(
+                SqlServerScalarCodecKind.Binary32,
+                0.1f,
+                1024);
+        Assert.Equal(
+            ((double)0.1f).ToString(
+                "R",
+                System.Globalization.CultureInfo.InvariantCulture),
+            widenedBinary32.Value.CanonicalText);
+        Assert.NotEqual(
+            0.1f.ToString(
+                "R",
+                System.Globalization.CultureInfo.InvariantCulture),
+            widenedBinary32.Value.CanonicalText);
+
         byte[] bytes = [0x00, 0xff, 0x2a];
         SqlServerProjectedScalar binary =
             SqlServerScalarCodec.Project(

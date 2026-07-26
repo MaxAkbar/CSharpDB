@@ -1312,7 +1312,9 @@ public sealed class SqlServerWorkerClientTests
         string directory = Path.Combine(
             Path.GetTempPath(),
             $"csharpdb_sqlserver_worker_{Guid.NewGuid():N}");
-        Directory.CreateDirectory(directory);
+        MigrationCommandRunner
+            .SqlServerCaptureWorkspace
+            .CreatePrivateDirectoryExclusive(directory);
         return directory;
     }
 

@@ -1,22 +1,23 @@
 # CSharpDB MySQL migration analyzer
 
-This optional, non-packable project is the bounded MySQL schema-readiness
-analyzer for the CSharpDB migration tooling. Phase 7B.4 is schema-only: it
-opens one selected database, reads fixed server-variable and
-`INFORMATION_SCHEMA` projections, retains bounded `SHOW CREATE TABLE`
-evidence, and builds the source snapshot used by the migration planner. The
-generic CLI does not reference this project; the non-packable MySQL
-distribution runs it in a fixed companion worker.
+This optional, non-packable project provides the bounded MySQL schema analyzer
+and retained row capture for the CSharpDB migration tooling. It opens one
+selected database, reads fixed server-variable and `INFORMATION_SCHEMA`
+projections, retains bounded `SHOW CREATE TABLE` evidence, and builds the
+source snapshot used by the migration planner. Its retained v1 path also
+captures a deliberately narrow, deterministic subset of application rows into
+the provider-neutral retained migration package. The generic CLI does not
+reference MySqlConnector directly; the non-packable MySQL distribution runs
+this project in a fixed companion worker.
 
 The checkpoint inventories tables, columns and column-default evidence,
 primary and unique keys, foreign keys, checks, index variants, views and their
 output columns, triggers, stored procedures and functions, and routine
 parameters and function return rows. Programmable definitions are inventory
 evidence only. They are not parsed, bound, lowered, scratch-executed, or
-promoted to target SQL. It does not read application rows, execute
-caller-supplied SQL, write to the source, create a target, or copy or validate
-application data. The optional CLI path exposes inspection, generic planning,
-and bounded preview only.
+promoted to target SQL. Retained v1 never captures or migrates those objects.
+No path executes caller-supplied SQL, writes to the source, or creates a
+target.
 
 ## Qualified scope
 
@@ -26,10 +27,10 @@ servers, but driver connectivity is not qualification. The analyzer records
 server version and version-comment evidence so non-Oracle variants can be
 reported as unqualified instead of being treated as equivalent.
 
-Phase 7B.4 has deterministic reader, catalog, process-protocol, and packaging
-tests but no live-server qualification claim. MySQL 8.0 and 8.4 live fixtures,
-restricted-account permission coverage, TLS modes, platforms, and
-published-runtime smoke tests
+The provider has deterministic reader, catalog, retained-package,
+process-protocol, and adversarial lifecycle tests but no live-server
+qualification claim. MySQL 8.0 and 8.4 live fixtures, restricted-account
+permission coverage, TLS modes, platforms, and published-runtime smoke tests
 must be qualified before this adapter becomes packable or shipping software.
 
 ## CLI and worker boundary
@@ -48,11 +49,12 @@ catalog through the fixed protocol. Public errors are stable and sanitized,
 standard error is bounded and not relayed, catalog output is limited to
 64 MiB, and cancellation terminates the worker process tree.
 
-The supported workflow is `migrate inspect --source mysql`, generic
-`migrate plan`, and normal, DDL, or scratch `migrate preview`. MySQL remains a
-schema-readiness route with non-overrideable blockers: it has no retained data
-package, importer, apply, resume, validate, activation, or readiness-promotion
-path. A preview or successful scratch comparison does not make the plan ready.
+Schema inspection remains distinct from retained capture. The schema analyzer
+continues to emit fail-closed inventory and live-qualification diagnostics.
+Retained capture replaces only the blockers that its bounded row package and
+scoped metadata proof resolve; it preserves unrelated analyzer diagnostics.
+A preview, a package capture, or a successful scratch comparison does not by
+itself make the MySQL adapter shipping-qualified.
 
 ## Connection policy
 
@@ -61,7 +63,11 @@ connection string. Comma-delimited multi-host configurations are rejected so
 one inspection cannot silently move between servers. The reader opens one
 connection with pooling, local-infile requests, user variables, automatic
 transaction enlistment, and persisted security information disabled.
-Connection, command, and cancellation timeouts are bounded.
+`TreatTinyAsBoolean=false`, `AllowZeroDateTime=true`,
+`ConvertZeroDateTime=false`, `DateTimeKind=Unspecified`, `GuidFormat=None`,
+and `IgnoreCommandTransaction=false` are forced so provider conversions and
+transaction attachment cannot silently change retained values. Connection,
+command, and cancellation timeouts are bounded.
 
 TCP connections reject `SslMode=None` and `SslMode=Preferred`; they must use
 `Required` or a stronger certificate-verifying mode. Local Unix sockets,
@@ -79,6 +85,91 @@ Raw connection strings, credentials, account names, server names, socket
 paths, and provider exception messages are not migration artifacts or public
 errors. The durable endpoint identity is a domain-separated SHA-256 digest;
 the selected database remains visible because it is required schema metadata.
+
+## Retained v1 row capture
+
+`MySqlRetainedCapture.CaptureAsync` writes
+`csharpdb-mysql-retained-data/v1` content through the generic retained package
+writer. Capture uses one non-pooled connection and one read-only
+consistent-snapshot transaction. Every catalog and row command is explicitly
+bound to that transaction. The analyzer catalog is read before row streaming
+and read and digested again before final publication. Any difference fails the
+capture, and the generic writer publishes no output file until all row,
+catalog, manifest, and package checks have succeeded. Rollback, transaction
+disposal, and connection disposal are all attempted even when another cleanup
+step reports a provider failure.
+
+A table is data-available only when all of these conditions hold:
+
+- it is an ordinary, nonpartitioned InnoDB base table;
+- every selected column has a retained v1 scalar codec and is neither
+  generated, invisible, nor ZEROFILL; and
+- it has a complete nonnullable primary key, or otherwise a complete
+  nonnullable unique key, whose exact visible ascending unique BTREE backing
+  index contains only signed or unsigned integer columns.
+
+Before materializing any row, capture runs a same-snapshot, length-only
+preflight for every projected scalar. The row query then projects
+`OCTET_LENGTH(projected-value)` plus a server-side `CASE` that returns the
+column only when it remains within the configured value limit; oversized
+values therefore never enter the connector's current-row buffer. Text length
+uses the exact UTF-8 result representation through
+`OCTET_LENGTH(CONVERT(column USING utf8mb4))`. All schema, table, column, and
+ordering identifiers are separately quoted. The selected database and exact
+table identity are verified inside the same transaction before each scan.
+Rows are ordered by every chosen key member in ascending order. Text or
+collation order is never used as retained ordering evidence.
+
+Retained scalar v1 supports signed and unsigned MySQL integers, including the
+full unsigned `BIGINT` range. `TINYINT(1)` remains an integer rather than being
+coerced to Boolean. `DECIMAL` and `NUMERIC` use MySqlConnector's
+`MySqlDecimal` representation and a canonical text path that supports MySQL's
+65-digit precision and 30-digit scale. Finite `FLOAT` and `DOUBLE` values use
+round-trip text; binary32 values are widened exactly before encoding. Text is
+strict Unicode-to-UTF-8, binary values remain byte-exact, and valid `DATE` and
+`DATETIME` values use the shared CSharpDB wall-clock formats. Zero or partial
+dates fail capture rather than being converted.
+
+`TIME`, `TIMESTAMP`, `JSON`, `BIT`, `YEAR`, `ENUM`, `SET`, spatial values,
+generated columns, invisible columns, and ZEROFILL columns are unavailable in
+retained v1. A table containing any unavailable column is not row-captured.
+Caller-selected limits bound tables, columns per table, rows per table, total
+rows, value bytes, row bytes, package bytes, and per-table command time. Fixed
+implementation ceilings cannot be raised. Impossible retained envelope minima
+and exceeded capture bounds use the typed
+`MySqlRetainedCaptureLimitException`.
+
+The retained catalog records `mysqlRetainedMetadataScope` as
+`ordinary-base-tables`, uses generic `migrationDataAvailable` and
+`migrationDataUnavailableReason` table facets, and binds every available
+table to the integer-key ordering and scalar codec contracts. Views, triggers,
+routines, events, and non-table objects are explicitly outside this retained
+scope. The retained catalog therefore includes a conditional scope warning
+and a separate deferred-live-qualification warning; neither is a claim of
+live qualification.
+
+## Metadata visibility proof
+
+The analyzer reads `CURRENT_USER()` and direct schema grants from
+`INFORMATION_SCHEMA.SCHEMA_PRIVILEGES` through the same transaction-bound
+catalog context. A grant counts only when its `GRANTEE` exactly matches the
+authenticated account format derived from `CURRENT_USER()`. Global grants,
+activated-role grants, different grantees, and ambiguous account formats do
+not count.
+
+For the full schema analyzer, direct schema-level `SELECT`, `SHOW VIEW`,
+`TRIGGER`, and `EXECUTE` facts are all required to remove the broad metadata
+completeness blocker. Those facts only establish bounded metadata visibility;
+the analyzer does not invoke routines or mutate triggers. Routine bodies can
+still remain unavailable and diagnosed.
+
+Retained v1 has a narrower read-only proof. It requires only an exact-grantee,
+direct schema-level `SELECT` grant because its scope is ordinary base-table
+metadata and rows. The binding checks this proof before any table row is read
+or any package output is started. Missing, ambiguous, role-only, or
+different-grantee evidence fails capture. Retained capture does not require
+`SHOW VIEW`, `TRIGGER`, or `EXECUTE`, and it does not claim complete
+programmable-object inventory.
 
 ## Metadata scope
 
@@ -142,10 +233,10 @@ non-BTREE, and ambiguous foreign-key support indexes remain explicit blockers
 instead of being simplified silently.
 
 Detailed partition metadata, Event Scheduler definitions and schedules,
-complete programmable dependency proof, application rows and validation, a
-data importer, and live restricted-account qualification remain follow-on
-work. Their absence is represented by non-overrideable readiness diagnostics;
-this catalog is not migration approval. Live MySQL 8.0/8.4, Docker,
+complete programmable dependency proof, unsupported row families, and live
+restricted-account qualification remain follow-on work. Their absence is
+represented by explicit availability facts and diagnostics; a retained
+catalog is not blanket migration approval. Live MySQL 8.0/8.4, Docker,
 published-runtime, restricted-account, and TLS-mode qualification remain
 deferred. The wider migration roadmap also defers Access and
 disposable-Windows-VM qualification.

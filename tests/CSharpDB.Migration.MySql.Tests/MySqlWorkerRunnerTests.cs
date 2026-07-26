@@ -16,6 +16,7 @@ public sealed class MySqlWorkerRunnerTests
         MigrationCatalog catalog = BuildCatalog(ct);
         string? observedEnvironmentName = null;
         string? observedConnectionString = null;
+        string? clearedEnvironmentName = null;
         MigrationInspectionRequest? observedRequest = null;
         var dependencies = new MySqlWorkerDependencies
         {
@@ -24,8 +25,13 @@ public sealed class MySqlWorkerRunnerTests
                 observedEnvironmentName = name;
                 return SecretConnectionString;
             },
+            ClearEnvironmentVariable =
+                name => clearedEnvironmentName = name,
             CreateInspector = connectionString =>
             {
+                Assert.Equal(
+                    EnvironmentVariableName,
+                    clearedEnvironmentName);
                 observedConnectionString = connectionString;
                 return new FakeInspector(
                     MigrationSourceKind.MySql,
@@ -52,6 +58,7 @@ public sealed class MySqlWorkerRunnerTests
                     writeIndented: false),
             result.Output);
         Assert.Equal(EnvironmentVariableName, observedEnvironmentName);
+        Assert.Equal(EnvironmentVariableName, clearedEnvironmentName);
         Assert.Equal(SecretConnectionString, observedConnectionString);
         Assert.NotNull(observedRequest);
         Assert.Equal(

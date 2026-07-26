@@ -13,6 +13,7 @@ public sealed class MySqlCatalogReaderTests
     [
         "2418f45547c5a38ccdacbcdd4ee31a195ae0da1b9e7d97651f31c3559b01f998",
         "5456ee05ea9f9eeefdb08cc30e345962a2de7d8df0dd61ce27b080d2b6471c7c",
+        "3b12420233f59978e684098362bb7f556ea0fe94eec5dceabab0bb13915243d8",
         "ea21132749e445022a591add54037d00a87b477c98c18cb9bbe2f42454812e7c",
         "cb880529e6ff62c3076accfc162c88816f9697485f193408255caef9aa12f3ac",
         "025dada3390acf714b4136131926f5d95766e8020af03693d9b3fdcdb60d7f99",
@@ -47,6 +48,12 @@ public sealed class MySqlCatalogReaderTests
         Assert.False(reader.Policy.AllowUserVariables);
         Assert.False(reader.Policy.AutoEnlist);
         Assert.False(reader.Policy.PersistSecurityInfo);
+        Assert.False(reader.Policy.TreatTinyAsBoolean);
+        Assert.True(reader.Policy.AllowZeroDateTime);
+        Assert.False(reader.Policy.ConvertZeroDateTime);
+        Assert.Equal("Unspecified", reader.Policy.DateTimeKind);
+        Assert.Equal("None", reader.Policy.GuidFormat);
+        Assert.False(reader.Policy.IgnoreCommandTransaction);
         Assert.Equal(30u, reader.Policy.ConnectionTimeout);
         Assert.Equal(30u, reader.Policy.DefaultCommandTimeout);
         Assert.Equal(5, reader.Policy.CancellationTimeout);
@@ -233,6 +240,7 @@ public sealed class MySqlCatalogReaderTests
             [
                 MySqlCatalogReader.ServerAndDatabaseQuery,
                 MySqlCatalogReader.GeneratedInvisiblePrimaryKeyVisibilityQuery,
+                MySqlCatalogReader.MetadataVisibilityProofQuery,
                 MySqlCatalogReader.TablesQuery,
                 MySqlCatalogReader.ColumnsQuery,
                 MySqlCatalogReader.KeysQuery,
@@ -256,7 +264,13 @@ public sealed class MySqlCatalogReaderTests
                 "SELECT",
                 command.TrimStart(),
                 StringComparison.OrdinalIgnoreCase);
-            Assert.DoesNotMatch(MutatingStatement(), command);
+            string statementAuditText = command.Replace(
+                "'EXECUTE'",
+                "''",
+                StringComparison.Ordinal);
+            Assert.DoesNotMatch(
+                MutatingStatement(),
+                statementAuditText);
             Assert.DoesNotMatch(DangerousReadClause(), command);
         }
 
@@ -291,6 +305,7 @@ public sealed class MySqlCatalogReaderTests
             StringComparison.Ordinal);
         string[] databaseScopedQueries =
         [
+            MySqlCatalogReader.MetadataVisibilityProofQuery,
             MySqlCatalogReader.TablesQuery,
             MySqlCatalogReader.ColumnsQuery,
             MySqlCatalogReader.KeysQuery,
@@ -320,6 +335,14 @@ public sealed class MySqlCatalogReaderTests
         Assert.Contains(
             "INFORMATION_SCHEMA.TABLES",
             MySqlCatalogReader.TablesQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "CURRENT_USER()",
+            MySqlCatalogReader.MetadataVisibilityProofQuery,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "INFORMATION_SCHEMA.SCHEMA_PRIVILEGES",
+            MySqlCatalogReader.MetadataVisibilityProofQuery,
             StringComparison.Ordinal);
         Assert.Contains(
             "INFORMATION_SCHEMA.COLUMNS",
@@ -449,7 +472,14 @@ public sealed class MySqlCatalogReaderTests
             "p.DTD_IDENTIFIER");
 
         string commands = string.Join("\n", MySqlCatalogReader.CommandTexts);
-        Assert.DoesNotContain("SHOW ", commands, StringComparison.OrdinalIgnoreCase);
+        string commandStatementAudit = commands.Replace(
+            "'SHOW VIEW'",
+            "''",
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "SHOW ",
+            commandStatementAudit,
+            StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("mysql.", commands, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(
             "performance_schema.",

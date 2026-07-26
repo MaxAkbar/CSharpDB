@@ -1808,7 +1808,9 @@ public sealed class SqlServerMigrationCommandRunnerTests
         string directory = Path.Combine(
             Path.GetTempPath(),
             $"csharpdb_sqlserver_cli_{Guid.NewGuid():N}");
-        Directory.CreateDirectory(directory);
+        MigrationCommandRunner
+            .SqlServerCaptureWorkspace
+            .CreatePrivateDirectoryExclusive(directory);
         return directory;
     }
 

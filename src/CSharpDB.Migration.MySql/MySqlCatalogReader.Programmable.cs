@@ -142,7 +142,7 @@ internal sealed partial class MySqlCatalogReader
         """;
 
     private async ValueTask<IReadOnlyList<MySqlViewMetadata>> ReadViewsAsync(
-        MySqlConnection connection,
+        CatalogReadContext context,
         string selectedDatabase,
         IReadOnlyList<MySqlViewMetadata> visibleViews,
         ReaderBudget budget,
@@ -165,7 +165,7 @@ internal sealed partial class MySqlCatalogReader
         }
 
         var enriched = new HashSet<string>(StringComparer.Ordinal);
-        await using MySqlCommand command = Command(connection, ViewsQuery);
+        await using MySqlCommand command = Command(context, ViewsQuery);
         AddDatabaseParameter(command, selectedDatabase);
         await using MySqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
@@ -228,7 +228,7 @@ internal sealed partial class MySqlCatalogReader
 
     private async ValueTask<IReadOnlyList<MySqlViewColumnMetadata>>
         ReadViewColumnsAsync(
-            MySqlConnection connection,
+            CatalogReadContext context,
             string selectedDatabase,
             IReadOnlyList<MySqlViewMetadata> views,
             ReaderBudget budget,
@@ -244,7 +244,7 @@ internal sealed partial class MySqlCatalogReader
         var columns = new List<MySqlViewColumnMetadata>();
 
         await using MySqlCommand command = Command(
-            connection,
+            context,
             ViewColumnsQuery);
         AddDatabaseParameter(command, selectedDatabase);
         await using MySqlDataReader reader = await command.ExecuteReaderAsync(
@@ -322,7 +322,7 @@ internal sealed partial class MySqlCatalogReader
 
     private async ValueTask<IReadOnlyList<MySqlTriggerMetadata>>
         ReadTriggersAsync(
-            MySqlConnection connection,
+            CatalogReadContext context,
             string selectedDatabase,
             IReadOnlyList<MySqlTableMetadata> tables,
             ReaderBudget budget,
@@ -336,7 +336,7 @@ internal sealed partial class MySqlCatalogReader
         var identities = new HashSet<string>(StringComparer.Ordinal);
         var triggers = new List<MySqlTriggerMetadata>();
 
-        await using MySqlCommand command = Command(connection, TriggersQuery);
+        await using MySqlCommand command = Command(context, TriggersQuery);
         AddDatabaseParameter(command, selectedDatabase);
         await using MySqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
@@ -421,7 +421,7 @@ internal sealed partial class MySqlCatalogReader
 
     private async ValueTask<IReadOnlyList<MySqlRoutineMetadata>>
         ReadRoutinesAsync(
-            MySqlConnection connection,
+            CatalogReadContext context,
             string selectedDatabase,
             ReaderBudget budget,
             MySqlInspectionLimits limits,
@@ -430,7 +430,7 @@ internal sealed partial class MySqlCatalogReader
         var identities = new HashSet<string>(StringComparer.Ordinal);
         var routines = new List<MySqlRoutineMetadata>();
 
-        await using MySqlCommand command = Command(connection, RoutinesQuery);
+        await using MySqlCommand command = Command(context, RoutinesQuery);
         AddDatabaseParameter(command, selectedDatabase);
         await using MySqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
@@ -543,7 +543,7 @@ internal sealed partial class MySqlCatalogReader
 
     private async ValueTask<IReadOnlyList<MySqlRoutineParameterMetadata>>
         ReadRoutineParametersAsync(
-            MySqlConnection connection,
+            CatalogReadContext context,
             string selectedDatabase,
             IReadOnlyList<MySqlRoutineMetadata> routines,
             ReaderBudget budget,
@@ -560,7 +560,7 @@ internal sealed partial class MySqlCatalogReader
         var parameters = new List<MySqlRoutineParameterMetadata>();
 
         await using MySqlCommand command = Command(
-            connection,
+            context,
             RoutineParametersQuery);
         AddDatabaseParameter(command, selectedDatabase);
         await using MySqlDataReader reader = await command.ExecuteReaderAsync(

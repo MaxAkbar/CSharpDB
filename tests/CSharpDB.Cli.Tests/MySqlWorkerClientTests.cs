@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using CSharpDB.Migration;
+using CSharpDB.Migration.Retained;
 
 namespace CSharpDB.Cli.Tests;
 
@@ -353,6 +354,377 @@ public sealed class MySqlWorkerClientTests
         }
     }
 
+    [Fact]
+    public async Task
+        Capture_ValidWorkerReceiptIsStrictAndSecretFree()
+    {
+        CancellationToken ct =
+            TestContext.Current.CancellationToken;
+        using var installation =
+            new WorkerInstallation(
+                installHarness: true);
+        using var mode = new EnvironmentScope(
+            ModeEnvironment,
+            "capture-connection-check");
+        using var connection =
+            new EnvironmentScope(
+                ConnectionEnvironment,
+                "Server=worker.example;Password=inherited-capture-secret");
+        string directory =
+            CreateCaptureWorkspace();
+        string packagePath = Path.Combine(
+            directory,
+            MySqlWorkerClient
+                .CaptureOutputFileName);
+        try
+        {
+            MySqlCaptureWorkerResult result =
+                await MySqlWorkerClient.CaptureAsync(
+                    ConnectionEnvironment,
+                    CSharpDbCapabilityCatalogLoader
+                        .CurrentTargetVersion,
+                    packagePath,
+                    4 * 1024 * 1024,
+                    42,
+                    ct);
+
+            Assert.Equal(
+                MySqlCaptureWorkerStatus.Success,
+                result.Status);
+            MySqlCaptureReceipt receipt =
+                Assert.IsType<MySqlCaptureReceipt>(
+                    result.Receipt);
+            Assert.Equal(
+                MySqlCaptureReceipt.CurrentFormat,
+                receipt.Format);
+            Assert.StartsWith(
+                "sha256:",
+                receipt.PackageDigest,
+                StringComparison.Ordinal);
+            Assert.Equal(
+                new FileInfo(packagePath).Length,
+                receipt.PackageBytes);
+            Assert.True(File.Exists(packagePath));
+            string verificationWorkspace =
+                Path.Combine(
+                    directory,
+                    "verified");
+            Directory.CreateDirectory(
+                verificationWorkspace);
+            await using (
+                RetainedMigrationPackageSession
+                    session =
+                    await RetainedMigrationPackageSession
+                        .OpenAsync(
+                            packagePath,
+                            new RetainedMigrationPackageOpenOptions
+                            {
+                                ExpectedPackageDigest =
+                                    receipt
+                                        .PackageDigest,
+                                WorkspacePath =
+                                    verificationWorkspace,
+                                MaxPackageBytes =
+                                    4 * 1024 * 1024,
+                            },
+                            ct))
+            {
+                Assert.Equal(
+                    MigrationSourceKind.MySql,
+                    session.Manifest.SourceKind);
+                Assert.Equal(
+                    receipt.CatalogDigest,
+                    session.Manifest
+                        .CatalogDigest);
+                Assert.Equal(
+                    receipt.SnapshotIdentity,
+                    session.Manifest
+                        .SnapshotIdentity);
+            }
+            Assert.DoesNotContain(
+                "inherited-capture-secret",
+                result.ToString(),
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            TryDeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public async Task
+        Capture_MissingWorkerDoesNotConsumeConnectionMaterial()
+    {
+        CancellationToken ct =
+            TestContext.Current.CancellationToken;
+        using var installation =
+            new WorkerInstallation(
+                installHarness: false);
+        const string secret =
+            "Server=private;Password=base-process-must-not-read-this";
+        using var connection =
+            new EnvironmentScope(
+                ConnectionEnvironment,
+                secret);
+        string directory =
+            CreateCaptureWorkspace();
+        string packagePath = Path.Combine(
+            directory,
+            MySqlWorkerClient
+                .CaptureOutputFileName);
+        try
+        {
+            MySqlCaptureWorkerResult result =
+                await MySqlWorkerClient.CaptureAsync(
+                    ConnectionEnvironment,
+                    CSharpDbCapabilityCatalogLoader
+                        .CurrentTargetVersion,
+                    packagePath,
+                    4 * 1024 * 1024,
+                    MySqlWorkerClient
+                        .DefaultCaptureTableTimeoutSeconds,
+                    ct);
+
+            Assert.Equal(
+                MySqlCaptureWorkerStatus.Missing,
+                result.Status);
+            Assert.Null(result.Receipt);
+            Assert.Equal(
+                secret,
+                Environment.GetEnvironmentVariable(
+                    ConnectionEnvironment));
+            Assert.False(File.Exists(packagePath));
+        }
+        finally
+        {
+            TryDeleteDirectory(directory);
+        }
+    }
+
+    [Theory]
+    [InlineData(
+        "capture-connection-error",
+        "ConnectionUnavailable")]
+    [InlineData(
+        "capture-error",
+        "CaptureFailed")]
+    [InlineData(
+        "capture-internal-error",
+        "Incompatible")]
+    [InlineData(
+        "capture-limit-error",
+        "LimitExceeded")]
+    public async Task
+        Capture_ExitStatusIsDistinctAndSanitized(
+        string modeValue,
+        string expectedStatus)
+    {
+        CancellationToken ct =
+            TestContext.Current.CancellationToken;
+        using var installation =
+            new WorkerInstallation(
+                installHarness: true);
+        using var mode =
+            new EnvironmentScope(
+                ModeEnvironment,
+                modeValue);
+        string directory =
+            CreateCaptureWorkspace();
+        string packagePath = Path.Combine(
+            directory,
+            MySqlWorkerClient
+                .CaptureOutputFileName);
+        try
+        {
+            MySqlCaptureWorkerResult result =
+                await MySqlWorkerClient.CaptureAsync(
+                    ConnectionEnvironment,
+                    CSharpDbCapabilityCatalogLoader
+                        .CurrentTargetVersion,
+                    packagePath,
+                    4 * 1024 * 1024,
+                    MySqlWorkerClient
+                        .DefaultCaptureTableTimeoutSeconds,
+                    ct);
+
+            Assert.Equal(
+                Enum.Parse<MySqlCaptureWorkerStatus>(
+                    expectedStatus),
+                result.Status);
+            Assert.Null(result.Receipt);
+            Assert.DoesNotContain(
+                WorkerSecret,
+                result.ToString(),
+                StringComparison.Ordinal);
+            Assert.False(File.Exists(packagePath));
+        }
+        finally
+        {
+            TryDeleteDirectory(directory);
+        }
+    }
+
+    [Theory]
+    [InlineData("capture-bad-header")]
+    [InlineData("capture-invalid-utf8")]
+    [InlineData("capture-wrong-format")]
+    [InlineData("capture-wrong-length")]
+    [InlineData("capture-secret-identity")]
+    [InlineData("capture-stdout-overflow")]
+    [InlineData("capture-stderr-overflow")]
+    public async Task
+        Capture_InvalidOrUnboundedResultFailsClosed(
+        string modeValue)
+    {
+        CancellationToken ct =
+            TestContext.Current.CancellationToken;
+        using var installation =
+            new WorkerInstallation(
+                installHarness: true);
+        using var mode =
+            new EnvironmentScope(
+                ModeEnvironment,
+                modeValue);
+        string directory =
+            CreateCaptureWorkspace();
+        string packagePath = Path.Combine(
+            directory,
+            MySqlWorkerClient
+                .CaptureOutputFileName);
+        try
+        {
+            MySqlCaptureWorkerResult result =
+                await MySqlWorkerClient.CaptureAsync(
+                    ConnectionEnvironment,
+                    CSharpDbCapabilityCatalogLoader
+                        .CurrentTargetVersion,
+                    packagePath,
+                    4 * 1024 * 1024,
+                    MySqlWorkerClient
+                        .DefaultCaptureTableTimeoutSeconds,
+                    ct);
+
+            Assert.Equal(
+                MySqlCaptureWorkerStatus.Incompatible,
+                result.Status);
+            Assert.Null(result.Receipt);
+            Assert.DoesNotContain(
+                WorkerSecret,
+                result.ToString(),
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            TryDeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public async Task
+        Capture_CancellationKillsWorkerProcessTree()
+    {
+        using var installation =
+            new WorkerInstallation(
+                installHarness: true);
+        using var mode = new EnvironmentScope(
+            ModeEnvironment,
+            "capture-hang-tree");
+        string directory =
+            CreateCaptureWorkspace();
+        string packagePath = Path.Combine(
+            directory,
+            MySqlWorkerClient
+                .CaptureOutputFileName);
+        string pidPath = Path.Combine(
+            directory,
+            "capture-pids.txt");
+        using var pidFile =
+            new EnvironmentScope(
+                PidFileEnvironment,
+                pidPath);
+        using var cancellation =
+            new CancellationTokenSource();
+        int[] processIds = [];
+
+        try
+        {
+            Task<MySqlCaptureWorkerResult> run =
+                MySqlWorkerClient.CaptureAsync(
+                        ConnectionEnvironment,
+                        CSharpDbCapabilityCatalogLoader
+                            .CurrentTargetVersion,
+                        packagePath,
+                        4 * 1024 * 1024,
+                        MySqlWorkerClient
+                            .DefaultCaptureTableTimeoutSeconds,
+                        cancellation.Token)
+                    .AsTask();
+            processIds =
+                await WaitForProcessIdsAsync(
+                    pidPath,
+                    expectedCount: 2,
+                    TestContext.Current
+                        .CancellationToken);
+
+            cancellation.Cancel();
+
+            await Assert.ThrowsAnyAsync<
+                OperationCanceledException>(
+                async () => await run);
+            await WaitForProcessesToExitAsync(
+                processIds,
+                TestContext.Current
+                    .CancellationToken);
+            Assert.False(File.Exists(packagePath));
+        }
+        finally
+        {
+            cancellation.Cancel();
+            foreach (int processId in processIds)
+                TryKill(processId);
+            TryDeleteDirectory(directory);
+        }
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(86_401)]
+    public async Task
+        Capture_InvalidTimeoutIsRejectedBeforeWorker(
+        int tableTimeoutSeconds)
+    {
+        using var installation =
+            new WorkerInstallation(
+                installHarness: false);
+        string directory =
+            CreateCaptureWorkspace();
+        string packagePath = Path.Combine(
+            directory,
+            MySqlWorkerClient
+                .CaptureOutputFileName);
+        try
+        {
+            await Assert.ThrowsAsync<
+                ArgumentOutOfRangeException>(
+                async () =>
+                    await MySqlWorkerClient
+                        .CaptureAsync(
+                            ConnectionEnvironment,
+                            CSharpDbCapabilityCatalogLoader
+                                .CurrentTargetVersion,
+                            packagePath,
+                            1024,
+                            tableTimeoutSeconds,
+                            TestContext.Current
+                                .CancellationToken));
+        }
+        finally
+        {
+            TryDeleteDirectory(directory);
+        }
+    }
+
     private static ValueTask<int> RunInspectAsync(
         string catalogPath,
         TextWriter output,
@@ -480,6 +852,17 @@ public sealed class MySqlWorkerClientTests
         string directory = Path.Combine(
             Path.GetTempPath(),
             $"csharpdb_mysql_worker_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        return directory;
+    }
+
+    private static string CreateCaptureWorkspace()
+    {
+        string directory = Path.Combine(
+            Path.GetTempPath(),
+            MySqlWorkerClient
+                .CaptureWorkspacePrefix +
+            Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         return directory;
     }

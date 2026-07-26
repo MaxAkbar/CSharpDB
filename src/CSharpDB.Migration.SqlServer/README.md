@@ -16,7 +16,10 @@ bounded selective-XML path metadata, spatial tessellation configuration,
 memory-optimized hash bucket counts, columnstore ordering and SQL Server 2025
 data-clustering ordinals, and SQL Server 2025 JSON-index options and bounded
 path metadata.
-It does not copy SQL Server rows or write to either the source or a CSharpDB
+The schema-only inspection route (used when `inspect` omits `--package`) does
+not copy SQL Server rows or write to either the source or a CSharpDB target.
+The retained route described below can copy its bounded row subset only into a
+new digest-pinned package; it still never writes the source or a CSharpDB
 target. Available default, computed-column, check, filtered-index, and SQL
 module definitions receive bounded, syntax-only ScriptDom analysis. Parsing
 does not imply that an expression or module has been bound, lowered, or
@@ -34,7 +37,7 @@ diagnostic. Azure SQL Database, Azure SQL Managed Instance, Synapse, Fabric,
 and other compatible services are not silently treated as equivalent to the
 intended on-premises products.
 
-This checkpoint is intentionally non-shipping. Available SQL definitions are
+The schema-readiness checkpoint remains intentionally blocked. Available SQL definitions are
 parsed only for bounded syntax and expected-root evidence; they are not bound,
 rewritten, or differentially validated. The proven ordinary relational subset
 now has an offline integration proof through the generic migration planner,
@@ -42,13 +45,14 @@ the exact CSharpDB DDL renderer, and a transactionally isolated in-memory
 scratch catalog comparison. That proof does not promote the partial SQL Server
 inventory from `Blocked`, establish source semantics, or write a
 caller-supplied, existing, or durable target.
-The non-packable proof CLI exposes schema-only inspection through a named
-environment variable and the isolated worker, generic planning sealed to the
-bounded target DDL digest, bounded exact CSharpDB DDL preview, and sanitized
-in-memory scratch evidence. The worker resolves the connection value itself;
-the value is never placed on the command line or process protocol. The surface
-does not accept a raw connection string argument, copy rows, apply DDL, open
-an existing target, or promote the analyzer's blocked readiness. The offline
+The non-NuGet CLI adapter exposes schema-only inspection when `--package` is
+omitted and bounded retained row capture when it is supplied, always through a
+named environment variable and the isolated worker. Generic planning remains
+sealed to the bounded target DDL digest, bounded exact CSharpDB DDL preview,
+and sanitized in-memory scratch evidence. The worker resolves the connection
+value itself; the value is never placed on the command line or process
+protocol. The surface does not accept a raw connection string argument, apply
+DDL, open an existing target, or promote the analyzer's blocked readiness. The offline
 physical inventory deliberately omits raw partition
 boundary values, full-text stopwords and registered property definitions,
 database file names and paths, allocation details, physical sizes, row
@@ -61,8 +65,7 @@ dependency graph now exclude this adapter, SqlClient, ScriptDom, SNI, and
 their authentication closure; those assets live only beneath the optional
 worker directory. Live server and published-runtime qualification remain later
 Phase 7A work. Disposable-VM and restricted-login qualification remain
-deferred; no offline fixture is described as live evidence. A SQL Server data
-importer is a separately approved follow-on.
+deferred; no offline fixture is described as live evidence.
 
 ## Phase 6B.2: standalone T-SQL DDL proof
 
@@ -356,6 +359,7 @@ The resolved worker package closure is inventoried in
 `THIRD-PARTY-NOTICES.md`. Its MIT-licensed packages include
 Microsoft.Data.SqlClient and Microsoft.SqlServer.TransactSql.ScriptDom.
 Microsoft.Data.SqlClient.SNI.runtime 6.0.2 is not MIT; its separate Microsoft
-Software License Terms accompany the worker under `licenses/`. This remains a
-non-packable, non-shipping distribution pending the deferred runtime, live
-server, and legal qualification lanes.
+Software License Terms accompany the worker under `licenses/`. The worker is
+not published as a NuGet package. It is carried only in the fixed migration
+release layout, whose live server, authentication, TLS, restricted-account,
+and published-runtime qualification remains deferred.

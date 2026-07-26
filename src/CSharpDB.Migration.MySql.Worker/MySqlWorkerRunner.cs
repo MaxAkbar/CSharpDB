@@ -1,5 +1,6 @@
 using System.Text;
 using CSharpDB.Migration;
+using CSharpDB.Migration.Retained;
 
 namespace CSharpDB.Migration.MySql.Worker;
 
@@ -9,6 +10,9 @@ internal sealed record MySqlWorkerDependencies
 
     internal Func<string, string?> ReadEnvironmentVariable { get; init; } =
         Environment.GetEnvironmentVariable;
+
+    internal Action<string> ClearEnvironmentVariable { get; init; } =
+        static name => Environment.SetEnvironmentVariable(name, null);
 
     internal Func<string, IMigrationSourceInspector> CreateInspector { get; init; } =
         static connectionString =>
@@ -25,6 +29,34 @@ internal sealed record MySqlWorkerDependencies
                 encoderShouldEmitUTF8Identifier: false,
                 throwOnInvalidBytes: true)
             .GetByteCount(value);
+
+    internal Func<
+        string,
+        string,
+        long,
+        int,
+        CancellationToken,
+        ValueTask<RetainedMigrationPackageWriteResult>>
+        CaptureRetainedAsync
+    {
+        get;
+        init;
+    } = static (
+        connectionString,
+        outputPath,
+        maxPackageBytes,
+        rowCommandTimeoutSeconds,
+        cancellationToken) =>
+        MySqlRetainedCapture.CaptureAsync(
+            connectionString,
+            outputPath,
+            new MySqlRetainedCaptureOptions
+            {
+                MaxPackageBytes = maxPackageBytes,
+                RowCommandTimeoutSeconds =
+                    rowCommandTimeoutSeconds,
+            },
+            cancellationToken);
 }
 
 internal static class MySqlWorkerRunner
@@ -59,6 +91,16 @@ internal static class MySqlWorkerRunner
         ArgumentNullException.ThrowIfNull(error);
         ArgumentNullException.ThrowIfNull(dependencies);
 
+        if (MySqlCaptureWorkerRunner.IsCaptureProtocol(args))
+        {
+            return await MySqlCaptureWorkerRunner.RunAsync(
+                args,
+                output,
+                error,
+                dependencies,
+                cancellationToken);
+        }
+
         if (!TryParseInvocation(
                 args,
                 out string? environmentVariableName,
@@ -82,6 +124,7 @@ internal static class MySqlWorkerRunner
         }
 
         if (dependencies.ReadEnvironmentVariable is null ||
+            dependencies.ClearEnvironmentVariable is null ||
             dependencies.CreateInspector is null ||
             dependencies.SerializeCatalog is null ||
             dependencies.MeasureUtf8Bytes is null)
@@ -96,8 +139,17 @@ internal static class MySqlWorkerRunner
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            connectionString =
-                dependencies.ReadEnvironmentVariable(environmentVariableName!);
+            try
+            {
+                connectionString =
+                    dependencies.ReadEnvironmentVariable(
+                        environmentVariableName!);
+            }
+            finally
+            {
+                dependencies.ClearEnvironmentVariable(
+                    environmentVariableName!);
+            }
         }
         catch (OperationCanceledException)
             when (cancellationToken.IsCancellationRequested)

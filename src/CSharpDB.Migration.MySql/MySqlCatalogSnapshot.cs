@@ -28,7 +28,8 @@ internal sealed class MySqlCatalogSnapshot
         IEnumerable<MySqlViewColumnMetadata>? viewColumns = null,
         IEnumerable<MySqlTriggerMetadata>? triggers = null,
         IEnumerable<MySqlRoutineMetadata>? routines = null,
-        IEnumerable<MySqlRoutineParameterMetadata>? routineParameters = null)
+        IEnumerable<MySqlRoutineParameterMetadata>? routineParameters = null,
+        MySqlMetadataVisibilityProof? metadataVisibilityProof = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(endpointDigest);
         ArgumentException.ThrowIfNullOrWhiteSpace(providerVersion);
@@ -58,6 +59,9 @@ internal sealed class MySqlCatalogSnapshot
         Triggers = ReadOnly(triggers);
         Routines = ReadOnly(routines);
         RoutineParameters = ReadOnly(routineParameters);
+        MetadataVisibilityProof =
+            metadataVisibilityProof ??
+            MySqlMetadataVisibilityProof.Unproven;
     }
 
     public string EndpointDigest { get; }
@@ -100,8 +104,39 @@ internal sealed class MySqlCatalogSnapshot
 
     public IReadOnlyList<MySqlRoutineParameterMetadata> RoutineParameters { get; }
 
+    public MySqlMetadataVisibilityProof MetadataVisibilityProof { get; }
+
     private static IReadOnlyList<T> ReadOnly<T>(IEnumerable<T>? values) =>
         new ReadOnlyCollection<T>((values ?? []).ToArray());
+}
+
+internal sealed record MySqlMetadataVisibilityProof(
+    bool Attempted,
+    bool AccountFormatSupported,
+    bool GranteeMatched,
+    bool HasDirectSchemaSelect,
+    bool HasDirectSchemaShowView,
+    bool HasDirectSchemaTrigger,
+    bool HasDirectSchemaExecute)
+{
+    internal static MySqlMetadataVisibilityProof Unproven { get; } =
+        new(
+            Attempted: false,
+            AccountFormatSupported: false,
+            GranteeMatched: false,
+            HasDirectSchemaSelect: false,
+            HasDirectSchemaShowView: false,
+            HasDirectSchemaTrigger: false,
+            HasDirectSchemaExecute: false);
+
+    internal bool IsComplete =>
+        Attempted &&
+        AccountFormatSupported &&
+        GranteeMatched &&
+        HasDirectSchemaSelect &&
+        HasDirectSchemaShowView &&
+        HasDirectSchemaTrigger &&
+        HasDirectSchemaExecute;
 }
 
 internal sealed record MySqlServerMetadata(

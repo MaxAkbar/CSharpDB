@@ -6,9 +6,9 @@ namespace CSharpDB.Migration.MySql.Tests;
 public sealed class MySqlCatalogBuilderTests
 {
     private const string GoldenCatalogDigest =
-        "ba6abab6a480bf4f7fa1d043477bd67d690b9b772b59c7034ea4576d98b5e200";
+        "8c055b066cc05d0e00b589361772001446a1dc9aa7b49ca152482fbea7b57c5b";
     private const string GoldenSourceFingerprint =
-        "sha256:f109bb449e192312533704d8e2bde3a18dc23700e420c4c3ab4cbedfe9aa0266";
+        "sha256:3e8b79eed8a2f36c0962a6e252404180d715dbbaab46d1fec4f1af61b75e383c";
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
@@ -49,7 +49,9 @@ public sealed class MySqlCatalogBuilderTests
             "sha256:",
             first.Source.Fingerprint,
             StringComparison.Ordinal);
-        Assert.Equal(GoldenSourceFingerprint, first.Source.Fingerprint);
+        Assert.Equal(
+            GoldenSourceFingerprint,
+            first.Source.Fingerprint);
 
         string serialized = MigrationArtifactSerializer.SerializeCatalog(first);
         Assert.DoesNotContain(
@@ -358,7 +360,11 @@ public sealed class MySqlCatalogBuilderTests
         Assert.Equal("18", Facet(amount, "precision"));
         Assert.Equal("2", Facet(amount, "scale"));
         MigrationCatalogObject enabled =
-            AssertColumn(catalog, "Enabled", "boolean", "tinyint(1)");
+            AssertColumn(
+                catalog,
+                "Enabled",
+                "signedInteger",
+                "tinyint(1)");
         Assert.Equal("true", Facet(enabled, "mysqlTinyIntOne"));
         MigrationCatalogObject createdAt =
             AssertColumn(catalog, "CreatedAt", "dateTime", "datetime(6)");
@@ -380,6 +386,10 @@ public sealed class MySqlCatalogBuilderTests
                 item.ObjectId == enabled.ObjectId &&
                 item.RuleId ==
                     "MIG-MYSQL-TINYINT-BOOLEAN-SEMANTICS-001" &&
+                item.Severity ==
+                    MigrationDiagnosticSeverity.Warning &&
+                item.Status ==
+                    MigrationCompatibilityStatus.Compatible &&
                 !item.CanOverride);
         foreach (string name in new[] { "Document", "Location" })
         {

@@ -32,12 +32,12 @@ internal static class MigrationCommandRunner
         "       csharpdb migrate inspect --source sqlite --input <source.db> --package <snapshot.csdbsqlite> --out <catalog.json> [--profile-sample-size <count>] [--max-source-bytes <count>]\n" +
         "       csharpdb migrate inspect --source litedb --input <source.db> --package <snapshot.csdblitedb> --out <catalog.json> [--profile-sample-size <count>] [--max-source-bytes <count>]\n" +
         "       csharpdb migrate inspect --source sqlserver --connection-env <name> --out <catalog.json> [--package <snapshot.csdbsqlserver> --max-source-bytes <count> --table-timeout-seconds <1..86400>]\n" +
-        "       csharpdb migrate inspect --source mysql --connection-env <name> --out <catalog.json>\n" +
+        "       csharpdb migrate inspect --source mysql --connection-env <name> --out <catalog.json> [--package <snapshot.csdbmysql> --max-source-bytes <count> --table-timeout-seconds <1..86400>]\n" +
         "       csharpdb migrate ddl-check <file.sql> --dialect csharpdb|tsql [--format text|json]\n" +
         "       csharpdb migrate plan <catalog.json> --out <plan.json> [--profile preserve|queryable] [--accept-exclusions all|<id,...>] [--accept-diagnostics <id,...>] [--reject-mode fail-fast|deterministic --reject-rules all|<id,...> --max-rejected-rows-per-batch <count> --max-rejected-rows-per-run <count> --max-reject-evidence-value-bytes <count> --max-reject-evidence-bytes-per-batch <count> --max-reject-evidence-bytes-per-run <count> --max-reject-artifact-bytes <count>]\n" +
         "       csharpdb migrate preview <plan.json> --catalog <catalog.json> [--ddl|--scratch] [--format text|json]\n" +
-        "       csharpdb migrate apply <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite|source.csdblitedb|source.csdbsqlserver> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
-        "       csharpdb migrate validate <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite|source.csdblitedb|source.csdbsqlserver> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
+        "       csharpdb migrate apply <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite|source.csdblitedb|source.csdbsqlserver|source.csdbmysql> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
+        "       csharpdb migrate validate <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite|source.csdblitedb|source.csdbsqlserver|source.csdbmysql> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
         "       csharpdb migrate export <retained-snapshot.db> --format csv --table <physical-table> --out <table.csv> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1|spreadsheet-safe-lossy-v1] [--max-data-bytes <count>] [--max-decoded-blob-bytes <count>] [--checkpoint-row-interval <count>] [--json]\n" +
         "       csharpdb migrate export <retained-snapshot.db> --format json|ndjson --table <physical-table> --out <table.json|table.ndjson> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1] [--max-data-bytes <count>] [--max-decoded-blob-bytes <count>] [--checkpoint-row-interval <count>] [--json]";
 
@@ -54,6 +54,34 @@ internal static class MigrationCommandRunner
         "sqlServerDataContract";
     private const string SqlServerRetainedDataContract =
         "csharpdb-sqlserver-retained-data/v1";
+    private const string MySqlRetainedCatalogFacet =
+        "mysqlCatalogContract";
+    private const string MySqlRetainedCatalogContract =
+        "csharpdb-mysql-retained-catalog/v1";
+    private const string MySqlAnalyzerCatalogFacet =
+        "mysqlAnalyzerCatalogContract";
+    private const string MySqlAnalyzerCatalogContract =
+        "csharpdb-mysql-catalog/v3";
+    private const string MySqlRetainedDataFacet =
+        "mysqlDataContract";
+    private const string MySqlRetainedDataContract =
+        "csharpdb-mysql-retained-data/v1";
+    private const string MySqlRetainedContentDigestFacet =
+        "mysqlRetainedContentDigest";
+    private const string MySqlRetainedSnapshotIdentityFacet =
+        "mysqlRetainedSnapshotIdentity";
+    private const string MySqlRetainedSnapshotIdentityPrefix =
+        "mysql-retained:";
+    private const string MySqlRetainedMetadataScopeFacet =
+        "mysqlRetainedMetadataScope";
+    private const string MySqlRetainedMetadataScope =
+        "ordinary-base-tables";
+    private const string MySqlRetainedDirectSelectFacet =
+        "mysqlRetainedDirectSchemaSelectProven";
+    private const string MySqlRetainedScopeRule =
+        "MIG-MYSQL-RETAINED-SCOPE-001";
+    private const string MySqlRetainedQualificationRule =
+        "MIG-MYSQL-RETAINED-LIVE-QUALIFICATION-DEFERRED-001";
     private static readonly StringComparison PathComparison =
         OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
         ? StringComparison.OrdinalIgnoreCase
@@ -122,6 +150,8 @@ internal static class MigrationCommandRunner
             dependencies.InspectSqlServerAsync);
         ArgumentNullException.ThrowIfNull(
             dependencies.InspectMySqlAsync);
+        ArgumentNullException.ThrowIfNull(
+            dependencies.CaptureMySqlAsync);
         ArgumentNullException.ThrowIfNull(
             dependencies.BuildCSharpDbDdlPreview);
         ArgumentNullException.ThrowIfNull(
@@ -1012,185 +1042,251 @@ internal static class MigrationCommandRunner
                 pathError);
         }
 
-        bool packagePublished = false;
-        bool catalogPublished = false;
-        SqlServerCaptureWorkspace? workspace = null;
+        string? catalogParent = Path.GetDirectoryName(outputPath);
+        if (string.IsNullOrEmpty(catalogParent) ||
+            !Directory.Exists(catalogParent))
+        {
+            return await OptionErrorAsync(
+                "The SQL Server catalog parent must be an existing caller-controlled directory.",
+                error);
+        }
+
+        RetainedCaptureDirectoryLease packageParentLease;
+        RetainedCaptureDirectoryLease catalogParentLease;
         try
         {
+            packageParentLease =
+                RetainedCaptureDirectoryLease.Open(packageParent);
             try
             {
-                workspace =
-                    SqlServerCaptureWorkspace.Create(packageParent);
-                string targetCSharpDbVersion =
-                    CSharpDbCapabilityCatalogLoader.CurrentTargetVersion;
-                SqlServerCaptureWorkerResult workerResult =
-                    await dependencies.CaptureSqlServerAsync(
-                            environmentVariableName,
-                            targetCSharpDbVersion,
-                            workspace.CapturePath,
-                            maxSourceBytes,
-                            tableTimeoutSeconds,
-                            ct)
-                        .ConfigureAwait(false);
-                ArgumentNullException.ThrowIfNull(workerResult);
-
-                switch (workerResult.Status)
-                {
-                    case SqlServerCaptureWorkerStatus.Missing:
-                    case SqlServerCaptureWorkerStatus.Incompatible:
-                        throw new MigrationCliSafeException(
-                            "MIG-SQLSERVER-CLI-ADAPTER-001",
-                            "The optional SQL Server capture adapter is unavailable or incompatible.",
-                            new InvalidOperationException(
-                                "The SQL Server capture worker boundary is unavailable."));
-                    case SqlServerCaptureWorkerStatus.ConnectionUnavailable:
-                        throw new MigrationCliSafeException(
-                            "MIG-SQLSERVER-CLI-CONNECTION-001",
-                            "The SQL Server connection could not be acquired by the optional adapter.",
-                            new InvalidOperationException(
-                                "SQL Server connection material was unavailable."));
-                    case SqlServerCaptureWorkerStatus.LimitExceeded:
-                        throw new MigrationCliSafeException(
-                            "MIG-SQLSERVER-CLI-CAPTURE-LIMIT-001",
-                            "The SQL Server retained capture exceeded a configured safety limit.",
-                            new InvalidDataException(
-                                "The SQL Server capture worker crossed a retained-source limit."));
-                    case SqlServerCaptureWorkerStatus.CaptureFailed:
-                        throw new MigrationCliSafeException(
-                            "MIG-SQLSERVER-CLI-CAPTURE-001",
-                            "The SQL Server rows could not be captured safely.",
-                            new InvalidOperationException(
-                                "The SQL Server capture worker could not retain the source."));
-                }
-                if (workerResult.Status !=
-                        SqlServerCaptureWorkerStatus.Success ||
-                    workerResult.Receipt is null)
-                {
-                    throw new MigrationCliSafeException(
-                        "MIG-SQLSERVER-CLI-ADAPTER-001",
-                        "The optional SQL Server capture adapter is unavailable or incompatible.",
-                        new InvalidDataException(
-                            "The SQL Server capture worker returned an invalid contract."));
-                }
-
-                SqlServerCaptureReceipt receipt =
-                    workerResult.Receipt;
-                MigrationCatalog catalog;
-                await using (
-                    RetainedMigrationPackageSession session =
-                        await RetainedMigrationPackageSession
-                            .OpenAsync(
-                                workspace.CapturePath,
-                                new RetainedMigrationPackageOpenOptions
-                                {
-                                    ExpectedPackageDigest =
-                                        receipt.PackageDigest,
-                                    WorkspacePath =
-                                        workspace
-                                            .VerificationWorkspacePath,
-                                    MaxPackageBytes =
-                                        maxSourceBytes,
-                                },
-                                ct)
-                            .ConfigureAwait(false))
-                {
-                    ValidateSqlServerCaptureSession(
-                        session,
-                        receipt,
-                        targetCSharpDbVersion);
-                    catalog = session.Catalog;
-                }
-
-                ct.ThrowIfCancellationRequested();
-                File.Move(
-                    workspace.CapturePath,
-                    packagePath,
-                    overwrite: false);
-                packagePublished = true;
-
-                workspace.Dispose();
-                workspace = null;
-
-                await WriteNewArtifactAsync(
-                    outputPath,
-                    MigrationArtifactSerializer.SerializeCatalog(
-                        catalog),
-                    ct);
-                catalogPublished = true;
-
-                int exitCode = catalog.Diagnostics.Count == 0
-                    ? InspectorCommandRunner.ExitOk
-                    : InspectorCommandRunner.ExitWarn;
-                await output.WriteLineAsync(
-                    $"Status: {StatusLabel(exitCode)} | catalog={outputPath} | package={packagePath} | manifestDigest={receipt.PackageDigest} | tables={receipt.TableCount} | rows={receipt.RowCount} | objects={catalog.Objects.Count} | diagnostics={catalog.Diagnostics.Count}");
-                return exitCode;
+                catalogParentLease =
+                    RetainedCaptureDirectoryLease.Open(catalogParent);
             }
-            catch (Exception operationFailure)
+            catch
             {
-                if (workspace is null)
-                    throw;
-
-                try
-                {
-                    workspace.Dispose();
-                    workspace = null;
-                }
-                catch (
-                    SqlServerCaptureWorkspaceCleanupException
-                        cleanupFailure)
-                {
-                    throw new SqlServerCaptureWorkspaceCleanupException(
-                        operationFailure,
-                        cleanupFailure);
-                }
-
+                packageParentLease.Dispose();
                 throw;
             }
         }
-        catch (
-            SqlServerCaptureWorkspaceCleanupException
-                cleanupFailure)
-        {
-            string message = packagePublished
-                ? "The SQL Server retained package was published, but private capture workspace cleanup failed; the package was preserved and the catalog was not published."
-                : "SQL Server capture failed and its private workspace could not be cleaned safely; no final artifacts were published.";
-            throw new MigrationCliSafeException(
-                "MIG-SQLSERVER-CLI-CLEANUP-001",
-                message,
-                cleanupFailure);
-        }
-        catch (Exception operationFailure) when (
-            packagePublished &&
-            !catalogPublished)
+        catch (Exception pathError) when (
+            pathError is IOException or
+                UnauthorizedAccessException or
+                ArgumentException or
+                NotSupportedException)
         {
             throw new MigrationCliSafeException(
-                "MIG-SQLSERVER-CLI-CATALOG-001",
-                "SQL Server catalog publication failed after the retained package was published; the package was preserved.",
-                operationFailure);
+                "MIG-SQLSERVER-CLI-PATH-001",
+                "The SQL Server retained capture output directories are not safe caller-controlled local directories.",
+                pathError);
         }
-        catch (MigrationCliSafeException)
+
+        using (packageParentLease)
+        using (catalogParentLease)
         {
-            throw;
-        }
-        catch (OperationCanceledException) when (
-            ct.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (RetainedMigrationPackageException packageFailure)
-        {
-            throw new MigrationCliSafeException(
-                "MIG-SQLSERVER-CLI-PACKAGE-001",
-                "The SQL Server retained package could not be verified safely.",
-                packageFailure);
-        }
-        catch (Exception captureError) when (
-            IsRecoverableCliException(captureError))
-        {
-            throw new MigrationCliSafeException(
-                "MIG-SQLSERVER-CLI-CAPTURE-001",
-                "The SQL Server rows could not be captured or published safely.",
-                captureError);
+            packageParentLease.AssertUnchanged();
+            catalogParentLease.AssertUnchanged();
+            if (File.Exists(packagePath) ||
+                Directory.Exists(packagePath) ||
+                File.Exists(outputPath) ||
+                Directory.Exists(outputPath))
+            {
+                return await OptionErrorAsync(
+                    "A SQL Server retained capture destination appeared while its output directories were being secured.",
+                    error);
+            }
+
+            bool packagePublished = false;
+            bool catalogPublished = false;
+            SqlServerCaptureWorkspace? workspace = null;
+            try
+            {
+                try
+                {
+                    workspace =
+                        SqlServerCaptureWorkspace.Create(
+                            packageParent,
+                            packageParentLease);
+                    packageParentLease.AssertUnchanged();
+                    catalogParentLease.AssertUnchanged();
+                    string targetCSharpDbVersion =
+                        CSharpDbCapabilityCatalogLoader.CurrentTargetVersion;
+                    SqlServerCaptureWorkerResult workerResult =
+                        await dependencies.CaptureSqlServerAsync(
+                                environmentVariableName,
+                                targetCSharpDbVersion,
+                                workspace.CapturePath,
+                                maxSourceBytes,
+                                tableTimeoutSeconds,
+                                ct)
+                            .ConfigureAwait(false);
+                    ArgumentNullException.ThrowIfNull(workerResult);
+                    packageParentLease.AssertUnchanged();
+                    workspace.AssertUnchanged();
+
+                    switch (workerResult.Status)
+                    {
+                        case SqlServerCaptureWorkerStatus.Missing:
+                        case SqlServerCaptureWorkerStatus.Incompatible:
+                            throw new MigrationCliSafeException(
+                                "MIG-SQLSERVER-CLI-ADAPTER-001",
+                                "The optional SQL Server capture adapter is unavailable or incompatible.",
+                                new InvalidOperationException(
+                                    "The SQL Server capture worker boundary is unavailable."));
+                        case SqlServerCaptureWorkerStatus.ConnectionUnavailable:
+                            throw new MigrationCliSafeException(
+                                "MIG-SQLSERVER-CLI-CONNECTION-001",
+                                "The SQL Server connection could not be acquired by the optional adapter.",
+                                new InvalidOperationException(
+                                    "SQL Server connection material was unavailable."));
+                        case SqlServerCaptureWorkerStatus.LimitExceeded:
+                            throw new MigrationCliSafeException(
+                                "MIG-SQLSERVER-CLI-CAPTURE-LIMIT-001",
+                                "The SQL Server retained capture exceeded a configured safety limit.",
+                                new InvalidDataException(
+                                    "The SQL Server capture worker crossed a retained-source limit."));
+                        case SqlServerCaptureWorkerStatus.CaptureFailed:
+                            throw new MigrationCliSafeException(
+                                "MIG-SQLSERVER-CLI-CAPTURE-001",
+                                "The SQL Server rows could not be captured safely.",
+                                new InvalidOperationException(
+                                    "The SQL Server capture worker could not retain the source."));
+                    }
+                    if (workerResult.Status !=
+                            SqlServerCaptureWorkerStatus.Success ||
+                        workerResult.Receipt is null)
+                    {
+                        throw new MigrationCliSafeException(
+                            "MIG-SQLSERVER-CLI-ADAPTER-001",
+                            "The optional SQL Server capture adapter is unavailable or incompatible.",
+                            new InvalidDataException(
+                                "The SQL Server capture worker returned an invalid contract."));
+                    }
+
+                    SqlServerCaptureReceipt receipt =
+                        workerResult.Receipt;
+                    MigrationCatalog catalog;
+                    await using (
+                        RetainedMigrationPackageSession session =
+                            await RetainedMigrationPackageSession
+                                .OpenAsync(
+                                    workspace.CapturePath,
+                                    new RetainedMigrationPackageOpenOptions
+                                    {
+                                        ExpectedPackageDigest =
+                                            receipt.PackageDigest,
+                                        WorkspacePath =
+                                            workspace
+                                                .VerificationWorkspacePath,
+                                        MaxPackageBytes =
+                                            maxSourceBytes,
+                                    },
+                                    ct)
+                                .ConfigureAwait(false))
+                    {
+                        ValidateSqlServerCaptureSession(
+                            session,
+                            receipt,
+                            targetCSharpDbVersion);
+                        catalog = session.Catalog;
+                    }
+
+                    ct.ThrowIfCancellationRequested();
+                    packageParentLease.AssertUnchanged();
+                    workspace.AssertUnchanged();
+                    File.Move(
+                        workspace.CapturePath,
+                        packagePath,
+                        overwrite: false);
+                    packagePublished = true;
+                    packageParentLease.AssertUnchanged();
+
+                    workspace.Dispose();
+                    workspace = null;
+                    packageParentLease.AssertUnchanged();
+
+                    catalogParentLease.AssertUnchanged();
+                    await WriteNewArtifactAsync(
+                        outputPath,
+                        MigrationArtifactSerializer.SerializeCatalog(
+                            catalog),
+                        ct);
+                    catalogPublished = true;
+                    catalogParentLease.AssertUnchanged();
+
+                    int exitCode = catalog.Diagnostics.Count == 0
+                        ? InspectorCommandRunner.ExitOk
+                        : InspectorCommandRunner.ExitWarn;
+                    await output.WriteLineAsync(
+                        $"Status: {StatusLabel(exitCode)} | catalog={outputPath} | package={packagePath} | manifestDigest={receipt.PackageDigest} | tables={receipt.TableCount} | rows={receipt.RowCount} | objects={catalog.Objects.Count} | diagnostics={catalog.Diagnostics.Count}");
+                    return exitCode;
+                }
+                catch (Exception operationFailure)
+                {
+                    if (workspace is null)
+                        throw;
+
+                    try
+                    {
+                        workspace.Dispose();
+                        workspace = null;
+                    }
+                    catch (
+                        RetainedCaptureWorkspaceCleanupException
+                            cleanupFailure)
+                    {
+                        throw new RetainedCaptureWorkspaceCleanupException(
+                            operationFailure,
+                            cleanupFailure);
+                    }
+
+                    throw;
+                }
+            }
+            catch (
+                RetainedCaptureWorkspaceCleanupException
+                    cleanupFailure)
+            {
+                string message = packagePublished
+                    ? "The SQL Server retained package was published, but private capture workspace cleanup failed; the package was preserved and the catalog was not published."
+                    : "SQL Server capture failed and its private workspace could not be cleaned safely; no final artifacts were published.";
+                throw new MigrationCliSafeException(
+                    "MIG-SQLSERVER-CLI-CLEANUP-001",
+                    message,
+                    cleanupFailure);
+            }
+            catch (Exception operationFailure) when (
+                packagePublished &&
+                !catalogPublished)
+            {
+                throw new MigrationCliSafeException(
+                    "MIG-SQLSERVER-CLI-CATALOG-001",
+                    "SQL Server catalog publication failed after the retained package was published; the package was preserved.",
+                    operationFailure);
+            }
+            catch (MigrationCliSafeException)
+            {
+                throw;
+            }
+            catch (OperationCanceledException) when (
+                ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (RetainedMigrationPackageException packageFailure)
+            {
+                throw new MigrationCliSafeException(
+                    "MIG-SQLSERVER-CLI-PACKAGE-001",
+                    "The SQL Server retained package could not be verified safely.",
+                    packageFailure);
+            }
+            catch (Exception captureError) when (
+                IsRecoverableCliException(captureError))
+            {
+                throw new MigrationCliSafeException(
+                    "MIG-SQLSERVER-CLI-CAPTURE-001",
+                    "The SQL Server rows could not be captured or published safely.",
+                    captureError);
+            }
         }
     }
 
@@ -1204,7 +1300,14 @@ internal static class MigrationCommandRunner
     {
         if (!RequireOnly(
                 options,
-                ["--source", "--connection-env", "--out"],
+                [
+                    "--source",
+                    "--connection-env",
+                    "--package",
+                    "--out",
+                    "--max-source-bytes",
+                    "--table-timeout-seconds",
+                ],
                 out string? parseError))
         {
             return await OptionErrorAsync(
@@ -1223,6 +1326,31 @@ internal static class MigrationCommandRunner
         {
             return await OptionErrorAsync(
                 "The MySQL connection environment variable name is invalid.",
+                error);
+        }
+        bool hasPackage = options.TryGetValue(
+            "--package",
+            out string? packageValue);
+        if (!hasPackage &&
+            options.ContainsKey("--max-source-bytes"))
+        {
+            return await OptionErrorAsync(
+                "The MySQL source byte limit requires --package.",
+                error);
+        }
+        if (!hasPackage &&
+            options.ContainsKey(
+                "--table-timeout-seconds"))
+        {
+            return await OptionErrorAsync(
+                "The MySQL table timeout requires --package.",
+                error);
+        }
+        if (hasPackage &&
+            string.IsNullOrWhiteSpace(packageValue))
+        {
+            return await OptionErrorAsync(
+                "The MySQL retained package path cannot be blank.",
                 error);
         }
         if (string.IsNullOrWhiteSpace(outputValue))
@@ -1245,6 +1373,18 @@ internal static class MigrationCommandRunner
                 "MIG-MYSQL-CLI-PATH-001",
                 "The MySQL catalog path is invalid.",
                 pathError);
+        }
+        if (hasPackage)
+        {
+            return await RunMySqlCaptureInspectAsync(
+                options,
+                environmentVariableName,
+                packageValue!,
+                outputPath,
+                output,
+                error,
+                dependencies,
+                ct);
         }
         if (File.Exists(outputPath) || Directory.Exists(outputPath))
         {
@@ -1334,6 +1474,417 @@ internal static class MigrationCommandRunner
                 "MIG-MYSQL-CLI-INSPECT-001",
                 "The MySQL schema could not be inspected or published safely.",
                 inspectionError);
+        }
+    }
+
+    private static async ValueTask<int>
+        RunMySqlCaptureInspectAsync(
+        IReadOnlyDictionary<string, string> options,
+        string environmentVariableName,
+        string packageValue,
+        string outputPath,
+        TextWriter output,
+        TextWriter error,
+        MigrationCommandDependencies dependencies,
+        CancellationToken ct)
+    {
+        long maxSourceBytes =
+            new RetainedMigrationPackageWriteOptions()
+                .MaxPackageBytes;
+        if (options.TryGetValue(
+                "--max-source-bytes",
+                out string? maxSourceBytesValue) &&
+            (!TryParseSourceByteLimit(
+                 maxSourceBytesValue,
+                 out maxSourceBytes) ||
+             maxSourceBytes <= 0 ||
+             maxSourceBytes >
+                 MySqlWorkerClient
+                     .HardMaxCapturePackageBytes))
+        {
+            return await OptionErrorAsync(
+                "The MySQL source byte limit must be a positive 64-bit integer no larger than 256 GiB.",
+                error);
+        }
+        int tableTimeoutSeconds =
+            MySqlWorkerClient
+                .DefaultCaptureTableTimeoutSeconds;
+        if (options.TryGetValue(
+                "--table-timeout-seconds",
+                out string? tableTimeoutValue) &&
+            (!int.TryParse(
+                 tableTimeoutValue,
+                 NumberStyles.None,
+                 CultureInfo.InvariantCulture,
+                 out tableTimeoutSeconds) ||
+             tableTimeoutSeconds <= 0 ||
+             tableTimeoutSeconds >
+                 MySqlWorkerClient
+                     .MaxCaptureTableTimeoutSeconds))
+        {
+            return await OptionErrorAsync(
+                "The MySQL table timeout must be an integer from 1 through 86400 seconds.",
+                error);
+        }
+
+        string packagePath;
+        try
+        {
+            packagePath =
+                Path.GetFullPath(packageValue);
+        }
+        catch (Exception pathError) when (
+            pathError is ArgumentException or
+                NotSupportedException or
+                PathTooLongException)
+        {
+            throw new MigrationCliSafeException(
+                "MIG-MYSQL-CLI-PATH-001",
+                "The MySQL retained package path is invalid.",
+                pathError);
+        }
+
+        bool pathsCollide;
+        try
+        {
+            pathsCollide =
+                ContainsEquivalentResolvedPaths(
+                    [packagePath, outputPath]);
+        }
+        catch (Exception pathError) when (
+            pathError is IOException or
+                UnauthorizedAccessException or
+                ArgumentException or
+                NotSupportedException)
+        {
+            throw new MigrationCliSafeException(
+                "MIG-MYSQL-CLI-PATH-001",
+                "The MySQL migration paths could not be verified safely.",
+                pathError);
+        }
+        if (pathsCollide)
+        {
+            return await OptionErrorAsync(
+                "The MySQL retained package and catalog output must use different files.",
+                error);
+        }
+        if (File.Exists(packagePath) ||
+            Directory.Exists(packagePath))
+        {
+            return await OptionErrorAsync(
+                "The MySQL retained package destination already exists.",
+                error);
+        }
+        if (File.Exists(outputPath) ||
+            Directory.Exists(outputPath))
+        {
+            return await OptionErrorAsync(
+                "The MySQL catalog destination already exists.",
+                error);
+        }
+
+        string? packageParent =
+            Path.GetDirectoryName(packagePath);
+        if (string.IsNullOrEmpty(packageParent) ||
+            !Directory.Exists(packageParent))
+        {
+            return await OptionErrorAsync(
+                "The MySQL retained package parent must be an existing caller-controlled directory.",
+                error);
+        }
+        try
+        {
+            FileAttributes parentAttributes =
+                File.GetAttributes(packageParent);
+            if ((parentAttributes &
+                (FileAttributes.ReparsePoint |
+                 FileAttributes.Device)) != 0)
+            {
+                return await OptionErrorAsync(
+                    "The MySQL retained package parent cannot be a link, reparse point, or device.",
+                    error);
+            }
+        }
+        catch (Exception pathError) when (
+            pathError is IOException or
+                UnauthorizedAccessException or
+                ArgumentException or
+                NotSupportedException)
+        {
+            throw new MigrationCliSafeException(
+                "MIG-MYSQL-CLI-PATH-001",
+                "The MySQL retained package parent could not be verified safely.",
+                pathError);
+        }
+
+        string? catalogParent =
+            Path.GetDirectoryName(outputPath);
+        if (string.IsNullOrEmpty(catalogParent) ||
+            !Directory.Exists(catalogParent))
+        {
+            return await OptionErrorAsync(
+                "The MySQL catalog parent must be an existing caller-controlled directory.",
+                error);
+        }
+
+        RetainedCaptureDirectoryLease packageParentLease;
+        RetainedCaptureDirectoryLease catalogParentLease;
+        try
+        {
+            packageParentLease =
+                RetainedCaptureDirectoryLease.Open(packageParent);
+            try
+            {
+                catalogParentLease =
+                    RetainedCaptureDirectoryLease.Open(catalogParent);
+            }
+            catch
+            {
+                packageParentLease.Dispose();
+                throw;
+            }
+        }
+        catch (Exception pathError) when (
+            pathError is IOException or
+                UnauthorizedAccessException or
+                ArgumentException or
+                NotSupportedException)
+        {
+            throw new MigrationCliSafeException(
+                "MIG-MYSQL-CLI-PATH-001",
+                "The MySQL retained capture output directories are not safe caller-controlled local directories.",
+                pathError);
+        }
+
+        using (packageParentLease)
+        using (catalogParentLease)
+        {
+            packageParentLease.AssertUnchanged();
+            catalogParentLease.AssertUnchanged();
+            if (File.Exists(packagePath) ||
+                Directory.Exists(packagePath) ||
+                File.Exists(outputPath) ||
+                Directory.Exists(outputPath))
+            {
+                return await OptionErrorAsync(
+                    "A MySQL retained capture destination appeared while its output directories were being secured.",
+                    error);
+            }
+
+            bool packagePublished = false;
+            bool catalogPublished = false;
+            SqlServerCaptureWorkspace? workspace =
+                null;
+            try
+            {
+                try
+                {
+                    workspace =
+                        SqlServerCaptureWorkspace.Create(
+                            packageParent,
+                            MySqlWorkerClient
+                                .CaptureWorkspacePrefix,
+                            MySqlWorkerClient
+                                .CaptureOutputFileName,
+                            packageParentLease);
+                    packageParentLease.AssertUnchanged();
+                    catalogParentLease.AssertUnchanged();
+                    string targetCSharpDbVersion =
+                        CSharpDbCapabilityCatalogLoader
+                            .CurrentTargetVersion;
+                    MySqlCaptureWorkerResult workerResult =
+                        await dependencies.CaptureMySqlAsync(
+                                environmentVariableName,
+                                targetCSharpDbVersion,
+                                workspace.CapturePath,
+                                maxSourceBytes,
+                                tableTimeoutSeconds,
+                                ct)
+                            .ConfigureAwait(false);
+                    ArgumentNullException.ThrowIfNull(
+                        workerResult);
+                    packageParentLease.AssertUnchanged();
+                    workspace.AssertUnchanged();
+
+                    switch (workerResult.Status)
+                    {
+                        case MySqlCaptureWorkerStatus
+                            .Missing:
+                        case MySqlCaptureWorkerStatus
+                            .Incompatible:
+                            throw new MigrationCliSafeException(
+                                "MIG-MYSQL-CLI-ADAPTER-001",
+                                "The optional MySQL capture adapter is unavailable or incompatible.",
+                                new InvalidOperationException(
+                                    "The MySQL capture worker boundary is unavailable."));
+                        case MySqlCaptureWorkerStatus
+                            .ConnectionUnavailable:
+                            throw new MigrationCliSafeException(
+                                "MIG-MYSQL-CLI-CONNECTION-001",
+                                "The MySQL connection could not be acquired by the optional adapter.",
+                                new InvalidOperationException(
+                                    "MySQL connection material was unavailable."));
+                        case MySqlCaptureWorkerStatus
+                            .LimitExceeded:
+                            throw new MigrationCliSafeException(
+                                "MIG-MYSQL-CLI-CAPTURE-LIMIT-001",
+                                "The MySQL retained capture exceeded a configured safety limit.",
+                                new InvalidDataException(
+                                    "The MySQL capture worker crossed a retained-source limit."));
+                        case MySqlCaptureWorkerStatus
+                            .CaptureFailed:
+                            throw new MigrationCliSafeException(
+                                "MIG-MYSQL-CLI-CAPTURE-001",
+                                "The MySQL rows could not be captured safely.",
+                                new InvalidOperationException(
+                                    "The MySQL capture worker could not retain the source."));
+                    }
+                    if (workerResult.Status !=
+                            MySqlCaptureWorkerStatus
+                                .Success ||
+                        workerResult.Receipt is null)
+                    {
+                        throw new MigrationCliSafeException(
+                            "MIG-MYSQL-CLI-ADAPTER-001",
+                            "The optional MySQL capture adapter is unavailable or incompatible.",
+                            new InvalidDataException(
+                                "The MySQL capture worker returned an invalid contract."));
+                    }
+
+                    MySqlCaptureReceipt receipt =
+                        workerResult.Receipt;
+                    long capturedPackageBytes =
+                        new FileInfo(
+                            workspace.CapturePath)
+                            .Length;
+                    MigrationCatalog catalog;
+                    await using (
+                        RetainedMigrationPackageSession session =
+                            await RetainedMigrationPackageSession
+                                .OpenAsync(
+                                    workspace.CapturePath,
+                                    new RetainedMigrationPackageOpenOptions
+                                    {
+                                        ExpectedPackageDigest =
+                                            receipt
+                                                .PackageDigest,
+                                        WorkspacePath =
+                                            workspace
+                                                .VerificationWorkspacePath,
+                                        MaxPackageBytes =
+                                            maxSourceBytes,
+                                    },
+                                    ct)
+                                .ConfigureAwait(false))
+                    {
+                        ValidateMySqlCaptureSession(
+                            session,
+                            receipt,
+                            capturedPackageBytes,
+                            targetCSharpDbVersion);
+                        catalog = session.Catalog;
+                    }
+
+                    ct.ThrowIfCancellationRequested();
+                    packageParentLease.AssertUnchanged();
+                    workspace.AssertUnchanged();
+                    File.Move(
+                        workspace.CapturePath,
+                        packagePath,
+                        overwrite: false);
+                    packagePublished = true;
+                    packageParentLease.AssertUnchanged();
+
+                    workspace.Dispose();
+                    workspace = null;
+                    packageParentLease.AssertUnchanged();
+
+                    catalogParentLease.AssertUnchanged();
+                    await WriteNewArtifactAsync(
+                        outputPath,
+                        MigrationArtifactSerializer
+                            .SerializeCatalog(catalog),
+                        ct);
+                    catalogPublished = true;
+                    catalogParentLease.AssertUnchanged();
+
+                    int exitCode =
+                        catalog.Diagnostics.Count == 0
+                            ? InspectorCommandRunner.ExitOk
+                            : InspectorCommandRunner.ExitWarn;
+                    await output.WriteLineAsync(
+                        $"Status: {StatusLabel(exitCode)} | catalog={outputPath} | package={packagePath} | manifestDigest={receipt.PackageDigest} | tables={receipt.TableCount} | rows={receipt.RowCount} | objects={catalog.Objects.Count} | diagnostics={catalog.Diagnostics.Count}");
+                    return exitCode;
+                }
+                catch (Exception operationFailure)
+                {
+                    if (workspace is null)
+                        throw;
+
+                    try
+                    {
+                        workspace.Dispose();
+                        workspace = null;
+                    }
+                    catch (
+                        RetainedCaptureWorkspaceCleanupException
+                            cleanupFailure)
+                    {
+                        throw new RetainedCaptureWorkspaceCleanupException(
+                            operationFailure,
+                            cleanupFailure);
+                    }
+
+                    throw;
+                }
+            }
+            catch (
+                RetainedCaptureWorkspaceCleanupException
+                    cleanupFailure)
+            {
+                string message = packagePublished
+                    ? "The MySQL retained package was published, but private capture workspace cleanup failed; the package was preserved and the catalog was not published."
+                    : "MySQL capture failed and its private workspace could not be cleaned safely; no final artifacts were published.";
+                throw new MigrationCliSafeException(
+                    "MIG-MYSQL-CLI-CLEANUP-001",
+                    message,
+                    cleanupFailure);
+            }
+            catch (Exception operationFailure) when (
+                packagePublished &&
+                !catalogPublished)
+            {
+                throw new MigrationCliSafeException(
+                    "MIG-MYSQL-CLI-CATALOG-001",
+                    "MySQL catalog publication failed after the retained package was published; the package was preserved.",
+                    operationFailure);
+            }
+            catch (MigrationCliSafeException)
+            {
+                throw;
+            }
+            catch (OperationCanceledException) when (
+                ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (
+                RetainedMigrationPackageException
+                    packageFailure)
+            {
+                throw new MigrationCliSafeException(
+                    "MIG-MYSQL-CLI-PACKAGE-001",
+                    "The MySQL retained package could not be verified safely.",
+                    packageFailure);
+            }
+            catch (Exception captureError) when (
+                IsRecoverableCliException(captureError))
+            {
+                throw new MigrationCliSafeException(
+                    "MIG-MYSQL-CLI-CAPTURE-001",
+                    "The MySQL rows could not be captured or published safely.",
+                    captureError);
+            }
         }
     }
 
@@ -4710,13 +5261,22 @@ internal static class MigrationCommandRunner
                 "This SQL Server catalog is schema-only and has no retained row route. Inspect the source again with --package before apply or data validation.";
             return false;
         }
+        if (catalog.Source.Kind ==
+                MigrationSourceKind.MySql &&
+            !IsRetainedMySqlCatalog(catalog))
+        {
+            error =
+                "This MySQL catalog is schema-only and has no retained row route. Inspect the source again with --package before apply or data validation.";
+            return false;
+        }
 
         if (catalog.Source.Kind is
             MigrationSourceKind.Csv or
             MigrationSourceKind.Json or
             MigrationSourceKind.Sqlite or
             MigrationSourceKind.LiteDb or
-            MigrationSourceKind.SqlServer)
+            MigrationSourceKind.SqlServer or
+            MigrationSourceKind.MySql)
         {
             string sourceDescription = catalog.Source.Kind switch
             {
@@ -4726,6 +5286,7 @@ internal static class MigrationCommandRunner
                 MigrationSourceKind.LiteDb => "LiteDB",
                 MigrationSourceKind.SqlServer =>
                     "SQL Server",
+                MigrationSourceKind.MySql => "MySQL",
                 _ => "retained-source",
             };
             if (!hasPackage)
@@ -5244,6 +5805,84 @@ internal static class MigrationCommandRunner
                     throw;
                 }
 
+            case MigrationSourceKind.MySql:
+                if (!IsRetainedMySqlCatalog(catalog))
+                {
+                    throw new NotSupportedException(
+                        "This MySQL catalog is schema-only and has no retained row route.");
+                }
+
+                long mySqlMaxSourceBytes =
+                    new RetainedMigrationPackageOpenOptions
+                    {
+                        ExpectedPackageDigest =
+                            options[
+                                "--expected-manifest-digest"],
+                    }.MaxPackageBytes;
+                if (options.TryGetValue(
+                        "--max-source-bytes",
+                        out string?
+                            mySqlMaxSourceBytesValue))
+                {
+                    _ = TryParseSourceByteLimit(
+                        mySqlMaxSourceBytesValue,
+                        out mySqlMaxSourceBytes);
+                }
+
+                RetainedMigrationPackageSession?
+                    mySqlSession = null;
+                try
+                {
+                    mySqlSession =
+                        await RetainedMigrationPackageSession
+                            .OpenAsync(
+                                Path.GetFullPath(
+                                    options[
+                                        "--source-package"]),
+                                new RetainedMigrationPackageOpenOptions
+                                {
+                                    ExpectedPackageDigest =
+                                        options[
+                                            "--expected-manifest-digest"],
+                                    WorkspacePath =
+                                        options.GetValueOrDefault(
+                                            "--workspace"),
+                                    MaxPackageBytes =
+                                        mySqlMaxSourceBytes,
+                                },
+                                ct);
+                    ValidateOpenedMySqlSource(
+                        catalog,
+                        mySqlSession);
+                    return new MigrationSourceLease(
+                        mySqlSession.DataSource,
+                        mySqlSession,
+                        new MigrationSourcePackageMetadata(
+                            RetainedMigrationPackageContract
+                                .Format,
+                            mySqlSession
+                                .PackageDigest));
+                }
+                catch (Exception operationFailure) when (
+                    mySqlSession is not null)
+                {
+                    try
+                    {
+                        await mySqlSession
+                            .DisposeAsync();
+                    }
+                    catch (Exception cleanupFailure)
+                    {
+                        throw new AggregateException(
+                            operationFailure,
+                            cleanupFailure);
+                    }
+
+                    ExceptionDispatchInfo.Capture(
+                        operationFailure).Throw();
+                    throw;
+                }
+
             default:
                 throw new NotSupportedException(
                     $"Migration source '{catalog.Source.Kind}' is not registered in this CLI build.");
@@ -5673,6 +6312,279 @@ internal static class MigrationCommandRunner
             string.Equals(
                 dataContract,
                 SqlServerRetainedDataContract,
+                StringComparison.Ordinal);
+    }
+
+    private static void ValidateMySqlCaptureSession(
+        RetainedMigrationPackageSession session,
+        MySqlCaptureReceipt receipt,
+        long capturedPackageBytes,
+        string targetCSharpDbVersion)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        ArgumentNullException.ThrowIfNull(receipt);
+        MigrationCatalog catalog = session.Catalog;
+        MySqlRetainedManifestBindingValidator.Validate(
+            catalog,
+            session.Manifest);
+        string retainedSnapshotIdentity =
+            GetRetainedMySqlSnapshotIdentity(catalog);
+        string catalogDigest =
+            MigrationArtifactSerializer.ComputeCatalogDigest(
+                catalog);
+        long rowCount = 0;
+        foreach (RetainedMigrationPackageTableManifest table
+                 in session.Manifest.Tables)
+        {
+            rowCount = checked(rowCount + table.RowCount);
+        }
+
+        if (catalog.Source.Kind != MigrationSourceKind.MySql ||
+            !IsRetainedMySqlCatalog(catalog) ||
+            !string.Equals(
+                catalog.TargetCSharpDbVersion,
+                targetCSharpDbVersion,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                session.Manifest.Format,
+                RetainedMigrationPackageContract.Format,
+                StringComparison.Ordinal) ||
+            session.Manifest.SourceKind !=
+                MigrationSourceKind.MySql ||
+            !string.Equals(
+                receipt.Format,
+                MySqlCaptureReceipt.CurrentFormat,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                session.PackageDigest,
+                receipt.PackageDigest,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                session.Manifest.CatalogDigest,
+                receipt.CatalogDigest,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                catalogDigest,
+                receipt.CatalogDigest,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                session.Manifest.SnapshotIdentity,
+                receipt.SnapshotIdentity,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                session.Manifest.SnapshotIdentity,
+                retainedSnapshotIdentity,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                session.DataSource.SnapshotIdentity,
+                receipt.SnapshotIdentity,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                session.Manifest.SourceIdentity,
+                catalog.Source.Identity,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                session.Manifest.SourceFingerprint,
+                catalog.Source.Fingerprint,
+                StringComparison.Ordinal) ||
+            capturedPackageBytes <= 0 ||
+            receipt.PackageBytes != capturedPackageBytes ||
+            session.Manifest.Tables.Count !=
+                receipt.TableCount ||
+            rowCount != receipt.RowCount)
+        {
+            throw new InvalidDataException(
+                "The retained MySQL package does not match the worker capture receipt.");
+        }
+
+        ValidateOpenedSource(catalog, session.DataSource);
+    }
+
+    private static void ValidateOpenedMySqlSource(
+        MigrationCatalog catalog,
+        RetainedMigrationPackageSession session)
+    {
+        MySqlRetainedManifestBindingValidator.Validate(
+            session.Catalog,
+            session.Manifest);
+        MySqlRetainedManifestBindingValidator.Validate(
+            catalog,
+            session.Manifest);
+        string retainedSnapshotIdentity =
+            GetRetainedMySqlSnapshotIdentity(catalog);
+        string catalogDigest =
+            MigrationArtifactSerializer.ComputeCatalogDigest(
+                catalog);
+        string retainedCatalogDigest =
+            MigrationArtifactSerializer.ComputeCatalogDigest(
+                session.Catalog);
+        if (!IsRetainedMySqlCatalog(catalog) ||
+            !IsRetainedMySqlCatalog(session.Catalog) ||
+            !string.Equals(
+                session.Manifest.Format,
+                RetainedMigrationPackageContract.Format,
+                StringComparison.Ordinal) ||
+            session.Manifest.SourceKind !=
+                MigrationSourceKind.MySql ||
+            !string.Equals(
+                catalogDigest,
+                retainedCatalogDigest,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                catalogDigest,
+                session.Manifest.CatalogDigest,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                session.Manifest.SourceIdentity,
+                catalog.Source.Identity,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                session.Manifest.SourceFingerprint,
+                catalog.Source.Fingerprint,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                session.Manifest.SnapshotIdentity,
+                session.DataSource.SnapshotIdentity,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                session.Manifest.SnapshotIdentity,
+                retainedSnapshotIdentity,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "The retained MySQL package catalog does not match the supplied catalog artifact.");
+        }
+
+        ValidateOpenedSource(catalog, session.DataSource);
+    }
+
+    private static bool IsRetainedMySqlCatalog(
+        MigrationCatalog catalog)
+    {
+        if (catalog.Source.Kind != MigrationSourceKind.MySql)
+            return false;
+        MigrationCatalogObject[] databases = catalog.Objects
+            .Where(static item =>
+                item.Kind == MigrationObjectKind.Database)
+            .ToArray();
+        if (databases.Length != 1)
+            return false;
+
+        MigrationCatalogObject database = databases[0];
+        if (!TryGetSingleFacetValue(
+                database.Facets,
+                MySqlRetainedCatalogFacet,
+                out string catalogContract) ||
+            !TryGetSingleFacetValue(
+                database.Facets,
+                MySqlAnalyzerCatalogFacet,
+                out string analyzerContract) ||
+            !TryGetSingleFacetValue(
+                database.Facets,
+                MySqlRetainedDataFacet,
+                out string dataContract) ||
+            !TryGetSingleFacetValue(
+                database.Facets,
+                MySqlRetainedContentDigestFacet,
+                out string contentDigest) ||
+            !TryGetSingleFacetValue(
+                database.Facets,
+                MySqlRetainedSnapshotIdentityFacet,
+                out string snapshotIdentity) ||
+            !TryGetSingleFacetValue(
+                database.Facets,
+                MySqlRetainedMetadataScopeFacet,
+                out string metadataScope) ||
+            !TryGetSingleFacetValue(
+                database.Facets,
+                MySqlRetainedDirectSelectFacet,
+                out string directSelectProven))
+        {
+            return false;
+        }
+
+        return
+            string.Equals(
+                catalogContract,
+                MySqlRetainedCatalogContract,
+                StringComparison.Ordinal) &&
+            string.Equals(
+                analyzerContract,
+                MySqlAnalyzerCatalogContract,
+                StringComparison.Ordinal) &&
+            string.Equals(
+                dataContract,
+                MySqlRetainedDataContract,
+                StringComparison.Ordinal) &&
+            IsCanonicalSha256(contentDigest) &&
+            string.Equals(
+                catalog.Source.Fingerprint,
+                contentDigest,
+                StringComparison.Ordinal) &&
+            string.Equals(
+                snapshotIdentity,
+                MySqlRetainedSnapshotIdentityPrefix +
+                contentDigest,
+                StringComparison.Ordinal) &&
+            string.Equals(
+                metadataScope,
+                MySqlRetainedMetadataScope,
+                StringComparison.Ordinal) &&
+            string.Equals(
+                directSelectProven,
+                "true",
+                StringComparison.Ordinal) &&
+            HasRequiredRetainedMySqlDiagnostic(
+                catalog,
+                database.ObjectId,
+                MySqlRetainedScopeRule) &&
+            HasRequiredRetainedMySqlDiagnostic(
+                catalog,
+                database.ObjectId,
+                MySqlRetainedQualificationRule);
+    }
+
+    private static string GetRetainedMySqlSnapshotIdentity(
+        MigrationCatalog catalog)
+    {
+        MigrationCatalogObject database = catalog.Objects
+            .Single(static item =>
+                item.Kind == MigrationObjectKind.Database);
+        if (!TryGetSingleFacetValue(
+                database.Facets,
+                MySqlRetainedSnapshotIdentityFacet,
+                out string snapshotIdentity))
+        {
+            throw new InvalidDataException(
+                "The retained MySQL catalog snapshot binding is invalid.");
+        }
+
+        return snapshotIdentity;
+    }
+
+    private static bool HasRequiredRetainedMySqlDiagnostic(
+        MigrationCatalog catalog,
+        string databaseObjectId,
+        string ruleId)
+    {
+        MigrationDiagnostic[] matches = catalog.Diagnostics
+            .Where(item =>
+                string.Equals(
+                    item.RuleId,
+                    ruleId,
+                    StringComparison.Ordinal))
+            .ToArray();
+        return matches.Length == 1 &&
+            matches[0].Severity ==
+                MigrationDiagnosticSeverity.Warning &&
+            matches[0].Status ==
+                MigrationCompatibilityStatus.Conditional &&
+            matches[0].Evidence ==
+                MigrationEvidenceLevel.Bound &&
+            !matches[0].CanOverride &&
+            string.Equals(
+                matches[0].ObjectId,
+                databaseObjectId,
                 StringComparison.Ordinal);
     }
 
@@ -6126,6 +7038,7 @@ internal static class MigrationCommandRunner
             0x0002 | // STATX_MODE
             0x0008;  // STATX_UID
         private readonly string rootPath;
+        private RetainedCaptureDirectoryLease? directoryLease;
         private int disposed;
 
         private SqlServerCaptureWorkspace(
@@ -6144,17 +7057,36 @@ internal static class MigrationCommandRunner
         internal string VerificationWorkspacePath { get; }
 
         internal static SqlServerCaptureWorkspace Create(
-            string parentPath)
+            string parentPath,
+            RetainedCaptureDirectoryLease parentLease) =>
+            Create(
+                parentPath,
+                SqlServerWorkerClient
+                    .CaptureWorkspacePrefix,
+                SqlServerWorkerClient
+                    .CaptureOutputFileName,
+                parentLease);
+
+        internal static SqlServerCaptureWorkspace Create(
+            string parentPath,
+            string workspacePrefix,
+            string captureOutputFileName,
+            RetainedCaptureDirectoryLease parentLease)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(
                 parentPath);
+            ArgumentException.ThrowIfNullOrWhiteSpace(
+                workspacePrefix);
+            ArgumentException.ThrowIfNullOrWhiteSpace(
+                captureOutputFileName);
+            ArgumentNullException.ThrowIfNull(parentLease);
             string fullParent = Path.GetFullPath(parentPath);
             for (int attempt = 0; attempt < 8; attempt++)
             {
+                parentLease.AssertUnchanged();
                 string root = Path.Combine(
                     fullParent,
-                    SqlServerWorkerClient
-                        .CaptureWorkspacePrefix +
+                    workspacePrefix +
                     Guid.NewGuid().ToString("N"));
                 if (Directory.Exists(root) ||
                     File.Exists(root))
@@ -6174,9 +7106,8 @@ internal static class MigrationCommandRunner
                         new SqlServerCaptureWorkspace(
                             root,
                             Path.Combine(
-                                root,
-                                SqlServerWorkerClient
-                                    .CaptureOutputFileName),
+                            root,
+                                captureOutputFileName),
                             Path.Combine(
                                 root,
                                 "verified"));
@@ -6185,7 +7116,7 @@ internal static class MigrationCommandRunner
                             root))
                     {
                         throw new IOException(
-                            "The SQL Server capture workspace resolved unexpectedly.");
+                            "The retained capture workspace resolved unexpectedly.");
                     }
                     FileAttributes rootAttributes =
                         File.GetAttributes(root);
@@ -6194,7 +7125,7 @@ internal static class MigrationCommandRunner
                          FileAttributes.Device)) != 0)
                     {
                         throw new IOException(
-                            "The SQL Server capture workspace resolved to an unsafe filesystem object.");
+                            "The retained capture workspace resolved to an unsafe filesystem object.");
                     }
                     string verification =
                         partial.VerificationWorkspacePath;
@@ -6207,13 +7138,19 @@ internal static class MigrationCommandRunner
                          FileAttributes.Device)) != 0)
                     {
                         throw new IOException(
-                            "The SQL Server verification workspace resolved to an unsafe filesystem object.");
+                            "The retained verification workspace resolved to an unsafe filesystem object.");
                     }
+                    parentLease.AssertUnchanged();
+                    partial.directoryLease =
+                        RetainedCaptureDirectoryLease.Open(root);
+                    partial.directoryLease.AssertUnchanged();
+                    parentLease.AssertUnchanged();
                     return partial;
                 }
                 catch (Exception creationFailure) when (
                     creationFailure is IOException or
-                        UnauthorizedAccessException)
+                        UnauthorizedAccessException or
+                        InvalidDataException)
                 {
                     if (partial is not null)
                     {
@@ -6222,10 +7159,10 @@ internal static class MigrationCommandRunner
                             partial.Dispose();
                         }
                         catch (
-                            SqlServerCaptureWorkspaceCleanupException
+                            RetainedCaptureWorkspaceCleanupException
                                 cleanupFailure)
                         {
-                            throw new SqlServerCaptureWorkspaceCleanupException(
+                            throw new RetainedCaptureWorkspaceCleanupException(
                                 creationFailure,
                                 cleanupFailure);
                         }
@@ -6237,42 +7174,131 @@ internal static class MigrationCommandRunner
             }
 
             throw new IOException(
-                "A private SQL Server capture workspace could not be created.");
+                "A private retained capture workspace could not be created.");
+        }
+
+        internal void AssertUnchanged()
+        {
+            if (Volatile.Read(ref disposed) != 0)
+            {
+                throw new ObjectDisposedException(
+                    nameof(SqlServerCaptureWorkspace));
+            }
+
+            RetainedCaptureDirectoryLease lease =
+                directoryLease ??
+                throw new IOException(
+                    "The retained capture workspace identity lease is unavailable.");
+            lease.AssertUnchanged();
+            RequireKnownWorkspaceEntries();
         }
 
         public void Dispose()
         {
             if (Interlocked.Exchange(ref disposed, 1) != 0)
                 return;
+            RetainedCaptureDirectoryLease? lease =
+                directoryLease;
+            directoryLease = null;
             try
             {
-                FileAttributes attributes;
-                try
+                if (lease is null)
+                    throw new IOException(
+                        "The retained capture workspace identity lease is unavailable during cleanup.");
+
+                lease.AssertUnchanged();
+                RequireKnownWorkspaceEntries();
+
+                if (File.Exists(CapturePath))
                 {
-                    attributes =
-                        File.GetAttributes(rootPath);
+                    RequireRegularWorkspaceFile(CapturePath);
+                    File.Delete(CapturePath);
                 }
-                catch (Exception missingError) when (
-                    missingError is FileNotFoundException or
-                        DirectoryNotFoundException)
-                {
-                    return;
-                }
-                if ((attributes &
-                    (FileAttributes.ReparsePoint |
-                     FileAttributes.Device)) != 0)
+
+                if (!Directory.Exists(
+                        VerificationWorkspacePath))
                 {
                     throw new IOException(
-                        "The SQL Server capture workspace changed into an unsafe filesystem object before cleanup.");
+                        "The retained verification workspace disappeared before cleanup.");
                 }
-                Directory.Delete(rootPath, recursive: true);
+                RequireRealWorkspaceDirectory(
+                    VerificationWorkspacePath);
+                Directory.Delete(
+                    VerificationWorkspacePath,
+                    recursive: false);
+
+                lease.AssertUnchanged();
+                lease.Dispose();
+                lease = null;
+                Directory.Delete(
+                    rootPath,
+                    recursive: false);
             }
             catch (Exception exception) when (
                 exception is IOException or
-                    UnauthorizedAccessException)
+                    UnauthorizedAccessException or
+                    InvalidDataException)
             {
-                throw new SqlServerCaptureWorkspaceCleanupException(
+                throw new RetainedCaptureWorkspaceCleanupException(
                     exception);
+            }
+            finally
+            {
+                lease?.Dispose();
+            }
+        }
+
+        private void RequireKnownWorkspaceEntries()
+        {
+            string[] entries =
+                Directory.GetFileSystemEntries(rootPath);
+            foreach (string entry in entries)
+            {
+                if (PathsAreEquivalent(entry, CapturePath))
+                {
+                    RequireRegularWorkspaceFile(entry);
+                    continue;
+                }
+                if (PathsAreEquivalent(
+                        entry,
+                        VerificationWorkspacePath))
+                {
+                    RequireRealWorkspaceDirectory(entry);
+                    continue;
+                }
+
+                throw new IOException(
+                    "The retained capture workspace contains an unexpected entry; it was preserved for manual review.");
+            }
+        }
+
+        private static void RequireRegularWorkspaceFile(
+            string path)
+        {
+            FileAttributes attributes =
+                File.GetAttributes(path);
+            if ((attributes &
+                (FileAttributes.Directory |
+                 FileAttributes.ReparsePoint |
+                 FileAttributes.Device)) != 0)
+            {
+                throw new IOException(
+                    "A retained capture workspace file changed into an unsafe filesystem object.");
+            }
+        }
+
+        private static void RequireRealWorkspaceDirectory(
+            string path)
+        {
+            FileAttributes attributes =
+                File.GetAttributes(path);
+            if ((attributes & FileAttributes.Directory) == 0 ||
+                (attributes &
+                    (FileAttributes.ReparsePoint |
+                     FileAttributes.Device)) != 0)
+            {
+                throw new IOException(
+                    "A retained capture workspace directory changed into an unsafe filesystem object.");
             }
         }
 
@@ -6322,11 +7348,11 @@ internal static class MigrationCommandRunner
                 if (error == 5)
                 {
                     throw new UnauthorizedAccessException(
-                        "Access to the SQL Server capture workspace parent was denied.",
+                        "Access to the retained capture workspace parent was denied.",
                         nativeFailure);
                 }
                 throw new IOException(
-                    "The private SQL Server capture workspace directory could not be created.",
+                    "The private retained capture workspace directory could not be created.",
                     nativeFailure);
             }
 
@@ -6341,18 +7367,18 @@ internal static class MigrationCommandRunner
                 if (unixError == UnixAlreadyExists)
                 {
                     throw new IOException(
-                        "The SQL Server capture workspace candidate already exists.",
+                        "The retained capture workspace candidate already exists.",
                         nativeFailure);
                 }
                 if (unixError is 1 or
                     UnixPermissionDenied)
                 {
                     throw new UnauthorizedAccessException(
-                        "Access to the SQL Server capture workspace parent was denied.",
+                        "Access to the retained capture workspace parent was denied.",
                         nativeFailure);
                 }
                 throw new IOException(
-                    "The private SQL Server capture workspace directory could not be created.",
+                    "The private retained capture workspace directory could not be created.",
                     nativeFailure);
             }
 
@@ -6381,7 +7407,7 @@ internal static class MigrationCommandRunner
                         UnauthorizedAccessException)
                 {
                     throw new IOException(
-                        "The private SQL Server capture workspace could not be verified or cleaned safely.",
+                        "The private retained capture workspace could not be verified or cleaned safely.",
                         new AggregateException(
                             creationFailure,
                             cleanupFailure));
@@ -6405,7 +7431,7 @@ internal static class MigrationCommandRunner
                      FileAttributes.Device)) != 0)
             {
                 throw new IOException(
-                    "The SQL Server capture workspace is not a real directory.");
+                    "The retained capture workspace is not a real directory.");
             }
 
             UnixFileMode mode =
@@ -6417,7 +7443,7 @@ internal static class MigrationCommandRunner
             if (mode != expectedMode)
             {
                 throw new IOException(
-                    "The SQL Server capture workspace does not have owner-only Unix permissions.");
+                    "The retained capture workspace does not have owner-only Unix permissions.");
             }
 
             UnixDirectoryMetadata? metadata =
@@ -6434,7 +7460,7 @@ internal static class MigrationCommandRunner
                     UnixGetEffectiveUserId())
             {
                 throw new IOException(
-                    "The SQL Server capture workspace Unix owner or mode is unsafe.");
+                    "The retained capture workspace Unix owner or mode is unsafe.");
             }
         }
 
@@ -6457,7 +7483,7 @@ internal static class MigrationCommandRunner
                         if (error == 38)
                             return null;
                         throw new IOException(
-                            "The SQL Server capture workspace Unix identity could not be read.",
+                            "The retained capture workspace Unix identity could not be read.",
                             new Win32Exception(error));
                     }
                     if ((metadata.Mask &
@@ -6465,7 +7491,7 @@ internal static class MigrationCommandRunner
                             LinuxStatxRequired)
                     {
                         throw new IOException(
-                            "The SQL Server capture workspace Unix identity is incomplete.");
+                            "The retained capture workspace Unix identity is incomplete.");
                     }
                     return new UnixDirectoryMetadata(
                         metadata.Mode,
@@ -6484,7 +7510,7 @@ internal static class MigrationCommandRunner
                         out DarwinStatBuffer metadata) != 0)
                 {
                     throw new IOException(
-                        "The SQL Server capture workspace Unix identity could not be read.",
+                        "The retained capture workspace Unix identity could not be read.",
                         new Win32Exception(
                             Marshal.GetLastPInvokeError()));
                 }
@@ -6617,22 +7643,22 @@ internal static class MigrationCommandRunner
         }
     }
 
-    private sealed class SqlServerCaptureWorkspaceCleanupException
+    private sealed class RetainedCaptureWorkspaceCleanupException
         : IOException
     {
-        internal SqlServerCaptureWorkspaceCleanupException(
+        internal RetainedCaptureWorkspaceCleanupException(
             Exception cleanupFailure)
             : base(
-                "The private SQL Server capture workspace could not be cleaned safely.",
+                "The private retained capture workspace could not be cleaned safely.",
                 cleanupFailure)
         {
         }
 
-        internal SqlServerCaptureWorkspaceCleanupException(
+        internal RetainedCaptureWorkspaceCleanupException(
             Exception operationFailure,
             Exception cleanupFailure)
             : base(
-                "The SQL Server capture operation and private workspace cleanup both failed.",
+                "The retained capture operation and private workspace cleanup both failed.",
                 new AggregateException(
                     operationFailure,
                     cleanupFailure))

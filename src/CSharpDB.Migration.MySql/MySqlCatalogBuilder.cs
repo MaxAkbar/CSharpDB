@@ -8,6 +8,9 @@ internal static partial class MySqlCatalogBuilder
 {
     public const string CatalogContract = "csharpdb-mysql-catalog/v3";
 
+    internal const string MetadataVisibilityCompleteFacet =
+        "mysqlMetadataVisibilityComplete";
+
     private static readonly UTF8Encoding s_strictUtf8 =
         new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
@@ -105,6 +108,46 @@ internal static partial class MySqlCatalogBuilder
                 Facet(
                     "mysqlRoutineParameterCount",
                     Invariant(snapshot.RoutineParameters.Count)),
+                Facet(
+                    "mysqlMetadataVisibilityProofAttempted",
+                    Boolean(
+                        snapshot.MetadataVisibilityProof
+                            .Attempted)),
+                Facet(
+                    "mysqlMetadataVisibilityAccountFormatSupported",
+                    Boolean(
+                        snapshot.MetadataVisibilityProof
+                            .AccountFormatSupported)),
+                Facet(
+                    "mysqlMetadataVisibilityGranteeMatched",
+                    Boolean(
+                        snapshot.MetadataVisibilityProof
+                            .GranteeMatched)),
+                Facet(
+                    "mysqlDirectSchemaSelect",
+                    Boolean(
+                        snapshot.MetadataVisibilityProof
+                            .HasDirectSchemaSelect)),
+                Facet(
+                    "mysqlDirectSchemaShowView",
+                    Boolean(
+                        snapshot.MetadataVisibilityProof
+                            .HasDirectSchemaShowView)),
+                Facet(
+                    "mysqlDirectSchemaTrigger",
+                    Boolean(
+                        snapshot.MetadataVisibilityProof
+                            .HasDirectSchemaTrigger)),
+                Facet(
+                    "mysqlDirectSchemaExecute",
+                    Boolean(
+                        snapshot.MetadataVisibilityProof
+                            .HasDirectSchemaExecute)),
+                Facet(
+                    MetadataVisibilityCompleteFacet,
+                    Boolean(
+                        snapshot.MetadataVisibilityProof
+                            .IsComplete)),
             ],
         });
         objects.Add(new MigrationCatalogObject
@@ -349,6 +392,8 @@ internal static partial class MySqlCatalogBuilder
             throw new MySqlMigrationException(
                 "MySQL returned an invalid lower_case_table_names value.");
         }
+        ValidateMetadataVisibilityProof(
+            snapshot.MetadataVisibilityProof);
 
         var budget = new MetadataBudget(limits);
         budget.Add(snapshot.EndpointDigest);
@@ -459,6 +504,29 @@ internal static partial class MySqlCatalogBuilder
             tableIdentities,
             budget,
             cancellationToken);
+    }
+
+    private static void ValidateMetadataVisibilityProof(
+        MySqlMetadataVisibilityProof proof)
+    {
+        ArgumentNullException.ThrowIfNull(proof);
+        bool anyGrant =
+            proof.HasDirectSchemaSelect ||
+            proof.HasDirectSchemaShowView ||
+            proof.HasDirectSchemaTrigger ||
+            proof.HasDirectSchemaExecute;
+        if (!proof.Attempted &&
+            (proof.AccountFormatSupported ||
+             proof.GranteeMatched ||
+             anyGrant) ||
+            !proof.AccountFormatSupported &&
+            (proof.GranteeMatched || anyGrant) ||
+            !proof.GranteeMatched &&
+            anyGrant)
+        {
+            throw InvalidSnapshot(
+                "inconsistent metadata-visibility proof");
+        }
     }
 
     private static void ValidateGeneration(
@@ -610,15 +678,18 @@ internal static partial class MySqlCatalogBuilder
             "Phase 7B.3 inventories bounded base tables, columns, default evidence, keys, foreign keys, checks, indexes, views, triggers, routines, parameters, and digest-only SQL-body evidence. Partitions beyond detection, events, dependencies, query semantics, source rows, and live qualification remain deferred.",
             "Complete dependency, row-semantics, and live-source qualification before using this catalog for migration approval.",
             canOverride: false));
-        diagnostics.Add(Diagnostic(
-            databaseId,
-            "MIG-MYSQL-METADATA-COMPLETENESS-UNKNOWN-001",
-            MigrationDiagnosticSeverity.Error,
-            MigrationCompatibilityStatus.Unknown,
-            "Complete MySQL metadata visibility has not been established.",
-            "INFORMATION_SCHEMA can reflect the connected account's visibility, and this checkpoint has not yet proven completeness with a restricted read-only account.",
-            "Run the deferred restricted-account qualification and reconcile the visible object inventory.",
-            canOverride: false));
+        if (!snapshot.MetadataVisibilityProof.IsComplete)
+        {
+            diagnostics.Add(Diagnostic(
+                databaseId,
+                "MIG-MYSQL-METADATA-COMPLETENESS-UNKNOWN-001",
+                MigrationDiagnosticSeverity.Error,
+                MigrationCompatibilityStatus.Unknown,
+                "Complete MySQL metadata visibility has not been established.",
+                "For full analyzer inventory, the authenticated account did not prove direct schema-level SELECT, SHOW VIEW, TRIGGER, and EXECUTE grants through an exact CURRENT_USER grantee match. Role-only and global grants do not satisfy that full-analyzer proof.",
+                "Use an account with the four direct schema grants only when full programmable-object inventory is required; retained v1 uses its narrower direct-SELECT proof.",
+                canOverride: false));
+        }
         diagnostics.Add(Diagnostic(
             databaseId,
             "MIG-MYSQL-LIVE-QUALIFICATION-PENDING-001",
@@ -736,11 +807,11 @@ internal static partial class MySqlCatalogBuilder
             diagnostics.Add(Diagnostic(
                 columnId,
                 "MIG-MYSQL-TINYINT-BOOLEAN-SEMANTICS-001",
-                MigrationDiagnosticSeverity.Error,
-                MigrationCompatibilityStatus.Unknown,
-                "TINYINT(1) boolean semantics require value proof.",
-                "TINYINT(1) is only a display-width convention and can contain values outside zero and one.",
-                "Profile every value or select an explicit integer mapping.",
+                MigrationDiagnosticSeverity.Warning,
+                MigrationCompatibilityStatus.Compatible,
+                "TINYINT(1) is retained as an integer.",
+                "The (1) suffix is a display-width convention, not proof of Boolean values. This provider deliberately preserves every TINYINT(1) value through the signed- or unsigned-integer path.",
+                "Review application assumptions that treated this column as Boolean.",
                 canOverride: false));
         }
         if (column.IsAutoIncrement)
@@ -886,12 +957,6 @@ internal static partial class MySqlCatalogBuilder
         string type = column.DataType.ToLowerInvariant();
         if (IsIntegerType(type))
         {
-            if (column.IsTinyIntOne &&
-                !column.IsUnsigned &&
-                !column.IsZerofill)
-            {
-                return "boolean";
-            }
             return column.IsUnsigned
                 ? "unsignedInteger"
                 : "signedInteger";
@@ -983,6 +1048,25 @@ internal static partial class MySqlCatalogBuilder
             yield return snapshot.Database.DefaultCharacterSet;
             yield return snapshot.Database.DefaultCollation;
             yield return Invariant(snapshot.Database.ViewCount);
+            yield return Boolean(
+                snapshot.MetadataVisibilityProof.Attempted);
+            yield return Boolean(
+                snapshot.MetadataVisibilityProof
+                    .AccountFormatSupported);
+            yield return Boolean(
+                snapshot.MetadataVisibilityProof.GranteeMatched);
+            yield return Boolean(
+                snapshot.MetadataVisibilityProof
+                    .HasDirectSchemaSelect);
+            yield return Boolean(
+                snapshot.MetadataVisibilityProof
+                    .HasDirectSchemaShowView);
+            yield return Boolean(
+                snapshot.MetadataVisibilityProof
+                    .HasDirectSchemaTrigger);
+            yield return Boolean(
+                snapshot.MetadataVisibilityProof
+                    .HasDirectSchemaExecute);
             foreach (MySqlTableMetadata table in OrderedTables(snapshot))
             {
                 yield return "table";
@@ -1218,7 +1302,9 @@ internal static partial class MySqlCatalogBuilder
             "0123456789abcdef".AsSpan()) < 0;
 
     private static MySqlMigrationException LimitExceeded(string category) =>
-        new($"MySQL inspection exceeded the fixed {category} limit.");
+        new(
+            $"MySQL inspection exceeded the fixed {category} limit.",
+            MySqlMigrationErrorCode.InspectionLimit);
 
     private static MySqlMigrationException InvalidSnapshot(string category) =>
         new($"MySQL returned {category}.");

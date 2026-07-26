@@ -20,10 +20,67 @@ if (($temporaryParentItem.Attributes -band
 {
     throw "The isolation workspace parent cannot be a reparse point: $temporaryParent"
 }
+
+function Set-PrivateDirectory {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path
+    )
+
+    if ($IsWindows) {
+        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent(
+            [System.Security.Principal.TokenAccessLevels]::Query)
+        try {
+            $owner = $identity.User
+            if ($null -eq $owner) {
+                throw 'The current Windows identity does not have a SID.'
+            }
+            $security = [System.Security.AccessControl.DirectorySecurity]::new()
+            $security.SetOwner($owner)
+            $security.SetAccessRuleProtection($true, $false)
+            $trusted = @(
+                $owner,
+                [System.Security.Principal.SecurityIdentifier]::new(
+                    [System.Security.Principal.WellKnownSidType]::LocalSystemSid,
+                    $null),
+                [System.Security.Principal.SecurityIdentifier]::new(
+                    [System.Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid,
+                    $null)
+            )
+            foreach ($sid in $trusted) {
+                $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+                    $sid,
+                    [System.Security.AccessControl.FileSystemRights]::FullControl,
+                    [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+                        [System.Security.AccessControl.InheritanceFlags]::ObjectInherit,
+                    [System.Security.AccessControl.PropagationFlags]::None,
+                    [System.Security.AccessControl.AccessControlType]::Allow)
+                $security.AddAccessRule($rule)
+            }
+            [System.IO.FileSystemAclExtensions]::SetAccessControl(
+                [System.IO.DirectoryInfo]::new($Path),
+                $security)
+        }
+        finally {
+            $identity.Dispose()
+        }
+        return
+    }
+
+    $privateMode =
+        [System.IO.UnixFileMode]::UserRead -bor
+        [System.IO.UnixFileMode]::UserWrite -bor
+        [System.IO.UnixFileMode]::UserExecute
+    [System.IO.File]::SetUnixFileMode(
+        $Path,
+        [System.IO.UnixFileMode] $privateMode)
+}
+
 $workspace = Join-Path `
     $temporaryParent `
     ("mysql-migration-isolation-" + [Guid]::NewGuid().ToString('N'))
 [System.IO.Directory]::CreateDirectory($workspace) | Out-Null
+Set-PrivateDirectory -Path $workspace
 
 function Invoke-DotNetPublish {
     param(
@@ -141,6 +198,62 @@ function Assert-CommandFailure {
     }
 }
 
+function Assert-CaptureCommandFailure {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Executable,
+
+        [Parameter(Mandatory = $true)]
+        [string] $ConnectionEnvironmentName,
+
+        [Parameter(Mandatory = $true)]
+        [string] $PackagePath,
+
+        [Parameter(Mandatory = $true)]
+        [string] $OutputPath,
+
+        [Parameter(Mandatory = $true)]
+        [string] $ExpectedCode
+    )
+
+    $commandOutput = @(
+        & $Executable `
+            migrate inspect `
+            --source mysql `
+            --connection-env $ConnectionEnvironmentName `
+            --package $PackagePath `
+            --out $OutputPath 2>&1
+    )
+    $exitCode = $LASTEXITCODE
+    $text = $commandOutput -join [Environment]::NewLine
+
+    if ($exitCode -ne 2) {
+        throw "Expected MySQL retained capture to fail with exit code 2, but received $exitCode."
+    }
+    if (-not $text.Contains($ExpectedCode, [StringComparison]::Ordinal)) {
+        throw "MySQL retained capture did not report the stable code $ExpectedCode."
+    }
+    if (Test-Path -LiteralPath $PackagePath) {
+        throw 'A failed MySQL retained capture published a package artifact.'
+    }
+    if (Test-Path -LiteralPath $OutputPath) {
+        throw 'A failed MySQL retained capture published a catalog artifact.'
+    }
+
+    $packageParent = [System.IO.Path]::GetDirectoryName(
+        [System.IO.Path]::GetFullPath($PackagePath))
+    $orphaned = @(
+        Get-ChildItem `
+            -LiteralPath $packageParent `
+            -Directory `
+            -Force `
+            -Filter '.csharpdb-mysql-capture-*'
+    )
+    if ($orphaned.Count -gt 0) {
+        throw "A failed MySQL retained capture left a private workspace: $($orphaned.FullName -join ', ')"
+    }
+}
+
 function Assert-ReviewedWorkerPackageClosure {
     param(
         [Parameter(Mandatory = $true)]
@@ -215,8 +328,16 @@ try {
     Assert-NoMySqlAssets -Directory $baseOutput
 
     $workerOutput = Join-Path $bundleOutput 'adapters/mysql'
+    $workerName = if ($IsWindows) {
+        'csharpdb-migration-mysql-worker.exe'
+    }
+    else {
+        'csharpdb-migration-mysql-worker'
+    }
     $requiredWorkerFiles = @(
         (Join-Path $bundleOutput 'LICENSE'),
+        (Join-Path $workerOutput $workerName),
+        (Join-Path $workerOutput 'CSharpDB.Migration.Retained.dll'),
         (Join-Path $workerOutput 'CSharpDB.Migration.MySql.dll'),
         (Join-Path $workerOutput 'MySqlConnector.dll'),
         (Join-Path $workerOutput 'Microsoft.Extensions.DependencyInjection.Abstractions.dll'),
@@ -250,6 +371,18 @@ try {
         -Executable (Join-Path $bundleOutput $cliName) `
         -ConnectionEnvironmentName $missingConnectionName `
         -OutputPath (Join-Path $workspace 'bundle-catalog.json') `
+        -ExpectedCode 'MIG-MYSQL-CLI-CONNECTION-001'
+    Assert-CaptureCommandFailure `
+        -Executable (Join-Path $baseOutput $cliName) `
+        -ConnectionEnvironmentName $missingConnectionName `
+        -PackagePath (Join-Path $workspace 'base-source.csdbmysql') `
+        -OutputPath (Join-Path $workspace 'base-capture-catalog.json') `
+        -ExpectedCode 'MIG-MYSQL-CLI-ADAPTER-001'
+    Assert-CaptureCommandFailure `
+        -Executable (Join-Path $bundleOutput $cliName) `
+        -ConnectionEnvironmentName $missingConnectionName `
+        -PackagePath (Join-Path $workspace 'bundle-source.csdbmysql') `
+        -OutputPath (Join-Path $workspace 'bundle-capture-catalog.json') `
         -ExpectedCode 'MIG-MYSQL-CLI-CONNECTION-001'
 
     Write-Host 'MySQL migration adapter isolation is valid.'

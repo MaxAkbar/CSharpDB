@@ -63,6 +63,25 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
             @@session.show_gipk_in_create_table_and_information_schema;
         """;
 
+    internal const string MetadataVisibilityProofQuery =
+        """
+        SELECT
+            CURRENT_USER(),
+            privilege.GRANTEE,
+            privilege.PRIVILEGE_TYPE
+        FROM (SELECT 1 AS anchor) AS proof
+        LEFT JOIN INFORMATION_SCHEMA.SCHEMA_PRIVILEGES AS privilege
+            ON BINARY privilege.TABLE_SCHEMA = BINARY @database_name
+           AND privilege.PRIVILEGE_TYPE IN (
+                'SELECT',
+                'SHOW VIEW',
+                'TRIGGER',
+                'EXECUTE')
+        ORDER BY
+            BINARY privilege.GRANTEE,
+            BINARY privilege.PRIVILEGE_TYPE;
+        """;
+
     internal const string ColumnsQuery =
         """
         SELECT
@@ -103,6 +122,7 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
         [
             ServerAndDatabaseQuery,
             GeneratedInvisiblePrimaryKeyVisibilityQuery,
+            MetadataVisibilityProofQuery,
             TablesQuery,
             ColumnsQuery,
             KeysQuery,
@@ -195,6 +215,13 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
         settings.AllowUserVariables = false;
         settings.AutoEnlist = false;
         settings.PersistSecurityInfo = false;
+        settings.TreatTinyAsBoolean = false;
+        settings.AllowZeroDateTime = true;
+        settings.ConvertZeroDateTime = false;
+        settings.DateTimeKind =
+            MySqlDateTimeKind.Unspecified;
+        settings.GuidFormat = MySqlGuidFormat.None;
+        settings.IgnoreCommandTransaction = false;
         if (settings.ConnectionTimeout is 0 or > ConnectionTimeoutSeconds)
             settings.ConnectionTimeout = ConnectionTimeoutSeconds;
         if (settings.DefaultCommandTimeout is 0 or > CommandTimeoutSeconds)
@@ -209,6 +236,12 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
             settings.AllowUserVariables,
             settings.AutoEnlist,
             settings.PersistSecurityInfo,
+            settings.TreatTinyAsBoolean,
+            settings.AllowZeroDateTime,
+            settings.ConvertZeroDateTime,
+            settings.DateTimeKind.ToString(),
+            settings.GuidFormat.ToString(),
+            settings.IgnoreCommandTransaction,
             settings.ConnectionTimeout,
             settings.DefaultCommandTimeout,
             settings.CancellationTimeout,
@@ -219,6 +252,9 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
 
     internal string EndpointDigest => endpointDigest;
 
+    internal MySqlConnection CreateConnection() =>
+        new(connectionString);
+
     public async ValueTask<MySqlCatalogSnapshot> ReadAsync(
         MySqlInspectionLimits limits,
         CancellationToken cancellationToken)
@@ -227,9 +263,50 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
         limits.Validate();
         cancellationToken.ThrowIfCancellationRequested();
 
-        await using var connection = new MySqlConnection(connectionString);
+        await using MySqlConnection connection = CreateConnection();
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(connection.Database))
+        return await ReadCoreAsync(
+                new CatalogReadContext(connection, null),
+                limits,
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    internal async ValueTask<MySqlCatalogSnapshot> ReadAsync(
+        MySqlConnection connection,
+        MySqlTransaction transaction,
+        MySqlInspectionLimits limits,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        ArgumentNullException.ThrowIfNull(transaction);
+        ArgumentNullException.ThrowIfNull(limits);
+        limits.Validate();
+        cancellationToken.ThrowIfCancellationRequested();
+        if (connection.State != ConnectionState.Open ||
+            !ReferenceEquals(transaction.Connection, connection) ||
+            transaction.IsolationLevel != IsolationLevel.Snapshot)
+        {
+            throw new ArgumentException(
+                "Catalog capture requires an active consistent-snapshot transaction on the supplied MySQL connection.",
+                nameof(transaction));
+        }
+
+        return await ReadCoreAsync(
+                new CatalogReadContext(
+                    connection,
+                    transaction),
+                limits,
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async ValueTask<MySqlCatalogSnapshot> ReadCoreAsync(
+        CatalogReadContext context,
+        MySqlInspectionLimits limits,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(context.Connection.Database))
             throw InvalidProviderMetadata();
 
         var budget = new ReaderBudget(limits);
@@ -240,14 +317,21 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
             string defaultCollation,
             string selectedDatabase
         ) = await ReadServerAndDatabaseAsync(
-                connection,
+                context,
                 budget,
             cancellationToken)
             .ConfigureAwait(false);
+        MySqlMetadataVisibilityProof metadataVisibilityProof =
+            await ReadMetadataVisibilityProofAsync(
+                    context,
+                    selectedDatabase,
+                    budget,
+                    cancellationToken)
+                .ConfigureAwait(false);
         bool? showGeneratedInvisiblePrimaryKey =
             ShouldReadGeneratedInvisiblePrimaryKeyVisibility(server)
                 ? await ReadGeneratedInvisiblePrimaryKeyVisibilityAsync(
-                        connection,
+                        context,
                         cancellationToken)
                     .ConfigureAwait(false)
                 : null;
@@ -261,14 +345,14 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
             IReadOnlyList<MySqlViewMetadata> visibleViews
         ) =
             await ReadTablesAsync(
-                    connection,
+                    context,
                     selectedDatabase,
                     budget,
                     limits,
                     cancellationToken)
                 .ConfigureAwait(false);
         IReadOnlyList<MySqlColumnMetadata> columns = await ReadColumnsAsync(
-                connection,
+                context,
                 selectedDatabase,
                 tables,
                 budget,
@@ -276,7 +360,7 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
                 cancellationToken)
             .ConfigureAwait(false);
         IReadOnlyList<MySqlViewMetadata> views = await ReadViewsAsync(
-                connection,
+                context,
                 selectedDatabase,
                 visibleViews,
                 budget,
@@ -285,7 +369,7 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
             .ConfigureAwait(false);
         IReadOnlyList<MySqlViewColumnMetadata> viewColumns =
             await ReadViewColumnsAsync(
-                    connection,
+                    context,
                     selectedDatabase,
                     views,
                     budget,
@@ -294,7 +378,7 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
                 .ConfigureAwait(false);
         IReadOnlyList<MySqlTriggerMetadata> triggers =
             await ReadTriggersAsync(
-                    connection,
+                    context,
                     selectedDatabase,
                     tables,
                     budget,
@@ -303,7 +387,7 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
                 .ConfigureAwait(false);
         IReadOnlyList<MySqlRoutineMetadata> routines =
             await ReadRoutinesAsync(
-                    connection,
+                    context,
                     selectedDatabase,
                     budget,
                     limits,
@@ -311,7 +395,7 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
                 .ConfigureAwait(false);
         IReadOnlyList<MySqlRoutineParameterMetadata> routineParameters =
             await ReadRoutineParametersAsync(
-                    connection,
+                    context,
                     selectedDatabase,
                     routines,
                     budget,
@@ -319,7 +403,7 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
                     cancellationToken)
                 .ConfigureAwait(false);
         IReadOnlyList<MySqlKeyMetadata> keys = await ReadKeysAsync(
-                connection,
+                context,
                 selectedDatabase,
                 tables,
                 budget,
@@ -328,7 +412,7 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
             .ConfigureAwait(false);
         IReadOnlyList<MySqlKeyColumnMetadata> keyColumns =
             await ReadKeyColumnsAsync(
-                    connection,
+                    context,
                     selectedDatabase,
                     tables,
                     columns,
@@ -339,7 +423,7 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
                 .ConfigureAwait(false);
         IReadOnlyList<MySqlForeignKeyMetadata> foreignKeys =
             await ReadForeignKeysAsync(
-                    connection,
+                    context,
                     selectedDatabase,
                     tables,
                     budget,
@@ -348,7 +432,7 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
                 .ConfigureAwait(false);
         IReadOnlyList<MySqlForeignKeyColumnMetadata> foreignKeyColumns =
             await ReadForeignKeyColumnsAsync(
-                    connection,
+                    context,
                     selectedDatabase,
                     tables,
                     columns,
@@ -360,7 +444,7 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
         IReadOnlyList<MySqlCheckMetadata> checks =
             ShouldReadCheckConstraints(server)
                 ? await ReadChecksAsync(
-                        connection,
+                        context,
                         selectedDatabase,
                         tables,
                         budget,
@@ -372,7 +456,7 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
             IReadOnlyList<MySqlIndexMetadata> indexes,
             IReadOnlyList<MySqlIndexPartMetadata> indexParts
         ) = await ReadIndexesAsync(
-                connection,
+                context,
                 selectedDatabase,
                 tables,
                 columns,
@@ -383,7 +467,7 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
             .ConfigureAwait(false);
         IReadOnlyList<MySqlTableDefinitionMetadata> tableDefinitions =
             await ReadTableDefinitionsAsync(
-                    connection,
+                    context,
                     tables,
                     budget,
                     limits,
@@ -414,7 +498,8 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
             viewColumns,
             triggers,
             routines,
-            routineParameters);
+            routineParameters,
+            metadataVisibilityProof);
     }
 
     private async ValueTask<(
@@ -423,12 +508,12 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
         string DefaultCharacterSet,
         string DefaultCollation,
         string SelectedDatabase)> ReadServerAndDatabaseAsync(
-        MySqlConnection connection,
+        CatalogReadContext context,
         ReaderBudget budget,
         CancellationToken cancellationToken)
     {
         await using MySqlCommand command = Command(
-            connection,
+            context,
             ServerAndDatabaseQuery);
         await using MySqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SingleResult,
@@ -483,13 +568,173 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
             selectedDatabase);
     }
 
-    private static async ValueTask<bool>
-        ReadGeneratedInvisiblePrimaryKeyVisibilityAsync(
-            MySqlConnection connection,
+    private static async ValueTask<MySqlMetadataVisibilityProof>
+        ReadMetadataVisibilityProofAsync(
+            CatalogReadContext context,
+            string selectedDatabase,
+            ReaderBudget budget,
             CancellationToken cancellationToken)
     {
         await using MySqlCommand command = Command(
-            connection,
+            context,
+            MetadataVisibilityProofQuery);
+        AddDatabaseParameter(command, selectedDatabase);
+        await using MySqlDataReader reader =
+            await command.ExecuteReaderAsync(
+                    CommandBehavior.SequentialAccess |
+                    CommandBehavior.SingleResult,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+        string? authenticatedAccount = null;
+        string? expectedGrantee = null;
+        bool accountFormatSupported = false;
+        bool granteeMatched = false;
+        bool hasSelect = false;
+        bool hasShowView = false;
+        bool hasTrigger = false;
+        bool hasExecute = false;
+        bool anyRow = false;
+        while (await reader.ReadAsync(cancellationToken)
+                   .ConfigureAwait(false))
+        {
+            anyRow = true;
+            budget.AddStructuralRow();
+            string current =
+                RequiredString(
+                    reader,
+                    0,
+                    budget);
+            if (authenticatedAccount is null)
+            {
+                authenticatedAccount = current;
+                accountFormatSupported =
+                    TryCreateDirectSchemaGrantee(
+                        current,
+                        out expectedGrantee);
+            }
+            else if (!string.Equals(
+                         authenticatedAccount,
+                         current,
+                         StringComparison.Ordinal))
+            {
+                throw InvalidProviderMetadata();
+            }
+
+            string? grantee =
+                OptionalString(
+                    reader,
+                    1,
+                    budget);
+            string? privilege =
+                OptionalString(
+                    reader,
+                    2,
+                    budget);
+            if ((grantee is null) != (privilege is null))
+                throw InvalidProviderMetadata();
+            if (!accountFormatSupported ||
+                grantee is null ||
+                !string.Equals(
+                    grantee,
+                    expectedGrantee,
+                    StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            granteeMatched = true;
+            switch (privilege)
+            {
+                case "SELECT":
+                    hasSelect = true;
+                    break;
+                case "SHOW VIEW":
+                    hasShowView = true;
+                    break;
+                case "TRIGGER":
+                    hasTrigger = true;
+                    break;
+                case "EXECUTE":
+                    hasExecute = true;
+                    break;
+                default:
+                    throw InvalidProviderMetadata();
+            }
+        }
+        if (!anyRow)
+            throw InvalidProviderMetadata();
+
+        return new MySqlMetadataVisibilityProof(
+            Attempted: true,
+            AccountFormatSupported:
+                accountFormatSupported,
+            GranteeMatched: granteeMatched,
+            HasDirectSchemaSelect: hasSelect,
+            HasDirectSchemaShowView: hasShowView,
+            HasDirectSchemaTrigger: hasTrigger,
+            HasDirectSchemaExecute: hasExecute);
+    }
+
+    internal static bool TryCreateDirectSchemaGrantee(
+        string authenticatedAccount,
+        out string? grantee)
+    {
+        grantee = null;
+        if (string.IsNullOrWhiteSpace(authenticatedAccount))
+            return false;
+        int separator = authenticatedAccount.IndexOf(
+            '@',
+            StringComparison.Ordinal);
+        if (separator <= 0 ||
+            separator != authenticatedAccount.LastIndexOf(
+                '@') ||
+            separator == authenticatedAccount.Length - 1)
+        {
+            return false;
+        }
+
+        ReadOnlySpan<char> user =
+            authenticatedAccount.AsSpan(0, separator);
+        ReadOnlySpan<char> host =
+            authenticatedAccount.AsSpan(separator + 1);
+        if (ContainsUnsafeAccountCharacter(user) ||
+            ContainsUnsafeAccountCharacter(host))
+        {
+            return false;
+        }
+
+        grantee = string.Concat(
+            "'",
+            user.ToString(),
+            "'@'",
+            host.ToString(),
+            "'");
+        return true;
+    }
+
+    private static bool ContainsUnsafeAccountCharacter(
+        ReadOnlySpan<char> value)
+    {
+        foreach (char character in value)
+        {
+            if (character is '\'' or '\\' ||
+                char.IsControl(character) ||
+                char.IsSurrogate(character))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static async ValueTask<bool>
+        ReadGeneratedInvisiblePrimaryKeyVisibilityAsync(
+            CatalogReadContext context,
+            CancellationToken cancellationToken)
+    {
+        await using MySqlCommand command = Command(
+            context,
             GeneratedInvisiblePrimaryKeyVisibilityQuery);
         object? value = await command.ExecuteScalarAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -507,13 +752,13 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
     private async ValueTask<(
         IReadOnlyList<MySqlTableMetadata> Tables,
         IReadOnlyList<MySqlViewMetadata> Views)> ReadTablesAsync(
-        MySqlConnection connection,
+        CatalogReadContext context,
         string selectedDatabase,
         ReaderBudget budget,
         MySqlInspectionLimits limits,
         CancellationToken cancellationToken)
     {
-        await using MySqlCommand command = Command(connection, TablesQuery);
+        await using MySqlCommand command = Command(context, TablesQuery);
         AddDatabaseParameter(command, selectedDatabase);
         await using MySqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
@@ -584,7 +829,7 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
     }
 
     private async ValueTask<IReadOnlyList<MySqlColumnMetadata>> ReadColumnsAsync(
-        MySqlConnection connection,
+        CatalogReadContext context,
         string selectedDatabase,
         IReadOnlyList<MySqlTableMetadata> tables,
         ReaderBudget budget,
@@ -596,7 +841,7 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
             StringComparer.Ordinal);
         var columnIdentities = new HashSet<string>(StringComparer.Ordinal);
         var columnNameIdentities = new HashSet<string>(StringComparer.Ordinal);
-        await using MySqlCommand command = Command(connection, ColumnsQuery);
+        await using MySqlCommand command = Command(context, ColumnsQuery);
         AddDatabaseParameter(command, selectedDatabase);
         await using MySqlDataReader reader = await command.ExecuteReaderAsync(
                 CommandBehavior.SequentialAccess | CommandBehavior.SingleResult,
@@ -745,9 +990,12 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
     }
 
     private static MySqlCommand Command(
-        MySqlConnection connection,
+        CatalogReadContext context,
         string commandText) =>
-        new(commandText, connection)
+        new(
+            commandText,
+            context.Connection,
+            context.Transaction)
         {
             CommandType = CommandType.Text,
             CommandTimeout = checked((int)CommandTimeoutSeconds),
@@ -984,7 +1232,9 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
         new("MySQL returned incomplete or invalid catalog metadata.");
 
     private static MySqlMigrationException LimitExceeded(string category) =>
-        new($"MySQL inspection exceeded the fixed {category} limit.");
+        new(
+            $"MySQL inspection exceeded the fixed {category} limit.",
+            MySqlMigrationErrorCode.InspectionLimit);
 
     private static string ProviderVersion()
     {
@@ -1124,6 +1374,10 @@ internal sealed partial class MySqlCatalogReader : IMySqlCatalogReader
                 throw LimitExceeded("metadata byte");
         }
     }
+
+    private readonly record struct CatalogReadContext(
+        MySqlConnection Connection,
+        MySqlTransaction? Transaction);
 }
 
 internal sealed record MySqlConnectionPolicy(
@@ -1132,6 +1386,12 @@ internal sealed record MySqlConnectionPolicy(
     bool AllowUserVariables,
     bool AutoEnlist,
     bool PersistSecurityInfo,
+    bool TreatTinyAsBoolean,
+    bool AllowZeroDateTime,
+    bool ConvertZeroDateTime,
+    string DateTimeKind,
+    string GuidFormat,
+    bool IgnoreCommandTransaction,
     uint ConnectionTimeout,
     uint DefaultCommandTimeout,
     int CancellationTimeout,
