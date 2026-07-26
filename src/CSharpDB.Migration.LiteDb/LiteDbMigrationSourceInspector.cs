@@ -27,9 +27,25 @@ public sealed partial class LiteDbMigrationSourceInspector : IMigrationSourceIns
     private readonly string sourcePath;
     private readonly string? password;
     private readonly LiteDbInspectionLimits limits;
+    private readonly MigrationSourceIdentity? retainedSource;
 
     public LiteDbMigrationSourceInspector(string sourcePath, string? password = null)
-        : this(sourcePath, password, LiteDbInspectionLimits.Default)
+        : this(
+            sourcePath,
+            password,
+            LiteDbInspectionLimits.Default,
+            retainedSource: null)
+    {
+    }
+
+    public LiteDbMigrationSourceInspector(
+        LiteDbRetainedSnapshot snapshot)
+        : this(
+            (snapshot ?? throw new ArgumentNullException(nameof(snapshot)))
+                .FilePath,
+            password: null,
+            LiteDbInspectionLimits.Default,
+            snapshot.Source)
     {
     }
 
@@ -37,14 +53,42 @@ public sealed partial class LiteDbMigrationSourceInspector : IMigrationSourceIns
         string sourcePath,
         string? password,
         LiteDbInspectionLimits limits)
+        : this(
+            sourcePath,
+            password,
+            limits,
+            retainedSource: null)
+    {
+    }
+
+    internal LiteDbMigrationSourceInspector(
+        string sourcePath,
+        string? password,
+        LiteDbInspectionLimits limits,
+        MigrationSourceIdentity? retainedSource)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sourcePath);
         ArgumentNullException.ThrowIfNull(limits);
         limits.Validate();
+        if (retainedSource is not null &&
+            retainedSource.Kind != MigrationSourceKind.LiteDb)
+        {
+            throw new ArgumentException(
+                "The retained source identity must describe LiteDB.",
+                nameof(retainedSource));
+        }
+        if (retainedSource is not null &&
+            password is not null)
+        {
+            throw new ArgumentException(
+                "Retained LiteDB snapshots do not accept passwords.",
+                nameof(password));
+        }
 
         this.sourcePath = Path.GetFullPath(sourcePath);
         this.password = password;
         this.limits = limits;
+        this.retainedSource = retainedSource;
     }
 
     public MigrationSourceKind SourceKind => MigrationSourceKind.LiteDb;
@@ -90,6 +134,7 @@ public sealed partial class LiteDbMigrationSourceInspector : IMigrationSourceIns
                     before,
                     request,
                     limits,
+                    retainedSource,
                     cancellationToken);
             }
 
@@ -142,6 +187,7 @@ public sealed partial class LiteDbMigrationSourceInspector : IMigrationSourceIns
         FileIdentity file,
         MigrationInspectionRequest request,
         LiteDbInspectionLimits limits,
+        MigrationSourceIdentity? retainedSource,
         CancellationToken cancellationToken)
     {
         var metadataBudget = new MetadataBudget(limits);
@@ -321,10 +367,8 @@ public sealed partial class LiteDbMigrationSourceInspector : IMigrationSourceIns
             diagnostics,
             metadataBudget);
 
-        var catalog = new MigrationCatalog
-        {
-            TargetCSharpDbVersion = request.TargetCSharpDbVersion,
-            Source = new MigrationSourceIdentity
+        MigrationSourceIdentity source = retainedSource ??
+            new MigrationSourceIdentity
             {
                 Kind = MigrationSourceKind.LiteDb,
                 Identity = "litedb-file:" + HashText(
@@ -338,7 +382,20 @@ public sealed partial class LiteDbMigrationSourceInspector : IMigrationSourceIns
                     Description =
                         "Direct LiteDB file inspection with ReadOnly=true and Upgrade=false; unchanged content is verified before and after inspection.",
                 },
-            },
+            };
+        if (!string.Equals(
+                source.Fingerprint,
+                "sha256:" + file.Sha256,
+                StringComparison.Ordinal))
+        {
+            throw new LiteDbMigrationException(
+                "The retained LiteDB snapshot does not match its content-pinned source identity.");
+        }
+
+        var catalog = new MigrationCatalog
+        {
+            TargetCSharpDbVersion = request.TargetCSharpDbVersion,
+            Source = source,
             Objects = objects
                 .OrderBy(static item => item.ObjectId, StringComparer.Ordinal)
                 .ToArray(),

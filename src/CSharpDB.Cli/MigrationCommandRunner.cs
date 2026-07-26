@@ -10,6 +10,7 @@ using CSharpDB.Migration;
 using CSharpDB.Migration.CSharpDb;
 using CSharpDB.Migration.Files.Csv;
 using CSharpDB.Migration.Files.Json;
+using CSharpDB.Migration.LiteDb;
 using CSharpDB.Migration.Sqlite;
 using CSharpDB.Migration.Validation;
 using CSharpDB.Sql;
@@ -23,13 +24,14 @@ internal static class MigrationCommandRunner
         "       csharpdb migrate inspect --source csv --input <source.csv> --package <source.csdbcsv> --out <catalog.json> [--delimiter auto|comma|semicolon|tab|pipe|<character>] [--no-header] [--table <name>] [--sample-rows <count>] [--null-token <text>] [--source-id <label>] [--workspace <directory>] [--max-source-bytes <count>]\n" +
         "       csharpdb migrate inspect --source json --input <source.json|source.ndjson> --package <source.csdbjson> --out <catalog.json> [--framing root-array|ndjson] [--table <name>] [--sample-rows <count>] [--source-id <label>] [--workspace <directory>] [--max-source-bytes <count>] [--typed-intent <source.csdbjson-intent.json> --expected-intent-manifest-digest <sha256:...>]\n" +
         "       csharpdb migrate inspect --source sqlite --input <source.db> --package <snapshot.csdbsqlite> --out <catalog.json> [--profile-sample-size <count>] [--max-source-bytes <count>]\n" +
+        "       csharpdb migrate inspect --source litedb --input <source.db> --package <snapshot.csdblitedb> --out <catalog.json> [--profile-sample-size <count>] [--max-source-bytes <count>]\n" +
         "       csharpdb migrate inspect --source sqlserver --connection-env <name> --out <catalog.json>\n" +
         "       csharpdb migrate inspect --source mysql --connection-env <name> --out <catalog.json>\n" +
         "       csharpdb migrate ddl-check <file.sql> --dialect csharpdb|tsql [--format text|json]\n" +
         "       csharpdb migrate plan <catalog.json> --out <plan.json> [--profile preserve|queryable] [--accept-exclusions all|<id,...>] [--accept-diagnostics <id,...>] [--reject-mode fail-fast|deterministic --reject-rules all|<id,...> --max-rejected-rows-per-batch <count> --max-rejected-rows-per-run <count> --max-reject-evidence-value-bytes <count> --max-reject-evidence-bytes-per-batch <count> --max-reject-evidence-bytes-per-run <count> --max-reject-artifact-bytes <count>]\n" +
         "       csharpdb migrate preview <plan.json> --catalog <catalog.json> [--ddl|--scratch] [--format text|json]\n" +
-        "       csharpdb migrate apply <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
-        "       csharpdb migrate validate <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
+        "       csharpdb migrate apply <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite|source.csdblitedb> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
+        "       csharpdb migrate validate <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite|source.csdblitedb> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
         "       csharpdb migrate export <retained-snapshot.db> --format csv --table <physical-table> --out <table.csv> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1|spreadsheet-safe-lossy-v1] [--max-data-bytes <count>] [--max-decoded-blob-bytes <count>] [--checkpoint-row-interval <count>] [--json]\n" +
         "       csharpdb migrate export <retained-snapshot.db> --format json|ndjson --table <physical-table> --out <table.json|table.ndjson> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1] [--max-data-bytes <count>] [--max-decoded-blob-bytes <count>] [--checkpoint-row-interval <count>] [--json]";
 
@@ -69,6 +71,10 @@ internal static class MigrationCommandRunner
         "csharpdb-sqlite-catalog-v1";
     private const string SqliteCatalogRouteOnlyMessage =
         "This CLI route supports only SQLite catalog contract v1.";
+    private const string LiteDbCatalogContractFacet =
+        "liteDbCatalogContract";
+    private const string LiteDbCatalogRouteOnlyMessage =
+        "This CLI route supports only LiteDB catalog contract v1.";
     private const long MaxMigrationContractArtifactBytes =
         64L * 1024 * 1024;
 
@@ -626,6 +632,15 @@ internal static class MigrationCommandRunner
         if (string.Equals(source, "sqlite", StringComparison.OrdinalIgnoreCase))
         {
             return await RunSqliteInspectAsync(
+                options,
+                outputValue,
+                output,
+                error,
+                ct);
+        }
+        if (string.Equals(source, "litedb", StringComparison.OrdinalIgnoreCase))
+        {
+            return await RunLiteDbInspectAsync(
                 options,
                 outputValue,
                 output,
@@ -1203,6 +1218,180 @@ internal static class MigrationCommandRunner
         }
     }
 
+    private static async ValueTask<int> RunLiteDbInspectAsync(
+        IReadOnlyDictionary<string, string> options,
+        string outputValue,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken ct)
+    {
+        if (!RequireOnly(
+                options,
+                [
+                    "--source",
+                    "--input",
+                    "--package",
+                    "--out",
+                    "--profile-sample-size",
+                    "--max-source-bytes",
+                ],
+                out string? parseError))
+        {
+            return await OptionErrorAsync(parseError!, error);
+        }
+        if (!options.TryGetValue("--input", out string? inputValue))
+            return await OptionErrorAsync("Missing required option --input.", error);
+        if (!options.TryGetValue("--package", out string? packageValue))
+            return await OptionErrorAsync("Missing required option --package.", error);
+        if (string.IsNullOrWhiteSpace(inputValue) ||
+            string.IsNullOrWhiteSpace(packageValue) ||
+            string.IsNullOrWhiteSpace(outputValue))
+        {
+            return await OptionErrorAsync(
+                "LiteDB input, retained package, and catalog paths cannot be blank.",
+                error);
+        }
+
+        var inspectionRequest = new MigrationInspectionRequest
+        {
+            TargetCSharpDbVersion =
+                CSharpDbCapabilityCatalogLoader.CurrentTargetVersion,
+            IncludeProfile = true,
+        };
+        if (options.TryGetValue(
+                "--profile-sample-size",
+                out string? sampleSizeValue))
+        {
+            if (!TryParsePositiveInt(
+                    sampleSizeValue,
+                    out int profileSampleSize))
+            {
+                return await OptionErrorAsync(
+                    "The LiteDB profile sample size must be a positive 32-bit integer.",
+                    error);
+            }
+
+            inspectionRequest = inspectionRequest with
+            {
+                ProfileSampleSize = profileSampleSize,
+            };
+        }
+
+        long maxSourceBytes =
+            LiteDbRetainedSnapshot.DefaultMaxSnapshotBytes;
+        if (options.TryGetValue(
+                "--max-source-bytes",
+                out string? maxSourceBytesValue) &&
+            !TryParseSourceByteLimit(maxSourceBytesValue, out maxSourceBytes))
+        {
+            return await OptionErrorAsync(
+                "The LiteDB source byte limit must be a non-negative 64-bit integer below Int64.MaxValue.",
+                error);
+        }
+
+        string inputPath;
+        string packagePath;
+        string outputPath;
+        try
+        {
+            inputPath = Path.GetFullPath(inputValue);
+            packagePath = Path.GetFullPath(packageValue);
+            outputPath = Path.GetFullPath(outputValue);
+        }
+        catch (Exception pathError) when (
+            pathError is ArgumentException or NotSupportedException or
+                PathTooLongException)
+        {
+            throw new MigrationCliSafeException(
+                "MIG-LITEDB-CLI-PATH-001",
+                "The LiteDB migration paths are invalid.",
+                pathError);
+        }
+
+        bool pathsCollide;
+        try
+        {
+            pathsCollide = ContainsEquivalentResolvedPaths(
+                [inputPath, packagePath, outputPath]);
+        }
+        catch (Exception pathError) when (
+            pathError is IOException or UnauthorizedAccessException or
+                ArgumentException or NotSupportedException)
+        {
+            throw new MigrationCliSafeException(
+                "MIG-LITEDB-CLI-PATH-001",
+                "The LiteDB migration paths could not be verified safely.",
+                pathError);
+        }
+        if (pathsCollide)
+        {
+            return await OptionErrorAsync(
+                "LiteDB input, retained package, and catalog output must use different files.",
+                error);
+        }
+        if (File.Exists(packagePath) || Directory.Exists(packagePath))
+        {
+            return await OptionErrorAsync(
+                "The LiteDB retained package destination already exists.",
+                error);
+        }
+        if (File.Exists(outputPath) || Directory.Exists(outputPath))
+        {
+            return await OptionErrorAsync(
+                "The LiteDB catalog destination already exists.",
+                error);
+        }
+
+        bool packagePublished = false;
+        bool catalogPublished = false;
+        try
+        {
+            LiteDbRetainedSnapshot snapshot =
+                await LiteDbRetainedSnapshot.CreateAsync(
+                    inputPath,
+                    packagePath,
+                    maxSourceBytes,
+                    ct);
+            packagePublished = true;
+            MigrationCatalog catalog =
+                await new LiteDbMigrationSourceInspector(snapshot)
+                    .InspectAsync(inspectionRequest, ct);
+            if (!IsSupportedLiteDbV1Catalog(catalog))
+            {
+                throw new InvalidDataException(
+                    "The LiteDB inspector produced an unsupported catalog contract.");
+            }
+            await WriteNewArtifactAsync(
+                outputPath,
+                MigrationArtifactSerializer.SerializeCatalog(catalog),
+                ct);
+            catalogPublished = true;
+
+            int exitCode = catalog.Diagnostics.Count == 0
+                ? InspectorCommandRunner.ExitOk
+                : InspectorCommandRunner.ExitWarn;
+            await output.WriteLineAsync(
+                $"Status: {StatusLabel(exitCode)} | catalog={outputPath} | package={packagePath} | manifestDigest={snapshot.ContentDigest} | objects={catalog.Objects.Count} | diagnostics={catalog.Diagnostics.Count}");
+            return exitCode;
+        }
+        catch (Exception operationFailure) when (
+            packagePublished &&
+            !catalogPublished)
+        {
+            throw new MigrationCliSafeException(
+                "MIG-LITEDB-CLI-CATALOG-001",
+                "LiteDB catalog publication failed after the retained package was published; the package was preserved.",
+                operationFailure);
+        }
+        catch (LiteDbMigrationException liteDbFailure)
+        {
+            throw new MigrationCliSafeException(
+                "MIG-LITEDB-CLI-INSPECT-001",
+                liteDbFailure.Message,
+                liteDbFailure);
+        }
+    }
+
     private static async ValueTask<int> RunCsvInspectAsync(
         IReadOnlyDictionary<string, string> options,
         string outputValue,
@@ -1777,6 +1966,13 @@ internal static class MigrationCommandRunner
         {
             return await OptionErrorAsync(
                 SqliteCatalogRouteOnlyMessage,
+                error);
+        }
+        if (catalog.Source.Kind == MigrationSourceKind.LiteDb &&
+            !IsSupportedLiteDbV1Catalog(catalog))
+        {
+            return await OptionErrorAsync(
+                LiteDbCatalogRouteOnlyMessage,
                 error);
         }
         if (!TryBindPlanLoadPolicy(
@@ -2423,6 +2619,13 @@ internal static class MigrationCommandRunner
                 SqliteCatalogRouteOnlyMessage,
                 error);
         }
+        if (catalog.Source.Kind == MigrationSourceKind.LiteDb &&
+            !IsSupportedLiteDbV1Catalog(catalog))
+        {
+            return await OptionErrorAsync(
+                LiteDbCatalogRouteOnlyMessage,
+                error);
+        }
         MigrationPlan plan = MigrationArtifactSerializer.DeserializePlan(
             await File.ReadAllTextAsync(planPath, ct),
             catalog);
@@ -2480,6 +2683,13 @@ internal static class MigrationCommandRunner
         {
             return await OptionErrorAsync(
                 SqliteCatalogRouteOnlyMessage,
+                error);
+        }
+        if (catalog.Source.Kind == MigrationSourceKind.LiteDb &&
+            !IsSupportedLiteDbV1Catalog(catalog))
+        {
+            return await OptionErrorAsync(
+                LiteDbCatalogRouteOnlyMessage,
                 error);
         }
         MigrationPlan plan = MigrationArtifactSerializer.DeserializePlan(
@@ -3893,6 +4103,13 @@ internal static class MigrationCommandRunner
                     "Deterministic rejects are not supported for retained SQLite backup migrations.";
                 return false;
 
+            case MigrationSourceKind.LiteDb:
+                supportedRuleIds = [];
+                sourceDescription = "retained LiteDB snapshot source";
+                error =
+                    "Deterministic rejects are not supported for retained LiteDB snapshot migrations.";
+                return false;
+
             default:
                 supportedRuleIds = [];
                 sourceDescription = "unsupported migration source";
@@ -4107,17 +4324,25 @@ internal static class MigrationCommandRunner
             error = SqliteCatalogRouteOnlyMessage;
             return false;
         }
+        if (catalog.Source.Kind == MigrationSourceKind.LiteDb &&
+            !IsSupportedLiteDbV1Catalog(catalog))
+        {
+            error = LiteDbCatalogRouteOnlyMessage;
+            return false;
+        }
 
         if (catalog.Source.Kind is
             MigrationSourceKind.Csv or
             MigrationSourceKind.Json or
-            MigrationSourceKind.Sqlite)
+            MigrationSourceKind.Sqlite or
+            MigrationSourceKind.LiteDb)
         {
             string sourceDescription = catalog.Source.Kind switch
             {
                 MigrationSourceKind.Csv => "CSV",
                 MigrationSourceKind.Json => "JSON",
                 MigrationSourceKind.Sqlite => "SQLite",
+                MigrationSourceKind.LiteDb => "LiteDB",
                 _ => "retained-source",
             };
             if (!hasPackage)
@@ -4491,6 +4716,73 @@ internal static class MigrationCommandRunner
                     throw;
                 }
 
+            case MigrationSourceKind.LiteDb:
+                long liteDbMaxSourceBytes =
+                    LiteDbSnapshotPackageOpenOptions
+                        .DefaultMaxSourceBytes;
+                if (options.TryGetValue(
+                        "--max-source-bytes",
+                        out string? liteDbMaxSourceBytesValue))
+                {
+                    _ = TryParseSourceByteLimit(
+                        liteDbMaxSourceBytesValue,
+                        out liteDbMaxSourceBytes);
+                }
+
+                LiteDbSnapshotPackageSession?
+                    liteDbSession = null;
+                try
+                {
+                    liteDbSession =
+                        await LiteDbSnapshotPackageSession
+                            .OpenAsync(
+                                Path.GetFullPath(
+                                    options[
+                                        "--source-package"]),
+                                catalog,
+                                new LiteDbSnapshotPackageOpenOptions
+                                {
+                                    WorkspacePath =
+                                        options.GetValueOrDefault(
+                                            "--workspace"),
+                                    MaxSourceBytes =
+                                        liteDbMaxSourceBytes,
+                                    ExpectedContentDigest =
+                                        options[
+                                            "--expected-manifest-digest"],
+                                },
+                                ct);
+                    ValidateOpenedSource(
+                        catalog,
+                        liteDbSession.DataSource);
+                    return new MigrationSourceLease(
+                        liteDbSession.DataSource,
+                        liteDbSession,
+                        new MigrationSourcePackageMetadata(
+                            LiteDbSnapshotPackageSession
+                                .Format,
+                            liteDbSession.ContentDigest));
+                }
+                catch (Exception operationFailure) when (
+                    liteDbSession is not null)
+                {
+                    try
+                    {
+                        await liteDbSession
+                            .DisposeAsync();
+                    }
+                    catch (Exception cleanupFailure)
+                    {
+                        throw new AggregateException(
+                            operationFailure,
+                            cleanupFailure);
+                    }
+
+                    ExceptionDispatchInfo.Capture(
+                        operationFailure).Throw();
+                    throw;
+                }
+
             default:
                 throw new NotSupportedException(
                     $"Migration source '{catalog.Source.Kind}' is not registered in this CLI build.");
@@ -4534,6 +4826,40 @@ internal static class MigrationCommandRunner
             string.Equals(
                 contracts[0].Value,
                 SqliteCatalogContractV1,
+                StringComparison.Ordinal);
+    }
+
+    private static bool IsSupportedLiteDbV1Catalog(
+        MigrationCatalog catalog)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        if (catalog.Source.Kind != MigrationSourceKind.LiteDb)
+            return false;
+
+        MigrationCatalogObject[] mainNamespaces = catalog.Objects
+            .Where(item =>
+                item.Kind == MigrationObjectKind.Namespace &&
+                string.Equals(
+                    item.SourceName,
+                    "main",
+                    StringComparison.Ordinal))
+            .ToArray();
+        if (mainNamespaces.Length != 1)
+            return false;
+
+        MigrationCatalogFacet[] contracts = catalog.Objects
+            .Where(item => item.Kind == MigrationObjectKind.Namespace)
+            .SelectMany(item => item.Facets)
+            .Where(facet => string.Equals(
+                facet.Name,
+                LiteDbCatalogContractFacet,
+                StringComparison.Ordinal))
+            .ToArray();
+        return contracts.Length == 1 &&
+            mainNamespaces[0].Facets.Contains(contracts[0]) &&
+            string.Equals(
+                contracts[0].Value,
+                LiteDbMigrationSourceInspector.CatalogContract,
                 StringComparison.Ordinal);
     }
 

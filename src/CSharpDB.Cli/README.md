@@ -115,22 +115,23 @@ csharpdb migrate inspect --source csv --input <source.csv> --package <source.csd
 csharpdb migrate inspect --source json --input <source.json|source.ndjson> --package <source.csdbjson> --out <catalog.json> [--framing root-array|ndjson] [--table <name>] [--sample-rows <count>] [--source-id <label>] [--workspace <directory>] [--max-source-bytes <count>]
 csharpdb migrate inspect --source json --input <source.json|source.ndjson> --typed-intent <source.csdbjson-intent.json> --expected-intent-manifest-digest <sha256:...> --package <source.csdbjson> --out <catalog.json> [--framing root-array|ndjson] [--table <name>] [--sample-rows <count>] [--source-id <label>] [--workspace <directory>] [--max-source-bytes <count>]
 csharpdb migrate inspect --source sqlite --input <source.db> --package <source.csdbsqlite> --out <catalog.json> [--profile-sample-size <count>] [--max-source-bytes <count>]
+csharpdb migrate inspect --source litedb --input <source.db> --package <source.csdblitedb> --out <catalog.json> [--profile-sample-size <count>] [--max-source-bytes <count>]
 csharpdb migrate inspect --source sqlserver --connection-env <name> --out <catalog.json>
 csharpdb migrate inspect --source mysql --connection-env <name> --out <catalog.json>
 csharpdb migrate ddl-check <file.sql> --dialect csharpdb|tsql [--format text|json]
 csharpdb migrate plan <catalog.json> --out <plan.json> [--profile preserve|queryable] [--accept-exclusions all|<id,...>] [--accept-diagnostics <id,...>] [--reject-mode fail-fast|deterministic --reject-rules all|<id,...> --max-rejected-rows-per-batch <count> --max-rejected-rows-per-run <count> --max-reject-evidence-value-bytes <count> --max-reject-evidence-bytes-per-batch <count> --max-reject-evidence-bytes-per-run <count> --max-reject-artifact-bytes <count>]
 csharpdb migrate preview <plan.json> --catalog <catalog.json> [--ddl|--scratch] [--format text|json]
-csharpdb migrate apply <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite> --expected-manifest-digest <sha256:...> --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]
-csharpdb migrate validate <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite> --expected-manifest-digest <sha256:...> --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]
+csharpdb migrate apply <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite|source.csdblitedb> --expected-manifest-digest <sha256:...> [--workspace <directory>] [--max-source-bytes <count>] --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]
+csharpdb migrate validate <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite|source.csdblitedb> --expected-manifest-digest <sha256:...> [--workspace <directory>] [--max-source-bytes <count>] --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]
 csharpdb migrate export <retained-snapshot.db> --format csv --table <physical-table> --out <table.csv> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1|spreadsheet-safe-lossy-v1] [--max-data-bytes <positive-int64>] [--max-decoded-blob-bytes <positive-int32>] [--checkpoint-row-interval <positive-int64>] [--json]
 csharpdb migrate export <retained-snapshot.db> --format json|ndjson --table <physical-table> --out <table.json|table.ndjson> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1] [--max-data-bytes <positive-int64>] [--max-decoded-blob-bytes <positive-int32>] [--checkpoint-row-interval <positive-int64>] [--json]
 ```
 
 Inspection supports the immutable synthetic qualification source, strict CSV,
 untyped retained JSON package v1, explicitly selected typed JSON package v2,
-SQLite, and schema-only SQL Server and MySQL readiness analysis. CSV inspection
-freezes the raw bytes and complete reader and inference policy into one
-no-overwrite `.csdbcsv` package. JSON inspection does
+SQLite, LiteDB, and schema-only SQL Server and MySQL readiness analysis. CSV
+inspection freezes the raw bytes and complete reader and inference policy into
+one no-overwrite `.csdbcsv` package. JSON inspection does
 the same for root-array JSON or NDJSON-compatible whitespace-separated
 top-level values in one no-overwrite `.csdbjson` package. Both JSON package
 versions use that extension; the catalog's versioned schema facets select the
@@ -139,6 +140,12 @@ coherent online backup in one no-overwrite `.csdbsqlite` package and binds its
 native catalog plus sampled storage-class profile to the package SHA-256.
 SQLite backup creation is incrementally cancellable and defaults to a 1 TiB
 retained-snapshot ceiling; `--max-source-bytes` can select a smaller bound.
+LiteDB inspection requires an offline/quiesced, unencrypted LiteDB 5 source and
+creates a byte-for-byte retained snapshot in one no-overwrite `.csdblitedb`
+package. Capture holds a read handle that denies writers and deletion while
+copying because LiteDB has no coherent online-backup API. Close all LiteDB
+writers before running the command. The package and catalog are bound to the
+printed SHA-256 content digest.
 
 SQL Server and MySQL inspection accept only the name of an environment variable
 through `--connection-env`; a raw connection string is never a command-line
@@ -169,8 +176,8 @@ Inspection writes the normal catalog artifact and prints
 `intentManifestDigest=sha256:...`. Retain package and sidecar pins in an
 independently trusted change record or CI parameter. Apply, resume, and
 validation require the package pin through `--expected-manifest-digest`.
-The original CSV, JSON, or live SQLite path is not retained and is never
-reopened after inspection.
+The original CSV, JSON, live SQLite, or live LiteDB path is not retained and is
+never reopened after inspection.
 
 The DDL proof command reads one strict, bounded UTF-8 script and supports the
 `csharpdb` and `tsql` dialects. The CSharpDB route uses source grammar
@@ -245,6 +252,16 @@ validation copy the pinned package into an owner-private workspace, reconstruct
 the exact catalog before target access, and never read the deleted or changed
 live source path.
 
+LiteDB v1 replays every collection as a CSharpDB document collection in
+ascending built-in `_id` index order. `_key` is a collision-proof typed source
+key and `_doc` is the complete tagged canonical BSON document, including `_id`.
+The bridge preserves all LiteDB BSON types and supports fail-fast plans only.
+The built-in `_id` index is subsumed by `_key`; other simple, expression, and
+unique indexes are retained in inventory but excluded from automatic target
+creation because BSON-path, uniqueness, and collation semantics are not
+translated. Review and accept those exclusions, then recreate required indexes
+manually using reviewed CSharpDB semantics.
+
 Supported migration-source matrix:
 
 | Source | Retained consistency boundary | Schema/data route | Reject policy |
@@ -253,6 +270,7 @@ Supported migration-source matrix:
 | JSON/NDJSON v1 | Private byte-for-byte snapshot in `.csdbjson` | Untyped table inference and streaming | Fail-fast or the fixed untyped-JSON deterministic registry |
 | Typed JSON v2 | Source- and intent-pinned `.csdbjson` | Explicit typed table contract | Fail-fast |
 | SQLite v1 | Coherent online backup in `.csdbsqlite` | Tier 1 native catalog and rowid streaming | Fail-fast |
+| LiteDB v1 | Offline/quiesced byte-for-byte snapshot in `.csdblitedb` | Tagged canonical BSON document-collection streaming | Fail-fast |
 | SQL Server readiness | Live best-effort, schema-only metadata inspection | Inventory, compatibility, planning, and target DDL assurance only | No data route |
 | MySQL readiness | Live best-effort, schema-only metadata inspection | Inventory, compatibility, planning, and target DDL assurance only | No data route |
 
@@ -262,6 +280,15 @@ and content fingerprint used for the run. This repository qualifies the
 provider version selected by `CSharpDbQualifiedEfCoreVersion` together with the
 pinned SQLitePCLRaw bundle; a catalog produced by a different build remains
 explicitly versioned evidence, not an implied compatibility claim.
+
+LiteDB catalogs record the adapter and LiteDB provider versions, collection
+name comparison, collation, collection/index/document counts, profile coverage,
+and snapshot content fingerprint. Apply and validation copy the package into a
+unique owner-private child of `--workspace`, verify the trusted digest,
+reconstruct the exact catalog, and read only that private copy. The child is
+removed when the command closes. If `--workspace` is omitted, the system
+temporary directory is used; an explicit existing caller-controlled local
+directory is recommended.
 
 Example SQLite workflow:
 
@@ -273,6 +300,41 @@ csharpdb migrate preview .\plan.json --catalog .\catalog.json
 csharpdb migrate apply .\plan.json --catalog .\catalog.json --source-package .\source.csdbsqlite --expected-manifest-digest <recorded-sha256> --target .\staged.csdb --out .\run.json
 csharpdb migrate validate .\plan.json --catalog .\catalog.json --source-package .\source.csdbsqlite --expected-manifest-digest <recorded-sha256> --target .\staged.csdb --out .\validation.json --level checksum
 ```
+
+Example LiteDB workflow:
+
+```powershell
+# Close all LiteDB writers first. The v1 route accepts unencrypted LiteDB 5.
+New-Item -ItemType Directory -Force .\migration-work, .\migration-spill
+csharpdb migrate inspect --source litedb --input .\source.db --package .\source.csdblitedb --out .\catalog.json --max-source-bytes 1073741824
+# Record the printed manifestDigest in trusted change control.
+
+# Index inventory is excluded from automatic target creation and requires
+# explicit review/approval. Use specific object IDs instead of "all" when
+# change control requires narrower approval.
+csharpdb migrate plan .\catalog.json --out .\plan.json --accept-exclusions all
+csharpdb migrate preview .\plan.json --catalog .\catalog.json
+csharpdb migrate preview .\plan.json --catalog .\catalog.json --ddl
+csharpdb migrate preview .\plan.json --catalog .\catalog.json --scratch
+
+csharpdb migrate apply .\plan.json --catalog .\catalog.json --source-package .\source.csdblitedb --expected-manifest-digest <recorded-sha256> --workspace .\migration-work --max-source-bytes 1073741824 --target .\staged.csdb --out .\run.json
+
+# If apply was interrupted after the staged target was created, repeat the
+# exact binding and add --resume.
+csharpdb migrate apply .\plan.json --catalog .\catalog.json --source-package .\source.csdblitedb --expected-manifest-digest <recorded-sha256> --workspace .\migration-work --max-source-bytes 1073741824 --target .\staged.csdb --out .\run.json --resume
+
+csharpdb migrate validate .\plan.json --catalog .\catalog.json --source-package .\source.csdblitedb --expected-manifest-digest <recorded-sha256> --workspace .\migration-work --max-source-bytes 1073741824 --target .\staged.csdb --out .\validation.json --level checksum --spill-dir .\migration-spill
+```
+
+Apply creates a new staged target and stops at `awaitingValidation`; it does not
+overwrite or activate an existing target. Rows and receipts commit together.
+`--resume` reopens and requalifies the package, creates a fresh private
+workspace copy, and skips only exact matching batch receipts. The target
+receipts—not the workspace copy or run report—are the recovery authority.
+Checksum validation replays the same snapshot and compares normalized schema,
+64-bit counts, and partitioned canonical SHA-256 evidence. Passing validation
+activates the staged target; failure or inconclusive evidence withholds
+activation.
 
 Example SQL Server schema-readiness workflow:
 
@@ -366,6 +428,14 @@ or devices. Source-package collision checks resolve link aliases in ancestor
 components before comparing input, package, catalog, plan, target, and report
 roles.
 
+LiteDB inspect publishes the no-overwrite `.csdblitedb` package before its
+no-overwrite catalog. If later catalog publication fails, the package is
+preserved for diagnosis instead of being silently deleted or repaired. Apply
+and validation normally remove their unique owner-private workspace child on
+close. A process crash can leave an orphan; after confirming that no migration
+process is using it, inspect and remove it manually. Orphaned workspace data is
+not resumable state and must never be substituted for the retained package.
+
 CSV export accepts only an already retained CSharpDB snapshot. Capture
 and pin its canonical identity independently before invoking the command; the
 CLI does not turn a live database path into a retained source or derive a trust
@@ -413,7 +483,7 @@ with both JSON data formats.
 Fail-fast is the default: omitting `--reject-mode` produces the established
 `csharpdb-migration-fail-fast/v1` plan JSON and digest. Retained CSV and
 untyped retained JSON package v1 can opt into `--reject-mode deterministic`;
-typed JSON v2 and SQLite currently remain fail-fast only.
+typed JSON v2, SQLite, and LiteDB remain fail-fast only.
 That mode requires `--reject-rules` plus all six positive, base-10 limits shown
 above. `--reject-rules all` expands to a source-specific fixed set. CSV uses
 `MIG-CSV-DATA-MISSING-001`, `MIG-CSV-DATA-NULL-001`, and
@@ -443,8 +513,8 @@ fails.
 
 These commands produce digested deterministic planning artifacts and apply an
 explicitly approved plan to a new staged database. Apply never overwrites or
-activates an existing target. Before target creation, retained CSV, JSON, or
-SQLite execution verifies the exact package digest and reconstructs the
+activates an existing target. Before target creation, retained CSV, JSON,
+SQLite, or LiteDB execution verifies the exact package digest and reconstructs the
 catalog, source fingerprint, snapshot identity, and inspection recipe. Rows and
 receipts commit together; `--resume` replays the same source snapshot and skips
 only batches whose identities and digests match exactly.
@@ -490,8 +560,8 @@ checkpoint, and is not consulted to decide which batches `--resume` skips.
 - `DevOpsCommandRunner.cs` - schema compare commands
 - `PipelineCommandRunner.cs` - ETL package and catalog commands
 - `MigrationCommandRunner.cs` - migration inspect, plan, bounded DDL/scratch
-  preview, apply, resume, validate, retained CSV/JSON/SQLite, schema-only SQL
-  Server/MySQL analysis, and CSV/JSON/NDJSON export commands
+  preview, apply, resume, validate, retained CSV/JSON/SQLite/LiteDB, schema-only
+  SQL Server/MySQL analysis, and CSV/JSON/NDJSON export commands
 - `SqlServerWorkerClient.cs` - bounded fixed-path protocol client for the
   optional SQL Server inspection and standalone T-SQL DDL worker routes
 - `MySqlWorkerClient.cs` - bounded fixed-path protocol client for the optional MySQL inspection worker
@@ -516,6 +586,7 @@ dotnet test tests/CSharpDB.Migration.SqlServer.Tests/CSharpDB.Migration.SqlServe
 - `CSharpDB.Migration`
 - `CSharpDB.Migration.CSharpDb`
 - `CSharpDB.Migration.Files`
+- `CSharpDB.Migration.LiteDb`
 - `CSharpDB.Migration.Sqlite`
 - `CSharpDB.Sql`
 - `CSharpDB.Storage.Diagnostics`
