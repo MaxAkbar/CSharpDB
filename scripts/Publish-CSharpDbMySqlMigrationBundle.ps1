@@ -16,6 +16,43 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Assert-ExistingPathHasNoReparsePoints {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path,
+
+        [Parameter(Mandatory = $true)]
+        [string] $Description
+    )
+
+    $current = [System.IO.Path]::GetFullPath($Path)
+    while (-not [string]::IsNullOrWhiteSpace($current)) {
+        $item = Get-Item `
+            -LiteralPath $current `
+            -Force `
+            -ErrorAction SilentlyContinue
+        if ($null -ne $item -and
+            ($item.Attributes -band
+                [System.IO.FileAttributes]::ReparsePoint) -ne 0)
+        {
+            throw "$Description cannot pass through a link or reparse point: $current"
+        }
+
+        $parent = [System.IO.Directory]::GetParent($current)
+        if ($null -eq $parent -or
+            [string]::Equals(
+                [System.IO.Path]::TrimEndingDirectorySeparator($current),
+                [System.IO.Path]::TrimEndingDirectorySeparator(
+                    $parent.FullName),
+                [StringComparison]::OrdinalIgnoreCase))
+        {
+            break
+        }
+
+        $current = $parent.FullName
+    }
+}
+
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).ProviderPath
 $output = [System.IO.Path]::GetFullPath(
     $(if ([System.IO.Path]::IsPathRooted($OutputPath)) {
@@ -25,6 +62,12 @@ $output = [System.IO.Path]::GetFullPath(
         Join-Path $root $OutputPath
     }))
 
+Assert-ExistingPathHasNoReparsePoints `
+    -Path $root `
+    -Description 'The repository root'
+Assert-ExistingPathHasNoReparsePoints `
+    -Path $output `
+    -Description 'The bundle destination'
 if (Test-Path -LiteralPath $output) {
     if (-not (Test-Path -LiteralPath $output -PathType Container)) {
         throw "The bundle destination is not a directory: $output"
@@ -37,6 +80,9 @@ if (Test-Path -LiteralPath $output) {
 else {
     [System.IO.Directory]::CreateDirectory($output) | Out-Null
 }
+Assert-ExistingPathHasNoReparsePoints `
+    -Path $output `
+    -Description 'The bundle destination'
 
 $workerOutput = Join-Path $output 'adapters/mysql'
 [System.IO.Directory]::CreateDirectory($workerOutput) | Out-Null

@@ -16,6 +16,43 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Assert-ExistingPathHasNoReparsePoints {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path,
+
+        [Parameter(Mandatory = $true)]
+        [string] $Description
+    )
+
+    $current = [System.IO.Path]::GetFullPath($Path)
+    while (-not [string]::IsNullOrWhiteSpace($current)) {
+        $item = Get-Item `
+            -LiteralPath $current `
+            -Force `
+            -ErrorAction SilentlyContinue
+        if ($null -ne $item -and
+            ($item.Attributes -band
+                [System.IO.FileAttributes]::ReparsePoint) -ne 0)
+        {
+            throw "$Description cannot pass through a link or reparse point: $current"
+        }
+
+        $parent = [System.IO.Directory]::GetParent($current)
+        if ($null -eq $parent -or
+            [string]::Equals(
+                [System.IO.Path]::TrimEndingDirectorySeparator($current),
+                [System.IO.Path]::TrimEndingDirectorySeparator(
+                    $parent.FullName),
+                [StringComparison]::OrdinalIgnoreCase))
+        {
+            break
+        }
+
+        $current = $parent.FullName
+    }
+}
+
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).ProviderPath
 $output = [System.IO.Path]::GetFullPath(
     $(if ([System.IO.Path]::IsPathRooted($OutputPath)) {
@@ -25,6 +62,12 @@ $output = [System.IO.Path]::GetFullPath(
         Join-Path $root $OutputPath
     }))
 
+Assert-ExistingPathHasNoReparsePoints `
+    -Path $root `
+    -Description 'The repository root'
+Assert-ExistingPathHasNoReparsePoints `
+    -Path $output `
+    -Description 'The bundle destination'
 if (Test-Path -LiteralPath $output) {
     if (-not (Test-Path -LiteralPath $output -PathType Container)) {
         throw "The bundle destination is not a directory: $output"
@@ -37,6 +80,9 @@ if (Test-Path -LiteralPath $output) {
 else {
     [System.IO.Directory]::CreateDirectory($output) | Out-Null
 }
+Assert-ExistingPathHasNoReparsePoints `
+    -Path $output `
+    -Description 'The bundle destination'
 
 $workerOutput = Join-Path $output 'adapters/sqlserver'
 [System.IO.Directory]::CreateDirectory($workerOutput) | Out-Null
@@ -86,10 +132,13 @@ function Assert-ReviewedWorkerPackageClosure {
         [string] $DependencyPath,
 
         [Parameter(Mandatory = $true)]
-        [string] $NoticePath
+        [string] $NoticePath,
+
+        [Parameter(Mandatory = $true)]
+        [bool] $IncludesSniRuntime
     )
 
-    $expectedPackages = @(
+    $reviewedPackages = @(
         'Microsoft.Bcl.Cryptography/9.0.13'
         'Microsoft.Data.SqlClient.Extensions.Abstractions/7.0.2'
         'Microsoft.Data.SqlClient.Internal.Logging/7.0.2'
@@ -115,6 +164,17 @@ function Assert-ReviewedWorkerPackageClosure {
         'System.Security.Cryptography.Pkcs/9.0.13'
         'System.Security.Cryptography.ProtectedData/9.0.13'
     ) | Sort-Object
+    $expectedPackages = if ($IncludesSniRuntime) {
+        $reviewedPackages
+    }
+    else {
+        @(
+            $reviewedPackages |
+                Where-Object {
+                    $_ -ne 'Microsoft.Data.SqlClient.SNI.runtime/6.0.2'
+                }
+        )
+    }
 
     $dependencies = [System.IO.File]::ReadAllText($DependencyPath) |
         ConvertFrom-Json -AsHashtable
@@ -156,7 +216,7 @@ function Assert-ReviewedWorkerPackageClosure {
     }
 
     $notice = [System.IO.File]::ReadAllText($NoticePath)
-    foreach ($package in $expectedPackages) {
+    foreach ($package in $reviewedPackages) {
         $separator = $package.LastIndexOf('/')
         $noticeEntry = '| ' +
             $package.Substring(0, $separator) +
@@ -192,6 +252,9 @@ else {
         'win-',
         [StringComparison]::OrdinalIgnoreCase)
 }
+$targetIncludesSniRuntime =
+    [string]::IsNullOrWhiteSpace($RuntimeIdentifier) -or
+    $targetIsWindows
 
 $workerExecutableName = if ($targetIsWindows) {
     'csharpdb-migration-sqlserver-worker.exe'
@@ -213,6 +276,19 @@ $requiredFiles = @(
     (Join-Path $workerOutput 'licenses/Microsoft.Data.SqlClient.SNI.runtime-6.0.2-LICENSE.txt'),
     (Join-Path $workerOutput 'csharpdb-migration-sqlserver-worker.deps.json')
 )
+
+if ([string]::IsNullOrWhiteSpace($RuntimeIdentifier)) {
+    $requiredFiles += @(
+        (Join-Path $workerOutput 'runtimes/win-arm64/native/Microsoft.Data.SqlClient.SNI.dll'),
+        (Join-Path $workerOutput 'runtimes/win-x64/native/Microsoft.Data.SqlClient.SNI.dll'),
+        (Join-Path $workerOutput 'runtimes/win-x86/native/Microsoft.Data.SqlClient.SNI.dll')
+    )
+}
+elseif ($targetIsWindows) {
+    $requiredFiles += Join-Path `
+        $workerOutput `
+        'Microsoft.Data.SqlClient.SNI.dll'
+}
 
 $missing = @($requiredFiles | Where-Object {
     -not (Test-Path -LiteralPath $_ -PathType Leaf)
@@ -238,6 +314,7 @@ if (-not $actualSniLicenseHash.Equals(
 
 Assert-ReviewedWorkerPackageClosure `
     -DependencyPath (Join-Path $workerOutput 'csharpdb-migration-sqlserver-worker.deps.json') `
-    -NoticePath (Join-Path $workerOutput 'THIRD-PARTY-NOTICES.md')
+    -NoticePath (Join-Path $workerOutput 'THIRD-PARTY-NOTICES.md') `
+    -IncludesSniRuntime $targetIncludesSniRuntime
 
 Write-Host "Created the non-packable SQL Server migration bundle at $output"

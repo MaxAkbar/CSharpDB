@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>Move Data into CSharpDB — Database Migration Guide</title>
+    <meta name="description" content="Move data from CSV, JSON, SQLite, LiteDB, or MySQL into a staged CSharpDB database, and evaluate the bounded SQL Server candidate capture lane.">
+    <link rel="canonical" href="https://csharpdb.com/docs/database-migration.html">
+    <meta property="og:title" content="Move Data into CSharpDB — Database Migration Guide">
+    <meta property="og:description" content="A practical, recoverable workflow for moving data from CSV, JSON, SQLite, LiteDB, or MySQL into CSharpDB, with an explicit SQL Server candidate boundary.">
+    <meta property="og:url" content="https://csharpdb.com/docs/database-migration.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "TechArticle",
+        "name": "Move Data into CSharpDB",
+        "description": "Move data from CSV, JSON, SQLite, LiteDB, or MySQL into a staged CSharpDB database, and evaluate the bounded SQL Server candidate capture lane.",
+        "url": "https://csharpdb.com/docs/database-migration.html",
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": "CSharpDB",
+            "url": "https://csharpdb.com"
+        }
+    }
+    </script>
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Move Data into CSharpDB',
+        description: 'A practical, recoverable workflow for moving data from CSV, JSON, SQLite, LiteDB, or MySQL into CSharpDB, with an explicit SQL Server candidate boundary.',
+        keywords: 'CSharpDB database migration, SQL Server to CSharpDB, MySQL to CSharpDB, SQLite to CSharpDB, LiteDB to CSharpDB, CSV import, JSON import',
+        canonicalPath: 'docs/database-migration.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#what-this-tool-does">What This Tool Does</a></li>
+                        <li><a href="#supported-sources">Source Lanes and Status</a></li>
+                        <li><a href="#before-you-start">Before You Start</a></li>
+                        <li><a href="#workflow">The Four-Step Workflow</a>
+                            <ul>
+                                <li><a href="#inspect">1. Inspect and Capture</a></li>
+                                <li><a href="#plan">2. Plan and Preview</a></li>
+                                <li><a href="#apply">3. Apply or Resume</a></li>
+                                <li><a href="#validate">4. Validate and Activate</a></li>
+                            </ul>
+                        </li>
+                        <li><a href="#source-recipes">Source Recipes</a></li>
+                        <li><a href="#recovery">Recover an Interrupted Run</a></li>
+                        <li><a href="#security">Protect Credentials and Data</a></li>
+                        <li><a href="#limits">Current Limits</a></li>
+                        <li><a href="#troubleshooting">Troubleshooting</a></li>
+                    </ul>
+                </nav>
+            </aside>
+
+            <div class="doc-content">
+                <h1>Move Data from Another Database into CSharpDB</h1>
+                <p class="lead">Use the CSharpDB migration CLI to capture a source, review the proposed conversion, build a new staged CSharpDB database, resume safely after interruption, and validate the result before activation.</p>
+
+                <div class="callout callout-info">
+                    <strong>This is the data-migration guide.</strong> It covers moving schemas and rows from other data sources into CSharpDB. For the old <code>CSharpDB.Core</code> to <code>CSharpDB.Primitives</code> code rename, use the separate <a href="migrations.html">library migration guide</a>.
+                </div>
+
+                <h2 id="what-this-tool-does">What This Tool Does</h2>
+                <p>The migration workflow deliberately separates source access from target creation:</p>
+                <ol>
+                    <li><strong>Inspect and capture</strong> the source into a retained, digest-pinned package.</li>
+                    <li><strong>Plan and preview</strong> the schema conversion and review every warning or exclusion.</li>
+                    <li><strong>Apply</strong> the reviewed plan to a new staged <code>.csdb</code> target. If interrupted, resume the same run.</li>
+                    <li><strong>Validate</strong> schema, row counts, and checksums. The target is activated only after validation passes.</li>
+                </ol>
+                <p>SQL Server and MySQL credentials are needed only for capture. MySQL then uses the retained package without reconnecting to the source database. A SQL Server candidate package and catalog can be reviewed offline, but that lane stops after capture and catalog review: planning remains blocked until the restricted-account metadata proof and live qualification described below are completed.</p>
+
+                <h2 id="supported-sources">Source Lanes and Status</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Source</th>
+                            <th>Retained package</th>
+                            <th>Capture boundary</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>CSV</td>
+                            <td><code>.csdbcsv</code></td>
+                            <td>Private byte-for-byte snapshot with fixed reader and inference settings</td>
+                        </tr>
+                        <tr>
+                            <td>JSON / NDJSON</td>
+                            <td><code>.csdbjson</code></td>
+                            <td>Private byte snapshot; optional separately reviewed typed-intent contract</td>
+                        </tr>
+                        <tr>
+                            <td>SQLite</td>
+                            <td><code>.csdbsqlite</code></td>
+                            <td>Coherent online backup of supported ordinary rowid tables</td>
+                        </tr>
+                        <tr>
+                            <td>LiteDB 5</td>
+                            <td><code>.csdblitedb</code></td>
+                            <td>Offline, quiesced snapshot of an unencrypted database</td>
+                        </tr>
+                        <tr>
+                            <td>SQL Server 2019 / 2022 / 2025 (on premises)</td>
+                            <td><code>.csdbsqlserver</code></td>
+                            <td>Candidate snapshot-isolated capture for offline evaluation; not currently apply-ready under the documented least-privilege account</td>
+                        </tr>
+                        <tr>
+                            <td>MySQL 8.0 / 8.4</td>
+                            <td><code>.csdbmysql</code></td>
+                            <td>Read-only consistent-snapshot capture of the supported InnoDB subset</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h2 id="before-you-start">Before You Start</h2>
+
+                <h3>Install the migration release</h3>
+                <p>The migration release is framework-dependent and requires the Microsoft .NET 10 runtime. Extract the archive for your platform and keep its layout intact: the <code>adapters/sqlserver</code> and <code>adapters/mysql</code> directories must remain beside the base CLI. Verify the archive against <code>SHA256SUMS.txt</code> before installation.</p>
+                <div class="code-block" data-title="Windows PowerShell"><pre><code>New-Item -ItemType Directory -Force `
+  -Path "$env:LOCALAPPDATA\CSharpDB" | Out-Null
+
+.\install\windows\install-csharpdb-migration-tool.ps1 `
+  -InstallDirectory "$env:LOCALAPPDATA\CSharpDB\MigrationTool"</code></pre></div>
+                <div class="code-block" data-title="Linux or macOS"><pre><code>umask 077
+mkdir -p "$HOME/.local/lib"
+
+sh install/posix/install-csharpdb-migration-tool.sh \
+  --install-dir "$HOME/.local/lib/csharpdb-migration-tool"</code></pre></div>
+                <p>The installers use a user-selected directory, refuse to overwrite files by default, do not request administrator access, and do not change <code>PATH</code>. They print optional path setup instructions. You can also run <code>csharpdb</code> directly from the extracted archive. See <a href="../downloads.html#cli">Downloads</a> for release and source-build options.</p>
+
+                <h3>Prepare a private migration workspace</h3>
+                <ul>
+                    <li>Use a new target path such as <code>staged.csdb</code>. Apply does not overwrite an existing target.</li>
+                    <li>Keep retained packages in a private directory. They may contain plaintext-sensitive source rows.</li>
+                    <li>Create the workspace and spill directories before running apply or validation. The CLI requires those roots to exist and verifies their security boundary.</li>
+                    <li>Record the printed <code>manifestDigest=sha256:...</code> separately in trusted change control. Do not store the package and its only trusted digest together.</li>
+                    <li>Back up the source independently. The migration tool creates a new CSharpDB target; it is not a source backup system.</li>
+                </ul>
+                <div class="code-block" data-title="PowerShell — inside a private, current-user-owned migration directory"><pre><code>New-Item -ItemType Directory -Force `
+  -Path .\migration-work, .\migration-spill | Out-Null</code></pre></div>
+
+                <h3>Review source readiness</h3>
+                <p>Resolve blocking diagnostics before applying a plan. An accepted exclusion means you have reviewed a source object the tool will not reproduce automatically and have a separate disposition for it. Prefer accepting specific exclusion or diagnostic IDs; do not approve <code>all</code> without reviewing the catalog.</p>
+
+                <h2 id="workflow">The Four-Step Workflow</h2>
+
+                <h3 id="inspect">1. Inspect and Capture</h3>
+                <p>Choose the matching recipe below. A successful retained capture writes both <code>catalog.json</code> and a source package, then prints a manifest digest. Publication is create-new: an existing catalog or package is not replaced.</p>
+                <div class="code-block" data-title="PowerShell"><pre><code># Example: capture SQLite
+csharpdb migrate inspect `
+  --source sqlite `
+  --input .\source.db `
+  --package .\source.csdbsqlite `
+  --out .\catalog.json
+
+# Copy the exact value printed by the successful command.
+$digest = 'sha256:&lt;64-lowercase-hex&gt;'</code></pre></div>
+
+                <h3 id="plan">2. Plan and Preview</h3>
+                <p>Build a deterministic plan from the captured catalog, then inspect both the exact target DDL and the isolated scratch result. Add only the specific reviewed exclusion or diagnostic IDs required by your catalog.</p>
+                <div class="code-block" data-title="PowerShell"><pre><code>csharpdb migrate plan .\catalog.json --out .\plan.json
+
+# Human-readable summary
+csharpdb migrate preview .\plan.json --catalog .\catalog.json
+
+# Exact target DDL and collection actions
+csharpdb migrate preview .\plan.json --catalog .\catalog.json --ddl
+
+# Execute the proposed schema in a new isolated scratch database
+csharpdb migrate preview .\plan.json --catalog .\catalog.json --scratch</code></pre></div>
+                <div class="callout callout-info">
+                    <strong>Do not skip review.</strong> A plan can require rewrites or omit unsupported source objects. Treat the catalog diagnostics, exclusions, rendered DDL, and scratch result as one approval packet.
+                </div>
+
+                <h3 id="apply">3. Apply or Resume</h3>
+                <p>Apply the reviewed plan to a new staged target. The package extension must match the source recipe. The expected manifest digest must be the independently recorded value from capture.</p>
+                <div class="code-block" data-title="PowerShell"><pre><code>$package = '.\source.csdbsqlite'
+
+csharpdb migrate apply .\plan.json `
+  --catalog .\catalog.json `
+  --source-package $package `
+  --expected-manifest-digest $digest `
+  --workspace .\migration-work `
+  --target .\staged.csdb `
+  --out .\run.json</code></pre></div>
+                <p>Apply commits rows and target receipts together. A completed apply stops at <code>awaitingValidation</code>; it does not silently replace an existing production database.</p>
+
+                <h3 id="validate">4. Validate and Activate</h3>
+                <p>Checksum validation reopens the same retained package and compares normalized schema, 64-bit row counts, and partitioned canonical SHA-256 evidence. A passing validation activates the staged target. Failed or inconclusive validation withholds activation.</p>
+                <div class="code-block" data-title="PowerShell"><pre><code>csharpdb migrate validate .\plan.json `
+  --catalog .\catalog.json `
+  --source-package $package `
+  --expected-manifest-digest $digest `
+  --workspace .\migration-work `
+  --target .\staged.csdb `
+  --out .\validation.json `
+  --level checksum `
+  --spill-dir .\migration-spill</code></pre></div>
+                <p>Keep the plan, catalog, package digest, run report, validation report, and reviewed exclusions with the migration change record.</p>
+
+                <h2 id="source-recipes">Source Recipes</h2>
+                <p>For CSV, JSON/NDJSON, SQLite, LiteDB, and MySQL, use the common plan, preview, apply, and validation steps above after a successful capture. SQL Server currently stops after candidate capture and catalog review; do not proceed to plan or apply for that lane.</p>
+
+                <h3>CSV</h3>
+                <div class="code-block" data-title="PowerShell"><pre><code>csharpdb migrate inspect `
+  --source csv `
+  --input .\source.csv `
+  --package .\source.csdbcsv `
+  --out .\catalog.json `
+  --delimiter auto</code></pre></div>
+                <p>CSV uses strict tabular inference. Add <code>--no-header</code> only when the source has no header row. You can explicitly select comma, semicolon, tab, pipe, or one delimiter character.</p>
+
+                <h3>JSON or NDJSON</h3>
+                <div class="code-block" data-title="PowerShell"><pre><code># Root JSON array
+csharpdb migrate inspect `
+  --source json `
+  --input .\source.json `
+  --framing root-array `
+  --package .\source.csdbjson `
+  --out .\catalog.json
+
+# Newline-delimited JSON
+csharpdb migrate inspect `
+  --source json `
+  --input .\source.ndjson `
+  --framing ndjson `
+  --package .\source.csdbjson `
+  --out .\catalog.json</code></pre></div>
+                <p>Use an explicitly selected, digest-pinned typed-intent sidecar when inference is not sufficient. The CLI does not automatically discover or author that contract.</p>
+
+                <h3>SQLite</h3>
+                <div class="code-block" data-title="PowerShell"><pre><code>csharpdb migrate inspect `
+  --source sqlite `
+  --input .\source.db `
+  --package .\source.csdbsqlite `
+  --out .\catalog.json</code></pre></div>
+                <p>The automatic row route is limited to supported ordinary UTF-8 rowid tables. Views, triggers, virtual tables, <code>WITHOUT ROWID</code>, generated columns, and other unsupported shapes remain visible as blocking diagnostics or reviewed exclusions.</p>
+
+                <h3>LiteDB 5</h3>
+                <div class="code-block" data-title="PowerShell"><pre><code># Close every LiteDB writer before capture.
+csharpdb migrate inspect `
+  --source litedb `
+  --input .\source.db `
+  --package .\source.csdblitedb `
+  --out .\catalog.json</code></pre></div>
+                <p>The v1 route requires an offline, quiesced, unencrypted LiteDB 5 database. Collections become CSharpDB document collections. Non-built-in LiteDB indexes are inventoried but excluded from automatic creation; review and recreate required indexes with CSharpDB semantics.</p>
+
+                <h3>SQL Server</h3>
+                <p>Put the connection string in a protected process environment variable or secret manager. It must select exactly one source database through <code>Initial Catalog</code>. For candidate capture, use a dedicated no-write account that can connect to that database, read the candidate tables, and view their definitions. Enable <code>ALLOW_SNAPSHOT_ISOLATION</code> for the database and confirm <code>snapshot_isolation_state = ON</code> before capture. These are capture-only prerequisites, not an apply-ready permission recipe. Pass only the environment variable name to the CLI:</p>
+                <div class="code-block" data-title="PowerShell"><pre><code>csharpdb migrate inspect `
+  --source sqlserver `
+  --connection-env CSHARPDB_SQLSERVER_SOURCE `
+  --package .\source.csdbsqlserver `
+  --out .\catalog.json `
+  --table-timeout-seconds 1800</code></pre></div>
+                <div class="callout callout-warning">
+                    <strong>SQL Server is currently an evaluation capture lane.</strong> The analyzer can prove complete metadata visibility only for <code>sysadmin</code>; a clean least-privilege read-only account remains <code>Unknown</code>, and that non-overrideable diagnostic blocks planning and apply. Do not grant <code>sysadmin</code> to bypass the guard. Complete the restricted-account proof and live qualification before treating this as an apply-ready source route.
+                </div>
+                <p>The retained candidate lanes are on-premises SQL Server 2019, 2022, and 2025. Azure SQL Database, Azure SQL Managed Instance, Synapse, Fabric, and other compatible services require separate qualification. The source credential is not needed for offline package evaluation after capture.</p>
+
+                <h3>MySQL</h3>
+                <p>Use a connection string that selects exactly one source database through <code>Database</code>, and a dedicated read-only account with direct schema-level <code>SELECT</code> on that database's ordinary base tables. Retained v1 does not require <code>TRIGGER</code>, <code>EXECUTE</code>, or <code>SHOW VIEW</code>. TCP connections require TLS; place the reviewed TLS settings in the protected connection environment value.</p>
+                <div class="code-block" data-title="PowerShell"><pre><code>csharpdb migrate inspect `
+  --source mysql `
+  --connection-env CSHARPDB_MYSQL_SOURCE `
+  --package .\source.csdbmysql `
+  --out .\catalog.json `
+  --table-timeout-seconds 1800</code></pre></div>
+                <p>The source credential is needed only for capture. Apply, resume, and validation reopen <code>source.csdbmysql</code> without reconnecting to MySQL.</p>
+
+                <h2 id="recovery">Recover an Interrupted Run</h2>
+                <p>Repeat the exact apply binding—same plan, catalog, package, expected digest, and staged target—then add <code>--resume</code>:</p>
+                <div class="code-block" data-title="PowerShell"><pre><code>csharpdb migrate apply .\plan.json `
+  --catalog .\catalog.json `
+  --source-package $package `
+  --expected-manifest-digest $digest `
+  --workspace .\migration-work `
+  --target .\staged.csdb `
+  --out .\resume.json `
+  --resume</code></pre></div>
+                <ul>
+                    <li>The receipts stored in the staged target are the recovery authority.</li>
+                    <li>The workspace copy and <code>run.json</code> are not authoritative checkpoints. A fresh private workspace copy is created and requalified when resuming.</li>
+                    <li>Resume skips only batches whose target receipts exactly match the package and plan binding.</li>
+                    <li>A changed package, wrong digest, changed catalog, changed plan, or mismatched target fails closed instead of guessing.</li>
+                    <li>If the staged target was never created, run the original apply command again without <code>--resume</code>.</li>
+                </ul>
+
+                <h2 id="security">Protect Credentials and Retained Data</h2>
+                <ul>
+                    <li>Never put a SQL Server or MySQL connection string directly in command text. Use <code>--connection-env</code> with the name of a protected environment variable.</li>
+                    <li>Treat <code>.csdbsqlserver</code> and <code>.csdbmysql</code> as plaintext-sensitive source data. Apply source-equivalent access, retention, backup, and deletion controls.</li>
+                    <li>Store the expected package digest in an independently trusted record. If an attacker can replace both a package and its pin, the pin provides no protection.</li>
+                    <li>Create package and catalog outputs beneath existing, normalized local directories owned by the current user. The capture command rejects links, remote filesystems, directories with untrusted write/delete authority, and directory identity changes during publication.</li>
+                    <li>Use a caller-controlled local workspace with private permissions. Do not put retained packages, workspaces, reject evidence, or spill files in a shared directory.</li>
+                    <li>Delete credentials from the capture process environment and remove retained packages according to the approved retention policy after migration evidence is complete.</li>
+                </ul>
+
+                <h2 id="limits">Current Limits and Qualification Status</h2>
+                <div class="callout callout-info">
+                    <strong>Provider qualification remains explicit.</strong> The retained package, process isolation, deterministic replay, and offline validation paths are reviewed and tested. Broad live SQL Server and MySQL server, authentication, TLS, least-privilege, and published-runtime qualification is not claimed yet.
+                </div>
+                <ul>
+                    <li><strong>SQL Server:</strong> retained v1 implements a bounded relational schema and scalar row capture subset, but the current least-privilege metadata result remains <code>Unknown</code> and blocks planning. Unsupported features remain blocking diagnostics or reviewed exclusions.</li>
+                    <li><strong>MySQL:</strong> retained v1 is limited to supported ordinary, nonpartitioned InnoDB base tables with deterministic integer key ordering and supported scalar columns. Programmable objects are outside this retained migration scope.</li>
+                    <li><strong>Live test matrix:</strong> disposable Windows VM and broader live-provider qualification remain deferred. Do not interpret a successful offline package test as proof for every server, authentication, or TLS configuration.</li>
+                    <li><strong>Source products:</strong> MariaDB, Aurora MySQL, Percona, TiDB, Vitess, and other MySQL-compatible products require separate qualification.</li>
+                    <li><strong>Package size:</strong> provider captures default to bounded ceilings. Lower the ceiling with <code>--max-source-bytes</code> when your change policy requires a smaller limit.</li>
+                </ul>
+
+                <h2 id="troubleshooting">Troubleshooting</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Symptom</th>
+                            <th>What to do</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Adapter unavailable</td>
+                            <td>Restore the release layout so <code>adapters/sqlserver</code> and <code>adapters/mysql</code> remain beside the base CLI. Do not copy only the executable.</td>
+                        </tr>
+                        <tr>
+                            <td>Catalog has blocking diagnostics</td>
+                            <td>Fix source permissions or unsupported schema shapes. Accept only explicit reviewable diagnostics or exclusions; blockers cannot be bypassed.</td>
+                        </tr>
+                        <tr>
+                            <td>Manifest digest mismatch</td>
+                            <td>Stop. Confirm the package path and compare it with the independently recorded digest. Do not replace the trusted digest merely to make the command pass.</td>
+                        </tr>
+                        <tr>
+                            <td>Target already exists</td>
+                            <td>Use <code>--resume</code> only for the same interrupted migration binding. Otherwise choose a new staged target path.</td>
+                        </tr>
+                        <tr>
+                            <td>Validation fails</td>
+                            <td>Keep the target staged, preserve the reports, and investigate schema, count, or checksum evidence. Do not activate or substitute it for production.</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="next-steps">
+                    <h2>Related Documentation</h2>
+                    <div class="next-steps-grid">
+                        <a href="cli.html" class="next-step-card">
+                            <h4>CLI Reference</h4>
+                            <p>Full command-line usage and general database commands.</p>
+                        </a>
+                        <a href="../downloads.html#cli" class="next-step-card">
+                            <h4>Downloads</h4>
+                            <p>Migration release archives, checksums, and source-build options.</p>
+                        </a>
+                        <a href="migrations.html" class="next-step-card">
+                            <h4>Library Rename</h4>
+                            <p>The separate CSharpDB.Core to CSharpDB.Primitives code migration.</p>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

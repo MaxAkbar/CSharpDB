@@ -15,7 +15,8 @@
     <PackageReference Include="Microsoft.Data.SqlClient.SNI.runtime"
                       Version="6.0.2"
                       GeneratePathProperty="true"
-                      PrivateAssets="all" />
+                      PrivateAssets="all"
+                      Publish="true" />
   </ItemGroup>
 
   <ItemGroup>

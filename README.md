@@ -336,6 +336,7 @@ The native library exports 20 C functions. See the [Native Library Reference](ht
 | [REST API Reference](https://csharpdb.com/docs/rest-api.html) | HTTP API, schema/data CRUD, and maintenance |
 | [MCP Server](https://csharpdb.com/docs/mcp-server.html) | AI assistant integration |
 | [CLI Reference](https://csharpdb.com/docs/cli.html) | REPL commands |
+| [Database Migration Guide](https://csharpdb.com/docs/database-migration.html) | Move schemas and rows from CSV, JSON, SQLite, LiteDB, or MySQL; evaluate the bounded SQL Server candidate capture lane |
 | [VS Code Extension](vscode-extension/README.md) | Local NativeAOT-backed extension |
 | [Benchmark Suite](tests/CSharpDB.Benchmarks/README.md) | Full results and comparisons |
 | [SQL Reference](https://csharpdb.com/docs/sql.html) | Supported SQL syntax |

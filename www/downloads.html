@@ -437,7 +437,13 @@
             <!-- ───────── CLI ───────── -->
             <div class="dl-section" id="cli">
                 <h2>CLI Tool</h2>
-                <p>The <code>csharpdb</code> CLI is an interactive REPL with SQL execution, meta-commands, storage diagnostics, and ETL pipeline management. Build from source:</p>
+                <p>The <code>csharpdb</code> CLI is an interactive REPL with SQL execution, meta-commands, storage diagnostics, ETL pipeline management, reviewed migration workflows for CSV, JSON, SQLite, LiteDB, and MySQL, and a bounded SQL Server candidate capture lane.</p>
+
+                <div class="dl-cli-note">
+                    <h4>Migration release archives</h4>
+                    <p>The v4.3.0 migration release produces framework-dependent archives for Windows x64, Linux x64, and macOS Apple silicon. Each archive requires the .NET 10 runtime and keeps the fixed SQL Server and MySQL adapters, notices, licenses, and installers together. Verify the archive against the accompanying <code>SHA256SUMS.txt</code> and preserve its directory layout.</p>
+                    <p>Find published assets on <a href="#all-releases">the releases page</a>, then follow the <a href="docs/database-migration.html">database migration guide</a>.</p>
+                </div>
 
                 <div class="dl-cli-note">
                     <h4>Build from source</h4>
@@ -451,7 +457,7 @@ dotnet publish src/CSharpDB.Cli -c Release -r linux-x64 --self-contained -o ./pu
 dotnet publish src/CSharpDB.Cli -c Release -r osx-arm64 --self-contained -o ./publish</code></pre></div>
                 </div>
 
-                <p style="margin-top: 1rem; font-size: 0.88rem; color: var(--text-muted);">See the <a href="docs/cli.html">CLI Reference</a> for the full command and meta-command documentation.</p>
+                <p style="margin-top: 1rem; font-size: 0.88rem; color: var(--text-muted);">See the <a href="docs/cli.html">CLI Reference</a> for general command documentation or <a href="docs/database-migration.html">Move Data into CSharpDB</a> for the end-to-end migration workflow.</p>
             </div>
 
             <!-- ───────── Node.js ───────── -->

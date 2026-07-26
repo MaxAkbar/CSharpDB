@@ -136,6 +136,26 @@
                     <div class="news-entry">
                         <div class="news-entry-header">
                             <span class="news-badge news-badge-release">Release</span>
+                            <span class="news-date">July 2026</span>
+                        </div>
+                        <h3>v4.3.0 — Migration Tooling for External Data Sources</h3>
+                        <p>Adds a review-first, recoverable workflow for moving schemas and rows from CSV, JSON, SQLite, LiteDB, and MySQL into a new staged CSharpDB database, plus a bounded SQL Server candidate capture lane:</p>
+                        <ul>
+                            <li><strong>Retained source packages</strong> — Captures source data into digest-pinned packages with bounded readers, deterministic ordering, provider-specific catalog bindings, and explicit diagnostics for unsupported objects.</li>
+                            <li><strong>Plan before apply</strong> — New inspect, plan, preview, DDL, and isolated scratch-schema steps keep rewrites and exclusions visible before a target is created.</li>
+                            <li><strong>Resumable staged targets</strong> — Apply commits rows with target receipts; an interrupted run can resume the exact package and plan binding without trusting an orphaned workspace or report.</li>
+                            <li><strong>Checksum validation</strong> — Schema, 64-bit row counts, and partitioned canonical SHA-256 evidence must pass before the staged target is activated.</li>
+                            <li><strong>Isolated database adapters</strong> — SQL Server and MySQL credentials are accepted only through named environment variables and remain inside fixed optional worker processes. Retained packages are treated as plaintext-sensitive source data.</li>
+                            <li><strong>SQL Server candidate boundary</strong> — Row capture is implemented for the bounded on-premises candidate lanes, but least-privilege metadata completeness remains <code>Unknown</code> and blocks planning; operators must not elevate an account to bypass that guard.</li>
+                            <li><strong>Installable migration release</strong> — Framework-dependent .NET 10 archives for Windows x64, Linux x64, and macOS Apple silicon preserve both adapters, third-party notices/licenses, and safe user-directory installers; a checksum manifest is produced alongside the archives.</li>
+                            <li><strong>New migration guide</strong> — The <a href="docs/database-migration.html">Move Data into CSharpDB</a> guide covers installation, source recipes, review, recovery, validation, security, troubleshooting, and current provider limits.</li>
+                            <li><strong>Qualification remains bounded</strong> — Broad live SQL Server/MySQL server, authentication, TLS, restricted-account, published-runtime, and disposable-Windows-VM qualification remains deferred and is not claimed by this release.</li>
+                        </ul>
+                    </div>
+
+                    <div class="news-entry">
+                        <div class="news-entry-header">
+                            <span class="news-badge news-badge-release">Release</span>
                             <span class="news-date">May 2026</span>
                         </div>
                         <h3>v3.8.0 — Native Table Archives &amp; External Tables</h3>
