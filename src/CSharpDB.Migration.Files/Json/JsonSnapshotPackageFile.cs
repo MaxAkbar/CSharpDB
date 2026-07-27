@@ -102,8 +102,7 @@ internal static class JsonSnapshotPackageFile
             FileStream stream = new(
                 handle,
                 FileAccess.Read,
-                bufferSize,
-                isAsync: true);
+                bufferSize);
             handle = null;
             return stream;
         }
@@ -356,7 +355,6 @@ internal static class JsonSnapshotPackageFile
         internal long RawDevice;
         internal long Inode;
         internal uint UserFlags;
-        internal uint HardLinkCount;
     }
 
     [DllImport(

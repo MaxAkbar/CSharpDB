@@ -18,7 +18,7 @@ public sealed class FileStorageDevice : IStorageDevice
             filePath,
             createNew ? FileMode.CreateNew : FileMode.OpenOrCreate,
             FileAccess.ReadWrite,
-            fileShare,
+            EffectiveFileShare(fileShare),
             FileOptions.Asynchronous | FileOptions.RandomAccess);
 
         _sequentialReadHandle = new Lazy<SafeFileHandle?>(CreateSequentialReadHandle, isThreadSafe: true);
@@ -91,5 +91,19 @@ public sealed class FileStorageDevice : IStorageDevice
         {
             return null;
         }
+    }
+
+    private static FileShare EffectiveFileShare(FileShare fileShare)
+    {
+        if (OperatingSystem.IsWindows() ||
+            (fileShare & FileShare.Write) != 0)
+        {
+            return fileShare;
+        }
+
+        // .NET's Unix FileShare implementation maps every non-None share to a
+        // shared flock. Use an exclusive flock when writes are denied so a
+        // second database writer cannot bypass the requested writer barrier.
+        return FileShare.None;
     }
 }

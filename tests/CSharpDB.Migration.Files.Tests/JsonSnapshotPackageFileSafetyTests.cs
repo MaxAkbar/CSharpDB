@@ -30,7 +30,7 @@ public sealed class JsonSnapshotPackageFileSafetyTests
                     modifiers: null)!;
 
     [Fact]
-    public void RegularFileIsOpenedWithoutChangingItsBytes()
+    public async Task RegularFileSupportsAsynchronousReadsWithoutChangingItsBytes()
     {
         using var workspace = new TemporaryDirectory();
         string path = workspace.PathFor(
@@ -42,12 +42,17 @@ public sealed class JsonSnapshotPackageFileSafetyTests
                 .ToArray();
         File.WriteAllBytes(path, expected);
 
-        using FileStream stream =
+        await using FileStream stream =
             OpenReadNoFollow(path);
         byte[] actual = new byte[expected.Length];
-        stream.ReadExactly(actual);
+        await stream.ReadExactlyAsync(
+            actual,
+            TestContext.Current.CancellationToken);
 
         Assert.Equal(expected, actual);
+        Assert.Equal(
+            OperatingSystem.IsWindows(),
+            stream.IsAsync);
         Assert.Equal(
             expected,
             File.ReadAllBytes(path));

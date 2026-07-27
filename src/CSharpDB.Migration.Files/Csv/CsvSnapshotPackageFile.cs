@@ -80,7 +80,7 @@ internal static class CsvSnapshotPackageFile
                     Marshal.GetLastPInvokeError());
             }
 
-            FileStream stream = new(handle, FileAccess.Read, bufferSize, isAsync: true);
+            FileStream stream = new(handle, FileAccess.Read, bufferSize);
             handle = null; // FileStream owns the handle after successful construction.
             return stream;
         }
@@ -302,7 +302,6 @@ internal static class CsvSnapshotPackageFile
         internal long RawDevice;
         internal long Inode;
         internal uint UserFlags;
-        internal uint HardLinkCount;
     }
 
     [DllImport(

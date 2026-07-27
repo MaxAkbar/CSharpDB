@@ -33,6 +33,9 @@ internal static class RetainedDatabaseSnapshotFile
     private const int FreeBsdCloseOnExec = 0x00100000;
     private const int FSetFileDescriptor = 2;
     private const int CloseOnExec = 1;
+    private const int UnixAtSymlinkNoFollow = 0x0100;
+    private const int UnixAtEmptyPath = 0x1000;
+    private const uint LinuxStatxHardLinkCount = 0x0004;
     private const FileAttributes UnsafeFileAttributes =
         FileAttributes.Directory | FileAttributes.ReparsePoint | FileAttributes.Device;
     private static readonly StringComparison PathComparison =
@@ -121,7 +124,7 @@ internal static class RetainedDatabaseSnapshotFile
                         Marshal.GetLastPInvokeError());
                 }
 
-                stream = new FileStream(handle, FileAccess.Read, bufferSize: 1, isAsync: true);
+                stream = new FileStream(handle, FileAccess.Read, bufferSize: 1);
                 handle = null!;
             }
             finally
@@ -573,13 +576,73 @@ internal static class RetainedDatabaseSnapshotFile
             const int RegularFileType = 0x8000;
             if ((status.Mode & FileTypeMask) != RegularFileType)
                 throw new IOException($"Path is not a regular file: '{path}'.");
-            return status.HardLinkCount;
+            return ReadUnixHardLinkCount(handle, path);
         }
         catch (Exception exception) when (
             exception is NotSupportedException or ArgumentException)
         {
             throw new IOException($"Path is not a regular file: '{path}'.", exception);
         }
+    }
+
+    private static uint ReadUnixHardLinkCount(
+        SafeFileHandle handle,
+        string path)
+    {
+        int descriptor = checked(handle.DangerousGetHandle().ToInt32());
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsAndroid())
+        {
+            int result;
+            try
+            {
+                result = LinuxStatx(
+                    descriptor,
+                    string.Empty,
+                    UnixAtEmptyPath | UnixAtSymlinkNoFollow,
+                    LinuxStatxHardLinkCount,
+                    out LinuxStatxBuffer status);
+                if (result == 0)
+                {
+                    if ((status.Mask & LinuxStatxHardLinkCount) == 0)
+                    {
+                        throw new IOException(
+                            $"The hard-link count is unavailable for '{path}'.");
+                    }
+                    return status.HardLinkCount;
+                }
+            }
+            catch (EntryPointNotFoundException exception)
+            {
+                throw new PlatformNotSupportedException(
+                    "Secure hard-link inspection requires statx on Linux.",
+                    exception);
+            }
+
+            throw CreateNativeIOException(
+                $"Could not inspect the hard-link count for '{path}'.",
+                Marshal.GetLastPInvokeError());
+        }
+
+        if (OperatingSystem.IsMacOS() ||
+            OperatingSystem.IsIOS() ||
+            OperatingSystem.IsTvOS() ||
+            OperatingSystem.IsMacCatalyst())
+        {
+            int result = OperatingSystem.IsMacOS() &&
+                RuntimeInformation.ProcessArchitecture == Architecture.X64
+                ? DarwinFStatInode64(descriptor, out DarwinStatBuffer status)
+                : DarwinFStat(descriptor, out status);
+            if (result != 0)
+            {
+                throw CreateNativeIOException(
+                    $"Could not inspect the hard-link count for '{path}'.",
+                    Marshal.GetLastPInvokeError());
+            }
+            return status.HardLinkCount;
+        }
+
+        throw new PlatformNotSupportedException(
+            "Secure hard-link inspection is not implemented for this operating system.");
     }
 
     private static IOException CreateNativeIOException(string message, int error) =>
@@ -619,6 +682,24 @@ internal static class RetainedDatabaseSnapshotFile
 
     [DllImport("libc", EntryPoint = "fcntl", SetLastError = true)]
     private static extern int UnixFcntl(int descriptor, int command, int argument);
+
+    [DllImport("libc", EntryPoint = "statx", SetLastError = true)]
+    private static extern int LinuxStatx(
+        int directoryDescriptor,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
+        int flags,
+        uint mask,
+        out LinuxStatxBuffer status);
+
+    [DllImport("libc", EntryPoint = "fstat", SetLastError = true)]
+    private static extern int DarwinFStat(
+        int descriptor,
+        out DarwinStatBuffer status);
+
+    [DllImport("libc", EntryPoint = "fstat$INODE64", SetLastError = true)]
+    private static extern int DarwinFStatInode64(
+        int descriptor,
+        out DarwinStatBuffer status);
 
     [DllImport("System.Native", EntryPoint = "SystemNative_FStat", SetLastError = true)]
     private static extern int SystemNativeFStat(
@@ -675,6 +756,22 @@ internal static class RetainedDatabaseSnapshotFile
         internal long RawDevice;
         internal long Inode;
         internal uint UserFlags;
+    }
+
+    [StructLayout(LayoutKind.Explicit, Size = 256)]
+    private struct LinuxStatxBuffer
+    {
+        [FieldOffset(0)]
+        internal uint Mask;
+
+        [FieldOffset(16)]
         internal uint HardLinkCount;
+    }
+
+    [StructLayout(LayoutKind.Explicit, Size = 144)]
+    private struct DarwinStatBuffer
+    {
+        [FieldOffset(6)]
+        internal ushort HardLinkCount;
     }
 }

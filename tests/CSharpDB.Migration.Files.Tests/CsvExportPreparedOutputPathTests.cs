@@ -82,6 +82,9 @@ public sealed class CsvExportPreparedOutputPathTests
     [Fact]
     public async Task SiblingPaths_AreDestinationOnlyAndDeterministicAcrossBindings()
     {
+        if (!OperatingSystem.IsWindows())
+            return;
+
         using var workspace = new TemporaryDirectory();
         string destinationPath = workspace.PathFor("orders.csv");
 
@@ -119,6 +122,9 @@ public sealed class CsvExportPreparedOutputPathTests
     [Fact]
     public async Task ExistingDestination_IsRejectedWithoutMutationOrSiblingCreation()
     {
+        if (!OperatingSystem.IsWindows())
+            return;
+
         using var workspace = new TemporaryDirectory();
         string destinationPath = workspace.PathFor("existing.csv");
         CsvExportCheckpointBinding binding = CreateBinding();
@@ -150,6 +156,9 @@ public sealed class CsvExportPreparedOutputPathTests
     [InlineData("pending-checkpoint")]
     public async Task ExistingSiblingDirectory_IsRejected(string siblingKind)
     {
+        if (!OperatingSystem.IsWindows())
+            return;
+
         using var workspace = new TemporaryDirectory();
         string destinationPath = workspace.PathFor("directory-collision.csv");
         CsvExportCheckpointBinding binding = CreateBinding();
@@ -170,6 +179,9 @@ public sealed class CsvExportPreparedOutputPathTests
     [Fact]
     public async Task PreparedDataSymbolicLink_IsRejectedWithoutTouchingTarget()
     {
+        if (!OperatingSystem.IsWindows())
+            return;
+
         using var workspace = new TemporaryDirectory();
         string destinationPath = workspace.PathFor("reparse.csv");
         CsvExportCheckpointBinding binding = CreateBinding();
@@ -203,6 +215,9 @@ public sealed class CsvExportPreparedOutputPathTests
     [Fact]
     public async Task DisposeAndReacquire_PreservesCheckpointedData()
     {
+        if (!OperatingSystem.IsWindows())
+            return;
+
         using var workspace = new TemporaryDirectory();
         string destinationPath = workspace.PathFor("reacquire.csv");
         CsvExportCheckpointBinding binding = CreateBinding();

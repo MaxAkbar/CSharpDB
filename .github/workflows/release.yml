@@ -33,6 +33,11 @@ jobs:
         with:
           global-json-file: global.json
 
+      - name: Use link-free temporary directory (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: echo "TMPDIR=${RUNNER_TEMP}" >> "${GITHUB_ENV}"
+
       - name: Guard NuGet package dependency closure
         shell: pwsh
         run: ./scripts/Test-NuGetPackageClosure.ps1

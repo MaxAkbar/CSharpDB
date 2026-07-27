@@ -17,7 +17,10 @@ public sealed class StorageEngineOptions
     /// Sharing policy for the primary database file handle. The default keeps
     /// the historical multi-handle behavior; specialized owners may select
     /// <see cref="FileShare.Read"/> to allow readers while excluding every
-    /// other writer for the lifetime of the database handle.
+    /// other writer for the lifetime of the database handle. On Unix, .NET
+    /// cannot express that exact distinction, so the writer barrier also
+    /// excludes independent file readers; use the owning database's reader
+    /// sessions instead.
     /// </summary>
     public FileShare PrimaryFileShare { get; init; } = FileShare.ReadWrite;
 

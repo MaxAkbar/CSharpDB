@@ -354,6 +354,5 @@ internal sealed class RetainedDatabaseSnapshotWorkspace : IAsyncDisposable
         internal long RawDevice;
         internal long Inode;
         internal uint UserFlags;
-        internal uint HardLinkCount;
     }
 }

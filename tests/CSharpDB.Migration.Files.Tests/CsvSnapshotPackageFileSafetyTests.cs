@@ -24,6 +24,26 @@ public sealed class CsvSnapshotPackageFileSafetyTests
                 modifiers: null)!;
 
     [Fact]
+    public async Task RegularFileSupportsAsynchronousReads()
+    {
+        using var workspace = new TemporaryDirectory();
+        string path = workspace.PathFor("regular.csdbcsv");
+        byte[] expected = Enumerable.Range(0, 256)
+            .Select(value => checked((byte)value))
+            .ToArray();
+        File.WriteAllBytes(path, expected);
+
+        await using FileStream stream = OpenReadNoFollow(path);
+        byte[] actual = new byte[expected.Length];
+        await stream.ReadExactlyAsync(
+            actual,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(expected, actual);
+        Assert.Equal(OperatingSystem.IsWindows(), stream.IsAsync);
+    }
+
+    [Fact]
     public void DirectoryHandleIsRejectedAsUnsafePath()
     {
         using var workspace = new TemporaryDirectory();

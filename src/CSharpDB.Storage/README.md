@@ -298,6 +298,12 @@ migration target uses this opt-in barrier so no independent writer can change
 the file between validation and activation. The default remains
 `FileShare.ReadWrite` for compatibility.
 
+On Unix, .NET maps non-exclusive file-share modes to the same shared OS lock.
+CSharpDB therefore uses a stronger exclusive OS lock for this opt-in writer
+barrier. Independent file readers are also refused there; use a
+`ReaderSession` from the owning `Database`. Windows retains the exact
+allow-readers/deny-writers behavior.
+
 ```csharp
 using CSharpDB.Engine;
 

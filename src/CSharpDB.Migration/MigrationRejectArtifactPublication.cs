@@ -740,7 +740,11 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
 
         try
         {
-            var stream = new FileStream(handle, FileAccess.ReadWrite, BufferSize, isAsync: true);
+            var stream = new FileStream(
+                handle,
+                FileAccess.ReadWrite,
+                BufferSize,
+                isAsync: true);
             handle = null!;
             try
             {
@@ -784,7 +788,11 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
 
         try
         {
-            var stream = new FileStream(handle, FileAccess.Read, BufferSize, isAsync: true);
+            var stream = new FileStream(
+                handle,
+                FileAccess.Read,
+                BufferSize,
+                isAsync: true);
             handle = null!;
             try
             {
@@ -998,7 +1006,7 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
                     new Win32Exception(Marshal.GetLastPInvokeError()));
             }
 
-            var stream = new FileStream(handle, FileAccess.ReadWrite, BufferSize, isAsync: true);
+            var stream = new FileStream(handle, FileAccess.ReadWrite, BufferSize);
             handle = null!;
             return stream;
         }
@@ -1033,7 +1041,7 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
                     "The existing reject artifact could not be prepared for reading.",
                     new Win32Exception(Marshal.GetLastPInvokeError()));
             }
-            var stream = new FileStream(handle, FileAccess.Read, BufferSize, isAsync: true);
+            var stream = new FileStream(handle, FileAccess.Read, BufferSize);
             handle = null!;
             return stream;
         }
@@ -1060,13 +1068,14 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
         bool validateExtendedAcl)
     {
         UnixFileStatus status = ReadUnixStatus(handle);
+        uint hardLinkCount = ReadUnixHardLinkCount(handle);
         if ((status.Mode & FileTypeMask) != RegularFileType ||
             status.Uid != UnixEffectiveUserId() ||
             (status.Mode & GroupAndOtherPermissionMask) != 0 ||
-            status.HardLinkCount != 1)
+            hardLinkCount != 1)
         {
             throw new InvalidDataException(
-                "The reject artifact file must be a private, current-user-owned regular file with one link.");
+                "The reject artifact file must have private access, be current-user-owned, be regular, and have one link.");
         }
         if (validateExtendedAcl)
             RequireNoUnixExtendedAcl(handle);
@@ -1082,7 +1091,7 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
                 if (UnixRemoveExtendedAttribute(descriptor, name) == 0)
                     continue;
                 int error = Marshal.GetLastPInvokeError();
-                if (error != LinuxNoExtendedAttribute)
+                if (!IsAbsentLinuxAclAttribute(handle, error))
                 {
                     throw new InvalidDataException(
                         "The reject artifact file extended access policy could not be removed.");
@@ -1124,7 +1133,8 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
                     throw new InvalidDataException(
                         "The reject artifact file contains an extended access policy.");
                 }
-                if (Marshal.GetLastPInvokeError() != LinuxNoExtendedAttribute)
+                int error = Marshal.GetLastPInvokeError();
+                if (!IsAbsentLinuxAclAttribute(handle, error))
                 {
                     throw new InvalidDataException(
                         "The reject artifact file extended access policy cannot be verified.");
@@ -1168,6 +1178,26 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
 
         throw new PlatformNotSupportedException(
             "Private reject-artifact ACL verification is not supported on this platform.");
+    }
+
+    private static bool IsAbsentLinuxAclAttribute(
+        SafeFileHandle handle,
+        int error)
+    {
+        if (error == LinuxNoExtendedAttribute)
+            return true;
+        if (error != LinuxOperationNotSupported ||
+            LinuxFStatFs(
+                Descriptor(handle),
+                out LinuxFileSystemStatus status) != 0)
+        {
+            return false;
+        }
+
+        // ext2/3/4 enforce uid and mode bits. EOPNOTSUPP therefore means the
+        // queried optional NFSv4/richacl family is not implemented, not that
+        // an unverified access policy was accepted.
+        return unchecked((ulong)(long)status.Type) == LinuxExtFileSystem;
     }
 
     private static void RequireUnixTemporaryIdentity(
@@ -1233,6 +1263,64 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
                 new Win32Exception(Marshal.GetLastPInvokeError()));
         }
         return status;
+    }
+
+    private static uint ReadUnixHardLinkCount(SafeFileHandle handle)
+    {
+        int descriptor = Descriptor(handle);
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsAndroid())
+        {
+            int result;
+            try
+            {
+                result = LinuxStatx(
+                    descriptor,
+                    string.Empty,
+                    UnixAtEmptyPath | UnixAtSymlinkNoFollow,
+                    LinuxStatxHardLinkCount,
+                    out LinuxStatxBuffer status);
+                if (result == 0)
+                {
+                    if ((status.Mask & LinuxStatxHardLinkCount) == 0)
+                    {
+                        throw new IOException(
+                            "The reject artifact file hard-link count is unavailable.");
+                    }
+                    return status.HardLinkCount;
+                }
+            }
+            catch (EntryPointNotFoundException exception)
+            {
+                throw new PlatformNotSupportedException(
+                    "Private reject-artifact publication requires statx on Linux.",
+                    exception);
+            }
+
+            throw new IOException(
+                "The reject artifact file hard-link count cannot be read.",
+                new Win32Exception(Marshal.GetLastPInvokeError()));
+        }
+
+        if (OperatingSystem.IsMacOS() ||
+            OperatingSystem.IsIOS() ||
+            OperatingSystem.IsTvOS() ||
+            OperatingSystem.IsMacCatalyst())
+        {
+            int result = OperatingSystem.IsMacOS() &&
+                RuntimeInformation.ProcessArchitecture == Architecture.X64
+                ? DarwinFStatInode64(descriptor, out DarwinStatBuffer status)
+                : DarwinFStat(descriptor, out status);
+            if (result != 0)
+            {
+                throw new IOException(
+                    "The reject artifact file hard-link count cannot be read.",
+                    new Win32Exception(Marshal.GetLastPInvokeError()));
+            }
+            return status.HardLinkCount;
+        }
+
+        throw new PlatformNotSupportedException(
+            "Private reject-artifact hard-link inspection is unsupported on this platform.");
     }
 
     private static int GetUnixParentFlags()
@@ -1394,7 +1482,12 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
     private const int DirectoryFileType = 0x4000;
     private const int GroupAndOtherPermissionMask = 0x3F;
     private const uint UnixPrivateFileMode = 0x180;
+    private const int UnixAtSymlinkNoFollow = 0x0100;
+    private const int UnixAtEmptyPath = 0x1000;
+    private const uint LinuxStatxHardLinkCount = 0x0004;
+    private const ulong LinuxExtFileSystem = 0x0000EF53;
     private const int LinuxNoExtendedAttribute = 61;
+    private const int LinuxOperationNotSupported = 95;
     private const int DarwinNoEntry = 2;
     private const int DarwinInvalidArgument = 22;
     private const int DarwinAclTypeExtended = 0x100;
@@ -1420,7 +1513,30 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
         internal long RawDevice;
         internal long Inode;
         internal uint UserFlags;
+    }
+
+    [StructLayout(LayoutKind.Explicit, Size = 256)]
+    private struct LinuxStatxBuffer
+    {
+        [FieldOffset(0)]
+        internal uint Mask;
+
+        [FieldOffset(16)]
         internal uint HardLinkCount;
+    }
+
+    [StructLayout(LayoutKind.Explicit, Size = 256)]
+    private struct LinuxFileSystemStatus
+    {
+        [FieldOffset(0)]
+        internal nint Type;
+    }
+
+    [StructLayout(LayoutKind.Explicit, Size = 144)]
+    private struct DarwinStatBuffer
+    {
+        [FieldOffset(6)]
+        internal ushort HardLinkCount;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -1548,6 +1664,29 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
 
     [DllImport("libc", EntryPoint = "fcntl", SetLastError = true)]
     private static extern int UnixFcntl(int descriptor, int command, int argument);
+
+    [DllImport("libc", EntryPoint = "statx", SetLastError = true)]
+    private static extern int LinuxStatx(
+        int directoryDescriptor,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
+        int flags,
+        uint mask,
+        out LinuxStatxBuffer status);
+
+    [DllImport("libc", EntryPoint = "fstatfs", SetLastError = true)]
+    private static extern int LinuxFStatFs(
+        int descriptor,
+        out LinuxFileSystemStatus status);
+
+    [DllImport("libc", EntryPoint = "fstat", SetLastError = true)]
+    private static extern int DarwinFStat(
+        int descriptor,
+        out DarwinStatBuffer status);
+
+    [DllImport("libc", EntryPoint = "fstat$INODE64", SetLastError = true)]
+    private static extern int DarwinFStatInode64(
+        int descriptor,
+        out DarwinStatBuffer status);
 
     [DllImport("System.Native", EntryPoint = "SystemNative_FStat", SetLastError = true)]
     private static extern int SystemNativeFStat(

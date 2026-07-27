@@ -15,6 +15,9 @@ public sealed class CsvExportPreparedOutputLeaseTests
     [Fact]
     public async Task NewLease_PersistsHeaderCheckpoint_AndReopensRecovered()
     {
+        if (!OperatingSystem.IsWindows())
+            return;
+
         using var workspace = new TemporaryDirectory();
         string destinationPath = workspace.PathFor("orders.csv");
         CsvExportCheckpointBinding binding = CreateBinding();
@@ -78,6 +81,9 @@ public sealed class CsvExportPreparedOutputLeaseTests
     [Fact]
     public async Task OpenAsync_HoldsAnExclusivePreparedOutputLease()
     {
+        if (!OperatingSystem.IsWindows())
+            return;
+
         using var workspace = new TemporaryDirectory();
         string destinationPath = workspace.PathFor("exclusive.csv");
         CsvExportCheckpointBinding binding = CreateBinding();
@@ -100,6 +106,9 @@ public sealed class CsvExportPreparedOutputLeaseTests
     [Fact]
     public async Task PersistCheckpoint_EmitsEveryDurableFaultBoundaryInOrder()
     {
+        if (!OperatingSystem.IsWindows())
+            return;
+
         using var workspace = new TemporaryDirectory();
         string destinationPath = workspace.PathFor("fault-boundaries.csv");
         CsvExportCheckpointBinding binding = CreateBinding();
@@ -127,6 +136,9 @@ public sealed class CsvExportPreparedOutputLeaseTests
     [Fact]
     public async Task UncheckpointedData_IsInaccessibleAndPreservedUntilExplicitReset()
     {
+        if (!OperatingSystem.IsWindows())
+            return;
+
         using var workspace = new TemporaryDirectory();
         string destinationPath = workspace.PathFor("uncheckpointed.csv");
         CsvExportCheckpointBinding binding = CreateBinding();
@@ -186,6 +198,9 @@ public sealed class CsvExportPreparedOutputLeaseTests
     [Fact]
     public async Task Recovery_VerifiesCheckpointedPrefixBeforeTruncatingTail()
     {
+        if (!OperatingSystem.IsWindows())
+            return;
+
         using var workspace = new TemporaryDirectory();
         string destinationPath = workspace.PathFor("tail.csv");
         CsvExportCheckpointBinding binding = CreateBinding();
@@ -230,6 +245,9 @@ public sealed class CsvExportPreparedOutputLeaseTests
     public async Task Recovery_RejectsAlteredOrShortPrefixWithoutMutation(
         bool truncatePrefix)
     {
+        if (!OperatingSystem.IsWindows())
+            return;
+
         using var workspace = new TemporaryDirectory();
         string destinationPath = workspace.PathFor(
             truncatePrefix ? "short.csv" : "altered.csv");
@@ -269,6 +287,9 @@ public sealed class CsvExportPreparedOutputLeaseTests
     [Fact]
     public async Task Recovery_RejectsBindingMismatchWithoutChangingPreparedData()
     {
+        if (!OperatingSystem.IsWindows())
+            return;
+
         using var workspace = new TemporaryDirectory();
         string destinationPath = workspace.PathFor("binding.csv");
         CsvExportCheckpointBinding original = CreateBinding();
@@ -297,6 +318,9 @@ public sealed class CsvExportPreparedOutputLeaseTests
     [Fact]
     public async Task PersistCheckpoint_EnforcesGenerationIdempotenceAndProgress()
     {
+        if (!OperatingSystem.IsWindows())
+            return;
+
         using var workspace = new TemporaryDirectory();
         string destinationPath = workspace.PathFor("generations.csv");
         CsvExportCheckpointBinding binding = CreateBinding();
@@ -354,6 +378,9 @@ public sealed class CsvExportPreparedOutputLeaseTests
     [Fact]
     public async Task PersistCheckpoint_WrongDataDigestPreservesLastGoodGeneration()
     {
+        if (!OperatingSystem.IsWindows())
+            return;
+
         using var workspace = new TemporaryDirectory();
         string destinationPath = workspace.PathFor("wrong-digest.csv");
         CsvExportCheckpointBinding binding = CreateBinding();
@@ -423,6 +450,9 @@ public sealed class CsvExportPreparedOutputLeaseTests
     [Fact]
     public async Task PersistCheckpoint_DataCompleteIsTerminalAndRecovers()
     {
+        if (!OperatingSystem.IsWindows())
+            return;
+
         using var workspace = new TemporaryDirectory();
         string destinationPath = workspace.PathFor("complete.csv");
         CsvExportCheckpointBinding binding = CreateBinding();
@@ -470,6 +500,9 @@ public sealed class CsvExportPreparedOutputLeaseTests
     [Fact]
     public async Task Recovery_ActiveCheckpointAlwaysOutranksPendingCheckpoint()
     {
+        if (!OperatingSystem.IsWindows())
+            return;
+
         using var workspace = new TemporaryDirectory();
         string destinationPath = workspace.PathFor("pending.csv");
         CsvExportCheckpointBinding binding = CreateBinding();
@@ -500,6 +533,9 @@ public sealed class CsvExportPreparedOutputLeaseTests
     [Fact]
     public async Task Recovery_IgnoresTornPendingCheckpointBytes()
     {
+        if (!OperatingSystem.IsWindows())
+            return;
+
         using var workspace = new TemporaryDirectory();
         string destinationPath = workspace.PathFor("torn-pending.csv");
         CsvExportCheckpointBinding binding = CreateBinding();

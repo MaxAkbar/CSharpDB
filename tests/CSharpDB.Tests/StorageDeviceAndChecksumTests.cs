@@ -172,7 +172,7 @@ public sealed class StorageDeviceAndChecksumTests
     }
 
     [Fact]
-    public async Task FileStorageDevice_ReadShareAllowsReaderButRejectsSecondWriter()
+    public async Task FileStorageDevice_ReadShareUsesPlatformReaderPolicyAndRejectsSecondWriter()
     {
         string path = NewTempPath();
         try
@@ -181,11 +181,22 @@ public sealed class StorageDeviceAndChecksumTests
                 path,
                 createNew: true,
                 FileShare.Read);
-            using var reader = new FileStream(
-                path,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.ReadWrite);
+            if (OperatingSystem.IsWindows())
+            {
+                using var reader = new FileStream(
+                    path,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.ReadWrite);
+            }
+            else
+            {
+                Assert.Throws<IOException>(() => new FileStream(
+                    path,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.ReadWrite));
+            }
 
             Assert.Throws<IOException>(() => new FileStorageDevice(path));
         }

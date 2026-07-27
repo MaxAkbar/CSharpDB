@@ -1160,7 +1160,6 @@ internal sealed class RetainedCaptureDirectoryLease : IDisposable
         internal long RawDevice;
         internal long Inode;
         internal uint UserFlags;
-        internal uint HardLinkCount;
     }
 
     [StructLayout(LayoutKind.Explicit, Size = 256)]
