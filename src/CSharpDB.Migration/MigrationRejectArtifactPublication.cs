@@ -94,7 +94,8 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
                 unixParent = OpenUnixParent(binding.ParentPath);
                 stream = OpenUnixClaim(
                     unixParent,
-                    binding.TemporaryLeaf);
+                    binding.TemporaryLeaf,
+                    binding.TemporaryPath);
             }
 
             try
@@ -945,14 +946,37 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
 
     private static FileStream OpenUnixClaim(
         SafeFileHandle parent,
-        string temporaryLeaf)
+        string temporaryLeaf,
+        string temporaryPath)
     {
         int parentDescriptor = Descriptor(parent);
-        int descriptor = UnixOpenAt(
-            parentDescriptor,
-            temporaryLeaf,
-            GetUnixClaimFlags(create: true),
-            UnixPrivateFileMode);
+        int descriptor;
+        if (OperatingSystem.IsMacOS() || OperatingSystem.IsIOS() ||
+            OperatingSystem.IsTvOS() || OperatingSystem.IsMacCatalyst())
+        {
+            // openat(2) receives mode through C varargs. Apple ARM64 uses a
+            // distinct variadic calling convention that a fixed P/Invoke
+            // declaration cannot represent. System.Native supplies the fixed
+            // ABI shim used by .NET itself; the descriptor is then rebound to
+            // the already pinned parent before any evidence is written.
+            nint opened = SystemNativeOpen(
+                temporaryPath,
+                PalOpenReadWrite |
+                PalOpenCloseOnExec |
+                PalOpenCreate |
+                PalOpenExclusive |
+                PalOpenNoFollow,
+                checked((int)UnixPrivateFileMode));
+            descriptor = checked((int)opened);
+        }
+        else
+        {
+            descriptor = UnixOpenAt(
+                parentDescriptor,
+                temporaryLeaf,
+                GetUnixClaimFlags(create: true),
+                UnixPrivateFileMode);
+        }
         if (descriptor == -1)
         {
             int createError = Marshal.GetLastPInvokeError();
@@ -978,6 +1002,7 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
         SafeFileHandle handle = WrapUnixDescriptor(descriptor);
         try
         {
+            RequireUnixTemporaryIdentity(parent, temporaryLeaf, handle);
             int lockResult = UnixFlock(
                 Descriptor(handle),
                 LockExclusive | LockNonBlocking);
@@ -991,7 +1016,6 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
             }
 
             ValidateUnixRegularPrivateFile(handle, validateExtendedAcl: false);
-            RequireUnixTemporaryIdentity(parent, temporaryLeaf, handle);
             RemoveUnixExtendedAcl(handle);
             if (UnixChangeMode(Descriptor(handle), UnixPrivateFileMode) != 0)
             {
@@ -1514,6 +1538,11 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
     private const int FreeBsdDirectory = 0x00020000;
     private const int FreeBsdNoFollow = 0x00000100;
     private const int FreeBsdCloseOnExec = 0x00100000;
+    private const int PalOpenReadWrite = 0x0002;
+    private const int PalOpenCloseOnExec = 0x0010;
+    private const int PalOpenCreate = 0x0020;
+    private const int PalOpenExclusive = 0x0040;
+    private const int PalOpenNoFollow = 0x0200;
     private const int FSetFileDescriptor = 2;
     private const int CloseOnExec = 1;
     private const int FileTypeMask = 0xF000;
@@ -1746,6 +1775,15 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
     private static extern int SystemNativeFStat(
         SafeFileHandle descriptor,
         out UnixFileStatus status);
+
+    [DllImport(
+        "System.Native",
+        EntryPoint = "SystemNative_Open",
+        SetLastError = true)]
+    private static extern nint SystemNativeOpen(
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
+        int flags,
+        int mode);
 
     [DllImport(
         "System.Native",
