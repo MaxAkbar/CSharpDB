@@ -441,7 +441,7 @@ public sealed class MigrationProcessCrashRecoveryTests
         CancellationToken cancellationToken,
         string scenario = FailFastScenario)
     {
-        string pipeName = $"csharpdb-migration-crash-{Guid.NewGuid():N}";
+        string pipeName = $"cdb-mc-{Guid.NewGuid():N}";
         await using var pipe = new NamedPipeServerStream(
             pipeName,
             PipeDirection.InOut,
@@ -524,7 +524,7 @@ public sealed class MigrationProcessCrashRecoveryTests
         MigrationRejectArtifactFaultPoint faultPoint,
         CancellationToken cancellationToken)
     {
-        string pipeName = $"csharpdb-reject-artifact-crash-{Guid.NewGuid():N}";
+        string pipeName = $"cdb-ra-{Guid.NewGuid():N}";
         await using var pipe = new NamedPipeServerStream(
             pipeName,
             PipeDirection.InOut,
