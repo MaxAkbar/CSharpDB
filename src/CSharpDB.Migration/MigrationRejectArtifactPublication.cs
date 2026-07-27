@@ -1070,13 +1070,25 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
     {
         UnixFileStatus status = ReadUnixStatus(handle);
         uint hardLinkCount = ReadUnixHardLinkCount(handle);
-        if ((status.Mode & FileTypeMask) != RegularFileType ||
-            status.Uid != UnixEffectiveUserId() ||
-            (status.Mode & GroupAndOtherPermissionMask) != 0 ||
-            hardLinkCount != 1)
+        if ((status.Mode & FileTypeMask) != RegularFileType)
         {
             throw new InvalidDataException(
-                "The reject artifact file must have private access, be current-user-owned, be regular, and have one link.");
+                "The reject artifact file is not a regular file.");
+        }
+        if (status.Uid != UnixEffectiveUserId())
+        {
+            throw new InvalidDataException(
+                "The reject artifact file is not owned by the current user.");
+        }
+        if ((status.Mode & GroupAndOtherPermissionMask) != 0)
+        {
+            throw new InvalidDataException(
+                "The reject artifact file grants group or other access.");
+        }
+        if (hardLinkCount != 1)
+        {
+            throw new InvalidDataException(
+                "The reject artifact file does not have exactly one link.");
         }
         if (validateExtendedAcl)
             RequireNoUnixExtendedAcl(handle);
