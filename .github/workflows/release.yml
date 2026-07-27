@@ -33,10 +33,13 @@ jobs:
         with:
           global-json-file: global.json
 
-      - name: Use link-free temporary directory (macOS)
+      - name: Use private link-free temporary directory (macOS)
         if: runner.os == 'macOS'
         shell: bash
-        run: echo "TMPDIR=${RUNNER_TEMP}" >> "${GITHUB_ENV}"
+        run: |
+          temp_directory="$(mktemp -d /private/tmp/csharpdb-ci.XXXXXX)"
+          chmod 700 "${temp_directory}"
+          echo "TMPDIR=${temp_directory}" >> "${GITHUB_ENV}"
 
       - name: Guard NuGet package dependency closure
         shell: pwsh
