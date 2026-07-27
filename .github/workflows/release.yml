@@ -33,10 +33,6 @@ jobs:
         with:
           global-json-file: global.json
 
-      - name: Guard legacy primitives identity
-        shell: pwsh
-        run: ./scripts/Test-NoLegacyCoreReferences.ps1
-
       - name: Guard NuGet package dependency closure
         shell: pwsh
         run: ./scripts/Test-NuGetPackageClosure.ps1

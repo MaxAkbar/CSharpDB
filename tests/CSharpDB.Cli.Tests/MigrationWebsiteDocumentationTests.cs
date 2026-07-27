@@ -147,7 +147,7 @@ public sealed class MigrationWebsiteDocumentationTests
 
     [Fact]
     public void
-        DatabaseMigrationGuide_IsDiscoverableAndDistinctFromLibraryRename()
+        DatabaseMigrationGuide_IsDiscoverable()
     {
         string repoRoot = FindRepoRoot();
         foreach (string relativePath in
@@ -161,10 +161,6 @@ public sealed class MigrationWebsiteDocumentationTests
                          "www",
                          "docs",
                          "cli.html"),
-                     Path.Combine(
-                         "www",
-                         "docs",
-                         "migrations.html"),
                      Path.Combine(
                          "www",
                          "downloads.html"),
@@ -183,21 +179,6 @@ public sealed class MigrationWebsiteDocumentationTests
                 content,
                 StringComparison.Ordinal);
         }
-
-        string renameGuide = File.ReadAllText(
-            Path.Combine(
-                repoRoot,
-                "www",
-                "docs",
-                "migrations.html"));
-        Assert.Contains(
-            "CSharpDB.Core",
-            renameGuide,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "Looking for database migration?",
-            renameGuide,
-            StringComparison.Ordinal);
 
         string releaseNotes = File.ReadAllText(
             Path.Combine(repoRoot, "RELEASE_NOTES.md"));

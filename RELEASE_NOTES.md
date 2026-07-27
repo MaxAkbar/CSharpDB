@@ -33,7 +33,7 @@ version4.3.0 adds a first-party, review-first workflow for moving schemas and ro
 - Added combined, framework-dependent migration CLI archives for Windows x64, Linux x64, and macOS Apple silicon. Archives require the .NET 10 runtime and retain the applicable fixed optional adapters, notices, licenses, and installers; the GitHub release includes `MIGRATION-SHA256SUMS.txt` for all three archives.
 - Published the provider-neutral `CSharpDB.Migration` and `CSharpDB.Migration.DualRun` packages so the durable migration contracts and dual-run SDK are usable without a source checkout.
 - Added safe user-directory installers that refuse overwrite by default, do not request administrator access, do not create services, and do not change `PATH`.
-- Added the public [database migration guide](https://csharpdb.com/docs/database-migration.html) and [migration release article](https://csharpdb.com/blog/migrating-existing-data-to-csharpdb.html), including source recipes, compatibility tools, export, dual-run, recovery, validation, security, troubleshooting, and the distinction from the older library-rename migration guide.
+- Added the public [database migration guide](https://csharpdb.com/docs/database-migration.html) and [migration release article](https://csharpdb.com/blog/migrating-existing-data-to-csharpdb.html), including source recipes, compatibility tools, export, dual-run, recovery, validation, security, and troubleshooting.
 
 ### Qualification Boundary
 
