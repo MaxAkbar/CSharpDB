@@ -1,0 +1,110 @@
+{
+  "canonicalizationId": "csharpdb-canon-v1",
+  "rowMagicHex": "4353444243414e31",
+  "keyMagicHex": "435344424b455931",
+  "contractHash": "8a323b42ac39d6faa2a8609c88143f5e78f613fb2b73cb2947ac50bf35ee616a",
+  "vectors": [
+    {
+      "name": "empty",
+      "fieldCount": 0,
+      "frameHex": "",
+      "rowSha256": "5fe81ae8fc2882af235d5884fd4bdc1c7af163d038afb3062cfd5857f619e26e"
+    },
+    {
+      "name": "null-text",
+      "fieldCount": 1,
+      "frameHex": "07010000000000000000",
+      "rowSha256": "b3eec3502a76a9d297480236724f4b125f9e0615e69f0c521fd0dc8c3e8ddb4f"
+    },
+    {
+      "name": "boolean-true",
+      "fieldCount": 1,
+      "frameHex": "0100000000000000000101",
+      "rowSha256": "70d44193495fa074c2d668ef4e36df49583ef80e63fa202572c7f0de305f3a77"
+    },
+    {
+      "name": "int64-minus-one",
+      "fieldCount": 1,
+      "frameHex": "02000000000000000008ffffffffffffffff",
+      "rowSha256": "90a5ef950f25d7806bcdf5436c51f143dbc8dd3724d7fc82ade3207af6d28336"
+    },
+    {
+      "name": "uint64-max",
+      "fieldCount": 1,
+      "frameHex": "03000000000000000008ffffffffffffffff",
+      "rowSha256": "53f31f0adf574a3614a6ee94354e3d3c0a613c559cf5d9a16f74faaf4f377243"
+    },
+    {
+      "name": "decimal-123-4500",
+      "fieldCount": 1,
+      "frameHex": "04000000000000000006000000023039",
+      "rowSha256": "d6c41856d212ad900542e60bc60c05942093165c9ed57a1c2bc1fdba99cc3d90"
+    },
+    {
+      "name": "binary32-negative-zero",
+      "fieldCount": 1,
+      "frameHex": "0500000000000000000400000000",
+      "rowSha256": "b0cccdc7b45f238a1ed66e20a678c9f6c1ab4b33d0d9278cf1e7f79fafcd1559"
+    },
+    {
+      "name": "binary64-one-point-five",
+      "fieldCount": 1,
+      "frameHex": "060000000000000000083ff8000000000000",
+      "rowSha256": "5154b51ad1f49c547e7d5104f0790faecda6ba9c2f3d399229aa4b56274ef769"
+    },
+    {
+      "name": "text-a-combining-ring",
+      "fieldCount": 1,
+      "frameHex": "0700000000000000000341cc8a",
+      "rowSha256": "d20bab23dd3def1ea953046a3ce8fd521691c97f64703d5e8fe7a7b826fc068b"
+    },
+    {
+      "name": "blob-deadbe",
+      "fieldCount": 1,
+      "frameHex": "08000000000000000003deadbe",
+      "rowSha256": "6d0bdf8be8af1e99ba287c27b4ad3fddbad437452e12642b9e42b63350e8f201"
+    },
+    {
+      "name": "guid-rfc-network-order",
+      "fieldCount": 1,
+      "frameHex": "0900000000000000001000112233445566778899aabbccddeeff",
+      "rowSha256": "a5b8062ed9a60d4e2734bf5587a0a88c787589774e5beb1645bb0ff4fd5bd16d"
+    },
+    {
+      "name": "date-minus-one",
+      "fieldCount": 1,
+      "frameHex": "0a000000000000000004ffffffff",
+      "rowSha256": "1f4106504e35822b52a7b99c9f6f4a67f625a5f0440a5a05f54815deb7f68e1f"
+    },
+    {
+      "name": "time-one-second",
+      "fieldCount": 1,
+      "frameHex": "0b000000000000000008000000003b9aca00",
+      "rowSha256": "bc54ca17b9214b7f91c01b670deb098a1518ba14a1a0eb4b5919fe7870ad7c11"
+    },
+    {
+      "name": "wall-date-time",
+      "fieldCount": 1,
+      "frameHex": "0c00000000000000000c000050af00001ab19baec8bc",
+      "rowSha256": "b3895c2a677f1084be4462f659c94c9cd2ef1516cca6ae6d412af900797892f5"
+    },
+    {
+      "name": "utc-instant",
+      "fieldCount": 1,
+      "frameHex": "0d00000000000000000c000000006a5f8b96075bccbc",
+      "rowSha256": "a79c16d53a51fdd381eae4decdbb651d982d0ba9bc34fca40450599c8eb7f493"
+    },
+    {
+      "name": "offset-date-time",
+      "fieldCount": 1,
+      "frameHex": "0e00000000000000000e000050af00001ab19baec8bcfe5c",
+      "rowSha256": "3974e767e81e93e3be3baf52f36442b052eb840de057aa842649a6548020a4b0"
+    },
+    {
+      "name": "excluded-rowversion",
+      "fieldCount": 1,
+      "frameHex": "0802000000000000000101",
+      "rowSha256": "5030dcd2bcbc22983bf27cf7726d26ddc44eb114662b364739d3ca4b982ac159"
+    }
+  ]
+}

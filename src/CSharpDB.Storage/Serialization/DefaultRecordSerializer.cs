@@ -19,6 +19,9 @@ public sealed class DefaultRecordSerializer : IRecordSerializer
 
     public DbValue[] Decode(ReadOnlySpan<byte> buffer) => RecordEncoder.Decode(buffer);
 
+    public int GetDecodedColumnCount(ReadOnlySpan<byte> buffer) =>
+        RecordEncoder.GetDecodedColumnCount(buffer);
+
     public int DecodeInto(ReadOnlySpan<byte> buffer, Span<DbValue> destination) =>
         RecordEncoder.DecodeInto(buffer, destination);
 

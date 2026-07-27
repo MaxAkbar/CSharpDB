@@ -209,6 +209,7 @@ public static class GrpcModelMapper
         var message = new TableSchemaMessage
         {
             TableName = value.TableName,
+            NextRowId = value.NextRowId,
         };
         message.Columns.Add(value.Columns.Select(ToMessage));
         message.ForeignKeys.Add(value.ForeignKeys.Select(ToMessage));
@@ -262,6 +263,7 @@ public static class GrpcModelMapper
             ForeignKeys = value.ForeignKeys.Select(ToModel).ToList(),
             KeyConstraints = value.KeyConstraints.Select(ToModel).ToList(),
             CheckConstraints = value.CheckConstraints.Select(ToModel).ToList(),
+            NextRowId = value.NextRowId,
         };
 
     public static IndexSchemaMessage ToMessage(IndexSchema value)

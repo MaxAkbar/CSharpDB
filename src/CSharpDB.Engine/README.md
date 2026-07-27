@@ -172,6 +172,50 @@ await db.SaveToFileAsync("cache.db");
 await using var imported = await Database.LoadIntoMemoryAsync("cache.db");
 ```
 
+### Retained Read-Only Snapshots
+
+Use `RetainedDatabaseSnapshot` when a later process must continue reading the
+same database view, such as a resumable migration export:
+
+```csharp
+string source = Path.GetFullPath("app.db");
+string retained = Path.GetFullPath("app.export-snapshot.db");
+
+RetainedDatabaseSnapshotReceipt receipt =
+    await RetainedDatabaseSnapshot.CaptureAsync(source, retained);
+
+// Persist receipt.Identity with the export checkpoint.
+await using RetainedDatabaseSnapshotSession snapshot =
+    await RetainedDatabaseSnapshot.OpenAsync(retained, receipt.Identity);
+
+await using RetainedDatabaseSnapshotTableReader rows =
+    snapshot.OpenTableReader("users", afterRowIdExclusive: lastCompletedRowId);
+while (await rows.MoveNextAsync(cancellationToken))
+{
+    long physicalRowId = rows.CurrentRowId;
+    ReadOnlySpan<DbValue> values = rows.Current.Span;
+    // Consume values before advancing; the reader reuses this row buffer.
+}
+```
+
+The v1 path capture is offline: it requires a cooperating writer to be closed
+and never opens, recovers, checkpoints, or creates a WAL beside the source.
+Recovery happens only on a bounded private copy. Capture publishes one clean
+database file without replacing an existing destination; reopen requires the
+exact retained length and `sha256:<64 hex>` digest and exposes no writable
+`Database` handle. The default workspace is a random private child of the
+validated physical OS temporary directory; caller-supplied workspace parents
+must already be trusted and link-free. On platforms with advisory file sharing,
+enforce the write freeze and keep the source and destination parents trusted.
+Registered external-table archives are separate files and are not covered by
+the retained database digest; retain them independently or exclude those
+queries from a snapshot-qualified export. `OpenTableReader` scans only local
+physical tables in strictly ascending physical row-ID order. Its optional
+resume boundary is exclusive, and only one SQL query or table reader may be
+active on a retained session at a time. The session owns and closes its active
+table reader during disposal. `RetainedDatabaseSnapshotOptions.MaxEncodedRowBytes`
+defaults to 64 MiB and rejects larger overflow records before materialization.
+
 ### Hybrid Memory-Resident Mode
 
 ```csharp

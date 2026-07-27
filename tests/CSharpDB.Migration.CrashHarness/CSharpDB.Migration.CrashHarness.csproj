@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\CSharpDB.Migration\CSharpDB.Migration.csproj" />
+    <ProjectReference Include="..\..\src\CSharpDB.Migration.CSharpDb\CSharpDB.Migration.CSharpDb.csproj" />
+    <ProjectReference Include="..\..\src\CSharpDB.Migration.Files\CSharpDB.Migration.Files.csproj" />
+  </ItemGroup>
+
+</Project>

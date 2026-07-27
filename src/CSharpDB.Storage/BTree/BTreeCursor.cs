@@ -11,6 +11,7 @@ public sealed class BTreeCursor : IAsyncDisposable
 
     private readonly BTree _tree;
     private readonly Pager _pager;
+    private readonly int _maxResolvedPayloadBytes;
     private uint _currentPageId;
     private int _currentIndex;
     private PageReadBuffer _currentLeafPage;
@@ -23,10 +24,15 @@ public sealed class BTreeCursor : IAsyncDisposable
     private bool _eof;
     private bool _disposed;
 
-    internal BTreeCursor(BTree tree, Pager pager)
+    internal BTreeCursor(
+        BTree tree,
+        Pager pager,
+        int maxResolvedPayloadBytes = int.MaxValue)
     {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxResolvedPayloadBytes);
         _tree = tree;
         _pager = pager;
+        _maxResolvedPayloadBytes = maxResolvedPayloadBytes;
         _currentPageId = 0;
         _currentIndex = -1;
         _currentLeafPage = default;
@@ -80,7 +86,17 @@ public sealed class BTreeCursor : IAsyncDisposable
                     candidateIndex,
                     out bool valueIsOverflow);
                 if (valueIsOverflow)
-                    value = await _tree.ResolveStoredPayloadAsync(value, storedPayloadIsOverflow: true, ct);
+                {
+                    value = await _tree.ResolveStoredPayloadAsync(
+                        value,
+                        storedPayloadIsOverflow: true,
+                        _maxResolvedPayloadBytes,
+                        ct);
+                }
+                else
+                {
+                    EnsurePayloadWithinLimit(value.Length);
+                }
                 _currentIndex = candidateIndex;
                 CurrentKey = key;
                 CurrentValue = value;
@@ -127,7 +143,17 @@ public sealed class BTreeCursor : IAsyncDisposable
                         i,
                         out bool valueIsOverflow);
                     if (valueIsOverflow)
-                        value = await _tree.ResolveStoredPayloadAsync(value, storedPayloadIsOverflow: true, ct);
+                    {
+                        value = await _tree.ResolveStoredPayloadAsync(
+                            value,
+                            storedPayloadIsOverflow: true,
+                            _maxResolvedPayloadBytes,
+                            ct);
+                    }
+                    else
+                    {
+                        EnsurePayloadWithinLimit(value.Length);
+                    }
                     _currentPageId = pageId;
                     _currentIndex = i;
                     _currentLeafPage = page;
@@ -173,6 +199,15 @@ public sealed class BTreeCursor : IAsyncDisposable
                 hi = mid;
         }
         return lo;
+    }
+
+    private void EnsurePayloadWithinLimit(int payloadLength)
+    {
+        if (payloadLength > _maxResolvedPayloadBytes)
+        {
+            throw new InvalidDataException(
+                $"B+tree payload length {payloadLength} exceeds the configured {_maxResolvedPayloadBytes}-byte limit.");
+        }
     }
 
     private static int UpperBoundInterior(ReadOnlySlottedPage sp, long key)

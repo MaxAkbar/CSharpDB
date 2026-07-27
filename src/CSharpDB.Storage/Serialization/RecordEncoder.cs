@@ -155,6 +155,15 @@ public static class RecordEncoder
         return values;
     }
 
+    /// <summary>Returns the number of values encoded in one record.</summary>
+    public static int GetDecodedColumnCount(ReadOnlySpan<byte> buffer)
+    {
+        ulong count = Varint.Read(buffer, out _);
+        if (count > int.MaxValue)
+            throw new InvalidDataException("The encoded record column count exceeds the supported limit.");
+        return (int)count;
+    }
+
     /// <summary>
     /// Decode values into a caller-provided destination buffer.
     /// Returns the number of decoded columns (up to destination length).

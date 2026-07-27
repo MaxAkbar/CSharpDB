@@ -1,5 +1,6 @@
 using System.Data;
 using CSharpDB.EntityFrameworkCore.Infrastructure.Internal;
+using CSharpDbTextCodec = CSharpDB.Primitives.CSharpDbTextCodec;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
@@ -22,11 +23,36 @@ public sealed class CSharpDbTypeMappingSource : RelationalTypeMappingSource
     private static readonly RelationalTypeMapping UShortMapping = Compose(LongMapping, new ValueConverter<ushort, long>(value => value, value => checked((ushort)value)));
     private static readonly RelationalTypeMapping UIntMapping = Compose(LongMapping, new ValueConverter<uint, long>(value => value, value => checked((uint)value)));
     private static readonly RelationalTypeMapping ULongMapping = Compose(LongMapping, new ValueConverter<ulong, long>(value => checked((long)value), value => checked((ulong)value)));
-    private static readonly RelationalTypeMapping GuidMapping = Compose(TextMapping, new GuidToStringConverter());
-    private static readonly RelationalTypeMapping DateTimeMapping = Compose(TextMapping, new DateTimeToStringConverter());
-    private static readonly RelationalTypeMapping DateTimeOffsetMapping = Compose(TextMapping, new DateTimeOffsetToStringConverter());
-    private static readonly RelationalTypeMapping DateOnlyMapping = Compose(TextMapping, new DateOnlyToStringConverter());
-    private static readonly RelationalTypeMapping TimeOnlyMapping = Compose(TextMapping, new TimeOnlyToStringConverter());
+    private static readonly RelationalTypeMapping GuidMapping = Compose(
+        TextMapping,
+        new ValueConverter<Guid, string>(
+            value => CSharpDbTextCodec.FormatGuid(value),
+            value => CSharpDbTextCodec.ParseGuid(value),
+            new ConverterMappingHints(size: 36)));
+    private static readonly RelationalTypeMapping DateTimeMapping = Compose(
+        TextMapping,
+        new ValueConverter<DateTime, string>(
+            value => CSharpDbTextCodec.FormatDateTime(value),
+            value => CSharpDbTextCodec.ParseDateTime(value),
+            new ConverterMappingHints(size: 48)));
+    private static readonly RelationalTypeMapping DateTimeOffsetMapping = Compose(
+        TextMapping,
+        new ValueConverter<DateTimeOffset, string>(
+            value => CSharpDbTextCodec.FormatDateTimeOffset(value),
+            value => CSharpDbTextCodec.ParseDateTimeOffset(value),
+            new ConverterMappingHints(size: 48)));
+    private static readonly RelationalTypeMapping DateOnlyMapping = Compose(
+        TextMapping,
+        new ValueConverter<DateOnly, string>(
+            value => CSharpDbTextCodec.FormatDate(value),
+            value => CSharpDbTextCodec.ParseDate(value),
+            new ConverterMappingHints(size: 10)));
+    private static readonly RelationalTypeMapping TimeOnlyMapping = Compose(
+        TextMapping,
+        new ValueConverter<TimeOnly, string>(
+            value => CSharpDbTextCodec.FormatTime(value),
+            value => CSharpDbTextCodec.ParseTime(value),
+            new ConverterMappingHints(size: 48)));
 
     private static readonly Dictionary<string, RelationalTypeMapping> StoreTypeMappings = new(StringComparer.OrdinalIgnoreCase)
     {

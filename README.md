@@ -182,6 +182,18 @@ CSharpDB is more than an embedded SQL engine. The same database can be used thro
 
 CSharpDB includes a first-party embedded EF Core 10 provider for file-backed and private in-memory databases. It supports application-managed concurrency tokens plus one engine-generated nonnullable `byte[]` `[Timestamp]`/`IsRowVersion()` property per table. The opaque eight-byte token is a per-row revision that advances for every successful update, including raw SQL and trigger-issued updates; it is not SQL Server's database-wide counter, and standalone add/alter rowversion migrations remain unsupported. Conventional optional scalar and composite relationships support EF Core's default `ClientSetNull`: EF clears nullable FK components for tracked dependents, while a restrictive database constraint protects unloaded dependents. Database-side `DeleteBehavior.SetNull` remains unsupported.
 
+The separate [`csharpdb-ef` migration analyzer](src/CSharpDB.EntityFrameworkCore.Tools/README.md)
+can inspect a restored `net10.0` project's compiled migration chain through the
+provider's real design-time services and SQL generator without adding EF Core
+design dependencies to the base CLI. Generation-only analysis remains the
+default. Its explicit `--scratch` tier applies every supported migration prefix
+to tool-owned private-memory databases, checks normalized schema and history
+after apply/down/reapply, and twice runs an analyzer-owned guarded replay built
+from retained `Up` command payloads. A pass is empty-database evidence only: it
+does not validate existing-row conversions, file/WAL persistence, configured
+migration history, locks, interceptors, `IMigrator`, or
+`IMigrator.GenerateScript` behavior.
+
 The supported ASP.NET Core Identity configuration is deliberately bounded to Identity
 schema v1 with `IdentityUser<int>` and `IdentityRole<int>`. Its standard
 user, role, claim, login, token, role-membership, concurrency, transaction,
@@ -324,6 +336,7 @@ The native library exports 20 C functions. See the [Native Library Reference](ht
 | [REST API Reference](https://csharpdb.com/docs/rest-api.html) | HTTP API, schema/data CRUD, and maintenance |
 | [MCP Server](https://csharpdb.com/docs/mcp-server.html) | AI assistant integration |
 | [CLI Reference](https://csharpdb.com/docs/cli.html) | REPL commands |
+| [Database Migration Guide](https://csharpdb.com/docs/database-migration.html) | Move data from file and database sources, export CSV/JSON, and review mapping, query, and cutover evidence |
 | [VS Code Extension](vscode-extension/README.md) | Local NativeAOT-backed extension |
 | [Benchmark Suite](tests/CSharpDB.Benchmarks/README.md) | Full results and comparisons |
 | [SQL Reference](https://csharpdb.com/docs/sql.html) | Supported SQL syntax |

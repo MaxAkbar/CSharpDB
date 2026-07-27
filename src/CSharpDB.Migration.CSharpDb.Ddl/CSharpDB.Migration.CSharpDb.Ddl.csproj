@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>CSharpDB.Migration.CSharpDb.Ddl</AssemblyName>
+    <RootNamespace>CSharpDB.Migration.CSharpDb</RootNamespace>
+    <Description>Bounded CSharpDB DDL rendering, compatibility, and scratch-proof engine.</Description>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CSharpDB.Migration\CSharpDB.Migration.csproj" />
+    <ProjectReference Include="..\CSharpDB.Engine\CSharpDB.Engine.csproj" />
+    <ProjectReference Include="..\CSharpDB.Sql\CSharpDB.Sql.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="CSharpDB.Migration.CSharpDb" />
+    <InternalsVisibleTo Include="CSharpDB.Migration.SqlServer" />
+  </ItemGroup>
+
+</Project>

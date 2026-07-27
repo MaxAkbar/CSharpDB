@@ -22,7 +22,7 @@ using CoreTriggerTiming = CSharpDB.Primitives.TriggerTiming;
 
 namespace CSharpDB.Client.Internal;
 
-internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBackedClient, ICSharpDbTableArchiveProgressExporter
+internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBackedClient, ICSharpDbTableArchiveProgressExporter, ICSharpDbTransactionalSnapshotReader
 {
     private const string CollectionPrefix = "_col_";
     private const string ProcedureTableName = "__procedures";
@@ -74,6 +74,7 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
 
     public string DataSource => _databasePath;
     public bool SupportsTableArchiveExport => true;
+    public bool SupportsTransactionalSnapshotReads => true;
     internal DatabaseOptions DirectDatabaseOptions => _directDatabaseOptions;
     internal HybridDatabaseOptions? HybridDatabaseOptions => _hybridDatabaseOptions;
 
@@ -157,7 +158,18 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
             totalRows,
             path);
         var rows = ReportArchiveRowsAsync(result.GetRowsAsync(ct), normalizedTableName, totalRows, path, progress, ct);
-        var manifest = await TableArchiveWriter.WriteAsync(path, schema, rows, ct);
+        CSharpDB.Primitives.IndexSchema[] secondaryIndexes = db.GetIndexes()
+            .Where(index =>
+                index.Kind == CSharpDB.Primitives.IndexKind.Sql &&
+                index.State == CSharpDB.Primitives.IndexState.Ready &&
+                string.Equals(index.TableName, normalizedTableName, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        var manifest = await TableArchiveWriter.WriteAsync(
+            path,
+            schema,
+            secondaryIndexes,
+            rows,
+            ct);
         ReportArchiveExportProgress(
             progress,
             normalizedTableName,
@@ -522,6 +534,93 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
         finally
         {
             session.ExitOperation();
+        }
+    }
+
+    public async ValueTask<TransactionTableSnapshot?> ReadTableSnapshotAsync(
+        string transactionId,
+        string tableName,
+        CancellationToken ct = default)
+    {
+        string normalizedTableName = RequireIdentifier(tableName, nameof(tableName));
+        if (IsInternalTable(normalizedTableName))
+            return null;
+
+        ClientTransactionSession session = GetTransactionSession(transactionId);
+        if (!await session.TryEnterOperationAsync(ct))
+            throw TransactionNotFound(transactionId);
+
+        try
+        {
+            CoreTableSchema? schema = session.Database.GetTableSchema(normalizedTableName);
+            if (schema is null)
+                return null;
+
+            IndexSchema[] indexes = session.Database.GetIndexes()
+                .Where(index =>
+                    index.Kind is not (
+                        CSharpDB.Primitives.IndexKind.ForeignKeyInternal or
+                        CSharpDB.Primitives.IndexKind.ConstraintInternal) &&
+                    string.Equals(index.TableName, normalizedTableName, StringComparison.OrdinalIgnoreCase))
+                .Select(MapIndexSchema)
+                .OrderBy(index => index.IndexName, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            return new TransactionTableSnapshot
+            {
+                Schema = MapTableSchema(schema),
+                Indexes = indexes,
+            };
+        }
+        finally
+        {
+            session.ExitOperation();
+        }
+    }
+
+    public async ValueTask<ForwardOnlyQueryCursor?> TryOpenForwardOnlyQueryCursorAsync(
+        string transactionId,
+        string sql,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sql);
+
+        ClientTransactionSession session = GetTransactionSession(transactionId);
+        if (!await session.TryEnterOperationAsync(ct))
+            throw TransactionNotFound(transactionId);
+
+        CSharpDB.Execution.QueryResult? result = null;
+        bool operationGateTransferred = false;
+        try
+        {
+            result = await session.Database.ExecuteAsync(sql, ct);
+            if (!result.IsQuery)
+                return null;
+
+            var cursor = new ForwardOnlyQueryCursor(
+                result,
+                () =>
+                {
+                    session.ExitOperation();
+                    return ValueTask.CompletedTask;
+                });
+            operationGateTransferred = true;
+            return cursor;
+        }
+        finally
+        {
+            if (!operationGateTransferred)
+            {
+                try
+                {
+                    if (result is not null)
+                        await result.DisposeAsync();
+                }
+                finally
+                {
+                    session.ExitOperation();
+                }
+            }
         }
     }
 
@@ -941,6 +1040,7 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
             ForeignKeys = schema.ForeignKeys.Select(MapForeignKeyDefinition).ToArray(),
             CheckConstraints = schema.CheckConstraints.Select(MapCheckConstraintDefinition).ToArray(),
             KeyConstraints = schema.KeyConstraints.Select(MapKeyConstraintDefinition).ToArray(),
+            NextRowId = schema.NextRowId,
         };
 
     private static CheckConstraintDefinition MapCheckConstraintDefinition(CoreCheckConstraintDefinition check)

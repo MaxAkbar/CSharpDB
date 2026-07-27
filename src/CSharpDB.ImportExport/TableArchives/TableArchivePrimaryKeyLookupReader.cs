@@ -8,16 +8,19 @@ public sealed class TableArchivePrimaryKeyLookupReader : IAsyncDisposable
     private readonly FileStream _stream;
     private readonly NativeTableArchiveHeader _header;
     private readonly NativeTableArchiveIndexHeader _indexHeader;
+    private readonly TableSchema _schema;
     private readonly byte[] _page;
 
     private TableArchivePrimaryKeyLookupReader(
         FileStream stream,
         NativeTableArchiveHeader header,
-        NativeTableArchiveIndexHeader indexHeader)
+        NativeTableArchiveIndexHeader indexHeader,
+        TableSchema schema)
     {
         _stream = stream;
         _header = header;
         _indexHeader = indexHeader;
+        _schema = schema;
         _page = new byte[TableArchiveNativeFormat.IndexPageSize];
     }
 
@@ -30,15 +33,18 @@ public sealed class TableArchivePrimaryKeyLookupReader : IAsyncDisposable
         FileStream stream = TableArchiveReader.OpenRead(path);
         try
         {
-            NativeTableArchiveHeader? nativeHeader = await TableArchiveReader.TryReadNativeHeaderAsync(stream, ct);
-            if (nativeHeader is not { } header || header.IndexLength <= 0)
+            var metadata = await TableArchiveReader.TryReadValidatedLookupMetadataAsync(stream, ct);
+            if (metadata is not { } validated || validated.IndexHeader is not { } indexHeader)
             {
                 await stream.DisposeAsync();
                 return null;
             }
 
-            NativeTableArchiveIndexHeader indexHeader = await TableArchiveReader.ReadNativeIndexHeaderAsync(stream, header, ct);
-            return new TableArchivePrimaryKeyLookupReader(stream, header, indexHeader);
+            return new TableArchivePrimaryKeyLookupReader(
+                stream,
+                validated.Header,
+                indexHeader,
+                validated.Schema);
         }
         catch
         {
@@ -70,7 +76,20 @@ public sealed class TableArchivePrimaryKeyLookupReader : IAsyncDisposable
                     return null;
 
                 long rowOffset = TableArchiveReader.ReadIndexEntryValue(_page, entryIndex);
-                return await TableArchiveReader.ReadNativeRowAtOffsetAsync(_stream, _header, rowOffset, ct);
+                DbValue[] row = await TableArchiveReader.ReadNativeRowAtOffsetAsync(
+                    _stream,
+                    _header,
+                    rowOffset,
+                    ct);
+                TableArchiveReader.ValidateRow(_schema, row, rowIndex: -1);
+                DbValue indexedValue = row[_indexHeader.KeyColumnIndex];
+                if (indexedValue.Type != DbType.Integer || indexedValue.AsInteger != key)
+                {
+                    throw new InvalidDataException(
+                        "The native table archive index points to a row with a different primary key.");
+                }
+
+                return row;
             }
 
             int childIndex = TableArchiveReader.FindInteriorChildIndex(_page, pageHeader.EntryCount, key);

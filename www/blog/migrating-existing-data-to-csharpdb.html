@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>Migrating Existing Data into CSharpDB with v4.3.0 &mdash; Blog &mdash; CSharpDB</title>
+    <meta name="description" content="A practical introduction to CSharpDB v4.3.0 migration tooling: retained capture, reviewable plans, resumable staged targets, validation, export, and compatibility evidence.">
+    <link rel="canonical" href="https://csharpdb.com/blog/migrating-existing-data-to-csharpdb.html">
+    <meta property="og:title" content="Migrating Existing Data into CSharpDB with v4.3.0">
+    <meta property="og:description" content="Capture another data source, review its conversion, migrate into a staged CSharpDB database, and validate the result before cutover.">
+    <meta property="og:url" content="https://csharpdb.com/blog/migrating-existing-data-to-csharpdb.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "BlogPosting",
+        "headline": "Migrating Existing Data into CSharpDB with v4.3.0",
+        "description": "A practical introduction to CSharpDB v4.3.0 migration tooling: retained capture, reviewable plans, resumable staged targets, validation, export, and compatibility evidence.",
+        "url": "https://csharpdb.com/blog/migrating-existing-data-to-csharpdb.html",
+        "datePublished": "2026-07-26",
+        "author": { "@type": "Organization", "name": "CSharpDB" },
+        "isPartOf": { "@type": "WebSite", "name": "CSharpDB", "url": "https://csharpdb.com" }
+    }
+    </script>
+    <style>
+        .blog-post-meta {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 32px;
+            font-size: 0.88rem;
+            color: var(--text-muted);
+        }
+        .blog-post-tag {
+            display: inline-block;
+            font-size: 0.72rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            padding: 2px 8px;
+            border-radius: 100px;
+            background: var(--accent-soft);
+            color: var(--accent);
+        }
+        .blog-post-content h2 { margin-top: 48px; margin-bottom: 16px; }
+        .blog-post-content p { margin-bottom: 16px; }
+        .blog-post-content .code-block { margin: 20px 0 24px; }
+        .blog-post-content table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 16px 0 24px;
+            font-size: 0.92rem;
+        }
+        .blog-post-content th {
+            text-align: left;
+            padding: 10px 14px;
+            border-bottom: 2px solid var(--border);
+            color: var(--text-muted);
+            font-size: 0.78rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .blog-post-content td {
+            padding: 10px 14px;
+            border-bottom: 1px solid var(--border);
+            color: var(--text-secondary);
+            vertical-align: top;
+        }
+        .callout {
+            margin: 24px 0;
+            padding: 20px 22px;
+            border: 1px solid var(--border);
+            border-left: 3px solid var(--accent);
+            border-radius: var(--radius-md);
+            background: var(--bg-card);
+            color: var(--text-secondary);
+        }
+        .callout strong { color: var(--text-primary); }
+        .blog-nav {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 48px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border);
+        }
+        .blog-nav a {
+            color: var(--accent);
+            text-decoration: none;
+            font-weight: 500;
+        }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'blog'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Migrating Existing Data into CSharpDB with v4.3.0',
+        description: 'Capture another data source, review its conversion, migrate into a staged CSharpDB database, and validate the result before cutover.',
+        keywords: 'CSharpDB migration, SQLite to CSharpDB, MySQL to CSharpDB, Access to CSharpDB, CSV import, JSON import',
+        canonicalPath: 'blog/migrating-existing-data-to-csharpdb.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width" style="max-width: 900px; margin: 0 auto;">
+                <h1>Migrating Existing Data into CSharpDB with v4.3.0</h1>
+                <div class="blog-post-meta">
+                    <span class="blog-post-tag">Release</span>
+                    <span>July 26, 2026</span>
+                    <span>&middot; 7 min read</span>
+                </div>
+
+                <div class="blog-post-content">
+                    <p>CSharpDB v4.3.0 introduces migration tooling for a job that should be boring but rarely is: moving an existing schema and its data into a new database without hiding conversions, losing the ability to resume, or declaring success before the result has been checked.</p>
+                    <p>The tools use one review-first workflow across file formats and database sources:</p>
+                    <div class="code-block" data-title="Migration workflow"><pre><code>inspect and capture
+        ↓
+plan and preview
+        ↓
+apply or resume into a new staged database
+        ↓
+validate schema, counts, and checksums
+        ↓
+activate only after validation passes</code></pre></div>
+
+                    <h2>A Retained Source, Not a Moving Target</h2>
+                    <p>The first command captures the source into a provider-specific retained package and writes a catalog. The package is create-new, digest-pinned, and bound to the catalog by a SHA-256 manifest digest. Planning reads the frozen catalog; apply, resume, and validation requalify the retained package instead of quietly reconnecting to a database that may have changed.</p>
+                    <table>
+                        <thead>
+                            <tr><th>Source</th><th>v4.3.0 route</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr><td>CSV and JSON / NDJSON</td><td>Retained import with explicit reader, inference, null, and type policy</td></tr>
+                            <tr><td>SQLite and LiteDB 5</td><td>Retained database snapshot with provider-specific schema and row handling</td></tr>
+                            <tr><td>MySQL 8.0 / 8.4</td><td>Bounded retained InnoDB table route through an isolated worker</td></tr>
+                            <tr><td>Microsoft Access</td><td>Windows-only ACE candidate capture; planning remains gated pending its VM matrix</td></tr>
+                            <tr><td>SQL Server</td><td>Snapshot-isolated candidate capture; planning remains gated pending the broader live release matrix</td></tr>
+                        </tbody>
+                    </table>
+
+                    <h2>A Complete SQLite-to-CSharpDB Run</h2>
+                    <p>SQLite is the shortest example because it needs no server credential or optional worker. Start in a private directory and choose new output paths:</p>
+                    <div class="code-block" data-title="PowerShell"><pre><code>csharpdb migrate inspect `
+  --source sqlite `
+  --input .\legacy.db `
+  --package .\legacy.csdbsqlite `
+  --out .\catalog.json
+
+# Record the printed value in trusted change control.
+$digest = 'sha256:&lt;64-lowercase-hex&gt;'
+
+csharpdb migrate type-map .\catalog.json `
+  --profile preserve `
+  --out .\type-map.txt
+
+csharpdb migrate plan .\catalog.json --out .\plan.json
+csharpdb migrate preview .\plan.json --catalog .\catalog.json --ddl
+csharpdb migrate preview .\plan.json --catalog .\catalog.json --scratch
+
+New-Item -ItemType Directory -Force `
+  -Path .\migration-work, .\migration-spill | Out-Null
+
+csharpdb migrate apply .\plan.json `
+  --catalog .\catalog.json `
+  --source-package .\legacy.csdbsqlite `
+  --expected-manifest-digest $digest `
+  --workspace .\migration-work `
+  --target .\staged.csdb `
+  --out .\run.json
+
+csharpdb migrate validate .\plan.json `
+  --catalog .\catalog.json `
+  --source-package .\legacy.csdbsqlite `
+  --expected-manifest-digest $digest `
+  --workspace .\migration-work `
+  --target .\staged.csdb `
+  --out .\validation.json `
+  --level checksum `
+  --spill-dir .\migration-spill</code></pre></div>
+                    <p>Apply writes rows and target-owned receipts in the same transactions. If the process is interrupted, repeat the exact binding with <code>--resume</code>. The target receipts—not an orphaned workspace or a console log—decide which verified batches can be skipped.</p>
+
+                    <h2>Compatibility Is Evidence, Not a Green Checkmark</h2>
+                    <p>The type-map command uses the same mapping provider as migration planning and shows every exact, lossless-reencoded, lossy, or unsupported conversion. The query checker accepts bounded read-only CSharpDB SQL and, through the optional SQL Server worker, qualified T-SQL grammars. A root integer <code>TOP</code> can produce a review candidate using CSharpDB <code>LIMIT</code>.</p>
+                    <p>A static result remains <code>Conditional</code> when schema binding, typed parameters, scratch execution, or result equivalence has not been proven. MySQL, SQLite, and Access query dialects return <code>Unknown</code> until their own parsers are qualified.</p>
+
+                    <h2>Validate the Copy Before Cutover</h2>
+                    <p>Migration validation compares normalized schema, 64-bit row counts, and partitioned canonical SHA-256 evidence against the same retained source package. A successful copy stops in an awaiting-validation state; a failed or inconclusive report keeps the staged target inactive.</p>
+                    <p>For selected read-only query packs, the dual-run SDK can add result-level evidence between coherent source and target snapshots. It requires typed parameters, explicit endpoint snapshot identities obtained from trusted capture evidence, a reviewed SQL allowlist, and provider-enforced read-only access. It is deliberately not a generic connection-string CLI or a production dual-write system.</p>
+
+                    <h2>Know Which Lanes Are Still Gated</h2>
+                    <div class="callout">
+                        <strong>Access and SQL Server are evaluation capture lanes in v4.3.0.</strong> Access still needs its disposable Windows/ACE/file-format/bitness matrix. SQL Server has a working strict non-<code>sysadmin</code> metadata proof in the LocalDB fixture, but its supported-edition, published-runtime, platform, authentication, and differential matrix remains incomplete. Their blockers cannot be overridden, and granting broader privileges is not a valid substitute for qualification.
+                    </div>
+                    <p>MySQL has an environment-gated live qualification harness, but a successful retained package test is not a blanket claim for every server build, authentication plugin, TLS configuration, or MySQL-compatible product. Provider qualification stays explicit.</p>
+
+                    <h2>Export Is Part of the Same Assurance Story</h2>
+                    <p>The release also exports a normal CSharpDB database to lossless CSV, JSON, or NDJSON. Export begins with an explicit offline retained snapshot, requires the snapshot identity on publication, writes a source-bound manifest, and can resume from a verified row boundary. The hardened resumable publisher is currently Windows-only; other platforms fail with a stable diagnostic instead of weakening the publication contract.</p>
+
+                    <p>For every option, source limitation, recovery rule, and security boundary, continue with the <a href="../docs/database-migration.html">complete database migration guide</a>. Release archives and checksums are listed on the <a href="../downloads.html#cli">downloads page</a>.</p>
+
+                    <div class="blog-nav">
+                        <a href="index.html">&larr; All posts</a>
+                        <a href="../docs/database-migration.html">Migration guide &rarr;</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

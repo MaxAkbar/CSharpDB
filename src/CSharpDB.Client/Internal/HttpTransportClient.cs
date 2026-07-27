@@ -998,6 +998,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
             ForeignKeys = payload.ForeignKeys.Select(MapForeignKey).ToList(),
             CheckConstraints = (payload.CheckConstraints ?? []).Select(MapCheckConstraint).ToList(),
             KeyConstraints = (payload.KeyConstraints ?? []).Select(MapKeyConstraint).ToList(),
+            NextRowId = payload.NextRowId,
         };
 
     private static ColumnDefinition MapColumn(ApiColumnResponse payload)
@@ -1229,7 +1230,8 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
         List<ApiColumnResponse> Columns,
         List<ApiForeignKeyResponse> ForeignKeys,
         List<ApiKeyConstraintResponse>? KeyConstraints,
-        List<ApiCheckConstraintResponse>? CheckConstraints);
+        List<ApiCheckConstraintResponse>? CheckConstraints,
+        long NextRowId);
     private sealed record ApiColumnResponse(
         string Name,
         string Type,

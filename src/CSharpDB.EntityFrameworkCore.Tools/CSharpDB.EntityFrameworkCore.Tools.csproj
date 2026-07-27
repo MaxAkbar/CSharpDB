@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>dotnet-csharpdb-ef</AssemblyName>
+    <RootNamespace>CSharpDB.EntityFrameworkCore.Tools</RootNamespace>
+    <PackageId>CSharpDB.EntityFrameworkCore.Tools</PackageId>
+    <Description>Isolated compiled EF Core migration analysis tool for CSharpDB.</Description>
+    <PackageTags>csharp;dotnet;embedded-database;entity-framework-core;migrations;analyzer</PackageTags>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>dotnet-csharpdb-ef</ToolCommandName>
+    <IsPackable>true</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CSharpDB.Migration\CSharpDB.Migration.csproj"
+                      PrivateAssets="all" />
+    <ProjectReference Include="..\CSharpDB.Migration.CSharpDb.Ddl\CSharpDB.Migration.CSharpDb.Ddl.csproj"
+                      PrivateAssets="all" />
+    <ProjectReference Include="..\CSharpDB.EntityFrameworkCore\CSharpDB.EntityFrameworkCore.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design"
+                      Version="$(CSharpDbQualifiedEfCoreVersion)">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="CSharpDB.EntityFrameworkCore.Tools.Tests" />
+  </ItemGroup>
+
+</Project>

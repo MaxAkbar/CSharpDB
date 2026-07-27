@@ -264,6 +264,11 @@ public sealed class RenameIndexAction : AlterAction
     public required string NewIndexName { get; init; }
 }
 
+public sealed class ReseedTableAction : AlterAction
+{
+    public long NextRowId { get; init; }
+}
+
 public sealed class AlterColumnSetDefaultAction : AlterAction
 {
     public required string ColumnName { get; init; }

@@ -829,6 +829,17 @@ public sealed class BTree
         => CreateCursor(IndexScanRange.All);
 
     /// <summary>
+    /// Create a cursor with a finite bound on each resolved payload. Overflow
+    /// references above the bound fail before their chains are materialized.
+    /// </summary>
+    internal BTreeCursor CreateCursor(int maxResolvedPayloadBytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxResolvedPayloadBytes);
+        RecordLogicalRangeRead(IndexScanRange.All);
+        return new BTreeCursor(this, _pager, maxResolvedPayloadBytes);
+    }
+
+    /// <summary>
     /// Create a cursor positioned before the first entry and record a logical read range.
     /// </summary>
     public BTreeCursor CreateCursor(IndexScanRange range)
@@ -2105,16 +2116,41 @@ public sealed class BTree
         return BTreeOverflowReferenceCodec.Encode(reference);
     }
 
-    internal async ValueTask<ReadOnlyMemory<byte>> ResolveStoredPayloadAsync(
+    internal ValueTask<ReadOnlyMemory<byte>> ResolveStoredPayloadAsync(
         ReadOnlyMemory<byte> storedPayload,
         bool storedPayloadIsOverflow,
         CancellationToken ct)
+        => ResolveStoredPayloadAsync(
+            storedPayload,
+            storedPayloadIsOverflow,
+            int.MaxValue,
+            ct);
+
+    internal async ValueTask<ReadOnlyMemory<byte>> ResolveStoredPayloadAsync(
+        ReadOnlyMemory<byte> storedPayload,
+        bool storedPayloadIsOverflow,
+        int maxResolvedPayloadBytes,
+        CancellationToken ct)
     {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxResolvedPayloadBytes);
         if (!storedPayloadIsOverflow)
+        {
+            EnsurePayloadWithinLimit(storedPayload.Length, maxResolvedPayloadBytes);
             return storedPayload;
+        }
 
         OverflowPageReference reference = BTreeOverflowReferenceCodec.Decode(storedPayload.Span);
+        EnsurePayloadWithinLimit(reference.PayloadLength, maxResolvedPayloadBytes);
         return await OverflowPageStore.ReadAsync(_pager, reference, ct);
+    }
+
+    private static void EnsurePayloadWithinLimit(int payloadLength, int maxResolvedPayloadBytes)
+    {
+        if (payloadLength > maxResolvedPayloadBytes)
+        {
+            throw new InvalidDataException(
+                $"B+tree payload length {payloadLength} exceeds the configured {maxResolvedPayloadBytes}-byte limit.");
+        }
     }
 
     private async ValueTask<ReadOnlyMemory<byte>> ResolveStoredPayloadAsync(

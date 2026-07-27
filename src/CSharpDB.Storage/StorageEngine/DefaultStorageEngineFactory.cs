@@ -5,18 +5,31 @@ namespace CSharpDB.Storage.StorageEngine;
 /// </summary>
 public sealed class DefaultStorageEngineFactory : IStorageEngineFactory
 {
-    public async ValueTask<StorageEngineContext> OpenAsync(
+    public ValueTask<StorageEngineContext> OpenAsync(
         string filePath,
         StorageEngineOptions options,
         CancellationToken ct = default)
+        => OpenCoreAsync(filePath, options, createNew: false, ct);
+
+    public ValueTask<StorageEngineContext> CreateNewAsync(
+        string filePath,
+        StorageEngineOptions options,
+        CancellationToken ct = default)
+        => OpenCoreAsync(filePath, options, createNew: true, ct);
+
+    private static async ValueTask<StorageEngineContext> OpenCoreAsync(
+        string filePath,
+        StorageEngineOptions options,
+        bool createNew,
+        CancellationToken ct)
     {
-        bool isNew = !File.Exists(filePath);
+        bool isNew = createNew || !File.Exists(filePath);
         FileStorageDevice? device = null;
         Pager? pager = null;
 
         try
         {
-            device = new FileStorageDevice(filePath);
+            device = new FileStorageDevice(filePath, createNew, options.PrimaryFileShare);
             var walIndex = new WalIndex();
             var wal = new WriteAheadLog(
                 filePath,

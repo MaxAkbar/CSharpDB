@@ -15,6 +15,31 @@ CSharpDB table archives directly.
 - primary-key index metadata and indexed integer primary-key lookup
 - conversion between archive schema models and `CSharpDB.Primitives.TableSchema`
 
+The integer primary-key lookup index is an optional acceleration structure.
+Writers retain at most 65,536 index entries in memory. Archives with more rows
+are written without the physical lookup index; their schema and rows are still
+complete, and external-table point lookups use the streaming scan fallback.
+
+Format v5 archives carry required SHA-256 digests for their schema, rows, and
+optional physical index. Every reader path verifies those section digests
+before exposing archive data; v3 and v4 remain readable for compatibility.
+
+The Admin restore workflow adds an independent post-load check before a staged
+table becomes visible. It compares archive rows with the loaded table using
+the `csharpdb-canon-v1` logical encoding and an order-independent,
+duplicate-preserving 256-partition checksum. Regenerated rowversion values are
+explicitly excluded. The target scan and final rename share one transaction,
+and metadata plus rows are read from one immutable private archive snapshot.
+A mismatch, validation error, or cancellation before the activation boundary
+leaves no activated table. Once validation passes, the short rename/commit
+sequence is intentionally non-cancelable and its result is reconciled if
+commit reporting fails through a durable activation receipt written in the
+same transaction. The immutable snapshot and memory-bounded checksum
+spill workspace each have a configurable 4-GiB default safety limit through
+`CSharpDB.Admin.ImportExport.Services.TableArchiveRestoreOptions`; exceeding
+either limit fails the restore safely.
+This activation contract currently requires a direct/local CSharpDB transport.
+
 ## Reading Archives
 
 ```csharp

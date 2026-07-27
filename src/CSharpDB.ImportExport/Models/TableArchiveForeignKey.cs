@@ -25,11 +25,11 @@ public sealed class TableArchiveForeignKey
         SupportingIndexName = foreignKey.SupportingIndexName,
     };
 
-    public ForeignKeyDefinition ToForeignKey() => new()
+    public ForeignKeyDefinition ToForeignKey(string? referencedTableNameOverride = null) => new()
     {
         ConstraintName = ConstraintName,
         ColumnName = ColumnName,
-        ReferencedTableName = ReferencedTableName,
+        ReferencedTableName = referencedTableNameOverride ?? ReferencedTableName,
         ReferencedColumnName = ReferencedColumnName,
         ColumnNames = ColumnNames.Count > 0 ? ColumnNames.ToArray() : [ColumnName],
         ReferencedColumnNames = ReferencedColumnNames.Count > 0 ? ReferencedColumnNames.ToArray() : [ReferencedColumnName],

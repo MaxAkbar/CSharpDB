@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>CSharpDB.Migration</AssemblyName>
+    <RootNamespace>CSharpDB.Migration</RootNamespace>
+    <PackageId>CSharpDB.Migration</PackageId>
+    <Description>Shared migration catalogs, plans, diagnostics, mappings, and durable artifact contracts for CSharpDB.</Description>
+    <PackageTags>csharp;dotnet;embedded-database;migration;schema;validation</PackageTags>
+    <IsPackable>true</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CSharpDB.Primitives\CSharpDB.Primitives.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="CSharpDB.Migration.CSharpDb" />
+    <InternalsVisibleTo Include="CSharpDB.Migration.CrashHarness" />
+    <InternalsVisibleTo Include="CSharpDB.Migration.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Capabilities\csharpdb-4.3.0.json"
+                      LogicalName="CSharpDB.Migration.Capabilities.csharpdb-4.3.0.json" />
+  </ItemGroup>
+
+</Project>

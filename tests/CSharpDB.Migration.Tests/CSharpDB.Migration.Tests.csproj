@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <Import Project="..\TestDefaults.props" />
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\CSharpDB.Migration\CSharpDB.Migration.csproj" />
+    <ProjectReference Include="..\..\src\CSharpDB.Migration.CSharpDb\CSharpDB.Migration.CSharpDb.csproj" />
+    <ProjectReference Include="..\..\src\CSharpDB.Migration.Files\CSharpDB.Migration.Files.csproj" />
+    <ProjectReference Include="..\CSharpDB.Migration.CrashHarness\CSharpDB.Migration.CrashHarness.csproj"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="Fixtures\*.golden.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

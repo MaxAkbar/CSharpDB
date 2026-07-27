@@ -94,6 +94,39 @@ public static class Program
                     repeatCount);
                 return;
 
+            case "--migration-target-throughput":
+                EnsureReproConfigured();
+                await RunSuiteWithRepeatsAsync(
+                    "migration-target-throughput",
+                    RunMigrationTargetThroughputOnceAsync,
+                    repeatCount);
+                return;
+
+            case "--migration-target-scenario":
+                EnsureReproConfigured();
+                await RunSuiteWithRepeatsAsync(
+                    $"migration-target-scenario-{GetRequiredOptionValue(args, "--migration-target-scenario")}",
+                    () => RunMigrationTargetScenarioOnceAsync(GetRequiredOptionValue(args, "--migration-target-scenario")),
+                    repeatCount);
+                return;
+
+            case "--csv-retained-migration":
+                EnsureReproConfigured();
+                await RunSuiteWithRepeatsAsync(
+                    "csv-retained-migration",
+                    RunCsvRetainedMigrationOnceAsync,
+                    repeatCount);
+                return;
+
+            case "--csv-retained-migration-scenario":
+                EnsureReproConfigured();
+                await RunSuiteWithRepeatsAsync(
+                    $"csv-retained-migration-scenario-{GetRequiredOptionValue(args, "--csv-retained-migration-scenario")}",
+                    () => RunCsvRetainedMigrationScenarioOnceAsync(
+                        GetRequiredOptionValue(args, "--csv-retained-migration-scenario")),
+                    repeatCount);
+                return;
+
             case "--write-transaction-diagnostics":
                 EnsureReproConfigured();
                 await RunSuiteWithRepeatsAsync("write-transaction-diagnostics", RunWriteTransactionDiagnosticsOnceAsync, repeatCount);
@@ -782,6 +815,31 @@ public static class Program
         return [await DurableSqlBatchingBenchmark.RunNamedScenarioAsync(scenarioName)];
     }
 
+    private static async Task<List<BenchmarkResult>> RunMigrationTargetThroughputOnceAsync()
+    {
+        Console.WriteLine("--- Migration Staged-Target Throughput And Memory Qualification ---");
+        return await MigrationTargetThroughputBenchmark.RunAsync();
+    }
+
+    private static async Task<List<BenchmarkResult>> RunMigrationTargetScenarioOnceAsync(string scenarioName)
+    {
+        Console.WriteLine($"--- Migration Staged-Target Scenario: {scenarioName} ---");
+        return [await MigrationTargetThroughputBenchmark.RunNamedScenarioAsync(scenarioName)];
+    }
+
+    private static async Task<List<BenchmarkResult>> RunCsvRetainedMigrationOnceAsync()
+    {
+        Console.WriteLine("--- Retained CSV Migration Benchmark ---");
+        return await CsvRetainedMigrationBenchmark.RunAsync();
+    }
+
+    private static async Task<List<BenchmarkResult>> RunCsvRetainedMigrationScenarioOnceAsync(
+        string scenarioName)
+    {
+        Console.WriteLine($"--- Retained CSV Migration Scenario: {scenarioName} ---");
+        return await CsvRetainedMigrationBenchmark.RunNamedScenarioAsync(scenarioName);
+    }
+
     private static async Task<List<BenchmarkResult>> RunWriteTransactionDiagnosticsOnceAsync()
     {
         Console.WriteLine("--- Explicit WriteTransaction Benchmark ---");
@@ -1317,6 +1375,10 @@ public static class Program
         Console.WriteLine("  dotnet run -- --write-diagnostics  Run focused pager/WAL durable-write diagnostics");
         Console.WriteLine("  dotnet run -- --durable-sql-batching  Run focused durable SQL batching benchmark");
         Console.WriteLine("  dotnet run -- --durable-sql-batching-scenario TxBatch10_LowLatency  Run one durable SQL batching scenario");
+        Console.WriteLine("  dotnet run -- --migration-target-throughput  Measure staged migration target throughput and bounded batch memory");
+        Console.WriteLine("  dotnet run -- --migration-target-scenario Rows100K_Batch1000_Text64  Run one migration target scenario");
+        Console.WriteLine("  dotnet run -- --csv-retained-migration  Measure retained CSV inspect, package, replay, apply, resume, and checksum validation");
+        Console.WriteLine("  dotnet run -- --csv-retained-migration-scenario Rows100K_Batch1000_Text64  Run one retained CSV scenario");
         Console.WriteLine("  dotnet run -- --write-transaction-diagnostics  Run focused explicit WriteTransaction diagnostics");
         Console.WriteLine("  dotnet run -- --commit-fan-in-diagnostics  Compare shared auto-commit vs explicit WriteTransaction fan-in");
         Console.WriteLine("  dotnet run -- --commit-fan-in-scenario ExplicitTx_DisjointUpdate_W8_Batch250us  Run one commit fan-in scenario");

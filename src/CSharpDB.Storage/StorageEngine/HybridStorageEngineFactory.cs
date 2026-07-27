@@ -27,7 +27,10 @@ internal static class HybridStorageEngineFactory
 
         try
         {
-            device = new FileStorageDevice(fullPath);
+            device = new FileStorageDevice(
+                fullPath,
+                createNew: false,
+                options.PrimaryFileShare);
             var walIndex = new WalIndex();
             var wal = new WriteAheadLog(
                 fullPath,

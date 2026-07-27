@@ -244,6 +244,215 @@ Default runtimes:
 Outputs are written under `artifacts\daemon-release` unless `-OutputRoot` is
 provided.
 
+### `Publish-CSharpDbMigrationRelease.ps1`
+
+Use this to create the installable combined migration CLI archives for
+v4.3.0. It composes the reviewed SQL Server and MySQL bundle publishers for
+every runtime and the reviewed Microsoft Access bundle publisher for
+`win-x64`, instead of rebuilding any provider layout itself.
+
+What it does:
+
+- publishes the SQL Server and MySQL audited framework-dependent bundles for
+  every selected RID, plus the Windows-only Access bundle for `win-x64`
+- verifies every applicable bundle's base CLI root has identical file sets,
+  lengths, and SHA-256 digests before merging anything
+- preserves the fixed workers and all provider notices/licenses beneath
+  `adapters/sqlserver`, `adapters/mysql`, and, on Windows only,
+  `adapters/access`
+- rejects Access assemblies, `System.Data.OleDb`, and the Access adapter
+  directory from Linux and macOS stages
+- verifies the CLI and workers target `Microsoft.NETCore.App` 10.x and rejects
+  accidental self-contained runtime files
+- adds the safe Windows and POSIX installers from `deploy/migration-tool`
+- creates `csharpdb-migration-tool-v{version}-{rid}.zip` for Windows
+- creates `csharpdb-migration-tool-v{version}-{rid}.tar.gz` for Linux/macOS
+- writes `SHA256SUMS.txt`
+
+The default RIDs are `win-x64`, `linux-x64`, and `osx-arm64`:
+
+```powershell
+.\scripts\Publish-CSharpDbMigrationRelease.ps1 `
+  -Version 4.3.0
+```
+
+The publisher requires PowerShell 7.4 or later.
+
+For a single local packaging check:
+
+```powershell
+.\scripts\Publish-CSharpDbMigrationRelease.ps1 `
+  -Version 4.3.0 `
+  -Runtime win-x64 `
+  -OutputRoot artifacts\migration-release-local
+```
+
+Outputs are written under `artifacts\migration-release` by default. Managed
+publish, stage, and archive directories must be empty unless `-Force` is
+explicitly supplied. The script never removes `OutputRoot` itself and rejects
+links or reparse points in the output path, its existing ancestors, and
+directories it would replace.
+
+These releases are framework-dependent and require the Microsoft .NET 10
+runtime. A RID-specific archive is not a claim of runtime, authentication,
+TLS, or live Access/SQL Server/MySQL qualification. Each extracted archive
+includes `README.md`, `LICENSE`, and installers under `install/windows` and
+`install/posix`. The Windows installer requires the complete Access adapter in
+the `win-x64` archive. The POSIX installer has no Access dependency. Both copy
+into a caller-selected directory, do not overwrite a nonempty destination
+without explicit force, do not create a service or require administrator
+access by default, and print optional `PATH` setup instructions without
+changing `PATH`.
+
+### `Publish-CSharpDbAccessMigrationBundle.ps1`
+
+Use this to produce the non-packable, Windows-only Microsoft Access capture
+distribution. The generic `csharpdb` host remains provider-free at the bundle
+root. `System.Data.OleDb` and the reviewed support closure are published only
+beneath `adapters/access`, alongside the fixed companion worker and
+`THIRD-PARTY-NOTICES.md`.
+
+The destination must be absent or empty. Output is framework-dependent and
+restricted to `win-x64`. The Microsoft Access Database Engine (ACE) is an
+external, bitness-sensitive prerequisite that CSharpDB does not redistribute
+or install. Publishing the adapter does not complete its deferred live
+qualification matrix.
+
+```powershell
+.\scripts\Publish-CSharpDbAccessMigrationBundle.ps1 `
+  -OutputPath artifacts\access-migration-local `
+  -Configuration Release
+```
+
+### `Test-AccessMigrationIsolation.ps1`
+
+Use this Windows-only provider-boundary check after restore. It publishes the
+base CLI and optional Access bundle separately, proves the base dependency
+graph contains no Access adapter or OLE DB assets, proves the provider closure
+stays beneath `adapters/access`, and exercises stable worker-absent and
+provider/capture failure paths without requiring a valid Access database.
+
+```powershell
+.\scripts\Test-AccessMigrationIsolation.ps1 `
+  -Configuration Release
+```
+
+### `Publish-CSharpDbMySqlMigrationBundle.ps1`
+
+Use this to produce the non-packable MySQL schema-analysis distribution. The
+generic `csharpdb` host is published at the bundle root. MySqlConnector and its
+supporting dependencies are published only beneath `adapters/mysql`, alongside
+the fixed companion worker, the resolved dependency inventory, and the
+applicable third-party license notices.
+
+The destination must be absent or empty. Output is intentionally
+framework-dependent; self-contained output is excluded until its runtime
+license and notice closure is audited. A runtime identifier may be selected
+for a qualification-only framework-dependent build, but doing so does not
+qualify that runtime or a live MySQL version.
+
+```powershell
+.\scripts\Publish-CSharpDbMySqlMigrationBundle.ps1 `
+  -OutputPath artifacts\mysql-migration-local `
+  -Configuration Release
+```
+
+### `Test-MySqlMigrationIsolation.ps1`
+
+Use this provider-absent packaging check after restore. It publishes the base
+CLI and optional MySQL bundle separately, proves the base dependency graph
+contains no MySQL adapter or provider assets, proves the provider closure stays
+under the worker directory, and exercises stable adapter-absent and
+connection-absent failures without contacting a server. The bundled failure
+also confirms that the fixed-path worker and
+`csharpdb-mysql-worker/v1` protocol are usable.
+
+```powershell
+.\scripts\Test-MySqlMigrationIsolation.ps1 `
+  -Configuration Release
+```
+
+### `Publish-CSharpDbSqlServerMigrationBundle.ps1`
+
+Use this to produce the non-packable SQL Server schema-analysis distribution.
+The generic `csharpdb` host is published at the bundle root. SqlClient,
+ScriptDom, SNI, and authentication dependencies are published only beneath
+`adapters/sqlserver`, alongside the fixed companion worker, the resolved
+dependency inventory, and the applicable third-party license notices.
+
+The destination must be absent or empty. Output is intentionally
+framework-dependent; self-contained output is excluded until its runtime
+license and notice closure is audited. A runtime identifier may be selected
+for a qualification-only framework-dependent build, but doing so does not
+qualify that runtime or a live SQL Server version.
+
+The worker keeps the reviewed SNI package private from consumers while
+explicitly including its applicable native binary in publish output. The
+publisher requires that binary for Windows RID builds (and all three reviewed
+Windows native assets for a portable build), alongside the exact dependency
+inventory and the hashed SNI license. Linux and macOS RID closures exclude the
+Windows-only SNI package while retaining its notice and license in the common
+worker distribution. This explicit publish contract is required by the .NET
+10 SDK for packages marked `PrivateAssets="all"`.
+
+```powershell
+.\scripts\Publish-CSharpDbSqlServerMigrationBundle.ps1 `
+  -OutputPath artifacts\sqlserver-migration-local `
+  -Configuration Release
+```
+
+### `Test-SqlServerMigrationIsolation.ps1`
+
+Use this provider-absent packaging check after restore. It publishes the base
+CLI and the optional SQL Server bundle separately, proves the base dependency
+graph contains no SQL Server adapter or provider assets, proves the provider
+closure stays under the worker directory, and exercises stable adapter-absent
+and connection-absent failures without contacting a server.
+
+```powershell
+.\scripts\Test-SqlServerMigrationIsolation.ps1 `
+  -Configuration Release
+```
+
+### `Test-EfCoreMigrationTool.ps1`
+
+Use this after restore to qualify the packaged `csharpdb-ef` tool boundary. It
+packs and installs the tool into a validated repository-local temporary
+workspace, analyzes the compiled valid and unsupported fixtures, checks the
+unchanged generation-only exit/status contract, and proves target-controlled
+console output does not escape into the JSON report. A separate `--scratch`
+lane executes the valid two-prefix chain, requires
+`Compatible`/`ScratchExecuted` evidence, verifies apply/down/reapply and two
+analyzer-owned guarded replays built from retained `Up` command payloads, and
+checks that no configured, sample, temporary database, WAL, journal, or lock
+artifact is left behind. It also checks the Web SDK minimal sample without
+creating `sample.db`, then publishes the base `csharpdb` CLI and verifies that
+the separate analyzer and EF Core design-time dependencies did not enter that
+dependency graph. A Raw SQL scratch request separately pins the blocked
+envelope, zero execution evidence, and `Conditional` exit code `1`.
+
+The scratch lane proves only an empty private-memory database. It does not
+qualify existing-row conversions, file/WAL persistence, configured
+`IMigrator`, `IMigrator.GenerateScript`, EF-generated idempotent scripts,
+migration-history behavior, migration locks, or interceptors.
+
+```powershell
+.\scripts\Test-EfCoreMigrationTool.ps1 `
+  -Configuration Release `
+  -NoRestore
+```
+
+To qualify the exact tool package produced by a release pack, supply both its
+local feed and version. This mode does not repack the project; it verifies the
+selected nupkg identity and hash, installs only from that feed, and runs the
+same checks.
+
+```powershell
+.\scripts\Test-EfCoreMigrationTool.ps1 `
+  -FeedPath artifacts/nuget `
+  -Version 4.3.0
+```
+
 ### `Publish-CSharpDbAdminStorePackage.ps1`
 
 Use this on Windows when preparing the Microsoft Store package for CSharpDB

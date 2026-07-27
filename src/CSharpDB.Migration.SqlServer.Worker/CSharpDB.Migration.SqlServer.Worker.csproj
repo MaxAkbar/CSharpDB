@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>csharpdb-migration-sqlserver-worker</AssemblyName>
+    <RootNamespace>CSharpDB.Migration.SqlServer.Worker</RootNamespace>
+    <Description>Isolated SQL Server schema inspection worker for CSharpDB migration tooling.</Description>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.SqlClient.SNI.runtime"
+                      Version="6.0.2"
+                      GeneratePathProperty="true"
+                      PrivateAssets="all"
+                      Publish="true" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CSharpDB.Migration.Retained\CSharpDB.Migration.Retained.csproj" />
+    <ProjectReference Include="..\CSharpDB.Migration.SqlServer\CSharpDB.Migration.SqlServer.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="CSharpDB.Migration.SqlServer.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\CSharpDB.Migration.SqlServer\THIRD-PARTY-NOTICES.md"
+          Link="THIRD-PARTY-NOTICES.md"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" />
+    <None Include="$(PkgMicrosoft_Data_SqlClient_SNI_runtime)\LICENSE.txt"
+          Link="licenses\Microsoft.Data.SqlClient.SNI.runtime-6.0.2-LICENSE.txt"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

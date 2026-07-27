@@ -1,5 +1,6 @@
 * text=auto
 
+.gitattributes text eol=lf
 *.cs text eol=lf
 *.csproj text eol=lf
 *.props text eol=lf
@@ -10,6 +11,7 @@
 *.yaml text eol=lf
 *.xml text eol=lf
 *.editorconfig text eol=lf
+*.sh text eol=lf
 
 *.sln text eol=crlf
 *.bat text eol=crlf

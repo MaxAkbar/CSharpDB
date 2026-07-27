@@ -334,6 +334,16 @@
                         </thead>
                         <tbody>
                             <tr>
+                                <td><code>CSharpDB.Migration</code></td>
+                                <td>Provider-neutral migration catalogs, plans, mappings, canonicalization, and validation contracts</td>
+                                <td><a href="https://www.nuget.org/packages/CSharpDB.Migration" class="dl-btn dl-btn-primary" target="_blank" rel="noopener">NuGet</a></td>
+                            </tr>
+                            <tr>
+                                <td><code>CSharpDB.Migration.DualRun</code></td>
+                                <td>Bounded read-only source-to-CSharpDB query result validation for migration cutovers</td>
+                                <td><a href="https://www.nuget.org/packages/CSharpDB.Migration.DualRun" class="dl-btn dl-btn-primary" target="_blank" rel="noopener">NuGet</a></td>
+                            </tr>
+                            <tr>
                                 <td><code>CSharpDB.Engine</code></td>
                                 <td>Top-level Database API and Collection&lt;T&gt; (NoSQL)</td>
                                 <td><a href="https://github.com/MaxAkbar/CSharpDB/releases/download/v2.7.0/CSharpDB.Engine.2.7.0.nupkg" class="dl-btn dl-btn-ghost">.nupkg</a></td>
@@ -437,7 +447,13 @@
             <!-- ───────── CLI ───────── -->
             <div class="dl-section" id="cli">
                 <h2>CLI Tool</h2>
-                <p>The <code>csharpdb</code> CLI is an interactive REPL with SQL execution, meta-commands, storage diagnostics, and ETL pipeline management. Build from source:</p>
+                <p>The <code>csharpdb</code> CLI is an interactive REPL with SQL execution, meta-commands, storage diagnostics, ETL pipeline management, retained import/export workflows, mapping and query reports, and explicitly gated Access and SQL Server candidate capture lanes.</p>
+
+                <div class="dl-cli-note">
+                    <h4>Migration release archives</h4>
+                    <p>The v4.3.0 migration release produces framework-dependent archives for Windows x64, Linux x64, and macOS Apple silicon. Each archive requires the .NET 10 runtime and keeps its applicable fixed optional adapters, notices, licenses, and installers together. The Access adapter is Windows-only. Verify the downloaded archive against <code>MIGRATION-SHA256SUMS.txt</code> from the same GitHub release and preserve its directory layout.</p>
+                    <p>Find published assets on <a href="#all-releases">the releases page</a>, then follow the <a href="docs/database-migration.html">database migration guide</a>.</p>
+                </div>
 
                 <div class="dl-cli-note">
                     <h4>Build from source</h4>
@@ -449,9 +465,12 @@ dotnet publish src/CSharpDB.Cli -c Release -o ./publish
 dotnet publish src/CSharpDB.Cli -c Release -r win-x64 --self-contained -o ./publish
 dotnet publish src/CSharpDB.Cli -c Release -r linux-x64 --self-contained -o ./publish
 dotnet publish src/CSharpDB.Cli -c Release -r osx-arm64 --self-contained -o ./publish</code></pre></div>
+                    <p>Those direct commands publish the base CLI only. They do not produce the optional Access, SQL Server, or MySQL worker layout required by provider-specific commands. To build the reviewed framework-dependent migration archives and their applicable workers, use the repository release publisher:</p>
+                    <div class="code-block" data-title="PowerShell"><pre><code>.\scripts\Publish-CSharpDbMigrationRelease.ps1 `
+  -Version 4.3.0</code></pre></div>
                 </div>
 
-                <p style="margin-top: 1rem; font-size: 0.88rem; color: var(--text-muted);">See the <a href="docs/cli.html">CLI Reference</a> for the full command and meta-command documentation.</p>
+                <p style="margin-top: 1rem; font-size: 0.88rem; color: var(--text-muted);">See the <a href="docs/cli.html">CLI Reference</a> for general command documentation or <a href="docs/database-migration.html">Move Data into CSharpDB</a> for the end-to-end migration workflow.</p>
             </div>
 
             <!-- ───────── Node.js ───────── -->

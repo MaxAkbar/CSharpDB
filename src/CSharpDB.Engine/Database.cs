@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Collections.Concurrent;
+using System.Text.Json;
 using CSharpDB.Primitives;
 using CSharpDB.Execution;
 using CSharpDB.Sql;
@@ -60,6 +61,7 @@ public sealed class Database : IAsyncDisposable
     private readonly string? _databasePath;
     private readonly StatementCache _statementCache;
     private readonly HybridDatabasePersistenceCoordinator? _hybridPersistenceCoordinator;
+    private readonly bool _skipDisposePersistence;
     private readonly Dictionary<string, object> _collectionCache = new(StringComparer.Ordinal);
     private readonly Dictionary<string, PendingCollectionCatalogMutation> _pendingCollectionCatalogMutations = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, long> _sharedNextRowIdHints = new(StringComparer.OrdinalIgnoreCase);
@@ -173,7 +175,8 @@ public sealed class Database : IAsyncDisposable
         DbFunctionRegistry? functions = null,
         HybridDatabasePersistenceCoordinator? hybridPersistenceCoordinator = null,
         string? databasePath = null,
-        StorageEngineOptions? temporaryStorageOptions = null)
+        StorageEngineOptions? temporaryStorageOptions = null,
+        bool skipDisposePersistence = false)
     {
         _pager = pager;
         _catalog = catalog;
@@ -187,6 +190,7 @@ public sealed class Database : IAsyncDisposable
         _databasePath = string.IsNullOrWhiteSpace(databasePath) ? null : Path.GetFullPath(databasePath);
         _implicitInsertExecutionMode = implicitInsertExecutionMode;
         _hybridPersistenceCoordinator = hybridPersistenceCoordinator;
+        _skipDisposePersistence = skipDisposePersistence;
         _planner = new QueryPlanner(
             pager,
             catalog,
@@ -562,6 +566,15 @@ public sealed class Database : IAsyncDisposable
     }
 
     /// <summary>
+    /// Create a new database file using default composition options, atomically refusing to open or
+    /// replace an existing file.
+    /// </summary>
+    public static async ValueTask<Database> CreateNewAsync(string filePath, CancellationToken ct = default)
+    {
+        return await CreateNewAsync(filePath, new DatabaseOptions(), ct);
+    }
+
+    /// <summary>
     /// Open a new in-memory database using default composition options.
     /// </summary>
     public static async ValueTask<Database> OpenInMemoryAsync(CancellationToken ct = default)
@@ -754,6 +767,92 @@ public sealed class Database : IAsyncDisposable
 
         string fullPath = Path.GetFullPath(filePath);
         var context = await options.StorageEngineFactory.OpenAsync(fullPath, options.StorageEngineOptions, ct);
+        return await CompleteOpenAsync(new Database(
+            context.Pager,
+            context.Catalog,
+            context.RecordSerializer,
+            context.SchemaSerializer,
+            context.IndexProvider,
+            context.CatalogStore,
+            context.AdvisoryStatisticsPersistenceMode,
+            options.ImplicitInsertExecutionMode,
+            options.AdaptiveQueryReoptimization,
+            options.Functions,
+            databasePath: fullPath,
+            temporaryStorageOptions: options.StorageEngineOptions),
+            ct);
+    }
+
+    /// <summary>
+    /// Opens an engine-owned private snapshot copy without running open-time
+    /// repair routines. The caller must never expose this mutable handle.
+    /// </summary>
+    internal static async ValueTask<Database> OpenPrivateSnapshotCopyAsync(
+        string filePath,
+        DatabaseOptions options,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+        ArgumentNullException.ThrowIfNull(options);
+
+        string fullPath = Path.GetFullPath(filePath);
+        var context = await new DefaultStorageEngineFactory().OpenAsync(
+            fullPath,
+            options.StorageEngineOptions,
+            ct);
+        return new Database(
+            context.Pager,
+            context.Catalog,
+            context.RecordSerializer,
+            context.SchemaSerializer,
+            context.IndexProvider,
+            context.CatalogStore,
+            context.AdvisoryStatisticsPersistenceMode,
+            options.ImplicitInsertExecutionMode,
+            options.AdaptiveQueryReoptimization,
+            options.Functions,
+            databasePath: fullPath,
+            temporaryStorageOptions: options.StorageEngineOptions,
+            skipDisposePersistence: true);
+    }
+
+    /// <summary>
+    /// Recovers and checkpoints an engine-owned private snapshot pair without
+    /// constructing a Database or persisting advisory/catalog metadata.
+    /// </summary>
+    internal static async ValueTask RecoverPrivateSnapshotCopyAsync(
+        string filePath,
+        DatabaseOptions options,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+        ArgumentNullException.ThrowIfNull(options);
+
+        string fullPath = Path.GetFullPath(filePath);
+        var context = await new DefaultStorageEngineFactory().OpenAsync(
+            fullPath,
+            options.StorageEngineOptions,
+            ct);
+        await context.Pager.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Create a new database file using explicit composition options, atomically refusing to open or
+    /// replace an existing file.
+    /// </summary>
+    public static async ValueTask<Database> CreateNewAsync(
+        string filePath,
+        DatabaseOptions options,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+        ArgumentNullException.ThrowIfNull(options);
+
+        string fullPath = Path.GetFullPath(filePath);
+        var context = await options.StorageEngineFactory.CreateNewAsync(
+            fullPath,
+            options.StorageEngineOptions,
+            ct);
         return await CompleteOpenAsync(new Database(
             context.Pager,
             context.Catalog,
@@ -1167,12 +1266,7 @@ public sealed class Database : IAsyncDisposable
         try
         {
             await _catalog.ReloadAsync(ct);
-            foreach (var cached in _collectionCache.Values)
-            {
-                if (cached is ICollectionTreeRefresh refreshable)
-                    refreshable.RefreshTreeFromCatalog();
-            }
-
+            RefreshCachedCollectionsFromCatalog();
             _statementCache.Clear();
         }
         finally
@@ -1593,14 +1687,74 @@ public sealed class Database : IAsyncDisposable
     private const string GeneratedCollectionCacheSuffix = "\u0001generated";
 
     /// <summary>
+    /// Ensures that a real JsonElement document collection exists in the
+    /// caller's active explicit transaction.
+    /// </summary>
+    internal async ValueTask EnsureJsonDocumentCollectionAsync(
+        string collectionName,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(collectionName);
+        RequireCanonicalJsonCollectionTransaction();
+        _ = await GetCollectionCoreAsync<JsonElement>(
+            collectionName,
+            generatedOnly: false,
+            ct);
+    }
+
+    /// <summary>
+    /// Inserts one already-canonical UTF-8 JSON value into a JsonElement
+    /// collection in the caller's active explicit transaction.
+    /// </summary>
+    internal async ValueTask InsertCanonicalJsonDocumentAsync(
+        string collectionName,
+        string key,
+        ReadOnlyMemory<byte> canonicalUtf8Json,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(collectionName);
+        ArgumentNullException.ThrowIfNull(key);
+        RequireCanonicalJsonCollectionTransaction();
+
+        ct.ThrowIfCancellationRequested();
+        if (canonicalUtf8Json.Length >
+            OrderedCanonicalJsonValidator.MaximumDocumentBytes)
+        {
+            throw new InvalidDataException(
+                $"A canonical JSON migration document cannot exceed {OrderedCanonicalJsonValidator.MaximumDocumentBytes} bytes.");
+        }
+        byte[] canonicalSnapshot = canonicalUtf8Json.ToArray();
+        OrderedCanonicalJsonValidator.Validate(canonicalSnapshot, ct);
+
+        Collection<JsonElement> collection =
+            await GetCollectionCoreAsync<JsonElement>(
+                collectionName,
+                generatedOnly: false,
+                ct);
+        await collection.InsertValidatedCanonicalJsonAsync(
+            key,
+            canonicalSnapshot,
+            ct);
+    }
+
+    private void RequireCanonicalJsonCollectionTransaction()
+    {
+        if (!_inTransaction)
+        {
+            throw new InvalidOperationException(
+                "Canonical JSON collection writes require an active explicit transaction.");
+        }
+    }
+
+    /// <summary>
     /// Get or create a document collection with the given name.
     /// Collections are stored as internal tables with a "_col_" prefix.
     /// </summary>
     [RequiresUnreferencedCode("Collection<T> uses reflection-based JSON serialization and member binding. Use SQL API for NativeAOT scenarios.")]
     [RequiresDynamicCode("Collection<T> uses reflection-based JSON serialization and member binding. Use SQL API for NativeAOT scenarios.")]
     public async ValueTask<Collection<T>> GetCollectionAsync<
-        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicFields)]
-        T>(
+    [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicFields)]
+    T>(
         string name,
         CancellationToken ct = default)
         => await GetCollectionCoreAsync<T>(name, generatedOnly: false, ct);
@@ -1995,10 +2149,18 @@ public sealed class Database : IAsyncDisposable
 
     private void RefreshCachedCollectionsFromCatalog()
     {
-        foreach (var cached in _collectionCache.Values)
+        foreach (var cached in _collectionCache.ToArray())
         {
-            if (cached is ICollectionTreeRefresh refreshable)
-                refreshable.RefreshTreeFromCatalog();
+            if (cached.Value is not ICollectionTreeRefresh refreshable)
+                continue;
+
+            if (_catalog.GetTable(refreshable.CatalogTableName) is null)
+            {
+                _collectionCache.Remove(cached.Key);
+                continue;
+            }
+
+            refreshable.RefreshTreeFromCatalog();
         }
     }
 
@@ -2109,9 +2271,12 @@ public sealed class Database : IAsyncDisposable
 
         try
         {
-            if (!rolledBackExplicitTransaction)
-                await FlushPendingAdvisoryStatisticsAsync(CancellationToken.None);
-            await PersistHybridStateAsync(HybridPersistenceTriggers.Dispose, CancellationToken.None);
+            if (!_skipDisposePersistence)
+            {
+                if (!rolledBackExplicitTransaction)
+                    await FlushPendingAdvisoryStatisticsAsync(CancellationToken.None);
+                await PersistHybridStateAsync(HybridPersistenceTriggers.Dispose, CancellationToken.None);
+            }
         }
         finally
         {
@@ -2334,11 +2499,7 @@ public sealed class Database : IAsyncDisposable
                 throw new CSharpDbException(ErrorCode.Unknown,
                     "Reader sessions only support read-only statements.");
 
-            if (Interlocked.CompareExchange(ref _activeQuery, 1, 0) != 0)
-            {
-                throw new InvalidOperationException(
-                    "ReaderSession supports only one active query at a time. Dispose the previous QueryResult before executing another query.");
-            }
+            AcquireActiveRead();
 
             try
             {
@@ -2389,6 +2550,54 @@ public sealed class Database : IAsyncDisposable
             }
         }
 
+        /// <summary>
+        /// Opens one forward-only physical table reader over this session's
+        /// immutable pager snapshot. This bypasses SQL planning so callers can
+        /// bind durable progress to the actual table row ID.
+        /// </summary>
+        internal RetainedDatabaseSnapshotTableReader OpenTableReader(
+            string tableName,
+            long? afterRowIdExclusive,
+            int maxEncodedRowBytes)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            ArgumentException.ThrowIfNullOrWhiteSpace(tableName);
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxEncodedRowBytes);
+
+            if (IsReservedPhysicalTableName(tableName))
+            {
+                throw new InvalidOperationException(
+                    "Retained snapshot table readers cannot scan system or internal tables.");
+            }
+            if (_catalog.IsView(tableName))
+            {
+                throw new InvalidOperationException(
+                    "Retained snapshot table readers require a physical table and cannot scan a view.");
+            }
+
+            TableSchema schema = _catalog.GetTable(tableName)
+                ?? throw new CSharpDbException(
+                    ErrorCode.TableNotFound,
+                    $"Local physical table '{tableName}' was not found. External tables are not retained by the database snapshot.");
+
+            AcquireActiveRead();
+            try
+            {
+                var tree = _catalog.GetTableTree(schema.TableName, GetOrCreateSnapshotPager());
+                return new RetainedDatabaseSnapshotTableReader(
+                    schema,
+                    tree.CreateCursor(maxEncodedRowBytes),
+                    GetReadSerializer(schema),
+                    afterRowIdExclusive,
+                    _releaseActiveQueryCallback);
+            }
+            catch
+            {
+                Volatile.Write(ref _activeQuery, 0);
+                throw;
+            }
+        }
+
         public void Dispose()
         {
             if (!_disposed)
@@ -2396,6 +2605,15 @@ public sealed class Database : IAsyncDisposable
                 _snapshotPager?.Dispose();
                 _pager.ReleaseReaderSnapshot(_snapshot);
                 _disposed = true;
+            }
+        }
+
+        private void AcquireActiveRead()
+        {
+            if (Interlocked.CompareExchange(ref _activeQuery, 1, 0) != 0)
+            {
+                throw new InvalidOperationException(
+                    "ReaderSession supports only one active query or physical table reader at a time. Dispose the previous read before starting another.");
             }
         }
 
@@ -2729,6 +2947,12 @@ public sealed class Database : IAsyncDisposable
             string.Equals(tableName, "sys_planner_index_prefix_stats", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(tableName, "sys.validation_rules", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(tableName, "sys_validation_rules", StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsReservedPhysicalTableName(string tableName) =>
+            tableName.StartsWith("sys.", StringComparison.OrdinalIgnoreCase) ||
+            tableName.StartsWith("sys_", StringComparison.OrdinalIgnoreCase) ||
+            tableName.StartsWith("__", StringComparison.Ordinal) ||
+            tableName.StartsWith("_col_", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

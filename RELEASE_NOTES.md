@@ -1,34 +1,41 @@
 # What's New
 
-## version4.2.0
+## version4.3.0
 
-version4.2.0 advances `CSharpDB.EntityFrameworkCore` from a credible baseline to a production-ready provider for its documented embedded surface. Support remains intentionally bounded, with current behavior and limitations documented in the provider guide and covered by automated tests.
+version4.3.0 adds a first-party, review-first workflow for moving schemas and rows from other data sources into a new CSharpDB database. Migration is deliberately staged: capture a source, review the conversion plan and target DDL, apply to a new target, resume from committed target receipts if interrupted, and activate only after validation passes.
 
-### Migrations and Model Fidelity
+### Migration Source Lanes
 
-- Added repeatable idempotent migration scripts and expanded practical schema evolution, including bounded column, key, foreign-key, check-constraint, index, default, nullability, numeric-type, and collation changes with transactional failure behavior.
-- Expanded literal defaults, standalone named checks, and metadata round trips while retaining early validation for unsupported shapes; computed columns and `DefaultValueSql` remain explicitly unsupported.
-- Added first-class exact `decimal` mapping for the supported precision and scale envelope, including round trips, single-facet parameters, comparisons, ordering, ordinary indexes, overflow handling, and durable reopen tests. Computed decimal expressions and precision/scale-changing migrations remain outside the supported contract.
+- Added retained, digest-pinned migration packages for strict CSV, JSON/NDJSON, SQLite, LiteDB 5, MySQL 8.0/8.4, and the bounded Microsoft Access and on-premises SQL Server 2019/2022/2025 candidate lanes.
+- Added coherent SQLite online backup and offline/quiesced LiteDB capture, with bounded source profiles and explicit diagnostics for unsupported source objects.
+- Added a Windows-only ACE worker for local unencrypted `.mdb`/`.accdb` tables. Access capture is evaluation-only until the declared Windows/ACE/file-format/bitness VM matrix passes.
+- Added isolated SQL Server and MySQL workers for bounded schema and row capture. Connection strings are accepted only through named environment variables and are needed only during capture.
+- Added deterministic scalar encodings, row ordering, catalog/package bindings, package size ceilings, and fail-closed diagnostics for the implemented SQL Server and MySQL relational subsets.
+- SQL Server now has a strict positive non-`sysadmin` metadata-visibility proof that passes a SQL Server 2019 Express LocalDB fixture and fails closed on object-level `DENY`. Retained capture remains evaluation-only until the supported-edition, published-runtime, platform, authentication, and differential matrix passes. Do not elevate a migration account to bypass a failed proof.
 
-### Concurrency and Queries
+### Review, Recovery, and Validation
 
-- Added database-generated `byte[]` rowversion support with generated-value refresh, stale update/delete detection, raw SQL and trigger advancement, reopen behavior, and clear scope limitations.
-- Broadened supported LINQ translation across string predicates, grouped aggregates, direct inner and left joins, ordinal string operations, bounded `LIKE`, and set operations.
-- Added stable provider diagnostics for unsupported LINQ and model shapes so known limitations fail before malformed SQL reaches the engine.
+- Added explicit `inspect`, `plan`, `preview`, `apply`, and `validate` commands plus an `apply --resume` recovery mode. Exact target DDL and isolated scratch-schema evidence are available before target creation.
+- Added `type-map` reports using the planner's exact conversion policy and bounded `query-check` reports for CSharpDB and isolated T-SQL parse-level evidence. MySQL, SQLite, and Access query dialects fail closed as `Unknown`.
+- Apply writes a new staged target and commits rows with target receipts. Resume reopens and requalifies the exact package binding and skips only batches with matching target receipts.
+- Checksum validation compares normalized schema, 64-bit row counts, and partitioned canonical SHA-256 evidence. Failed or inconclusive validation withholds activation.
+- Added `CSharpDB.Migration.DualRun`, a packaged read-only SDK for typed query-pack comparison between explicitly identified, coherent source and target snapshots. Writable generic source connections, structurally inconsistent or tampered pass reports, endpoint errors, and exhausted limits fail closed.
+- Retained packages are treated as plaintext-sensitive source data. Expected package digests must be stored in an independently trusted record.
 
-### Application and Package Validation
+### CSV and JSON Export
 
-- Validated explicit transaction commit and rollback behavior and documented that savepoints are unsupported.
-- Added warm embedded-engine connection pooling for EF-created file connections, including logical-session cleanup, streamed committed-snapshot readers for data-only concurrency, serialized schema changes, poisoned-engine eviction after failed resets, bounded concurrent leases, explicit opt-out, and physical checkpoint/WAL cleanup through the pool-clear APIs. The ADO.NET hot path now also caches prepared absolute-file open plans, checks out existing pools without registry-wide serialization, and skips temporary-state cleanup for sessions proven clean.
-- Optimized direct embedded `CSharpDB.Client` transaction sessions to reuse an exclusively owned non-hybrid engine handle after a logical-session reset. In the matched diagnostic, median begin/rollback latency fell from 9.016 ms to 70.429 us (99.22%) and begin/commit fell from 20.871 ms to 3.452 ms (83.46%). Independent transaction completions now perform commit/rollback and disposal outside the client-wide coordination lock. Failed or overlapping transactions, competing handles, and hybrid persistence keep their physical open/close boundaries; raw `Database.OpenAsync(...)` and storage-factory opens remain physical and should be retained by their owners.
-- Against the pooling-disabled physical-reopen baseline, the repeat-three EF-managed auto-open/close comparison reduced CSharpDB median single-insert latency from 31.41 ms to 3.58 ms and batch-100 latency from 33.12 ms to 4.07 ms. Final pooled throughput reached 269 single inserts/sec and 23,349 batch rows/sec, placing the tested workloads within about 7% of SQLite.
-- Added an eight-case BenchmarkDotNet lifecycle comparison covering CSharpDB and `Microsoft.Data.Sqlite`, explicit pooling on/off, and reused versus short-lived connection objects. Pooled CSharpDB measured 0.228 us and 128 B of managed allocation for a reused connection and 0.508 us and 256 B for construct/open/close/dispose, versus SQLite at 0.045 us/0 B and 0.170 us/168 B. In a cross-run diagnostic comparison, the earlier CSharpDB pooled short-lived result was 2.499 us and 3.08 KB; the new path is about 4.9x faster with about 92% less managed allocation on this runner.
-- Added a bounded ASP.NET Core Identity readiness profile for schema version 1 with integer user and role keys, including the seven-table store workflow, relationships, claims, logins, tokens, concurrency stamps, cancellation, rollback, cascade cleanup, and reopen persistence.
-- Added a runnable ASP.NET Core minimal API sample and an in-process HTTP integration test that proves CRUD and persistence across host restarts.
-- Added a package-only consumer gate that restores freshly packed NuGet artifacts and exercises CRUD, reopen, `dotnet ef migrations add`, script generation, and database update without project references.
+- Added explicit offline retained CSharpDB snapshot capture with a canonical snapshot identity.
+- Added resumable, lossless CSV, JSON, and NDJSON publication with source-bound manifests and create-new/no-overwrite behavior.
+- The hardened resumable publisher is currently limited to trusted local Windows directories; other platforms return `MIG-EXPORT-PLATFORM-001` instead of weakening the publication contract.
 
-### Documentation and Adoption
+### Packaging and Documentation
 
-- Expanded the EF Core provider guide with its supported behavior, current limitations, deployment checklist, and upgrade guidance.
-- Added shared EF Core patch-version validation across the provider, tests, samples, benchmarks, Identity integration, and package smoke fixture.
-- Expanded the provider guide, package README, website, sample catalog, migration deployment guidance, query cookbook, troubleshooting, upgrade notes, and production-readiness checklist from the same bounded support contract.
+- Added combined, framework-dependent migration CLI archives for Windows x64, Linux x64, and macOS Apple silicon. Archives require the .NET 10 runtime and retain the applicable fixed optional adapters, notices, licenses, and installers; the GitHub release includes `MIGRATION-SHA256SUMS.txt` for all three archives.
+- Published the provider-neutral `CSharpDB.Migration` and `CSharpDB.Migration.DualRun` packages so the durable migration contracts and dual-run SDK are usable without a source checkout.
+- Added safe user-directory installers that refuse overwrite by default, do not request administrator access, do not create services, and do not change `PATH`.
+- Added the public [database migration guide](https://csharpdb.com/docs/database-migration.html) and [migration release article](https://csharpdb.com/blog/migrating-existing-data-to-csharpdb.html), including source recipes, compatibility tools, export, dual-run, recovery, validation, security, and troubleshooting.
+
+### Qualification Boundary
+
+- The retained package, process-isolation, deterministic replay, and offline validation paths are reviewed and covered by automated tests.
+- Broad live Access/ACE, SQL Server/MySQL server, authentication, TLS, restricted-account, published-runtime, platform, and disposable-Windows-VM qualification remains deferred. This release does not claim that every live provider configuration is shipping-qualified.

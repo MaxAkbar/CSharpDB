@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>CSharpDB.Migration.Compatibility</AssemblyName>
+    <RootNamespace>CSharpDB.Migration.Compatibility</RootNamespace>
+    <Description>Deterministic type-mapping reports and bounded static query compatibility analysis for CSharpDB migrations.</Description>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CSharpDB.Migration\CSharpDB.Migration.csproj" />
+    <ProjectReference Include="..\CSharpDB.Sql\CSharpDB.Sql.csproj" />
+  </ItemGroup>
+
+</Project>

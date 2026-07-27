@@ -123,14 +123,32 @@ public sealed class Tokenizer
 
     public List<Token> Tokenize()
     {
+        try
+        {
+            return Tokenize(int.MaxValue, CancellationToken.None);
+        }
+        catch (SqlTokenizerException ex)
+        {
+            // Preserve the exact exception type exposed by the original public API.
+            throw new CSharpDbException(ex.Code, ex.Message);
+        }
+    }
+
+    internal List<Token> Tokenize(int maxTokenCount, CancellationToken cancellationToken)
+    {
+        if (maxTokenCount <= 0)
+            throw new ArgumentOutOfRangeException(nameof(maxTokenCount));
+
         var tokens = new List<Token>();
 
         while (_pos < _input.Length)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             SkipWhitespace();
             if (_pos >= _input.Length) break;
 
             char c = _input[_pos];
+            Token token;
 
             // Single-line comment
             if (c == '-' && _pos + 1 < _input.Length && _input[_pos + 1] == '-')
@@ -139,39 +157,69 @@ public sealed class Tokenizer
                 continue;
             }
 
+            // Block comment
+            if (c == '/' && _pos + 1 < _input.Length && _input[_pos + 1] == '*')
+            {
+                int start = _pos;
+                _pos += 2;
+                while (_pos + 1 < _input.Length &&
+                       !(_input[_pos] == '*' && _input[_pos + 1] == '/'))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    _pos++;
+                }
+
+                if (_pos + 1 >= _input.Length)
+                {
+                    throw new SqlTokenizerException(
+                        start,
+                        _input.Length - start,
+                        "token.block-comment",
+                        $"Unterminated block comment at position {start}.");
+                }
+
+                _pos += 2;
+                continue;
+            }
+
             if ((c == 'X' || c == 'x') &&
                 _pos + 1 < _input.Length &&
                 _input[_pos + 1] == '\'')
             {
-                tokens.Add(ReadBlobLiteral());
+                token = ReadBlobLiteral();
             }
             else if (char.IsLetter(c) || c == '_')
             {
-                tokens.Add(ReadIdentifierOrKeyword());
+                token = ReadIdentifierOrKeyword();
             }
             else if (c == '"')
             {
-                tokens.Add(ReadQuotedIdentifier());
+                token = ReadQuotedIdentifier();
             }
             else if (c == '@')
             {
-                tokens.Add(ReadParameter());
+                token = ReadParameter();
             }
             else if (char.IsDigit(c))
             {
-                tokens.Add(ReadNumber());
+                token = ReadNumber();
             }
             else if (c == '\'')
             {
-                tokens.Add(ReadString());
+                token = ReadString();
             }
             else
             {
-                tokens.Add(ReadOperatorOrPunctuation());
+                token = ReadOperatorOrPunctuation();
             }
+
+            if (tokens.Count == maxTokenCount)
+                throw new SqlTokenLimitExceededException(token.Position, token.Length);
+
+            tokens.Add(token);
         }
 
-        tokens.Add(new Token(TokenType.Eof, "", _pos));
+        tokens.Add(new Token(TokenType.Eof, "", _pos, 0));
         return tokens;
     }
 
@@ -188,9 +236,22 @@ public sealed class Tokenizer
             _pos++;
 
         string value = _input[start.._pos];
-        SqlIdentifierRules.Validate(value);
+        try
+        {
+            SqlIdentifierRules.Validate(value);
+        }
+        catch (CSharpDbException ex)
+        {
+            throw new SqlTokenizerException(
+                start,
+                _pos - start,
+                "token.identifier",
+                ex.Message,
+                ex);
+        }
+
         var type = Keywords.TryGetValue(value, out var kw) ? kw : TokenType.Identifier;
-        return new Token(type, value, start);
+        return new Token(type, value, start, _pos - start);
     }
 
     private Token ReadQuotedIdentifier()
@@ -216,12 +277,27 @@ public sealed class Tokenizer
             }
 
             string value = builder.ToString();
-            SqlIdentifierRules.Validate(value, "Quoted identifier");
-            return new Token(TokenType.Identifier, value, start);
+            try
+            {
+                SqlIdentifierRules.Validate(value, "Quoted identifier");
+            }
+            catch (CSharpDbException ex)
+            {
+                throw new SqlTokenizerException(
+                    start,
+                    _pos - start,
+                    "token.quoted-identifier",
+                    ex.Message,
+                    ex);
+            }
+
+            return new Token(TokenType.Identifier, value, start, _pos - start);
         }
 
-        throw new CSharpDbException(
-            ErrorCode.SyntaxError,
+        throw new SqlTokenizerException(
+            start,
+            _input.Length - start,
+            "token.quoted-identifier",
             $"Unterminated quoted identifier at position {start}.");
     }
 
@@ -241,7 +317,7 @@ public sealed class Tokenizer
         }
 
         string value = _input[start.._pos];
-        return new Token(hasDot ? TokenType.RealLiteral : TokenType.IntegerLiteral, value, start);
+        return new Token(hasDot ? TokenType.RealLiteral : TokenType.IntegerLiteral, value, start, _pos - start);
     }
 
     private Token ReadParameter()
@@ -249,14 +325,20 @@ public sealed class Tokenizer
         int start = _pos;
         _pos++; // skip '@'
         if (_pos >= _input.Length || !(char.IsLetter(_input[_pos]) || _input[_pos] == '_'))
-            throw new CSharpDbException(ErrorCode.SyntaxError, $"Invalid parameter name at position {start}.");
+        {
+            throw new SqlTokenizerException(
+                start,
+                1,
+                "token.parameter",
+                $"Invalid parameter name at position {start}.");
+        }
 
         int nameStart = _pos;
         while (_pos < _input.Length && (char.IsLetterOrDigit(_input[_pos]) || _input[_pos] == '_'))
             _pos++;
 
         string value = _input[nameStart.._pos];
-        return new Token(TokenType.Parameter, value, start);
+        return new Token(TokenType.Parameter, value, start, _pos - start);
     }
 
     private Token ReadString()
@@ -279,7 +361,7 @@ public sealed class Tokenizer
                 else
                 {
                     _pos++; // skip closing quote
-                    return new Token(TokenType.StringLiteral, sb.ToString(), start);
+                    return new Token(TokenType.StringLiteral, sb.ToString(), start, _pos - start);
                 }
             }
             else
@@ -289,7 +371,11 @@ public sealed class Tokenizer
             }
         }
 
-        throw new CSharpDbException(ErrorCode.SyntaxError, $"Unterminated string literal at position {start}.");
+        throw new SqlTokenizerException(
+            start,
+            _input.Length - start,
+            "token.string-literal",
+            $"Unterminated string literal at position {start}.");
     }
 
     private Token ReadBlobLiteral()
@@ -303,8 +389,10 @@ public sealed class Tokenizer
         {
             if (!IsHexDigit(_input[_pos]))
             {
-                throw new CSharpDbException(
-                    ErrorCode.SyntaxError,
+                throw new SqlTokenizerException(
+                    start,
+                    Math.Max(1, _pos - start + 1),
+                    "token.blob-literal",
                     $"Invalid blob literal at position {start}. Expected hexadecimal characters.");
             }
 
@@ -312,19 +400,27 @@ public sealed class Tokenizer
         }
 
         if (_pos >= _input.Length)
-            throw new CSharpDbException(ErrorCode.SyntaxError, $"Unterminated blob literal at position {start}.");
+        {
+            throw new SqlTokenizerException(
+                start,
+                _input.Length - start,
+                "token.blob-literal",
+                $"Unterminated blob literal at position {start}.");
+        }
 
         int hexLength = _pos - hexStart;
         if ((hexLength & 1) != 0)
         {
-            throw new CSharpDbException(
-                ErrorCode.SyntaxError,
+            throw new SqlTokenizerException(
+                start,
+                _pos - start + 1,
+                "token.blob-literal",
                 $"Blob literal at position {start} must contain an even number of hexadecimal characters.");
         }
 
         string hex = _input[hexStart.._pos];
         _pos++; // skip closing quote
-        return new Token(TokenType.BlobLiteral, hex, start);
+        return new Token(TokenType.BlobLiteral, hex, start, _pos - start);
     }
 
     private Token ReadOperatorOrPunctuation()
@@ -335,32 +431,40 @@ public sealed class Tokenizer
         switch (c)
         {
             case '=':
-                return new Token(TokenType.Equals, "=", start);
+                return new Token(TokenType.Equals, "=", start, _pos - start);
             case '<':
                 if (_pos < _input.Length)
                 {
-                    if (_input[_pos] == '=') { _pos++; return new Token(TokenType.LessOrEqual, "<=", start); }
-                    if (_input[_pos] == '>') { _pos++; return new Token(TokenType.NotEquals, "<>", start); }
+                    if (_input[_pos] == '=') { _pos++; return new Token(TokenType.LessOrEqual, "<=", start, _pos - start); }
+                    if (_input[_pos] == '>') { _pos++; return new Token(TokenType.NotEquals, "<>", start, _pos - start); }
                 }
-                return new Token(TokenType.LessThan, "<", start);
+                return new Token(TokenType.LessThan, "<", start, _pos - start);
             case '>':
-                if (_pos < _input.Length && _input[_pos] == '=') { _pos++; return new Token(TokenType.GreaterOrEqual, ">=", start); }
-                return new Token(TokenType.GreaterThan, ">", start);
+                if (_pos < _input.Length && _input[_pos] == '=') { _pos++; return new Token(TokenType.GreaterOrEqual, ">=", start, _pos - start); }
+                return new Token(TokenType.GreaterThan, ">", start, _pos - start);
             case '!':
-                if (_pos < _input.Length && _input[_pos] == '=') { _pos++; return new Token(TokenType.NotEquals, "!=", start); }
-                throw new CSharpDbException(ErrorCode.SyntaxError, $"Unexpected character '!' at position {start}.");
-            case '+': return new Token(TokenType.Plus, "+", start);
-            case '-': return new Token(TokenType.Minus, "-", start);
-            case '*': return new Token(TokenType.Star, "*", start);
-            case '/': return new Token(TokenType.Slash, "/", start);
-            case ',': return new Token(TokenType.Comma, ",", start);
-            case ':': return new Token(TokenType.Colon, ":", start);
-            case '.': return new Token(TokenType.Dot, ".", start);
-            case '(': return new Token(TokenType.LeftParen, "(", start);
-            case ')': return new Token(TokenType.RightParen, ")", start);
-            case ';': return new Token(TokenType.Semicolon, ";", start);
+                if (_pos < _input.Length && _input[_pos] == '=') { _pos++; return new Token(TokenType.NotEquals, "!=", start, _pos - start); }
+                throw new SqlTokenizerException(
+                    start,
+                    1,
+                    "token.character",
+                    $"Unexpected character '!' at position {start}.");
+            case '+': return new Token(TokenType.Plus, "+", start, _pos - start);
+            case '-': return new Token(TokenType.Minus, "-", start, _pos - start);
+            case '*': return new Token(TokenType.Star, "*", start, _pos - start);
+            case '/': return new Token(TokenType.Slash, "/", start, _pos - start);
+            case ',': return new Token(TokenType.Comma, ",", start, _pos - start);
+            case ':': return new Token(TokenType.Colon, ":", start, _pos - start);
+            case '.': return new Token(TokenType.Dot, ".", start, _pos - start);
+            case '(': return new Token(TokenType.LeftParen, "(", start, _pos - start);
+            case ')': return new Token(TokenType.RightParen, ")", start, _pos - start);
+            case ';': return new Token(TokenType.Semicolon, ";", start, _pos - start);
             default:
-                throw new CSharpDbException(ErrorCode.SyntaxError, $"Unexpected character '{c}' at position {start}.");
+                throw new SqlTokenizerException(
+                    start,
+                    1,
+                    "token.character",
+                    $"Unexpected character '{c}' at position {start}.");
         }
     }
 
@@ -368,4 +472,48 @@ public sealed class Tokenizer
         => c is >= '0' and <= '9'
         or >= 'a' and <= 'f'
         or >= 'A' and <= 'F';
+}
+
+internal sealed class SqlTokenLimitExceededException : Exception
+{
+    public int Position { get; }
+    public int TokenLength { get; }
+
+    public SqlTokenLimitExceededException(int position, int tokenLength)
+    {
+        Position = position;
+        TokenLength = tokenLength;
+    }
+}
+
+internal sealed class SqlTokenizerException : CSharpDbException
+{
+    public int Position { get; }
+    public int TokenLength { get; }
+    public string Rule { get; }
+
+    public SqlTokenizerException(
+        int position,
+        int tokenLength,
+        string rule,
+        string message)
+        : base(ErrorCode.SyntaxError, message)
+    {
+        Position = position;
+        TokenLength = tokenLength;
+        Rule = rule;
+    }
+
+    public SqlTokenizerException(
+        int position,
+        int tokenLength,
+        string rule,
+        string message,
+        Exception innerException)
+        : base(ErrorCode.SyntaxError, message, innerException)
+    {
+        Position = position;
+        TokenLength = tokenLength;
+        Rule = rule;
+    }
 }

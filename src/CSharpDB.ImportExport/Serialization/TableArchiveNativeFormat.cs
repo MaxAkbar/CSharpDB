@@ -26,6 +26,7 @@ internal static class TableArchiveNativeFormat
 {
     public const int FormatVersion = 3;
     public const int RowVersionFormatVersion = 4;
+    public const int SchemaFidelityFormatVersion = 5;
     public const int HeaderSize = 76;
 
     public const int PrimaryKeyIndexVersion = 1;
@@ -108,7 +109,7 @@ internal static class TableArchiveNativeFormat
     }
 
     private static bool IsSupportedFormatVersion(int version)
-        => version is FormatVersion or RowVersionFormatVersion;
+        => version is FormatVersion or RowVersionFormatVersion or SchemaFidelityFormatVersion;
 
     public static void WriteIndexHeader(
         Span<byte> destination,

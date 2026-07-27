@@ -20,7 +20,7 @@
   </url>
   <url>
     <loc>https://csharpdb.com/downloads.html</loc>
-    <lastmod>2026-04-20</lastmod>
+    <lastmod>2026-07-26</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
@@ -38,13 +38,13 @@
   </url>
   <url>
     <loc>https://csharpdb.com/changelog.html</loc>
-    <lastmod>2026-05-10</lastmod>
+    <lastmod>2026-07-26</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
     <loc>https://csharpdb.com/docs/</loc>
-    <lastmod>2026-05-24</lastmod>
+    <lastmod>2026-07-26</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
@@ -128,7 +128,7 @@
   </url>
   <url>
     <loc>https://csharpdb.com/docs/cli.html</loc>
-    <lastmod>2026-03-27</lastmod>
+    <lastmod>2026-07-26</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
@@ -163,6 +163,12 @@
     <priority>0.6</priority>
   </url>
   <url>
+    <loc>https://csharpdb.com/docs/database-migration.html</loc>
+    <lastmod>2026-07-26</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
     <loc>https://csharpdb.com/docs/ecosystem.html</loc>
     <lastmod>2026-05-17</lastmod>
     <changefreq>monthly</changefreq>
@@ -170,7 +176,7 @@
   </url>
   <url>
     <loc>https://csharpdb.com/docs/entity-framework-core.html</loc>
-    <lastmod>2026-05-24</lastmod>
+    <lastmod>2026-07-26</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
@@ -194,12 +200,6 @@
   </url>
   <url>
     <loc>https://csharpdb.com/docs/mcp-server.html</loc>
-    <lastmod>2026-04-20</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>0.6</priority>
-  </url>
-  <url>
-    <loc>https://csharpdb.com/docs/migrations.html</loc>
     <lastmod>2026-04-20</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
@@ -362,9 +362,15 @@
   </url>
   <url>
     <loc>https://csharpdb.com/blog/</loc>
-    <lastmod>2026-05-10</lastmod>
+    <lastmod>2026-07-26</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://csharpdb.com/blog/migrating-existing-data-to-csharpdb.html</loc>
+    <lastmod>2026-07-26</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
   </url>
   <url>
     <loc>https://csharpdb.com/blog/table-archives.html</loc>

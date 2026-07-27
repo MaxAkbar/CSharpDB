@@ -7,6 +7,7 @@ public sealed class StorageEngineOptionsBuilder
 {
     private PagerOptions _pagerOptions;
     private DurabilityMode _durabilityMode;
+    private FileShare _primaryFileShare;
     private DurableGroupCommitOptions _durableGroupCommit;
     private AdvisoryStatisticsPersistenceMode _advisoryStatisticsPersistenceMode;
     private long _walPreallocationChunkBytes;
@@ -26,6 +27,7 @@ public sealed class StorageEngineOptionsBuilder
 
         _pagerOptions = options.PagerOptions;
         _durabilityMode = options.DurabilityMode;
+        _primaryFileShare = options.PrimaryFileShare;
         _durableGroupCommit = options.DurableGroupCommit;
         _advisoryStatisticsPersistenceMode = options.AdvisoryStatisticsPersistenceMode;
         _walPreallocationChunkBytes = options.WalPreallocationChunkBytes;
@@ -45,6 +47,15 @@ public sealed class StorageEngineOptionsBuilder
     public StorageEngineOptionsBuilder UseDurabilityMode(DurabilityMode durabilityMode)
     {
         _durabilityMode = durabilityMode;
+        return this;
+    }
+
+    public StorageEngineOptionsBuilder UsePrimaryFileShare(FileShare fileShare)
+    {
+        const FileShare supported = FileShare.Read | FileShare.Write | FileShare.Delete;
+        if ((fileShare & ~supported) != 0)
+            throw new ArgumentOutOfRangeException(nameof(fileShare));
+        _primaryFileShare = fileShare;
         return this;
     }
 
@@ -337,6 +348,7 @@ public sealed class StorageEngineOptionsBuilder
         return new StorageEngineOptions
         {
             DurabilityMode = _durabilityMode,
+            PrimaryFileShare = _primaryFileShare,
             DurableGroupCommit = _durableGroupCommit,
             AdvisoryStatisticsPersistenceMode = _advisoryStatisticsPersistenceMode,
             WalPreallocationChunkBytes = _walPreallocationChunkBytes,

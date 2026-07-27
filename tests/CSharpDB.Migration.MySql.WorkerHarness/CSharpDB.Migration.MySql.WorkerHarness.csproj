@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>csharpdb-migration-mysql-worker</AssemblyName>
+    <RootNamespace>CSharpDB.Migration.MySql.WorkerHarness</RootNamespace>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\CSharpDB.Migration\CSharpDB.Migration.csproj" />
+    <ProjectReference Include="..\..\src\CSharpDB.Migration.Retained\CSharpDB.Migration.Retained.csproj" />
+  </ItemGroup>
+
+</Project>

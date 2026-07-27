@@ -33,9 +33,13 @@ jobs:
         with:
           global-json-file: global.json
 
-      - name: Guard legacy primitives identity
-        shell: pwsh
-        run: ./scripts/Test-NoLegacyCoreReferences.ps1
+      - name: Use private link-free temporary directory (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          temp_directory="$(mktemp -d /private/tmp/csharpdb-ci.XXXXXX)"
+          chmod 700 "${temp_directory}"
+          echo "TMPDIR=${temp_directory}" >> "${GITHUB_ENV}"
 
       - name: Guard NuGet package dependency closure
         shell: pwsh
@@ -63,6 +67,10 @@ jobs:
 
       - name: Test
         run: dotnet test CSharpDB.slnx -c Release --no-build --verbosity minimal
+
+      - name: Verify EF Core migration analyzer package boundary
+        shell: pwsh
+        run: ./scripts/Test-EfCoreMigrationTool.ps1 -Configuration Release -NoRestore
 
   publish-nuget:
     name: Publish NuGet
@@ -122,6 +130,8 @@ jobs:
             src/CSharpDB.Client/README.md \
             src/CSharpDB.CodeModules/README.md \
             src/CSharpDB.Data/README.md \
+            src/CSharpDB.Migration/README.md \
+            src/CSharpDB.Migration.DualRun/README.md \
             src/CSharpDB.EntityFrameworkCore/README.md
 
       - name: Pack projects
@@ -142,6 +152,8 @@ jobs:
           dotnet pack src/CSharpDB.Client/CSharpDB.Client.csproj -c Release -o artifacts/nuget -p:Version="$version"
           dotnet pack src/CSharpDB.CodeModules/CSharpDB.CodeModules.csproj -c Release -o artifacts/nuget -p:Version="$version"
           dotnet pack src/CSharpDB.Data/CSharpDB.Data.csproj -c Release -o artifacts/nuget -p:Version="$version"
+          dotnet pack src/CSharpDB.Migration/CSharpDB.Migration.csproj -c Release -o artifacts/nuget -p:Version="$version"
+          dotnet pack src/CSharpDB.Migration.DualRun/CSharpDB.Migration.DualRun.csproj -c Release -o artifacts/nuget -p:Version="$version"
           dotnet pack src/CSharpDB.EntityFrameworkCore/CSharpDB.EntityFrameworkCore.csproj -c Release -o artifacts/nuget -p:Version="$version"
           dotnet pack src/CSharpDB/CSharpDB.csproj -c Release -o artifacts/nuget -p:Version="$version"
 
@@ -149,6 +161,16 @@ jobs:
         shell: pwsh
         run: |
           ./scripts/Test-EfCoreNuGetPackage.ps1 `
+            -FeedPath artifacts/nuget `
+            -Version "${{ steps.version.outputs.version }}"
+
+      - name: Pack EF Core migration analyzer
+        run: dotnet pack src/CSharpDB.EntityFrameworkCore.Tools/CSharpDB.EntityFrameworkCore.Tools.csproj -c Release -o artifacts/nuget -p:Version="${{ steps.version.outputs.version }}"
+
+      - name: Qualify packed EF Core migration analyzer
+        shell: pwsh
+        run: |
+          ./scripts/Test-EfCoreMigrationTool.ps1 `
             -FeedPath artifacts/nuget `
             -Version "${{ steps.version.outputs.version }}"
 
@@ -185,7 +207,10 @@ jobs:
               'CSharpDB.Client',
               'CSharpDB.CodeModules',
               'CSharpDB.Data',
+              'CSharpDB.Migration',
+              'CSharpDB.Migration.DualRun',
               'CSharpDB.EntityFrameworkCore',
+              'CSharpDB.EntityFrameworkCore.Tools',
               'CSharpDB'
             )
 
@@ -194,6 +219,73 @@ jobs:
         with:
           name: nuget-packages
           path: artifacts/nuget/*.nupkg
+          if-no-files-found: error
+
+  migration-archives:
+    name: Migration Archive (${{ matrix.rid }})
+    needs: build-and-test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+            extension: zip
+          - os: ubuntu-latest
+            rid: linux-x64
+            extension: tar.gz
+          - os: macos-latest
+            rid: osx-arm64
+            extension: tar.gz
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Publish reviewed migration archive
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $version = $env:RELEASE_TAG -replace '^v', ''
+          ./scripts/Publish-CSharpDbMigrationRelease.ps1 `
+            -Version $version `
+            -Runtime '${{ matrix.rid }}' `
+            -Configuration Release `
+            -OutputRoot artifacts/migration-release
+
+      - name: Verify migration archive and publisher checksum
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = $env:RELEASE_TAG -replace '^v', ''
+          $archiveName = "csharpdb-migration-tool-v$version-${{ matrix.rid }}.${{ matrix.extension }}"
+          $archivePath = Join-Path 'artifacts/migration-release/archives' $archiveName
+          $checksumsPath = Join-Path 'artifacts/migration-release/archives' 'SHA256SUMS.txt'
+
+          if (-not (Test-Path -LiteralPath $archivePath -PathType Leaf)) {
+            throw "Expected migration archive was not created: $archivePath"
+          }
+          if (-not (Test-Path -LiteralPath $checksumsPath -PathType Leaf)) {
+            throw "Expected migration checksum file was not created: $checksumsPath"
+          }
+          if (-not (Select-String -LiteralPath $checksumsPath -Pattern ([regex]::Escape($archiveName)) -Quiet)) {
+            throw "Migration checksum file does not contain $archiveName."
+          }
+
+      - name: Upload migration archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: migration-${{ matrix.rid }}
+          path: artifacts/migration-release/archives/csharpdb-migration-tool-v*.${{ matrix.extension }}
           if-no-files-found: error
 
   native-aot:
@@ -510,7 +602,7 @@ jobs:
 
   create-release:
     name: Create GitHub Release
-    needs: [publish-nuget, native-aot, daemon-archives, admin-desktop-archive]
+    needs: [publish-nuget, migration-archives, native-aot, daemon-archives, admin-desktop-archive]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -532,6 +624,13 @@ jobs:
           path: artifacts/native
           merge-multiple: true
 
+      - name: Download migration artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: migration-*
+          path: artifacts/migration
+          merge-multiple: true
+
       - name: Download daemon artifacts
         uses: actions/download-artifact@v8
         with:
@@ -551,6 +650,13 @@ jobs:
           set -euo pipefail
           cd artifacts/daemon
           sha256sum csharpdb-daemon-v* > SHA256SUMS.txt
+
+      - name: Generate migration checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd artifacts/migration
+          sha256sum csharpdb-migration-tool-v* > MIGRATION-SHA256SUMS.txt
 
       - name: Resolve release notes
         id: notes
@@ -586,6 +692,7 @@ jobs:
           files: |
             artifacts/nuget/*.nupkg
             artifacts/native/*
+            artifacts/migration/*
             artifacts/daemon/*
             artifacts/admin-desktop/*
 
@@ -598,5 +705,6 @@ jobs:
           files: |
             artifacts/nuget/*.nupkg
             artifacts/native/*
+            artifacts/migration/*
             artifacts/daemon/*
             artifacts/admin-desktop/*

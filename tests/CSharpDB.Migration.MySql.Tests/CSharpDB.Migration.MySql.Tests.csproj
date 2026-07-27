@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <Import Project="..\TestDefaults.props" />
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\CSharpDB.Migration.MySql\CSharpDB.Migration.MySql.csproj" />
+    <ProjectReference Include="..\..\src\CSharpDB.Migration.Retained\CSharpDB.Migration.Retained.csproj" />
+    <ProjectReference Include="..\..\src\CSharpDB.Migration.MySql.Worker\CSharpDB.Migration.MySql.Worker.csproj" />
+    <ProjectReference Include="..\..\src\CSharpDB.Migration.CSharpDb\CSharpDB.Migration.CSharpDb.csproj" />
+  </ItemGroup>
+
+</Project>

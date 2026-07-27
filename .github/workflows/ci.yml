@@ -32,9 +32,13 @@ jobs:
         with:
           global-json-file: global.json
 
-      - name: Guard legacy primitives identity
-        shell: pwsh
-        run: ./scripts/Test-NoLegacyCoreReferences.ps1
+      - name: Use private link-free temporary directory (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          temp_directory="$(mktemp -d /private/tmp/csharpdb-ci.XXXXXX)"
+          chmod 700 "${temp_directory}"
+          echo "TMPDIR=${temp_directory}" >> "${GITHUB_ENV}"
 
       - name: Guard NuGet package dependency closure
         shell: pwsh
@@ -54,6 +58,16 @@ jobs:
       - name: Build
         run: dotnet build CSharpDB.slnx -c Release --no-restore
 
+      - name: Verify macOS reject-artifact publication
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          dotnet test tests/CSharpDB.Migration.Tests/CSharpDB.Migration.Tests.csproj \
+            -c Release \
+            --no-build \
+            --filter "FullyQualifiedName~WriteAsync_PublishesHeaderOnlyArtifactForEmptyEvidence|FullyQualifiedName~WriteAsync_ReclaimsPrivateStaleTemporaryArtifact|FullyQualifiedName~WriteAsync_RemovesMacOsAclFromPrivateStaleTemporaryArtifact|FullyQualifiedName~WriteAsync_RejectsMacOsAclOnExistingArtifact" \
+            --logger "console;verbosity=detailed"
+
       - name: Test smaller suites
         shell: bash
         run: |
@@ -68,6 +82,14 @@ jobs:
             tests/CSharpDB.Data.Tests/CSharpDB.Data.Tests.csproj
             tests/CSharpDB.DevOps.Tests/CSharpDB.DevOps.Tests.csproj
             tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj
+            tests/CSharpDB.EntityFrameworkCore.Tools.Tests/CSharpDB.EntityFrameworkCore.Tools.Tests.csproj
+            tests/CSharpDB.Migration.Access.Tests/CSharpDB.Migration.Access.Tests.csproj
+            tests/CSharpDB.Migration.Compatibility.Tests/CSharpDB.Migration.Compatibility.Tests.csproj
+            tests/CSharpDB.Migration.DualRun.Tests/CSharpDB.Migration.DualRun.Tests.csproj
+            tests/CSharpDB.Migration.Files.Tests/CSharpDB.Migration.Files.Tests.csproj
+            tests/CSharpDB.Migration.MySql.Tests/CSharpDB.Migration.MySql.Tests.csproj
+            tests/CSharpDB.Migration.SqlServer.Tests/CSharpDB.Migration.SqlServer.Tests.csproj
+            tests/CSharpDB.Migration.Tests/CSharpDB.Migration.Tests.csproj
             tests/CSharpDB.Pipelines.Tests/CSharpDB.Pipelines.Tests.csproj
           )
 
@@ -76,6 +98,23 @@ jobs:
             dotnet test "${project}" -c Release --no-build --logger "console;verbosity=minimal"
             echo "::endgroup::"
           done
+
+      - name: Verify SQL Server migration adapter isolation
+        shell: pwsh
+        run: ./scripts/Test-SqlServerMigrationIsolation.ps1 -Configuration Release
+
+      - name: Verify MySQL migration adapter isolation
+        shell: pwsh
+        run: ./scripts/Test-MySqlMigrationIsolation.ps1 -Configuration Release
+
+      - name: Verify Microsoft Access migration adapter isolation
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/Test-AccessMigrationIsolation.ps1 -Configuration Release
+
+      - name: Verify EF Core migration analyzer package boundary
+        shell: pwsh
+        run: ./scripts/Test-EfCoreMigrationTool.ps1 -Configuration Release -NoRestore
 
       - name: Test CSharpDB.Tests
         shell: bash
@@ -209,6 +248,8 @@ jobs:
             src/CSharpDB.Client/README.md \
             src/CSharpDB.CodeModules/README.md \
             src/CSharpDB.Data/README.md \
+            src/CSharpDB.Migration/README.md \
+            src/CSharpDB.Migration.DualRun/README.md \
             src/CSharpDB.EntityFrameworkCore/README.md
 
       - name: Pack projects
@@ -228,12 +269,17 @@ jobs:
           dotnet pack src/CSharpDB.Client/CSharpDB.Client.csproj -c Release -o artifacts/nuget
           dotnet pack src/CSharpDB.CodeModules/CSharpDB.CodeModules.csproj -c Release -o artifacts/nuget
           dotnet pack src/CSharpDB.Data/CSharpDB.Data.csproj -c Release -o artifacts/nuget
+          dotnet pack src/CSharpDB.Migration/CSharpDB.Migration.csproj -c Release -o artifacts/nuget
+          dotnet pack src/CSharpDB.Migration.DualRun/CSharpDB.Migration.DualRun.csproj -c Release -o artifacts/nuget
           dotnet pack src/CSharpDB.EntityFrameworkCore/CSharpDB.EntityFrameworkCore.csproj -c Release -o artifacts/nuget
           dotnet pack src/CSharpDB/CSharpDB.csproj -c Release -o artifacts/nuget
 
       - name: Qualify packed EF Core provider
         shell: pwsh
         run: ./scripts/Test-EfCoreNuGetPackage.ps1 -FeedPath artifacts/nuget
+
+      - name: Pack EF Core migration analyzer
+        run: dotnet pack src/CSharpDB.EntityFrameworkCore.Tools/CSharpDB.EntityFrameworkCore.Tools.csproj -c Release -o artifacts/nuget
 
       - name: Upload NuGet artifacts
         uses: actions/upload-artifact@v7

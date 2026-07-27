@@ -53,6 +53,7 @@ These harnesses stay available, but they do not feed the main README unless they
 |---|---|---|
 | `--macro` | `diagnostic` | Broad sustained write, mixed workload, reader scaling, write amplification, collections, and in-memory macro sweep. |
 | `--macro-batch-memory` | `diagnostic` | In-memory rotating x100 batch throughput. |
+| `--csv-retained-migration` | `diagnostic` | Retained CSV inspect/package, full replay, staged apply, fresh-session resume, and checksum validation at 100K and 1M rows. |
 | `--write-diagnostics` | `diagnostic` | Pager/WAL single-row durable-write policy detail. |
 | `--write-transaction-diagnostics` | `diagnostic` | Explicit transaction hot-insert and disjoint-update behavior. |
 | `--commit-fan-in-diagnostics` | `diagnostic` | Shared auto-commit vs explicit transaction fan-in detail. |
@@ -73,7 +74,7 @@ These harnesses stay available, but they do not feed the main README unless they
 | `--stress` | `diagnostic` | Crash recovery, logical conflicts, and WAL growth. |
 | `--scaling` | `diagnostic` | Row-count and B+tree depth scaling experiments. |
 
-Scenario-specific commands such as `--durable-sql-batching-scenario`, `--concurrent-write-scenario`, `--commit-fan-in-scenario`, and `--insert-fan-in-scenario` are diagnostic isolation tools.
+Scenario-specific commands such as `--csv-retained-migration-scenario`, `--durable-sql-batching-scenario`, `--concurrent-write-scenario`, `--commit-fan-in-scenario`, and `--insert-fan-in-scenario` are diagnostic isolation tools.
 
 ## Diagnostic Micro Suites
 

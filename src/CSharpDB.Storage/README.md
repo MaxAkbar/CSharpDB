@@ -290,6 +290,20 @@ by the direct `CSharpDB.Client` is implemented at the client ownership boundary
 and is not inherited by callers of the raw engine API. Retain and share the
 owning `Database` when its concurrency model fits the workload.
 
+Specialized single-owner workflows can configure
+`StorageEngineOptionsBuilder.UsePrimaryFileShare(FileShare.Read)`. The primary
+database handle still reads and writes through its existing owner, but the OS
+refuses any second read/write opener until that owner is disposed. The staged
+migration target uses this opt-in barrier so no independent writer can change
+the file between validation and activation. The default remains
+`FileShare.ReadWrite` for compatibility.
+
+On Unix, .NET maps non-exclusive file-share modes to the same shared OS lock.
+CSharpDB therefore uses a stronger exclusive OS lock for this opt-in writer
+barrier. Independent file readers are also refused there; use a
+`ReaderSession` from the owning `Database`. Windows retains the exact
+allow-readers/deny-writers behavior.
+
 ```csharp
 using CSharpDB.Engine;
 

@@ -89,6 +89,71 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task LegacyRelationalTextValues_MaterializeAndMatchProviderParametersAfterReopen()
+    {
+        string dbPath = GetDbPath("legacy-relational-text-codecs");
+        int personId;
+
+        await using (var db = new ProviderRuntimeContext($"Data Source={dbPath}"))
+        {
+            await db.Database.EnsureCreatedAsync(Ct);
+            var person = new PersonRecord
+            {
+                Name = "Legacy wire",
+                Active = true,
+                Score = 1,
+                Visits = 1,
+                Status = PersonStatus.Active,
+                GuidValue = Guid.Empty,
+                CreatedAt = DateTime.UnixEpoch,
+                ObservedAt = DateTimeOffset.UnixEpoch,
+                Birthday = new DateOnly(2000, 1, 1),
+                Alarm = TimeOnly.MinValue,
+                Payload = [0x01],
+            };
+            db.People.Add(person);
+            await db.SaveChangesAsync(Ct);
+            personId = person.Id;
+
+            await db.Database.OpenConnectionAsync(Ct);
+            await using DbCommand command = db.Database.GetDbConnection().CreateCommand();
+            command.CommandText = $"""
+                UPDATE "People"
+                SET "GuidValue" = '11111111-2222-3333-4444-555555555555',
+                    "CreatedAt" = '2026-07-21 08:09:10.123',
+                    "ObservedAt" = '2026-07-21 08:09:10.123-07:00',
+                    "Birthday" = '2026-07-21',
+                    "Alarm" = '08:09:10.1230000'
+                WHERE "Id" = {personId}
+                """;
+            Assert.Equal(1, await command.ExecuteNonQueryAsync(Ct));
+        }
+
+        Guid guid = Guid.Parse("11111111-2222-3333-4444-555555555555");
+        DateTime createdAt = new(2026, 7, 21, 8, 9, 10, 123, DateTimeKind.Unspecified);
+        DateTimeOffset observedAt = new(2026, 7, 21, 8, 9, 10, 123, TimeSpan.FromHours(-7));
+        DateOnly birthday = new(2026, 7, 21);
+        TimeOnly alarm = new(8, 9, 10, 123);
+
+        await using var reopened = new ProviderRuntimeContext($"Data Source={dbPath}");
+        PersonRecord loaded = await reopened.People.AsNoTracking().SingleAsync(
+            person => person.Id == personId &&
+                      person.GuidValue == guid &&
+                      person.CreatedAt == createdAt &&
+                      person.ObservedAt == observedAt &&
+                      person.Birthday == birthday &&
+                      person.Alarm == alarm,
+            Ct);
+
+        Assert.Equal(guid, loaded.GuidValue);
+        Assert.Equal(createdAt, loaded.CreatedAt);
+        Assert.Equal(DateTimeKind.Unspecified, loaded.CreatedAt.Kind);
+        Assert.Equal(observedAt, loaded.ObservedAt);
+        Assert.Equal(birthday, loaded.Birthday);
+        Assert.Equal(alarm, loaded.Alarm);
+    }
+
+    [Fact]
     public async Task ProviderCreatedFileConnection_UsesPoolingAndReusesWarmDatabase()
     {
         string dbPath = GetDbPath("default-pooling");

@@ -12,6 +12,8 @@
     <InternalsVisibleTo Include="CSharpDB.Client" />
     <InternalsVisibleTo Include="CSharpDB.Data" />
     <InternalsVisibleTo Include="CSharpDB.Native" />
+    <InternalsVisibleTo Include="CSharpDB.Migration.CSharpDb" />
+    <InternalsVisibleTo Include="CSharpDB.Migration.CSharpDb.Ddl" />
     <InternalsVisibleTo Include="CSharpDB.Tests" />
     <InternalsVisibleTo Include="CSharpDB.Benchmarks" />
   </ItemGroup>
