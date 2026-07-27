@@ -65,7 +65,8 @@ $packageDirectory = $null
 $packageVersion = $null
 $packagePath = $null
 $packageDigest = $null
-$dotnetCommand = Get-Command dotnet -CommandType Application
+$dotnetCommand = Get-Command dotnet -CommandType Application |
+    Select-Object -First 1
 $dotnetExecutable = [System.IO.Path]::GetFullPath($dotnetCommand.Source)
 if (-not (Test-Path -LiteralPath $dotnetExecutable -PathType Leaf)) {
     throw 'The .NET host could not be resolved.'

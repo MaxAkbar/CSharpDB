@@ -58,6 +58,16 @@ jobs:
       - name: Build
         run: dotnet build CSharpDB.slnx -c Release --no-restore
 
+      - name: Verify macOS reject-artifact publication
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          dotnet test tests/CSharpDB.Migration.Tests/CSharpDB.Migration.Tests.csproj \
+            -c Release \
+            --no-build \
+            --filter "FullyQualifiedName~WriteAsync_PublishesHeaderOnlyArtifactForEmptyEvidence|FullyQualifiedName~WriteAsync_ReclaimsPrivateStaleTemporaryArtifact|FullyQualifiedName~WriteAsync_RemovesMacOsAclFromPrivateStaleTemporaryArtifact|FullyQualifiedName~WriteAsync_RejectsMacOsAclOnExistingArtifact" \
+            --logger "console;verbosity=detailed"
+
       - name: Test smaller suites
         shell: bash
         run: |

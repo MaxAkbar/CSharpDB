@@ -1108,18 +1108,25 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
             if (fileSecurity == IntPtr.Zero)
             {
                 throw new InvalidDataException(
-                    "The reject artifact file extended access policy could not be removed.");
+                    "The reject artifact file extended access policy removal could not be initialized.",
+                    new Win32Exception(Marshal.GetLastPInvokeError()));
             }
             try
             {
                 if (DarwinFileSecuritySetProperty(
                         fileSecurity,
                         DarwinFileSecurityAclProperty,
-                        DarwinRemoveAcl) != 0 ||
-                    DarwinChangeModeWithFileSecurity(descriptor, fileSecurity) != 0)
+                        DarwinRemoveAcl) != 0)
                 {
                     throw new InvalidDataException(
-                        "The reject artifact file extended access policy could not be removed.");
+                        "The reject artifact file extended access policy removal could not be configured.",
+                        new Win32Exception(Marshal.GetLastPInvokeError()));
+                }
+                if (DarwinChangeModeWithFileSecurity(descriptor, fileSecurity) != 0)
+                {
+                    throw new InvalidDataException(
+                        "The reject artifact file extended access policy could not be removed.",
+                        new Win32Exception(Marshal.GetLastPInvokeError()));
                 }
             }
             finally
@@ -1170,7 +1177,8 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
                 if (error == DarwinNoEntry)
                     return;
                 throw new InvalidDataException(
-                    "The reject artifact file extended access policy cannot be verified.");
+                    "The reject artifact file extended access policy cannot be verified.",
+                    new Win32Exception(error));
             }
             try
             {
@@ -1184,7 +1192,8 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
                     Marshal.GetLastPInvokeError() != DarwinInvalidArgument)
                 {
                     throw new InvalidDataException(
-                        "The reject artifact file extended access policy cannot be verified.");
+                        "The reject artifact file extended access policy cannot be verified.",
+                        new Win32Exception(Marshal.GetLastPInvokeError()));
                 }
                 return;
             }
