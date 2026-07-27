@@ -14,8 +14,25 @@ $ErrorActionPreference = 'Stop'
 $root = (
     Resolve-Path (Join-Path $PSScriptRoot '..')
 ).ProviderPath
-$temporaryParent =
+$temporaryParent = if ($IsWindows) {
     Join-Path $root '.tmp'
+}
+else {
+    $platformTemporaryParent = [IO.Path]::GetTempPath()
+    if ($IsMacOS -and
+        ($platformTemporaryParent.StartsWith(
+                '/var/',
+                [StringComparison]::Ordinal) -or
+         $platformTemporaryParent.StartsWith(
+                '/tmp/',
+                [StringComparison]::Ordinal)))
+    {
+        "/private$platformTemporaryParent"
+    }
+    else {
+        $platformTemporaryParent
+    }
+}
 [IO.Directory]::CreateDirectory(
     $temporaryParent) | Out-Null
 
@@ -175,7 +192,9 @@ function Assert-AccessCommandFailure {
             $ExpectedCode,
             [StringComparison]::Ordinal))
     {
-        throw "Access capture did not report the stable code $ExpectedCode."
+        throw (
+            "Access capture did not report the stable code " +
+            "$ExpectedCode. Command output:`n$text")
     }
     if ($text.Contains(
             $SourcePath,

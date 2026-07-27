@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
@@ -1038,6 +1039,99 @@ public sealed class MigrationRejectArtifactWriterTests
     }
 
     [Fact]
+    public async Task WriteAsync_RemovesMacOsAclFromPrivateStaleTemporaryArtifact()
+    {
+        if (!OperatingSystem.IsMacOS())
+            return;
+
+        string root = CreateRoot();
+        try
+        {
+            ArtifactFixture fixture = await CreateFixtureAsync(
+            [
+                new OutcomeSpec(
+                    AcceptedRows: 0,
+                    RejectedValues: ["current-private-value"]),
+            ]);
+            string outputPath = Path.Combine(root, "rejects.jsonl");
+            string claimBinding = fixture.PlanDigest + "\0" + Path.GetFileName(outputPath);
+            string claimDigest = Convert.ToHexString(
+                    SHA256.HashData(Encoding.UTF8.GetBytes(claimBinding)))
+                .ToLowerInvariant();
+            string temporaryPath = Path.Combine(
+                root,
+                $".csharpdb-reject-{claimDigest[..32]}.tmp");
+            await using (FileStream stale = CreatePrivateStaleFile(temporaryPath))
+            {
+                await stale.WriteAsync(
+                    Encoding.UTF8.GetBytes("stale-private-value"),
+                    TestContext.Current.CancellationToken);
+                stale.Flush(flushToDisk: true);
+            }
+            await AddMacOsAclAsync(
+                temporaryPath,
+                TestContext.Current.CancellationToken);
+
+            MigrationRejectArtifactWriteResult result = await WriteAsync(
+                fixture,
+                new ArtifactTarget(new ArtifactSnapshot(
+                    fixture.Receipts,
+                    fixture.Ledger)),
+                outputPath,
+                TestContext.Current.CancellationToken);
+
+            Assert.False(result.ReusedExistingArtifact);
+            Assert.True(File.Exists(outputPath));
+            Assert.False(File.Exists(temporaryPath));
+            Assert.Single(Directory.EnumerateFiles(root));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [Fact]
+    public async Task WriteAsync_RejectsMacOsAclOnExistingArtifact()
+    {
+        if (!OperatingSystem.IsMacOS())
+            return;
+
+        string root = CreateRoot();
+        try
+        {
+            ArtifactFixture fixture = await CreateFixtureAsync([]);
+            string outputPath = Path.Combine(root, "rejects.jsonl");
+            var target = new ArtifactTarget(new ArtifactSnapshot([], []));
+            _ = await WriteAsync(
+                fixture,
+                target,
+                outputPath,
+                TestContext.Current.CancellationToken);
+            await AddMacOsAclAsync(
+                outputPath,
+                TestContext.Current.CancellationToken);
+
+            InvalidDataException error =
+                await Assert.ThrowsAsync<InvalidDataException>(async () =>
+                    await WriteAsync(
+                        fixture,
+                        target,
+                        outputPath,
+                        TestContext.Current.CancellationToken));
+
+            Assert.Contains(
+                "extended access policy",
+                error.Message,
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [Fact]
     public async Task WriteAsync_RefusesHardLinkedTemporaryWithoutTruncatingVictim()
     {
         string root = CreateRoot();
@@ -1298,6 +1392,28 @@ public sealed class MigrationRejectArtifactWriterTests
             Options = FileOptions.Asynchronous | FileOptions.WriteThrough,
             UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite,
         });
+    }
+
+    private static async Task AddMacOsAclAsync(
+        string path,
+        CancellationToken cancellationToken)
+    {
+        var startInfo = new ProcessStartInfo("/bin/chmod")
+        {
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        startInfo.ArgumentList.Add("+a");
+        startInfo.ArgumentList.Add("everyone allow read");
+        startInfo.ArgumentList.Add(path);
+        using Process process = Process.Start(startInfo) ??
+            throw new InvalidOperationException("The macOS chmod process could not be started.");
+        string standardError = await process.StandardError
+            .ReadToEndAsync(cancellationToken);
+        await process.WaitForExitAsync(cancellationToken);
+        Assert.True(
+            process.ExitCode == 0,
+            $"macOS chmod failed with exit code {process.ExitCode}: {standardError}");
     }
 
     private static bool TryCreateHardLink(string linkPath, string existingPath) =>

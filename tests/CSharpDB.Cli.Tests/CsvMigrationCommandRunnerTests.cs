@@ -829,7 +829,11 @@ public sealed class CsvMigrationCommandRunnerTests
             applyError,
             Cancellation);
 
-        Assert.Equal(InspectorCommandRunner.ExitWarn, applyCode);
+        Assert.True(
+            applyCode == InspectorCommandRunner.ExitWarn,
+            $"Expected warning exit code but received {applyCode}.{Environment.NewLine}" +
+            $"Standard output:{Environment.NewLine}{applyOutput}{Environment.NewLine}" +
+            $"Standard error:{Environment.NewLine}{applyError}");
         Assert.True(string.IsNullOrWhiteSpace(applyError.ToString()));
         Assert.True(File.Exists(targetPath));
         Assert.True(File.Exists(runPath));

@@ -12,7 +12,25 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).ProviderPath
-$temporaryParent = Join-Path $root '.tmp'
+$temporaryParent = if ($IsWindows) {
+    Join-Path $root '.tmp'
+}
+else {
+    $platformTemporaryParent = [System.IO.Path]::GetTempPath()
+    if ($IsMacOS -and
+        ($platformTemporaryParent.StartsWith(
+                '/var/',
+                [StringComparison]::Ordinal) -or
+         $platformTemporaryParent.StartsWith(
+                '/tmp/',
+                [StringComparison]::Ordinal)))
+    {
+        "/private$platformTemporaryParent"
+    }
+    else {
+        $platformTemporaryParent
+    }
+}
 [System.IO.Directory]::CreateDirectory($temporaryParent) | Out-Null
 $temporaryParentItem = Get-Item -LiteralPath $temporaryParent -Force
 if (($temporaryParentItem.Attributes -band
@@ -237,7 +255,9 @@ function Assert-CaptureCommandFailure {
         throw "Expected SQL Server retained capture to fail with exit code 2, but received $exitCode."
     }
     if (-not $text.Contains($ExpectedCode, [StringComparison]::Ordinal)) {
-        throw "SQL Server retained capture did not report the stable code $ExpectedCode."
+        throw (
+            "SQL Server retained capture did not report the stable code " +
+            "$ExpectedCode. Command output:`n$text")
     }
     if ((Test-Path -LiteralPath $PackagePath) -or
         (Test-Path -LiteralPath $CatalogPath))

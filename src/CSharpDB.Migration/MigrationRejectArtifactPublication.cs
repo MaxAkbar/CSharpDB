@@ -32,6 +32,7 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
         "system.nfs4_acl",
         "system.richacl",
     ];
+    private static readonly IntPtr DarwinRemoveAcl = new(1);
 
     private readonly string _parentPath;
     private readonly string _destinationLeaf;
@@ -1103,13 +1104,29 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
         if (OperatingSystem.IsMacOS() || OperatingSystem.IsIOS() ||
             OperatingSystem.IsTvOS() || OperatingSystem.IsMacCatalyst())
         {
-            if (DarwinDeleteAcl(descriptor, DarwinAclTypeExtended) == 0)
-                return;
-            int error = Marshal.GetLastPInvokeError();
-            if (error is DarwinNoEntry or DarwinInvalidArgument)
-                return;
-            throw new InvalidDataException(
-                "The reject artifact file extended access policy could not be removed.");
+            IntPtr fileSecurity = DarwinFileSecurityInitialize();
+            if (fileSecurity == IntPtr.Zero)
+            {
+                throw new InvalidDataException(
+                    "The reject artifact file extended access policy could not be removed.");
+            }
+            try
+            {
+                if (DarwinFileSecuritySetProperty(
+                        fileSecurity,
+                        DarwinFileSecurityAclProperty,
+                        DarwinRemoveAcl) != 0 ||
+                    DarwinChangeModeWithFileSecurity(descriptor, fileSecurity) != 0)
+                {
+                    throw new InvalidDataException(
+                        "The reject artifact file extended access policy could not be removed.");
+                }
+            }
+            finally
+            {
+                DarwinFileSecurityFree(fileSecurity);
+            }
+            return;
         }
 
         throw new PlatformNotSupportedException(
@@ -1150,7 +1167,7 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
             if (acl == IntPtr.Zero)
             {
                 int error = Marshal.GetLastPInvokeError();
-                if (error is DarwinNoEntry or DarwinInvalidArgument)
+                if (error == DarwinNoEntry)
                     return;
                 throw new InvalidDataException(
                     "The reject artifact file extended access policy cannot be verified.");
@@ -1158,12 +1175,13 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
             try
             {
                 int result = DarwinGetAclEntry(acl, DarwinAclFirstEntry, out _);
-                if (result == 1)
+                if (result == 0)
                 {
                     throw new InvalidDataException(
                         "The reject artifact file contains an extended access policy.");
                 }
-                if (result != 0)
+                if (result != -1 ||
+                    Marshal.GetLastPInvokeError() != DarwinInvalidArgument)
                 {
                     throw new InvalidDataException(
                         "The reject artifact file extended access policy cannot be verified.");
@@ -1490,6 +1508,7 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
     private const int LinuxOperationNotSupported = 95;
     private const int DarwinNoEntry = 2;
     private const int DarwinInvalidArgument = 22;
+    private const int DarwinFileSecurityAclProperty = 5;
     private const int DarwinAclTypeExtended = 0x100;
     private const int DarwinAclFirstEntry = 0;
 
@@ -1638,8 +1657,22 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
         IntPtr value,
         UIntPtr size);
 
-    [DllImport("libc", EntryPoint = "acl_delete_fd_np", SetLastError = true)]
-    private static extern int DarwinDeleteAcl(int descriptor, int type);
+    [DllImport("libc", EntryPoint = "filesec_init", SetLastError = true)]
+    private static extern IntPtr DarwinFileSecurityInitialize();
+
+    [DllImport("libc", EntryPoint = "filesec_set_property", SetLastError = true)]
+    private static extern int DarwinFileSecuritySetProperty(
+        IntPtr fileSecurity,
+        int property,
+        IntPtr value);
+
+    [DllImport("libc", EntryPoint = "fchmodx_np", SetLastError = true)]
+    private static extern int DarwinChangeModeWithFileSecurity(
+        int descriptor,
+        IntPtr fileSecurity);
+
+    [DllImport("libc", EntryPoint = "filesec_free")]
+    private static extern void DarwinFileSecurityFree(IntPtr fileSecurity);
 
     [DllImport("libc", EntryPoint = "acl_get_fd_np", SetLastError = true)]
     private static extern IntPtr DarwinGetAcl(int descriptor, int type);
