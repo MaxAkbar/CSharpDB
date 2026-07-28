@@ -114,7 +114,7 @@ public sealed class LiteDbRetainedSnapshot
                 sourcePath,
                 FileMode.Open,
                 FileAccess.Read,
-                FileShare.Read,
+                FileShare.None,
                 CopyBufferBytes,
                 FileOptions.Asynchronous |
                 FileOptions.SequentialScan))
