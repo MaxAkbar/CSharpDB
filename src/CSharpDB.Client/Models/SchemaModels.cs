@@ -10,6 +10,7 @@ public enum DbType
 
 public sealed class ColumnDefinition
 {
+    public Guid SchemaId { get; init; }
     public required string Name { get; init; }
     public required DbType Type { get; init; }
     public bool Nullable { get; init; } = true;
@@ -28,6 +29,11 @@ public enum ForeignKeyOnDeleteAction
 
 public sealed class ForeignKeyDefinition
 {
+    public Guid SchemaId { get; init; }
+    public IReadOnlyList<Guid> ColumnSchemaIds { get; init; } = Array.Empty<Guid>();
+    public Guid ReferencedTableSchemaId { get; init; }
+    public IReadOnlyList<Guid> ReferencedColumnSchemaIds { get; init; } = Array.Empty<Guid>();
+    public Guid ReferencedKeySchemaId { get; init; }
     public required string ConstraintName { get; init; }
     public required string ColumnName { get; init; }
     public required string ReferencedTableName { get; init; }
@@ -48,6 +54,7 @@ public enum KeyConstraintKind
 
 public sealed class KeyConstraintDefinition
 {
+    public Guid SchemaId { get; init; }
     public string? ConstraintName { get; init; }
     public KeyConstraintKind Kind { get; init; }
     public required IReadOnlyList<string> Columns { get; init; }
@@ -56,6 +63,7 @@ public sealed class KeyConstraintDefinition
 
 public sealed class CheckConstraintDefinition
 {
+    public Guid SchemaId { get; init; }
     public string? ConstraintName { get; init; }
     public required string ExpressionSql { get; init; }
     public string? ColumnName { get; init; }
@@ -63,6 +71,7 @@ public sealed class CheckConstraintDefinition
 
 public sealed class TableSchema
 {
+    public Guid SchemaId { get; init; }
     public required string TableName { get; init; }
     public required IReadOnlyList<ColumnDefinition> Columns { get; init; }
     public IReadOnlyList<ForeignKeyDefinition> ForeignKeys { get; init; } = Array.Empty<ForeignKeyDefinition>();

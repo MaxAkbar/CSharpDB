@@ -1273,13 +1273,19 @@ public sealed class GrpcClientTests : IAsyncLifetime
 
         TableSchema? schema = await client.GetTableSchemaAsync("grpc_schema_metadata", Ct);
         Assert.NotNull(schema);
-        Assert.Equal("'new'", Assert.Single(schema!.Columns, column => column.Name == "code").DefaultSql);
+        Assert.NotEqual(Guid.Empty, schema!.SchemaId);
+        Assert.All(
+            schema.Columns,
+            column => Assert.NotEqual(Guid.Empty, column.SchemaId));
+        Assert.Equal("'new'", Assert.Single(schema.Columns, column => column.Name == "code").DefaultSql);
         CheckConstraintDefinition check = Assert.Single(schema.CheckConstraints);
+        Assert.NotEqual(Guid.Empty, check.SchemaId);
         Assert.Equal("ck_grpc_schema_score", check.ConstraintName);
         Assert.Contains("score", check.ExpressionSql, StringComparison.OrdinalIgnoreCase);
         KeyConstraintDefinition unique = Assert.Single(
             schema.KeyConstraints,
             key => key.Kind == KeyConstraintKind.Unique);
+        Assert.NotEqual(Guid.Empty, unique.SchemaId);
         Assert.Equal(["tenant", "code"], unique.Columns);
     }
 
@@ -1307,6 +1313,10 @@ public sealed class GrpcClientTests : IAsyncLifetime
         Assert.Equal("grpc_parents", foreignKey.ReferencedTableName);
         Assert.Equal("id", foreignKey.ReferencedColumnName);
         Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
+        Assert.Single(foreignKey.ColumnSchemaIds);
+        Assert.NotEqual(Guid.Empty, foreignKey.ReferencedTableSchemaId);
+        Assert.Single(foreignKey.ReferencedColumnSchemaIds);
+        Assert.NotEqual(Guid.Empty, foreignKey.ReferencedKeySchemaId);
         Assert.StartsWith("__fk_grpc_children_parent_id_", foreignKey.SupportingIndexName, StringComparison.Ordinal);
     }
 

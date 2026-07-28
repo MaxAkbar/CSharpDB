@@ -1035,6 +1035,7 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
     private static TableSchema MapTableSchema(CoreTableSchema schema)
         => new()
         {
+            SchemaId = schema.SchemaId,
             TableName = schema.TableName,
             Columns = schema.Columns.Select(MapColumnDefinition).ToArray(),
             ForeignKeys = schema.ForeignKeys.Select(MapForeignKeyDefinition).ToArray(),
@@ -1046,6 +1047,7 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
     private static CheckConstraintDefinition MapCheckConstraintDefinition(CoreCheckConstraintDefinition check)
         => new()
         {
+            SchemaId = check.SchemaId,
             ConstraintName = check.ConstraintName,
             ExpressionSql = check.ExpressionSql,
             ColumnName = check.ColumnName,
@@ -1054,6 +1056,7 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
     private static KeyConstraintDefinition MapKeyConstraintDefinition(CoreKeyConstraintDefinition key)
         => new()
         {
+            SchemaId = key.SchemaId,
             ConstraintName = key.ConstraintName,
             Kind = key.Kind switch
             {
@@ -1068,6 +1071,11 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
     private static ForeignKeyDefinition MapForeignKeyDefinition(CoreForeignKeyDefinition foreignKey)
         => new()
         {
+            SchemaId = foreignKey.SchemaId,
+            ColumnSchemaIds = foreignKey.ColumnSchemaIds.ToArray(),
+            ReferencedTableSchemaId = foreignKey.ReferencedTableSchemaId,
+            ReferencedColumnSchemaIds = foreignKey.ReferencedColumnSchemaIds.ToArray(),
+            ReferencedKeySchemaId = foreignKey.ReferencedKeySchemaId,
             ConstraintName = foreignKey.ConstraintName,
             ColumnName = foreignKey.ColumnName,
             ReferencedTableName = foreignKey.ReferencedTableName,
@@ -1086,6 +1094,7 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
     private static ColumnDefinition MapColumnDefinition(CoreColumnDefinition column)
         => new()
         {
+            SchemaId = column.SchemaId,
             Name = column.Name,
             Type = column.Type switch
             {

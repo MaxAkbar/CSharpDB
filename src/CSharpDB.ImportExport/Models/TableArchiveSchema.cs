@@ -5,6 +5,7 @@ namespace CSharpDB.ImportExport.Models;
 
 public sealed class TableArchiveSchema
 {
+    public Guid SchemaId { get; init; }
     public required string TableName { get; init; }
     public required IReadOnlyList<TableArchiveColumn> Columns { get; init; }
     public IReadOnlyList<TableArchiveForeignKey> ForeignKeys { get; init; } = Array.Empty<TableArchiveForeignKey>();
@@ -18,6 +19,7 @@ public sealed class TableArchiveSchema
         TableSchema schema,
         IReadOnlyList<IndexSchema>? secondaryIndexes = null) => new()
     {
+        SchemaId = schema.SchemaId,
         TableName = schema.TableName,
         Columns = schema.Columns.Select(TableArchiveColumn.FromColumn).ToArray(),
         ForeignKeys = schema.ForeignKeys.Select(TableArchiveForeignKey.FromForeignKey).ToArray(),
@@ -38,6 +40,7 @@ public sealed class TableArchiveSchema
         string targetTableName = string.IsNullOrWhiteSpace(tableNameOverride) ? TableName : tableNameOverride;
         return new TableSchema
         {
+            SchemaId = SchemaId,
             TableName = targetTableName,
             Columns = Columns.Select(static column => column.ToColumn()).ToArray(),
             ForeignKeys = ForeignKeys.Select(foreignKey =>

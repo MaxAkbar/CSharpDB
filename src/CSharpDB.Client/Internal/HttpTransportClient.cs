@@ -993,6 +993,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
     private static TableSchema MapTableSchema(ApiTableSchemaResponse payload)
         => new()
         {
+            SchemaId = payload.SchemaId,
             TableName = payload.TableName,
             Columns = payload.Columns.Select(MapColumn).ToList(),
             ForeignKeys = payload.ForeignKeys.Select(MapForeignKey).ToList(),
@@ -1004,6 +1005,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
     private static ColumnDefinition MapColumn(ApiColumnResponse payload)
         => new()
         {
+            SchemaId = payload.SchemaId,
             Name = payload.Name,
             Type = Enum.TryParse<DbType>(payload.Type, ignoreCase: true, out var type)
                 ? type
@@ -1019,6 +1021,11 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
     private static ForeignKeyDefinition MapForeignKey(ApiForeignKeyResponse payload)
         => new()
         {
+            SchemaId = payload.SchemaId,
+            ColumnSchemaIds = payload.ColumnSchemaIds ?? [],
+            ReferencedTableSchemaId = payload.ReferencedTableSchemaId,
+            ReferencedColumnSchemaIds = payload.ReferencedColumnSchemaIds ?? [],
+            ReferencedKeySchemaId = payload.ReferencedKeySchemaId,
             ConstraintName = payload.ConstraintName,
             ColumnName = payload.ColumnName,
             ReferencedTableName = payload.ReferencedTableName,
@@ -1034,6 +1041,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
     private static KeyConstraintDefinition MapKeyConstraint(ApiKeyConstraintResponse payload)
         => new()
         {
+            SchemaId = payload.SchemaId,
             ConstraintName = payload.ConstraintName,
             Kind = Enum.TryParse<KeyConstraintKind>(payload.Kind, ignoreCase: true, out var kind)
                 && Enum.IsDefined(kind)
@@ -1046,6 +1054,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
     private static CheckConstraintDefinition MapCheckConstraint(ApiCheckConstraintResponse payload)
         => new()
         {
+            SchemaId = payload.SchemaId,
             ConstraintName = payload.ConstraintName,
             ExpressionSql = payload.ExpressionSql,
             ColumnName = payload.ColumnName,
@@ -1231,7 +1240,8 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
         List<ApiForeignKeyResponse> ForeignKeys,
         List<ApiKeyConstraintResponse>? KeyConstraints,
         List<ApiCheckConstraintResponse>? CheckConstraints,
-        long NextRowId);
+        long NextRowId,
+        Guid SchemaId = default);
     private sealed record ApiColumnResponse(
         string Name,
         string Type,
@@ -1240,10 +1250,11 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
         bool IsIdentity,
         bool IsRowVersion,
         string? Collation,
-        string? DefaultSql);
-    private sealed record ApiForeignKeyResponse(string ConstraintName, string ColumnName, string ReferencedTableName, string ReferencedColumnName, string OnDelete, string SupportingIndexName, IReadOnlyList<string>? ColumnNames = null, IReadOnlyList<string>? ReferencedColumnNames = null);
-    private sealed record ApiKeyConstraintResponse(string? ConstraintName, string Kind, IReadOnlyList<string> Columns, string? BackingIndexName);
-    private sealed record ApiCheckConstraintResponse(string? ConstraintName, string ExpressionSql, string? ColumnName);
+        string? DefaultSql,
+        Guid SchemaId = default);
+    private sealed record ApiForeignKeyResponse(string ConstraintName, string ColumnName, string ReferencedTableName, string ReferencedColumnName, string OnDelete, string SupportingIndexName, IReadOnlyList<string>? ColumnNames = null, IReadOnlyList<string>? ReferencedColumnNames = null, Guid SchemaId = default, IReadOnlyList<Guid>? ColumnSchemaIds = null, Guid ReferencedTableSchemaId = default, IReadOnlyList<Guid>? ReferencedColumnSchemaIds = null, Guid ReferencedKeySchemaId = default);
+    private sealed record ApiKeyConstraintResponse(string? ConstraintName, string Kind, IReadOnlyList<string> Columns, string? BackingIndexName, Guid SchemaId = default);
+    private sealed record ApiCheckConstraintResponse(string? ConstraintName, string ExpressionSql, string? ColumnName, Guid SchemaId = default);
     private sealed record ApiBrowseResponse(string[] ColumnNames, List<Dictionary<string, object?>> Rows, int TotalRows, int Page, int PageSize, int TotalPages);
     private sealed record ApiRowCountResponse(string TableName, int Count);
     private sealed record ApiMutationResponse(int RowsAffected);

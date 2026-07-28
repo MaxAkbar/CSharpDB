@@ -138,17 +138,20 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
             ? null
             : new CoreTableSchema
             {
+                SchemaId = schema.SchemaId,
                 TableName = schema.TableName,
                 Columns = schema.Columns.Select(MapColumnDefinition).ToArray(),
                 ForeignKeys = schema.ForeignKeys.Select(MapForeignKeyDefinition).ToArray(),
                 CheckConstraints = schema.CheckConstraints.Select(check => new CSharpDB.Primitives.CheckConstraintDefinition
                 {
+                    SchemaId = check.SchemaId,
                     ConstraintName = check.ConstraintName,
                     ExpressionSql = check.ExpressionSql,
                     ColumnName = check.ColumnName,
                 }).ToArray(),
                 KeyConstraints = schema.KeyConstraints.Select(key => new CSharpDB.Primitives.KeyConstraintDefinition
                 {
+                    SchemaId = key.SchemaId,
                     ConstraintName = key.ConstraintName,
                     Kind = key.Kind switch
                     {
@@ -164,6 +167,7 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
     private static CoreColumnDefinition MapColumnDefinition(CSharpDB.Client.Models.ColumnDefinition column)
         => new()
         {
+            SchemaId = column.SchemaId,
             Name = column.Name,
             Type = MapDbType(column.Type),
             Nullable = column.Nullable,
@@ -177,6 +181,11 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
     private static CoreForeignKeyDefinition MapForeignKeyDefinition(CSharpDB.Client.Models.ForeignKeyDefinition foreignKey)
         => new()
         {
+            SchemaId = foreignKey.SchemaId,
+            ColumnSchemaIds = foreignKey.ColumnSchemaIds.ToArray(),
+            ReferencedTableSchemaId = foreignKey.ReferencedTableSchemaId,
+            ReferencedColumnSchemaIds = foreignKey.ReferencedColumnSchemaIds.ToArray(),
+            ReferencedKeySchemaId = foreignKey.ReferencedKeySchemaId,
             ConstraintName = foreignKey.ConstraintName,
             ColumnName = foreignKey.ColumnName,
             ReferencedTableName = foreignKey.ReferencedTableName,

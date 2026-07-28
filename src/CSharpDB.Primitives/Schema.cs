@@ -2,6 +2,11 @@ namespace CSharpDB.Primitives;
 
 public sealed class ColumnDefinition
 {
+    /// <summary>
+    /// Stable persisted identity. Guid.Empty is accepted only for legacy or
+    /// caller-constructed metadata and is normalized before catalog storage.
+    /// </summary>
+    public Guid SchemaId { get; init; }
     public required string Name { get; init; }
     public required DbType Type { get; init; }
     public bool Nullable { get; init; } = true;
@@ -29,6 +34,19 @@ public enum ForeignKeyOnDeleteAction
 
 public sealed class ForeignKeyDefinition
 {
+    /// <summary>Stable persisted identity of this constraint.</summary>
+    public Guid SchemaId { get; init; }
+    /// <summary>Stable identities of the ordered child columns.</summary>
+    public IReadOnlyList<Guid> ColumnSchemaIds { get; init; } = Array.Empty<Guid>();
+    /// <summary>Stable identity of the referenced table.</summary>
+    public Guid ReferencedTableSchemaId { get; init; }
+    /// <summary>Stable identities of the ordered referenced columns.</summary>
+    public IReadOnlyList<Guid> ReferencedColumnSchemaIds { get; init; } = Array.Empty<Guid>();
+    /// <summary>
+    /// Stable identity of the referenced primary or unique key when one is
+    /// represented by logical key metadata.
+    /// </summary>
+    public Guid ReferencedKeySchemaId { get; init; }
     public required string ConstraintName { get; init; }
     /// <summary>
     /// Compatibility view of the first child column.
@@ -62,6 +80,8 @@ public sealed class TableForeignKeyReference
 
 public sealed class CheckConstraintDefinition
 {
+    /// <summary>Stable persisted identity of this constraint.</summary>
+    public Guid SchemaId { get; init; }
     /// <summary>
     /// User-supplied constraint name. Null preserves an unnamed CHECK.
     /// </summary>
@@ -81,6 +101,8 @@ public enum KeyConstraintKind
 
 public sealed class KeyConstraintDefinition
 {
+    /// <summary>Stable persisted identity of this constraint.</summary>
+    public Guid SchemaId { get; init; }
     /// <summary>
     /// User-supplied constraint name. Null preserves an unnamed key.
     /// </summary>
@@ -96,6 +118,11 @@ public sealed class KeyConstraintDefinition
 
 public sealed class TableSchema
 {
+    /// <summary>
+    /// Stable persisted table identity. It is independent of
+    /// <see cref="TableName"/> and therefore survives renames.
+    /// </summary>
+    public Guid SchemaId { get; init; }
     public required string TableName { get; init; }
     public required IReadOnlyList<ColumnDefinition> Columns { get; init; }
     public IReadOnlyList<ForeignKeyDefinition> ForeignKeys { get; init; } = Array.Empty<ForeignKeyDefinition>();

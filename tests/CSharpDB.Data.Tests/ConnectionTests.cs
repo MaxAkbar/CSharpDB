@@ -193,6 +193,9 @@ public class ConnectionTests : IDisposable
         Assert.Equal("BASE TABLE", GetRequiredString(schema, "users", "TABLE_TYPE"));
         Assert.Equal("BASE TABLE", GetRequiredString(schema, "audit_log", "TABLE_TYPE"));
         Assert.Equal("VIEW", GetRequiredString(schema, "adult_users", "TABLE_TYPE"));
+        Assert.All(
+            schema.Rows.Cast<DataRow>().Where(row => (string)row["TABLE_TYPE"] == "BASE TABLE"),
+            row => Assert.IsType<Guid>(row["SCHEMA_ID"]));
     }
 
     [Fact]
@@ -250,6 +253,8 @@ public class ConnectionTests : IDisposable
         Assert.Equal("version", rows[3]["COLUMN_NAME"]);
         Assert.Equal("BLOB", rows[3]["DATA_TYPE"]);
         Assert.True((bool)rows[3]["IS_ROW_VERSION"]);
+        Assert.All(rows, row => Assert.IsType<Guid>(row["TABLE_SCHEMA_ID"]));
+        Assert.All(rows, row => Assert.IsType<Guid>(row["COLUMN_SCHEMA_ID"]));
 
         DataTable filtered = conn.GetSchema("Columns", [null, null, "users", "name"]);
         DataRow filteredRow = Assert.Single(filtered.Rows.Cast<DataRow>());
@@ -291,6 +296,8 @@ public class ConnectionTests : IDisposable
         Assert.Contains("\"score\"", (string)check["CHECK_CLAUSE"], StringComparison.Ordinal);
         Assert.Contains(">= 0", (string)check["CHECK_CLAUSE"], StringComparison.Ordinal);
         Assert.Equal("score", check["COLUMN_NAME"]);
+        Assert.IsType<Guid>(check["TABLE_SCHEMA_ID"]);
+        Assert.IsType<Guid>(check["CONSTRAINT_SCHEMA_ID"]);
 
         DataTable keys = conn.GetSchema("KeyConstraints", [null, null, "metadata_items", null]);
         Assert.Equal(2, keys.Rows.Count);
@@ -300,6 +307,8 @@ public class ConnectionTests : IDisposable
         Assert.Equal("PRIMARY KEY", primaryKey["CONSTRAINT_TYPE"]);
         Assert.Equal(2, primaryKey["COLUMN_COUNT"]);
         Assert.NotEqual(DBNull.Value, primaryKey["BACKING_INDEX_NAME"]);
+        Assert.IsType<Guid>(primaryKey["TABLE_SCHEMA_ID"]);
+        Assert.IsType<Guid>(primaryKey["CONSTRAINT_SCHEMA_ID"]);
 
         DataTable keyColumns = conn.GetSchema(
             "KeyColumns",
@@ -309,6 +318,7 @@ public class ConnectionTests : IDisposable
             .ToArray();
         Assert.Equal(["tenant_id", "code"], orderedKeyColumns.Select(row => (string)row["COLUMN_NAME"]));
         Assert.Equal([1, 2], orderedKeyColumns.Select(row => (int)row["ORDINAL_POSITION"]));
+        Assert.All(orderedKeyColumns, row => Assert.IsType<Guid>(row["COLUMN_SCHEMA_ID"]));
     }
 
     [Fact]
@@ -362,6 +372,8 @@ public class ConnectionTests : IDisposable
         Assert.Equal("CASCADE", row["DELETE_RULE"]);
         Assert.NotEqual(DBNull.Value, row["SUPPORTING_INDEX_NAME"]);
         Assert.Equal(1, row["ORDINAL_POSITION"]);
+        Assert.IsType<Guid>(row["TABLE_SCHEMA_ID"]);
+        Assert.IsType<Guid>(row["CONSTRAINT_SCHEMA_ID"]);
     }
 
     [Fact]

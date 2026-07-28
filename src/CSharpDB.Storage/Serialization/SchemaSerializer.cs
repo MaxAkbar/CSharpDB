@@ -15,13 +15,15 @@ public static class SchemaSerializer
     private const byte PrimaryKeyFlag = 0x02;
     private const byte IdentityFlag = 0x04;
     private const byte RowVersionFlag = 0x08;
-    private const ulong TableMetadataVersion = 6;
+    private const ulong TableMetadataVersion = 8;
     private const ulong TableMetadataVersionWithCollations = 1;
     private const ulong TableMetadataVersionWithForeignKeys = 2;
     private const ulong TableMetadataVersionWithDefaultsAndChecks = 3;
     private const ulong TableMetadataVersionWithLogicalKeys = 4;
     private const ulong TableMetadataVersionWithOrderedForeignKeys = 5;
     private const ulong TableMetadataVersionWithRowVersion = 6;
+    private const ulong TableMetadataVersionWithStableIdentities = 7;
+    private const ulong TableMetadataVersionWithStableForeignKeyBindings = 8;
     private const ulong IndexMetadataVersion = 1;
 
     public static byte[] Serialize(TableSchema schema)
@@ -50,11 +52,7 @@ public static class SchemaSerializer
         // 0 means unknown/uninitialized (legacy compatibility path).
         ulong nextRowId = schema.NextRowId > 0 ? (ulong)schema.NextRowId : 0UL;
         WriteVarint(ms, nextRowId);
-        WriteVarint(
-            ms,
-            schema.Columns.Any(static column => column.IsRowVersion)
-                ? TableMetadataVersionWithRowVersion
-                : TableMetadataVersionWithOrderedForeignKeys);
+        WriteVarint(ms, TableMetadataVersion);
         WriteVarint(ms, (ulong)schema.Columns.Count);
         foreach (var col in schema.Columns)
             WriteNullableString(ms, col.Collation);
@@ -104,6 +102,70 @@ public static class SchemaSerializer
             foreach (string columnName in referencedColumnNames)
                 WriteString(ms, columnName);
         }
+        Guid tableId = schema.SchemaId != Guid.Empty
+            ? schema.SchemaId
+            : SchemaIdentity.ForLegacyTable(schema.TableName);
+        WriteGuid(ms, tableId);
+        WriteVarint(ms, (ulong)schema.Columns.Count);
+        for (int i = 0; i < schema.Columns.Count; i++)
+        {
+            ColumnDefinition column = schema.Columns[i];
+            WriteGuid(
+                ms,
+                column.SchemaId != Guid.Empty
+                    ? column.SchemaId
+                    : SchemaIdentity.ForLegacyColumn(tableId, column.Name, i));
+        }
+        WriteVarint(ms, (ulong)schema.ForeignKeys.Count);
+        for (int i = 0; i < schema.ForeignKeys.Count; i++)
+        {
+            ForeignKeyDefinition constraint = schema.ForeignKeys[i];
+            WriteGuid(
+                ms,
+                constraint.SchemaId != Guid.Empty
+                    ? constraint.SchemaId
+                    : SchemaIdentity.ForLegacyConstraint(
+                        tableId,
+                        "foreign-key",
+                        constraint.ConstraintName,
+                        i));
+        }
+        WriteVarint(ms, (ulong)schema.CheckConstraints.Count);
+        for (int i = 0; i < schema.CheckConstraints.Count; i++)
+        {
+            CheckConstraintDefinition constraint = schema.CheckConstraints[i];
+            WriteGuid(
+                ms,
+                constraint.SchemaId != Guid.Empty
+                    ? constraint.SchemaId
+                    : SchemaIdentity.ForLegacyConstraint(
+                        tableId,
+                        "check",
+                        constraint.ConstraintName,
+                        i));
+        }
+        WriteVarint(ms, (ulong)schema.KeyConstraints.Count);
+        for (int i = 0; i < schema.KeyConstraints.Count; i++)
+        {
+            KeyConstraintDefinition constraint = schema.KeyConstraints[i];
+            WriteGuid(
+                ms,
+                constraint.SchemaId != Guid.Empty
+                    ? constraint.SchemaId
+                    : SchemaIdentity.ForLegacyConstraint(
+                        tableId,
+                        "key",
+                        constraint.ConstraintName,
+                        i));
+        }
+        WriteVarint(ms, (ulong)schema.ForeignKeys.Count);
+        foreach (ForeignKeyDefinition foreignKey in schema.ForeignKeys)
+        {
+            WriteGuid(ms, foreignKey.ReferencedTableSchemaId);
+            WriteGuidList(ms, foreignKey.ColumnSchemaIds);
+            WriteGuidList(ms, foreignKey.ReferencedColumnSchemaIds);
+            WriteGuid(ms, foreignKey.ReferencedKeySchemaId);
+        }
 
         return ms.ToArray();
     }
@@ -138,6 +200,17 @@ public static class SchemaSerializer
         ForeignKeyDefinition[] foreignKeys = Array.Empty<ForeignKeyDefinition>();
         CheckConstraintDefinition[] checkConstraints = Array.Empty<CheckConstraintDefinition>();
         KeyConstraintDefinition[] keyConstraints = Array.Empty<KeyConstraintDefinition>();
+        Guid tableId = SchemaIdentity.ForLegacyTable(tableName);
+        Guid[] columnIds = new Guid[colCount];
+        for (int i = 0; i < colCount; i++)
+            columnIds[i] = SchemaIdentity.ForLegacyColumn(tableId, columnNames[i], i);
+        Guid[] foreignKeyIds = Array.Empty<Guid>();
+        Guid[] checkConstraintIds = Array.Empty<Guid>();
+        Guid[] keyConstraintIds = Array.Empty<Guid>();
+        Guid[] referencedTableIds = Array.Empty<Guid>();
+        Guid[][] foreignKeyColumnIds = Array.Empty<Guid[]>();
+        Guid[][] referencedColumnIds = Array.Empty<Guid[]>();
+        Guid[] referencedKeyIds = Array.Empty<Guid>();
         ulong metadataVersion = 0;
         if (pos < data.Length)
         {
@@ -158,6 +231,8 @@ public static class SchemaSerializer
                     TableMetadataVersionWithDefaultsAndChecks or
                     TableMetadataVersionWithLogicalKeys or
                     TableMetadataVersionWithOrderedForeignKeys or
+                    TableMetadataVersionWithRowVersion or
+                    TableMetadataVersionWithStableIdentities or
                     TableMetadataVersion))
                 throw new InvalidDataException($"Unsupported table schema metadata version '{metadataVersion}'.");
 
@@ -323,7 +398,104 @@ public static class SchemaSerializer
                     };
                 }
             }
+
+            if (metadataVersion >= TableMetadataVersionWithStableIdentities && pos < data.Length)
+            {
+                tableId = ReadGuid(data, ref pos);
+                columnIds = ReadIdentityList(
+                    data,
+                    ref pos,
+                    colCount,
+                    "column");
+                foreignKeyIds = ReadIdentityList(
+                    data,
+                    ref pos,
+                    foreignKeys.Length,
+                    "foreign key");
+                checkConstraintIds = ReadIdentityList(
+                    data,
+                    ref pos,
+                    checkConstraints.Length,
+                    "check constraint");
+                keyConstraintIds = ReadIdentityList(
+                    data,
+                    ref pos,
+                    keyConstraints.Length,
+                    "key constraint");
+            }
+
+            if (metadataVersion >= TableMetadataVersionWithStableForeignKeyBindings &&
+                pos < data.Length)
+            {
+                int bindingCount = checked((int)Varint.Read(
+                    data[pos..],
+                    out int bindingCountBytesRead));
+                pos += bindingCountBytesRead;
+                if (bindingCount != foreignKeys.Length)
+                {
+                    throw new InvalidDataException(
+                        $"Stable foreign key binding count '{bindingCount}' does not match foreign key count '{foreignKeys.Length}'.");
+                }
+
+                referencedTableIds = new Guid[bindingCount];
+                foreignKeyColumnIds = new Guid[bindingCount][];
+                referencedColumnIds = new Guid[bindingCount][];
+                referencedKeyIds = new Guid[bindingCount];
+                for (int i = 0; i < bindingCount; i++)
+                {
+                    referencedTableIds[i] = ReadOptionalGuid(data, ref pos);
+                    foreignKeyColumnIds[i] = ReadGuidList(data, ref pos);
+                    referencedColumnIds[i] = ReadGuidList(data, ref pos);
+                    referencedKeyIds[i] = ReadOptionalGuid(data, ref pos);
+                }
+            }
         }
+
+        if (foreignKeyIds.Length == 0)
+        {
+            foreignKeyIds = new Guid[foreignKeys.Length];
+            for (int i = 0; i < foreignKeys.Length; i++)
+                foreignKeyIds[i] = SchemaIdentity.ForLegacyConstraint(
+                    tableId,
+                    "foreign-key",
+                    foreignKeys[i].ConstraintName,
+                    i);
+        }
+        if (checkConstraintIds.Length == 0)
+        {
+            checkConstraintIds = new Guid[checkConstraints.Length];
+            for (int i = 0; i < checkConstraints.Length; i++)
+                checkConstraintIds[i] = SchemaIdentity.ForLegacyConstraint(
+                    tableId,
+                    "check",
+                    checkConstraints[i].ConstraintName,
+                    i);
+        }
+        if (keyConstraintIds.Length == 0)
+        {
+            keyConstraintIds = new Guid[keyConstraints.Length];
+            for (int i = 0; i < keyConstraints.Length; i++)
+                keyConstraintIds[i] = SchemaIdentity.ForLegacyConstraint(
+                    tableId,
+                    "key",
+                    keyConstraints[i].ConstraintName,
+                    i);
+        }
+
+        for (int i = 0; i < foreignKeys.Length; i++)
+        {
+            foreignKeys[i] = CloneWithSchemaIdAndBindings(
+                foreignKeys[i],
+                foreignKeyIds[i],
+                referencedTableIds.Length > i ? referencedTableIds[i] : Guid.Empty,
+                foreignKeyColumnIds.Length > i ? foreignKeyColumnIds[i] : [],
+                referencedColumnIds.Length > i ? referencedColumnIds[i] : [],
+                referencedKeyIds.Length > i ? referencedKeyIds[i] : Guid.Empty);
+        }
+        for (int i = 0; i < checkConstraints.Length; i++)
+            checkConstraints[i] = CloneWithSchemaId(checkConstraints[i], checkConstraintIds[i]);
+        for (int i = 0; i < keyConstraints.Length; i++)
+            keyConstraints[i] = CloneWithSchemaId(keyConstraints[i], keyConstraintIds[i]);
 
         var columns = new ColumnDefinition[colCount];
         for (int i = 0; i < colCount; i++)
@@ -334,6 +506,7 @@ public static class SchemaSerializer
             bool hasIdentityFlag = (flags & IdentityFlag) != 0;
             columns[i] = new ColumnDefinition
             {
+                SchemaId = columnIds[i],
                 Name = columnNames[i],
                 Type = type,
                 Nullable = (flags & NullableFlag) != 0,
@@ -355,6 +528,7 @@ public static class SchemaSerializer
 
         return new TableSchema
         {
+            SchemaId = tableId,
             TableName = tableName,
             Columns = columns,
             NextRowId = nextRowId,
@@ -363,6 +537,119 @@ public static class SchemaSerializer
             KeyConstraints = keyConstraints,
         };
     }
+
+    private static void WriteGuid(Stream stream, Guid value) =>
+        stream.Write(value.ToByteArray());
+
+    private static void WriteGuidList(
+        MemoryStream stream,
+        IReadOnlyList<Guid> values)
+    {
+        WriteVarint(stream, (ulong)values.Count);
+        foreach (Guid value in values)
+            WriteGuid(stream, value);
+    }
+
+    private static Guid ReadGuid(ReadOnlySpan<byte> data, ref int pos)
+    {
+        const int GuidLength = 16;
+        if (data.Length - pos < GuidLength)
+            throw new InvalidDataException("Truncated stable schema identity.");
+
+        Guid value = new(data.Slice(pos, GuidLength));
+        pos += GuidLength;
+        if (value == Guid.Empty)
+            throw new InvalidDataException("Persisted stable schema identity cannot be empty.");
+        return value;
+    }
+
+    private static Guid ReadOptionalGuid(ReadOnlySpan<byte> data, ref int pos)
+    {
+        const int GuidLength = 16;
+        if (data.Length - pos < GuidLength)
+            throw new InvalidDataException("Truncated stable schema binding.");
+
+        Guid value = new(data.Slice(pos, GuidLength));
+        pos += GuidLength;
+        return value;
+    }
+
+    private static Guid[] ReadGuidList(ReadOnlySpan<byte> data, ref int pos)
+    {
+        int count = checked((int)Varint.Read(data[pos..], out int countBytesRead));
+        pos += countBytesRead;
+        var values = new Guid[count];
+        for (int i = 0; i < count; i++)
+            values[i] = ReadOptionalGuid(data, ref pos);
+        return values;
+    }
+
+    private static Guid[] ReadIdentityList(
+        ReadOnlySpan<byte> data,
+        ref int pos,
+        int expectedCount,
+        string objectKind)
+    {
+        int count = checked((int)Varint.Read(data[pos..], out int countBytesRead));
+        pos += countBytesRead;
+        if (count != expectedCount)
+        {
+            throw new InvalidDataException(
+                $"Stable {objectKind} identity count '{count}' does not match metadata count '{expectedCount}'.");
+        }
+
+        var identities = new Guid[count];
+        for (int i = 0; i < count; i++)
+            identities[i] = ReadGuid(data, ref pos);
+        return identities;
+    }
+
+    private static ForeignKeyDefinition CloneWithSchemaIdAndBindings(
+        ForeignKeyDefinition value,
+        Guid schemaId,
+        Guid referencedTableSchemaId,
+        IReadOnlyList<Guid> columnSchemaIds,
+        IReadOnlyList<Guid> referencedColumnSchemaIds,
+        Guid referencedKeySchemaId) =>
+        new()
+        {
+            SchemaId = schemaId,
+            ColumnSchemaIds = columnSchemaIds,
+            ReferencedTableSchemaId = referencedTableSchemaId,
+            ReferencedColumnSchemaIds = referencedColumnSchemaIds,
+            ReferencedKeySchemaId = referencedKeySchemaId,
+            ConstraintName = value.ConstraintName,
+            ColumnName = value.ColumnName,
+            ReferencedTableName = value.ReferencedTableName,
+            ReferencedColumnName = value.ReferencedColumnName,
+            ColumnNames = value.ColumnNames,
+            ReferencedColumnNames = value.ReferencedColumnNames,
+            OnDelete = value.OnDelete,
+            SupportingIndexName = value.SupportingIndexName,
+        };
+
+    private static CheckConstraintDefinition CloneWithSchemaId(
+        CheckConstraintDefinition value,
+        Guid schemaId) =>
+        new()
+        {
+            SchemaId = schemaId,
+            ConstraintName = value.ConstraintName,
+            ExpressionSql = value.ExpressionSql,
+            ColumnName = value.ColumnName,
+        };
+
+    private static KeyConstraintDefinition CloneWithSchemaId(
+        KeyConstraintDefinition value,
+        Guid schemaId) =>
+        new()
+        {
+            SchemaId = schemaId,
+            ConstraintName = value.ConstraintName,
+            Kind = value.Kind,
+            Columns = value.Columns,
+            BackingIndexName = value.BackingIndexName,
+        };
 
     public static byte[] SerializeIndex(IndexSchema index)
     {

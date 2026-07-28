@@ -16,6 +16,9 @@ internal static class CSharpDbSchemaProvider
     private const string KeyConstraintsCollection = "KeyConstraints";
     private const string KeyColumnsCollection = "KeyColumns";
 
+    private static object ToDataValue(Guid? value) =>
+        value is { } id && id != Guid.Empty ? id : DBNull.Value;
+
     public static DataTable GetSchema(
         CSharpDbConnection connection,
         string collectionName,
@@ -118,6 +121,7 @@ internal static class CSharpDbSchemaProvider
         table.Columns.Add("TABLE_SCHEMA", typeof(string));
         table.Columns.Add("TABLE_NAME", typeof(string));
         table.Columns.Add("TABLE_TYPE", typeof(string));
+        table.Columns.Add("SCHEMA_ID", typeof(Guid));
 
         string catalog = connection.DataSource;
         string? catalogRestriction = GetRestrictionValue(restrictionValues, 0);
@@ -137,7 +141,13 @@ internal static class CSharpDbSchemaProvider
                 continue;
             }
 
-            table.Rows.Add(catalog, DBNull.Value, tableName, "BASE TABLE");
+            TableSchema? schema = connection.GetTableSchema(tableName);
+            table.Rows.Add(
+                catalog,
+                DBNull.Value,
+                tableName,
+                "BASE TABLE",
+                ToDataValue(schema?.SchemaId));
         }
 
         foreach (string viewName in connection.GetViewNames()
@@ -152,7 +162,7 @@ internal static class CSharpDbSchemaProvider
                 continue;
             }
 
-            table.Rows.Add(catalog, DBNull.Value, viewName, "VIEW");
+            table.Rows.Add(catalog, DBNull.Value, viewName, "VIEW", DBNull.Value);
         }
 
         return table;
@@ -179,6 +189,8 @@ internal static class CSharpDbSchemaProvider
         table.Columns.Add("IS_IDENTITY", typeof(bool));
         table.Columns.Add("COLLATION_NAME", typeof(string));
         table.Columns.Add("IS_ROW_VERSION", typeof(bool));
+        table.Columns.Add("TABLE_SCHEMA_ID", typeof(Guid));
+        table.Columns.Add("COLUMN_SCHEMA_ID", typeof(Guid));
 
         string catalog = connection.DataSource;
         string? catalogRestriction = GetRestrictionValue(restrictionValues, 0);
@@ -225,7 +237,9 @@ internal static class CSharpDbSchemaProvider
                     column.IsPrimaryKey,
                     column.IsIdentity,
                     column.Collation is null ? DBNull.Value : column.Collation,
-                    column.IsRowVersion);
+                    column.IsRowVersion,
+                    ToDataValue(schema.SchemaId),
+                    ToDataValue(column.SchemaId));
             }
         }
 
@@ -245,6 +259,8 @@ internal static class CSharpDbSchemaProvider
         table.Columns.Add("TABLE_NAME", typeof(string));
         table.Columns.Add("CHECK_CLAUSE", typeof(string));
         table.Columns.Add("COLUMN_NAME", typeof(string));
+        table.Columns.Add("TABLE_SCHEMA_ID", typeof(Guid));
+        table.Columns.Add("CONSTRAINT_SCHEMA_ID", typeof(Guid));
 
         string catalog = connection.DataSource;
         string? catalogRestriction = GetRestrictionValue(restrictionValues, 0);
@@ -280,7 +296,9 @@ internal static class CSharpDbSchemaProvider
                     DBNull.Value,
                     tableName,
                     check.ExpressionSql,
-                    check.ColumnName is null ? DBNull.Value : check.ColumnName);
+                    check.ColumnName is null ? DBNull.Value : check.ColumnName,
+                    ToDataValue(schema.SchemaId),
+                    ToDataValue(check.SchemaId));
             }
         }
 
@@ -301,6 +319,8 @@ internal static class CSharpDbSchemaProvider
         table.Columns.Add("CONSTRAINT_TYPE", typeof(string));
         table.Columns.Add("BACKING_INDEX_NAME", typeof(string));
         table.Columns.Add("COLUMN_COUNT", typeof(int));
+        table.Columns.Add("TABLE_SCHEMA_ID", typeof(Guid));
+        table.Columns.Add("CONSTRAINT_SCHEMA_ID", typeof(Guid));
 
         string catalog = connection.DataSource;
         string? catalogRestriction = GetRestrictionValue(restrictionValues, 0);
@@ -325,7 +345,9 @@ internal static class CSharpDbSchemaProvider
                 tableName,
                 GetKeyConstraintType(key.Kind),
                 key.BackingIndexName is null ? DBNull.Value : key.BackingIndexName,
-                key.Columns.Count);
+                key.Columns.Count,
+                ToDataValue(connection.GetTableSchema(tableName)?.SchemaId),
+                ToDataValue(key.SchemaId));
         }
 
         return table;
@@ -344,6 +366,9 @@ internal static class CSharpDbSchemaProvider
         table.Columns.Add("TABLE_NAME", typeof(string));
         table.Columns.Add("COLUMN_NAME", typeof(string));
         table.Columns.Add("ORDINAL_POSITION", typeof(int));
+        table.Columns.Add("TABLE_SCHEMA_ID", typeof(Guid));
+        table.Columns.Add("CONSTRAINT_SCHEMA_ID", typeof(Guid));
+        table.Columns.Add("COLUMN_SCHEMA_ID", typeof(Guid));
 
         string catalog = connection.DataSource;
         string? catalogRestriction = GetRestrictionValue(restrictionValues, 0);
@@ -359,8 +384,14 @@ internal static class CSharpDbSchemaProvider
             tableRestriction,
             constraintRestriction))
         {
+            TableSchema? schema = connection.GetTableSchema(tableName);
             for (int i = 0; i < key.Columns.Count; i++)
             {
+                Guid columnId = schema?.Columns.FirstOrDefault(column =>
+                    string.Equals(
+                        column.Name,
+                        key.Columns[i],
+                        StringComparison.OrdinalIgnoreCase))?.SchemaId ?? Guid.Empty;
                 table.Rows.Add(
                     catalog,
                     DBNull.Value,
@@ -369,7 +400,10 @@ internal static class CSharpDbSchemaProvider
                     DBNull.Value,
                     tableName,
                     key.Columns[i],
-                    i + 1);
+                    i + 1,
+                    ToDataValue(schema?.SchemaId),
+                    ToDataValue(key.SchemaId),
+                    ToDataValue(columnId));
             }
         }
 
@@ -511,6 +545,8 @@ internal static class CSharpDbSchemaProvider
         table.Columns.Add("DELETE_RULE", typeof(string));
         table.Columns.Add("SUPPORTING_INDEX_NAME", typeof(string));
         table.Columns.Add("ORDINAL_POSITION", typeof(int));
+        table.Columns.Add("TABLE_SCHEMA_ID", typeof(Guid));
+        table.Columns.Add("CONSTRAINT_SCHEMA_ID", typeof(Guid));
 
         string catalog = connection.DataSource;
         string? catalogRestriction = GetRestrictionValue(restrictionValues, 0);
@@ -559,7 +595,9 @@ internal static class CSharpDbSchemaProvider
                         referencedColumns[columnIndex],
                         foreignKey.OnDelete.ToString().ToUpperInvariant(),
                         foreignKey.SupportingIndexName,
-                        columnIndex + 1);
+                        columnIndex + 1,
+                        ToDataValue(schema.SchemaId),
+                        ToDataValue(foreignKey.SchemaId));
                 }
             }
         }

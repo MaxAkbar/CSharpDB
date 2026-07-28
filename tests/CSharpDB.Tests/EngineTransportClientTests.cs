@@ -110,13 +110,19 @@ public sealed class EngineTransportClientTests
                 TestContext.Current.CancellationToken);
 
             Assert.NotNull(schema);
-            Assert.Equal("'new'", Assert.Single(schema!.Columns, column => column.Name == "code").DefaultSql);
+            Assert.NotEqual(Guid.Empty, schema!.SchemaId);
+            Assert.All(
+                schema.Columns,
+                column => Assert.NotEqual(Guid.Empty, column.SchemaId));
+            Assert.Equal("'new'", Assert.Single(schema.Columns, column => column.Name == "code").DefaultSql);
             CheckConstraintDefinition check = Assert.Single(schema.CheckConstraints);
+            Assert.NotEqual(Guid.Empty, check.SchemaId);
             Assert.Equal("ck_transport_score", check.ConstraintName);
             Assert.Contains("score", check.ExpressionSql, StringComparison.OrdinalIgnoreCase);
             KeyConstraintDefinition unique = Assert.Single(
                 schema.KeyConstraints,
                 key => key.Kind == KeyConstraintKind.Unique);
+            Assert.NotEqual(Guid.Empty, unique.SchemaId);
             Assert.Equal("uq_transport_tenant_code", unique.ConstraintName);
             Assert.Equal(["tenant", "code"], unique.Columns);
         }

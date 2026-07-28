@@ -624,6 +624,7 @@ public sealed class TableImportExportService(
 
     private static PrimitiveTableSchema MapSchema(ClientTableSchema schema) => new()
     {
+        SchemaId = schema.SchemaId,
         TableName = schema.TableName,
         Columns = schema.Columns.Select(MapColumn).ToArray(),
         ForeignKeys = schema.ForeignKeys.Select(MapForeignKey).ToArray(),
@@ -634,6 +635,7 @@ public sealed class TableImportExportService(
 
     private static PrimitiveColumnDefinition MapColumn(ClientColumnDefinition column) => new()
     {
+        SchemaId = column.SchemaId,
         Name = column.Name,
         Type = column.Type switch
         {
@@ -662,6 +664,11 @@ public sealed class TableImportExportService(
 
     private static PrimitiveForeignKeyDefinition MapForeignKey(ClientForeignKeyDefinition foreignKey) => new()
     {
+        SchemaId = foreignKey.SchemaId,
+        ColumnSchemaIds = foreignKey.ColumnSchemaIds.ToArray(),
+        ReferencedTableSchemaId = foreignKey.ReferencedTableSchemaId,
+        ReferencedColumnSchemaIds = foreignKey.ReferencedColumnSchemaIds.ToArray(),
+        ReferencedKeySchemaId = foreignKey.ReferencedKeySchemaId,
         ConstraintName = foreignKey.ConstraintName,
         ColumnName = foreignKey.ColumnName,
         ReferencedTableName = foreignKey.ReferencedTableName,
@@ -681,6 +688,7 @@ public sealed class TableImportExportService(
     private static PrimitiveCheckConstraintDefinition MapCheckConstraint(
         ClientCheckConstraintDefinition check) => new()
     {
+        SchemaId = check.SchemaId,
         ConstraintName = check.ConstraintName,
         ExpressionSql = check.ExpressionSql,
         ColumnName = check.ColumnName,
@@ -689,6 +697,7 @@ public sealed class TableImportExportService(
     private static PrimitiveKeyConstraintDefinition MapKeyConstraint(
         ClientKeyConstraintDefinition key) => new()
     {
+        SchemaId = key.SchemaId,
         ConstraintName = key.ConstraintName,
         Kind = key.Kind switch
         {

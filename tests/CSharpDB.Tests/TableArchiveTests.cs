@@ -185,12 +185,22 @@ public class TableArchiveTests
     {
         var ct = TestContext.Current.CancellationToken;
         string path = Path.Combine(Path.GetTempPath(), $"customers_{Guid.NewGuid():N}.csdbtable");
+        Guid tableId = Guid.NewGuid();
+        Guid idColumnId = Guid.NewGuid();
+        Guid checkId = Guid.NewGuid();
+        Guid foreignKeyId = Guid.NewGuid();
+        Guid referencedTableId = Guid.NewGuid();
+        Guid referencedColumnId = Guid.NewGuid();
+        Guid referencedKeyId = Guid.NewGuid();
+        Guid primaryKeyId = Guid.NewGuid();
+        Guid uniqueKeyId = Guid.NewGuid();
         var schema = new TableSchema
         {
+            SchemaId = tableId,
             TableName = "customers",
             Columns =
             [
-                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false, IsPrimaryKey = true, IsIdentity = true },
+                new ColumnDefinition { SchemaId = idColumnId, Name = "id", Type = DbType.Integer, Nullable = false, IsPrimaryKey = true, IsIdentity = true },
                 new ColumnDefinition { Name = "name", Type = DbType.Text, Nullable = false, Collation = "NOCASE", DefaultSql = "'anonymous'" },
                 new ColumnDefinition { Name = "balance", Type = DbType.Real, Nullable = true },
                 new ColumnDefinition { Name = "payload", Type = DbType.Blob, Nullable = true },
@@ -199,6 +209,7 @@ public class TableArchiveTests
             [
                 new CheckConstraintDefinition
                 {
+                    SchemaId = checkId,
                     ConstraintName = "ck_customers_balance",
                     ExpressionSql = "balance >= 0",
                     ColumnName = "balance",
@@ -208,6 +219,11 @@ public class TableArchiveTests
             [
                 new ForeignKeyDefinition
                 {
+                    SchemaId = foreignKeyId,
+                    ColumnSchemaIds = [idColumnId],
+                    ReferencedTableSchemaId = referencedTableId,
+                    ReferencedColumnSchemaIds = [referencedColumnId],
+                    ReferencedKeySchemaId = referencedKeyId,
                     ConstraintName = "fk_customers_tenant",
                     ColumnName = "id",
                     ReferencedTableName = "tenants",
@@ -222,12 +238,14 @@ public class TableArchiveTests
             [
                 new KeyConstraintDefinition
                 {
+                    SchemaId = primaryKeyId,
                     ConstraintName = "pk_customers",
                     Kind = KeyConstraintKind.PrimaryKey,
                     Columns = ["id"],
                 },
                 new KeyConstraintDefinition
                 {
+                    SchemaId = uniqueKeyId,
                     ConstraintName = "uq_customers_name",
                     Kind = KeyConstraintKind.Unique,
                     Columns = ["name"],
@@ -256,17 +274,25 @@ public class TableArchiveTests
             Assert.Equal(2, index.EntryCount);
 
             TableSchema restoredSchema = await TableArchiveReader.ReadTableSchemaAsync(path, ct: ct);
+            Assert.Equal(tableId, restoredSchema.SchemaId);
             Assert.Equal("customers", restoredSchema.TableName);
             Assert.Equal(4, restoredSchema.Columns.Count);
             Assert.True(restoredSchema.Columns[0].IsPrimaryKey);
             Assert.True(restoredSchema.Columns[0].IsIdentity);
+            Assert.Equal(idColumnId, restoredSchema.Columns[0].SchemaId);
             Assert.Equal("NOCASE", restoredSchema.Columns[1].Collation);
             Assert.Equal("'anonymous'", restoredSchema.Columns[1].DefaultSql);
             CheckConstraintDefinition check = Assert.Single(restoredSchema.CheckConstraints);
+            Assert.Equal(checkId, check.SchemaId);
             Assert.Equal("ck_customers_balance", check.ConstraintName);
             Assert.Equal("balance >= 0", check.ExpressionSql);
             Assert.Equal("balance", check.ColumnName);
             ForeignKeyDefinition foreignKey = Assert.Single(restoredSchema.ForeignKeys);
+            Assert.Equal(foreignKeyId, foreignKey.SchemaId);
+            Assert.Equal([idColumnId], foreignKey.ColumnSchemaIds);
+            Assert.Equal(referencedTableId, foreignKey.ReferencedTableSchemaId);
+            Assert.Equal([referencedColumnId], foreignKey.ReferencedColumnSchemaIds);
+            Assert.Equal(referencedKeyId, foreignKey.ReferencedKeySchemaId);
             Assert.Equal("id", foreignKey.ColumnName);
             Assert.Equal("tenant_id", foreignKey.ReferencedColumnName);
             Assert.Equal(["id", "name"], foreignKey.ColumnNames);
@@ -276,11 +302,13 @@ public class TableArchiveTests
                 restoredSchema.KeyConstraints,
                 primary =>
                 {
+                    Assert.Equal(primaryKeyId, primary.SchemaId);
                     Assert.Equal(KeyConstraintKind.PrimaryKey, primary.Kind);
                     Assert.Equal(["id"], primary.Columns);
                 },
                 unique =>
                 {
+                    Assert.Equal(uniqueKeyId, unique.SchemaId);
                     Assert.Equal(KeyConstraintKind.Unique, unique.Kind);
                     Assert.Equal(["name"], unique.Columns);
                     Assert.Equal("__constraint_customers_name", unique.BackingIndexName);

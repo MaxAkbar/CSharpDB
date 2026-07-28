@@ -48,6 +48,13 @@ public sealed class SystemCatalogTests : IAsyncLifetime
         Assert.Equal(3L, tableRow[1].AsInteger);
         Assert.Equal("id", tableRow[2].AsText);
 
+        await using var stableTableIdentity = await _db.ExecuteAsync(
+            "SELECT schema_id FROM sys.tables WHERE table_name = 'users'",
+            ct);
+        Assert.True(Guid.TryParse(
+            Assert.Single(await stableTableIdentity.ToListAsync(ct))[0].AsText,
+            out _));
+
         await using var columns = await _db.ExecuteAsync(
             "SELECT column_name, ordinal_position, data_type, is_nullable, is_primary_key, is_identity, collation " +
             "FROM sys.columns WHERE table_name = 'users' ORDER BY ordinal_position", ct);
@@ -65,6 +72,18 @@ public sealed class SystemCatalogTests : IAsyncLifetime
         Assert.Equal(0L, columnRows[1][4].AsInteger);
         Assert.Equal(0L, columnRows[1][5].AsInteger);
         Assert.Equal("NOCASE", columnRows[1][6].AsText);
+
+        await using var stableColumnIdentities = await _db.ExecuteAsync(
+            "SELECT table_schema_id, column_schema_id FROM sys.columns " +
+            "WHERE table_name = 'users' ORDER BY ordinal_position",
+            ct);
+        Assert.All(
+            await stableColumnIdentities.ToListAsync(ct),
+            row =>
+            {
+                Assert.True(Guid.TryParse(row[0].AsText, out _));
+                Assert.True(Guid.TryParse(row[1].AsText, out _));
+            });
 
         await using var indexes = await _db.ExecuteAsync(
             "SELECT index_name, table_name, column_name, ordinal_position, is_unique, collation " +
@@ -93,6 +112,8 @@ public sealed class SystemCatalogTests : IAsyncLifetime
         Assert.Equal("collation", allColumns.Schema[7].Name);
         Assert.Equal("column_default", allColumns.Schema[8].Name);
         Assert.Equal("is_row_version", allColumns.Schema[9].Name);
+        Assert.Equal("table_schema_id", allColumns.Schema[10].Name);
+        Assert.Equal("column_schema_id", allColumns.Schema[11].Name);
 
         await using var columns = await _db.ExecuteAsync(
             "SELECT column_name, is_row_version FROM sys.columns WHERE table_name = 'versioned_items' ORDER BY ordinal_position",
@@ -182,6 +203,14 @@ public sealed class SystemCatalogTests : IAsyncLifetime
         Assert.Equal("parents", foreignKeyRow[3].AsText);
         Assert.Equal("id", foreignKeyRow[4].AsText);
         Assert.Equal("CASCADE", foreignKeyRow[5].AsText);
+
+        await using var stableForeignKeyIdentity = await _db.ExecuteAsync(
+            "SELECT table_schema_id, constraint_schema_id FROM sys.foreign_keys",
+            ct);
+        DbValue[] stableForeignKeyRow =
+            Assert.Single(await stableForeignKeyIdentity.ToListAsync(ct));
+        Assert.True(Guid.TryParse(stableForeignKeyRow[0].AsText, out _));
+        Assert.True(Guid.TryParse(stableForeignKeyRow[1].AsText, out _));
 
         await using var systemIndexes = await _db.ExecuteAsync(
             "SELECT COUNT(*) FROM sys.indexes WHERE index_name = '" + supportingIndexName + "'",

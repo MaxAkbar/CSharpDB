@@ -160,6 +160,15 @@ public sealed class DefaultCheckConstraintTests : IAsyncLifetime
             "id INTEGER PRIMARY KEY, " +
             "score INTEGER DEFAULT 5 CONSTRAINT ck_rename_score CHECK (score >= 0))",
             ct);
+        TableSchema originalSchema = _db.GetTableSchema("rename_me")!;
+        Guid originalTableId = originalSchema.SchemaId;
+        Guid originalColumnId = originalSchema.Columns.Single(
+            column => column.Name == "score").SchemaId;
+        Guid originalCheckId =
+            Assert.Single(originalSchema.CheckConstraints).SchemaId;
+        Assert.NotEqual(Guid.Empty, originalTableId);
+        Assert.NotEqual(Guid.Empty, originalColumnId);
+        Assert.NotEqual(Guid.Empty, originalCheckId);
 
         await _db.ExecuteAsync("ALTER TABLE rename_me RENAME COLUMN score TO points", ct);
         await _db.ExecuteAsync("ALTER TABLE rename_me RENAME TO renamed", ct);
@@ -183,6 +192,26 @@ public sealed class DefaultCheckConstraintTests : IAsyncLifetime
         var dropError = await Assert.ThrowsAsync<CSharpDbException>(
             async () => await _db.ExecuteAsync("ALTER TABLE renamed DROP COLUMN points", ct));
         Assert.Equal(ErrorCode.ConstraintViolation, dropError.Code);
+
+        TableSchema renamedSchema = _db.GetTableSchema("renamed")!;
+        Assert.Equal(originalTableId, renamedSchema.SchemaId);
+        Assert.Equal(
+            originalColumnId,
+            renamedSchema.Columns.Single(column => column.Name == "points").SchemaId);
+        Assert.Equal(
+            originalCheckId,
+            Assert.Single(renamedSchema.CheckConstraints).SchemaId);
+
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(_dbPath, ct);
+        TableSchema reopenedSchema = _db.GetTableSchema("renamed")!;
+        Assert.Equal(originalTableId, reopenedSchema.SchemaId);
+        Assert.Equal(
+            originalColumnId,
+            reopenedSchema.Columns.Single(column => column.Name == "points").SchemaId);
+        Assert.Equal(
+            originalCheckId,
+            Assert.Single(reopenedSchema.CheckConstraints).SchemaId);
     }
 
     [Fact]

@@ -385,13 +385,19 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
 
         TableSchema? schema = await _client.GetTableSchemaAsync("http_schema_metadata", Ct);
         Assert.NotNull(schema);
-        Assert.Equal("'new'", Assert.Single(schema!.Columns, column => column.Name == "code").DefaultSql);
+        Assert.NotEqual(Guid.Empty, schema!.SchemaId);
+        Assert.All(
+            schema.Columns,
+            column => Assert.NotEqual(Guid.Empty, column.SchemaId));
+        Assert.Equal("'new'", Assert.Single(schema.Columns, column => column.Name == "code").DefaultSql);
         CheckConstraintDefinition check = Assert.Single(schema.CheckConstraints);
+        Assert.NotEqual(Guid.Empty, check.SchemaId);
         Assert.Equal("ck_http_schema_score", check.ConstraintName);
         Assert.Contains("score", check.ExpressionSql, StringComparison.OrdinalIgnoreCase);
         KeyConstraintDefinition unique = Assert.Single(
             schema.KeyConstraints,
             key => key.Kind == KeyConstraintKind.Unique);
+        Assert.NotEqual(Guid.Empty, unique.SchemaId);
         Assert.Equal(["tenant", "code"], unique.Columns);
     }
 
@@ -438,10 +444,14 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
         TableSchema? schema = await client.GetTableSchemaAsync("legacy_http", Ct);
 
         Assert.NotNull(schema);
-        Assert.Null(Assert.Single(schema!.Columns).DefaultSql);
+        Assert.Equal(Guid.Empty, schema!.SchemaId);
+        ColumnDefinition legacyColumn = Assert.Single(schema.Columns);
+        Assert.Equal(Guid.Empty, legacyColumn.SchemaId);
+        Assert.Null(legacyColumn.DefaultSql);
         Assert.Empty(schema.CheckConstraints);
         Assert.Empty(schema.KeyConstraints);
         ForeignKeyDefinition legacyForeignKey = Assert.Single(schema.ForeignKeys);
+        Assert.Equal(Guid.Empty, legacyForeignKey.SchemaId);
         Assert.Equal(["id"], legacyForeignKey.ColumnNames);
         Assert.Equal(["id"], legacyForeignKey.ReferencedColumnNames);
     }
@@ -467,6 +477,10 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
         Assert.Equal("http_parents", foreignKey.ReferencedTableName);
         Assert.Equal("id", foreignKey.ReferencedColumnName);
         Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
+        Assert.Single(foreignKey.ColumnSchemaIds);
+        Assert.NotEqual(Guid.Empty, foreignKey.ReferencedTableSchemaId);
+        Assert.Single(foreignKey.ReferencedColumnSchemaIds);
+        Assert.NotEqual(Guid.Empty, foreignKey.ReferencedKeySchemaId);
         Assert.StartsWith("__fk_http_children_parent_id_", foreignKey.SupportingIndexName, StringComparison.Ordinal);
     }
 

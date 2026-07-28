@@ -152,6 +152,7 @@ public static class GrpcModelMapper
     public static ColumnDefinitionMessage ToMessage(ColumnDefinition value)
         => new()
         {
+            SchemaId = FormatSchemaId(value.SchemaId),
             Name = value.Name,
             Type = ToMessage(value.Type),
             Nullable = value.Nullable,
@@ -165,6 +166,7 @@ public static class GrpcModelMapper
     public static ColumnDefinition ToModel(ColumnDefinitionMessage value)
         => new()
         {
+            SchemaId = ParseSchemaId(value.SchemaId),
             Name = value.Name,
             Type = ToModel(value.Type),
             Nullable = value.Nullable,
@@ -179,21 +181,33 @@ public static class GrpcModelMapper
     {
         var message = new ForeignKeyDefinitionMessage
         {
+            SchemaId = FormatSchemaId(value.SchemaId),
             ConstraintName = value.ConstraintName,
             ColumnName = value.ColumnName,
             ReferencedTableName = value.ReferencedTableName,
             ReferencedColumnName = value.ReferencedColumnName,
             OnDelete = ToMessage(value.OnDelete),
             SupportingIndexName = value.SupportingIndexName,
+            ReferencedTableSchemaId = FormatSchemaId(value.ReferencedTableSchemaId),
+            ReferencedKeySchemaId = FormatSchemaId(value.ReferencedKeySchemaId),
         };
         message.ColumnNames.Add(value.ColumnNames.Count > 0 ? value.ColumnNames : [value.ColumnName]);
         message.ReferencedColumnNames.Add(value.ReferencedColumnNames.Count > 0 ? value.ReferencedColumnNames : [value.ReferencedColumnName]);
+        message.ColumnSchemaIds.Add(value.ColumnSchemaIds.Select(FormatSchemaId));
+        message.ReferencedColumnSchemaIds.Add(
+            value.ReferencedColumnSchemaIds.Select(FormatSchemaId));
         return message;
     }
 
     public static ForeignKeyDefinition ToModel(ForeignKeyDefinitionMessage value)
         => new()
         {
+            SchemaId = ParseSchemaId(value.SchemaId),
+            ColumnSchemaIds = value.ColumnSchemaIds.Select(ParseSchemaId).ToArray(),
+            ReferencedTableSchemaId = ParseSchemaId(value.ReferencedTableSchemaId),
+            ReferencedColumnSchemaIds =
+                value.ReferencedColumnSchemaIds.Select(ParseSchemaId).ToArray(),
+            ReferencedKeySchemaId = ParseSchemaId(value.ReferencedKeySchemaId),
             ConstraintName = value.ConstraintName,
             ColumnName = value.ColumnName,
             ReferencedTableName = value.ReferencedTableName,
@@ -208,6 +222,7 @@ public static class GrpcModelMapper
     {
         var message = new TableSchemaMessage
         {
+            SchemaId = FormatSchemaId(value.SchemaId),
             TableName = value.TableName,
             NextRowId = value.NextRowId,
         };
@@ -221,6 +236,7 @@ public static class GrpcModelMapper
     public static CheckConstraintDefinitionMessage ToMessage(CheckConstraintDefinition value)
         => new()
         {
+            SchemaId = FormatSchemaId(value.SchemaId),
             ConstraintName = value.ConstraintName ?? string.Empty,
             ExpressionSql = value.ExpressionSql,
             ColumnName = value.ColumnName ?? string.Empty,
@@ -229,6 +245,7 @@ public static class GrpcModelMapper
     public static CheckConstraintDefinition ToModel(CheckConstraintDefinitionMessage value)
         => new()
         {
+            SchemaId = ParseSchemaId(value.SchemaId),
             ConstraintName = string.IsNullOrEmpty(value.ConstraintName) ? null : value.ConstraintName,
             ExpressionSql = value.ExpressionSql,
             ColumnName = string.IsNullOrEmpty(value.ColumnName) ? null : value.ColumnName,
@@ -238,6 +255,7 @@ public static class GrpcModelMapper
     {
         var message = new KeyConstraintDefinitionMessage
         {
+            SchemaId = FormatSchemaId(value.SchemaId),
             ConstraintName = value.ConstraintName ?? string.Empty,
             Kind = ToMessage(value.Kind),
             BackingIndexName = value.BackingIndexName ?? string.Empty,
@@ -249,6 +267,7 @@ public static class GrpcModelMapper
     public static KeyConstraintDefinition ToModel(KeyConstraintDefinitionMessage value)
         => new()
         {
+            SchemaId = ParseSchemaId(value.SchemaId),
             ConstraintName = string.IsNullOrEmpty(value.ConstraintName) ? null : value.ConstraintName,
             Kind = ToModel(value.Kind),
             Columns = value.Columns.ToList(),
@@ -258,6 +277,7 @@ public static class GrpcModelMapper
     public static TableSchema ToModel(TableSchemaMessage value)
         => new()
         {
+            SchemaId = ParseSchemaId(value.SchemaId),
             TableName = value.TableName,
             Columns = value.Columns.Select(ToModel).ToList(),
             ForeignKeys = value.ForeignKeys.Select(ToModel).ToList(),
@@ -265,6 +285,12 @@ public static class GrpcModelMapper
             CheckConstraints = value.CheckConstraints.Select(ToModel).ToList(),
             NextRowId = value.NextRowId,
         };
+
+    private static string FormatSchemaId(Guid value) =>
+        value == Guid.Empty ? string.Empty : value.ToString("D");
+
+    private static Guid ParseSchemaId(string value) =>
+        Guid.TryParse(value, out Guid parsed) ? parsed : Guid.Empty;
 
     public static IndexSchemaMessage ToMessage(IndexSchema value)
     {

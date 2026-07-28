@@ -7,6 +7,109 @@ namespace CSharpDB.Tests;
 public sealed class SchemaSerializerCompatibilityTests
 {
     [Fact]
+    public void SerializeDeserialize_TableSchema_RoundTripsStableIdentities()
+    {
+        Guid tableId = Guid.NewGuid();
+        Guid columnId = Guid.NewGuid();
+        Guid foreignKeyId = Guid.NewGuid();
+        Guid referencedTableId = Guid.NewGuid();
+        Guid referencedColumnId = Guid.NewGuid();
+        Guid referencedKeyId = Guid.NewGuid();
+        Guid checkId = Guid.NewGuid();
+        Guid keyId = Guid.NewGuid();
+        var schema = new TableSchema
+        {
+            SchemaId = tableId,
+            TableName = "children",
+            Columns =
+            [
+                new ColumnDefinition
+                {
+                    SchemaId = columnId,
+                    Name = "parent_id",
+                    Type = DbType.Integer,
+                },
+            ],
+            ForeignKeys =
+            [
+                new ForeignKeyDefinition
+                {
+                    SchemaId = foreignKeyId,
+                    ColumnSchemaIds = [columnId],
+                    ReferencedTableSchemaId = referencedTableId,
+                    ReferencedColumnSchemaIds = [referencedColumnId],
+                    ReferencedKeySchemaId = referencedKeyId,
+                    ConstraintName = "fk_children_parent",
+                    ColumnName = "parent_id",
+                    ReferencedTableName = "parents",
+                    ReferencedColumnName = "id",
+                    SupportingIndexName = "__fk_children_parent",
+                },
+            ],
+            CheckConstraints =
+            [
+                new CheckConstraintDefinition
+                {
+                    SchemaId = checkId,
+                    ConstraintName = "ck_parent_positive",
+                    ExpressionSql = "parent_id > 0",
+                },
+            ],
+            KeyConstraints =
+            [
+                new KeyConstraintDefinition
+                {
+                    SchemaId = keyId,
+                    ConstraintName = "uq_parent",
+                    Kind = KeyConstraintKind.Unique,
+                    Columns = ["parent_id"],
+                },
+            ],
+        };
+
+        TableSchema decoded =
+            SchemaSerializer.Deserialize(SchemaSerializer.Serialize(schema));
+
+        Assert.Equal(tableId, decoded.SchemaId);
+        Assert.Equal(columnId, Assert.Single(decoded.Columns).SchemaId);
+        Assert.Equal(foreignKeyId, Assert.Single(decoded.ForeignKeys).SchemaId);
+        ForeignKeyDefinition foreignKey = Assert.Single(decoded.ForeignKeys);
+        Assert.Equal([columnId], foreignKey.ColumnSchemaIds);
+        Assert.Equal(referencedTableId, foreignKey.ReferencedTableSchemaId);
+        Assert.Equal([referencedColumnId], foreignKey.ReferencedColumnSchemaIds);
+        Assert.Equal(referencedKeyId, foreignKey.ReferencedKeySchemaId);
+        Assert.Equal(checkId, Assert.Single(decoded.CheckConstraints).SchemaId);
+        Assert.Equal(keyId, Assert.Single(decoded.KeyConstraints).SchemaId);
+    }
+
+    [Fact]
+    public void Deserialize_LegacySchema_DerivesRepeatableNonEmptyIdentities()
+    {
+        byte[] legacy = BuildLegacyTableSchemaPayload(
+            tableName: "legacy_identity",
+            columns:
+            [
+                new ColumnDefinition
+                {
+                    Name = "id",
+                    Type = DbType.Integer,
+                    IsPrimaryKey = true,
+                    Nullable = false,
+                },
+            ]);
+
+        TableSchema first = SchemaSerializer.Deserialize(legacy);
+        TableSchema second = SchemaSerializer.Deserialize(legacy);
+
+        Assert.NotEqual(Guid.Empty, first.SchemaId);
+        Assert.Equal(first.SchemaId, second.SchemaId);
+        Assert.NotEqual(Guid.Empty, Assert.Single(first.Columns).SchemaId);
+        Assert.Equal(
+            Assert.Single(first.Columns).SchemaId,
+            Assert.Single(second.Columns).SchemaId);
+    }
+
+    [Fact]
     public void SerializeDeserialize_TableSchema_RoundTripsRowVersionMetadata()
     {
         var schema = new TableSchema

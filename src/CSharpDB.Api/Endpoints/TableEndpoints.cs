@@ -35,7 +35,7 @@ public static class TableEndpoints
         var response = new TableSchemaResponse(
             schema.TableName,
             schema.Columns.Select(c => new ColumnResponse(
-                c.Name, c.Type.ToString(), c.Nullable, c.IsPrimaryKey, c.IsIdentity, c.IsRowVersion, c.Collation, c.DefaultSql)).ToList(),
+                c.Name, c.Type.ToString(), c.Nullable, c.IsPrimaryKey, c.IsIdentity, c.IsRowVersion, c.Collation, c.DefaultSql, c.SchemaId)).ToList(),
             schema.ForeignKeys.Select(fk => new ForeignKeyResponse(
                 fk.ConstraintName,
                 fk.ColumnName,
@@ -44,17 +44,25 @@ public static class TableEndpoints
                 fk.OnDelete.ToString(),
                 fk.SupportingIndexName,
                 fk.ColumnNames.Count > 0 ? fk.ColumnNames : [fk.ColumnName],
-                fk.ReferencedColumnNames.Count > 0 ? fk.ReferencedColumnNames : [fk.ReferencedColumnName])).ToList(),
+                fk.ReferencedColumnNames.Count > 0 ? fk.ReferencedColumnNames : [fk.ReferencedColumnName],
+                fk.SchemaId,
+                fk.ColumnSchemaIds,
+                fk.ReferencedTableSchemaId,
+                fk.ReferencedColumnSchemaIds,
+                fk.ReferencedKeySchemaId)).ToList(),
             schema.KeyConstraints.Select(key => new KeyConstraintResponse(
                 key.ConstraintName,
                 key.Kind.ToString(),
                 key.Columns,
-                key.BackingIndexName)).ToList(),
+                key.BackingIndexName,
+                key.SchemaId)).ToList(),
             schema.CheckConstraints.Select(check => new CheckConstraintResponse(
                 check.ConstraintName,
                 check.ExpressionSql,
-                check.ColumnName)).ToList(),
-            schema.NextRowId);
+                check.ColumnName,
+                check.SchemaId)).ToList(),
+            schema.NextRowId,
+            schema.SchemaId);
 
         return Results.Ok(response);
     }

@@ -802,6 +802,7 @@ message ColumnDefinitionMessage {
   string collation = 6;
   string default_sql = 7;
   bool is_row_version = 8;
+  string schema_id = 9;
 }
 
 enum ForeignKeyOnDeleteActionEnum {
@@ -819,6 +820,11 @@ message ForeignKeyDefinitionMessage {
   string supporting_index_name = 6;
   repeated string column_names = 7;
   repeated string referenced_column_names = 8;
+  string schema_id = 9;
+  repeated string column_schema_ids = 10;
+  string referenced_table_schema_id = 11;
+  repeated string referenced_column_schema_ids = 12;
+  string referenced_key_schema_id = 13;
 }
 
 enum KeyConstraintKindEnum {
@@ -832,12 +838,14 @@ message KeyConstraintDefinitionMessage {
   KeyConstraintKindEnum kind = 2;
   repeated string columns = 3;
   string backing_index_name = 4;
+  string schema_id = 5;
 }
 
 message CheckConstraintDefinitionMessage {
   string constraint_name = 1;
   string expression_sql = 2;
   string column_name = 3;
+  string schema_id = 4;
 }
 
 message TableSchemaMessage {
@@ -847,6 +855,7 @@ message TableSchemaMessage {
   repeated KeyConstraintDefinitionMessage key_constraints = 4;
   repeated CheckConstraintDefinitionMessage check_constraints = 5;
   int64 next_row_id = 6;
+  string schema_id = 7;
 }
 
 message OptionalTableSchemaResponse {

@@ -4,6 +4,11 @@ namespace CSharpDB.ImportExport.Models;
 
 public sealed class TableArchiveForeignKey
 {
+    public Guid SchemaId { get; init; }
+    public IReadOnlyList<Guid> ColumnSchemaIds { get; init; } = Array.Empty<Guid>();
+    public Guid ReferencedTableSchemaId { get; init; }
+    public IReadOnlyList<Guid> ReferencedColumnSchemaIds { get; init; } = Array.Empty<Guid>();
+    public Guid ReferencedKeySchemaId { get; init; }
     public required string ConstraintName { get; init; }
     public required string ColumnName { get; init; }
     public required string ReferencedTableName { get; init; }
@@ -15,6 +20,11 @@ public sealed class TableArchiveForeignKey
 
     public static TableArchiveForeignKey FromForeignKey(ForeignKeyDefinition foreignKey) => new()
     {
+        SchemaId = foreignKey.SchemaId,
+        ColumnSchemaIds = foreignKey.ColumnSchemaIds.ToArray(),
+        ReferencedTableSchemaId = foreignKey.ReferencedTableSchemaId,
+        ReferencedColumnSchemaIds = foreignKey.ReferencedColumnSchemaIds.ToArray(),
+        ReferencedKeySchemaId = foreignKey.ReferencedKeySchemaId,
         ConstraintName = foreignKey.ConstraintName,
         ColumnName = foreignKey.ColumnName,
         ReferencedTableName = foreignKey.ReferencedTableName,
@@ -27,6 +37,11 @@ public sealed class TableArchiveForeignKey
 
     public ForeignKeyDefinition ToForeignKey(string? referencedTableNameOverride = null) => new()
     {
+        SchemaId = SchemaId,
+        ColumnSchemaIds = ColumnSchemaIds.ToArray(),
+        ReferencedTableSchemaId = ReferencedTableSchemaId,
+        ReferencedColumnSchemaIds = ReferencedColumnSchemaIds.ToArray(),
+        ReferencedKeySchemaId = ReferencedKeySchemaId,
         ConstraintName = ConstraintName,
         ColumnName = ColumnName,
         ReferencedTableName = referencedTableNameOverride ?? ReferencedTableName,

@@ -97,6 +97,18 @@ public sealed class ForeignKeyIntegrationTests : IAsyncLifetime
         var ct = TestContext.Current.CancellationToken;
         await _db.ExecuteAsync("CREATE TABLE parents (id INTEGER PRIMARY KEY)", ct);
         await _db.ExecuteAsync("CREATE TABLE children (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parents(id) ON DELETE CASCADE)", ct);
+        TableSchema originalParent = _db.GetTableSchema("parents")!;
+        TableSchema originalChild = _db.GetTableSchema("children")!;
+        ForeignKeyDefinition originalForeignKey =
+            Assert.Single(originalChild.ForeignKeys);
+        Guid parentTableId = originalParent.SchemaId;
+        Guid parentColumnId = Assert.Single(originalParent.Columns).SchemaId;
+        Guid childColumnId = originalChild.Columns.Single(
+            column => column.Name == "parent_id").SchemaId;
+        Assert.Equal(parentTableId, originalForeignKey.ReferencedTableSchemaId);
+        Assert.Equal([parentColumnId], originalForeignKey.ReferencedColumnSchemaIds);
+        Assert.Equal([childColumnId], originalForeignKey.ColumnSchemaIds);
+        Assert.NotEqual(Guid.Empty, originalForeignKey.ReferencedKeySchemaId);
 
         await _db.ExecuteAsync("ALTER TABLE parents RENAME TO accounts", ct);
         await _db.ExecuteAsync("ALTER TABLE accounts RENAME COLUMN id TO account_id", ct);
@@ -106,6 +118,20 @@ public sealed class ForeignKeyIntegrationTests : IAsyncLifetime
         ForeignKeyDefinition foreignKey = Assert.Single(schema.ForeignKeys);
         Assert.Equal("accounts", foreignKey.ReferencedTableName);
         Assert.Equal("account_id", foreignKey.ReferencedColumnName);
+        Assert.Equal(parentTableId, foreignKey.ReferencedTableSchemaId);
+        Assert.Equal([parentColumnId], foreignKey.ReferencedColumnSchemaIds);
+        Assert.Equal([childColumnId], foreignKey.ColumnSchemaIds);
+        Assert.Equal(
+            originalForeignKey.ReferencedKeySchemaId,
+            foreignKey.ReferencedKeySchemaId);
+
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(_dbPath, ct);
+        ForeignKeyDefinition reopened =
+            Assert.Single(_db.GetTableSchema("children")!.ForeignKeys);
+        Assert.Equal(parentTableId, reopened.ReferencedTableSchemaId);
+        Assert.Equal([parentColumnId], reopened.ReferencedColumnSchemaIds);
+        Assert.Equal([childColumnId], reopened.ColumnSchemaIds);
     }
 
     [Fact]

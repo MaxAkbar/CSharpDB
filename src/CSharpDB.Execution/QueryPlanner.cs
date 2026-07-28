@@ -221,6 +221,7 @@ public sealed class QueryPlanner
         new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
         new ColumnDefinition { Name = "column_count", Type = DbType.Integer, Nullable = false },
         new ColumnDefinition { Name = "primary_key_column", Type = DbType.Text, Nullable = true },
+        new ColumnDefinition { Name = "schema_id", Type = DbType.Text, Nullable = true },
     ];
 
     private static readonly ColumnDefinition[] SystemColumnsColumns =
@@ -235,6 +236,8 @@ public sealed class QueryPlanner
         new ColumnDefinition { Name = "collation", Type = DbType.Text, Nullable = true },
         new ColumnDefinition { Name = "column_default", Type = DbType.Text, Nullable = true },
         new ColumnDefinition { Name = "is_row_version", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "table_schema_id", Type = DbType.Text, Nullable = true },
+        new ColumnDefinition { Name = "column_schema_id", Type = DbType.Text, Nullable = true },
     ];
 
     private static readonly ColumnDefinition[] SystemIndexesColumns =
@@ -257,6 +260,8 @@ public sealed class QueryPlanner
         new ColumnDefinition { Name = "on_delete", Type = DbType.Text, Nullable = false },
         new ColumnDefinition { Name = "supporting_index_name", Type = DbType.Text, Nullable = false },
         new ColumnDefinition { Name = "ordinal_position", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "table_schema_id", Type = DbType.Text, Nullable = true },
+        new ColumnDefinition { Name = "constraint_schema_id", Type = DbType.Text, Nullable = true },
     ];
 
     private static readonly ColumnDefinition[] SystemKeyConstraintsColumns =
@@ -267,6 +272,8 @@ public sealed class QueryPlanner
         new ColumnDefinition { Name = "column_name", Type = DbType.Text, Nullable = false },
         new ColumnDefinition { Name = "ordinal_position", Type = DbType.Integer, Nullable = false },
         new ColumnDefinition { Name = "backing_index_name", Type = DbType.Text, Nullable = true },
+        new ColumnDefinition { Name = "table_schema_id", Type = DbType.Text, Nullable = true },
+        new ColumnDefinition { Name = "constraint_schema_id", Type = DbType.Text, Nullable = true },
     ];
 
     private static readonly ColumnDefinition[] SystemCheckConstraintsColumns =
@@ -275,6 +282,8 @@ public sealed class QueryPlanner
         new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
         new ColumnDefinition { Name = "column_name", Type = DbType.Text, Nullable = true },
         new ColumnDefinition { Name = "expression_sql", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "table_schema_id", Type = DbType.Text, Nullable = true },
+        new ColumnDefinition { Name = "constraint_schema_id", Type = DbType.Text, Nullable = true },
     ];
 
     private static readonly ColumnDefinition[] SystemFunctionsColumns =
@@ -19757,12 +19766,18 @@ public sealed class QueryPlanner
                 DbValue.FromText(tableName),
                 DbValue.FromInteger(schema.Columns.Count),
                 pkName is null ? DbValue.Null : DbValue.FromText(pkName),
+                SchemaIdValue(schema.SchemaId),
             ]);
         }
 
         _systemTablesRowsCache = rows;
         return rows;
     }
+
+    private static DbValue SchemaIdValue(Guid value) =>
+        value == Guid.Empty
+            ? DbValue.Null
+            : DbValue.FromText(value.ToString("D"));
 
     private List<DbValue[]> BuildSystemColumnsRows()
     {
@@ -19795,6 +19810,8 @@ public sealed class QueryPlanner
                     col.Collation is null ? DbValue.Null : DbValue.FromText(col.Collation),
                     col.DefaultSql is null ? DbValue.Null : DbValue.FromText(col.DefaultSql),
                     DbValue.FromInteger(col.IsRowVersion ? 1 : 0),
+                    SchemaIdValue(schema.SchemaId),
+                    SchemaIdValue(col.SchemaId),
                 ]);
             }
         }
@@ -19824,6 +19841,7 @@ public sealed class QueryPlanner
                 DbValue.FromText(tableName),
                 DbValue.FromInteger(schema.Columns.Count),
                 pkName is null ? DbValue.Null : DbValue.FromText(pkName),
+                SchemaIdValue(schema.SchemaId),
             ]);
         }
 
@@ -19857,6 +19875,8 @@ public sealed class QueryPlanner
                     col.Collation is null ? DbValue.Null : DbValue.FromText(col.Collation),
                     col.DefaultSql is null ? DbValue.Null : DbValue.FromText(col.DefaultSql),
                     DbValue.FromInteger(0),
+                    SchemaIdValue(schema.SchemaId),
+                    SchemaIdValue(col.SchemaId),
                 ]);
             }
         }
@@ -19941,6 +19961,8 @@ public sealed class QueryPlanner
                         DbValue.FromText(foreignKey.OnDelete.ToString().ToUpperInvariant()),
                         DbValue.FromText(foreignKey.SupportingIndexName),
                         DbValue.FromInteger(i + 1),
+                        SchemaIdValue(schema.SchemaId),
+                        SchemaIdValue(foreignKey.SchemaId),
                     ]);
                 }
             }
@@ -19970,6 +19992,8 @@ public sealed class QueryPlanner
                     DbValue.FromText(tableName),
                     check.ColumnName is null ? DbValue.Null : DbValue.FromText(check.ColumnName),
                     DbValue.FromText(check.ExpressionSql),
+                    SchemaIdValue(schema.SchemaId),
+                    SchemaIdValue(check.SchemaId),
                 ]);
             }
         }
@@ -20062,6 +20086,8 @@ public sealed class QueryPlanner
                         DbValue.FromText(key.Columns[i]),
                         DbValue.FromInteger(i + 1),
                         key.BackingIndexName is null ? DbValue.Null : DbValue.FromText(key.BackingIndexName),
+                        SchemaIdValue(schema.SchemaId),
+                        SchemaIdValue(key.SchemaId),
                     ]);
                 }
             }
@@ -22586,6 +22612,7 @@ public sealed class QueryPlanner
                 .Select(foreignKey => string.Equals(foreignKey.ReferencedTableName, oldTableName, StringComparison.OrdinalIgnoreCase)
                     ? new ForeignKeyDefinition
                     {
+                        SchemaId = foreignKey.SchemaId,
                         ConstraintName = foreignKey.ConstraintName,
                         ColumnName = foreignKey.ColumnName,
                         ReferencedTableName = newTableName,
@@ -22628,6 +22655,7 @@ public sealed class QueryPlanner
             string.Equals(column.Name, oldColumnName, StringComparison.OrdinalIgnoreCase)
                 ? new ColumnDefinition
                 {
+                    SchemaId = column.SchemaId,
                     Name = newColumnName,
                     Type = column.Type,
                     Nullable = column.Nullable,
@@ -22648,6 +22676,7 @@ public sealed class QueryPlanner
         KeyConstraintDefinition[] renamedKeyConstraints = schema.KeyConstraints
             .Select(key => new KeyConstraintDefinition
             {
+                SchemaId = key.SchemaId,
                 ConstraintName = key.ConstraintName,
                 Kind = key.Kind,
                 Columns = key.Columns
@@ -22717,6 +22746,7 @@ public sealed class QueryPlanner
                     changed = true;
                     return new ForeignKeyDefinition
                     {
+                        SchemaId = foreignKey.SchemaId,
                         ConstraintName = foreignKey.ConstraintName,
                         ColumnName = foreignKey.ColumnName,
                         ReferencedTableName = foreignKey.ReferencedTableName,
@@ -22754,6 +22784,7 @@ public sealed class QueryPlanner
 
         return new ForeignKeyDefinition
         {
+            SchemaId = foreignKey.SchemaId,
             ConstraintName = foreignKey.ConstraintName,
             ColumnName = foreignKey.ColumnName,
             ReferencedTableName = referencedTableRenamed ? newTableName : foreignKey.ReferencedTableName,
@@ -22784,6 +22815,7 @@ public sealed class QueryPlanner
 
         return new ForeignKeyDefinition
         {
+            SchemaId = foreignKey.SchemaId,
             ConstraintName = foreignKey.ConstraintName,
             ColumnName = childColumnNames[0],
             ReferencedTableName = foreignKey.ReferencedTableName,
@@ -22816,6 +22848,7 @@ public sealed class QueryPlanner
         Expression expression = Parser.ParseExpressionSql(check.ExpressionSql);
         return new CheckConstraintDefinition
         {
+            SchemaId = check.SchemaId,
             ConstraintName = check.ConstraintName,
             ExpressionSql = ExprToSql(RenameColumnReferences(expression, oldColumnName, newColumnName)),
             ColumnName = string.Equals(check.ColumnName, oldColumnName, StringComparison.OrdinalIgnoreCase)
