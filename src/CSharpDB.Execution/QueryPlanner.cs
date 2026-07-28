@@ -262,6 +262,10 @@ public sealed class QueryPlanner
         new ColumnDefinition { Name = "ordinal_position", Type = DbType.Integer, Nullable = false },
         new ColumnDefinition { Name = "table_schema_id", Type = DbType.Text, Nullable = true },
         new ColumnDefinition { Name = "constraint_schema_id", Type = DbType.Text, Nullable = true },
+        new ColumnDefinition { Name = "column_schema_id", Type = DbType.Text, Nullable = true },
+        new ColumnDefinition { Name = "referenced_table_schema_id", Type = DbType.Text, Nullable = true },
+        new ColumnDefinition { Name = "referenced_column_schema_id", Type = DbType.Text, Nullable = true },
+        new ColumnDefinition { Name = "referenced_key_schema_id", Type = DbType.Text, Nullable = true },
     ];
 
     private static readonly ColumnDefinition[] SystemKeyConstraintsColumns =
@@ -19951,6 +19955,18 @@ public sealed class QueryPlanner
                     GetForeignKeyReferencedColumnNames(foreignKey);
                 for (int i = 0; i < columnNames.Count; i++)
                 {
+                    Guid childColumnId = foreignKey.ColumnSchemaIds.Count > i
+                        ? foreignKey.ColumnSchemaIds[i]
+                        : schema.Columns.FirstOrDefault(column =>
+                            string.Equals(
+                                column.Name,
+                                columnNames[i],
+                                StringComparison.OrdinalIgnoreCase))?.SchemaId ??
+                          Guid.Empty;
+                    Guid referencedColumnId =
+                        foreignKey.ReferencedColumnSchemaIds.Count > i
+                            ? foreignKey.ReferencedColumnSchemaIds[i]
+                            : Guid.Empty;
                     rows.Add(
                     [
                         DbValue.FromText(foreignKey.ConstraintName),
@@ -19963,6 +19979,10 @@ public sealed class QueryPlanner
                         DbValue.FromInteger(i + 1),
                         SchemaIdValue(schema.SchemaId),
                         SchemaIdValue(foreignKey.SchemaId),
+                        SchemaIdValue(childColumnId),
+                        SchemaIdValue(foreignKey.ReferencedTableSchemaId),
+                        SchemaIdValue(referencedColumnId),
+                        SchemaIdValue(foreignKey.ReferencedKeySchemaId),
                     ]);
                 }
             }

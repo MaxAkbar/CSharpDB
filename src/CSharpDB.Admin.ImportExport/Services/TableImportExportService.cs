@@ -29,6 +29,7 @@ using PrimitiveForeignKeyOnDeleteAction = CSharpDB.Primitives.ForeignKeyOnDelete
 using PrimitiveIndexSchema = CSharpDB.Primitives.IndexSchema;
 using PrimitiveKeyConstraintDefinition = CSharpDB.Primitives.KeyConstraintDefinition;
 using PrimitiveKeyConstraintKind = CSharpDB.Primitives.KeyConstraintKind;
+using SchemaIdentity = CSharpDB.Primitives.SchemaIdentity;
 using PrimitiveTableSchema = CSharpDB.Primitives.TableSchema;
 using SqlIdentifierRules = CSharpDB.Primitives.SqlIdentifierRules;
 
@@ -85,7 +86,9 @@ public sealed class TableImportExportService(
         IProgress<TableExportProgress>? progress = null,
         CancellationToken ct = default)
     {
-        string tableName = RequireIdentifier(request.TableName, nameof(request.TableName));
+        string tableName = RequireArchiveIdentifier(
+            request.TableName,
+            nameof(request.TableName));
         string path = request.Destination == TableExportDestination.Download
             ? CreateTemporaryArchivePath(tableName)
             : string.IsNullOrWhiteSpace(request.ServerPath)
@@ -283,7 +286,23 @@ public sealed class TableImportExportService(
 
         string targetTableName = string.IsNullOrWhiteSpace(request.TargetTableName)
             ? RequireArchiveIdentifier(archivedSchema.TableName, "Archived table name")
-            : RequireArchiveIdentifier(request.TargetTableName.Trim(), nameof(request.TargetTableName));
+            : RequireArchiveIdentifier(request.TargetTableName, nameof(request.TargetTableName));
+        bool preserveArchivedIdentities =
+            archivedSchema.SchemaId != Guid.Empty &&
+            string.Equals(
+                targetTableName,
+                archivedSchema.TableName,
+                StringComparison.OrdinalIgnoreCase);
+        ICSharpDbTransactionalSchemaIdentityWriter? identityWriter = null;
+        if (preserveArchivedIdentities)
+        {
+            identityWriter = client as ICSharpDbTransactionalSchemaIdentityWriter;
+            if (identityWriter is not { SupportsTransactionalSchemaIdentityWrites: true })
+            {
+                throw new NotSupportedException(
+                    "Exact table archive recovery with stable identities requires a direct CSharpDB transport.");
+            }
+        }
 
         if (IsReservedRestoreTableName(targetTableName))
         {
@@ -421,6 +440,7 @@ public sealed class TableImportExportService(
                 stagingTableName,
                 targetTableName,
                 transactionalReader,
+                identityWriter,
                 ct);
             activated = true;
         }
@@ -633,6 +653,88 @@ public sealed class TableImportExportService(
         NextRowId = schema.NextRowId,
     };
 
+    private static ClientTableSchema MapClientSchema(PrimitiveTableSchema schema) => new()
+    {
+        SchemaId = schema.SchemaId,
+        TableName = schema.TableName,
+        Columns = schema.Columns.Select(column => new ClientColumnDefinition
+        {
+            SchemaId = column.SchemaId,
+            Name = column.Name,
+            Type = column.Type switch
+            {
+                PrimitiveDbType.Integer => ClientDbType.Integer,
+                PrimitiveDbType.Real => ClientDbType.Real,
+                PrimitiveDbType.Text => ClientDbType.Text,
+                PrimitiveDbType.Blob => ClientDbType.Blob,
+                _ => throw new InvalidDataException(
+                    $"Unsupported archived column type '{column.Type}'."),
+            },
+            Nullable = column.Nullable,
+            IsPrimaryKey = column.IsPrimaryKey,
+            IsIdentity = column.IsIdentity,
+            IsRowVersion = column.IsRowVersion,
+            Collation = column.Collation,
+            DefaultSql = column.DefaultSql,
+        }).ToArray(),
+        ForeignKeys = schema.ForeignKeys.Select(foreignKey =>
+            new ClientForeignKeyDefinition
+            {
+                SchemaId = foreignKey.SchemaId,
+                ColumnSchemaIds = foreignKey.ColumnSchemaIds.ToArray(),
+                ReferencedTableSchemaId = foreignKey.ReferencedTableSchemaId,
+                ReferencedColumnSchemaIds =
+                    foreignKey.ReferencedColumnSchemaIds.ToArray(),
+                ReferencedKeySchemaId = foreignKey.ReferencedKeySchemaId,
+                ConstraintName = foreignKey.ConstraintName,
+                ColumnName = foreignKey.ColumnName,
+                ReferencedTableName = foreignKey.ReferencedTableName,
+                ReferencedColumnName = foreignKey.ReferencedColumnName,
+                ColumnNames = foreignKey.ColumnNames.Count > 0
+                    ? foreignKey.ColumnNames.ToArray()
+                    : [foreignKey.ColumnName],
+                ReferencedColumnNames = foreignKey.ReferencedColumnNames.Count > 0
+                    ? foreignKey.ReferencedColumnNames.ToArray()
+                    : [foreignKey.ReferencedColumnName],
+                OnDelete = foreignKey.OnDelete switch
+                {
+                    PrimitiveForeignKeyOnDeleteAction.Restrict =>
+                        ClientForeignKeyOnDeleteAction.Restrict,
+                    PrimitiveForeignKeyOnDeleteAction.Cascade =>
+                        ClientForeignKeyOnDeleteAction.Cascade,
+                    _ => throw new InvalidDataException(
+                        $"Unsupported archived foreign key delete action '{foreignKey.OnDelete}'."),
+                },
+                SupportingIndexName = foreignKey.SupportingIndexName,
+            }).ToArray(),
+        CheckConstraints = schema.CheckConstraints.Select(check =>
+            new ClientCheckConstraintDefinition
+            {
+                SchemaId = check.SchemaId,
+                ConstraintName = check.ConstraintName,
+                ExpressionSql = check.ExpressionSql,
+                ColumnName = check.ColumnName,
+            }).ToArray(),
+        KeyConstraints = schema.KeyConstraints.Select(key =>
+            new ClientKeyConstraintDefinition
+            {
+                SchemaId = key.SchemaId,
+                ConstraintName = key.ConstraintName,
+                Kind = key.Kind switch
+                {
+                    PrimitiveKeyConstraintKind.PrimaryKey =>
+                        ClientKeyConstraintKind.PrimaryKey,
+                    PrimitiveKeyConstraintKind.Unique =>
+                        ClientKeyConstraintKind.Unique,
+                    _ => throw new InvalidDataException(
+                        $"Unsupported archived key constraint kind '{key.Kind}'."),
+                },
+                Columns = key.Columns.ToArray(),
+                BackingIndexName = key.BackingIndexName,
+            }).ToArray(),
+        NextRowId = schema.NextRowId,
+    };
+
     private static PrimitiveColumnDefinition MapColumn(ClientColumnDefinition column) => new()
     {
         SchemaId = column.SchemaId,
@@ -831,7 +933,9 @@ public sealed class TableImportExportService(
 
     private static string ComputeTargetKey(string targetTableName)
     {
-        byte[] digest = SHA256.HashData(Encoding.UTF8.GetBytes(targetTableName.ToUpperInvariant()));
+        byte[] digest = SHA256.HashData(
+            Encoding.UTF8.GetBytes(
+                SchemaIdentity.CanonicalizeOrdinalIgnoreCase(targetTableName)));
         return Convert.ToHexString(digest.AsSpan(0, 12)).ToLowerInvariant();
     }
 
@@ -849,7 +953,8 @@ public sealed class TableImportExportService(
         ReadOnlySpan<byte> archiveDigest,
         string targetTableName)
     {
-        byte[] targetBytes = Encoding.UTF8.GetBytes(targetTableName.ToUpperInvariant());
+        byte[] targetBytes = Encoding.UTF8.GetBytes(
+            SchemaIdentity.CanonicalizeOrdinalIgnoreCase(targetTableName));
         byte[] identity = new byte[targetBytes.Length + 1 + archiveDigest.Length];
         targetBytes.CopyTo(identity, 0);
         archiveDigest.CopyTo(identity.AsSpan(targetBytes.Length + 1));
@@ -1244,6 +1349,7 @@ public sealed class TableImportExportService(
         string stagingTableName,
         string targetTableName,
         ICSharpDbTransactionalSnapshotReader transactionalReader,
+        ICSharpDbTransactionalSchemaIdentityWriter? identityWriter,
         CancellationToken ct)
     {
         CanonicalRowContract contract = CanonicalRowProjector.CreateCSharpDbTableContract(restoreSchema);
@@ -1295,6 +1401,14 @@ public sealed class TableImportExportService(
                 transactionId,
                 $"ALTER TABLE {QuoteIdentifier(stagingTableName)} DROP CONSTRAINT {QuoteIdentifier(ownerConstraintName)};",
                 CancellationToken.None);
+            if (identityWriter is not null)
+            {
+                await identityWriter.ApplyTableSchemaIdentitiesAsync(
+                    transactionId,
+                    stagingTableName,
+                    MapClientSchema(restoreSchema),
+                    CancellationToken.None);
+            }
             await ExecuteInTransactionCheckedAsync(
                 transactionId,
                 $"ALTER TABLE {QuoteIdentifier(stagingTableName)} RENAME TO {QuoteIdentifier(targetTableName)};",

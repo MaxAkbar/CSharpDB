@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using CSharpDB.Primitives;
 using CSharpDB.Storage.StorageEngine;
@@ -191,6 +192,9 @@ internal sealed class CatalogService
         _tableRootPages.Clear();
         _tableTrees.Clear();
         _persistedTableNextRowIds.Clear();
+        _foreignKeysByTable.Clear();
+        _referencingForeignKeysByParentTable.Clear();
+        _referencingForeignKeysByParentTableId.Clear();
         _indexCache.Clear();
         _indexRootPages.Clear();
         _indexStores.Clear();
@@ -425,6 +429,8 @@ internal sealed class CatalogService
             _persistedTableNextRowIds[schema.TableName] = schema.NextRowId;
         }
 
+        ValidateLoadedStableIdentityUniqueness();
+        HydrateLoadedForeignKeyBindings();
         RebuildForeignKeyCaches();
 
         // Load index entries
@@ -528,17 +534,30 @@ internal sealed class CatalogService
 
     public IReadOnlyList<TableForeignKeyReference> GetReferencingForeignKeys(string parentTableName)
     {
+        TableForeignKeyReference[] identityReferences = Array.Empty<TableForeignKeyReference>();
         if (_cache.TryGetValue(parentTableName, out TableSchema? parentSchema) &&
             parentSchema.SchemaId != Guid.Empty &&
-            _referencingForeignKeysByParentTableId.TryGetValue(parentSchema.SchemaId, out var identityReferences))
+            _referencingForeignKeysByParentTableId.TryGetValue(parentSchema.SchemaId, out var cachedIdentityReferences))
         {
-            return identityReferences;
+            identityReferences = cachedIdentityReferences;
         }
 
-        if (_referencingForeignKeysByParentTable.TryGetValue(parentTableName, out var references))
-            return references;
+        _referencingForeignKeysByParentTable.TryGetValue(
+            parentTableName,
+            out TableForeignKeyReference[]? nameReferences);
+        nameReferences ??= Array.Empty<TableForeignKeyReference>();
 
-        return Array.Empty<TableForeignKeyReference>();
+        if (identityReferences.Length == 0)
+            return nameReferences;
+        if (nameReferences.Length == 0)
+            return identityReferences;
+
+        var combined = new List<TableForeignKeyReference>(
+            identityReferences.Length + nameReferences.Length);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        AddDistinctReferences(identityReferences, combined, seen);
+        AddDistinctReferences(nameReferences, combined, seen);
+        return combined;
     }
 
     public TableStatistics? GetTableStatistics(string tableName)
@@ -866,6 +885,7 @@ internal sealed class CatalogService
         var storedSchema = normalizeNewSchema
             ? NormalizeNewTableSchema(schema)
             : NormalizeSchemaIdentities(schema, previous: null, schema.NextRowId);
+        ValidateStableIdentityUniqueness(storedSchema, excludedTableName: null);
 
         // Create a new B+tree for the table's data
         uint tableRootPage = await BTree.CreateNewAsync(_pager, ct);
@@ -883,6 +903,7 @@ internal sealed class CatalogService
         _tableTrees[storedSchema.TableName] = new BTree(_pager, tableRootPage, storedSchema.TableName);
         _tableTrees[storedSchema.TableName].SetCachedEntryCount(0);
         _persistedTableNextRowIds[storedSchema.TableName] = storedSchema.NextRowId;
+        await RefreshForeignKeyBindingsAsync(persistChanges: true, ct);
         RebuildForeignKeyCaches();
         await UpsertTableStatisticsAsync(
             new TableStatistics
@@ -950,7 +971,9 @@ internal sealed class CatalogService
         if (!_cache.TryGetValue(oldTableName, out var oldSchema))
             throw new CSharpDbException(ErrorCode.TableNotFound, $"Table '{oldTableName}' not found.");
 
+        ValidateRequestedIdentityImmutability(oldSchema, newSchema);
         var storedSchema = NormalizeUpdatedTableSchema(newSchema, oldSchema);
+        ValidateStableIdentityUniqueness(storedSchema, oldTableName);
 
         // Delete old catalog entry
         long oldKey = _schemaSerializer.TableNameToKey(oldTableName);
@@ -970,6 +993,7 @@ internal sealed class CatalogService
         _cache[storedSchema.TableName] = storedSchema;
         _tableRootPages[storedSchema.TableName] = rootPage;
         _persistedTableNextRowIds[storedSchema.TableName] = storedSchema.NextRowId;
+        await RefreshForeignKeyBindingsAsync(persistChanges: true, ct);
         RebuildForeignKeyCaches();
 
         if (_tableTrees.Remove(oldTableName, out var existingTree))
@@ -1001,6 +1025,43 @@ internal sealed class CatalogService
         if (!string.Equals(oldTableName, storedSchema.TableName, StringComparison.OrdinalIgnoreCase))
             await DeleteIndexPrefixStatisticsForTableAsync(storedSchema.TableName, ct);
 
+        IncrementSchemaVersion();
+    }
+
+    /// <summary>
+    /// Applies stable identities from a structurally equivalent schema without
+    /// changing the live table shape or storage. This is a trusted recovery
+    /// path; ordinary schema updates cannot replace existing identities.
+    /// </summary>
+    public async ValueTask ApplyTableSchemaIdentitiesAsync(
+        string tableName,
+        TableSchema identitySource,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(identitySource);
+        if (!_pager.IsWriteTransactionActive)
+        {
+            throw new InvalidOperationException(
+                "Stable schema identities can only be adopted inside an explicit storage transaction.");
+        }
+
+        if (!_cache.TryGetValue(tableName, out TableSchema? liveSchema) ||
+            !_tableRootPages.ContainsKey(tableName))
+        {
+            throw new CSharpDbException(
+                ErrorCode.TableNotFound,
+                $"Table '{tableName}' not found.");
+        }
+
+        TableSchema adoptedSchema = AdoptStructurallyEquivalentIdentities(
+            liveSchema,
+            identitySource);
+        ValidateStableIdentityUniqueness(adoptedSchema, tableName);
+
+        await PersistTableSchemaPayloadAsync(adoptedSchema, ct);
+        _cache[tableName] = adoptedSchema;
+        await RefreshForeignKeyBindingsAsync(persistChanges: true, ct);
+        RebuildForeignKeyCaches();
         IncrementSchemaVersion();
     }
 
@@ -1092,7 +1153,9 @@ internal sealed class CatalogService
         uint previousRootPage = _tableTrees.TryGetValue(tableName, out BTree? existingTree)
             ? existingTree.RootPageId
             : persistedRootPage;
+        ValidateRequestedIdentityImmutability(oldSchema, newSchema);
         var storedSchema = NormalizeUpdatedTableSchema(newSchema, oldSchema);
+        ValidateStableIdentityUniqueness(storedSchema, tableName);
         byte[] schemaBytes = _schemaSerializer.Serialize(storedSchema);
         byte[] tablePayload = _catalogStore.WriteRootPayload(replacementTableRootPage, schemaBytes);
         long tableKey = _schemaSerializer.TableNameToKey(tableName);
@@ -1251,6 +1314,7 @@ internal sealed class CatalogService
             isExact: true,
             markDirty: true);
 
+        await RefreshForeignKeyBindingsAsync(persistChanges: true, ct);
         RebuildForeignKeyCaches();
         IncrementSchemaVersion();
         return new TableAndIndexStorageReplacement(previousRootPage, previousIndexStores);
@@ -1986,6 +2050,843 @@ internal sealed class CatalogService
         _cacheState.RemoveTriggerFromTable(schema);
     }
 
+    private static void AddDistinctReferences(
+        IReadOnlyList<TableForeignKeyReference> source,
+        ICollection<TableForeignKeyReference> destination,
+        ISet<string> seen)
+    {
+        for (int i = 0; i < source.Count; i++)
+        {
+            TableForeignKeyReference reference = source[i];
+            string identity = reference.ForeignKey.SchemaId != Guid.Empty
+                ? reference.ForeignKey.SchemaId.ToString("N")
+                : reference.ForeignKey.ConstraintName;
+            string key = $"{reference.TableName}\u001f{identity}";
+            if (seen.Add(key))
+                destination.Add(reference);
+        }
+    }
+
+    private void ValidateLoadedStableIdentityUniqueness()
+    {
+        var identities = new Dictionary<Guid, string>();
+        foreach (TableSchema schema in _cache.Values)
+        {
+            foreach ((Guid id, string description) in EnumerateOwnedSchemaIdentities(schema))
+            {
+                if (id == Guid.Empty)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.CorruptDatabase,
+                        $"Catalog object {description} has an empty stable identity.");
+                }
+
+                if (identities.TryGetValue(id, out string? existing))
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.CorruptDatabase,
+                        $"Catalog objects {existing} and {description} share stable identity '{id}'.");
+                }
+
+                identities.Add(id, description);
+            }
+        }
+    }
+
+    private void ValidateStableIdentityUniqueness(
+        TableSchema candidate,
+        string? excludedTableName)
+    {
+        var identities = new Dictionary<Guid, string>();
+        foreach ((Guid id, string description) in EnumerateOwnedSchemaIdentities(candidate))
+        {
+            if (id == Guid.Empty)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.ConstraintViolation,
+                    $"Catalog object {description} must have a stable identity.");
+            }
+
+            if (identities.TryGetValue(id, out string? existing))
+                ThrowDuplicateStableIdentity(id, existing, description);
+
+            identities.Add(id, description);
+        }
+
+        foreach (TableSchema existingSchema in _cache.Values)
+        {
+            if (excludedTableName is not null &&
+                string.Equals(
+                    existingSchema.TableName,
+                    excludedTableName,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            foreach ((Guid id, string description) in EnumerateOwnedSchemaIdentities(existingSchema))
+            {
+                if (identities.TryGetValue(id, out string? candidateDescription))
+                    ThrowDuplicateStableIdentity(id, candidateDescription, description);
+            }
+        }
+    }
+
+    private static void ThrowDuplicateStableIdentity(
+        Guid id,
+        string firstDescription,
+        string secondDescription)
+    {
+        throw new CSharpDbException(
+            ErrorCode.ConstraintViolation,
+            $"Catalog objects {firstDescription} and {secondDescription} cannot share stable identity '{id}'.");
+    }
+
+    private static IEnumerable<(Guid Id, string Description)> EnumerateOwnedSchemaIdentities(
+        TableSchema schema)
+    {
+        yield return (schema.SchemaId, $"table '{schema.TableName}'");
+
+        for (int i = 0; i < schema.Columns.Count; i++)
+        {
+            ColumnDefinition column = schema.Columns[i];
+            yield return (
+                column.SchemaId,
+                $"column '{schema.TableName}.{column.Name}'");
+        }
+
+        for (int i = 0; i < schema.ForeignKeys.Count; i++)
+        {
+            ForeignKeyDefinition foreignKey = schema.ForeignKeys[i];
+            yield return (
+                foreignKey.SchemaId,
+                $"foreign key '{schema.TableName}.{foreignKey.ConstraintName}'");
+        }
+
+        for (int i = 0; i < schema.CheckConstraints.Count; i++)
+        {
+            CheckConstraintDefinition check = schema.CheckConstraints[i];
+            string name = check.ConstraintName ?? $"<unnamed:{i}>";
+            yield return (
+                check.SchemaId,
+                $"check constraint '{schema.TableName}.{name}'");
+        }
+
+        for (int i = 0; i < schema.KeyConstraints.Count; i++)
+        {
+            KeyConstraintDefinition key = schema.KeyConstraints[i];
+            string name = key.ConstraintName ?? $"<unnamed:{i}>";
+            yield return (
+                key.SchemaId,
+                $"key constraint '{schema.TableName}.{name}'");
+        }
+    }
+
+    private static void ValidateRequestedIdentityImmutability(
+        TableSchema current,
+        TableSchema requested)
+    {
+        Dictionary<Guid, (string Kind, string Description)>
+            currentIdentityOwners = BuildCurrentIdentityOwners(current);
+        if (requested.SchemaId != Guid.Empty &&
+            requested.SchemaId != current.SchemaId)
+        {
+            ThrowStableIdentityReplacement(
+                $"table '{current.TableName}'",
+                current.SchemaId,
+                requested.SchemaId);
+        }
+
+        var retainedColumnIds = new HashSet<Guid>();
+        int addedColumnCount = 0;
+        for (int i = 0; i < requested.Columns.Count; i++)
+        {
+            ColumnDefinition candidate = requested.Columns[i];
+            ValidateRequestedIdentityObjectKind(
+                currentIdentityOwners,
+                candidate.SchemaId,
+                "column",
+                $"column '{current.TableName}.{candidate.Name}'");
+            ColumnDefinition? existingByIdentity = candidate.SchemaId != Guid.Empty
+                ? current.Columns.FirstOrDefault(
+                    column => column.SchemaId == candidate.SchemaId)
+                : null;
+            ColumnDefinition? existingByName = current.Columns.FirstOrDefault(
+                column => string.Equals(
+                    column.Name,
+                    candidate.Name,
+                    StringComparison.OrdinalIgnoreCase));
+            ValidateIdentityDoesNotBelongToDifferentObject(
+                candidate.SchemaId,
+                existingByIdentity?.SchemaId,
+                existingByName?.SchemaId,
+                $"column '{current.TableName}.{candidate.Name}'");
+            ColumnDefinition? existing = existingByIdentity ?? existingByName;
+            if (existing is null)
+            {
+                addedColumnCount++;
+                continue;
+            }
+
+            retainedColumnIds.Add(existing.SchemaId);
+            if (candidate.SchemaId != Guid.Empty &&
+                existing.SchemaId != candidate.SchemaId)
+            {
+                ThrowStableIdentityReplacement(
+                    $"column '{current.TableName}.{existing.Name}'",
+                    existing.SchemaId,
+                    candidate.SchemaId);
+            }
+        }
+        ValidateNoMixedIdentityRemovalAndAddition(
+            current.TableName,
+            "columns",
+            current.Columns.Count - retainedColumnIds.Count,
+            addedColumnCount);
+
+        var retainedForeignKeyIds = new HashSet<Guid>();
+        int addedForeignKeyCount = 0;
+        for (int i = 0; i < requested.ForeignKeys.Count; i++)
+        {
+            ForeignKeyDefinition candidate = requested.ForeignKeys[i];
+            ValidateRequestedIdentityObjectKind(
+                currentIdentityOwners,
+                candidate.SchemaId,
+                "foreign key",
+                $"foreign key '{current.TableName}.{candidate.ConstraintName}'");
+            ForeignKeyDefinition? existingByIdentity =
+                candidate.SchemaId != Guid.Empty
+                ? current.ForeignKeys.FirstOrDefault(
+                    foreignKey => foreignKey.SchemaId == candidate.SchemaId)
+                : null;
+            ForeignKeyDefinition? existingByName =
+                current.ForeignKeys.FirstOrDefault(
+                foreignKey => string.Equals(
+                    foreignKey.ConstraintName,
+                    candidate.ConstraintName,
+                    StringComparison.OrdinalIgnoreCase));
+            ValidateIdentityDoesNotBelongToDifferentObject(
+                candidate.SchemaId,
+                existingByIdentity?.SchemaId,
+                existingByName?.SchemaId,
+                $"foreign key '{current.TableName}.{candidate.ConstraintName}'");
+            ForeignKeyDefinition? existing =
+                existingByIdentity ?? existingByName;
+            if (existing is null)
+            {
+                addedForeignKeyCount++;
+                continue;
+            }
+
+            retainedForeignKeyIds.Add(existing.SchemaId);
+            if (candidate.SchemaId != Guid.Empty &&
+                existing.SchemaId != candidate.SchemaId)
+            {
+                ThrowStableIdentityReplacement(
+                    $"foreign key '{current.TableName}.{existing.ConstraintName}'",
+                    existing.SchemaId,
+                    candidate.SchemaId);
+            }
+        }
+        ValidateNoMixedIdentityRemovalAndAddition(
+            current.TableName,
+            "foreign keys",
+            current.ForeignKeys.Count - retainedForeignKeyIds.Count,
+            addedForeignKeyCount);
+
+        var retainedCheckIds = new HashSet<Guid>();
+        int addedCheckCount = 0;
+        for (int i = 0; i < requested.CheckConstraints.Count; i++)
+        {
+            CheckConstraintDefinition candidate = requested.CheckConstraints[i];
+            ValidateRequestedIdentityObjectKind(
+                currentIdentityOwners,
+                candidate.SchemaId,
+                "check constraint",
+                $"check constraint on table '{current.TableName}'");
+            CheckConstraintDefinition? existingByIdentity =
+                candidate.SchemaId != Guid.Empty
+                ? current.CheckConstraints.FirstOrDefault(
+                    check => check.SchemaId == candidate.SchemaId)
+                : null;
+            CheckConstraintDefinition? existingByStructure =
+                current.CheckConstraints.FirstOrDefault(
+                check => CheckConstraintsRepresentSameObject(check, candidate));
+            ValidateIdentityDoesNotBelongToDifferentObject(
+                candidate.SchemaId,
+                existingByIdentity?.SchemaId,
+                existingByStructure?.SchemaId,
+                $"check constraint on table '{current.TableName}'");
+            CheckConstraintDefinition? existing =
+                existingByIdentity ?? existingByStructure;
+            if (existing is null)
+            {
+                addedCheckCount++;
+                continue;
+            }
+
+            retainedCheckIds.Add(existing.SchemaId);
+            if (candidate.SchemaId != Guid.Empty &&
+                existing.SchemaId != candidate.SchemaId)
+            {
+                ThrowStableIdentityReplacement(
+                    $"check constraint on table '{current.TableName}'",
+                    existing.SchemaId,
+                    candidate.SchemaId);
+            }
+        }
+        ValidateNoMixedIdentityRemovalAndAddition(
+            current.TableName,
+            "check constraints",
+            current.CheckConstraints.Count - retainedCheckIds.Count,
+            addedCheckCount);
+
+        var retainedKeyIds = new HashSet<Guid>();
+        int addedKeyCount = 0;
+        for (int i = 0; i < requested.KeyConstraints.Count; i++)
+        {
+            KeyConstraintDefinition candidate = requested.KeyConstraints[i];
+            ValidateRequestedIdentityObjectKind(
+                currentIdentityOwners,
+                candidate.SchemaId,
+                "key constraint",
+                $"key constraint on table '{current.TableName}'");
+            KeyConstraintDefinition? existingByIdentity =
+                candidate.SchemaId != Guid.Empty
+                ? current.KeyConstraints.FirstOrDefault(
+                    key => key.SchemaId == candidate.SchemaId)
+                : null;
+            KeyConstraintDefinition? existingByStructure =
+                current.KeyConstraints.FirstOrDefault(
+                key => KeyConstraintsRepresentSameObject(key, candidate));
+            ValidateIdentityDoesNotBelongToDifferentObject(
+                candidate.SchemaId,
+                existingByIdentity?.SchemaId,
+                existingByStructure?.SchemaId,
+                $"key constraint on table '{current.TableName}'");
+            KeyConstraintDefinition? existing =
+                existingByIdentity ?? existingByStructure;
+            if (existing is null)
+            {
+                addedKeyCount++;
+                continue;
+            }
+
+            retainedKeyIds.Add(existing.SchemaId);
+            if (candidate.SchemaId != Guid.Empty &&
+                existing.SchemaId != candidate.SchemaId)
+            {
+                ThrowStableIdentityReplacement(
+                    $"key constraint on table '{current.TableName}'",
+                    existing.SchemaId,
+                    candidate.SchemaId);
+            }
+        }
+        ValidateNoMixedIdentityRemovalAndAddition(
+            current.TableName,
+            "key constraints",
+            current.KeyConstraints.Count - retainedKeyIds.Count,
+            addedKeyCount);
+    }
+
+    private static Dictionary<Guid, (string Kind, string Description)>
+        BuildCurrentIdentityOwners(TableSchema schema)
+    {
+        var owners =
+            new Dictionary<Guid, (string Kind, string Description)>
+            {
+                [schema.SchemaId] =
+                    ("table", $"table '{schema.TableName}'"),
+            };
+        foreach (ColumnDefinition column in schema.Columns)
+        {
+            owners[column.SchemaId] =
+                ("column", $"column '{schema.TableName}.{column.Name}'");
+        }
+        foreach (ForeignKeyDefinition foreignKey in schema.ForeignKeys)
+        {
+            owners[foreignKey.SchemaId] =
+                (
+                    "foreign key",
+                    $"foreign key '{schema.TableName}.{foreignKey.ConstraintName}'");
+        }
+        for (int i = 0; i < schema.CheckConstraints.Count; i++)
+        {
+            CheckConstraintDefinition check = schema.CheckConstraints[i];
+            string name = check.ConstraintName ?? $"<unnamed:{i}>";
+            owners[check.SchemaId] =
+                (
+                    "check constraint",
+                    $"check constraint '{schema.TableName}.{name}'");
+        }
+        for (int i = 0; i < schema.KeyConstraints.Count; i++)
+        {
+            KeyConstraintDefinition key = schema.KeyConstraints[i];
+            string name = key.ConstraintName ?? $"<unnamed:{i}>";
+            owners[key.SchemaId] =
+                (
+                    "key constraint",
+                    $"key constraint '{schema.TableName}.{name}'");
+        }
+
+        return owners;
+    }
+
+    private static void ValidateRequestedIdentityObjectKind(
+        IReadOnlyDictionary<Guid, (string Kind, string Description)> owners,
+        Guid requestedIdentity,
+        string requestedKind,
+        string requestedDescription)
+    {
+        if (requestedIdentity == Guid.Empty ||
+            !owners.TryGetValue(requestedIdentity, out var owner) ||
+            string.Equals(
+                owner.Kind,
+                requestedKind,
+                StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        throw new CSharpDbException(
+            ErrorCode.ConstraintViolation,
+            $"Stable identity '{requestedIdentity}' owned by {owner.Description} cannot be reassigned to {requestedDescription} during an ordinary schema update.");
+    }
+
+    private static void ValidateIdentityDoesNotBelongToDifferentObject(
+        Guid requestedIdentity,
+        Guid? identityMatch,
+        Guid? structuralMatch,
+        string description)
+    {
+        if (requestedIdentity == Guid.Empty ||
+            identityMatch is null ||
+            structuralMatch is null ||
+            identityMatch == structuralMatch)
+        {
+            return;
+        }
+
+        ThrowStableIdentityReplacement(
+            description,
+            structuralMatch.Value,
+            requestedIdentity);
+    }
+
+    private static void ValidateNoMixedIdentityRemovalAndAddition(
+        string tableName,
+        string objectKind,
+        int removedCount,
+        int addedCount)
+    {
+        if (removedCount == 0 || addedCount == 0)
+            return;
+
+        throw new CSharpDbException(
+            ErrorCode.ConstraintViolation,
+            $"An ordinary schema update for table '{tableName}' cannot replace {objectKind} by removing and adding them in the same catalog operation. Preserve their stable identities or perform distinct drop and add operations.");
+    }
+
+    private static void ThrowStableIdentityReplacement(
+        string description,
+        Guid existing,
+        Guid replacement)
+    {
+        throw new CSharpDbException(
+            ErrorCode.ConstraintViolation,
+            $"Stable identity '{existing}' for {description} cannot be replaced with '{replacement}' during an ordinary schema update.");
+    }
+
+    private void HydrateLoadedForeignKeyBindings()
+    {
+        foreach (TableSchema schema in _cache.Values.ToArray())
+        {
+            TableSchema hydrated = ResolveForeignKeyBindings(
+                schema,
+                loading: true,
+                out bool changed);
+            if (changed)
+                _cache[schema.TableName] = hydrated;
+        }
+    }
+
+    private async ValueTask RefreshForeignKeyBindingsAsync(
+        bool persistChanges,
+        CancellationToken ct)
+    {
+        foreach (TableSchema schema in _cache.Values.ToArray())
+        {
+            TableSchema hydrated = ResolveForeignKeyBindings(
+                schema,
+                loading: false,
+                out bool changed);
+            if (!changed)
+                continue;
+
+            if (persistChanges)
+                await PersistTableSchemaPayloadAsync(hydrated, ct);
+
+            _cache[schema.TableName] = hydrated;
+        }
+    }
+
+    private TableSchema ResolveForeignKeyBindings(
+        TableSchema schema,
+        bool loading,
+        out bool changed)
+    {
+        changed = false;
+        if (schema.ForeignKeys.Count == 0)
+            return schema;
+
+        var resolved = new ForeignKeyDefinition[schema.ForeignKeys.Count];
+        for (int i = 0; i < schema.ForeignKeys.Count; i++)
+        {
+            ForeignKeyDefinition foreignKey = schema.ForeignKeys[i];
+            ForeignKeyDefinition hydrated = ResolveForeignKeyBinding(
+                schema,
+                foreignKey,
+                loading);
+            resolved[i] = hydrated;
+            changed |= !ForeignKeyBindingsEqual(foreignKey, hydrated);
+        }
+
+        if (!changed)
+            return schema;
+
+        return new TableSchema
+        {
+            SchemaId = schema.SchemaId,
+            TableName = schema.TableName,
+            Columns = schema.Columns,
+            ForeignKeys = resolved,
+            CheckConstraints = schema.CheckConstraints,
+            KeyConstraints = schema.KeyConstraints,
+            QualifiedMappings = schema.QualifiedMappings,
+            NextRowId = schema.NextRowId,
+        };
+    }
+
+    private ForeignKeyDefinition ResolveForeignKeyBinding(
+        TableSchema childSchema,
+        ForeignKeyDefinition foreignKey,
+        bool loading)
+    {
+        IReadOnlyList<string> requestedChildColumnNames =
+            GetForeignKeyColumnNames(foreignKey);
+        IReadOnlyList<string> requestedReferencedColumnNames =
+            GetForeignKeyReferencedColumnNames(foreignKey);
+        bool hasAnyStableBinding =
+            foreignKey.ReferencedTableSchemaId != Guid.Empty ||
+            foreignKey.ReferencedKeySchemaId != Guid.Empty ||
+            foreignKey.ColumnSchemaIds.Count != 0 ||
+            foreignKey.ReferencedColumnSchemaIds.Count != 0;
+        bool hasCompleteStableBinding =
+            foreignKey.ReferencedTableSchemaId != Guid.Empty &&
+            foreignKey.ColumnSchemaIds.Count ==
+            requestedChildColumnNames.Count &&
+            foreignKey.ReferencedColumnSchemaIds.Count ==
+            requestedReferencedColumnNames.Count;
+        if (hasAnyStableBinding && !hasCompleteStableBinding)
+        {
+            ThrowForeignKeyBindingError(
+                childSchema,
+                foreignKey,
+                loading,
+                "has partial stable identity bindings");
+        }
+
+        (string[] childColumnNames, Guid[] childColumnIds) =
+            ResolveForeignKeyColumns(
+                childSchema,
+                foreignKey,
+                childSchema.Columns,
+                requestedChildColumnNames,
+                foreignKey.ColumnSchemaIds,
+                "child",
+                loading);
+
+        TableSchema? referencedSchema = null;
+        _cache.TryGetValue(
+            foreignKey.ReferencedTableName,
+            out TableSchema? referencedSchemaByName);
+        if (foreignKey.ReferencedTableSchemaId != Guid.Empty)
+        {
+            referencedSchema = _cache.Values.FirstOrDefault(
+                candidate =>
+                    candidate.SchemaId == foreignKey.ReferencedTableSchemaId);
+
+            if (referencedSchema is null)
+            {
+                ThrowForeignKeyBindingError(
+                    childSchema,
+                    foreignKey,
+                    loading,
+                    referencedSchemaByName is null
+                        ? $"is bound to missing table identity '{foreignKey.ReferencedTableSchemaId}'"
+                        : $"is bound to missing table identity '{foreignKey.ReferencedTableSchemaId}', while its name resolves to different table identity '{referencedSchemaByName.SchemaId}'");
+            }
+
+            if (referencedSchemaByName is not null &&
+                referencedSchema.SchemaId != referencedSchemaByName.SchemaId)
+            {
+                ThrowForeignKeyBindingError(
+                    childSchema,
+                    foreignKey,
+                    loading,
+                    "has conflicting referenced-table name and identity bindings");
+            }
+            if (loading && referencedSchemaByName is null)
+            {
+                ThrowForeignKeyBindingError(
+                    childSchema,
+                    foreignKey,
+                    loading,
+                    "has a referenced-table name that does not match its stable table identity");
+            }
+        }
+        else
+        {
+            referencedSchema = referencedSchemaByName;
+            if (referencedSchema is null)
+            {
+                ThrowForeignKeyBindingError(
+                    childSchema,
+                    foreignKey,
+                    loading,
+                    $"references missing table '{foreignKey.ReferencedTableName}'");
+            }
+        }
+
+        (string[] referencedColumnNames, Guid[] referencedColumnIds) =
+            ResolveForeignKeyColumns(
+                childSchema,
+                foreignKey,
+                referencedSchema.Columns,
+                requestedReferencedColumnNames,
+                foreignKey.ReferencedColumnSchemaIds,
+                "referenced",
+                loading);
+
+        Guid referencedKeyId = foreignKey.ReferencedKeySchemaId;
+        if (referencedKeyId != Guid.Empty)
+        {
+            KeyConstraintDefinition? referencedKey =
+                referencedSchema.KeyConstraints.FirstOrDefault(
+                    key => key.SchemaId == referencedKeyId);
+            if (referencedKey is null ||
+                !OrderedNamesEqual(
+                    referencedKey.Columns,
+                    referencedColumnNames))
+            {
+                if (loading)
+                {
+                    ThrowForeignKeyBindingError(
+                        childSchema,
+                        foreignKey,
+                        loading,
+                        $"has invalid referenced-key identity '{referencedKeyId}'");
+                }
+
+                referencedKeyId = referencedSchema.KeyConstraints
+                    .FirstOrDefault(key => OrderedNamesEqual(
+                        key.Columns,
+                        referencedColumnNames))?.SchemaId ?? Guid.Empty;
+            }
+        }
+        else
+        {
+            referencedKeyId = referencedSchema.KeyConstraints
+                .FirstOrDefault(key => OrderedNamesEqual(
+                    key.Columns,
+                    referencedColumnNames))?.SchemaId ?? Guid.Empty;
+        }
+
+        return new ForeignKeyDefinition
+        {
+            SchemaId = foreignKey.SchemaId,
+            ColumnSchemaIds = childColumnIds,
+            ReferencedTableSchemaId = referencedSchema.SchemaId,
+            ReferencedColumnSchemaIds = referencedColumnIds,
+            ReferencedKeySchemaId = referencedKeyId,
+            ConstraintName = foreignKey.ConstraintName,
+            ColumnName = childColumnNames[0],
+            ReferencedTableName = referencedSchema.TableName,
+            ReferencedColumnName = referencedColumnNames[0],
+            ColumnNames = childColumnNames,
+            ReferencedColumnNames = referencedColumnNames,
+            OnDelete = foreignKey.OnDelete,
+            SupportingIndexName = foreignKey.SupportingIndexName,
+        };
+    }
+
+    private static (string[] Names, Guid[] Identities)
+        ResolveForeignKeyColumns(
+            TableSchema childSchema,
+            ForeignKeyDefinition foreignKey,
+            IReadOnlyList<ColumnDefinition> availableColumns,
+            IReadOnlyList<string> requestedNames,
+        IReadOnlyList<Guid> boundIdentities,
+        string bindingKind,
+        bool loading)
+    {
+        if (requestedNames.Count == 0 ||
+            requestedNames.Distinct(
+                StringComparer.OrdinalIgnoreCase).Count() !=
+            requestedNames.Count)
+        {
+            ThrowForeignKeyBindingError(
+                childSchema,
+                foreignKey,
+                loading,
+                $"has invalid or repeated {bindingKind} columns");
+        }
+
+        Guid[] identitiesByName = ResolveColumnIds(
+            availableColumns,
+            requestedNames);
+        if (boundIdentities.Count == 0)
+        {
+            if (identitiesByName.Any(static identity =>
+                    identity == Guid.Empty))
+            {
+                ThrowForeignKeyBindingError(
+                    childSchema,
+                    foreignKey,
+                    loading,
+                    $"references a missing {bindingKind} column");
+            }
+
+            return (requestedNames.ToArray(), identitiesByName);
+        }
+
+        if (boundIdentities.Count != requestedNames.Count ||
+            boundIdentities.Any(static identity =>
+                identity == Guid.Empty) ||
+            boundIdentities.Distinct().Count() !=
+            boundIdentities.Count)
+        {
+            ThrowForeignKeyBindingError(
+                childSchema,
+                foreignKey,
+                loading,
+                $"has invalid {bindingKind}-column identity bindings");
+        }
+
+        var columnsByIdentity = new ColumnDefinition[boundIdentities.Count];
+        for (int i = 0; i < boundIdentities.Count; i++)
+        {
+            ColumnDefinition? boundColumn =
+                availableColumns.FirstOrDefault(column =>
+                    column.SchemaId == boundIdentities[i]);
+            if (boundColumn is null)
+            {
+                ThrowForeignKeyBindingError(
+                    childSchema,
+                    foreignKey,
+                    loading,
+                    $"is bound to missing {bindingKind} column identity '{boundIdentities[i]}'");
+            }
+
+            columnsByIdentity[i] = boundColumn;
+        }
+
+        if (identitiesByName.SequenceEqual(boundIdentities))
+            return (requestedNames.ToArray(), boundIdentities.ToArray());
+
+        if (loading)
+        {
+            ThrowForeignKeyBindingError(
+                childSchema,
+                foreignKey,
+                loading,
+                $"has conflicting {bindingKind}-column name and identity bindings");
+        }
+
+        return (
+            columnsByIdentity.Select(static column =>
+                column.Name).ToArray(),
+            boundIdentities.ToArray());
+    }
+
+    [DoesNotReturn]
+    private static void ThrowForeignKeyBindingError(
+        TableSchema childSchema,
+        ForeignKeyDefinition foreignKey,
+        bool loading,
+        string detail)
+    {
+        throw new CSharpDbException(
+            loading
+                ? ErrorCode.CorruptDatabase
+                : ErrorCode.ConstraintViolation,
+            $"Foreign key '{childSchema.TableName}.{foreignKey.ConstraintName}' {detail}.");
+    }
+
+    private static bool ForeignKeyBindingsEqual(
+        ForeignKeyDefinition left,
+        ForeignKeyDefinition right) =>
+        left.ReferencedTableSchemaId == right.ReferencedTableSchemaId &&
+        left.ReferencedKeySchemaId == right.ReferencedKeySchemaId &&
+        left.ColumnSchemaIds.SequenceEqual(right.ColumnSchemaIds) &&
+        left.ReferencedColumnSchemaIds.SequenceEqual(
+            right.ReferencedColumnSchemaIds) &&
+        string.Equals(
+            left.ColumnName,
+            right.ColumnName,
+            StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(
+            left.ReferencedTableName,
+            right.ReferencedTableName,
+            StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(
+            left.ReferencedColumnName,
+            right.ReferencedColumnName,
+            StringComparison.OrdinalIgnoreCase) &&
+        left.ColumnNames.SequenceEqual(
+            right.ColumnNames,
+            StringComparer.OrdinalIgnoreCase) &&
+        left.ReferencedColumnNames.SequenceEqual(
+            right.ReferencedColumnNames,
+            StringComparer.OrdinalIgnoreCase);
+
+    private static IReadOnlyList<string> GetForeignKeyColumnNames(
+        ForeignKeyDefinition foreignKey) =>
+        foreignKey.ColumnNames.Count > 0
+            ? foreignKey.ColumnNames
+            : [foreignKey.ColumnName];
+
+    private static IReadOnlyList<string> GetForeignKeyReferencedColumnNames(
+        ForeignKeyDefinition foreignKey) =>
+        foreignKey.ReferencedColumnNames.Count > 0
+            ? foreignKey.ReferencedColumnNames
+            : [foreignKey.ReferencedColumnName];
+
+    private async ValueTask PersistTableSchemaPayloadAsync(
+        TableSchema schema,
+        CancellationToken ct)
+    {
+        if (!_tableRootPages.TryGetValue(schema.TableName, out uint rootPage))
+        {
+            throw new CSharpDbException(
+                ErrorCode.TableNotFound,
+                $"Table '{schema.TableName}' not found.");
+        }
+
+        byte[] schemaBytes = _schemaSerializer.Serialize(schema);
+        byte[] payload = _catalogStore.WriteRootPayload(rootPage, schemaBytes);
+        long key = _schemaSerializer.TableNameToKey(schema.TableName);
+        if (!await _catalogTree!.ReplaceAsync(key, payload, ct))
+        {
+            throw new CSharpDbException(
+                ErrorCode.TableNotFound,
+                $"Table '{schema.TableName}' not found.");
+        }
+
+        _pager.SchemaRootPage = _catalogTree.RootPageId;
+        _persistedTableNextRowIds[schema.TableName] = schema.NextRowId;
+    }
+
     private void RebuildForeignKeyCaches()
     {
         _foreignKeysByTable.Clear();
@@ -2049,6 +2950,359 @@ internal sealed class CatalogService
         _referencingForeignKeysByParentTableId[referencedTableSchemaId] = new[] { reference };
     }
 
+    private static TableSchema AdoptStructurallyEquivalentIdentities(
+        TableSchema live,
+        TableSchema identitySource)
+    {
+        EnsureStructurallyEquivalent(live, identitySource);
+
+        Guid tableId = identitySource.SchemaId != Guid.Empty
+            ? identitySource.SchemaId
+            : live.SchemaId;
+        var columns = new ColumnDefinition[live.Columns.Count];
+        for (int i = 0; i < columns.Length; i++)
+        {
+            ColumnDefinition current = live.Columns[i];
+            ColumnDefinition source = identitySource.Columns[i];
+            columns[i] = new ColumnDefinition
+            {
+                SchemaId = source.SchemaId != Guid.Empty
+                    ? source.SchemaId
+                    : current.SchemaId,
+                Name = current.Name,
+                Type = current.Type,
+                Nullable = current.Nullable,
+                IsPrimaryKey = current.IsPrimaryKey,
+                IsIdentity = current.IsIdentity,
+                IsRowVersion = current.IsRowVersion,
+                Collation = current.Collation,
+                DefaultSql = current.DefaultSql,
+            };
+        }
+
+        var checks = new CheckConstraintDefinition[live.CheckConstraints.Count];
+        var usedSourceChecks = new bool[identitySource.CheckConstraints.Count];
+        for (int i = 0; i < checks.Length; i++)
+        {
+            CheckConstraintDefinition current = live.CheckConstraints[i];
+            int sourceIndex = TakeMatchingCheckIndex(
+                current,
+                identitySource,
+                usedSourceChecks);
+            CheckConstraintDefinition source =
+                identitySource.CheckConstraints[sourceIndex];
+            checks[i] = new CheckConstraintDefinition
+            {
+                SchemaId = source.SchemaId != Guid.Empty
+                    ? source.SchemaId
+                    : current.SchemaId,
+                ConstraintName = current.ConstraintName,
+                ExpressionSql = current.ExpressionSql,
+                ColumnName = current.ColumnName,
+            };
+        }
+
+        var keys = new KeyConstraintDefinition[live.KeyConstraints.Count];
+        var usedSourceKeys = new bool[identitySource.KeyConstraints.Count];
+        for (int i = 0; i < keys.Length; i++)
+        {
+            KeyConstraintDefinition current = live.KeyConstraints[i];
+            int sourceIndex = TakeMatchingKeyIndex(
+                current,
+                identitySource,
+                usedSourceKeys);
+            KeyConstraintDefinition source =
+                identitySource.KeyConstraints[sourceIndex];
+            keys[i] = new KeyConstraintDefinition
+            {
+                SchemaId = source.SchemaId != Guid.Empty
+                    ? source.SchemaId
+                    : current.SchemaId,
+                ConstraintName = current.ConstraintName,
+                Kind = current.Kind,
+                Columns = current.Columns,
+                BackingIndexName = current.BackingIndexName,
+            };
+        }
+
+        var foreignKeys = new ForeignKeyDefinition[live.ForeignKeys.Count];
+        var usedSourceForeignKeys = new bool[identitySource.ForeignKeys.Count];
+        for (int i = 0; i < foreignKeys.Length; i++)
+        {
+            ForeignKeyDefinition current = live.ForeignKeys[i];
+            int sourceIndex = TakeMatchingForeignKeyIndex(
+                current,
+                live.TableName,
+                identitySource,
+                usedSourceForeignKeys);
+            ForeignKeyDefinition source = identitySource.ForeignKeys[sourceIndex];
+            IReadOnlyList<string> childColumnNames =
+                GetForeignKeyColumnNames(current);
+            IReadOnlyList<string> referencedColumnNames =
+                GetForeignKeyReferencedColumnNames(current);
+            bool selfReference = string.Equals(
+                current.ReferencedTableName,
+                live.TableName,
+                StringComparison.OrdinalIgnoreCase);
+            Guid referencedTableId = selfReference
+                ? tableId
+                : current.ReferencedTableSchemaId;
+            Guid[] referencedColumnIds = selfReference
+                ? ResolveColumnIds(columns, referencedColumnNames)
+                : current.ReferencedColumnSchemaIds.ToArray();
+            Guid referencedKeyId = current.ReferencedKeySchemaId;
+            if (selfReference)
+            {
+                if (source.ReferencedKeySchemaId != Guid.Empty)
+                {
+                    KeyConstraintDefinition? adoptedReferencedKey =
+                        keys.FirstOrDefault(key =>
+                            key.SchemaId ==
+                            source.ReferencedKeySchemaId &&
+                            OrderedNamesEqual(
+                                key.Columns,
+                                referencedColumnNames));
+                    if (adoptedReferencedKey is null)
+                        ThrowIdentitySourceShapeMismatch(live.TableName);
+                    referencedKeyId =
+                        adoptedReferencedKey.SchemaId;
+                }
+                else
+                {
+                    referencedKeyId = keys.FirstOrDefault(key =>
+                        OrderedNamesEqual(
+                            key.Columns,
+                            referencedColumnNames))?.SchemaId ?? Guid.Empty;
+                }
+            }
+
+            foreignKeys[i] = new ForeignKeyDefinition
+            {
+                SchemaId = source.SchemaId != Guid.Empty
+                    ? source.SchemaId
+                    : current.SchemaId,
+                ColumnSchemaIds = ResolveColumnIds(
+                    columns,
+                    childColumnNames),
+                ReferencedTableSchemaId = referencedTableId,
+                ReferencedColumnSchemaIds = referencedColumnIds,
+                ReferencedKeySchemaId = referencedKeyId,
+                ConstraintName = current.ConstraintName,
+                ColumnName = current.ColumnName,
+                ReferencedTableName = current.ReferencedTableName,
+                ReferencedColumnName = current.ReferencedColumnName,
+                ColumnNames = current.ColumnNames,
+                ReferencedColumnNames = current.ReferencedColumnNames,
+                OnDelete = current.OnDelete,
+                SupportingIndexName = current.SupportingIndexName,
+            };
+        }
+
+        return new TableSchema
+        {
+            SchemaId = tableId,
+            TableName = live.TableName,
+            Columns = columns,
+            ForeignKeys = foreignKeys,
+            CheckConstraints = checks,
+            KeyConstraints = keys,
+            QualifiedMappings = live.QualifiedMappings,
+            NextRowId = live.NextRowId,
+        };
+    }
+
+    private static void EnsureStructurallyEquivalent(
+        TableSchema live,
+        TableSchema identitySource)
+    {
+        if (live.Columns.Count != identitySource.Columns.Count ||
+            live.ForeignKeys.Count != identitySource.ForeignKeys.Count ||
+            live.CheckConstraints.Count != identitySource.CheckConstraints.Count ||
+            live.KeyConstraints.Count != identitySource.KeyConstraints.Count)
+        {
+            ThrowIdentitySourceShapeMismatch(live.TableName);
+        }
+
+        for (int i = 0; i < live.Columns.Count; i++)
+        {
+            ColumnDefinition left = live.Columns[i];
+            ColumnDefinition right = identitySource.Columns[i];
+            if (!string.Equals(left.Name, right.Name, StringComparison.OrdinalIgnoreCase) ||
+                left.Type != right.Type ||
+                left.Nullable != right.Nullable ||
+                left.IsPrimaryKey != right.IsPrimaryKey ||
+                left.IsIdentity != right.IsIdentity ||
+                left.IsRowVersion != right.IsRowVersion ||
+                !string.Equals(left.Collation, right.Collation, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(left.DefaultSql, right.DefaultSql, StringComparison.Ordinal))
+            {
+                ThrowIdentitySourceShapeMismatch(live.TableName);
+            }
+        }
+
+        var usedSourceForeignKeys = new bool[identitySource.ForeignKeys.Count];
+        for (int i = 0; i < live.ForeignKeys.Count; i++)
+            TakeMatchingForeignKeyIndex(
+                live.ForeignKeys[i],
+                live.TableName,
+                identitySource,
+                usedSourceForeignKeys);
+
+        var usedSourceChecks = new bool[identitySource.CheckConstraints.Count];
+        for (int i = 0; i < live.CheckConstraints.Count; i++)
+            TakeMatchingCheckIndex(
+                live.CheckConstraints[i],
+                identitySource,
+                usedSourceChecks);
+
+        var usedSourceKeys = new bool[identitySource.KeyConstraints.Count];
+        for (int i = 0; i < live.KeyConstraints.Count; i++)
+            TakeMatchingKeyIndex(
+                live.KeyConstraints[i],
+                identitySource,
+                usedSourceKeys);
+    }
+
+    private static int TakeMatchingForeignKeyIndex(
+        ForeignKeyDefinition liveForeignKey,
+        string liveTableName,
+        TableSchema identitySource,
+        bool[] used)
+    {
+        for (int i = 0; i < identitySource.ForeignKeys.Count; i++)
+        {
+            if (used[i] ||
+                !ForeignKeysStructurallyEquivalent(
+                    liveForeignKey,
+                    liveTableName,
+                    identitySource.ForeignKeys[i],
+                    identitySource.TableName))
+            {
+                continue;
+            }
+
+            used[i] = true;
+            return i;
+        }
+
+        ThrowIdentitySourceShapeMismatch(liveTableName);
+        return -1;
+    }
+
+    private static int TakeMatchingCheckIndex(
+        CheckConstraintDefinition liveCheck,
+        TableSchema identitySource,
+        bool[] used)
+    {
+        for (int i = 0; i < identitySource.CheckConstraints.Count; i++)
+        {
+            if (used[i] ||
+                !ChecksStructurallyEquivalent(
+                    liveCheck,
+                    identitySource.CheckConstraints[i]))
+            {
+                continue;
+            }
+
+            used[i] = true;
+            return i;
+        }
+
+        ThrowIdentitySourceShapeMismatch(identitySource.TableName);
+        return -1;
+    }
+
+    private static int TakeMatchingKeyIndex(
+        KeyConstraintDefinition liveKey,
+        TableSchema identitySource,
+        bool[] used)
+    {
+        for (int i = 0; i < identitySource.KeyConstraints.Count; i++)
+        {
+            if (used[i] ||
+                !KeysStructurallyEquivalent(
+                    liveKey,
+                    identitySource.KeyConstraints[i]))
+            {
+                continue;
+            }
+
+            used[i] = true;
+            return i;
+        }
+
+        ThrowIdentitySourceShapeMismatch(identitySource.TableName);
+        return -1;
+    }
+
+    private static bool ForeignKeysStructurallyEquivalent(
+        ForeignKeyDefinition left,
+        string leftTableName,
+        ForeignKeyDefinition right,
+        string rightTableName)
+    {
+        bool leftSelfReference = string.Equals(
+            left.ReferencedTableName,
+            leftTableName,
+            StringComparison.OrdinalIgnoreCase);
+        bool rightSelfReference = string.Equals(
+            right.ReferencedTableName,
+            rightTableName,
+            StringComparison.OrdinalIgnoreCase);
+        bool referencedTablesEqual =
+            leftSelfReference && rightSelfReference ||
+            string.Equals(
+                left.ReferencedTableName,
+                right.ReferencedTableName,
+                StringComparison.OrdinalIgnoreCase);
+        return string.Equals(
+                left.ConstraintName,
+                right.ConstraintName,
+                StringComparison.OrdinalIgnoreCase) &&
+            OrderedNamesEqual(
+                GetForeignKeyColumnNames(left),
+                GetForeignKeyColumnNames(right)) &&
+            referencedTablesEqual &&
+            OrderedNamesEqual(
+                GetForeignKeyReferencedColumnNames(left),
+                GetForeignKeyReferencedColumnNames(right)) &&
+            left.OnDelete == right.OnDelete;
+    }
+
+    private static bool ChecksStructurallyEquivalent(
+        CheckConstraintDefinition left,
+        CheckConstraintDefinition right) =>
+        string.Equals(
+            left.ConstraintName,
+            right.ConstraintName,
+            StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(
+            left.ExpressionSql,
+            right.ExpressionSql,
+            StringComparison.Ordinal) &&
+        string.Equals(
+            left.ColumnName,
+            right.ColumnName,
+            StringComparison.OrdinalIgnoreCase);
+
+    private static bool KeysStructurallyEquivalent(
+        KeyConstraintDefinition left,
+        KeyConstraintDefinition right) =>
+        string.Equals(
+            left.ConstraintName,
+            right.ConstraintName,
+            StringComparison.OrdinalIgnoreCase) &&
+        left.Kind == right.Kind &&
+        OrderedNamesEqual(left.Columns, right.Columns);
+
+    [DoesNotReturn]
+    private static void ThrowIdentitySourceShapeMismatch(string tableName)
+    {
+        throw new CSharpDbException(
+            ErrorCode.ConstraintViolation,
+            $"Stable identities can only be applied to a structurally equivalent schema for table '{tableName}'.");
+    }
+
     private TableSchema NormalizeNewTableSchema(TableSchema schema)
     {
         long normalizedNextRowId = schema.NextRowId > 0 ? schema.NextRowId : 1;
@@ -2090,7 +3344,11 @@ internal sealed class CatalogService
         ColumnDefinition[] columns = schema.Columns
             .Select(column =>
             {
-                ColumnDefinition? prior = previous?.Columns.FirstOrDefault(
+                ColumnDefinition? prior = column.SchemaId != Guid.Empty
+                    ? previous?.Columns.FirstOrDefault(
+                        candidate => candidate.SchemaId == column.SchemaId)
+                    : null;
+                prior ??= previous?.Columns.FirstOrDefault(
                     candidate => string.Equals(
                         candidate.Name,
                         column.Name,
@@ -2118,14 +3376,14 @@ internal sealed class CatalogService
         KeyConstraintDefinition[] keys = schema.KeyConstraints
             .Select(constraint =>
             {
-                KeyConstraintDefinition? prior =
-                    previous?.KeyConstraints.FirstOrDefault(
-                        candidate =>
-                            constraint.ConstraintName is not null &&
-                            string.Equals(
-                                candidate.ConstraintName,
-                                constraint.ConstraintName,
-                                StringComparison.OrdinalIgnoreCase));
+                KeyConstraintDefinition? prior = constraint.SchemaId != Guid.Empty
+                    ? previous?.KeyConstraints.FirstOrDefault(
+                        candidate => candidate.SchemaId == constraint.SchemaId)
+                    : null;
+                prior ??= previous?.KeyConstraints.FirstOrDefault(
+                    candidate => KeyConstraintsRepresentSameObject(
+                        candidate,
+                        constraint));
                 return new KeyConstraintDefinition
                 {
                     SchemaId = ResolveIdentity(constraint.SchemaId, prior?.SchemaId),
@@ -2140,7 +3398,11 @@ internal sealed class CatalogService
         ForeignKeyDefinition[] foreignKeys = schema.ForeignKeys
             .Select(constraint =>
             {
-                ForeignKeyDefinition? prior = previous?.ForeignKeys.FirstOrDefault(
+                ForeignKeyDefinition? prior = constraint.SchemaId != Guid.Empty
+                    ? previous?.ForeignKeys.FirstOrDefault(
+                        candidate => candidate.SchemaId == constraint.SchemaId)
+                    : null;
+                prior ??= previous?.ForeignKeys.FirstOrDefault(
                     candidate => string.Equals(
                         candidate.ConstraintName,
                         constraint.ConstraintName,
@@ -2153,9 +3415,12 @@ internal sealed class CatalogService
                     constraint.ReferencedColumnNames.Count > 0
                         ? constraint.ReferencedColumnNames
                         : [constraint.ReferencedColumnName];
-                Guid[] childColumnIds = ResolveColumnIds(
-                    columns,
-                    childColumnNames);
+                Guid[] childColumnIds =
+                    constraint.ColumnSchemaIds.Count > 0
+                        ? constraint.ColumnSchemaIds.ToArray()
+                        : ResolveColumnIds(
+                            columns,
+                            childColumnNames);
 
                 bool selfReference = string.Equals(
                     constraint.ReferencedTableName,
@@ -2164,21 +3429,32 @@ internal sealed class CatalogService
                 TableSchema? referencedSchema = selfReference
                     ? null
                     : _cache.GetValueOrDefault(constraint.ReferencedTableName);
-                Guid referencedTableId = selfReference
-                    ? tableId
-                    : referencedSchema?.SchemaId ?? constraint.ReferencedTableSchemaId;
+                Guid referencedTableId =
+                    constraint.ReferencedTableSchemaId != Guid.Empty
+                        ? constraint.ReferencedTableSchemaId
+                        : selfReference
+                            ? tableId
+                            : referencedSchema?.SchemaId ?? Guid.Empty;
                 IReadOnlyList<ColumnDefinition> referencedColumns = selfReference
                     ? columns
                     : referencedSchema?.Columns ?? [];
                 IReadOnlyList<KeyConstraintDefinition> referencedKeys = selfReference
                     ? keys
                     : referencedSchema?.KeyConstraints ?? [];
-                Guid[] referencedColumnIds = ResolveColumnIds(
-                    referencedColumns,
-                    referencedColumnNames);
-                Guid referencedKeyId = referencedKeys.FirstOrDefault(key =>
-                    OrderedNamesEqual(key.Columns, referencedColumnNames))?.SchemaId
-                    ?? constraint.ReferencedKeySchemaId;
+                Guid[] referencedColumnIds =
+                    constraint.ReferencedColumnSchemaIds.Count > 0
+                        ? constraint.ReferencedColumnSchemaIds.ToArray()
+                        : ResolveColumnIds(
+                            referencedColumns,
+                            referencedColumnNames);
+                Guid referencedKeyId =
+                    constraint.ReferencedKeySchemaId != Guid.Empty
+                        ? constraint.ReferencedKeySchemaId
+                        : referencedKeys.FirstOrDefault(key =>
+                            OrderedNamesEqual(
+                                key.Columns,
+                                referencedColumnNames))?.SchemaId ??
+                          Guid.Empty;
                 return new ForeignKeyDefinition
                 {
                     SchemaId = ResolveIdentity(constraint.SchemaId, prior?.SchemaId),
@@ -2201,14 +3477,14 @@ internal sealed class CatalogService
         CheckConstraintDefinition[] checks = schema.CheckConstraints
             .Select(constraint =>
             {
-                CheckConstraintDefinition? prior =
-                    previous?.CheckConstraints.FirstOrDefault(
-                        candidate =>
-                            constraint.ConstraintName is not null &&
-                            string.Equals(
-                                candidate.ConstraintName,
-                                constraint.ConstraintName,
-                                StringComparison.OrdinalIgnoreCase));
+                CheckConstraintDefinition? prior = constraint.SchemaId != Guid.Empty
+                    ? previous?.CheckConstraints.FirstOrDefault(
+                        candidate => candidate.SchemaId == constraint.SchemaId)
+                    : null;
+                prior ??= previous?.CheckConstraints.FirstOrDefault(
+                    candidate => CheckConstraintsRepresentSameObject(
+                        candidate,
+                        constraint));
                 return new CheckConstraintDefinition
                 {
                     SchemaId = ResolveIdentity(constraint.SchemaId, prior?.SchemaId),
@@ -2248,6 +3524,50 @@ internal sealed class CatalogService
                 name,
                 StringComparison.OrdinalIgnoreCase))?.SchemaId ?? Guid.Empty)
             .ToArray();
+
+    private static bool KeyConstraintsRepresentSameObject(
+        KeyConstraintDefinition left,
+        KeyConstraintDefinition right)
+    {
+        if (left.ConstraintName is not null ||
+            right.ConstraintName is not null)
+        {
+            return left.ConstraintName is not null &&
+                right.ConstraintName is not null &&
+                string.Equals(
+                    left.ConstraintName,
+                    right.ConstraintName,
+                    StringComparison.OrdinalIgnoreCase);
+        }
+
+        return left.Kind == right.Kind &&
+            OrderedNamesEqual(left.Columns, right.Columns);
+    }
+
+    private static bool CheckConstraintsRepresentSameObject(
+        CheckConstraintDefinition left,
+        CheckConstraintDefinition right)
+    {
+        if (left.ConstraintName is not null ||
+            right.ConstraintName is not null)
+        {
+            return left.ConstraintName is not null &&
+                right.ConstraintName is not null &&
+                string.Equals(
+                    left.ConstraintName,
+                    right.ConstraintName,
+                    StringComparison.OrdinalIgnoreCase);
+        }
+
+        return string.Equals(
+                left.ExpressionSql,
+                right.ExpressionSql,
+                StringComparison.Ordinal) &&
+            string.Equals(
+                left.ColumnName,
+                right.ColumnName,
+                StringComparison.OrdinalIgnoreCase);
+    }
 
     private static bool OrderedNamesEqual(
         IReadOnlyList<string> left,

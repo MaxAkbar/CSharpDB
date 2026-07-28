@@ -15,7 +15,9 @@ public static class SchemaIdentity
     public static Guid Create() => Guid.NewGuid();
 
     public static Guid ForLegacyTable(string tableName) =>
-        Derive(LegacyNamespace, $"table:{tableName.ToUpperInvariant()}");
+        Derive(
+            LegacyNamespace,
+            $"table:{CanonicalizeOrdinalIgnoreCase(tableName)}");
 
     public static Guid ForLegacyColumn(
         Guid tableId,
@@ -23,7 +25,7 @@ public static class SchemaIdentity
         int ordinal) =>
         Derive(
             tableId,
-            $"column:{ordinal}:{columnName.ToUpperInvariant()}");
+            $"column:{ordinal}:{CanonicalizeOrdinalIgnoreCase(columnName)}");
 
     public static Guid ForLegacyConstraint(
         Guid tableId,
@@ -32,7 +34,39 @@ public static class SchemaIdentity
         int ordinal) =>
         Derive(
             tableId,
-            $"{kind}:{ordinal}:{name?.ToUpperInvariant() ?? "<unnamed>"}");
+            $"{kind}:{ordinal}:{(name is null ? "<unnamed>" : CanonicalizeOrdinalIgnoreCase(name))}");
+
+    /// <summary>
+    /// Produces a deterministic representative for the same equivalence relation
+    /// used by <see cref="StringComparer.OrdinalIgnoreCase"/>.
+    /// </summary>
+    /// <remarks>
+    /// Unconditionally calling <see cref="string.ToUpperInvariant"/> is not safe
+    /// here: invariant casing folds some characters (for example, the long s)
+    /// that ordinal-ignore-case deliberately keeps distinct. Apply a casing
+    /// transform only when the comparer itself confirms that it is equivalent.
+    /// </remarks>
+    public static string CanonicalizeOrdinalIgnoreCase(string value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+
+        var canonical = new StringBuilder(value.Length);
+        foreach (Rune rune in value.EnumerateRunes())
+        {
+            Rune upper = Rune.ToUpperInvariant(rune);
+            string originalText = rune.ToString();
+            string upperText = upper.ToString();
+            canonical.Append(
+                string.Equals(
+                    originalText,
+                    upperText,
+                    StringComparison.OrdinalIgnoreCase)
+                    ? upperText
+                    : originalText);
+        }
+
+        return canonical.ToString();
+    }
 
     private static Guid Derive(Guid namespaceId, string value)
     {

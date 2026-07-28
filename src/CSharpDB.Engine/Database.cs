@@ -1400,6 +1400,29 @@ public sealed class Database : IAsyncDisposable
     public TableSchema? GetTableSchema(string tableName) => _catalog.GetTable(tableName);
 
     /// <summary>
+    /// Applies trusted stable identities to a structurally equivalent table.
+    /// Used only by exact recovery while an explicit transaction is active.
+    /// </summary>
+    internal async ValueTask ApplyTableSchemaIdentitiesAsync(
+        string tableName,
+        TableSchema identitySource,
+        CancellationToken ct = default)
+    {
+        if (!_inTransaction)
+        {
+            throw new InvalidOperationException(
+                "Schema identities can only be applied inside an explicit transaction.");
+        }
+
+        await _catalog.ApplyTableSchemaIdentitiesAsync(
+            tableName,
+            identitySource,
+            ct);
+        _statementCache.Clear();
+        _observedSchemaVersion = _catalog.SchemaVersion;
+    }
+
+    /// <summary>
     /// Returns all indexes defined in the database.
     /// </summary>
     public IReadOnlyCollection<IndexSchema> GetIndexes() => _catalog.GetIndexes();

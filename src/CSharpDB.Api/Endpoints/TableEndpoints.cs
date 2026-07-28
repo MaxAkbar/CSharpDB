@@ -9,6 +9,18 @@ public static class TableEndpoints
     public static RouteGroupBuilder MapTableEndpoints(this RouteGroupBuilder group)
     {
         group.MapGet("/tables", GetTableNames);
+        group.MapGet("/tables/schema", GetTableSchema);
+        group.MapGet("/table-operations/count", GetRowCount);
+        group.MapDelete("/table-operations/table", DropTable);
+        group.MapPatch("/table-operations/table/rename", RenameTable);
+        group.MapPost("/table-operations/columns", AddColumn);
+        group.MapDelete("/table-operations/columns", DropColumn);
+        group.MapPatch("/table-operations/columns/rename", RenameColumn);
+
+        // Retain the original path-based routes for existing callers. New
+        // clients use the separate query-based namespace above so quoted
+        // identifiers that contain path syntax such as '/' round-trip without
+        // route rewriting or shadowing table names.
         group.MapGet("/tables/{name}/schema", GetTableSchema);
         group.MapGet("/tables/{name}/count", GetRowCount);
         group.MapDelete("/tables/{name}", DropTable);
@@ -87,7 +99,8 @@ public static class TableEndpoints
 
     private static async Task<IResult> AddColumn(string name, AddColumnRequest req, ICSharpDbClient db)
     {
-        if (!Enum.TryParse<DbType>(req.Type, ignoreCase: true, out var dbType))
+        if (!Enum.TryParse<DbType>(req.Type, ignoreCase: true, out var dbType) ||
+            !Enum.IsDefined(dbType))
             return Results.BadRequest(new { error = $"Invalid column type '{req.Type}'. Valid types: Integer, Real, Text, Blob." });
 
         await db.AddColumnAsync(name, req.ColumnName, dbType, req.NotNull, req.Collation);

@@ -253,7 +253,11 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
 
     public async Task<TableSchema?> GetTableSchemaAsync(string tableName, CancellationToken ct = default)
     {
-        using var response = await SendAsync(HttpMethod.Get, BuildUri($"api/tables/{Escape(tableName)}/schema"), payload: null, ct);
+        using var response = await SendAsync(
+            HttpMethod.Get,
+            BuildUri("api/tables/schema", Q("name", tableName)),
+            payload: null,
+            ct);
         if (response.StatusCode == HttpStatusCode.NotFound)
         {
             var error = await ReadErrorAsync(response, ct);
@@ -267,7 +271,11 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
 
     public async Task<int> GetRowCountAsync(string tableName, CancellationToken ct = default)
     {
-        using var response = await SendAsync(HttpMethod.Get, BuildUri($"api/tables/{Escape(tableName)}/count"), payload: null, ct);
+        using var response = await SendAsync(
+            HttpMethod.Get,
+            BuildUri("api/table-operations/count", Q("name", tableName)),
+            payload: null,
+            ct);
         var payload = await ReadRequiredAsync<ApiRowCountResponse>(response, ct);
         return payload.Count;
     }
@@ -280,7 +288,8 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
         using var response = await SendAsync(
             HttpMethod.Get,
             BuildUri(
-                $"api/tables/{Escape(tableName)}/rows",
+                "api/table-operations/rows",
+                Q("name", tableName),
                 Q("page", page.ToString(System.Globalization.CultureInfo.InvariantCulture)),
                 Q("pageSize", pageSize.ToString(System.Globalization.CultureInfo.InvariantCulture))),
             payload: null,
@@ -302,7 +311,11 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
     {
         using var response = await SendAsync(
             HttpMethod.Get,
-            BuildUri($"api/tables/{Escape(tableName)}/rows/{Escape(ConvertKey(pkValue))}", Q("pkColumn", pkColumn)),
+            BuildUri(
+                "api/table-operations/row",
+                Q("name", tableName),
+                Q("pkColumn", pkColumn),
+                Q("pkValue", ConvertKey(pkValue))),
             payload: null,
             ct);
 
@@ -319,7 +332,11 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
 
     public async Task<int> InsertRowAsync(string tableName, Dictionary<string, object?> values, CancellationToken ct = default)
     {
-        using var response = await SendAsync(HttpMethod.Post, BuildUri($"api/tables/{Escape(tableName)}/rows"), new { Values = values }, ct);
+        using var response = await SendAsync(
+            HttpMethod.Post,
+            BuildUri("api/table-operations/rows", Q("name", tableName)),
+            new { Values = values },
+            ct);
         var payload = await ReadRequiredAsync<ApiMutationResponse>(response, ct);
         return payload.RowsAffected;
     }
@@ -328,7 +345,11 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
     {
         using var response = await SendAsync(
             HttpMethod.Put,
-            BuildUri($"api/tables/{Escape(tableName)}/rows/{Escape(ConvertKey(pkValue))}", Q("pkColumn", pkColumn)),
+            BuildUri(
+                "api/table-operations/row",
+                Q("name", tableName),
+                Q("pkColumn", pkColumn),
+                Q("pkValue", ConvertKey(pkValue))),
             new { Values = values },
             ct);
         var payload = await ReadRequiredAsync<ApiMutationResponse>(response, ct);
@@ -339,7 +360,11 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
     {
         using var response = await SendAsync(
             HttpMethod.Delete,
-            BuildUri($"api/tables/{Escape(tableName)}/rows/{Escape(ConvertKey(pkValue))}", Q("pkColumn", pkColumn)),
+            BuildUri(
+                "api/table-operations/row",
+                Q("name", tableName),
+                Q("pkColumn", pkColumn),
+                Q("pkValue", ConvertKey(pkValue))),
             payload: null,
             ct);
 
@@ -356,13 +381,21 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
 
     public async Task DropTableAsync(string tableName, CancellationToken ct = default)
     {
-        using var response = await SendAsync(HttpMethod.Delete, BuildUri($"api/tables/{Escape(tableName)}"), payload: null, ct);
+        using var response = await SendAsync(
+            HttpMethod.Delete,
+            BuildUri("api/table-operations/table", Q("name", tableName)),
+            payload: null,
+            ct);
         await EnsureSuccessAsync(response, ct);
     }
 
     public async Task RenameTableAsync(string tableName, string newTableName, CancellationToken ct = default)
     {
-        using var response = await SendAsync(HttpMethod.Patch, BuildUri($"api/tables/{Escape(tableName)}/rename"), new { NewName = newTableName }, ct);
+        using var response = await SendAsync(
+            HttpMethod.Patch,
+            BuildUri("api/table-operations/table/rename", Q("name", tableName)),
+            new { NewName = newTableName },
+            ct);
         await EnsureSuccessAsync(response, ct);
     }
 
@@ -373,7 +406,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
     {
         using var response = await SendAsync(
             HttpMethod.Post,
-            BuildUri($"api/tables/{Escape(tableName)}/columns"),
+            BuildUri("api/table-operations/columns", Q("name", tableName)),
             new { ColumnName = columnName, Type = type.ToString(), NotNull = notNull, Collation = collation },
             ct);
         await EnsureSuccessAsync(response, ct);
@@ -381,7 +414,14 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
 
     public async Task DropColumnAsync(string tableName, string columnName, CancellationToken ct = default)
     {
-        using var response = await SendAsync(HttpMethod.Delete, BuildUri($"api/tables/{Escape(tableName)}/columns/{Escape(columnName)}"), payload: null, ct);
+        using var response = await SendAsync(
+            HttpMethod.Delete,
+            BuildUri(
+                "api/table-operations/columns",
+                Q("name", tableName),
+                Q("col", columnName)),
+            payload: null,
+            ct);
         await EnsureSuccessAsync(response, ct);
     }
 
@@ -389,7 +429,10 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
     {
         using var response = await SendAsync(
             HttpMethod.Patch,
-            BuildUri($"api/tables/{Escape(tableName)}/columns/{Escape(oldColumnName)}/rename"),
+            BuildUri(
+                "api/table-operations/columns/rename",
+                Q("name", tableName),
+                Q("col", oldColumnName)),
             new { NewName = newColumnName },
             ct);
         await EnsureSuccessAsync(response, ct);
@@ -935,7 +978,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
         if (query.Length == 0)
             return uri;
 
-        var nonEmpty = query.Where(pair => !string.IsNullOrWhiteSpace(pair.Value)).ToArray();
+        var nonEmpty = query.Where(static pair => pair.Value is not null).ToArray();
         if (nonEmpty.Length == 0)
             return uri;
 
@@ -991,7 +1034,8 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
     }
 
     private static TableSchema MapTableSchema(ApiTableSchemaResponse payload)
-        => new()
+    {
+        var schema = new TableSchema
         {
             SchemaId = payload.SchemaId,
             TableName = payload.TableName,
@@ -1001,6 +1045,9 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
             KeyConstraints = (payload.KeyConstraints ?? []).Select(MapKeyConstraint).ToList(),
             NextRowId = payload.NextRowId,
         };
+        StableSchemaIdentityValidator.Validate(schema);
+        return schema;
+    }
 
     private static ColumnDefinition MapColumn(ApiColumnResponse payload)
         => new()
@@ -1008,6 +1055,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
             SchemaId = payload.SchemaId,
             Name = payload.Name,
             Type = Enum.TryParse<DbType>(payload.Type, ignoreCase: true, out var type)
+                && Enum.IsDefined(type)
                 ? type
                 : throw new CSharpDbClientException($"Unsupported column type '{payload.Type}'."),
             Nullable = payload.Nullable,
@@ -1033,6 +1081,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
             ColumnNames = payload.ColumnNames is { Count: > 0 } ? payload.ColumnNames : [payload.ColumnName],
             ReferencedColumnNames = payload.ReferencedColumnNames is { Count: > 0 } ? payload.ReferencedColumnNames : [payload.ReferencedColumnName],
             OnDelete = Enum.TryParse<ForeignKeyOnDeleteAction>(payload.OnDelete, ignoreCase: true, out var onDelete)
+                && Enum.IsDefined(onDelete)
                 ? onDelete
                 : throw new CSharpDbClientException($"Unsupported foreign key ON DELETE action '{payload.OnDelete}'."),
             SupportingIndexName = payload.SupportingIndexName,
@@ -1083,9 +1132,11 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
             TriggerName = payload.TriggerName,
             TableName = payload.TableName,
             Timing = Enum.TryParse<TriggerTiming>(payload.Timing, ignoreCase: true, out var timing)
+                && Enum.IsDefined(timing)
                 ? timing
                 : throw new CSharpDbClientException($"Unsupported trigger timing '{payload.Timing}'."),
             Event = Enum.TryParse<TriggerEvent>(payload.Event, ignoreCase: true, out var triggerEvent)
+                && Enum.IsDefined(triggerEvent)
                 ? triggerEvent
                 : throw new CSharpDbClientException($"Unsupported trigger event '{payload.Event}'."),
             BodySql = payload.BodySql,
@@ -1100,6 +1151,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
             {
                 Name = parameter.Name,
                 Type = Enum.TryParse<DbType>(parameter.Type, ignoreCase: true, out var type)
+                    && Enum.IsDefined(type)
                     ? type
                     : throw new CSharpDbClientException($"Unsupported procedure parameter type '{parameter.Type}'."),
                 Required = parameter.Required,

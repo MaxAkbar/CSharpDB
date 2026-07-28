@@ -8,6 +8,15 @@ public static class RowEndpoints
 {
     public static RouteGroupBuilder MapRowEndpoints(this RouteGroupBuilder group)
     {
+        group.MapGet("/table-operations/rows", BrowseRows);
+        group.MapGet("/table-operations/row", GetRowByPk);
+        group.MapPost("/table-operations/rows", InsertRow);
+        group.MapPut("/table-operations/row", UpdateRow);
+        group.MapDelete("/table-operations/row", DeleteRow);
+
+        // Backward-compatible path routes. Query-based routes are canonical
+        // because route segments cannot faithfully carry every quoted SQL
+        // identifier or primary-key string.
         group.MapGet("/tables/{name}/rows", BrowseRows);
         group.MapGet("/tables/{name}/rows/{pkValue}", GetRowByPk);
         group.MapPost("/tables/{name}/rows", InsertRow);
@@ -47,7 +56,9 @@ public static class RowEndpoints
     {
         var values = JsonHelper.CoerceDictionary(req.Values);
         var affected = await db.InsertRowAsync(name, values);
-        return Results.Created($"/api/tables/{name}/rows", new MutationResponse(affected));
+        return Results.Created(
+            $"/api/table-operations/rows?name={Uri.EscapeDataString(name)}",
+            new MutationResponse(affected));
     }
 
     private static async Task<IResult> UpdateRow(

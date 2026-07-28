@@ -89,7 +89,8 @@ public static class ProcedureEndpoints
         {
             foreach (var p in parameters)
             {
-                if (!Enum.TryParse<DbType>(p.Type, ignoreCase: true, out var type))
+                if (!Enum.TryParse<DbType>(p.Type, ignoreCase: true, out var type) ||
+                    !Enum.IsDefined(type))
                     throw new ArgumentException($"Invalid procedure parameter type '{p.Type}'.");
 
                 mappedParameters.Add(new ProcedureParameterDefinition

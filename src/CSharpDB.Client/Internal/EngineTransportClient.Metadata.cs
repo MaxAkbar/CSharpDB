@@ -109,7 +109,10 @@ internal sealed partial class EngineTransportClient
 
     private static async Task<int> CountRowsViaScalarAsync(Database db, string tableName, CancellationToken ct)
     {
-        var result = await ExecuteQueryAsync(db, $"SELECT COUNT(*) FROM {tableName};", ct);
+        var result = await ExecuteQueryAsync(
+            db,
+            $"SELECT COUNT(*) FROM {CSharpDB.Primitives.SqlIdentifierRules.Quote(tableName)};",
+            ct);
         if (result.Rows is null || result.Rows.Count == 0 || result.Rows[0].Length == 0 || result.Rows[0][0] is null)
             return 0;
 

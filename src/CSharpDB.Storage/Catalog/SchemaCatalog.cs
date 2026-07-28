@@ -166,6 +166,12 @@ public sealed class SchemaCatalog
     public ValueTask UpdateTableSchemaAsync(string oldTableName, TableSchema newSchema, CancellationToken ct = default) =>
         _service.UpdateTableSchemaAsync(oldTableName, newSchema, ct);
 
+    internal ValueTask ApplyTableSchemaIdentitiesAsync(
+        string tableName,
+        TableSchema identitySource,
+        CancellationToken ct = default) =>
+        _service.ApplyTableSchemaIdentitiesAsync(tableName, identitySource, ct);
+
     public ValueTask<uint> ReplaceTableStorageAsync(
         string tableName,
         TableSchema newSchema,

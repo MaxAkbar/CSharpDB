@@ -200,13 +200,46 @@ public static class GrpcModelMapper
     }
 
     public static ForeignKeyDefinition ToModel(ForeignKeyDefinitionMessage value)
-        => new()
+    {
+        string[] columnNames =
+            value.ColumnNames.Count > 0
+                ? value.ColumnNames.ToArray()
+                : [value.ColumnName];
+        string[] referencedColumnNames =
+            value.ReferencedColumnNames.Count > 0
+                ? value.ReferencedColumnNames.ToArray()
+                : [value.ReferencedColumnName];
+        if (columnNames.Length != referencedColumnNames.Length)
+        {
+            throw new CSharpDbClientException(
+                $"The server returned inconsistent ordered columns for foreign key '{value.ConstraintName}'.");
+        }
+
+        Guid[] columnSchemaIds = value.ColumnSchemaIds
+            .Select(ParseRequiredSchemaId)
+            .ToArray();
+        Guid[] referencedColumnSchemaIds = value.ReferencedColumnSchemaIds
+            .Select(ParseRequiredSchemaId)
+            .ToArray();
+        if (columnSchemaIds.Length != 0 &&
+            columnSchemaIds.Length != columnNames.Length)
+        {
+            throw new CSharpDbClientException(
+                $"The server returned {columnSchemaIds.Length} child-column identities for foreign key '{value.ConstraintName}', expected {columnNames.Length}.");
+        }
+        if (referencedColumnSchemaIds.Length != 0 &&
+            referencedColumnSchemaIds.Length != referencedColumnNames.Length)
+        {
+            throw new CSharpDbClientException(
+                $"The server returned {referencedColumnSchemaIds.Length} referenced-column identities for foreign key '{value.ConstraintName}', expected {referencedColumnNames.Length}.");
+        }
+
+        return new ForeignKeyDefinition
         {
             SchemaId = ParseSchemaId(value.SchemaId),
-            ColumnSchemaIds = value.ColumnSchemaIds.Select(ParseSchemaId).ToArray(),
+            ColumnSchemaIds = columnSchemaIds,
             ReferencedTableSchemaId = ParseSchemaId(value.ReferencedTableSchemaId),
-            ReferencedColumnSchemaIds =
-                value.ReferencedColumnSchemaIds.Select(ParseSchemaId).ToArray(),
+            ReferencedColumnSchemaIds = referencedColumnSchemaIds,
             ReferencedKeySchemaId = ParseSchemaId(value.ReferencedKeySchemaId),
             ConstraintName = value.ConstraintName,
             ColumnName = value.ColumnName,
@@ -214,9 +247,10 @@ public static class GrpcModelMapper
             ReferencedColumnName = value.ReferencedColumnName,
             OnDelete = ToModel(value.OnDelete),
             SupportingIndexName = value.SupportingIndexName,
-            ColumnNames = value.ColumnNames.Count > 0 ? value.ColumnNames.ToArray() : [value.ColumnName],
-            ReferencedColumnNames = value.ReferencedColumnNames.Count > 0 ? value.ReferencedColumnNames.ToArray() : [value.ReferencedColumnName],
+            ColumnNames = columnNames,
+            ReferencedColumnNames = referencedColumnNames,
         };
+    }
 
     public static TableSchemaMessage ToMessage(TableSchema value)
     {
@@ -275,7 +309,8 @@ public static class GrpcModelMapper
         };
 
     public static TableSchema ToModel(TableSchemaMessage value)
-        => new()
+    {
+        var schema = new TableSchema
         {
             SchemaId = ParseSchemaId(value.SchemaId),
             TableName = value.TableName,
@@ -285,12 +320,36 @@ public static class GrpcModelMapper
             CheckConstraints = value.CheckConstraints.Select(ToModel).ToList(),
             NextRowId = value.NextRowId,
         };
+        StableSchemaIdentityValidator.Validate(schema);
+        return schema;
+    }
 
     private static string FormatSchemaId(Guid value) =>
         value == Guid.Empty ? string.Empty : value.ToString("D");
 
-    private static Guid ParseSchemaId(string value) =>
-        Guid.TryParse(value, out Guid parsed) ? parsed : Guid.Empty;
+    private static Guid ParseSchemaId(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+            return Guid.Empty;
+        if (Guid.TryParse(value, out Guid parsed) &&
+            parsed != Guid.Empty)
+            return parsed;
+
+        throw new CSharpDbClientException(
+            $"The server returned malformed schema identity '{value}'.");
+    }
+
+    private static Guid ParseRequiredSchemaId(string value)
+    {
+        Guid parsed = ParseSchemaId(value);
+        if (parsed == Guid.Empty)
+        {
+            throw new CSharpDbClientException(
+                "The server returned an empty schema identity inside a stable identity list.");
+        }
+
+        return parsed;
+    }
 
     public static IndexSchemaMessage ToMessage(IndexSchema value)
     {

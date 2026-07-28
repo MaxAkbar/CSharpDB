@@ -84,6 +84,173 @@ public sealed class EngineTransportClientTests
     }
 
     [Fact]
+    public async Task DirectCrud_QuotesUnusualColumnIdentifiers()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb_engine_transport_quoted_crud_{Guid.NewGuid():N}.db");
+
+        try
+        {
+            await using var client = new EngineTransportClient(dbPath);
+            SqlExecutionResult create = await client.ExecuteSqlAsync(
+                """
+                CREATE TABLE direct_identifier_rows (
+                    "order id" INTEGER PRIMARY KEY,
+                    "select" TEXT NOT NULL,
+                    "path/value" TEXT NOT NULL,
+                    "display""name" TEXT NOT NULL
+                );
+                """,
+                ct);
+            Assert.Null(create.Error);
+
+            int inserted = await client.InsertRowAsync(
+                "direct_identifier_rows",
+                new Dictionary<string, object?>
+                {
+                    ["order id"] = 7L,
+                    ["select"] = "before",
+                    ["path/value"] = "/first",
+                    ["display\"name"] = "Ada",
+                },
+                ct);
+            Assert.Equal(1, inserted);
+
+            Dictionary<string, object?>? insertedRow =
+                await client.GetRowByPkAsync(
+                    "direct_identifier_rows",
+                    "order id",
+                    7L,
+                    ct);
+            Assert.NotNull(insertedRow);
+            Assert.Equal("before", insertedRow["select"]);
+            Assert.Equal("/first", insertedRow["path/value"]);
+            Assert.Equal("Ada", insertedRow["display\"name"]);
+
+            int updated = await client.UpdateRowAsync(
+                "direct_identifier_rows",
+                "order id",
+                7L,
+                new Dictionary<string, object?>
+                {
+                    ["select"] = "after",
+                    ["path/value"] = "/second",
+                    ["display\"name"] = "Grace",
+                },
+                ct);
+            Assert.Equal(1, updated);
+
+            Dictionary<string, object?>? updatedRow =
+                await client.GetRowByPkAsync(
+                    "direct_identifier_rows",
+                    "order id",
+                    7L,
+                    ct);
+            Assert.NotNull(updatedRow);
+            Assert.Equal("after", updatedRow["select"]);
+            Assert.Equal("/second", updatedRow["path/value"]);
+            Assert.Equal("Grace", updatedRow["display\"name"]);
+
+            Assert.Equal(
+                1,
+                await client.DeleteRowAsync(
+                    "direct_identifier_rows",
+                    "order id",
+                    7L,
+                    ct));
+            Assert.Null(
+                await client.GetRowByPkAsync(
+                    "direct_identifier_rows",
+                    "order id",
+                    7L,
+                    ct));
+        }
+        finally
+        {
+            if (File.Exists(dbPath))
+                File.Delete(dbPath);
+            if (File.Exists(dbPath + ".wal"))
+                File.Delete(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task DirectDdl_QuotesCatalogValidTableAndColumnIdentifiers()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb_engine_transport_quoted_ddl_{Guid.NewGuid():N}.db");
+
+        try
+        {
+            await using var client = new EngineTransportClient(dbPath);
+            SqlExecutionResult create = await client.ExecuteSqlAsync(
+                """
+                CREATE TABLE "http/items" (
+                    "order id" INTEGER PRIMARY KEY
+                );
+                """,
+                ct);
+            Assert.Null(create.Error);
+
+            await client.AddColumnAsync(
+                "http/items",
+                "select",
+                CSharpDB.Client.Models.DbType.Text,
+                notNull: false,
+                ct);
+            Assert.Contains(
+                (await client.GetTableSchemaAsync("http/items", ct))!.Columns,
+                column => column.Name == "select");
+
+            await client.RenameColumnAsync(
+                "http/items",
+                "select",
+                "path/value",
+                ct);
+            Assert.Contains(
+                (await client.GetTableSchemaAsync("http/items", ct))!.Columns,
+                column => column.Name == "path/value");
+
+            await client.RenameTableAsync(
+                "http/items",
+                "renamed items",
+                ct);
+            Assert.Null(
+                await client.GetTableSchemaAsync("http/items", ct));
+            Assert.NotNull(
+                await client.GetTableSchemaAsync("renamed items", ct));
+
+            await client.DropColumnAsync(
+                "renamed items",
+                "path/value",
+                ct);
+            CSharpDB.Client.Models.TableSchema renamedSchema =
+                Assert.IsType<CSharpDB.Client.Models.TableSchema>(
+                    await client.GetTableSchemaAsync(
+                        "renamed items",
+                        ct));
+            Assert.DoesNotContain(
+                renamedSchema.Columns,
+                column => column.Name == "path/value");
+
+            await client.DropTableAsync("renamed items", ct);
+            Assert.Null(
+                await client.GetTableSchemaAsync("renamed items", ct));
+        }
+        finally
+        {
+            if (File.Exists(dbPath))
+                File.Delete(dbPath);
+            if (File.Exists(dbPath + ".wal"))
+                File.Delete(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
     public async Task GetTableSchemaAsync_MapsDefaultsChecksAndLogicalKeys()
     {
         string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_engine_transport_schema_{Guid.NewGuid():N}.db");

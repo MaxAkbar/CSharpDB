@@ -28,9 +28,11 @@ public static class TriggerEndpoints
 
     private static async Task<IResult> CreateTrigger(CreateTriggerRequest req, ICSharpDbClient db)
     {
-        if (!Enum.TryParse<TriggerTiming>(req.Timing, ignoreCase: true, out var timing))
+        if (!Enum.TryParse<TriggerTiming>(req.Timing, ignoreCase: true, out var timing) ||
+            !Enum.IsDefined(timing))
             return Results.BadRequest(new { error = $"Invalid timing '{req.Timing}'. Valid values: Before, After." });
-        if (!Enum.TryParse<TriggerEvent>(req.Event, ignoreCase: true, out var triggerEvent))
+        if (!Enum.TryParse<TriggerEvent>(req.Event, ignoreCase: true, out var triggerEvent) ||
+            !Enum.IsDefined(triggerEvent))
             return Results.BadRequest(new { error = $"Invalid event '{req.Event}'. Valid values: Insert, Update, Delete." });
 
         await db.CreateTriggerAsync(req.TriggerName, req.TableName, timing, triggerEvent, req.BodySql);
@@ -40,9 +42,11 @@ public static class TriggerEndpoints
 
     private static async Task<IResult> UpdateTrigger(string name, UpdateTriggerRequest req, ICSharpDbClient db)
     {
-        if (!Enum.TryParse<TriggerTiming>(req.Timing, ignoreCase: true, out var timing))
+        if (!Enum.TryParse<TriggerTiming>(req.Timing, ignoreCase: true, out var timing) ||
+            !Enum.IsDefined(timing))
             return Results.BadRequest(new { error = $"Invalid timing '{req.Timing}'. Valid values: Before, After." });
-        if (!Enum.TryParse<TriggerEvent>(req.Event, ignoreCase: true, out var triggerEvent))
+        if (!Enum.TryParse<TriggerEvent>(req.Event, ignoreCase: true, out var triggerEvent) ||
+            !Enum.IsDefined(triggerEvent))
             return Results.BadRequest(new { error = $"Invalid event '{req.Event}'. Valid values: Insert, Update, Delete." });
 
         await db.UpdateTriggerAsync(name, req.NewTriggerName, req.TableName, timing, triggerEvent, req.BodySql);

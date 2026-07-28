@@ -274,24 +274,41 @@ public static class DatabaseMaintenanceCoordinator
         StorageEngineContext destination,
         CancellationToken ct)
     {
-        foreach (string tableName in GetTablesToCopy(source.Catalog))
-        {
-            var schema = source.Catalog.GetTable(tableName);
-            if (schema is null)
-                continue;
+        TableSchema[] schemas = GetTablesToCopy(source.Catalog)
+            .Select(source.Catalog.GetTable)
+            .Where(static schema => schema is not null)
+            .Cast<TableSchema>()
+            .ToArray();
 
-            await destination.Catalog.CreateTableExactAsync(CloneTableSchema(schema), ct);
+        // Create every table before restoring foreign keys. A child may sort
+        // before its parent (and cycles are valid), so a second schema pass is
+        // required to resolve every persisted identity binding consistently.
+        foreach (TableSchema schema in schemas)
+            await destination.Catalog.CreateTableExactAsync(CloneTableSchema(schema, includeForeignKeys: false), ct);
+
+        foreach (TableSchema schema in schemas)
+        {
             long copiedRowCount;
-            if (IsClientMetadataTable(tableName))
+            if (IsClientMetadataTable(schema.TableName))
                 copiedRowCount = await CopyMetadataTableRowsAsync(source, destination, schema, ct);
             else
-                copiedRowCount = await CopyTableRowsAsync(source, destination, tableName, ct);
+                copiedRowCount = await CopyTableRowsAsync(source, destination, schema.TableName, ct);
 
-            await destination.Catalog.SetTableRowCountAsync(tableName, copiedRowCount, ct);
-            var columnStats = source.Catalog.GetColumnStatistics(tableName);
+            await destination.Catalog.SetTableRowCountAsync(schema.TableName, copiedRowCount, ct);
+        }
+
+        foreach (TableSchema schema in schemas)
+            await destination.Catalog.UpdateTableSchemaAsync(
+                schema.TableName,
+                CloneTableSchema(schema, includeForeignKeys: true),
+                ct);
+
+        foreach (TableSchema schema in schemas)
+        {
+            var columnStats = source.Catalog.GetColumnStatistics(schema.TableName);
             if (columnStats.Count > 0)
-                await destination.Catalog.ReplaceColumnStatisticsAsync(tableName, columnStats.ToArray(), ct);
-            await destination.Catalog.PersistRootPageChangesAsync(tableName, ct);
+                await destination.Catalog.ReplaceColumnStatisticsAsync(schema.TableName, columnStats.ToArray(), ct);
+            await destination.Catalog.PersistRootPageChangesAsync(schema.TableName, ct);
         }
 
         foreach (var indexSchema in source.Catalog.GetIndexes()
@@ -719,13 +736,15 @@ public static class DatabaseMaintenanceCoordinator
         return count;
     }
 
-    private static TableSchema CloneTableSchema(TableSchema schema)
+    private static TableSchema CloneTableSchema(TableSchema schema, bool includeForeignKeys)
     {
         return new TableSchema
         {
+            SchemaId = schema.SchemaId,
             TableName = schema.TableName,
             Columns = schema.Columns.Select(column => new ColumnDefinition
             {
+                SchemaId = column.SchemaId,
                 Name = column.Name,
                 Type = column.Type,
                 Nullable = column.Nullable,
@@ -735,29 +754,38 @@ public static class DatabaseMaintenanceCoordinator
                 Collation = column.Collation,
                 DefaultSql = column.DefaultSql,
             }).ToArray(),
-            ForeignKeys = schema.ForeignKeys.Select(foreignKey => new ForeignKeyDefinition
-            {
-                ConstraintName = foreignKey.ConstraintName,
-                ColumnName = foreignKey.ColumnName,
-                ReferencedTableName = foreignKey.ReferencedTableName,
-                ReferencedColumnName = foreignKey.ReferencedColumnName,
-                ColumnNames = foreignKey.ColumnNames.Count > 0
-                    ? foreignKey.ColumnNames.ToArray()
-                    : [foreignKey.ColumnName],
-                ReferencedColumnNames = foreignKey.ReferencedColumnNames.Count > 0
-                    ? foreignKey.ReferencedColumnNames.ToArray()
-                    : [foreignKey.ReferencedColumnName],
-                OnDelete = foreignKey.OnDelete,
-                SupportingIndexName = foreignKey.SupportingIndexName,
-            }).ToArray(),
+            ForeignKeys = includeForeignKeys
+                ? schema.ForeignKeys.Select(foreignKey => new ForeignKeyDefinition
+                {
+                    SchemaId = foreignKey.SchemaId,
+                    ColumnSchemaIds = foreignKey.ColumnSchemaIds.ToArray(),
+                    ReferencedTableSchemaId = foreignKey.ReferencedTableSchemaId,
+                    ReferencedColumnSchemaIds = foreignKey.ReferencedColumnSchemaIds.ToArray(),
+                    ReferencedKeySchemaId = foreignKey.ReferencedKeySchemaId,
+                    ConstraintName = foreignKey.ConstraintName,
+                    ColumnName = foreignKey.ColumnName,
+                    ReferencedTableName = foreignKey.ReferencedTableName,
+                    ReferencedColumnName = foreignKey.ReferencedColumnName,
+                    ColumnNames = foreignKey.ColumnNames.Count > 0
+                        ? foreignKey.ColumnNames.ToArray()
+                        : [foreignKey.ColumnName],
+                    ReferencedColumnNames = foreignKey.ReferencedColumnNames.Count > 0
+                        ? foreignKey.ReferencedColumnNames.ToArray()
+                        : [foreignKey.ReferencedColumnName],
+                    OnDelete = foreignKey.OnDelete,
+                    SupportingIndexName = foreignKey.SupportingIndexName,
+                }).ToArray()
+                : Array.Empty<ForeignKeyDefinition>(),
             CheckConstraints = schema.CheckConstraints.Select(check => new CheckConstraintDefinition
             {
+                SchemaId = check.SchemaId,
                 ConstraintName = check.ConstraintName,
                 ExpressionSql = check.ExpressionSql,
                 ColumnName = check.ColumnName,
             }).ToArray(),
             KeyConstraints = schema.KeyConstraints.Select(key => new KeyConstraintDefinition
             {
+                SchemaId = key.SchemaId,
                 ConstraintName = key.ConstraintName,
                 Kind = key.Kind,
                 Columns = key.Columns.ToArray(),

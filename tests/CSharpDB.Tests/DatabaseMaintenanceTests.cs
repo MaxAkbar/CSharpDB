@@ -338,6 +338,200 @@ public sealed class DatabaseMaintenanceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task MigrateForeignKeysAsync_Apply_PreservesExistingSchemaIdentitiesAndAssignsOnlyNewConstraintIdentity()
+    {
+        await _client.ExecuteSqlAsync(
+            "CREATE TABLE migration_parent_a (id INTEGER PRIMARY KEY, name TEXT);",
+            Ct);
+        await _client.ExecuteSqlAsync(
+            "CREATE TABLE migration_parent_b (id INTEGER PRIMARY KEY, name TEXT);",
+            Ct);
+        await _client.ExecuteSqlAsync(
+            """
+            CREATE TABLE migration_children (
+                id INTEGER PRIMARY KEY,
+                parent_a_id INTEGER,
+                parent_b_id INTEGER,
+                code TEXT,
+                CONSTRAINT ck_migration_children_id CHECK (id > 0),
+                CONSTRAINT uq_migration_children_code UNIQUE (code),
+                CONSTRAINT fk_migration_children_parent_a
+                    FOREIGN KEY (parent_a_id) REFERENCES migration_parent_a(id)
+            );
+            """,
+            Ct);
+
+        var parentBefore = await _client.GetTableSchemaAsync("migration_parent_b", Ct);
+        var childBefore = await _client.GetTableSchemaAsync("migration_children", Ct);
+        Assert.NotNull(parentBefore);
+        Assert.NotNull(childBefore);
+        var existingForeignKeyBefore = Assert.Single(childBefore.ForeignKeys);
+        var existingIds = childBefore.Columns.Select(static column => column.SchemaId)
+            .Append(childBefore.SchemaId)
+            .Concat(childBefore.ForeignKeys.Select(static constraint => constraint.SchemaId))
+            .Concat(childBefore.CheckConstraints.Select(static constraint => constraint.SchemaId))
+            .Concat(childBefore.KeyConstraints.Select(static constraint => constraint.SchemaId))
+            .ToHashSet();
+        Assert.DoesNotContain(Guid.Empty, existingIds);
+
+        var result = await _client.MigrateForeignKeysAsync(
+            new ClientModels.ForeignKeyMigrationRequest
+            {
+                Constraints =
+                [
+                    new ClientModels.ForeignKeyMigrationConstraintSpec
+                    {
+                        TableName = "migration_children",
+                        ColumnName = "parent_b_id",
+                        ReferencedTableName = "migration_parent_b",
+                        ReferencedColumnName = "id",
+                    },
+                ],
+            },
+            Ct);
+
+        Assert.True(result.Succeeded);
+        var childAfter = await _client.GetTableSchemaAsync("migration_children", Ct);
+        Assert.NotNull(childAfter);
+        Assert.Equal(childBefore.SchemaId, childAfter.SchemaId);
+        Assert.Equal(
+            childBefore.Columns.Select(static column => (column.Name, column.SchemaId)),
+            childAfter.Columns.Select(static column => (column.Name, column.SchemaId)));
+        Assert.Equal(
+            childBefore.CheckConstraints.Select(static constraint => (constraint.ConstraintName, constraint.SchemaId)),
+            childAfter.CheckConstraints.Select(static constraint => (constraint.ConstraintName, constraint.SchemaId)));
+        Assert.Equal(
+            childBefore.KeyConstraints.Select(static constraint => (constraint.ConstraintName, constraint.SchemaId)),
+            childAfter.KeyConstraints.Select(static constraint => (constraint.ConstraintName, constraint.SchemaId)));
+
+        var existingForeignKeyAfter = Assert.Single(
+            childAfter.ForeignKeys,
+            constraint => string.Equals(
+                constraint.ConstraintName,
+                existingForeignKeyBefore.ConstraintName,
+                StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(existingForeignKeyBefore.SchemaId, existingForeignKeyAfter.SchemaId);
+        Assert.Equal(existingForeignKeyBefore.ColumnSchemaIds, existingForeignKeyAfter.ColumnSchemaIds);
+        Assert.Equal(existingForeignKeyBefore.ReferencedTableSchemaId, existingForeignKeyAfter.ReferencedTableSchemaId);
+        Assert.Equal(existingForeignKeyBefore.ReferencedColumnSchemaIds, existingForeignKeyAfter.ReferencedColumnSchemaIds);
+        Assert.Equal(existingForeignKeyBefore.ReferencedKeySchemaId, existingForeignKeyAfter.ReferencedKeySchemaId);
+
+        var newForeignKey = Assert.Single(
+            childAfter.ForeignKeys,
+            constraint => string.Equals(
+                constraint.ColumnName,
+                "parent_b_id",
+                StringComparison.OrdinalIgnoreCase));
+        Assert.NotEqual(Guid.Empty, newForeignKey.SchemaId);
+        Assert.DoesNotContain(newForeignKey.SchemaId, existingIds);
+        Assert.Equal(
+            [childAfter.Columns.Single(column => column.Name == "parent_b_id").SchemaId],
+            newForeignKey.ColumnSchemaIds);
+        Assert.Equal(parentBefore.SchemaId, newForeignKey.ReferencedTableSchemaId);
+        Assert.Equal(
+            [parentBefore.Columns.Single(column => column.Name == "id").SchemaId],
+            newForeignKey.ReferencedColumnSchemaIds);
+        Assert.Equal(
+            Assert.Single(parentBefore.KeyConstraints).SchemaId,
+            newForeignKey.ReferencedKeySchemaId);
+
+        await _client.DisposeAsync();
+        _client = CreateClient();
+
+        var reopened = await _client.GetTableSchemaAsync("migration_children", Ct);
+        Assert.NotNull(reopened);
+        Assert.Equal(childAfter.SchemaId, reopened.SchemaId);
+        Assert.Equal(
+            childAfter.Columns.Select(static column => column.SchemaId),
+            reopened.Columns.Select(static column => column.SchemaId));
+        Assert.Equal(
+            childAfter.ForeignKeys.Select(static constraint => constraint.SchemaId),
+            reopened.ForeignKeys.Select(static constraint => constraint.SchemaId));
+        Assert.Equal(
+            childAfter.CheckConstraints.Select(static constraint => constraint.SchemaId),
+            reopened.CheckConstraints.Select(static constraint => constraint.SchemaId));
+        Assert.Equal(
+            childAfter.KeyConstraints.Select(static constraint => constraint.SchemaId),
+            reopened.KeyConstraints.Select(static constraint => constraint.SchemaId));
+    }
+
+    [Fact]
+    public async Task MigrateForeignKeysAsync_Apply_PreservesInboundForeignKeyBinding()
+    {
+        await _client.ExecuteSqlAsync(
+            "CREATE TABLE migration_lookup (id INTEGER PRIMARY KEY);",
+            Ct);
+        await _client.ExecuteSqlAsync(
+            "CREATE TABLE migration_parent (id INTEGER PRIMARY KEY, lookup_id INTEGER);",
+            Ct);
+        await _client.ExecuteSqlAsync(
+            """
+            CREATE TABLE migration_inbound_child (
+                id INTEGER PRIMARY KEY,
+                parent_id INTEGER,
+                CONSTRAINT fk_migration_inbound_parent
+                    FOREIGN KEY (parent_id) REFERENCES migration_parent(id)
+            );
+            """,
+            Ct);
+
+        var parentBefore =
+            await _client.GetTableSchemaAsync("migration_parent", Ct);
+        var inboundBefore =
+            await _client.GetTableSchemaAsync("migration_inbound_child", Ct);
+        Assert.NotNull(parentBefore);
+        Assert.NotNull(inboundBefore);
+        var inboundForeignKeyBefore = Assert.Single(inboundBefore.ForeignKeys);
+        Assert.Equal(
+            parentBefore.SchemaId,
+            inboundForeignKeyBefore.ReferencedTableSchemaId);
+
+        var result = await _client.MigrateForeignKeysAsync(
+            new ClientModels.ForeignKeyMigrationRequest
+            {
+                Constraints =
+                [
+                    new ClientModels.ForeignKeyMigrationConstraintSpec
+                    {
+                        TableName = "migration_parent",
+                        ColumnName = "lookup_id",
+                        ReferencedTableName = "migration_lookup",
+                        ReferencedColumnName = "id",
+                    },
+                ],
+            },
+            Ct);
+
+        Assert.True(result.Succeeded);
+        var parentAfter =
+            await _client.GetTableSchemaAsync("migration_parent", Ct);
+        var inboundAfter =
+            await _client.GetTableSchemaAsync("migration_inbound_child", Ct);
+        Assert.NotNull(parentAfter);
+        Assert.NotNull(inboundAfter);
+        Assert.Equal(parentBefore.SchemaId, parentAfter.SchemaId);
+        Assert.Equal(
+            parentAfter.SchemaId,
+            Assert.Single(inboundAfter.ForeignKeys)
+                .ReferencedTableSchemaId);
+
+        await _client.DisposeAsync();
+        _client = CreateClient();
+
+        var reopenedParent =
+            await _client.GetTableSchemaAsync("migration_parent", Ct);
+        var reopenedInbound =
+            await _client.GetTableSchemaAsync("migration_inbound_child", Ct);
+        Assert.NotNull(reopenedParent);
+        Assert.NotNull(reopenedInbound);
+        Assert.Equal(parentAfter.SchemaId, reopenedParent.SchemaId);
+        Assert.Equal(
+            reopenedParent.SchemaId,
+            Assert.Single(reopenedInbound.ForeignKeys)
+                .ReferencedTableSchemaId);
+    }
+
+    [Fact]
     public async Task ReindexAsync_RebuildsNamedIndexTableScopeAndFullScope()
     {
         await _client.ExecuteSqlAsync("CREATE TABLE people (id INTEGER PRIMARY KEY, age INTEGER, name TEXT);", Ct);
@@ -573,31 +767,84 @@ public sealed class DatabaseMaintenanceTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task VacuumAsync_PreservesOrderedCompositeForeignKeys()
+    public async Task VacuumAsync_PreservesStableIdentitiesWhenCompositeForeignKeyChildSortsBeforeParent()
     {
         await _client.ExecuteSqlAsync(
-            "CREATE TABLE parents (tenant_id INTEGER, code TEXT, PRIMARY KEY (tenant_id, code));",
+            "CREATE TABLE z_parents (tenant_id INTEGER, code TEXT, " +
+            "CONSTRAINT pk_z_parents PRIMARY KEY (tenant_id, code));",
             Ct);
         await _client.ExecuteSqlAsync(
-            "CREATE TABLE children (id INTEGER PRIMARY KEY, tenant_id INTEGER, parent_code TEXT, " +
-            "FOREIGN KEY (tenant_id, parent_code) REFERENCES parents(tenant_id, code) ON DELETE CASCADE);",
+            "CREATE TABLE a_children (id INTEGER PRIMARY KEY, tenant_id INTEGER, parent_code TEXT, " +
+            "CONSTRAINT ck_a_children_tenant CHECK (tenant_id > 0), " +
+            "CONSTRAINT fk_a_children_z_parents FOREIGN KEY (tenant_id, parent_code) " +
+            "REFERENCES z_parents(tenant_id, code) ON DELETE CASCADE);",
             Ct);
-        await _client.ExecuteSqlAsync("INSERT INTO parents VALUES (1, 'north');", Ct);
-        await _client.ExecuteSqlAsync("INSERT INTO children VALUES (1, 1, 'north');", Ct);
+        await _client.ExecuteSqlAsync("INSERT INTO z_parents VALUES (1, 'north');", Ct);
+        await _client.ExecuteSqlAsync("INSERT INTO a_children VALUES (1, 1, 'north');", Ct);
+
+        var parentBefore = await _client.GetTableSchemaAsync("z_parents", Ct);
+        var childBefore = await _client.GetTableSchemaAsync("a_children", Ct);
+        Assert.NotNull(parentBefore);
+        Assert.NotNull(childBefore);
+        var foreignKeyBefore = Assert.Single(childBefore.ForeignKeys);
+        Assert.NotEqual(Guid.Empty, parentBefore.SchemaId);
+        Assert.NotEqual(Guid.Empty, childBefore.SchemaId);
+        Assert.DoesNotContain(
+            parentBefore.Columns.Concat(childBefore.Columns),
+            static column => column.SchemaId == Guid.Empty);
+        Assert.Equal(
+            childBefore.Columns
+                .Where(column => foreignKeyBefore.ColumnNames.Contains(column.Name, StringComparer.OrdinalIgnoreCase))
+                .Select(static column => column.SchemaId),
+            foreignKeyBefore.ColumnSchemaIds);
+        Assert.Equal(parentBefore.SchemaId, foreignKeyBefore.ReferencedTableSchemaId);
+        Assert.Equal(
+            parentBefore.Columns.Select(static column => column.SchemaId),
+            foreignKeyBefore.ReferencedColumnSchemaIds);
+        Assert.Equal(
+            Assert.Single(parentBefore.KeyConstraints).SchemaId,
+            foreignKeyBefore.ReferencedKeySchemaId);
 
         await _client.DisposeAsync();
         await DatabaseMaintenanceCoordinator.VacuumAsync(_dbPath, Ct);
 
         await using (var reopened = await Database.OpenAsync(_dbPath, Ct))
         {
+            TableSchema? parentAfter = reopened.GetTableSchema("z_parents");
+            TableSchema? childAfter = reopened.GetTableSchema("a_children");
+            Assert.NotNull(parentAfter);
+            Assert.NotNull(childAfter);
             ForeignKeyDefinition foreignKey = Assert.Single(
-                reopened.GetTableSchema("children")!.ForeignKeys);
+                childAfter.ForeignKeys);
+
+            Assert.Equal(parentBefore.SchemaId, parentAfter.SchemaId);
+            Assert.Equal(childBefore.SchemaId, childAfter.SchemaId);
+            Assert.Equal(
+                parentBefore.Columns.Select(static column => (column.Name, column.SchemaId)),
+                parentAfter.Columns.Select(static column => (column.Name, column.SchemaId)));
+            Assert.Equal(
+                childBefore.Columns.Select(static column => (column.Name, column.SchemaId)),
+                childAfter.Columns.Select(static column => (column.Name, column.SchemaId)));
+            Assert.Equal(
+                parentBefore.KeyConstraints.Select(static constraint => (constraint.ConstraintName, constraint.SchemaId)),
+                parentAfter.KeyConstraints.Select(static constraint => (constraint.ConstraintName, constraint.SchemaId)));
+            Assert.Equal(
+                childBefore.KeyConstraints.Select(static constraint => (constraint.ConstraintName, constraint.SchemaId)),
+                childAfter.KeyConstraints.Select(static constraint => (constraint.ConstraintName, constraint.SchemaId)));
+            Assert.Equal(
+                childBefore.CheckConstraints.Select(static constraint => (constraint.ConstraintName, constraint.SchemaId)),
+                childAfter.CheckConstraints.Select(static constraint => (constraint.ConstraintName, constraint.SchemaId)));
+            Assert.Equal(foreignKeyBefore.SchemaId, foreignKey.SchemaId);
             Assert.Equal(["tenant_id", "parent_code"], foreignKey.ColumnNames);
             Assert.Equal(["tenant_id", "code"], foreignKey.ReferencedColumnNames);
+            Assert.Equal(foreignKeyBefore.ColumnSchemaIds, foreignKey.ColumnSchemaIds);
+            Assert.Equal(foreignKeyBefore.ReferencedTableSchemaId, foreignKey.ReferencedTableSchemaId);
+            Assert.Equal(foreignKeyBefore.ReferencedColumnSchemaIds, foreignKey.ReferencedColumnSchemaIds);
+            Assert.Equal(foreignKeyBefore.ReferencedKeySchemaId, foreignKey.ReferencedKeySchemaId);
 
             CSharpDbException violation = await Assert.ThrowsAsync<CSharpDbException>(
                 async () => await reopened.ExecuteAsync(
-                    "INSERT INTO children VALUES (2, 1, 'missing')",
+                    "INSERT INTO a_children VALUES (2, 1, 'missing')",
                     Ct));
             Assert.Equal(ErrorCode.ConstraintViolation, violation.Code);
         }

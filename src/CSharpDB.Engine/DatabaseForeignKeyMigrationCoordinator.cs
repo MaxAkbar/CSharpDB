@@ -131,7 +131,14 @@ internal static class DatabaseForeignKeyMigrationCoordinator
             await context.Catalog.DropTriggerAsync(trigger.TriggerName, ct);
 
         await context.Catalog.DropTableAsync(plan.OriginalSchema.TableName, ct);
-        await context.Catalog.UpdateTableSchemaAsync(plan.TempSchema.TableName, plan.RenamedTempSchema, ct);
+        await context.Catalog.ApplyTableSchemaIdentitiesAsync(
+            plan.TempSchema.TableName,
+            plan.PreservedIdentitySchema,
+            ct);
+        await context.Catalog.UpdateTableSchemaAsync(
+            plan.TempSchema.TableName,
+            plan.PreservedIdentitySchema,
+            ct);
 
         foreach (IndexSchema index in plan.RecreatedIndexes)
         {
@@ -246,8 +253,9 @@ internal static class DatabaseForeignKeyMigrationCoordinator
 
         TableSchema currentSchema = new()
         {
+            SchemaId = originalSchema.SchemaId,
             TableName = tableName,
-            Columns = CloneColumns(originalSchema.Columns),
+            Columns = CloneColumns(originalSchema.Columns, preserveIdentities: true),
             ForeignKeys = originalSchema.ForeignKeys.ToArray(),
             CheckConstraints = originalSchema.CheckConstraints.ToArray(),
             KeyConstraints = originalSchema.KeyConstraints.ToArray(),
@@ -269,6 +277,7 @@ internal static class DatabaseForeignKeyMigrationCoordinator
             materializedForeignKeys.Add(new MaterializedForeignKey(spec, definition));
             currentSchema = new TableSchema
             {
+                SchemaId = currentSchema.SchemaId,
                 TableName = currentSchema.TableName,
                 Columns = currentSchema.Columns,
                 ForeignKeys = currentSchema.ForeignKeys.Concat([definition]).ToArray(),
@@ -279,7 +288,8 @@ internal static class DatabaseForeignKeyMigrationCoordinator
         }
 
         string tempTableName = GenerateTempTableName(catalog, tableName, materializedForeignKeys.Select(static fk => fk.Definition.ConstraintName));
-        ColumnDefinition[] clonedColumns = CloneColumns(originalSchema.Columns);
+        ColumnDefinition[] temporaryColumns = CloneColumns(originalSchema.Columns, preserveIdentities: false);
+        ColumnDefinition[] preservedColumns = CloneColumns(originalSchema.Columns, preserveIdentities: true);
         ColumnStatistics[] clonedStats = catalog.GetColumnStatistics(tableName)
             .Select(stat => new ColumnStatistics
             {
@@ -296,17 +306,28 @@ internal static class DatabaseForeignKeyMigrationCoordinator
         var tempSchema = new TableSchema
         {
             TableName = tempTableName,
-            Columns = clonedColumns,
+            Columns = temporaryColumns,
             ForeignKeys = Array.Empty<ForeignKeyDefinition>(),
-            CheckConstraints = originalSchema.CheckConstraints,
-            KeyConstraints = originalSchema.KeyConstraints,
+            CheckConstraints = CloneCheckConstraints(originalSchema.CheckConstraints, preserveIdentities: false),
+            KeyConstraints = CloneKeyConstraints(originalSchema.KeyConstraints, preserveIdentities: false),
             NextRowId = originalSchema.NextRowId,
         };
 
         var renamedTempSchema = new TableSchema
         {
             TableName = tableName,
-            Columns = clonedColumns,
+            Columns = temporaryColumns,
+            ForeignKeys = Array.Empty<ForeignKeyDefinition>(),
+            CheckConstraints = CloneCheckConstraints(originalSchema.CheckConstraints, preserveIdentities: false),
+            KeyConstraints = CloneKeyConstraints(originalSchema.KeyConstraints, preserveIdentities: false),
+            NextRowId = originalSchema.NextRowId,
+        };
+
+        var preservedIdentitySchema = new TableSchema
+        {
+            SchemaId = originalSchema.SchemaId,
+            TableName = tableName,
+            Columns = preservedColumns,
             ForeignKeys = Array.Empty<ForeignKeyDefinition>(),
             CheckConstraints = originalSchema.CheckConstraints,
             KeyConstraints = originalSchema.KeyConstraints,
@@ -322,10 +343,12 @@ internal static class DatabaseForeignKeyMigrationCoordinator
             originalSchema,
             tempSchema,
             renamedTempSchema,
+            preservedIdentitySchema,
             new TableSchema
             {
+                SchemaId = originalSchema.SchemaId,
                 TableName = tableName,
-                Columns = clonedColumns,
+                Columns = preservedColumns,
                 ForeignKeys = originalSchema.ForeignKeys.Concat(materializedForeignKeys.Select(static fk => fk.Definition)).ToArray(),
                 CheckConstraints = originalSchema.CheckConstraints,
                 KeyConstraints = originalSchema.KeyConstraints,
@@ -810,9 +833,12 @@ internal static class DatabaseForeignKeyMigrationCoordinator
             ? new CollectionAwareRecordSerializer(recordSerializer)
             : recordSerializer;
 
-    private static ColumnDefinition[] CloneColumns(IReadOnlyList<ColumnDefinition> columns)
+    private static ColumnDefinition[] CloneColumns(
+        IReadOnlyList<ColumnDefinition> columns,
+        bool preserveIdentities)
         => columns.Select(column => new ColumnDefinition
         {
+            SchemaId = preserveIdentities ? column.SchemaId : Guid.Empty,
             Name = column.Name,
             Type = column.Type,
             Nullable = column.Nullable,
@@ -821,6 +847,29 @@ internal static class DatabaseForeignKeyMigrationCoordinator
             IsRowVersion = column.IsRowVersion,
             Collation = column.Collation,
             DefaultSql = column.DefaultSql,
+        }).ToArray();
+
+    private static CheckConstraintDefinition[] CloneCheckConstraints(
+        IReadOnlyList<CheckConstraintDefinition> constraints,
+        bool preserveIdentities)
+        => constraints.Select(constraint => new CheckConstraintDefinition
+        {
+            SchemaId = preserveIdentities ? constraint.SchemaId : Guid.Empty,
+            ConstraintName = constraint.ConstraintName,
+            ExpressionSql = constraint.ExpressionSql,
+            ColumnName = constraint.ColumnName,
+        }).ToArray();
+
+    private static KeyConstraintDefinition[] CloneKeyConstraints(
+        IReadOnlyList<KeyConstraintDefinition> constraints,
+        bool preserveIdentities)
+        => constraints.Select(constraint => new KeyConstraintDefinition
+        {
+            SchemaId = preserveIdentities ? constraint.SchemaId : Guid.Empty,
+            ConstraintName = constraint.ConstraintName,
+            Kind = constraint.Kind,
+            Columns = constraint.Columns.ToArray(),
+            BackingIndexName = constraint.BackingIndexName,
         }).ToArray();
 
     private static IndexSchema CloneIndexSchema(IndexSchema index, string tableName)
@@ -926,6 +975,7 @@ internal static class DatabaseForeignKeyMigrationCoordinator
         TableSchema OriginalSchema,
         TableSchema TempSchema,
         TableSchema RenamedTempSchema,
+        TableSchema PreservedIdentitySchema,
         TableSchema FinalSchema,
         IndexSchema[] RecreatedIndexes,
         TriggerSchema[] OriginalTriggers,

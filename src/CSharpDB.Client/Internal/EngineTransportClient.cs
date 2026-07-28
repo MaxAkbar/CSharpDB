@@ -15,6 +15,7 @@ using CoreForeignKeyOnDeleteAction = CSharpDB.Primitives.ForeignKeyOnDeleteActio
 using CoreIndexSchema = CSharpDB.Primitives.IndexSchema;
 using CoreKeyConstraintDefinition = CSharpDB.Primitives.KeyConstraintDefinition;
 using CoreKeyConstraintKind = CSharpDB.Primitives.KeyConstraintKind;
+using CoreSqlIdentifierRules = CSharpDB.Primitives.SqlIdentifierRules;
 using CoreTableSchema = CSharpDB.Primitives.TableSchema;
 using CoreTriggerEvent = CSharpDB.Primitives.TriggerEvent;
 using CoreTriggerSchema = CSharpDB.Primitives.TriggerSchema;
@@ -22,7 +23,12 @@ using CoreTriggerTiming = CSharpDB.Primitives.TriggerTiming;
 
 namespace CSharpDB.Client.Internal;
 
-internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBackedClient, ICSharpDbTableArchiveProgressExporter, ICSharpDbTransactionalSnapshotReader
+internal sealed partial class EngineTransportClient :
+    ICSharpDbClient,
+    IEngineBackedClient,
+    ICSharpDbTableArchiveProgressExporter,
+    ICSharpDbTransactionalSnapshotReader,
+    ICSharpDbTransactionalSchemaIdentityWriter
 {
     private const string CollectionPrefix = "_col_";
     private const string ProcedureTableName = "__procedures";
@@ -75,6 +81,7 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
     public string DataSource => _databasePath;
     public bool SupportsTableArchiveExport => true;
     public bool SupportsTransactionalSnapshotReads => true;
+    public bool SupportsTransactionalSchemaIdentityWrites => true;
     internal DatabaseOptions DirectDatabaseOptions => _directDatabaseOptions;
     internal HybridDatabaseOptions? HybridDatabaseOptions => _hybridDatabaseOptions;
 
@@ -96,14 +103,16 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
         if (IsInternalTable(tableName))
             return null;
 
-        var schema = db.GetTableSchema(RequireIdentifier(tableName, nameof(tableName)));
+        var schema = db.GetTableSchema(
+            RequireCatalogIdentifier(tableName, nameof(tableName)));
         return schema is null ? null : MapTableSchema(schema);
     }
 
     public async Task<int> GetRowCountAsync(string tableName, CancellationToken ct = default)
     {
         var db = await GetDatabaseAsync(ct);
-        string normalizedTableName = RequireIdentifier(tableName, nameof(tableName));
+        string normalizedTableName =
+            RequireCatalogIdentifier(tableName, nameof(tableName));
         var schema = db.GetTableSchema(normalizedTableName);
         if (schema is null || IsInternalTable(normalizedTableName))
             throw new CSharpDbClientException($"Table '{normalizedTableName}' was not found.");
@@ -129,7 +138,8 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
         IProgress<TableArchiveExportProgress>? progress,
         CancellationToken ct = default)
     {
-        string normalizedTableName = RequireIdentifier(tableName, nameof(tableName));
+        string normalizedTableName =
+            RequireCatalogIdentifier(tableName, nameof(tableName));
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
 
         var db = await GetDatabaseAsync(ct);
@@ -148,7 +158,9 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
             path);
 
         using var reader = db.CreateReaderSession();
-        await using var result = await reader.ExecuteReadAsync($"SELECT * FROM {normalizedTableName}", ct);
+        await using var result = await reader.ExecuteReadAsync(
+            $"SELECT * FROM {CoreSqlIdentifierRules.Quote(normalizedTableName)}",
+            ct);
         ReportArchiveExportProgress(
             progress,
             normalizedTableName,
@@ -253,8 +265,10 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
     public async Task<Dictionary<string, object?>?> GetRowByPkAsync(string tableName, string pkColumn, object pkValue, CancellationToken ct = default)
     {
         var db = await GetDatabaseAsync(ct);
-        string normalizedTableName = RequireIdentifier(tableName, nameof(tableName));
-        string normalizedPkColumn = RequireIdentifier(pkColumn, nameof(pkColumn));
+        string normalizedTableName =
+            RequireCatalogIdentifier(tableName, nameof(tableName));
+        string normalizedPkColumn =
+            RequireCatalogIdentifier(pkColumn, nameof(pkColumn));
         var schema = db.GetTableSchema(normalizedTableName);
         if (schema is null || IsInternalTable(normalizedTableName))
             throw new CSharpDbClientException($"Table '{normalizedTableName}' was not found.");
@@ -262,7 +276,9 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
         if (!schema.Columns.Any(column => string.Equals(column.Name, normalizedPkColumn, StringComparison.OrdinalIgnoreCase)))
             throw new CSharpDbClientException($"Column '{normalizedPkColumn}' was not found in table '{normalizedTableName}'.");
 
-        string sql = $"SELECT * FROM {normalizedTableName} WHERE {normalizedPkColumn} = {FormatSqlLiteral(pkValue)}";
+        string sql =
+            $"SELECT * FROM {CoreSqlIdentifierRules.Quote(normalizedTableName)} " +
+            $"WHERE {CoreSqlIdentifierRules.Quote(normalizedPkColumn)} = {FormatSqlLiteral(pkValue)}";
         await using var result = await db.ExecuteAsync(sql, ct);
         if (!result.IsQuery || !await result.MoveNextAsync(ct))
             return null;
@@ -272,19 +288,29 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
 
     public async Task<int> InsertRowAsync(string tableName, Dictionary<string, object?> values, CancellationToken ct = default)
     {
-        string normalizedTableName = RequireIdentifier(tableName, nameof(tableName));
+        string normalizedTableName =
+            RequireCatalogIdentifier(tableName, nameof(tableName));
         if (values.Count == 0)
         {
             return await ExecuteNonQueryAsync(
                 await GetDatabaseAsync(ct),
-                $"INSERT INTO {normalizedTableName} DEFAULT VALUES",
+                $"INSERT INTO {CoreSqlIdentifierRules.Quote(normalizedTableName)} DEFAULT VALUES",
                 ct);
         }
 
-        var assignments = values.Select(kvp => new KeyValuePair<string, object?>(RequireIdentifier(kvp.Key, nameof(values)), kvp.Value)).ToArray();
-        string columns = string.Join(", ", assignments.Select(item => item.Key));
+        var assignments = values.Select(kvp =>
+            new KeyValuePair<string, object?>(
+                RequireCatalogIdentifier(kvp.Key, nameof(values)),
+                kvp.Value)).ToArray();
+        string columns = string.Join(
+            ", ",
+            assignments.Select(item =>
+                CoreSqlIdentifierRules.Quote(item.Key)));
         string literals = string.Join(", ", assignments.Select(item => FormatSqlLiteral(item.Value)));
-        return await ExecuteNonQueryAsync(await GetDatabaseAsync(ct), $"INSERT INTO {normalizedTableName} ({columns}) VALUES ({literals})", ct);
+        return await ExecuteNonQueryAsync(
+            await GetDatabaseAsync(ct),
+            $"INSERT INTO {CoreSqlIdentifierRules.Quote(normalizedTableName)} ({columns}) VALUES ({literals})",
+            ct);
     }
 
     public async Task<int> UpdateRowAsync(string tableName, string pkColumn, object pkValue, Dictionary<string, object?> values, CancellationToken ct = default)
@@ -292,41 +318,70 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
         if (values.Count == 0)
             return 0;
 
-        string normalizedTableName = RequireIdentifier(tableName, nameof(tableName));
-        string normalizedPkColumn = RequireIdentifier(pkColumn, nameof(pkColumn));
-        string setClause = string.Join(", ", values.Select(kvp => $"{RequireIdentifier(kvp.Key, nameof(values))} = {FormatSqlLiteral(kvp.Value)}"));
-        string sql = $"UPDATE {normalizedTableName} SET {setClause} WHERE {normalizedPkColumn} = {FormatSqlLiteral(pkValue)}";
+        string normalizedTableName =
+            RequireCatalogIdentifier(tableName, nameof(tableName));
+        string normalizedPkColumn =
+            RequireCatalogIdentifier(pkColumn, nameof(pkColumn));
+        string setClause = string.Join(
+            ", ",
+            values.Select(kvp =>
+                $"{CoreSqlIdentifierRules.Quote(RequireCatalogIdentifier(kvp.Key, nameof(values)))} = {FormatSqlLiteral(kvp.Value)}"));
+        string sql =
+            $"UPDATE {CoreSqlIdentifierRules.Quote(normalizedTableName)} " +
+            $"SET {setClause} WHERE {CoreSqlIdentifierRules.Quote(normalizedPkColumn)} = {FormatSqlLiteral(pkValue)}";
         return await ExecuteNonQueryAsync(await GetDatabaseAsync(ct), sql, ct);
     }
 
     public async Task<int> DeleteRowAsync(string tableName, string pkColumn, object pkValue, CancellationToken ct = default)
     {
-        string normalizedTableName = RequireIdentifier(tableName, nameof(tableName));
-        string normalizedPkColumn = RequireIdentifier(pkColumn, nameof(pkColumn));
-        string sql = $"DELETE FROM {normalizedTableName} WHERE {normalizedPkColumn} = {FormatSqlLiteral(pkValue)}";
+        string normalizedTableName =
+            RequireCatalogIdentifier(tableName, nameof(tableName));
+        string normalizedPkColumn =
+            RequireCatalogIdentifier(pkColumn, nameof(pkColumn));
+        string sql =
+            $"DELETE FROM {CoreSqlIdentifierRules.Quote(normalizedTableName)} " +
+            $"WHERE {CoreSqlIdentifierRules.Quote(normalizedPkColumn)} = {FormatSqlLiteral(pkValue)}";
         return await ExecuteNonQueryAsync(await GetDatabaseAsync(ct), sql, ct);
     }
 
     public async Task DropTableAsync(string tableName, CancellationToken ct = default)
-        => await ExecuteStatementAsync(await GetDatabaseAsync(ct), $"DROP TABLE {RequireIdentifier(tableName, nameof(tableName))}", ct);
+        => await ExecuteStatementAsync(
+            await GetDatabaseAsync(ct),
+            $"DROP TABLE {QuoteCatalogIdentifier(tableName, nameof(tableName))}",
+            ct);
 
     public async Task RenameTableAsync(string tableName, string newTableName, CancellationToken ct = default)
-        => await ExecuteStatementAsync(await GetDatabaseAsync(ct), $"ALTER TABLE {RequireIdentifier(tableName, nameof(tableName))} RENAME TO {RequireIdentifier(newTableName, nameof(newTableName))}", ct);
+        => await ExecuteStatementAsync(
+            await GetDatabaseAsync(ct),
+            $"ALTER TABLE {QuoteCatalogIdentifier(tableName, nameof(tableName))} " +
+            $"RENAME TO {QuoteCatalogIdentifier(newTableName, nameof(newTableName))}",
+            ct);
 
     public Task AddColumnAsync(string tableName, string columnName, Models.DbType type, bool notNull, CancellationToken ct = default)
         => AddColumnAsync(tableName, columnName, type, notNull, collation: null, ct);
 
     public async Task AddColumnAsync(string tableName, string columnName, Models.DbType type, bool notNull, string? collation, CancellationToken ct = default)
     {
-        string sql = $"ALTER TABLE {RequireIdentifier(tableName, nameof(tableName))} ADD COLUMN {BuildColumnDefinitionSql(columnName, type, notNull, collation)}";
+        string sql =
+            $"ALTER TABLE {QuoteCatalogIdentifier(tableName, nameof(tableName))} " +
+            $"ADD COLUMN {BuildColumnDefinitionSql(columnName, type, notNull, collation)}";
         await ExecuteStatementAsync(await GetDatabaseAsync(ct), sql, ct);
     }
 
     public async Task DropColumnAsync(string tableName, string columnName, CancellationToken ct = default)
-        => await ExecuteStatementAsync(await GetDatabaseAsync(ct), $"ALTER TABLE {RequireIdentifier(tableName, nameof(tableName))} DROP COLUMN {RequireIdentifier(columnName, nameof(columnName))}", ct);
+        => await ExecuteStatementAsync(
+            await GetDatabaseAsync(ct),
+            $"ALTER TABLE {QuoteCatalogIdentifier(tableName, nameof(tableName))} " +
+            $"DROP COLUMN {QuoteCatalogIdentifier(columnName, nameof(columnName))}",
+            ct);
 
     public async Task RenameColumnAsync(string tableName, string oldColumnName, string newColumnName, CancellationToken ct = default)
-        => await ExecuteStatementAsync(await GetDatabaseAsync(ct), $"ALTER TABLE {RequireIdentifier(tableName, nameof(tableName))} RENAME COLUMN {RequireIdentifier(oldColumnName, nameof(oldColumnName))} TO {RequireIdentifier(newColumnName, nameof(newColumnName))}", ct);
+        => await ExecuteStatementAsync(
+            await GetDatabaseAsync(ct),
+            $"ALTER TABLE {QuoteCatalogIdentifier(tableName, nameof(tableName))} " +
+            $"RENAME COLUMN {QuoteCatalogIdentifier(oldColumnName, nameof(oldColumnName))} " +
+            $"TO {QuoteCatalogIdentifier(newColumnName, nameof(newColumnName))}",
+            ct);
 
     public async Task<IReadOnlyList<IndexSchema>> GetIndexesAsync(CancellationToken ct = default)
     {
@@ -542,7 +597,8 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
         string tableName,
         CancellationToken ct = default)
     {
-        string normalizedTableName = RequireIdentifier(tableName, nameof(tableName));
+        string normalizedTableName =
+            RequireCatalogIdentifier(tableName, nameof(tableName));
         if (IsInternalTable(normalizedTableName))
             return null;
 
@@ -571,6 +627,38 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
                 Schema = MapTableSchema(schema),
                 Indexes = indexes,
             };
+        }
+        finally
+        {
+            session.ExitOperation();
+        }
+    }
+
+    public async ValueTask ApplyTableSchemaIdentitiesAsync(
+        string transactionId,
+        string tableName,
+        TableSchema identitySource,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(identitySource);
+        string normalizedTableName =
+            RequireCatalogIdentifier(tableName, nameof(tableName));
+        if (IsInternalTable(normalizedTableName))
+        {
+            throw new CSharpDbClientException(
+                "Schema identities cannot be applied to an internal table.");
+        }
+
+        ClientTransactionSession session = GetTransactionSession(transactionId);
+        if (!await session.TryEnterOperationAsync(ct))
+            throw TransactionNotFound(transactionId);
+
+        try
+        {
+            await session.Database.ApplyTableSchemaIdentitiesAsync(
+                normalizedTableName,
+                MapCoreTableSchema(identitySource),
+                ct);
         }
         finally
         {
@@ -1044,6 +1132,89 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
             NextRowId = schema.NextRowId,
         };
 
+    private static CoreTableSchema MapCoreTableSchema(TableSchema schema)
+        => new()
+        {
+            SchemaId = schema.SchemaId,
+            TableName = schema.TableName,
+            Columns = schema.Columns.Select(static column => new CoreColumnDefinition
+            {
+                SchemaId = column.SchemaId,
+                Name = column.Name,
+                Type = column.Type switch
+                {
+                    Models.DbType.Integer => CoreDbType.Integer,
+                    Models.DbType.Real => CoreDbType.Real,
+                    Models.DbType.Text => CoreDbType.Text,
+                    Models.DbType.Blob => CoreDbType.Blob,
+                    _ => throw new CSharpDbClientException(
+                        $"Unsupported column type '{column.Type}'."),
+                },
+                Nullable = column.Nullable,
+                IsPrimaryKey = column.IsPrimaryKey,
+                IsIdentity = column.IsIdentity,
+                IsRowVersion = column.IsRowVersion,
+                Collation = column.Collation,
+                DefaultSql = column.DefaultSql,
+            }).ToArray(),
+            ForeignKeys = schema.ForeignKeys.Select(static foreignKey =>
+                new CoreForeignKeyDefinition
+                {
+                    SchemaId = foreignKey.SchemaId,
+                    ColumnSchemaIds = foreignKey.ColumnSchemaIds.ToArray(),
+                    ReferencedTableSchemaId = foreignKey.ReferencedTableSchemaId,
+                    ReferencedColumnSchemaIds =
+                        foreignKey.ReferencedColumnSchemaIds.ToArray(),
+                    ReferencedKeySchemaId = foreignKey.ReferencedKeySchemaId,
+                    ConstraintName = foreignKey.ConstraintName,
+                    ColumnName = foreignKey.ColumnName,
+                    ReferencedTableName = foreignKey.ReferencedTableName,
+                    ReferencedColumnName = foreignKey.ReferencedColumnName,
+                    ColumnNames = foreignKey.ColumnNames.Count > 0
+                        ? foreignKey.ColumnNames.ToArray()
+                        : [foreignKey.ColumnName],
+                    ReferencedColumnNames = foreignKey.ReferencedColumnNames.Count > 0
+                        ? foreignKey.ReferencedColumnNames.ToArray()
+                        : [foreignKey.ReferencedColumnName],
+                    OnDelete = foreignKey.OnDelete switch
+                    {
+                        ForeignKeyOnDeleteAction.Restrict =>
+                            CoreForeignKeyOnDeleteAction.Restrict,
+                        ForeignKeyOnDeleteAction.Cascade =>
+                            CoreForeignKeyOnDeleteAction.Cascade,
+                        _ => throw new CSharpDbClientException(
+                            $"Unsupported foreign key ON DELETE action '{foreignKey.OnDelete}'."),
+                    },
+                    SupportingIndexName = foreignKey.SupportingIndexName,
+                }).ToArray(),
+            CheckConstraints = schema.CheckConstraints.Select(static check =>
+                new CoreCheckConstraintDefinition
+                {
+                    SchemaId = check.SchemaId,
+                    ConstraintName = check.ConstraintName,
+                    ExpressionSql = check.ExpressionSql,
+                    ColumnName = check.ColumnName,
+                }).ToArray(),
+            KeyConstraints = schema.KeyConstraints.Select(static key =>
+                new CoreKeyConstraintDefinition
+                {
+                    SchemaId = key.SchemaId,
+                    ConstraintName = key.ConstraintName,
+                    Kind = key.Kind switch
+                    {
+                        KeyConstraintKind.PrimaryKey =>
+                            CoreKeyConstraintKind.PrimaryKey,
+                        KeyConstraintKind.Unique =>
+                            CoreKeyConstraintKind.Unique,
+                        _ => throw new CSharpDbClientException(
+                            $"Unsupported key constraint kind '{key.Kind}'."),
+                    },
+                    Columns = key.Columns.ToArray(),
+                    BackingIndexName = key.BackingIndexName,
+                }).ToArray(),
+            NextRowId = schema.NextRowId,
+        };
+
     private static CheckConstraintDefinition MapCheckConstraintDefinition(CoreCheckConstraintDefinition check)
         => new()
         {
@@ -1325,7 +1496,8 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
 
     private static async Task<TableBrowseResult> BrowseTablePageAsync(Database db, string tableName, int page, int pageSize, CancellationToken ct)
     {
-        string normalizedTableName = RequireIdentifier(tableName, nameof(tableName));
+        string normalizedTableName =
+            RequireCatalogIdentifier(tableName, nameof(tableName));
         var schema = db.GetTableSchema(normalizedTableName);
         if (schema is null || IsInternalTable(normalizedTableName))
             throw new CSharpDbClientException($"Table '{normalizedTableName}' was not found.");
@@ -1334,7 +1506,10 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
         int normalizedPageSize = NormalizePageSize(pageSize);
         long skip = (long)(normalizedPage - 1) * normalizedPageSize;
         int totalRows = await CountRowsViaScalarAsync(db, normalizedTableName, ct);
-        var query = await ExecuteQueryAsync(db, $"SELECT * FROM {normalizedTableName} LIMIT {normalizedPageSize} OFFSET {skip}", ct);
+        var query = await ExecuteQueryAsync(
+            db,
+            $"SELECT * FROM {CoreSqlIdentifierRules.Quote(normalizedTableName)} LIMIT {normalizedPageSize} OFFSET {skip}",
+            ct);
 
         return new TableBrowseResult
         {
@@ -1439,6 +1614,27 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
         return value;
     }
 
+    private static string RequireCatalogIdentifier(
+        string value,
+        string paramName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(value, paramName);
+        if (value.Length > CoreSqlIdentifierRules.MaxLength ||
+            value.IndexOf('\0') >= 0)
+        {
+            throw new CSharpDbClientException(
+                $"Identifier '{value}' is not supported by the engine-only client.");
+        }
+
+        return value;
+    }
+
+    private static string QuoteCatalogIdentifier(
+        string value,
+        string paramName) =>
+        CoreSqlIdentifierRules.Quote(
+            RequireCatalogIdentifier(value, paramName));
+
     private static bool IsInternalTable(string tableName)
         => tableName.StartsWith(CollectionPrefix, StringComparison.Ordinal)
            || string.Equals(tableName, ProcedureTableName, StringComparison.OrdinalIgnoreCase)
@@ -1458,7 +1654,7 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
     private static string BuildColumnDefinitionSql(string columnName, Models.DbType type, bool notNull, string? collation)
     {
         var builder = new StringBuilder()
-            .Append(RequireIdentifier(columnName, nameof(columnName)))
+            .Append(QuoteCatalogIdentifier(columnName, nameof(columnName)))
             .Append(' ')
             .Append(MapDbType(type))
             .Append(BuildCollationClause(collation));

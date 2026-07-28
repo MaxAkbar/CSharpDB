@@ -374,6 +374,23 @@ public class ConnectionTests : IDisposable
         Assert.Equal(1, row["ORDINAL_POSITION"]);
         Assert.IsType<Guid>(row["TABLE_SCHEMA_ID"]);
         Assert.IsType<Guid>(row["CONSTRAINT_SCHEMA_ID"]);
+        Assert.IsType<Guid>(row["COLUMN_SCHEMA_ID"]);
+        Assert.IsType<Guid>(row["REFERENCED_TABLE_SCHEMA_ID"]);
+        Assert.IsType<Guid>(row["REFERENCED_COLUMN_SCHEMA_ID"]);
+        Assert.IsType<Guid>(row["REFERENCED_KEY_SCHEMA_ID"]);
+
+        CSharpDB.Primitives.TableSchema childSchema =
+            Assert.IsType<CSharpDB.Primitives.TableSchema>(
+                conn.GetTableSchema("children"));
+        CSharpDB.Primitives.TableSchema parentSchema =
+            Assert.IsType<CSharpDB.Primitives.TableSchema>(
+                conn.GetTableSchema("parents"));
+        CSharpDB.Primitives.ForeignKeyDefinition foreignKey =
+            Assert.Single(childSchema.ForeignKeys);
+        Assert.Equal(childSchema.Columns.Single(column => column.Name == "parent_id").SchemaId, row["COLUMN_SCHEMA_ID"]);
+        Assert.Equal(parentSchema.SchemaId, row["REFERENCED_TABLE_SCHEMA_ID"]);
+        Assert.Equal(parentSchema.Columns.Single(column => column.Name == "id").SchemaId, row["REFERENCED_COLUMN_SCHEMA_ID"]);
+        Assert.Equal(Assert.Single(parentSchema.KeyConstraints).SchemaId, row["REFERENCED_KEY_SCHEMA_ID"]);
     }
 
     [Fact]

@@ -547,6 +547,10 @@ internal static class CSharpDbSchemaProvider
         table.Columns.Add("ORDINAL_POSITION", typeof(int));
         table.Columns.Add("TABLE_SCHEMA_ID", typeof(Guid));
         table.Columns.Add("CONSTRAINT_SCHEMA_ID", typeof(Guid));
+        table.Columns.Add("COLUMN_SCHEMA_ID", typeof(Guid));
+        table.Columns.Add("REFERENCED_TABLE_SCHEMA_ID", typeof(Guid));
+        table.Columns.Add("REFERENCED_COLUMN_SCHEMA_ID", typeof(Guid));
+        table.Columns.Add("REFERENCED_KEY_SCHEMA_ID", typeof(Guid));
 
         string catalog = connection.DataSource;
         string? catalogRestriction = GetRestrictionValue(restrictionValues, 0);
@@ -583,6 +587,19 @@ internal static class CSharpDbSchemaProvider
                 int columnCount = Math.Min(childColumns.Count, referencedColumns.Count);
                 for (int columnIndex = 0; columnIndex < columnCount; columnIndex++)
                 {
+                    Guid childColumnId =
+                        foreignKey.ColumnSchemaIds.Count > columnIndex
+                            ? foreignKey.ColumnSchemaIds[columnIndex]
+                            : schema.Columns.FirstOrDefault(column =>
+                                string.Equals(
+                                    column.Name,
+                                    childColumns[columnIndex],
+                                    StringComparison.OrdinalIgnoreCase))?.SchemaId ??
+                              Guid.Empty;
+                    Guid referencedColumnId =
+                        foreignKey.ReferencedColumnSchemaIds.Count > columnIndex
+                            ? foreignKey.ReferencedColumnSchemaIds[columnIndex]
+                            : Guid.Empty;
                     table.Rows.Add(
                         catalog,
                         DBNull.Value,
@@ -597,7 +614,11 @@ internal static class CSharpDbSchemaProvider
                         foreignKey.SupportingIndexName,
                         columnIndex + 1,
                         ToDataValue(schema.SchemaId),
-                        ToDataValue(foreignKey.SchemaId));
+                        ToDataValue(foreignKey.SchemaId),
+                        ToDataValue(childColumnId),
+                        ToDataValue(foreignKey.ReferencedTableSchemaId),
+                        ToDataValue(referencedColumnId),
+                        ToDataValue(foreignKey.ReferencedKeySchemaId));
                 }
             }
         }

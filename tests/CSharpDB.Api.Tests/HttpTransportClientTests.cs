@@ -60,6 +60,133 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task HttpTransport_GetTableSchemaAsync_SupportsDotSegmentTableName()
+    {
+        SqlExecutionResult create = await _client.ExecuteSqlAsync(
+            "CREATE TABLE \".\" (id INTEGER PRIMARY KEY);",
+            Ct);
+        Assert.Null(create.Error);
+
+        TableSchema schema = Assert.IsType<TableSchema>(
+            await _client.GetTableSchemaAsync(".", Ct));
+
+        Assert.Equal(".", schema.TableName);
+        Assert.NotEqual(Guid.Empty, schema.SchemaId);
+    }
+
+    [Fact]
+    public async Task HttpTransport_TableAndRowOperations_SupportPathSyntaxInIdentifiers()
+    {
+        const string OriginalTableName = "http/items";
+        const string RenamedTableName = "http/items-renamed";
+        const string PrimaryKeyName = "key/id";
+        const string ValueColumnName = "select";
+        const string AddedColumnName = "extra/value";
+        const string RenamedColumnName = "renamed/value";
+
+        SqlExecutionResult create = await _client.ExecuteSqlAsync(
+            """
+            CREATE TABLE "http/items" (
+                "key/id" INTEGER PRIMARY KEY,
+                "select" TEXT
+            );
+            """,
+            Ct);
+        Assert.Null(create.Error);
+
+        Assert.Equal(
+            1,
+            await _client.InsertRowAsync(
+                OriginalTableName,
+                new Dictionary<string, object?>
+                {
+                    [PrimaryKeyName] = 1L,
+                    [ValueColumnName] = "Ada",
+                },
+                Ct));
+        Assert.Equal(1, await _client.GetRowCountAsync(OriginalTableName, Ct));
+
+        TableBrowseResult browse = await _client.BrowseTableAsync(
+            OriginalTableName,
+            ct: Ct);
+        Assert.Single(browse.Rows);
+
+        Dictionary<string, object?> row = Assert.IsType<Dictionary<string, object?>>(
+            await _client.GetRowByPkAsync(
+                OriginalTableName,
+                PrimaryKeyName,
+                1L,
+                Ct));
+        Assert.Equal("Ada", row[ValueColumnName]);
+
+        Assert.Equal(
+            1,
+            await _client.UpdateRowAsync(
+                OriginalTableName,
+                PrimaryKeyName,
+                1L,
+                new Dictionary<string, object?>
+                {
+                    [ValueColumnName] = "Grace",
+                },
+                Ct));
+
+        await _client.AddColumnAsync(
+            OriginalTableName,
+            AddedColumnName,
+            DbType.Text,
+            notNull: false,
+            Ct);
+        await _client.RenameColumnAsync(
+            OriginalTableName,
+            AddedColumnName,
+            RenamedColumnName,
+            Ct);
+        await _client.DropColumnAsync(
+            OriginalTableName,
+            RenamedColumnName,
+            Ct);
+        await _client.RenameTableAsync(
+            OriginalTableName,
+            RenamedTableName,
+            Ct);
+
+        Assert.Equal(
+            1,
+            await _client.DeleteRowAsync(
+                RenamedTableName,
+                PrimaryKeyName,
+                1L,
+                Ct));
+        await _client.DropTableAsync(RenamedTableName, Ct);
+        Assert.Null(await _client.GetTableSchemaAsync(RenamedTableName, Ct));
+    }
+
+    [Fact]
+    public async Task HttpTransport_QueryRoutes_DoNotShadowLegacyDropTableNames()
+    {
+        SqlExecutionResult create = await _client.ExecuteSqlAsync(
+            """
+            CREATE TABLE "row" (id INTEGER PRIMARY KEY);
+            CREATE TABLE "columns" (id INTEGER PRIMARY KEY);
+            """,
+            Ct);
+        Assert.Null(create.Error);
+
+        using HttpResponseMessage dropRow = await _httpClient.DeleteAsync(
+            "/api/tables/row",
+            Ct);
+        using HttpResponseMessage dropColumns = await _httpClient.DeleteAsync(
+            "/api/tables/columns",
+            Ct);
+
+        Assert.Equal(HttpStatusCode.NoContent, dropRow.StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, dropColumns.StatusCode);
+        Assert.Null(await _client.GetTableSchemaAsync("row", Ct));
+        Assert.Null(await _client.GetTableSchemaAsync("columns", Ct));
+    }
+
+    [Fact]
     public async Task HttpTransport_SupportsTransactionsCollectionsSavedQueriesAndCheckpoint()
     {
         var createTable = await _client.ExecuteSqlAsync(
@@ -454,6 +581,375 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
         Assert.Equal(Guid.Empty, legacyForeignKey.SchemaId);
         Assert.Equal(["id"], legacyForeignKey.ColumnNames);
         Assert.Equal(["id"], legacyForeignKey.ReferencedColumnNames);
+    }
+
+    [Fact]
+    public async Task HttpTransport_RejectsPartialOwnedSchemaIdentities()
+    {
+        string payload =
+            $$"""
+            {
+              "schemaId": "{{Guid.NewGuid():D}}",
+              "tableName": "partial_http",
+              "columns": [
+                {
+                  "name": "id",
+                  "type": "Integer",
+                  "nullable": false,
+                  "isPrimaryKey": true,
+                  "isIdentity": false
+                }
+              ],
+              "foreignKeys": [],
+              "keyConstraints": [],
+              "checkConstraints": [],
+              "nextRowId": 1
+            }
+            """;
+        using var httpClient = new HttpClient(new StaticJsonHandler(payload))
+        {
+            BaseAddress = new Uri("http://partial-server/"),
+        };
+        await using ICSharpDbClient client = CSharpDbClient.Create(
+            new CSharpDbClientOptions
+            {
+                Transport = CSharpDbTransport.Http,
+                Endpoint = httpClient.BaseAddress.ToString(),
+                HttpClient = httpClient,
+            });
+
+        CSharpDbClientException error =
+            await Assert.ThrowsAsync<CSharpDbClientException>(
+                async () =>
+                    await client.GetTableSchemaAsync("partial_http", Ct));
+        Assert.Contains(
+            "no stable identity",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task HttpTransport_RejectsPartialForeignKeyBindings()
+    {
+        Guid tableId = Guid.NewGuid();
+        Guid columnId = Guid.NewGuid();
+        Guid foreignKeyId = Guid.NewGuid();
+        string payload =
+            $$"""
+            {
+              "schemaId": "{{tableId:D}}",
+              "tableName": "partial_fk_http",
+              "columns": [
+                {
+                  "schemaId": "{{columnId:D}}",
+                  "name": "parent_id",
+                  "type": "Integer",
+                  "nullable": true,
+                  "isPrimaryKey": false,
+                  "isIdentity": false
+                }
+              ],
+              "foreignKeys": [
+                {
+                  "schemaId": "{{foreignKeyId:D}}",
+                  "constraintName": "fk_partial_http",
+                  "columnName": "parent_id",
+                  "columnNames": ["parent_id"],
+                  "columnSchemaIds": ["{{columnId:D}}"],
+                  "referencedTableName": "parents",
+                  "referencedColumnName": "id",
+                  "referencedColumnNames": ["id"],
+                  "onDelete": "Restrict",
+                  "supportingIndexName": "__fk_partial_http"
+                }
+              ],
+              "keyConstraints": [],
+              "checkConstraints": [],
+              "nextRowId": 1
+            }
+            """;
+        using var httpClient = new HttpClient(new StaticJsonHandler(payload))
+        {
+            BaseAddress = new Uri("http://partial-fk-server/"),
+        };
+        await using ICSharpDbClient client = CSharpDbClient.Create(
+            new CSharpDbClientOptions
+            {
+                Transport = CSharpDbTransport.Http,
+                Endpoint = httpClient.BaseAddress.ToString(),
+                HttpClient = httpClient,
+            });
+
+        CSharpDbClientException error =
+            await Assert.ThrowsAsync<CSharpDbClientException>(
+                async () =>
+                    await client.GetTableSchemaAsync(
+                        "partial_fk_http",
+                        Ct));
+        Assert.Contains(
+            "partial stable bindings",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task HttpTransport_RejectsInconsistentLegacyForeignKeyColumns()
+    {
+        const string payload =
+            """
+            {
+              "tableName": "legacy_inconsistent_fk",
+              "columns": [
+                {
+                  "name": "first_id",
+                  "type": "Integer",
+                  "nullable": true,
+                  "isPrimaryKey": false,
+                  "isIdentity": false
+                },
+                {
+                  "name": "second_id",
+                  "type": "Integer",
+                  "nullable": true,
+                  "isPrimaryKey": false,
+                  "isIdentity": false
+                }
+              ],
+              "foreignKeys": [
+                {
+                  "constraintName": "fk_legacy_inconsistent",
+                  "columnName": "first_id",
+                  "columnNames": ["first_id", "second_id"],
+                  "referencedTableName": "parents",
+                  "referencedColumnName": "id",
+                  "referencedColumnNames": ["id"],
+                  "onDelete": "Restrict",
+                  "supportingIndexName": "__fk_legacy_inconsistent"
+                }
+              ],
+              "keyConstraints": [],
+              "checkConstraints": [],
+              "nextRowId": 1
+            }
+            """;
+        using var httpClient = new HttpClient(new StaticJsonHandler(payload))
+        {
+            BaseAddress = new Uri("http://legacy-inconsistent-server/"),
+        };
+        await using ICSharpDbClient client = CSharpDbClient.Create(
+            new CSharpDbClientOptions
+            {
+                Transport = CSharpDbTransport.Http,
+                Endpoint = httpClient.BaseAddress.ToString(),
+                HttpClient = httpClient,
+            });
+
+        CSharpDbClientException error =
+            await Assert.ThrowsAsync<CSharpDbClientException>(
+                async () =>
+                    await client.GetTableSchemaAsync(
+                        "legacy_inconsistent_fk",
+                        Ct));
+        Assert.Contains(
+            "inconsistent ordered columns",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task HttpTransport_RejectsUndefinedNumericColumnType()
+    {
+        const string payload =
+            """
+            {
+              "tableName": "invalid_column_type",
+              "columns": [
+                {
+                  "name": "id",
+                  "type": "255",
+                  "nullable": false,
+                  "isPrimaryKey": true,
+                  "isIdentity": false
+                }
+              ],
+              "foreignKeys": [],
+              "keyConstraints": [],
+              "checkConstraints": [],
+              "nextRowId": 1
+            }
+            """;
+        using var httpClient = new HttpClient(new StaticJsonHandler(payload))
+        {
+            BaseAddress = new Uri("http://invalid-column-type-server/"),
+        };
+        await using ICSharpDbClient client = CSharpDbClient.Create(
+            new CSharpDbClientOptions
+            {
+                Transport = CSharpDbTransport.Http,
+                Endpoint = httpClient.BaseAddress.ToString(),
+                HttpClient = httpClient,
+            });
+
+        CSharpDbClientException error =
+            await Assert.ThrowsAsync<CSharpDbClientException>(
+                async () =>
+                    await client.GetTableSchemaAsync(
+                        "invalid_column_type",
+                        Ct));
+
+        Assert.Contains(
+            "Unsupported column type '255'",
+            error.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task HttpTransport_RejectsUndefinedNumericForeignKeyAction()
+    {
+        const string payload =
+            """
+            {
+              "tableName": "invalid_fk_action",
+              "columns": [
+                {
+                  "name": "parent_id",
+                  "type": "Integer",
+                  "nullable": true,
+                  "isPrimaryKey": false,
+                  "isIdentity": false
+                }
+              ],
+              "foreignKeys": [
+                {
+                  "constraintName": "fk_invalid_action",
+                  "columnName": "parent_id",
+                  "columnNames": ["parent_id"],
+                  "referencedTableName": "parents",
+                  "referencedColumnName": "id",
+                  "referencedColumnNames": ["id"],
+                  "onDelete": "2",
+                  "supportingIndexName": "__fk_invalid_action"
+                }
+              ],
+              "keyConstraints": [],
+              "checkConstraints": [],
+              "nextRowId": 1
+            }
+            """;
+        using var httpClient = new HttpClient(new StaticJsonHandler(payload))
+        {
+            BaseAddress = new Uri("http://invalid-fk-action-server/"),
+        };
+        await using ICSharpDbClient client = CSharpDbClient.Create(
+            new CSharpDbClientOptions
+            {
+                Transport = CSharpDbTransport.Http,
+                Endpoint = httpClient.BaseAddress.ToString(),
+                HttpClient = httpClient,
+            });
+
+        CSharpDbClientException error =
+            await Assert.ThrowsAsync<CSharpDbClientException>(
+                async () =>
+                    await client.GetTableSchemaAsync(
+                        "invalid_fk_action",
+                        Ct));
+
+        Assert.Contains(
+            "Unsupported foreign key ON DELETE action '2'",
+            error.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("99", "Insert", "timing")]
+    [InlineData("After", "99", "event")]
+    public async Task HttpTransport_RejectsUndefinedNumericTriggerEnums(
+        string timing,
+        string triggerEvent,
+        string enumKind)
+    {
+        string payload =
+            $$"""
+            [
+              {
+                "triggerName": "invalid_trigger",
+                "tableName": "items",
+                "timing": "{{timing}}",
+                "event": "{{triggerEvent}}",
+                "bodySql": "SELECT 1"
+              }
+            ]
+            """;
+        using var httpClient = new HttpClient(new StaticJsonHandler(payload))
+        {
+            BaseAddress = new Uri("http://invalid-trigger-enum-server/"),
+        };
+        await using ICSharpDbClient client = CSharpDbClient.Create(
+            new CSharpDbClientOptions
+            {
+                Transport = CSharpDbTransport.Http,
+                Endpoint = httpClient.BaseAddress.ToString(),
+                HttpClient = httpClient,
+            });
+
+        CSharpDbClientException error =
+            await Assert.ThrowsAsync<CSharpDbClientException>(
+                async () => await client.GetTriggersAsync(Ct));
+
+        Assert.Contains(
+            $"Unsupported trigger {enumKind} '99'",
+            error.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task HttpTransport_RejectsUndefinedNumericProcedureParameterType()
+    {
+        const string payload =
+            """
+            {
+              "name": "invalid_procedure",
+              "bodySql": "SELECT @value",
+              "parameters": [
+                {
+                  "name": "value",
+                  "type": "255",
+                  "required": true,
+                  "default": "unused",
+                  "description": "invalid type"
+                }
+              ],
+              "description": "invalid parameter type",
+              "isEnabled": true,
+              "createdUtc": "1970-01-01T00:00:00Z",
+              "updatedUtc": "1970-01-01T00:00:00Z"
+            }
+            """;
+        using var httpClient = new HttpClient(new StaticJsonHandler(payload))
+        {
+            BaseAddress = new Uri(
+                "http://invalid-procedure-type-server/"),
+        };
+        await using ICSharpDbClient client = CSharpDbClient.Create(
+            new CSharpDbClientOptions
+            {
+                Transport = CSharpDbTransport.Http,
+                Endpoint = httpClient.BaseAddress.ToString(),
+                HttpClient = httpClient,
+            });
+
+        CSharpDbClientException error =
+            await Assert.ThrowsAsync<CSharpDbClientException>(
+                async () =>
+                    await client.GetProcedureAsync(
+                        "invalid_procedure",
+                        Ct));
+
+        Assert.Contains(
+            "Unsupported procedure parameter type '255'",
+            error.Message,
+            StringComparison.Ordinal);
     }
 
     [Fact]

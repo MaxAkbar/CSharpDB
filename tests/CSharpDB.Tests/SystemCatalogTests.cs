@@ -205,12 +205,40 @@ public sealed class SystemCatalogTests : IAsyncLifetime
         Assert.Equal("CASCADE", foreignKeyRow[5].AsText);
 
         await using var stableForeignKeyIdentity = await _db.ExecuteAsync(
-            "SELECT table_schema_id, constraint_schema_id FROM sys.foreign_keys",
+            """
+            SELECT table_schema_id,
+                   constraint_schema_id,
+                   column_schema_id,
+                   referenced_table_schema_id,
+                   referenced_column_schema_id,
+                   referenced_key_schema_id
+            FROM sys.foreign_keys
+            """,
             ct);
         DbValue[] stableForeignKeyRow =
             Assert.Single(await stableForeignKeyIdentity.ToListAsync(ct));
-        Assert.True(Guid.TryParse(stableForeignKeyRow[0].AsText, out _));
-        Assert.True(Guid.TryParse(stableForeignKeyRow[1].AsText, out _));
+        Guid[] stableIds = stableForeignKeyRow
+            .Select(value =>
+            {
+                Assert.True(Guid.TryParse(value.AsText, out Guid parsed));
+                return parsed;
+            })
+            .ToArray();
+        TableSchema childSchema = Assert.IsType<TableSchema>(
+            _db.GetTableSchema("children"));
+        TableSchema parentSchema = Assert.IsType<TableSchema>(
+            _db.GetTableSchema("parents"));
+        ForeignKeyDefinition foreignKey = Assert.Single(childSchema.ForeignKeys);
+        Assert.Equal(childSchema.SchemaId, stableIds[0]);
+        Assert.Equal(foreignKey.SchemaId, stableIds[1]);
+        Assert.Equal(
+            childSchema.Columns.Single(column => column.Name == "parent_id").SchemaId,
+            stableIds[2]);
+        Assert.Equal(parentSchema.SchemaId, stableIds[3]);
+        Assert.Equal(
+            parentSchema.Columns.Single(column => column.Name == "id").SchemaId,
+            stableIds[4]);
+        Assert.Equal(Assert.Single(parentSchema.KeyConstraints).SchemaId, stableIds[5]);
 
         await using var systemIndexes = await _db.ExecuteAsync(
             "SELECT COUNT(*) FROM sys.indexes WHERE index_name = '" + supportingIndexName + "'",
