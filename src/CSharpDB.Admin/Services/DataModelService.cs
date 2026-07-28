@@ -6,6 +6,7 @@ using CSharpDB.Client.Models;
 using CSharpDB.ImportExport.TableArchives;
 using ArchiveColumn = CSharpDB.ImportExport.Models.TableArchiveColumn;
 using ArchiveForeignKey = CSharpDB.ImportExport.Models.TableArchiveForeignKey;
+using PrimitiveForeignKeyOnDeleteAction = CSharpDB.Primitives.ForeignKeyOnDeleteAction;
 
 namespace CSharpDB.Admin.Services;
 
@@ -275,6 +276,8 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
                     .Append(relationship.RightColumn);
                 if (!string.IsNullOrWhiteSpace(relationship.OnDelete))
                     sb.Append(" ON DELETE ").Append(relationship.OnDelete);
+                if (!string.IsNullOrWhiteSpace(relationship.OnUpdate))
+                    sb.Append(" ON UPDATE ").Append(relationship.OnUpdate);
                 sb.AppendLine();
             }
         }
@@ -463,6 +466,7 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
                                 ReferencedTableName = RequireValue(operation.ReferencedTableName, "referenced table"),
                                 ReferencedColumnName = operation.ReferencedColumnName,
                                 OnDelete = ParseOnDeleteAction(operation.OnDelete),
+                                OnUpdate = ParseReferentialAction(operation.OnUpdate),
                             },
                         ],
                     },
@@ -711,7 +715,8 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
         ReferencedColumnNames = foreignKey.ReferencedColumnNames.Count > 0
             ? foreignKey.ReferencedColumnNames
             : [foreignKey.ReferencedColumnName],
-        OnDelete = foreignKey.OnDelete.ToString().ToUpperInvariant(),
+        OnDelete = FormatReferentialAction(foreignKey.OnDelete),
+        OnUpdate = FormatReferentialAction(foreignKey.OnUpdate),
     };
 
     private static DataModelForeignKeyMetadata MapArchiveForeignKey(ArchiveForeignKey foreignKey) => new()
@@ -726,7 +731,8 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
         ReferencedColumnNames = foreignKey.ReferencedColumnNames.Count > 0
             ? foreignKey.ReferencedColumnNames
             : [foreignKey.ReferencedColumnName],
-        OnDelete = foreignKey.OnDelete.ToString().ToUpperInvariant(),
+        OnDelete = FormatReferentialAction(foreignKey.OnDelete),
+        OnUpdate = FormatReferentialAction(foreignKey.OnUpdate),
     };
 
     private static DataModelIndexMetadata MapIndex(IndexSchema index) => new()
@@ -828,11 +834,52 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
     };
 
     private static ForeignKeyOnDeleteAction ParseOnDeleteAction(string? value)
+        => ParseReferentialAction(value);
+
+    private static ForeignKeyOnDeleteAction ParseReferentialAction(string? value)
     {
-        return string.Equals(value, "CASCADE", StringComparison.OrdinalIgnoreCase)
-            ? ForeignKeyOnDeleteAction.Cascade
-            : ForeignKeyOnDeleteAction.Restrict;
+        if (string.IsNullOrWhiteSpace(value))
+            return ForeignKeyOnDeleteAction.Restrict;
+
+        string normalized = value.Trim().Replace("_", " ", StringComparison.Ordinal)
+            .Replace("-", " ", StringComparison.Ordinal);
+        return normalized.ToUpperInvariant() switch
+        {
+            "RESTRICT" => ForeignKeyOnDeleteAction.Restrict,
+            "CASCADE" => ForeignKeyOnDeleteAction.Cascade,
+            "NO ACTION" or "NOACTION" => ForeignKeyOnDeleteAction.NoAction,
+            "SET NULL" or "SETNULL" => ForeignKeyOnDeleteAction.SetNull,
+            "SET DEFAULT" or "SETDEFAULT" => ForeignKeyOnDeleteAction.SetDefault,
+            _ => throw new InvalidOperationException(
+                $"Unsupported foreign key referential action '{value}'."),
+        };
     }
+
+    private static string FormatReferentialAction(
+        ForeignKeyOnDeleteAction action) =>
+        action switch
+        {
+            ForeignKeyOnDeleteAction.Restrict => "RESTRICT",
+            ForeignKeyOnDeleteAction.Cascade => "CASCADE",
+            ForeignKeyOnDeleteAction.NoAction => "NO ACTION",
+            ForeignKeyOnDeleteAction.SetNull => "SET NULL",
+            ForeignKeyOnDeleteAction.SetDefault => "SET DEFAULT",
+            _ => throw new InvalidOperationException(
+                $"Unsupported foreign key referential action '{action}'."),
+        };
+
+    private static string FormatReferentialAction(
+        PrimitiveForeignKeyOnDeleteAction action) =>
+        action switch
+        {
+            PrimitiveForeignKeyOnDeleteAction.Restrict => "RESTRICT",
+            PrimitiveForeignKeyOnDeleteAction.Cascade => "CASCADE",
+            PrimitiveForeignKeyOnDeleteAction.NoAction => "NO ACTION",
+            PrimitiveForeignKeyOnDeleteAction.SetNull => "SET NULL",
+            PrimitiveForeignKeyOnDeleteAction.SetDefault => "SET DEFAULT",
+            _ => throw new InvalidOperationException(
+                $"Unsupported archived foreign key referential action '{action}'."),
+        };
 
     private sealed record ExternalTableRegistration(
         string TableName,

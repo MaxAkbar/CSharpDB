@@ -217,6 +217,7 @@ public sealed class SchemaSerializerCompatibilityTests
                     ReferencedTableName = "parents",
                     ReferencedColumnName = "id",
                     OnDelete = ForeignKeyOnDeleteAction.Cascade,
+                    OnUpdate = ForeignKeyOnDeleteAction.SetNull,
                     SupportingIndexName = "__fk_children_parent_id_a1b2",
                 },
             },
@@ -232,7 +233,25 @@ public sealed class SchemaSerializerCompatibilityTests
         Assert.Equal("parents", foreignKey.ReferencedTableName);
         Assert.Equal("id", foreignKey.ReferencedColumnName);
         Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
+        Assert.Equal(ForeignKeyOnDeleteAction.SetNull, foreignKey.OnUpdate);
         Assert.Equal("__fk_children_parent_id_a1b2", foreignKey.SupportingIndexName);
+    }
+
+    [Fact]
+    public void Deserialize_PreVersionNineForeignKey_DefaultsOnUpdateToRestrict()
+    {
+        byte[] payload = BuildVersionTwoForeignKeyPayload(
+            (ulong)ForeignKeyOnDeleteAction.Cascade);
+
+        ForeignKeyDefinition foreignKey = Assert.Single(
+            SchemaSerializer.Deserialize(payload).ForeignKeys);
+
+        Assert.Equal(
+            ForeignKeyOnDeleteAction.Cascade,
+            foreignKey.OnDelete);
+        Assert.Equal(
+            ForeignKeyOnDeleteAction.Restrict,
+            foreignKey.OnUpdate);
     }
 
     [Fact]
@@ -334,6 +353,7 @@ public sealed class SchemaSerializerCompatibilityTests
     [InlineData(6UL)]
     [InlineData(7UL)]
     [InlineData(8UL)]
+    [InlineData(9UL)]
     public void Deserialize_PreviousVersionedTableMetadata_DefaultsNewConstraintFields(
         ulong metadataVersion)
     {
@@ -355,6 +375,7 @@ public sealed class SchemaSerializerCompatibilityTests
     [InlineData(6UL)]
     [InlineData(7UL)]
     [InlineData(8UL)]
+    [InlineData(9UL)]
     public void Deserialize_DeclaredMetadataVersion_RequiresCompletePayload(
         ulong metadataVersion)
     {
@@ -378,6 +399,7 @@ public sealed class SchemaSerializerCompatibilityTests
     [InlineData(6UL)]
     [InlineData(7UL)]
     [InlineData(8UL)]
+    [InlineData(9UL)]
     public void Deserialize_VersionedMetadata_RejectsTrailingBytes(
         ulong metadataVersion)
     {
@@ -391,14 +413,14 @@ public sealed class SchemaSerializerCompatibilityTests
     }
 
     [Fact]
-    public void Deserialize_ExplicitlyRejectsUnknownVersionAfterVersionEight()
+    public void Deserialize_ExplicitlyRejectsUnknownVersionAfterVersionNine()
     {
-        byte[] payload = BuildVersionedTableSchemaPayload(9);
+        byte[] payload = BuildVersionedTableSchemaPayload(10);
 
         InvalidDataException error = Assert.Throws<InvalidDataException>(
             () => SchemaSerializer.Deserialize(payload));
 
-        Assert.Contains("version '9'", error.Message, StringComparison.Ordinal);
+        Assert.Contains("version '10'", error.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -627,7 +649,7 @@ public sealed class SchemaSerializerCompatibilityTests
                     ColumnName = "parent_id",
                     ReferencedTableName = "parents",
                     ReferencedColumnName = "id",
-                    OnDelete = (ForeignKeyOnDeleteAction)2,
+                    OnDelete = (ForeignKeyOnDeleteAction)5,
                     SupportingIndexName = "ix_invalid",
                 },
             ],
@@ -637,6 +659,43 @@ public sealed class SchemaSerializerCompatibilityTests
             () => SchemaSerializer.Serialize(schema));
 
         Assert.Contains("ON DELETE", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Serialize_RejectsUndefinedForeignKeyOnUpdateAction()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "invalid_foreign_key",
+            Columns =
+            [
+                new ColumnDefinition
+                {
+                    Name = "parent_id",
+                    Type = DbType.Integer,
+                },
+            ],
+            ForeignKeys =
+            [
+                new ForeignKeyDefinition
+                {
+                    ConstraintName = "fk_invalid",
+                    ColumnName = "parent_id",
+                    ReferencedTableName = "parents",
+                    ReferencedColumnName = "id",
+                    OnUpdate = (ForeignKeyOnDeleteAction)5,
+                    SupportingIndexName = "ix_invalid",
+                },
+            ],
+        };
+
+        InvalidDataException error = Assert.Throws<InvalidDataException>(
+            () => SchemaSerializer.Serialize(schema));
+
+        Assert.Contains(
+            "ON UPDATE",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -693,8 +752,11 @@ public sealed class SchemaSerializerCompatibilityTests
 
     [Theory]
     [InlineData(2UL)]
+    [InlineData(3UL)]
+    [InlineData(4UL)]
+    [InlineData(5UL)]
     [InlineData(4_294_967_296UL)]
-    public void Deserialize_RejectsUndefinedForeignKeyOnDeleteAction(
+    public void Deserialize_PreVersionNineRejectsExpandedOrUndefinedForeignKeyOnDeleteAction(
         ulong rawValue)
     {
         byte[] payload =
@@ -704,6 +766,29 @@ public sealed class SchemaSerializerCompatibilityTests
             () => SchemaSerializer.Deserialize(payload));
 
         Assert.Contains("ON DELETE", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(5UL)]
+    [InlineData(4_294_967_296UL)]
+    public void Deserialize_RejectsUndefinedForeignKeyOnUpdateAction(
+        ulong rawValue)
+    {
+        byte[] payload = SchemaSerializer.Serialize(
+            BuildCompositeForeignKeySchema(
+                childBindingIds: [Guid.NewGuid(), Guid.NewGuid()]));
+        byte[] corrupt = ReplaceSingleByte(
+            payload,
+            payload.Length - 1,
+            EncodeVarint(rawValue));
+
+        InvalidDataException error = Assert.Throws<InvalidDataException>(
+            () => SchemaSerializer.Deserialize(corrupt));
+
+        Assert.Contains(
+            "ON UPDATE",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     [Theory]
@@ -1040,6 +1125,8 @@ public sealed class SchemaSerializerCompatibilityTests
         }
         if (metadataVersion >= 8)
             WriteVarint(ms, 0); // stable foreign-key binding count
+        if (metadataVersion >= 9)
+            WriteVarint(ms, 0); // foreign-key ON UPDATE action count
         return ms.ToArray();
     }
 
@@ -1158,6 +1245,7 @@ public sealed class SchemaSerializerCompatibilityTests
         const int GuidLength = 16;
         const int OneByteCountLength = 1;
         const int CompositeArity = 2;
+        const int ForeignKeyUpdateActionSectionLength = 2;
         int bindingSectionLength =
             OneByteCountLength +
             GuidLength +
@@ -1166,7 +1254,10 @@ public sealed class SchemaSerializerCompatibilityTests
             OneByteCountLength +
             (CompositeArity * GuidLength) +
             GuidLength;
-        int bindingSectionOffset = payload.Length - bindingSectionLength;
+        int bindingSectionOffset =
+            payload.Length -
+            ForeignKeyUpdateActionSectionLength -
+            bindingSectionLength;
         return bindingSectionOffset + OneByteCountLength + GuidLength;
     }
 

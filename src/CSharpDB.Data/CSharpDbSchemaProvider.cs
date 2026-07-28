@@ -543,6 +543,7 @@ internal static class CSharpDbSchemaProvider
         table.Columns.Add("REFERENCED_TABLE_NAME", typeof(string));
         table.Columns.Add("REFERENCED_COLUMN_NAME", typeof(string));
         table.Columns.Add("DELETE_RULE", typeof(string));
+        table.Columns.Add("UPDATE_RULE", typeof(string));
         table.Columns.Add("SUPPORTING_INDEX_NAME", typeof(string));
         table.Columns.Add("ORDINAL_POSITION", typeof(int));
         table.Columns.Add("TABLE_SCHEMA_ID", typeof(Guid));
@@ -610,7 +611,8 @@ internal static class CSharpDbSchemaProvider
                         childColumns[columnIndex],
                         foreignKey.ReferencedTableName,
                         referencedColumns[columnIndex],
-                        foreignKey.OnDelete.ToString().ToUpperInvariant(),
+                        FormatReferentialAction(foreignKey.OnDelete),
+                        FormatReferentialAction(foreignKey.OnUpdate),
                         foreignKey.SupportingIndexName,
                         columnIndex + 1,
                         ToDataValue(schema.SchemaId),
@@ -625,6 +627,19 @@ internal static class CSharpDbSchemaProvider
 
         return table;
     }
+
+    private static string FormatReferentialAction(
+        ForeignKeyOnDeleteAction action) =>
+        action switch
+        {
+            ForeignKeyOnDeleteAction.Restrict => "RESTRICT",
+            ForeignKeyOnDeleteAction.Cascade => "CASCADE",
+            ForeignKeyOnDeleteAction.NoAction => "NO ACTION",
+            ForeignKeyOnDeleteAction.SetNull => "SET NULL",
+            ForeignKeyOnDeleteAction.SetDefault => "SET DEFAULT",
+            _ => throw new InvalidDataException(
+                $"Unsupported foreign key referential action '{action}'."),
+        };
 
     private static DataTable CreateViewsTable(CSharpDbConnection connection, string?[]? restrictionValues)
     {

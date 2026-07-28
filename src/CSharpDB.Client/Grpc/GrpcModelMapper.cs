@@ -51,6 +51,9 @@ public static class GrpcModelMapper
         {
             ForeignKeyOnDeleteAction.Restrict => ForeignKeyOnDeleteActionEnum.ForeignKeyOnDeleteActionRestrict,
             ForeignKeyOnDeleteAction.Cascade => ForeignKeyOnDeleteActionEnum.ForeignKeyOnDeleteActionCascade,
+            ForeignKeyOnDeleteAction.NoAction => ForeignKeyOnDeleteActionEnum.ForeignKeyOnDeleteActionNoAction,
+            ForeignKeyOnDeleteAction.SetNull => ForeignKeyOnDeleteActionEnum.ForeignKeyOnDeleteActionSetNull,
+            ForeignKeyOnDeleteAction.SetDefault => ForeignKeyOnDeleteActionEnum.ForeignKeyOnDeleteActionSetDefault,
             _ => throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported foreign key ON DELETE action."),
         };
 
@@ -59,6 +62,9 @@ public static class GrpcModelMapper
         {
             ForeignKeyOnDeleteActionEnum.ForeignKeyOnDeleteActionRestrict => ForeignKeyOnDeleteAction.Restrict,
             ForeignKeyOnDeleteActionEnum.ForeignKeyOnDeleteActionCascade => ForeignKeyOnDeleteAction.Cascade,
+            ForeignKeyOnDeleteActionEnum.ForeignKeyOnDeleteActionNoAction => ForeignKeyOnDeleteAction.NoAction,
+            ForeignKeyOnDeleteActionEnum.ForeignKeyOnDeleteActionSetNull => ForeignKeyOnDeleteAction.SetNull,
+            ForeignKeyOnDeleteActionEnum.ForeignKeyOnDeleteActionSetDefault => ForeignKeyOnDeleteAction.SetDefault,
             ForeignKeyOnDeleteActionEnum.ForeignKeyOnDeleteActionUnspecified => ForeignKeyOnDeleteAction.Restrict,
             _ => throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported foreign key ON DELETE action enum."),
         };
@@ -187,6 +193,7 @@ public static class GrpcModelMapper
             ReferencedTableName = value.ReferencedTableName,
             ReferencedColumnName = value.ReferencedColumnName,
             OnDelete = ToMessage(value.OnDelete),
+            OnUpdate = ToMessage(value.OnUpdate),
             SupportingIndexName = value.SupportingIndexName,
             ReferencedTableSchemaId = FormatSchemaId(value.ReferencedTableSchemaId),
             ReferencedKeySchemaId = FormatSchemaId(value.ReferencedKeySchemaId),
@@ -246,6 +253,7 @@ public static class GrpcModelMapper
             ReferencedTableName = value.ReferencedTableName,
             ReferencedColumnName = value.ReferencedColumnName,
             OnDelete = ToModel(value.OnDelete),
+            OnUpdate = ToModel(value.OnUpdate),
             SupportingIndexName = value.SupportingIndexName,
             ColumnNames = columnNames,
             ReferencedColumnNames = referencedColumnNames,
@@ -1665,6 +1673,7 @@ public static class GrpcModelMapper
             ReferencedTableName = value.ReferencedTableName,
             ReferencedColumnName = value.ReferencedColumnName ?? string.Empty,
             OnDelete = ToMessage(value.OnDelete),
+            OnUpdate = ToMessage(value.OnUpdate),
         };
 
     public static ForeignKeyMigrationConstraintSpec ToModel(ForeignKeyMigrationConstraintSpecMessage value)
@@ -1675,6 +1684,7 @@ public static class GrpcModelMapper
             ReferencedTableName = value.ReferencedTableName,
             ReferencedColumnName = string.IsNullOrWhiteSpace(value.ReferencedColumnName) ? null : value.ReferencedColumnName,
             OnDelete = ToModel(value.OnDelete),
+            OnUpdate = ToModel(value.OnUpdate),
         };
 
     public static ForeignKeyMigrationRequestMessage ToMessage(ForeignKeyMigrationRequest value)
@@ -1802,6 +1812,7 @@ public static class GrpcModelMapper
             ConstraintName = value.ConstraintName,
             SupportingIndexName = value.SupportingIndexName,
             OnDelete = ToMessage(value.OnDelete),
+            OnUpdate = ToMessage(value.OnUpdate),
         };
 
     public static ForeignKeyMigrationAppliedConstraint ToModel(ForeignKeyMigrationAppliedConstraintMessage value)
@@ -1814,6 +1825,7 @@ public static class GrpcModelMapper
             ConstraintName = value.ConstraintName,
             SupportingIndexName = value.SupportingIndexName,
             OnDelete = ToModel(value.OnDelete),
+            OnUpdate = ToModel(value.OnUpdate),
         };
 
     public static ForeignKeyMigrationResultMessage ToMessage(ForeignKeyMigrationResult value)

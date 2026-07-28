@@ -6,6 +6,40 @@ namespace CSharpDB.Tests;
 public sealed class DataModelGraphBuilderTests
 {
     [Fact]
+    public void RelationshipRules_SetNullRequiresNullableChildColumn()
+    {
+        var nullable = new DataModelColumn { Name = "ParentId", Nullable = true };
+        var required = new DataModelColumn { Name = "ParentId", Nullable = false };
+        var primaryKey = new DataModelColumn
+        {
+            Name = "ParentId",
+            Nullable = true,
+            IsPrimaryKey = true,
+        };
+
+        Assert.True(
+            DataModelRelationshipRules.IsDeleteActionCompatible(
+                "SET NULL",
+                nullable));
+        Assert.False(
+            DataModelRelationshipRules.IsDeleteActionCompatible(
+                "SET NULL",
+                required));
+        Assert.False(
+            DataModelRelationshipRules.IsDeleteActionCompatible(
+                "SET NULL",
+                primaryKey));
+        Assert.False(
+            DataModelRelationshipRules.IsDeleteActionCompatible(
+                "SET NULL",
+                childColumn: null));
+        Assert.True(
+            DataModelRelationshipRules.IsDeleteActionCompatible(
+                "CASCADE",
+                required));
+    }
+
+    [Fact]
     public void Build_MapsColumnsIndexesAndPhysicalForeignKeys()
     {
         DataModelState state = DataModelGraphBuilder.Build(

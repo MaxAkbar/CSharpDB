@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using CSharpDB.Client;
+using CSharpDB.Client.Models;
 using CSharpDB.Mcp.Helpers;
 using ModelContextProtocol.Server;
 
@@ -51,12 +52,26 @@ public static class SchemaTools
             referencedColumnNames = fk.ReferencedColumnNames.Count > 0
                 ? fk.ReferencedColumnNames
                 : [fk.ReferencedColumnName],
-            onDelete = fk.OnDelete.ToString().ToLowerInvariant(),
+            onDelete = FormatReferentialAction(fk.OnDelete),
+            onUpdate = FormatReferentialAction(fk.OnUpdate),
             supportingIndexName = fk.SupportingIndexName,
         });
 
         return JsonHelper.Serialize(new { tableName = schema.TableName, columns, foreignKeys });
     }
+
+    private static string FormatReferentialAction(
+        ForeignKeyOnDeleteAction action) =>
+        action switch
+        {
+            ForeignKeyOnDeleteAction.Restrict => "restrict",
+            ForeignKeyOnDeleteAction.Cascade => "cascade",
+            ForeignKeyOnDeleteAction.NoAction => "no-action",
+            ForeignKeyOnDeleteAction.SetNull => "set-null",
+            ForeignKeyOnDeleteAction.SetDefault => "set-default",
+            _ => throw new InvalidDataException(
+                $"Unsupported foreign key referential action '{action}'."),
+        };
 
     [McpServerTool, Description("List all indexes in the database with their table, columns, and uniqueness.")]
     public static async Task<string> ListIndexes(ICSharpDbClient db)

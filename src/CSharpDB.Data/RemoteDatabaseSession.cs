@@ -196,10 +196,27 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
             ReferencedColumnNames = foreignKey.ReferencedColumnNames.Count > 0
                 ? foreignKey.ReferencedColumnNames.ToArray()
                 : [foreignKey.ReferencedColumnName],
-            OnDelete = foreignKey.OnDelete == CSharpDB.Client.Models.ForeignKeyOnDeleteAction.Cascade
-                ? CoreForeignKeyOnDeleteAction.Cascade
-                : CoreForeignKeyOnDeleteAction.Restrict,
+            OnDelete = MapForeignKeyAction(foreignKey.OnDelete),
+            OnUpdate = MapForeignKeyAction(foreignKey.OnUpdate),
             SupportingIndexName = foreignKey.SupportingIndexName,
+        };
+
+    private static CoreForeignKeyOnDeleteAction MapForeignKeyAction(
+        CSharpDB.Client.Models.ForeignKeyOnDeleteAction action) =>
+        action switch
+        {
+            CSharpDB.Client.Models.ForeignKeyOnDeleteAction.Restrict =>
+                CoreForeignKeyOnDeleteAction.Restrict,
+            CSharpDB.Client.Models.ForeignKeyOnDeleteAction.Cascade =>
+                CoreForeignKeyOnDeleteAction.Cascade,
+            CSharpDB.Client.Models.ForeignKeyOnDeleteAction.NoAction =>
+                CoreForeignKeyOnDeleteAction.NoAction,
+            CSharpDB.Client.Models.ForeignKeyOnDeleteAction.SetNull =>
+                CoreForeignKeyOnDeleteAction.SetNull,
+            CSharpDB.Client.Models.ForeignKeyOnDeleteAction.SetDefault =>
+                CoreForeignKeyOnDeleteAction.SetDefault,
+            _ => throw new InvalidDataException(
+                $"Unsupported foreign key referential action '{action}'."),
         };
 
     private static CoreIndexSchema MapIndexSchema(CSharpDB.Client.Models.IndexSchema index)

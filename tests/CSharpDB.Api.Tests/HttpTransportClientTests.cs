@@ -804,7 +804,7 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task HttpTransport_RejectsUndefinedNumericForeignKeyAction()
+    public async Task HttpTransport_RejectsNumericForeignKeyAction()
     {
         const string payload =
             """
@@ -859,6 +859,59 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
             "Unsupported foreign key ON DELETE action '2'",
             error.Message,
             StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task HttpTransport_MigrateForeignKeys_RejectsNumericResultAction()
+    {
+        const string Payload =
+            """
+            {
+              "validateOnly": false,
+              "succeeded": true,
+              "affectedTables": 1,
+              "appliedForeignKeys": 1,
+              "copiedRows": 0,
+              "violationCount": 0,
+              "violations": [],
+              "appliedConstraints": [
+                {
+                  "tableName": "children",
+                  "columnName": "parent_id",
+                  "referencedTableName": "parents",
+                  "referencedColumnName": "id",
+                  "constraintName": "fk_children_parent",
+                  "supportingIndexName": "__fk_children_parent",
+                  "onDelete": "restrict",
+                  "onUpdate": 99
+                }
+              ]
+            }
+            """;
+        using var httpClient = new HttpClient(
+            new StaticJsonHandler(Payload))
+        {
+            BaseAddress =
+                new Uri("http://invalid-fk-migration-server/"),
+        };
+        await using ICSharpDbClient client = CSharpDbClient.Create(
+            new CSharpDbClientOptions
+            {
+                Transport = CSharpDbTransport.Http,
+                Endpoint = httpClient.BaseAddress.ToString(),
+                HttpClient = httpClient,
+            });
+
+        CSharpDbClientException error =
+            await Assert.ThrowsAsync<CSharpDbClientException>(
+                () => client.MigrateForeignKeysAsync(
+                    new ForeignKeyMigrationRequest(),
+                    Ct));
+
+        Assert.Contains(
+            "invalid foreign-key migration payload",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     [Theory]
@@ -960,7 +1013,9 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
             CREATE TABLE http_parents (id INTEGER PRIMARY KEY);
             CREATE TABLE http_children (
                 id INTEGER PRIMARY KEY,
-                parent_id INTEGER REFERENCES http_parents(id) ON DELETE CASCADE
+                parent_id INTEGER REFERENCES http_parents(id)
+                    ON DELETE SET NULL
+                    ON UPDATE NO ACTION
             );
             """,
             Ct);
@@ -972,7 +1027,8 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
         Assert.Equal("parent_id", foreignKey.ColumnName);
         Assert.Equal("http_parents", foreignKey.ReferencedTableName);
         Assert.Equal("id", foreignKey.ReferencedColumnName);
-        Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
+        Assert.Equal(ForeignKeyOnDeleteAction.SetNull, foreignKey.OnDelete);
+        Assert.Equal(ForeignKeyOnDeleteAction.NoAction, foreignKey.OnUpdate);
         Assert.Single(foreignKey.ColumnSchemaIds);
         Assert.NotEqual(Guid.Empty, foreignKey.ReferencedTableSchemaId);
         Assert.Single(foreignKey.ReferencedColumnSchemaIds);

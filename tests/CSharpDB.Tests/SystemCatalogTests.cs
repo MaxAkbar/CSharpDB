@@ -189,20 +189,21 @@ public sealed class SystemCatalogTests : IAsyncLifetime
         var ct = TestContext.Current.CancellationToken;
         await _db.ExecuteAsync("CREATE TABLE parents (id INTEGER PRIMARY KEY)", ct);
         await _db.ExecuteAsync(
-            "CREATE TABLE children (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parents(id) ON DELETE CASCADE)",
+            "CREATE TABLE children (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parents(id) ON DELETE SET NULL ON UPDATE NO ACTION)",
             ct);
 
         await using var foreignKeys = await _db.ExecuteAsync(
-            "SELECT constraint_name, table_name, column_name, referenced_table_name, referenced_column_name, on_delete, supporting_index_name FROM sys.foreign_keys",
+            "SELECT constraint_name, table_name, column_name, referenced_table_name, referenced_column_name, on_delete, on_update, supporting_index_name FROM sys.foreign_keys",
             ct);
         var foreignKeyRow = Assert.Single(await foreignKeys.ToListAsync(ct));
-        string supportingIndexName = foreignKeyRow[6].AsText;
+        string supportingIndexName = foreignKeyRow[7].AsText;
 
         Assert.Equal("children", foreignKeyRow[1].AsText);
         Assert.Equal("parent_id", foreignKeyRow[2].AsText);
         Assert.Equal("parents", foreignKeyRow[3].AsText);
         Assert.Equal("id", foreignKeyRow[4].AsText);
-        Assert.Equal("CASCADE", foreignKeyRow[5].AsText);
+        Assert.Equal("SET NULL", foreignKeyRow[5].AsText);
+        Assert.Equal("NO ACTION", foreignKeyRow[6].AsText);
 
         await using var stableForeignKeyIdentity = await _db.ExecuteAsync(
             """

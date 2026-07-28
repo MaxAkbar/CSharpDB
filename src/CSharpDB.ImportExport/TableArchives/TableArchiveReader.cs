@@ -263,7 +263,8 @@ public static class TableArchiveReader
         if (manifest.FormatVersion is not (
                 TableArchiveManifest.CurrentFormatVersion or
                 TableArchiveManifest.RowVersionFormatVersion or
-                TableArchiveManifest.SchemaFidelityFormatVersion))
+                TableArchiveManifest.SchemaFidelityFormatVersion or
+                TableArchiveManifest.ReferentialActionsFormatVersion))
             throw new InvalidDataException($"Unsupported native table archive format version {manifest.FormatVersion}.");
         if (manifest.FormatVersion != header.FormatVersion)
             throw new InvalidDataException("The table archive header and manifest format versions do not match.");
@@ -339,7 +340,7 @@ public static class TableArchiveReader
         TableArchiveManifest manifest,
         CancellationToken ct)
     {
-        ValidateSchema(schema);
+        ValidateSchema(schema, header.FormatVersion);
         if (manifest.Indexes is null)
             throw new InvalidDataException("The table archive physical index collection is null.");
 
@@ -596,7 +597,9 @@ public static class TableArchiveReader
         }
     }
 
-    private static void ValidateSchema(TableArchiveSchema schema)
+    private static void ValidateSchema(
+        TableArchiveSchema schema,
+        int formatVersion)
     {
         SqlIdentifierRules.Validate(schema.TableName, "Archived table name");
         if (schema.Columns is null || schema.Columns.Count == 0)
@@ -649,6 +652,32 @@ public static class TableArchiveReader
         {
             if (foreignKey is null)
                 throw new InvalidDataException("The table archive foreign key collection contains a null entry.");
+            if (!Enum.IsDefined(foreignKey.OnDelete))
+            {
+                throw new InvalidDataException(
+                    $"Archived foreign key '{foreignKey.ConstraintName}' has an unknown ON DELETE action.");
+            }
+            if (!Enum.IsDefined(foreignKey.OnUpdate))
+            {
+                throw new InvalidDataException(
+                    $"Archived foreign key '{foreignKey.ConstraintName}' has an unknown ON UPDATE action.");
+            }
+            if (formatVersion <
+                    TableArchiveManifest.ReferentialActionsFormatVersion &&
+                foreignKey.OnDelete is not (
+                    ForeignKeyOnDeleteAction.Restrict or
+                    ForeignKeyOnDeleteAction.Cascade))
+            {
+                throw new InvalidDataException(
+                    $"Archived foreign key '{foreignKey.ConstraintName}' requires native archive format version {TableArchiveManifest.ReferentialActionsFormatVersion} for ON DELETE action '{foreignKey.OnDelete}'.");
+            }
+            if (formatVersion <
+                    TableArchiveManifest.ReferentialActionsFormatVersion &&
+                foreignKey.OnUpdate != ForeignKeyOnDeleteAction.Restrict)
+            {
+                throw new InvalidDataException(
+                    $"Archived foreign key '{foreignKey.ConstraintName}' requires native archive format version {TableArchiveManifest.ReferentialActionsFormatVersion} for ON UPDATE action '{foreignKey.OnUpdate}'.");
+            }
             SqlIdentifierRules.Validate(foreignKey.ConstraintName, "Archived foreign key name");
             SqlIdentifierRules.Validate(foreignKey.ReferencedTableName, "Archived referenced table name");
             if (foreignKey.ColumnNames is null || foreignKey.ReferencedColumnNames is null)

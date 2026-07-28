@@ -54,6 +54,7 @@ internal static class DatabaseForeignKeyMigrationCoordinator
                         ConstraintName = foreignKey.Definition.ConstraintName,
                         SupportingIndexName = foreignKey.Definition.SupportingIndexName,
                         OnDelete = foreignKey.Definition.OnDelete,
+                        OnUpdate = foreignKey.Definition.OnUpdate,
                     })
                     .ToArray(),
             };
@@ -186,8 +187,26 @@ internal static class DatabaseForeignKeyMigrationCoordinator
 
             ValidateUserTableName(tableName);
             ValidateUserTableName(referencedTableName);
+            if (!Enum.IsDefined(spec.OnDelete))
+            {
+                throw new CSharpDbException(
+                    ErrorCode.SyntaxError,
+                    $"Unsupported foreign key ON DELETE action '{spec.OnDelete}'.");
+            }
+            if (!Enum.IsDefined(spec.OnUpdate))
+            {
+                throw new CSharpDbException(
+                    ErrorCode.SyntaxError,
+                    $"Unsupported foreign key ON UPDATE action '{spec.OnUpdate}'.");
+            }
 
-            string specKey = BuildSpecKey(tableName, columnName, referencedTableName, referencedColumnName, spec.OnDelete);
+            string specKey = BuildSpecKey(
+                tableName,
+                columnName,
+                referencedTableName,
+                referencedColumnName,
+                spec.OnDelete,
+                spec.OnUpdate);
             if (!seenSpecKeys.Add(specKey))
             {
                 throw new CSharpDbException(
@@ -216,6 +235,7 @@ internal static class DatabaseForeignKeyMigrationCoordinator
                 ReferencedTableName = referencedTableName,
                 ReferencedColumnName = referencedColumnName,
                 OnDelete = spec.OnDelete,
+                OnUpdate = spec.OnUpdate,
             });
         }
 
@@ -272,7 +292,8 @@ internal static class DatabaseForeignKeyMigrationCoordinator
                 spec.ColumnName,
                 spec.ReferencedTableName,
                 spec.ReferencedColumnName,
-                spec.OnDelete);
+                spec.OnDelete,
+                spec.OnUpdate);
 
             materializedForeignKeys.Add(new MaterializedForeignKey(spec, definition));
             currentSchema = new TableSchema
@@ -502,8 +523,16 @@ internal static class DatabaseForeignKeyMigrationCoordinator
         string columnName,
         string referencedTableName,
         string? referencedColumnName,
-        ForeignKeyOnDeleteAction onDelete)
-        => string.Join("|", tableName, columnName, referencedTableName, referencedColumnName ?? string.Empty, onDelete.ToString());
+        ForeignKeyOnDeleteAction onDelete,
+        ForeignKeyOnDeleteAction onUpdate)
+        => string.Join(
+            "|",
+            tableName,
+            columnName,
+            referencedTableName,
+            referencedColumnName ?? string.Empty,
+            onDelete.ToString(),
+            onUpdate.ToString());
 
     private static IEnumerable<string> OrderTables(
         IReadOnlyDictionary<string, List<DatabaseForeignKeyMigrationConstraintSpec>> specsByTable)
@@ -542,7 +571,8 @@ internal static class DatabaseForeignKeyMigrationCoordinator
         string columnName,
         string referencedTableName,
         string? referencedColumnName,
-        ForeignKeyOnDeleteAction onDelete)
+        ForeignKeyOnDeleteAction onDelete,
+        ForeignKeyOnDeleteAction onUpdate)
     {
         int childColumnIndex = currentTableSchema.GetColumnIndex(columnName);
         if (childColumnIndex < 0)
@@ -554,6 +584,31 @@ internal static class DatabaseForeignKeyMigrationCoordinator
             throw new CSharpDbException(
                 ErrorCode.TypeMismatch,
                 $"Foreign key column '{columnName}' must use INTEGER or TEXT.");
+        }
+        if (onDelete is not (
+                ForeignKeyOnDeleteAction.Restrict or
+                ForeignKeyOnDeleteAction.NoAction or
+                ForeignKeyOnDeleteAction.Cascade or
+                ForeignKeyOnDeleteAction.SetNull))
+        {
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                $"ON DELETE action '{onDelete}' is not implemented in this Phase 2 slice.");
+        }
+        if (onUpdate is not (
+                ForeignKeyOnDeleteAction.Restrict or
+                ForeignKeyOnDeleteAction.NoAction))
+        {
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                $"ON UPDATE action '{onUpdate}' is not implemented in this Phase 2 slice.");
+        }
+        if (onDelete == ForeignKeyOnDeleteAction.SetNull &&
+            !childColumn.Nullable)
+        {
+            throw new CSharpDbException(
+                ErrorCode.ConstraintViolation,
+                $"Foreign key SET NULL action on table '{tableName}' requires child column '{childColumn.Name}' to be nullable.");
         }
 
         TableSchema parentSchema = string.Equals(referencedTableName, tableName, StringComparison.OrdinalIgnoreCase)
@@ -606,6 +661,7 @@ internal static class DatabaseForeignKeyMigrationCoordinator
             ColumnNames = [columnName],
             ReferencedColumnNames = [resolvedReferencedColumn],
             OnDelete = onDelete,
+            OnUpdate = onUpdate,
             SupportingIndexName = GenerateForeignKeySupportIndexName(constraintName, tableName, columnName),
         };
     }

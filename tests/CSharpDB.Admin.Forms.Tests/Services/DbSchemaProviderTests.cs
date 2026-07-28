@@ -239,6 +239,61 @@ public class DbSchemaProviderTests
         Assert.Equal(legacySignature, table.SourceSchemaSignature);
     }
 
+    [Fact]
+    public async Task SourceSchemaSignature_LegacyForeignKeyHashRemainsStable()
+    {
+        await using var db = await TestDatabaseScope.CreateAsync();
+        await CreateSchemaAsync(db);
+        TableSchema schema = Assert.IsType<TableSchema>(
+            await db.Client.GetTableSchemaAsync(
+                "Orders",
+                TestContext.Current.CancellationToken));
+        Assert.All(
+            schema.ForeignKeys,
+            foreignKey => Assert.Equal(
+                ForeignKeyOnDeleteAction.Restrict,
+                foreignKey.OnUpdate));
+
+        string legacyJson = JsonSerializer.Serialize(new
+        {
+            schema.TableName,
+            Columns = schema.Columns.Select(column => new
+            {
+                column.Name,
+                Type = column.Type.ToString(),
+                column.Nullable,
+                column.IsPrimaryKey,
+                column.IsIdentity,
+                column.Collation,
+            }),
+            ForeignKeys = schema.ForeignKeys.Select(foreignKey => new
+            {
+                foreignKey.ConstraintName,
+                foreignKey.ColumnName,
+                ColumnNames = foreignKey.ColumnNames.Count > 0
+                    ? foreignKey.ColumnNames
+                    : [foreignKey.ColumnName],
+                foreignKey.ReferencedTableName,
+                foreignKey.ReferencedColumnName,
+                ReferencedColumnNames =
+                    foreignKey.ReferencedColumnNames.Count > 0
+                        ? foreignKey.ReferencedColumnNames
+                        : [foreignKey.ReferencedColumnName],
+                OnDelete = foreignKey.OnDelete.ToString(),
+                foreignKey.SupportingIndexName,
+            }),
+        });
+        string legacySignature = Convert.ToHexString(
+            SHA256.HashData(
+                Encoding.UTF8.GetBytes(legacyJson)));
+
+        var provider = new DbSchemaProvider(db.Client);
+        FormTableDefinition table = Assert.IsType<FormTableDefinition>(
+            await provider.GetTableDefinitionAsync("Orders"));
+
+        Assert.Equal(legacySignature, table.SourceSchemaSignature);
+    }
+
     private static Task CreateSchemaAsync(TestDatabaseScope db)
         => db.ExecuteAsync(
             """

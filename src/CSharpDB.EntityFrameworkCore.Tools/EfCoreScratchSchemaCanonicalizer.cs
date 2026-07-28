@@ -542,20 +542,30 @@ internal static class EfCoreScratchSchemaCanonicalizer
                         [
                             Attribute(
                                 "onDelete",
-                                foreignKey.OnDelete switch
-                                {
-                                    ForeignKeyOnDeleteAction.Restrict =>
-                                        "restrict",
-                                    ForeignKeyOnDeleteAction.Cascade =>
-                                        "cascade",
-                                    _ => throw new InvalidDataException(),
-                                }),
-                            Attribute("onUpdate", "restrict"),
+                                FormatReferentialAction(
+                                    foreignKey.OnDelete)),
+                            Attribute(
+                                "onUpdate",
+                                FormatReferentialAction(
+                                    foreignKey.OnUpdate)),
                         ],
                         members));
                 }
             }
         }
+
+        private static string FormatReferentialAction(
+            ForeignKeyOnDeleteAction action) =>
+            action switch
+            {
+                ForeignKeyOnDeleteAction.Restrict => "restrict",
+                ForeignKeyOnDeleteAction.Cascade => "cascade",
+                ForeignKeyOnDeleteAction.NoAction => "no-action",
+                ForeignKeyOnDeleteAction.SetNull => "set-null",
+                ForeignKeyOnDeleteAction.SetDefault => "set-default",
+                _ => throw new InvalidDataException(
+                    $"Unknown foreign key referential action '{action}'."),
+            };
 
         private void CaptureIndexes(
             IReadOnlyDictionary<string, TableShape> tablesByName)

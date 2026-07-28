@@ -90,14 +90,40 @@ public static partial class SchemaScriptRenderer
                 .Append(string.Join(", ", referencedColumns.Select(Identifier)))
                 .Append(')');
 
-            if (foreignKey.OnDelete == ForeignKeyOnDeleteAction.Cascade)
-                sql.Append(" ON DELETE CASCADE");
+            AppendReferentialAction(
+                sql,
+                "ON DELETE",
+                foreignKey.OnDelete);
+            AppendReferentialAction(
+                sql,
+                "ON UPDATE",
+                foreignKey.OnUpdate);
 
             sql.AppendLine(hasTrailingItems ? "," : string.Empty);
         }
 
         sql.Append(");");
         return sql.ToString();
+    }
+
+    private static void AppendReferentialAction(
+        StringBuilder sql,
+        string clause,
+        ForeignKeyOnDeleteAction action)
+    {
+        if (action == ForeignKeyOnDeleteAction.Restrict)
+            return;
+
+        string keyword = action switch
+        {
+            ForeignKeyOnDeleteAction.Cascade => "CASCADE",
+            ForeignKeyOnDeleteAction.NoAction => "NO ACTION",
+            ForeignKeyOnDeleteAction.SetNull => "SET NULL",
+            ForeignKeyOnDeleteAction.SetDefault => "SET DEFAULT",
+            _ => throw new InvalidOperationException(
+                $"Unsupported foreign key referential action '{action}'."),
+        };
+        sql.Append(' ').Append(clause).Append(' ').Append(keyword);
     }
 
     public static string RenderColumn(ColumnDefinition column)

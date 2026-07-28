@@ -63,6 +63,7 @@ public sealed class DataModelRelationship
     public bool IsResolved { get; set; } = true;
     public string? ConstraintName { get; set; }
     public string? OnDelete { get; set; }
+    public string? OnUpdate { get; set; }
     public string? Warning { get; set; }
 }
 
@@ -88,7 +89,20 @@ public sealed class DataModelPendingOperation
     public string? ReferencedColumnName { get; set; }
     public string? ConstraintName { get; set; }
     public string OnDelete { get; set; } = "RESTRICT";
+    public string OnUpdate { get; set; } = "RESTRICT";
     public string Description { get; set; } = "";
+}
+
+public static class DataModelRelationshipRules
+{
+    public static bool IsDeleteActionCompatible(
+        string? onDelete,
+        DataModelColumn? childColumn) =>
+        !string.Equals(
+            onDelete?.Trim(),
+            "SET NULL",
+            StringComparison.OrdinalIgnoreCase)
+        || childColumn is { Nullable: true, IsPrimaryKey: false };
 }
 
 public enum DataModelPendingOperationKind
@@ -163,6 +177,7 @@ public sealed class DataModelForeignKeyMetadata
     public required string ReferencedColumnName { get; init; }
     public IReadOnlyList<string> ReferencedColumnNames { get; init; } = [];
     public string? OnDelete { get; init; }
+    public string? OnUpdate { get; init; }
 }
 
 public sealed class DataModelIndexMetadata

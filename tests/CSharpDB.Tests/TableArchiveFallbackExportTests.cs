@@ -62,7 +62,7 @@ public sealed class TableArchiveFallbackExportTests
             Assert.True(index.IsUnique);
 
             TableArchiveManifest manifest = await TableArchiveReader.ReadManifestAsync(path, ct);
-            Assert.Equal(TableArchiveManifest.SchemaFidelityFormatVersion, manifest.FormatVersion);
+            Assert.Equal(TableArchiveManifest.LatestFormatVersion, manifest.FormatVersion);
         }
         finally
         {

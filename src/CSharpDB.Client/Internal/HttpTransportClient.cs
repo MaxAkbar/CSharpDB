@@ -819,7 +819,42 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
     public async Task<ForeignKeyMigrationResult> MigrateForeignKeysAsync(ForeignKeyMigrationRequest request, CancellationToken ct = default)
     {
         using var response = await SendAsync(HttpMethod.Post, BuildUri("api/maintenance/migrate-foreign-keys"), request, ct);
-        return await ReadRequiredAsync<ForeignKeyMigrationResult>(response, ct);
+        ForeignKeyMigrationResult result;
+        try
+        {
+            result =
+                await ReadRequiredAsync<ForeignKeyMigrationResult>(
+                    response,
+                    ct);
+        }
+        catch (JsonException error)
+        {
+            throw new CSharpDbClientException(
+                "HTTP transport returned an invalid foreign-key migration payload.",
+                error);
+        }
+
+        if (result.AppliedConstraints is null)
+        {
+            throw new CSharpDbClientException(
+                "HTTP transport returned a null applied-constraint collection.");
+        }
+        foreach (ForeignKeyMigrationAppliedConstraint constraint in
+                 result.AppliedConstraints)
+        {
+            if (!Enum.IsDefined(constraint.OnDelete))
+            {
+                throw new CSharpDbClientException(
+                    $"Unsupported foreign key ON DELETE action '{(int)constraint.OnDelete}' in the migration result.");
+            }
+            if (!Enum.IsDefined(constraint.OnUpdate))
+            {
+                throw new CSharpDbClientException(
+                    $"Unsupported foreign key ON UPDATE action '{(int)constraint.OnUpdate}' in the migration result.");
+            }
+        }
+
+        return result;
     }
 
     public async Task<DatabaseMaintenanceReport> GetMaintenanceReportAsync(CancellationToken ct = default)
@@ -1029,7 +1064,10 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
             DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
         };
 
-        options.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase));
+        options.Converters.Add(
+            new JsonStringEnumConverter(
+                JsonNamingPolicy.CamelCase,
+                allowIntegerValues: false));
         return options;
     }
 
@@ -1080,12 +1118,40 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
             ReferencedColumnName = payload.ReferencedColumnName,
             ColumnNames = payload.ColumnNames is { Count: > 0 } ? payload.ColumnNames : [payload.ColumnName],
             ReferencedColumnNames = payload.ReferencedColumnNames is { Count: > 0 } ? payload.ReferencedColumnNames : [payload.ReferencedColumnName],
-            OnDelete = Enum.TryParse<ForeignKeyOnDeleteAction>(payload.OnDelete, ignoreCase: true, out var onDelete)
-                && Enum.IsDefined(onDelete)
-                ? onDelete
-                : throw new CSharpDbClientException($"Unsupported foreign key ON DELETE action '{payload.OnDelete}'."),
+            OnDelete = ParseForeignKeyAction(payload.OnDelete, "ON DELETE", defaultWhenMissing: false),
+            OnUpdate = ParseForeignKeyAction(payload.OnUpdate, "ON UPDATE", defaultWhenMissing: true),
             SupportingIndexName = payload.SupportingIndexName,
         };
+
+    private static ForeignKeyOnDeleteAction ParseForeignKeyAction(
+        string? value,
+        string clause,
+        bool defaultWhenMissing)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            if (defaultWhenMissing)
+                return ForeignKeyOnDeleteAction.Restrict;
+
+            throw new CSharpDbClientException(
+                $"The server omitted the foreign key {clause} action.");
+        }
+
+        return value.Trim()
+            .Replace(" ", string.Empty, StringComparison.Ordinal)
+            .Replace("-", string.Empty, StringComparison.Ordinal)
+            .Replace("_", string.Empty, StringComparison.Ordinal)
+            .ToUpperInvariant() switch
+        {
+            "RESTRICT" => ForeignKeyOnDeleteAction.Restrict,
+            "CASCADE" => ForeignKeyOnDeleteAction.Cascade,
+            "NOACTION" => ForeignKeyOnDeleteAction.NoAction,
+            "SETNULL" => ForeignKeyOnDeleteAction.SetNull,
+            "SETDEFAULT" => ForeignKeyOnDeleteAction.SetDefault,
+            _ => throw new CSharpDbClientException(
+                $"Unsupported foreign key {clause} action '{value}'."),
+        };
+    }
 
     private static KeyConstraintDefinition MapKeyConstraint(ApiKeyConstraintResponse payload)
         => new()
@@ -1304,7 +1370,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
         string? Collation,
         string? DefaultSql,
         Guid SchemaId = default);
-    private sealed record ApiForeignKeyResponse(string ConstraintName, string ColumnName, string ReferencedTableName, string ReferencedColumnName, string OnDelete, string SupportingIndexName, IReadOnlyList<string>? ColumnNames = null, IReadOnlyList<string>? ReferencedColumnNames = null, Guid SchemaId = default, IReadOnlyList<Guid>? ColumnSchemaIds = null, Guid ReferencedTableSchemaId = default, IReadOnlyList<Guid>? ReferencedColumnSchemaIds = null, Guid ReferencedKeySchemaId = default);
+    private sealed record ApiForeignKeyResponse(string ConstraintName, string ColumnName, string ReferencedTableName, string ReferencedColumnName, string OnDelete, string SupportingIndexName, IReadOnlyList<string>? ColumnNames = null, IReadOnlyList<string>? ReferencedColumnNames = null, Guid SchemaId = default, IReadOnlyList<Guid>? ColumnSchemaIds = null, Guid ReferencedTableSchemaId = default, IReadOnlyList<Guid>? ReferencedColumnSchemaIds = null, Guid ReferencedKeySchemaId = default, string? OnUpdate = null);
     private sealed record ApiKeyConstraintResponse(string? ConstraintName, string Kind, IReadOnlyList<string> Columns, string? BackingIndexName, Guid SchemaId = default);
     private sealed record ApiCheckConstraintResponse(string? ConstraintName, string ExpressionSql, string? ColumnName, Guid SchemaId = default);
     private sealed record ApiBrowseResponse(string[] ColumnNames, List<Dictionary<string, object?>> Rows, int TotalRows, int Page, int PageSize, int TotalPages);

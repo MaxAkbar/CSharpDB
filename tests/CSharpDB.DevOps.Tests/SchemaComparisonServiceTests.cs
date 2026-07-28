@@ -137,6 +137,7 @@ public sealed class SchemaComparisonServiceTests
                         ColumnNames = ["id", "name"],
                         ReferencedColumnNames = ["tenant_id", "customer_name"],
                         OnDelete = CSharpDB.Primitives.ForeignKeyOnDeleteAction.Cascade,
+                        OnUpdate = CSharpDB.Primitives.ForeignKeyOnDeleteAction.NoAction,
                         SupportingIndexName = "__fk_archive_customers_tenant",
                     },
                 ],
@@ -172,6 +173,9 @@ public sealed class SchemaComparisonServiceTests
             ClientForeignKeyDefinition tableForeignKey = Assert.Single(table.ForeignKeys);
             Assert.Equal(["id", "name"], tableForeignKey.ColumnNames);
             Assert.Equal(["tenant_id", "customer_name"], tableForeignKey.ReferencedColumnNames);
+            Assert.Equal(
+                ClientForeignKeyOnDeleteAction.NoAction,
+                tableForeignKey.OnUpdate);
             Assert.Collection(
                 table.KeyConstraints,
                 primary => Assert.Equal(ClientKeyConstraintKind.PrimaryKey, primary.Kind),
@@ -410,7 +414,8 @@ public sealed class SchemaComparisonServiceTests
                     ReferencedColumnName = "tenant_id",
                     ColumnNames = ["tenant_id", "parent_code"],
                     ReferencedColumnNames = ["tenant_id", "code"],
-                    OnDelete = ClientForeignKeyOnDeleteAction.Cascade,
+                    OnDelete = ClientForeignKeyOnDeleteAction.SetNull,
+                    OnUpdate = ClientForeignKeyOnDeleteAction.NoAction,
                     SupportingIndexName = "__fk_children_parent",
                 },
             ],
@@ -427,9 +432,10 @@ public sealed class SchemaComparisonServiceTests
                     ColumnName = "tenant_id",
                     ReferencedTableName = "parents",
                     ReferencedColumnName = "tenant_id",
-                    ColumnNames = ["tenant_id", "legacy_code"],
-                    ReferencedColumnNames = ["tenant_id", "legacy_code"],
-                    OnDelete = ClientForeignKeyOnDeleteAction.Cascade,
+                    ColumnNames = ["tenant_id", "parent_code"],
+                    ReferencedColumnNames = ["tenant_id", "code"],
+                    OnDelete = ClientForeignKeyOnDeleteAction.SetNull,
+                    OnUpdate = ClientForeignKeyOnDeleteAction.Restrict,
                     SupportingIndexName = "__fk_children_parent",
                 },
             ],
@@ -447,7 +453,7 @@ public sealed class SchemaComparisonServiceTests
             change.SourceDefinition,
             StringComparison.Ordinal);
         Assert.Contains(
-            "FOREIGN KEY (tenant_id, parent_code) REFERENCES parents (tenant_id, code) ON DELETE CASCADE",
+            "FOREIGN KEY (tenant_id, parent_code) REFERENCES parents (tenant_id, code) ON DELETE SET NULL ON UPDATE NO ACTION",
             SchemaScriptRenderer.RenderCreateTable(source),
             StringComparison.Ordinal);
     }

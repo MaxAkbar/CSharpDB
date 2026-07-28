@@ -570,6 +570,7 @@ internal static class DdlLowerer
                     ? null
                     : [foreignKey.ReferencedColumnName],
                 foreignKey.OnDelete,
+                foreignKey.OnUpdate,
                 ordinal++));
         }
         foreach (ForeignKeyConstraintClause foreignKey in
@@ -581,6 +582,7 @@ internal static class DdlLowerer
                 foreignKey.ReferencedTableName,
                 foreignKey.ReferencedColumns,
                 foreignKey.OnDelete,
+                foreignKey.OnUpdate,
                 ordinal++));
         }
         if (pending.Count == 0)
@@ -625,6 +627,48 @@ internal static class DdlLowerer
                         .InvalidReferenceRuleId,
                     "The foreign key contains an unknown or duplicate source or table reference.",
                     "Reference tables and columns declared exactly once in this bounded script.",
+                    diagnostics,
+                    invalidStatements);
+                continue;
+            }
+
+            bool supportedDeleteAction =
+                foreignKey.OnDelete is
+                    ForeignKeyOnDeleteAction.Restrict or
+                    ForeignKeyOnDeleteAction.NoAction or
+                    ForeignKeyOnDeleteAction.Cascade or
+                    ForeignKeyOnDeleteAction.SetNull;
+            bool supportedUpdateAction =
+                foreignKey.OnUpdate is
+                    ForeignKeyOnDeleteAction.Restrict or
+                    ForeignKeyOnDeleteAction.NoAction;
+            if (!supportedDeleteAction || !supportedUpdateAction)
+            {
+                AddDiagnostic(
+                    model.Statement,
+                    CSharpDbDdlCompatibilityAnalyzer
+                        .UnsupportedFeatureRuleId,
+                    "The foreign key uses a referential action outside the current Phase 2 execution slice.",
+                    "Use ON DELETE RESTRICT, NO ACTION, CASCADE, or SET NULL and ON UPDATE RESTRICT or NO ACTION.",
+                    diagnostics,
+                    invalidStatements);
+                continue;
+            }
+
+            if (foreignKey.OnDelete ==
+                    ForeignKeyOnDeleteAction.SetNull &&
+                sourceColumns.Any(column =>
+                    !column.Column.IsNullable ||
+                    model.Keys.Any(key =>
+                        key.Kind == KeyConstraintKind.PrimaryKey &&
+                        key.Columns.Contains(column))))
+            {
+                AddDiagnostic(
+                    model.Statement,
+                    CSharpDbDdlCompatibilityAnalyzer
+                        .UnsupportedFeatureRuleId,
+                    "ON DELETE SET NULL requires every child column to be nullable.",
+                    "Make every child column nullable or use a restrictive or cascading delete action.",
                     diagnostics,
                     invalidStatements);
                 continue;
@@ -706,6 +750,17 @@ internal static class DdlLowerer
                 .Append(referencedKey.ObjectId)
                 .Distinct(StringComparer.Ordinal)
                 .ToArray();
+            var facets = new List<MigrationCatalogFacet>
+            {
+                Facet("onDelete", FormatReferentialAction(foreignKey.OnDelete)),
+            };
+            if (foreignKey.OnUpdate != ForeignKeyOnDeleteAction.Restrict)
+            {
+                facets.Add(
+                    Facet(
+                        "onUpdate",
+                        FormatReferentialAction(foreignKey.OnUpdate)));
+            }
             objects.Add(new MigrationCatalogObject
             {
                 ObjectId = foreignKeyId,
@@ -715,15 +770,7 @@ internal static class DdlLowerer
                 SourceSpan =
                     CSharpDbDdlCompatibilityAnalyzer.SourceSpan(
                         model.Statement.Span),
-                Facets =
-                [
-                    Facet(
-                        "onDelete",
-                        foreignKey.OnDelete ==
-                        ForeignKeyOnDeleteAction.Cascade
-                            ? "cascade"
-                            : "restrict"),
-                ],
+                Facets = facets,
                 Members = members,
                 DependsOn = dependencies,
             });
@@ -1100,7 +1147,21 @@ internal static class DdlLowerer
         string ReferencedTableName,
         IReadOnlyList<string>? ReferencedColumnNames,
         ForeignKeyOnDeleteAction OnDelete,
+        ForeignKeyOnDeleteAction OnUpdate,
         int Ordinal);
+
+    private static string FormatReferentialAction(
+        ForeignKeyOnDeleteAction action) =>
+        action switch
+        {
+            ForeignKeyOnDeleteAction.Restrict => "restrict",
+            ForeignKeyOnDeleteAction.Cascade => "cascade",
+            ForeignKeyOnDeleteAction.NoAction => "no-action",
+            ForeignKeyOnDeleteAction.SetNull => "set-null",
+            ForeignKeyOnDeleteAction.SetDefault => "set-default",
+            _ => throw new InvalidDataException(
+                $"Unsupported foreign key referential action '{action}'."),
+        };
 
     private sealed class ColumnNameSequenceComparer
         : IEqualityComparer<IReadOnlyList<string>>

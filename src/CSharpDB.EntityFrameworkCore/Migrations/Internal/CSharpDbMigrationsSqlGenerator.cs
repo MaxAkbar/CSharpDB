@@ -579,8 +579,7 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
                 .Append(QuoteIdentifier(principalColumn))
                 .Append(")");
 
-            if (foreignKey.OnDelete == ReferentialAction.Cascade)
-                builder.Append(" ON DELETE CASCADE");
+            AppendReferentialActions(builder, foreignKey);
         }
 
         return builder.ToString();
@@ -643,10 +642,48 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
             .Append(string.Join(", ", operation.PrincipalColumns!.Select(QuoteIdentifier)))
             .Append(")");
 
-        if (operation.OnDelete == ReferentialAction.Cascade)
-            builder.Append(" ON DELETE CASCADE");
+        AppendReferentialActions(builder, operation);
 
         return builder.ToString();
+    }
+
+    private static void AppendReferentialActions(
+        StringBuilder builder,
+        AddForeignKeyOperation operation)
+    {
+        AppendReferentialAction(
+            builder,
+            "DELETE",
+            operation.OnDelete);
+        AppendReferentialAction(
+            builder,
+            "UPDATE",
+            operation.OnUpdate);
+    }
+
+    private static void AppendReferentialAction(
+        StringBuilder builder,
+        string operation,
+        ReferentialAction action)
+    {
+        string? sql = action switch
+        {
+            ReferentialAction.NoAction => "NO ACTION",
+            ReferentialAction.Restrict => "RESTRICT",
+            ReferentialAction.Cascade => "CASCADE",
+            ReferentialAction.SetNull => "SET NULL",
+            ReferentialAction.SetDefault => "SET DEFAULT",
+            _ => throw Unsupported(
+                $"ON {operation} action '{action}'"),
+        };
+
+        if (sql is not null)
+        {
+            builder.Append(" ON ")
+                .Append(operation)
+                .Append(' ')
+                .Append(sql);
+        }
     }
 
     private string GenerateLiteral(object value)
@@ -832,10 +869,14 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
 
         if (operation.Columns.Length == 0 || operation.Columns.Length != principalColumns.Length)
             throw new InvalidOperationException("Foreign keys require equal, non-empty child and principal column lists.");
-        if (operation.OnUpdate != ReferentialAction.NoAction)
-            throw Unsupported("ON UPDATE actions");
-        if (operation.OnDelete is not ReferentialAction.NoAction and not ReferentialAction.Restrict and not ReferentialAction.Cascade)
-            throw Unsupported($"ON DELETE action '{operation.OnDelete}'");
+        ValidateReferentialAction(
+            operation.OnDelete,
+            "DELETE",
+            allowSetNull: true);
+        ValidateReferentialAction(
+            operation.OnUpdate,
+            "UPDATE",
+            allowSetNull: false);
 
         CSharpDbProviderValidation.ValidateSimpleIdentifier(operation.Table, "Table name");
         CSharpDbProviderValidation.ValidateSimpleIdentifier(operation.Name, "Foreign key name");
@@ -844,6 +885,23 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
         CSharpDbProviderValidation.ValidateSimpleIdentifier(principalTable, "Table name");
         foreach (string principalColumn in principalColumns)
             CSharpDbProviderValidation.ValidateSimpleIdentifier(principalColumn, "Column name");
+    }
+
+    private static void ValidateReferentialAction(
+        ReferentialAction action,
+        string operation,
+        bool allowSetNull)
+    {
+        if (action is ReferentialAction.NoAction
+            or ReferentialAction.Restrict
+            || (operation == "DELETE" && action == ReferentialAction.Cascade)
+            || (allowSetNull && action == ReferentialAction.SetNull))
+        {
+            return;
+        }
+
+        throw Unsupported(
+            $"ON {operation} action '{action}'");
     }
 
     private static void ValidateColumnOperation(

@@ -274,7 +274,19 @@ public sealed class ClientSchemaCompareTarget : ISchemaCompareTarget
                 {
                     PrimitiveForeignKeyOnDeleteAction.Restrict => ClientForeignKeyOnDeleteAction.Restrict,
                     PrimitiveForeignKeyOnDeleteAction.Cascade => ClientForeignKeyOnDeleteAction.Cascade,
+                    PrimitiveForeignKeyOnDeleteAction.NoAction => ClientForeignKeyOnDeleteAction.NoAction,
+                    PrimitiveForeignKeyOnDeleteAction.SetNull => ClientForeignKeyOnDeleteAction.SetNull,
+                    PrimitiveForeignKeyOnDeleteAction.SetDefault => ClientForeignKeyOnDeleteAction.SetDefault,
                     _ => throw new ArgumentOutOfRangeException(nameof(foreignKey.OnDelete), foreignKey.OnDelete, null),
+                },
+                OnUpdate = foreignKey.OnUpdate switch
+                {
+                    PrimitiveForeignKeyOnDeleteAction.Restrict => ClientForeignKeyOnDeleteAction.Restrict,
+                    PrimitiveForeignKeyOnDeleteAction.Cascade => ClientForeignKeyOnDeleteAction.Cascade,
+                    PrimitiveForeignKeyOnDeleteAction.NoAction => ClientForeignKeyOnDeleteAction.NoAction,
+                    PrimitiveForeignKeyOnDeleteAction.SetNull => ClientForeignKeyOnDeleteAction.SetNull,
+                    PrimitiveForeignKeyOnDeleteAction.SetDefault => ClientForeignKeyOnDeleteAction.SetDefault,
+                    _ => throw new ArgumentOutOfRangeException(nameof(foreignKey.OnUpdate), foreignKey.OnUpdate, null),
                 },
                 SupportingIndexName = foreignKey.SupportingIndexName,
             }).ToArray(),
@@ -420,7 +432,19 @@ public sealed class TableArchiveSchemaCompareTarget : ISchemaCompareTarget
                 {
                     PrimitiveForeignKeyOnDeleteAction.Restrict => ClientForeignKeyOnDeleteAction.Restrict,
                     PrimitiveForeignKeyOnDeleteAction.Cascade => ClientForeignKeyOnDeleteAction.Cascade,
+                    PrimitiveForeignKeyOnDeleteAction.NoAction => ClientForeignKeyOnDeleteAction.NoAction,
+                    PrimitiveForeignKeyOnDeleteAction.SetNull => ClientForeignKeyOnDeleteAction.SetNull,
+                    PrimitiveForeignKeyOnDeleteAction.SetDefault => ClientForeignKeyOnDeleteAction.SetDefault,
                     _ => throw new ArgumentOutOfRangeException(nameof(foreignKey.OnDelete), foreignKey.OnDelete, null),
+                },
+                OnUpdate = foreignKey.OnUpdate switch
+                {
+                    PrimitiveForeignKeyOnDeleteAction.Restrict => ClientForeignKeyOnDeleteAction.Restrict,
+                    PrimitiveForeignKeyOnDeleteAction.Cascade => ClientForeignKeyOnDeleteAction.Cascade,
+                    PrimitiveForeignKeyOnDeleteAction.NoAction => ClientForeignKeyOnDeleteAction.NoAction,
+                    PrimitiveForeignKeyOnDeleteAction.SetNull => ClientForeignKeyOnDeleteAction.SetNull,
+                    PrimitiveForeignKeyOnDeleteAction.SetDefault => ClientForeignKeyOnDeleteAction.SetDefault,
+                    _ => throw new ArgumentOutOfRangeException(nameof(foreignKey.OnUpdate), foreignKey.OnUpdate, null),
                 },
                 SupportingIndexName = foreignKey.SupportingIndexName,
             }).ToArray(),

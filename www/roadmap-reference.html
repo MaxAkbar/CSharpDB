@@ -213,7 +213,7 @@
                 <tbody>
                 <tr>
                 <td><strong>SQL feature coverage</strong></td>
-                <td>The public <a href="docs/sql.html">SQL Reference</a> and automated regression coverage are in place. Core development slices cover quoted identifiers, SQL three-valued logic, <code>UNION ALL</code>, literal <code>DEFAULT</code>/<code>CHECK</code>, logical composite keys, standalone primary-key add/drop with bounded populated single-INTEGER rekeying, table-level/composite foreign keys, Tier-1 windows, transactional shadow-root rewrites including exact INTEGER/REAL and indexed TEXT-collation ALTER COLUMN operations, constraint metadata transport, EF-generated defaults/checks/composite keys/named relationships/column rewrites, richer ADO.NET metadata, and a central function catalog. The remaining staged work covers additional referential actions, nonnumeric and indexed-numeric rewrites, broader physical-rekey ALTER operations, deeper generated-SQL testing, normalized metadata, physical explain/profile output, and release validation.</td>
+                <td>The public <a href="docs/sql.html">SQL Reference</a> and automated regression coverage are in place. Core development slices cover quoted identifiers, SQL three-valued logic, <code>UNION ALL</code>, literal <code>DEFAULT</code>/<code>CHECK</code>, logical composite keys, standalone primary-key add/drop with bounded populated single-INTEGER rekeying, table-level/composite foreign keys with stable identities and immediate RESTRICT/NO ACTION/CASCADE/SET NULL delete behavior, Tier-1 windows, transactional shadow-root rewrites including exact INTEGER/REAL and indexed TEXT-collation ALTER COLUMN operations, constraint metadata transport, EF-generated defaults/checks/composite keys/named relationships/column rewrites, richer ADO.NET metadata, and a central function catalog. The remaining staged work covers SET DEFAULT and mutating ON UPDATE referential actions, nonnumeric and indexed-numeric rewrites, broader physical-rekey ALTER operations, deeper generated-SQL testing, normalized metadata, physical explain/profile output, and release validation.</td>
                 <td>In Progress</td>
                 </tr>
                 <tr>
@@ -263,7 +263,7 @@
                 </tr>
                 <tr>
                 <td><strong>Foreign key constraints</strong></td>
-                <td>Column/table scalar and composite constraints with MATCH SIMPLE, immediate RESTRICT/CASCADE, candidate-key/type/collation validation, persistence, dependency repair, ordered catalogs, ADO.NET, direct/REST/gRPC, archive, schema-tooling, and named EF create/add/drop coverage. Additional actions, deferrability, and stable ids remain.</td>
+                <td>Column/table scalar and composite constraints with stable identities, MATCH SIMPLE, immediate RESTRICT/NO ACTION/CASCADE/SET NULL delete behavior, RESTRICT/NO ACTION update behavior, candidate-key/type/collation validation, persistence, dependency repair, ordered catalogs, ADO.NET, direct/REST/gRPC, archive, schema-tooling, and named EF create/add/drop coverage. SET DEFAULT, mutating ON UPDATE actions, deferrability, and MATCH FULL/PARTIAL remain.</td>
                 <td>Partial</td>
                 </tr>
                 <tr>
@@ -486,7 +486,7 @@
                 </tr>
                 <tr>
                 <td><strong>Schema</strong></td>
-                <td>Literal SQL <code>DEFAULT</code> values, deterministic row-local <code>CHECK</code> constraints, logical composite primary/unique keys, standalone PRIMARY KEY add/drop with bounded populated single-INTEGER rekeying, table-level/composite foreign keys with MATCH SIMPLE and immediate RESTRICT/CASCADE, additive transport/archive and ADO.NET constraint metadata, SET/DROP DEFAULT, validated SET/DROP NOT NULL and named constraint changes, plus transactional shadow-root rewrites for exact dependency-free INTEGER/REAL type changes and TEXT collation changes with inherited ordinary/unique SQL-index rebuilding are implemented. Statement-time/function defaults, arbitrary functions/subqueries in checks, stable schema ids, TEXT/BLOB type conversions, indexed numeric changes, broader dependency rewriting and physical rekey shapes/index kinds, additional referential actions, deferred constraints, and fault-injected rewrite recovery remain</td>
+                <td>Literal SQL <code>DEFAULT</code> values, deterministic row-local <code>CHECK</code> constraints, stable schema identities, logical composite primary/unique keys, standalone PRIMARY KEY add/drop with bounded populated single-INTEGER rekeying, table-level/composite foreign keys with MATCH SIMPLE, immediate RESTRICT/NO ACTION/CASCADE/SET NULL delete behavior, and RESTRICT/NO ACTION update behavior, additive transport/archive and ADO.NET constraint metadata, SET/DROP DEFAULT, validated SET/DROP NOT NULL and named constraint changes, plus transactional shadow-root rewrites for exact dependency-free INTEGER/REAL type changes and TEXT collation changes with inherited ordinary/unique SQL-index rebuilding are implemented. Statement-time/function defaults, arbitrary functions/subqueries in checks, TEXT/BLOB type conversions, indexed numeric changes, broader dependency rewriting and physical rekey shapes/index kinds, SET DEFAULT and mutating ON UPDATE referential actions, deferred constraints, and fault-injected rewrite recovery remain</td>
                 </tr>
                 <tr>
                 <td><strong>Indexes</strong></td>
@@ -580,7 +580,7 @@
                 <li>Exact dependency-free INTEGER/REAL and indexed TEXT-collation ALTER COLUMN rewrites with atomic table/index roots, row-ID, check/uniqueness, rollback, reopen, and EF migration coverage</li>
                 <li>Persisted table <code>NextRowId</code> high-water mark with compatibility fallback for legacy metadata</li>
                 <li>Views and triggers (BEFORE/AFTER on INSERT/UPDATE/DELETE)</li>
-                <li>Foreign key constraints: scalar/composite, column/table syntax, MATCH SIMPLE, immediate RESTRICT/CASCADE, ordered catalogs, and transport/archive preservation</li>
+                <li>Foreign key constraints: stable identities, scalar/composite column/table syntax, MATCH SIMPLE, immediate RESTRICT/NO ACTION/CASCADE/SET NULL delete behavior, RESTRICT/NO ACTION update behavior, ordered catalogs, and transport/archive preservation</li>
                 <li>Older-database foreign-key retrofit migration across direct, HTTP, gRPC, CLI, and Admin</li>
                 <li>ADO.NET provider (DbConnection, DbCommand, DbDataReader, DbTransaction)</li>
                 <li>ADO.NET <code>GetSchema()</code> metadata collections for core objects, restrictions, defaults, checks, ordered key columns, and ordered scalar/composite foreign-key pairs</li>

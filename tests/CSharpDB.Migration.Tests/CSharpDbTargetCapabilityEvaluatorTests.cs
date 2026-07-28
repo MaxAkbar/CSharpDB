@@ -153,6 +153,108 @@ public sealed class CSharpDbTargetCapabilityEvaluatorTests
     }
 
     [Fact]
+    public async Task Planner_AdmitsCurrentReferentialActionsAndRequiresNullableSetNullChildren()
+    {
+        MigrationCatalog source = await InspectAsync();
+        MigrationCatalogObject childColumn = source.Objects.Single(
+            item => item.ObjectId == "syn:column:orders:customer-id");
+        MigrationCatalogObject foreignKey = source.Objects.Single(
+            item => item.ObjectId == "syn:fk:orders:customer");
+        MigrationCatalog catalog = source with
+        {
+            Objects =
+            [
+                .. source.Objects.Select(item =>
+                    item.ObjectId == childColumn.ObjectId
+                        ? item with
+                        {
+                            Facets =
+                            [
+                                .. item.Facets.Where(facet =>
+                                    !string.Equals(
+                                        facet.Name,
+                                        "nullable",
+                                        StringComparison.Ordinal)),
+                                Facet("nullable", "true"),
+                            ],
+                        }
+                        : item),
+                foreignKey with
+                {
+                    ObjectId = "cap:fk:orders:set-null",
+                    Facets =
+                    [
+                        Facet("onDelete", "set-null"),
+                        Facet("onUpdate", "no-action"),
+                    ],
+                },
+                foreignKey with
+                {
+                    ObjectId = "cap:fk:orders:no-action",
+                    Facets =
+                    [
+                        Facet("onDelete", "no-action"),
+                        Facet("onUpdate", "restrict"),
+                    ],
+                },
+            ],
+        };
+
+        MigrationPlan supported = new MigrationPlanner().CreatePlan(catalog);
+
+        Assert.True(Object(supported, "cap:fk:orders:set-null").Included);
+        Assert.True(Object(supported, "cap:fk:orders:no-action").Included);
+
+        MigrationCatalog nonNullableCatalog = catalog with
+        {
+            Objects = catalog.Objects
+                .Select(item =>
+                    item.ObjectId == childColumn.ObjectId
+                        ? childColumn
+                        : item)
+                .ToArray(),
+        };
+        MigrationPlan nonNullable = new MigrationPlanner().CreatePlan(nonNullableCatalog);
+
+        AssertExcludedBy(
+            nonNullable,
+            "cap:fk:orders:set-null",
+            "CSDB-FOREIGNKEY-001");
+        Assert.Contains(
+            "nullable=true",
+            Object(nonNullable, "cap:fk:orders:set-null").ExclusionReason,
+            StringComparison.Ordinal);
+        Assert.True(Object(nonNullable, "cap:fk:orders:no-action").Included);
+
+        MigrationCatalog primaryKeyCatalog = catalog with
+        {
+            Objects =
+            [
+                .. catalog.Objects,
+                CatalogObject(
+                    "cap:key:orders:customer-id",
+                    MigrationObjectKind.Key,
+                    "PK Orders Customer",
+                    "syn:table:orders",
+                    [Facet("kind", "primary")],
+                    [childColumn.ObjectId]),
+            ],
+        };
+        MigrationPlan primaryKey = new MigrationPlanner().CreatePlan(
+            primaryKeyCatalog);
+
+        AssertExcludedBy(
+            primaryKey,
+            "cap:fk:orders:set-null",
+            "CSDB-FOREIGNKEY-001");
+        Assert.Contains(
+            "primary key",
+            Object(primaryKey, "cap:fk:orders:set-null").ExclusionReason,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.True(Object(primaryKey, "cap:fk:orders:no-action").Included);
+    }
+
+    [Fact]
     public async Task Planner_ExcludesInventoriedTablesWithoutRetainedData()
     {
         MigrationCatalog source = await InspectAsync();

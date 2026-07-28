@@ -360,7 +360,7 @@ public class ConnectionTests : IDisposable
         using var cmd = conn.CreateCommand();
         cmd.CommandText = "CREATE TABLE parents (id INTEGER PRIMARY KEY);";
         await cmd.ExecuteNonQueryAsync(Ct);
-        cmd.CommandText = "CREATE TABLE children (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parents(id) ON DELETE CASCADE);";
+        cmd.CommandText = "CREATE TABLE children (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parents(id) ON DELETE SET NULL ON UPDATE NO ACTION);";
         await cmd.ExecuteNonQueryAsync(Ct);
 
         DataTable schema = conn.GetSchema("ForeignKeys");
@@ -369,7 +369,8 @@ public class ConnectionTests : IDisposable
         Assert.Equal("parent_id", row["COLUMN_NAME"]);
         Assert.Equal("parents", row["REFERENCED_TABLE_NAME"]);
         Assert.Equal("id", row["REFERENCED_COLUMN_NAME"]);
-        Assert.Equal("CASCADE", row["DELETE_RULE"]);
+        Assert.Equal("SET NULL", row["DELETE_RULE"]);
+        Assert.Equal("NO ACTION", row["UPDATE_RULE"]);
         Assert.NotEqual(DBNull.Value, row["SUPPORTING_INDEX_NAME"]);
         Assert.Equal(1, row["ORDINAL_POSITION"]);
         Assert.IsType<Guid>(row["TABLE_SCHEMA_ID"]);

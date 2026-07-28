@@ -471,10 +471,11 @@ public sealed class SchemaComparisonService
                ResolveChildColumns(right),
                StringComparer.OrdinalIgnoreCase)
            && string.Equals(left.ReferencedTableName, right.ReferencedTableName, StringComparison.OrdinalIgnoreCase)
-           && ResolveReferencedColumns(left).SequenceEqual(
+            && ResolveReferencedColumns(left).SequenceEqual(
                ResolveReferencedColumns(right),
                StringComparer.OrdinalIgnoreCase)
-           && left.OnDelete == right.OnDelete;
+           && left.OnDelete == right.OnDelete
+           && left.OnUpdate == right.OnUpdate;
 
     private static IReadOnlyList<string> ResolveChildColumns(ClientForeignKeyDefinition foreignKey)
         => foreignKey.ColumnNames.Count > 0
@@ -543,7 +544,7 @@ public sealed class SchemaComparisonService
     private static string RenderForeignKey(ClientForeignKeyDefinition foreignKey)
         => $"{foreignKey.ConstraintName}: ({string.Join(", ", ResolveChildColumns(foreignKey))}) -> " +
            $"{foreignKey.ReferencedTableName}.({string.Join(", ", ResolveReferencedColumns(foreignKey))}) " +
-           $"ON DELETE {foreignKey.OnDelete}";
+           $"ON DELETE {foreignKey.OnDelete} ON UPDATE {foreignKey.OnUpdate}";
 
     private static string RenderProcedure(ProcedureDefinition procedure)
         => JsonSerializer.Serialize(procedure, SchemaDevOpsJson.Options);

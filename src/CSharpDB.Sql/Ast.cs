@@ -37,6 +37,8 @@ public sealed class ForeignKeyClause
     public string? ReferencedColumnName { get; init; }
     public CSharpDB.Primitives.ForeignKeyOnDeleteAction OnDelete { get; init; } =
         CSharpDB.Primitives.ForeignKeyOnDeleteAction.Restrict;
+    public CSharpDB.Primitives.ForeignKeyOnDeleteAction OnUpdate { get; init; } =
+        CSharpDB.Primitives.ForeignKeyOnDeleteAction.Restrict;
 }
 
 public sealed class ForeignKeyConstraintClause
@@ -46,6 +48,8 @@ public sealed class ForeignKeyConstraintClause
     public required string ReferencedTableName { get; init; }
     public List<string>? ReferencedColumns { get; init; }
     public CSharpDB.Primitives.ForeignKeyOnDeleteAction OnDelete { get; init; } =
+        CSharpDB.Primitives.ForeignKeyOnDeleteAction.Restrict;
+    public CSharpDB.Primitives.ForeignKeyOnDeleteAction OnUpdate { get; init; } =
         CSharpDB.Primitives.ForeignKeyOnDeleteAction.Restrict;
 }
 

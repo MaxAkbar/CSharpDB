@@ -11,7 +11,9 @@ internal static class TableArchiveJson
         WriteIndented = true,
         Converters =
         {
-            new JsonStringEnumConverter(JsonNamingPolicy.CamelCase),
+            new JsonStringEnumConverter(
+                JsonNamingPolicy.CamelCase,
+                allowIntegerValues: false),
         },
     };
 }

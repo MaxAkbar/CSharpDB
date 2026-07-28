@@ -1698,14 +1698,17 @@ public sealed class Parser
             Expect(TokenType.RightParen);
         }
 
-        ForeignKeyOnDeleteAction onDelete = ParseForeignKeyOnDeleteAction(
-            $"column '{columnName}'");
+        (
+            ForeignKeyOnDeleteAction onDelete,
+            ForeignKeyOnDeleteAction onUpdate) =
+            ParseForeignKeyActions($"column '{columnName}'");
 
         return new ForeignKeyClause
         {
             ReferencedTableName = referencedTableName,
             ReferencedColumnName = referencedColumnName,
             OnDelete = onDelete,
+            OnUpdate = onUpdate,
         };
     }
 
@@ -1726,10 +1729,13 @@ public sealed class Parser
             Expect(TokenType.RightParen);
         }
 
-        ForeignKeyOnDeleteAction onDelete = ParseForeignKeyOnDeleteAction(
-            constraintName is { Length: > 0 }
-                ? $"foreign key constraint '{constraintName}'"
-                : "table-level foreign key");
+        (
+            ForeignKeyOnDeleteAction onDelete,
+            ForeignKeyOnDeleteAction onUpdate) =
+            ParseForeignKeyActions(
+                constraintName is { Length: > 0 }
+                    ? $"foreign key constraint '{constraintName}'"
+                    : "table-level foreign key");
 
         return new ForeignKeyConstraintClause
         {
@@ -1738,6 +1744,7 @@ public sealed class Parser
             ReferencedTableName = referencedTableName,
             ReferencedColumns = referencedColumns,
             OnDelete = onDelete,
+            OnUpdate = onUpdate,
         };
     }
 
@@ -1749,29 +1756,78 @@ public sealed class Parser
         return identifiers;
     }
 
-    private ForeignKeyOnDeleteAction ParseForeignKeyOnDeleteAction(string context)
+    private (
+        ForeignKeyOnDeleteAction OnDelete,
+        ForeignKeyOnDeleteAction OnUpdate) ParseForeignKeyActions(
+            string context)
     {
         var onDelete = ForeignKeyOnDeleteAction.Restrict;
-        if (TryConsume(TokenType.On))
-        {
-            if (!TryConsume(TokenType.Delete))
-                throw Error($"Only ON DELETE is supported for {context}.");
+        var onUpdate = ForeignKeyOnDeleteAction.Restrict;
+        bool hasOnDelete = false;
+        bool hasOnUpdate = false;
 
-            if (TryConsume(TokenType.Cascade))
+        while (TryConsume(TokenType.On))
+        {
+            if (TryConsume(TokenType.Delete))
             {
-                onDelete = ForeignKeyOnDeleteAction.Cascade;
+                if (hasOnDelete)
+                    throw Error($"ON DELETE specified multiple times for {context}.");
+
+                hasOnDelete = true;
+                onDelete = ParseForeignKeyAction("ON DELETE", context);
             }
-            else if (TryConsumeContextualKeyword("RESTRICT"))
+            else if (TryConsume(TokenType.Update))
             {
-                onDelete = ForeignKeyOnDeleteAction.Restrict;
+                if (hasOnUpdate)
+                    throw Error($"ON UPDATE specified multiple times for {context}.");
+
+                hasOnUpdate = true;
+                onUpdate = ParseForeignKeyAction("ON UPDATE", context);
             }
             else
             {
-                throw Error($"Only ON DELETE RESTRICT and ON DELETE CASCADE are supported for {context}.");
+                throw Error(
+                    $"Expected DELETE or UPDATE after ON for {context}.");
             }
         }
 
-        return onDelete;
+        return (onDelete, onUpdate);
+    }
+
+    private ForeignKeyOnDeleteAction ParseForeignKeyAction(
+        string clause,
+        string context)
+    {
+        if (TryConsumeContextualKeyword("RESTRICT"))
+            return ForeignKeyOnDeleteAction.Restrict;
+
+        if (TryConsumeContextualKeyword("NO"))
+        {
+            if (!TryConsumeContextualKeyword("ACTION"))
+            {
+                throw Error(
+                    $"Expected ACTION after {clause} NO for {context}.");
+            }
+
+            return ForeignKeyOnDeleteAction.NoAction;
+        }
+
+        if (TryConsume(TokenType.Cascade))
+            return ForeignKeyOnDeleteAction.Cascade;
+
+        if (TryConsume(TokenType.Set))
+        {
+            if (TryConsume(TokenType.Null))
+                return ForeignKeyOnDeleteAction.SetNull;
+            if (TryConsumeContextualKeyword("DEFAULT"))
+                return ForeignKeyOnDeleteAction.SetDefault;
+
+            throw Error(
+                $"Expected NULL or DEFAULT after {clause} SET for {context}.");
+        }
+
+        throw Error(
+            $"Expected RESTRICT, NO ACTION, CASCADE, SET NULL, or SET DEFAULT after {clause} for {context}.");
     }
 
     private Statement ParseDrop()

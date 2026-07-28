@@ -5517,23 +5517,43 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
     }
 
     [Fact]
-    public void DatabaseSetNull_RemainsExplicitlyUnsupported()
+    public async Task DatabaseSetNull_NullsUntrackedDependent()
     {
         string dbPath = GetDbPath("database-set-null");
-        using var db =
+
+        await using (var seed =
+            new DatabaseSetNullModelContext($"Data Source={dbPath}"))
+        {
+            await seed.Database.EnsureCreatedAsync(Ct);
+            var parent = new OptionalForeignKeyParent();
+            parent.Children.Add(new OptionalForeignKeyChild());
+            seed.Set<OptionalForeignKeyParent>().Add(parent);
+            await seed.SaveChangesAsync(Ct);
+        }
+
+        await using (var delete =
+            new DatabaseSetNullModelContext($"Data Source={dbPath}"))
+        {
+            OptionalForeignKeyParent parent =
+                await delete.Set<OptionalForeignKeyParent>().SingleAsync(Ct);
+            Assert.Empty(
+                delete.ChangeTracker.Entries<OptionalForeignKeyChild>());
+
+            delete.Remove(parent);
+            await delete.SaveChangesAsync(Ct);
+        }
+
+        await using var verify =
             new DatabaseSetNullModelContext($"Data Source={dbPath}");
-
-        NotSupportedException error =
-            Assert.Throws<NotSupportedException>(() => _ = db.Model);
-
-        Assert.Contains(
-            "SetNull",
-            error.Message,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "not supported",
-            error.Message,
-            StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(
+            await verify.Set<OptionalForeignKeyParent>()
+                .AsNoTracking()
+                .ToListAsync(Ct));
+        OptionalForeignKeyChild child =
+            await verify.Set<OptionalForeignKeyChild>()
+                .AsNoTracking()
+                .SingleAsync(Ct);
+        Assert.Null(child.ParentId);
     }
 
     [Theory]

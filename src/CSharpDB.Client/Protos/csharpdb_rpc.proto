@@ -784,6 +784,7 @@ message ForeignKeyMigrationConstraintSpecMessage {
   string referenced_table_name = 3;
   string referenced_column_name = 4;
   ForeignKeyOnDeleteActionEnum on_delete = 5;
+  ForeignKeyOnDeleteActionEnum on_update = 6;
 }
 
 message ForeignKeyMigrationRequestMessage {
@@ -809,6 +810,9 @@ enum ForeignKeyOnDeleteActionEnum {
   FOREIGN_KEY_ON_DELETE_ACTION_UNSPECIFIED = 0;
   FOREIGN_KEY_ON_DELETE_ACTION_RESTRICT = 1;
   FOREIGN_KEY_ON_DELETE_ACTION_CASCADE = 2;
+  FOREIGN_KEY_ON_DELETE_ACTION_NO_ACTION = 3;
+  FOREIGN_KEY_ON_DELETE_ACTION_SET_NULL = 4;
+  FOREIGN_KEY_ON_DELETE_ACTION_SET_DEFAULT = 5;
 }
 
 message ForeignKeyDefinitionMessage {
@@ -825,6 +829,7 @@ message ForeignKeyDefinitionMessage {
   string referenced_table_schema_id = 11;
   repeated string referenced_column_schema_ids = 12;
   string referenced_key_schema_id = 13;
+  ForeignKeyOnDeleteActionEnum on_update = 14;
 }
 
 enum KeyConstraintKindEnum {
@@ -1112,6 +1117,7 @@ message ForeignKeyMigrationAppliedConstraintMessage {
   string constraint_name = 5;
   string supporting_index_name = 6;
   ForeignKeyOnDeleteActionEnum on_delete = 7;
+  ForeignKeyOnDeleteActionEnum on_update = 8;
 }
 
 message ForeignKeyMigrationResultMessage {

@@ -168,7 +168,19 @@ public sealed class TableArchiveDataCompareTarget : IDataCompareTarget
                 {
                     PrimitiveForeignKeyOnDeleteAction.Restrict => ClientForeignKeyOnDeleteAction.Restrict,
                     PrimitiveForeignKeyOnDeleteAction.Cascade => ClientForeignKeyOnDeleteAction.Cascade,
+                    PrimitiveForeignKeyOnDeleteAction.NoAction => ClientForeignKeyOnDeleteAction.NoAction,
+                    PrimitiveForeignKeyOnDeleteAction.SetNull => ClientForeignKeyOnDeleteAction.SetNull,
+                    PrimitiveForeignKeyOnDeleteAction.SetDefault => ClientForeignKeyOnDeleteAction.SetDefault,
                     _ => throw new ArgumentOutOfRangeException(nameof(foreignKey.OnDelete), foreignKey.OnDelete, null),
+                },
+                OnUpdate = foreignKey.OnUpdate switch
+                {
+                    PrimitiveForeignKeyOnDeleteAction.Restrict => ClientForeignKeyOnDeleteAction.Restrict,
+                    PrimitiveForeignKeyOnDeleteAction.Cascade => ClientForeignKeyOnDeleteAction.Cascade,
+                    PrimitiveForeignKeyOnDeleteAction.NoAction => ClientForeignKeyOnDeleteAction.NoAction,
+                    PrimitiveForeignKeyOnDeleteAction.SetNull => ClientForeignKeyOnDeleteAction.SetNull,
+                    PrimitiveForeignKeyOnDeleteAction.SetDefault => ClientForeignKeyOnDeleteAction.SetDefault,
+                    _ => throw new ArgumentOutOfRangeException(nameof(foreignKey.OnUpdate), foreignKey.OnUpdate, null),
                 },
                 SupportingIndexName = foreignKey.SupportingIndexName,
             }).ToArray(),

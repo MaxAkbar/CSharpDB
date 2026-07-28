@@ -1300,7 +1300,9 @@ public sealed class GrpcClientTests : IAsyncLifetime
             CREATE TABLE grpc_parents (id INTEGER PRIMARY KEY);
             CREATE TABLE grpc_children (
                 id INTEGER PRIMARY KEY,
-                parent_id INTEGER REFERENCES grpc_parents(id) ON DELETE CASCADE
+                parent_id INTEGER REFERENCES grpc_parents(id)
+                    ON DELETE SET NULL
+                    ON UPDATE NO ACTION
             );
             """,
             Ct);
@@ -1312,7 +1314,8 @@ public sealed class GrpcClientTests : IAsyncLifetime
         Assert.Equal("parent_id", foreignKey.ColumnName);
         Assert.Equal("grpc_parents", foreignKey.ReferencedTableName);
         Assert.Equal("id", foreignKey.ReferencedColumnName);
-        Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
+        Assert.Equal(ForeignKeyOnDeleteAction.SetNull, foreignKey.OnDelete);
+        Assert.Equal(ForeignKeyOnDeleteAction.NoAction, foreignKey.OnUpdate);
         Assert.Single(foreignKey.ColumnSchemaIds);
         Assert.NotEqual(Guid.Empty, foreignKey.ReferencedTableSchemaId);
         Assert.Single(foreignKey.ReferencedColumnSchemaIds);
@@ -1376,6 +1379,9 @@ public sealed class GrpcClientTests : IAsyncLifetime
         Assert.Equal(["id"], foreignKey.ReferencedColumnNames);
         Assert.Equal("parent_id", foreignKey.ColumnName);
         Assert.Equal("id", foreignKey.ReferencedColumnName);
+        Assert.Equal(
+            ForeignKeyOnDeleteAction.Restrict,
+            foreignKey.OnUpdate);
     }
 
     [Fact]

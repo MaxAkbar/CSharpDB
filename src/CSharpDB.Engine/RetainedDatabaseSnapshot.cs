@@ -508,6 +508,7 @@ public sealed class RetainedDatabaseSnapshotSession : IAsyncDisposable
             ColumnNames = foreignKey.ColumnNames.ToArray(),
             ReferencedColumnNames = foreignKey.ReferencedColumnNames.ToArray(),
             OnDelete = foreignKey.OnDelete,
+            OnUpdate = foreignKey.OnUpdate,
             SupportingIndexName = foreignKey.SupportingIndexName,
         }).ToArray(),
         CheckConstraints = schema.CheckConstraints.Select(static check => new CheckConstraintDefinition

@@ -61,7 +61,8 @@ public static class TableEndpoints
                 fk.ColumnSchemaIds,
                 fk.ReferencedTableSchemaId,
                 fk.ReferencedColumnSchemaIds,
-                fk.ReferencedKeySchemaId)).ToList(),
+                fk.ReferencedKeySchemaId,
+                fk.OnUpdate.ToString())).ToList(),
             schema.KeyConstraints.Select(key => new KeyConstraintResponse(
                 key.ConstraintName,
                 key.Kind.ToString(),

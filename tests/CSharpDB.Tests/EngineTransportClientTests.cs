@@ -324,7 +324,8 @@ public sealed class EngineTransportClientTests
                     CONSTRAINT fk_transport_parent
                         FOREIGN KEY (tenant_id, parent_code)
                         REFERENCES transport_parents (tenant_id, code)
-                        ON DELETE CASCADE
+                        ON DELETE SET NULL
+                        ON UPDATE NO ACTION
                 );
                 """,
                 TestContext.Current.CancellationToken);
@@ -340,7 +341,8 @@ public sealed class EngineTransportClientTests
             Assert.Equal("tenant_id", foreignKey.ReferencedColumnName);
             Assert.Equal(["tenant_id", "parent_code"], foreignKey.ColumnNames);
             Assert.Equal(["tenant_id", "code"], foreignKey.ReferencedColumnNames);
-            Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
+            Assert.Equal(ForeignKeyOnDeleteAction.SetNull, foreignKey.OnDelete);
+            Assert.Equal(ForeignKeyOnDeleteAction.NoAction, foreignKey.OnUpdate);
         }
         finally
         {

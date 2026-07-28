@@ -385,6 +385,101 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
     }
 
     [Fact]
+    public void MigrationsSqlGenerator_StandaloneForeignKey_EmitsSetNullAndRejectsUnimplementedActions()
+    {
+        string dbPath = Path.Combine(_workspace, "foreign-key-actions-generator.db");
+        using var db =
+            new MigrationRuntimeContext($"Data Source={dbPath}");
+        IMigrationsSqlGenerator generator =
+            db.GetService<IMigrationsSqlGenerator>();
+
+        MigrationCommand setNull = Assert.Single(
+            generator.Generate(
+                [
+                    new AddForeignKeyOperation
+                    {
+                        Name = "FK_Posts_Blogs_BlogId",
+                        Table = "Posts",
+                        Columns = ["BlogId"],
+                        PrincipalTable = "Blogs",
+                        PrincipalColumns = ["Id"],
+                        OnDelete = ReferentialAction.SetNull,
+                    },
+                ],
+                model: null));
+        Assert.Contains(
+            "ON DELETE SET NULL",
+            setNull.CommandText,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "ON UPDATE NO ACTION",
+            setNull.CommandText,
+            StringComparison.Ordinal);
+
+        MigrationCommand noAction = Assert.Single(
+            generator.Generate(
+                [
+                    new AddForeignKeyOperation
+                    {
+                        Name = "FK_Posts_Blogs_NoAction",
+                        Table = "Posts",
+                        Columns = ["BlogId"],
+                        PrincipalTable = "Blogs",
+                        PrincipalColumns = ["Id"],
+                        OnDelete = ReferentialAction.NoAction,
+                        OnUpdate = ReferentialAction.NoAction,
+                    },
+                ],
+                model: null));
+        Assert.Contains(
+            "ON DELETE NO ACTION",
+            noAction.CommandText,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "ON UPDATE NO ACTION",
+            noAction.CommandText,
+            StringComparison.Ordinal);
+
+        var updateCascade = new AddForeignKeyOperation
+        {
+            Name = "FK_Posts_Blogs_BlogId",
+            Table = "Posts",
+            Columns = ["BlogId"],
+            PrincipalTable = "Blogs",
+            PrincipalColumns = ["Id"],
+            OnUpdate = ReferentialAction.Cascade,
+        };
+        NotSupportedException updateError =
+            Assert.Throws<NotSupportedException>(
+                () => generator.Generate(
+                    [updateCascade],
+                    model: null));
+        Assert.Contains(
+            "ON UPDATE",
+            updateError.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        var deleteSetDefault = new AddForeignKeyOperation
+        {
+            Name = "FK_Posts_Blogs_BlogId",
+            Table = "Posts",
+            Columns = ["BlogId"],
+            PrincipalTable = "Blogs",
+            PrincipalColumns = ["Id"],
+            OnDelete = ReferentialAction.SetDefault,
+        };
+        NotSupportedException defaultError =
+            Assert.Throws<NotSupportedException>(
+                () => generator.Generate(
+                    [deleteSetDefault],
+                    model: null));
+        Assert.Contains(
+            "SetDefault",
+            defaultError.Message,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task MigrationsSqlGenerator_CreateTable_PreservesForeignAndUniqueConstraintNames()
     {
         string dbPath = Path.Combine(_workspace, "named-create-constraints.db");

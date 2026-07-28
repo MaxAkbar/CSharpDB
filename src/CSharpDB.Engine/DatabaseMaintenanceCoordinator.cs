@@ -773,6 +773,7 @@ public static class DatabaseMaintenanceCoordinator
                         ? foreignKey.ReferencedColumnNames.ToArray()
                         : [foreignKey.ReferencedColumnName],
                     OnDelete = foreignKey.OnDelete,
+                    OnUpdate = foreignKey.OnUpdate,
                     SupportingIndexName = foreignKey.SupportingIndexName,
                 }).ToArray()
                 : Array.Empty<ForeignKeyDefinition>(),

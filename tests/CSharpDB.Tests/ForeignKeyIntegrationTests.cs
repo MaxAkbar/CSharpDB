@@ -1,4 +1,5 @@
 using CSharpDB.Engine;
+using CSharpDB.Execution;
 using CSharpDB.Primitives;
 
 namespace CSharpDB.Tests;
@@ -72,6 +73,372 @@ public sealed class ForeignKeyIntegrationTests : IAsyncLifetime
 
         Assert.Equal(0L, await ScalarIntAsync("SELECT COUNT(*) FROM parents", ct));
         Assert.Equal(0L, await ScalarIntAsync("SELECT COUNT(*) FROM children", ct));
+    }
+
+    [Fact]
+    public async Task ForeignKeys_DeleteSetNull_UpdatesScalarChildrenAndIndexes()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE parents (id INTEGER PRIMARY KEY)", ct);
+        await _db.ExecuteAsync(
+            "CREATE TABLE children (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parents(id) ON DELETE SET NULL)",
+            ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_children_parent_id ON children(parent_id)", ct);
+        await _db.ExecuteAsync("INSERT INTO parents VALUES (1)", ct);
+        await _db.ExecuteAsync("INSERT INTO parents VALUES (2)", ct);
+        await _db.ExecuteAsync("INSERT INTO children VALUES (10, 1)", ct);
+        await _db.ExecuteAsync("INSERT INTO children VALUES (20, 2)", ct);
+
+        await _db.ExecuteAsync("DELETE FROM parents WHERE id = 1", ct);
+
+        await using (QueryResult rowsResult =
+                     await _db.ExecuteAsync("SELECT id, parent_id FROM children ORDER BY id", ct))
+        {
+            IReadOnlyList<DbValue[]> rows = await rowsResult.ToListAsync(ct);
+            Assert.Equal(2, rows.Count);
+            Assert.Equal(10L, rows[0][0].AsInteger);
+            Assert.True(rows[0][1].IsNull);
+            Assert.Equal(20L, rows[1][0].AsInteger);
+            Assert.Equal(2L, rows[1][1].AsInteger);
+        }
+
+        Assert.Equal(
+            0L,
+            await ScalarIntAsync("SELECT COUNT(*) FROM children WHERE parent_id = 1", ct));
+        Assert.Equal(
+            1L,
+            await ScalarIntAsync("SELECT COUNT(*) FROM children WHERE parent_id = 2", ct));
+
+        await _db.ExecuteAsync("INSERT INTO parents VALUES (3)", ct);
+        await _db.ExecuteAsync("UPDATE children SET parent_id = 3 WHERE id = 10", ct);
+        Assert.Equal(
+            1L,
+            await ScalarIntAsync("SELECT COUNT(*) FROM children WHERE parent_id = 3", ct));
+
+        await _db.ExecuteAsync("DELETE FROM parents WHERE id = 3", ct);
+        Assert.Equal(
+            0L,
+            await ScalarIntAsync("SELECT COUNT(*) FROM children WHERE parent_id = 3", ct));
+        Assert.Equal(
+            1L,
+            await ScalarIntAsync("SELECT COUNT(*) FROM children WHERE id = 10 AND parent_id IS NULL", ct));
+    }
+
+    [Fact]
+    public async Task ForeignKeys_DeleteSetNull_NullsEveryCompositeChildColumn()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync(
+            "CREATE TABLE parents (tenant_id INTEGER, code TEXT, PRIMARY KEY (tenant_id, code))",
+            ct);
+        await _db.ExecuteAsync(
+            """
+            CREATE TABLE children (
+                id INTEGER PRIMARY KEY,
+                parent_tenant_id INTEGER,
+                parent_code TEXT,
+                FOREIGN KEY (parent_tenant_id, parent_code)
+                    REFERENCES parents(tenant_id, code)
+                    ON DELETE SET NULL
+            )
+            """,
+            ct);
+        await _db.ExecuteAsync("INSERT INTO parents VALUES (1, 'one')", ct);
+        await _db.ExecuteAsync("INSERT INTO parents VALUES (2, 'two')", ct);
+        await _db.ExecuteAsync("INSERT INTO children VALUES (10, 1, 'one')", ct);
+        await _db.ExecuteAsync("INSERT INTO children VALUES (20, 2, 'two')", ct);
+
+        await _db.ExecuteAsync(
+            "DELETE FROM parents WHERE tenant_id = 1 AND code = 'one'",
+            ct);
+
+        await using QueryResult result =
+            await _db.ExecuteAsync(
+                "SELECT id, parent_tenant_id, parent_code FROM children ORDER BY id",
+                ct);
+        IReadOnlyList<DbValue[]> rows = await result.ToListAsync(ct);
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(10L, rows[0][0].AsInteger);
+        Assert.True(rows[0][1].IsNull);
+        Assert.True(rows[0][2].IsNull);
+        Assert.Equal(20L, rows[1][0].AsInteger);
+        Assert.Equal(2L, rows[1][1].AsInteger);
+        Assert.Equal("two", rows[1][2].AsText);
+    }
+
+    [Fact]
+    public async Task ForeignKeys_SetNull_RejectsAnyNonNullableCompositeChildColumn()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync(
+            "CREATE TABLE parents (tenant_id INTEGER, code TEXT, PRIMARY KEY (tenant_id, code))",
+            ct);
+
+        CSharpDbException error = await Assert.ThrowsAsync<CSharpDbException>(
+            () => _db.ExecuteAsync(
+                """
+                CREATE TABLE children (
+                    id INTEGER PRIMARY KEY,
+                    parent_tenant_id INTEGER,
+                    parent_code TEXT NOT NULL,
+                    FOREIGN KEY (parent_tenant_id, parent_code)
+                        REFERENCES parents(tenant_id, code)
+                        ON DELETE SET NULL
+                )
+                """,
+                ct).AsTask());
+
+        Assert.Equal(ErrorCode.ConstraintViolation, error.Code);
+        Assert.Contains("every child column", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("parent_code", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Null(_db.GetTableSchema("children"));
+    }
+
+    [Fact]
+    public async Task ForeignKeys_SetNull_BlocksMakingChildColumnNotNull()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync(
+            "CREATE TABLE parents (id INTEGER PRIMARY KEY)",
+            ct);
+        await _db.ExecuteAsync(
+            "CREATE TABLE children (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parents(id) ON DELETE SET NULL)",
+            ct);
+        await _db.ExecuteAsync("INSERT INTO parents VALUES (1)", ct);
+        await _db.ExecuteAsync("INSERT INTO children VALUES (10, 1)", ct);
+
+        CSharpDbException error = await Assert.ThrowsAsync<CSharpDbException>(
+            () => _db.ExecuteAsync(
+                "ALTER TABLE children ALTER COLUMN parent_id SET NOT NULL",
+                ct).AsTask());
+
+        Assert.Equal(ErrorCode.ConstraintViolation, error.Code);
+        Assert.Contains("SET NULL", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.True(
+            Assert.Single(
+                _db.GetTableSchema("children")!.Columns,
+                column => column.Name == "parent_id").Nullable);
+
+        await _db.ExecuteAsync("DELETE FROM parents WHERE id = 1", ct);
+        Assert.Equal(
+            1L,
+            await ScalarIntAsync(
+                "SELECT COUNT(*) FROM children WHERE id = 10 AND parent_id IS NULL",
+                ct));
+    }
+
+    [Fact]
+    public async Task ForeignKeys_SetNull_BlocksAddingPrimaryKeyOverChildColumn()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync(
+            "CREATE TABLE parents (id INTEGER PRIMARY KEY)",
+            ct);
+        await _db.ExecuteAsync(
+            "CREATE TABLE children (parent_id INTEGER REFERENCES parents(id) ON DELETE SET NULL)",
+            ct);
+
+        CSharpDbException error = await Assert.ThrowsAsync<CSharpDbException>(
+            () => _db.ExecuteAsync(
+                "ALTER TABLE children ADD CONSTRAINT pk_children PRIMARY KEY (parent_id)",
+                ct).AsTask());
+
+        Assert.Equal(ErrorCode.ConstraintViolation, error.Code);
+        Assert.Contains("SET NULL", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(_db.GetTableSchema("children")!.KeyConstraints);
+        Assert.True(_db.GetTableSchema("children")!.Columns[0].Nullable);
+    }
+
+    [Fact]
+    public async Task ForeignKeys_UnimplementedActionsFailClosedAtDdlMaterialization()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE parents (id INTEGER PRIMARY KEY)", ct);
+
+        CSharpDbException setDefault = await Assert.ThrowsAsync<CSharpDbException>(
+            () => _db.ExecuteAsync(
+                "CREATE TABLE default_children (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parents(id) ON DELETE SET DEFAULT)",
+                ct).AsTask());
+        Assert.Equal(ErrorCode.SyntaxError, setDefault.Code);
+        Assert.Contains(
+            "not implemented in this Phase 2 slice",
+            setDefault.Message,
+            StringComparison.Ordinal);
+
+        CSharpDbException updateSetNull = await Assert.ThrowsAsync<CSharpDbException>(
+            () => _db.ExecuteAsync(
+                "CREATE TABLE update_children (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parents(id) ON UPDATE SET NULL)",
+                ct).AsTask());
+        Assert.Equal(ErrorCode.SyntaxError, updateSetNull.Code);
+        Assert.Contains(
+            "ON UPDATE",
+            updateSetNull.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(
+            "not implemented in this Phase 2 slice",
+            updateSetNull.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ForeignKeys_DeleteSetNull_FiresUpdateTriggersAndAdvancesRowVersion()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE parents (id INTEGER PRIMARY KEY)", ct);
+        await _db.ExecuteAsync(
+            """
+            CREATE TABLE children (
+                id INTEGER PRIMARY KEY,
+                parent_id INTEGER REFERENCES parents(id) ON DELETE SET NULL,
+                version BLOB ROWVERSION NOT NULL
+            )
+            """,
+            ct);
+        await _db.ExecuteAsync(
+            "CREATE TABLE update_log (id INTEGER PRIMARY KEY, phase TEXT, old_parent_id INTEGER, new_parent_id INTEGER)",
+            ct);
+        await _db.ExecuteAsync(
+            """
+            CREATE TRIGGER children_before_update BEFORE UPDATE ON children
+            BEGIN
+                INSERT INTO update_log
+                VALUES (1, 'before', OLD.parent_id, NEW.parent_id);
+            END
+            """,
+            ct);
+        await _db.ExecuteAsync(
+            """
+            CREATE TRIGGER children_after_update AFTER UPDATE ON children
+            BEGIN
+                INSERT INTO update_log
+                VALUES (2, 'after', OLD.parent_id, NEW.parent_id);
+            END
+            """,
+            ct);
+        await _db.ExecuteAsync("INSERT INTO parents VALUES (1)", ct);
+        await _db.ExecuteAsync("INSERT INTO children (id, parent_id) VALUES (10, 1)", ct);
+
+        byte[] originalVersion;
+        await using (QueryResult original =
+                     await _db.ExecuteAsync("SELECT version FROM children WHERE id = 10", ct))
+        {
+            originalVersion = Assert.Single(await original.ToListAsync(ct))[0].AsBlob.ToArray();
+        }
+
+        await _db.ExecuteAsync("DELETE FROM parents WHERE id = 1", ct);
+
+        byte[] updatedVersion;
+        await using (QueryResult updated =
+                     await _db.ExecuteAsync("SELECT parent_id, version FROM children WHERE id = 10", ct))
+        {
+            DbValue[] row = Assert.Single(await updated.ToListAsync(ct));
+            Assert.True(row[0].IsNull);
+            updatedVersion = row[1].AsBlob.ToArray();
+        }
+        Assert.False(originalVersion.AsSpan().SequenceEqual(updatedVersion));
+
+        await using QueryResult logResult =
+            await _db.ExecuteAsync(
+                "SELECT phase, old_parent_id, new_parent_id FROM update_log ORDER BY id",
+                ct);
+        IReadOnlyList<DbValue[]> logRows = await logResult.ToListAsync(ct);
+        Assert.Equal(2, logRows.Count);
+        Assert.Equal("before", logRows[0][0].AsText);
+        Assert.Equal("after", logRows[1][0].AsText);
+        Assert.All(logRows, row =>
+        {
+            Assert.Equal(1L, row[1].AsInteger);
+            Assert.True(row[2].IsNull);
+        });
+    }
+
+    [Fact]
+    public async Task ForeignKeys_DeleteSetNull_RuntimeConstraintFailureRollsBackWholeDelete()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE parents (id INTEGER PRIMARY KEY)", ct);
+        await _db.ExecuteAsync(
+            """
+            CREATE TABLE children (
+                id INTEGER PRIMARY KEY,
+                parent_id INTEGER REFERENCES parents(id) ON DELETE SET NULL,
+                CHECK (parent_id IS NOT NULL)
+            )
+            """,
+            ct);
+        await _db.ExecuteAsync("CREATE TABLE delete_log (parent_id INTEGER PRIMARY KEY)", ct);
+        await _db.ExecuteAsync(
+            """
+            CREATE TRIGGER parents_before_delete BEFORE DELETE ON parents
+            BEGIN
+                INSERT INTO delete_log VALUES (OLD.id);
+            END
+            """,
+            ct);
+        await _db.ExecuteAsync("INSERT INTO parents VALUES (1)", ct);
+        await _db.ExecuteAsync("INSERT INTO children VALUES (10, 1)", ct);
+
+        CSharpDbException error = await Assert.ThrowsAsync<CSharpDbException>(
+            () => _db.ExecuteAsync("DELETE FROM parents WHERE id = 1", ct).AsTask());
+
+        Assert.Equal(ErrorCode.ConstraintViolation, error.Code);
+        Assert.Equal(1L, await ScalarIntAsync("SELECT COUNT(*) FROM parents WHERE id = 1", ct));
+        Assert.Equal(
+            1L,
+            await ScalarIntAsync("SELECT COUNT(*) FROM children WHERE id = 10 AND parent_id = 1", ct));
+        Assert.Equal(0L, await ScalarIntAsync("SELECT COUNT(*) FROM delete_log", ct));
+    }
+
+    [Fact]
+    public async Task ForeignKeys_DeleteCascadeChain_CanTerminateInSetNull()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE roots (id INTEGER PRIMARY KEY)", ct);
+        await _db.ExecuteAsync(
+            "CREATE TABLE branches (id INTEGER PRIMARY KEY, root_id INTEGER REFERENCES roots(id) ON DELETE CASCADE)",
+            ct);
+        await _db.ExecuteAsync(
+            "CREATE TABLE leaves (id INTEGER PRIMARY KEY, branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL)",
+            ct);
+        await _db.ExecuteAsync("INSERT INTO roots VALUES (1)", ct);
+        await _db.ExecuteAsync("INSERT INTO branches VALUES (10, 1)", ct);
+        await _db.ExecuteAsync("INSERT INTO leaves VALUES (100, 10)", ct);
+
+        await _db.ExecuteAsync("DELETE FROM roots WHERE id = 1", ct);
+
+        Assert.Equal(0L, await ScalarIntAsync("SELECT COUNT(*) FROM roots", ct));
+        Assert.Equal(0L, await ScalarIntAsync("SELECT COUNT(*) FROM branches", ct));
+        Assert.Equal(
+            1L,
+            await ScalarIntAsync("SELECT COUNT(*) FROM leaves WHERE id = 100 AND branch_id IS NULL", ct));
+    }
+
+    [Fact]
+    public async Task ForeignKeys_DeleteCascade_PreservesTwoTableCycleBehavior()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync(
+            "CREATE TABLE first_nodes (id INTEGER PRIMARY KEY, second_id INTEGER)",
+            ct);
+        await _db.ExecuteAsync(
+            "CREATE TABLE second_nodes (id INTEGER PRIMARY KEY, first_id INTEGER REFERENCES first_nodes(id) ON DELETE CASCADE)",
+            ct);
+        await _db.ExecuteAsync(
+            """
+            ALTER TABLE first_nodes
+            ADD CONSTRAINT fk_first_second
+            FOREIGN KEY (second_id) REFERENCES second_nodes(id)
+            ON DELETE CASCADE
+            """,
+            ct);
+        await _db.ExecuteAsync("INSERT INTO first_nodes VALUES (1, NULL)", ct);
+        await _db.ExecuteAsync("INSERT INTO second_nodes VALUES (1, 1)", ct);
+        await _db.ExecuteAsync("UPDATE first_nodes SET second_id = 1 WHERE id = 1", ct);
+
+        await _db.ExecuteAsync("DELETE FROM first_nodes WHERE id = 1", ct);
+
+        Assert.Equal(0L, await ScalarIntAsync("SELECT COUNT(*) FROM first_nodes", ct));
+        Assert.Equal(0L, await ScalarIntAsync("SELECT COUNT(*) FROM second_nodes", ct));
     }
 
     [Fact]

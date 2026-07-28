@@ -696,15 +696,8 @@ public sealed class TableImportExportService(
                 ReferencedColumnNames = foreignKey.ReferencedColumnNames.Count > 0
                     ? foreignKey.ReferencedColumnNames.ToArray()
                     : [foreignKey.ReferencedColumnName],
-                OnDelete = foreignKey.OnDelete switch
-                {
-                    PrimitiveForeignKeyOnDeleteAction.Restrict =>
-                        ClientForeignKeyOnDeleteAction.Restrict,
-                    PrimitiveForeignKeyOnDeleteAction.Cascade =>
-                        ClientForeignKeyOnDeleteAction.Cascade,
-                    _ => throw new InvalidDataException(
-                        $"Unsupported archived foreign key delete action '{foreignKey.OnDelete}'."),
-                },
+                OnDelete = MapForeignKeyAction(foreignKey.OnDelete),
+                OnUpdate = MapForeignKeyAction(foreignKey.OnUpdate),
                 SupportingIndexName = foreignKey.SupportingIndexName,
             }).ToArray(),
         CheckConstraints = schema.CheckConstraints.Select(check =>
@@ -781,11 +774,46 @@ public sealed class TableImportExportService(
         ReferencedColumnNames = foreignKey.ReferencedColumnNames.Count > 0
             ? foreignKey.ReferencedColumnNames.ToArray()
             : [foreignKey.ReferencedColumnName],
-        OnDelete = foreignKey.OnDelete == ClientForeignKeyOnDeleteAction.Cascade
-            ? PrimitiveForeignKeyOnDeleteAction.Cascade
-            : PrimitiveForeignKeyOnDeleteAction.Restrict,
+        OnDelete = MapForeignKeyAction(foreignKey.OnDelete),
+        OnUpdate = MapForeignKeyAction(foreignKey.OnUpdate),
         SupportingIndexName = foreignKey.SupportingIndexName,
     };
+
+    private static ClientForeignKeyOnDeleteAction MapForeignKeyAction(
+        PrimitiveForeignKeyOnDeleteAction action) =>
+        action switch
+        {
+            PrimitiveForeignKeyOnDeleteAction.Restrict =>
+                ClientForeignKeyOnDeleteAction.Restrict,
+            PrimitiveForeignKeyOnDeleteAction.Cascade =>
+                ClientForeignKeyOnDeleteAction.Cascade,
+            PrimitiveForeignKeyOnDeleteAction.NoAction =>
+                ClientForeignKeyOnDeleteAction.NoAction,
+            PrimitiveForeignKeyOnDeleteAction.SetNull =>
+                ClientForeignKeyOnDeleteAction.SetNull,
+            PrimitiveForeignKeyOnDeleteAction.SetDefault =>
+                ClientForeignKeyOnDeleteAction.SetDefault,
+            _ => throw new InvalidDataException(
+                $"Unsupported archived foreign key action '{action}'."),
+        };
+
+    private static PrimitiveForeignKeyOnDeleteAction MapForeignKeyAction(
+        ClientForeignKeyOnDeleteAction action) =>
+        action switch
+        {
+            ClientForeignKeyOnDeleteAction.Restrict =>
+                PrimitiveForeignKeyOnDeleteAction.Restrict,
+            ClientForeignKeyOnDeleteAction.Cascade =>
+                PrimitiveForeignKeyOnDeleteAction.Cascade,
+            ClientForeignKeyOnDeleteAction.NoAction =>
+                PrimitiveForeignKeyOnDeleteAction.NoAction,
+            ClientForeignKeyOnDeleteAction.SetNull =>
+                PrimitiveForeignKeyOnDeleteAction.SetNull,
+            ClientForeignKeyOnDeleteAction.SetDefault =>
+                PrimitiveForeignKeyOnDeleteAction.SetDefault,
+            _ => throw new InvalidDataException(
+                $"Unsupported archived foreign key action '{action}'."),
+        };
 
     private static PrimitiveCheckConstraintDefinition MapCheckConstraint(
         ClientCheckConstraintDefinition check) => new()
@@ -1858,7 +1886,8 @@ public sealed class TableImportExportService(
             foreignKey.ReferencedColumnNames.Count > 0
                 ? foreignKey.ReferencedColumnNames
                 : [foreignKey.ReferencedColumnName],
-            foreignKey.OnDelete.ToString());
+            foreignKey.OnDelete.ToString(),
+            foreignKey.OnUpdate.ToString());
 
     private static string ActualForeignKeySignature(ClientForeignKeyDefinition foreignKey) =>
         ForeignKeySignature(
@@ -1868,17 +1897,19 @@ public sealed class TableImportExportService(
             foreignKey.ReferencedColumnNames.Count > 0
                 ? foreignKey.ReferencedColumnNames
                 : [foreignKey.ReferencedColumnName],
-            foreignKey.OnDelete.ToString());
+            foreignKey.OnDelete.ToString(),
+            foreignKey.OnUpdate.ToString());
 
     private static string ForeignKeySignature(
         string name,
         IReadOnlyList<string> columns,
         string referencedTable,
         IReadOnlyList<string> referencedColumns,
-        string onDelete) =>
+        string onDelete,
+        string onUpdate) =>
         $"{NormalizeIdentifier(name)}|{string.Join(",", columns.Select(NormalizeIdentifier))}|" +
         $"{NormalizeIdentifier(referencedTable)}|" +
-        $"{string.Join(",", referencedColumns.Select(NormalizeIdentifier))}|{onDelete}";
+        $"{string.Join(",", referencedColumns.Select(NormalizeIdentifier))}|{onDelete}|{onUpdate}";
 
     private static string ExpectedIndexSignature(PrimitiveIndexSchema index) =>
         IndexSignature(index.IndexName, index.Columns, index.ColumnCollations, index.IsUnique);
@@ -2278,21 +2309,29 @@ public sealed class TableImportExportService(
                 $"Archived foreign key '{foreignKey.ConstraintName}' has inconsistent column lists.");
         }
 
-        string onDelete = foreignKey.OnDelete switch
-        {
-            PrimitiveForeignKeyOnDeleteAction.Restrict => "RESTRICT",
-            PrimitiveForeignKeyOnDeleteAction.Cascade => "CASCADE",
-            _ => throw new InvalidDataException(
-                $"Unsupported archived foreign key delete action '{foreignKey.OnDelete}'."),
-        };
+        string onDelete = RenderForeignKeyAction(foreignKey.OnDelete);
+        string onUpdate = RenderForeignKeyAction(foreignKey.OnUpdate);
         return
             $"ALTER TABLE {QuoteIdentifier(tableName)} " +
             $"ADD CONSTRAINT {QuoteIdentifier(foreignKey.ConstraintName)} " +
             $"FOREIGN KEY ({string.Join(", ", sourceColumns.Select(QuoteIdentifier))}) " +
             $"REFERENCES {QuoteIdentifier(foreignKey.ReferencedTableName)} " +
             $"({string.Join(", ", referencedColumns.Select(QuoteIdentifier))}) " +
-            $"ON DELETE {onDelete};";
+            $"ON DELETE {onDelete} ON UPDATE {onUpdate};";
     }
+
+    private static string RenderForeignKeyAction(
+        PrimitiveForeignKeyOnDeleteAction action) =>
+        action switch
+        {
+            PrimitiveForeignKeyOnDeleteAction.Restrict => "RESTRICT",
+            PrimitiveForeignKeyOnDeleteAction.Cascade => "CASCADE",
+            PrimitiveForeignKeyOnDeleteAction.NoAction => "NO ACTION",
+            PrimitiveForeignKeyOnDeleteAction.SetNull => "SET NULL",
+            PrimitiveForeignKeyOnDeleteAction.SetDefault => "SET DEFAULT",
+            _ => throw new InvalidDataException(
+                $"Unsupported archived foreign key action '{action}'."),
+        };
 
     private static string BuildCreateIndexSql(PrimitiveIndexSchema index)
     {

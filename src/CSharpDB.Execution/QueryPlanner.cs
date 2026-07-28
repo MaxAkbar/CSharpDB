@@ -178,6 +178,7 @@ public sealed class QueryPlanner
     private sealed class ForeignKeyMutationContext
     {
         public HashSet<ForeignKeyDeleteKey> VisitedDeletes { get; } = [];
+        public HashSet<ForeignKeySetNullKey> VisitedSetNulls { get; } = [];
         public HashSet<string> TouchedTables { get; } = new(StringComparer.OrdinalIgnoreCase);
         public HashSet<string> StaleTables { get; } = new(StringComparer.OrdinalIgnoreCase);
     }
@@ -214,6 +215,23 @@ public sealed class QueryPlanner
 
         public override int GetHashCode() =>
             HashCode.Combine(StringComparer.OrdinalIgnoreCase.GetHashCode(TableName), RowId);
+    }
+
+    private readonly record struct ForeignKeySetNullKey(
+        string TableName,
+        long RowId,
+        string ConstraintName)
+    {
+        public bool Equals(ForeignKeySetNullKey other) =>
+            RowId == other.RowId &&
+            string.Equals(TableName, other.TableName, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(ConstraintName, other.ConstraintName, StringComparison.OrdinalIgnoreCase);
+
+        public override int GetHashCode() =>
+            HashCode.Combine(
+                StringComparer.OrdinalIgnoreCase.GetHashCode(TableName),
+                RowId,
+                StringComparer.OrdinalIgnoreCase.GetHashCode(ConstraintName));
     }
 
     private static readonly ColumnDefinition[] SystemTablesColumns =
@@ -258,6 +276,7 @@ public sealed class QueryPlanner
         new ColumnDefinition { Name = "referenced_table_name", Type = DbType.Text, Nullable = false },
         new ColumnDefinition { Name = "referenced_column_name", Type = DbType.Text, Nullable = false },
         new ColumnDefinition { Name = "on_delete", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "on_update", Type = DbType.Text, Nullable = false },
         new ColumnDefinition { Name = "supporting_index_name", Type = DbType.Text, Nullable = false },
         new ColumnDefinition { Name = "ordinal_position", Type = DbType.Integer, Nullable = false },
         new ColumnDefinition { Name = "table_schema_id", Type = DbType.Text, Nullable = true },
@@ -19974,7 +19993,8 @@ public sealed class QueryPlanner
                         DbValue.FromText(columnNames[i]),
                         DbValue.FromText(foreignKey.ReferencedTableName),
                         DbValue.FromText(referencedColumnNames[i]),
-                        DbValue.FromText(foreignKey.OnDelete.ToString().ToUpperInvariant()),
+                        DbValue.FromText(FormatForeignKeyReferentialAction(foreignKey.OnDelete)),
+                        DbValue.FromText(FormatForeignKeyReferentialAction(foreignKey.OnUpdate)),
                         DbValue.FromText(foreignKey.SupportingIndexName),
                         DbValue.FromInteger(i + 1),
                         SchemaIdValue(schema.SchemaId),
@@ -19991,6 +20011,19 @@ public sealed class QueryPlanner
         _systemForeignKeysRowsCache = rows;
         return rows;
     }
+
+    private static string FormatForeignKeyReferentialAction(
+        ForeignKeyOnDeleteAction action) =>
+        action switch
+        {
+            ForeignKeyOnDeleteAction.Restrict => "RESTRICT",
+            ForeignKeyOnDeleteAction.Cascade => "CASCADE",
+            ForeignKeyOnDeleteAction.NoAction => "NO ACTION",
+            ForeignKeyOnDeleteAction.SetNull => "SET NULL",
+            ForeignKeyOnDeleteAction.SetDefault => "SET DEFAULT",
+            _ => throw new InvalidDataException(
+                $"Unsupported foreign key referential action '{action}'."),
+        };
 
     private List<DbValue[]> BuildSystemCheckConstraintsRows()
     {
@@ -22121,6 +22154,7 @@ public sealed class QueryPlanner
                 clause.ReferencedTableName,
                 clause.ReferencedColumnName is null ? null : [clause.ReferencedColumnName],
                 clause.OnDelete,
+                clause.OnUpdate,
                 constraintName: null,
                 currentSchema,
                 ct));
@@ -22136,6 +22170,7 @@ public sealed class QueryPlanner
                 clause.ReferencedTableName,
                 clause.ReferencedColumns,
                 clause.OnDelete,
+                clause.OnUpdate,
                 clause.ConstraintName,
                 currentSchema,
                 ct));
@@ -22151,6 +22186,7 @@ public sealed class QueryPlanner
         string requestedReferencedTableName,
         IReadOnlyList<string>? requestedReferencedColumnNames,
         ForeignKeyOnDeleteAction onDelete,
+        ForeignKeyOnDeleteAction onUpdate,
         string? constraintName,
         TableSchema currentTableSchema,
         CancellationToken ct)
@@ -22187,6 +22223,45 @@ public sealed class QueryPlanner
 
             childColumnNames[i] = childColumn.Name;
             childColumnIndices[i] = childColumnIndex;
+        }
+
+        if (onDelete == ForeignKeyOnDeleteAction.SetDefault)
+        {
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                "ON DELETE SET DEFAULT is not implemented in this Phase 2 slice.");
+        }
+        if (onDelete is not (
+                ForeignKeyOnDeleteAction.Restrict or
+                ForeignKeyOnDeleteAction.NoAction or
+                ForeignKeyOnDeleteAction.Cascade or
+                ForeignKeyOnDeleteAction.SetNull))
+        {
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                $"ON DELETE action '{onDelete}' is not implemented in this Phase 2 slice.");
+        }
+        if (onUpdate is not (
+                ForeignKeyOnDeleteAction.Restrict or
+                ForeignKeyOnDeleteAction.NoAction))
+        {
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                $"ON UPDATE action '{onUpdate}' is not implemented in this Phase 2 slice.");
+        }
+
+        if (onDelete == ForeignKeyOnDeleteAction.SetNull)
+        {
+            for (int i = 0; i < childColumnIndices.Length; i++)
+            {
+                ColumnDefinition childColumn = columns[childColumnIndices[i]];
+                if (!childColumn.Nullable)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.ConstraintViolation,
+                        $"Foreign key SET NULL action on table '{tableName}' requires every child column to be nullable; column '{childColumn.Name}' is NOT NULL.");
+                }
+            }
         }
 
         TableSchema parentSchema;
@@ -22270,6 +22345,7 @@ public sealed class QueryPlanner
             ColumnNames = childColumnNames,
             ReferencedColumnNames = parentColumnNames,
             OnDelete = onDelete,
+            OnUpdate = onUpdate,
             SupportingIndexName = GenerateForeignKeySupportIndexName(
                 constraintName,
                 tableName,
@@ -22640,6 +22716,7 @@ public sealed class QueryPlanner
                         ColumnNames = foreignKey.ColumnNames,
                         ReferencedColumnNames = foreignKey.ReferencedColumnNames,
                         OnDelete = foreignKey.OnDelete,
+                        OnUpdate = foreignKey.OnUpdate,
                         SupportingIndexName = foreignKey.SupportingIndexName,
                     }
                     : foreignKey)
@@ -22774,6 +22851,7 @@ public sealed class QueryPlanner
                         ColumnNames = GetForeignKeyColumnNames(foreignKey).ToArray(),
                         ReferencedColumnNames = RenameForeignKeyColumnNames(foreignKey, oldColumnName, newColumnName, referenced: true),
                         OnDelete = foreignKey.OnDelete,
+                        OnUpdate = foreignKey.OnUpdate,
                         SupportingIndexName = foreignKey.SupportingIndexName,
                     };
                 })
@@ -22812,6 +22890,7 @@ public sealed class QueryPlanner
             ColumnNames = GetForeignKeyColumnNames(foreignKey).ToArray(),
             ReferencedColumnNames = GetForeignKeyReferencedColumnNames(foreignKey).ToArray(),
             OnDelete = foreignKey.OnDelete,
+            OnUpdate = foreignKey.OnUpdate,
             SupportingIndexName = childTableRenamed
                 ? GenerateForeignKeySupportIndexName(foreignKey.ConstraintName, newTableName, GetForeignKeyColumnNames(foreignKey))
                 : foreignKey.SupportingIndexName,
@@ -22843,6 +22922,7 @@ public sealed class QueryPlanner
             ColumnNames = childColumnNames,
             ReferencedColumnNames = referencedColumnNames,
             OnDelete = foreignKey.OnDelete,
+            OnUpdate = foreignKey.OnUpdate,
             SupportingIndexName = childColumnRenamed
                 ? GenerateForeignKeySupportIndexName(foreignKey.ConstraintName, tableName, childColumnNames)
                 : foreignKey.SupportingIndexName,
@@ -23384,34 +23464,89 @@ public sealed class QueryPlanner
             if (dependentRows.Count == 0)
                 continue;
 
-            if (reference.ForeignKey.OnDelete != ForeignKeyOnDeleteAction.Cascade)
+            switch (reference.ForeignKey.OnDelete)
             {
-                throw new CSharpDbException(
-                    ErrorCode.ConstraintViolation,
-                    $"Cannot delete row from '{tableName}' because foreign key '{reference.ForeignKey.ConstraintName}' has dependent rows in '{reference.TableName}'.");
-            }
+                case ForeignKeyOnDeleteAction.Restrict:
+                case ForeignKeyOnDeleteAction.NoAction:
+                    throw new CSharpDbException(
+                        ErrorCode.ConstraintViolation,
+                        $"Cannot delete row from '{tableName}' because foreign key '{reference.ForeignKey.ConstraintName}' has dependent rows in '{reference.TableName}'.");
 
-            TableSchema childSchema = GetSchema(reference.TableName);
-            BTree childTree = _catalog.GetTableTree(reference.TableName, _pager);
-            IReadOnlyList<IndexSchema> childIndexes = _catalog.GetIndexesForTable(reference.TableName);
-            for (int dependentIndex = 0; dependentIndex < dependentRows.Count; dependentIndex++)
-            {
-                (long dependentRowId, _) = dependentRows[dependentIndex];
-                if (string.Equals(reference.TableName, tableName, StringComparison.OrdinalIgnoreCase) &&
-                    dependentRowId == rowId)
+                case ForeignKeyOnDeleteAction.Cascade:
                 {
-                    continue;
+                    TableSchema childSchema = GetSchema(reference.TableName);
+                    BTree childTree = _catalog.GetTableTree(reference.TableName, _pager);
+                    IReadOnlyList<IndexSchema> childIndexes = _catalog.GetIndexesForTable(reference.TableName);
+                    for (int dependentIndex = 0; dependentIndex < dependentRows.Count; dependentIndex++)
+                    {
+                        (long dependentRowId, _) = dependentRows[dependentIndex];
+                        if (string.Equals(reference.TableName, tableName, StringComparison.OrdinalIgnoreCase) &&
+                            dependentRowId == rowId)
+                        {
+                            continue;
+                        }
+
+                        await DeleteRowWithForeignKeysAsync(
+                            reference.TableName,
+                            childSchema,
+                            childTree,
+                            childIndexes,
+                            dependentRowId,
+                            mutationContext,
+                            depth + 1,
+                            ct);
+                    }
+
+                    break;
                 }
 
-                await DeleteRowWithForeignKeysAsync(
-                    reference.TableName,
-                    childSchema,
-                    childTree,
-                    childIndexes,
-                    dependentRowId,
-                    mutationContext,
-                    depth + 1,
-                    ct);
+                case ForeignKeyOnDeleteAction.SetNull:
+                    for (int dependentIndex = 0; dependentIndex < dependentRows.Count; dependentIndex++)
+                    {
+                        (long dependentRowId, _) = dependentRows[dependentIndex];
+                        if (string.Equals(reference.TableName, tableName, StringComparison.OrdinalIgnoreCase) &&
+                            dependentRowId == rowId)
+                        {
+                            continue;
+                        }
+                        if (mutationContext.VisitedDeletes.Contains(
+                                new ForeignKeyDeleteKey(reference.TableName, dependentRowId)))
+                        {
+                            continue;
+                        }
+
+                        await SetForeignKeyColumnsNullAsync(
+                            reference,
+                            parentValues,
+                            dependentRowId,
+                            mutationContext,
+                            depth + 1,
+                            ct);
+                    }
+
+                    break;
+
+                default:
+                    throw new CSharpDbException(
+                        ErrorCode.ConstraintViolation,
+                        $"ON DELETE action '{reference.ForeignKey.OnDelete}' is not implemented in this Phase 2 slice.");
+            }
+
+            if (reference.ForeignKey.OnDelete == ForeignKeyOnDeleteAction.SetNull)
+            {
+                List<(long RowId, DbValue[] Row)> remainingDependents =
+                    await LoadReferencingRowsAsync(reference, parentValues, ct);
+                bool hasRemainingDependent = remainingDependents.Any(dependent =>
+                    (!string.Equals(reference.TableName, tableName, StringComparison.OrdinalIgnoreCase) ||
+                     dependent.RowId != rowId) &&
+                    !mutationContext.VisitedDeletes.Contains(
+                        new ForeignKeyDeleteKey(reference.TableName, dependent.RowId)));
+                if (hasRemainingDependent)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.ConstraintViolation,
+                        $"Foreign key action '{reference.ForeignKey.OnDelete}' for constraint '{reference.ForeignKey.ConstraintName}' left dependent rows in '{reference.TableName}'.");
+                }
             }
         }
 
@@ -23424,6 +23559,138 @@ public sealed class QueryPlanner
 
         await FireTriggersAsync(tableName, TriggerTiming.After, TriggerEvent.Delete, currentRow, null, schema, ct);
         return true;
+    }
+
+    private async ValueTask SetForeignKeyColumnsNullAsync(
+        TableForeignKeyReference reference,
+        IReadOnlyList<DbValue> referencedValues,
+        long rowId,
+        ForeignKeyMutationContext mutationContext,
+        int depth,
+        CancellationToken ct)
+    {
+        if (depth > MaxForeignKeyCascadeDepth)
+        {
+            throw new CSharpDbException(
+                ErrorCode.ConstraintViolation,
+                $"Maximum foreign key cascade depth of {MaxForeignKeyCascadeDepth} was exceeded.");
+        }
+
+        var mutationKey = new ForeignKeySetNullKey(
+            reference.TableName,
+            rowId,
+            reference.ForeignKey.ConstraintName);
+        TableSchema schema = GetSchema(reference.TableName);
+        BTree tree = _catalog.GetTableTree(reference.TableName, _pager);
+        IReadOnlyList<IndexSchema> indexes = _catalog.GetIndexesForTable(reference.TableName);
+        DbValue[]? oldRow = await TryLoadRowAsync(reference.TableName, schema, rowId, ct);
+        if (oldRow is null)
+            return;
+
+        int[] childColumnIndices = GetForeignKeyColumnIndices(
+            schema,
+            GetForeignKeyColumnNames(reference.ForeignKey),
+            reference.ForeignKey.ConstraintName,
+            "child");
+        if (!ForeignKeyValuesEqual(schema, childColumnIndices, oldRow, referencedValues))
+            return;
+        if (!mutationContext.VisitedSetNulls.Add(mutationKey))
+            return;
+
+        var newRow = (DbValue[])oldRow.Clone();
+        for (int i = 0; i < childColumnIndices.Length; i++)
+        {
+            int childColumnIndex = childColumnIndices[i];
+            ColumnDefinition childColumn = schema.Columns[childColumnIndex];
+            if (!childColumn.Nullable)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.ConstraintViolation,
+                    $"Foreign key SET NULL action for constraint '{reference.ForeignKey.ConstraintName}' requires nullable child column '{reference.TableName}.{childColumn.Name}'.");
+            }
+
+            newRow[childColumnIndex] = DbValue.Null;
+        }
+
+        AdvanceRowVersion(schema, oldRow, newRow);
+        RowConstraintValidator.ValidateRow(schema, newRow);
+
+        await FireTriggersAsync(
+            reference.TableName,
+            TriggerTiming.Before,
+            TriggerEvent.Update,
+            oldRow,
+            newRow,
+            schema,
+            ct);
+        await RefreshRowVersionAfterBeforeTriggersAsync(
+            reference.TableName,
+            schema,
+            rowId,
+            newRow,
+            ct);
+
+        int primaryKeyColumnIndex = schema.PrimaryKeyColumnIndex;
+        bool hasIntegerPrimaryKey =
+            primaryKeyColumnIndex >= 0 &&
+            schema.Columns[primaryKeyColumnIndex].Type == DbType.Integer;
+        long newRowId = rowId;
+        if (hasIntegerPrimaryKey)
+        {
+            if (newRow[primaryKeyColumnIndex].IsNull)
+                newRow[primaryKeyColumnIndex] = DbValue.FromInteger(rowId);
+            if (newRow[primaryKeyColumnIndex].Type != DbType.Integer)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.TypeMismatch,
+                    "INTEGER PRIMARY KEY must remain an integer value.");
+            }
+
+            newRowId = newRow[primaryKeyColumnIndex].AsInteger;
+        }
+
+        await ValidateIncomingForeignKeyUpdatesAsync(
+            reference.TableName,
+            schema,
+            rowId,
+            oldRow,
+            newRow,
+            ct);
+        await ValidateOutgoingForeignKeysAsync(
+            reference.TableName,
+            schema,
+            oldRow,
+            newRow,
+            ct);
+
+        await tree.DeleteAsync(rowId, ct);
+        await tree.InsertAsync(newRowId, _recordSerializer.Encode(newRow), ct);
+        RecordLogicalMutationWrites(
+            reference.TableName,
+            schema,
+            oldRow,
+            newRow,
+            rowId,
+            newRowId);
+        await UpdateAllIndexesAsync(
+            indexes,
+            schema,
+            oldRow,
+            newRow,
+            rowId,
+            newRowId,
+            ct);
+        mutationContext.TouchedTables.Add(reference.TableName);
+        mutationContext.StaleTables.Add(reference.TableName);
+
+        await FireTriggersAsync(
+            reference.TableName,
+            TriggerTiming.After,
+            TriggerEvent.Update,
+            oldRow,
+            newRow,
+            schema,
+            ct);
     }
 
     private async ValueTask<List<(long RowId, DbValue[] Row)>> LoadReferencingRowsAsync(

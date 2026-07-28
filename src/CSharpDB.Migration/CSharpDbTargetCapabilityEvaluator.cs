@@ -391,10 +391,42 @@ internal sealed class CSharpDbTargetCapabilityEvaluator
             : $"on-delete-{onDelete}";
         if (!AllowsValue(rule, onDeleteCapability))
             return Reject(rule, $"does not allow delete action '{onDelete}' for '{foreignKey.ObjectId}'.");
+        if (onDeleteCapability == "on-delete-set-null")
+        {
+            foreach (MigrationCatalogObject child in childColumns)
+            {
+                if (!TryOptionalBoolean(child, "nullable", out bool? nullable, out booleanReason))
+                    return Reject(rule, booleanReason!);
+                if (nullable is not true)
+                {
+                    return Reject(
+                        rule,
+                        $"requires every child column of SET NULL foreign key '{foreignKey.ObjectId}' to prove nullable=true; '{child.ObjectId}' does not.");
+                }
+                if (IsPrimaryKeyColumn(child, objectsById))
+                {
+                    return Reject(
+                        rule,
+                        $"does not allow SET NULL foreign key '{foreignKey.ObjectId}' because child column '{child.ObjectId}' belongs to a primary key.");
+                }
+            }
+        }
 
         string? onUpdate = Facet(foreignKey, "onUpdate");
         if (!string.IsNullOrWhiteSpace(onUpdate))
-            return Reject(rule, $"does not allow ON UPDATE behavior for '{foreignKey.ObjectId}'.");
+        {
+            string normalizedOnUpdate = NormalizeToken(onUpdate);
+            string onUpdateCapability =
+                normalizedOnUpdate.StartsWith("on-update-", StringComparison.Ordinal)
+                    ? normalizedOnUpdate
+                    : $"on-update-{normalizedOnUpdate}";
+            if (!AllowsValue(rule, onUpdateCapability))
+            {
+                return Reject(
+                    rule,
+                    $"does not allow update action '{normalizedOnUpdate}' for '{foreignKey.ObjectId}'.");
+            }
+        }
 
         return null;
     }
@@ -618,7 +650,8 @@ internal sealed class CSharpDbTargetCapabilityEvaluator
             candidate.Kind == MigrationObjectKind.Key &&
             string.Equals(candidate.ParentObjectId, column.ParentObjectId, StringComparison.Ordinal) &&
             NormalizeToken(Facet(candidate, "kind")) is "primary" or "primary-key" &&
-            candidate.DependsOn.Contains(column.ObjectId, StringComparer.Ordinal));
+            ResolveDirectColumns(candidate, objectsById)?.Any(
+                member => member.ObjectId == column.ObjectId) == true);
     }
 
     private static bool DependsOn(

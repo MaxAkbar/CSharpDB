@@ -373,7 +373,13 @@
                         </select>
                         <select class="schema-input" @bind="_relationshipOnDelete">
                             <option>RESTRICT</option>
+                            <option>NO ACTION</option>
                             <option>CASCADE</option>
+                            <option disabled="@(!CanSelectSetNull)">SET NULL</option>
+                        </select>
+                        <select class="schema-input" @bind="_relationshipOnUpdate">
+                            <option>RESTRICT</option>
+                            <option>NO ACTION</option>
                         </select>
                         <button class="toolbar-btn"
                                 disabled="@(!CanStageRelationship)"
@@ -454,6 +460,7 @@
     private string _relationshipRightTable = "";
     private string _relationshipRightColumn = "";
     private string _relationshipOnDelete = "RESTRICT";
+    private string _relationshipOnUpdate = "RESTRICT";
     private bool _showAddSource;
     private bool _showLoadPanel;
     private bool _showNewTablePanel;
@@ -546,11 +553,26 @@
         && FindNode(_relationshipRightTable) is { Kind: DataModelNodeKind.Table }
         && RelationshipLeftColumns.Any(column => string.Equals(column.Name, _relationshipLeftColumn, StringComparison.OrdinalIgnoreCase))
         && RelationshipRightColumns.Any(column => string.Equals(column.Name, _relationshipRightColumn, StringComparison.OrdinalIgnoreCase))
+        && DataModelRelationshipRules.IsDeleteActionCompatible(
+            _relationshipOnDelete,
+            SelectedRelationshipLeftColumn)
         && !_state.Relationships.Any(relationship =>
             string.Equals(relationship.LeftTable, _relationshipLeftTable, StringComparison.OrdinalIgnoreCase) &&
             string.Equals(relationship.LeftColumn, _relationshipLeftColumn, StringComparison.OrdinalIgnoreCase) &&
             string.Equals(relationship.RightTable, _relationshipRightTable, StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(relationship.RightColumn, _relationshipRightColumn, StringComparison.OrdinalIgnoreCase));
+             string.Equals(relationship.RightColumn, _relationshipRightColumn, StringComparison.OrdinalIgnoreCase));
+
+    private DataModelColumn? SelectedRelationshipLeftColumn =>
+        RelationshipLeftColumns.FirstOrDefault(column =>
+            string.Equals(
+                column.Name,
+                _relationshipLeftColumn,
+                StringComparison.OrdinalIgnoreCase));
+
+    private bool CanSelectSetNull =>
+        DataModelRelationshipRules.IsDeleteActionCompatible(
+            "SET NULL",
+            SelectedRelationshipLeftColumn);
 
     private bool HasPendingDropForSelectedRelationship =>
         SelectedRelationship is not null &&
@@ -1172,6 +1194,7 @@
             RightColumn = _relationshipRightColumn,
             Kind = DataModelRelationshipKind.Draft,
             OnDelete = _relationshipOnDelete,
+            OnUpdate = _relationshipOnUpdate,
         };
 
         _state.Relationships.Add(relationship);
@@ -1184,6 +1207,7 @@
             ReferencedTableName = _relationshipRightTable,
             ReferencedColumnName = _relationshipRightColumn,
             OnDelete = _relationshipOnDelete,
+            OnUpdate = _relationshipOnUpdate,
             Description = $"Add relationship {_relationshipLeftTable}.{_relationshipLeftColumn} -> {_relationshipRightTable}.{_relationshipRightColumn}",
         });
 
@@ -1194,6 +1218,7 @@
         _relationshipRightTable = "";
         _relationshipRightColumn = "";
         _relationshipOnDelete = "RESTRICT";
+        _relationshipOnUpdate = "RESTRICT";
         SaveState();
         await PersistActiveDiagramAsync();
     }

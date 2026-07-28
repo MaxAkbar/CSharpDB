@@ -994,7 +994,7 @@ public sealed class SchemaIdentityCatalogTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Open_HydratesEmptyLegacyForeignKeyBindingsWithoutPersistingDuringLoad()
+    public async Task OnUpdateNoAction_SurvivesBindingHydrationAndTrustedIdentityAdoption()
     {
         CancellationToken ct = TestContext.Current.CancellationToken;
         await _database.DisposeAsync();
@@ -1012,7 +1012,7 @@ public sealed class SchemaIdentityCatalogTests : IAsyncLifetime
             "CREATE TABLE legacy_binding_child (" +
             "id INTEGER PRIMARY KEY, parent_code TEXT, " +
             "CONSTRAINT fk_legacy_binding_child FOREIGN KEY (parent_code) " +
-            "REFERENCES legacy_binding_parent(code))",
+            "REFERENCES legacy_binding_parent(code) ON UPDATE NO ACTION)",
             ct);
         await _database.DisposeAsync();
 
@@ -1027,6 +1027,82 @@ public sealed class SchemaIdentityCatalogTests : IAsyncLifetime
             ct);
         Assert.True(observingSerializer.SawEmptyForeignKeyBindings);
         AssertHydratedLegacyBinding(_database);
+
+        TableSchema hydrated =
+            _database.GetTableSchema("legacy_binding_child")!;
+        ForeignKeyDefinition hydratedForeignKey =
+            Assert.Single(hydrated.ForeignKeys);
+        ColumnDefinition[] identityColumns = hydrated.Columns
+            .Select(column => CopyColumn(column, Guid.NewGuid()))
+            .ToArray();
+        Guid adoptedForeignKeyId = Guid.NewGuid();
+        var identitySource = new TableSchema
+        {
+            SchemaId = Guid.NewGuid(),
+            TableName = hydrated.TableName,
+            Columns = identityColumns,
+            ForeignKeys =
+            [
+                new ForeignKeyDefinition
+                {
+                    SchemaId = adoptedForeignKeyId,
+                    ColumnSchemaIds =
+                    [
+                        identityColumns.Single(column =>
+                            column.Name == hydratedForeignKey.ColumnName)
+                            .SchemaId,
+                    ],
+                    ReferencedTableSchemaId =
+                        hydratedForeignKey.ReferencedTableSchemaId,
+                    ReferencedColumnSchemaIds =
+                        hydratedForeignKey.ReferencedColumnSchemaIds,
+                    ReferencedKeySchemaId =
+                        hydratedForeignKey.ReferencedKeySchemaId,
+                    ConstraintName =
+                        hydratedForeignKey.ConstraintName,
+                    ColumnName = hydratedForeignKey.ColumnName,
+                    ReferencedTableName =
+                        hydratedForeignKey.ReferencedTableName,
+                    ReferencedColumnName =
+                        hydratedForeignKey.ReferencedColumnName,
+                    ColumnNames = hydratedForeignKey.ColumnNames,
+                    ReferencedColumnNames =
+                        hydratedForeignKey.ReferencedColumnNames,
+                    OnDelete = hydratedForeignKey.OnDelete,
+                    OnUpdate = hydratedForeignKey.OnUpdate,
+                    SupportingIndexName =
+                        hydratedForeignKey.SupportingIndexName,
+                },
+            ],
+            CheckConstraints = hydrated.CheckConstraints,
+            KeyConstraints = hydrated.KeyConstraints.Select(key =>
+                CopyKey(key, Guid.NewGuid())).ToArray(),
+            QualifiedMappings = hydrated.QualifiedMappings,
+            NextRowId = hydrated.NextRowId,
+        };
+
+        await _database.BeginTransactionAsync(ct);
+        await GetCatalog(_database).ApplyTableSchemaIdentitiesAsync(
+            hydrated.TableName,
+            identitySource,
+            ct);
+        await _database.CommitAsync(ct);
+
+        ForeignKeyDefinition adopted = Assert.Single(
+            _database.GetTableSchema(hydrated.TableName)!.ForeignKeys);
+        Assert.Equal(adoptedForeignKeyId, adopted.SchemaId);
+        Assert.Equal(
+            ForeignKeyOnDeleteAction.NoAction,
+            adopted.OnUpdate);
+
+        await _database.DisposeAsync();
+        _database = await Database.OpenAsync(_databasePath, ct);
+        ForeignKeyDefinition reopened = Assert.Single(
+            _database.GetTableSchema(hydrated.TableName)!.ForeignKeys);
+        Assert.Equal(adoptedForeignKeyId, reopened.SchemaId);
+        Assert.Equal(
+            ForeignKeyOnDeleteAction.NoAction,
+            reopened.OnUpdate);
     }
 
     [Fact]
@@ -1107,6 +1183,9 @@ public sealed class SchemaIdentityCatalogTests : IAsyncLifetime
         Assert.Equal(
             Assert.Single(parent.KeyConstraints).SchemaId,
             foreignKey.ReferencedKeySchemaId);
+        Assert.Equal(
+            ForeignKeyOnDeleteAction.NoAction,
+            foreignKey.OnUpdate);
     }
 
     private static DatabaseOptions CreateOptions(ISchemaSerializer serializer) =>
@@ -1418,6 +1497,7 @@ public sealed class SchemaIdentityCatalogTests : IAsyncLifetime
                     ReferencedColumnNames =
                         foreignKey.ReferencedColumnNames,
                     OnDelete = foreignKey.OnDelete,
+                    OnUpdate = foreignKey.OnUpdate,
                     SupportingIndexName =
                         foreignKey.SupportingIndexName,
                 }).ToArray(),

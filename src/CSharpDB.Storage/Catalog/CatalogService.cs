@@ -2716,6 +2716,7 @@ internal sealed class CatalogService
             ColumnNames = childColumnNames,
             ReferencedColumnNames = referencedColumnNames,
             OnDelete = foreignKey.OnDelete,
+            OnUpdate = foreignKey.OnUpdate,
             SupportingIndexName = foreignKey.SupportingIndexName,
         };
     }
@@ -3094,6 +3095,7 @@ internal sealed class CatalogService
                 ColumnNames = current.ColumnNames,
                 ReferencedColumnNames = current.ReferencedColumnNames,
                 OnDelete = current.OnDelete,
+                OnUpdate = current.OnUpdate,
                 SupportingIndexName = current.SupportingIndexName,
             };
         }
@@ -3266,7 +3268,8 @@ internal sealed class CatalogService
             OrderedNamesEqual(
                 GetForeignKeyReferencedColumnNames(left),
                 GetForeignKeyReferencedColumnNames(right)) &&
-            left.OnDelete == right.OnDelete;
+            left.OnDelete == right.OnDelete &&
+            left.OnUpdate == right.OnUpdate;
     }
 
     private static bool ChecksStructurallyEquivalent(
@@ -3469,6 +3472,7 @@ internal sealed class CatalogService
                     ColumnNames = constraint.ColumnNames,
                     ReferencedColumnNames = constraint.ReferencedColumnNames,
                     OnDelete = constraint.OnDelete,
+                    OnUpdate = constraint.OnUpdate,
                     SupportingIndexName = constraint.SupportingIndexName,
                 };
             })

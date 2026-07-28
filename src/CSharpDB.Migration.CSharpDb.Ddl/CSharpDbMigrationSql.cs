@@ -416,16 +416,17 @@ internal static class CSharpDbMigrationSql
             string onDelete = Normalize(Facet(foreignKey, "onDelete"));
             if (onDelete.StartsWith("on-delete-", StringComparison.Ordinal))
                 onDelete = onDelete["on-delete-".Length..];
-            string onDeleteClause = string.Empty;
-            if (!string.IsNullOrEmpty(onDelete) && onDelete != "restrict")
-            {
-                onDeleteClause = onDelete switch
-                {
-                    "cascade" => " ON DELETE CASCADE",
-                    _ => throw new InvalidDataException(
-                        $"Included foreign key '{foreignKey.ObjectId}' has unsupported delete action '{onDelete}'."),
-                };
-            }
+            string onDeleteClause = RenderReferentialActionClause(
+                foreignKey.ObjectId,
+                "DELETE",
+                onDelete);
+            string onUpdate = Normalize(Facet(foreignKey, "onUpdate"));
+            if (onUpdate.StartsWith("on-update-", StringComparison.Ordinal))
+                onUpdate = onUpdate["on-update-".Length..];
+            string onUpdateClause = RenderReferentialActionClause(
+                foreignKey.ObjectId,
+                "UPDATE",
+                onUpdate);
             AddSqlAction(
                 actions,
                 actionObserver,
@@ -445,6 +446,7 @@ internal static class CSharpDbMigrationSql
                     AppendJoined(writer, referencedColumns);
                     writer.Append(")");
                     writer.Append(onDeleteClause);
+                    writer.Append(onUpdateClause);
                 });
         }
 
@@ -570,6 +572,26 @@ internal static class CSharpDbMigrationSql
                 writer.Append(", ");
             writer.Append(segments[ordinal]);
         }
+    }
+
+    private static string RenderReferentialActionClause(
+        string foreignKeyId,
+        string operation,
+        string action)
+    {
+        if (string.IsNullOrEmpty(action) || action == "restrict")
+            return string.Empty;
+
+        string keyword = (operation, action) switch
+        {
+            ("DELETE", "cascade") => "CASCADE",
+            ("DELETE", "no-action") => "NO ACTION",
+            ("DELETE", "set-null") => "SET NULL",
+            ("UPDATE", "no-action") => "NO ACTION",
+            _ => throw new InvalidDataException(
+                $"Included foreign key '{foreignKeyId}' has {operation.ToLowerInvariant()} action '{action}' outside the current Phase 2 execution slice."),
+        };
+        return $" ON {operation} {keyword}";
     }
 
     private static MigrationPlanObject ParentPlan(

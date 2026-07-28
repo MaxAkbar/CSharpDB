@@ -25,6 +25,9 @@ public enum ForeignKeyOnDeleteAction
 {
     Restrict = 0,
     Cascade = 1,
+    NoAction = 2,
+    SetNull = 3,
+    SetDefault = 4,
 }
 
 public sealed class ForeignKeyDefinition
@@ -43,6 +46,7 @@ public sealed class ForeignKeyDefinition
     /// <summary>Ordered referenced columns; legacy payloads expose the scalar column as the only entry.</summary>
     public IReadOnlyList<string> ReferencedColumnNames { get; init; } = Array.Empty<string>();
     public ForeignKeyOnDeleteAction OnDelete { get; init; } = ForeignKeyOnDeleteAction.Restrict;
+    public ForeignKeyOnDeleteAction OnUpdate { get; init; } = ForeignKeyOnDeleteAction.Restrict;
     public required string SupportingIndexName { get; init; }
 }
 

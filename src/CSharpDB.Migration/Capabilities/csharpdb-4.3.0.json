@@ -230,9 +230,18 @@
       "feature": "foreignKey",
       "status": "conditional",
       "allowedTypes": ["integer", "text"],
-      "allowedValues": ["immediate", "match-simple", "on-delete-cascade", "on-delete-restrict"],
+      "allowedValues": [
+        "immediate",
+        "match-simple",
+        "on-delete-cascade",
+        "on-delete-no-action",
+        "on-delete-restrict",
+        "on-delete-set-null",
+        "on-update-no-action",
+        "on-update-restrict"
+      ],
       "evidenceId": "EVID-FOREIGN-KEYS",
-      "notes": "Child and ordered parent key types/collations must match; ON UPDATE and deferred matching are unsupported."
+      "notes": "Child and ordered parent key types/collations must match. SET NULL requires every child column to be nullable. Mutating ON UPDATE actions and deferred matching are unsupported."
     },
     {
       "ruleId": "CSDB-CHECK-001",
@@ -321,7 +330,7 @@
     {
       "evidenceId": "EVID-FOREIGN-KEYS",
       "source": "CSharpDB.Engine.QueryPlanner and ForeignKeyIntegrationTests",
-      "assertion": "Foreign keys require compatible ordered parent keys and support immediate MATCH SIMPLE with RESTRICT or CASCADE delete actions."
+      "assertion": "Foreign keys require compatible ordered parent keys and support immediate MATCH SIMPLE with RESTRICT, NO ACTION, CASCADE, or nullable-child SET NULL delete actions plus RESTRICT or NO ACTION update behavior."
     },
     {
       "evidenceId": "EVID-IDENTIFIERS",

@@ -25,7 +25,8 @@ public sealed record ForeignKeyResponse(
     IReadOnlyList<Guid>? ColumnSchemaIds = null,
     Guid ReferencedTableSchemaId = default,
     IReadOnlyList<Guid>? ReferencedColumnSchemaIds = null,
-    Guid ReferencedKeySchemaId = default);
+    Guid ReferencedKeySchemaId = default,
+    string OnUpdate = "Restrict");
 public sealed record KeyConstraintResponse(
     string? ConstraintName,
     string Kind,

@@ -92,13 +92,13 @@ FIND ORPHANS IN Bookings;</code></pre></div>
                 <p>Current SQL secondary indexes support <code>INTEGER</code> and <code>TEXT</code> columns. <code>COLLATE</code> is only valid on <code>TEXT</code> index columns.</p>
 
                 <h3>Are foreign keys enforced?</h3>
-                <p>Yes. CSharpDB supports column-level and table-level scalar/composite foreign keys with ordered primary/unique candidate-key validation, MATCH SIMPLE null behavior, immediate RESTRICT, and optional <code>ON DELETE CASCADE</code>.</p>
+                <p>Yes. CSharpDB supports column-level and table-level scalar/composite foreign keys with ordered primary/unique candidate-key validation, MATCH SIMPLE null behavior, and immediate <code>ON DELETE RESTRICT</code>, <code>NO ACTION</code>, <code>CASCADE</code>, or <code>SET NULL</code>. <code>SET NULL</code> requires every child-key column to be nullable.</p>
                 <p>Current v1 boundary:</p>
                 <ul>
                     <li>Constraints are enforced immediately.</li>
                     <li><code>NULL</code> child values are allowed.</li>
-                    <li><code>ON UPDATE</code>, <code>SET NULL</code>, <code>SET DEFAULT</code>, deferred constraints, and MATCH FULL/PARTIAL are not implemented yet.</li>
-                    <li><code>ON UPDATE</code>, <code>SET NULL</code>, <code>SET DEFAULT</code>, and deferred constraints are not implemented yet.</li>
+                    <li><code>ON UPDATE RESTRICT</code> and <code>ON UPDATE NO ACTION</code> are supported as immediate restrictive behavior.</li>
+                    <li><code>SET DEFAULT</code>, mutating <code>ON UPDATE</code> actions, deferred constraints, and MATCH FULL/PARTIAL are not implemented yet.</li>
                 </ul>
 
                 <h3>Will older databases automatically show foreign keys after I upgrade?</h3>

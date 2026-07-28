@@ -293,10 +293,10 @@ internal sealed class CSharpDbActualSchemaReader
                     [
                         Attribute(
                             "onDelete",
-                            foreignKey.OnDelete == ForeignKeyOnDeleteAction.Cascade
-                                ? "cascade"
-                                : "restrict"),
-                        Attribute("onUpdate", "restrict"),
+                            FormatReferentialAction(foreignKey.OnDelete)),
+                        Attribute(
+                            "onUpdate",
+                            FormatReferentialAction(foreignKey.OnUpdate)),
                     ],
                     members));
             }
@@ -600,17 +600,28 @@ internal sealed class CSharpDbActualSchemaReader
             item,
             foreignKey.ConstraintName,
             [
-                Attribute("onDelete", foreignKey.OnDelete switch
-                {
-                    ForeignKeyOnDeleteAction.Restrict => "restrict",
-                    ForeignKeyOnDeleteAction.Cascade => "cascade",
-                    _ => throw new InvalidDataException(
-                        $"Target foreign key '{foreignKey.ConstraintName}' has an unknown delete action."),
-                }),
-                Attribute("onUpdate", "restrict"),
+                Attribute(
+                    "onDelete",
+                    FormatReferentialAction(foreignKey.OnDelete)),
+                Attribute(
+                    "onUpdate",
+                    FormatReferentialAction(foreignKey.OnUpdate)),
             ],
             members);
     }
+
+    private static string FormatReferentialAction(
+        ForeignKeyOnDeleteAction action) =>
+        action switch
+        {
+            ForeignKeyOnDeleteAction.Restrict => "restrict",
+            ForeignKeyOnDeleteAction.Cascade => "cascade",
+            ForeignKeyOnDeleteAction.NoAction => "no-action",
+            ForeignKeyOnDeleteAction.SetNull => "set-null",
+            ForeignKeyOnDeleteAction.SetDefault => "set-default",
+            _ => throw new InvalidDataException(
+                $"Target foreign key has an unknown referential action '{action}'."),
+        };
 
     private MigrationNormalizedSchemaObject? CaptureCheck(
         MigrationCatalogObject item,

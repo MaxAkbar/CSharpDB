@@ -1176,15 +1176,8 @@ internal sealed partial class EngineTransportClient :
                     ReferencedColumnNames = foreignKey.ReferencedColumnNames.Count > 0
                         ? foreignKey.ReferencedColumnNames.ToArray()
                         : [foreignKey.ReferencedColumnName],
-                    OnDelete = foreignKey.OnDelete switch
-                    {
-                        ForeignKeyOnDeleteAction.Restrict =>
-                            CoreForeignKeyOnDeleteAction.Restrict,
-                        ForeignKeyOnDeleteAction.Cascade =>
-                            CoreForeignKeyOnDeleteAction.Cascade,
-                        _ => throw new CSharpDbClientException(
-                            $"Unsupported foreign key ON DELETE action '{foreignKey.OnDelete}'."),
-                    },
+                    OnDelete = MapForeignKeyActionToCore(foreignKey.OnDelete),
+                    OnUpdate = MapForeignKeyActionToCore(foreignKey.OnUpdate),
                     SupportingIndexName = foreignKey.SupportingIndexName,
                 }).ToArray(),
             CheckConstraints = schema.CheckConstraints.Select(static check =>
@@ -1253,13 +1246,35 @@ internal sealed partial class EngineTransportClient :
             ReferencedColumnName = foreignKey.ReferencedColumnName,
             ColumnNames = foreignKey.ColumnNames.Count > 0 ? foreignKey.ColumnNames.ToArray() : [foreignKey.ColumnName],
             ReferencedColumnNames = foreignKey.ReferencedColumnNames.Count > 0 ? foreignKey.ReferencedColumnNames.ToArray() : [foreignKey.ReferencedColumnName],
-            OnDelete = foreignKey.OnDelete switch
-            {
-                CoreForeignKeyOnDeleteAction.Restrict => ForeignKeyOnDeleteAction.Restrict,
-                CoreForeignKeyOnDeleteAction.Cascade => ForeignKeyOnDeleteAction.Cascade,
-                _ => throw new CSharpDbClientException($"Unsupported foreign key ON DELETE action '{foreignKey.OnDelete}'."),
-            },
+            OnDelete = MapForeignKeyActionToClient(foreignKey.OnDelete),
+            OnUpdate = MapForeignKeyActionToClient(foreignKey.OnUpdate),
             SupportingIndexName = foreignKey.SupportingIndexName,
+        };
+
+    private static CoreForeignKeyOnDeleteAction MapForeignKeyActionToCore(
+        ForeignKeyOnDeleteAction action) =>
+        action switch
+        {
+            ForeignKeyOnDeleteAction.Restrict => CoreForeignKeyOnDeleteAction.Restrict,
+            ForeignKeyOnDeleteAction.Cascade => CoreForeignKeyOnDeleteAction.Cascade,
+            ForeignKeyOnDeleteAction.NoAction => CoreForeignKeyOnDeleteAction.NoAction,
+            ForeignKeyOnDeleteAction.SetNull => CoreForeignKeyOnDeleteAction.SetNull,
+            ForeignKeyOnDeleteAction.SetDefault => CoreForeignKeyOnDeleteAction.SetDefault,
+            _ => throw new CSharpDbClientException(
+                $"Unsupported foreign key referential action '{action}'."),
+        };
+
+    private static ForeignKeyOnDeleteAction MapForeignKeyActionToClient(
+        CoreForeignKeyOnDeleteAction action) =>
+        action switch
+        {
+            CoreForeignKeyOnDeleteAction.Restrict => ForeignKeyOnDeleteAction.Restrict,
+            CoreForeignKeyOnDeleteAction.Cascade => ForeignKeyOnDeleteAction.Cascade,
+            CoreForeignKeyOnDeleteAction.NoAction => ForeignKeyOnDeleteAction.NoAction,
+            CoreForeignKeyOnDeleteAction.SetNull => ForeignKeyOnDeleteAction.SetNull,
+            CoreForeignKeyOnDeleteAction.SetDefault => ForeignKeyOnDeleteAction.SetDefault,
+            _ => throw new CSharpDbClientException(
+                $"Unsupported foreign key referential action '{action}'."),
         };
 
     private static ColumnDefinition MapColumnDefinition(CoreColumnDefinition column)
@@ -1346,12 +1361,8 @@ internal sealed partial class EngineTransportClient :
                 ColumnName = spec.ColumnName,
                 ReferencedTableName = spec.ReferencedTableName,
                 ReferencedColumnName = spec.ReferencedColumnName,
-                OnDelete = spec.OnDelete switch
-                {
-                    ForeignKeyOnDeleteAction.Restrict => CoreForeignKeyOnDeleteAction.Restrict,
-                    ForeignKeyOnDeleteAction.Cascade => CoreForeignKeyOnDeleteAction.Cascade,
-                    _ => throw new CSharpDbClientException($"Unsupported foreign key ON DELETE action '{spec.OnDelete}'."),
-                },
+                OnDelete = MapForeignKeyActionToCore(spec.OnDelete),
+                OnUpdate = MapForeignKeyActionToCore(spec.OnUpdate),
             }).ToArray(),
         };
 
@@ -1384,12 +1395,8 @@ internal sealed partial class EngineTransportClient :
                 ReferencedColumnName = constraint.ReferencedColumnName,
                 ConstraintName = constraint.ConstraintName,
                 SupportingIndexName = constraint.SupportingIndexName,
-                OnDelete = constraint.OnDelete switch
-                {
-                    CoreForeignKeyOnDeleteAction.Restrict => ForeignKeyOnDeleteAction.Restrict,
-                    CoreForeignKeyOnDeleteAction.Cascade => ForeignKeyOnDeleteAction.Cascade,
-                    _ => throw new CSharpDbClientException($"Unsupported foreign key ON DELETE action '{constraint.OnDelete}'."),
-                },
+                OnDelete = MapForeignKeyActionToClient(constraint.OnDelete),
+                OnUpdate = MapForeignKeyActionToClient(constraint.OnUpdate),
             }).ToArray(),
         };
 

@@ -15,7 +15,7 @@ public static class SchemaSerializer
     private const byte PrimaryKeyFlag = 0x02;
     private const byte IdentityFlag = 0x04;
     private const byte RowVersionFlag = 0x08;
-    private const ulong TableMetadataVersion = 8;
+    private const ulong TableMetadataVersion = 9;
     private const ulong TableMetadataVersionWithCollations = 1;
     private const ulong TableMetadataVersionWithForeignKeys = 2;
     private const ulong TableMetadataVersionWithDefaultsAndChecks = 3;
@@ -24,6 +24,7 @@ public static class SchemaSerializer
     private const ulong TableMetadataVersionWithRowVersion = 6;
     private const ulong TableMetadataVersionWithStableIdentities = 7;
     private const ulong TableMetadataVersionWithStableForeignKeyBindings = 8;
+    private const ulong TableMetadataVersionWithForeignKeyUpdateActions = 9;
     private const ulong IndexMetadataVersion = 1;
     private const int MaximumSchemaCollectionCount = 65_536;
     private const int MaximumSchemaPayloadBytes = 64 * 1024 * 1024;
@@ -167,6 +168,9 @@ public static class SchemaSerializer
             WriteGuidList(ms, foreignKey.ReferencedColumnSchemaIds);
             WriteGuid(ms, foreignKey.ReferencedKeySchemaId);
         }
+        WriteVarint(ms, (ulong)schema.ForeignKeys.Count);
+        foreach (ForeignKeyDefinition foreignKey in schema.ForeignKeys)
+            WriteVarint(ms, (ulong)foreignKey.OnUpdate);
 
         return ms.ToArray();
     }
@@ -261,7 +265,8 @@ public static class SchemaSerializer
                     TableMetadataVersionWithOrderedForeignKeys or
                     TableMetadataVersionWithRowVersion or
                     TableMetadataVersionWithStableIdentities or
-                    TableMetadataVersionWithStableForeignKeyBindings))
+                    TableMetadataVersionWithStableForeignKeyBindings or
+                    TableMetadataVersionWithForeignKeyUpdateActions))
                 throw new InvalidDataException($"Unsupported table schema metadata version '{metadataVersion}'.");
 
             int metadataColumnCount = ReadCount(data, ref pos, "table metadata column");
@@ -292,7 +297,14 @@ public static class SchemaSerializer
                     if (onDeleteRaw > int.MaxValue)
                         throw new InvalidDataException($"Unsupported foreign key ON DELETE action '{onDeleteRaw}'.");
                     var onDelete = (ForeignKeyOnDeleteAction)(int)onDeleteRaw;
-                    if (!Enum.IsDefined(onDelete))
+                    bool supportsAction =
+                        metadataVersion >=
+                            TableMetadataVersionWithForeignKeyUpdateActions
+                            ? Enum.IsDefined(onDelete)
+                            : onDelete is
+                                ForeignKeyOnDeleteAction.Restrict or
+                                ForeignKeyOnDeleteAction.Cascade;
+                    if (!supportsAction)
                         throw new InvalidDataException($"Unsupported foreign key ON DELETE action '{onDeleteRaw}'.");
 
                     foreignKeys[i] = new ForeignKeyDefinition
@@ -440,6 +452,7 @@ public static class SchemaSerializer
                         ColumnNames = orderedChildColumnNames,
                         ReferencedColumnNames = referencedColumnNames,
                         OnDelete = scalar.OnDelete,
+                        OnUpdate = scalar.OnUpdate,
                         SupportingIndexName = scalar.SupportingIndexName,
                     };
                 }
@@ -535,6 +548,45 @@ public static class SchemaSerializer
                         foreignKeyColumnIds[i] = [];
                         referencedColumnIds[i] = [];
                     }
+                }
+            }
+
+            if (metadataVersion >=
+                TableMetadataVersionWithForeignKeyUpdateActions)
+            {
+                int updateActionCount = ReadCount(
+                    data,
+                    ref pos,
+                    "foreign key ON UPDATE action");
+                if (updateActionCount != foreignKeys.Length)
+                {
+                    throw new InvalidDataException(
+                        $"Foreign key ON UPDATE action count '{updateActionCount}' does not match foreign key count '{foreignKeys.Length}'.");
+                }
+
+                for (int i = 0; i < updateActionCount; i++)
+                {
+                    ulong onUpdateRaw = ReadVarint(
+                        data,
+                        ref pos,
+                        "foreign key ON UPDATE action");
+                    if (onUpdateRaw > int.MaxValue)
+                    {
+                        throw new InvalidDataException(
+                            $"Unsupported foreign key ON UPDATE action '{onUpdateRaw}'.");
+                    }
+
+                    var onUpdate =
+                        (ForeignKeyOnDeleteAction)(int)onUpdateRaw;
+                    if (!Enum.IsDefined(onUpdate))
+                    {
+                        throw new InvalidDataException(
+                            $"Unsupported foreign key ON UPDATE action '{onUpdateRaw}'.");
+                    }
+
+                    foreignKeys[i] = CloneWithOnUpdate(
+                        foreignKeys[i],
+                        onUpdate);
                 }
             }
 
@@ -674,6 +726,11 @@ public static class SchemaSerializer
             {
                 throw new InvalidDataException(
                     $"Unsupported foreign key ON DELETE action '{(int)foreignKey.OnDelete}'.");
+            }
+            if (!Enum.IsDefined(foreignKey.OnUpdate))
+            {
+                throw new InvalidDataException(
+                    $"Unsupported foreign key ON UPDATE action '{(int)foreignKey.OnUpdate}'.");
             }
 
             if (foreignKey.ColumnNames is not null)
@@ -982,6 +1039,28 @@ public static class SchemaSerializer
             ColumnNames = value.ColumnNames,
             ReferencedColumnNames = value.ReferencedColumnNames,
             OnDelete = value.OnDelete,
+            OnUpdate = value.OnUpdate,
+            SupportingIndexName = value.SupportingIndexName,
+        };
+
+    private static ForeignKeyDefinition CloneWithOnUpdate(
+        ForeignKeyDefinition value,
+        ForeignKeyOnDeleteAction onUpdate) =>
+        new()
+        {
+            SchemaId = value.SchemaId,
+            ColumnSchemaIds = value.ColumnSchemaIds,
+            ReferencedTableSchemaId = value.ReferencedTableSchemaId,
+            ReferencedColumnSchemaIds = value.ReferencedColumnSchemaIds,
+            ReferencedKeySchemaId = value.ReferencedKeySchemaId,
+            ConstraintName = value.ConstraintName,
+            ColumnName = value.ColumnName,
+            ReferencedTableName = value.ReferencedTableName,
+            ReferencedColumnName = value.ReferencedColumnName,
+            ColumnNames = value.ColumnNames,
+            ReferencedColumnNames = value.ReferencedColumnNames,
+            OnDelete = value.OnDelete,
+            OnUpdate = onUpdate,
             SupportingIndexName = value.SupportingIndexName,
         };
 

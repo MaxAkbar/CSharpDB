@@ -154,6 +154,86 @@ public sealed class CSharpDbDdlCompatibilityTests
     }
 
     [Fact]
+    public async Task AnalyzeAsync_SetNullAndNoActionPassScratchProof()
+    {
+        const string script = """
+            CREATE TABLE action_parent (
+                id INTEGER PRIMARY KEY
+            );
+            CREATE TABLE action_child (
+                id INTEGER PRIMARY KEY,
+                parent_id INTEGER,
+                CONSTRAINT fk_action_child_parent
+                    FOREIGN KEY (parent_id)
+                    REFERENCES action_parent (id)
+                    ON DELETE SET NULL
+                    ON UPDATE NO ACTION
+            );
+            """;
+
+        CSharpDbDdlCompatibilityReport report =
+            await AnalyzeAsync(script);
+
+        Assert.Equal(
+            MigrationCompatibilityStatus.CompatibleWithRewrite,
+            report.Status);
+        Assert.Equal(
+            MigrationEvidenceLevel.ScratchExecuted,
+            report.HighestEvidence);
+        Assert.Equal(2, report.ProvenStatementCount);
+        Assert.Empty(report.Differences);
+        Assert.Equal(
+            report.ExpectedSchemaDigest,
+            report.ActualSchemaDigest);
+    }
+
+    [Theory]
+    [InlineData(
+        """
+        CREATE TABLE action_parent (id INTEGER PRIMARY KEY);
+        CREATE TABLE action_child (
+            id INTEGER PRIMARY KEY,
+            parent_id INTEGER REFERENCES action_parent(id)
+                ON UPDATE CASCADE
+        );
+        """)]
+    [InlineData(
+        """
+        CREATE TABLE action_parent (id INTEGER PRIMARY KEY);
+        CREATE TABLE action_child (
+            id INTEGER PRIMARY KEY,
+            parent_id INTEGER NOT NULL REFERENCES action_parent(id)
+                ON DELETE SET NULL
+        );
+        """)]
+    [InlineData(
+        """
+        CREATE TABLE action_parent (id INTEGER PRIMARY KEY);
+        CREATE TABLE action_child (
+            id INTEGER PRIMARY KEY,
+            parent_id INTEGER REFERENCES action_parent(id)
+                ON DELETE SET DEFAULT
+        );
+        """)]
+    public async Task AnalyzeAsync_RejectsForeignKeyActionsOutsideCurrentExecutionSlice(
+        string script)
+    {
+        CSharpDbDdlCompatibilityReport report =
+            await AnalyzeAsync(script);
+
+        Assert.Equal(
+            MigrationCompatibilityStatus.Unsupported,
+            report.Status);
+        Assert.Contains(
+            report.Diagnostics,
+            diagnostic =>
+                diagnostic.RuleId ==
+                CSharpDbDdlCompatibilityAnalyzer
+                    .UnsupportedFeatureRuleId);
+        Assert.Equal(0, report.CandidateActionCount);
+    }
+
+    [Fact]
     public async Task AnalyzeAsync_IndexBeforeTableRequiresProvenReordering()
     {
         const string script = """

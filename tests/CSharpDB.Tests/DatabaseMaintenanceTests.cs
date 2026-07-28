@@ -222,6 +222,70 @@ public sealed class DatabaseMaintenanceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task MigrateForeignKeysAsync_RejectsActionsOutsideCurrentExecutionSlice()
+    {
+        await _client.ExecuteSqlAsync(
+            "CREATE TABLE action_parents (id INTEGER PRIMARY KEY);",
+            Ct);
+        await _client.ExecuteSqlAsync(
+            "CREATE TABLE action_children (id INTEGER PRIMARY KEY, required_parent_id INTEGER NOT NULL, default_parent_id INTEGER, update_parent_id INTEGER);",
+            Ct);
+
+        async Task<CSharpDbException> RejectAsync(
+            string columnName,
+            ClientModels.ForeignKeyOnDeleteAction onDelete =
+                ClientModels.ForeignKeyOnDeleteAction.Restrict,
+            ClientModels.ForeignKeyOnDeleteAction onUpdate =
+                ClientModels.ForeignKeyOnDeleteAction.Restrict) =>
+            await Assert.ThrowsAsync<CSharpDbException>(
+                () => _client.MigrateForeignKeysAsync(
+                    new ClientModels.ForeignKeyMigrationRequest
+                    {
+                        ValidateOnly = true,
+                        Constraints =
+                        [
+                            new ClientModels.ForeignKeyMigrationConstraintSpec
+                            {
+                                TableName = "action_children",
+                                ColumnName = columnName,
+                                ReferencedTableName = "action_parents",
+                                ReferencedColumnName = "id",
+                                OnDelete = onDelete,
+                                OnUpdate = onUpdate,
+                            },
+                        ],
+                    },
+                    Ct));
+
+        CSharpDbException nonNullable = await RejectAsync(
+            "required_parent_id",
+            onDelete: ClientModels.ForeignKeyOnDeleteAction.SetNull);
+        Assert.Equal(ErrorCode.ConstraintViolation, nonNullable.Code);
+        Assert.Contains(
+            "nullable",
+            nonNullable.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        CSharpDbException setDefault = await RejectAsync(
+            "default_parent_id",
+            onDelete: ClientModels.ForeignKeyOnDeleteAction.SetDefault);
+        Assert.Equal(ErrorCode.SyntaxError, setDefault.Code);
+        Assert.Contains(
+            "ON DELETE",
+            setDefault.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        CSharpDbException updateCascade = await RejectAsync(
+            "update_parent_id",
+            onUpdate: ClientModels.ForeignKeyOnDeleteAction.Cascade);
+        Assert.Equal(ErrorCode.SyntaxError, updateCascade.Code);
+        Assert.Contains(
+            "ON UPDATE",
+            updateCascade.Message,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task MigrateForeignKeysAsync_Apply_PersistsMetadataBackupEnforcementAndDropConstraint()
     {
         string backupPath = Path.Combine(Path.GetTempPath(), $"csharpdb_fk_migration_backup_{Guid.NewGuid():N}.db");

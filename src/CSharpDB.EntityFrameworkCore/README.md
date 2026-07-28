@@ -274,8 +274,11 @@ when at least one dependent foreign-key property is nullable. CSharpDB maps
 that client behavior to a restrictive database foreign key: when dependents
 are tracked, EF clears the nullable scalar or composite-key components before
 deleting the principal; when dependents are not tracked, the database rejects
-the principal delete. Required relationships configured with `ClientSetNull`
-and database-side `DeleteBehavior.SetNull` remain explicit rejections.
+the principal delete. Database-side `DeleteBehavior.SetNull` is supported when
+every dependent foreign-key property is nullable. It emits `ON DELETE SET NULL`
+and applies even when dependents are not tracked. Required relationships
+configured with `ClientSetNull`, and `SetNull` relationships containing any
+nonnullable dependent property, remain explicit rejections.
 
 Standalone primary-key migrations have a bounded support path:
 
@@ -565,7 +568,7 @@ an entire table.
 | Index migrations | Yes | Create, drop, and root-preserving rename operations |
 | Alternate keys and unique constraints | Yes | Named create-table constraints plus standalone add/drop migrations |
 | Standalone primary-key migrations | Partial | Named logical keys add/drop; physical `INTEGER` adds can rekey validated populated rows and supported relational indexes atomically; EF drops match the exact constraint name |
-| Foreign keys | Partial | Named scalar/composite create/add/drop, primary or alternate-key targets, cascade/restrict behavior, and optional-relationship `ClientSetNull`; database-side `SetNull` is unsupported |
+| Foreign keys | Partial | Named scalar/composite create/add/drop, primary or alternate-key targets, restrictive/cascade behavior, optional-relationship `ClientSetNull`, and database-side `SetNull` when every dependent property is nullable |
 | Literal column defaults | Partial | `HasDefaultValue(...)` values that map to INTEGER, REAL, TEXT, BLOB, or NULL; computed/default SQL expressions remain unsupported |
 | Check constraints | Partial | Create-table and standalone add/drop migrations for deterministic row-local expressions accepted by the engine |
 | `AlterColumn` | Partial | Literal default/nullability changes, exact dependency-free `INTEGER`/`REAL` rewrites, and `TEXT` collation changes with inherited ordinary/unique SQL-index rebuilding |
@@ -593,7 +596,9 @@ an entire table.
   mappings, comparer overloads, nested/chained operations, and server
   composition after the operation remain unsupported
 - optional relationships support client-side `ClientSetNull`; database-side
-  `DeleteBehavior.SetNull`/`ON DELETE SET NULL` remains unsupported
+  `DeleteBehavior.SetNull`/`ON DELETE SET NULL` requires every dependent
+  foreign-key property to be nullable; `SET DEFAULT` and mutating `ON UPDATE`
+  actions remain unsupported
 - schemas are unsupported in runtime and migrations
 - computed columns and `DefaultValueSql` are unsupported
 - rowversion is limited to one nonnullable `byte[]` property created with its

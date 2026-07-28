@@ -16,6 +16,7 @@ public sealed class TableArchiveForeignKey
     public IReadOnlyList<string> ColumnNames { get; init; } = Array.Empty<string>();
     public IReadOnlyList<string> ReferencedColumnNames { get; init; } = Array.Empty<string>();
     public ForeignKeyOnDeleteAction OnDelete { get; init; }
+    public ForeignKeyOnDeleteAction OnUpdate { get; init; }
     public required string SupportingIndexName { get; init; }
 
     public static TableArchiveForeignKey FromForeignKey(ForeignKeyDefinition foreignKey) => new()
@@ -32,6 +33,7 @@ public sealed class TableArchiveForeignKey
         ColumnNames = foreignKey.ColumnNames.Count > 0 ? foreignKey.ColumnNames.ToArray() : [foreignKey.ColumnName],
         ReferencedColumnNames = foreignKey.ReferencedColumnNames.Count > 0 ? foreignKey.ReferencedColumnNames.ToArray() : [foreignKey.ReferencedColumnName],
         OnDelete = foreignKey.OnDelete,
+        OnUpdate = foreignKey.OnUpdate,
         SupportingIndexName = foreignKey.SupportingIndexName,
     };
 
@@ -49,6 +51,7 @@ public sealed class TableArchiveForeignKey
         ColumnNames = ColumnNames.Count > 0 ? ColumnNames.ToArray() : [ColumnName],
         ReferencedColumnNames = ReferencedColumnNames.Count > 0 ? ReferencedColumnNames.ToArray() : [ReferencedColumnName],
         OnDelete = OnDelete,
+        OnUpdate = OnUpdate,
         SupportingIndexName = SupportingIndexName,
     };
 }

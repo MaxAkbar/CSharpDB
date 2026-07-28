@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Security.Cryptography;
 using System.Text;
 using CSharpDB.Admin.ImportExport.Contracts;
 using CSharpDB.Admin.ImportExport.Services;
@@ -390,11 +391,11 @@ public class TableArchiveTests
                 ct);
 
             byte[] archive = await File.ReadAllBytesAsync(path, ct);
-            byte[] versionFive =
-                Encoding.UTF8.GetBytes("\"formatVersion\": 5");
-            int versionOffset = archive.AsSpan().IndexOf(versionFive);
+            byte[] versionSix =
+                Encoding.UTF8.GetBytes("\"formatVersion\": 6");
+            int versionOffset = archive.AsSpan().IndexOf(versionSix);
             Assert.True(versionOffset >= 0);
-            archive[versionOffset + versionFive.Length - 1] = (byte)'4';
+            archive[versionOffset + versionSix.Length - 1] = (byte)'5';
             await File.WriteAllBytesAsync(path, archive, ct);
 
             await Assert.ThrowsAsync<InvalidDataException>(
@@ -478,6 +479,7 @@ public class TableArchiveTests
                     ColumnNames = ["id", "name"],
                     ReferencedColumnNames = ["tenant_id", "customer_name"],
                     OnDelete = ForeignKeyOnDeleteAction.Cascade,
+                    OnUpdate = ForeignKeyOnDeleteAction.NoAction,
                     SupportingIndexName = "__fk_customers_tenant",
                 },
             ],
@@ -545,6 +547,7 @@ public class TableArchiveTests
             Assert.Equal(["id", "name"], foreignKey.ColumnNames);
             Assert.Equal(["tenant_id", "customer_name"], foreignKey.ReferencedColumnNames);
             Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
+            Assert.Equal(ForeignKeyOnDeleteAction.NoAction, foreignKey.OnUpdate);
             Assert.Collection(
                 restoredSchema.KeyConstraints,
                 primary =>
@@ -645,7 +648,8 @@ public class TableArchiveTests
                     ReferencedColumnName = "tenant_id",
                     ColumnNames = ["parent_tenant_id", "parent_code"],
                     ReferencedColumnNames = ["tenant_id", "code"],
-                    OnDelete = ForeignKeyOnDeleteAction.Cascade,
+                    OnDelete = ForeignKeyOnDeleteAction.SetNull,
+                    OnUpdate = ForeignKeyOnDeleteAction.NoAction,
                     SupportingIndexName = "__fk_archive_items_parent",
                 },
             ],
@@ -685,16 +689,16 @@ public class TableArchiveTests
                 TableArchiveWriter.ToAsyncRows(rows, ct),
                 ct);
 
-            Assert.Equal(TableArchiveManifest.SchemaFidelityFormatVersion, manifest.FormatVersion);
+            Assert.Equal(TableArchiveManifest.LatestFormatVersion, manifest.FormatVersion);
             byte[] archive = await File.ReadAllBytesAsync(archivePath, ct);
             Assert.Equal(
-                TableArchiveManifest.SchemaFidelityFormatVersion,
+                TableArchiveManifest.LatestFormatVersion,
                 BinaryPrimitives.ReadInt32LittleEndian(archive.AsSpan(8, sizeof(int))));
             Assert.Contains("\"secondaryIndexes\"", ReadSchemaJson(archive));
 
             (TableArchiveSchema archivedSchema, TableArchiveManifest archivedManifest) =
                 await TableArchiveReader.ReadMetadataAsync(archivePath, ct);
-            Assert.Equal(TableArchiveManifest.SchemaFidelityFormatVersion, archivedManifest.FormatVersion);
+            Assert.Equal(TableArchiveManifest.LatestFormatVersion, archivedManifest.FormatVersion);
             Assert.Collection(
                 Assert.IsAssignableFrom<IReadOnlyList<TableArchiveSecondaryIndex>>(archivedSchema.SecondaryIndexes),
                 index =>
@@ -761,7 +765,8 @@ public class TableArchiveTests
             Assert.Equal(["parent_tenant_id", "parent_code"], restoredForeignKey.ColumnNames);
             Assert.Equal("restored_items", restoredForeignKey.ReferencedTableName);
             Assert.Equal(["tenant_id", "code"], restoredForeignKey.ReferencedColumnNames);
-            Assert.Equal(CSharpDB.Client.Models.ForeignKeyOnDeleteAction.Cascade, restoredForeignKey.OnDelete);
+            Assert.Equal(CSharpDB.Client.Models.ForeignKeyOnDeleteAction.SetNull, restoredForeignKey.OnDelete);
+            Assert.Equal(CSharpDB.Client.Models.ForeignKeyOnDeleteAction.NoAction, restoredForeignKey.OnUpdate);
 
             CSharpDB.Client.Models.IndexSchema[] restoredIndexes = (await client.GetIndexesAsync(ct))
                 .Where(index => string.Equals(index.TableName, "restored_items", StringComparison.Ordinal))
@@ -1465,6 +1470,39 @@ public class TableArchiveTests
             ForeignKeyDefinition foreignKey = Assert.Single(restored.ForeignKeys);
             Assert.Equal(["id"], foreignKey.ColumnNames);
             Assert.Equal(["id"], foreignKey.ReferencedColumnNames);
+            Assert.Equal(ForeignKeyOnDeleteAction.Restrict, foreignKey.OnDelete);
+            Assert.Equal(ForeignKeyOnDeleteAction.Restrict, foreignKey.OnUpdate);
+        }
+        finally
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task Archive_VersionFiveForeignKeyWithoutOnUpdateDefaultsToRestrict()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string path = Path.Combine(
+            Path.GetTempPath(),
+            $"version_five_fk_{Guid.NewGuid():N}.csdbtable");
+
+        try
+        {
+            await WriteVersionFiveArchiveWithoutOnUpdateAsync(path, ct);
+
+            TableSchema restored =
+                await TableArchiveReader.ReadTableSchemaAsync(path, ct: ct);
+            ForeignKeyDefinition foreignKey =
+                Assert.Single(restored.ForeignKeys);
+
+            Assert.Equal(
+                ForeignKeyOnDeleteAction.Restrict,
+                foreignKey.OnDelete);
+            Assert.Equal(
+                ForeignKeyOnDeleteAction.Restrict,
+                foreignKey.OnUpdate);
         }
         finally
         {
@@ -1908,6 +1946,94 @@ public class TableArchiveTests
         BinaryPrimitives.WriteInt64LittleEndian(header.AsSpan(36), rowsOffset);
 
         await using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        await stream.WriteAsync(header, ct);
+        await stream.WriteAsync(schema, ct);
+        await stream.WriteAsync(manifest, ct);
+    }
+
+    private static async Task WriteVersionFiveArchiveWithoutOnUpdateAsync(
+        string path,
+        CancellationToken ct)
+    {
+        const int headerSize = 76;
+        byte[] schema = Encoding.UTF8.GetBytes(
+            """
+            {
+              "tableName": "version_five_items",
+              "columns": [
+                {
+                  "name": "id",
+                  "type": "integer",
+                  "nullable": false,
+                  "isPrimaryKey": true,
+                  "isIdentity": false,
+                  "collation": null
+                }
+              ],
+              "foreignKeys": [
+                {
+                  "constraintName": "fk_version_five_items_parent",
+                  "columnName": "id",
+                  "referencedTableName": "version_five_parents",
+                  "referencedColumnName": "id",
+                  "onDelete": "restrict",
+                  "supportingIndexName": "__fk_version_five_items_parent"
+                }
+              ],
+              "nextRowId": 2
+            }
+            """);
+        string schemaDigest = Convert.ToHexString(
+            SHA256.HashData(schema)).ToLowerInvariant();
+        string emptyDigest = Convert.ToHexString(
+            SHA256.HashData(Array.Empty<byte>())).ToLowerInvariant();
+        byte[] manifest = Encoding.UTF8.GetBytes(
+            $$"""
+            {
+              "formatVersion": 5,
+              "sourceTableName": "version_five_items",
+              "createdUtc": "2025-01-01T00:00:00+00:00",
+              "rowCount": 0,
+              "schemaEntry": "native:schema",
+              "rowsEntry": "native:rows",
+              "indexes": [],
+              "digests": {
+                "algorithm": "sha256",
+                "encoding": "lowercase-hex",
+                "schema": "{{schemaDigest}}",
+                "rows": "{{emptyDigest}}",
+                "physicalIndex": "{{emptyDigest}}"
+              }
+            }
+            """);
+
+        long schemaOffset = headerSize;
+        long rowsOffset = schemaOffset + schema.Length;
+        long manifestOffset = rowsOffset;
+        var header = new byte[headerSize];
+        "CSDBTBL3"u8.CopyTo(header);
+        BinaryPrimitives.WriteInt32LittleEndian(header.AsSpan(8), 5);
+        BinaryPrimitives.WriteInt64LittleEndian(
+            header.AsSpan(12),
+            schemaOffset);
+        BinaryPrimitives.WriteInt32LittleEndian(
+            header.AsSpan(20),
+            schema.Length);
+        BinaryPrimitives.WriteInt64LittleEndian(
+            header.AsSpan(24),
+            manifestOffset);
+        BinaryPrimitives.WriteInt32LittleEndian(
+            header.AsSpan(32),
+            manifest.Length);
+        BinaryPrimitives.WriteInt64LittleEndian(
+            header.AsSpan(36),
+            rowsOffset);
+
+        await using var stream = new FileStream(
+            path,
+            FileMode.CreateNew,
+            FileAccess.Write,
+            FileShare.None);
         await stream.WriteAsync(header, ct);
         await stream.WriteAsync(schema, ct);
         await stream.WriteAsync(manifest, ct);
