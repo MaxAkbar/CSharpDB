@@ -384,8 +384,15 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
         await ExecuteScriptAsync(dbPath, "INSERT INTO Posts (Id, BlogId) VALUES (2, 999);");
     }
 
-    [Fact]
-    public void MigrationsSqlGenerator_StandaloneForeignKey_EmitsSetNullAndRejectsUnimplementedActions()
+    [Theory]
+    [InlineData(ReferentialAction.NoAction, "NO ACTION")]
+    [InlineData(ReferentialAction.Restrict, "RESTRICT")]
+    [InlineData(ReferentialAction.Cascade, "CASCADE")]
+    [InlineData(ReferentialAction.SetNull, "SET NULL")]
+    [InlineData(ReferentialAction.SetDefault, "SET DEFAULT")]
+    public void MigrationsSqlGenerator_StandaloneForeignKey_EmitsEveryImmediateAction(
+        ReferentialAction action,
+        string keyword)
     {
         string dbPath = Path.Combine(_workspace, "foreign-key-actions-generator.db");
         using var db =
@@ -393,7 +400,7 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
         IMigrationsSqlGenerator generator =
             db.GetService<IMigrationsSqlGenerator>();
 
-        MigrationCommand setNull = Assert.Single(
+        MigrationCommand delete = Assert.Single(
             generator.Generate(
                 [
                     new AddForeignKeyOperation
@@ -403,80 +410,244 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
                         Columns = ["BlogId"],
                         PrincipalTable = "Blogs",
                         PrincipalColumns = ["Id"],
-                        OnDelete = ReferentialAction.SetNull,
+                        OnDelete = action,
                     },
                 ],
                 model: null));
         Assert.Contains(
-            "ON DELETE SET NULL",
-            setNull.CommandText,
+            $"ON DELETE {keyword}",
+            delete.CommandText,
             StringComparison.Ordinal);
         Assert.Contains(
             "ON UPDATE NO ACTION",
-            setNull.CommandText,
+            delete.CommandText,
             StringComparison.Ordinal);
 
-        MigrationCommand noAction = Assert.Single(
+        MigrationCommand update = Assert.Single(
             generator.Generate(
                 [
                     new AddForeignKeyOperation
                     {
-                        Name = "FK_Posts_Blogs_NoAction",
+                        Name = "FK_Posts_Blogs_BlogId",
                         Table = "Posts",
                         Columns = ["BlogId"],
                         PrincipalTable = "Blogs",
                         PrincipalColumns = ["Id"],
                         OnDelete = ReferentialAction.NoAction,
-                        OnUpdate = ReferentialAction.NoAction,
+                        OnUpdate = action,
                     },
                 ],
                 model: null));
         Assert.Contains(
             "ON DELETE NO ACTION",
-            noAction.CommandText,
+            update.CommandText,
             StringComparison.Ordinal);
         Assert.Contains(
-            "ON UPDATE NO ACTION",
-            noAction.CommandText,
+            $"ON UPDATE {keyword}",
+            update.CommandText,
             StringComparison.Ordinal);
+    }
 
-        var updateCascade = new AddForeignKeyOperation
+    [Fact]
+    public void MigrationsSqlGenerator_CreateTable_EmitsPhase3ForeignKeyActions()
+    {
+        string dbPath = Path.Combine(
+            _workspace,
+            "foreign-key-create-actions-generator.db");
+        using var db =
+            new MigrationRuntimeContext($"Data Source={dbPath}");
+        IMigrationsSqlGenerator generator =
+            db.GetService<IMigrationsSqlGenerator>();
+        var create = new CreateTableOperation { Name = "Posts" };
+        create.Columns.Add(new AddColumnOperation
+        {
+            Name = "BlogId",
+            Table = create.Name,
+            ClrType = typeof(int),
+            ColumnType = "INTEGER",
+            IsNullable = false,
+            DefaultValue = 1,
+        });
+        create.ForeignKeys.Add(new AddForeignKeyOperation
         {
             Name = "FK_Posts_Blogs_BlogId",
-            Table = "Posts",
-            Columns = ["BlogId"],
-            PrincipalTable = "Blogs",
-            PrincipalColumns = ["Id"],
-            OnUpdate = ReferentialAction.Cascade,
-        };
-        NotSupportedException updateError =
-            Assert.Throws<NotSupportedException>(
-                () => generator.Generate(
-                    [updateCascade],
-                    model: null));
-        Assert.Contains(
-            "ON UPDATE",
-            updateError.Message,
-            StringComparison.OrdinalIgnoreCase);
-
-        var deleteSetDefault = new AddForeignKeyOperation
-        {
-            Name = "FK_Posts_Blogs_BlogId",
-            Table = "Posts",
+            Table = create.Name,
             Columns = ["BlogId"],
             PrincipalTable = "Blogs",
             PrincipalColumns = ["Id"],
             OnDelete = ReferentialAction.SetDefault,
+            OnUpdate = ReferentialAction.Cascade,
+        });
+
+        MigrationCommand command = Assert.Single(
+            generator.Generate([create], model: null));
+
+        Assert.Contains(
+            "DEFAULT 1",
+            command.CommandText,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "ON DELETE SET DEFAULT",
+            command.CommandText,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "ON UPDATE CASCADE",
+            command.CommandText,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MigrationsSqlGenerator_StandaloneForeignKey_RejectsUnknownAction()
+    {
+        string dbPath = Path.Combine(_workspace, "foreign-key-actions-invalid.db");
+        using var db =
+            new MigrationRuntimeContext($"Data Source={dbPath}");
+        IMigrationsSqlGenerator generator =
+            db.GetService<IMigrationsSqlGenerator>();
+        var invalid = new AddForeignKeyOperation
+        {
+            Name = "FK_Posts_Blogs_BlogId",
+            Table = "Posts",
+            Columns = ["BlogId"],
+            PrincipalTable = "Blogs",
+            PrincipalColumns = ["Id"],
+            OnUpdate = (ReferentialAction)999,
         };
-        NotSupportedException defaultError =
+        NotSupportedException error =
             Assert.Throws<NotSupportedException>(
                 () => generator.Generate(
-                    [deleteSetDefault],
+                    [invalid],
                     model: null));
         Assert.Contains(
-            "SetDefault",
-            defaultError.Message,
+            "ON UPDATE",
+            error.Message,
             StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task MigrationsSqlGenerator_Phase3Actions_ExecuteAgainstPopulatedTables()
+    {
+        string dbPath = Path.Combine(
+            _workspace,
+            "foreign-key-phase3-actions.db");
+        await ExecuteScriptAsync(
+            dbPath,
+            """
+            CREATE TABLE DeleteParents (Id INTEGER PRIMARY KEY);
+            CREATE TABLE DeleteChildren (
+                Id INTEGER PRIMARY KEY,
+                ParentId INTEGER DEFAULT 2
+            );
+            CREATE TABLE CascadeParents (Id INTEGER PRIMARY KEY);
+            CREATE TABLE CascadeChildren (
+                Id INTEGER PRIMARY KEY,
+                ParentId INTEGER NOT NULL
+            );
+            CREATE TABLE NullParents (Id INTEGER PRIMARY KEY);
+            CREATE TABLE NullChildren (
+                Id INTEGER PRIMARY KEY,
+                ParentId INTEGER
+            );
+            CREATE TABLE DefaultParents (Id INTEGER PRIMARY KEY);
+            CREATE TABLE DefaultChildren (
+                Id INTEGER PRIMARY KEY,
+                ParentId INTEGER DEFAULT 2
+            );
+            INSERT INTO DeleteParents VALUES (1), (2);
+            INSERT INTO DeleteChildren VALUES (1, 1);
+            INSERT INTO CascadeParents VALUES (1);
+            INSERT INTO CascadeChildren VALUES (1, 1);
+            INSERT INTO NullParents VALUES (1);
+            INSERT INTO NullChildren VALUES (1, 1);
+            INSERT INTO DefaultParents VALUES (1), (2);
+            INSERT INTO DefaultChildren VALUES (1, 1);
+            """);
+
+        IReadOnlyList<MigrationCommand> commands;
+        using (var db =
+               new MigrationRuntimeContext($"Data Source={dbPath}"))
+        {
+            IMigrationsSqlGenerator generator =
+                db.GetService<IMigrationsSqlGenerator>();
+            commands = generator.Generate(
+                [
+                    ForeignKeyOperation(
+                        "FK_DeleteChildren_DeleteParents",
+                        "DeleteChildren",
+                        "DeleteParents",
+                        ReferentialAction.SetDefault,
+                        ReferentialAction.NoAction),
+                    ForeignKeyOperation(
+                        "FK_CascadeChildren_CascadeParents",
+                        "CascadeChildren",
+                        "CascadeParents",
+                        ReferentialAction.NoAction,
+                        ReferentialAction.Cascade),
+                    ForeignKeyOperation(
+                        "FK_NullChildren_NullParents",
+                        "NullChildren",
+                        "NullParents",
+                        ReferentialAction.NoAction,
+                        ReferentialAction.SetNull),
+                    ForeignKeyOperation(
+                        "FK_DefaultChildren_DefaultParents",
+                        "DefaultChildren",
+                        "DefaultParents",
+                        ReferentialAction.NoAction,
+                        ReferentialAction.SetDefault),
+                ],
+                model: null);
+        }
+
+        foreach (MigrationCommand command in commands)
+            await ExecuteScriptAsync(dbPath, command.CommandText);
+
+        await ExecuteScriptAsync(
+            dbPath,
+            """
+            DELETE FROM DeleteParents WHERE Id = 1;
+            UPDATE CascadeParents SET Id = 10 WHERE Id = 1;
+            UPDATE NullParents SET Id = 10 WHERE Id = 1;
+            UPDATE DefaultParents SET Id = 10 WHERE Id = 1;
+            """);
+
+        Assert.Equal(
+            2L,
+            Convert.ToInt64(await ExecuteScalarValueAsync(
+                dbPath,
+                "SELECT ParentId FROM DeleteChildren WHERE Id = 1")));
+        Assert.Equal(
+            10L,
+            Convert.ToInt64(await ExecuteScalarValueAsync(
+                dbPath,
+                "SELECT ParentId FROM CascadeChildren WHERE Id = 1")));
+        Assert.Equal(
+            DBNull.Value,
+            await ExecuteScalarValueAsync(
+                dbPath,
+                "SELECT ParentId FROM NullChildren WHERE Id = 1"));
+        Assert.Equal(
+            2L,
+            Convert.ToInt64(await ExecuteScalarValueAsync(
+                dbPath,
+                "SELECT ParentId FROM DefaultChildren WHERE Id = 1")));
+
+        static AddForeignKeyOperation ForeignKeyOperation(
+            string name,
+            string table,
+            string principalTable,
+            ReferentialAction onDelete,
+            ReferentialAction onUpdate) =>
+            new()
+            {
+                Name = name,
+                Table = table,
+                Columns = ["ParentId"],
+                PrincipalTable = principalTable,
+                PrincipalColumns = ["Id"],
+                OnDelete = onDelete,
+                OnUpdate = onUpdate,
+            };
     }
 
     [Fact]

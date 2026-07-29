@@ -280,6 +280,18 @@ and applies even when dependents are not tracked. Required relationships
 configured with `ClientSetNull`, and `SetNull` relationships containing any
 nonnullable dependent property, remain explicit rejections.
 
+EF Core's relationship model has no `DeleteBehavior.SetDefault` or
+model-level `ON UPDATE` action. Explicit migrations can nevertheless use
+`migrationBuilder.AddForeignKey(..., onDelete: ..., onUpdate: ...)` with every
+immediate `ReferentialAction`: `Restrict`, `NoAction`, `Cascade`, `SetNull`,
+and `SetDefault`. `SetNull` requires every child column to be nullable and
+outside the child primary key. `SetDefault` uses each child column's literal
+default; a column with no explicit default resolves to `NULL` and therefore
+must be nullable and outside the child primary key. Updating a tracked EF
+primary or alternate key remains an EF model limitation, so exercise
+database-side `ON UPDATE` actions with raw SQL and clear or reload tracked
+entities before reading the cascaded values.
+
 Standalone primary-key migrations have a bounded support path:
 
 - named single-`TEXT` and composite `INTEGER`/`TEXT` logical primary keys can be
@@ -568,7 +580,7 @@ an entire table.
 | Index migrations | Yes | Create, drop, and root-preserving rename operations |
 | Alternate keys and unique constraints | Yes | Named create-table constraints plus standalone add/drop migrations |
 | Standalone primary-key migrations | Partial | Named logical keys add/drop; physical `INTEGER` adds can rekey validated populated rows and supported relational indexes atomically; EF drops match the exact constraint name |
-| Foreign keys | Partial | Named scalar/composite create/add/drop, primary or alternate-key targets, restrictive/cascade behavior, optional-relationship `ClientSetNull`, and database-side `SetNull` when every dependent property is nullable |
+| Foreign keys | Partial | Named scalar/composite create/add/drop, primary or alternate-key targets, model-level restrictive/cascade/`SetNull` behavior, and the full immediate delete/update action matrix through explicit migration operations |
 | Literal column defaults | Partial | `HasDefaultValue(...)` values that map to INTEGER, REAL, TEXT, BLOB, or NULL; computed/default SQL expressions remain unsupported |
 | Check constraints | Partial | Create-table and standalone add/drop migrations for deterministic row-local expressions accepted by the engine |
 | `AlterColumn` | Partial | Literal default/nullability changes, exact dependency-free `INTEGER`/`REAL` rewrites, and `TEXT` collation changes with inherited ordinary/unique SQL-index rebuilding |
@@ -597,8 +609,9 @@ an entire table.
   composition after the operation remain unsupported
 - optional relationships support client-side `ClientSetNull`; database-side
   `DeleteBehavior.SetNull`/`ON DELETE SET NULL` requires every dependent
-  foreign-key property to be nullable; `SET DEFAULT` and mutating `ON UPDATE`
-  actions remain unsupported
+  foreign-key property to be nullable; explicit migration operations support
+  immediate `SET DEFAULT` and mutating `ON UPDATE` actions, but EF's
+  relationship model cannot scaffold those actions
 - schemas are unsupported in runtime and migrations
 - computed columns and `DefaultValueSql` are unsupported
 - rowversion is limited to one nonnullable `byte[]` property created with its

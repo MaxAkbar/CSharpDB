@@ -306,6 +306,7 @@ internal static class DatabaseForeignKeyMigrationCoordinator
                 KeyConstraints = currentSchema.KeyConstraints,
                 NextRowId = currentSchema.NextRowId,
             };
+            RowConstraintValidator.ValidateSchemaDefinitions(currentSchema);
         }
 
         string tempTableName = GenerateTempTableName(catalog, tableName, materializedForeignKeys.Select(static fk => fk.Definition.ConstraintName));
@@ -589,21 +590,26 @@ internal static class DatabaseForeignKeyMigrationCoordinator
                 ForeignKeyOnDeleteAction.Restrict or
                 ForeignKeyOnDeleteAction.NoAction or
                 ForeignKeyOnDeleteAction.Cascade or
-                ForeignKeyOnDeleteAction.SetNull))
+                ForeignKeyOnDeleteAction.SetNull or
+                ForeignKeyOnDeleteAction.SetDefault))
         {
             throw new CSharpDbException(
                 ErrorCode.SyntaxError,
-                $"ON DELETE action '{onDelete}' is not implemented in this Phase 2 slice.");
+                $"Unsupported ON DELETE action '{onDelete}'.");
         }
         if (onUpdate is not (
                 ForeignKeyOnDeleteAction.Restrict or
-                ForeignKeyOnDeleteAction.NoAction))
+                ForeignKeyOnDeleteAction.NoAction or
+                ForeignKeyOnDeleteAction.Cascade or
+                ForeignKeyOnDeleteAction.SetNull or
+                ForeignKeyOnDeleteAction.SetDefault))
         {
             throw new CSharpDbException(
                 ErrorCode.SyntaxError,
-                $"ON UPDATE action '{onUpdate}' is not implemented in this Phase 2 slice.");
+                $"Unsupported ON UPDATE action '{onUpdate}'.");
         }
-        if (onDelete == ForeignKeyOnDeleteAction.SetNull &&
+        if ((onDelete == ForeignKeyOnDeleteAction.SetNull ||
+             onUpdate == ForeignKeyOnDeleteAction.SetNull) &&
             !childColumn.Nullable)
         {
             throw new CSharpDbException(

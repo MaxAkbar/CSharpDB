@@ -34,9 +34,67 @@ public sealed class DataModelGraphBuilderTests
                 "SET NULL",
                 childColumn: null));
         Assert.True(
-            DataModelRelationshipRules.IsDeleteActionCompatible(
+            DataModelRelationshipRules.IsActionCompatible(
                 "CASCADE",
                 required));
+    }
+
+    [Fact]
+    public void RelationshipRules_SetDefaultRequiresNullableOrNonNullDefault()
+    {
+        var nullable = new DataModelColumn
+        {
+            Name = "ParentId",
+            Nullable = true,
+        };
+        var withDefault = new DataModelColumn
+        {
+            Name = "ParentId",
+            Nullable = false,
+            DefaultSql = "2",
+        };
+        var withoutDefault = new DataModelColumn
+        {
+            Name = "ParentId",
+            Nullable = false,
+        };
+        var nullDefault = new DataModelColumn
+        {
+            Name = "ParentId",
+            Nullable = false,
+            DefaultSql = "(NULL)",
+        };
+        var nullablePrimaryKey = new DataModelColumn
+        {
+            Name = "ParentId",
+            Nullable = true,
+            IsPrimaryKey = true,
+        };
+
+        Assert.True(
+            DataModelRelationshipRules.IsActionCompatible(
+                "SET DEFAULT",
+                nullable));
+        Assert.True(
+            DataModelRelationshipRules.IsActionCompatible(
+                "set-default",
+                withDefault));
+        Assert.False(
+            DataModelRelationshipRules.IsActionCompatible(
+                "SET DEFAULT",
+                withoutDefault));
+        Assert.False(
+            DataModelRelationshipRules.IsActionCompatible(
+                "SET DEFAULT",
+                nullDefault));
+        Assert.False(
+            DataModelRelationshipRules.IsActionCompatible(
+                "SET DEFAULT",
+                nullablePrimaryKey));
+        Assert.False(
+            DataModelRelationshipRules.IsActionCompatible(
+                "SET DEFAULT",
+                childColumn: null));
     }
 
     [Fact]
@@ -52,12 +110,70 @@ public sealed class DataModelGraphBuilderTests
         DataModelColumn customerId = Assert.Single(orders.Columns, column => column.Name == "CustomerId");
         Assert.True(customerId.IsForeignKey);
         Assert.True(customerId.IsIndexed);
+        Assert.Equal(
+            "'new'",
+            Assert.Single(orders.Columns, column => column.Name == "Status").DefaultSql);
 
         DataModelRelationship relationship = Assert.Single(state.Relationships);
         Assert.Equal(DataModelRelationshipKind.PhysicalForeignKey, relationship.Kind);
         Assert.Equal("Orders", relationship.LeftTable);
         Assert.Equal("Customers", relationship.RightTable);
         Assert.True(relationship.IsResolved);
+    }
+
+    [Fact]
+    public async Task DataModelService_MapsDefaultsAndPhase3ReferentialActions()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string databasePath = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb_data_model_phase3_{Guid.NewGuid():N}.db");
+
+        try
+        {
+            await using var client = CSharpDB.Client.CSharpDbClient.Create(
+                new CSharpDB.Client.CSharpDbClientOptions
+                {
+                    DataSource = databasePath,
+                });
+            CSharpDB.Client.Models.SqlExecutionResult create =
+                await client.ExecuteSqlAsync(
+                    """
+                    CREATE TABLE model_parents (id INTEGER PRIMARY KEY);
+                    CREATE TABLE model_children (
+                        id INTEGER PRIMARY KEY,
+                        parent_id INTEGER NOT NULL DEFAULT 1
+                            REFERENCES model_parents(id)
+                            ON DELETE SET DEFAULT
+                            ON UPDATE CASCADE
+                    );
+                    """,
+                    ct);
+            Assert.Null(create.Error);
+
+            var service = new DataModelService(client);
+            DataModelState state = await service.BuildModelAsync(ct: ct);
+            DataModelNode child = Assert.Single(
+                state.Nodes,
+                node => node.Name == "model_children");
+            Assert.Equal(
+                "1",
+                Assert.Single(
+                    child.Columns,
+                    column => column.Name == "parent_id").DefaultSql);
+            DataModelRelationship relationship = Assert.Single(
+                state.Relationships,
+                item => item.LeftTable == "model_children");
+            Assert.Equal("SET DEFAULT", relationship.OnDelete);
+            Assert.Equal("CASCADE", relationship.OnUpdate);
+        }
+        finally
+        {
+            if (File.Exists(databasePath))
+                File.Delete(databasePath);
+            if (File.Exists(databasePath + ".wal"))
+                File.Delete(databasePath + ".wal");
+        }
     }
 
     [Fact]
@@ -228,7 +344,7 @@ public sealed class DataModelGraphBuilderTests
         [
             new DataModelColumnMetadata { Name = "Id", TypeLabel = "INTEGER", IsPrimaryKey = true, IsIdentity = true, Nullable = false },
             new DataModelColumnMetadata { Name = "CustomerId", TypeLabel = "INTEGER", Nullable = false },
-            new DataModelColumnMetadata { Name = "Status", TypeLabel = "TEXT" },
+            new DataModelColumnMetadata { Name = "Status", TypeLabel = "TEXT", DefaultSql = "'new'" },
         ],
         ForeignKeys =
         [

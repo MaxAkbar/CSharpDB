@@ -92,13 +92,14 @@ FIND ORPHANS IN Bookings;</code></pre></div>
                 <p>Current SQL secondary indexes support <code>INTEGER</code> and <code>TEXT</code> columns. <code>COLLATE</code> is only valid on <code>TEXT</code> index columns.</p>
 
                 <h3>Are foreign keys enforced?</h3>
-                <p>Yes. CSharpDB supports column-level and table-level scalar/composite foreign keys with ordered primary/unique candidate-key validation, MATCH SIMPLE null behavior, and immediate <code>ON DELETE RESTRICT</code>, <code>NO ACTION</code>, <code>CASCADE</code>, or <code>SET NULL</code>. <code>SET NULL</code> requires every child-key column to be nullable.</p>
+                <p>Yes. CSharpDB supports column-level and table-level scalar/composite foreign keys with ordered primary/unique candidate-key validation, MATCH SIMPLE null behavior, and the full immediate <code>RESTRICT</code>, <code>NO ACTION</code>, <code>CASCADE</code>, <code>SET NULL</code>, and <code>SET DEFAULT</code> action matrix for both deletes and referenced-key updates. <code>SET NULL</code> requires every child-key column to be nullable and outside the primary key.</p>
                 <p>Current v1 boundary:</p>
                 <ul>
                     <li>Constraints are enforced immediately.</li>
-                    <li><code>NULL</code> child values are allowed.</li>
-                    <li><code>ON UPDATE RESTRICT</code> and <code>ON UPDATE NO ACTION</code> are supported as immediate restrictive behavior.</li>
-                    <li><code>SET DEFAULT</code>, mutating <code>ON UPDATE</code> actions, deferred constraints, and MATCH FULL/PARTIAL are not implemented yet.</li>
+                    <li>MATCH SIMPLE allows a scalar NULL or any composite child tuple containing at least one NULL. A fully non-NULL tuple must match a parent candidate key.</li>
+                    <li><code>NO ACTION</code> remains metadata-distinct but has the same immediate restrictive behavior as <code>RESTRICT</code>.</li>
+                    <li><code>SET DEFAULT</code> uses each child column's persisted literal default, or NULL when no explicit default exists. The resulting tuple must satisfy nullability, checks, and uniqueness; a fully non-NULL tuple must also match a parent, while any NULL component satisfies MATCH SIMPLE.</li>
+                    <li>Deferred constraints and MATCH FULL/PARTIAL are not implemented yet.</li>
                 </ul>
 
                 <h3>Will older databases automatically show foreign keys after I upgrade?</h3>

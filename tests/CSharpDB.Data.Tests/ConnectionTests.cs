@@ -395,6 +395,60 @@ public class ConnectionTests : IDisposable
     }
 
     [Fact]
+    public async Task GetSchema_ForeignKeys_ReturnsFullImmediateActionMatrix()
+    {
+        await using var conn = new CSharpDbConnection($"Data Source={_dbPath}");
+        await conn.OpenAsync(Ct);
+
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText =
+            "CREATE TABLE action_parents (id INTEGER PRIMARY KEY);";
+        await cmd.ExecuteNonQueryAsync(Ct);
+        cmd.CommandText =
+            """
+            CREATE TABLE action_children (
+                id INTEGER PRIMARY KEY,
+                restrict_id INTEGER REFERENCES action_parents(id)
+                    ON DELETE RESTRICT ON UPDATE RESTRICT,
+                no_action_id INTEGER REFERENCES action_parents(id)
+                    ON DELETE NO ACTION ON UPDATE NO ACTION,
+                cascade_id INTEGER REFERENCES action_parents(id)
+                    ON DELETE CASCADE ON UPDATE CASCADE,
+                set_null_id INTEGER REFERENCES action_parents(id)
+                    ON DELETE SET NULL ON UPDATE SET NULL,
+                set_default_id INTEGER DEFAULT 1
+                    REFERENCES action_parents(id)
+                    ON DELETE SET DEFAULT ON UPDATE SET DEFAULT
+            );
+            """;
+        await cmd.ExecuteNonQueryAsync(Ct);
+
+        Dictionary<string, DataRow> byColumn = conn.GetSchema(
+                "ForeignKeys",
+                [null, null, "action_children", null])
+            .Rows
+            .Cast<DataRow>()
+            .ToDictionary(
+                row => (string)row["COLUMN_NAME"],
+                StringComparer.Ordinal);
+        Assert.Equal(5, byColumn.Count);
+
+        foreach ((string columnName, string action) in
+                 new[]
+                 {
+                     ("restrict_id", "RESTRICT"),
+                     ("no_action_id", "NO ACTION"),
+                     ("cascade_id", "CASCADE"),
+                     ("set_null_id", "SET NULL"),
+                     ("set_default_id", "SET DEFAULT"),
+                 })
+        {
+            Assert.Equal(action, byColumn[columnName]["DELETE_RULE"]);
+            Assert.Equal(action, byColumn[columnName]["UPDATE_RULE"]);
+        }
+    }
+
+    [Fact]
     public async Task GetSchema_ForeignKeys_ReturnsOrderedCompositeColumnPairs()
     {
         await using var conn = new CSharpDbConnection($"Data Source={_dbPath}");

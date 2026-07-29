@@ -22,6 +22,14 @@ public sealed class ExceptionHandlingMiddleware
         {
             await _next(context);
         }
+        catch (BadHttpRequestException ex)
+        {
+            _logger.LogWarning(ex, "Invalid HTTP request");
+            await WriteErrorResponse(
+                context,
+                (HttpStatusCode)ex.StatusCode,
+                ex.Message);
+        }
         catch (ArgumentException ex)
         {
             _logger.LogWarning(ex, "Validation error");

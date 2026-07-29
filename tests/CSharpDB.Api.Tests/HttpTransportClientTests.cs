@@ -1037,6 +1037,53 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task HttpTransport_MapsFullImmediateForeignKeyActionMatrix()
+    {
+        SqlExecutionResult create = await _client.ExecuteSqlAsync(
+            """
+            CREATE TABLE http_action_parents (id INTEGER PRIMARY KEY);
+            CREATE TABLE http_action_children (
+                id INTEGER PRIMARY KEY,
+                restrict_id INTEGER REFERENCES http_action_parents(id)
+                    ON DELETE RESTRICT ON UPDATE RESTRICT,
+                no_action_id INTEGER REFERENCES http_action_parents(id)
+                    ON DELETE NO ACTION ON UPDATE NO ACTION,
+                cascade_id INTEGER REFERENCES http_action_parents(id)
+                    ON DELETE CASCADE ON UPDATE CASCADE,
+                set_null_id INTEGER REFERENCES http_action_parents(id)
+                    ON DELETE SET NULL ON UPDATE SET NULL,
+                set_default_id INTEGER DEFAULT 1
+                    REFERENCES http_action_parents(id)
+                    ON DELETE SET DEFAULT ON UPDATE SET DEFAULT
+            );
+            """,
+            Ct);
+        Assert.Null(create.Error);
+
+        TableSchema schema = Assert.IsType<TableSchema>(
+            await _client.GetTableSchemaAsync("http_action_children", Ct));
+        Dictionary<string, ForeignKeyDefinition> byColumn =
+            schema.ForeignKeys.ToDictionary(
+                foreignKey => foreignKey.ColumnName,
+                StringComparer.Ordinal);
+        Assert.Equal(5, byColumn.Count);
+
+        foreach ((string columnName, ForeignKeyOnDeleteAction action) in
+                 new[]
+                 {
+                     ("restrict_id", ForeignKeyOnDeleteAction.Restrict),
+                     ("no_action_id", ForeignKeyOnDeleteAction.NoAction),
+                     ("cascade_id", ForeignKeyOnDeleteAction.Cascade),
+                     ("set_null_id", ForeignKeyOnDeleteAction.SetNull),
+                     ("set_default_id", ForeignKeyOnDeleteAction.SetDefault),
+                 })
+        {
+            Assert.Equal(action, byColumn[columnName].OnDelete);
+            Assert.Equal(action, byColumn[columnName].OnUpdate);
+        }
+    }
+
+    [Fact]
     public async Task HttpTransport_MapsOrderedCompositeForeignKeyMetadata()
     {
         SqlExecutionResult create = await _client.ExecuteSqlAsync(
@@ -1076,7 +1123,10 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
         var create = await _client.ExecuteSqlAsync(
             """
             CREATE TABLE http_migrate_parents (id INTEGER PRIMARY KEY);
-            CREATE TABLE http_migrate_children (id INTEGER PRIMARY KEY, parent_id INTEGER);
+            CREATE TABLE http_migrate_children (
+                id INTEGER PRIMARY KEY,
+                parent_id INTEGER NOT NULL DEFAULT 1
+            );
             INSERT INTO http_migrate_parents VALUES (1);
             INSERT INTO http_migrate_children VALUES (10, 1);
             """,
@@ -1116,7 +1166,8 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
                         ColumnName = "parent_id",
                         ReferencedTableName = "http_migrate_parents",
                         ReferencedColumnName = "id",
-                        OnDelete = ForeignKeyOnDeleteAction.Cascade,
+                        OnDelete = ForeignKeyOnDeleteAction.SetDefault,
+                        OnUpdate = ForeignKeyOnDeleteAction.Cascade,
                     },
                 ],
             },
@@ -1129,7 +1180,79 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
         var schema = await _client.GetTableSchemaAsync("http_migrate_children", Ct);
         Assert.NotNull(schema);
         var foreignKey = Assert.Single(schema!.ForeignKeys);
-        Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
+        Assert.Equal(ForeignKeyOnDeleteAction.SetDefault, foreignKey.OnDelete);
+        Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnUpdate);
+    }
+
+    [Fact]
+    public async Task RestApi_MigrateForeignKeys_AcceptsDefinedNumericReferentialActions()
+    {
+        SqlExecutionResult create = await _client.ExecuteSqlAsync(
+            """
+            CREATE TABLE numeric_parents (id INTEGER PRIMARY KEY);
+            CREATE TABLE numeric_children (
+                id INTEGER PRIMARY KEY,
+                parent_id INTEGER NOT NULL DEFAULT 1
+            );
+            """,
+            Ct);
+        Assert.Null(create.Error);
+
+        using var content = new StringContent(
+            """
+            {
+              "validateOnly": true,
+              "constraints": [
+                {
+                  "tableName": "numeric_children",
+                  "columnName": "parent_id",
+                  "referencedTableName": "numeric_parents",
+                  "referencedColumnName": "id",
+                  "onDelete": 4,
+                  "onUpdate": 2
+                }
+              ]
+            }
+            """,
+            Encoding.UTF8,
+            "application/json");
+
+        using HttpResponseMessage response = await _httpClient.PostAsync(
+            "/api/maintenance/migrate-foreign-keys",
+            content,
+            Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task RestApi_MigrateForeignKeys_RejectsUndefinedNumericReferentialActions()
+    {
+        using var content = new StringContent(
+            """
+            {
+              "validateOnly": true,
+              "constraints": [
+                {
+                  "tableName": "undefined_numeric_children",
+                  "columnName": "parent_id",
+                  "referencedTableName": "undefined_numeric_parents",
+                  "referencedColumnName": "id",
+                  "onDelete": 99,
+                  "onUpdate": "restrict"
+                }
+              ]
+            }
+            """,
+            Encoding.UTF8,
+            "application/json");
+
+        using HttpResponseMessage response = await _httpClient.PostAsync(
+            "/api/maintenance/migrate-foreign-keys",
+            content,
+            Ct);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
     [Fact]

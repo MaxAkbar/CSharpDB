@@ -222,13 +222,13 @@ public sealed class DatabaseMaintenanceTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task MigrateForeignKeysAsync_RejectsActionsOutsideCurrentExecutionSlice()
+    public async Task MigrateForeignKeysAsync_ValidatesPhase3ReferentialActions()
     {
         await _client.ExecuteSqlAsync(
             "CREATE TABLE action_parents (id INTEGER PRIMARY KEY);",
             Ct);
         await _client.ExecuteSqlAsync(
-            "CREATE TABLE action_children (id INTEGER PRIMARY KEY, required_parent_id INTEGER NOT NULL, default_parent_id INTEGER, update_parent_id INTEGER);",
+            "CREATE TABLE action_children (id INTEGER PRIMARY KEY, required_parent_id INTEGER NOT NULL, default_parent_id INTEGER DEFAULT 2, update_parent_id INTEGER);",
             Ct);
 
         async Task<CSharpDbException> RejectAsync(
@@ -266,23 +266,91 @@ public sealed class DatabaseMaintenanceTests : IAsyncLifetime
             nonNullable.Message,
             StringComparison.OrdinalIgnoreCase);
 
-        CSharpDbException setDefault = await RejectAsync(
-            "default_parent_id",
-            onDelete: ClientModels.ForeignKeyOnDeleteAction.SetDefault);
-        Assert.Equal(ErrorCode.SyntaxError, setDefault.Code);
-        Assert.Contains(
-            "ON DELETE",
-            setDefault.Message,
-            StringComparison.OrdinalIgnoreCase);
+        foreach (ClientModels.ForeignKeyOnDeleteAction action in
+                 Enum.GetValues<ClientModels.ForeignKeyOnDeleteAction>())
+        {
+            ClientModels.ForeignKeyMigrationResult result =
+                await _client.MigrateForeignKeysAsync(
+                    new ClientModels.ForeignKeyMigrationRequest
+                    {
+                        ValidateOnly = true,
+                        Constraints =
+                        [
+                            new ClientModels.ForeignKeyMigrationConstraintSpec
+                            {
+                                TableName = "action_children",
+                                ColumnName = "default_parent_id",
+                                ReferencedTableName = "action_parents",
+                                ReferencedColumnName = "id",
+                                OnDelete = action,
+                                OnUpdate = action,
+                            },
+                        ],
+                    },
+                    Ct);
 
-        CSharpDbException updateCascade = await RejectAsync(
-            "update_parent_id",
-            onUpdate: ClientModels.ForeignKeyOnDeleteAction.Cascade);
-        Assert.Equal(ErrorCode.SyntaxError, updateCascade.Code);
-        Assert.Contains(
-            "ON UPDATE",
-            updateCascade.Message,
-            StringComparison.OrdinalIgnoreCase);
+            Assert.True(result.Succeeded);
+            ClientModels.ForeignKeyMigrationAppliedConstraint applied =
+                Assert.Single(result.AppliedConstraints);
+            Assert.Equal(action, applied.OnDelete);
+            Assert.Equal(action, applied.OnUpdate);
+        }
+    }
+
+    [Fact]
+    public async Task MigrateForeignKeysAsync_RejectsUndefinedReferentialActions()
+    {
+        await _client.DisposeAsync();
+
+        async Task<CSharpDbException> RejectAsync(
+            ForeignKeyOnDeleteAction onDelete,
+            ForeignKeyOnDeleteAction onUpdate) =>
+            await Assert.ThrowsAsync<CSharpDbException>(
+                async () => await DatabaseMaintenanceCoordinator
+                    .MigrateForeignKeysAsync(
+                        _dbPath,
+                        new DatabaseForeignKeyMigrationRequest
+                        {
+                            ValidateOnly = true,
+                            Constraints =
+                            [
+                                new DatabaseForeignKeyMigrationConstraintSpec
+                                {
+                                    TableName = "action_children",
+                                    ColumnName = "parent_id",
+                                    ReferencedTableName = "action_parents",
+                                    ReferencedColumnName = "id",
+                                    OnDelete = onDelete,
+                                    OnUpdate = onUpdate,
+                                },
+                            ],
+                        },
+                        Ct));
+
+        try
+        {
+            CSharpDbException invalidDelete = await RejectAsync(
+                (ForeignKeyOnDeleteAction)99,
+                ForeignKeyOnDeleteAction.Restrict);
+            Assert.Equal(ErrorCode.SyntaxError, invalidDelete.Code);
+            Assert.Contains(
+                "ON DELETE",
+                invalidDelete.Message,
+                StringComparison.OrdinalIgnoreCase);
+
+            CSharpDbException invalidUpdate = await RejectAsync(
+                ForeignKeyOnDeleteAction.Restrict,
+                (ForeignKeyOnDeleteAction)99);
+            Assert.Equal(ErrorCode.SyntaxError, invalidUpdate.Code);
+            Assert.Contains(
+                "ON UPDATE",
+                invalidUpdate.Message,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            _client = CreateClient();
+        }
     }
 
     [Fact]

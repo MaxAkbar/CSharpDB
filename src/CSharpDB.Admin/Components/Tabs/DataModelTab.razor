@@ -376,10 +376,14 @@
                             <option>NO ACTION</option>
                             <option>CASCADE</option>
                             <option disabled="@(!CanSelectSetNull)">SET NULL</option>
+                            <option disabled="@(!CanSelectSetDefault)">SET DEFAULT</option>
                         </select>
                         <select class="schema-input" @bind="_relationshipOnUpdate">
                             <option>RESTRICT</option>
                             <option>NO ACTION</option>
+                            <option>CASCADE</option>
+                            <option disabled="@(!CanSelectSetNull)">SET NULL</option>
+                            <option disabled="@(!CanSelectSetDefault)">SET DEFAULT</option>
                         </select>
                         <button class="toolbar-btn"
                                 disabled="@(!CanStageRelationship)"
@@ -553,8 +557,11 @@
         && FindNode(_relationshipRightTable) is { Kind: DataModelNodeKind.Table }
         && RelationshipLeftColumns.Any(column => string.Equals(column.Name, _relationshipLeftColumn, StringComparison.OrdinalIgnoreCase))
         && RelationshipRightColumns.Any(column => string.Equals(column.Name, _relationshipRightColumn, StringComparison.OrdinalIgnoreCase))
-        && DataModelRelationshipRules.IsDeleteActionCompatible(
+        && DataModelRelationshipRules.IsActionCompatible(
             _relationshipOnDelete,
+            SelectedRelationshipLeftColumn)
+        && DataModelRelationshipRules.IsActionCompatible(
+            _relationshipOnUpdate,
             SelectedRelationshipLeftColumn)
         && !_state.Relationships.Any(relationship =>
             string.Equals(relationship.LeftTable, _relationshipLeftTable, StringComparison.OrdinalIgnoreCase) &&
@@ -570,8 +577,13 @@
                 StringComparison.OrdinalIgnoreCase));
 
     private bool CanSelectSetNull =>
-        DataModelRelationshipRules.IsDeleteActionCompatible(
+        DataModelRelationshipRules.IsActionCompatible(
             "SET NULL",
+            SelectedRelationshipLeftColumn);
+
+    private bool CanSelectSetDefault =>
+        DataModelRelationshipRules.IsActionCompatible(
+            "SET DEFAULT",
             SelectedRelationshipLeftColumn);
 
     private bool HasPendingDropForSelectedRelationship =>

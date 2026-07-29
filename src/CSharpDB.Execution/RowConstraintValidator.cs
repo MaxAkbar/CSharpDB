@@ -28,7 +28,13 @@ internal static class RowConstraintValidator
                     $"Constraint name '{foreignKeyName}' is specified multiple times on table '{schema.TableName}'.");
             }
 
-            if (foreignKey.OnDelete != ForeignKeyOnDeleteAction.SetNull)
+            bool requiresSetNull =
+                foreignKey.OnDelete == ForeignKeyOnDeleteAction.SetNull ||
+                foreignKey.OnUpdate == ForeignKeyOnDeleteAction.SetNull;
+            bool requiresSetDefault =
+                foreignKey.OnDelete == ForeignKeyOnDeleteAction.SetDefault ||
+                foreignKey.OnUpdate == ForeignKeyOnDeleteAction.SetDefault;
+            if (!requiresSetNull && !requiresSetDefault)
                 continue;
 
             IReadOnlyList<string> childColumnNames =
@@ -56,11 +62,24 @@ internal static class RowConstraintValidator
                                 column,
                                 childColumn.Name,
                                 StringComparison.OrdinalIgnoreCase)));
-                if (!childColumn.Nullable || isPrimaryKeyColumn)
+                if (requiresSetNull &&
+                    (!childColumn.Nullable || isPrimaryKeyColumn))
                 {
                     throw new CSharpDbException(
                         ErrorCode.ConstraintViolation,
                         $"Foreign key SET NULL action on table '{schema.TableName}' requires every child column to be nullable and outside the primary key; column '{childColumn.Name}' is not eligible.");
+                }
+
+                if (requiresSetDefault)
+                {
+                    DbValue defaultValue = EvaluateDefault(childColumn, schema);
+                    if (defaultValue.IsNull &&
+                        (!childColumn.Nullable || isPrimaryKeyColumn))
+                    {
+                        throw new CSharpDbException(
+                            ErrorCode.ConstraintViolation,
+                            $"Foreign key SET DEFAULT action on table '{schema.TableName}' requires child column '{childColumn.Name}' to have a non-NULL literal default or be nullable and outside the primary key.");
+                    }
                 }
             }
         }

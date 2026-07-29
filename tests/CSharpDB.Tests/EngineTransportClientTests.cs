@@ -354,6 +354,71 @@ public sealed class EngineTransportClientTests
     }
 
     [Fact]
+    public async Task GetTableSchemaAsync_MapsFullImmediateForeignKeyActionMatrix()
+    {
+        string dbPath = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb_engine_transport_fk_actions_{Guid.NewGuid():N}.db");
+
+        try
+        {
+            await using var client = new EngineTransportClient(dbPath);
+            SqlExecutionResult create = await client.ExecuteSqlAsync(
+                """
+                CREATE TABLE transport_action_parents (id INTEGER PRIMARY KEY);
+                CREATE TABLE transport_action_children (
+                    id INTEGER PRIMARY KEY,
+                    restrict_id INTEGER REFERENCES transport_action_parents(id)
+                        ON DELETE RESTRICT ON UPDATE RESTRICT,
+                    no_action_id INTEGER REFERENCES transport_action_parents(id)
+                        ON DELETE NO ACTION ON UPDATE NO ACTION,
+                    cascade_id INTEGER REFERENCES transport_action_parents(id)
+                        ON DELETE CASCADE ON UPDATE CASCADE,
+                    set_null_id INTEGER REFERENCES transport_action_parents(id)
+                        ON DELETE SET NULL ON UPDATE SET NULL,
+                    set_default_id INTEGER DEFAULT 1
+                        REFERENCES transport_action_parents(id)
+                        ON DELETE SET DEFAULT ON UPDATE SET DEFAULT
+                );
+                """,
+                TestContext.Current.CancellationToken);
+            Assert.Null(create.Error);
+
+            CSharpDB.Client.Models.TableSchema schema =
+                Assert.IsType<CSharpDB.Client.Models.TableSchema>(
+                    await client.GetTableSchemaAsync(
+                        "transport_action_children",
+                        TestContext.Current.CancellationToken));
+            Dictionary<string, ForeignKeyDefinition> byColumn =
+                schema.ForeignKeys.ToDictionary(
+                    foreignKey => foreignKey.ColumnName,
+                    StringComparer.Ordinal);
+            Assert.Equal(5, byColumn.Count);
+
+            foreach ((string columnName, ForeignKeyOnDeleteAction action) in
+                     new[]
+                     {
+                         ("restrict_id", ForeignKeyOnDeleteAction.Restrict),
+                         ("no_action_id", ForeignKeyOnDeleteAction.NoAction),
+                         ("cascade_id", ForeignKeyOnDeleteAction.Cascade),
+                         ("set_null_id", ForeignKeyOnDeleteAction.SetNull),
+                         ("set_default_id", ForeignKeyOnDeleteAction.SetDefault),
+                     })
+            {
+                Assert.Equal(action, byColumn[columnName].OnDelete);
+                Assert.Equal(action, byColumn[columnName].OnUpdate);
+            }
+        }
+        finally
+        {
+            if (File.Exists(dbPath))
+                File.Delete(dbPath);
+            if (File.Exists(dbPath + ".wal"))
+                File.Delete(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
     public async Task ReleaseCachedDatabaseAsync_CancellationKeepsPendingOpenCached()
     {
         string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_engine_transport_{Guid.NewGuid():N}.db");

@@ -871,12 +871,10 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
             throw new InvalidOperationException("Foreign keys require equal, non-empty child and principal column lists.");
         ValidateReferentialAction(
             operation.OnDelete,
-            "DELETE",
-            allowSetNull: true);
+            "DELETE");
         ValidateReferentialAction(
             operation.OnUpdate,
-            "UPDATE",
-            allowSetNull: false);
+            "UPDATE");
 
         CSharpDbProviderValidation.ValidateSimpleIdentifier(operation.Table, "Table name");
         CSharpDbProviderValidation.ValidateSimpleIdentifier(operation.Name, "Foreign key name");
@@ -889,13 +887,13 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
 
     private static void ValidateReferentialAction(
         ReferentialAction action,
-        string operation,
-        bool allowSetNull)
+        string operation)
     {
         if (action is ReferentialAction.NoAction
             or ReferentialAction.Restrict
-            || (operation == "DELETE" && action == ReferentialAction.Cascade)
-            || (allowSetNull && action == ReferentialAction.SetNull))
+            or ReferentialAction.Cascade
+            or ReferentialAction.SetNull
+            or ReferentialAction.SetDefault)
         {
             return;
         }

@@ -55,6 +55,19 @@ public sealed class CSharpDbTargetCapabilityEvaluatorTests
                     "cap:table:system",
                     [Facet("kind", "primary")],
                     ["cap:column:system:id"]),
+                CatalogObject("cap:table:safe-default", MigrationObjectKind.Table, "Safe Defaults", "syn:ns:main"),
+                Column(
+                    "cap:column:safe-default:value",
+                    "SafeValue",
+                    "INT64",
+                    "signedInteger",
+                    "cap:table:safe-default",
+                    Facet("nullable", "false"),
+                    Facet("hasDefault", "true"),
+                    Facet("defaultKind", "typed-literal"),
+                    Facet("defaultType", "integer"),
+                    Facet("defaultValue", "-7"),
+                    Facet("defaultExpression", "-7")),
                 CatalogObject("cap:table:unsafe-default", MigrationObjectKind.Table, "Unsafe Defaults", "syn:ns:main"),
                 Column(
                     "cap:column:unsafe-default:value",
@@ -65,6 +78,32 @@ public sealed class CSharpDbTargetCapabilityEvaluatorTests
                     Facet("nullable", "true"),
                     Facet("defaultKind", "expression"),
                     Facet("defaultExpression", "current_user()")),
+                Column(
+                    "cap:column:unsafe-default:malformed",
+                    "MalformedValue",
+                    "INT64",
+                    "signedInteger",
+                    "cap:table:unsafe-default",
+                    Facet("nullable", "true"),
+                    Facet("hasDefault", "true"),
+                    Facet("defaultKind", "typed-literal"),
+                    Facet("defaultType", "integer"),
+                    Facet("defaultValue", "seven"),
+                    Facet("defaultExpression", "seven")),
+                Column(
+                    "cap:column:unsafe-default:tampered",
+                    "TamperedValue",
+                    "INT64",
+                    "signedInteger",
+                    "cap:table:unsafe-default",
+                    Facet("nullable", "true"),
+                    Facet("hasDefault", "true"),
+                    Facet("defaultKind", "typed-literal"),
+                    Facet("defaultType", "integer"),
+                    Facet("defaultValue", "7"),
+                    Facet(
+                        "defaultExpression",
+                        "7); DROP TABLE private_data; --")),
             ],
         };
 
@@ -74,10 +113,21 @@ public sealed class CSharpDbTargetCapabilityEvaluatorTests
         Assert.True(Object(plan, "cap:column:system:id").Included);
         Assert.True(Object(plan, "cap:column:system:stamp").Included);
         Assert.True(Object(plan, "cap:key:system:pk").Included);
+        Assert.True(Object(
+            plan,
+            "cap:column:safe-default:value").Included);
 
         MigrationPlanObject unsafeDefault = Object(plan, "cap:column:unsafe-default:value");
         Assert.False(unsafeDefault.Included);
         Assert.Contains("CSDB-COLUMN-DEFAULT-001", unsafeDefault.ExclusionReason, StringComparison.Ordinal);
+        AssertExcludedBy(
+            plan,
+            "cap:column:unsafe-default:malformed",
+            "CSDB-COLUMN-DEFAULT-001");
+        AssertExcludedBy(
+            plan,
+            "cap:column:unsafe-default:tampered",
+            "CSDB-COLUMN-DEFAULT-001");
         Assert.False(Object(plan, "cap:table:unsafe-default").Included);
     }
 
@@ -153,7 +203,7 @@ public sealed class CSharpDbTargetCapabilityEvaluatorTests
     }
 
     [Fact]
-    public async Task Planner_AdmitsCurrentReferentialActionsAndRequiresNullableSetNullChildren()
+    public async Task Planner_AdmitsPhase3ActionsAndProvesMutatingChildEligibility()
     {
         MigrationCatalog source = await InspectAsync();
         MigrationCatalogObject childColumn = source.Objects.Single(
@@ -174,8 +224,22 @@ public sealed class CSharpDbTargetCapabilityEvaluatorTests
                                     !string.Equals(
                                         facet.Name,
                                         "nullable",
+                                        StringComparison.Ordinal) &&
+                                    !facet.Name.StartsWith(
+                                        "default",
+                                        StringComparison.Ordinal) &&
+                                    !string.Equals(
+                                        facet.Name,
+                                        "hasDefault",
                                         StringComparison.Ordinal)),
                                 Facet("nullable", "true"),
+                                Facet("hasDefault", "true"),
+                                Facet(
+                                    "defaultKind",
+                                    "typed-literal"),
+                                Facet("defaultType", "integer"),
+                                Facet("defaultValue", "1"),
+                                Facet("defaultExpression", "1"),
                             ],
                         }
                         : item),
@@ -186,6 +250,42 @@ public sealed class CSharpDbTargetCapabilityEvaluatorTests
                     [
                         Facet("onDelete", "set-null"),
                         Facet("onUpdate", "no-action"),
+                    ],
+                },
+                foreignKey with
+                {
+                    ObjectId = "cap:fk:orders:update-set-null",
+                    Facets =
+                    [
+                        Facet("onDelete", "restrict"),
+                        Facet("onUpdate", "set-null"),
+                    ],
+                },
+                foreignKey with
+                {
+                    ObjectId = "cap:fk:orders:delete-set-default",
+                    Facets =
+                    [
+                        Facet("onDelete", "set-default"),
+                        Facet("onUpdate", "restrict"),
+                    ],
+                },
+                foreignKey with
+                {
+                    ObjectId = "cap:fk:orders:update-set-default",
+                    Facets =
+                    [
+                        Facet("onDelete", "restrict"),
+                        Facet("onUpdate", "set-default"),
+                    ],
+                },
+                foreignKey with
+                {
+                    ObjectId = "cap:fk:orders:update-cascade",
+                    Facets =
+                    [
+                        Facet("onDelete", "restrict"),
+                        Facet("onUpdate", "cascade"),
                     ],
                 },
                 foreignKey with
@@ -203,14 +303,41 @@ public sealed class CSharpDbTargetCapabilityEvaluatorTests
         MigrationPlan supported = new MigrationPlanner().CreatePlan(catalog);
 
         Assert.True(Object(supported, "cap:fk:orders:set-null").Included);
+        Assert.True(Object(
+            supported,
+            "cap:fk:orders:update-set-null").Included);
+        Assert.True(Object(
+            supported,
+            "cap:fk:orders:delete-set-default").Included);
+        Assert.True(Object(
+            supported,
+            "cap:fk:orders:update-set-default").Included);
+        Assert.True(Object(
+            supported,
+            "cap:fk:orders:update-cascade").Included);
         Assert.True(Object(supported, "cap:fk:orders:no-action").Included);
 
+        MigrationCatalogObject supportedChild =
+            catalog.Objects.Single(
+                item => item.ObjectId == childColumn.ObjectId);
         MigrationCatalog nonNullableCatalog = catalog with
         {
             Objects = catalog.Objects
                 .Select(item =>
                     item.ObjectId == childColumn.ObjectId
-                        ? childColumn
+                        ? supportedChild with
+                        {
+                            Facets =
+                            [
+                                .. supportedChild.Facets.Where(
+                                    facet =>
+                                        !string.Equals(
+                                            facet.Name,
+                                            "nullable",
+                                            StringComparison.Ordinal)),
+                                Facet("nullable", "false"),
+                            ],
+                        }
                         : item)
                 .ToArray(),
         };
@@ -247,11 +374,134 @@ public sealed class CSharpDbTargetCapabilityEvaluatorTests
             primaryKey,
             "cap:fk:orders:set-null",
             "CSDB-FOREIGNKEY-001");
+        AssertExcludedBy(
+            primaryKey,
+            "cap:fk:orders:update-set-null",
+            "CSDB-FOREIGNKEY-001");
         Assert.Contains(
             "primary key",
             Object(primaryKey, "cap:fk:orders:set-null").ExclusionReason,
             StringComparison.OrdinalIgnoreCase);
         Assert.True(Object(primaryKey, "cap:fk:orders:no-action").Included);
+
+        MigrationCatalog implicitNullDefaultCatalog =
+            catalog with
+            {
+                Objects = catalog.Objects
+                    .Select(item =>
+                        item.ObjectId == childColumn.ObjectId
+                            ? supportedChild with
+                            {
+                                Facets =
+                                [
+                                    .. supportedChild.Facets.Where(
+                                        facet =>
+                                            !facet.Name.StartsWith(
+                                                "default",
+                                                StringComparison.Ordinal) &&
+                                            !string.Equals(
+                                                facet.Name,
+                                                "hasDefault",
+                                                StringComparison.Ordinal)),
+                                    Facet("hasDefault", "false"),
+                                ],
+                            }
+                            : item)
+                    .ToArray(),
+            };
+        MigrationPlan implicitNullDefault =
+            new MigrationPlanner().CreatePlan(
+                implicitNullDefaultCatalog);
+        Assert.True(Object(
+            implicitNullDefault,
+            "cap:fk:orders:delete-set-default").Included);
+        Assert.True(Object(
+            implicitNullDefault,
+            "cap:fk:orders:update-set-default").Included);
+
+        MigrationCatalog missingDefaultProofCatalog =
+            implicitNullDefaultCatalog with
+            {
+                Objects = implicitNullDefaultCatalog.Objects
+                    .Select(item =>
+                        item.ObjectId == childColumn.ObjectId
+                            ? item with
+                            {
+                                Facets =
+                                [
+                                    .. item.Facets.Where(facet =>
+                                        !string.Equals(
+                                            facet.Name,
+                                            "hasDefault",
+                                            StringComparison.Ordinal)),
+                                ],
+                            }
+                            : item)
+                    .ToArray(),
+            };
+        MigrationPlan missingDefaultProof =
+            new MigrationPlanner().CreatePlan(
+                missingDefaultProofCatalog);
+        AssertExcludedBy(
+            missingDefaultProof,
+            "cap:fk:orders:delete-set-default",
+            "CSDB-FOREIGNKEY-001");
+        Assert.Contains(
+            "explicitly prove",
+            Object(
+                missingDefaultProof,
+                "cap:fk:orders:delete-set-default")
+                .ExclusionReason,
+            StringComparison.OrdinalIgnoreCase);
+
+        MigrationCatalog nullOnNonNullableCatalog =
+            catalog with
+            {
+                Objects = catalog.Objects
+                    .Select(item =>
+                        item.ObjectId == childColumn.ObjectId
+                            ? supportedChild with
+                            {
+                                Facets =
+                                [
+                                    .. supportedChild.Facets.Where(
+                                        facet =>
+                                            !string.Equals(
+                                                facet.Name,
+                                                "nullable",
+                                                StringComparison.Ordinal) &&
+                                            !facet.Name.StartsWith(
+                                                "default",
+                                                StringComparison.Ordinal) &&
+                                            !string.Equals(
+                                                facet.Name,
+                                                "hasDefault",
+                                                StringComparison.Ordinal)),
+                                    Facet("nullable", "false"),
+                                    Facet("hasDefault", "true"),
+                                    Facet("defaultKind", "null"),
+                                    Facet(
+                                        "defaultExpression",
+                                        "NULL"),
+                                ],
+                            }
+                            : item)
+                    .ToArray(),
+            };
+        MigrationPlan nullOnNonNullable =
+            new MigrationPlanner().CreatePlan(
+                nullOnNonNullableCatalog);
+        AssertExcludedBy(
+            nullOnNonNullable,
+            "cap:fk:orders:update-set-default",
+            "CSDB-FOREIGNKEY-001");
+        Assert.Contains(
+            "nullable",
+            Object(
+                nullOnNonNullable,
+                "cap:fk:orders:update-set-default")
+                .ExclusionReason,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

@@ -177,16 +177,16 @@
                                      [DEFAULT literal]
                                      [[CONSTRAINT name] CHECK (row_local_expression)]
                                      [REFERENCES other_table(column)
-                                         [ON DELETE RESTRICT | NO ACTION | CASCADE | SET NULL]
-                                         [ON UPDATE RESTRICT | NO ACTION]],
+                                         [ON DELETE RESTRICT | NO ACTION | CASCADE | SET NULL | SET DEFAULT]
+                                         [ON UPDATE RESTRICT | NO ACTION | CASCADE | SET NULL | SET DEFAULT]],
                     ...,
                     [[CONSTRAINT name] CHECK (row_local_expression)],
                     [[CONSTRAINT name] PRIMARY KEY (column1 [, column2, ...])],
                     [[CONSTRAINT name] UNIQUE (column1 [, column2, ...])],
                     [[CONSTRAINT name] FOREIGN KEY (column1 [, column2, ...])
                         REFERENCES other_table(column1 [, column2, ...])
-                        [ON DELETE RESTRICT | NO ACTION | CASCADE | SET NULL]
-                        [ON UPDATE RESTRICT | NO ACTION]]
+                        [ON DELETE RESTRICT | NO ACTION | CASCADE | SET NULL | SET DEFAULT]
+                        [ON UPDATE RESTRICT | NO ACTION | CASCADE | SET NULL | SET DEFAULT]]
                 );
                 </code></pre></div>
                 <p><strong>Constraints:</strong></p>
@@ -257,12 +257,32 @@
                 <tr>
                 <td><code>ON DELETE SET NULL</code></td>
                 <td>Foreign key</td>
-                <td>Sets every child-key column to NULL when the parent is deleted; all child-key columns must be nullable</td>
+                <td>Sets every child-key column to NULL when the parent is deleted; all child-key columns must be nullable and outside the primary key</td>
+                </tr>
+                <tr>
+                <td><code>ON DELETE SET DEFAULT</code></td>
+                <td>Foreign key</td>
+                <td>Sets every child-key column to its persisted literal default when the parent is deleted. A column without an explicit default uses NULL, so it must be nullable and outside the primary key. The resulting tuple is revalidated immediately; a fully non-NULL tuple must match a parent, while any NULL component satisfies MATCH SIMPLE.</td>
                 </tr>
                 <tr>
                 <td><code>ON UPDATE RESTRICT</code> / <code>NO ACTION</code></td>
                 <td>Foreign key</td>
                 <td>Prevents a referenced parent key from changing while matching children exist; <code>NO ACTION</code> remains metadata-distinct</td>
+                </tr>
+                <tr>
+                <td><code>ON UPDATE CASCADE</code></td>
+                <td>Foreign key</td>
+                <td>Copies the ordered new parent-key tuple into matching child rows</td>
+                </tr>
+                <tr>
+                <td><code>ON UPDATE SET NULL</code></td>
+                <td>Foreign key</td>
+                <td>Sets every child-key column to NULL when the referenced parent key changes; all child-key columns must be nullable and outside the primary key</td>
+                </tr>
+                <tr>
+                <td><code>ON UPDATE SET DEFAULT</code></td>
+                <td>Foreign key</td>
+                <td>Sets every child-key column to its persisted literal default when the referenced parent key changes. A column without an explicit default uses NULL, so it must be nullable and outside the primary key. The resulting tuple is revalidated immediately; a fully non-NULL tuple must match a parent, while any NULL component satisfies MATCH SIMPLE.</td>
                 </tr>
                 </tbody>
                 </table>
@@ -287,7 +307,7 @@
                 ALTER TABLE table_name ADD CONSTRAINT constraint_name CHECK (expression);
                 ALTER TABLE table_name ADD CONSTRAINT constraint_name UNIQUE (column_name [, ...]);
                 ALTER TABLE table_name ADD CONSTRAINT constraint_name PRIMARY KEY (column_name [, ...]);
-                ALTER TABLE table_name ADD CONSTRAINT constraint_name FOREIGN KEY (column_name [, ...]) REFERENCES parent_table (column_name [, ...]) [ON DELETE RESTRICT | NO ACTION | CASCADE | SET NULL] [ON UPDATE RESTRICT | NO ACTION];
+                ALTER TABLE table_name ADD CONSTRAINT constraint_name FOREIGN KEY (column_name [, ...]) REFERENCES parent_table (column_name [, ...]) [ON DELETE RESTRICT | NO ACTION | CASCADE | SET NULL | SET DEFAULT] [ON UPDATE RESTRICT | NO ACTION | CASCADE | SET NULL | SET DEFAULT];
                 ALTER TABLE table_name DROP COLUMN column_name;
                 ALTER TABLE table_name DROP CONSTRAINT constraint_name;
                 ALTER TABLE table_name DROP PRIMARY KEY;
@@ -822,9 +842,9 @@
                 <li>Unregistered vendor-specific functions such as <code>STRFTIME</code>, <code>CEIL</code>, and <code>POWER</code></li>
                 <li>Advanced window forms (<code>LAG</code>, <code>LEAD</code>, named windows, and explicit frames)</li>
                 <li>Stored procedures</li>
-                <li><code>ON DELETE SET DEFAULT</code>, mutating <code>ON UPDATE</code> foreign-key actions, deferred constraints, and <code>MATCH FULL</code>/<code>MATCH PARTIAL</code></li>
+                <li>Deferred foreign-key constraints and <code>MATCH FULL</code>/<code>MATCH PARTIAL</code></li>
                 </ul>
-                <p>Current <code>DEFAULT</code> support is limited to typed literals and NULL. <code>CHECK</code> expressions must be deterministic and row-local; parameters, functions, subqueries, qualified references, and cross-column references from a column-scoped CHECK are rejected.</p>
+                <p>Current <code>DEFAULT</code> support is limited to typed literals and NULL. Immediate referential mutations use the normal UPDATE pipeline, including rowversion, triggers, checks, other foreign keys, unique indexes, and transactional rollback. Under MATCH SIMPLE, a <code>SET DEFAULT</code> result with any NULL component satisfies the foreign key; a fully non-NULL result without a matching parent fails without partial changes. <code>CHECK</code> expressions must be deterministic and row-local; parameters, functions, subqueries, qualified references, and cross-column references from a column-scoped CHECK are rejected.</p>
             </div>
         </div>
     </main>

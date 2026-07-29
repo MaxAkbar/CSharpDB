@@ -459,6 +459,78 @@ public sealed class SchemaComparisonServiceTests
     }
 
     [Fact]
+    public async Task RenderCreateTable_RoundTripsPhase3ReferentialActions()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string sourcePath = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb_devops_fk_source_{Guid.NewGuid():N}.db");
+        string targetPath = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb_devops_fk_target_{Guid.NewGuid():N}.db");
+
+        try
+        {
+            await using var source = CSharpDbClient.Create(
+                new CSharpDbClientOptions { DataSource = sourcePath });
+            SqlExecutionResult sourceCreate = await source.ExecuteSqlAsync(
+                """
+                CREATE TABLE devops_parents (id INTEGER PRIMARY KEY);
+                CREATE TABLE devops_children (
+                    id INTEGER PRIMARY KEY,
+                    parent_id INTEGER NOT NULL DEFAULT 1,
+                    CONSTRAINT fk_devops_parent
+                        FOREIGN KEY (parent_id)
+                        REFERENCES devops_parents (id)
+                        ON DELETE SET DEFAULT
+                        ON UPDATE CASCADE
+                );
+                """,
+                ct);
+            Assert.Null(sourceCreate.Error);
+
+            ClientTableSchema parentSchema = Assert.IsType<ClientTableSchema>(
+                await source.GetTableSchemaAsync("devops_parents", ct));
+            ClientTableSchema childSchema = Assert.IsType<ClientTableSchema>(
+                await source.GetTableSchemaAsync("devops_children", ct));
+
+            await using var target = CSharpDbClient.Create(
+                new CSharpDbClientOptions { DataSource = targetPath });
+            SqlExecutionResult targetCreate = await target.ExecuteSqlAsync(
+                SchemaScriptRenderer.RenderCreateTable(parentSchema) +
+                Environment.NewLine +
+                SchemaScriptRenderer.RenderCreateTable(childSchema),
+                ct);
+            Assert.Null(targetCreate.Error);
+
+            ClientTableSchema roundTripped = Assert.IsType<ClientTableSchema>(
+                await target.GetTableSchemaAsync("devops_children", ct));
+            ClientForeignKeyDefinition foreignKey =
+                Assert.Single(roundTripped.ForeignKeys);
+            Assert.Equal(
+                ClientForeignKeyOnDeleteAction.SetDefault,
+                foreignKey.OnDelete);
+            Assert.Equal(
+                ClientForeignKeyOnDeleteAction.Cascade,
+                foreignKey.OnUpdate);
+        }
+        finally
+        {
+            foreach (string path in new[]
+                     {
+                         sourcePath,
+                         sourcePath + ".wal",
+                         targetPath,
+                         targetPath + ".wal",
+                     })
+            {
+                if (File.Exists(path))
+                    File.Delete(path);
+            }
+        }
+    }
+
+    [Fact]
     public async Task RenderCreateTable_RoundTripsDefaultsChecksLogicalKeysAndIdentity()
     {
         var ct = TestContext.Current.CancellationToken;

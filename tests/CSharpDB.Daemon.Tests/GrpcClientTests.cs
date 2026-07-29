@@ -1324,6 +1324,56 @@ public sealed class GrpcClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GrpcClient_MapsFullImmediateForeignKeyActionMatrix()
+    {
+        using var transportClient = CreateGrpcHttpClient();
+        await using var client = CreateGrpcClient(transportClient);
+
+        SqlExecutionResult createResult = await client.ExecuteSqlAsync(
+            """
+            CREATE TABLE grpc_action_parents (id INTEGER PRIMARY KEY);
+            CREATE TABLE grpc_action_children (
+                id INTEGER PRIMARY KEY,
+                restrict_id INTEGER REFERENCES grpc_action_parents(id)
+                    ON DELETE RESTRICT ON UPDATE RESTRICT,
+                no_action_id INTEGER REFERENCES grpc_action_parents(id)
+                    ON DELETE NO ACTION ON UPDATE NO ACTION,
+                cascade_id INTEGER REFERENCES grpc_action_parents(id)
+                    ON DELETE CASCADE ON UPDATE CASCADE,
+                set_null_id INTEGER REFERENCES grpc_action_parents(id)
+                    ON DELETE SET NULL ON UPDATE SET NULL,
+                set_default_id INTEGER DEFAULT 1
+                    REFERENCES grpc_action_parents(id)
+                    ON DELETE SET DEFAULT ON UPDATE SET DEFAULT
+            );
+            """,
+            Ct);
+        Assert.Null(createResult.Error);
+
+        TableSchema schema = Assert.IsType<TableSchema>(
+            await client.GetTableSchemaAsync("grpc_action_children", Ct));
+        Dictionary<string, ForeignKeyDefinition> byColumn =
+            schema.ForeignKeys.ToDictionary(
+                foreignKey => foreignKey.ColumnName,
+                StringComparer.Ordinal);
+        Assert.Equal(5, byColumn.Count);
+
+        foreach ((string columnName, ForeignKeyOnDeleteAction action) in
+                 new[]
+                 {
+                     ("restrict_id", ForeignKeyOnDeleteAction.Restrict),
+                     ("no_action_id", ForeignKeyOnDeleteAction.NoAction),
+                     ("cascade_id", ForeignKeyOnDeleteAction.Cascade),
+                     ("set_null_id", ForeignKeyOnDeleteAction.SetNull),
+                     ("set_default_id", ForeignKeyOnDeleteAction.SetDefault),
+                 })
+        {
+            Assert.Equal(action, byColumn[columnName].OnDelete);
+            Assert.Equal(action, byColumn[columnName].OnUpdate);
+        }
+    }
+
+    [Fact]
     public async Task GrpcClient_MapsOrderedCompositeForeignKeyMetadata()
     {
         using var transportClient = CreateGrpcHttpClient();
@@ -1735,7 +1785,10 @@ public sealed class GrpcClientTests : IAsyncLifetime
         SqlExecutionResult createResult = await client.ExecuteSqlAsync(
             """
             CREATE TABLE grpc_migrate_parents (id INTEGER PRIMARY KEY);
-            CREATE TABLE grpc_migrate_children (id INTEGER PRIMARY KEY, parent_id INTEGER);
+            CREATE TABLE grpc_migrate_children (
+                id INTEGER PRIMARY KEY,
+                parent_id INTEGER NOT NULL DEFAULT 1
+            );
             INSERT INTO grpc_migrate_parents VALUES (1);
             INSERT INTO grpc_migrate_children VALUES (10, 1);
             """,
@@ -1775,7 +1828,8 @@ public sealed class GrpcClientTests : IAsyncLifetime
                         ColumnName = "parent_id",
                         ReferencedTableName = "grpc_migrate_parents",
                         ReferencedColumnName = "id",
-                        OnDelete = ForeignKeyOnDeleteAction.Cascade,
+                        OnDelete = ForeignKeyOnDeleteAction.SetDefault,
+                        OnUpdate = ForeignKeyOnDeleteAction.Cascade,
                     },
                 ],
             },
@@ -1788,7 +1842,8 @@ public sealed class GrpcClientTests : IAsyncLifetime
         TableSchema? schema = await client.GetTableSchemaAsync("grpc_migrate_children", Ct);
         Assert.NotNull(schema);
         var foreignKey = Assert.Single(schema!.ForeignKeys);
-        Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
+        Assert.Equal(ForeignKeyOnDeleteAction.SetDefault, foreignKey.OnDelete);
+        Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnUpdate);
     }
 
     [Fact]

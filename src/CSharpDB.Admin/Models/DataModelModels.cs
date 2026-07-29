@@ -48,6 +48,7 @@ public sealed class DataModelColumn
     public bool IsRowVersion { get; set; }
     public bool Nullable { get; set; } = true;
     public string? Collation { get; set; }
+    public string? DefaultSql { get; set; }
     public bool IsForeignKey { get; set; }
     public bool IsIndexed { get; set; }
 }
@@ -95,14 +96,46 @@ public sealed class DataModelPendingOperation
 
 public static class DataModelRelationshipRules
 {
+    public static bool IsActionCompatible(
+        string? action,
+        DataModelColumn? childColumn)
+    {
+        string normalized = action?.Trim().Replace("_", " ", StringComparison.Ordinal)
+            .Replace("-", " ", StringComparison.Ordinal)
+            .ToUpperInvariant() ?? "RESTRICT";
+
+        return normalized switch
+        {
+            "SET NULL" or "SETNULL" =>
+                childColumn is { Nullable: true, IsPrimaryKey: false },
+            "SET DEFAULT" or "SETDEFAULT" =>
+                childColumn is not null &&
+                (HasNonNullDefault(childColumn.DefaultSql) ||
+                 childColumn is { Nullable: true, IsPrimaryKey: false }),
+            _ => true,
+        };
+    }
+
     public static bool IsDeleteActionCompatible(
         string? onDelete,
         DataModelColumn? childColumn) =>
-        !string.Equals(
-            onDelete?.Trim(),
-            "SET NULL",
-            StringComparison.OrdinalIgnoreCase)
-        || childColumn is { Nullable: true, IsPrimaryKey: false };
+        IsActionCompatible(onDelete, childColumn);
+
+    private static bool HasNonNullDefault(string? defaultSql)
+    {
+        if (string.IsNullOrWhiteSpace(defaultSql))
+            return false;
+
+        string normalized = defaultSql.Trim();
+        while (normalized.Length > 1 &&
+               normalized[0] == '(' &&
+               normalized[^1] == ')')
+        {
+            normalized = normalized[1..^1].Trim();
+        }
+
+        return !string.Equals(normalized, "NULL", StringComparison.OrdinalIgnoreCase);
+    }
 }
 
 public enum DataModelPendingOperationKind
@@ -166,6 +199,7 @@ public sealed class DataModelColumnMetadata
     public bool IsRowVersion { get; init; }
     public bool Nullable { get; init; } = true;
     public string? Collation { get; init; }
+    public string? DefaultSql { get; init; }
 }
 
 public sealed class DataModelForeignKeyMetadata

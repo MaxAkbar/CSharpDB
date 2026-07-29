@@ -247,7 +247,12 @@ internal static class CSharpDbMigrationSql
                 throw new InvalidDataException($"Included table '{table.ObjectId}' has no included columns.");
 
             var definitions =
-                new (string Name, string Type, string? Collation, bool Nullable)[
+                new (
+                    string Name,
+                    string Type,
+                    string? Collation,
+                    bool Nullable,
+                    string? DefaultExpression)[
                     columns.Length];
             for (int columnOrdinal = 0;
                  columnOrdinal < columns.Length;
@@ -259,12 +264,14 @@ internal static class CSharpDbMigrationSql
                 MigrationTypeMapping mapping = planned.TypeMappings.Single();
                 if (mapping.TargetType is not DbType targetType || targetType == DbType.Null)
                     throw new InvalidDataException($"Included column '{column.ObjectId}' has no persistent target type.");
-                if (HasFacet(column, "defaultKind") || HasFacet(column, "defaultValue") ||
-                    HasFacet(column, "defaultExpression") || IsTrue(column, "identity") || IsTrue(column, "rowVersion"))
+                if (IsTrue(column, "identity") ||
+                    IsTrue(column, "rowVersion"))
                 {
                     throw new NotSupportedException(
-                        $"Included column '{column.ObjectId}' requires a default, identity, or rowversion lowering that is not in the Phase 2 staged slice.");
+                        $"Included column '{column.ObjectId}' requires identity or rowversion lowering outside the staged slice.");
                 }
+                string? defaultExpression =
+                    ReadLiteralDefault(column, targetType);
 
                 string? collation = Facet(column, "collation");
                 if (!string.IsNullOrWhiteSpace(collation))
@@ -276,7 +283,8 @@ internal static class CSharpDbMigrationSql
                     Quote(planned.TargetName!),
                     TypeName(targetType),
                     collation,
-                    IsNullable(column));
+                    IsNullable(column),
+                    defaultExpression);
             }
 
             AddSqlAction(
@@ -303,6 +311,12 @@ internal static class CSharpDbMigrationSql
                         }
                         if (!definitions[ordinal].Nullable)
                             writer.Append(" NOT NULL");
+                        if (definitions[ordinal].DefaultExpression is
+                            string defaultExpression)
+                        {
+                            writer.Append(" DEFAULT ");
+                            writer.Append(defaultExpression);
+                        }
                     }
                     writer.Append(")");
                 });
@@ -587,9 +601,13 @@ internal static class CSharpDbMigrationSql
             ("DELETE", "cascade") => "CASCADE",
             ("DELETE", "no-action") => "NO ACTION",
             ("DELETE", "set-null") => "SET NULL",
+            ("DELETE", "set-default") => "SET DEFAULT",
+            ("UPDATE", "cascade") => "CASCADE",
             ("UPDATE", "no-action") => "NO ACTION",
+            ("UPDATE", "set-null") => "SET NULL",
+            ("UPDATE", "set-default") => "SET DEFAULT",
             _ => throw new InvalidDataException(
-                $"Included foreign key '{foreignKeyId}' has {operation.ToLowerInvariant()} action '{action}' outside the current Phase 2 execution slice."),
+                $"Included foreign key '{foreignKeyId}' has unknown {operation.ToLowerInvariant()} action '{action}'."),
         };
         return $" ON {operation} {keyword}";
     }
@@ -646,6 +664,83 @@ internal static class CSharpDbMigrationSql
         DbType.Blob => "BLOB",
         _ => throw new InvalidDataException($"Unsupported persistent target type '{type}'."),
     };
+
+    private static string? ReadLiteralDefault(
+        MigrationCatalogObject column,
+        DbType targetType)
+    {
+        bool hasShape = HasFacet(column, "defaultKind") ||
+            HasFacet(column, "defaultType") ||
+            HasFacet(column, "defaultValue") ||
+            HasFacet(column, "defaultExpression");
+        bool? hasDefault = null;
+        if (HasFacet(column, "hasDefault"))
+        {
+            if (!bool.TryParse(
+                    Facet(column, "hasDefault"),
+                    out bool parsed))
+            {
+                throw new InvalidDataException(
+                    $"Included column '{column.ObjectId}' has an invalid hasDefault facet.");
+            }
+            hasDefault = parsed;
+        }
+
+        if (hasDefault == false)
+        {
+            if (hasShape)
+            {
+                throw new InvalidDataException(
+                    $"Included column '{column.ObjectId}' declares hasDefault=false with conflicting default facets.");
+            }
+            return null;
+        }
+        if (hasDefault is null && !hasShape)
+            return null;
+        if (!HasFacet(column, "defaultKind"))
+        {
+            throw new InvalidDataException(
+                $"Included column '{column.ObjectId}' has no proven defaultKind.");
+        }
+
+        string? kind = Facet(column, "defaultKind");
+        string normalizedKind = Normalize(kind);
+        if (normalizedKind == "null" &&
+            (HasFacet(column, "defaultType") ||
+             HasFacet(column, "defaultValue")))
+        {
+            throw new InvalidDataException(
+                $"Included column '{column.ObjectId}' gives a NULL default typed value facets.");
+        }
+        if (normalizedKind == "typed-literal" &&
+            (!HasFacet(column, "defaultType") ||
+             !HasFacet(column, "defaultValue")))
+        {
+            throw new InvalidDataException(
+                $"Included column '{column.ObjectId}' has an incomplete typed literal default.");
+        }
+        if (!CSharpDbLiteralDefaultContract.TryCreate(
+                targetType,
+                kind,
+                Facet(column, "defaultType"),
+                Facet(column, "defaultValue"),
+                out CSharpDbLiteralDefaultDescriptor descriptor,
+                out string reason))
+        {
+            throw new InvalidDataException(
+                $"Included column '{column.ObjectId}' has an unsafe literal default: {reason}");
+        }
+        if (!string.Equals(
+                Facet(column, "defaultExpression"),
+                descriptor.Expression,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                $"Included column '{column.ObjectId}' does not retain the canonical defaultExpression.");
+        }
+
+        return descriptor.Expression;
+    }
 
     private static bool IsNullable(MigrationCatalogObject column) =>
         !bool.TryParse(Facet(column, "nullable"), out bool nullable) || nullable;

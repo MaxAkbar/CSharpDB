@@ -258,8 +258,25 @@ internal static class DdlLowerer
                 valid = false;
                 continue;
             }
-            if (column.DefaultExpression is not null ||
-                column.IsIdentity ||
+            CSharpDbLiteralDefaultDescriptor? literalDefault = null;
+            if (column.DefaultExpression is not null &&
+                !TryLowerLiteralDefault(
+                    column.DefaultExpression,
+                    targetType,
+                    out literalDefault,
+                    out string defaultReason))
+            {
+                AddDiagnostic(
+                    statement,
+                    CSharpDbDdlCompatibilityAnalyzer
+                        .UnsupportedFeatureRuleId,
+                    $"The column default is outside the safe literal proof subset: {defaultReason}",
+                    "Use a compatible INTEGER, REAL, TEXT, BLOB, or NULL literal default.",
+                    diagnostics,
+                    invalidStatements);
+                valid = false;
+            }
+            if (column.IsIdentity ||
                 column.IsRowVersion ||
                 column.CheckConstraints.Count > 0)
             {
@@ -267,7 +284,7 @@ internal static class DdlLowerer
                     statement,
                     CSharpDbDdlCompatibilityAnalyzer
                         .UnsupportedFeatureRuleId,
-                    "The column contains an unproven default, identity, rowversion, or CHECK feature.",
+                    "The column contains an unproven identity, rowversion, or CHECK feature.",
                     "Remove the unproven column feature before retrying.",
                     diagnostics,
                     invalidStatements);
@@ -300,7 +317,8 @@ internal static class DdlLowerer
                 nativeType,
                 logicalType,
                 targetType,
-                normalizedCollation));
+                normalizedCollation,
+                literalDefault));
             model.ColumnsByName.TryAdd(column.Name, model.Columns[^1]);
         }
 
@@ -342,11 +360,40 @@ internal static class DdlLowerer
                     (!primary && column.Column.IsNullable)
                         .ToString()
                         .ToLowerInvariant()),
+                Facet(
+                    "hasDefault",
+                    (column.LiteralDefault is not null)
+                        .ToString()
+                        .ToLowerInvariant()),
             };
             if (column.Collation is not null)
             {
                 facets.Add(
                     Facet("collation", column.Collation));
+            }
+            if (column.LiteralDefault is
+                CSharpDbLiteralDefaultDescriptor literalDefault)
+            {
+                facets.Add(
+                    Facet("defaultKind", literalDefault.Kind));
+                if (literalDefault.LiteralType is not null)
+                {
+                    facets.Add(
+                        Facet(
+                            "defaultType",
+                            literalDefault.LiteralType));
+                }
+                if (literalDefault.Value is not null)
+                {
+                    facets.Add(
+                        Facet(
+                            "defaultValue",
+                            literalDefault.Value));
+                }
+                facets.Add(
+                    Facet(
+                        "defaultExpression",
+                        literalDefault.Expression));
             }
 
             objects.Add(new MigrationCatalogObject
@@ -637,26 +684,34 @@ internal static class DdlLowerer
                     ForeignKeyOnDeleteAction.Restrict or
                     ForeignKeyOnDeleteAction.NoAction or
                     ForeignKeyOnDeleteAction.Cascade or
-                    ForeignKeyOnDeleteAction.SetNull;
+                    ForeignKeyOnDeleteAction.SetNull or
+                    ForeignKeyOnDeleteAction.SetDefault;
             bool supportedUpdateAction =
                 foreignKey.OnUpdate is
                     ForeignKeyOnDeleteAction.Restrict or
-                    ForeignKeyOnDeleteAction.NoAction;
+                    ForeignKeyOnDeleteAction.NoAction or
+                    ForeignKeyOnDeleteAction.Cascade or
+                    ForeignKeyOnDeleteAction.SetNull or
+                    ForeignKeyOnDeleteAction.SetDefault;
             if (!supportedDeleteAction || !supportedUpdateAction)
             {
                 AddDiagnostic(
                     model.Statement,
                     CSharpDbDdlCompatibilityAnalyzer
                         .UnsupportedFeatureRuleId,
-                    "The foreign key uses a referential action outside the current Phase 2 execution slice.",
-                    "Use ON DELETE RESTRICT, NO ACTION, CASCADE, or SET NULL and ON UPDATE RESTRICT or NO ACTION.",
+                    "The foreign key uses an unknown referential action.",
+                    "Use RESTRICT, NO ACTION, CASCADE, SET NULL, or SET DEFAULT.",
                     diagnostics,
                     invalidStatements);
                 continue;
             }
 
-            if (foreignKey.OnDelete ==
-                    ForeignKeyOnDeleteAction.SetNull &&
+            bool requiresSetNull =
+                foreignKey.OnDelete ==
+                    ForeignKeyOnDeleteAction.SetNull ||
+                foreignKey.OnUpdate ==
+                    ForeignKeyOnDeleteAction.SetNull;
+            if (requiresSetNull &&
                 sourceColumns.Any(column =>
                     !column.Column.IsNullable ||
                     model.Keys.Any(key =>
@@ -667,8 +722,37 @@ internal static class DdlLowerer
                     model.Statement,
                     CSharpDbDdlCompatibilityAnalyzer
                         .UnsupportedFeatureRuleId,
-                    "ON DELETE SET NULL requires every child column to be nullable.",
+                    "SET NULL requires every child column to be nullable and outside the primary key.",
                     "Make every child column nullable or use a restrictive or cascading delete action.",
+                    diagnostics,
+                    invalidStatements);
+                continue;
+            }
+
+            bool requiresSetDefault =
+                foreignKey.OnDelete ==
+                    ForeignKeyOnDeleteAction.SetDefault ||
+                foreignKey.OnUpdate ==
+                    ForeignKeyOnDeleteAction.SetDefault;
+            if (requiresSetDefault &&
+                sourceColumns.Any(column =>
+                {
+                    bool primary = model.Keys.Any(key =>
+                        key.Kind == KeyConstraintKind.PrimaryKey &&
+                        key.Columns.Contains(column));
+                    bool effectiveNullable =
+                        column.Column.IsNullable && !primary;
+                    return (column.LiteralDefault is null ||
+                            column.LiteralDefault.Value.ProducesNull) &&
+                        !effectiveNullable;
+                }))
+            {
+                AddDiagnostic(
+                    model.Statement,
+                    CSharpDbDdlCompatibilityAnalyzer
+                        .UnsupportedFeatureRuleId,
+                    "SET DEFAULT requires every child column to have a compatible non-NULL literal default or be nullable when its default resolves to NULL.",
+                    "Add compatible literal defaults, make NULL-defaulted child columns nullable, or choose another referential action.",
                     diagnostics,
                     invalidStatements);
                 continue;
@@ -974,6 +1058,98 @@ internal static class DdlLowerer
         return targetType != DbType.Null;
     }
 
+    private static bool TryLowerLiteralDefault(
+        Expression expression,
+        DbType columnType,
+        out CSharpDbLiteralDefaultDescriptor? descriptor,
+        out string reason)
+    {
+        bool negative = false;
+        LiteralExpression? literal = expression as LiteralExpression;
+        if (expression is UnaryExpression
+            {
+                Op: TokenType.Minus,
+                Operand: LiteralExpression operand
+            })
+        {
+            negative = true;
+            literal = operand;
+        }
+        if (literal is null)
+        {
+            descriptor = null;
+            reason =
+                "only typed literals, NULL, and unary-negative numeric literals are accepted.";
+            return false;
+        }
+
+        string kind;
+        string? literalType;
+        string? value;
+        switch (literal.LiteralType, literal.Value)
+        {
+            case (TokenType.Null, null) when !negative:
+                kind = "null";
+                literalType = null;
+                value = null;
+                break;
+
+            case (TokenType.IntegerLiteral, long integer)
+                when !negative || integer >= 0:
+                kind = "typed-literal";
+                literalType = "integer";
+                value = string.Concat(
+                    negative ? "-" : string.Empty,
+                    integer.ToString(CultureInfo.InvariantCulture));
+                break;
+
+            case (TokenType.RealLiteral, double real)
+                when (!negative || real >= 0) &&
+                     double.IsFinite(real):
+                kind = "typed-literal";
+                literalType = "real";
+                value = string.Concat(
+                    negative ? "-" : string.Empty,
+                    SqlLiteralRules.FormatReal(real));
+                break;
+
+            case (TokenType.StringLiteral, string text)
+                when !negative:
+                kind = "typed-literal";
+                literalType = "text";
+                value = text;
+                break;
+
+            case (TokenType.BlobLiteral, byte[] blob)
+                when !negative:
+                kind = "typed-literal";
+                literalType = "blob";
+                value = Convert.ToHexString(blob);
+                break;
+
+            default:
+                descriptor = null;
+                reason =
+                    "the parsed literal has an invalid value or unary sign.";
+                return false;
+        }
+
+        if (!CSharpDbLiteralDefaultContract.TryCreate(
+                columnType,
+                kind,
+                literalType,
+                value,
+                out CSharpDbLiteralDefaultDescriptor lowered,
+                out reason))
+        {
+            descriptor = null;
+            return false;
+        }
+
+        descriptor = lowered;
+        return true;
+    }
+
     private static string StatementKind(Statement statement) =>
         statement switch
         {
@@ -1132,7 +1308,8 @@ internal static class DdlLowerer
         string NativeType,
         string LogicalType,
         DbType TargetType,
-        string? Collation);
+        string? Collation,
+        CSharpDbLiteralDefaultDescriptor? LiteralDefault);
 
     private sealed record KeyModel(
         string ObjectId,

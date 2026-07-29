@@ -255,6 +255,60 @@ public sealed class SystemCatalogTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SystemCatalog_ExposesFullImmediateForeignKeyActionMatrix()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync(
+            "CREATE TABLE action_parents (id INTEGER PRIMARY KEY)",
+            ct);
+        await _db.ExecuteAsync(
+            """
+            CREATE TABLE action_children (
+                id INTEGER PRIMARY KEY,
+                restrict_id INTEGER REFERENCES action_parents(id)
+                    ON DELETE RESTRICT ON UPDATE RESTRICT,
+                no_action_id INTEGER REFERENCES action_parents(id)
+                    ON DELETE NO ACTION ON UPDATE NO ACTION,
+                cascade_id INTEGER REFERENCES action_parents(id)
+                    ON DELETE CASCADE ON UPDATE CASCADE,
+                set_null_id INTEGER REFERENCES action_parents(id)
+                    ON DELETE SET NULL ON UPDATE SET NULL,
+                set_default_id INTEGER DEFAULT 1
+                    REFERENCES action_parents(id)
+                    ON DELETE SET DEFAULT ON UPDATE SET DEFAULT
+            )
+            """,
+            ct);
+
+        await using var foreignKeys = await _db.ExecuteAsync(
+            """
+            SELECT column_name, on_delete, on_update
+            FROM sys.foreign_keys
+            WHERE table_name = 'action_children'
+            """,
+            ct);
+        Dictionary<string, DbValue[]> byColumn =
+            (await foreignKeys.ToListAsync(ct)).ToDictionary(
+                row => row[0].AsText,
+                StringComparer.Ordinal);
+        Assert.Equal(5, byColumn.Count);
+
+        foreach ((string columnName, string action) in
+                 new[]
+                 {
+                     ("restrict_id", "RESTRICT"),
+                     ("no_action_id", "NO ACTION"),
+                     ("cascade_id", "CASCADE"),
+                     ("set_null_id", "SET NULL"),
+                     ("set_default_id", "SET DEFAULT"),
+                 })
+        {
+            Assert.Equal(action, byColumn[columnName][1].AsText);
+            Assert.Equal(action, byColumn[columnName][2].AsText);
+        }
+    }
+
+    [Fact]
     public async Task SystemCatalog_ExposesObjects()
     {
         var ct = TestContext.Current.CancellationToken;

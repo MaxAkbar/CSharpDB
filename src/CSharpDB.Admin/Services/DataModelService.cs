@@ -245,6 +245,8 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
                     sb.Append(" NOT NULL");
                 if (!string.IsNullOrWhiteSpace(column.Collation))
                     sb.Append(" COLLATE ").Append(column.Collation);
+                if (!string.IsNullOrWhiteSpace(column.DefaultSql))
+                    sb.Append(" DEFAULT ").Append(column.DefaultSql);
 
                 if (i < node.Columns.Count - 1)
                     sb.Append(',');
@@ -534,6 +536,8 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
                 sb.Append(" NOT NULL");
             if (!string.IsNullOrWhiteSpace(column.Collation))
                 sb.Append(" COLLATE ").Append(column.Collation);
+            if (!string.IsNullOrWhiteSpace(column.DefaultSql))
+                sb.Append(" DEFAULT ").Append(column.DefaultSql);
             if (i < columns.Count - 1)
                 sb.Append(',');
             sb.AppendLine();
@@ -690,6 +694,7 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
         IsRowVersion = column.IsRowVersion,
         Nullable = column.Nullable,
         Collation = column.Collation,
+        DefaultSql = column.DefaultSql,
     };
 
     private static DataModelColumnMetadata MapArchiveColumn(ArchiveColumn column) => new()
@@ -701,6 +706,7 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
         IsRowVersion = column.IsRowVersion,
         Nullable = column.Nullable,
         Collation = column.Collation,
+        DefaultSql = column.DefaultSql,
     };
 
     private static DataModelForeignKeyMetadata MapForeignKey(ForeignKeyDefinition foreignKey) => new()

@@ -590,7 +590,7 @@ public class TableArchiveTests
     }
 
     [Fact]
-    public async Task Archive_V5_RestoresNamedOrderedConstraintsAndSecondaryIndexes()
+    public async Task Archive_V6_RestoresNamedOrderedConstraintsSecondaryIndexesAndPhase3Actions()
     {
         CancellationToken ct = TestContext.Current.CancellationToken;
         string archivePath = Path.Combine(Path.GetTempPath(), $"schema_fidelity_{Guid.NewGuid():N}.csdbtable");
@@ -648,8 +648,8 @@ public class TableArchiveTests
                     ReferencedColumnName = "tenant_id",
                     ColumnNames = ["parent_tenant_id", "parent_code"],
                     ReferencedColumnNames = ["tenant_id", "code"],
-                    OnDelete = ForeignKeyOnDeleteAction.SetNull,
-                    OnUpdate = ForeignKeyOnDeleteAction.NoAction,
+                    OnDelete = ForeignKeyOnDeleteAction.SetDefault,
+                    OnUpdate = ForeignKeyOnDeleteAction.Cascade,
                     SupportingIndexName = "__fk_archive_items_parent",
                 },
             ],
@@ -699,6 +699,14 @@ public class TableArchiveTests
             (TableArchiveSchema archivedSchema, TableArchiveManifest archivedManifest) =
                 await TableArchiveReader.ReadMetadataAsync(archivePath, ct);
             Assert.Equal(TableArchiveManifest.LatestFormatVersion, archivedManifest.FormatVersion);
+            TableArchiveForeignKey archivedForeignKey =
+                Assert.Single(archivedSchema.ForeignKeys);
+            Assert.Equal(
+                ForeignKeyOnDeleteAction.SetDefault,
+                archivedForeignKey.OnDelete);
+            Assert.Equal(
+                ForeignKeyOnDeleteAction.Cascade,
+                archivedForeignKey.OnUpdate);
             Assert.Collection(
                 Assert.IsAssignableFrom<IReadOnlyList<TableArchiveSecondaryIndex>>(archivedSchema.SecondaryIndexes),
                 index =>
@@ -765,8 +773,8 @@ public class TableArchiveTests
             Assert.Equal(["parent_tenant_id", "parent_code"], restoredForeignKey.ColumnNames);
             Assert.Equal("restored_items", restoredForeignKey.ReferencedTableName);
             Assert.Equal(["tenant_id", "code"], restoredForeignKey.ReferencedColumnNames);
-            Assert.Equal(CSharpDB.Client.Models.ForeignKeyOnDeleteAction.SetNull, restoredForeignKey.OnDelete);
-            Assert.Equal(CSharpDB.Client.Models.ForeignKeyOnDeleteAction.NoAction, restoredForeignKey.OnUpdate);
+            Assert.Equal(CSharpDB.Client.Models.ForeignKeyOnDeleteAction.SetDefault, restoredForeignKey.OnDelete);
+            Assert.Equal(CSharpDB.Client.Models.ForeignKeyOnDeleteAction.Cascade, restoredForeignKey.OnUpdate);
 
             CSharpDB.Client.Models.IndexSchema[] restoredIndexes = (await client.GetIndexesAsync(ct))
                 .Where(index => string.Equals(index.TableName, "restored_items", StringComparison.Ordinal))
