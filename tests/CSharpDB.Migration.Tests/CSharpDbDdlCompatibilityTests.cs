@@ -724,6 +724,36 @@ public sealed class CSharpDbDdlCompatibilityTests
             },
         };
 
+    [Fact]
+    public async Task AnalyzeAsync_RealEqualityIndexPassesScratchProof()
+    {
+        const string script = """
+            CREATE TABLE real_index (
+                scope_id INTEGER NOT NULL,
+                value REAL NOT NULL
+            );
+            CREATE UNIQUE INDEX ux_real_value
+                ON real_index (scope_id, value);
+            """;
+
+        CSharpDbDdlCompatibilityReport report =
+            await AnalyzeAsync(script);
+
+        Assert.Equal(
+            MigrationCompatibilityStatus.Compatible,
+            report.Status);
+        Assert.Equal(
+            MigrationEvidenceLevel.ScratchExecuted,
+            report.HighestEvidence);
+        Assert.Equal(2, report.StatementCount);
+        Assert.Equal(2, report.ProvenStatementCount);
+        Assert.Empty(report.Diagnostics);
+        Assert.Empty(report.Differences);
+        Assert.Equal(
+            report.ExpectedSchemaDigest,
+            report.ActualSchemaDigest);
+    }
+
     [Theory]
     [InlineData(
         "CREATE TABLE real_key (value REAL PRIMARY KEY);")]
@@ -731,15 +761,10 @@ public sealed class CSharpDbDdlCompatibilityTests
         "CREATE TABLE blob_key (value BLOB, PRIMARY KEY (value));")]
     [InlineData(
         """
-        CREATE TABLE real_index (value REAL);
-        CREATE INDEX ix_real ON real_index (value);
-        """)]
-    [InlineData(
-        """
         CREATE TABLE blob_index (value BLOB);
         CREATE INDEX ix_blob ON blob_index (value);
         """)]
-    public async Task AnalyzeAsync_RejectsRealOrBlobKeyAndIndex(
+    public async Task AnalyzeAsync_RejectsRealOrBlobKeyAndBlobIndex(
         string script)
     {
         CSharpDbDdlCompatibilityReport report =

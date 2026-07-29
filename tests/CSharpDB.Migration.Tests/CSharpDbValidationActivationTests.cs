@@ -250,7 +250,7 @@ public sealed class CSharpDbValidationActivationTests
 
         string expectedIdentity =
             $"staged-target:{GoldenTargetIdentity}:awaiting-validation:outcomes:" +
-            "b71f52817988e6982dbc94643df6954c53099eb1ca2a116db2128e4bc3239588";
+            "e39bc61a9978fffb407c8d14c48c11ec9f84be168a7c04d3a1cc881da66e61ac";
         Assert.True(
             string.Equals(expectedIdentity, snapshot.SnapshotIdentity, StringComparison.Ordinal),
             $"Validation snapshot golden identity changed. Actual value: {snapshot.SnapshotIdentity}");

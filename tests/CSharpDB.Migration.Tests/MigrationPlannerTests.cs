@@ -26,6 +26,13 @@ public sealed class MigrationPlannerTests
         Assert.Equal(
             MigrationCompatibilityStatus.Conditional,
             capabilities.GetObjectStatus(MigrationObjectKind.Trigger));
+        CSharpDbCapabilityRule indexRule = capabilities.Rules.Single(rule =>
+            rule.ObjectKind == MigrationObjectKind.Index &&
+            rule.Feature == CSharpDbCapabilityFeature.Index);
+        Assert.Equal(
+            [DbType.Integer, DbType.Real, DbType.Text],
+            indexRule.AllowedTypes);
+        Assert.Contains("equality", indexRule.AllowedValues);
     }
 
     [Fact]

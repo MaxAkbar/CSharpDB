@@ -321,6 +321,14 @@ remains.
   representable `±2^53` range
 - `REAL` to `INTEGER` is accepted when every value is finite, integral, and in
   the signed 64-bit range
+- ready ordinary and unique SQL indexes that reference the changed numeric
+  column are rebuilt atomically with the table; composite indexes are included,
+  while unrelated index roots remain unchanged
+- `TEXT` to `BLOB` encodes UTF-8, and `BLOB` to `TEXT` accepts only valid UTF-8;
+  these conversions currently require a dependency-free column
+- changing `TEXT` to `BLOB` clears its collation; a `BLOB` to `TEXT` change
+  starts at default `BINARY` and applies any requested target collation after
+  the type change
 - a `TEXT` column can change among supported collations or return to the
   default `BINARY` collation
 - ready ordinary and unique SQL indexes that inherit the column collation are
@@ -332,12 +340,14 @@ remains.
   the table, table-owned triggers, cross-table triggers that reference the
   column, and applicable validation rules still block the rewrite
 
-The provider orders compound changes as drop old default, rewrite type, restore
-the target default, change collation, then change nullability. `Database.Migrate()`,
-`dotnet ef database update`, and normal generated migration scripts supply the
-surrounding transaction. If those commands are extracted into a custom deployment
-script, keep them in one transaction so a failed later facet also restores the
-original table and index roots.
+The provider emits the bounded conversions in both Up and Down migrations. It
+orders compound changes as drop old default, rewrite type, restore the target
+default, change collation, then change nullability; `TYPE BLOB` itself clears
+an old TEXT collation. `Database.Migrate()`, `dotnet ef database update`, and
+normal generated migration scripts supply the surrounding transaction. If
+those commands are extracted into a custom deployment script, keep them in one
+transaction so a failed later facet also restores the original table and index
+roots.
 
 ## Exact Decimal Foundation
 
@@ -583,7 +593,7 @@ an entire table.
 | Foreign keys | Partial | Named scalar/composite create/add/drop, primary or alternate-key targets, model-level restrictive/cascade/`SetNull` behavior, and the full immediate delete/update action matrix through explicit migration operations |
 | Literal column defaults | Partial | `HasDefaultValue(...)` values that map to INTEGER, REAL, TEXT, BLOB, or NULL; computed/default SQL expressions remain unsupported |
 | Check constraints | Partial | Create-table and standalone add/drop migrations for deterministic row-local expressions accepted by the engine |
-| `AlterColumn` | Partial | Literal default/nullability changes, exact dependency-free `INTEGER`/`REAL` rewrites, and `TEXT` collation changes with inherited ordinary/unique SQL-index rebuilding |
+| `AlterColumn` | Partial | Literal default/nullability changes, exact `INTEGER`/`REAL` rewrites with ready ordinary/unique SQL-index rebuilding, strict dependency-free UTF-8 `TEXT`/`BLOB` rewrites, and `TEXT` collation changes with inherited SQL-index rebuilding |
 | Exact decimal mapping | Partial | Provider-owned scaled `INTEGER` storage for precision 1–18; exact round trips, parameters, comparisons, and ordering |
 | Bounded LINQ/query subset | Partial | Basic operators plus bounded direct inner and left joins, terminal direct-integer set operations, and the string, `EF.Functions.Like`, temporal, finite-double math, scalar numeric aggregate, direct-column integer-distinct aggregate, and direct single-table grouped aggregate translations listed above; unsupported methods, members, operators, set-operation shapes, aggregate shapes, and join shapes receive provider diagnostics |
 | ASP.NET Core Identity | Partial | Identity schema v1 with `IdentityUser<int>` and `IdentityRole<int>` for the documented workflows |
@@ -642,9 +652,9 @@ an entire table.
 - ASP.NET Core Identity is supported only for schema v1 with integer user and
   role keys; default string keys, schema versions 2 and 3, passkeys, and
   unlisted store APIs remain unsupported
-- `TEXT`/`BLOB` type conversions, lossy numeric conversions, indexed numeric
-  changes, and collation changes involving key, foreign-key, full-text, or
-  collection dependencies still require broader rewrite support
+- indexed `TEXT`/`BLOB` changes, lossy or other type conversions, ordered/range
+  REAL index access, and rewrites involving key, foreign-key, full-text,
+  collection, or non-ready dependencies still require broader support
 
 ## Production Readiness Checklist
 

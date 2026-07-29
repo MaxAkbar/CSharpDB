@@ -1259,6 +1259,18 @@ public class ParserTests
             TokenType.Real,
             Assert.IsType<AlterColumnSetTypeAction>(setRealType.Action).TypeToken);
 
+        var setTextType = Assert.IsType<AlterTableStatement>(
+            Parser.Parse("ALTER TABLE users ALTER COLUMN payload TYPE TEXT"));
+        Assert.Equal(
+            TokenType.Text,
+            Assert.IsType<AlterColumnSetTypeAction>(setTextType.Action).TypeToken);
+
+        var setBlobType = Assert.IsType<AlterTableStatement>(
+            Parser.Parse("ALTER TABLE users ALTER COLUMN payload TYPE BLOB"));
+        Assert.Equal(
+            TokenType.Blob,
+            Assert.IsType<AlterColumnSetTypeAction>(setBlobType.Action).TypeToken);
+
         var setCollation = Assert.IsType<AlterTableStatement>(
             Parser.Parse("ALTER TABLE users ALTER COLUMN status SET COLLATION nocase"));
         var setCollationAction =
@@ -1273,14 +1285,13 @@ public class ParserTests
             Assert.IsType<AlterColumnDropCollationAction>(dropCollation.Action).ColumnName);
     }
 
-    [Theory]
-    [InlineData("ALTER TABLE users ALTER COLUMN status TYPE TEXT")]
-    [InlineData("ALTER TABLE users ALTER COLUMN status TYPE BLOB")]
-    public void Parse_AlterTable_RejectsUnsupportedTypeTargets(string sql)
+    [Fact]
+    public void Parse_AlterTable_RejectsUnsupportedTypeTarget()
     {
-        var error = Assert.Throws<CSharpDbException>(() => Parser.Parse(sql));
+        var error = Assert.Throws<CSharpDbException>(() =>
+            Parser.Parse("ALTER TABLE users ALTER COLUMN status TYPE BOOLEAN"));
 
-        Assert.Contains("INTEGER and REAL", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("INTEGER, REAL, TEXT, and BLOB", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

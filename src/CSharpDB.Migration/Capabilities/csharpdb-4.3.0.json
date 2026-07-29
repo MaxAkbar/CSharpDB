@@ -261,10 +261,10 @@
       "objectKind": "index",
       "feature": "index",
       "status": "conditional",
-      "allowedTypes": ["integer", "text"],
-      "allowedValues": ["column-only", "composite", "nonunique", "unique"],
+      "allowedTypes": ["integer", "real", "text"],
+      "allowedValues": ["column-only", "composite", "equality", "nonunique", "unique"],
       "evidenceId": "EVID-INDEXES",
-      "notes": "REAL/BLOB/rowversion, expression, partial, included-column, and sort-direction indexes are unsupported."
+      "notes": "Column-only INTEGER/TEXT/REAL equality indexes are supported. REAL components use hashed equality and do not provide ordered or range scans. BLOB/rowversion, expression, partial, included-column, and sort-direction indexes are unsupported."
     },
     {
       "ruleId": "CSDB-VIEW-BODY-001",
@@ -344,7 +344,7 @@
     {
       "evidenceId": "EVID-INDEXES",
       "source": "CSharpDB.Engine.QueryPlanner and CSharpDB.Sql.Ast.CreateIndexStatement",
-      "assertion": "Indexes are column-only and constrained to INTEGER/TEXT key components with supported collations."
+      "assertion": "Indexes are column-only and constrained to INTEGER/TEXT/REAL key components with supported collations; REAL components use equality-only hashed keys while ordered and range access remains limited to supported INTEGER/TEXT shapes."
     },
     {
       "evidenceId": "EVID-INSERT-BATCH",

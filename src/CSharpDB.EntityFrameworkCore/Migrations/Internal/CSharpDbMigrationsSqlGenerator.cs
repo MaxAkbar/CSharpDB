@@ -251,18 +251,34 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
         }
 
         bool typeChanged = !string.Equals(storeType, oldStoreType, StringComparison.OrdinalIgnoreCase);
-        if (typeChanged && !IsSupportedNumericTypeRewrite(oldStoreType, storeType))
+        if (typeChanged && !IsSupportedTypeRewrite(oldStoreType, storeType))
         {
             throw Unsupported(
                 $"changing column '{operation.Table}.{operation.Name}' from store type '{oldStoreType}' to '{storeType}'. " +
-                "The bounded rewrite path supports only exact INTEGER-to-REAL and REAL-to-INTEGER conversions on dependency-free columns");
+                "The bounded rewrite path supports only exact INTEGER-to-REAL, REAL-to-INTEGER, TEXT-to-BLOB, and BLOB-to-TEXT conversions; numeric rewrites can rebuild ready SQL indexes, while TEXT/BLOB rewrites require dependency-free columns");
+        }
+
+        bool oldStoreTypeIsText = IsStoreType(oldStoreType, "TEXT");
+        bool storeTypeIsText = IsStoreType(storeType, "TEXT");
+        bool enteringBlobFromText =
+            typeChanged &&
+            oldStoreTypeIsText &&
+            IsStoreType(storeType, "BLOB");
+        string? normalizedTargetCollation =
+            NormalizeBinaryCollation(operation.Collation);
+        if (normalizedTargetCollation is not null &&
+            !storeTypeIsText)
+        {
+            throw Unsupported(
+                $"collation '{normalizedTargetCollation}' on non-TEXT column '{operation.Table}.{operation.Name}'");
         }
 
         bool collationChanged = !CollationsSemanticallyEqual(
             operation.Collation,
             operation.OldColumn.Collation);
         if (collationChanged &&
-            (!IsStoreType(storeType, "TEXT") || !IsStoreType(oldStoreType, "TEXT")))
+            !enteringBlobFromText &&
+            !storeTypeIsText)
         {
             throw Unsupported(
                 $"changing the collation of non-TEXT column '{operation.Table}.{operation.Name}'");
@@ -307,18 +323,20 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
                 AppendSetDefault(builder, table, column, operation.DefaultValue);
         }
 
-        if (collationChanged)
+        // TYPE BLOB removes TEXT collation metadata as part of the same shadow
+        // rewrite. Emitting DROP COLLATION afterwards would target a non-TEXT
+        // column. BLOB-to-TEXT applies any requested collation after TYPE TEXT.
+        if (collationChanged && !enteringBlobFromText)
         {
             builder.Append("ALTER TABLE ")
                 .Append(table)
                 .Append(" ALTER COLUMN ")
                 .Append(column);
 
-            string? targetCollation = NormalizeBinaryCollation(operation.Collation);
-            if (targetCollation is null)
+            if (normalizedTargetCollation is null)
                 builder.Append(" DROP COLLATION");
             else
-                builder.Append(" SET COLLATION ").Append(QuoteIdentifier(targetCollation));
+                builder.Append(" SET COLLATION ").Append(QuoteIdentifier(normalizedTargetCollation));
 
             EndCommand(builder, terminate: true);
         }
@@ -723,9 +741,11 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
         EndCommand(builder, terminate: true);
     }
 
-    private static bool IsSupportedNumericTypeRewrite(string oldStoreType, string storeType) =>
+    private static bool IsSupportedTypeRewrite(string oldStoreType, string storeType) =>
         IsStoreType(oldStoreType, "INTEGER") && IsStoreType(storeType, "REAL") ||
-        IsStoreType(oldStoreType, "REAL") && IsStoreType(storeType, "INTEGER");
+        IsStoreType(oldStoreType, "REAL") && IsStoreType(storeType, "INTEGER") ||
+        IsStoreType(oldStoreType, "TEXT") && IsStoreType(storeType, "BLOB") ||
+        IsStoreType(oldStoreType, "BLOB") && IsStoreType(storeType, "TEXT");
 
     private static bool IsStoreType(string storeType, string expected) =>
         string.Equals(storeType.Trim(), expected, StringComparison.OrdinalIgnoreCase);

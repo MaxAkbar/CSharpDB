@@ -15,6 +15,7 @@ internal static class HashedIndexPayloadCodec
     private const int HeaderSize = 16;
     private const byte IntegerComponentTag = 1;
     private const byte TextComponentTag = 2;
+    private const byte RealComponentTag = 3;
 
     public static bool IsEncoded(ReadOnlySpan<byte> payload)
         => payload.Length >= HeaderSize &&
@@ -138,6 +139,22 @@ internal static class HashedIndexPayloadCodec
                         break;
                     }
 
+                    case RealComponentTag:
+                    {
+                        if (offset + sizeof(long) > span.Length)
+                            return false;
+
+                        long actualBits = BinaryPrimitives.ReadInt64LittleEndian(
+                            span.Slice(offset, sizeof(long)));
+                        offset += sizeof(long);
+                        if (expectedComponent.Type != DbType.Real ||
+                            RealIndexKeyCodec.GetCanonicalBits(expectedComponent.AsReal) != actualBits)
+                        {
+                            matches = false;
+                        }
+                        break;
+                    }
+
                     default:
                         return false;
                 }
@@ -236,6 +253,22 @@ internal static class HashedIndexPayloadCodec
                         ReadOnlySpan<byte> expectedBytes = GetExpectedTextBytes(expectedComponent, expectedTextBytes, componentIndex);
                         if (expectedComponent.Type != DbType.Text || !actualTextBytes.SequenceEqual(expectedBytes))
                             matches = false;
+                        break;
+                    }
+
+                    case RealComponentTag:
+                    {
+                        if (offset + sizeof(long) > span.Length)
+                            return false;
+
+                        long actualBits = BinaryPrimitives.ReadInt64LittleEndian(
+                            span.Slice(offset, sizeof(long)));
+                        offset += sizeof(long);
+                        if (expectedComponent.Type != DbType.Real ||
+                            RealIndexKeyCodec.GetCanonicalBits(expectedComponent.AsReal) != actualBits)
+                        {
+                            matches = false;
+                        }
                         break;
                     }
 
@@ -425,6 +458,16 @@ internal static class HashedIndexPayloadCodec
                         offset += textByteLength;
                         break;
 
+                    case RealComponentTag:
+                        if (offset + sizeof(long) > payload.Length)
+                            return false;
+                        components[componentIndex] = DbValue.FromReal(
+                            BitConverter.Int64BitsToDouble(
+                                BinaryPrimitives.ReadInt64LittleEndian(
+                                    payload.Slice(offset, sizeof(long)))));
+                        offset += sizeof(long);
+                        break;
+
                     default:
                         return false;
                 }
@@ -483,6 +526,16 @@ internal static class HashedIndexPayloadCodec
                     continue;
                 }
 
+                if (component.Type == DbType.Real)
+                {
+                    payload[offset++] = RealComponentTag;
+                    BinaryPrimitives.WriteInt64LittleEndian(
+                        payload.AsSpan(offset, sizeof(long)),
+                        RealIndexKeyCodec.GetCanonicalBits(component.AsReal));
+                    offset += sizeof(long);
+                    continue;
+                }
+
                 if (component.Type != DbType.Text)
                     throw new InvalidOperationException($"Unsupported hashed index component type: {component.Type}.");
 
@@ -513,6 +566,16 @@ internal static class HashedIndexPayloadCodec
             {
                 payload[offset++] = IntegerComponentTag;
                 BinaryPrimitives.WriteInt64LittleEndian(payload.AsSpan(offset, sizeof(long)), component.AsInteger);
+                offset += sizeof(long);
+                continue;
+            }
+
+            if (component.Type == DbType.Real)
+            {
+                payload[offset++] = RealComponentTag;
+                BinaryPrimitives.WriteInt64LittleEndian(
+                    payload.AsSpan(offset, sizeof(long)),
+                    RealIndexKeyCodec.GetCanonicalBits(component.AsReal));
                 offset += sizeof(long);
                 continue;
             }
@@ -577,6 +640,7 @@ internal static class HashedIndexPayloadCodec
             size += keyComponents[i].Type switch
             {
                 DbType.Integer => sizeof(long),
+                DbType.Real => sizeof(long),
                 DbType.Text => sizeof(int) + Encoding.UTF8.GetByteCount(keyComponents[i].AsText),
                 _ => throw new InvalidOperationException($"Unsupported hashed index component type: {keyComponents[i].Type}."),
             };

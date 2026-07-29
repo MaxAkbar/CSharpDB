@@ -823,6 +823,7 @@ public sealed class QueryPlanner
         public required IndexSchema Index { get; init; }
         public required IIndexStore IndexStore { get; init; }
         public required int[] ColumnIndices { get; init; }
+        public required DbType[] ColumnTypes { get; init; }
         public required string?[] IndexColumnCollations { get; init; }
         public required SqlIndexStorageMode StorageMode { get; init; }
         public required bool UsesDirectIntegerKey { get; init; }
@@ -2366,8 +2367,12 @@ public sealed class QueryPlanner
             }
 
             DbType columnType = column.Type;
-            if (columnType is not (DbType.Integer or DbType.Text))
-                throw new CSharpDbException(ErrorCode.TypeMismatch, "Only INTEGER and TEXT column indexes are supported.");
+            if (columnType is not (DbType.Integer or DbType.Real or DbType.Text))
+            {
+                throw new CSharpDbException(
+                    ErrorCode.TypeMismatch,
+                    "Only INTEGER, REAL, and TEXT equality indexes are supported.");
+            }
 
             string? columnCollation = i < stmt.ColumnCollations.Count
                 ? NormalizeCollationName(stmt.ColumnCollations[i])
@@ -7876,8 +7881,8 @@ public sealed class QueryPlanner
         int predicateColumnIndex = schema.GetColumnIndex(lookup.PredicateColumn);
         if (predicateColumnIndex < 0 || predicateColumnIndex >= schema.Columns.Count)
             return false;
-        if (schema.Columns[predicateColumnIndex].Type != DbType.Integer &&
-            schema.Columns[predicateColumnIndex].Type != DbType.Text)
+        DbType predicateColumnType = schema.Columns[predicateColumnIndex].Type;
+        if (predicateColumnType is not (DbType.Integer or DbType.Real or DbType.Text))
         {
             return false;
         }
@@ -7921,11 +7926,16 @@ public sealed class QueryPlanner
             if (matchedIndex == null)
                 return false;
 
-            if (predicateLiteral.Type != DbType.Integer && predicateLiteral.Type != DbType.Text)
+            bool hasCompatibleLiteral =
+                predicateColumnType == DbType.Real
+                    ? predicateLiteral.Type is DbType.Integer or DbType.Real
+                    : predicateLiteral.Type == predicateColumnType;
+            if (!hasCompatibleLiteral)
                 return false;
 
             if (!predicateUsesDirectIntegerKey &&
-                !(predicateLiteral.Type == DbType.Text && schema.Columns[predicateColumnIndex].Type == DbType.Text))
+                predicateColumnType != DbType.Real &&
+                !(predicateLiteral.Type == DbType.Text && predicateColumnType == DbType.Text))
             {
                 return false;
             }
@@ -14734,7 +14744,8 @@ public sealed class QueryPlanner
 
     /// <summary>
     /// Attempts to use a point/equality lookup for a WHERE clause.
-    /// Supports extracting an integer equality term from AND-conjunct predicates.
+    /// Supports extracting a compatible indexed equality term from
+    /// AND-conjunct predicates.
     /// remaining is set to residual terms that were not consumed by the lookup.
     /// </summary>
     private IOperator? TryBuildIndexScan(string tableName, Expression where, TableSchema schema, out Expression? remaining)
@@ -15093,7 +15104,7 @@ public sealed class QueryPlanner
                 }
 
                 DbType colType = schema.Columns[colIndex].Type;
-                if (colType is not (DbType.Integer or DbType.Text))
+                if (colType is not (DbType.Integer or DbType.Real or DbType.Text))
                 {
                     matches = false;
                     break;
@@ -15105,7 +15116,10 @@ public sealed class QueryPlanner
                     break;
                 }
 
-                if (literal.Type != colType)
+                bool hasCompatibleLiteral = colType == DbType.Real
+                    ? literal.Type is DbType.Integer or DbType.Real
+                    : literal.Type == colType;
+                if (!hasCompatibleLiteral)
                 {
                     matches = false;
                     break;
@@ -15340,10 +15354,13 @@ public sealed class QueryPlanner
             return false;
 
         DbType columnType = schema.Columns[resolvedIndex].Type;
-        if (columnType is not (DbType.Integer or DbType.Text))
+        if (columnType is not (DbType.Integer or DbType.Real or DbType.Text))
             return false;
 
-        if (literal.Type != columnType)
+        bool hasCompatibleLiteral = columnType == DbType.Real
+            ? literal.Type is DbType.Integer or DbType.Real
+            : literal.Type == columnType;
+        if (!hasCompatibleLiteral)
             return false;
 
         columnIndex = resolvedIndex;
@@ -15394,7 +15411,18 @@ public sealed class QueryPlanner
             indexColumnPosition,
             schemaColumnIndex);
 
-        return CollationSupport.NormalizeIndexValue(literal, effectiveCollation);
+        if (IndexMaintenanceHelper.TryNormalizeLookupComponent(
+                literal,
+                schema.Columns[schemaColumnIndex].Type,
+                effectiveCollation,
+                out DbValue normalized))
+        {
+            return normalized;
+        }
+
+        throw new CSharpDbException(
+            ErrorCode.TypeMismatch,
+            $"Literal of type {literal.Type} cannot use index '{index.IndexName}' on {schema.Columns[schemaColumnIndex].Type} column '{schema.TableName}.{schema.Columns[schemaColumnIndex].Name}'.");
     }
 
     private bool TryFindDirectIntegerIndexForColumn(
@@ -17751,8 +17779,15 @@ public sealed class QueryPlanner
             if (index.Kind is not (IndexKind.Sql or IndexKind.ForeignKeyInternal or IndexKind.ConstraintInternal))
                 continue;
 
-            if (!IndexMaintenanceHelper.TryResolveIndexColumnIndices(index, schema, out int[]? columnIndices, out bool usesDirectIntegerKey))
+            if (!IndexMaintenanceHelper.TryResolveIndexColumnIndices(
+                    index,
+                    schema,
+                    out int[] columnIndices,
+                    out DbType[] columnTypes,
+                    out bool usesDirectIntegerKey))
+            {
                 continue;
+            }
 
             SqlIndexStorageMode storageMode = IndexMaintenanceHelper.ResolveSqlIndexStorageMode(index, schema);
             sqlIndexes.Add(
@@ -17761,6 +17796,7 @@ public sealed class QueryPlanner
                     Index = index,
                     IndexStore = _catalog.GetIndexStore(index.IndexName),
                     ColumnIndices = columnIndices,
+                    ColumnTypes = columnTypes,
                     IndexColumnCollations = CollationSupport.GetEffectiveIndexColumnCollations(index, schema, columnIndices),
                     StorageMode = storageMode,
                     UsesDirectIntegerKey = usesDirectIntegerKey,
@@ -17803,6 +17839,7 @@ public sealed class QueryPlanner
             if (!IndexMaintenanceHelper.TryBuildIndexKey(
                     row,
                     plan.ColumnIndices,
+                    plan.ColumnTypes,
                     plan.IndexColumnCollations,
                     plan.UsesDirectIntegerKey,
                     plan.StorageMode,
@@ -17950,13 +17987,21 @@ public sealed class QueryPlanner
             if (idx.Kind is not (IndexKind.Sql or IndexKind.ForeignKeyInternal or IndexKind.ConstraintInternal))
                 continue;
 
-            if (!IndexMaintenanceHelper.TryResolveIndexColumnIndices(idx, schema, out var columnIndices, out bool usesDirectIntegerKey))
+            if (!IndexMaintenanceHelper.TryResolveIndexColumnIndices(
+                    idx,
+                    schema,
+                    out var columnIndices,
+                    out var columnTypes,
+                    out bool usesDirectIntegerKey))
+            {
                 continue;
+            }
             string?[] indexColumnCollations = CollationSupport.GetEffectiveIndexColumnCollations(idx, schema, columnIndices);
             SqlIndexStorageMode storageMode = IndexMaintenanceHelper.ResolveSqlIndexStorageMode(idx, schema);
             if (!IndexMaintenanceHelper.TryBuildIndexKey(
                     row,
                     columnIndices,
+                    columnTypes,
                     indexColumnCollations,
                     usesDirectIntegerKey,
                     storageMode,
@@ -17996,14 +18041,22 @@ public sealed class QueryPlanner
             if (idx.Kind is not (IndexKind.Sql or IndexKind.ForeignKeyInternal or IndexKind.ConstraintInternal))
                 continue;
 
-            if (!IndexMaintenanceHelper.TryResolveIndexColumnIndices(idx, schema, out var columnIndices, out bool usesDirectIntegerKey))
+            if (!IndexMaintenanceHelper.TryResolveIndexColumnIndices(
+                    idx,
+                    schema,
+                    out var columnIndices,
+                    out var columnTypes,
+                    out bool usesDirectIntegerKey))
+            {
                 continue;
+            }
             string?[] indexColumnCollations = CollationSupport.GetEffectiveIndexColumnCollations(idx, schema, columnIndices);
             SqlIndexStorageMode storageMode = IndexMaintenanceHelper.ResolveSqlIndexStorageMode(idx, schema);
 
             bool hasOldKey = IndexMaintenanceHelper.TryBuildIndexKey(
                 oldRow,
                 columnIndices,
+                columnTypes,
                 indexColumnCollations,
                 usesDirectIntegerKey,
                 storageMode,
@@ -18012,6 +18065,7 @@ public sealed class QueryPlanner
             bool hasNewKey = IndexMaintenanceHelper.TryBuildIndexKey(
                 newRow,
                 columnIndices,
+                columnTypes,
                 indexColumnCollations,
                 usesDirectIntegerKey,
                 storageMode,
@@ -19037,6 +19091,13 @@ public sealed class QueryPlanner
             {
                 if (keyColumnIndices[j] == columnIndex)
                 {
+                    if (columnIndex < 0 ||
+                        columnIndex >= schema.Columns.Count ||
+                        schema.Columns[columnIndex].Type == DbType.Real)
+                    {
+                        return false;
+                    }
+
                     matchesIndexedColumn = true;
                     break;
                 }
@@ -21451,20 +21512,26 @@ public sealed class QueryPlanner
         if (targetType == current.Type)
             return;
 
-        if (current.Type is not (DbType.Integer or DbType.Real) ||
-            targetType is not (DbType.Integer or DbType.Real))
+        bool isExactNumericConversion =
+            current.Type == DbType.Integer && targetType == DbType.Real ||
+            current.Type == DbType.Real && targetType == DbType.Integer;
+        bool isExactTextBlobConversion =
+            current.Type == DbType.Text && targetType == DbType.Blob ||
+            current.Type == DbType.Blob && targetType == DbType.Text;
+        if (!isExactNumericConversion && !isExactTextBlobConversion)
         {
             throw new CSharpDbException(
                 ErrorCode.TypeMismatch,
-                $"ALTER COLUMN TYPE supports only INTEGER-to-REAL and REAL-to-INTEGER conversions; column '{tableName}.{current.Name}' uses {current.Type}.");
+                $"ALTER COLUMN TYPE supports only exact INTEGER-to-REAL, REAL-to-INTEGER, TEXT-to-BLOB, and BLOB-to-TEXT conversions; column '{tableName}.{current.Name}' cannot change from {current.Type} to {targetType}.");
         }
 
-        await EnsureAlterColumnRewriteHasNoUnsupportedDependenciesAsync(
-            tableName,
-            schema,
-            current,
-            allowReadySqlIndexes: false,
-            ct);
+        IndexSchema[] dependentIndexes =
+            await EnsureAlterColumnRewriteHasNoUnsupportedDependenciesAsync(
+                tableName,
+                schema,
+                current,
+                allowReadySqlIndexes: isExactNumericConversion,
+                ct);
 
         ColumnDefinition[] newColumns = schema.Columns.ToArray();
         newColumns[columnIndex] = CopyColumnDefinition(
@@ -21477,6 +21544,10 @@ public sealed class QueryPlanner
         try
         {
             RowConstraintValidator.ValidateSchemaDefinitions(targetSchema);
+            ValidateAlterColumnDefaultIsExactlyCompatible(
+                schema,
+                current,
+                targetType);
         }
         catch (CSharpDbException ex) when (
             current.DefaultSql is not null &&
@@ -21492,15 +21563,59 @@ public sealed class QueryPlanner
         for (int i = 0; i < mappings.Length; i++)
             mappings[i] = TableRewriteColumnMapping.FromSource(i);
 
-        TableRewriteValueConversion conversion = current.Type == DbType.Integer
-            ? TableRewriteValueConversion.IntegerToReal
-            : TableRewriteValueConversion.RealToInteger;
+        TableRewriteValueConversion conversion =
+            (current.Type, targetType) switch
+            {
+                (DbType.Integer, DbType.Real) =>
+                    TableRewriteValueConversion.IntegerToReal,
+                (DbType.Real, DbType.Integer) =>
+                    TableRewriteValueConversion.RealToInteger,
+                (DbType.Text, DbType.Blob) =>
+                    TableRewriteValueConversion.TextToBlob,
+                (DbType.Blob, DbType.Text) =>
+                    TableRewriteValueConversion.BlobToText,
+                _ => throw new InvalidOperationException(
+                    $"Unsupported validated ALTER COLUMN conversion from {current.Type} to {targetType}."),
+            };
         mappings[columnIndex] =
             TableRewriteColumnMapping.ConvertFromSource(columnIndex, conversion);
 
         await ExecuteTableRewriteAsync(
             new TableRewritePlan(schema, targetSchema, mappings),
+            isExactNumericConversion
+                ? dependentIndexes
+                : Array.Empty<IndexSchema>(),
             ct);
+    }
+
+    private static void ValidateAlterColumnDefaultIsExactlyCompatible(
+        TableSchema sourceSchema,
+        ColumnDefinition sourceColumn,
+        DbType targetType)
+    {
+        if (sourceColumn.DefaultSql is null ||
+            sourceColumn.Type != DbType.Integer ||
+            targetType != DbType.Real)
+        {
+            return;
+        }
+
+        DbValue defaultValue =
+            RowConstraintValidator.EvaluateDefault(sourceColumn, sourceSchema);
+        if (defaultValue.IsNull || defaultValue.Type != DbType.Integer)
+            return;
+
+        const long largestConsecutivelyRepresentableInteger =
+            9_007_199_254_740_992L;
+        long integer = defaultValue.AsInteger;
+        if (integer is <
+                -largestConsecutivelyRepresentableInteger or
+            > largestConsecutivelyRepresentableInteger)
+        {
+            throw new CSharpDbException(
+                ErrorCode.TypeMismatch,
+                $"DEFAULT {sourceColumn.DefaultSql} cannot be represented exactly as REAL.");
+        }
     }
 
     private async ValueTask ExecuteAlterColumnCollationRewriteAsync(

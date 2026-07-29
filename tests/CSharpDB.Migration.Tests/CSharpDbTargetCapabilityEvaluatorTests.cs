@@ -18,8 +18,56 @@ public sealed class CSharpDbTargetCapabilityEvaluatorTests
             catalog,
             new MigrationPlanningOptions { MappingProfile = MigrationMappingProfile.Queryable });
         MigrationPlanObject realIndex = Object(queryable, "syn:index:orders:amount");
+        Assert.True(realIndex.Included);
+        Assert.Null(realIndex.ExclusionReason);
+    }
+
+    [Theory]
+    [InlineData("ordered")]
+    [InlineData("range")]
+    public async Task Planner_RealIndexesRemainEqualityOnly(
+        string unsupportedAccessFacet)
+    {
+        MigrationCatalog source = await InspectAsync();
+        MigrationCatalogObject amountIndex = source.Objects.Single(
+            item => item.ObjectId == "syn:index:orders:amount");
+        MigrationCatalog catalog = source with
+        {
+            Objects =
+            [
+                .. source.Objects.Select(item =>
+                    item.ObjectId == amountIndex.ObjectId
+                        ? item with
+                        {
+                            Facets =
+                            [
+                                Facet("kind", "standard"),
+                                Facet(unsupportedAccessFacet, "true"),
+                            ],
+                        }
+                        : item),
+            ],
+        };
+
+        MigrationPlan plan = new MigrationPlanner().CreatePlan(
+            catalog,
+            new MigrationPlanningOptions
+            {
+                MappingProfile = MigrationMappingProfile.Queryable,
+            });
+
+        MigrationPlanObject realIndex = Object(
+            plan,
+            amountIndex.ObjectId);
         Assert.False(realIndex.Included);
-        Assert.Contains("CSDB-INDEX-001", realIndex.ExclusionReason, StringComparison.Ordinal);
+        Assert.Contains(
+            "CSDB-INDEX-001",
+            realIndex.ExclusionReason,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "only for equality access",
+            realIndex.ExclusionReason,
+            StringComparison.Ordinal);
     }
 
     [Fact]

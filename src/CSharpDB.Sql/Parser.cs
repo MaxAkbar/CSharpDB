@@ -2147,10 +2147,14 @@ public sealed class Parser
             else if (TryConsumeContextualKeyword("TYPE"))
             {
                 TokenType targetType = Peek().Type;
-                if (targetType is not (TokenType.Integer or TokenType.Real))
+                if (targetType is not (
+                        TokenType.Integer or
+                        TokenType.Real or
+                        TokenType.Text or
+                        TokenType.Blob))
                 {
                     throw Error(
-                        $"ALTER COLUMN TYPE supports only INTEGER and REAL in the first conversion slice; got '{Peek().Value}'.");
+                        $"ALTER COLUMN TYPE supports INTEGER, REAL, TEXT, and BLOB targets; got '{Peek().Value}'.");
                 }
 
                 Advance();
@@ -2163,7 +2167,7 @@ public sealed class Parser
             else
             {
                 throw Error(
-                    "ALTER COLUMN supports TYPE INTEGER/REAL, SET/DROP DEFAULT, SET/DROP NOT NULL, and SET/DROP COLLATION.");
+                    "ALTER COLUMN supports TYPE INTEGER/REAL/TEXT/BLOB, SET/DROP DEFAULT, SET/DROP NOT NULL, and SET/DROP COLLATION.");
             }
         }
         else if (t == TokenType.Rename)

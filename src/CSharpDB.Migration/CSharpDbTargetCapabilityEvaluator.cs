@@ -588,6 +588,7 @@ internal sealed class CSharpDbTargetCapabilityEvaluator
         if (columns is null || columns.Count == 0)
             return Reject(rule, $"requires index '{index.ObjectId}' to depend only on one or more columns.");
 
+        bool hasRealColumn = false;
         foreach (MigrationCatalogObject column in columns)
         {
             if (!TryGetMappedType(column, mappingsByObjectId, out DbType targetType) ||
@@ -599,10 +600,13 @@ internal sealed class CSharpDbTargetCapabilityEvaluator
             }
             if (IsTrue(column, "rowVersion"))
                 return Reject(rule, $"does not allow rowversion column '{column.ObjectId}' in an index.");
+            hasRealColumn |= targetType == DbType.Real;
         }
 
         if (!AllowsValue(rule, "column-only"))
             return Reject(rule, "does not advertise column-only index support.");
+        if (!AllowsValue(rule, "equality"))
+            return Reject(rule, "does not advertise equality index support.");
         if (columns.Count > 1 && !AllowsValue(rule, "composite"))
             return Reject(rule, "does not advertise composite index support.");
 
@@ -627,6 +631,22 @@ internal sealed class CSharpDbTargetCapabilityEvaluator
         {
             if (FacetHasUnsupportedValue(index, unsupportedFacet))
                 return Reject(rule, $"does not allow facet '{unsupportedFacet}' on index '{index.ObjectId}'.");
+        }
+
+        if (hasRealColumn)
+        {
+            foreach (string orderedFacet in new[]
+                     {
+                         "ordered", "ordering", "range", "rangeScan", "rangeScans",
+                     })
+            {
+                if (FacetHasUnsupportedValue(index, orderedFacet))
+                {
+                    return Reject(
+                        rule,
+                        $"allows REAL index column components only for equality access and does not allow facet '{orderedFacet}' on index '{index.ObjectId}'.");
+                }
+            }
         }
 
         return null;

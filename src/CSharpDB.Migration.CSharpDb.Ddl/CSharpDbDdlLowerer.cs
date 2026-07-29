@@ -910,21 +910,21 @@ internal static class DdlLowerer
                 CSharpDbDdlCompatibilityAnalyzer
                     .InvalidReferenceRuleId,
                 "The index contains an unknown or duplicate table or column reference.",
-                "Reference each existing INTEGER or TEXT column exactly once.",
+                "Reference each existing INTEGER, REAL, or TEXT column exactly once.",
                 diagnostics,
                 invalidStatements);
             return;
         }
         if (columns.Any(column =>
                 column.TargetType is not (
-                    DbType.Integer or DbType.Text)))
+                    DbType.Integer or DbType.Real or DbType.Text)))
         {
             AddDiagnostic(
                 statement,
                 CSharpDbDdlCompatibilityAnalyzer
                     .UnsupportedFeatureRuleId,
-                "CSharpDB indexes in this proof subset require INTEGER or TEXT columns.",
-                "Use INTEGER or TEXT index columns.",
+                "CSharpDB indexes in this proof subset require INTEGER, REAL, or TEXT columns.",
+                "Use INTEGER, REAL, or TEXT index columns.",
                 diagnostics,
                 invalidStatements);
             return;
