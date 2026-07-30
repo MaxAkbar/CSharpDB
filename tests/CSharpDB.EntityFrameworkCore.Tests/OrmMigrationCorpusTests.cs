@@ -9,17 +9,17 @@ using Microsoft.EntityFrameworkCore.Migrations.Operations;
 namespace CSharpDB.EntityFrameworkCore.Tests;
 
 [Collection("ConnectionPoolState")]
-public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
+public sealed class OrmMigrationCorpusTests : IAsyncLifetime
 {
-    private const string InitialMigration = "20260729000100_Phase6Initial";
-    private const string RewriteMigration = "20260729000200_Phase6RewriteAndRename";
-    private const string LatestMigration = "20260729000300_Phase6CompositeRekey";
-    private const string RollbackInitialMigration = "20260729010100_Phase6RollbackInitial";
-    private const string RollbackFailingMigration = "20260729010200_Phase6RollbackFails";
+    private const string InitialMigration = "20260729000100_OrmCorpusInitial";
+    private const string RewriteMigration = "20260729000200_OrmCorpusRewriteAndRename";
+    private const string LatestMigration = "20260729000300_OrmCorpusCompositeRekey";
+    private const string RollbackInitialMigration = "20260729010100_OrmRollbackInitial";
+    private const string RollbackFailingMigration = "20260729010200_OrmRollbackFails";
 
     private readonly string _workspace = Path.Combine(
         Path.GetTempPath(),
-        $"csharpdb_phase6_orm_{Guid.NewGuid():N}");
+        $"csharpdb_orm_migration_{Guid.NewGuid():N}");
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
@@ -44,7 +44,7 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
         string generatedUp;
         string generatedDown;
 
-        await using (var db = new Phase6MigrationContext(ConnectionString(generationPath)))
+        await using (var db = new OrmMigrationContext(ConnectionString(generationPath)))
         {
             IMigrator migrator = db.GetService<IMigrator>();
             generatedUp = NormalizeSql(migrator.GenerateScript());
@@ -54,8 +54,8 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
                     Migration.InitialDatabase));
         }
 
-        string expectedUp = ReadCorpus("phase6-up.sql");
-        string expectedDown = ReadCorpus("phase6-down.sql");
+        string expectedUp = ReadCorpus("orm-migration-corpus-up.sql");
+        string expectedDown = ReadCorpus("orm-migration-corpus-down.sql");
 
         Assert.Equal(expectedUp, generatedUp);
         Assert.Equal(expectedDown, generatedDown);
@@ -69,7 +69,7 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
             AssertFinalSchema(connection);
         }
 
-        await using (var db = new Phase6MigrationContext(ConnectionString(replayPath)))
+        await using (var db = new OrmMigrationContext(ConnectionString(replayPath)))
         {
             Assert.Equal(
                 [InitialMigration, RewriteMigration, LatestMigration],
@@ -104,7 +104,7 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
                 remainingTables.Contains);
         }
 
-        await using (var db = new Phase6MigrationContext(ConnectionString(replayPath)))
+        await using (var db = new OrmMigrationContext(ConnectionString(replayPath)))
         {
             Assert.Empty(await db.Database.GetAppliedMigrationsAsync(Ct));
         }
@@ -115,17 +115,17 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
     {
         string dbPath = DatabasePath("empty-runtime.db");
 
-        await using (var db = new Phase6MigrationContext(ConnectionString(dbPath)))
+        await using (var db = new OrmMigrationContext(ConnectionString(dbPath)))
         {
             await db.Database.MigrateAsync(Ct);
 
-            var organization = new Phase6Organization
+            var organization = new OrmOrganization
             {
                 TenantId = 7,
                 OrganizationId = 11,
                 Name = "runtime",
             };
-            organization.WorkItems.Add(new Phase6WorkItem
+            organization.WorkItems.Add(new OrmWorkItem
             {
                 TenantId = 7,
                 TaskId = 101,
@@ -133,7 +133,7 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
             });
 
             db.Organizations.Add(organization);
-            db.Members.Add(new Phase6Member
+            db.Members.Add(new OrmMember
             {
                 Id = 1,
                 Handle = "MixedCase",
@@ -147,13 +147,13 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
 
         await CSharpDbConnection.ClearAllPoolsAsync();
 
-        await using (var reopened = new Phase6MigrationContext(ConnectionString(dbPath)))
+        await using (var reopened = new OrmMigrationContext(ConnectionString(dbPath)))
         {
-            Phase6Organization organization = await reopened.Organizations.SingleAsync(Ct);
-            Phase6WorkItem workItem = await reopened.WorkItems.SingleAsync(Ct);
-            Phase6Member member = await reopened.Members
+            OrmOrganization organization = await reopened.Organizations.SingleAsync(Ct);
+            OrmWorkItem workItem = await reopened.WorkItems.SingleAsync(Ct);
+            OrmMember member = await reopened.Members
                 .SingleAsync(item => item.Handle == "mixedcase", Ct);
-            Phase6Member defaulted = await reopened.Members
+            OrmMember defaulted = await reopened.Members
                 .SingleAsync(item => item.Id == 2, Ct);
 
             Assert.Equal("runtime", organization.Name);
@@ -178,7 +178,7 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
                 (await reopened.WorkItems.SingleAsync(Ct)).Title);
             Assert.False(await reopened.Members.AnyAsync(item => item.Id == 2, Ct));
 
-            reopened.Members.Add(new Phase6Member
+            reopened.Members.Add(new OrmMember
             {
                 Id = 3,
                 Handle = "invalid",
@@ -199,7 +199,7 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
     {
         string dbPath = DatabasePath("populated-chain.db");
 
-        await using (var db = new Phase6MigrationContext(ConnectionString(dbPath)))
+        await using (var db = new OrmMigrationContext(ConnectionString(dbPath)))
         {
             await db.GetService<IMigrator>().MigrateAsync(InitialMigration, Ct);
         }
@@ -217,7 +217,7 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
             VALUES (10, 'ten'), (20, 'twenty');
             """);
 
-        await using (var db = new Phase6MigrationContext(ConnectionString(dbPath)))
+        await using (var db = new OrmMigrationContext(ConnectionString(dbPath)))
         {
             await db.GetService<IMigrator>().MigrateAsync(RewriteMigration, Ct);
             Assert.Equal(
@@ -248,25 +248,25 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
                         .Cast<DataRow>())["COLUMN_NAME"]);
         }
 
-        await using (var db = new Phase6MigrationContext(ConnectionString(dbPath)))
+        await using (var db = new OrmMigrationContext(ConnectionString(dbPath)))
         {
             await db.Database.MigrateAsync(Ct);
         }
 
         await CSharpDbConnection.ClearAllPoolsAsync();
 
-        await using (var reopened = new Phase6MigrationContext(ConnectionString(dbPath)))
+        await using (var reopened = new OrmMigrationContext(ConnectionString(dbPath)))
         {
             Assert.Equal(
                 [InitialMigration, RewriteMigration, LatestMigration],
                 (await reopened.Database.GetAppliedMigrationsAsync(Ct)).ToArray());
 
-            Phase6Member member = await reopened.Members
+            OrmMember member = await reopened.Members
                 .SingleAsync(item => item.Id == 5, Ct);
             Assert.Equal("LegacyCode", member.Handle);
             Assert.Equal(6D, member.Rating);
 
-            Phase6WorkItem workItem = await reopened.WorkItems
+            OrmWorkItem workItem = await reopened.WorkItems
                 .SingleAsync(item => item.TenantId == 3 && item.TaskId == 41, Ct);
             Assert.Equal("preserved task", workItem.Title);
         }
@@ -280,7 +280,7 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
 
         await ExerciseReferentialActionsAsync(dbPath);
 
-        await using (var db = new Phase6MigrationContext(ConnectionString(dbPath)))
+        await using (var db = new OrmMigrationContext(ConnectionString(dbPath)))
         {
             await db.GetService<IMigrator>().MigrateAsync(InitialMigration, Ct);
         }
@@ -360,7 +360,7 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
                     dbPath,
                     "SELECT COUNT(*) FROM MemberProfiles WHERE Id = 6 AND Code = 'LEGACY';")));
 
-        await using (var db = new Phase6MigrationContext(ConnectionString(dbPath)))
+        await using (var db = new OrmMigrationContext(ConnectionString(dbPath)))
         {
             Assert.Equal(
                 [InitialMigration],
@@ -378,7 +378,7 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
     {
         string dbPath = DatabasePath("failed-rollback.db");
 
-        await using (var db = new Phase6RollbackContext(ConnectionString(dbPath)))
+        await using (var db = new OrmRollbackContext(ConnectionString(dbPath)))
         {
             await db.GetService<IMigrator>().MigrateAsync(RollbackInitialMigration, Ct);
         }
@@ -390,7 +390,7 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
             VALUES (1, NULL, 'preserved');
             """);
 
-        await using (var db = new Phase6RollbackContext(ConnectionString(dbPath)))
+        await using (var db = new OrmRollbackContext(ConnectionString(dbPath)))
         {
             await Assert.ThrowsAsync<CSharpDbDataException>(
                 () => db.GetService<IMigrator>()
@@ -432,7 +432,7 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
                     dbPath,
                     "SELECT COUNT(*) FROM RollbackItems WHERE Id = 1 AND Score IS NULL;")));
 
-        await using (var verify = new Phase6RollbackContext(ConnectionString(dbPath)))
+        await using (var verify = new OrmRollbackContext(ConnectionString(dbPath)))
         {
             Assert.Equal(
                 [RollbackInitialMigration],
@@ -443,7 +443,7 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
             dbPath,
             "UPDATE RollbackItems SET Score = 3 WHERE Id = 1;");
 
-        await using (var recovered = new Phase6RollbackContext(ConnectionString(dbPath)))
+        await using (var recovered = new OrmRollbackContext(ConnectionString(dbPath)))
         {
             await recovered.GetService<IMigrator>()
                 .MigrateAsync(RollbackFailingMigration, Ct);
@@ -484,7 +484,7 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
     [Fact]
     public void UnsupportedSequenceOperations_FailDuringSqlGeneration_WithStableDiagnostic()
     {
-        using var db = new Phase6MigrationContext(ConnectionString(DatabasePath("unsupported.db")));
+        using var db = new OrmMigrationContext(ConnectionString(DatabasePath("unsupported.db")));
         IMigrationsSqlGenerator generator = db.GetService<IMigrationsSqlGenerator>();
 
         MigrationOperation[] operations =
@@ -527,7 +527,7 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
     [Fact]
     public void UnsupportedCollation_FailsDuringSqlGeneration_WithStableDiagnostic()
     {
-        using var db = new Phase6MigrationContext(
+        using var db = new OrmMigrationContext(
             ConnectionString(DatabasePath("unsupported-collation.db")));
         IMigrationsSqlGenerator generator = db.GetService<IMigrationsSqlGenerator>();
         var alterColumn = new AlterColumnOperation
@@ -572,7 +572,7 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
     [Fact]
     public void UnsupportedSchema_FailsDuringSqlGeneration_WithStableDiagnostic()
     {
-        using var db = new Phase6MigrationContext(
+        using var db = new OrmMigrationContext(
             ConnectionString(DatabasePath("unsupported-schema.db")));
         IMigrationsSqlGenerator generator = db.GetService<IMigrationsSqlGenerator>();
 
@@ -597,7 +597,7 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
     [Fact]
     public void UnsupportedDatabaseAndTableAlterations_FailDuringSqlGeneration_WithStableDiagnostics()
     {
-        using var db = new Phase6MigrationContext(
+        using var db = new OrmMigrationContext(
             ConnectionString(DatabasePath("unsupported-alterations.db")));
         IMigrationsSqlGenerator generator = db.GetService<IMigrationsSqlGenerator>();
 
@@ -626,7 +626,7 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
     [Fact]
     public void UnsupportedSchemaComments_FailDuringSqlGeneration_WithStableDiagnostics()
     {
-        using var db = new Phase6MigrationContext(
+        using var db = new OrmMigrationContext(
             ConnectionString(DatabasePath("unsupported-comments.db")));
         IMigrationsSqlGenerator generator = db.GetService<IMigrationsSqlGenerator>();
 
@@ -848,20 +848,20 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
         return await command.ExecuteScalarAsync(Ct);
     }
 
-    private sealed class Phase6MigrationContext(string connectionString) : DbContext
+    private sealed class OrmMigrationContext(string connectionString) : DbContext
     {
-        public DbSet<Phase6Organization> Organizations => Set<Phase6Organization>();
+        public DbSet<OrmOrganization> Organizations => Set<OrmOrganization>();
 
-        public DbSet<Phase6WorkItem> WorkItems => Set<Phase6WorkItem>();
+        public DbSet<OrmWorkItem> WorkItems => Set<OrmWorkItem>();
 
-        public DbSet<Phase6Member> Members => Set<Phase6Member>();
+        public DbSet<OrmMember> Members => Set<OrmMember>();
 
         protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder) =>
             optionsBuilder.UseCSharpDb(connectionString);
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<Phase6Organization>(organization =>
+            modelBuilder.Entity<OrmOrganization>(organization =>
             {
                 organization.ToTable(
                     "Organizations",
@@ -874,7 +874,7 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
                     .HasDefaultValue("unnamed");
             });
 
-            modelBuilder.Entity<Phase6WorkItem>(workItem =>
+            modelBuilder.Entity<OrmWorkItem>(workItem =>
             {
                 workItem.ToTable(
                     "WorkItems",
@@ -894,7 +894,7 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
                     .OnDelete(DeleteBehavior.Cascade);
             });
 
-            modelBuilder.Entity<Phase6Member>(member =>
+            modelBuilder.Entity<OrmMember>(member =>
             {
                 member.ToTable(
                     "Members",
@@ -916,13 +916,13 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
         }
     }
 
-    private sealed class Phase6RollbackContext(string connectionString) : DbContext
+    private sealed class OrmRollbackContext(string connectionString) : DbContext
     {
         protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder) =>
             optionsBuilder.UseCSharpDb(connectionString);
     }
 
-    private sealed class Phase6Organization
+    private sealed class OrmOrganization
     {
         public int TenantId { get; set; }
 
@@ -930,10 +930,10 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
 
         public string Name { get; set; } = string.Empty;
 
-        public List<Phase6WorkItem> WorkItems { get; set; } = [];
+        public List<OrmWorkItem> WorkItems { get; set; } = [];
     }
 
-    private sealed class Phase6WorkItem
+    private sealed class OrmWorkItem
     {
         public int TenantId { get; set; }
 
@@ -945,10 +945,10 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
 
         public string State { get; set; } = "open";
 
-        public Phase6Organization Organization { get; set; } = null!;
+        public OrmOrganization Organization { get; set; } = null!;
     }
 
-    private sealed class Phase6Member
+    private sealed class OrmMember
     {
         public int Id { get; set; }
 
@@ -959,9 +959,9 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
         public string State { get; set; } = "active";
     }
 
-    [DbContext(typeof(Phase6MigrationContext))]
+    [DbContext(typeof(OrmMigrationContext))]
     [Migration(InitialMigration)]
-    private sealed class Phase6Initial : Migration
+    private sealed class OrmCorpusInitial : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
         {
@@ -1154,9 +1154,9 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
         }
     }
 
-    [DbContext(typeof(Phase6MigrationContext))]
+    [DbContext(typeof(OrmMigrationContext))]
     [Migration(RewriteMigration)]
-    private sealed class Phase6RewriteAndRename : Migration
+    private sealed class OrmCorpusRewriteAndRename : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
         {
@@ -1246,9 +1246,9 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
         }
     }
 
-    [DbContext(typeof(Phase6MigrationContext))]
+    [DbContext(typeof(OrmMigrationContext))]
     [Migration(LatestMigration)]
-    private sealed class Phase6CompositeRekey : Migration
+    private sealed class OrmCorpusCompositeRekey : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
         {
@@ -1282,9 +1282,9 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
         }
     }
 
-    [DbContext(typeof(Phase6RollbackContext))]
+    [DbContext(typeof(OrmRollbackContext))]
     [Migration(RollbackInitialMigration)]
-    private sealed class Phase6RollbackInitial : Migration
+    private sealed class OrmRollbackInitial : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
         {
@@ -1307,9 +1307,9 @@ public sealed class Phase6OrmMigrationCorpusTests : IAsyncLifetime
             migrationBuilder.DropTable("RollbackItems");
     }
 
-    [DbContext(typeof(Phase6RollbackContext))]
+    [DbContext(typeof(OrmRollbackContext))]
     [Migration(RollbackFailingMigration)]
-    private sealed class Phase6RollbackFails : Migration
+    private sealed class OrmRollbackFails : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
         {

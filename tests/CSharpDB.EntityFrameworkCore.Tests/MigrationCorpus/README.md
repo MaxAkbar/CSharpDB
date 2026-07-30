@@ -1,8 +1,9 @@
-# Phase 6 EF migration SQL corpus
+# EF ORM migration SQL corpus
 
-`phase6-up.sql` and `phase6-down.sql` are exact, generated SQL snapshots for
+`orm-migration-corpus-up.sql` and `orm-migration-corpus-down.sql` are exact,
+generated SQL snapshots for
 the representative three-version migration chain in
-`Phase6OrmMigrationCorpusTests`.
+`OrmMigrationCorpusTests`.
 
 The tests compare provider output with these files and then replay the checked-in
 SQL through `CSharpDbConnection`, without using EF to apply it. Update the

@@ -6,7 +6,7 @@ ALTER TABLE "RekeyCandidates" DROP COLUMN "Region";
 ALTER TABLE "RekeyCandidates" ADD CONSTRAINT "PK_RekeyCandidates_Physical" PRIMARY KEY ("Id");
 
 DELETE FROM "__EFMigrationsHistory"
-WHERE "MigrationId" = '20260729000300_Phase6CompositeRekey';
+WHERE "MigrationId" = '20260729000300_OrmCorpusCompositeRekey';
 
 COMMIT;
 
@@ -32,7 +32,7 @@ ALTER TABLE "MemberProfiles" ALTER COLUMN "Rating" SET DEFAULT 1;
 ALTER TABLE "RekeyCandidates" DROP CONSTRAINT "PK_RekeyCandidates_Physical";
 
 DELETE FROM "__EFMigrationsHistory"
-WHERE "MigrationId" = '20260729000200_Phase6RewriteAndRename';
+WHERE "MigrationId" = '20260729000200_OrmCorpusRewriteAndRename';
 
 COMMIT;
 
@@ -58,6 +58,6 @@ DROP TABLE "Organizations";
 DROP TABLE "RekeyCandidates";
 
 DELETE FROM "__EFMigrationsHistory"
-WHERE "MigrationId" = '20260729000100_Phase6Initial';
+WHERE "MigrationId" = '20260729000100_OrmCorpusInitial';
 
 COMMIT;

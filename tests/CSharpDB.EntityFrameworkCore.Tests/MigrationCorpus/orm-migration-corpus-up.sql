@@ -81,7 +81,7 @@ CREATE TABLE "ActionSetDefault" (
 );
 
 INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
-VALUES ('20260729000100_Phase6Initial', '10.0.10');
+VALUES ('20260729000100_OrmCorpusInitial', '10.0.10');
 
 COMMIT;
 
@@ -107,7 +107,7 @@ ALTER TABLE "Members" RENAME COLUMN "Code" TO "Handle";
 ALTER TABLE "Members" RENAME INDEX "IX_MemberProfiles_Code" TO "IX_Members_Handle";
 
 INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
-VALUES ('20260729000200_Phase6RewriteAndRename', '10.0.10');
+VALUES ('20260729000200_OrmCorpusRewriteAndRename', '10.0.10');
 
 COMMIT;
 
@@ -119,6 +119,6 @@ ALTER TABLE "RekeyCandidates" ADD COLUMN "Region" TEXT NOT NULL DEFAULT 'west';
 ALTER TABLE "RekeyCandidates" ADD CONSTRAINT "PK_RekeyCandidates" PRIMARY KEY ("Region", "Id");
 
 INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
-VALUES ('20260729000300_Phase6CompositeRekey', '10.0.10');
+VALUES ('20260729000300_OrmCorpusCompositeRekey', '10.0.10');
 
 COMMIT;
