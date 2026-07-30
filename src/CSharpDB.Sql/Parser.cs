@@ -142,7 +142,16 @@ public sealed class Parser
         var parser = new Parser(tokens);
         Statement statement = parser.ParseStatement();
         if (parser.Peek().Type != TokenType.Eof)
+        {
+            if (parser._pos > 0 &&
+                tokens[parser._pos - 1].Type == TokenType.Semicolon)
+            {
+                throw parser.Error(
+                    "Multiple statements in one call are not supported; tokens after statement termination must be sent as a separate call.");
+            }
+
             throw parser.Error($"Unexpected token '{parser.Peek().Value}' after statement.");
+        }
         return statement;
     }
 
@@ -198,6 +207,29 @@ public sealed class Parser
     public Statement ParseStatement()
     {
         var token = Peek();
+        if (IsContextualKeyword(token, "UPSERT") ||
+            IsContextualKeyword(token, "REPLACE"))
+        {
+            throw Error(
+                "UPSERT and REPLACE statements are not supported.");
+        }
+
+        if (IsContextualKeyword(token, "CALL"))
+        {
+            throw Error(
+                "Stored-procedure SQL statements are not supported; use the client API.");
+        }
+
+        if (token.Type == TokenType.Begin ||
+            IsContextualKeyword(token, "COMMIT") ||
+            IsContextualKeyword(token, "ROLLBACK") ||
+            IsContextualKeyword(token, "SAVEPOINT") ||
+            IsContextualKeyword(token, "RELEASE"))
+        {
+            throw Error(
+                "SQL transaction and savepoint statements are not supported; use client transaction sessions.");
+        }
+
         Statement stmt = token.Type switch
         {
             TokenType.Create => ParseCreate(),
@@ -218,6 +250,21 @@ public sealed class Parser
             TokenType.If => ParseConditional(),
             _ => throw Error($"Unexpected token '{token.Value}', expected a statement."),
         };
+
+        if (stmt is InsertStatement or UpdateStatement or DeleteStatement &&
+            IsContextualKeyword(Peek(), "RETURNING"))
+        {
+            throw Error("RETURNING clauses are not supported.");
+        }
+
+        if (stmt is InsertStatement &&
+            Peek().Type == TokenType.On &&
+            _pos + 1 < _tokens.Count &&
+            IsContextualKeyword(_tokens[_pos + 1], "CONFLICT"))
+        {
+            throw Error(
+                "INSERT ... ON CONFLICT is not supported.");
+        }
 
         // Optional trailing semicolon
         if (Peek().Type == TokenType.Semicolon)
@@ -1369,6 +1416,11 @@ public sealed class Parser
             Expect(TokenType.Rule);
             return ParseCreateValidationRuleBody();
         }
+        if (IsContextualKeyword(Peek(), "PROCEDURE"))
+        {
+            throw Error(
+                "CREATE PROCEDURE SQL statements are not supported; use the client API.");
+        }
         if (t is TokenType.Temp or TokenType.Temporary)
         {
             Advance(); // consume TEMP/TEMPORARY
@@ -1768,30 +1820,72 @@ public sealed class Parser
         var onUpdate = ForeignKeyOnDeleteAction.Restrict;
         bool hasOnDelete = false;
         bool hasOnUpdate = false;
+        bool hasMatch = false;
 
-        while (TryConsume(TokenType.On))
+        while (true)
         {
-            if (TryConsume(TokenType.Delete))
+            if (TryConsumeContextualKeyword("MATCH"))
             {
-                if (hasOnDelete)
-                    throw Error($"ON DELETE specified multiple times for {context}.");
+                if (hasMatch)
+                    throw Error($"MATCH specified multiple times for {context}.");
 
-                hasOnDelete = true;
-                onDelete = ParseForeignKeyAction("ON DELETE", context);
-            }
-            else if (TryConsume(TokenType.Update))
-            {
-                if (hasOnUpdate)
-                    throw Error($"ON UPDATE specified multiple times for {context}.");
+                hasMatch = true;
+                string matchKind = Peek().Value.ToUpperInvariant();
+                if (matchKind is not ("SIMPLE" or "FULL" or "PARTIAL"))
+                {
+                    throw Error(
+                        $"Expected SIMPLE, FULL, or PARTIAL after MATCH for {context}.");
+                }
 
-                hasOnUpdate = true;
-                onUpdate = ParseForeignKeyAction("ON UPDATE", context);
+                Advance();
+                if (matchKind is not "SIMPLE")
+                {
+                    throw Error(
+                        $"MATCH {matchKind} foreign-key constraints are not supported; CSharpDB uses MATCH SIMPLE semantics.");
+                }
+
+                continue;
             }
-            else
+
+            if (TryConsume(TokenType.On))
             {
-                throw Error(
-                    $"Expected DELETE or UPDATE after ON for {context}.");
+                if (TryConsume(TokenType.Delete))
+                {
+                    if (hasOnDelete)
+                        throw Error($"ON DELETE specified multiple times for {context}.");
+
+                    hasOnDelete = true;
+                    onDelete = ParseForeignKeyAction("ON DELETE", context);
+                }
+                else if (TryConsume(TokenType.Update))
+                {
+                    if (hasOnUpdate)
+                        throw Error($"ON UPDATE specified multiple times for {context}.");
+
+                    hasOnUpdate = true;
+                    onUpdate = ParseForeignKeyAction("ON UPDATE", context);
+                }
+                else
+                {
+                    throw Error(
+                        $"Expected DELETE or UPDATE after ON for {context}.");
+                }
+
+                continue;
             }
+
+            break;
+        }
+
+        if (IsContextualKeyword(Peek(), "DEFERRABLE") ||
+            IsContextualKeyword(Peek(), "INITIALLY") ||
+            IsContextualKeyword(Peek(), "DEFERRED") ||
+            (Peek().Type == TokenType.Not &&
+             _pos + 1 < _tokens.Count &&
+             IsContextualKeyword(_tokens[_pos + 1], "DEFERRABLE")))
+        {
+            throw Error(
+                "DEFERRABLE foreign-key clauses are not supported; foreign keys are checked immediately.");
         }
 
         return (onDelete, onUpdate);
@@ -1966,12 +2060,11 @@ public sealed class Parser
             Expect(TokenType.Row);
         }
 
-        // Optional: WHEN (condition)
+        // Optional WHEN remains in the AST so execution can reject it with a
+        // stable diagnostic before catalog persistence.
         Expression? whenCondition = null;
-        if (Peek().Type == TokenType.Where || (Peek().Type == TokenType.Identifier && Peek().Value.Equals("WHEN", StringComparison.OrdinalIgnoreCase)))
+        if (TryConsumeContextualKeyword("WHEN"))
         {
-            // WHEN is not a keyword token, handle it as identifier check
-            Advance();
             Expect(TokenType.LeftParen);
             whenCondition = ParseExpression();
             Expect(TokenType.RightParen);
@@ -2245,6 +2338,17 @@ public sealed class Parser
     private InsertStatement ParseInsert()
     {
         Expect(TokenType.Insert);
+        if (TryConsume(TokenType.Or))
+        {
+            if (TryConsumeContextualKeyword("REPLACE"))
+            {
+                throw Error(
+                    "INSERT OR REPLACE is not supported.");
+            }
+
+            throw Error("Expected REPLACE after INSERT OR.");
+        }
+
         Expect(TokenType.Into);
         string tableName = ExpectIdentifier();
 
@@ -2352,6 +2456,13 @@ public sealed class Parser
                 TokenType.Except => SetOperationKind.Except,
                 _ => throw new InvalidOperationException(),
             };
+            if (opToken == TokenType.Except &&
+                TryConsumeContextualKeyword("ALL"))
+            {
+                throw Error(
+                    "EXCEPT ALL is not supported; use EXCEPT.");
+            }
+
             var quantifier = opToken == TokenType.Union && TryConsumeContextualKeyword("ALL")
                 ? SetQuantifier.All
                 : SetQuantifier.Distinct;
@@ -2376,6 +2487,12 @@ public sealed class Parser
         while (Peek().Type == TokenType.Intersect)
         {
             Advance();
+            if (TryConsumeContextualKeyword("ALL"))
+            {
+                throw Error(
+                    "INTERSECT ALL is not supported; use INTERSECT.");
+            }
+
             var right = ParseQueryPrimary();
             left = new CompoundSelectStatement
             {
@@ -2415,6 +2532,13 @@ public sealed class Parser
             }
 
             var expr = ParseExpression();
+            if (IsContextualKeyword(Peek(), "IGNORE") ||
+                IsContextualKeyword(Peek(), "RESPECT"))
+            {
+                throw Error(
+                    "IGNORE NULLS and RESPECT NULLS window syntax is not supported.");
+            }
+
             string? alias = null;
             if (Peek().Type == TokenType.As)
             {
@@ -2805,8 +2929,11 @@ public sealed class Parser
     {
         Expect(TokenType.With);
 
-        // Optional RECURSIVE keyword (parsed but not used — recursive CTEs not supported yet)
-        TryConsume(TokenType.Recursive);
+        if (TryConsume(TokenType.Recursive))
+        {
+            throw Error(
+                "Recursive CTE execution is not supported.");
+        }
 
         var ctes = new List<CteDefinition>();
         do
@@ -2855,8 +2982,12 @@ public sealed class Parser
         TableRef left = ParseSimpleTableRef();
 
         // Parse chained JOINs
-        while (IsJoinKeyword(Peek().Type))
+        while (true)
         {
+            ThrowIfUnsupportedJoin();
+            if (!IsJoinKeyword(Peek().Type))
+                break;
+
             var joinType = ParseJoinType();
             var right = ParseSimpleTableRef();
             Expression? condition = null;
@@ -2889,7 +3020,8 @@ public sealed class Parser
         }
         else if (Peek().Type == TokenType.Identifier &&
                  !IsClauseKeyword(Peek().Type) &&
-                 !IsContextualKeyword(Peek(), "WINDOW"))
+                 !IsContextualKeyword(Peek(), "WINDOW") &&
+                 !IsUnsupportedJoinStart())
         {
             // Implicit alias (no AS keyword)
             alias = Peek().Value;
@@ -2953,6 +3085,34 @@ public sealed class Parser
 
     private static bool IsJoinKeyword(TokenType type) =>
         type is TokenType.Join or TokenType.Inner or TokenType.Left or TokenType.Right or TokenType.Cross;
+
+    private void ThrowIfUnsupportedJoin()
+    {
+        if (!IsUnsupportedJoinStart())
+            return;
+
+        if (IsContextualKeyword(Peek(), "FULL"))
+        {
+            throw Error(
+                "FULL OUTER JOIN is not supported; use supported LEFT, RIGHT, INNER, or CROSS joins.");
+        }
+
+        throw Error(
+            "NATURAL JOIN is not supported; write an explicit JOIN ... ON condition.");
+    }
+
+    private bool IsUnsupportedJoinStart()
+    {
+        if (_pos + 1 >= _tokens.Count)
+            return false;
+
+        TokenType next = _tokens[_pos + 1].Type;
+        return IsContextualKeyword(Peek(), "FULL") &&
+               next is TokenType.Outer or TokenType.Join ||
+               IsContextualKeyword(Peek(), "NATURAL") &&
+               next is TokenType.Join or TokenType.Inner or TokenType.Left
+                   or TokenType.Right or TokenType.Cross;
+    }
 
     /// <summary>
     /// Returns true if the token is a SQL clause keyword that cannot be a table alias.
@@ -3662,6 +3822,16 @@ public sealed class Parser
     private Expression ParsePrimary()
     {
         var token = Peek();
+
+        if (IsContextualKeyword(token, "CASE"))
+            throw Error("CASE expressions are not supported.");
+
+        if (IsContextualKeyword(token, "CAST") &&
+            _pos + 1 < _tokens.Count &&
+            _tokens[_pos + 1].Type == TokenType.LeftParen)
+        {
+            throw Error("CAST expressions are not supported; use supported implicit conversions.");
+        }
 
         if (IsFunctionCallStart(token))
             return ParseFunctionCall(token, allowAggregateModifiers: IsAggregateFunctionToken(token.Type));

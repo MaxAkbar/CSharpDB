@@ -460,6 +460,8 @@ public static class GrpcModelMapper
             PageSize = value.PageSize,
         };
         message.ColumnNames.Add(value.ColumnNames);
+        if (value.ColumnTypes is not null)
+            message.ColumnTypes = ToStringList(value.ColumnTypes);
         message.Rows.Add(value.Rows.Select(GrpcValueMapper.ToArray));
         return message;
     }
@@ -469,6 +471,7 @@ public static class GrpcModelMapper
         {
             ViewName = value.ViewName,
             ColumnNames = value.ColumnNames.ToArray(),
+            ColumnTypes = value.ColumnTypes?.Values.ToArray(),
             Rows = value.Rows.Select(GrpcValueMapper.ToArray).ToList(),
             TotalRows = value.TotalRows,
             Page = value.Page,
@@ -1521,6 +1524,7 @@ public static class GrpcModelMapper
             StatementText = value.StatementText,
             IsQuery = value.IsQuery,
             ColumnNames = value.ColumnNames is null ? null : ToStringList(value.ColumnNames),
+            ColumnTypes = value.ColumnTypes is null ? null : ToStringList(value.ColumnTypes),
             Rows = value.Rows is null ? null : ToVariantArrayList(value.Rows),
             RowsAffected = value.RowsAffected,
             Elapsed = Duration.FromTimeSpan(value.Elapsed),
@@ -1533,6 +1537,7 @@ public static class GrpcModelMapper
             StatementText = value.StatementText,
             IsQuery = value.IsQuery,
             ColumnNames = value.ColumnNames?.Values.ToArray(),
+            ColumnTypes = value.ColumnTypes?.Values.ToArray(),
             Rows = value.Rows is null ? null : ToRows(value.Rows),
             RowsAffected = value.RowsAffected,
             Elapsed = value.Elapsed.ToTimeSpan(),

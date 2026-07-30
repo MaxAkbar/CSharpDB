@@ -957,11 +957,24 @@ public class ParserTests
     }
 
     [Theory]
-    [InlineData("SELECT id FROM a INTERSECT ALL SELECT id FROM b")]
-    [InlineData("SELECT id FROM a EXCEPT ALL SELECT id FROM b")]
-    public void Parse_AllIsOnlySupportedForUnion(string sql)
+    [InlineData(
+        "SELECT id FROM a INTERSECT ALL SELECT id FROM b",
+        "INTERSECT ALL is not supported; use INTERSECT.")]
+    [InlineData(
+        "SELECT id FROM a EXCEPT ALL SELECT id FROM b",
+        "EXCEPT ALL is not supported; use EXCEPT.")]
+    public void Parse_AllIsOnlySupportedForUnion(
+        string sql,
+        string expectedMessage)
     {
-        Assert.Throws<CSharpDbException>(() => Parser.Parse(sql));
+        CSharpDbException error = Assert.Throws<CSharpDbException>(
+            () => Parser.Parse(sql));
+
+        Assert.Equal(ErrorCode.SyntaxError, error.Code);
+        Assert.Contains(
+            expectedMessage,
+            error.Message,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1510,12 +1523,17 @@ public class ParserTests
     }
 
     [Fact]
-    public void Parse_CteWithRecursiveKeyword()
+    public void Parse_CteWithRecursiveKeyword_IsRejected()
     {
-        // RECURSIVE is accepted but not functionally implemented — just ensure it parses
-        var stmt = Parser.Parse("WITH RECURSIVE cte AS (SELECT id FROM t) SELECT * FROM cte");
-        var with = Assert.IsType<WithStatement>(stmt);
-        Assert.Single(with.Ctes);
+        CSharpDbException error = Assert.Throws<CSharpDbException>(
+            () => Parser.Parse(
+                "WITH RECURSIVE cte AS (SELECT id FROM t) SELECT * FROM cte"));
+
+        Assert.Equal(ErrorCode.SyntaxError, error.Code);
+        Assert.Contains(
+            "Recursive CTE execution is not supported",
+            error.Message,
+            StringComparison.Ordinal);
     }
 
     #endregion

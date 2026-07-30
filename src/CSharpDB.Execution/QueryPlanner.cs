@@ -3837,6 +3837,13 @@ public sealed partial class QueryPlanner
 
     private async ValueTask<QueryResult> ExecuteCreateTriggerAsync(CreateTriggerStatement stmt, CancellationToken ct)
     {
+        if (stmt.WhenCondition is not null)
+        {
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                "Trigger WHEN conditions are not supported.");
+        }
+
         if (HasTemporaryTable(stmt.TableName))
             throw new CSharpDbException(ErrorCode.SyntaxError, "Temporary tables do not support triggers in V1.");
 
@@ -5256,10 +5263,6 @@ public sealed partial class QueryPlanner
                 bodyStatements = ParseTriggerBody(trigger.BodySql);
                 _triggerBodyCache[trigger.TriggerName] = bodyStatements;
             }
-
-            // Check WHEN condition if present in the original trigger definition
-            // (For MVP, WHEN is evaluated at creation time and stored as part of the body check)
-            // We can add WHEN support later if needed
 
             // Build a composite schema that can resolve NEW.col and OLD.col
             var compositeSchema = BuildTriggerSchema(tableSchema, oldRow != null, newRow != null);

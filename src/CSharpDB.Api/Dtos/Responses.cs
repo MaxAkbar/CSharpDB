@@ -56,7 +56,8 @@ public sealed record BrowseResponse(
     int TotalRows,
     int Page,
     int PageSize,
-    int TotalPages);
+    int TotalPages,
+    string[]? ColumnTypes = null);
 
 // ─── Counts / Mutations ─────────────────────────────────────
 

@@ -26,6 +26,8 @@
   <ItemGroup>
     <EmbeddedResource Include="Capabilities\csharpdb-4.3.0.json"
                       LogicalName="CSharpDB.Migration.Capabilities.csharpdb-4.3.0.json" />
+    <EmbeddedResource Include="Capabilities\csharpdb-4.4.0.json"
+                      LogicalName="CSharpDB.Migration.Capabilities.csharpdb-4.4.0.json" />
   </ItemGroup>
 
 </Project>

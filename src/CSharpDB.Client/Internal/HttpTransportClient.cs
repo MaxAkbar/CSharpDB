@@ -300,7 +300,10 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
         {
             TableName = tableName,
             Schema = schema,
-            Rows = MapRows(payload.ColumnNames, payload.Rows),
+            Rows = MapRows(
+                payload.ColumnNames,
+                payload.Rows,
+                payload.ColumnTypes ?? GetColumnTypes(payload.ColumnNames, schema)),
             TotalRows = payload.TotalRows,
             Page = payload.Page,
             PageSize = payload.PageSize,
@@ -309,6 +312,9 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
 
     public async Task<Dictionary<string, object?>?> GetRowByPkAsync(string tableName, string pkColumn, object pkValue, CancellationToken ct = default)
     {
+        TableSchema schema = await GetTableSchemaAsync(tableName, ct)
+            ?? throw new CSharpDbClientException($"Table '{tableName}' was not found.");
+
         using var response = await SendAsync(
             HttpMethod.Get,
             BuildUri(
@@ -327,7 +333,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
         }
 
         var payload = await ReadRequiredAsync<Dictionary<string, object?>>(response, ct);
-        return NormalizeDictionary(payload);
+        return NormalizeDictionary(payload, schema);
     }
 
     public async Task<int> InsertRowAsync(string tableName, Dictionary<string, object?> values, CancellationToken ct = default)
@@ -520,7 +526,8 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
         {
             ViewName = viewName,
             ColumnNames = payload.ColumnNames,
-            Rows = MapRows(payload.ColumnNames, payload.Rows),
+            ColumnTypes = payload.ColumnTypes,
+            Rows = MapRows(payload.ColumnNames, payload.Rows, payload.ColumnTypes),
             TotalRows = payload.TotalRows,
             Page = payload.Page,
             PageSize = payload.PageSize,
@@ -1213,17 +1220,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
         {
             Name = payload.Name,
             BodySql = payload.BodySql,
-            Parameters = payload.Parameters.Select(parameter => new ProcedureParameterDefinition
-            {
-                Name = parameter.Name,
-                Type = Enum.TryParse<DbType>(parameter.Type, ignoreCase: true, out var type)
-                    && Enum.IsDefined(type)
-                    ? type
-                    : throw new CSharpDbClientException($"Unsupported procedure parameter type '{parameter.Type}'."),
-                Required = parameter.Required,
-                Default = NormalizeValue(parameter.Default),
-                Description = parameter.Description,
-            }).ToList(),
+            Parameters = payload.Parameters.Select(MapProcedureParameter).ToList(),
             Description = payload.Description,
             IsEnabled = payload.IsEnabled,
             CreatedUtc = payload.CreatedUtc,
@@ -1241,7 +1238,10 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
                 StatementText = statement.StatementText,
                 IsQuery = statement.IsQuery,
                 ColumnNames = statement.ColumnNames,
-                Rows = statement.Rows is null ? null : MapRows(statement.ColumnNames ?? [], statement.Rows),
+                ColumnTypes = statement.ColumnTypes,
+                Rows = statement.Rows is null
+                    ? null
+                    : MapRows(statement.ColumnNames ?? [], statement.Rows, statement.ColumnTypes),
                 RowsAffected = statement.RowsAffected,
                 Elapsed = TimeSpan.FromMilliseconds(statement.ElapsedMs),
             }).ToList(),
@@ -1250,6 +1250,28 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
             Elapsed = TimeSpan.FromMilliseconds(payload.ElapsedMs),
         };
 
+    private static ProcedureParameterDefinition MapProcedureParameter(
+        ApiProcedureParameterResponse parameter)
+    {
+        DbType type = Enum.TryParse<DbType>(
+                parameter.Type,
+                ignoreCase: true,
+                out DbType parsedType)
+            && Enum.IsDefined(parsedType)
+                ? parsedType
+                : throw new CSharpDbClientException(
+                    $"Unsupported procedure parameter type '{parameter.Type}'.");
+
+        return new ProcedureParameterDefinition
+        {
+            Name = parameter.Name,
+            Type = type,
+            Required = parameter.Required,
+            Default = NormalizeValue(parameter.Default, type.ToString()),
+            Description = parameter.Description,
+        };
+    }
+
     private static SqlExecutionResult MapSqlResult(ApiSqlResultResponse payload)
         => new()
         {
@@ -1257,13 +1279,18 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
             ColumnNames = payload.ColumnNames,
             ColumnTypes = payload.ColumnTypes,
             ColumnNullability = payload.ColumnNullability,
-            Rows = payload.ColumnNames is null ? null : MapRows(payload.ColumnNames, payload.Rows),
+            Rows = payload.ColumnNames is null
+                ? null
+                : MapRows(payload.ColumnNames, payload.Rows, payload.ColumnTypes),
             RowsAffected = payload.RowsAffected,
             Error = payload.Error,
             Elapsed = TimeSpan.FromMilliseconds(payload.ElapsedMs),
         };
 
-    private static List<object?[]> MapRows(string[] columnNames, IReadOnlyList<Dictionary<string, object?>>? rows)
+    private static List<object?[]> MapRows(
+        string[] columnNames,
+        IReadOnlyList<Dictionary<string, object?>>? rows,
+        string[]? columnTypes = null)
     {
         if (rows is null || rows.Count == 0)
             return [];
@@ -1275,7 +1302,11 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
             for (int i = 0; i < columnNames.Length; i++)
             {
                 row.TryGetValue(columnNames[i], out object? rawValue);
-                values[i] = NormalizeValue(rawValue);
+                values[i] = NormalizeValue(
+                    rawValue,
+                    columnTypes is not null && i < columnTypes.Length
+                        ? columnTypes[i]
+                        : null);
             }
 
             mapped.Add(values);
@@ -1284,21 +1315,61 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
         return mapped;
     }
 
-    private static Dictionary<string, object?> NormalizeDictionary(Dictionary<string, object?> values)
+    private static Dictionary<string, object?> NormalizeDictionary(
+        Dictionary<string, object?> values,
+        TableSchema schema)
     {
+        var declaredTypes = schema.Columns.ToDictionary(
+            column => column.Name,
+            column => column.Type.ToString(),
+            StringComparer.OrdinalIgnoreCase);
         var normalized = new Dictionary<string, object?>(values.Count, StringComparer.OrdinalIgnoreCase);
         foreach (var (key, value) in values)
-            normalized[key] = NormalizeValue(value);
+        {
+            declaredTypes.TryGetValue(key, out string? declaredType);
+            normalized[key] = NormalizeValue(value, declaredType);
+        }
 
         return normalized;
     }
 
-    private static object? NormalizeValue(object? value) => value switch
+    private static object? NormalizeValue(object? value, string? declaredType = null) => value switch
     {
         null => null,
+        JsonElement { ValueKind: JsonValueKind.String } element
+            when string.Equals(declaredType, "BLOB", StringComparison.OrdinalIgnoreCase) =>
+            DecodeBlob(element.GetString() ?? string.Empty),
+        string encoded
+            when string.Equals(declaredType, "BLOB", StringComparison.OrdinalIgnoreCase) =>
+            DecodeBlob(encoded),
         JsonElement element => NormalizeJsonElement(element),
         _ => value,
     };
+
+    private static byte[] DecodeBlob(string encoded)
+    {
+        try
+        {
+            return Convert.FromBase64String(encoded);
+        }
+        catch (FormatException error)
+        {
+            throw new CSharpDbClientException(
+                "HTTP transport returned an invalid base64 value for a BLOB column.",
+                error);
+        }
+    }
+
+    private static string[] GetColumnTypes(string[] columnNames, TableSchema schema)
+    {
+        var declaredTypes = schema.Columns.ToDictionary(
+            column => column.Name,
+            column => column.Type.ToString().ToUpperInvariant(),
+            StringComparer.OrdinalIgnoreCase);
+        return columnNames
+            .Select(columnName => declaredTypes.GetValueOrDefault(columnName) ?? string.Empty)
+            .ToArray();
+    }
 
     private static object? NormalizeJsonElement(JsonElement value) => value.ValueKind switch
     {
@@ -1374,7 +1445,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
     private sealed record ApiForeignKeyResponse(string ConstraintName, string ColumnName, string ReferencedTableName, string ReferencedColumnName, string OnDelete, string SupportingIndexName, IReadOnlyList<string>? ColumnNames = null, IReadOnlyList<string>? ReferencedColumnNames = null, Guid SchemaId = default, IReadOnlyList<Guid>? ColumnSchemaIds = null, Guid ReferencedTableSchemaId = default, IReadOnlyList<Guid>? ReferencedColumnSchemaIds = null, Guid ReferencedKeySchemaId = default, string? OnUpdate = null);
     private sealed record ApiKeyConstraintResponse(string? ConstraintName, string Kind, IReadOnlyList<string> Columns, string? BackingIndexName, Guid SchemaId = default);
     private sealed record ApiCheckConstraintResponse(string? ConstraintName, string ExpressionSql, string? ColumnName, Guid SchemaId = default);
-    private sealed record ApiBrowseResponse(string[] ColumnNames, List<Dictionary<string, object?>> Rows, int TotalRows, int Page, int PageSize, int TotalPages);
+    private sealed record ApiBrowseResponse(string[] ColumnNames, List<Dictionary<string, object?>> Rows, int TotalRows, int Page, int PageSize, int TotalPages, string[]? ColumnTypes = null);
     private sealed record ApiRowCountResponse(string TableName, int Count);
     private sealed record ApiMutationResponse(int RowsAffected);
     private sealed record ApiCollectionCountResponse(string CollectionName, int Count);
@@ -1386,5 +1457,5 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
     private sealed record ApiProcedureDetailResponse(string Name, string BodySql, IReadOnlyList<ApiProcedureParameterResponse> Parameters, string? Description, bool IsEnabled, DateTime CreatedUtc, DateTime UpdatedUtc);
     private sealed record ApiProcedureParameterResponse(string Name, string Type, bool Required, object? Default, string? Description);
     private sealed record ApiProcedureExecutionResponse(string ProcedureName, bool Succeeded, IReadOnlyList<ApiProcedureStatementResultResponse> Statements, string? Error, int? FailedStatementIndex, double ElapsedMs);
-    private sealed record ApiProcedureStatementResultResponse(int StatementIndex, string StatementText, bool IsQuery, string[]? ColumnNames, IReadOnlyList<Dictionary<string, object?>>? Rows, int RowsAffected, double ElapsedMs);
+    private sealed record ApiProcedureStatementResultResponse(int StatementIndex, string StatementText, bool IsQuery, string[]? ColumnNames, IReadOnlyList<Dictionary<string, object?>>? Rows, int RowsAffected, double ElapsedMs, string[]? ColumnTypes = null);
 }

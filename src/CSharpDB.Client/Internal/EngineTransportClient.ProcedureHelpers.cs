@@ -124,6 +124,7 @@ internal sealed partial class EngineTransportClient
             StatementText = sql,
             IsQuery = result.IsQuery,
             ColumnNames = result.ColumnNames,
+            ColumnTypes = result.ColumnTypes,
             Rows = result.Rows,
             RowsAffected = result.RowsAffected,
             Elapsed = stopwatch.Elapsed,

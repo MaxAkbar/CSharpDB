@@ -263,6 +263,17 @@ public sealed class GrpcClientTests : IAsyncLifetime
         Assert.Equal(7L, Assert.IsType<long>(browse.Rows[0][0]));
         Assert.Equal("seven", Assert.IsType<string>(browse.Rows[0][1]));
         Assert.Equal(12.5, Assert.IsType<double>(browse.Rows[0][2]));
+
+        await client.CreateViewAsync(
+            "grpc_users_view",
+            "SELECT id, name, score FROM grpc_users",
+            Ct);
+        ViewBrowseResult view = await client.BrowseViewAsync(
+            "grpc_users_view",
+            ct: Ct);
+        Assert.Equal(
+            ["INTEGER", "TEXT", "REAL"],
+            Assert.IsType<string[]>(view.ColumnTypes));
     }
 
     [Fact]
@@ -1223,6 +1234,9 @@ public sealed class GrpcClientTests : IAsyncLifetime
 
         Assert.True(execution.Succeeded);
         Assert.NotEmpty(execution.Statements);
+        Assert.Equal(
+            ["INTEGER", "TEXT"],
+            Assert.IsType<string[]>(execution.Statements[^1].ColumnTypes));
         Assert.Equal(10L, Assert.IsType<long>(execution.Statements[^1].Rows![0][0]));
         Assert.Equal("fallback", Assert.IsType<string>(execution.Statements[^1].Rows![0][1]));
 
@@ -1526,6 +1540,32 @@ public sealed class GrpcClientTests : IAsyncLifetime
         Assert.Equal(
             result.ColumnNullability,
             roundTrip.ColumnNullability);
+    }
+
+    [Fact]
+    public void GrpcModelMapper_LegacyBrowseAndProcedureMessagesOmitColumnTypesSafely()
+    {
+        var viewMessage = new ViewBrowseResultMessage
+        {
+            ViewName = "legacy_view",
+            TotalRows = 0,
+            Page = 1,
+            PageSize = 50,
+        };
+        viewMessage.ColumnNames.Add("payload");
+
+        var procedureMessage = new ProcedureStatementExecutionResultMessage
+        {
+            StatementIndex = 0,
+            StatementText = "SELECT payload;",
+            IsQuery = true,
+            RowsAffected = 0,
+            Elapsed = Google.Protobuf.WellKnownTypes.Duration.FromTimeSpan(
+                TimeSpan.Zero),
+        };
+
+        Assert.Null(GrpcModelMapper.ToModel(viewMessage).ColumnTypes);
+        Assert.Null(GrpcModelMapper.ToModel(procedureMessage).ColumnTypes);
     }
 
     [Fact]

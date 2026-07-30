@@ -46,12 +46,59 @@ Use this path before tagging or when validating release packaging locally.
 Commit implementation, version, documentation, roadmap, and release-note
 changes together. The release tag is the immutable record of that source state.
 
-2. Build and test the release commit.
+2. Run the complete local release qualification from a clean checkout.
 
 ```powershell
-dotnet build CSharpDB.slnx -c Release
-dotnet test tests\CSharpDB.Daemon.Tests\CSharpDB.Daemon.Tests.csproj -c Release
+$QualificationOutput = Join-Path `
+  ([IO.Path]::GetTempPath()) `
+  "csharpdb-sql-release-$([Guid]::NewGuid().ToString('N'))"
+
+.\scripts\Test-SqlReleaseQualification.ps1 `
+  -OutputPath $QualificationOutput `
+  -Configuration Release
 ```
+
+The script validates documentation and package boundaries, restores and builds
+the solution, runs every test project in `CSharpDB.slnx`, runs the
+cross-platform migration-isolation checks, and adds the Windows-only Access
+isolation check on Windows. Logs, TRX results, temporary package state, and the
+Markdown result are written beneath the caller-selected output path outside
+the repository. The source tree must be clean before and after the run.
+
+The authoritative GitHub `SQL Release Qualification` workflow executes this
+same check in two independent clean jobs on each of Windows, Linux, and macOS.
+It can be started manually for a release candidate and is also required
+automatically by the tag release workflow before any publishing job starts.
+The workflow also runs the full release-core benchmark against the previous
+release in two independent clean Windows jobs. When no override is provided,
+the nearest prior semantic release tag reachable from the candidate is
+selected automatically. Pass 1 measures the previous release before the
+candidate; pass 2 reverses that order. Both same-runner comparisons must pass
+before any publishing job can start.
+
+The performance comparison is intentionally separate from the faster local
+qualification command above. To reproduce it locally, start with a clean
+worktree and choose two empty output directories outside the repository:
+
+```powershell
+$PerformanceRoot = Join-Path `
+  ([IO.Path]::GetTempPath()) `
+  "csharpdb-previous-release-$([Guid]::NewGuid().ToString('N'))"
+
+.\tests\CSharpDB.Benchmarks\scripts\Test-PreviousReleasePerformance.ps1 `
+  -CandidateRef HEAD `
+  -OutputPath (Join-Path $PerformanceRoot 'pass-1') `
+  -QualificationPass 1
+
+.\tests\CSharpDB.Benchmarks\scripts\Test-PreviousReleasePerformance.ps1 `
+  -CandidateRef HEAD `
+  -OutputPath (Join-Path $PerformanceRoot 'pass-2') `
+  -QualificationPass 2
+```
+
+Each pass runs the complete release-core suite for both revisions and can take
+several hours. The comparison scripts do not update promoted benchmark
+manifests or write generated results into the source tree.
 
 3. Publish one local archive for a fast packaging check.
 
@@ -87,10 +134,11 @@ git tag $Tag $TagCommit
 git push origin $Tag
 ```
 
-The GitHub Release workflow publishes the daemon archives for `win-x64`,
-`linux-x64`, and `osx-arm64`, smoke-starts each extracted binary, calls the
-daemon REST `/api/info` endpoint, verifies a gRPC `GetInfoAsync` client call,
-combines checksums, and attaches everything to the GitHub Release.
+The GitHub Release workflow first completes both clean qualification passes on
+Windows, Linux, and macOS. It then publishes the daemon archives for
+`win-x64`, `linux-x64`, and `osx-arm64`, smoke-starts each extracted binary,
+calls the daemon REST `/api/info` endpoint, verifies a gRPC `GetInfoAsync`
+client call, combines checksums, and attaches everything to the GitHub Release.
 
 ## Operator Walkthrough
 
@@ -247,7 +295,7 @@ provided.
 ### `Publish-CSharpDbMigrationRelease.ps1`
 
 Use this to create the installable combined migration CLI archives for
-v4.3.0. It composes the reviewed SQL Server and MySQL bundle publishers for
+v4.4.0. It composes the reviewed SQL Server and MySQL bundle publishers for
 every runtime and the reviewed Microsoft Access bundle publisher for
 `win-x64`, instead of rebuilding any provider layout itself.
 
@@ -273,7 +321,7 @@ The default RIDs are `win-x64`, `linux-x64`, and `osx-arm64`:
 
 ```powershell
 .\scripts\Publish-CSharpDbMigrationRelease.ps1 `
-  -Version 4.3.0
+  -Version 4.4.0
 ```
 
 The publisher requires PowerShell 7.4 or later.
@@ -282,7 +330,7 @@ For a single local packaging check:
 
 ```powershell
 .\scripts\Publish-CSharpDbMigrationRelease.ps1 `
-  -Version 4.3.0 `
+  -Version 4.4.0 `
   -Runtime win-x64 `
   -OutputRoot artifacts\migration-release-local
 ```
@@ -323,6 +371,34 @@ qualification matrix.
   -OutputPath artifacts\access-migration-local `
   -Configuration Release
 ```
+
+### `Test-SqlReleaseQualification.ps1`
+
+Use this from a clean checkout to run the source-level release gate. It
+requires an empty output directory outside the repository and records its
+logs, TRX files, temporary NuGet state, and Markdown summary there. It does not
+create a feature-coverage file or any other generated source artifact.
+
+The check validates public documentation, NuGet package closure, EF Core
+version consistency, the full solution restore/build/test sequence, SQL Server
+and MySQL provider isolation, the Windows-only Access isolation boundary, and
+the packaged EF migration tool. Supplying both `-ReleaseVersion` and
+`-ReleaseCommit` additionally validates an existing release tag.
+
+```powershell
+$OutputPath = Join-Path `
+  ([IO.Path]::GetTempPath()) `
+  "csharpdb-sql-release-$([Guid]::NewGuid().ToString('N'))"
+
+.\scripts\Test-SqlReleaseQualification.ps1 `
+  -OutputPath $OutputPath `
+  -Configuration Release `
+  -QualificationPass 1
+```
+
+The GitHub workflow runs qualification passes 1 and 2 in separate clean hosted
+jobs for each supported operating system. The pass number identifies evidence;
+it does not weaken or filter the checks.
 
 ### `Test-AccessMigrationIsolation.ps1`
 
@@ -450,7 +526,7 @@ same checks.
 ```powershell
 .\scripts\Test-EfCoreMigrationTool.ps1 `
   -FeedPath artifacts/nuget `
-  -Version 4.3.0
+  -Version 4.4.0
 ```
 
 ### `Publish-CSharpDbAdminStorePackage.ps1`
@@ -508,7 +584,7 @@ The archive can be extracted anywhere and launched with
 `ADMIN-SHA256SUMS.txt`.
 
 ```powershell
-.\scripts\Publish-CSharpDbAdminRelease.ps1 -Version 4.3.0
+.\scripts\Publish-CSharpDbAdminRelease.ps1 -Version 4.4.0
 ```
 
 ## Daemon Service Installers

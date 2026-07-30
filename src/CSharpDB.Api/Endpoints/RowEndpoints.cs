@@ -39,7 +39,13 @@ public static class RowEndpoints
         var rows = JsonHelper.RowsToNamedDictionaries(columnNames, result.Rows);
 
         return Results.Ok(new BrowseResponse(
-            columnNames, rows, result.TotalRows, result.Page, result.PageSize, result.TotalPages));
+            columnNames,
+            rows,
+            result.TotalRows,
+            result.Page,
+            result.PageSize,
+            result.TotalPages,
+            result.Schema.Columns.Select(column => column.Type.ToString().ToUpperInvariant()).ToArray()));
     }
 
     private static async Task<IResult> GetRowByPk(

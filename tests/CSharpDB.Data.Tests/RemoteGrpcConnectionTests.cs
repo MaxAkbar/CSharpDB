@@ -7,9 +7,12 @@ using CSharpDB.Client;
 using CSharpDB.Client.Models;
 using CSharpDB.Data;
 using CSharpDB.Engine;
+using CSharpDB.Primitives;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
+using CoreDbType = CSharpDB.Primitives.DbType;
+using CoreTableSchema = CSharpDB.Primitives.TableSchema;
 
 namespace CSharpDB.Data.Tests;
 
@@ -391,6 +394,243 @@ public sealed class RemoteGrpcConnectionTests : IAsyncLifetime
         Assert.Equal("Ready", index["INDEX_STATE"]);
         Assert.Equal("NOCASE", index["COLLATION_LIST"]);
     }
+
+    [Fact]
+    public async Task ReleaseWorkload_IsEquivalentAcrossEngineAdoNetHttpAndGrpc()
+    {
+        await using var engine = await Database.OpenInMemoryAsync(Ct);
+        string[] engineEvidence =
+            await RunEngineReleaseWorkloadAsync(engine, "engine_release");
+
+        await using var adoNetConnection =
+            new CSharpDbConnection("Data Source=:memory:");
+        using HttpClient httpTransportClient = _factory.CreateClient();
+        await using var httpConnection =
+            new CSharpDbConnection(
+                "Transport=Http;Endpoint=http://localhost",
+                httpTransportClient);
+        await using CSharpDbConnection grpcConnection =
+            CreateConnection();
+
+        await adoNetConnection.OpenAsync(Ct);
+        await httpConnection.OpenAsync(Ct);
+        await grpcConnection.OpenAsync(Ct);
+
+        string[] adoNetEvidence =
+            await RunAdoNetReleaseWorkloadAsync(
+                adoNetConnection,
+                "adonet_release");
+        string[] httpEvidence =
+            await RunAdoNetReleaseWorkloadAsync(
+                httpConnection,
+                "http_release");
+        string[] grpcEvidence =
+            await RunAdoNetReleaseWorkloadAsync(
+                grpcConnection,
+                "grpc_release");
+
+        Assert.Equal(engineEvidence, adoNetEvidence);
+        Assert.Equal(engineEvidence, httpEvidence);
+        Assert.Equal(engineEvidence, grpcEvidence);
+    }
+
+    private static async Task<string[]> RunEngineReleaseWorkloadAsync(
+        Database database,
+        string prefix)
+    {
+        string parentTable = $"{prefix}_parents";
+        string childTable = $"{prefix}_children";
+        foreach (string sql in ReleaseWorkloadSchema(parentTable, childTable))
+            await database.ExecuteAsync(sql, Ct);
+
+        await database.ExecuteAsync(
+            $"INSERT INTO {parentTable} VALUES (1, 'root')",
+            Ct);
+        await database.ExecuteAsync(
+            $"INSERT INTO {childTable} VALUES (1, 1, DEFAULT, X'0001FF')",
+            Ct);
+        await database.ExecuteAsync(
+            $"INSERT INTO {childTable} VALUES (2, NULL, 'detached', NULL)",
+            Ct);
+
+        await database.BeginTransactionAsync(Ct);
+        await database.ExecuteAsync(
+            $"INSERT INTO {childTable} VALUES (3, NULL, 'committed', X'10')",
+            Ct);
+        await database.CommitAsync(Ct);
+
+        await database.BeginTransactionAsync(Ct);
+        await database.ExecuteAsync(
+            $"INSERT INTO {childTable} VALUES (4, NULL, 'rolled-back', X'20')",
+            Ct);
+        await database.RollbackAsync(Ct);
+
+        await database.ExecuteAsync(
+            $"DELETE FROM {parentTable} WHERE id = 1",
+            Ct);
+
+        await using var query = await database.ExecuteAsync(
+            $"SELECT id, parent_id, note, payload FROM {childTable} ORDER BY id",
+            Ct);
+        IReadOnlyList<DbValue[]> rows = await query.ToListAsync(Ct);
+        return BuildReleaseEvidence(
+            rows.Select(static row => string.Join(
+                "|",
+                row.Select(FormatDbValue))),
+            database.GetTableSchema(childTable)!);
+    }
+
+    private static async Task<string[]> RunAdoNetReleaseWorkloadAsync(
+        CSharpDbConnection connection,
+        string prefix)
+    {
+        string parentTable = $"{prefix}_parents";
+        string childTable = $"{prefix}_children";
+        foreach (string sql in ReleaseWorkloadSchema(parentTable, childTable))
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            await command.ExecuteNonQueryAsync(Ct);
+        }
+
+        await ExecuteNonQueryAsync(
+            connection,
+            $"INSERT INTO {parentTable} VALUES (1, 'root')");
+        await ExecuteNonQueryAsync(
+            connection,
+            $"INSERT INTO {childTable} VALUES (1, 1, DEFAULT, X'0001FF')");
+        await ExecuteNonQueryAsync(
+            connection,
+            $"INSERT INTO {childTable} VALUES (2, NULL, 'detached', NULL)");
+
+        await using (var transaction = await connection.BeginTransactionAsync(Ct))
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText =
+                $"INSERT INTO {childTable} VALUES (@id, NULL, @note, @payload)";
+            command.Parameters.AddWithValue("@id", 3);
+            command.Parameters.AddWithValue("@note", "committed");
+            command.Parameters.AddWithValue("@payload", new byte[] { 0x10 });
+            command.Prepare();
+            await command.ExecuteNonQueryAsync(Ct);
+            await transaction.CommitAsync(Ct);
+        }
+
+        await using (var transaction = await connection.BeginTransactionAsync(Ct))
+        {
+            await ExecuteNonQueryAsync(
+                connection,
+                $"INSERT INTO {childTable} VALUES (4, NULL, 'rolled-back', X'20')");
+            await transaction.RollbackAsync(Ct);
+        }
+
+        await ExecuteNonQueryAsync(
+            connection,
+            $"DELETE FROM {parentTable} WHERE id = 1");
+
+        var rows = new List<string>();
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText =
+                $"SELECT id, parent_id, note, payload FROM {childTable} ORDER BY id";
+            await using var reader = await command.ExecuteReaderAsync(Ct);
+            while (await reader.ReadAsync(Ct))
+            {
+                rows.Add(string.Join(
+                    "|",
+                    Enumerable.Range(0, reader.FieldCount)
+                        .Select(index => FormatAdoNetValue(reader.GetValue(index)))));
+            }
+        }
+
+        return BuildReleaseEvidence(
+            rows,
+            connection.GetTableSchema(childTable)!);
+    }
+
+    private static string[] ReleaseWorkloadSchema(
+        string parentTable,
+        string childTable) =>
+        [
+            $"""
+             CREATE TABLE {parentTable} (
+                 id INTEGER PRIMARY KEY,
+                 code TEXT NOT NULL,
+                 CONSTRAINT uq_{parentTable}_code UNIQUE (code)
+             )
+             """,
+            $"""
+             CREATE TABLE {childTable} (
+                 id INTEGER PRIMARY KEY,
+                 parent_id INTEGER,
+                 note TEXT DEFAULT 'new',
+                 payload BLOB,
+                 CONSTRAINT ck_{childTable}_id CHECK (id > 0),
+                 CONSTRAINT fk_{childTable}_parent
+                     FOREIGN KEY (parent_id)
+                     REFERENCES {parentTable} (id)
+                     ON DELETE CASCADE
+                     ON UPDATE SET NULL
+             )
+             """,
+        ];
+
+    private static async Task ExecuteNonQueryAsync(
+        CSharpDbConnection connection,
+        string sql)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        await command.ExecuteNonQueryAsync(Ct);
+    }
+
+    private static string[] BuildReleaseEvidence(
+        IEnumerable<string> rows,
+        CoreTableSchema schema)
+    {
+        IEnumerable<string> columns = schema.Columns.Select(column =>
+            $"column:{column.Name}:{column.Type}:{column.Nullable}:{column.DefaultSql ?? "<none>"}");
+        IEnumerable<string> checks = schema.CheckConstraints.Select(check =>
+            $"check:{check.ColumnName ?? "<table>"}:{check.ExpressionSql}");
+        IEnumerable<string> keys = schema.KeyConstraints.Select(key =>
+            $"key:{key.Kind}:{string.Join(",", key.Columns)}");
+        IEnumerable<string> foreignKeys = schema.ForeignKeys.Select(foreignKey =>
+            $"foreign-key:{string.Join(",", foreignKey.ColumnNames)}:" +
+            $"{string.Join(",", foreignKey.ReferencedColumnNames)}:" +
+            $"{foreignKey.OnDelete}:{foreignKey.OnUpdate}");
+
+        return
+        [
+            .. rows.Select(row => $"row:{row}"),
+            .. columns,
+            .. checks,
+            .. keys,
+            .. foreignKeys,
+        ];
+    }
+
+    private static string FormatDbValue(DbValue value) =>
+        value.Type switch
+        {
+            CoreDbType.Null => "NULL",
+            CoreDbType.Integer => $"INTEGER:{value.AsInteger.ToString(CultureInfo.InvariantCulture)}",
+            CoreDbType.Real => $"REAL:{value.AsReal.ToString("R", CultureInfo.InvariantCulture)}",
+            CoreDbType.Text => $"TEXT:{value.AsText}",
+            CoreDbType.Blob => $"BLOB:{Convert.ToHexString(value.AsBlob)}",
+            _ => throw new ArgumentOutOfRangeException(nameof(value)),
+        };
+
+    private static string FormatAdoNetValue(object value) =>
+        value switch
+        {
+            DBNull => "NULL",
+            long integer => $"INTEGER:{integer.ToString(CultureInfo.InvariantCulture)}",
+            double real => $"REAL:{real.ToString("R", CultureInfo.InvariantCulture)}",
+            string text => $"TEXT:{text}",
+            byte[] blob => $"BLOB:{Convert.ToHexString(blob)}",
+            _ => throw new InvalidOperationException(
+                $"Unexpected ADO.NET release-workload value type '{value.GetType().FullName}'."),
+        };
 
     private static async Task CreateOrdinarySchemaParityFixtureAsync(
         CSharpDbConnection connection)

@@ -142,7 +142,7 @@
                 between numeric types where needed.</p>
                 <hr/>
                 <h2 id="identifiers">Identifiers</h2>
-                <p>SQL identifiers are limited to 128 characters and cannot contain NUL.</p>
+                <p>SQL identifiers are limited to 128 UTF-16 code units and cannot contain NUL.</p>
                 <table class="doc-table">
                 <thead>
                 <tr>
@@ -165,7 +165,7 @@
                 </tbody>
                 </table>
                 <p>Catalog lookup is ordinal case-insensitive for quoted and unquoted identifiers. Quoting preserves the identifier text but does not create case-sensitive lookup semantics.</p>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">CREATE TABLE "order details" (
+                <div class="code-block" data-title="SQL" data-csharpdb-example="execute"><pre><code class="language-sql">CREATE TABLE "order details" (
                     "order id" INTEGER PRIMARY KEY,
                     "display ""name""" TEXT
                 );
@@ -173,12 +173,13 @@
                 <hr/>
                 <h2 id="statements">Statements</h2>
                 <h3 id="create-table">CREATE TABLE</h3>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">CREATE TABLE [IF NOT EXISTS] table_name (
+                <div class="code-block" data-title="SQL" data-csharpdb-example="grammar"><pre><code class="language-sql">CREATE TABLE [IF NOT EXISTS] table_name (
                     column_name type [PRIMARY KEY] [IDENTITY | AUTOINCREMENT] [NOT NULL]
                                      [COLLATE collation_name]
                                      [DEFAULT literal]
                                      [[CONSTRAINT name] CHECK (row_local_expression)]
                                      [REFERENCES other_table(column)
+                                         [MATCH SIMPLE]
                                          [ON DELETE RESTRICT | NO ACTION | CASCADE | SET NULL | SET DEFAULT]
                                          [ON UPDATE RESTRICT | NO ACTION | CASCADE | SET NULL | SET DEFAULT]],
                     ...,
@@ -187,6 +188,7 @@
                     [[CONSTRAINT name] UNIQUE (column1 [, column2, ...])],
                     [[CONSTRAINT name] FOREIGN KEY (column1 [, column2, ...])
                         REFERENCES other_table(column1 [, column2, ...])
+                        [MATCH SIMPLE]
                         [ON DELETE RESTRICT | NO ACTION | CASCADE | SET NULL | SET DEFAULT]
                         [ON UPDATE RESTRICT | NO ACTION | CASCADE | SET NULL | SET DEFAULT]]
                 );
@@ -204,12 +206,12 @@
                 <tr>
                 <td><code>PRIMARY KEY</code></td>
                 <td>Column or table</td>
-                <td>A single INTEGER primary key retains row-identity generation. Table-level and composite logical primary keys enforce ordered uniqueness and NOT NULL without implicitly generating integer components.</td>
+                <td>A single INTEGER primary key retains row-identity generation. New table-level and composite logical primary keys use INTEGER/TEXT components and enforce ordered uniqueness and NOT NULL without implicitly generating integer components.</td>
                 </tr>
                 <tr>
                 <td><code>UNIQUE</code></td>
                 <td>Table</td>
-                <td>Enforces an ordered logical candidate key, including composite keys. Tuples containing NULL follow the current SQL-style nullable-unique behavior.</td>
+                <td>Enforces an ordered INTEGER/TEXT logical candidate key, including composite keys. Tuples containing NULL follow the current SQL-style nullable-unique behavior.</td>
                 </tr>
                 <tr>
                 <td><code>IDENTITY</code> / <code>AUTOINCREMENT</code></td>
@@ -239,7 +241,7 @@
                 <tr>
                 <td><code>REFERENCES</code> / <code>FOREIGN KEY</code></td>
                 <td>Column or table</td>
-                <td>Declares a scalar or ordered composite foreign key. The referenced tuple must be an enforced primary or unique candidate key with matching types and collations. Nullable composite children use MATCH SIMPLE semantics.</td>
+                <td>Declares a scalar or ordered composite INTEGER/TEXT foreign key. The referenced tuple must be an enforced primary or unique candidate key with matching types and collations. <code>MATCH SIMPLE</code> may be written explicitly and is also the default; any NULL component satisfies a nullable composite child key.</td>
                 </tr>
                 <tr>
                 <td><code>ON DELETE CASCADE</code></td>
@@ -289,7 +291,7 @@
                 </tbody>
                 </table>
                 <h3 id="temporary-tables">Temporary Tables</h3>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">CREATE TEMP TABLE [IF NOT EXISTS] temp_name (
+                <div class="code-block" data-title="SQL" data-csharpdb-example="grammar"><pre><code class="language-sql">CREATE TEMP TABLE [IF NOT EXISTS] temp_name (
                     column_name type [PRIMARY KEY] [IDENTITY | AUTOINCREMENT] [NOT NULL]
                                      [COLLATE collation_name],
                     ...
@@ -305,11 +307,11 @@
                 <p><code>PERSIST TEMP TABLE temp_name AS durable_name</code> explicitly creates a new durable table using the temporary table schema and copies current rows through the normal durable mutation path. The durable target must not already exist. The command returns <code>temp_table</code>, <code>target_table</code>, and <code>rows_persisted</code>.</p>
                 <p>For embedded and ADO.NET connections, temporary tables live for the connection or database handle lifetime and are cleared when the session is disposed. Stateless HTTP/gRPC <code>ExecuteSqlAsync</code> rejects temporary table commands; use <code>BeginTransaction</code> plus <code>ExecuteInTransaction</code> for remote temporary workflows.</p>
                 <h3 id="alter-table">ALTER TABLE</h3>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">ALTER TABLE table_name ADD COLUMN column_name type [constraints];
+                <div class="code-block" data-title="SQL" data-csharpdb-example="grammar"><pre><code class="language-sql">ALTER TABLE table_name ADD COLUMN column_name type [constraints];
                 ALTER TABLE table_name ADD CONSTRAINT constraint_name CHECK (expression);
                 ALTER TABLE table_name ADD CONSTRAINT constraint_name UNIQUE (column_name [, ...]);
                 ALTER TABLE table_name ADD CONSTRAINT constraint_name PRIMARY KEY (column_name [, ...]);
-                ALTER TABLE table_name ADD CONSTRAINT constraint_name FOREIGN KEY (column_name [, ...]) REFERENCES parent_table (column_name [, ...]) [ON DELETE RESTRICT | NO ACTION | CASCADE | SET NULL | SET DEFAULT] [ON UPDATE RESTRICT | NO ACTION | CASCADE | SET NULL | SET DEFAULT];
+                ALTER TABLE table_name ADD CONSTRAINT constraint_name FOREIGN KEY (column_name [, ...]) REFERENCES parent_table (column_name [, ...]) [MATCH SIMPLE] [ON DELETE RESTRICT | NO ACTION | CASCADE | SET NULL | SET DEFAULT] [ON UPDATE RESTRICT | NO ACTION | CASCADE | SET NULL | SET DEFAULT];
                 ALTER TABLE table_name DROP COLUMN column_name;
                 ALTER TABLE table_name DROP CONSTRAINT constraint_name;
                 ALTER TABLE table_name DROP PRIMARY KEY;
@@ -335,52 +337,54 @@
                 <p>Defaults are validated against the target type rather than converted automatically. Use <code>DROP DEFAULT</code> before <code>TYPE</code> and <code>SET DEFAULT</code> afterward when the old literal is not valid for the target. EF Core emits that order for both Up and Down migrations, applies a requested BLOB-to-TEXT collation after the type change, and lets TYPE BLOB clear an old TEXT collation. EF migrations run the compound default/type/collation/nullability sequence in their surrounding migration transaction; manual replay must do the same so a later failure restores every facet.</p>
                 <p><code>SET COLLATION</code> and <code>DROP COLLATION</code> are limited to TEXT columns. Type and collation changes stream rows through transactional shadow roots, preserve physical row ids, revalidate CHECK constraints, and persist across reopen. For collation changes, ready ordinary and unique SQL indexes that inherit the column collation are rebuilt and swapped atomically with the table; explicit-collation and unrelated index roots remain unchanged. A newly colliding unique value rejects the rewrite and restores every original root. Primary/unique key constraints, incoming/outgoing foreign keys, full-text or collection dependencies, and non-ready indexes remain unsupported. The conservative preflight also rejects any view that references the table, any trigger owned by the table, a cross-table trigger that references the column, and an applicable validation rule. Indexed TEXT/BLOB changes and broader dependency rewriting remain unsupported.</p>
                 <h3 id="drop-table">DROP TABLE</h3>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">DROP TABLE [IF EXISTS] table_name;
+                <div class="code-block" data-title="SQL" data-csharpdb-example="grammar"><pre><code class="language-sql">DROP TABLE [IF EXISTS] table_name;
                 </code></pre></div>
                 <h3 id="create-index">CREATE INDEX</h3>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">CREATE [UNIQUE] INDEX [IF NOT EXISTS] index_name
+                <div class="code-block" data-title="SQL" data-csharpdb-example="grammar"><pre><code class="language-sql">CREATE [UNIQUE] INDEX [IF NOT EXISTS] index_name
                 ON table_name (column1 [, column2, ...]);
                 </code></pre></div>
                 <p>SQL indexes accept INTEGER, TEXT, and REAL columns. REAL components use a canonical hashed equality path: equality predicates can use the index, including exact INTEGER/REAL numeric matches, but ordered scans, range pushdown, and using a REAL index to satisfy <code>ORDER BY</code> are not supported. An INTEGER-tag value stored in a REAL-indexed column must be within the exactly representable ±2<sup>53</sup> range; index creation, rewrite backfill, or a later write rejects an out-of-range value instead of rounding it. <code>COLLATE</code> remains valid only for TEXT index columns.</p>
                 <h3 id="drop-index">DROP INDEX</h3>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">DROP INDEX [IF EXISTS] index_name;
+                <div class="code-block" data-title="SQL" data-csharpdb-example="grammar"><pre><code class="language-sql">DROP INDEX [IF EXISTS] index_name;
                 </code></pre></div>
                 <h3 id="create-view">CREATE VIEW</h3>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">CREATE VIEW [IF NOT EXISTS] view_name AS select_statement;
+                <div class="code-block" data-title="SQL" data-csharpdb-example="grammar"><pre><code class="language-sql">CREATE VIEW [IF NOT EXISTS] view_name AS select_statement;
                 </code></pre></div>
                 <h3 id="drop-view">DROP VIEW</h3>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">DROP VIEW [IF EXISTS] view_name;
+                <div class="code-block" data-title="SQL" data-csharpdb-example="grammar"><pre><code class="language-sql">DROP VIEW [IF EXISTS] view_name;
                 </code></pre></div>
                 <h3 id="create-trigger">CREATE TRIGGER</h3>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">CREATE TRIGGER [IF NOT EXISTS] trigger_name
+                <div class="code-block" data-title="SQL" data-csharpdb-example="grammar"><pre><code class="language-sql">CREATE TRIGGER [IF NOT EXISTS] trigger_name
                 {BEFORE | AFTER} {INSERT | UPDATE | DELETE}
                 ON table_name
                 [FOR EACH ROW]
-                [WHEN condition]
                 BEGIN
                     statement1;
                     [statement2;]
                     ...
                 END;
                 </code></pre></div>
-                <p>Triggers can reference <code>NEW</code> and <code>OLD</code> row aliases in their body and <code>WHEN</code> condition:</p>
+                <p>Triggers can reference <code>NEW</code> and <code>OLD</code> row aliases in their body:</p>
                 <ul>
                 <li><code>INSERT</code> triggers: <code>NEW</code> is available</li>
                 <li><code>DELETE</code> triggers: <code>OLD</code> is available</li>
                 <li><code>UPDATE</code> triggers: both <code>NEW</code> and <code>OLD</code> are available</li>
                 </ul>
+                <blockquote>
+                <p><strong>Unsupported:</strong> Trigger <code>WHEN</code> conditions are rejected with a stable <code>SyntaxError</code> before trigger metadata is persisted. Put supported predicate logic in the trigger body until conditional triggers are implemented.</p>
+                </blockquote>
                 <h3 id="drop-trigger">DROP TRIGGER</h3>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">DROP TRIGGER [IF EXISTS] trigger_name;
+                <div class="code-block" data-title="SQL" data-csharpdb-example="grammar"><pre><code class="language-sql">DROP TRIGGER [IF EXISTS] trigger_name;
                 </code></pre></div>
                 <h3 id="analyze">ANALYZE</h3>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">ANALYZE table_name;
+                <div class="code-block" data-title="SQL" data-csharpdb-example="grammar"><pre><code class="language-sql">ANALYZE table_name;
                 </code></pre></div>
                 <p>Collects per-column statistics (distinct count, min/max, frequency histograms, quantile
                 buckets) and index prefix statistics used by the query planner for cardinality estimation
                 and operator selection. See <a href="query-execution-pipeline.html">Query Execution Pipeline</a> for
                 details on how statistics influence planning.</p>
                 <h3 id="explain">EXPLAIN and EXPLAIN ANALYZE</h3>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">EXPLAIN [FOR] SELECT ...;
+                <div class="code-block" data-title="SQL" data-csharpdb-example="grammar"><pre><code class="language-sql">EXPLAIN [FOR] SELECT ...;
                 EXPLAIN [FOR] INSERT ...;
                 EXPLAIN [FOR] UPDATE ...;
                 EXPLAIN [FOR] DELETE ...;
@@ -413,23 +417,23 @@
                 <hr/>
                 <h2 id="data-manipulation">Data Manipulation</h2>
                 <h3 id="insert">INSERT</h3>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">INSERT INTO table_name [(column1, column2, ...)]
+                <div class="code-block" data-title="SQL" data-csharpdb-example="grammar"><pre><code class="language-sql">INSERT INTO table_name [(column1, column2, ...)]
                 VALUES (value_or_DEFAULT1, value_or_DEFAULT2, ...);
 
                 INSERT INTO table_name DEFAULT VALUES;
                 </code></pre></div>
                 <p>Column list is optional when providing values for all columns in declaration order. Omitted columns and explicit <code>DEFAULT</code> markers use their literal column defaults; explicit <code>NULL</code> remains NULL.</p>
                 <h3 id="update">UPDATE</h3>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">UPDATE table_name
+                <div class="code-block" data-title="SQL" data-csharpdb-example="grammar"><pre><code class="language-sql">UPDATE table_name
                 SET column1 = expression1 [, column2 = expression2, ...]
                 [WHERE condition];
                 </code></pre></div>
                 <h3 id="delete">DELETE</h3>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">DELETE FROM table_name
+                <div class="code-block" data-title="SQL" data-csharpdb-example="grammar"><pre><code class="language-sql">DELETE FROM table_name
                 [WHERE condition];
                 </code></pre></div>
                 <h3 id="select">SELECT</h3>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">SELECT [DISTINCT] column_list
+                <div class="code-block" data-title="SQL" data-csharpdb-example="grammar"><pre><code class="language-sql">SELECT [DISTINCT] column_list
                 FROM table_reference
                 [JOIN ...]
                 [WHERE condition]
@@ -440,7 +444,7 @@
                 [OFFSET skip];
                 </code></pre></div>
                 <h4>Column List</h4>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">SELECT *                              -- all columns
+                <div class="code-block" data-title="SQL" data-csharpdb-example="grammar"><pre><code class="language-sql">SELECT *                              -- all columns
                 SELECT column_name                    -- single column
                 SELECT column_name AS alias           -- aliased column
                 SELECT table.column_name              -- qualified column
@@ -448,7 +452,7 @@
                 SELECT aggregate_function(...)        -- aggregate
                 </code></pre></div>
                 <h4>FROM and JOIN</h4>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">FROM table_name [AS alias]
+                <div class="code-block" data-title="SQL" data-csharpdb-example="grammar"><pre><code class="language-sql">FROM table_name [AS alias]
                 
                 -- Join types
                 INNER JOIN table_name ON condition
@@ -458,15 +462,16 @@
                 </code></pre></div>
                 <p>All join types except <code>CROSS JOIN</code> require an <code>ON</code> condition.</p>
                 <h4>Subqueries</h4>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">-- Scalar subquery (must return a single value)
+                <div class="code-block" data-title="SQL" data-csharpdb-example="execute" data-csharpdb-fixture="reference-subqueries"><pre><code class="language-sql">-- Scalar subquery (must return a single value)
                 SELECT (SELECT MAX(age) FROM users) AS max_age;
                 
                 -- IN subquery
-                WHERE column IN (SELECT id FROM other_table)
-                WHERE column NOT IN (SELECT id FROM other_table)
+                SELECT id FROM users WHERE id IN (SELECT id FROM other_table);
+                SELECT id FROM users WHERE id NOT IN (SELECT id FROM other_table);
                 
                 -- EXISTS subquery
-                WHERE EXISTS (SELECT 1 FROM other_table WHERE condition)
+                SELECT id FROM users
+                WHERE EXISTS (SELECT 1 FROM other_table WHERE other_table.id = users.id);
                 </code></pre></div>
                 <hr/>
                 <h2 id="data-hygiene">Data Hygiene</h2>
@@ -475,7 +480,7 @@
                 normal query-shaped results through <code>ExecuteSqlAsync</code>, ADO.NET, Admin query tabs,
                 HTTP, gRPC, and the CLI.</p>
                 <h3 id="find-duplicates">FIND DUPLICATES</h3>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">FIND DUPLICATES IN table_name ON expression [, expression ...];
+                <div class="code-block" data-title="SQL" data-csharpdb-example="grammar"><pre><code class="language-sql">FIND DUPLICATES IN table_name ON expression [, expression ...];
                 </code></pre></div>
                 <p>Scans the target table, evaluates the <code>ON</code> expressions for each row, and returns
                 one row per duplicate group. Text keys use existing column or expression
@@ -497,11 +502,11 @@
                 <tr><td><code>duplicate_primary_keys</code></td><td>Comma-separated duplicate primary-key values, or <code>NULL</code> when no primary key exists</td></tr>
                 </tbody>
                 </table>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">FIND DUPLICATES IN Customers ON Email COLLATE NOCASE;
+                <div class="code-block" data-title="SQL" data-csharpdb-example="execute" data-csharpdb-fixture="reference-duplicates"><pre><code class="language-sql">FIND DUPLICATES IN Customers ON Email COLLATE NOCASE;
                 FIND DUPLICATES IN Contacts ON FirstName, LastName, Phone;
                 </code></pre></div>
                 <h3 id="dedup">DEDUP</h3>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">DEDUP table_name ON expression [, expression ...] KEEP FIRST | LAST;
+                <div class="code-block" data-title="SQL" data-csharpdb-example="grammar"><pre><code class="language-sql">DEDUP table_name ON expression [, expression ...] KEEP FIRST | LAST;
                 </code></pre></div>
                 <p>Deletes non-winner rows for each duplicate group. <code>KEEP FIRST</code> keeps the lowest
                 primary-key value when the table has a primary key, otherwise the lowest rowid.
@@ -510,10 +515,10 @@
                 keys, triggers, WAL, and transaction rollback.</p>
                 <p>Result columns: <code>table_name</code>, <code>duplicate_group_count</code>, <code>rows_deleted</code>,
                 <code>rows_kept</code>.</p>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">DEDUP Customers ON Email COLLATE NOCASE KEEP FIRST;
+                <div class="code-block" data-title="SQL" data-csharpdb-example="execute" data-csharpdb-fixture="reference-customers"><pre><code class="language-sql">DEDUP Customers ON Email COLLATE NOCASE KEEP FIRST;
                 </code></pre></div>
                 <h3 id="merge-duplicates">MERGE DUPLICATES</h3>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">MERGE DUPLICATES table_name ON expression [, expression ...];
+                <div class="code-block" data-title="SQL" data-csharpdb-example="grammar"><pre><code class="language-sql">MERGE DUPLICATES table_name ON expression [, expression ...];
                 </code></pre></div>
                 <p>Selects the same deterministic winner as <code>KEEP FIRST</code>, fills only <code>NULL</code> winner
                 columns when exactly one non-null duplicate value is available, reports merge
@@ -521,10 +526,10 @@
                 duplicate rows through the normal mutation path.</p>
                 <p>Result columns: <code>table_name</code>, <code>duplicate_group_count</code>, <code>rows_updated</code>,
                 <code>rows_deleted</code>, <code>merge_conflict_count</code>, <code>merge_conflicts</code>.</p>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">MERGE DUPLICATES Customers ON Email COLLATE NOCASE;
+                <div class="code-block" data-title="SQL" data-csharpdb-example="execute" data-csharpdb-fixture="reference-customers"><pre><code class="language-sql">MERGE DUPLICATES Customers ON Email COLLATE NOCASE;
                 </code></pre></div>
                 <h3 id="create-validation-rule">CREATE VALIDATION RULE</h3>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">CREATE VALIDATION RULE rule_name
+                <div class="code-block" data-title="SQL" data-csharpdb-example="grammar"><pre><code class="language-sql">CREATE VALIDATION RULE rule_name
                 ON table_name[.column_name]
                 AS expression
                 MESSAGE 'message text';
@@ -535,7 +540,7 @@
                 <p>Rules are stored in the hidden internal table <code>__validation_rules</code>. That table
                 is hidden from normal table/object listings and exposed through
                 <code>sys.validation_rules</code> and <code>sys_validation_rules</code>.</p>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">CREATE VALIDATION RULE ValidEmail
+                <div class="code-block" data-title="SQL" data-csharpdb-example="execute" data-csharpdb-fixture="reference-validation"><pre><code class="language-sql">CREATE VALIDATION RULE ValidEmail
                 ON Customers.Email
                 AS Email LIKE '%@%'
                 MESSAGE 'Email must contain @';
@@ -544,14 +549,14 @@
                 FROM sys.validation_rules;
                 </code></pre></div>
                 <h3 id="validate-table">VALIDATE TABLE</h3>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">VALIDATE TABLE table_name;
+                <div class="code-block" data-title="SQL" data-csharpdb-example="grammar"><pre><code class="language-sql">VALIDATE TABLE table_name;
                 </code></pre></div>
                 <p>Evaluates enabled validation rules for the table and returns one row per
                 violation. A rule fails when the expression returns false or <code>NULL</code>.</p>
                 <p>Result columns: <code>rule_name</code>, <code>table_name</code>, <code>column_name</code>, <code>rowid</code>,
                 <code>primary_key</code>, <code>message</code>.</p>
                 <h3 id="find-orphans">FIND ORPHANS</h3>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">FIND ORPHANS IN child_table;
+                <div class="code-block" data-title="SQL" data-csharpdb-example="grammar"><pre><code class="language-sql">FIND ORPHANS IN child_table;
                 FIND ORPHANS IN child_table.child_column REFERENCES parent_table.parent_column;
                 </code></pre></div>
                 <p>Without an explicit <code>REFERENCES</code> clause, CSharpDB uses declared foreign-key
@@ -559,7 +564,7 @@
                 are validated before running the check. <code>NULL</code> child values are ignored.</p>
                 <p>Result columns: <code>constraint_name</code>, <code>child_table</code>, <code>child_column</code>, <code>child_rowid</code>,
                 <code>child_value</code>, <code>parent_table</code>, <code>parent_column</code>.</p>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">FIND ORPHANS IN Bookings;
+                <div class="code-block" data-title="SQL" data-csharpdb-example="execute" data-csharpdb-fixture="reference-orphans"><pre><code class="language-sql">FIND ORPHANS IN Bookings;
                 FIND ORPHANS IN Bookings.BookId REFERENCES Books.Id;
                 </code></pre></div>
                 <p>Performance is proportional to the requested hygiene work: duplicate detection
@@ -568,7 +573,7 @@
                 parent value set built from one scan.</p>
                 <hr/>
                 <h2 id="common-table-expressions-ctes">Common Table Expressions (CTEs)</h2>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">WITH cte_name [(column1, column2, ...)] AS (
+                <div class="code-block" data-title="SQL" data-csharpdb-example="grammar"><pre><code class="language-sql">WITH cte_name [(column1, column2, ...)] AS (
                     select_statement
                 )
                 [, another_cte AS (...)]
@@ -577,12 +582,11 @@
                 <p>Multiple CTEs can be chained with commas. Optional column name lists rename the CTE's
                 output columns.</p>
                 <blockquote>
-                <p><strong>Note:</strong> The <code>RECURSIVE</code> keyword is parsed but recursive CTE execution is not yet
-                implemented.</p>
+                <p><strong>Note:</strong> <code>WITH RECURSIVE</code> is rejected because recursive CTE execution is not yet implemented.</p>
                 </blockquote>
                 <hr/>
                 <h2 id="set-operations">Set Operations</h2>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">select_statement UNION     select_statement
+                <div class="code-block" data-title="SQL" data-csharpdb-example="grammar"><pre><code class="language-sql">select_statement UNION     select_statement
                 select_statement UNION ALL select_statement
                 select_statement INTERSECT select_statement
                 select_statement EXCEPT    select_statement
@@ -779,7 +783,7 @@
                 </tr>
                 </tbody>
                 </table>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">SELECT COUNT(DISTINCT status), AVG(age) FROM users;
+                <div class="code-block" data-title="SQL" data-csharpdb-example="execute" data-csharpdb-fixture="reference-users"><pre><code class="language-sql">SELECT COUNT(DISTINCT status), AVG(age) FROM users;
                 </code></pre></div>
                 <h3 id="scalar-functions">Scalar Functions</h3>
                 <table class="doc-table">
@@ -822,7 +826,7 @@
                 <h3 id="window-functions">Window Functions</h3>
                 <p>Window functions are a completed, bounded in-memory SQL slice. Supported ranking functions are <code>ROW_NUMBER()</code>, <code>RANK()</code>, and <code>DENSE_RANK()</code>. Supported aggregate windows are non-distinct <code>COUNT</code>, <code>SUM</code>, <code>AVG</code>, <code>MIN</code>, and <code>MAX</code>. Navigation and value functions include <code>LAG(value[, offset[, default]])</code>, <code>LEAD(value[, offset[, default]])</code>, <code>FIRST_VALUE(value)</code>, and <code>LAST_VALUE(value)</code>.</p>
                 <p>An explicit <code>ROWS</code> frame may use either <code>ROWS frame_bound</code> (ending at <code>CURRENT ROW</code>) or <code>ROWS BETWEEN frame_bound AND frame_bound</code>. A bound may be <code>UNBOUNDED PRECEDING</code>, <code>n PRECEDING</code>, <code>CURRENT ROW</code>, <code>n FOLLOWING</code>, or <code>UNBOUNDED FOLLOWING</code>; offset <code>n</code> must be a nonnegative integer literal, and invalid start/end combinations are rejected. Ranking functions and <code>LAG</code>/<code>LEAD</code> ignore the frame; aggregate windows and <code>FIRST_VALUE</code>/<code>LAST_VALUE</code> evaluate against it. Without an explicit frame, an ordered window uses the peer-aware default through the current peer group, while a window without <code>ORDER BY</code> uses the whole partition.</p>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">SELECT
+                <div class="code-block" data-title="SQL" data-csharpdb-example="execute" data-csharpdb-fixture="reference-window"><pre><code class="language-sql">SELECT
                     department,
                     salary,
                     ROW_NUMBER() OVER (
@@ -846,7 +850,7 @@
                 <hr/>
                 <h2 id="parameters">Parameters</h2>
                 <p>Named parameters are supported in value positions using the <code>@</code> prefix:</p>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">SELECT * FROM users WHERE name = @name AND age &gt; @minAge;
+                <div class="code-block" data-title="SQL" data-csharpdb-example="syntax"><pre><code class="language-sql">SELECT * FROM users WHERE name = @name AND age &gt; @minAge;
                 INSERT INTO users (name, age) VALUES (@name, @age);
                 UPDATE users SET name = @name WHERE id = @id;
                 DELETE FROM users WHERE id = @id;
@@ -882,7 +886,7 @@
                 </tr>
                 </tbody>
                 </table>
-                <div class="code-block" data-title="SQL"><pre><code class="language-sql">-- Column-level collation
+                <div class="code-block" data-title="SQL" data-csharpdb-example="execute"><pre><code class="language-sql">-- Column-level collation
                 CREATE TABLE products (
                     name TEXT COLLATE NOCASE
                 );
@@ -900,11 +904,13 @@
                 <li><code>CAST</code> expressions (implicit coercion only)</li>
                 <li><code>RETURNING</code> clause on INSERT/UPDATE/DELETE</li>
                 <li><code>UPSERT</code> / <code>ON CONFLICT</code> / <code>INSERT OR REPLACE</code></li>
-                <li>Recursive CTE execution (<code>WITH RECURSIVE</code> is parsed but not evaluated)</li>
+                <li><code>INTERSECT ALL</code> and <code>EXCEPT ALL</code> (only <code>UNION ALL</code> is supported)</li>
+                <li>Recursive CTE execution (<code>WITH RECURSIVE</code> is rejected)</li>
                 <li>Unregistered vendor-specific functions such as <code>STRFTIME</code>, <code>CEIL</code>, and <code>POWER</code></li>
                 <li>Advanced window forms beyond the bounded slice described above</li>
-                <li>Stored procedures</li>
+                <li>SQL <code>CREATE PROCEDURE</code> and <code>CALL</code> statements; use the supported client procedure catalog/API instead</li>
                 <li>Deferred foreign-key constraints and <code>MATCH FULL</code>/<code>MATCH PARTIAL</code></li>
+                <li>Trigger <code>WHEN</code> conditions</li>
                 </ul>
                 <p>Current <code>DEFAULT</code> support is limited to typed literals and NULL. Immediate referential mutations use the normal UPDATE pipeline, including rowversion, triggers, checks, other foreign keys, unique indexes, and transactional rollback. Under MATCH SIMPLE, a <code>SET DEFAULT</code> result with any NULL component satisfies the foreign key; a fully non-NULL result without a matching parent fails without partial changes. <code>CHECK</code> expressions must be deterministic and row-local; parameters, functions, subqueries, qualified references, and cross-column references from a column-scoped CHECK are rejected.</p>
             </div>

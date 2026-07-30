@@ -102,33 +102,48 @@ public sealed record CSharpDbCapabilityCatalog
 
 public static class CSharpDbCapabilityCatalogLoader
 {
-    public const string CurrentTargetVersion = "4.3.0";
+    public const string CurrentTargetVersion = "4.4.0";
     public const string Format = "csharpdb-target-capabilities/v1";
 
-    private const string ResourceName = "CSharpDB.Migration.Capabilities.csharpdb-4.3.0.json";
-
     private static readonly JsonSerializerOptions s_options = CreateOptions();
-    private static readonly Lazy<CSharpDbCapabilityCatalog> s_current = new(LoadCurrent);
+    private static readonly IReadOnlyDictionary<string, Lazy<CSharpDbCapabilityCatalog>> s_catalogs =
+        new Dictionary<string, Lazy<CSharpDbCapabilityCatalog>>(StringComparer.Ordinal)
+        {
+            ["4.3.0"] = CreateCatalog("4.3.0"),
+            [CurrentTargetVersion] = CreateCatalog(CurrentTargetVersion),
+        };
+
+    public static IReadOnlyList<string> SupportedTargetVersions { get; } =
+        s_catalogs.Keys.OrderBy(static version => version, StringComparer.Ordinal).ToArray();
 
     public static CSharpDbCapabilityCatalog LoadEmbedded(string targetCSharpDbVersion = CurrentTargetVersion)
     {
-        if (!string.Equals(targetCSharpDbVersion, CurrentTargetVersion, StringComparison.Ordinal))
+        if (!s_catalogs.TryGetValue(targetCSharpDbVersion, out Lazy<CSharpDbCapabilityCatalog>? catalog))
         {
             throw new InvalidOperationException(
                 $"No embedded CSharpDB capability catalog is available for target version '{targetCSharpDbVersion}'.");
         }
 
-        return s_current.Value;
+        return catalog.Value;
     }
 
-    private static CSharpDbCapabilityCatalog LoadCurrent()
-    {
-        RequireAssemblyVersion(typeof(CSharpDbCapabilityCatalogLoader).Assembly, "CSharpDB.Migration");
-        RequireAssemblyVersion(typeof(DbType).Assembly, "CSharpDB.Primitives");
+    private static Lazy<CSharpDbCapabilityCatalog> CreateCatalog(string targetVersion) =>
+        new(
+            () => Load(targetVersion),
+            LazyThreadSafetyMode.ExecutionAndPublication);
 
+    private static CSharpDbCapabilityCatalog Load(string targetVersion)
+    {
+        if (string.Equals(targetVersion, CurrentTargetVersion, StringComparison.Ordinal))
+        {
+            RequireAssemblyVersion(typeof(CSharpDbCapabilityCatalogLoader).Assembly, "CSharpDB.Migration");
+            RequireAssemblyVersion(typeof(DbType).Assembly, "CSharpDB.Primitives");
+        }
+
+        string resourceName = $"CSharpDB.Migration.Capabilities.csharpdb-{targetVersion}.json";
         using Stream stream = typeof(CSharpDbCapabilityCatalogLoader).Assembly
-            .GetManifestResourceStream(ResourceName)
-            ?? throw new InvalidOperationException($"Embedded capability resource '{ResourceName}' is missing.");
+            .GetManifestResourceStream(resourceName)
+            ?? throw new InvalidOperationException($"Embedded capability resource '{resourceName}' is missing.");
         using var document = JsonDocument.Parse(stream, new JsonDocumentOptions
         {
             AllowTrailingCommas = false,
@@ -150,7 +165,7 @@ public static class CSharpDbCapabilityCatalogLoader
         }
 
         CSharpDbCapabilityCatalog normalized = Normalize(catalog);
-        Validate(normalized);
+        Validate(normalized, targetVersion);
         byte[] canonicalBytes = JsonSerializer.SerializeToUtf8Bytes(normalized, s_options);
         return normalized with
         {
@@ -172,12 +187,12 @@ public static class CSharpDbCapabilityCatalogLoader
         Evidence = catalog.Evidence.OrderBy(item => item.EvidenceId, StringComparer.Ordinal).ToArray(),
     };
 
-    private static void Validate(CSharpDbCapabilityCatalog catalog)
+    private static void Validate(CSharpDbCapabilityCatalog catalog, string targetVersion)
     {
         if (!string.Equals(catalog.Format, Format, StringComparison.Ordinal))
             throw new InvalidDataException($"Capability catalog format must be '{Format}'.");
-        if (!string.Equals(catalog.TargetCSharpDbVersion, CurrentTargetVersion, StringComparison.Ordinal))
-            throw new InvalidDataException("Capability catalog target version does not match this binary.");
+        if (!string.Equals(catalog.TargetCSharpDbVersion, targetVersion, StringComparison.Ordinal))
+            throw new InvalidDataException("Capability catalog target version does not match its resource name.");
         if (!string.Equals(catalog.Surface, "local-typed-engine", StringComparison.Ordinal))
             throw new InvalidDataException("Capability catalog surface is not supported.");
         if (catalog.MaxIdentifierLength != SqlIdentifierRules.MaxLength)

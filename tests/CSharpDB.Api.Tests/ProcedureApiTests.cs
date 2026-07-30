@@ -167,6 +167,9 @@ public sealed class ProcedureApiTests : IAsyncLifetime
         Assert.NotNull(payload);
         Assert.True(payload.Succeeded);
         var statement = Assert.Single(payload.Statements);
+        Assert.Equal(
+            ["BLOB"],
+            Assert.IsType<string[]>(statement.ColumnTypes));
         var row = Assert.Single(statement.Rows!);
         Assert.Equal("AQID", Assert.Single(row.Values)?.ToString());
     }

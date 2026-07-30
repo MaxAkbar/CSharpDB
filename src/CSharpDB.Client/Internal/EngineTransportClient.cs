@@ -446,6 +446,7 @@ internal sealed partial class EngineTransportClient :
             {
                 ViewName = normalizedViewName,
                 ColumnNames = result.ColumnNames ?? [],
+                ColumnTypes = result.ColumnTypes,
                 Rows = result.Rows ?? [],
                 TotalRows = result.Rows?.Count ?? 0,
                 Page = 1,
@@ -1495,6 +1496,7 @@ internal sealed partial class EngineTransportClient :
         {
             ViewName = result.ViewName,
             ColumnNames = result.ColumnNames,
+            ColumnTypes = result.ColumnTypes,
             Rows = result.Rows.Skip(skip).Take(normalizedPageSize).ToList(),
             TotalRows = result.Rows.Count,
             Page = normalizedPage,

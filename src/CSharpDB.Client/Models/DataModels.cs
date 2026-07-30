@@ -15,6 +15,7 @@ public sealed class ViewBrowseResult
 {
     public required string ViewName { get; init; }
     public required string[] ColumnNames { get; init; }
+    public string[]? ColumnTypes { get; init; }
     public required List<object?[]> Rows { get; init; }
     public required int TotalRows { get; init; }
     public required int Page { get; init; }

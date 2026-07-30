@@ -230,22 +230,9 @@
       "feature": "foreignKey",
       "status": "conditional",
       "allowedTypes": ["integer", "text"],
-      "allowedValues": [
-        "immediate",
-        "match-simple",
-        "on-delete-cascade",
-        "on-delete-no-action",
-        "on-delete-restrict",
-        "on-delete-set-null",
-        "on-delete-set-default",
-        "on-update-cascade",
-        "on-update-no-action",
-        "on-update-restrict",
-        "on-update-set-null",
-        "on-update-set-default"
-      ],
+      "allowedValues": ["immediate", "match-simple", "on-delete-cascade", "on-delete-restrict"],
       "evidenceId": "EVID-FOREIGN-KEYS",
-      "notes": "Child and ordered parent key types/collations must match. SET NULL requires every child column to be nullable and outside the primary key. SET DEFAULT requires a proven compatible literal default, or proven no/NULL default on a nullable non-key child column. Deferred matching remains unsupported."
+      "notes": "Child and ordered parent key types/collations must match; ON UPDATE and deferred matching are unsupported."
     },
     {
       "ruleId": "CSDB-CHECK-001",
@@ -261,10 +248,10 @@
       "objectKind": "index",
       "feature": "index",
       "status": "conditional",
-      "allowedTypes": ["integer", "real", "text"],
-      "allowedValues": ["column-only", "composite", "equality", "nonunique", "unique"],
+      "allowedTypes": ["integer", "text"],
+      "allowedValues": ["column-only", "composite", "nonunique", "unique"],
       "evidenceId": "EVID-INDEXES",
-      "notes": "Column-only INTEGER/TEXT/REAL equality indexes are supported. REAL components use hashed equality and do not provide ordered or range scans. BLOB/rowversion, expression, partial, included-column, and sort-direction indexes are unsupported."
+      "notes": "REAL/BLOB/rowversion, expression, partial, included-column, and sort-direction indexes are unsupported."
     },
     {
       "ruleId": "CSDB-VIEW-BODY-001",
@@ -334,7 +321,7 @@
     {
       "evidenceId": "EVID-FOREIGN-KEYS",
       "source": "CSharpDB.Engine.QueryPlanner and ForeignKeyIntegrationTests",
-      "assertion": "Foreign keys require compatible ordered parent keys and support immediate MATCH SIMPLE with RESTRICT, NO ACTION, CASCADE, eligible-child SET NULL, or proven-literal SET DEFAULT behavior for delete and update actions."
+      "assertion": "Foreign keys require compatible ordered parent keys and support immediate MATCH SIMPLE with RESTRICT or CASCADE delete actions."
     },
     {
       "evidenceId": "EVID-IDENTIFIERS",
@@ -344,7 +331,7 @@
     {
       "evidenceId": "EVID-INDEXES",
       "source": "CSharpDB.Engine.QueryPlanner and CSharpDB.Sql.Ast.CreateIndexStatement",
-      "assertion": "Indexes are column-only and constrained to INTEGER/TEXT/REAL key components with supported collations; REAL components use equality-only hashed keys while ordered and range access remains limited to supported INTEGER/TEXT shapes."
+      "assertion": "Indexes are column-only and constrained to INTEGER/TEXT key components with supported collations."
     },
     {
       "evidenceId": "EVID-INSERT-BATCH",

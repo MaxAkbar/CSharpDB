@@ -23,7 +23,7 @@ emitted tarball is reopened and checked against that contract before its
 checksum is written.
 
 .PARAMETER Version
-Release version used in archive names. Defaults to 4.3.0. A leading v is
+Release version used in archive names. Defaults to 4.4.0. A leading v is
 accepted and removed.
 
 .PARAMETER Runtime
@@ -44,17 +44,17 @@ Allows this script to replace its own nonempty publish, stage, and archive
 directories beneath OutputRoot. It never removes OutputRoot itself.
 
 .EXAMPLE
-.\scripts\Publish-CSharpDbMigrationRelease.ps1 -Version 4.3.0
+.\scripts\Publish-CSharpDbMigrationRelease.ps1 -Version 4.4.0
 
 .EXAMPLE
 .\scripts\Publish-CSharpDbMigrationRelease.ps1 `
-  -Version 4.3.0 `
+  -Version 4.4.0 `
   -Runtime win-x64 `
   -OutputRoot artifacts\migration-release-local
 #>
 [CmdletBinding()]
 param(
-    [string] $Version = '4.3.0',
+    [string] $Version = '4.4.0',
 
     [ValidateSet('win-x64', 'linux-x64', 'osx-arm64')]
     [string[]] $Runtime = @(
@@ -93,7 +93,7 @@ function Resolve-ReleaseVersion {
     if ($resolved -notmatch
         '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$')
     {
-        throw 'Version must be a safe semantic version such as 4.3.0.'
+        throw 'Version must be a safe semantic version such as 4.4.0.'
     }
 
     return $resolved

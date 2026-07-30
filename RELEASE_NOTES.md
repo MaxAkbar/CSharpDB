@@ -1,5 +1,31 @@
 # What's New
 
+## version4.4.0
+
+version4.4.0 completes the bounded SQL feature-coverage program and makes its release claims reproducible. The public reference, provider behavior, migration capability contracts, recovery tests, and release workflow now describe and qualify the same supported surface.
+
+### SQL and Schema Coverage
+
+- Completed the bounded window-function slice with explicit `ROWS` frames, named windows, compatible shared ordering, navigation/value functions, cancellation, prepared execution, and explicit in-memory resource limits.
+- Added the full immediate foreign-key action matrix for deletes and referenced-key updates, including composite relationships and transactional nested cascades.
+- Added transactional shadow-root `ALTER COLUMN` rewrites for the supported numeric, UTF-8 text/BLOB, collation, default, and nullability shapes, including atomic rebuilding of eligible indexes.
+- Added logical composite `INTEGER`/`TEXT` keys and bounded populated single-`INTEGER` primary-key rekeying with relational and complete ready full-text-owned storage rebuilding.
+- Added stable physical `EXPLAIN` and `EXPLAIN ANALYZE` rowsets with estimated and actual values, operator/access-path metadata, redacted predicates, partial safe diagnostics, and direct/ADO.NET/HTTP/gRPC access.
+- Unsupported SQL forms now fail with stable diagnostics instead of being silently accepted; documentation tests execute every concrete public SQL example from its published source, parser-check the parameterized example, and classify schematic grammar templates separately.
+
+### Provider and Compatibility Qualification
+
+- Added a replayable EF Core generated-SQL corpus covering defaults, checks, composite and named relationships, referential actions, key changes, column rewrites, rename sequences, rollback, reopen, upgrade/downgrade, runtime CRUD, and ADO.NET schema inspection.
+- Added immutable database fixtures produced by supported historical releases, with recorded commits and checksums, then qualified current write, checkpoint, recovery, and reopen behavior against each fixture.
+- Added one canonical typed workload across the direct engine, embedded ADO.NET, HTTP, and gRPC paths. This qualification found and fixed HTTP BLOB results being returned as base64 text rather than bytes.
+- Added deterministic bounded property coverage for parser expressions, constraint graphs, and type conversions, plus fault-injected WAL commit recovery for schema rewrites and multi-level cascades.
+
+### Release Gate
+
+- Added a reusable release qualification workflow that runs the full solution and provider/tooling checks twice from clean environments on Windows, Linux, and macOS before publishing can begin.
+- Added a parameterized previous-release performance comparison with explicit throughput and P99 thresholds. Benchmark evidence and test logs are written to runner-owned temporary storage, not left as generated source artifacts.
+- Preserved the immutable 4.3.0 migration capability catalog and added a separately digested 4.4.0 catalog so older migration plans remain independently replayable.
+
 ## version4.3.0
 
 version4.3.0 adds a first-party, review-first workflow for moving schemas and rows from other data sources into a new CSharpDB database. Migration is deliberately staged: capture a source, review the conversion plan and target DDL, apply to a new target, resume from committed target receipts if interrupted, and activate only after validation passes.

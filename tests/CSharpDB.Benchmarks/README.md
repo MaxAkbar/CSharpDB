@@ -436,6 +436,36 @@ Run the balanced release-core benchmark suite:
 dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --release-core --repeat 3 --repro
 ```
 
+Compare a release candidate with the previous release on the same machine:
+
+```powershell
+$ComparisonRoot = Join-Path `
+  ([IO.Path]::GetTempPath()) `
+  "csharpdb-previous-release-$([Guid]::NewGuid().ToString('N'))"
+
+pwsh -NoProfile .\tests\CSharpDB.Benchmarks\scripts\Test-PreviousReleasePerformance.ps1 `
+  -CandidateRef HEAD `
+  -OutputPath (Join-Path $ComparisonRoot 'pass-1') `
+  -QualificationPass 1
+
+pwsh -NoProfile .\tests\CSharpDB.Benchmarks\scripts\Test-PreviousReleasePerformance.ps1 `
+  -CandidateRef HEAD `
+  -OutputPath (Join-Path $ComparisonRoot 'pass-2') `
+  -QualificationPass 2
+```
+
+The repository must be clean. When `-PreviousRef` is omitted, the nearest
+prior semantic release tag reachable from the candidate is selected
+automatically; an explicit tag or commit can still override that choice. The
+previous revision must be an ancestor of the candidate, and each output
+directory must be absent or empty and outside the repository. Each pass checks
+all seven release-core CSV files for exact schema and row-name parity, rejects
+invalid metrics, and fails when throughput falls more than 15% or P99 rises
+more than 25%. The second pass reverses execution order to expose
+order-sensitive runner effects. Evidence includes the copied CSV files,
+separate logs, commit identities, run order, and a Markdown report. This
+qualification does not promote or modify benchmark baselines.
+
 Run the release guardrail comparison:
 
 ```powershell
@@ -471,4 +501,6 @@ Related files:
 - [BENCHMARK_CATALOG.md](BENCHMARK_CATALOG.md): complete harness list and classification.
 - [SQLITE_COMPARISON.md](SQLITE_COMPARISON.md): focused same-runner CSharpDB vs SQLite comparison.
 - `release-core-manifest.json`: source-of-truth manifest for published README tables.
+- `scripts/Compare-ReleaseCore.ps1`: strict same-runner release comparison.
+- `scripts/Test-PreviousReleasePerformance.ps1`: clean two-revision benchmark runner.
 - `scripts/Update-BenchmarkReadme.ps1`: generated-results updater.

@@ -592,6 +592,90 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task HttpTransport_PreservesBlobValuesAcrossTypedResultPaths()
+    {
+        byte[] storedPayload = [0x00, 0x01, 0xFE, 0xFF];
+        byte[] defaultPayload = [0x10, 0x20, 0x30];
+
+        SqlExecutionResult seed = await _client.ExecuteSqlAsync(
+            """
+            CREATE TABLE http_blob_paths (
+                id INTEGER PRIMARY KEY,
+                payload BLOB
+            );
+            INSERT INTO http_blob_paths VALUES (1, X'0001FEFF');
+            CREATE VIEW http_blob_view AS
+                SELECT id, payload FROM http_blob_paths;
+            """,
+            Ct);
+        Assert.Null(seed.Error);
+
+        TableBrowseResult table = await _client.BrowseTableAsync(
+            "http_blob_paths",
+            ct: Ct);
+        object?[] tableRow = Assert.Single(table.Rows);
+        Assert.Equal(storedPayload, Assert.IsType<byte[]>(tableRow[1]));
+
+        Dictionary<string, object?> row = Assert.IsType<Dictionary<string, object?>>(
+            await _client.GetRowByPkAsync(
+                "http_blob_paths",
+                "id",
+                1L,
+                Ct));
+        Assert.Equal(storedPayload, Assert.IsType<byte[]>(row["payload"]));
+
+        ViewBrowseResult view = await _client.BrowseViewAsync(
+            "http_blob_view",
+            ct: Ct);
+        Assert.Equal(
+            ["INTEGER", "BLOB"],
+            Assert.IsType<string[]>(view.ColumnTypes));
+        object?[] viewRow = Assert.Single(view.Rows);
+        Assert.Equal(storedPayload, Assert.IsType<byte[]>(viewRow[1]));
+
+        await _client.CreateProcedureAsync(
+            new ProcedureDefinition
+            {
+                Name = "HttpBlobDefault",
+                BodySql = "SELECT @payload AS payload;",
+                Parameters =
+                [
+                    new ProcedureParameterDefinition
+                    {
+                        Name = "payload",
+                        Type = DbType.Blob,
+                        Required = false,
+                        Default = defaultPayload,
+                    },
+                ],
+            },
+            Ct);
+
+        ProcedureDefinition detail = Assert.IsType<ProcedureDefinition>(
+            await _client.GetProcedureAsync("HttpBlobDefault", Ct));
+        Assert.Equal(
+            defaultPayload,
+            Assert.IsType<byte[]>(Assert.Single(detail.Parameters).Default));
+
+        ProcedureDefinition listed = Assert.Single(
+            await _client.GetProceduresAsync(ct: Ct),
+            procedure => procedure.Name == "HttpBlobDefault");
+        Assert.Equal(
+            defaultPayload,
+            Assert.IsType<byte[]>(Assert.Single(listed.Parameters).Default));
+
+        ProcedureExecutionResult execution = await _client.ExecuteProcedureAsync(
+            "HttpBlobDefault",
+            new Dictionary<string, object?>(),
+            Ct);
+        Assert.True(execution.Succeeded);
+        ProcedureStatementExecutionResult statement = Assert.Single(execution.Statements);
+        Assert.Equal(["BLOB"], Assert.IsType<string[]>(statement.ColumnTypes));
+        object?[] procedureRow = Assert.Single(statement.Rows!);
+        Assert.Equal(defaultPayload, Assert.IsType<byte[]>(Assert.Single(procedureRow)));
+    }
+
+    [Fact]
     public async Task HttpTransport_MapsCollationMetadata()
     {
         var createTable = await _client.ExecuteSqlAsync(

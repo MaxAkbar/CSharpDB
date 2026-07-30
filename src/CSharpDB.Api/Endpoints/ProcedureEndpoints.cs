@@ -149,7 +149,8 @@ public static class ProcedureEndpoints
                 ? JsonHelper.RowsToNamedDictionaries(statement.ColumnNames, statement.Rows)
                 : null,
             statement.RowsAffected,
-            statement.Elapsed.TotalMilliseconds)).ToList(),
+            statement.Elapsed.TotalMilliseconds,
+            statement.ColumnTypes)).ToList(),
         result.Error,
         result.FailedStatementIndex,
         result.Elapsed.TotalMilliseconds);

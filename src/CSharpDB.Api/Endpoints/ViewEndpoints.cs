@@ -44,7 +44,13 @@ public static class ViewEndpoints
         var rows = JsonHelper.RowsToNamedDictionaries(result.ColumnNames, result.Rows);
 
         return Results.Ok(new BrowseResponse(
-            result.ColumnNames, rows, result.TotalRows, result.Page, result.PageSize, result.TotalPages));
+            result.ColumnNames,
+            rows,
+            result.TotalRows,
+            result.Page,
+            result.PageSize,
+            result.TotalPages,
+            result.ColumnTypes));
     }
 
     private static async Task<IResult> CreateView(CreateViewRequest req, ICSharpDbClient db)

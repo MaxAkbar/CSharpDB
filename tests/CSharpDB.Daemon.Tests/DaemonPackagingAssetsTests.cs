@@ -59,6 +59,109 @@ public sealed class DaemonPackagingAssetsTests
     }
 
     [Fact]
+    public void SqlReleaseQualificationWorkflow_RunsTwoCleanPassesOnEverySupportedOs()
+    {
+        string repoRoot = FindRepoRoot();
+        string workflow = File.ReadAllText(Path.Combine(
+            repoRoot,
+            ".github",
+            "workflows",
+            "sql-release-qualification.yml"));
+        string normalized = workflow.ReplaceLineEndings("\n");
+
+        Assert.Contains("workflow_call:", normalized);
+        Assert.Contains("workflow_dispatch:", normalized);
+        Assert.Contains("clean: true", normalized);
+        Assert.Contains("- ubuntu-latest", normalized);
+        Assert.Contains("- windows-latest", normalized);
+        Assert.Contains("- macos-latest", normalized);
+        Assert.Contains(
+            """
+            qualification_pass:
+                      - 1
+                      - 2
+            """.ReplaceLineEndings("\n"),
+            normalized);
+        Assert.Contains("Test-SqlReleaseQualification.ps1", normalized);
+        Assert.Contains("${{ runner.temp }}", normalized);
+        Assert.Contains("previous_release_ref:", normalized);
+        Assert.Contains(
+            "empty discovers the nearest prior semantic release",
+            normalized);
+        Assert.DoesNotContain("default: v4.3.0", normalized);
+        Assert.Contains("previous-release-performance:", normalized);
+        Assert.Contains("Test-PreviousReleasePerformance.ps1", normalized);
+        Assert.Contains(
+            "-CandidateRef $env:CANDIDATE_REF",
+            normalized);
+        Assert.Contains(
+            "-QualificationPass ${{ matrix.qualification_pass }}",
+            normalized);
+        Assert.Contains("baseline-results", normalized);
+        Assert.Contains("candidate-results", normalized);
+    }
+
+    [Fact]
+    public void ReleaseWorkflow_GatesEveryPublisherOnReusableQualification()
+    {
+        string repoRoot = FindRepoRoot();
+        string workflow = File.ReadAllText(Path.Combine(
+            repoRoot,
+            ".github",
+            "workflows",
+            "release.yml"));
+        string normalized = workflow.ReplaceLineEndings("\n");
+
+        Assert.Contains(
+            "uses: ./.github/workflows/sql-release-qualification.yml",
+            normalized);
+        Assert.Contains(
+            "release_version: ${{ github.ref_name }}",
+            normalized);
+        Assert.Contains(
+            "release_commit: ${{ github.sha }}",
+            normalized);
+        Assert.DoesNotContain("previous_release_ref:", normalized);
+        Assert.Equal(
+            5,
+            System.Text.RegularExpressions.Regex.Matches(
+                normalized,
+                @"(?m)^    needs: build-and-test$").Count);
+    }
+
+    [Fact]
+    public void SqlReleaseQualificationScript_CoversFullSuiteAndIsolationBoundaries()
+    {
+        string repoRoot = FindRepoRoot();
+        string script = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "scripts",
+            "Test-SqlReleaseQualification.ps1"));
+
+        Assert.Contains("status --porcelain=v1 --untracked-files=all", script);
+        Assert.Contains("Qualification output must be outside the repository", script);
+        Assert.Contains("'test',", script);
+        Assert.Contains("$solutionPath", script);
+        Assert.Contains("Test-Documentation.ps1", script);
+        Assert.Contains("Test-NuGetPackageClosure.ps1", script);
+        Assert.Contains("Test-EfCoreVersionConsistency.ps1", script);
+        Assert.Contains("Test-SqlServerMigrationIsolation.ps1", script);
+        Assert.Contains("Test-MySqlMigrationIsolation.ps1", script);
+        Assert.Contains("Test-AccessMigrationIsolation.ps1", script);
+        Assert.Contains("Test-EfCoreMigrationTool.ps1", script);
+
+        System.Text.RegularExpressions.Match accessArguments =
+            System.Text.RegularExpressions.Regex.Match(
+                script,
+                @"(?s)-StepName 'access-migration-isolation'.*?-ArgumentList @\((?<arguments>.*?)\)");
+        Assert.True(accessArguments.Success);
+        Assert.DoesNotContain(
+            "'-NoRestore'",
+            accessArguments.Groups["arguments"].Value,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void NuGetVerificationScript_PollsHandlesMissingPackagesAndTimesOut()
     {
         string repoRoot = FindRepoRoot();

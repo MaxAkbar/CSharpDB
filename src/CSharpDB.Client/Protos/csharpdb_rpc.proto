@@ -932,6 +932,7 @@ message ViewBrowseResultMessage {
   int32 total_rows = 4;
   int32 page = 5;
   int32 page_size = 6;
+  StringList column_types = 7;
 }
 
 message SqlExecutionResultMessage {
@@ -990,6 +991,7 @@ message ProcedureStatementExecutionResultMessage {
   VariantArrayList rows = 5;
   int32 rows_affected = 6;
   google.protobuf.Duration elapsed = 7;
+  StringList column_types = 8;
 }
 
 message ProcedureExecutionResultMessage {
