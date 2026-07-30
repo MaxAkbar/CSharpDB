@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
 using Microsoft.EntityFrameworkCore.Storage;
+using EngineDatabase = CSharpDB.Engine.Database;
 
 namespace CSharpDB.EntityFrameworkCore.Tests;
 
@@ -1224,6 +1225,157 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
             Convert.ToInt64(await ExecuteScalarValueAsync(
                 unalignedPath,
                 "SELECT COUNT(*) FROM Items WHERE Id = 10")));
+    }
+
+    [Fact]
+    public async Task MigrationsSqlGenerator_StandaloneIntegerPrimaryKey_RebuildsFullTextIndexes()
+    {
+        string dbPath = Path.Combine(
+            _workspace,
+            "integer-primary-key-fulltext-rekey.db");
+        await using (EngineDatabase database =
+            await EngineDatabase.OpenAsync(dbPath, Ct))
+        {
+            await database.ExecuteAsync(
+                """
+                CREATE TABLE Items (
+                    Id INTEGER NOT NULL,
+                    Code TEXT NOT NULL,
+                    Body TEXT NOT NULL
+                )
+                """,
+                Ct);
+            await database.ExecuteAsync(
+                "CREATE INDEX IX_Items_Code ON Items (Code)",
+                Ct);
+            await database.ExecuteAsync(
+                """
+                INSERT INTO Items (Id, Code, Body)
+                VALUES
+                    (10, 'ten', 'searchable first'),
+                    (20, 'twenty', 'searchable second')
+                """,
+                Ct);
+            await database.EnsureFullTextIndexAsync(
+                "FTS_Items_Body",
+                "Items",
+                ["Body"],
+                ct: Ct);
+
+            Assert.Equal(
+                2L,
+                Assert.Single(
+                    await database.SearchAsync(
+                        "FTS_Items_Body",
+                        "second",
+                        Ct)).RowId);
+        }
+
+        string addPrimaryKeySql;
+        using (var db =
+            new MigrationRuntimeContext($"Data Source={dbPath}"))
+        {
+            IMigrationsSqlGenerator generator =
+                db.GetService<IMigrationsSqlGenerator>();
+            addPrimaryKeySql = Assert.Single(
+                generator.Generate(
+                    [
+                        new AddPrimaryKeyOperation
+                        {
+                            Name = "PK_Items",
+                            Table = "Items",
+                            Columns = ["Id"],
+                        },
+                    ],
+                    model: null)).CommandText;
+        }
+
+        await using (var connection =
+            new CSharpDbConnection($"Data Source={dbPath}"))
+        {
+            await connection.OpenAsync(Ct);
+            await using var transaction =
+                await connection.BeginTransactionAsync(Ct);
+            foreach (string statement in
+                SqlScriptSplitter.SplitExecutableStatements(
+                    addPrimaryKeySql))
+            {
+                await using var command = connection.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText = statement;
+                await command.ExecuteNonQueryAsync(Ct);
+            }
+
+            await transaction.CommitAsync(Ct);
+        }
+
+        await CSharpDbConnection.ClearAllPoolsAsync();
+        await using (EngineDatabase database =
+            await EngineDatabase.OpenAsync(dbPath, Ct))
+        {
+            Assert.True(
+                database.GetTableSchema("Items")!.Columns[0].IsPrimaryKey);
+            Assert.Equal(
+                20L,
+                Assert.Single(
+                    await database.SearchAsync(
+                        "FTS_Items_Body",
+                        "second",
+                        Ct)).RowId);
+
+            await database.ExecuteAsync(
+                """
+                INSERT INTO Items (Code, Body)
+                VALUES ('generated', 'searchable generated')
+                """,
+                Ct);
+            Assert.Equal(
+                21L,
+                Assert.Single(
+                    await database.SearchAsync(
+                        "FTS_Items_Body",
+                        "generated",
+                        Ct)).RowId);
+
+            await database.ExecuteAsync(
+                """
+                UPDATE Items
+                SET Body = 'renamed content'
+                WHERE Id = 20
+                """,
+                Ct);
+            Assert.Empty(
+                await database.SearchAsync(
+                    "FTS_Items_Body",
+                    "second",
+                    Ct));
+            Assert.Equal(
+                20L,
+                Assert.Single(
+                    await database.SearchAsync(
+                        "FTS_Items_Body",
+                        "renamed",
+                        Ct)).RowId);
+
+            await database.ExecuteAsync(
+                "DELETE FROM Items WHERE Id = 10",
+                Ct);
+            Assert.Empty(
+                await database.SearchAsync(
+                    "FTS_Items_Body",
+                    "first",
+                    Ct));
+        }
+
+        await using EngineDatabase reopened =
+            await EngineDatabase.OpenAsync(dbPath, Ct);
+        Assert.Equal(
+            20L,
+            Assert.Single(
+                await reopened.SearchAsync(
+                    "FTS_Items_Body",
+                    "renamed",
+                    Ct)).RowId);
     }
 
     [Fact]

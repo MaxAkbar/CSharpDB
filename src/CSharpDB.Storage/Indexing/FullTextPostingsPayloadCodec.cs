@@ -470,9 +470,9 @@ internal static class FullTextPostingChunkManifestCodec
             var chunks = new FullTextPostingChunkDescriptor[chunkCount];
             for (int j = 0; j < chunkCount; j++)
             {
-                long firstDocId = checked((long)Varint.Read(payload[offset..], out int firstBytes));
+                long firstDocId = Varint.ReadSigned(payload[offset..], out int firstBytes);
                 offset += firstBytes;
-                long lastDocId = checked((long)Varint.Read(payload[offset..], out int lastBytes));
+                long lastDocId = Varint.ReadSigned(payload[offset..], out int lastBytes);
                 offset += lastBytes;
                 int postingCount = checked((int)Varint.Read(payload[offset..], out int postingCountBytes));
                 offset += postingCountBytes;
@@ -663,7 +663,7 @@ internal static class FullTextPostingChunkPayloadCodec
             string term = Encoding.UTF8.GetString(payload.Slice(offset, termLength));
             offset += termLength;
 
-            long firstDocId = checked((long)Varint.Read(payload[offset..], out int firstDocIdBytes));
+            long firstDocId = Varint.ReadSigned(payload[offset..], out int firstDocIdBytes);
             offset += firstDocIdBytes;
 
             int postingsLength = checked((int)Varint.Read(payload[offset..], out int postingsLengthBytes));

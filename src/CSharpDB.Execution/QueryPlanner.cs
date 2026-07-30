@@ -79,6 +79,19 @@ public sealed class QueryPlanner
         DateTimeOffset CreatedUtc,
         bool IsEnabled);
 
+    private sealed record FullTextIndexRebuildPlan(
+        IndexSchema LogicalIndex,
+        IReadOnlyList<IndexSchema> InternalIndexes);
+
+    private sealed record TableRewriteIndexRebuildPlan(
+        IReadOnlyList<IndexSchema> RelationalIndexes,
+        IReadOnlyList<FullTextIndexRebuildPlan> FullTextIndexes)
+    {
+        public static TableRewriteIndexRebuildPlan Relational(
+            IReadOnlyList<IndexSchema> indexes) =>
+            new(indexes, Array.Empty<FullTextIndexRebuildPlan>());
+    }
+
     private readonly record struct ExplainEstimateResult(TableSchema? Schema, bool HasRows, long Rows);
 
     private sealed class PlannerEstimateDiagnostics
@@ -1837,9 +1850,9 @@ public sealed class QueryPlanner
                 {
                     if (UsesPhysicalIntegerPrimaryKey(newSchema, addedKey))
                     {
-                        IndexSchema[] indexesToRebuild =
+                        TableRewriteIndexRebuildPlan indexRebuildPlan =
                             GetIndexesForPhysicalIntegerPrimaryKeyRekey(
-                                stmt.TableName);
+                                schema);
                         long nextRowId =
                             await ValidatePhysicalIntegerPrimaryKeyValuesAsync(
                             schema,
@@ -1868,7 +1881,7 @@ public sealed class QueryPlanner
                                 rekeyedSchema,
                                 mappings,
                                 targetRowIdSourceOrdinal: primaryKeyColumnIndex),
-                            indexesToRebuild,
+                            indexRebuildPlan,
                             ct);
                         InvalidateRowIdCache(stmt.TableName);
                         break;
@@ -21242,27 +21255,121 @@ public sealed class QueryPlanner
         return columnIndex >= 0 && schema.Columns[columnIndex].Type == DbType.Integer;
     }
 
-    private IndexSchema[] GetIndexesForPhysicalIntegerPrimaryKeyRekey(
-        string tableName)
+    private TableRewriteIndexRebuildPlan GetIndexesForPhysicalIntegerPrimaryKeyRekey(
+        TableSchema tableSchema)
     {
+        string tableName = tableSchema.TableName;
         IndexSchema[] indexes = _catalog.GetIndexesForTable(tableName).ToArray();
+        var relationalIndexes = new List<IndexSchema>(indexes.Length);
+        var logicalFullTextIndexes =
+            new Dictionary<string, IndexSchema>(StringComparer.OrdinalIgnoreCase);
+        var internalFullTextIndexes =
+            new Dictionary<string, IndexSchema>(StringComparer.OrdinalIgnoreCase);
+
         for (int i = 0; i < indexes.Length; i++)
         {
             IndexSchema index = indexes[i];
-            if (index.State != IndexState.Ready ||
-                index.Kind is not (
-                    IndexKind.Sql or
-                    IndexKind.ConstraintInternal or
-                    IndexKind.ForeignKeyInternal))
+            if (index.State != IndexState.Ready)
             {
                 throw new CSharpDbException(
                     ErrorCode.ConstraintViolation,
                     $"Cannot physically rekey table '{tableName}' while index '{index.IndexName}' of kind {index.Kind} is present.");
             }
+
+            switch (index.Kind)
+            {
+                case IndexKind.Sql:
+                case IndexKind.ConstraintInternal:
+                case IndexKind.ForeignKeyInternal:
+                    relationalIndexes.Add(index);
+                    break;
+                case IndexKind.FullText:
+                    logicalFullTextIndexes.Add(index.IndexName, index);
+                    break;
+                case IndexKind.FullTextInternal:
+                    internalFullTextIndexes.Add(index.IndexName, index);
+                    break;
+                default:
+                    throw new CSharpDbException(
+                        ErrorCode.ConstraintViolation,
+                        $"Cannot physically rekey table '{tableName}' while index '{index.IndexName}' of kind {index.Kind} is present.");
+            }
         }
 
-        return indexes;
+        var fullTextRebuildPlans =
+            new List<FullTextIndexRebuildPlan>(logicalFullTextIndexes.Count);
+        var claimedInternalIndexes =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (IndexSchema logicalIndex in logicalFullTextIndexes.Values)
+        {
+            if (!FullTextIndexMaintenance.TryResolveColumnIndices(
+                    logicalIndex,
+                    tableSchema,
+                    out _))
+            {
+                throw CreateUnsupportedFullTextRekeyException(
+                    tableName,
+                    logicalIndex.IndexName,
+                    "its indexed columns are no longer valid TEXT columns");
+            }
+
+            string[] requiredInternalNames =
+                FullTextIndexNaming.GetRequiredOwnedIndexNames(
+                    logicalIndex.IndexName);
+            var ownedIndexes =
+                new IndexSchema[requiredInternalNames.Length];
+            for (int i = 0; i < requiredInternalNames.Length; i++)
+            {
+                string internalName = requiredInternalNames[i];
+                if (!internalFullTextIndexes.TryGetValue(
+                        internalName,
+                        out IndexSchema? internalIndex) ||
+                    internalIndex.State != IndexState.Ready ||
+                    !string.Equals(
+                        internalIndex.OwnerIndexName,
+                        logicalIndex.IndexName,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    throw CreateUnsupportedFullTextRekeyException(
+                        tableName,
+                        logicalIndex.IndexName,
+                        $"required owned index '{internalName}' is missing or invalid");
+                }
+
+                ownedIndexes[i] = internalIndex;
+                claimedInternalIndexes.Add(internalIndex.IndexName);
+            }
+
+            fullTextRebuildPlans.Add(
+                new FullTextIndexRebuildPlan(logicalIndex, ownedIndexes));
+        }
+
+        foreach (IndexSchema internalIndex in internalFullTextIndexes.Values)
+        {
+            if (!claimedInternalIndexes.Contains(internalIndex.IndexName))
+            {
+                string owner = string.IsNullOrWhiteSpace(
+                        internalIndex.OwnerIndexName)
+                    ? "no logical owner"
+                    : $"owner '{internalIndex.OwnerIndexName}'";
+                throw new CSharpDbException(
+                    ErrorCode.ConstraintViolation,
+                    $"Cannot physically rekey table '{tableName}' while full-text owned index '{internalIndex.IndexName}' has {owner} or is not part of a complete supported family.");
+            }
+        }
+
+        return new TableRewriteIndexRebuildPlan(
+            relationalIndexes,
+            fullTextRebuildPlans);
     }
+
+    private static CSharpDbException CreateUnsupportedFullTextRekeyException(
+        string tableName,
+        string indexName,
+        string reason) =>
+        new(
+            ErrorCode.ConstraintViolation,
+            $"Cannot physically rekey table '{tableName}' while full-text index '{indexName}' is present because {reason}.");
 
     private async ValueTask<long> ValidatePhysicalIntegerPrimaryKeyValuesAsync(
         TableSchema storageSchema,
@@ -21885,12 +21992,22 @@ public sealed class QueryPlanner
         CancellationToken ct) =>
         ExecuteTableRewriteAsync(
             plan,
-            Array.Empty<IndexSchema>(),
+            TableRewriteIndexRebuildPlan.Relational(
+                Array.Empty<IndexSchema>()),
+            ct);
+
+    private ValueTask ExecuteTableRewriteAsync(
+        TableRewritePlan plan,
+        IReadOnlyList<IndexSchema> indexesToRebuild,
+        CancellationToken ct) =>
+        ExecuteTableRewriteAsync(
+            plan,
+            TableRewriteIndexRebuildPlan.Relational(indexesToRebuild),
             ct);
 
     private async ValueTask ExecuteTableRewriteAsync(
         TableRewritePlan plan,
-        IReadOnlyList<IndexSchema> indexesToRebuild,
+        TableRewriteIndexRebuildPlan indexRebuildPlan,
         CancellationToken ct)
     {
         BTree sourceTree = _catalog.GetTableTree(plan.SourceSchema.TableName, _pager);
@@ -21936,9 +22053,12 @@ public sealed class QueryPlanner
                 }
             }
 
-            for (int i = 0; i < indexesToRebuild.Count; i++)
+            for (int i = 0;
+                 i < indexRebuildPlan.RelationalIndexes.Count;
+                 i++)
             {
-                IndexSchema index = indexesToRebuild[i];
+                IndexSchema index =
+                    indexRebuildPlan.RelationalIndexes[i];
                 IIndexStore shadowIndexStore =
                     await _catalog.CreateDetachedIndexStoreAsync(index, ct);
                 shadowIndexStores.Add(index.IndexName, shadowIndexStore);
@@ -21947,6 +22067,36 @@ public sealed class QueryPlanner
                     plan.TargetSchema,
                     index,
                     shadowIndexStore,
+                    GetReadSerializer(plan.TargetSchema),
+                    ct);
+            }
+
+            for (int i = 0;
+                 i < indexRebuildPlan.FullTextIndexes.Count;
+                 i++)
+            {
+                FullTextIndexRebuildPlan fullTextPlan =
+                    indexRebuildPlan.FullTextIndexes[i];
+                for (int j = 0;
+                     j < fullTextPlan.InternalIndexes.Count;
+                     j++)
+                {
+                    IndexSchema internalIndex =
+                        fullTextPlan.InternalIndexes[j];
+                    IIndexStore shadowIndexStore =
+                        await _catalog.CreateDetachedIndexStoreAsync(
+                            internalIndex,
+                            ct);
+                    shadowIndexStores.Add(
+                        internalIndex.IndexName,
+                        shadowIndexStore);
+                }
+
+                await FullTextIndexMaintenance.BackfillAsync(
+                    shadowTree,
+                    plan.TargetSchema,
+                    fullTextPlan.LogicalIndex,
+                    shadowIndexStores,
                     GetReadSerializer(plan.TargetSchema),
                     ct);
             }

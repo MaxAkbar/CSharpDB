@@ -299,9 +299,11 @@ Standalone primary-key migrations have a bounded support path:
 - a single physical `INTEGER` primary key can be added to populated data after
   every value passes non-NULL and uniqueness validation; those values become
   the physical row IDs
-- ready ordinary/unique SQL, constraint-owned, and foreign-key-support indexes
-  are rebuilt atomically with that physical rekey; full-text, collection, and
-  non-ready indexes reject the operation before mutation
+- ready ordinary/unique SQL, constraint-owned, foreign-key-support, and all
+  five owned stores in complete ready full-text index families are rebuilt
+  atomically with that physical rekey; the logical full-text owner stays
+  unchanged, while collection, incomplete full-text, and non-ready indexes
+  reject the operation before mutation
 - EF `DropPrimaryKey` migrations emit `DROP CONSTRAINT` with the exact
   constraint name; a mismatched name does not drop another key
 - `ALTER TABLE ... DROP PRIMARY KEY` is the supported path for an older unnamed
@@ -589,7 +591,7 @@ an entire table.
 | Composite primary keys and indexes | Yes | Composite primary keys are emitted as table constraints; composite unique and non-unique indexes preserve declared column order |
 | Index migrations | Yes | Create, drop, and root-preserving rename operations |
 | Alternate keys and unique constraints | Yes | Named create-table constraints plus standalone add/drop migrations |
-| Standalone primary-key migrations | Partial | Named logical keys add/drop; physical `INTEGER` adds can rekey validated populated rows and supported relational indexes atomically; EF drops match the exact constraint name |
+| Standalone primary-key migrations | Partial | Named logical keys add/drop; physical `INTEGER` adds can rekey validated populated rows, supported relational indexes, and complete ready full-text-owned storage atomically; EF drops match the exact constraint name |
 | Foreign keys | Partial | Named scalar/composite create/add/drop, primary or alternate-key targets, model-level restrictive/cascade/`SetNull` behavior, and the full immediate delete/update action matrix through explicit migration operations |
 | Literal column defaults | Partial | `HasDefaultValue(...)` values that map to INTEGER, REAL, TEXT, BLOB, or NULL; computed/default SQL expressions remain unsupported |
 | Check constraints | Partial | Create-table and standalone add/drop migrations for deterministic row-local expressions accepted by the engine |
@@ -639,8 +641,8 @@ an entire table.
   distinct aggregates, and broader `GroupBy` variants remain outside the
   supported surface
 - physical `INTEGER` primary-key rekeying supports ready ordinary/unique SQL,
-  constraint-owned, and foreign-key-support indexes; full-text, collection, and
-  non-ready indexes are rejected
+  constraint-owned, foreign-key-support, and complete ready full-text index
+  families; collection, incomplete full-text, and non-ready indexes are rejected
 - provider-created file connections are pooled by default; logical close resets
   connection-scoped state, persistent queries use committed snapshot readers
   during data-only writes, schema changes are serialized against those readers,

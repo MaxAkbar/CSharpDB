@@ -1,7 +1,9 @@
+using System.Reflection;
 using System.Text;
 using CSharpDB.Engine;
 using CSharpDB.Execution;
 using CSharpDB.Primitives;
+using CSharpDB.Storage.Catalog;
 using CSharpDB.Storage.Diagnostics;
 
 namespace CSharpDB.Tests;
@@ -1467,10 +1469,23 @@ public sealed class AlterTableRewriteTests : IAsyncLifetime
             "INSERT INTO failed_rekey_items VALUES " +
             "(10, 'first'), (10, 'second')",
             ct);
+        await _database.EnsureFullTextIndexAsync(
+            "fts_failed_rekey_code",
+            "failed_rekey_items",
+            ["code"],
+            ct: ct);
 
         uint originalTableRoot = _database.GetTableRootPage("failed_rekey_items");
-        uint originalIndexRoot =
-            (await GetIndexRootPagesAsync(ct))["ix_failed_rekey_code"];
+        string[] tableIndexNames = _database.GetIndexes()
+            .Where(index => string.Equals(
+                index.TableName,
+                "failed_rekey_items",
+                StringComparison.OrdinalIgnoreCase))
+            .Select(index => index.IndexName)
+            .ToArray();
+        Assert.Equal(7, tableIndexNames.Length);
+        IReadOnlyDictionary<string, uint> originalIndexRoots =
+            await GetIndexRootPagesAsync(ct);
 
         CSharpDbException failure = await Assert.ThrowsAsync<CSharpDbException>(
             async () => await _database.ExecuteAsync(
@@ -1483,9 +1498,13 @@ public sealed class AlterTableRewriteTests : IAsyncLifetime
         Assert.Equal(
             originalTableRoot,
             _database.GetTableRootPage("failed_rekey_items"));
-        Assert.Equal(
-            originalIndexRoot,
-            (await GetIndexRootPagesAsync(ct))["ix_failed_rekey_code"]);
+        IReadOnlyDictionary<string, uint> unchangedIndexRoots =
+            await GetIndexRootPagesAsync(ct);
+        Assert.All(
+            tableIndexNames,
+            indexName => Assert.Equal(
+                originalIndexRoots[indexName],
+                unchangedIndexRoots[indexName]));
         Assert.DoesNotContain(
             _database.GetTableSchema("failed_rekey_items")!.KeyConstraints,
             key => key.Kind == KeyConstraintKind.PrimaryKey);
@@ -1499,15 +1518,26 @@ public sealed class AlterTableRewriteTests : IAsyncLifetime
         Assert.Equal(
             10L,
             Assert.Single(await indexedLookup.ToListAsync(ct))[0].AsInteger);
+        Assert.Equal(
+            2L,
+            Assert.Single(
+                await _database.SearchAsync(
+                    "fts_failed_rekey_code",
+                    "second",
+                    ct)).RowId);
     }
 
     [Fact]
-    public async Task AddPhysicalIntegerPrimaryKey_FullTextIndexRejectsBeforeChangingRoots()
+    public async Task AddPhysicalIntegerPrimaryKey_RekeysRowsAndRebuildsFullTextIndexes()
     {
         CancellationToken ct = TestContext.Current.CancellationToken;
         await _database.ExecuteAsync(
             "CREATE TABLE fulltext_rekey_items (" +
             "id INTEGER NOT NULL, body TEXT NOT NULL)",
+            ct);
+        await _database.ExecuteAsync(
+            "CREATE INDEX ix_fulltext_rekey_items_body " +
+            "ON fulltext_rekey_items (body)",
             ct);
         await _database.ExecuteAsync(
             "INSERT INTO fulltext_rekey_items VALUES " +
@@ -1518,13 +1548,522 @@ public sealed class AlterTableRewriteTests : IAsyncLifetime
             "fulltext_rekey_items",
             ["body"],
             ct: ct);
+        await _database.EnsureFullTextIndexAsync(
+            "fts_fulltext_rekey_items_secondary",
+            "fulltext_rekey_items",
+            ["body"],
+            new FullTextIndexOptions
+            {
+                StorePositions = false,
+            },
+            ct);
+        await _database.ExecuteAsync(
+            "CREATE TABLE unrelated_rekey_items (" +
+            "id INTEGER PRIMARY KEY, body TEXT NOT NULL)",
+            ct);
+        await _database.ExecuteAsync(
+            "CREATE INDEX ix_unrelated_rekey_items_body " +
+            "ON unrelated_rekey_items (body)",
+            ct);
+        await _database.ExecuteAsync(
+            "INSERT INTO unrelated_rekey_items VALUES (1, 'unrelated')",
+            ct);
 
         uint originalTableRoot =
             _database.GetTableRootPage("fulltext_rekey_items");
+        IndexSchema[] logicalFullTextIndexes = _database.GetIndexes()
+            .Where(index =>
+                string.Equals(
+                    index.TableName,
+                    "fulltext_rekey_items",
+                    StringComparison.OrdinalIgnoreCase) &&
+                index.Kind == IndexKind.FullText)
+            .OrderBy(index => index.IndexName, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        Assert.Equal(2, logicalFullTextIndexes.Length);
+        IndexSchema logicalFullTextIndex = logicalFullTextIndexes[0];
+        var logicalFullTextIndexNames = logicalFullTextIndexes
+            .Select(index => index.IndexName)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        IndexSchema[] fullTextInternalIndexes = _database.GetIndexes()
+            .Where(index =>
+                string.Equals(
+                    index.TableName,
+                    "fulltext_rekey_items",
+                    StringComparison.OrdinalIgnoreCase) &&
+                index.Kind == IndexKind.FullTextInternal &&
+                index.OwnerIndexName is not null &&
+                logicalFullTextIndexNames.Contains(index.OwnerIndexName))
+            .ToArray();
+        Assert.Equal(10, fullTextInternalIndexes.Length);
+
+        IReadOnlyDictionary<string, uint> originalIndexRoots =
+            await GetIndexRootPagesAsync(ct);
+        IReadOnlyDictionary<string, uint> originalLogicalFullTextRoots =
+            logicalFullTextIndexes.ToDictionary(
+                index => index.IndexName,
+                index => originalIndexRoots[index.IndexName],
+                StringComparer.OrdinalIgnoreCase);
+        IReadOnlyDictionary<string, string?> originalLogicalFullTextOptions =
+            logicalFullTextIndexes.ToDictionary(
+                index => index.IndexName,
+                index => index.OptionsJson,
+                StringComparer.OrdinalIgnoreCase);
+        uint originalRelationalIndexRoot =
+            originalIndexRoots["ix_fulltext_rekey_items_body"];
+        uint originalUnrelatedIndexRoot =
+            originalIndexRoots["ix_unrelated_rekey_items_body"];
+
+        Assert.Equal(
+            1L,
+            Assert.Single(
+                await _database.SearchAsync(
+                    logicalFullTextIndex.IndexName,
+                    "first",
+                    ct)).RowId);
+        Assert.Equal(
+            2L,
+            Assert.Single(
+                await _database.SearchAsync(
+                    logicalFullTextIndex.IndexName,
+                    "second",
+                    ct)).RowId);
+        Assert.Equal(
+            2L,
+            Assert.Single(
+                await _database.SearchAsync(
+                    logicalFullTextIndexes[1].IndexName,
+                    "second",
+                    ct)).RowId);
+
+        await _database.ExecuteAsync(
+            "ALTER TABLE fulltext_rekey_items " +
+            "ADD CONSTRAINT pk_fulltext_rekey_items PRIMARY KEY (id)",
+            ct);
+
+        Assert.NotEqual(
+            originalTableRoot,
+            _database.GetTableRootPage("fulltext_rekey_items"));
+        IReadOnlyDictionary<string, uint> rekeyedIndexRoots =
+            await GetIndexRootPagesAsync(ct);
+        Assert.All(
+            logicalFullTextIndexes,
+            index => Assert.Equal(
+                originalLogicalFullTextRoots[index.IndexName],
+                rekeyedIndexRoots[index.IndexName]));
+        Assert.NotEqual(
+            originalRelationalIndexRoot,
+            rekeyedIndexRoots["ix_fulltext_rekey_items_body"]);
+        Assert.Equal(
+            originalUnrelatedIndexRoot,
+            rekeyedIndexRoots["ix_unrelated_rekey_items_body"]);
+        Assert.All(
+            fullTextInternalIndexes,
+            index => Assert.NotEqual(
+                originalIndexRoots[index.IndexName],
+                rekeyedIndexRoots[index.IndexName]));
+        Assert.All(
+            logicalFullTextIndexes,
+            index => Assert.Equal(
+                originalLogicalFullTextOptions[index.IndexName],
+                _database.GetIndexes()
+                    .Single(candidate => string.Equals(
+                        candidate.IndexName,
+                        index.IndexName,
+                        StringComparison.OrdinalIgnoreCase))
+                    .OptionsJson));
+
+        ColumnDefinition idColumn =
+            _database.GetTableSchema("fulltext_rekey_items")!.Columns[0];
+        Assert.True(idColumn.IsPrimaryKey);
+        Assert.True(idColumn.IsIdentity);
+        Assert.False(idColumn.Nullable);
+        Assert.Equal(
+            10L,
+            Assert.Single(
+                await _database.SearchAsync(
+                    logicalFullTextIndex.IndexName,
+                    "first",
+                    ct)).RowId);
+        Assert.Equal(
+            20L,
+            Assert.Single(
+                await _database.SearchAsync(
+                    logicalFullTextIndex.IndexName,
+                    "second",
+                    ct)).RowId);
+        Assert.Equal(
+            20L,
+            Assert.Single(
+                await _database.SearchAsync(
+                    logicalFullTextIndexes[1].IndexName,
+                    "second",
+                    ct)).RowId);
+
+        await _database.ExecuteAsync(
+            "INSERT INTO fulltext_rekey_items (body) " +
+            "VALUES ('searchable generated')",
+            ct);
+        Assert.Equal(
+            21L,
+            Assert.Single(
+                await _database.SearchAsync(
+                    logicalFullTextIndex.IndexName,
+                    "generated",
+                    ct)).RowId);
+        Assert.Equal(
+            21L,
+            Assert.Single(
+                await _database.SearchAsync(
+                    logicalFullTextIndexes[1].IndexName,
+                    "generated",
+                    ct)).RowId);
+        await using (QueryResult generated = await _database.ExecuteAsync(
+            "SELECT id FROM fulltext_rekey_items " +
+            "WHERE body = 'searchable generated'",
+            ct))
+        {
+            Assert.Equal(
+                21L,
+                Assert.Single(await generated.ToListAsync(ct))[0].AsInteger);
+        }
+
+        await _database.ExecuteAsync(
+            "UPDATE fulltext_rekey_items " +
+            "SET body = 'renamed primary' WHERE id = 10",
+            ct);
+        Assert.Empty(
+            await _database.SearchAsync(
+                logicalFullTextIndex.IndexName,
+                "first",
+                ct));
+        Assert.Equal(
+            10L,
+            Assert.Single(
+                await _database.SearchAsync(
+                    logicalFullTextIndex.IndexName,
+                    "renamed",
+                    ct)).RowId);
+        await using (QueryResult relationalLookup = await _database.ExecuteAsync(
+            "SELECT id FROM fulltext_rekey_items " +
+            "WHERE body = 'renamed primary'",
+            ct))
+        {
+            Assert.Equal(
+                10L,
+                Assert.Single(await relationalLookup.ToListAsync(ct))[0].AsInteger);
+        }
+
+        await _database.ExecuteAsync(
+            "DELETE FROM fulltext_rekey_items WHERE id = 20",
+            ct);
+        Assert.Empty(
+            await _database.SearchAsync(
+                logicalFullTextIndex.IndexName,
+                "second",
+                ct));
+        Assert.Empty(
+            await _database.SearchAsync(
+                logicalFullTextIndexes[1].IndexName,
+                "second",
+                ct));
+
+        uint persistedTableRoot =
+            _database.GetTableRootPage("fulltext_rekey_items");
+        IReadOnlyDictionary<string, uint> persistedIndexRoots =
+            await GetIndexRootPagesAsync(ct);
+        TableSchema persistedSchema =
+            _database.GetTableSchema("fulltext_rekey_items")!;
+
+        await _database.DisposeAsync();
+        _database = await Database.OpenAsync(_databasePath, ct);
+
+        TableSchema reopenedSchema =
+            _database.GetTableSchema("fulltext_rekey_items")!;
+        Assert.True(reopenedSchema.Columns[0].IsPrimaryKey);
+        Assert.Equal(persistedSchema.SchemaId, reopenedSchema.SchemaId);
+        Assert.Equal(
+            persistedSchema.Columns[0].SchemaId,
+            reopenedSchema.Columns[0].SchemaId);
+        Assert.Equal(persistedSchema.NextRowId, reopenedSchema.NextRowId);
+        Assert.Equal(
+            persistedTableRoot,
+            _database.GetTableRootPage("fulltext_rekey_items"));
+        IReadOnlyDictionary<string, uint> reopenedIndexRoots =
+            await GetIndexRootPagesAsync(ct);
+        Assert.Equal(persistedIndexRoots.Count, reopenedIndexRoots.Count);
+        Assert.All(
+            persistedIndexRoots,
+            pair => Assert.Equal(
+                pair.Value,
+                reopenedIndexRoots[pair.Key]));
+        Assert.All(
+            logicalFullTextIndexes,
+            index => Assert.Equal(
+                originalLogicalFullTextOptions[index.IndexName],
+                _database.GetIndexes()
+                    .Single(candidate => string.Equals(
+                        candidate.IndexName,
+                        index.IndexName,
+                        StringComparison.OrdinalIgnoreCase))
+                    .OptionsJson));
+        Assert.Equal(
+            10L,
+            Assert.Single(
+                await _database.SearchAsync(
+                    logicalFullTextIndex.IndexName,
+                    "renamed",
+                    ct)).RowId);
+        Assert.Equal(
+            21L,
+            Assert.Single(
+                await _database.SearchAsync(
+                    logicalFullTextIndex.IndexName,
+                    "generated",
+                    ct)).RowId);
+        Assert.Equal(
+            21L,
+            Assert.Single(
+                await _database.SearchAsync(
+                    logicalFullTextIndexes[1].IndexName,
+                    "generated",
+                    ct)).RowId);
+        Assert.Empty(
+            await _database.SearchAsync(
+                logicalFullTextIndex.IndexName,
+                "second",
+                ct));
+        Assert.Equal(
+            originalUnrelatedIndexRoot,
+            (await GetIndexRootPagesAsync(ct))["ix_unrelated_rekey_items_body"]);
+    }
+
+    [Fact]
+    public async Task AddPhysicalIntegerPrimaryKey_NegativeValuesRebuildFullTextChunks()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        await _database.ExecuteAsync(
+            "CREATE TABLE negative_fulltext_rekey (" +
+            "id INTEGER NOT NULL, body TEXT NOT NULL)",
+            ct);
+        await _database.ExecuteAsync(
+            "INSERT INTO negative_fulltext_rekey VALUES " +
+            "(-20, 'shared negative first'), " +
+            "(-10, 'shared negative second')",
+            ct);
+        await _database.EnsureFullTextIndexAsync(
+            "fts_negative_fulltext_rekey",
+            "negative_fulltext_rekey",
+            ["body"],
+            ct: ct);
+
+        await _database.ExecuteAsync(
+            "ALTER TABLE negative_fulltext_rekey " +
+            "ADD CONSTRAINT pk_negative_fulltext_rekey PRIMARY KEY (id)",
+            ct);
+
+        Assert.Equal(
+            [-20L, -10L],
+            (await _database.SearchAsync(
+                "fts_negative_fulltext_rekey",
+                "shared",
+                ct))
+            .Select(hit => hit.RowId));
+        Assert.Equal(
+            -20L,
+            Assert.Single(
+                await _database.SearchAsync(
+                    "fts_negative_fulltext_rekey",
+                    "first",
+                    ct)).RowId);
+
+        await _database.ExecuteAsync(
+            "INSERT INTO negative_fulltext_rekey (body) " +
+            "VALUES ('shared generated')",
+            ct);
+        Assert.Equal(
+            3L,
+            Assert.Single(
+                await _database.SearchAsync(
+                    "fts_negative_fulltext_rekey",
+                    "generated",
+                    ct)).RowId);
+
+        await _database.DisposeAsync();
+        _database = await Database.OpenAsync(_databasePath, ct);
+
+        Assert.Equal(
+            [-20L, -10L, 3L],
+            (await _database.SearchAsync(
+                "fts_negative_fulltext_rekey",
+                "shared",
+                ct))
+            .Select(hit => hit.RowId));
+    }
+
+    [Fact]
+    public async Task AddPhysicalIntegerPrimaryKey_FullTextRewrite_PublicTransactionRollbackRestoresRoots()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        await _database.ExecuteAsync(
+            "CREATE TABLE rollback_fulltext_rekey (" +
+            "id INTEGER NOT NULL, body TEXT NOT NULL)",
+            ct);
+        await _database.ExecuteAsync(
+            "CREATE INDEX ix_rollback_fulltext_rekey_body " +
+            "ON rollback_fulltext_rekey (body)",
+            ct);
+        await _database.ExecuteAsync(
+            "INSERT INTO rollback_fulltext_rekey VALUES " +
+            "(10, 'original first'), (20, 'original second')",
+            ct);
+        await _database.EnsureFullTextIndexAsync(
+            "fts_rollback_fulltext_rekey",
+            "rollback_fulltext_rekey",
+            ["body"],
+            ct: ct);
+
+        uint originalTableRoot =
+            _database.GetTableRootPage("rollback_fulltext_rekey");
         string[] tableIndexNames = _database.GetIndexes()
             .Where(index => string.Equals(
                 index.TableName,
-                "fulltext_rekey_items",
+                "rollback_fulltext_rekey",
+                StringComparison.OrdinalIgnoreCase))
+            .Select(index => index.IndexName)
+            .ToArray();
+        Assert.Equal(7, tableIndexNames.Length);
+        IReadOnlyDictionary<string, uint> originalIndexRoots =
+            await GetIndexRootPagesAsync(ct);
+
+        await using (WriteTransaction transaction =
+            await _database.BeginWriteTransactionAsync(ct))
+        {
+            await transaction.ExecuteAsync(
+                "ALTER TABLE rollback_fulltext_rekey " +
+                "ADD CONSTRAINT pk_rollback_fulltext_rekey PRIMARY KEY (id)",
+                ct);
+            await transaction.ExecuteAsync(
+                "INSERT INTO rollback_fulltext_rekey (body) " +
+                "VALUES ('uncommitted generated')",
+                ct);
+            await using (QueryResult generated = await transaction.ExecuteAsync(
+                "SELECT id FROM rollback_fulltext_rekey " +
+                "WHERE body = 'uncommitted generated'",
+                ct))
+            {
+                Assert.Equal(
+                    21L,
+                    Assert.Single(await generated.ToListAsync(ct))[0].AsInteger);
+            }
+
+            await transaction.RollbackAsync(ct);
+        }
+
+        Assert.Equal(
+            originalTableRoot,
+            _database.GetTableRootPage("rollback_fulltext_rekey"));
+        IReadOnlyDictionary<string, uint> restoredIndexRoots =
+            await GetIndexRootPagesAsync(ct);
+        Assert.All(
+            tableIndexNames,
+            indexName => Assert.Equal(
+                originalIndexRoots[indexName],
+                restoredIndexRoots[indexName]));
+        ColumnDefinition restoredIdColumn =
+            _database.GetTableSchema("rollback_fulltext_rekey")!.Columns[0];
+        Assert.False(restoredIdColumn.IsPrimaryKey);
+        Assert.False(restoredIdColumn.IsIdentity);
+        Assert.Equal(
+            1L,
+            Assert.Single(
+                await _database.SearchAsync(
+                    "fts_rollback_fulltext_rekey",
+                    "first",
+                    ct)).RowId);
+        Assert.Equal(
+            2L,
+            Assert.Single(
+                await _database.SearchAsync(
+                    "fts_rollback_fulltext_rekey",
+                    "second",
+                    ct)).RowId);
+        Assert.Empty(
+            await _database.SearchAsync(
+                "fts_rollback_fulltext_rekey",
+                "generated",
+                ct));
+
+        await _database.DisposeAsync();
+        _database = await Database.OpenAsync(_databasePath, ct);
+
+        Assert.False(
+            _database.GetTableSchema("rollback_fulltext_rekey")!.Columns[0].IsPrimaryKey);
+        Assert.Equal(
+            originalTableRoot,
+            _database.GetTableRootPage("rollback_fulltext_rekey"));
+        IReadOnlyDictionary<string, uint> reopenedIndexRoots =
+            await GetIndexRootPagesAsync(ct);
+        Assert.All(
+            tableIndexNames,
+            indexName => Assert.Equal(
+                originalIndexRoots[indexName],
+                reopenedIndexRoots[indexName]));
+        Assert.Equal(
+            2L,
+            Assert.Single(
+                await _database.SearchAsync(
+                    "fts_rollback_fulltext_rekey",
+                    "second",
+                    ct)).RowId);
+    }
+
+    [Fact]
+    public async Task AddPhysicalIntegerPrimaryKey_BuildingFullTextIndexRejectsBeforeChangingRoots()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        await _database.ExecuteAsync(
+            "CREATE TABLE building_fulltext_rekey (" +
+            "id INTEGER NOT NULL, body TEXT NOT NULL)",
+            ct);
+        await _database.ExecuteAsync(
+            "INSERT INTO building_fulltext_rekey VALUES " +
+            "(10, 'building first'), (20, 'building second')",
+            ct);
+        await _database.EnsureFullTextIndexAsync(
+            "fts_building_fulltext_rekey",
+            "building_fulltext_rekey",
+            ["body"],
+            ct: ct);
+
+        IndexSchema readyFullTextIndex = Assert.Single(
+            _database.GetIndexes(),
+            index => string.Equals(
+                index.IndexName,
+                "fts_building_fulltext_rekey",
+                StringComparison.OrdinalIgnoreCase));
+        SchemaCatalog catalog = GetCatalog(_database);
+        await _database.BeginTransactionAsync(ct);
+        try
+        {
+            await catalog.UpdateIndexSchemaAsync(
+                readyFullTextIndex.IndexName,
+                CopyIndexWithState(readyFullTextIndex, IndexState.Building),
+                ct);
+            await _database.CommitAsync(ct);
+        }
+        catch
+        {
+            await _database.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+
+        uint originalTableRoot =
+            _database.GetTableRootPage("building_fulltext_rekey");
+        string[] tableIndexNames = _database.GetIndexes()
+            .Where(index => string.Equals(
+                index.TableName,
+                "building_fulltext_rekey",
                 StringComparison.OrdinalIgnoreCase))
             .Select(index => index.IndexName)
             .ToArray();
@@ -1533,15 +2072,15 @@ public sealed class AlterTableRewriteTests : IAsyncLifetime
 
         CSharpDbException failure = await Assert.ThrowsAsync<CSharpDbException>(
             async () => await _database.ExecuteAsync(
-                "ALTER TABLE fulltext_rekey_items " +
-                "ADD CONSTRAINT pk_fulltext_rekey_items PRIMARY KEY (id)",
+                "ALTER TABLE building_fulltext_rekey " +
+                "ADD CONSTRAINT pk_building_fulltext_rekey PRIMARY KEY (id)",
                 ct));
 
         Assert.Equal(ErrorCode.ConstraintViolation, failure.Code);
         Assert.Contains("physically rekey", failure.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(
             originalTableRoot,
-            _database.GetTableRootPage("fulltext_rekey_items"));
+            _database.GetTableRootPage("building_fulltext_rekey"));
         IReadOnlyDictionary<string, uint> unchangedIndexRoots =
             await GetIndexRootPagesAsync(ct);
         Assert.All(
@@ -1550,18 +2089,87 @@ public sealed class AlterTableRewriteTests : IAsyncLifetime
                 originalIndexRoots[indexName],
                 unchangedIndexRoots[indexName]));
         Assert.DoesNotContain(
-            _database.GetTableSchema("fulltext_rekey_items")!.KeyConstraints,
+            _database.GetTableSchema("building_fulltext_rekey")!.KeyConstraints,
             key => key.Kind == KeyConstraintKind.PrimaryKey);
+    }
 
-        await _database.DisposeAsync();
-        _database = await Database.OpenAsync(_databasePath, ct);
+    [Fact]
+    public async Task AddPhysicalIntegerPrimaryKey_IncompleteFullTextFamilyRejectsBeforeChangingRoots()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        await _database.ExecuteAsync(
+            "CREATE TABLE incomplete_fulltext_rekey (" +
+            "id INTEGER NOT NULL, body TEXT NOT NULL)",
+            ct);
+        await _database.ExecuteAsync(
+            "INSERT INTO incomplete_fulltext_rekey VALUES " +
+            "(10, 'incomplete first'), (20, 'incomplete second')",
+            ct);
 
-        FullTextSearchHit hit = Assert.Single(
-            await _database.SearchAsync(
-                "fts_fulltext_rekey_items",
-                "second",
-                ct));
-        Assert.Equal(2L, hit.RowId);
+        const string FullTextIndexName =
+            "fts_incomplete_fulltext_rekey";
+        IndexSchema logicalIndex =
+            FullTextIndexCatalog.CreateLogicalSchema(
+                FullTextIndexName,
+                "incomplete_fulltext_rekey",
+                ["body"],
+                new FullTextIndexOptions());
+        IndexSchema[] internalIndexes =
+            FullTextIndexCatalog.CreateInternalSchemas(logicalIndex);
+        SchemaCatalog catalog = GetCatalog(_database);
+        await _database.BeginTransactionAsync(ct);
+        try
+        {
+            await catalog.CreateIndexAsync(logicalIndex, ct);
+            for (int i = 0; i < internalIndexes.Length - 1; i++)
+                await catalog.CreateIndexAsync(internalIndexes[i], ct);
+            await _database.CommitAsync(ct);
+        }
+        catch
+        {
+            await _database.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+
+        uint originalTableRoot =
+            _database.GetTableRootPage("incomplete_fulltext_rekey");
+        string[] tableIndexNames = _database.GetIndexes()
+            .Where(index => string.Equals(
+                index.TableName,
+                "incomplete_fulltext_rekey",
+                StringComparison.OrdinalIgnoreCase))
+            .Select(index => index.IndexName)
+            .ToArray();
+        Assert.Equal(5, tableIndexNames.Length);
+        IReadOnlyDictionary<string, uint> originalIndexRoots =
+            await GetIndexRootPagesAsync(ct);
+
+        CSharpDbException failure =
+            await Assert.ThrowsAsync<CSharpDbException>(
+                async () => await _database.ExecuteAsync(
+                    "ALTER TABLE incomplete_fulltext_rekey " +
+                    "ADD CONSTRAINT pk_incomplete_fulltext_rekey " +
+                    "PRIMARY KEY (id)",
+                    ct));
+
+        Assert.Equal(ErrorCode.ConstraintViolation, failure.Code);
+        Assert.Contains(
+            "missing or invalid",
+            failure.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(
+            originalTableRoot,
+            _database.GetTableRootPage("incomplete_fulltext_rekey"));
+        IReadOnlyDictionary<string, uint> unchangedIndexRoots =
+            await GetIndexRootPagesAsync(ct);
+        Assert.All(
+            tableIndexNames,
+            indexName => Assert.Equal(
+                originalIndexRoots[indexName],
+                unchangedIndexRoots[indexName]));
+        Assert.DoesNotContain(
+            _database.GetTableSchema("incomplete_fulltext_rekey")!.KeyConstraints,
+            key => key.Kind == KeyConstraintKind.PrimaryKey);
     }
 
     [Theory]
@@ -1753,4 +2361,29 @@ public sealed class AlterTableRewriteTests : IAsyncLifetime
             index => index.RootPage,
             StringComparer.OrdinalIgnoreCase);
     }
+
+    private static SchemaCatalog GetCatalog(Database database)
+    {
+        FieldInfo? field = typeof(Database).GetField(
+            "_catalog",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        return Assert.IsType<SchemaCatalog>(field.GetValue(database));
+    }
+
+    private static IndexSchema CopyIndexWithState(
+        IndexSchema index,
+        IndexState state) =>
+        new()
+        {
+            IndexName = index.IndexName,
+            TableName = index.TableName,
+            Columns = index.Columns,
+            ColumnCollations = index.ColumnCollations,
+            IsUnique = index.IsUnique,
+            Kind = index.Kind,
+            State = state,
+            OwnerIndexName = index.OwnerIndexName,
+            OptionsJson = index.OptionsJson,
+        };
 }
