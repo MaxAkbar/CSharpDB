@@ -244,6 +244,22 @@ to serialize concurrent migration runs across processes. Idempotent scripts
 guard migration commands with history-table checks, so one script can be
 applied to empty, partially migrated, or current databases.
 
+Provider CI freezes and independently replays a representative three-version
+Up/Down SQL corpus. The lifecycle coverage includes empty and populated
+databases, downgrade/re-upgrade, failed-migration rollback and recovery,
+database reopen, runtime CRUD, and ADO.NET inspection of rewritten columns,
+keys, indexes, checks, and named relationships. The corpus is stored as plain
+SQL so it can be executed without EF.
+
+Unsupported migration SQL shapes fail during generation with `CDBEF2001`
+instead of being deferred to deployment. This includes unsupported sequence
+operations and invalid CSharpDB collation names.
+
+EF migration execution remains intentionally embedded/direct. The ordinary
+SQL ADO.NET metadata contract is separately compared across direct, HTTP, and
+gRPC connections; this does not imply that `Database.Migrate()` accepts a
+remote endpoint.
+
 For adoption review, the separate
 [`csharpdb-ef` tool](../CSharpDB.EntityFrameworkCore.Tools/README.md) analyzes a
 restored, single-target `net10.0` project's compiled migrations with the

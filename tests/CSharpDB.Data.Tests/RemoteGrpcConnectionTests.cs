@@ -286,6 +286,413 @@ public sealed class RemoteGrpcConnectionTests : IAsyncLifetime
         Assert.Equal([1, 2], keyColumns.Select(row => (int)row["ORDINAL_POSITION"]));
     }
 
+    [Fact]
+    public async Task GetSchema_OrdinarySqlMetadata_IsEquivalentAcrossDirectHttpAndGrpc()
+    {
+        await using var directConnection =
+            new CSharpDbConnection("Data Source=:memory:");
+        using HttpClient httpTransportClient = _factory.CreateClient();
+        await using var httpConnection =
+            new CSharpDbConnection(
+                "Transport=Http;Endpoint=http://localhost",
+                httpTransportClient);
+        await using CSharpDbConnection grpcConnection =
+            CreateConnection();
+
+        await directConnection.OpenAsync(Ct);
+        await httpConnection.OpenAsync(Ct);
+        await grpcConnection.OpenAsync(Ct);
+
+        await CreateOrdinarySchemaParityFixtureAsync(
+            directConnection);
+        await CreateOrdinarySchemaParityFixtureAsync(
+            httpConnection);
+
+        string[] directSemantics =
+            CaptureOrdinarySchemaSemantics(directConnection);
+        string[] httpSemantics =
+            CaptureOrdinarySchemaSemantics(httpConnection);
+        string[] grpcSemantics =
+            CaptureOrdinarySchemaSemantics(grpcConnection);
+
+        Assert.Equal(directSemantics, httpSemantics);
+        Assert.Equal(directSemantics, grpcSemantics);
+
+        AssertOrdinarySchemaIdentityGraph(directConnection);
+        AssertOrdinarySchemaIdentityGraph(httpConnection);
+        AssertOrdinarySchemaIdentityGraph(grpcConnection);
+
+        Assert.Equal(
+            CaptureOrdinarySchemaIdentities(httpConnection),
+            CaptureOrdinarySchemaIdentities(grpcConnection));
+
+        DataRow index = Assert.Single(
+            grpcConnection.GetSchema(
+                    "Indexes",
+                    [null, null, "parity_children", "ix_parity_children_label"])
+                .Rows
+                .Cast<DataRow>());
+        Assert.Equal("Sql", index["INDEX_TYPE"]);
+        Assert.Equal("Ready", index["INDEX_STATE"]);
+        Assert.Equal("NOCASE", index["COLLATION_LIST"]);
+    }
+
+    private static async Task CreateOrdinarySchemaParityFixtureAsync(
+        CSharpDbConnection connection)
+    {
+        foreach (string sql in
+                 new[]
+                 {
+                     """
+                     CREATE TABLE parity_parents (
+                         tenant_id INTEGER NOT NULL,
+                         code TEXT COLLATE NOCASE NOT NULL,
+                         CONSTRAINT pk_parity_parents
+                             PRIMARY KEY (tenant_id, code)
+                     );
+                     """,
+                     """
+                     CREATE TABLE parity_children (
+                         id INTEGER NOT NULL,
+                         tenant_id INTEGER,
+                         parent_code TEXT COLLATE NOCASE,
+                         label TEXT COLLATE NOCASE DEFAULT 'new',
+                         score INTEGER,
+                         CONSTRAINT pk_parity_children PRIMARY KEY (id),
+                         CONSTRAINT ck_parity_children_score
+                             CHECK (score >= 0),
+                         CONSTRAINT fk_parity_children_parent
+                             FOREIGN KEY (tenant_id, parent_code)
+                             REFERENCES parity_parents (tenant_id, code)
+                             ON DELETE CASCADE
+                             ON UPDATE SET NULL
+                     );
+                     """,
+                     // Keep this parity fixture on ordinary SQL indexes. The
+                     // full-text kind/state transport contract is tracked
+                     // separately.
+                     """
+                     CREATE INDEX ix_parity_children_label
+                         ON parity_children (label);
+                     """,
+                 })
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            await command.ExecuteNonQueryAsync(Ct);
+        }
+    }
+
+    private static string[] CaptureOrdinarySchemaSemantics(
+        CSharpDbConnection connection)
+    {
+        var values = new List<string>();
+        AddSchemaRows(
+            values,
+            connection.GetSchema("Tables"),
+            "Tables",
+            "TABLE_NAME",
+            "TABLE_TYPE");
+        AddSchemaRows(
+            values,
+            connection.GetSchema("Columns"),
+            "Columns",
+            "TABLE_NAME",
+            "COLUMN_NAME",
+            "ORDINAL_POSITION",
+            "COLUMN_DEFAULT",
+            "IS_NULLABLE",
+            "DATA_TYPE",
+            "IS_PRIMARY_KEY",
+            "IS_IDENTITY",
+            "COLLATION_NAME",
+            "IS_ROW_VERSION");
+        AddSchemaRows(
+            values,
+            connection.GetSchema("CheckConstraints"),
+            "CheckConstraints",
+            "TABLE_NAME",
+            "CONSTRAINT_NAME",
+            "CHECK_CLAUSE",
+            "COLUMN_NAME");
+        AddSchemaRows(
+            values,
+            connection.GetSchema("KeyConstraints"),
+            "KeyConstraints",
+            "TABLE_NAME",
+            "CONSTRAINT_NAME",
+            "CONSTRAINT_TYPE",
+            "BACKING_INDEX_NAME",
+            "COLUMN_COUNT");
+        AddSchemaRows(
+            values,
+            connection.GetSchema("KeyColumns"),
+            "KeyColumns",
+            "TABLE_NAME",
+            "CONSTRAINT_NAME",
+            "COLUMN_NAME",
+            "ORDINAL_POSITION");
+        AddSchemaRows(
+            values,
+            connection.GetSchema("ForeignKeys"),
+            "ForeignKeys",
+            "TABLE_NAME",
+            "CONSTRAINT_NAME",
+            "COLUMN_NAME",
+            "REFERENCED_TABLE_NAME",
+            "REFERENCED_COLUMN_NAME",
+            "DELETE_RULE",
+            "UPDATE_RULE",
+            "SUPPORTING_INDEX_NAME",
+            "ORDINAL_POSITION");
+        AddSchemaRows(
+            values,
+            connection.GetSchema("Indexes"),
+            "Indexes",
+            "TABLE_NAME",
+            "INDEX_NAME",
+            "IS_UNIQUE",
+            "INDEX_TYPE",
+            "INDEX_STATE",
+            "COLUMN_LIST",
+            "COLLATION_LIST");
+        values.Sort(StringComparer.Ordinal);
+        return values.ToArray();
+    }
+
+    private static string[] CaptureOrdinarySchemaIdentities(
+        CSharpDbConnection connection)
+    {
+        var values = new List<string>();
+        AddSchemaRows(
+            values,
+            connection.GetSchema("Tables"),
+            "Tables",
+            "TABLE_NAME",
+            "SCHEMA_ID");
+        AddSchemaRows(
+            values,
+            connection.GetSchema("Columns"),
+            "Columns",
+            "TABLE_NAME",
+            "COLUMN_NAME",
+            "TABLE_SCHEMA_ID",
+            "COLUMN_SCHEMA_ID");
+        AddSchemaRows(
+            values,
+            connection.GetSchema("CheckConstraints"),
+            "CheckConstraints",
+            "TABLE_NAME",
+            "CONSTRAINT_NAME",
+            "TABLE_SCHEMA_ID",
+            "CONSTRAINT_SCHEMA_ID");
+        AddSchemaRows(
+            values,
+            connection.GetSchema("KeyConstraints"),
+            "KeyConstraints",
+            "TABLE_NAME",
+            "CONSTRAINT_NAME",
+            "TABLE_SCHEMA_ID",
+            "CONSTRAINT_SCHEMA_ID");
+        AddSchemaRows(
+            values,
+            connection.GetSchema("KeyColumns"),
+            "KeyColumns",
+            "TABLE_NAME",
+            "CONSTRAINT_NAME",
+            "COLUMN_NAME",
+            "TABLE_SCHEMA_ID",
+            "CONSTRAINT_SCHEMA_ID",
+            "COLUMN_SCHEMA_ID");
+        AddSchemaRows(
+            values,
+            connection.GetSchema("ForeignKeys"),
+            "ForeignKeys",
+            "TABLE_NAME",
+            "CONSTRAINT_NAME",
+            "COLUMN_NAME",
+            "TABLE_SCHEMA_ID",
+            "CONSTRAINT_SCHEMA_ID",
+            "COLUMN_SCHEMA_ID",
+            "REFERENCED_TABLE_SCHEMA_ID",
+            "REFERENCED_COLUMN_SCHEMA_ID",
+            "REFERENCED_KEY_SCHEMA_ID");
+        values.Sort(StringComparer.Ordinal);
+        return values.ToArray();
+    }
+
+    private static void AddSchemaRows(
+        ICollection<string> destination,
+        DataTable table,
+        string collectionName,
+        params string[] columnNames)
+    {
+        foreach (DataRow row in table.Rows)
+        {
+            destination.Add(
+                $"{collectionName}|{string.Join("|", columnNames.Select(columnName => FormatSchemaValue(row[columnName])))}");
+        }
+    }
+
+    private static string FormatSchemaValue(object value)
+        => value is DBNull
+            ? "<null>"
+            : Convert.ToString(
+                value,
+                CultureInfo.InvariantCulture) ?? "<null>";
+
+    private static void AssertOrdinarySchemaIdentityGraph(
+        CSharpDbConnection connection)
+    {
+        Dictionary<string, Guid> tableIds = connection.GetSchema("Tables")
+            .Rows
+            .Cast<DataRow>()
+            .ToDictionary(
+                row => (string)row["TABLE_NAME"],
+                row => AssertSchemaId(row, "SCHEMA_ID"),
+                StringComparer.OrdinalIgnoreCase);
+        Assert.Equal(2, tableIds.Count);
+
+        Dictionary<(string Table, string Column), Guid> columnIds =
+            connection.GetSchema("Columns")
+                .Rows
+                .Cast<DataRow>()
+                .ToDictionary(
+                    row => (
+                        (string)row["TABLE_NAME"],
+                        (string)row["COLUMN_NAME"]),
+                    row =>
+                    {
+                        Assert.Equal(
+                            tableIds[(string)row["TABLE_NAME"]],
+                            AssertSchemaId(row, "TABLE_SCHEMA_ID"));
+                        return AssertSchemaId(
+                            row,
+                            "COLUMN_SCHEMA_ID");
+                    });
+
+        Dictionary<(string Table, string Constraint), Guid> keyIds =
+            connection.GetSchema("KeyConstraints")
+                .Rows
+                .Cast<DataRow>()
+                .ToDictionary(
+                    row => (
+                        (string)row["TABLE_NAME"],
+                        (string)row["CONSTRAINT_NAME"]),
+                    row =>
+                    {
+                        Assert.Equal(
+                            tableIds[(string)row["TABLE_NAME"]],
+                            AssertSchemaId(row, "TABLE_SCHEMA_ID"));
+                        return AssertSchemaId(
+                            row,
+                            "CONSTRAINT_SCHEMA_ID");
+                    });
+
+        foreach (DataRow row in
+                 connection.GetSchema("KeyColumns")
+                     .Rows
+                     .Cast<DataRow>())
+        {
+            var key = (
+                (string)row["TABLE_NAME"],
+                (string)row["CONSTRAINT_NAME"]);
+            var column = (
+                (string)row["TABLE_NAME"],
+                (string)row["COLUMN_NAME"]);
+            Assert.Equal(
+                tableIds[key.Item1],
+                AssertSchemaId(row, "TABLE_SCHEMA_ID"));
+            Assert.Equal(
+                keyIds[key],
+                AssertSchemaId(row, "CONSTRAINT_SCHEMA_ID"));
+            Assert.Equal(
+                columnIds[column],
+                AssertSchemaId(row, "COLUMN_SCHEMA_ID"));
+        }
+
+        DataRow check = Assert.Single(
+            connection.GetSchema(
+                    "CheckConstraints",
+                    [null, null, "parity_children", "ck_parity_children_score"])
+                .Rows
+                .Cast<DataRow>());
+        Assert.Equal(
+            tableIds["parity_children"],
+            AssertSchemaId(check, "TABLE_SCHEMA_ID"));
+        AssertSchemaId(check, "CONSTRAINT_SCHEMA_ID");
+
+        DataRow[] foreignKeyRows = connection.GetSchema(
+                "ForeignKeys",
+                [null, null, "parity_children", "fk_parity_children_parent"])
+            .Rows
+            .Cast<DataRow>()
+            .OrderBy(row => (int)row["ORDINAL_POSITION"])
+            .ToArray();
+        Assert.Equal(2, foreignKeyRows.Length);
+        Assert.Equal(
+            ["tenant_id", "parent_code"],
+            foreignKeyRows.Select(row => (string)row["COLUMN_NAME"]));
+        Assert.Equal(
+            ["tenant_id", "code"],
+            foreignKeyRows.Select(
+                row => (string)row["REFERENCED_COLUMN_NAME"]));
+        Assert.All(
+            foreignKeyRows,
+            row =>
+            {
+                Assert.Equal(
+                    "CASCADE",
+                    row["DELETE_RULE"]);
+                Assert.Equal(
+                    "SET NULL",
+                    row["UPDATE_RULE"]);
+                Assert.Equal(
+                    tableIds["parity_children"],
+                    AssertSchemaId(row, "TABLE_SCHEMA_ID"));
+                Assert.Equal(
+                    columnIds[
+                        ("parity_children",
+                            (string)row["COLUMN_NAME"])],
+                    AssertSchemaId(row, "COLUMN_SCHEMA_ID"));
+                Assert.Equal(
+                    tableIds["parity_parents"],
+                    AssertSchemaId(
+                        row,
+                        "REFERENCED_TABLE_SCHEMA_ID"));
+                Assert.Equal(
+                    columnIds[
+                        ("parity_parents",
+                            (string)row["REFERENCED_COLUMN_NAME"])],
+                    AssertSchemaId(
+                        row,
+                        "REFERENCED_COLUMN_SCHEMA_ID"));
+                Assert.Equal(
+                    keyIds[
+                        ("parity_parents",
+                            "pk_parity_parents")],
+                    AssertSchemaId(
+                        row,
+                        "REFERENCED_KEY_SCHEMA_ID"));
+                AssertSchemaId(
+                    row,
+                    "CONSTRAINT_SCHEMA_ID");
+            });
+        Assert.Single(
+            foreignKeyRows
+                .Select(row => (Guid)row["CONSTRAINT_SCHEMA_ID"])
+                .Distinct());
+    }
+
+    private static Guid AssertSchemaId(
+        DataRow row,
+        string columnName)
+    {
+        Guid id = Assert.IsType<Guid>(row[columnName]);
+        Assert.NotEqual(Guid.Empty, id);
+        return id;
+    }
+
     private CSharpDbConnection CreateConnection()
         => new("Transport=Grpc;Endpoint=http://localhost", _transportClient);
 

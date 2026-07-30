@@ -1,6 +1,7 @@
 using System.Text;
 using CSharpDB.EntityFrameworkCore.Infrastructure.Internal;
 using CSharpDB.EntityFrameworkCore.Storage.Internal;
+using CSharpDB.Execution;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations;
@@ -18,6 +19,11 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
     protected override void Generate(CreateTableOperation operation, IModel? model, MigrationCommandListBuilder builder, bool terminate)
     {
         ValidateNoSchema(operation.Schema, operation.Name);
+        if (operation.Comment is not null)
+        {
+            throw Unsupported(
+                $"table comments on table '{operation.Name}'");
+        }
 
         CSharpDbProviderValidation.ValidateSimpleIdentifier(operation.Name, "Table name");
         int rowVersionColumnCount =
@@ -188,6 +194,18 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
 
         EndCommand(builder, terminate);
     }
+
+    protected override void Generate(
+        AlterDatabaseOperation operation,
+        IModel? model,
+        MigrationCommandListBuilder builder) =>
+        throw Unsupported("database-level alterations");
+
+    protected override void Generate(
+        AlterTableOperation operation,
+        IModel? model,
+        MigrationCommandListBuilder builder) =>
+        throw Unsupported("table-level alterations");
 
     protected override void Generate(EnsureSchemaOperation operation, IModel? model, MigrationCommandListBuilder builder)
         => throw Unsupported("schemas");
@@ -707,7 +725,7 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
     private string GenerateLiteral(object value)
     {
         var mapping = Dependencies.TypeMappingSource.FindMapping(value.GetType())
-            ?? throw new NotSupportedException(
+            ?? throw MigrationUnsupportedDiagnostic(
                 $"The CSharpDB EF Core provider cannot generate a literal DEFAULT for CLR type '{value.GetType().Name}'.");
 
         return mapping.GenerateSqlLiteral(value);
@@ -869,10 +887,21 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
 
     private static string? NormalizeBinaryCollation(string? collation)
     {
-        string? normalized = string.IsNullOrWhiteSpace(collation)
-            ? null
-            : collation.Trim();
-        return string.Equals(normalized, "BINARY", StringComparison.OrdinalIgnoreCase)
+        if (string.IsNullOrWhiteSpace(collation))
+            return null;
+
+        string requested = collation.Trim();
+        if (!CollationSupport.IsSupported(requested))
+        {
+            throw Unsupported(
+                $"collation '{requested}'. Supported collations are {CollationSupport.DescribeSupportedCollations()}");
+        }
+
+        string? normalized = CollationSupport.NormalizeMetadataName(requested);
+        return string.Equals(
+                normalized,
+                CollationSupport.BinaryCollation,
+                StringComparison.Ordinal)
             ? null
             : normalized;
     }
@@ -932,6 +961,11 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
             throw Unsupported("DefaultValueSql");
         if (operation.ComputedColumnSql is not null)
             throw Unsupported("computed columns");
+        if (operation.Comment is not null)
+        {
+            throw Unsupported(
+                $"column comments on column '{operation.Table}.{operation.Name}'");
+        }
         if (operation.IsRowVersion &&
             !allowInitialCreateTableRowVersion)
         {
@@ -1013,11 +1047,18 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
     private static void ValidateNoSchema(string? schema, string objectName)
     {
         if (!string.IsNullOrWhiteSpace(schema))
-            throw new NotSupportedException($"Schemas are not supported by the CSharpDB EF Core provider. '{schema}.{objectName}' is not valid.");
+        {
+            throw MigrationUnsupportedDiagnostic(
+                $"Schemas are not supported by the CSharpDB EF Core provider. '{schema}.{objectName}' is not valid.");
+        }
     }
 
     private static NotSupportedException Unsupported(string feature)
-        => new($"The CSharpDB EF Core provider does not support {feature} in v1.");
+        => MigrationUnsupportedDiagnostic(
+            $"The CSharpDB EF Core provider does not support {feature} in v1.");
+
+    private static NotSupportedException MigrationUnsupportedDiagnostic(string message)
+        => new($"CDBEF2001: {message}");
 
     private string QuoteIdentifier(string identifier)
         => Dependencies.SqlGenerationHelper.DelimitIdentifier(identifier);
