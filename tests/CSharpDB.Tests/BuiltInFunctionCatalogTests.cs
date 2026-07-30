@@ -59,6 +59,35 @@ public sealed class BuiltInFunctionCatalogTests
     }
 
     [Fact]
+    public void Registry_DescribesWindowOnlyFunctionsAndReservesTheirNames()
+    {
+        (string Name, int Minimum, int Maximum, DbType? ReturnType)[] expected =
+        [
+            ("ROW_NUMBER", 0, 0, DbType.Integer),
+            ("RANK", 0, 0, DbType.Integer),
+            ("DENSE_RANK", 0, 0, DbType.Integer),
+            ("LAG", 1, 3, null),
+            ("LEAD", 1, 3, null),
+            ("FIRST_VALUE", 1, 1, null),
+            ("LAST_VALUE", 1, 1, null),
+        ];
+
+        foreach ((string name, int minimum, int maximum, DbType? returnType) in expected)
+        {
+            Assert.True(DbBuiltInFunctionRegistry.TryGet(name, out var function));
+            Assert.Equal(DbBuiltInFunctionKind.Window, function.Kind);
+            Assert.Equal(minimum, function.MinimumArity);
+            Assert.Equal(maximum, function.MaximumArity);
+            Assert.Equal(returnType, function.ReturnType);
+            Assert.False(function.AllowedInDefaults);
+            Assert.False(function.AllowedInChecks);
+        }
+
+        Assert.Throws<ArgumentException>(() => DbFunctionRegistry.Create(functions =>
+            functions.AddScalar("lag", 1, static (_, arguments) => arguments[0])));
+    }
+
+    [Fact]
     public async Task OrdinalStringSearchFunctions_UseLiteralCaseSensitiveSemantics()
     {
         await using var db = await Database.OpenInMemoryAsync(Ct);
@@ -164,5 +193,27 @@ public sealed class BuiltInFunctionCatalogTests
         Assert.Equal("DoubleIt", rows[1][1].AsText);
         Assert.Equal("DoubleIt(1)", rows[1][2].AsText);
         Assert.Equal(0, rows[1][8].AsInteger);
+    }
+
+    [Fact]
+    public async Task SystemFunctions_ExposesWindowOnlyBuiltIns()
+    {
+        await using var db = await Database.OpenInMemoryAsync(Ct);
+        await using var result = await db.ExecuteAsync(
+            """
+            SELECT function_name, signature, function_kind, return_type
+            FROM sys.functions
+            WHERE function_name IN ('ROW_NUMBER', 'LAG', 'FIRST_VALUE')
+            ORDER BY function_name
+            """,
+            Ct);
+
+        List<DbValue[]> rows = await result.ToListAsync(Ct);
+        Assert.Equal(["FIRST_VALUE", "LAG", "ROW_NUMBER"], rows.Select(static row => row[0].AsText));
+        Assert.Equal(["FIRST_VALUE(1)", "LAG(1..3)", "ROW_NUMBER(0)"], rows.Select(static row => row[1].AsText));
+        Assert.All(rows, static row => Assert.Equal("WINDOW", row[2].AsText));
+        Assert.True(rows[0][3].IsNull);
+        Assert.True(rows[1][3].IsNull);
+        Assert.Equal("INTEGER", rows[2][3].AsText);
     }
 }

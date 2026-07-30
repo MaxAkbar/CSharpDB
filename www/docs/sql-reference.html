@@ -87,6 +87,7 @@
                         <li><a href="#functions">Functions</a></li>
                         <li class="toc-child"><a href="#aggregate-functions">Aggregate Functions</a></li>
                         <li class="toc-child"><a href="#scalar-functions">Scalar Functions</a></li>
+                        <li class="toc-child"><a href="#window-functions">Window Functions</a></li>
                         <li><a href="#parameters">Parameters</a></li>
                         <li><a href="#collations">Collations</a></li>
                         <li><a href="#limitations">Limitations</a></li>
@@ -786,6 +787,30 @@
                 </tbody>
                 </table>
                 <p>The three ordinal search functions return <code>1</code> for true, <code>0</code> for false, and <code>NULL</code> when either argument is <code>NULL</code>. They use .NET ordinal UTF-16 code-unit semantics and do not apply collation, wildcard, or escape rules.</p>
+                <h3 id="window-functions">Window Functions</h3>
+                <p>Window functions are a completed, bounded in-memory SQL slice. Supported ranking functions are <code>ROW_NUMBER()</code>, <code>RANK()</code>, and <code>DENSE_RANK()</code>. Supported aggregate windows are non-distinct <code>COUNT</code>, <code>SUM</code>, <code>AVG</code>, <code>MIN</code>, and <code>MAX</code>. Navigation and value functions include <code>LAG(value[, offset[, default]])</code>, <code>LEAD(value[, offset[, default]])</code>, <code>FIRST_VALUE(value)</code>, and <code>LAST_VALUE(value)</code>.</p>
+                <p>An explicit <code>ROWS</code> frame may use either <code>ROWS frame_bound</code> (ending at <code>CURRENT ROW</code>) or <code>ROWS BETWEEN frame_bound AND frame_bound</code>. A bound may be <code>UNBOUNDED PRECEDING</code>, <code>n PRECEDING</code>, <code>CURRENT ROW</code>, <code>n FOLLOWING</code>, or <code>UNBOUNDED FOLLOWING</code>; offset <code>n</code> must be a nonnegative integer literal, and invalid start/end combinations are rejected. Ranking functions and <code>LAG</code>/<code>LEAD</code> ignore the frame; aggregate windows and <code>FIRST_VALUE</code>/<code>LAST_VALUE</code> evaluate against it. Without an explicit frame, an ordered window uses the peer-aware default through the current peer group, while a window without <code>ORDER BY</code> uses the whole partition.</p>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">SELECT
+                    department,
+                    salary,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY department
+                        ORDER BY salary DESC
+                    ) AS position,
+                    AVG(salary) OVER (
+                        PARTITION BY department
+                        ORDER BY salary DESC
+                        ROWS BETWEEN 2 PRECEDING AND CURRENT ROW
+                    ) AS moving_average,
+                    LAG(salary, 1, 0) OVER pay_order AS previous_salary
+                FROM employees
+                WINDOW pay_order AS (
+                    PARTITION BY department
+                    ORDER BY salary DESC
+                );
+                </code></pre></div>
+                <p>Named definitions use <code>WINDOW name AS (...)</code> and are referenced with <code>OVER name</code>; names are matched case-insensitively. Window inheritance and extensions such as <code>OVER (name ...)</code> are not supported. Expressions whose resolved windows have exactly the same <code>PARTITION BY</code> and <code>ORDER BY</code> specifications can share one execution stage even when their frames differ. Incompatible partitioning or ordering specifications are rejected explicitly instead of sharing an incorrect sort order.</p>
+                <p>Ascending window order places NULL values first and descending order places them last. Explicit <code>NULLS FIRST</code>/<code>NULLS LAST</code> syntax is not supported. Window queries support prepared execution and poll cancellation during buffering, sorting, and evaluation. See <a href="configuration.html#windowexecution">WindowExecution</a> for the finite partition and stage-buffer limits; exceeding either limit returns <code>ResourceLimitExceeded</code>.</p>
                 <hr/>
                 <h2 id="parameters">Parameters</h2>
                 <p>Named parameters are supported in value positions using the <code>@</code> prefix:</p>
@@ -835,7 +860,7 @@
                 </code></pre></div>
                 <hr/>
                 <h2 id="limitations">Limitations</h2>
-                <p>Window functions are available as an <strong>experimental in-memory slice</strong>: one compatible specification per SELECT with <code>ROW_NUMBER</code>, <code>RANK</code>, <code>DENSE_RANK</code>, and non-distinct <code>COUNT</code>, <code>SUM</code>, <code>AVG</code>, <code>MIN</code>, or <code>MAX</code>. Star and mixed-expression projections preserve SELECT-list order without exposing internal window slots, and long sort/evaluation loops poll cancellation. Named windows, explicit frames, navigation functions, mixed grouping, incompatible specifications, and disk spill are not yet supported.</p>
+                <p>Window execution is deliberately in-memory and bounded. Disk spilling is deferred and does not block completion of this SQL slice because configured limits fail predictably with <code>ResourceLimitExceeded</code>. <code>RANGE</code>, <code>GROUPS</code>, <code>EXCLUDE</code>, DISTINCT window aggregates, <code>IGNORE NULLS</code>/<code>RESPECT NULLS</code>, window inheritance, incompatible window specifications, and window queries mixed with ordinary aggregates, <code>GROUP BY</code>, <code>HAVING</code>, or subqueries are not supported.</p>
                 <p>Built-in scalar and aggregate metadata is queryable through <code>sys.functions</code> (also <code>sys_functions</code>). Logical primary/unique key columns are exposed through <code>sys.key_constraints</code>. The <a href="sql.html">SQL overview</a> lists the currently registered built-in families.</p>
                 <p>The following SQL features are <strong>not currently supported</strong>:</p>
                 <ul>
@@ -845,7 +870,7 @@
                 <li><code>UPSERT</code> / <code>ON CONFLICT</code> / <code>INSERT OR REPLACE</code></li>
                 <li>Recursive CTE execution (<code>WITH RECURSIVE</code> is parsed but not evaluated)</li>
                 <li>Unregistered vendor-specific functions such as <code>STRFTIME</code>, <code>CEIL</code>, and <code>POWER</code></li>
-                <li>Advanced window forms (<code>LAG</code>, <code>LEAD</code>, named windows, and explicit frames)</li>
+                <li>Advanced window forms beyond the bounded slice described above</li>
                 <li>Stored procedures</li>
                 <li>Deferred foreign-key constraints and <code>MATCH FULL</code>/<code>MATCH PARTIAL</code></li>
                 </ul>

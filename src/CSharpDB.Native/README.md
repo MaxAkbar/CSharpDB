@@ -557,6 +557,7 @@ Returns the last error code. `0` = no error, `-1` = generic error. Positive valu
 | 13 | WalError |
 | 14 | Busy |
 | 15 | TransactionConflict |
+| 16 | ResourceLimitExceeded |
 
 #### `csharpdb_clear_error`
 

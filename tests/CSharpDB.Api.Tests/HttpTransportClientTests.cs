@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using CSharpDB.Client;
@@ -6,6 +7,7 @@ using CSharpDB.Client.Models;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace CSharpDB.Api.Tests;
 
@@ -40,6 +42,65 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
         await _factory.DisposeAsync();
         await DeleteIfExistsAsync(_dbPath);
         await DeleteIfExistsAsync(_dbPath + ".wal");
+    }
+
+    [Fact]
+    public async Task ExecuteSql_ResourceLimitExceeded_ReturnsRequestEntityTooLarge()
+    {
+        string dbPath = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb_api_window_limit_{Guid.NewGuid():N}.db");
+
+        try
+        {
+            await using var factory = new TestApiFactory(
+                dbPath,
+                directDatabaseOptions: new CSharpDB.Engine.DatabaseOptions
+                {
+                    WindowExecution = new CSharpDB.Primitives.WindowExecutionOptions
+                    {
+                        MaxPartitionRows = 2,
+                        MaxBufferedRows = 4,
+                    },
+                });
+            using HttpClient httpClient = factory.CreateClient();
+
+            using HttpResponseMessage seed = await httpClient.PostAsJsonAsync(
+                "/api/sql/execute",
+                new
+                {
+                    Sql = """
+                        CREATE TABLE api_window_limit_rows (id INTEGER PRIMARY KEY, group_id INTEGER);
+                        INSERT INTO api_window_limit_rows VALUES (1, 1), (2, 1), (3, 1);
+                        """,
+                },
+                Ct);
+            Assert.Equal(HttpStatusCode.OK, seed.StatusCode);
+
+            using HttpResponseMessage response = await httpClient.PostAsJsonAsync(
+                "/api/sql/execute",
+                new
+                {
+                    Sql = """
+                        SELECT ROW_NUMBER() OVER (PARTITION BY group_id ORDER BY id)
+                        FROM api_window_limit_rows;
+                        """,
+                },
+                Ct);
+
+            Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
+            using JsonDocument problem = JsonDocument.Parse(
+                await response.Content.ReadAsStringAsync(Ct));
+            Assert.Contains(
+                "partition",
+                problem.RootElement.GetProperty("detail").GetString(),
+                StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            await DeleteIfExistsAsync(dbPath);
+            await DeleteIfExistsAsync(dbPath + ".wal");
+        }
     }
 
     [Fact]
@@ -1333,11 +1394,23 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
 
     private sealed class TestApiFactory(
         string dbPath,
-        IReadOnlyDictionary<string, string?>? extraConfig = null) : WebApplicationFactory<Program>
+        IReadOnlyDictionary<string, string?>? extraConfig = null,
+        CSharpDB.Engine.DatabaseOptions? directDatabaseOptions = null) : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             builder.UseEnvironment("Development");
+            if (directDatabaseOptions is not null)
+            {
+                builder.ConfigureServices(services =>
+                {
+                    services.AddSingleton(new CSharpDbClientOptions
+                    {
+                        ConnectionString = $"Data Source={dbPath}",
+                        DirectDatabaseOptions = directDatabaseOptions,
+                    });
+                });
+            }
             builder.ConfigureAppConfiguration((_, config) =>
             {
                 config.AddInMemoryCollection(new Dictionary<string, string?>

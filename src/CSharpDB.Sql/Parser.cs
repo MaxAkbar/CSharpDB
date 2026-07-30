@@ -156,6 +156,9 @@ public sealed class Parser
             parser.Advance();
         if (parser.Peek().Type != TokenType.Eof)
             throw parser.Error($"Unexpected token '{parser.Peek().Value}' after expression.");
+        parser.ResolveNamedWindowReferences(
+            expression,
+            new Dictionary<string, NamedWindowDefinition>(StringComparer.OrdinalIgnoreCase));
         return expression;
     }
 
@@ -2304,7 +2307,7 @@ public sealed class Parser
         int? limit = ParseOptionalLimit();
         int? offset = ParseOptionalOffset();
 
-        return query switch
+        QueryStatement completedQuery = query switch
         {
             SelectStatement select => new SelectStatement
             {
@@ -2314,6 +2317,7 @@ public sealed class Parser
                 Where = select.Where,
                 GroupBy = select.GroupBy,
                 Having = select.Having,
+                WindowDefinitions = select.WindowDefinitions,
                 OrderBy = orderBy,
                 Limit = limit,
                 Offset = offset,
@@ -2330,6 +2334,9 @@ public sealed class Parser
             },
             _ => throw new InvalidOperationException($"Unknown query statement type: {query.GetType().Name}"),
         };
+
+        ResolveNamedWindowReferences(completedQuery);
+        return completedQuery;
     }
 
     private QueryStatement ParseUnionExceptExpression()
@@ -2414,7 +2421,8 @@ public sealed class Parser
                 Advance();
                 alias = ExpectIdentifier();
             }
-            else if (Peek().Type == TokenType.Identifier)
+            else if (Peek().Type == TokenType.Identifier &&
+                     !IsContextualKeyword(Peek(), "WINDOW"))
             {
                 // Implicit alias: SELECT expr alias (no AS keyword)
                 alias = Peek().Value;
@@ -2453,6 +2461,8 @@ public sealed class Parser
             having = ParseExpression();
         }
 
+        List<NamedWindowDefinition> windowDefinitions = ParseOptionalWindowClause();
+
         return new SelectStatement
         {
             IsDistinct = isDistinct,
@@ -2461,10 +2471,39 @@ public sealed class Parser
             Where = where,
             GroupBy = groupBy,
             Having = having,
+            WindowDefinitions = windowDefinitions,
             OrderBy = null,
             Limit = null,
             Offset = null,
         };
+    }
+
+    private List<NamedWindowDefinition> ParseOptionalWindowClause()
+    {
+        if (!TryConsumeContextualKeyword("WINDOW"))
+            return [];
+
+        var definitions = new List<NamedWindowDefinition>();
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        do
+        {
+            string name = ExpectIdentifier();
+            if (!names.Add(name))
+                throw Error($"Duplicate window definition '{name}'.");
+
+            Expect(TokenType.As);
+            Expect(TokenType.LeftParen);
+            WindowSpecification specification = ParseWindowSpecification(
+                rejectParenthesizedReference: true);
+            Expect(TokenType.RightParen);
+            definitions.Add(new NamedWindowDefinition
+            {
+                Name = name,
+                Specification = specification,
+            });
+        } while (TryConsume(TokenType.Comma));
+
+        return definitions;
     }
 
     private List<OrderByClause>? ParseOptionalOrderBy()
@@ -2488,6 +2527,12 @@ public sealed class Parser
             else if (Peek().Type == TokenType.Asc)
             {
                 Advance();
+            }
+
+            if (IsContextualKeyword(Peek(), "NULLS"))
+            {
+                throw Error(
+                    "NULLS FIRST/LAST ordering is not supported; use the default NULL ordering.");
             }
 
             orderBy.Add(new OrderByClause { Expression = expr, Descending = desc });
@@ -2821,7 +2866,9 @@ public sealed class Parser
             Advance();
             alias = ExpectIdentifier();
         }
-        else if (Peek().Type == TokenType.Identifier && !IsClauseKeyword(Peek().Type))
+        else if (Peek().Type == TokenType.Identifier &&
+                 !IsClauseKeyword(Peek().Type) &&
+                 !IsContextualKeyword(Peek(), "WINDOW"))
         {
             // Implicit alias (no AS keyword)
             alias = Peek().Value;
@@ -3098,7 +3145,42 @@ public sealed class Parser
     private WindowFunctionExpression ParseWindowFunction(FunctionCallExpression function)
     {
         if (!TryConsume(TokenType.LeftParen))
-            throw Error("Named windows are not supported; OVER requires a parenthesized window specification.");
+        {
+            if (!IsIdentifierLike(Peek().Type))
+                throw Error("OVER requires a window name or parenthesized window specification.");
+
+            return new WindowFunctionExpression
+            {
+                Function = function,
+                Window = new WindowSpecification
+                {
+                    ReferenceName = ExpectIdentifier(),
+                },
+            };
+        }
+
+        WindowSpecification specification = ParseWindowSpecification(
+            rejectParenthesizedReference: true);
+        Expect(TokenType.RightParen);
+        return new WindowFunctionExpression
+        {
+            Function = function,
+            Window = specification,
+        };
+    }
+
+    private WindowSpecification ParseWindowSpecification(bool rejectParenthesizedReference)
+    {
+        if (rejectParenthesizedReference &&
+            Peek().Type == TokenType.Identifier &&
+            !IsContextualKeyword(Peek(), "PARTITION") &&
+            !IsContextualKeyword(Peek(), "ROWS") &&
+            !IsContextualKeyword(Peek(), "RANGE") &&
+            !IsContextualKeyword(Peek(), "GROUPS"))
+        {
+            throw Error(
+                "Window inheritance and parenthesized named-window references are not supported; use OVER window_name.");
+        }
 
         var partitionBy = new List<Expression>();
         if (TryConsumeContextualKeyword("PARTITION"))
@@ -3112,27 +3194,386 @@ public sealed class Parser
 
         List<OrderByClause>? orderBy = ParseOptionalOrderBy();
 
-        if (IsContextualKeyword(Peek(), "ROWS") ||
-            IsContextualKeyword(Peek(), "RANGE") ||
+        if (IsContextualKeyword(Peek(), "RANGE") ||
             IsContextualKeyword(Peek(), "GROUPS"))
         {
-            throw Error("Explicit window frames are not supported in the experimental window-function tier.");
+            throw Error(
+                "Only explicit ROWS window frames are supported; RANGE and GROUPS frames are not supported.");
+        }
+
+        WindowFrame? frame = TryConsumeContextualKeyword("ROWS")
+            ? ParseRowsWindowFrame()
+            : null;
+
+        if (IsContextualKeyword(Peek(), "EXCLUDE"))
+            throw Error("EXCLUDE window-frame clauses are not supported.");
+
+        if (IsContextualKeyword(Peek(), "NULLS"))
+        {
+            throw Error(
+                "NULLS FIRST/LAST ordering is not supported; use the default NULL ordering.");
         }
 
         if (Peek().Type != TokenType.RightParen)
             throw Error($"Unsupported window clause '{Peek().Value}'.");
 
-        Advance();
-        return new WindowFunctionExpression
+        return new WindowSpecification
         {
-            Function = function,
-            Window = new WindowSpecification
-            {
-                PartitionBy = partitionBy,
-                OrderBy = orderBy ?? [],
-            },
+            PartitionBy = partitionBy,
+            OrderBy = orderBy ?? [],
+            Frame = frame,
         };
     }
+
+    private WindowFrame ParseRowsWindowFrame()
+    {
+        WindowFrameBound start;
+        WindowFrameBound end;
+        if (TryConsume(TokenType.Between))
+        {
+            start = ParseWindowFrameBound();
+            Expect(TokenType.And);
+            end = ParseWindowFrameBound();
+        }
+        else
+        {
+            start = ParseWindowFrameBound();
+            end = new WindowFrameBound
+            {
+                Kind = WindowFrameBoundKind.CurrentRow,
+            };
+        }
+
+        ValidateRowsWindowFrame(start, end);
+        return new WindowFrame
+        {
+            Start = start,
+            End = end,
+        };
+    }
+
+    private WindowFrameBound ParseWindowFrameBound()
+    {
+        if (TryConsumeContextualKeyword("UNBOUNDED"))
+        {
+            if (TryConsumeContextualKeyword("PRECEDING"))
+            {
+                return new WindowFrameBound
+                {
+                    Kind = WindowFrameBoundKind.UnboundedPreceding,
+                };
+            }
+
+            if (TryConsumeContextualKeyword("FOLLOWING"))
+            {
+                return new WindowFrameBound
+                {
+                    Kind = WindowFrameBoundKind.UnboundedFollowing,
+                };
+            }
+
+            throw Error("UNBOUNDED in a ROWS frame must be followed by PRECEDING or FOLLOWING.");
+        }
+
+        if (TryConsumeContextualKeyword("CURRENT"))
+        {
+            Expect(TokenType.Row);
+            return new WindowFrameBound
+            {
+                Kind = WindowFrameBoundKind.CurrentRow,
+            };
+        }
+
+        if (Peek().Type != TokenType.IntegerLiteral)
+        {
+            throw Error(
+                "A ROWS frame offset must be a nonnegative integer literal followed by PRECEDING or FOLLOWING.");
+        }
+
+        Token offsetToken = Advance();
+        if (!long.TryParse(
+                offsetToken.Value,
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out long offset))
+        {
+            throw Error("A ROWS frame offset must fit in a nonnegative 64-bit integer.");
+        }
+
+        WindowFrameBoundKind kind;
+        if (TryConsumeContextualKeyword("PRECEDING"))
+        {
+            kind = WindowFrameBoundKind.Preceding;
+        }
+        else if (TryConsumeContextualKeyword("FOLLOWING"))
+        {
+            kind = WindowFrameBoundKind.Following;
+        }
+        else
+        {
+            throw Error(
+                "A ROWS frame offset must be followed by PRECEDING or FOLLOWING.");
+        }
+
+        return new WindowFrameBound
+        {
+            Kind = kind,
+            Offset = offset,
+        };
+    }
+
+    private void ValidateRowsWindowFrame(WindowFrameBound start, WindowFrameBound end)
+    {
+        if (start.Kind == WindowFrameBoundKind.UnboundedFollowing)
+            throw Error("A ROWS frame cannot start with UNBOUNDED FOLLOWING.");
+        if (end.Kind == WindowFrameBoundKind.UnboundedPreceding)
+            throw Error("A ROWS frame cannot end with UNBOUNDED PRECEDING.");
+        if (CompareWindowFrameBounds(start, end) > 0)
+            throw Error("A ROWS frame start cannot be after its frame end.");
+    }
+
+    private static int CompareWindowFrameBounds(
+        WindowFrameBound left,
+        WindowFrameBound right)
+    {
+        int leftRegion = GetWindowFrameBoundRegion(left);
+        int rightRegion = GetWindowFrameBoundRegion(right);
+        if (leftRegion != rightRegion)
+            return leftRegion.CompareTo(rightRegion);
+
+        return leftRegion switch
+        {
+            1 => right.Offset!.Value.CompareTo(left.Offset!.Value),
+            3 => left.Offset!.Value.CompareTo(right.Offset!.Value),
+            _ => 0,
+        };
+    }
+
+    private static int GetWindowFrameBoundRegion(WindowFrameBound bound) =>
+        bound.Kind switch
+        {
+            WindowFrameBoundKind.UnboundedPreceding => 0,
+            WindowFrameBoundKind.Preceding when bound.Offset > 0 => 1,
+            WindowFrameBoundKind.CurrentRow => 2,
+            WindowFrameBoundKind.Preceding or WindowFrameBoundKind.Following
+                when bound.Offset == 0 => 2,
+            WindowFrameBoundKind.Following => 3,
+            WindowFrameBoundKind.UnboundedFollowing => 4,
+            _ => throw new InvalidOperationException("Invalid ROWS frame bound."),
+        };
+
+    private void ResolveNamedWindowReferences(QueryStatement query)
+    {
+        switch (query)
+        {
+            case SelectStatement select:
+                ResolveNamedWindowReferences(select);
+                break;
+            case CompoundSelectStatement compound:
+                ResolveNamedWindowReferences(compound.Left);
+                ResolveNamedWindowReferences(compound.Right);
+                foreach (OrderByClause clause in compound.OrderBy ?? [])
+                {
+                    ResolveNamedWindowReferences(
+                        clause.Expression,
+                        new Dictionary<string, NamedWindowDefinition>(
+                            StringComparer.OrdinalIgnoreCase));
+                }
+                break;
+        }
+    }
+
+    private void ResolveNamedWindowReferences(SelectStatement select)
+    {
+        var definitions = new Dictionary<string, NamedWindowDefinition>(
+            StringComparer.OrdinalIgnoreCase);
+        foreach (NamedWindowDefinition definition in select.WindowDefinitions)
+        {
+            if (!definitions.TryAdd(definition.Name, definition))
+                throw Error($"Duplicate window definition '{definition.Name}'.");
+        }
+
+        foreach (NamedWindowDefinition definition in select.WindowDefinitions)
+            ResolveNamedWindowReferences(definition.Specification, definitions);
+
+        foreach (SelectColumn column in select.Columns)
+        {
+            if (column.Expression != null)
+                ResolveNamedWindowReferences(column.Expression, definitions);
+        }
+
+        ResolveNamedWindowReferences(select.From, definitions);
+        if (select.Where != null)
+            ResolveNamedWindowReferences(select.Where, definitions);
+        foreach (Expression expression in select.GroupBy ?? [])
+            ResolveNamedWindowReferences(expression, definitions);
+        if (select.Having != null)
+            ResolveNamedWindowReferences(select.Having, definitions);
+        foreach (OrderByClause clause in select.OrderBy ?? [])
+            ResolveNamedWindowReferences(clause.Expression, definitions);
+    }
+
+    private void ResolveNamedWindowReferences(
+        TableRef table,
+        IReadOnlyDictionary<string, NamedWindowDefinition> definitions)
+    {
+        if (table is not JoinTableRef join)
+            return;
+
+        ResolveNamedWindowReferences(join.Left, definitions);
+        ResolveNamedWindowReferences(join.Right, definitions);
+        if (join.Condition != null)
+            ResolveNamedWindowReferences(join.Condition, definitions);
+    }
+
+    private void ResolveNamedWindowReferences(
+        WindowSpecification specification,
+        IReadOnlyDictionary<string, NamedWindowDefinition> definitions)
+    {
+        foreach (Expression expression in specification.PartitionBy)
+        {
+            ResolveNamedWindowReferences(
+                expression,
+                definitions,
+                insideWindowFunction: true);
+        }
+
+        foreach (OrderByClause clause in specification.OrderBy)
+        {
+            ResolveNamedWindowReferences(
+                clause.Expression,
+                definitions,
+                insideWindowFunction: true);
+        }
+    }
+
+    private void ResolveNamedWindowReferences(
+        Expression expression,
+        IReadOnlyDictionary<string, NamedWindowDefinition> definitions,
+        bool insideWindowFunction = false)
+    {
+        switch (expression)
+        {
+            case WindowFunctionExpression window:
+                if (insideWindowFunction)
+                    throw Error("Nested window functions are not supported.");
+
+                foreach (Expression argument in window.Function.Arguments)
+                {
+                    ResolveNamedWindowReferences(
+                        argument,
+                        definitions,
+                        insideWindowFunction: true);
+                }
+
+                if (window.Window.ReferenceName != null)
+                {
+                    if (!definitions.TryGetValue(
+                            window.Window.ReferenceName,
+                            out NamedWindowDefinition? definition))
+                    {
+                        throw Error(
+                            $"Undefined window definition '{window.Window.ReferenceName}'.");
+                    }
+
+                    window.Window = CloneWindowSpecification(definition.Specification);
+                }
+
+                ResolveNamedWindowReferences(window.Window, definitions);
+                break;
+            case BinaryExpression binary:
+                ResolveNamedWindowReferences(binary.Left, definitions, insideWindowFunction);
+                ResolveNamedWindowReferences(binary.Right, definitions, insideWindowFunction);
+                break;
+            case UnaryExpression unary:
+                ResolveNamedWindowReferences(unary.Operand, definitions, insideWindowFunction);
+                break;
+            case CollateExpression collate:
+                ResolveNamedWindowReferences(collate.Operand, definitions, insideWindowFunction);
+                break;
+            case FunctionCallExpression function:
+                foreach (Expression argument in function.Arguments)
+                {
+                    ResolveNamedWindowReferences(
+                        argument,
+                        definitions,
+                        insideWindowFunction);
+                }
+                break;
+            case LikeExpression like:
+                ResolveNamedWindowReferences(like.Operand, definitions, insideWindowFunction);
+                ResolveNamedWindowReferences(like.Pattern, definitions, insideWindowFunction);
+                if (like.EscapeChar != null)
+                {
+                    ResolveNamedWindowReferences(
+                        like.EscapeChar,
+                        definitions,
+                        insideWindowFunction);
+                }
+                break;
+            case InExpression inExpression:
+                ResolveNamedWindowReferences(
+                    inExpression.Operand,
+                    definitions,
+                    insideWindowFunction);
+                foreach (Expression value in inExpression.Values)
+                    ResolveNamedWindowReferences(value, definitions, insideWindowFunction);
+                break;
+            case InSubqueryExpression inSubquery:
+                ResolveNamedWindowReferences(
+                    inSubquery.Operand,
+                    definitions,
+                    insideWindowFunction);
+                ResolveNamedWindowReferences(inSubquery.Query);
+                break;
+            case ScalarSubqueryExpression scalarSubquery:
+                ResolveNamedWindowReferences(scalarSubquery.Query);
+                break;
+            case ExistsExpression exists:
+                ResolveNamedWindowReferences(exists.Query);
+                break;
+            case BetweenExpression between:
+                ResolveNamedWindowReferences(
+                    between.Operand,
+                    definitions,
+                    insideWindowFunction);
+                ResolveNamedWindowReferences(between.Low, definitions, insideWindowFunction);
+                ResolveNamedWindowReferences(between.High, definitions, insideWindowFunction);
+                break;
+            case IsNullExpression isNull:
+                ResolveNamedWindowReferences(
+                    isNull.Operand,
+                    definitions,
+                    insideWindowFunction);
+                break;
+        }
+    }
+
+    private static WindowSpecification CloneWindowSpecification(
+        WindowSpecification specification) =>
+        new()
+        {
+            PartitionBy = [.. specification.PartitionBy],
+            OrderBy = specification.OrderBy.Select(clause => new OrderByClause
+            {
+                Expression = clause.Expression,
+                Descending = clause.Descending,
+            }).ToList(),
+            Frame = specification.Frame == null
+                ? null
+                : new WindowFrame
+                {
+                    Start = CloneWindowFrameBound(specification.Frame.Start),
+                    End = CloneWindowFrameBound(specification.Frame.End),
+                },
+        };
+
+    private static WindowFrameBound CloneWindowFrameBound(WindowFrameBound bound) =>
+        new()
+        {
+            Kind = bound.Kind,
+            Offset = bound.Offset,
+        };
 
     private static bool IsAggregateFunctionToken(TokenType type) =>
         type is TokenType.Count or TokenType.Sum or TokenType.Avg or TokenType.Min or TokenType.Max;
@@ -3374,6 +3815,7 @@ public sealed class Parser
 
     private static bool IsContextualKeyword(Token token, string keyword) =>
         token.Type == TokenType.Identifier &&
+        token.Length == token.Value.Length &&
         token.Value.Equals(keyword, StringComparison.OrdinalIgnoreCase);
 
     private CSharpDbException Error(string message) =>

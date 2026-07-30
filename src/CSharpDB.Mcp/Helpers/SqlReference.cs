@@ -110,12 +110,21 @@ internal static class SqlReference
         MIN(col)              — minimum value
         MAX(col)              — maximum value
 
-        ── EXPERIMENTAL WINDOW FUNCTIONS ──
+        ── WINDOW FUNCTIONS ──
         ROW_NUMBER(), RANK(), DENSE_RANK()
         COUNT, SUM, AVG, MIN, MAX with OVER (...)
-        Supports one shared PARTITION BY / ORDER BY specification per SELECT.
-        Execution is in-memory; named windows, explicit frames, DISTINCT window
-        aggregates, navigation functions, and mixed grouped aggregates are rejected.
+        LAG(value[, offset[, default]]), LEAD(value[, offset[, default]])
+        FIRST_VALUE(value), LAST_VALUE(value)
+        Explicit ROWS frames support nonnegative integer-literal offsets.
+        Named WINDOW name AS (...) definitions are reused with OVER name.
+        Windows with identical PARTITION BY / ORDER BY can use different frames.
+        Ordered defaults are peer-aware; without ORDER BY the whole partition is used.
+        ASC places NULL first; DESC places NULL last.
+        Default limits: 65,536 rows/partition and 262,144 buffered rows/stage.
+        Exceeding either limit returns ResourceLimitExceeded.
+        Execution is bounded in memory. RANGE/GROUPS/EXCLUDE, DISTINCT windows,
+        incompatible specifications, mixed grouped/subquery windows, NULL-treatment
+        syntax, and disk spill are unsupported.
 
         ── JOIN TYPES ──
         [INNER] JOIN ... ON condition
@@ -127,7 +136,7 @@ internal static class SqlReference
         • SELECT DISTINCT
         • Subqueries (nested SELECT in WHERE / FROM)
         • UNION / INTERSECT / EXCEPT
-        • Advanced window functions (LAG, LEAD, named windows, explicit frames)
+        • Window forms beyond the bounded slice listed above
         • EXISTS / NOT EXISTS
         • FULL OUTER JOIN / NATURAL JOIN
         • DEFAULT, CHECK, FOREIGN KEY, UNIQUE column constraints

@@ -55,22 +55,34 @@ public sealed class WindowFunctionParserTests
     }
 
     [Fact]
-    public void Parse_ExplicitFrame_ReportsExperimentalBoundary()
+    public void Parse_ExplicitRowsFrame_PreservesBounds()
     {
-        CSharpDbException error = Assert.Throws<CSharpDbException>(
-            () => Parser.Parse(
+        var select = Assert.IsType<SelectStatement>(
+            Parser.Parse(
                 "SELECT SUM(score) OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM scores"));
+        var window = Assert.IsType<WindowFunctionExpression>(
+            Assert.Single(select.Columns).Expression);
 
-        Assert.Contains("Explicit window frames are not supported", error.Message);
+        Assert.NotNull(window.Window.Frame);
+        Assert.Equal(
+            WindowFrameBoundKind.UnboundedPreceding,
+            window.Window.Frame.Start.Kind);
+        Assert.Equal(
+            WindowFrameBoundKind.CurrentRow,
+            window.Window.Frame.End.Kind);
     }
 
     [Fact]
-    public void Parse_NamedWindow_ReportsExperimentalBoundary()
+    public void Parse_NamedWindow_ResolvesToConcreteSpecification()
     {
-        CSharpDbException error = Assert.Throws<CSharpDbException>(
-            () => Parser.Parse("SELECT ROW_NUMBER() OVER named_window FROM scores"));
+        var select = Assert.IsType<SelectStatement>(
+            Parser.Parse(
+                "SELECT ROW_NUMBER() OVER named_window FROM scores WINDOW named_window AS (ORDER BY id)"));
+        var window = Assert.IsType<WindowFunctionExpression>(
+            Assert.Single(select.Columns).Expression);
 
-        Assert.Contains("Named windows are not supported", error.Message);
+        Assert.Null(window.Window.ReferenceName);
+        Assert.Single(window.Window.OrderBy);
     }
 }
 
@@ -446,7 +458,8 @@ public sealed class WindowFunctionExecutionTests : IAsyncLifetime
     [InlineData("SELECT COUNT(*), ROW_NUMBER() OVER () FROM scores", "ordinary aggregate")]
     [InlineData("SELECT ROW_NUMBER() OVER (ORDER BY RANK() OVER (ORDER BY score)) FROM scores", "Nested")]
     [InlineData("SELECT ROW_NUMBER() OVER (ORDER BY id), RANK() OVER (ORDER BY score) FROM scores", "incompatible")]
-    [InlineData("SELECT LAG(score) OVER (ORDER BY id) FROM scores", "not supported")]
+    [InlineData("SELECT LAG() OVER (ORDER BY id) FROM scores", "between one and three")]
+    [InlineData("SELECT LEAD(score, 1, 0, 99) OVER (ORDER BY id) FROM scores", "between one and three")]
     [InlineData("SELECT COUNT(DISTINCT score) OVER () FROM scores", "DISTINCT")]
     public async Task InvalidWindowPlacementOrUnsupportedCombination_IsRejected(
         string sql,

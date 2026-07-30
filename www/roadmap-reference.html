@@ -213,7 +213,7 @@
                 <tbody>
                 <tr>
                 <td><strong>SQL feature coverage</strong></td>
-                <td>The public <a href="docs/sql.html">SQL Reference</a> and automated regression coverage are in place. Core development slices cover quoted identifiers, SQL three-valued logic, <code>UNION ALL</code>, literal <code>DEFAULT</code>/<code>CHECK</code>, logical composite keys, standalone primary-key add/drop with populated single-INTEGER rekeying that atomically rebuilds ready relational and full-text-owned storage, table-level/composite foreign keys with stable identities and the full immediate RESTRICT/NO ACTION/CASCADE/SET NULL/SET DEFAULT delete and update action matrix, Tier-1 windows, transactional shadow-root rewrites including exact indexed INTEGER/REAL, strict UTF-8 TEXT/BLOB, and indexed TEXT-collation ALTER COLUMN operations, constraint metadata transport, EF-generated defaults/checks/composite keys/named relationships/column rewrites, richer ADO.NET metadata, and a central function catalog. The remaining staged work covers indexed TEXT/BLOB and broader dependency rewrites, broader physical-rekey shapes/index kinds, deeper generated-SQL testing, normalized metadata, physical explain/profile output, and release validation.</td>
+                <td>The public <a href="docs/sql.html">SQL Reference</a> and automated regression coverage are in place. Core development slices cover quoted identifiers, SQL three-valued logic, <code>UNION ALL</code>, literal <code>DEFAULT</code>/<code>CHECK</code>, logical composite keys, standalone primary-key add/drop with populated single-INTEGER rekeying that atomically rebuilds ready relational and full-text-owned storage, table-level/composite foreign keys with stable identities and the full immediate RESTRICT/NO ACTION/CASCADE/SET NULL/SET DEFAULT delete and update action matrix, the completed bounded window-function slice, transactional shadow-root rewrites including exact indexed INTEGER/REAL, strict UTF-8 TEXT/BLOB, and indexed TEXT-collation ALTER COLUMN operations, constraint metadata transport, EF-generated defaults/checks/composite keys/named relationships/column rewrites, richer ADO.NET metadata, and a central function catalog. The remaining staged work covers indexed TEXT/BLOB and broader dependency rewrites, broader physical-rekey shapes/index kinds, deeper generated-SQL testing, normalized metadata, physical explain/profile output, and release validation.</td>
                 <td>In Progress</td>
                 </tr>
                 <tr>
@@ -238,8 +238,8 @@
                 </tr>
                 <tr>
                 <td><strong>Window functions</strong></td>
-                <td>A bounded in-memory Tier-1 implementation covers <code>ROW_NUMBER()</code>, <code>RANK()</code>, <code>DENSE_RANK()</code>, and common aggregate windows with partitioning, ordering, peer-aware defaults, cancellation, and explicit rejection coverage. Explicit frames, advanced functions, incompatible window groups, and spill-backed large partitions remain later tiers.</td>
-                <td>In Progress</td>
+                <td>Done as a bounded in-memory slice: <code>ROW_NUMBER()</code>, <code>RANK()</code>, <code>DENSE_RANK()</code>, common aggregate windows, <code>LAG</code>/<code>LEAD</code>/<code>FIRST_VALUE</code>/<code>LAST_VALUE</code>, explicit <code>ROWS</code> frames, case-insensitive named windows, compatible shared ordering across different frames, deterministic peer/NULL behavior, prepared execution, cancellation, and configurable limits with explicit <code>ResourceLimitExceeded</code> failures. Disk spill is deferred and is not required for completion because memory growth is bounded; incompatible partition/order specifications and later SQL window forms remain explicitly unsupported.</td>
+                <td>Done</td>
                 </tr>
                 <tr>
                 <td><strong><code>DEFAULT</code> column values</strong></td>
@@ -482,7 +482,7 @@
                 </tr>
                 <tr>
                 <td><strong>Query</strong></td>
-                <td>Tier-1 windows have parser, logical-phase, peer/default-frame, prepared execution, rejection, and cancellation coverage, but remain a bounded in-memory development preview. Advanced functions, explicit frames, incompatible window groups, and spill-backed large partitions are unsupported</td>
+                <td>Window functions are complete for the bounded in-memory slice, including ranking, aggregate, navigation/value functions, explicit <code>ROWS</code> frames, named windows, compatible shared ordering, peer/default-frame and NULL ordering semantics, prepared execution, cancellation, and controlled resource-limit failures. <code>RANGE</code>/<code>GROUPS</code>/<code>EXCLUDE</code>, DISTINCT windows, NULL-treatment syntax, incompatible partition/order specifications, mixed grouped/subquery window queries, disk spill, and physical window explain/profile diagnostics remain deferred</td>
                 </tr>
                 <tr>
                 <td><strong>Schema</strong></td>

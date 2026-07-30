@@ -14,6 +14,53 @@ namespace CSharpDB.Tests;
 public sealed class EngineTransportClientTests
 {
     [Fact]
+    public async Task ExecuteSqlAsync_PreservesResourceLimitErrorCode()
+    {
+        string dbPath = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb_engine_transport_window_limit_{Guid.NewGuid():N}.db");
+        CancellationToken ct = TestContext.Current.CancellationToken;
+
+        try
+        {
+            await using var client = new EngineTransportClient(
+                dbPath,
+                new DatabaseOptions
+                {
+                    WindowExecution = new CSharpDB.Primitives.WindowExecutionOptions
+                    {
+                        MaxPartitionRows = 2,
+                        MaxBufferedRows = 4,
+                    },
+                });
+            SqlExecutionResult seed = await client.ExecuteSqlAsync(
+                """
+                CREATE TABLE window_limit_rows (id INTEGER PRIMARY KEY, group_id INTEGER);
+                INSERT INTO window_limit_rows VALUES (1, 1), (2, 1), (3, 1);
+                """,
+                ct);
+            Assert.Null(seed.Error);
+
+            SqlExecutionResult result = await client.ExecuteSqlAsync(
+                """
+                SELECT ROW_NUMBER() OVER (PARTITION BY group_id ORDER BY id)
+                FROM window_limit_rows;
+                """,
+                ct);
+
+            Assert.Equal(CSharpDB.Primitives.ErrorCode.ResourceLimitExceeded, result.ErrorCode);
+            Assert.Contains("partition", result.Error, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (File.Exists(dbPath))
+                File.Delete(dbPath);
+            if (File.Exists(dbPath + ".wal"))
+                File.Delete(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
     public async Task GetTableSchemaAsync_MapsRowVersionMetadata()
     {
         string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_engine_transport_rowversion_{Guid.NewGuid():N}.db");

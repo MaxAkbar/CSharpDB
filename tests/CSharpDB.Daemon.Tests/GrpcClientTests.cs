@@ -42,6 +42,77 @@ public sealed class GrpcClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ExecuteSql_ResourceLimitExceeded_ReturnsResourceExhausted()
+    {
+        string dbPath = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb_daemon_window_limit_{Guid.NewGuid():N}.db");
+        var hostClientOptions = new CSharpDbClientOptions
+        {
+            Transport = CSharpDbTransport.Direct,
+            ConnectionString = $"Data Source={dbPath}",
+            DirectDatabaseOptions = new DatabaseOptions
+            {
+                WindowExecution = new CSharpDB.Primitives.WindowExecutionOptions
+                {
+                    MaxPartitionRows = 2,
+                    MaxBufferedRows = 4,
+                },
+            },
+        };
+
+        try
+        {
+            await using var factory = new TestDaemonFactory(
+                dbPath,
+                clientOptionsOverride: hostClientOptions);
+            using HttpClient transportClient = CreateGrpcHttpClient(factory);
+            using var channel = GrpcChannel.ForAddress(
+                "http://localhost",
+                new GrpcChannelOptions
+                {
+                    HttpClient = transportClient,
+                    DisposeHttpClient = false,
+                });
+            var rpcClient = new CSharpDbRpc.CSharpDbRpcClient(channel);
+
+            SqlExecutionResultMessage seed = await rpcClient.ExecuteSqlAsync(
+                new SqlRequest
+                {
+                    Sql = """
+                        CREATE TABLE grpc_window_limit_rows (id INTEGER PRIMARY KEY, group_id INTEGER);
+                        INSERT INTO grpc_window_limit_rows VALUES (1, 1), (2, 1), (3, 1);
+                        """,
+                },
+                cancellationToken: Ct).ResponseAsync;
+            Assert.Null(seed.Error);
+
+            RpcException error = await Assert.ThrowsAsync<RpcException>(
+                () => rpcClient.ExecuteSqlAsync(
+                    new SqlRequest
+                    {
+                        Sql = """
+                            SELECT ROW_NUMBER() OVER (PARTITION BY group_id ORDER BY id)
+                            FROM grpc_window_limit_rows;
+                            """,
+                    },
+                    cancellationToken: Ct).ResponseAsync);
+
+            Assert.Equal(StatusCode.ResourceExhausted, error.StatusCode);
+            Assert.Contains(
+                error.Trailers,
+                entry =>
+                    entry.Key == GrpcMetadataNames.ErrorCode &&
+                    entry.Value == CSharpDB.Primitives.ErrorCode.ResourceLimitExceeded.ToString());
+        }
+        finally
+        {
+            TryDelete(dbPath);
+            TryDelete(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
     public void Daemon_DefaultHostDatabaseOptions_EnableHybridConcurrentInsertAndWritePreset()
     {
         DaemonHostDatabaseOptions hostOptions = GetResolvedHostDatabaseOptions(_factory);
@@ -2147,7 +2218,8 @@ public sealed class GrpcClientTests : IAsyncLifetime
 
     private sealed class TestDaemonFactory(
         string dbPath,
-        IReadOnlyDictionary<string, string?>? extraConfig = null) : WebApplicationFactory<Program>
+        IReadOnlyDictionary<string, string?>? extraConfig = null,
+        CSharpDbClientOptions? clientOptionsOverride = null) : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
@@ -2155,6 +2227,8 @@ public sealed class GrpcClientTests : IAsyncLifetime
             builder.ConfigureServices(services =>
             {
                 services.AddHostedService<TestDaemonClientShutdown>();
+                if (clientOptionsOverride is not null)
+                    services.AddSingleton(clientOptionsOverride);
             });
             builder.ConfigureAppConfiguration((_, config) =>
             {

@@ -24,6 +24,11 @@ public sealed class DatabaseOptions
     public AdaptiveQueryReoptimizationOptions AdaptiveQueryReoptimization { get; init; } = new();
 
     /// <summary>
+    /// Bounded in-memory execution settings for SQL window functions.
+    /// </summary>
+    public WindowExecutionOptions WindowExecution { get; init; } = new();
+
+    /// <summary>
     /// Trusted in-process scalar functions available to SQL and embedded expression surfaces.
     /// </summary>
     public DbFunctionRegistry Functions { get; init; } = DbFunctionRegistry.Empty;

@@ -21,6 +21,13 @@ public static class SqlEndpoints
             return rejection;
 
         var result = await db.ExecuteSqlAsync(req.Sql);
+        if (result.ErrorCode == ErrorCode.ResourceLimitExceeded)
+        {
+            throw new CSharpDbException(
+                result.ErrorCode.Value,
+                result.Error ?? "The SQL execution resource limit was exceeded.");
+        }
+
         var response = ToResponse(result);
 
         return result.Error is not null

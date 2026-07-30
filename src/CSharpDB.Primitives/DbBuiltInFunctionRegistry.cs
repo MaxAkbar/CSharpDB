@@ -35,6 +35,7 @@ public enum DbBuiltInFunctionKind
 {
     Scalar,
     Aggregate,
+    Window,
 }
 
 public enum DbFunctionNullBehavior
@@ -122,6 +123,14 @@ public static class DbBuiltInFunctionRegistry
         Aggregate("AVG", 1, 1, DbType.Real, "real", "numeric aggregate"),
         Aggregate("MIN", 1, 1, null, "input type", "comparison aggregate"),
         Aggregate("MAX", 1, 1, null, "input type", "comparison aggregate"),
+
+        Window("ROW_NUMBER", 0, 0, "none", DbType.Integer, "integer", "one-based row position within the ordered partition"),
+        Window("RANK", 0, 0, "none", DbType.Integer, "integer", "one-based peer rank with gaps"),
+        Window("DENSE_RANK", 0, 0, "none", DbType.Integer, "integer", "one-based peer rank without gaps"),
+        Window("LAG", 1, 3, "value[, offset[, default]]", null, "first argument type", "value from a preceding partition row"),
+        Window("LEAD", 1, 3, "value[, offset[, default]]", null, "first argument type", "value from a following partition row"),
+        Window("FIRST_VALUE", 1, 1, "value", null, "first argument type", "value from the first row in the effective frame"),
+        Window("LAST_VALUE", 1, 1, "value", null, "first argument type", "value from the last row in the effective frame"),
     ];
 
     private static readonly IReadOnlyDictionary<string, DbBuiltInFunctionDescriptor> s_byName = BuildByName();
@@ -161,5 +170,17 @@ public static class DbBuiltInFunctionRegistry
         string name, int minimum, int maximum, DbType? returnType, string returnTypeRule, string semantics)
         => new(name, [], DbBuiltInFunctionKind.Aggregate, minimum, maximum, "any", returnType,
             returnTypeRule, DbFunctionNullBehavior.AggregateIgnoresNulls, DbFunctionVolatility.Immutable,
+            SupportsBatch: false, AllowedInDefaults: false, AllowedInChecks: false, "input collation", semantics);
+
+    private static DbBuiltInFunctionDescriptor Window(
+        string name,
+        int minimum,
+        int maximum,
+        string acceptedTypes,
+        DbType? returnType,
+        string returnTypeRule,
+        string semantics)
+        => new(name, [], DbBuiltInFunctionKind.Window, minimum, maximum, acceptedTypes, returnType,
+            returnTypeRule, DbFunctionNullBehavior.NotApplicable, DbFunctionVolatility.Immutable,
             SupportsBatch: false, AllowedInDefaults: false, AllowedInChecks: false, "input collation", semantics);
 }

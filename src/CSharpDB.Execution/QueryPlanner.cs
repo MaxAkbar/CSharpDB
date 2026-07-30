@@ -868,6 +868,7 @@ public sealed class QueryPlanner
     internal NumericRelationshipJoinMode RelationshipJoinMode { get; set; } = NumericRelationshipJoinMode.Auto;
 
     public AdaptiveQueryReoptimizationOptions AdaptiveQueryReoptimization { get; }
+    public WindowExecutionOptions WindowExecution { get; }
 
     public QueryPlanner(
         Pager pager,
@@ -880,7 +881,8 @@ public sealed class QueryPlanner
         bool useTransientNextRowIdHints = false,
         DbFunctionRegistry? functions = null,
         AdaptiveQueryReoptimizationOptions? adaptiveQueryReoptimization = null,
-        string? externalTableBasePath = null)
+        string? externalTableBasePath = null,
+        WindowExecutionOptions? windowExecution = null)
         : this(
             pager,
             catalog,
@@ -893,7 +895,8 @@ public sealed class QueryPlanner
             useTransientNextRowIdHints,
             functions,
             adaptiveQueryReoptimization,
-            externalTableBasePath)
+            externalTableBasePath,
+            windowExecution: windowExecution)
     {
     }
 
@@ -910,7 +913,8 @@ public sealed class QueryPlanner
         DbFunctionRegistry? functions,
         AdaptiveQueryReoptimizationOptions? adaptiveQueryReoptimization = null,
         string? externalTableBasePath = null,
-        TemporaryTableManager? temporaryTables = null)
+        TemporaryTableManager? temporaryTables = null,
+        WindowExecutionOptions? windowExecution = null)
     {
         _pager = pager;
         _catalog = catalog;
@@ -931,6 +935,7 @@ public sealed class QueryPlanner
         _observedSchemaVersion = catalog.SchemaVersion;
         _useTransientNextRowIdHints = useTransientNextRowIdHints;
         AdaptiveQueryReoptimization = NormalizeAdaptiveQueryReoptimizationOptions(adaptiveQueryReoptimization);
+        WindowExecution = NormalizeWindowExecutionOptions(windowExecution);
         _adaptiveRuntimeDiagnostics = new AdaptiveQueryReoptimizationRuntimeDiagnostics(
             RecordAdaptiveAttempt,
             RecordAdaptiveSuccessfulSwitch,
@@ -1206,6 +1211,41 @@ public sealed class QueryPlanner
             MinimumObservedRows = Math.Max(1, options.MinimumObservedRows),
             MaxBufferedRows = Math.Max(1, options.MaxBufferedRows),
             MaxReoptimizationsPerQuery = Math.Max(0, options.MaxReoptimizationsPerQuery),
+        };
+    }
+
+    internal static WindowExecutionOptions NormalizeWindowExecutionOptions(
+        WindowExecutionOptions? options)
+    {
+        options ??= new WindowExecutionOptions();
+        if (options.MaxPartitionRows <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(WindowExecutionOptions.MaxPartitionRows),
+                options.MaxPartitionRows,
+                "The maximum window partition row count must be greater than zero.");
+        }
+
+        if (options.MaxBufferedRows <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(WindowExecutionOptions.MaxBufferedRows),
+                options.MaxBufferedRows,
+                "The maximum buffered window row count must be greater than zero.");
+        }
+
+        if (options.MaxBufferedRows < options.MaxPartitionRows)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(WindowExecutionOptions.MaxBufferedRows),
+                options.MaxBufferedRows,
+                "The maximum buffered window row count cannot be smaller than the maximum partition row count.");
+        }
+
+        return new WindowExecutionOptions
+        {
+            MaxPartitionRows = options.MaxPartitionRows,
+            MaxBufferedRows = options.MaxBufferedRows,
         };
     }
 
@@ -2579,6 +2619,15 @@ public sealed class QueryPlanner
             parts.Add(ExprToSql(stmt.Having));
         }
 
+        if (stmt.WindowDefinitions.Count > 0)
+        {
+            parts.Add("WINDOW");
+            parts.Add(string.Join(
+                ", ",
+                stmt.WindowDefinitions.Select(definition =>
+                    $"{SqlIdentifierRules.Quote(definition.Name)} AS ({WindowSpecificationToSql(definition.Specification)})")));
+        }
+
         AppendOrderingAndPagination(parts, stmt.OrderBy, stmt.Limit, stmt.Offset);
 
         return string.Join(" ", parts);
@@ -2694,27 +2743,63 @@ public sealed class QueryPlanner
 
     private static string WindowFunctionToSql(WindowFunctionExpression window)
     {
-        var clauses = new List<string>(2);
-        if (window.Window.PartitionBy.Count > 0)
+        string specificationSql = WindowSpecificationToSql(window.Window);
+        bool isBareReference =
+            window.Window.ReferenceName != null &&
+            window.Window.PartitionBy.Count == 0 &&
+            window.Window.OrderBy.Count == 0 &&
+            window.Window.Frame == null;
+        return isBareReference
+            ? $"{ExprToSql(window.Function)} OVER {specificationSql}"
+            : $"{ExprToSql(window.Function)} OVER ({specificationSql})";
+    }
+
+    private static string WindowSpecificationToSql(WindowSpecification specification)
+    {
+        var clauses = new List<string>(4);
+        if (specification.ReferenceName != null)
+            clauses.Add(SqlIdentifierRules.Quote(specification.ReferenceName));
+
+        if (specification.PartitionBy.Count > 0)
         {
             clauses.Add(
                 "PARTITION BY " +
-                string.Join(", ", window.Window.PartitionBy.Select(ExprToSql)));
+                string.Join(", ", specification.PartitionBy.Select(ExprToSql)));
         }
 
-        if (window.Window.OrderBy.Count > 0)
+        if (specification.OrderBy.Count > 0)
         {
             clauses.Add(
                 "ORDER BY " +
                 string.Join(
                     ", ",
-                    window.Window.OrderBy.Select(
+                    specification.OrderBy.Select(
                         clause => ExprToSql(clause.Expression) +
                             (clause.Descending ? " DESC" : string.Empty))));
         }
 
-        return $"{ExprToSql(window.Function)} OVER ({string.Join(" ", clauses)})";
+        if (specification.Frame != null)
+        {
+            clauses.Add(
+                $"ROWS BETWEEN {WindowFrameBoundToSql(specification.Frame.Start)} " +
+                $"AND {WindowFrameBoundToSql(specification.Frame.End)}");
+        }
+
+        return string.Join(" ", clauses);
     }
+
+    private static string WindowFrameBoundToSql(WindowFrameBound bound) =>
+        bound.Kind switch
+        {
+            WindowFrameBoundKind.UnboundedPreceding => "UNBOUNDED PRECEDING",
+            WindowFrameBoundKind.Preceding =>
+                $"{bound.Offset.GetValueOrDefault().ToString(CultureInfo.InvariantCulture)} PRECEDING",
+            WindowFrameBoundKind.CurrentRow => "CURRENT ROW",
+            WindowFrameBoundKind.Following =>
+                $"{bound.Offset.GetValueOrDefault().ToString(CultureInfo.InvariantCulture)} FOLLOWING",
+            WindowFrameBoundKind.UnboundedFollowing => "UNBOUNDED FOLLOWING",
+            _ => throw new InvalidOperationException($"Unsupported window frame bound: {bound.Kind}"),
+        };
 
     private static string BinaryOpToSql(BinaryOp op) => op switch
     {
@@ -2848,6 +2933,9 @@ public sealed class QueryPlanner
                     Where = select.Where != null ? await RewriteSubqueriesInExpressionAsync(select.Where, ct) : null,
                     GroupBy = select.GroupBy != null ? await RewriteSubqueriesInExpressionListAsync(select.GroupBy, ct) : null,
                     Having = select.Having != null ? await RewriteSubqueriesInExpressionAsync(select.Having, ct) : null,
+                    WindowDefinitions = await RewriteSubqueriesInWindowDefinitionsAsync(
+                        select.WindowDefinitions,
+                        ct),
                     OrderBy = select.OrderBy != null ? await RewriteSubqueriesInOrderByClausesAsync(select.OrderBy, ct) : null,
                     Limit = select.Limit,
                     Offset = select.Offset,
@@ -2908,6 +2996,33 @@ public sealed class QueryPlanner
             {
                 Expression = await RewriteSubqueriesInExpressionAsync(clauses[i].Expression, ct),
                 Descending = clauses[i].Descending,
+            });
+        }
+
+        return rewritten;
+    }
+
+    private async ValueTask<List<NamedWindowDefinition>> RewriteSubqueriesInWindowDefinitionsAsync(
+        IReadOnlyList<NamedWindowDefinition> definitions,
+        CancellationToken ct)
+    {
+        var rewritten = new List<NamedWindowDefinition>(definitions.Count);
+        foreach (NamedWindowDefinition definition in definitions)
+        {
+            rewritten.Add(new NamedWindowDefinition
+            {
+                Name = definition.Name,
+                Specification = new WindowSpecification
+                {
+                    ReferenceName = definition.Specification.ReferenceName,
+                    PartitionBy = await RewriteSubqueriesInExpressionListAsync(
+                        definition.Specification.PartitionBy,
+                        ct),
+                    OrderBy = await RewriteSubqueriesInOrderByClausesAsync(
+                        definition.Specification.OrderBy,
+                        ct),
+                    Frame = definition.Specification.Frame,
+                },
             });
         }
 
@@ -3066,8 +3181,10 @@ public sealed class QueryPlanner
                     Function = function,
                     Window = new WindowSpecification
                     {
+                        ReferenceName = window.Window.ReferenceName,
                         PartitionBy = partitionBy,
                         OrderBy = orderBy,
+                        Frame = window.Window.Frame,
                     },
                 };
             }
@@ -3248,6 +3365,10 @@ public sealed class QueryPlanner
                     Where = select.Where != null ? BindOuterScopesInExpression(select.Where, visibleScopes, outerScopes) : null,
                     GroupBy = select.GroupBy?.Select(expr => BindOuterScopesInExpression(expr, visibleScopes, outerScopes)).ToList(),
                     Having = select.Having != null ? BindOuterScopesInExpression(select.Having, visibleScopes, outerScopes) : null,
+                    WindowDefinitions = BindOuterScopesInWindowDefinitions(
+                        select.WindowDefinitions,
+                        visibleScopes,
+                        outerScopes),
                     OrderBy = select.OrderBy?.Select(orderBy => new OrderByClause
                     {
                         Expression = BindOuterScopesInExpression(orderBy.Expression, visibleScopes, outerScopes),
@@ -3279,6 +3400,36 @@ public sealed class QueryPlanner
             default:
                 throw new CSharpDbException(ErrorCode.Unknown, $"Unknown query type: {query.GetType().Name}");
         }
+    }
+
+    private List<NamedWindowDefinition> BindOuterScopesInWindowDefinitions(
+        IReadOnlyList<NamedWindowDefinition> definitions,
+        IReadOnlyList<TableSchema> visibleScopes,
+        IReadOnlyList<CorrelationScope> outerScopes)
+    {
+        return definitions.Select(definition => new NamedWindowDefinition
+        {
+            Name = definition.Name,
+            Specification = new WindowSpecification
+            {
+                ReferenceName = definition.Specification.ReferenceName,
+                PartitionBy = definition.Specification.PartitionBy
+                    .Select(expression => BindOuterScopesInExpression(
+                        expression,
+                        visibleScopes,
+                        outerScopes))
+                    .ToList(),
+                OrderBy = definition.Specification.OrderBy.Select(clause => new OrderByClause
+                {
+                    Expression = BindOuterScopesInExpression(
+                        clause.Expression,
+                        visibleScopes,
+                        outerScopes),
+                    Descending = clause.Descending,
+                }).ToList(),
+                Frame = definition.Specification.Frame,
+            },
+        }).ToList();
     }
 
     private TableRef BindOuterScopesInTableRef(
@@ -3402,6 +3553,7 @@ public sealed class QueryPlanner
                         outerScopes),
                     Window = new WindowSpecification
                     {
+                        ReferenceName = window.Window.ReferenceName,
                         PartitionBy = window.Window.PartitionBy
                             .Select(expression => BindOuterScopesInExpression(
                                 expression,
@@ -3416,6 +3568,7 @@ public sealed class QueryPlanner
                                 outerScopes),
                             Descending = clause.Descending,
                         }).ToList(),
+                        Frame = window.Window.Frame,
                     },
                 };
             default:
@@ -5329,6 +5482,7 @@ public sealed class QueryPlanner
                         compositeSchema),
                     Window = new WindowSpecification
                     {
+                        ReferenceName = window.Window.ReferenceName,
                         PartitionBy = window.Window.PartitionBy
                             .Select(expression => ResolveNewOldRefsInExpression(
                                 expression,
@@ -5343,6 +5497,7 @@ public sealed class QueryPlanner
                                 compositeSchema),
                             Descending = clause.Descending,
                         }).ToList(),
+                        Frame = window.Window.Frame,
                     },
                 };
             default:
@@ -5370,6 +5525,10 @@ public sealed class QueryPlanner
                     Where = select.Where != null ? ResolveNewOldRefsInExpression(select.Where, compositeRow, compositeSchema) : null,
                     GroupBy = select.GroupBy?.Select(expr => ResolveNewOldRefsInExpression(expr, compositeRow, compositeSchema)).ToList(),
                     Having = select.Having != null ? ResolveNewOldRefsInExpression(select.Having, compositeRow, compositeSchema) : null,
+                    WindowDefinitions = ResolveNewOldRefsInWindowDefinitions(
+                        select.WindowDefinitions,
+                        compositeRow,
+                        compositeSchema),
                     OrderBy = select.OrderBy?.Select(orderBy => new OrderByClause
                     {
                         Expression = ResolveNewOldRefsInExpression(orderBy.Expression, compositeRow, compositeSchema),
@@ -5396,6 +5555,36 @@ public sealed class QueryPlanner
             default:
                 throw new CSharpDbException(ErrorCode.Unknown, $"Unknown query type: {query.GetType().Name}");
         }
+    }
+
+    private static List<NamedWindowDefinition> ResolveNewOldRefsInWindowDefinitions(
+        IReadOnlyList<NamedWindowDefinition> definitions,
+        DbValue[] compositeRow,
+        TableSchema compositeSchema)
+    {
+        return definitions.Select(definition => new NamedWindowDefinition
+        {
+            Name = definition.Name,
+            Specification = new WindowSpecification
+            {
+                ReferenceName = definition.Specification.ReferenceName,
+                PartitionBy = definition.Specification.PartitionBy
+                    .Select(expression => ResolveNewOldRefsInExpression(
+                        expression,
+                        compositeRow,
+                        compositeSchema))
+                    .ToList(),
+                OrderBy = definition.Specification.OrderBy.Select(clause => new OrderByClause
+                {
+                    Expression = ResolveNewOldRefsInExpression(
+                        clause.Expression,
+                        compositeRow,
+                        compositeSchema),
+                    Descending = clause.Descending,
+                }).ToList(),
+                Frame = definition.Specification.Frame,
+            },
+        }).ToList();
     }
 
     private static TableRef ResolveNewOldRefsInTableRef(TableRef tableRef, DbValue[] compositeRow, TableSchema compositeSchema)
@@ -6215,6 +6404,7 @@ public sealed class QueryPlanner
                 },
             GroupBy = select.GroupBy,
             Having = select.Having,
+            WindowDefinitions = select.WindowDefinitions,
             OrderBy = select.OrderBy,
             Limit = select.Limit,
             Offset = select.Offset,
@@ -6368,11 +6558,13 @@ public sealed class QueryPlanner
                         ct),
                     Window = new WindowSpecification
                     {
+                        ReferenceName = window.Window.ReferenceName,
                         PartitionBy = await RewriteCorrelatedExpressionListAsync(
                             window.Window.PartitionBy,
                             outerScopes,
                             ct),
                         OrderBy = orderBy,
+                        Frame = window.Window.Frame,
                     },
                 };
             }
@@ -7365,7 +7557,8 @@ public sealed class QueryPlanner
             sourceSchema,
             windowFunctions,
             augmentedColumns.ToArray(),
-            _functions);
+            _functions,
+            WindowExecution);
 
         var rewrittenColumns = new List<SelectColumn>(statement.Columns.Count);
         var aliases = new Dictionary<string, Expression>(StringComparer.OrdinalIgnoreCase);

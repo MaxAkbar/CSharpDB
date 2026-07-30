@@ -176,7 +176,8 @@ public sealed class Database : IAsyncDisposable
         HybridDatabasePersistenceCoordinator? hybridPersistenceCoordinator = null,
         string? databasePath = null,
         StorageEngineOptions? temporaryStorageOptions = null,
-        bool skipDisposePersistence = false)
+        bool skipDisposePersistence = false,
+        WindowExecutionOptions? windowExecution = null)
     {
         _pager = pager;
         _catalog = catalog;
@@ -204,7 +205,8 @@ public sealed class Database : IAsyncDisposable
             functions: _functions,
             adaptiveQueryReoptimization: adaptiveQueryReoptimization,
             externalTableBasePath: GetExternalTableBasePath(_databasePath),
-            temporaryTables: _temporaryTables);
+            temporaryTables: _temporaryTables,
+            windowExecution: windowExecution);
         _statementCache = new StatementCache(DefaultStatementCacheCapacity);
         _observedSchemaVersion = catalog.SchemaVersion;
         RefreshSharedNextRowIdHintsFromCatalog();
@@ -242,7 +244,8 @@ public sealed class Database : IAsyncDisposable
                 functions: _functions,
                 adaptiveQueryReoptimization: _planner.AdaptiveQueryReoptimization,
                 externalTableBasePath: GetExternalTableBasePath(_databasePath),
-                temporaryTables: _temporaryTables)
+                temporaryTables: _temporaryTables,
+                windowExecution: _planner.WindowExecution)
             {
                 PreferSyncPointLookups = PreferSyncPointLookups,
             };
@@ -590,6 +593,7 @@ public sealed class Database : IAsyncDisposable
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(options);
+        _ = QueryPlanner.NormalizeWindowExecutionOptions(options.WindowExecution);
 
         var context = await InMemoryStorageEngineFactory.OpenAsync(options.StorageEngineOptions, ct: ct);
         return await CompleteOpenAsync(new Database(
@@ -603,7 +607,8 @@ public sealed class Database : IAsyncDisposable
             options.ImplicitInsertExecutionMode,
             options.AdaptiveQueryReoptimization,
             options.Functions,
-            temporaryStorageOptions: options.StorageEngineOptions),
+            temporaryStorageOptions: options.StorageEngineOptions,
+            windowExecution: options.WindowExecution),
             ct);
     }
 
@@ -632,6 +637,7 @@ public sealed class Database : IAsyncDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(hybridOptions);
+        _ = QueryPlanner.NormalizeWindowExecutionOptions(options.WindowExecution);
         ValidateHybridHotSetOptions(options, hybridOptions);
 
         string fullPath = Path.GetFullPath(filePath);
@@ -671,7 +677,8 @@ public sealed class Database : IAsyncDisposable
                 options.Functions,
                 new HybridDatabasePersistenceCoordinator(fullPath, hybridOptions.PersistenceTriggers),
                 fullPath,
-                temporaryStorageOptions: options.StorageEngineOptions);
+                temporaryStorageOptions: options.StorageEngineOptions,
+                windowExecution: options.WindowExecution);
             return await CompleteOpenAsync(snapshotDatabase, ct);
         }
 
@@ -688,7 +695,8 @@ public sealed class Database : IAsyncDisposable
             options.AdaptiveQueryReoptimization,
             options.Functions,
             databasePath: fullPath,
-            temporaryStorageOptions: options.StorageEngineOptions);
+            temporaryStorageOptions: options.StorageEngineOptions,
+            windowExecution: options.WindowExecution);
         try
         {
             await database.EnsureFullTextInternalStoresOnOpenAsync(ct);
@@ -722,6 +730,7 @@ public sealed class Database : IAsyncDisposable
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
         ArgumentNullException.ThrowIfNull(options);
+        _ = QueryPlanner.NormalizeWindowExecutionOptions(options.WindowExecution);
 
         string fullPath = Path.GetFullPath(filePath);
         if (!File.Exists(fullPath))
@@ -751,7 +760,8 @@ public sealed class Database : IAsyncDisposable
             options.AdaptiveQueryReoptimization,
             options.Functions,
             databasePath: fullPath,
-            temporaryStorageOptions: options.StorageEngineOptions),
+            temporaryStorageOptions: options.StorageEngineOptions,
+            windowExecution: options.WindowExecution),
             ct);
     }
 
@@ -764,6 +774,7 @@ public sealed class Database : IAsyncDisposable
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(options);
+        _ = QueryPlanner.NormalizeWindowExecutionOptions(options.WindowExecution);
 
         string fullPath = Path.GetFullPath(filePath);
         var context = await options.StorageEngineFactory.OpenAsync(fullPath, options.StorageEngineOptions, ct);
@@ -779,7 +790,8 @@ public sealed class Database : IAsyncDisposable
             options.AdaptiveQueryReoptimization,
             options.Functions,
             databasePath: fullPath,
-            temporaryStorageOptions: options.StorageEngineOptions),
+            temporaryStorageOptions: options.StorageEngineOptions,
+            windowExecution: options.WindowExecution),
             ct);
     }
 
@@ -794,6 +806,7 @@ public sealed class Database : IAsyncDisposable
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
         ArgumentNullException.ThrowIfNull(options);
+        _ = QueryPlanner.NormalizeWindowExecutionOptions(options.WindowExecution);
 
         string fullPath = Path.GetFullPath(filePath);
         var context = await new DefaultStorageEngineFactory().OpenAsync(
@@ -813,7 +826,8 @@ public sealed class Database : IAsyncDisposable
             options.Functions,
             databasePath: fullPath,
             temporaryStorageOptions: options.StorageEngineOptions,
-            skipDisposePersistence: true);
+            skipDisposePersistence: true,
+            windowExecution: options.WindowExecution);
     }
 
     /// <summary>
@@ -827,6 +841,7 @@ public sealed class Database : IAsyncDisposable
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
         ArgumentNullException.ThrowIfNull(options);
+        _ = QueryPlanner.NormalizeWindowExecutionOptions(options.WindowExecution);
 
         string fullPath = Path.GetFullPath(filePath);
         var context = await new DefaultStorageEngineFactory().OpenAsync(
@@ -847,6 +862,7 @@ public sealed class Database : IAsyncDisposable
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
         ArgumentNullException.ThrowIfNull(options);
+        _ = QueryPlanner.NormalizeWindowExecutionOptions(options.WindowExecution);
 
         string fullPath = Path.GetFullPath(filePath);
         var context = await options.StorageEngineFactory.CreateNewAsync(
@@ -865,7 +881,8 @@ public sealed class Database : IAsyncDisposable
             options.AdaptiveQueryReoptimization,
             options.Functions,
             databasePath: fullPath,
-            temporaryStorageOptions: options.StorageEngineOptions),
+            temporaryStorageOptions: options.StorageEngineOptions,
+            windowExecution: options.WindowExecution),
             ct);
     }
 
@@ -1343,6 +1360,7 @@ public sealed class Database : IAsyncDisposable
             _statementCache,
             _functions,
             _planner.AdaptiveQueryReoptimization,
+            _planner.WindowExecution,
             snapshotRowCounts,
             allowCurrentCatalogRowCounts);
     }
@@ -2455,6 +2473,7 @@ public sealed class Database : IAsyncDisposable
         private readonly IReadOnlyDictionary<string, long> _snapshotRowCounts;
         private readonly bool _allowCurrentCatalogRowCounts;
         private readonly AdaptiveQueryReoptimizationOptions _adaptiveQueryReoptimization;
+        private readonly WindowExecutionOptions _windowExecution;
         private Pager? _snapshotPager;
         private QueryPlanner? _planner;
         private string? _lastSql;
@@ -2470,6 +2489,7 @@ public sealed class Database : IAsyncDisposable
             StatementCache statementCache,
             DbFunctionRegistry functions,
             AdaptiveQueryReoptimizationOptions adaptiveQueryReoptimization,
+            WindowExecutionOptions windowExecution,
             IReadOnlyDictionary<string, long> snapshotRowCounts,
             bool allowCurrentCatalogRowCounts)
         {
@@ -2484,6 +2504,7 @@ public sealed class Database : IAsyncDisposable
             _statementCache = statementCache;
             _snapshot = snapshot;
             _adaptiveQueryReoptimization = adaptiveQueryReoptimization;
+            _windowExecution = windowExecution;
             _snapshotRowCounts = snapshotRowCounts;
             _allowCurrentCatalogRowCounts = allowCurrentCatalogRowCounts;
         }
@@ -2555,7 +2576,8 @@ public sealed class Database : IAsyncDisposable
                     _catalog,
                     _recordSerializer,
                     functions: _functions,
-                    adaptiveQueryReoptimization: _adaptiveQueryReoptimization);
+                    adaptiveQueryReoptimization: _adaptiveQueryReoptimization,
+                    windowExecution: _windowExecution);
                 ValueTask<QueryResult> plannerTask = _planner.ExecuteAsync(stmt, ct);
                 if (plannerTask.IsCompletedSuccessfully)
                 {
@@ -2665,7 +2687,8 @@ public sealed class Database : IAsyncDisposable
                     _catalog,
                     _recordSerializer,
                     functions: _functions,
-                    adaptiveQueryReoptimization: _adaptiveQueryReoptimization);
+                    adaptiveQueryReoptimization: _adaptiveQueryReoptimization,
+                    windowExecution: _windowExecution);
                 QueryResult plannerResult = await _planner.ExecuteAsync(stmt, ct);
                 plannerResult.SetDisposeCallback(_releaseActiveQueryCallback);
                 return plannerResult;

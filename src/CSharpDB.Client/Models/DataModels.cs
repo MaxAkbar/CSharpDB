@@ -30,6 +30,7 @@ public sealed class SqlExecutionResult
     public List<object?[]>? Rows { get; init; }
     public int RowsAffected { get; init; }
     public string? Error { get; init; }
+    public CSharpDB.Primitives.ErrorCode? ErrorCode { get; init; }
     public TimeSpan Elapsed { get; init; }
 }
 

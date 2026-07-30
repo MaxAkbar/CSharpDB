@@ -163,7 +163,12 @@ internal sealed partial class EngineTransportClient
             catch (CSharpDB.Primitives.CSharpDbException ex)
             {
                 stopwatch.Stop();
-                return new SqlExecutionResult { Error = ex.Message, Elapsed = stopwatch.Elapsed };
+                return new SqlExecutionResult
+                {
+                    Error = ex.Message,
+                    ErrorCode = ex.Code,
+                    Elapsed = stopwatch.Elapsed,
+                };
             }
 
             if (statements.Count == 0)
@@ -187,6 +192,17 @@ internal sealed partial class EngineTransportClient
                 catch (OperationCanceledException)
                 {
                     throw;
+                }
+                catch (CSharpDB.Primitives.CSharpDbException ex)
+                {
+                    stopwatch.Stop();
+                    string error = statements.Count > 1 ? $"Statement {i + 1} failed: {ex.Message}" : ex.Message;
+                    return new SqlExecutionResult
+                    {
+                        Error = error,
+                        ErrorCode = ex.Code,
+                        Elapsed = stopwatch.Elapsed,
+                    };
                 }
                 catch (Exception ex)
                 {

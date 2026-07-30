@@ -72,6 +72,7 @@ public sealed class ExceptionHandlingMiddleware
         ErrorCode.SyntaxError => HttpStatusCode.BadRequest,
         ErrorCode.TypeMismatch => HttpStatusCode.BadRequest,
         ErrorCode.Busy => HttpStatusCode.ServiceUnavailable,
+        ErrorCode.ResourceLimitExceeded => HttpStatusCode.RequestEntityTooLarge,
         _ => HttpStatusCode.InternalServerError,
     };
 
