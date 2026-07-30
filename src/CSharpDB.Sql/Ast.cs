@@ -374,6 +374,12 @@ public sealed class ExplainEstimateStatement : Statement
     public required Statement Target { get; init; }
 }
 
+public sealed class ExplainStatement : Statement
+{
+    public required Statement Target { get; init; }
+    public bool Analyze { get; init; }
+}
+
 // ============ Data Hygiene ============
 
 public enum DuplicateKeepMode

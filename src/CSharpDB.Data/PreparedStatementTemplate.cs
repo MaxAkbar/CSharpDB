@@ -261,6 +261,19 @@ internal sealed class PreparedStatementTemplate
                 return new ExplainEstimateStatement { Target = target };
             }
 
+            case ExplainStatement explain:
+            {
+                Statement target = BindStatement(explain.Target, parameters);
+                if (ReferenceEquals(target, explain.Target))
+                    return explain;
+
+                return new ExplainStatement
+                {
+                    Target = target,
+                    Analyze = explain.Analyze,
+                };
+            }
+
             case CreateTriggerStatement trigger:
             {
                 Expression? whenCondition = BindOptionalExpression(trigger.WhenCondition, parameters, out bool whenChanged);
@@ -999,6 +1012,9 @@ internal sealed class PreparedStatementTemplate
                 CollectParameterNames(with.MainQuery, names, seen);
                 return;
             case ExplainEstimateStatement explain:
+                CollectParameterNames(explain.Target, names, seen);
+                return;
+            case ExplainStatement explain:
                 CollectParameterNames(explain.Target, names, seen);
                 return;
             case CreateTriggerStatement trigger:

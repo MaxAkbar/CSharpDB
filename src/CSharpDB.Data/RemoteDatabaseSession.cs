@@ -123,7 +123,11 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
         foreach (object?[] row in sourceRows)
             rows.Add(row.Select(ToDbValue).ToArray());
 
-        CoreColumnDefinition[] schema = BuildQuerySchema(result.ColumnNames ?? [], sourceRows);
+        CoreColumnDefinition[] schema = BuildQuerySchema(
+            result.ColumnNames ?? [],
+            result.ColumnTypes,
+            result.ColumnNullability,
+            sourceRows);
         return QueryResult.FromMaterializedRows(schema, rows);
     }
 
@@ -244,7 +248,11 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
             BodySql = trigger.BodySql,
         };
 
-    private static CoreColumnDefinition[] BuildQuerySchema(IReadOnlyList<string> columnNames, IReadOnlyList<object?[]> rows)
+    private static CoreColumnDefinition[] BuildQuerySchema(
+        IReadOnlyList<string> columnNames,
+        IReadOnlyList<string>? columnTypes,
+        IReadOnlyList<bool>? columnNullability,
+        IReadOnlyList<object?[]> rows)
     {
         var schema = new CoreColumnDefinition[columnNames.Count];
         for (int i = 0; i < columnNames.Count; i++)
@@ -252,12 +260,33 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
             schema[i] = new CoreColumnDefinition
             {
                 Name = columnNames[i],
-                Type = InferColumnType(rows, i),
-                Nullable = true,
+                Type = ResolveColumnType(columnTypes, rows, i),
+                Nullable = columnNullability is not null &&
+                           i < columnNullability.Count
+                    ? columnNullability[i]
+                    : true,
             };
         }
 
         return schema;
+    }
+
+    private static CoreDbType ResolveColumnType(
+        IReadOnlyList<string>? columnTypes,
+        IReadOnlyList<object?[]> rows,
+        int ordinal)
+    {
+        if (columnTypes is not null
+            && ordinal < columnTypes.Count
+            && Enum.TryParse(
+                columnTypes[ordinal],
+                ignoreCase: true,
+                out CoreDbType declaredType))
+        {
+            return declaredType;
+        }
+
+        return InferColumnType(rows, ordinal);
     }
 
     private static CoreDbType InferColumnType(IReadOnlyList<object?[]> rows, int ordinal)

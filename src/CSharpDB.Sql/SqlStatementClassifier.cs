@@ -22,7 +22,13 @@ public static class SqlStatementClassifier
     public static bool IsReadOnly(Statement statement)
     {
         ArgumentNullException.ThrowIfNull(statement);
-        return statement is QueryStatement or WithStatement or ExplainEstimateStatement;
+        return statement switch
+        {
+            QueryStatement or WithStatement or ExplainEstimateStatement => true,
+            ExplainStatement { Analyze: false } => true,
+            ExplainStatement explain => IsReadOnly(explain.Target),
+            _ => false,
+        };
     }
 
     public static bool IsTemporaryTableStatement(Statement statement)

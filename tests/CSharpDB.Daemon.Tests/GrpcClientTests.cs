@@ -1506,6 +1506,29 @@ public sealed class GrpcClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public void GrpcModelMapper_SqlResultPreservesDeclaredColumnMetadata()
+    {
+        var result = new SqlExecutionResult
+        {
+            IsQuery = true,
+            ColumnNames = ["id", "nullable_value"],
+            ColumnTypes = ["INTEGER", "INTEGER"],
+            ColumnNullability = [false, true],
+            Rows = [[1L, null]],
+        };
+
+        SqlExecutionResultMessage message = GrpcModelMapper.ToMessage(result);
+        SqlExecutionResult roundTrip = GrpcModelMapper.ToModel(message);
+
+        Assert.Equal(["INTEGER", "INTEGER"], message.ColumnTypes.Values);
+        Assert.Equal([false, true], message.ColumnNullability.Values);
+        Assert.Equal(result.ColumnTypes, roundTrip.ColumnTypes);
+        Assert.Equal(
+            result.ColumnNullability,
+            roundTrip.ColumnNullability);
+    }
+
+    [Fact]
     public void GrpcModelMapper_RejectsMalformedNonemptySchemaIdentity()
     {
         var message = new ColumnDefinitionMessage

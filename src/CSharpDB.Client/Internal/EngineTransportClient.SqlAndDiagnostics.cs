@@ -222,6 +222,7 @@ internal sealed partial class EngineTransportClient
                     IsQuery = true,
                     ColumnNames = lastResult.ColumnNames,
                     ColumnTypes = lastResult.ColumnTypes,
+                    ColumnNullability = lastResult.ColumnNullability,
                     Rows = lastResult.Rows,
                     RowsAffected = lastResult.RowsAffected,
                     Elapsed = stopwatch.Elapsed,

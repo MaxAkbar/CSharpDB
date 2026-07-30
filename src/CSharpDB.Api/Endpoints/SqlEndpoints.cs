@@ -15,12 +15,15 @@ public static class SqlEndpoints
         return group;
     }
 
-    private static async Task<IResult> ExecuteSql(ExecuteSqlRequest req, ICSharpDbClient db)
+    private static async Task<IResult> ExecuteSql(
+        ExecuteSqlRequest req,
+        ICSharpDbClient db,
+        CancellationToken cancellationToken)
     {
         if (TryRejectStatelessTemporaryTableSql(req.Sql, out IResult rejection))
             return rejection;
 
-        var result = await db.ExecuteSqlAsync(req.Sql);
+        var result = await db.ExecuteSqlAsync(req.Sql, cancellationToken);
         if (result.ErrorCode == ErrorCode.ResourceLimitExceeded)
         {
             throw new CSharpDbException(
@@ -51,6 +54,7 @@ public static class SqlEndpoints
                     IsQuery: false,
                     ColumnNames: null,
                     ColumnTypes: null,
+                    ColumnNullability: null,
                     Rows: null,
                     RowsAffected: 0,
                     Error: "Temporary table commands require a transaction session when using stateless HTTP. Use BeginTransaction and ExecuteInTransaction for remote temporary table workflows.",
@@ -73,12 +77,13 @@ public static class SqlEndpoints
             namedRows = JsonHelper.RowsToNamedDictionaries(result.ColumnNames, result.Rows);
 
         return new SqlResultResponse(
-            result.IsQuery,
-            result.ColumnNames,
-            result.ColumnTypes,
-            namedRows,
-            result.RowsAffected,
-            result.Error,
-            result.Elapsed.TotalMilliseconds);
+            IsQuery: result.IsQuery,
+            ColumnNames: result.ColumnNames,
+            ColumnTypes: result.ColumnTypes,
+            Rows: namedRows,
+            RowsAffected: result.RowsAffected,
+            Error: result.Error,
+            ElapsedMs: result.Elapsed.TotalMilliseconds,
+            ColumnNullability: result.ColumnNullability);
     }
 }

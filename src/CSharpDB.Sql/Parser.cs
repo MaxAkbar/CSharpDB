@@ -2588,20 +2588,41 @@ public sealed class Parser
         return new AnalyzeStatement { TableName = tableName };
     }
 
-    private ExplainEstimateStatement ParseExplain()
+    private Statement ParseExplain()
     {
         Expect(TokenType.Explain);
-        Expect(TokenType.Estimate);
-        Expect(TokenType.For);
 
-        Statement target = Peek().Type switch
+        if (TryConsume(TokenType.Estimate))
+        {
+            Expect(TokenType.For);
+            Statement estimateTarget = ParseExplainTarget(allowMutations: false);
+            return new ExplainEstimateStatement { Target = estimateTarget };
+        }
+
+        bool analyze = TryConsume(TokenType.Analyze);
+        TryConsume(TokenType.For);
+        Statement target = ParseExplainTarget(allowMutations: true);
+        return new ExplainStatement
+        {
+            Target = target,
+            Analyze = analyze,
+        };
+    }
+
+    private Statement ParseExplainTarget(bool allowMutations)
+    {
+        return Peek().Type switch
         {
             TokenType.Select => ParseQueryExpression(),
             TokenType.With => ParseWith(),
-            _ => throw Error("EXPLAIN ESTIMATE FOR supports SELECT, WITH, and compound SELECT queries only."),
+            TokenType.Insert when allowMutations => ParseInsert(),
+            TokenType.Update when allowMutations => ParseUpdate(),
+            TokenType.Delete when allowMutations => ParseDelete(),
+            _ when allowMutations => throw Error(
+                "EXPLAIN supports SELECT, WITH, compound SELECT, INSERT, UPDATE, and DELETE statements only."),
+            _ => throw Error(
+                "EXPLAIN ESTIMATE FOR supports SELECT, WITH, and compound SELECT queries only."),
         };
-
-        return new ExplainEstimateStatement { Target = target };
     }
 
     private FindDuplicatesStatement ParseFindDuplicates()

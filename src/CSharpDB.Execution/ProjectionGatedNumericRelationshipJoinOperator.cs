@@ -13,14 +13,16 @@ internal sealed class ProjectionGatedNumericRelationshipJoinOperator :
     IProjectionPushdownTarget,
     IEstimatedRowCountProvider,
     IBatchBufferReuseController,
-    IUnaryOperatorSource
+    IUnaryOperatorSource,
+    IPhysicalOperatorChildren,
+    IPhysicalOperatorMetadataProvider
 {
     private const int DefaultBatchSize = 64;
 
     private readonly IOperator _fallback;
     private readonly Func<NumericRelationshipIndexJoinOperator> _createNumericJoin;
     private readonly int[] _numericJoinCoveredColumnIndices;
-    private NumericRelationshipIndexJoinOperator? _numericJoin;
+    private IOperator? _numericJoin;
     private IOperator _active;
     private IBatchOperator? _activeBatchSource;
     private bool _projectionConfigured;
@@ -38,13 +40,13 @@ internal sealed class ProjectionGatedNumericRelationshipJoinOperator :
         ArgumentNullException.ThrowIfNull(createNumericJoin);
         ArgumentNullException.ThrowIfNull(numericJoinCoveredColumnIndices);
 
-        _fallback = fallback;
+        _fallback = PhysicalPlanCapture.WrapIfActive(fallback);
         _createNumericJoin = createNumericJoin;
         _numericJoinCoveredColumnIndices = (int[])numericJoinCoveredColumnIndices.Clone();
         Array.Sort(_numericJoinCoveredColumnIndices);
-        _active = fallback;
-        _activeBatchSource = BatchSourceHelper.TryGetBatchSource(fallback);
-        OutputSchema = fallback.OutputSchema;
+        _active = _fallback;
+        _activeBatchSource = BatchSourceHelper.TryGetBatchSource(_active);
+        OutputSchema = _fallback.OutputSchema;
     }
 
     public ColumnDefinition[] OutputSchema { get; private set; }
@@ -58,6 +60,11 @@ internal sealed class ProjectionGatedNumericRelationshipJoinOperator :
         (_fallback as IEstimatedRowCountProvider)?.EstimatedRowCount;
 
     IOperator IUnaryOperatorSource.Source => _active;
+    IReadOnlyList<IOperator> IPhysicalOperatorChildren.PhysicalChildren => [_active];
+    PhysicalOperatorMetadata IPhysicalOperatorMetadataProvider.GetPhysicalOperatorMetadata()
+        => PhysicalPlanCapture.Unwrap(_active) is IPhysicalOperatorMetadataProvider provider
+            ? provider.GetPhysicalOperatorMetadata()
+            : default;
 
     IBatchOperator IBatchBackedRowOperator.BatchSource => this;
 
@@ -119,9 +126,13 @@ internal sealed class ProjectionGatedNumericRelationshipJoinOperator :
 
         if (IsNumericJoinCoveredProjection(columnIndices))
         {
-            NumericRelationshipIndexJoinOperator numericJoin = _numericJoin ??= _createNumericJoin();
-            numericJoin.SetReuseCurrentBatch(_reuseCurrentBatch);
-            if (numericJoin.TrySetOutputProjection(columnIndices, outputSchema))
+            IOperator numericJoin = _numericJoin ??=
+                PhysicalPlanCapture.WrapIfActive(_createNumericJoin());
+            if (numericJoin is IBatchBufferReuseController batchController)
+                batchController.SetReuseCurrentBatch(_reuseCurrentBatch);
+
+            if (PhysicalPlanCapture.Unwrap(numericJoin) is IProjectionPushdownTarget projectionTarget &&
+                projectionTarget.TrySetOutputProjection(columnIndices, outputSchema))
             {
                 _active = numericJoin;
                 _activeBatchSource = BatchSourceHelper.TryGetBatchSource(numericJoin);
@@ -134,7 +145,7 @@ internal sealed class ProjectionGatedNumericRelationshipJoinOperator :
 
         // Preserve the existing plan's own projection optimization for non-covered
         // simple column lists rather than forcing a materializing projection above it.
-        if (_fallback is IProjectionPushdownTarget fallbackProjection &&
+        if (PhysicalPlanCapture.Unwrap(_fallback) is IProjectionPushdownTarget fallbackProjection &&
             fallbackProjection.TrySetOutputProjection(columnIndices, outputSchema))
         {
             OutputSchema = outputSchema;
@@ -151,7 +162,8 @@ internal sealed class ProjectionGatedNumericRelationshipJoinOperator :
         _reuseCurrentBatch = reuse;
         if (_fallback is IBatchBufferReuseController fallbackController)
             fallbackController.SetReuseCurrentBatch(reuse);
-        _numericJoin?.SetReuseCurrentBatch(reuse);
+        if (_numericJoin is IBatchBufferReuseController numericController)
+            numericController.SetReuseCurrentBatch(reuse);
 
         _currentBatch = null;
     }

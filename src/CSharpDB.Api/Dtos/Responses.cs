@@ -85,7 +85,8 @@ public sealed record SqlResultResponse(
     IReadOnlyList<Dictionary<string, object?>>? Rows,
     int RowsAffected,
     string? Error,
-    double ElapsedMs);
+    double ElapsedMs,
+    bool[]? ColumnNullability = null);
 
 public sealed record ShardSqlExecutionResultResponse(
     string ShardId,

@@ -110,6 +110,14 @@
 
                 <h2>Data Manipulation (DML)</h2>
 
+                <h3>EXPLAIN and profile output</h3>
+                <div class="code-block" data-title="SQL">
+                    <pre><code><span class="kw">EXPLAIN SELECT</span> Name <span class="kw">FROM</span> Employees <span class="kw">WHERE</span> Id = <span class="num">1</span>;
+<span class="kw">EXPLAIN ANALYZE SELECT</span> Name <span class="kw">FROM</span> Employees <span class="kw">WHERE</span> Id = <span class="num">1</span>;
+<span class="kw">EXPLAIN ANALYZE UPDATE</span> Employees <span class="kw">SET</span> Salary = Salary + <span class="num">1000</span> <span class="kw">WHERE</span> Id = <span class="num">1</span>;</code></pre>
+                </div>
+                <p><code>EXPLAIN</code> returns the selected physical operator tree without opening it. <code>EXPLAIN ANALYZE</code> executes exactly once and reports actual rows, loops, and elapsed time; DML profile statements therefore mutate under normal transaction semantics. Estimated costs use stable relative row-work units for comparing choices, not elapsed time; row estimates remain nullable when cardinality is unavailable. Output is a bounded structural rowset available through direct, ADO.NET, HTTP, and gRPC clients; its 256 KiB limit is an inline content budget rather than an exact serialized transport size. Predicate values are redacted. Cancellation and execution errors remain failures, with a bounded, redacted partial-profile summary attached to failure diagnostics where safe. See the <a href="sql-reference.html#explain">full contract and current non-executing planning restrictions</a>.</p>
+
                 <h3>INSERT</h3>
                 <div class="code-block" data-title="SQL">
                     <pre><code><span class="kw">INSERT INTO</span> Employees (Id, Name, DeptId, Salary)

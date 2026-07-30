@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using CSharpDB.Client;
@@ -8,6 +9,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace CSharpDB.Api.Tests;
 
@@ -98,6 +100,64 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
         }
         finally
         {
+            await DeleteIfExistsAsync(dbPath);
+            await DeleteIfExistsAsync(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task SqlAndTransactionEndpoints_ForwardRequestCancellationTokens()
+    {
+        string dbPath = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb_api_cancellation_{Guid.NewGuid():N}.db");
+        ICSharpDbClient captureClient =
+            DispatchProxy.Create<ICSharpDbClient, CancellationCaptureClientProxy>();
+        var capture = (CancellationCaptureClientProxy)captureClient;
+
+        try
+        {
+            await using var factory = new TestApiFactory(
+                dbPath,
+                clientOverride: captureClient);
+            using HttpClient httpClient = factory.CreateClient();
+            using var requestCancellation = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+
+            using HttpResponseMessage execute = await httpClient.PostAsJsonAsync(
+                "/api/sql/execute",
+                new { Sql = "SELECT 1;" },
+                requestCancellation.Token);
+            using HttpResponseMessage begin = await httpClient.PostAsJsonAsync(
+                "/api/transactions",
+                new { },
+                requestCancellation.Token);
+            using HttpResponseMessage transactionalExecute = await httpClient.PostAsJsonAsync(
+                "/api/transactions/tx-cancellation/execute",
+                new { Sql = "SELECT 1;" },
+                requestCancellation.Token);
+            using HttpResponseMessage commit = await httpClient.PostAsJsonAsync(
+                "/api/transactions/tx-cancellation/commit",
+                new { },
+                requestCancellation.Token);
+            using HttpResponseMessage rollback = await httpClient.PostAsJsonAsync(
+                "/api/transactions/tx-cancellation/rollback",
+                new { },
+                requestCancellation.Token);
+
+            Assert.True(execute.IsSuccessStatusCode);
+            Assert.True(begin.IsSuccessStatusCode);
+            Assert.True(transactionalExecute.IsSuccessStatusCode);
+            Assert.True(commit.IsSuccessStatusCode);
+            Assert.True(rollback.IsSuccessStatusCode);
+            Assert.True(capture.ExecuteSqlCancellationToken.CanBeCanceled);
+            Assert.True(capture.BeginTransactionCancellationToken.CanBeCanceled);
+            Assert.True(capture.ExecuteInTransactionCancellationToken.CanBeCanceled);
+            Assert.True(capture.CommitTransactionCancellationToken.CanBeCanceled);
+            Assert.True(capture.RollbackTransactionCancellationToken.CanBeCanceled);
+        }
+        finally
+        {
+            await captureClient.DisposeAsync();
             await DeleteIfExistsAsync(dbPath);
             await DeleteIfExistsAsync(dbPath + ".wal");
         }
@@ -1395,20 +1455,30 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
     private sealed class TestApiFactory(
         string dbPath,
         IReadOnlyDictionary<string, string?>? extraConfig = null,
-        CSharpDB.Engine.DatabaseOptions? directDatabaseOptions = null) : WebApplicationFactory<Program>
+        CSharpDB.Engine.DatabaseOptions? directDatabaseOptions = null,
+        ICSharpDbClient? clientOverride = null) : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             builder.UseEnvironment("Development");
-            if (directDatabaseOptions is not null)
+            if (directDatabaseOptions is not null || clientOverride is not null)
             {
                 builder.ConfigureServices(services =>
                 {
-                    services.AddSingleton(new CSharpDbClientOptions
+                    if (directDatabaseOptions is not null)
                     {
-                        ConnectionString = $"Data Source={dbPath}",
-                        DirectDatabaseOptions = directDatabaseOptions,
-                    });
+                        services.AddSingleton(new CSharpDbClientOptions
+                        {
+                            ConnectionString = $"Data Source={dbPath}",
+                            DirectDatabaseOptions = directDatabaseOptions,
+                        });
+                    }
+
+                    if (clientOverride is not null)
+                    {
+                        services.RemoveAll<ICSharpDbClient>();
+                        services.AddSingleton(clientOverride);
+                    }
                 });
             }
             builder.ConfigureAppConfiguration((_, config) =>
@@ -1422,6 +1492,71 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
                     config.AddInMemoryCollection(extraConfig);
                 }
             });
+        }
+    }
+
+    public class CancellationCaptureClientProxy : DispatchProxy
+    {
+        public CancellationToken ExecuteSqlCancellationToken { get; private set; }
+        public CancellationToken BeginTransactionCancellationToken { get; private set; }
+        public CancellationToken ExecuteInTransactionCancellationToken { get; private set; }
+        public CancellationToken CommitTransactionCancellationToken { get; private set; }
+        public CancellationToken RollbackTransactionCancellationToken { get; private set; }
+
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+            => targetMethod?.Name switch
+            {
+                "get_DataSource" => "cancellation-capture",
+                "GetInfoAsync" => Task.FromResult(new DatabaseInfo
+                {
+                    DataSource = "cancellation-capture",
+                }),
+                "ExecuteSqlAsync" => CaptureExecuteSql((CancellationToken)args![1]!),
+                "BeginTransactionAsync" => CaptureBeginTransaction((CancellationToken)args![0]!),
+                "ExecuteInTransactionAsync" =>
+                    CaptureExecuteInTransaction((CancellationToken)args![2]!),
+                "CommitTransactionAsync" =>
+                    CaptureCommitTransaction((CancellationToken)args![1]!),
+                "RollbackTransactionAsync" =>
+                    CaptureRollbackTransaction((CancellationToken)args![1]!),
+                "DisposeAsync" => ValueTask.CompletedTask,
+                _ => throw new NotSupportedException(targetMethod?.Name),
+            };
+
+        private Task<SqlExecutionResult> CaptureExecuteSql(CancellationToken cancellationToken)
+        {
+            ExecuteSqlCancellationToken = cancellationToken;
+            return Task.FromResult(new SqlExecutionResult { RowsAffected = 1 });
+        }
+
+        private Task<TransactionSessionInfo> CaptureBeginTransaction(
+            CancellationToken cancellationToken)
+        {
+            BeginTransactionCancellationToken = cancellationToken;
+            return Task.FromResult(new TransactionSessionInfo
+            {
+                TransactionId = "tx-cancellation",
+                ExpiresAtUtc = DateTime.UtcNow.AddMinutes(1),
+            });
+        }
+
+        private Task<SqlExecutionResult> CaptureExecuteInTransaction(
+            CancellationToken cancellationToken)
+        {
+            ExecuteInTransactionCancellationToken = cancellationToken;
+            return Task.FromResult(new SqlExecutionResult { RowsAffected = 1 });
+        }
+
+        private Task CaptureCommitTransaction(CancellationToken cancellationToken)
+        {
+            CommitTransactionCancellationToken = cancellationToken;
+            return Task.CompletedTask;
+        }
+
+        private Task CaptureRollbackTransaction(CancellationToken cancellationToken)
+        {
+            RollbackTransactionCancellationToken = cancellationToken;
+            return Task.CompletedTask;
         }
     }
 

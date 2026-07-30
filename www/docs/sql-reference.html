@@ -65,6 +65,7 @@
                         <li class="toc-child"><a href="#create-trigger">CREATE TRIGGER</a></li>
                         <li class="toc-child"><a href="#drop-trigger">DROP TRIGGER</a></li>
                         <li class="toc-child"><a href="#analyze">ANALYZE</a></li>
+                        <li class="toc-child"><a href="#explain">EXPLAIN and EXPLAIN ANALYZE</a></li>
                         <li><a href="#data-manipulation">Data Manipulation</a></li>
                         <li class="toc-child"><a href="#insert">INSERT</a></li>
                         <li class="toc-child"><a href="#update">UPDATE</a></li>
@@ -378,6 +379,37 @@
                 buckets) and index prefix statistics used by the query planner for cardinality estimation
                 and operator selection. See <a href="query-execution-pipeline.html">Query Execution Pipeline</a> for
                 details on how statistics influence planning.</p>
+                <h3 id="explain">EXPLAIN and EXPLAIN ANALYZE</h3>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">EXPLAIN [FOR] SELECT ...;
+                EXPLAIN [FOR] INSERT ...;
+                EXPLAIN [FOR] UPDATE ...;
+                EXPLAIN [FOR] DELETE ...;
+
+                EXPLAIN ANALYZE [FOR] SELECT ...;
+                EXPLAIN ANALYZE [FOR] INSERT ...;
+                EXPLAIN ANALYZE [FOR] UPDATE ...;
+                EXPLAIN ANALYZE [FOR] DELETE ...;
+
+                EXPLAIN ESTIMATE FOR SELECT ...; -- legacy cardinality diagnostic
+                </code></pre></div>
+                <p><code>EXPLAIN</code> binds the statement and returns the finalized physical operator structure without opening it. <code>EXPLAIN ANALYZE</code> executes the statement exactly once and adds per-operator actual rows, open loops, and inclusive elapsed time. Profiled DML performs the insert, update, or delete and uses the same auto-commit or explicit-transaction semantics as normal execution; rolling back the surrounding transaction rolls back the profiled mutation.</p>
+                <div class="callout callout-warning"><strong>Profile mode executes.</strong> Use ordinary <code>EXPLAIN</code> when execution or mutation is not intended. Cancellation and execution errors remain failures and are not converted into successful plan rowsets. Where it is safe to do so, <code>EXPLAIN ANALYZE</code> attaches a bounded, redacted partial-profile summary to the failure diagnostics without changing the failure outcome.</div>
+                <p>The physical plan is a stable structural rowset rather than formatted prose. It is available through direct execution, ADO.NET, HTTP, and gRPC using the normal SQL result path.</p>
+                <table class="doc-table">
+                <thead>
+                <tr><th>Column</th><th>Meaning</th></tr>
+                </thead>
+                <tbody>
+                <tr><td><code>node_id</code>, <code>parent_node_id</code></td><td>Deterministic parent-first tree identity.</td></tr>
+                <tr><td><code>operator_type</code></td><td>Stable physical operator name such as <code>table_scan</code>, <code>primary_key_lookup</code>, <code>hash_join</code>, or <code>sort</code>.</td></tr>
+                <tr><td><code>estimated_rows</code>, <code>estimated_cost</code></td><td><code>estimated_rows</code> is nullable when the planner has no cardinality estimate. Structural operator nodes receive a stable relative row-work <code>estimated_cost</code> for comparing plan choices; it is not a duration or a substitute for <code>elapsed_microseconds</code>. Diagnostic rows may leave both fields NULL. Estimated values are never substituted with runtime values.</td></tr>
+                <tr><td><code>actual_rows</code>, <code>actual_loops</code>, <code>elapsed_microseconds</code></td><td>Runtime values for <code>EXPLAIN ANALYZE</code>; NULL for ordinary <code>EXPLAIN</code>.</td></tr>
+                <tr><td><code>access_path</code>, <code>object_name</code>, <code>index_name</code>, <code>join_type</code>, <code>predicate</code></td><td>Chosen access, object, index, join, and redacted predicate-shape metadata.</td></tr>
+                <tr><td><code>status</code>, <code>diagnostic_code</code></td><td>Per-node execution state and stable diagnostic code when applicable.</td></tr>
+                </tbody>
+                </table>
+                <p>Plan output is bounded to 500 rows and a 256 KiB inline content budget, with text fields limited to 512 characters. The content budget limits the plan data before transport framing and serialization; it is not an exact HTTP, gRPC, or other serialized message-size guarantee. If a bound is reached, the final row is a <code>diagnostic</code> node with <code>plan_truncated</code>. Literal and prepared-parameter values are represented by placeholders in predicate metadata, including bounded partial-profile summaries attached to failures where safe.</p>
+                <p>To guarantee that ordinary <code>EXPLAIN</code> never triggers eager work, statements whose current planning path materializes data are rejected with a stable diagnostic. This currently includes <code>WITH</code>, subqueries, views, and duplicate-eliminating compound queries. Use <code>EXPLAIN ANALYZE</code> when those statements should be executed and profiled. Duplicate-preserving <code>UNION ALL</code> can be explained without execution.</p>
                 <hr/>
                 <h2 id="data-manipulation">Data Manipulation</h2>
                 <h3 id="insert">INSERT</h3>

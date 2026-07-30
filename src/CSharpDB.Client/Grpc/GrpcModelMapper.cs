@@ -16,6 +16,13 @@ public static class GrpcModelMapper
     public static IReadOnlyList<string> ToStringList(StringList values)
         => values.Values.ToList();
 
+    public static BoolList ToBoolList(IEnumerable<bool> values)
+    {
+        var message = new BoolList();
+        message.Values.Add(values);
+        return message;
+    }
+
     public static VariantArrayList ToVariantArrayList(IEnumerable<object?[]> rows)
     {
         var message = new VariantArrayList();
@@ -473,6 +480,10 @@ public static class GrpcModelMapper
         {
             IsQuery = value.IsQuery,
             ColumnNames = value.ColumnNames is null ? null : ToStringList(value.ColumnNames),
+            ColumnTypes = value.ColumnTypes is null ? null : ToStringList(value.ColumnTypes),
+            ColumnNullability = value.ColumnNullability is null
+                ? null
+                : ToBoolList(value.ColumnNullability),
             Rows = value.Rows is null ? null : ToVariantArrayList(value.Rows),
             RowsAffected = value.RowsAffected,
             Error = value.Error,
@@ -484,6 +495,8 @@ public static class GrpcModelMapper
         {
             IsQuery = value.IsQuery,
             ColumnNames = value.ColumnNames?.Values.ToArray(),
+            ColumnTypes = value.ColumnTypes?.Values.ToArray(),
+            ColumnNullability = value.ColumnNullability?.Values.ToArray(),
             Rows = value.Rows is null ? null : ToRows(value.Rows),
             RowsAffected = value.RowsAffected,
             Error = value.Error,

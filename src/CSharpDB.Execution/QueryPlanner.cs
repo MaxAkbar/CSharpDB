@@ -22,7 +22,7 @@ internal enum NumericRelationshipJoinMode
 /// Takes a parsed AST statement and produces an executable QueryResult.
 /// Handles DDL (CREATE/DROP TABLE/INDEX/VIEW) and DML (INSERT/UPDATE/DELETE/SELECT).
 /// </summary>
-public sealed class QueryPlanner
+public sealed partial class QueryPlanner
 {
     private const string InternalSavedQueriesTableName = "__saved_queries";
     private const string InternalExternalTablesTableName = "__external_tables";
@@ -858,6 +858,8 @@ public sealed class QueryPlanner
     /// cache-only path first, bypassing the async operator pipeline. Falls back to async on cache miss.
     /// </summary>
     public bool PreferSyncPointLookups { get; set; } = true;
+    private bool CanUseSyncPointLookups =>
+        PreferSyncPointLookups && !PhysicalPlanCapture.IsActive;
 
     /// <summary>
     /// Controls the supported numeric primary-key/foreign-key INNER JOIN optimization.
@@ -978,6 +980,7 @@ public sealed class QueryPlanner
             InsertStatement insert when HasTemporaryTable(insert.TableName) => true,
             DeleteStatement delete when HasTemporaryTable(delete.TableName) => true,
             UpdateStatement update when HasTemporaryTable(update.TableName) => true,
+            ExplainStatement explain => ShouldExecuteInSessionTemporaryState(explain.Target),
             _ => false,
         };
 
@@ -1044,6 +1047,7 @@ public sealed class QueryPlanner
                 ct),
             AnalyzeStatement analyze => await ExecuteAnalyzeAsync(analyze, ct),
             ExplainEstimateStatement explain => ExecuteExplainEstimate(explain),
+            ExplainStatement explain => await ExecutePhysicalExplainAsync(explain, ct),
             _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unknown statement type: {stmt.GetType().Name}"),
         };
     }
@@ -6368,7 +6372,7 @@ public sealed class QueryPlanner
 
         if (select.Where == null)
             residualPredicate = null;
-        else if (source is TableScanOperator tableScan)
+        else if (PhysicalPlanCapture.Unwrap(source) is TableScanOperator tableScan)
         {
             ApplyLogicalPredicateReadScope(simpleRef.TableName, select.Where, sourceSchema, tableScan);
             residualPredicate = select.Where;
@@ -6970,10 +6974,14 @@ public sealed class QueryPlanner
                 : null;
 
         if (remainingWhere != null && remainingWhereEvaluator == null)
-            op = new FilterOperator(
-                op,
-                GetOrCompileSpanExpression(remainingWhere, schema),
-                TryCreateCachedFilterBatchPlan(stmt, SelectBatchPlanSlot.GeneralFilterOnly, op, remainingWhere, schema));
+        {
+            op = AnnotatePhysicalPredicate(
+                new FilterOperator(
+                    op,
+                    GetOrCompileSpanExpression(remainingWhere, schema),
+                    TryCreateCachedFilterBatchPlan(stmt, SelectBatchPlanSlot.GeneralFilterOnly, op, remainingWhere, schema)),
+                remainingWhere);
+        }
 
         if (hasWindows)
         {
@@ -7042,13 +7050,18 @@ public sealed class QueryPlanner
                     // We can return the key directly once row existence is confirmed and skip row decode.
                     if (remainingWhere == null &&
                         stmt.OrderBy is not { Count: > 0 } &&
-                        op is PrimaryKeyLookupOperator pkLookup &&
+                        PhysicalPlanCapture.Unwrap(op) is PrimaryKeyLookupOperator pkLookup &&
                         IsPrimaryKeyOnlyProjection(columnIndices, schema.PrimaryKeyColumnIndex))
                     {
-                        op = new PrimaryKeyProjectionLookupOperator(pkLookup.TableTree, pkLookup.SeekKey, outputCols);
+                        op = AnnotatePhysicalPredicate(
+                            new PrimaryKeyProjectionLookupOperator(
+                                pkLookup.TableTree,
+                                pkLookup.SeekKey,
+                                outputCols),
+                            stmt.Where);
                     }
                     else if (remainingWhere == null &&
-                             op is IndexOrderedScanOperator orderedScan &&
+                             PhysicalPlanCapture.Unwrap(op) is IndexOrderedScanOperator orderedScan &&
                              TryBuildCoveredOrderedIndexProjectionOperator(
                                  orderedScan,
                                  schema,
@@ -7059,7 +7072,7 @@ public sealed class QueryPlanner
                         op = coveredOrderedProjection;
                     }
                     else if (remainingWhere == null &&
-                             op is IndexScanOperator hashedLookup &&
+                             PhysicalPlanCapture.Unwrap(op) is IndexScanOperator hashedLookup &&
                              TryBuildCoveredHashedIndexProjectionOperator(
                                  hashedLookup,
                                  schema,
@@ -7082,9 +7095,12 @@ public sealed class QueryPlanner
                             : null;
 
                         if (remainingWhereEvaluator != null)
+                        {
                             op = batchPlan != null
                                 ? new FilterProjectionOperator(op, remainingWhereEvaluator, columnIndices, outputCols, batchPlan, useSpanEvaluator: true)
                                 : new FilterOperator(op, remainingWhereEvaluator);
+                            op = AnnotatePhysicalPredicate(op, remainingWhere);
+                        }
 
                         op = batchPlan != null
                             ? op
@@ -7764,7 +7780,7 @@ public sealed class QueryPlanner
         int[] columnIndices,
         ColumnDefinition[] outputCols)
     {
-        if (op is IProjectionPushdownTarget pushdownTarget)
+        if (PhysicalPlanCapture.Unwrap(op) is IProjectionPushdownTarget pushdownTarget)
             return pushdownTarget.TrySetOutputProjection(columnIndices, outputCols);
 
         return false;
@@ -8192,7 +8208,7 @@ public sealed class QueryPlanner
                 residualLiteral = lookup.ResidualPredicateLiteral;
             }
 
-            if (lookupOp is not IPreDecodeFilterSupport preDecodeFilterTarget)
+            if (PhysicalPlanCapture.Unwrap(lookupOp) is not IPreDecodeFilterSupport preDecodeFilterTarget)
                 return false;
 
             if (!CanPushDownPredicate(schema, residualColumnIndex, residualLiteral))
@@ -8208,7 +8224,7 @@ public sealed class QueryPlanner
         {
             if (isPrimaryKeyLookup &&
                 !hasResidual &&
-                PreferSyncPointLookups &&
+                CanUseSyncPointLookups &&
                 tableTree.TryFindCachedMemory(lookupValue, out var payload))
             {
                 var row = payload is { } payloadMemory ? GetReadSerializer(schema).Decode(payloadMemory.Span) : null;
@@ -8231,7 +8247,7 @@ public sealed class QueryPlanner
 
         if (isPrimaryKeyLookup && !hasResidual && IsPrimaryKeyOnlyProjection(projectionColumnIndices, pkIdx))
         {
-            if (PreferSyncPointLookups && tableTree.TryFindCachedMemory(lookupValue, out var payload))
+            if (CanUseSyncPointLookups && tableTree.TryFindCachedMemory(lookupValue, out var payload))
             {
                 DbValue[]? row = null;
                 if (payload != null)
@@ -8634,7 +8650,13 @@ public sealed class QueryPlanner
         if (pkIdx < 0 || pkIdx >= querySchema.Columns.Count || querySchema.Columns[pkIdx].Type != DbType.Integer)
             return false;
 
-        if (!TryExtractPrimaryKeyLookupWithResidual(stmt.Where, querySchema, pkIdx, out long lookupValue, out var residualWhere))
+        if (!TryExtractPrimaryKeyLookupWithResidual(
+                stmt.Where,
+                querySchema,
+                pkIdx,
+                out long lookupValue,
+                out var lookupPredicate,
+                out var residualWhere))
             return false;
 
         bool hasIndex;
@@ -8657,18 +8679,22 @@ public sealed class QueryPlanner
         if (!hasIndex)
             return false;
 
-        IOperator op = new ExternalTablePrimaryKeyLookupOperator(
-            resolvedPath,
-            archiveSchema.Columns.ToArray(),
-            pkIdx,
-            lookupValue);
+        IOperator op = AnnotatePhysicalPredicate(
+            new ExternalTablePrimaryKeyLookupOperator(
+                resolvedPath,
+                archiveSchema.Columns.ToArray(),
+                pkIdx,
+                lookupValue),
+            lookupPredicate);
 
         if (residualWhere != null)
         {
-            op = new FilterOperator(
-                op,
-                GetOrCompileSpanExpression(residualWhere, querySchema),
-                batchPlan: null);
+            op = AnnotatePhysicalPredicate(
+                new FilterOperator(
+                    op,
+                    GetOrCompileSpanExpression(residualWhere, querySchema),
+                    batchPlan: null),
+                residualWhere);
         }
 
         if (stmt.Columns.Count == 1 && stmt.Columns[0].IsStar)
@@ -8719,14 +8745,20 @@ public sealed class QueryPlanner
         if (pkIdx < 0 || pkIdx >= schema.Columns.Count || schema.Columns[pkIdx].Type != DbType.Integer)
             return false;
 
-        if (!TryExtractPrimaryKeyLookupWithResidual(stmt.Where, schema, pkIdx, out long lookupValue, out var residualWhere))
+        if (!TryExtractPrimaryKeyLookupWithResidual(
+                stmt.Where,
+                schema,
+                pkIdx,
+                out long lookupValue,
+                out var lookupPredicate,
+                out var residualWhere))
             return false;
 
         var tableTree = _catalog.GetTableTree(simpleRef.TableName, _pager);
         bool selectStar = IsLoneStarProjection(stmt);
 
         // Sync fast path: try cache-only lookup to bypass the async operator pipeline
-        if (PreferSyncPointLookups && residualWhere == null && selectStar)
+        if (CanUseSyncPointLookups && residualWhere == null && selectStar)
         {
             if (tableTree.TryFindCachedMemory(lookupValue, out var payload))
             {
@@ -8741,14 +8773,24 @@ public sealed class QueryPlanner
         // SELECT * — just PrimaryKeyLookupOperator
         if (selectStar)
         {
-            IOperator op = new PrimaryKeyLookupOperator(tableTree, schema, lookupValue, GetReadSerializer(schema));
+            IOperator op = AnnotatePhysicalPredicate(
+                new PrimaryKeyLookupOperator(
+                    tableTree,
+                    schema,
+                    lookupValue,
+                    GetReadSerializer(schema)),
+                lookupPredicate);
             if (residualWhere != null && TryPushDownSimplePreDecodeFilter(op, residualWhere, schema, out var pushedWhere))
                 residualWhere = pushedWhere;
             if (residualWhere != null)
-                op = new FilterOperator(
-                    op,
-                    GetOrCompileSpanExpression(residualWhere, schema),
-                    TryCreateFilterBatchPlan(op, residualWhere, schema));
+            {
+                op = AnnotatePhysicalPredicate(
+                    new FilterOperator(
+                        op,
+                        GetOrCompileSpanExpression(residualWhere, schema),
+                        TryCreateFilterBatchPlan(op, residualWhere, schema)),
+                    residualWhere);
+            }
             result = CreateQueryResult(op);
             return true;
         }
@@ -8760,7 +8802,7 @@ public sealed class QueryPlanner
                 ? GetSingleColumnOutputSchema(schema, pkIdx)
                 : BuildRepeatedColumnOutputSchema(schema.Columns[pkIdx], projectedPkCount);
 
-            if (PreferSyncPointLookups && tableTree.TryFindCachedMemory(lookupValue, out var payload))
+            if (CanUseSyncPointLookups && tableTree.TryFindCachedMemory(lookupValue, out var payload))
             {
                 DbValue[]? row = null;
                 if (payload != null)
@@ -8781,7 +8823,12 @@ public sealed class QueryPlanner
                 return true;
             }
 
-            IOperator projectedOp = new PrimaryKeyProjectionLookupOperator(tableTree, lookupValue, pkOutputCols);
+            IOperator projectedOp = AnnotatePhysicalPredicate(
+                new PrimaryKeyProjectionLookupOperator(
+                    tableTree,
+                    lookupValue,
+                    pkOutputCols),
+                lookupPredicate);
             result = new QueryResult(projectedOp);
             return true;
         }
@@ -8792,7 +8839,7 @@ public sealed class QueryPlanner
             // PK-only projection with no residual filter: skip row decode entirely.
             if (residualWhere == null && IsPrimaryKeyOnlyProjection(columnIndices, pkIdx))
             {
-                if (PreferSyncPointLookups && tableTree.TryFindCachedMemory(lookupValue, out var payload))
+                if (CanUseSyncPointLookups && tableTree.TryFindCachedMemory(lookupValue, out var payload))
                 {
                     DbValue[]? row = null;
                     if (payload != null)
@@ -8807,7 +8854,12 @@ public sealed class QueryPlanner
                     return true;
                 }
 
-                IOperator op = new PrimaryKeyProjectionLookupOperator(tableTree, lookupValue, outputCols);
+                IOperator op = AnnotatePhysicalPredicate(
+                    new PrimaryKeyProjectionLookupOperator(
+                        tableTree,
+                        lookupValue,
+                        outputCols),
+                    lookupPredicate);
                 result = new QueryResult(op);
                 return true;
             }
@@ -8831,13 +8883,18 @@ public sealed class QueryPlanner
             }
             if (maxCol >= 0)
                 pkOp.SetDecodedColumnUpperBound(maxCol);
+            _ = AnnotatePhysicalPredicate(pkOp, lookupPredicate);
 
             IOperator projOp = pkOp;
             if (remainingResidual != null)
-                projOp = new FilterOperator(
-                    projOp,
-                    GetOrCompileSpanExpression(remainingResidual, schema),
-                    TryCreateFilterBatchPlan(projOp, remainingResidual, schema));
+            {
+                projOp = AnnotatePhysicalPredicate(
+                    new FilterOperator(
+                        projOp,
+                        GetOrCompileSpanExpression(remainingResidual, schema),
+                        TryCreateFilterBatchPlan(projOp, remainingResidual, schema)),
+                    remainingResidual);
+            }
 
             projOp = new ProjectionOperator(projOp, columnIndices, outputCols, schema);
             result = new QueryResult(projOp);
@@ -8853,9 +8910,11 @@ public sealed class QueryPlanner
         TableSchema schema,
         int pkIndex,
         out long lookupValue,
+        out Expression? lookupPredicate,
         out Expression? residualWhere)
     {
         lookupValue = 0;
+        lookupPredicate = null;
         residualWhere = null;
 
         if (TryExtractIntegerEqualityLookupTerm(where, schema, out int columnIndex, out long singleLookup))
@@ -8864,6 +8923,7 @@ public sealed class QueryPlanner
                 return false;
 
             lookupValue = singleLookup;
+            lookupPredicate = where;
             return true;
         }
 
@@ -8887,6 +8947,7 @@ public sealed class QueryPlanner
         if (selectedConjunctIndex < 0)
             return false;
 
+        lookupPredicate = conjuncts[selectedConjunctIndex];
         if (conjuncts.Count == 1)
             return true;
 
@@ -8952,6 +9013,9 @@ public sealed class QueryPlanner
 
         if (TryGetExternalTableRegistration(simpleRef.TableName, out var externalRegistration))
         {
+            if (PhysicalPlanCapture.IsActive)
+                return false;
+
             result = QueryResult.FromSyncScalar(DbValue.FromInteger(externalRegistration.RowCount), outputSchema);
             return true;
         }
@@ -8964,6 +9028,9 @@ public sealed class QueryPlanner
     private bool TryBuildSimpleSystemCatalogCountStarQuery(SelectStatement stmt, out QueryResult result)
     {
         result = null!;
+
+        if (PhysicalPlanCapture.IsActive)
+            return false;
 
         if (stmt.From is not SimpleTableRef simpleRef)
             return false;
@@ -9359,16 +9426,16 @@ public sealed class QueryPlanner
             {
                 var tableTree = _catalog.GetTableTree(simpleRef.TableName, _pager);
                 var serializer = GetReadSerializer(schema);
-                result = indexedLookupPlan.IsPrimaryKey
-                    ? new QueryResult(new ScalarAggregateLookupOperator(
+                IOperator aggregateLookup = indexedLookupPlan.IsPrimaryKey
+                    ? new ScalarAggregateLookupOperator(
                         tableTree,
                         indexedLookupPlan.LookupValue,
                         columnIndex,
                         func.FunctionName,
                         outputSchema,
                         isDistinct: func.IsDistinct,
-                        recordSerializer: serializer))
-                    : new QueryResult(new ScalarAggregateLookupOperator(
+                        recordSerializer: serializer)
+                    : new ScalarAggregateLookupOperator(
                         _catalog.GetIndexStore(indexedLookupPlan.Index!.IndexName, _pager),
                         tableTree,
                         indexedLookupPlan.LookupValue,
@@ -9376,7 +9443,11 @@ public sealed class QueryPlanner
                         func.FunctionName,
                         outputSchema,
                         isDistinct: func.IsDistinct,
-                        recordSerializer: serializer));
+                        recordSerializer: serializer);
+                result = new QueryResult(
+                    AnnotatePhysicalPredicate(
+                        aggregateLookup,
+                        indexedLookupPlan.Predicate));
                 return true;
             }
         }
@@ -9390,7 +9461,8 @@ public sealed class QueryPlanner
                 ?? TryBuildOrderedTextIndexRangeScan(simpleRef.TableName, stmt.Where, schema, out indexedRemainingWhere);
         }
 
-        if (indexedSource is IEncodedPayloadSource &&
+        if (indexedSource is not null &&
+            PhysicalPlanCapture.Unwrap(indexedSource) is IEncodedPayloadSource &&
             ShouldUseIndexedPayloadAggregateFastPath(simpleRef.TableName, schema, indexedSource))
         {
             TrySetDecodedColumnIndices(indexedSource, Array.Empty<int>());
@@ -9500,6 +9572,7 @@ public sealed class QueryPlanner
 
     private bool ShouldUseIndexedPayloadAggregateFastPath(string tableName, TableSchema schema, IOperator source)
     {
+        source = PhysicalPlanCapture.Unwrap(source);
         if (source is not IndexOrderedScanOperator)
             return true;
 
@@ -9687,7 +9760,8 @@ public sealed class QueryPlanner
 
     private bool TryBuildTableRowCountQuery(string tableName, ColumnDefinition[] outputSchema, out QueryResult result)
     {
-        if (TryGetExactTableRowCount(tableName, out long rowCount))
+        if (!PhysicalPlanCapture.IsActive &&
+            TryGetExactTableRowCount(tableName, out long rowCount))
         {
             result = QueryResult.FromSyncLookup([DbValue.FromInteger(rowCount)], outputSchema);
             return true;
@@ -10631,6 +10705,7 @@ public sealed class QueryPlanner
         if (indexedSource != null)
         {
             Interlocked.Increment(ref _indexedMutationTargetCollectionCount);
+            indexedSource = PhysicalPlanCapture.WrapRootIfActive(indexedSource);
 
             int? capacityHint = indexedSource is IEstimatedRowCountProvider estimated &&
                                 estimated.EstimatedRowCount is int estimatedRowCount
@@ -10675,8 +10750,9 @@ public sealed class QueryPlanner
         var scannedRows = scanCapacityHint.HasValue
             ? new List<(long rowId, DbValue[] row)>(scanCapacityHint.Value)
             : new List<(long rowId, DbValue[] row)>();
-        var scan = new TableScanOperator(tree, schema, GetReadSerializer(schema), scanCapacityHint);
-        ApplyLogicalPredicateReadScope(tableName, where, schema, scan);
+        var tableScan = new TableScanOperator(tree, schema, GetReadSerializer(schema), scanCapacityHint);
+        ApplyLogicalPredicateReadScope(tableName, where, schema, tableScan);
+        IOperator scan = PhysicalPlanCapture.WrapRootIfActive(tableScan);
         await scan.OpenAsync(ct);
         try
         {
@@ -10696,7 +10772,7 @@ public sealed class QueryPlanner
                         continue;
                 }
 
-                scannedRows.Add((scan.CurrentRowId, (DbValue[])scan.Current.Clone()));
+                scannedRows.Add((tableScan.CurrentRowId, (DbValue[])scan.Current.Clone()));
             }
         }
         finally
@@ -10709,6 +10785,7 @@ public sealed class QueryPlanner
 
     private static bool TryGetCurrentRowId(IOperator source, out long rowId)
     {
+        source = PhysicalPlanCapture.Unwrap(source);
         switch (source)
         {
             case TableScanOperator tableScan:
@@ -10745,7 +10822,8 @@ public sealed class QueryPlanner
         var rowsToDelete = deleteCapacityHint.HasValue
             ? new List<(long rowId, DbValue[] row)>(deleteCapacityHint.Value)
             : new List<(long rowId, DbValue[] row)>();
-        var scan = new TableScanOperator(tree, schema, GetReadSerializer(schema), deleteCapacityHint);
+        var tableScan = new TableScanOperator(tree, schema, GetReadSerializer(schema), deleteCapacityHint);
+        IOperator scan = PhysicalPlanCapture.WrapRootIfActive(tableScan);
         await scan.OpenAsync(ct);
         try
         {
@@ -10765,7 +10843,7 @@ public sealed class QueryPlanner
                         continue;
                 }
 
-                rowsToDelete.Add((scan.CurrentRowId, (DbValue[])scan.Current.Clone()));
+                rowsToDelete.Add((tableScan.CurrentRowId, (DbValue[])scan.Current.Clone()));
             }
         }
         finally
@@ -10808,7 +10886,8 @@ public sealed class QueryPlanner
         var updates = updateCapacityHint.HasValue
             ? new List<(long rowId, DbValue[] oldRow, DbValue[] newRow)>(updateCapacityHint.Value)
             : new List<(long rowId, DbValue[] oldRow, DbValue[] newRow)>();
-        var scan = new TableScanOperator(tree, schema, GetReadSerializer(schema), updateCapacityHint);
+        var tableScan = new TableScanOperator(tree, schema, GetReadSerializer(schema), updateCapacityHint);
+        IOperator scan = PhysicalPlanCapture.WrapRootIfActive(tableScan);
         await scan.OpenAsync(ct);
         try
         {
@@ -10846,11 +10925,11 @@ public sealed class QueryPlanner
                 }
 
                 if (hasIntegerPrimaryKey && newRow[pkIdx].IsNull)
-                    newRow[pkIdx] = DbValue.FromInteger(scan.CurrentRowId);
+                    newRow[pkIdx] = DbValue.FromInteger(tableScan.CurrentRowId);
                 if (hasIntegerPrimaryKey && newRow[pkIdx].Type != DbType.Integer)
                     throw new CSharpDbException(ErrorCode.TypeMismatch, "INTEGER PRIMARY KEY must remain an integer value.");
                 RowConstraintValidator.ValidateRow(schema, newRow);
-                updates.Add((scan.CurrentRowId, oldRow, newRow));
+                updates.Add((tableScan.CurrentRowId, oldRow, newRow));
             }
         }
         finally
@@ -11867,10 +11946,12 @@ public sealed class QueryPlanner
                     TryCollectLocalJoinLeafPredicates(outerWhere, simple, qualifiedTempSchema, out var tempLocalConjuncts) &&
                     CombineConjuncts(tempLocalConjuncts) is { } tempLocalPredicate)
                 {
-                    tempOp = new FilterOperator(
-                        tempOp,
-                        GetOrCompileSpanExpression(tempLocalPredicate, qualifiedTempSchema),
-                        TryCreateFilterBatchPlan(tempOp, tempLocalPredicate, qualifiedTempSchema));
+                    tempOp = AnnotatePhysicalPredicate(
+                        new FilterOperator(
+                            tempOp,
+                            GetOrCompileSpanExpression(tempLocalPredicate, qualifiedTempSchema),
+                            TryCreateFilterBatchPlan(tempOp, tempLocalPredicate, qualifiedTempSchema)),
+                        tempLocalPredicate);
                 }
 
                 return (tempOp, qualifiedTempSchema);
@@ -11930,10 +12011,14 @@ public sealed class QueryPlanner
                     }
 
                     if (viewStmt.Where != null)
-                        viewOp = new FilterOperator(
-                            viewOp,
-                            GetOrCompileSpanExpression(viewStmt.Where, viewSchema),
-                            TryCreateFilterBatchPlan(viewOp, viewStmt.Where, viewSchema));
+                    {
+                        viewOp = AnnotatePhysicalPredicate(
+                            new FilterOperator(
+                                viewOp,
+                                GetOrCompileSpanExpression(viewStmt.Where, viewSchema),
+                                TryCreateFilterBatchPlan(viewOp, viewStmt.Where, viewSchema)),
+                            viewStmt.Where);
+                    }
 
                     if (hasAggregates)
                     {
@@ -12083,10 +12168,12 @@ public sealed class QueryPlanner
 
                 if (remainingLocalPredicate != null)
                 {
-                    op = new FilterOperator(
-                        op,
-                        GetOrCompileSpanExpression(remainingLocalPredicate, qualifiedTableSchema),
-                        TryCreateFilterBatchPlan(op, remainingLocalPredicate, qualifiedTableSchema));
+                    op = AnnotatePhysicalPredicate(
+                        new FilterOperator(
+                            op,
+                            GetOrCompileSpanExpression(remainingLocalPredicate, qualifiedTableSchema),
+                            TryCreateFilterBatchPlan(op, remainingLocalPredicate, qualifiedTableSchema)),
+                        remainingLocalPredicate);
                 }
             }
 
@@ -12201,6 +12288,10 @@ public sealed class QueryPlanner
                         _functions);
                 }
 
+                swappedJoinOp = AnnotatePhysicalPredicate(
+                    swappedJoinOp,
+                    join.Condition);
+
                 // Swapped execution produces [original right | original left];
                 // reorder to SQL-visible [original left | original right].
                 var projectionMap = BuildSwappedJoinProjectionMap(
@@ -12225,7 +12316,11 @@ public sealed class QueryPlanner
                 outerWhere,
                 out var externalIndexNestedJoinOp))
             {
-                return (externalIndexNestedJoinOp!, compositeSchema);
+                return (
+                    AnnotatePhysicalPredicate(
+                        externalIndexNestedJoinOp!,
+                        join.Condition),
+                    compositeSchema);
             }
 
             Func<NumericRelationshipIndexJoinOperator>? deferredNumericRelationshipJoinFactory = null;
@@ -12244,7 +12339,13 @@ public sealed class QueryPlanner
                 out var numericRelationshipCoveredColumns))
             {
                 if (RelationshipJoinMode == NumericRelationshipJoinMode.Force)
-                    return (numericRelationshipJoinFactory!(), compositeSchema);
+                {
+                    return (
+                        AnnotatePhysicalPredicate(
+                            numericRelationshipJoinFactory!(),
+                            join.Condition),
+                        compositeSchema);
+                }
 
                 deferredNumericRelationshipJoinFactory = numericRelationshipJoinFactory;
                 deferredNumericRelationshipCoveredColumns = numericRelationshipCoveredColumns;
@@ -12261,11 +12362,16 @@ public sealed class QueryPlanner
                 adaptiveLease,
                 out var indexNestedJoinOp))
             {
+                IOperator annotatedJoin = AnnotatePhysicalPredicate(
+                    indexNestedJoinOp!,
+                    join.Condition);
                 return (
-                    WrapProjectionGatedNumericRelationshipJoin(
-                        indexNestedJoinOp!,
-                        deferredNumericRelationshipJoinFactory,
-                        deferredNumericRelationshipCoveredColumns),
+                    AnnotatePhysicalPredicate(
+                        WrapProjectionGatedNumericRelationshipJoin(
+                            annotatedJoin,
+                            deferredNumericRelationshipJoinFactory,
+                            deferredNumericRelationshipCoveredColumns),
+                        join.Condition),
                     compositeSchema);
             }
 
@@ -12279,11 +12385,16 @@ public sealed class QueryPlanner
                 adaptiveLease,
                 out var hashJoinOp))
             {
+                IOperator annotatedJoin = AnnotatePhysicalPredicate(
+                    hashJoinOp!,
+                    join.Condition);
                 return (
-                    WrapProjectionGatedNumericRelationshipJoin(
-                        hashJoinOp!,
-                        deferredNumericRelationshipJoinFactory,
-                        deferredNumericRelationshipCoveredColumns),
+                    AnnotatePhysicalPredicate(
+                        WrapProjectionGatedNumericRelationshipJoin(
+                            annotatedJoin,
+                            deferredNumericRelationshipJoinFactory,
+                            deferredNumericRelationshipCoveredColumns),
+                        join.Condition),
                     compositeSchema);
             }
 
@@ -12293,12 +12404,17 @@ public sealed class QueryPlanner
                 leftOp, rightOp, join.JoinType, join.Condition,
                 compositeSchema, leftSchema.Columns.Count, rightSchema.Columns.Count,
                 estimatedOutputRowCount, rightRowCapacityHint, _functions);
+            IOperator annotatedNestedLoopJoin = AnnotatePhysicalPredicate(
+                joinOp,
+                join.Condition);
 
             return (
-                WrapProjectionGatedNumericRelationshipJoin(
-                    joinOp,
-                    deferredNumericRelationshipJoinFactory,
-                    deferredNumericRelationshipCoveredColumns),
+                AnnotatePhysicalPredicate(
+                    WrapProjectionGatedNumericRelationshipJoin(
+                        annotatedNestedLoopJoin,
+                        deferredNumericRelationshipJoinFactory,
+                        deferredNumericRelationshipCoveredColumns),
+                    join.Condition),
                 compositeSchema);
         }
 
@@ -15016,6 +15132,11 @@ public sealed class QueryPlanner
         if (hasCompositeCandidate &&
             (!hasSelectedCandidate || (compositeIndex!.IsUnique ? 1 : 2) < selectedCandidate.Rank))
         {
+            Expression? lookupPredicate = BuildLookupKeyTerms(
+                conjuncts,
+                schema,
+                compositeColumnIndices!,
+                compositeKeyComponents!);
             remaining = BuildResidualTermsExcludingLookupKeyTerms(
                 conjuncts,
                 schema,
@@ -15027,7 +15148,8 @@ public sealed class QueryPlanner
                 LookupValue: compositeLookupKey,
                 KeyColumnIndices: compositeColumnIndices,
                 KeyComponents: compositeKeyComponents,
-                EstimatedRows: compositeIndex!.IsUnique ? 1 : null);
+                EstimatedRows: compositeIndex!.IsUnique ? 1 : null,
+                Predicate: lookupPredicate);
             return true;
         }
 
@@ -15041,7 +15163,8 @@ public sealed class QueryPlanner
             selectedCandidate.KeyComponents,
             selectedCandidate.EstimatedRows.HasValue
                 ? ToCapacityHint(selectedCandidate.EstimatedRows.Value)
-                : null);
+                : null,
+            conjuncts[selectedConjunctIndex]);
 
         if (selectedCandidate.RequiresResidualPredicate)
         {
@@ -15085,7 +15208,8 @@ public sealed class QueryPlanner
         long LookupValue,
         int[]? KeyColumnIndices,
         DbValue[]? KeyComponents,
-        int? EstimatedRows);
+        int? EstimatedRows,
+        Expression? Predicate);
 
     private bool TryPickLookupCandidate(
         string tableName,
@@ -15396,15 +15520,17 @@ public sealed class QueryPlanner
         TableSchema schema,
         LookupPlan lookupPlan)
     {
-        return BuildLookupOperator(
-            tableName,
-            schema,
-            lookupPlan.IsPrimaryKey,
-            lookupPlan.Index,
-            lookupPlan.LookupValue,
-            lookupPlan.KeyColumnIndices,
-            lookupPlan.KeyComponents,
-            lookupPlan.EstimatedRows);
+        return AnnotatePhysicalPredicate(
+            BuildLookupOperator(
+                tableName,
+                schema,
+                lookupPlan.IsPrimaryKey,
+                lookupPlan.Index,
+                lookupPlan.LookupValue,
+                lookupPlan.KeyColumnIndices,
+                lookupPlan.KeyComponents,
+                lookupPlan.EstimatedRows),
+            lookupPlan.Predicate);
     }
 
     private IOperator BuildLookupOperator(
@@ -15701,7 +15827,7 @@ public sealed class QueryPlanner
         if (stmt.OrderBy is not { Count: 1 })
             return false;
 
-        if (currentSource is not TableScanOperator)
+        if (PhysicalPlanCapture.Unwrap(currentSource) is not TableScanOperator)
             return false;
 
         if (_cteData != null && _cteData.ContainsKey(tableRef.TableName))
@@ -15737,7 +15863,7 @@ public sealed class QueryPlanner
         int pkIdx = schema.PrimaryKeyColumnIndex;
         if (orderColumn.Type == DbType.Integer &&
             pkIdx == orderColumnIndex &&
-            currentSource is TableScanOperator)
+            PhysicalPlanCapture.Unwrap(currentSource) is TableScanOperator)
         {
             return true;
         }
@@ -15867,13 +15993,21 @@ public sealed class QueryPlanner
         IOperator op = indexOp;
         List<PushdownPredicateSpec>? pushedPredicates = null;
         if (remainingWhere != null &&
-            TryExtractPushdownPredicates(remainingWhere, schema, out var extractedPredicates, out var residualWhere))
+            TryExtractPushdownPredicates(
+                remainingWhere,
+                schema,
+                out var extractedPredicates,
+                out var residualWhere,
+                out var pushedPredicate))
         {
             pushedPredicates = extractedPredicates;
             remainingWhere = RetainPushdownNullResidual(remainingWhere, residualWhere, schema);
 
-            if (op is IPreDecodeFilterSupport preDecodeFilterTarget)
+            if (PhysicalPlanCapture.Unwrap(op) is IPreDecodeFilterSupport preDecodeFilterTarget)
+            {
                 ApplyPushdownPredicates(preDecodeFilterTarget, pushedPredicates);
+                _ = AnnotatePhysicalPredicate(op, pushedPredicate);
+            }
         }
 
         if (IsLoneStarProjection(stmt))
@@ -15888,10 +16022,14 @@ public sealed class QueryPlanner
             }
 
             if (remainingWhere != null)
-                op = new FilterOperator(
-                    op,
-                    GetOrCompileSpanExpression(remainingWhere, schema),
-                    TryCreateCachedFilterBatchPlan(stmt, SelectBatchPlanSlot.GeneralFilterOnly, op, remainingWhere, schema));
+            {
+                op = AnnotatePhysicalPredicate(
+                    new FilterOperator(
+                        op,
+                        GetOrCompileSpanExpression(remainingWhere, schema),
+                        TryCreateCachedFilterBatchPlan(stmt, SelectBatchPlanSlot.GeneralFilterOnly, op, remainingWhere, schema)),
+                    remainingWhere);
+            }
             result = CreateQueryResult(ApplyOffsetAndLimit(op, stmt.Offset, stmt.Limit));
             return true;
         }
@@ -15908,7 +16046,7 @@ public sealed class QueryPlanner
             }
 
             if (remainingWhere == null &&
-                op is IndexOrderedScanOperator orderedScan &&
+                PhysicalPlanCapture.Unwrap(op) is IndexOrderedScanOperator orderedScan &&
                 TryBuildCoveredOrderedIndexProjectionOperator(
                     orderedScan,
                     schema,
@@ -15921,7 +16059,7 @@ public sealed class QueryPlanner
             }
 
             if (remainingWhere == null &&
-                op is IndexScanOperator hashedLookup &&
+                PhysicalPlanCapture.Unwrap(op) is IndexScanOperator hashedLookup &&
                 TryBuildCoveredHashedIndexProjectionOperator(
                     hashedLookup,
                     schema,
@@ -15933,7 +16071,7 @@ public sealed class QueryPlanner
                 return true;
             }
 
-            if (indexOp is IEncodedPayloadSource &&
+            if (PhysicalPlanCapture.Unwrap(indexOp) is IEncodedPayloadSource &&
                 TryGetProjectionDecodeColumnIndices(stmt, schema, remainingWhere, includeOrderBy: false, out var decodeColumnIndices))
             {
                 var compactSchema = CreateCompactProjectionSchema(schema, decodeColumnIndices);
@@ -15956,7 +16094,10 @@ public sealed class QueryPlanner
                         compactProjectionIndices,
                         compactOutputCols);
                     if (remainingWhere != null)
+                    {
                         compactOp.SetPredicateEvaluator(GetOrCompileExpression(remainingWhere, compactSchema));
+                        _ = AnnotatePhysicalPredicate(compactOp, remainingWhere);
+                    }
                     if (batchPlan != null)
                     {
                         compactOp.SetBatchPlan(batchPlan);
@@ -15982,17 +16123,21 @@ public sealed class QueryPlanner
                 TrySetDecodedColumnUpperBound(op, maxCol);
 
             if (remainingWhere != null)
-                op = new FilterOperator(
-                    op,
-                    GetOrCompileSpanExpression(remainingWhere, schema),
-                    TryCreateCachedFilterBatchPlan(stmt, SelectBatchPlanSlot.GeneralFilterOnly, op, remainingWhere, schema));
+            {
+                op = AnnotatePhysicalPredicate(
+                    new FilterOperator(
+                        op,
+                        GetOrCompileSpanExpression(remainingWhere, schema),
+                        TryCreateCachedFilterBatchPlan(stmt, SelectBatchPlanSlot.GeneralFilterOnly, op, remainingWhere, schema)),
+                    remainingWhere);
+            }
 
             op = new ProjectionOperator(op, columnIndices, outputCols, schema);
             result = CreateQueryResult(ApplyOffsetAndLimit(op, stmt.Offset, stmt.Limit));
             return true;
         }
 
-        if (indexOp is IEncodedPayloadSource &&
+        if (PhysicalPlanCapture.Unwrap(indexOp) is IEncodedPayloadSource &&
             TryGetProjectionDecodeColumnIndices(stmt, schema, remainingWhere, includeOrderBy: false, out var expressionDecodeColumnIndices))
         {
             var compactSchema = CreateCompactProjectionSchema(schema, expressionDecodeColumnIndices);
@@ -16008,7 +16153,10 @@ public sealed class QueryPlanner
                 expressionOutputCols,
                 GetOrCompileExpressions(expressions, compactSchema));
             if (remainingWhere != null)
+            {
                 compactExpressionOp.SetPredicateEvaluator(GetOrCompileExpression(remainingWhere, compactSchema));
+                _ = AnnotatePhysicalPredicate(compactExpressionOp, remainingWhere);
+            }
             var compactBatchPlan = TryCreateCachedCompactBatchPlan(
                 stmt,
                 SelectBatchPlanSlot.GeneralExpressionProjection,
@@ -16039,7 +16187,7 @@ public sealed class QueryPlanner
     {
         result = null!;
 
-        if (!PreferSyncPointLookups ||
+        if (!CanUseSyncPointLookups ||
             stmt.Where == null ||
             !CanUseSyncIndexedLookupShortcut(stmt))
         {
@@ -16107,7 +16255,7 @@ public sealed class QueryPlanner
     {
         result = null!;
 
-        if (!PreferSyncPointLookups)
+        if (!CanUseSyncPointLookups)
         {
             return false;
         }
@@ -16462,7 +16610,12 @@ public sealed class QueryPlanner
             if (hasRowWindow)
             {
                 if (remainingWhere != null &&
-                    TryExtractPushdownPredicates(remainingWhere, schema, out var starExtractedPredicates, out var starResidualWhere))
+                    TryExtractPushdownPredicates(
+                        remainingWhere,
+                        schema,
+                        out var starExtractedPredicates,
+                        out var starResidualWhere,
+                        out _))
                 {
                     remainingWhere = RetainPushdownNullResidual(remainingWhere, starResidualWhere, schema);
                     var compactStarOp = BuildCompactSelectStarScanOperator(
@@ -16508,10 +16661,14 @@ public sealed class QueryPlanner
             }
 
             if (remainingWhere != null)
-                op = new FilterOperator(
-                    op,
-                    GetOrCompileSpanExpression(remainingWhere, schema),
-                    TryCreateCachedFilterBatchPlan(stmt, SelectBatchPlanSlot.FastSimpleFilterOnly, op, remainingWhere, schema));
+            {
+                op = AnnotatePhysicalPredicate(
+                    new FilterOperator(
+                        op,
+                        GetOrCompileSpanExpression(remainingWhere, schema),
+                        TryCreateCachedFilterBatchPlan(stmt, SelectBatchPlanSlot.FastSimpleFilterOnly, op, remainingWhere, schema)),
+                    remainingWhere);
+            }
 
             op = ApplyOffsetAndLimit(op, stmt.Offset, stmt.Limit);
             result = CreateQueryResult(op);
@@ -16520,7 +16677,12 @@ public sealed class QueryPlanner
 
         List<PushdownPredicateSpec>? pushedPredicates = null;
         if (remainingWhere != null &&
-            TryExtractPushdownPredicates(remainingWhere, schema, out var extractedPredicates, out var residualWhere))
+            TryExtractPushdownPredicates(
+                remainingWhere,
+                schema,
+                out var extractedPredicates,
+                out var residualWhere,
+                out _))
         {
             pushedPredicates = extractedPredicates;
             remainingWhere = RetainPushdownNullResidual(remainingWhere, residualWhere, schema);
@@ -16556,12 +16718,15 @@ public sealed class QueryPlanner
                 ApplyPushdownPredicates(compactOp, pushedPredicates);
 
             if (remainingWhere != null)
+            {
                 compactOp.SetPredicateEvaluator(GetOrCompileExpression(remainingWhere, compactSchema));
+            }
             if (batchPlan != null)
             {
                 compactOp.SetBatchPlan(batchPlan);
                 ApplyBatchPlanPreDecodeFilters(compactOp, batchPlan);
             }
+            _ = AnnotatePhysicalPredicate(compactOp, stmt.Where);
 
             result = CreateQueryResult(ApplyOffsetAndLimit(compactOp, stmt.Offset, stmt.Limit));
             return true;
@@ -16585,7 +16750,9 @@ public sealed class QueryPlanner
             ApplyPushdownPredicates(compactExpressionOp, pushedPredicates);
 
         if (remainingWhere != null)
+        {
             compactExpressionOp.SetPredicateEvaluator(GetOrCompileExpression(remainingWhere, compactSchema));
+        }
         var compactBatchPlan = TryCreateCachedCompactBatchPlan(
             stmt,
             SelectBatchPlanSlot.FastSimpleExpressionProjection,
@@ -16597,6 +16764,7 @@ public sealed class QueryPlanner
             compactExpressionOp.SetBatchPlan(compactBatchPlan);
             ApplyBatchPlanPreDecodeFilters(compactExpressionOp, compactBatchPlan);
         }
+        _ = AnnotatePhysicalPredicate(compactExpressionOp, stmt.Where);
 
         result = CreateQueryResult(ApplyOffsetAndLimit(compactExpressionOp, stmt.Offset, stmt.Limit));
         return true;
@@ -16636,6 +16804,7 @@ public sealed class QueryPlanner
                 ApplyBatchPlanPreDecodeFilters(compactOp, batchPlan);
             }
         }
+        _ = AnnotatePhysicalPredicate(compactOp, logicalReadWhere);
 
         return compactOp;
     }
@@ -17700,12 +17869,18 @@ public sealed class QueryPlanner
     {
         remaining = where;
 
-        if (op is not IPreDecodeFilterSupport preDecodeFilterTarget)
+        if (PhysicalPlanCapture.Unwrap(op) is not IPreDecodeFilterSupport preDecodeFilterTarget)
             return false;
 
-        if (TryExtractPushdownPredicates(where, schema, out var predicates, out var residual))
+        if (TryExtractPushdownPredicates(
+                where,
+                schema,
+                out var predicates,
+                out var residual,
+                out var pushedPredicate))
         {
             ApplyPushdownPredicates(preDecodeFilterTarget, predicates);
+            _ = AnnotatePhysicalPredicate(op, pushedPredicate);
             remaining = residual;
             return true;
         }
@@ -17717,10 +17892,12 @@ public sealed class QueryPlanner
         Expression where,
         TableSchema schema,
         out List<PushdownPredicateSpec> predicates,
-        out Expression? remaining)
+        out Expression? remaining,
+        out Expression? pushed)
     {
         predicates = [];
         remaining = where;
+        pushed = null;
 
         if (where is IsNullExpression singleNull &&
             TryGetPushdownNullCheck(singleNull, schema, out int nullColumnIndex))
@@ -17729,6 +17906,7 @@ public sealed class QueryPlanner
                 nullColumnIndex,
                 singleNull.Negated ? PreDecodeFilterKind.IsNotNull : PreDecodeFilterKind.IsNull));
             remaining = null;
+            pushed = where;
             return true;
         }
 
@@ -17738,6 +17916,7 @@ public sealed class QueryPlanner
         {
             predicates.Add(new PushdownPredicateSpec(columnIndex, opToApply, literal));
             remaining = null;
+            pushed = where;
             return true;
         }
 
@@ -17748,6 +17927,7 @@ public sealed class QueryPlanner
         CollectAndConjuncts(where, conjuncts);
 
         var residualTerms = new List<Expression>(conjuncts.Count);
+        var pushedTerms = new List<Expression>(conjuncts.Count);
 
         for (int i = 0; i < conjuncts.Count; i++)
         {
@@ -17757,12 +17937,14 @@ public sealed class QueryPlanner
                 predicates.Add(new PushdownPredicateSpec(
                     nullCheckColumnIndex,
                     isNull.Negated ? PreDecodeFilterKind.IsNotNull : PreDecodeFilterKind.IsNull));
+                pushedTerms.Add(conjuncts[i]);
             }
             else if (conjuncts[i] is BinaryExpression bin &&
                 IsPushdownComparison(bin.Op) &&
                 TryGetPushdownOperands(bin, schema, out int candidateColumnIndex, out BinaryOp candidateOp, out DbValue candidateLiteral))
             {
                 predicates.Add(new PushdownPredicateSpec(candidateColumnIndex, candidateOp, candidateLiteral));
+                pushedTerms.Add(conjuncts[i]);
             }
             else
             {
@@ -17776,6 +17958,7 @@ public sealed class QueryPlanner
         predicates.Sort(static (left, right) =>
             GetPushdownPredicateRank(left).CompareTo(GetPushdownPredicateRank(right)));
         remaining = CombineConjuncts(residualTerms);
+        pushed = CombineConjuncts(pushedTerms);
         return true;
     }
 
@@ -18435,6 +18618,7 @@ public sealed class QueryPlanner
 
     private static void TrySetDecodedColumnUpperBound(IOperator op, int maxColumnIndex)
     {
+        op = PhysicalPlanCapture.Unwrap(op);
         switch (op)
         {
             case TableScanOperator tableScan:
@@ -18457,6 +18641,7 @@ public sealed class QueryPlanner
 
     private static bool TrySetDecodedColumnIndices(IOperator op, int[] columnIndices)
     {
+        op = PhysicalPlanCapture.Unwrap(op);
         switch (op)
         {
             case TableScanOperator tableScan:
@@ -19140,6 +19325,41 @@ public sealed class QueryPlanner
         return true;
     }
 
+    private static Expression? BuildLookupKeyTerms(
+        IReadOnlyList<Expression> conjuncts,
+        TableSchema schema,
+        ReadOnlySpan<int> keyColumnIndices,
+        ReadOnlySpan<DbValue> keyComponents)
+    {
+        var lookupTerms = new List<Expression>(keyColumnIndices.Length);
+        for (int i = 0; i < conjuncts.Count; i++)
+        {
+            if (!TryExtractIndexEqualityLookupTerm(
+                    conjuncts[i],
+                    schema,
+                    out int columnIndex,
+                    out DbValue literal,
+                    out string? queryCollation))
+            {
+                continue;
+            }
+
+            for (int componentIndex = 0; componentIndex < keyColumnIndices.Length; componentIndex++)
+            {
+                if (keyColumnIndices[componentIndex] != columnIndex)
+                    continue;
+
+                if (CollationSupport.Compare(keyComponents[componentIndex], literal, queryCollation) == 0)
+                {
+                    lookupTerms.Add(conjuncts[i]);
+                    break;
+                }
+            }
+        }
+
+        return CombineConjuncts(lookupTerms);
+    }
+
     private static Expression? BuildResidualTermsExcludingLookupKeyTerms(
         IReadOnlyList<Expression> conjuncts,
         TableSchema schema,
@@ -19481,7 +19701,7 @@ public sealed class QueryPlanner
         => BatchPlanCompiler.TryCreate(predicate, projections, schema);
 
     private static bool IsBatchPlanEligibleSource(IOperator source)
-        => source is
+        => PhysicalPlanCapture.Unwrap(source) is
             TableScanOperator or
             IndexScanOperator or
             IndexOrderedScanOperator or
@@ -19494,7 +19714,7 @@ public sealed class QueryPlanner
 
     private void ApplyBatchPlanPreDecodeFilters(IOperator source, IFilterProjectionBatchPlan? batchPlan)
     {
-        if (source is not IPreDecodeFilterSupport preDecodeFilterTarget ||
+        if (PhysicalPlanCapture.Unwrap(source) is not IPreDecodeFilterSupport preDecodeFilterTarget ||
             batchPlan?.PushdownFilters is not { Length: > 0 } pushdownFilters)
         {
             return;
@@ -19880,7 +20100,8 @@ public sealed class QueryPlanner
             new ExternalTableScanOperator(
                 resolvedPath,
                 archiveSchema.Columns.ToArray(),
-                ToCapacityHint(registration.RowCount)),
+                ToCapacityHint(registration.RowCount),
+                registration.RowCount),
             querySchema);
         return true;
     }

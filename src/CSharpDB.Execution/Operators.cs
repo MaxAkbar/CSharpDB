@@ -8,6 +8,19 @@ using CSharpDB.Sql;
 
 namespace CSharpDB.Execution;
 
+internal static class PhysicalOperatorMetadataHelper
+{
+    internal static string ToStableJoinType(JoinType joinType)
+        => joinType switch
+        {
+            JoinType.Inner => "inner",
+            JoinType.LeftOuter => "left_outer",
+            JoinType.RightOuter => "right_outer",
+            JoinType.Cross => "cross",
+            _ => "unknown",
+        };
+}
+
 internal enum PreDecodeFilterKind
 {
     Comparison,
@@ -442,7 +455,15 @@ internal static class BoundColumnAccessHelper
 /// <summary>
 /// Full table scan operator — reads all rows from a B+tree via cursor.
 /// </summary>
-public sealed class TableScanOperator : IOperator, IBatchOperator, IRowBufferReuseController, IBatchBufferReuseController, IPreDecodeFilterSupport, IEstimatedRowCountProvider, IEncodedPayloadSource
+public sealed class TableScanOperator :
+    IOperator,
+    IBatchOperator,
+    IRowBufferReuseController,
+    IBatchBufferReuseController,
+    IPreDecodeFilterSupport,
+    IEstimatedRowCountProvider,
+    IEncodedPayloadSource,
+    IPhysicalOperatorMetadataProvider
 {
     private const int DefaultBatchSize = 64;
 
@@ -470,6 +491,12 @@ public sealed class TableScanOperator : IOperator, IBatchOperator, IRowBufferReu
     public long CurrentRowId { get; private set; }
     public ReadOnlyMemory<byte> CurrentPayload => _currentPayload;
     internal int? DecodedColumnUpperBound => _maxDecodedColumnIndex;
+    PhysicalOperatorMetadata IPhysicalOperatorMetadataProvider.GetPhysicalOperatorMetadata()
+        => new(
+            EstimatedRows: _tree.TryGetCachedEntryCount(out long rowCount)
+                ? Math.Max(0, rowCount)
+                : null,
+            ObjectName: _schema.TableName);
 
     public TableScanOperator(
         BTree tree,
@@ -799,7 +826,13 @@ public sealed class TableScanOperator : IOperator, IBatchOperator, IRowBufferReu
 /// <summary>
 /// Filter operator — applies a WHERE predicate.
 /// </summary>
-public sealed class FilterOperator : IOperator, IBatchOperator, IRowBufferReuseController, IBatchBufferReuseController, IUnaryOperatorSource
+public sealed class FilterOperator :
+    IOperator,
+    IBatchOperator,
+    IRowBufferReuseController,
+    IBatchBufferReuseController,
+    IUnaryOperatorSource,
+    IPhysicalOperatorChildren
 {
     private const int DefaultBatchSize = 64;
 
@@ -817,6 +850,7 @@ public sealed class FilterOperator : IOperator, IBatchOperator, IRowBufferReuseC
     public bool ReusesCurrentRowBuffer => _source.ReusesCurrentRowBuffer;
     public DbValue[] Current => _source.Current;
     IOperator IUnaryOperatorSource.Source => _source;
+    IReadOnlyList<IOperator> IPhysicalOperatorChildren.PhysicalChildren => [_source];
 
     public FilterOperator(IOperator source, Expression predicate, TableSchema schema, DbFunctionRegistry? functions = null)
         : this(source, ExpressionCompiler.CompileSpan(predicate, schema, functions))
@@ -825,10 +859,10 @@ public sealed class FilterOperator : IOperator, IBatchOperator, IRowBufferReuseC
 
     public FilterOperator(IOperator source, Func<DbValue[], DbValue> predicateEvaluator)
     {
-        _source = source;
+        _source = PhysicalPlanCapture.WrapIfActive(source);
         _predicateEvaluator = predicateEvaluator;
         _batchPlan = null;
-        _currentBatch = CreateBatch(source.OutputSchema.Length);
+        _currentBatch = CreateBatch(_source.OutputSchema.Length);
     }
 
     internal FilterOperator(IOperator source, SpanExpressionEvaluator predicateEvaluator)
@@ -838,11 +872,11 @@ public sealed class FilterOperator : IOperator, IBatchOperator, IRowBufferReuseC
 
     internal FilterOperator(IOperator source, SpanExpressionEvaluator predicateEvaluator, IFilterProjectionBatchPlan? batchPlan)
     {
-        _source = source;
+        _source = PhysicalPlanCapture.WrapIfActive(source);
         _predicateEvaluator = row => predicateEvaluator(row);
         _spanPredicateEvaluator = predicateEvaluator;
         _batchPlan = batchPlan;
-        _currentBatch = CreateBatch(source.OutputSchema.Length);
+        _currentBatch = CreateBatch(_source.OutputSchema.Length);
     }
 
     public async ValueTask OpenAsync(CancellationToken ct = default)
@@ -1017,7 +1051,13 @@ public sealed class FilterOperator : IOperator, IBatchOperator, IRowBufferReuseC
 /// <summary>
 /// Projection operator — selects and reorders columns.
 /// </summary>
-public sealed class ProjectionOperator : IOperator, IBatchOperator, IRowBufferReuseController, IBatchBufferReuseController, IUnaryOperatorSource
+public sealed class ProjectionOperator :
+    IOperator,
+    IBatchOperator,
+    IRowBufferReuseController,
+    IBatchBufferReuseController,
+    IUnaryOperatorSource,
+    IPhysicalOperatorChildren
 {
     private const int DefaultBatchSize = 64;
 
@@ -1042,6 +1082,7 @@ public sealed class ProjectionOperator : IOperator, IBatchOperator, IRowBufferRe
     public bool ReusesCurrentRowBuffer => _reuseCurrentRowBuffer;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     IOperator IUnaryOperatorSource.Source => _source;
+    IReadOnlyList<IOperator> IPhysicalOperatorChildren.PhysicalChildren => [_source];
 
     public ProjectionOperator(
         IOperator source,
@@ -1051,7 +1092,7 @@ public sealed class ProjectionOperator : IOperator, IBatchOperator, IRowBufferRe
         Expression[]? expressions = null,
         DbFunctionRegistry? functions = null)
     {
-        _source = source;
+        _source = PhysicalPlanCapture.WrapIfActive(source);
         _columnIndices = columnIndices;
         if (expressions != null)
         {
@@ -1078,7 +1119,7 @@ public sealed class ProjectionOperator : IOperator, IBatchOperator, IRowBufferRe
         Func<DbValue[], DbValue>[] expressionEvaluators,
         IFilterProjectionBatchPlan? batchPlan)
     {
-        _source = source;
+        _source = PhysicalPlanCapture.WrapIfActive(source);
         _columnIndices = columnIndices;
         _expressionEvaluators = expressionEvaluators;
         _batchPlan = batchPlan;
@@ -1093,7 +1134,7 @@ public sealed class ProjectionOperator : IOperator, IBatchOperator, IRowBufferRe
         IFilterProjectionBatchPlan? batchPlan,
         bool useSpanEvaluators)
     {
-        _source = source;
+        _source = PhysicalPlanCapture.WrapIfActive(source);
         _columnIndices = columnIndices;
         _spanExpressionEvaluators = expressionEvaluators;
         _batchPlan = batchPlan;
@@ -1440,7 +1481,14 @@ public sealed class ProjectionOperator : IOperator, IBatchOperator, IRowBufferRe
 /// Fused filter + projection operator for common scan/lookup paths.
 /// Avoids an extra row-by-row iterator layer when a query needs both.
 /// </summary>
-public sealed class FilterProjectionOperator : IOperator, IBatchOperator, IRowBufferReuseController, IBatchBufferReuseController, IEstimatedRowCountProvider, IUnaryOperatorSource
+public sealed class FilterProjectionOperator :
+    IOperator,
+    IBatchOperator,
+    IRowBufferReuseController,
+    IBatchBufferReuseController,
+    IEstimatedRowCountProvider,
+    IUnaryOperatorSource,
+    IPhysicalOperatorChildren
 {
     private const int DefaultBatchSize = 64;
 
@@ -1468,6 +1516,7 @@ public sealed class FilterProjectionOperator : IOperator, IBatchOperator, IRowBu
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount => _source is IEstimatedRowCountProvider estimated ? estimated.EstimatedRowCount : null;
     IOperator IUnaryOperatorSource.Source => _source;
+    IReadOnlyList<IOperator> IPhysicalOperatorChildren.PhysicalChildren => [_source];
 
     public FilterProjectionOperator(
         IOperator source,
@@ -1485,7 +1534,7 @@ public sealed class FilterProjectionOperator : IOperator, IBatchOperator, IRowBu
         ColumnDefinition[] outputSchema,
         IFilterProjectionBatchPlan? batchPlan)
     {
-        _source = source;
+        _source = PhysicalPlanCapture.WrapIfActive(source);
         _predicateEvaluator = predicateEvaluator;
         _columnIndices = columnIndices;
         _batchPlan = batchPlan;
@@ -1500,7 +1549,7 @@ public sealed class FilterProjectionOperator : IOperator, IBatchOperator, IRowBu
         IFilterProjectionBatchPlan? batchPlan,
         bool useSpanEvaluator)
     {
-        _source = source;
+        _source = PhysicalPlanCapture.WrapIfActive(source);
         _predicateEvaluator = row => predicateEvaluator(row);
         _spanPredicateEvaluator = predicateEvaluator;
         _columnIndices = columnIndices;
@@ -1524,7 +1573,7 @@ public sealed class FilterProjectionOperator : IOperator, IBatchOperator, IRowBu
         Func<DbValue[], DbValue>[] expressionEvaluators,
         IFilterProjectionBatchPlan? batchPlan)
     {
-        _source = source;
+        _source = PhysicalPlanCapture.WrapIfActive(source);
         _predicateEvaluator = predicateEvaluator;
         _columnIndices = Array.Empty<int>();
         _expressionEvaluators = expressionEvaluators;
@@ -1540,7 +1589,7 @@ public sealed class FilterProjectionOperator : IOperator, IBatchOperator, IRowBu
         IFilterProjectionBatchPlan? batchPlan,
         bool useSpanEvaluator)
     {
-        _source = source;
+        _source = PhysicalPlanCapture.WrapIfActive(source);
         _predicateEvaluator = row => predicateEvaluator(row);
         _spanPredicateEvaluator = predicateEvaluator;
         _columnIndices = Array.Empty<int>();
@@ -1921,7 +1970,7 @@ public sealed class FilterProjectionOperator : IOperator, IBatchOperator, IRowBu
 /// Direct table-scan filter/projection path that decodes only the referenced columns
 /// into a compact row layout for simple single-table scans.
 /// </summary>
-public sealed class CompactTableScanProjectionOperator : IOperator, IBatchOperator, IRowBufferReuseController, IBatchBufferReuseController, IPreDecodeFilterSupport, IEstimatedRowCountProvider
+public sealed class CompactTableScanProjectionOperator : IOperator, IBatchOperator, IRowBufferReuseController, IBatchBufferReuseController, IPreDecodeFilterSupport, IEstimatedRowCountProvider, IPhysicalOperatorMetadataProvider
 {
     private const int DefaultBatchSize = 64;
 
@@ -1954,6 +2003,11 @@ public sealed class CompactTableScanProjectionOperator : IOperator, IBatchOperat
     public bool ReusesCurrentRowBuffer => _reuseCurrentRowBuffer;
     public int? EstimatedRowCount => _estimatedRowCount;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    PhysicalOperatorMetadata IPhysicalOperatorMetadataProvider.GetPhysicalOperatorMetadata()
+        => new(
+            EstimatedRows: _tree.TryGetCachedEntryCount(out long rowCount)
+                ? Math.Max(0, rowCount)
+                : null);
 
     public CompactTableScanProjectionOperator(
         BTree tree,
@@ -2429,7 +2483,14 @@ public sealed class CompactTableScanProjectionOperator : IOperator, IBatchOperat
 /// Compact projection path that reuses an existing payload-producing source
 /// and decodes only the referenced columns into a compact row layout.
 /// </summary>
-public sealed class CompactPayloadProjectionOperator : IOperator, IBatchOperator, IRowBufferReuseController, IBatchBufferReuseController, IEstimatedRowCountProvider, IUnaryOperatorSource
+public sealed class CompactPayloadProjectionOperator :
+    IOperator,
+    IBatchOperator,
+    IRowBufferReuseController,
+    IBatchBufferReuseController,
+    IEstimatedRowCountProvider,
+    IUnaryOperatorSource,
+    IPhysicalOperatorChildren
 {
     private const int DefaultBatchSize = 64;
 
@@ -2458,6 +2519,7 @@ public sealed class CompactPayloadProjectionOperator : IOperator, IBatchOperator
     public int? EstimatedRowCount => _source is IEstimatedRowCountProvider estimated ? estimated.EstimatedRowCount : null;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     IOperator IUnaryOperatorSource.Source => _source;
+    IReadOnlyList<IOperator> IPhysicalOperatorChildren.PhysicalChildren => [_source];
 
     public CompactPayloadProjectionOperator(
         IOperator source,
@@ -2466,8 +2528,11 @@ public sealed class CompactPayloadProjectionOperator : IOperator, IBatchOperator
         int[] projectionColumnIndices,
         ColumnDefinition[] outputSchema)
     {
-        _source = source;
-        _payloadSource = source as IEncodedPayloadSource
+        if (PhysicalPlanCapture.Unwrap(source) is not IEncodedPayloadSource)
+            throw new ArgumentException("Source must expose encoded payload.", nameof(source));
+
+        _source = PhysicalPlanCapture.WrapIfActive(source);
+        _payloadSource = _source as IEncodedPayloadSource
             ?? throw new ArgumentException("Source must expose encoded payload.", nameof(source));
         _recordSerializer = recordSerializer;
         _decodedColumnIndices = decodedColumnIndices;
@@ -2483,8 +2548,11 @@ public sealed class CompactPayloadProjectionOperator : IOperator, IBatchOperator
         ColumnDefinition[] outputSchema,
         Func<DbValue[], DbValue>[] expressionEvaluators)
     {
-        _source = source;
-        _payloadSource = source as IEncodedPayloadSource
+        if (PhysicalPlanCapture.Unwrap(source) is not IEncodedPayloadSource)
+            throw new ArgumentException("Source must expose encoded payload.", nameof(source));
+
+        _source = PhysicalPlanCapture.WrapIfActive(source);
+        _payloadSource = _source as IEncodedPayloadSource
             ?? throw new ArgumentException("Source must expose encoded payload.", nameof(source));
         _recordSerializer = recordSerializer;
         _decodedColumnIndices = decodedColumnIndices;
@@ -2653,7 +2721,7 @@ public sealed class CompactPayloadProjectionOperator : IOperator, IBatchOperator
 
     private void SuppressSourceDecode()
     {
-        switch (_source)
+        switch (PhysicalPlanCapture.Unwrap(_source))
         {
             case IndexScanOperator indexScan:
                 indexScan.SetDecodedColumnIndices(Array.Empty<int>());
@@ -2844,7 +2912,11 @@ public sealed class CompactPayloadProjectionOperator : IOperator, IBatchOperator
 /// <summary>
 /// DISTINCT operator — emits each unique row once.
 /// </summary>
-public sealed class DistinctOperator : IOperator, IBatchOperator, IBatchBufferReuseController
+public sealed class DistinctOperator :
+    IOperator,
+    IBatchOperator,
+    IBatchBufferReuseController,
+    IPhysicalOperatorChildren
 {
     private const int DefaultBatchSize = 64;
 
@@ -2863,11 +2935,12 @@ public sealed class DistinctOperator : IOperator, IBatchOperator, IBatchBufferRe
     public ColumnDefinition[] OutputSchema => _source.OutputSchema;
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    IReadOnlyList<IOperator> IPhysicalOperatorChildren.PhysicalChildren => [_source];
 
     public DistinctOperator(IOperator source, bool inputIsOrdered = false)
     {
-        _source = source;
-        _singleColumnFastPath = source.OutputSchema.Length == 1;
+        _source = PhysicalPlanCapture.WrapIfActive(source);
+        _singleColumnFastPath = _source.OutputSchema.Length == 1;
         _orderedSingleColumnFastPath = inputIsOrdered && _singleColumnFastPath;
     }
 
@@ -3116,7 +3189,13 @@ public sealed class DistinctOperator : IOperator, IBatchOperator, IBatchBufferRe
 /// <summary>
 /// Offset operator — skips the first N rows from the source.
 /// </summary>
-public sealed class OffsetOperator : IOperator, IBatchOperator, IRowBufferReuseController, IBatchBufferReuseController, IUnaryOperatorSource
+public sealed class OffsetOperator :
+    IOperator,
+    IBatchOperator,
+    IRowBufferReuseController,
+    IBatchBufferReuseController,
+    IUnaryOperatorSource,
+    IPhysicalOperatorChildren
 {
     private const int DefaultBatchSize = 64;
 
@@ -3131,12 +3210,13 @@ public sealed class OffsetOperator : IOperator, IBatchOperator, IRowBufferReuseC
     public bool ReusesCurrentRowBuffer => _source.ReusesCurrentRowBuffer;
     public DbValue[] Current => _source.Current;
     IOperator IUnaryOperatorSource.Source => _source;
+    IReadOnlyList<IOperator> IPhysicalOperatorChildren.PhysicalChildren => [_source];
 
     public OffsetOperator(IOperator source, int offset)
     {
-        _source = source;
+        _source = PhysicalPlanCapture.WrapIfActive(source);
         _offset = offset;
-        _currentBatch = CreateBatch(source.OutputSchema.Length);
+        _currentBatch = CreateBatch(_source.OutputSchema.Length);
     }
 
     public async ValueTask OpenAsync(CancellationToken ct = default)
@@ -3260,7 +3340,14 @@ public sealed class OffsetOperator : IOperator, IBatchOperator, IRowBufferReuseC
 /// <summary>
 /// Limit operator — caps the number of output rows.
 /// </summary>
-public sealed class LimitOperator : IOperator, IBatchOperator, IRowBufferReuseController, IBatchBufferReuseController, IEstimatedRowCountProvider, IUnaryOperatorSource
+public sealed class LimitOperator :
+    IOperator,
+    IBatchOperator,
+    IRowBufferReuseController,
+    IBatchBufferReuseController,
+    IEstimatedRowCountProvider,
+    IUnaryOperatorSource,
+    IPhysicalOperatorChildren
 {
     private const int DefaultBatchSize = 64;
     private const int SmallLimitRowModeThreshold = 4;
@@ -3277,12 +3364,13 @@ public sealed class LimitOperator : IOperator, IBatchOperator, IRowBufferReuseCo
     public DbValue[] Current => _source.Current;
     public int? EstimatedRowCount => _limit >= 0 ? _limit : 0;
     IOperator IUnaryOperatorSource.Source => _source;
+    IReadOnlyList<IOperator> IPhysicalOperatorChildren.PhysicalChildren => [_source];
 
     public LimitOperator(IOperator source, int limit)
     {
-        _source = source;
+        _source = PhysicalPlanCapture.WrapIfActive(source);
         _limit = limit;
-        _currentBatch = CreateBatch(source.OutputSchema.Length);
+        _currentBatch = CreateBatch(_source.OutputSchema.Length);
     }
 
     public async ValueTask OpenAsync(CancellationToken ct = default)
@@ -3569,7 +3657,11 @@ internal sealed class AggregateDistinctValueSet
 /// Hash aggregate operator — groups rows and computes aggregate functions.
 /// Used for GROUP BY and queries with aggregate functions (COUNT, SUM, AVG, MIN, MAX).
 /// </summary>
-public sealed class HashAggregateOperator : IOperator, IEstimatedRowCountProvider, IMaterializedRowsProvider
+public sealed class HashAggregateOperator :
+    IOperator,
+    IEstimatedRowCountProvider,
+    IMaterializedRowsProvider,
+    IPhysicalOperatorChildren
 {
     private enum SimpleGroupedBatchAggregateKind
     {
@@ -3639,6 +3731,7 @@ public sealed class HashAggregateOperator : IOperator, IEstimatedRowCountProvide
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount => _results?.Count;
+    IReadOnlyList<IOperator> IPhysicalOperatorChildren.PhysicalChildren => [_source];
 
     public HashAggregateOperator(
         IOperator source,
@@ -3649,7 +3742,7 @@ public sealed class HashAggregateOperator : IOperator, IEstimatedRowCountProvide
         ColumnDefinition[] outputSchema,
         DbFunctionRegistry? functions = null)
     {
-        _source = source;
+        _source = PhysicalPlanCapture.WrapIfActive(source);
         _selectColumns = selectColumns;
         _groupByExprs = groupByExprs;
         _havingExpr = havingExpr;
@@ -4768,7 +4861,11 @@ public sealed class HashAggregateOperator : IOperator, IEstimatedRowCountProvide
 /// without materializing all source rows.
 /// Used for aggregate queries that do not have GROUP BY.
 /// </summary>
-public sealed class ScalarAggregateOperator : IOperator, IEstimatedRowCountProvider
+public sealed class ScalarAggregateOperator :
+    IOperator,
+    IEstimatedRowCountProvider,
+    IPhysicalOperatorChildren,
+    IPhysicalOperatorMetadataProvider
 {
     private readonly IOperator _source;
     private readonly List<SelectColumn> _selectColumns;
@@ -4787,6 +4884,9 @@ public sealed class ScalarAggregateOperator : IOperator, IEstimatedRowCountProvi
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount => 1;
+    IReadOnlyList<IOperator> IPhysicalOperatorChildren.PhysicalChildren => [_source];
+    PhysicalOperatorMetadata IPhysicalOperatorMetadataProvider.GetPhysicalOperatorMetadata()
+        => new(EstimatedRows: 1);
 
     public ScalarAggregateOperator(
         IOperator source,
@@ -4796,7 +4896,7 @@ public sealed class ScalarAggregateOperator : IOperator, IEstimatedRowCountProvi
         ColumnDefinition[] outputSchema,
         DbFunctionRegistry? functions = null)
     {
-        _source = source;
+        _source = PhysicalPlanCapture.WrapIfActive(source);
         _selectColumns = selectColumns;
         _havingExpr = havingExpr;
         _inputSchema = inputSchema;
@@ -5347,7 +5447,13 @@ public sealed class ScalarAggregateOperator : IOperator, IEstimatedRowCountProvi
 /// <summary>
 /// Sort operator — materializes all input then sorts. Used for ORDER BY.
 /// </summary>
-public sealed class SortOperator : IOperator, IBatchOperator, IBatchBufferReuseController, IEstimatedRowCountProvider, IMaterializedRowsProvider
+public sealed class SortOperator :
+    IOperator,
+    IBatchOperator,
+    IBatchBufferReuseController,
+    IEstimatedRowCountProvider,
+    IMaterializedRowsProvider,
+    IPhysicalOperatorChildren
 {
     private const string LateMaterializationOverrideEnvVar = "CSHARPDB_SORT_LATE_MATERIALIZATION";
     private const int LateMaterializationMinRowCount = 25_000;
@@ -5449,10 +5555,11 @@ public sealed class SortOperator : IOperator, IBatchOperator, IBatchBufferReuseC
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount => _sortedRows?.Count ?? _lateMaterializedRowIds?.Length;
+    IReadOnlyList<IOperator> IPhysicalOperatorChildren.PhysicalChildren => [_source];
 
     public SortOperator(IOperator source, List<OrderByClause> orderBy, TableSchema schema, DbFunctionRegistry? functions = null)
     {
-        _source = source;
+        _source = PhysicalPlanCapture.WrapIfActive(source);
         _schema = schema;
         _compiledOrderBy = CompileOrderBy(orderBy, schema, out _precomputedKeyCount, functions);
         if (_compiledOrderBy.Length == 1)
@@ -5697,7 +5804,7 @@ public sealed class SortOperator : IOperator, IBatchOperator, IBatchBufferReuseC
         if (lateMaterializationOverride == LateMaterializationOverrideMode.ForceOff)
             return false;
 
-        if (_source is not TableScanOperator tableScan)
+        if (PhysicalPlanCapture.Unwrap(_source) is not TableScanOperator tableScan)
             return false;
         if (_compiledOrderBy.Length != 1 ||
             _singleClauseColumnIndex < 0 ||
@@ -6366,7 +6473,13 @@ public sealed class SortOperator : IOperator, IBatchOperator, IBatchBufferReuseC
 /// Keeps only the best N rows in memory and does a final in-memory sort
 /// over that bounded set.
 /// </summary>
-public sealed class TopNSortOperator : IOperator, IBatchOperator, IBatchBufferReuseController, IEstimatedRowCountProvider, IMaterializedRowsProvider
+public sealed class TopNSortOperator :
+    IOperator,
+    IBatchOperator,
+    IBatchBufferReuseController,
+    IEstimatedRowCountProvider,
+    IMaterializedRowsProvider,
+    IPhysicalOperatorChildren
 {
     private const int DefaultBatchSize = 64;
 
@@ -6473,6 +6586,7 @@ public sealed class TopNSortOperator : IOperator, IBatchOperator, IBatchBufferRe
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount => _topN;
+    IReadOnlyList<IOperator> IPhysicalOperatorChildren.PhysicalChildren => [_source];
 
     public TopNSortOperator(
         IOperator source,
@@ -6481,7 +6595,7 @@ public sealed class TopNSortOperator : IOperator, IBatchOperator, IBatchBufferRe
         int topN,
         DbFunctionRegistry? functions = null)
     {
-        _source = source;
+        _source = PhysicalPlanCapture.WrapIfActive(source);
         _compiledOrderBy = CompileOrderBy(orderBy, schema, out _precomputedKeyCount, functions);
         _singleComputedKeyClauseIndex = FindSingleComputedKeyClauseIndex(_compiledOrderBy, _precomputedKeyCount);
         _singleComputedKeyFastPath = _singleComputedKeyClauseIndex >= 0;
@@ -6604,7 +6718,7 @@ public sealed class TopNSortOperator : IOperator, IBatchOperator, IBatchBufferRe
 
     private async ValueTask<bool> TryOpenWithTableScanLateMaterializationAsync(CancellationToken ct)
     {
-        if (_source is not TableScanOperator tableScan)
+        if (PhysicalPlanCapture.Unwrap(_source) is not TableScanOperator tableScan)
             return false;
         if (tableScan.DecodedColumnUpperBound.HasValue)
             return false;
@@ -7070,7 +7184,15 @@ public sealed class TopNSortOperator : IOperator, IBatchOperator, IBatchBufferRe
 /// Hash-join operator for equi-joins (with optional residual predicate).
 /// Supports INNER, LEFT OUTER, and RIGHT OUTER joins.
 /// </summary>
-public sealed class HashJoinOperator : IOperator, IBatchOperator, IBatchBackedRowOperator, IProjectionPushdownTarget, IEstimatedRowCountProvider, IBatchBufferReuseController
+public sealed class HashJoinOperator :
+    IOperator,
+    IBatchOperator,
+    IBatchBackedRowOperator,
+    IProjectionPushdownTarget,
+    IEstimatedRowCountProvider,
+    IBatchBufferReuseController,
+    IPhysicalOperatorChildren,
+    IPhysicalOperatorMetadataProvider
 {
     private const int DefaultBatchSize = 64;
 
@@ -7122,6 +7244,10 @@ public sealed class HashJoinOperator : IOperator, IBatchOperator, IBatchBackedRo
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount => _estimatedRowCount;
     IBatchOperator IBatchBackedRowOperator.BatchSource => this;
+    IReadOnlyList<IOperator> IPhysicalOperatorChildren.PhysicalChildren => [_left, _right];
+    PhysicalOperatorMetadata IPhysicalOperatorMetadataProvider.GetPhysicalOperatorMetadata()
+        => new(
+            JoinType: PhysicalOperatorMetadataHelper.ToStableJoinType(_joinType));
 
     public HashJoinOperator(
         IOperator left,
@@ -7138,8 +7264,8 @@ public sealed class HashJoinOperator : IOperator, IBatchOperator, IBatchBackedRo
         int? estimatedOutputRowCount = null,
         DbFunctionRegistry? functions = null)
     {
-        _left = left;
-        _right = right;
+        _left = PhysicalPlanCapture.WrapIfActive(left);
+        _right = PhysicalPlanCapture.WrapIfActive(right);
         _joinType = joinType;
         _buildRightSide = buildRightSide;
         _leftKeyIndices = leftKeyIndices;
@@ -7567,7 +7693,7 @@ public sealed class HashJoinOperator : IOperator, IBatchOperator, IBatchBackedRo
         if (columnIndices.Length == 0)
             return true;
 
-        switch (op)
+        switch (PhysicalPlanCapture.Unwrap(op))
         {
             case TableScanOperator tableScan:
                 tableScan.SetDecodedColumnIndices(columnIndices);
@@ -7594,7 +7720,7 @@ public sealed class HashJoinOperator : IOperator, IBatchOperator, IBatchBackedRo
         if (maxColumnIndex < 0)
             return;
 
-        switch (op)
+        switch (PhysicalPlanCapture.Unwrap(op))
         {
             case TableScanOperator tableScan:
                 tableScan.SetDecodedColumnUpperBound(maxColumnIndex);
@@ -8675,7 +8801,14 @@ public sealed class HashJoinOperator : IOperator, IBatchOperator, IBatchBackedRo
     }
 }
 
-internal sealed class BufferedReplayOperator : IOperator, IBatchOperator, IBatchBackedRowOperator, IRowBufferReuseController, IBatchBufferReuseController, IEstimatedRowCountProvider
+internal sealed class BufferedReplayOperator :
+    IOperator,
+    IBatchOperator,
+    IBatchBackedRowOperator,
+    IRowBufferReuseController,
+    IBatchBufferReuseController,
+    IEstimatedRowCountProvider,
+    IPhysicalOperatorChildren
 {
     private const int DefaultBatchSize = 64;
 
@@ -8700,10 +8833,10 @@ internal sealed class BufferedReplayOperator : IOperator, IBatchOperator, IBatch
     {
         OutputSchema = outputSchema;
         _bufferedRows = bufferedRows;
-        _continuation = continuation;
+        _continuation = PhysicalPlanCapture.WrapIfActive(continuation);
         _continuationAlreadyOpen = continuationAlreadyOpen;
         _continuationExhausted = continuationExhausted;
-        _estimatedRowCount = continuation is IEstimatedRowCountProvider estimated &&
+        _estimatedRowCount = _continuation is IEstimatedRowCountProvider estimated &&
                              estimated.EstimatedRowCount is int continuationEstimate
             ? Math.Max(bufferedRows.Count, continuationEstimate)
             : bufferedRows.Count;
@@ -8715,6 +8848,7 @@ internal sealed class BufferedReplayOperator : IOperator, IBatchOperator, IBatch
     public int? EstimatedRowCount => _estimatedRowCount;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     IBatchOperator IBatchBackedRowOperator.BatchSource => this;
+    IReadOnlyList<IOperator> IPhysicalOperatorChildren.PhysicalChildren => [_continuation];
     bool IBatchOperator.ReusesCurrentBatch => _reuseCurrentBatch;
     RowBatch IBatchOperator.CurrentBatch => _currentBatch;
 
@@ -8836,7 +8970,15 @@ internal sealed class BufferedReplayOperator : IOperator, IBatchOperator, IBatch
     }
 }
 
-internal sealed class AdaptiveIndexNestedLoopJoinOperator : IOperator, IBatchOperator, IBatchBackedRowOperator, IProjectionPushdownTarget, IEstimatedRowCountProvider, IBatchBufferReuseController
+internal sealed class AdaptiveIndexNestedLoopJoinOperator :
+    IOperator,
+    IBatchOperator,
+    IBatchBackedRowOperator,
+    IProjectionPushdownTarget,
+    IEstimatedRowCountProvider,
+    IBatchBufferReuseController,
+    IPhysicalOperatorChildren,
+    IPhysicalOperatorMetadataProvider
 {
     private const int DefaultBatchSize = 64;
 
@@ -8865,8 +9007,8 @@ internal sealed class AdaptiveIndexNestedLoopJoinOperator : IOperator, IBatchOpe
         long estimatedOuterRows,
         int? estimatedRowCount)
     {
-        _outer = outer;
-        _unusedHashRight = unusedHashRight;
+        _outer = PhysicalPlanCapture.WrapIfActive(outer);
+        _unusedHashRight = PhysicalPlanCapture.WrapIfActive(unusedHashRight);
         OutputSchema = outputSchema;
         _createLookupJoin = createLookupJoin;
         _createHashJoin = createHashJoin;
@@ -8884,6 +9026,18 @@ internal sealed class AdaptiveIndexNestedLoopJoinOperator : IOperator, IBatchOpe
     IBatchOperator IBatchBackedRowOperator.BatchSource => this;
     bool IBatchOperator.ReusesCurrentBatch => _reuseCurrentBatch;
     RowBatch IBatchOperator.CurrentBatch => _currentBatch;
+    IReadOnlyList<IOperator> IPhysicalOperatorChildren.PhysicalChildren =>
+        _active is null ? [_outer, _unusedHashRight] : [_active];
+    PhysicalOperatorMetadata IPhysicalOperatorMetadataProvider.GetPhysicalOperatorMetadata()
+    {
+        PhysicalOperatorMetadata metadata =
+            _active is not null &&
+            PhysicalPlanCapture.Unwrap(_active) is IPhysicalOperatorMetadataProvider provider
+                ? provider.GetPhysicalOperatorMetadata()
+                : default;
+
+        return metadata;
+    }
 
     public async ValueTask OpenAsync(CancellationToken ct = default)
     {
@@ -8940,13 +9094,14 @@ internal sealed class AdaptiveIndexNestedLoopJoinOperator : IOperator, IBatchOpe
             continuationAlreadyOpen: true,
             continuationExhausted: exhausted);
 
-        _active = switchToHash
+        IOperator active = switchToHash
             ? _createHashJoin(replay)
             : _createLookupJoin(replay);
+        _active = PhysicalPlanCapture.WrapIfActive(active);
         disposeUnusedHashRight = !switchToHash;
 
         if (_projectionColumnIndices != null &&
-            _active is IProjectionPushdownTarget projectionTarget &&
+            PhysicalPlanCapture.Unwrap(_active) is IProjectionPushdownTarget projectionTarget &&
             !projectionTarget.TrySetOutputProjection(_projectionColumnIndices, OutputSchema))
         {
             _diagnostics.RecordRejectedSwitch(AdaptiveQueryReoptimizationFallbackReason.Unsupported);
@@ -9042,7 +9197,15 @@ internal sealed class AdaptiveIndexNestedLoopJoinOperator : IOperator, IBatchOpe
     private static DbValue[] CloneRow(DbValue[] row) => row.Length == 0 ? Array.Empty<DbValue>() : (DbValue[])row.Clone();
 }
 
-internal sealed class AdaptiveHashJoinOperator : IOperator, IBatchOperator, IBatchBackedRowOperator, IProjectionPushdownTarget, IEstimatedRowCountProvider, IBatchBufferReuseController
+internal sealed class AdaptiveHashJoinOperator :
+    IOperator,
+    IBatchOperator,
+    IBatchBackedRowOperator,
+    IProjectionPushdownTarget,
+    IEstimatedRowCountProvider,
+    IBatchBufferReuseController,
+    IPhysicalOperatorChildren,
+    IPhysicalOperatorMetadataProvider
 {
     private const int DefaultBatchSize = 64;
 
@@ -9086,8 +9249,8 @@ internal sealed class AdaptiveHashJoinOperator : IOperator, IBatchOperator, IBat
         AdaptiveQueryExecutionLease lease,
         AdaptiveQueryReoptimizationRuntimeDiagnostics diagnostics)
     {
-        _left = left;
-        _right = right;
+        _left = PhysicalPlanCapture.WrapIfActive(left);
+        _right = PhysicalPlanCapture.WrapIfActive(right);
         _joinType = joinType;
         _residualCondition = residualCondition;
         _compositeSchema = compositeSchema;
@@ -9113,6 +9276,11 @@ internal sealed class AdaptiveHashJoinOperator : IOperator, IBatchOperator, IBat
     IBatchOperator IBatchBackedRowOperator.BatchSource => this;
     bool IBatchOperator.ReusesCurrentBatch => _reuseCurrentBatch;
     RowBatch IBatchOperator.CurrentBatch => _currentBatch;
+    IReadOnlyList<IOperator> IPhysicalOperatorChildren.PhysicalChildren =>
+        _active is null ? [_left, _right] : [_active];
+    PhysicalOperatorMetadata IPhysicalOperatorMetadataProvider.GetPhysicalOperatorMetadata()
+        => new(
+            JoinType: PhysicalOperatorMetadataHelper.ToStableJoinType(_joinType));
 
     public async ValueTask OpenAsync(CancellationToken ct = default)
     {
@@ -9156,7 +9324,7 @@ internal sealed class AdaptiveHashJoinOperator : IOperator, IBatchOperator, IBat
 
         var leftReplay = new BufferedReplayOperator(_left.OutputSchema, leftRows, _left, true, leftExhausted);
         var rightReplay = new BufferedReplayOperator(_right.OutputSchema, rightRows, _right, true, rightExhausted);
-        _active = new HashJoinOperator(
+        _active = PhysicalPlanCapture.WrapIfActive(new HashJoinOperator(
             leftReplay,
             rightReplay,
             _joinType,
@@ -9169,10 +9337,10 @@ internal sealed class AdaptiveHashJoinOperator : IOperator, IBatchOperator, IBat
             buildRightSide,
             buildRightSide ? rightRows.Count : leftRows.Count,
             _estimatedRowCount,
-            _functions);
+            _functions));
 
         if (_projectionColumnIndices != null &&
-            _active is IProjectionPushdownTarget projectionTarget)
+            PhysicalPlanCapture.Unwrap(_active) is IProjectionPushdownTarget projectionTarget)
         {
             projectionTarget.TrySetOutputProjection(_projectionColumnIndices, OutputSchema);
         }
@@ -9285,7 +9453,15 @@ internal sealed class AdaptiveHashJoinOperator : IOperator, IBatchOperator, IBat
 /// Uses a right-side PRIMARY KEY or unique single-column index for lookup joins.
 /// Supports INNER and LEFT OUTER joins.
 /// </summary>
-public sealed class IndexNestedLoopJoinOperator : IOperator, IBatchOperator, IBatchBackedRowOperator, IProjectionPushdownTarget, IEstimatedRowCountProvider, IBatchBufferReuseController
+public sealed class IndexNestedLoopJoinOperator :
+    IOperator,
+    IBatchOperator,
+    IBatchBackedRowOperator,
+    IProjectionPushdownTarget,
+    IEstimatedRowCountProvider,
+    IBatchBufferReuseController,
+    IPhysicalOperatorChildren,
+    IPhysicalOperatorMetadataProvider
 {
     private const int DefaultBatchSize = 64;
 
@@ -9324,6 +9500,14 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IBatchOperator, IBa
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount => _estimatedRowCount;
     IBatchOperator IBatchBackedRowOperator.BatchSource => this;
+    IReadOnlyList<IOperator> IPhysicalOperatorChildren.PhysicalChildren => [_outer];
+    PhysicalOperatorMetadata IPhysicalOperatorMetadataProvider.GetPhysicalOperatorMetadata()
+        => new(
+            AccessPath: _innerIndexStore is null
+                ? PhysicalAccessPath.PrimaryKey
+                : PhysicalAccessPath.UniqueIndex,
+            IndexName: _innerIndexStore?.LogicalName,
+            JoinType: PhysicalOperatorMetadataHelper.ToStableJoinType(_joinType));
 
     public IndexNestedLoopJoinOperator(
         IOperator outer,
@@ -9339,7 +9523,7 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IBatchOperator, IBa
         int? estimatedOutputRowCount = null,
         DbFunctionRegistry? functions = null)
     {
-        _outer = outer;
+        _outer = PhysicalPlanCapture.WrapIfActive(outer);
         _innerTableTree = innerTableTree;
         _innerIndexStore = innerIndexStore;
         _innerCacheAwareIndexStore = innerIndexStore as ICacheAwareIndexStore;
@@ -9720,7 +9904,7 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IBatchOperator, IBa
         if (columnIndices.Length == 0)
             return true;
 
-        switch (op)
+        switch (PhysicalPlanCapture.Unwrap(op))
         {
             case TableScanOperator tableScan:
                 tableScan.SetDecodedColumnIndices(columnIndices);
@@ -9747,7 +9931,7 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IBatchOperator, IBa
         if (maxColumnIndex < 0)
             return;
 
-        switch (op)
+        switch (PhysicalPlanCapture.Unwrap(op))
         {
             case TableScanOperator tableScan:
                 tableScan.SetDecodedColumnUpperBound(maxColumnIndex);
@@ -10133,7 +10317,15 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IBatchOperator, IBa
 /// Supports exact equality lookups over single-column text indexes and
 /// composite integer/text indexes on the right side.
 /// </summary>
-public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperator, IBatchBackedRowOperator, IProjectionPushdownTarget, IEstimatedRowCountProvider, IBatchBufferReuseController
+public sealed class HashedIndexNestedLoopJoinOperator :
+    IOperator,
+    IBatchOperator,
+    IBatchBackedRowOperator,
+    IProjectionPushdownTarget,
+    IEstimatedRowCountProvider,
+    IBatchBufferReuseController,
+    IPhysicalOperatorChildren,
+    IPhysicalOperatorMetadataProvider
 {
     private const int DefaultBatchSize = 64;
     private const int CoveredProjectionLeftSlot = -2;
@@ -10183,6 +10375,11 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount => _estimatedRowCount;
     IBatchOperator IBatchBackedRowOperator.BatchSource => this;
+    IReadOnlyList<IOperator> IPhysicalOperatorChildren.PhysicalChildren => [_outer];
+    PhysicalOperatorMetadata IPhysicalOperatorMetadataProvider.GetPhysicalOperatorMetadata()
+        => new(
+            IndexName: _innerIndexStore.LogicalName,
+            JoinType: PhysicalOperatorMetadataHelper.ToStableJoinType(_joinType));
 
     internal HashedIndexNestedLoopJoinOperator(
         IOperator outer,
@@ -10203,7 +10400,7 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
         int? estimatedOutputRowCount = null,
         DbFunctionRegistry? functions = null)
     {
-        _outer = outer;
+        _outer = PhysicalPlanCapture.WrapIfActive(outer);
         _innerTableTree = innerTableTree;
         _innerIndexStore = innerIndexStore;
         _joinType = joinType;
@@ -10497,7 +10694,7 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
         if (columnIndices.Length == 0)
             return true;
 
-        switch (op)
+        switch (PhysicalPlanCapture.Unwrap(op))
         {
             case TableScanOperator tableScan:
                 tableScan.SetDecodedColumnIndices(columnIndices);
@@ -10524,7 +10721,7 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
         if (maxColumnIndex < 0)
             return;
 
-        switch (op)
+        switch (PhysicalPlanCapture.Unwrap(op))
         {
             case TableScanOperator tableScan:
                 tableScan.SetDecodedColumnUpperBound(maxColumnIndex);
@@ -11163,7 +11360,15 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
 /// Nested-loop join operator — materializes both sides and computes the join.
 /// Supports INNER, LEFT OUTER, RIGHT OUTER, and CROSS joins.
 /// </summary>
-public sealed class NestedLoopJoinOperator : IOperator, IBatchOperator, IBatchBackedRowOperator, IProjectionPushdownTarget, IEstimatedRowCountProvider, IBatchBufferReuseController
+public sealed class NestedLoopJoinOperator :
+    IOperator,
+    IBatchOperator,
+    IBatchBackedRowOperator,
+    IProjectionPushdownTarget,
+    IEstimatedRowCountProvider,
+    IBatchBufferReuseController,
+    IPhysicalOperatorChildren,
+    IPhysicalOperatorMetadataProvider
 {
     private const int DefaultBatchSize = 64;
 
@@ -11197,6 +11402,10 @@ public sealed class NestedLoopJoinOperator : IOperator, IBatchOperator, IBatchBa
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount => _estimatedRowCount;
     IBatchOperator IBatchBackedRowOperator.BatchSource => this;
+    IReadOnlyList<IOperator> IPhysicalOperatorChildren.PhysicalChildren => [_left, _right];
+    PhysicalOperatorMetadata IPhysicalOperatorMetadataProvider.GetPhysicalOperatorMetadata()
+        => new(
+            JoinType: PhysicalOperatorMetadataHelper.ToStableJoinType(_joinType));
 
     public NestedLoopJoinOperator(
         IOperator left, IOperator right,
@@ -11207,8 +11416,8 @@ public sealed class NestedLoopJoinOperator : IOperator, IBatchOperator, IBatchBa
         int? rightRowCapacityHint = null,
         DbFunctionRegistry? functions = null)
     {
-        _left = left;
-        _right = right;
+        _left = PhysicalPlanCapture.WrapIfActive(left);
+        _right = PhysicalPlanCapture.WrapIfActive(right);
         _joinType = joinType;
         _conditionExpression = condition;
         _conditionEvaluator = condition != null
@@ -11605,7 +11814,7 @@ public sealed class NestedLoopJoinOperator : IOperator, IBatchOperator, IBatchBa
         if (columnIndices.Length == 0)
             return true;
 
-        switch (op)
+        switch (PhysicalPlanCapture.Unwrap(op))
         {
             case TableScanOperator tableScan:
                 tableScan.SetDecodedColumnIndices(columnIndices);
@@ -11632,7 +11841,7 @@ public sealed class NestedLoopJoinOperator : IOperator, IBatchOperator, IBatchBa
         if (maxColumnIndex < 0)
             return;
 
-        switch (op)
+        switch (PhysicalPlanCapture.Unwrap(op))
         {
             case TableScanOperator tableScan:
                 tableScan.SetDecodedColumnUpperBound(maxColumnIndex);
@@ -11956,7 +12165,15 @@ public sealed class NestedLoopJoinOperator : IOperator, IBatchOperator, IBatchBa
 /// The index stores: key = indexed column value, payload = list of rowids (each 8 bytes).
 /// For each matching rowid, looks up the actual row in the table's B+tree.
 /// </summary>
-public sealed class IndexScanOperator : IOperator, IBatchOperator, IRowBufferReuseController, IBatchBufferReuseController, IPreDecodeFilterSupport, IEstimatedRowCountProvider, IEncodedPayloadSource
+public sealed class IndexScanOperator :
+    IOperator,
+    IBatchOperator,
+    IRowBufferReuseController,
+    IBatchBufferReuseController,
+    IPreDecodeFilterSupport,
+    IEstimatedRowCountProvider,
+    IEncodedPayloadSource,
+    IPhysicalOperatorMetadataProvider
 {
     private const int DefaultBatchSize = 64;
 
@@ -11977,6 +12194,7 @@ public sealed class IndexScanOperator : IOperator, IBatchOperator, IRowBufferReu
     private DbValue[]? _rowBuffer;
     private bool _reuseCurrentRowBuffer = true;
     private bool _reuseCurrentBatch = true;
+    private readonly int? _plannedEstimatedRowCount;
     private int? _estimatedRowCount;
     private int? _maxDecodedColumnIndex;
     private int[]? _decodedColumnIndices;
@@ -11999,6 +12217,10 @@ public sealed class IndexScanOperator : IOperator, IBatchOperator, IRowBufferReu
     internal DbValue[]? ExpectedKeyComponents => _expectedKeyComponents;
     internal byte[][]? ExpectedKeyTextBytes => _expectedKeyTextBytes;
     internal bool UsesOrderedTextPayload => _usesOrderedTextPayload;
+    PhysicalOperatorMetadata IPhysicalOperatorMetadataProvider.GetPhysicalOperatorMetadata()
+        => new(
+            ObjectName: _schema.TableName,
+            IndexName: _indexStore.LogicalName);
 
     public IndexScanOperator(
         IIndexStore indexStore,
@@ -12021,7 +12243,8 @@ public sealed class IndexScanOperator : IOperator, IBatchOperator, IRowBufferReu
         _expectedKeyComponents = expectedKeyComponents;
         _expectedKeyCollations = expectedKeyCollations;
         _usesOrderedTextPayload = usesOrderedTextPayload;
-        _estimatedRowCount = estimatedRowCount > 0 ? estimatedRowCount : null;
+        _plannedEstimatedRowCount = estimatedRowCount > 0 ? estimatedRowCount : null;
+        _estimatedRowCount = _plannedEstimatedRowCount;
         if (expectedKeyColumnIndices is { Length: > 0 } && expectedKeyComponents is { Length: > 0 })
         {
             _expectedKeyAccessors = BoundColumnAccessHelper.CreateAccessors(_recordSerializer, expectedKeyColumnIndices);
@@ -12368,7 +12591,12 @@ public sealed class IndexScanOperator : IOperator, IBatchOperator, IRowBufferReu
 /// Unique-index lookup operator — performs a direct secondary-index equality lookup
 /// and resolves exactly one rowid from the index payload.
 /// </summary>
-public sealed class UniqueIndexLookupOperator : IOperator, IPreDecodeFilterSupport, IEstimatedRowCountProvider, IEncodedPayloadSource
+public sealed class UniqueIndexLookupOperator :
+    IOperator,
+    IPreDecodeFilterSupport,
+    IEstimatedRowCountProvider,
+    IEncodedPayloadSource,
+    IPhysicalOperatorMetadataProvider
 {
     private readonly IIndexStore _indexStore;
     private readonly BTree _tableTree;
@@ -12392,6 +12620,11 @@ public sealed class UniqueIndexLookupOperator : IOperator, IPreDecodeFilterSuppo
     internal IIndexStore IndexStore => _indexStore;
     internal BTree TableTree => _tableTree;
     internal long SeekValue => _seekValue;
+    PhysicalOperatorMetadata IPhysicalOperatorMetadataProvider.GetPhysicalOperatorMetadata()
+        => new(
+            EstimatedRows: 1,
+            ObjectName: _schema.TableName,
+            IndexName: _indexStore.LogicalName);
 
     public UniqueIndexLookupOperator(
         IIndexStore indexStore,
@@ -12564,7 +12797,14 @@ public sealed class UniqueIndexLookupOperator : IOperator, IPreDecodeFilterSuppo
 /// Ordered index scan operator — walks an index B+tree in key order and fetches table rows by rowid.
 /// Used to satisfy ORDER BY on indexed INTEGER columns without a Sort operator.
 /// </summary>
-public sealed class IndexOrderedScanOperator : IOperator, IBatchOperator, IRowBufferReuseController, IBatchBufferReuseController, IPreDecodeFilterSupport, IEncodedPayloadSource
+public sealed class IndexOrderedScanOperator :
+    IOperator,
+    IBatchOperator,
+    IRowBufferReuseController,
+    IBatchBufferReuseController,
+    IPreDecodeFilterSupport,
+    IEncodedPayloadSource,
+    IPhysicalOperatorMetadataProvider
 {
     private const int DefaultBatchSize = 64;
 
@@ -12606,6 +12846,8 @@ public sealed class IndexOrderedScanOperator : IOperator, IBatchOperator, IRowBu
     internal int KeyColumnIndex => _keyColumnIndex;
     internal IndexScanRange ScanRange => _scanRange;
     internal bool UsesOrderedTextPayload => _usesOrderedTextPayload;
+    PhysicalOperatorMetadata IPhysicalOperatorMetadataProvider.GetPhysicalOperatorMetadata()
+        => new(ObjectName: _schema.TableName, IndexName: _indexStore.LogicalName);
 
     public IndexOrderedScanOperator(
         IIndexStore indexStore,
@@ -12957,7 +13199,13 @@ public sealed class IndexOrderedScanOperator : IOperator, IBatchOperator, IRowBu
 /// <summary>
 /// Primary-key lookup operator — performs a direct B+tree key lookup against the table.
 /// </summary>
-public sealed class PrimaryKeyLookupOperator : IOperator, IPreDecodeFilterSupport, IRowBufferReuseController, IEstimatedRowCountProvider, IEncodedPayloadSource
+public sealed class PrimaryKeyLookupOperator :
+    IOperator,
+    IPreDecodeFilterSupport,
+    IRowBufferReuseController,
+    IEstimatedRowCountProvider,
+    IEncodedPayloadSource,
+    IPhysicalOperatorMetadataProvider
 {
     private readonly BTree _tableTree;
     private readonly TableSchema _schema;
@@ -12981,6 +13229,10 @@ public sealed class PrimaryKeyLookupOperator : IOperator, IPreDecodeFilterSuppor
     public ReadOnlyMemory<byte> CurrentPayload => _currentPayload;
     internal BTree TableTree => _tableTree;
     internal long SeekKey => _seekKey;
+    PhysicalOperatorMetadata IPhysicalOperatorMetadataProvider.GetPhysicalOperatorMetadata()
+        => new(
+            EstimatedRows: 1,
+            ObjectName: _schema.TableName);
 
     public PrimaryKeyLookupOperator(
         BTree tableTree,
@@ -13175,7 +13427,10 @@ public sealed class PrimaryKeyLookupOperator : IOperator, IPreDecodeFilterSuppor
 /// Primary-key lookup projection fast path.
 /// Verifies row existence via table key lookup and returns one row where every projected value is the PK key.
 /// </summary>
-public sealed class PrimaryKeyProjectionLookupOperator : IOperator, IEstimatedRowCountProvider
+public sealed class PrimaryKeyProjectionLookupOperator :
+    IOperator,
+    IEstimatedRowCountProvider,
+    IPhysicalOperatorMetadataProvider
 {
     private readonly BTree _tableTree;
     private readonly long _seekKey;
@@ -13186,6 +13441,10 @@ public sealed class PrimaryKeyProjectionLookupOperator : IOperator, IEstimatedRo
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount => 1;
+    PhysicalOperatorMetadata IPhysicalOperatorMetadataProvider.GetPhysicalOperatorMetadata()
+        => new(
+            EstimatedRows: 1,
+            AccessPath: PhysicalAccessPath.PrimaryKey);
 
     public PrimaryKeyProjectionLookupOperator(BTree tableTree, long seekKey, ColumnDefinition[] outputSchema)
     {
@@ -13277,7 +13536,10 @@ public enum GroupedIndexAggregateCountPredicateKind
     GreaterOrEqual,
 }
 
-public sealed class UniqueIndexProjectionLookupOperator : IOperator, IEstimatedRowCountProvider
+public sealed class UniqueIndexProjectionLookupOperator :
+    IOperator,
+    IEstimatedRowCountProvider,
+    IPhysicalOperatorMetadataProvider
 {
     private readonly IIndexStore _indexStore;
     private readonly long _seekValue;
@@ -13290,6 +13552,10 @@ public sealed class UniqueIndexProjectionLookupOperator : IOperator, IEstimatedR
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount => 1;
+    PhysicalOperatorMetadata IPhysicalOperatorMetadataProvider.GetPhysicalOperatorMetadata()
+        => new(
+            EstimatedRows: 1,
+            IndexName: _indexStore.LogicalName);
 
     public UniqueIndexProjectionLookupOperator(
         IIndexStore indexStore,
@@ -13418,7 +13684,10 @@ public sealed class UniqueIndexProjectionLookupOperator : IOperator, IEstimatedR
 /// and the indexed integer lookup literal
 /// for each matching rowid without fetching base table rows.
 /// </summary>
-public sealed class IndexScanProjectionOperator : IOperator, IEstimatedRowCountProvider
+public sealed class IndexScanProjectionOperator :
+    IOperator,
+    IEstimatedRowCountProvider,
+    IPhysicalOperatorMetadataProvider
 {
     private readonly IIndexStore _indexStore;
     private readonly long _seekValue;
@@ -13432,6 +13701,8 @@ public sealed class IndexScanProjectionOperator : IOperator, IEstimatedRowCountP
     public bool ReusesCurrentRowBuffer => true;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount { get; private set; }
+    PhysicalOperatorMetadata IPhysicalOperatorMetadataProvider.GetPhysicalOperatorMetadata()
+        => new(IndexName: _indexStore.LogicalName);
 
     public IndexScanProjectionOperator(
         IIndexStore indexStore,
@@ -13562,7 +13833,10 @@ public sealed class IndexScanProjectionOperator : IOperator, IEstimatedRowCountP
 /// base table rows when the hashed bucket stores explicit key components.
 /// Legacy rowid-only hashed buckets fall back to row verification for correctness.
 /// </summary>
-public sealed class HashedIndexProjectionLookupOperator : IOperator, IEstimatedRowCountProvider
+public sealed class HashedIndexProjectionLookupOperator :
+    IOperator,
+    IEstimatedRowCountProvider,
+    IPhysicalOperatorMetadataProvider
 {
     private readonly IIndexStore _indexStore;
     private readonly BTree _tableTree;
@@ -13585,6 +13859,8 @@ public sealed class HashedIndexProjectionLookupOperator : IOperator, IEstimatedR
     public bool ReusesCurrentRowBuffer => true;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount { get; private set; }
+    PhysicalOperatorMetadata IPhysicalOperatorMetadataProvider.GetPhysicalOperatorMetadata()
+        => new(ObjectName: _schema.TableName, IndexName: _indexStore.LogicalName);
 
     public HashedIndexProjectionLookupOperator(
         IIndexStore indexStore,
@@ -13803,7 +14079,11 @@ public sealed class HashedIndexProjectionLookupOperator : IOperator, IEstimatedR
 /// Emits projections composed only of the rowid (integer primary key)
 /// and the current integer index key without fetching base table rows.
 /// </summary>
-public sealed class IndexOrderedProjectionScanOperator : IOperator, IBatchOperator, IBatchBufferReuseController
+public sealed class IndexOrderedProjectionScanOperator :
+    IOperator,
+    IBatchOperator,
+    IBatchBufferReuseController,
+    IPhysicalOperatorMetadataProvider
 {
     private const int DefaultBatchSize = 64;
 
@@ -13821,6 +14101,8 @@ public sealed class IndexOrderedProjectionScanOperator : IOperator, IBatchOperat
     public ColumnDefinition[] OutputSchema { get; }
     public bool ReusesCurrentRowBuffer => true;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    PhysicalOperatorMetadata IPhysicalOperatorMetadataProvider.GetPhysicalOperatorMetadata()
+        => new(IndexName: _indexStore.LogicalName);
 
     public IndexOrderedProjectionScanOperator(
         IIndexStore indexStore,
@@ -13998,7 +14280,10 @@ public sealed class IndexOrderedProjectionScanOperator : IOperator, IBatchOperat
 /// Scalar aggregate fast path over a direct INTEGER index.
 /// Uses only index keys and row-id payload counts, avoiding base-row fetches.
 /// </summary>
-public sealed class IndexKeyAggregateOperator : IOperator, IEstimatedRowCountProvider
+public sealed class IndexKeyAggregateOperator :
+    IOperator,
+    IEstimatedRowCountProvider,
+    IPhysicalOperatorMetadataProvider
 {
     private enum AggregateKind
     {
@@ -14019,6 +14304,10 @@ public sealed class IndexKeyAggregateOperator : IOperator, IEstimatedRowCountPro
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount => 1;
+    PhysicalOperatorMetadata IPhysicalOperatorMetadataProvider.GetPhysicalOperatorMetadata()
+        => new(
+            EstimatedRows: 1,
+            IndexName: _indexStore.LogicalName);
 
     public IndexKeyAggregateOperator(
         IIndexStore indexStore,
@@ -14120,7 +14409,9 @@ public sealed class IndexKeyAggregateOperator : IOperator, IEstimatedRowCountPro
 /// or generic hash grouping when the group key and aggregate arguments all map to
 /// the same indexed integer column.
 /// </summary>
-public sealed class IndexGroupedAggregateOperator : IOperator
+public sealed class IndexGroupedAggregateOperator :
+    IOperator,
+    IPhysicalOperatorMetadataProvider
 {
     private readonly IIndexStore _indexStore;
     private readonly IndexScanRange _scanRange;
@@ -14133,6 +14424,8 @@ public sealed class IndexGroupedAggregateOperator : IOperator
     public ColumnDefinition[] OutputSchema { get; }
     public bool ReusesCurrentRowBuffer => true;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    PhysicalOperatorMetadata IPhysicalOperatorMetadataProvider.GetPhysicalOperatorMetadata()
+        => new(IndexName: _indexStore.LogicalName);
 
     public IndexGroupedAggregateOperator(
         IIndexStore indexStore,
@@ -14230,7 +14523,11 @@ public sealed class IndexGroupedAggregateOperator : IOperator
 /// Avoids base-row scans when GROUP BY matches the leftmost index prefix and
 /// the result only needs the grouped key columns plus COUNT(*).
 /// </summary>
-public sealed class CompositeIndexGroupedAggregateOperator : IOperator, IEstimatedRowCountProvider, IMaterializedRowsProvider
+public sealed class CompositeIndexGroupedAggregateOperator :
+    IOperator,
+    IEstimatedRowCountProvider,
+    IMaterializedRowsProvider,
+    IPhysicalOperatorMetadataProvider
 {
     private readonly IIndexStore _indexStore;
     private readonly BTree _tableTree;
@@ -14248,6 +14545,8 @@ public sealed class CompositeIndexGroupedAggregateOperator : IOperator, IEstimat
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount => _results?.Count;
+    PhysicalOperatorMetadata IPhysicalOperatorMetadataProvider.GetPhysicalOperatorMetadata()
+        => new(IndexName: _indexStore.LogicalName);
 
     public CompositeIndexGroupedAggregateOperator(
         IIndexStore indexStore,
@@ -14468,7 +14767,10 @@ public sealed class CompositeIndexGroupedAggregateOperator : IOperator, IEstimat
 /// Scalar aggregate fast path over the table row key for INTEGER PRIMARY KEY tables.
 /// Uses only the B-tree key stream and avoids row payload materialization.
 /// </summary>
-public sealed class TableKeyAggregateOperator : IOperator, IEstimatedRowCountProvider
+public sealed class TableKeyAggregateOperator :
+    IOperator,
+    IEstimatedRowCountProvider,
+    IPhysicalOperatorMetadataProvider
 {
     private enum AggregateKind
     {
@@ -14488,6 +14790,10 @@ public sealed class TableKeyAggregateOperator : IOperator, IEstimatedRowCountPro
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount => 1;
+    PhysicalOperatorMetadata IPhysicalOperatorMetadataProvider.GetPhysicalOperatorMetadata()
+        => new(
+            EstimatedRows: 1,
+            AccessPath: PhysicalAccessPath.PrimaryKey);
 
     public TableKeyAggregateOperator(
         BTree tableTree,
@@ -14637,7 +14943,10 @@ public sealed class TableKeyAggregateOperator : IOperator, IEstimatedRowCountPro
 /// Scalar SUM/AVG/COUNT/MIN/MAX fast path for point/range lookups from PK or a single-column index equality lookup.
 /// Avoids generic operator-pipeline overhead by aggregating directly on payloads.
 /// </summary>
-public sealed class ScalarAggregateLookupOperator : IOperator, IEstimatedRowCountProvider
+public sealed class ScalarAggregateLookupOperator :
+    IOperator,
+    IEstimatedRowCountProvider,
+    IPhysicalOperatorMetadataProvider
 {
     private enum AggregateKind
     {
@@ -14669,6 +14978,13 @@ public sealed class ScalarAggregateLookupOperator : IOperator, IEstimatedRowCoun
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount => 1;
+    PhysicalOperatorMetadata IPhysicalOperatorMetadataProvider.GetPhysicalOperatorMetadata()
+        => new(
+            EstimatedRows: 1,
+            AccessPath: _lookupKind == LookupKind.PrimaryKey
+                ? PhysicalAccessPath.PrimaryKey
+                : PhysicalAccessPath.Index,
+            IndexName: _indexStore?.LogicalName);
 
     public ScalarAggregateLookupOperator(
         BTree tableTree,
@@ -15017,7 +15333,10 @@ public sealed class ScalarAggregateLookupOperator : IOperator, IEstimatedRowCoun
 /// Scans the table B+tree directly and decodes only the target column.
 /// Produces exactly one row.
 /// </summary>
-public sealed class ScalarAggregateTableOperator : IOperator, IEstimatedRowCountProvider
+public sealed class ScalarAggregateTableOperator :
+    IOperator,
+    IEstimatedRowCountProvider,
+    IPhysicalOperatorMetadataProvider
 {
     private enum AggregateKind
     {
@@ -15042,6 +15361,8 @@ public sealed class ScalarAggregateTableOperator : IOperator, IEstimatedRowCount
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount => 1;
+    PhysicalOperatorMetadata IPhysicalOperatorMetadataProvider.GetPhysicalOperatorMetadata()
+        => new(EstimatedRows: 1);
 
     public ScalarAggregateTableOperator(
         BTree tableTree,
@@ -15236,7 +15557,10 @@ public sealed class ScalarAggregateTableOperator : IOperator, IEstimatedRowCount
 /// Decodes only the referenced columns into a compact layout so predicates and aggregate
 /// accumulation avoid sparse row buffers.
 /// </summary>
-public sealed class FilteredScalarAggregateTableOperator : IOperator, IEstimatedRowCountProvider
+public sealed class FilteredScalarAggregateTableOperator :
+    IOperator,
+    IEstimatedRowCountProvider,
+    IPhysicalOperatorMetadataProvider
 {
     private enum AggregateKind
     {
@@ -15267,6 +15591,8 @@ public sealed class FilteredScalarAggregateTableOperator : IOperator, IEstimated
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount => 1;
+    PhysicalOperatorMetadata IPhysicalOperatorMetadataProvider.GetPhysicalOperatorMetadata()
+        => new(EstimatedRows: 1);
 
     internal FilteredScalarAggregateTableOperator(
         BTree tableTree,
@@ -15523,7 +15849,11 @@ public sealed class FilteredScalarAggregateTableOperator : IOperator, IEstimated
 /// Decodes only the referenced payload columns into a compact layout so indexed predicates can avoid falling
 /// back to a full table scan when the aggregate argument is not the index key itself.
 /// </summary>
-public sealed class FilteredScalarAggregatePayloadOperator : IOperator, IEstimatedRowCountProvider
+public sealed class FilteredScalarAggregatePayloadOperator :
+    IOperator,
+    IEstimatedRowCountProvider,
+    IPhysicalOperatorChildren,
+    IPhysicalOperatorMetadataProvider
 {
     private enum AggregateKind
     {
@@ -15555,6 +15885,9 @@ public sealed class FilteredScalarAggregatePayloadOperator : IOperator, IEstimat
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount => 1;
+    IReadOnlyList<IOperator> IPhysicalOperatorChildren.PhysicalChildren => [_source];
+    PhysicalOperatorMetadata IPhysicalOperatorMetadataProvider.GetPhysicalOperatorMetadata()
+        => new(EstimatedRows: 1);
 
     internal FilteredScalarAggregatePayloadOperator(
         IOperator source,
@@ -15569,8 +15902,12 @@ public sealed class FilteredScalarAggregatePayloadOperator : IOperator, IEstimat
         bool isCountStar = false,
         IScalarAggregateBatchPlan? batchPlan = null)
     {
-        _source = source ?? throw new ArgumentNullException(nameof(source));
-        _payloadSource = source as IEncodedPayloadSource
+        ArgumentNullException.ThrowIfNull(source);
+        if (PhysicalPlanCapture.Unwrap(source) is not IEncodedPayloadSource)
+            throw new ArgumentException("Source must expose encoded payload.", nameof(source));
+
+        _source = PhysicalPlanCapture.WrapIfActive(source);
+        _payloadSource = _source as IEncodedPayloadSource
             ?? throw new ArgumentException("Source must expose encoded payload.", nameof(source));
         _recordSerializer = recordSerializer ?? throw new ArgumentNullException(nameof(recordSerializer));
         _decodedColumnIndices = decodedColumnIndices ?? throw new ArgumentNullException(nameof(decodedColumnIndices));
@@ -15806,7 +16143,10 @@ public sealed class FilteredScalarAggregatePayloadOperator : IOperator, IEstimat
 /// COUNT(*) fast path for a single table with no filters.
 /// Produces exactly one row with the table entry count.
 /// </summary>
-public sealed class CountStarTableOperator : IOperator, IEstimatedRowCountProvider
+public sealed class CountStarTableOperator :
+    IOperator,
+    IEstimatedRowCountProvider,
+    IPhysicalOperatorMetadataProvider
 {
     private readonly BTree _tableTree;
     private readonly bool _ignoreCachedCount;
@@ -15816,6 +16156,8 @@ public sealed class CountStarTableOperator : IOperator, IEstimatedRowCountProvid
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount => 1;
+    PhysicalOperatorMetadata IPhysicalOperatorMetadataProvider.GetPhysicalOperatorMetadata()
+        => new(EstimatedRows: 1);
 
     public CountStarTableOperator(BTree tableTree, ColumnDefinition[] outputSchema, bool ignoreCachedCount = false)
     {
@@ -15850,7 +16192,10 @@ public sealed class CountStarTableOperator : IOperator, IEstimatedRowCountProvid
 /// Streams the left query result to completion before opening and consuming the right result.
 /// The operator owns both query results and normalizes their rows to the bound compound schema.
 /// </summary>
-internal sealed class ConcatenateOperator : IOperator, IRowBufferReuseController
+internal sealed class ConcatenateOperator :
+    IOperator,
+    IRowBufferReuseController,
+    IPhysicalOperatorChildren
 {
     private readonly QueryResult _left;
     private readonly QueryResult _right;
@@ -15874,6 +16219,26 @@ internal sealed class ConcatenateOperator : IOperator, IRowBufferReuseController
     public ColumnDefinition[] OutputSchema { get; }
     public bool ReusesCurrentRowBuffer => _reuseCurrentRowBuffer;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    IReadOnlyList<IOperator> IPhysicalOperatorChildren.PhysicalChildren
+    {
+        get
+        {
+            IOperator? left = _left.PhysicalRootOperator;
+            IOperator? right = _right.PhysicalRootOperator;
+            if (left is null)
+                return right is null
+                    ? Array.Empty<IOperator>()
+                    : [PhysicalPlanCapture.WrapIfActive(right)];
+            if (right is null)
+                return [PhysicalPlanCapture.WrapIfActive(left)];
+
+            return
+            [
+                PhysicalPlanCapture.WrapIfActive(left),
+                PhysicalPlanCapture.WrapIfActive(right),
+            ];
+        }
+    }
 
     public ValueTask OpenAsync(CancellationToken ct = default)
     {
@@ -16084,24 +16449,36 @@ public sealed class MaterializedOperator : IOperator, IEstimatedRowCountProvider
 /// <summary>
 /// Streams rows from a native CSharpDB table archive registered as an external table.
 /// </summary>
-public sealed class ExternalTableScanOperator : IOperator, IEstimatedRowCountProvider
+public sealed class ExternalTableScanOperator :
+    IOperator,
+    IEstimatedRowCountProvider,
+    IPhysicalOperatorMetadataProvider
 {
     private readonly string _path;
+    private readonly long? _physicalEstimatedRows;
     private IAsyncEnumerator<DbValue[]>? _rows;
 
     public ColumnDefinition[] OutputSchema { get; }
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount { get; }
+    PhysicalOperatorMetadata IPhysicalOperatorMetadataProvider.GetPhysicalOperatorMetadata()
+        => new(
+            EstimatedRows: _physicalEstimatedRows,
+            AccessPath: PhysicalAccessPath.ExternalTable);
 
     public ExternalTableScanOperator(
         string path,
         ColumnDefinition[] outputSchema,
-        int? estimatedRowCount = null)
+        int? estimatedRowCount = null,
+        long? physicalEstimatedRows = null)
     {
         _path = path;
         OutputSchema = outputSchema;
         EstimatedRowCount = estimatedRowCount > 0 ? estimatedRowCount : null;
+        _physicalEstimatedRows = physicalEstimatedRows is >= 0
+            ? physicalEstimatedRows
+            : null;
     }
 
     public ValueTask OpenAsync(CancellationToken ct = default)
@@ -16133,7 +16510,10 @@ public sealed class ExternalTableScanOperator : IOperator, IEstimatedRowCountPro
 /// <summary>
 /// Uses the embedded archive primary-key index when present, with a scan fallback for replaced legacy files.
 /// </summary>
-public sealed class ExternalTablePrimaryKeyLookupOperator : IOperator, IEstimatedRowCountProvider
+public sealed class ExternalTablePrimaryKeyLookupOperator :
+    IOperator,
+    IEstimatedRowCountProvider,
+    IPhysicalOperatorMetadataProvider
 {
     private readonly string _path;
     private readonly int _primaryKeyColumnIndex;
@@ -16144,6 +16524,10 @@ public sealed class ExternalTablePrimaryKeyLookupOperator : IOperator, IEstimate
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount => 1;
+    PhysicalOperatorMetadata IPhysicalOperatorMetadataProvider.GetPhysicalOperatorMetadata()
+        => new(
+            EstimatedRows: 1,
+            AccessPath: PhysicalAccessPath.ExternalTable);
 
     public ExternalTablePrimaryKeyLookupOperator(
         string path,
@@ -16209,7 +16593,11 @@ public sealed class ExternalTablePrimaryKeyLookupOperator : IOperator, IEstimate
 /// <summary>
 /// Probes an indexed external archive on the right side of an equality join.
 /// </summary>
-public sealed class ExternalIndexNestedLoopJoinOperator : IOperator, IEstimatedRowCountProvider
+public sealed class ExternalIndexNestedLoopJoinOperator :
+    IOperator,
+    IEstimatedRowCountProvider,
+    IPhysicalOperatorChildren,
+    IPhysicalOperatorMetadataProvider
 {
     private readonly IOperator _outer;
     private readonly string _path;
@@ -16224,6 +16612,11 @@ public sealed class ExternalIndexNestedLoopJoinOperator : IOperator, IEstimatedR
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount => _estimatedRowCount;
+    IReadOnlyList<IOperator> IPhysicalOperatorChildren.PhysicalChildren => [_outer];
+    PhysicalOperatorMetadata IPhysicalOperatorMetadataProvider.GetPhysicalOperatorMetadata()
+        => new(
+            AccessPath: PhysicalAccessPath.ExternalTable,
+            JoinType: PhysicalOperatorMetadataHelper.ToStableJoinType(_joinType));
 
     public ExternalIndexNestedLoopJoinOperator(
         IOperator outer,
@@ -16237,7 +16630,7 @@ public sealed class ExternalIndexNestedLoopJoinOperator : IOperator, IEstimatedR
         int? estimatedOutputRowCount = null,
         DbFunctionRegistry? functions = null)
     {
-        _outer = outer;
+        _outer = PhysicalPlanCapture.WrapIfActive(outer);
         _path = path;
         _joinType = joinType;
         _outerKeyIndex = outerKeyIndex;

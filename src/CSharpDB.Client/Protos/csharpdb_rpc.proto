@@ -172,6 +172,10 @@ message StringList {
   repeated string values = 1;
 }
 
+message BoolList {
+  repeated bool values = 1;
+}
+
 message ShardDefinitionMessage {
   string shard_id = 1;
   bool enabled = 2;
@@ -937,6 +941,8 @@ message SqlExecutionResultMessage {
   int32 rows_affected = 4;
   google.protobuf.StringValue error = 5;
   google.protobuf.Duration elapsed = 6;
+  StringList column_types = 7;
+  BoolList column_nullability = 8;
 }
 
 message DatabaseInfoMessage {

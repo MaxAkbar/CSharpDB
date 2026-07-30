@@ -7,7 +7,11 @@ namespace CSharpDB.Execution;
 /// Bounded in-memory window stage. The planner supplies one compatible
 /// partition/order specification per stage.
 /// </summary>
-internal sealed class WindowOperator : IOperator, IEstimatedRowCountProvider, IMaterializedRowsProvider
+internal sealed class WindowOperator :
+    IOperator,
+    IEstimatedRowCountProvider,
+    IMaterializedRowsProvider,
+    IPhysicalOperatorChildren
 {
     private const int CancellationCheckInterval = 1024;
 
@@ -311,7 +315,7 @@ internal sealed class WindowOperator : IOperator, IEstimatedRowCountProvider, IM
                 "The maximum buffered window row count cannot be smaller than the maximum partition row count.");
         }
 
-        _source = source;
+        _source = PhysicalPlanCapture.WrapIfActive(source);
         _inputSchema = inputSchema;
         _options = new WindowExecutionOptions
         {
@@ -343,6 +347,7 @@ internal sealed class WindowOperator : IOperator, IEstimatedRowCountProvider, IM
     public bool ReusesCurrentRowBuffer => false;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount => _results?.Count;
+    IReadOnlyList<IOperator> IPhysicalOperatorChildren.PhysicalChildren => [_source];
 
     public async ValueTask OpenAsync(CancellationToken ct = default)
     {

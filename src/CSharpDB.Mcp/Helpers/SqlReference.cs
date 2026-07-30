@@ -90,6 +90,24 @@ internal static class SqlReference
         COMMIT
         ROLLBACK
 
+        ── PLAN INSPECTION ──
+        EXPLAIN [FOR] SELECT|INSERT|UPDATE|DELETE ...
+          — returns the selected physical operator tree without opening it
+        EXPLAIN ANALYZE [FOR] SELECT|INSERT|UPDATE|DELETE ...
+          — executes exactly once and adds actual rows, loops, and elapsed time
+          — profiled DML mutates under normal transaction semantics
+        EXPLAIN ESTIMATE FOR SELECT ...
+          — legacy bounded cardinality-estimate diagnostic
+        estimated_rows is nullable when no planner estimate is available.
+        estimated_cost uses stable relative row-work units, not elapsed time.
+        Physical output is a stable rowset bounded to 500 rows and a 256 KiB
+        inline content budget; that budget is not exact serialized transport size.
+        Predicate literal and parameter values are redacted. Plain EXPLAIN rejects
+        WITH, subquery, view, and duplicate-eliminating compound shapes whose current
+        planning paths would perform eager work; use ANALYZE only when execution is intended.
+        Cancellation and execution errors remain failures. Where safe, ANALYZE attaches
+        a bounded, redacted partial-profile summary to the failure diagnostics.
+
         ── OPERATORS ──
         Comparison:  =  <>  <  >  <=  >=
         Logical:     AND  OR  NOT

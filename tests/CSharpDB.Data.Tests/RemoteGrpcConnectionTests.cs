@@ -63,6 +63,61 @@ public sealed class RemoteGrpcConnectionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task QuerySchema_AllNullIntegerColumn_PreservesDeclaredTypeOverGrpc()
+    {
+        await using var conn = CreateConnection();
+        await conn.OpenAsync(Ct);
+
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "CREATE TABLE grpc_nullable_type (value INTEGER);";
+        await cmd.ExecuteNonQueryAsync(Ct);
+
+        cmd.CommandText = "INSERT INTO grpc_nullable_type VALUES (NULL);";
+        await cmd.ExecuteNonQueryAsync(Ct);
+
+        cmd.CommandText = "SELECT value FROM grpc_nullable_type;";
+        await using var reader = await cmd.ExecuteReaderAsync(Ct);
+
+        Assert.Equal("INTEGER", reader.GetDataTypeName(0));
+        Assert.Equal(typeof(long), reader.GetFieldType(0));
+        Assert.True(await reader.ReadAsync(Ct));
+        Assert.True(reader.IsDBNull(0));
+    }
+
+    [Fact]
+    public async Task PhysicalExplainSchema_IsEquivalentAcrossDirectHttpAndGrpc()
+    {
+        await using var directConnection =
+            new CSharpDbConnection("Data Source=:memory:");
+        using HttpClient httpTransportClient = _factory.CreateClient();
+        await using var httpConnection =
+            new CSharpDbConnection(
+                "Transport=Http;Endpoint=http://localhost",
+                httpTransportClient);
+        await using CSharpDbConnection grpcConnection =
+            CreateConnection();
+
+        await directConnection.OpenAsync(Ct);
+        await httpConnection.OpenAsync(Ct);
+        await grpcConnection.OpenAsync(Ct);
+
+        string[] directSchema =
+            await CapturePhysicalExplainSchemaAsync(directConnection);
+        Assert.Equal(
+            directSchema,
+            await CapturePhysicalExplainSchemaAsync(httpConnection));
+        Assert.Equal(
+            directSchema,
+            await CapturePhysicalExplainSchemaAsync(grpcConnection));
+
+        Assert.Contains("node_id|INTEGER|False", directSchema);
+        Assert.Contains("operator_type|TEXT|False", directSchema);
+        Assert.Contains("status|TEXT|False", directSchema);
+        Assert.Contains("parent_node_id|INTEGER|True", directSchema);
+        Assert.Contains("estimated_cost|REAL|True", directSchema);
+    }
+
+    [Fact]
     public async Task Prepare_RemoteGrpcConnections_FallBackToSqlBinding()
     {
         await using var conn = CreateConnection();
@@ -695,6 +750,22 @@ public sealed class RemoteGrpcConnectionTests : IAsyncLifetime
 
     private CSharpDbConnection CreateConnection()
         => new("Transport=Grpc;Endpoint=http://localhost", _transportClient);
+
+    private static async Task<string[]> CapturePhysicalExplainSchemaAsync(
+        CSharpDbConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "EXPLAIN SELECT 1;";
+        await using var reader = await command.ExecuteReaderAsync(Ct);
+        DataTable schema = Assert.IsType<DataTable>(reader.GetSchemaTable());
+        return schema.Rows
+            .Cast<DataRow>()
+            .Select(row =>
+                $"{row.Field<string>("ColumnName")}|" +
+                $"{row.Field<string>("DataTypeName")}|" +
+                $"{row.Field<bool>("AllowDBNull")}")
+            .ToArray();
+    }
 
     private static HttpClient CreateGrpcHttpClient(TestDaemonFactory factory)
     {
