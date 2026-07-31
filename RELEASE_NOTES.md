@@ -23,7 +23,7 @@ version4.4.0 completes the bounded SQL feature-coverage program and makes its re
 ### Release Gate
 
 - Added a reusable release qualification workflow that runs the full solution and provider/tooling checks twice from clean environments on Windows, Linux, and macOS before publishing can begin.
-- Added a parameterized previous-release performance comparison with explicit throughput and P99 thresholds. Benchmark evidence and test logs are written to runner-owned temporary storage, not left as generated source artifacts.
+- Added a parameterized, suite-interleaved previous-release performance comparison with a 15% throughput limit and a dual P99 limit requiring both a 25% and 0.05 ms regression. Benchmark evidence and test logs are written to runner-owned temporary storage, not left as generated source artifacts.
 - Preserved the immutable 4.3.0 migration capability catalog and added a separately digested 4.4.0 catalog so older migration plans remain independently replayable.
 
 ## version4.3.0

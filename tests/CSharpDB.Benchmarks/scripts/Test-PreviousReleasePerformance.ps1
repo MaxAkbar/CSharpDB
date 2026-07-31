@@ -11,7 +11,7 @@ param(
     [ValidateSet(1, 2)]
     [int] $QualificationPass = 1,
 
-    [ValidateRange(1, 9)]
+    [ValidateRange(2, 9)]
     [int] $RepeatCount = 3,
 
     [ValidateRange(0, 100)]
@@ -19,6 +19,9 @@ param(
 
     [ValidateRange(0, 500)]
     [double] $MaxP99RegressionPercent = 25,
+
+    [ValidateRange(0, 1000)]
+    [double] $MaxP99RegressionMilliseconds = 0.05,
 
     [switch] $PreflightOnly
 )
@@ -185,28 +188,66 @@ Assert-BenchmarkProjectAtCommit -Commit $previousCommit -Description "Previous r
 Assert-BenchmarkProjectAtCommit -Commit $candidateCommit -Description "Candidate ref '$CandidateRef'"
 
 New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
-$runOrder = if ($QualificationPass -eq 1) {
+$revisionOrder = if ($QualificationPass -eq 1) {
     @('previous', 'candidate')
 }
 else {
     @('candidate', 'previous')
 }
+$suiteDefinitions = @(
+    [pscustomobject]@{ Name = 'master-table'; Argument = '--master-table' }
+    [pscustomobject]@{ Name = 'durable-sql-batching'; Argument = '--durable-sql-batching' }
+    [pscustomobject]@{ Name = 'concurrent-write-diagnostics'; Argument = '--concurrent-write-diagnostics' }
+    [pscustomobject]@{ Name = 'hybrid-storage-mode'; Argument = '--hybrid-storage-mode' }
+    [pscustomobject]@{ Name = 'hybrid-hot-set-read'; Argument = '--hybrid-hot-set-read' }
+    [pscustomobject]@{ Name = 'hybrid-cold-open'; Argument = '--hybrid-cold-open' }
+    [pscustomobject]@{ Name = 'sqlite-compare'; Argument = '--sqlite-compare' }
+)
+$executionPlan = @(
+    foreach ($suite in $suiteDefinitions) {
+        foreach ($revision in $revisionOrder) {
+            [pscustomobject]@{
+                Suite = $suite
+                Revision = $revision
+            }
+        }
+    }
+)
+$suiteOrder = ($suiteDefinitions.Name -join ', ')
+$executionOrder = (
+    $executionPlan |
+        ForEach-Object { "$($_.Suite.Name)/$($_.Revision)" }
+) -join ', '
+$p99AbsoluteAllowance = $MaxP99RegressionMilliseconds.ToString(
+    '0.0000',
+    [Globalization.CultureInfo]::InvariantCulture)
+$logRoot = Join-Path $outputRoot 'logs'
+$executionLogPath = Join-Path $logRoot 'execution-order.log'
 
+$preflightPath = Join-Path $outputRoot 'previous-release-performance-preflight.md'
+$preflight = @(
+    '# Previous-release performance preflight',
+    '',
+    '- Result: **PASS**',
+    "- Qualification pass: $QualificationPass",
+    '- Execution strategy: suite-interleaved',
+    "- Revision order within each suite: $($revisionOrder -join ' then ')",
+    "- Suite order: $suiteOrder",
+    "- Execution order: $executionOrder",
+    "- Repeat count: $RepeatCount",
+    "- Throughput regression limit: $MaxThroughputRegressionPercent%",
+    "- P99 regression limit: $MaxP99RegressionPercent%",
+    "- P99 absolute regression allowance: $p99AbsoluteAllowance ms",
+    '- P99 failure rule: relative and absolute limits must both be exceeded',
+    "- Previous ref: ``$PreviousRef`` (``$previousCommit``)",
+    "- Candidate ref: ``$CandidateRef`` (``$candidateCommit``)",
+    "- Planned execution log: ``$executionLogPath``",
+    "- Output root: ``$outputRoot``"
+)
+[IO.File]::WriteAllLines($preflightPath, $preflight)
+Write-Host 'Previous-release performance preflight passed.'
+Write-Host "Evidence: $preflightPath"
 if ($PreflightOnly) {
-    $preflightPath = Join-Path $outputRoot 'previous-release-performance-preflight.md'
-    $preflight = @(
-        '# Previous-release performance preflight',
-        '',
-        '- Result: **PASS**',
-        "- Qualification pass: $QualificationPass",
-        "- Run order: $($runOrder -join ' then ')",
-        "- Previous ref: ``$PreviousRef`` (``$previousCommit``)",
-        "- Candidate ref: ``$CandidateRef`` (``$candidateCommit``)",
-        "- Output root: ``$outputRoot``"
-    )
-    [IO.File]::WriteAllLines($preflightPath, $preflight)
-    Write-Host 'Previous-release performance preflight passed.'
-    Write-Host "Evidence: $preflightPath"
     return
 }
 
@@ -214,7 +255,6 @@ $baselineWorktree = Join-Path $outputRoot 'baseline-source'
 $candidateWorktree = Join-Path $outputRoot 'candidate-source'
 $baselineResults = Join-Path $outputRoot 'baseline-results'
 $candidateResults = Join-Path $outputRoot 'candidate-results'
-$logRoot = Join-Path $outputRoot 'logs'
 $reportPath = Join-Path $outputRoot 'previous-release-performance.md'
 $baselineAdded = $false
 $candidateAdded = $false
@@ -227,8 +267,87 @@ $env:DOTNET_CLI_HOME = Join-Path $outputRoot '.dotnet-home'
 New-Item -ItemType Directory -Path $env:NUGET_PACKAGES -Force | Out-Null
 New-Item -ItemType Directory -Path $env:DOTNET_CLI_HOME -Force | Out-Null
 New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
+[IO.File]::WriteAllLines(
+    $executionLogPath,
+    @('TimestampUtc|Ordinal|Suite|Revision|State|Detail'))
 
-function Invoke-ReleaseCore {
+function Write-ExecutionEvent {
+    param(
+        [Parameter(Mandatory)]
+        [int] $Ordinal,
+
+        [Parameter(Mandatory)]
+        [string] $Suite,
+
+        [Parameter(Mandatory)]
+        [string] $Revision,
+
+        [Parameter(Mandatory)]
+        [ValidateSet('START', 'PASS', 'FAIL')]
+        [string] $State,
+
+        [string] $Detail = ''
+    )
+
+    $safeDetail = $Detail.
+        Replace('|', '/').
+        Replace("`r", ' ').
+        Replace("`n", ' ')
+    $timestamp = [DateTimeOffset]::UtcNow.ToString(
+        'o',
+        [Globalization.CultureInfo]::InvariantCulture)
+    Add-Content `
+        -LiteralPath $executionLogPath `
+        -Value "$timestamp|$Ordinal|$Suite|$Revision|$State|$safeDetail"
+}
+
+function Get-BenchmarkProject {
+    param(
+        [Parameter(Mandatory)]
+        [string] $SourceRoot
+    )
+
+    return [IO.Path]::Combine(
+        $SourceRoot,
+        'tests',
+        'CSharpDB.Benchmarks',
+        'CSharpDB.Benchmarks.csproj')
+}
+
+function Invoke-BenchmarkBuild {
+    param(
+        [Parameter(Mandatory)]
+        [string] $SourceRoot,
+
+        [Parameter(Mandatory)]
+        [string] $RunName
+    )
+
+    $project = Get-BenchmarkProject -SourceRoot $SourceRoot
+    $logPath = Join-Path $logRoot "$RunName.log"
+    [IO.File]::WriteAllLines(
+        $logPath,
+        @(
+            "=== BUILD $RunName ===",
+            "Project: $project",
+            ''
+        ))
+    Push-Location $SourceRoot
+    try {
+        & dotnet build $project -c Release --nologo 2>&1 |
+            Tee-Object -FilePath $logPath -Append |
+            Write-Host
+        $buildExitCode = $LASTEXITCODE
+    }
+    finally {
+        Pop-Location
+    }
+    if ($buildExitCode -ne 0) {
+        throw "Release-core benchmark build failed in '$SourceRoot'."
+    }
+}
+
+function Invoke-ReleaseCoreSuite {
     param(
         [Parameter(Mandatory)]
         [string] $SourceRoot,
@@ -237,61 +356,91 @@ function Invoke-ReleaseCore {
         [string] $Destination,
 
         [Parameter(Mandatory)]
-        [string] $RunName
+        [string] $RunName,
+
+        [Parameter(Mandatory)]
+        [object] $Suite
     )
 
-    $project = [IO.Path]::Combine(
-        $SourceRoot,
-        'tests',
-        'CSharpDB.Benchmarks',
-        'CSharpDB.Benchmarks.csproj')
+    $project = Get-BenchmarkProject -SourceRoot $SourceRoot
     $logPath = Join-Path $logRoot "$RunName.log"
-    Push-Location $SourceRoot
-    try {
-        & dotnet run -c Release --project $project -- --release-core --repeat $RepeatCount --repro 2>&1 |
-            Tee-Object -FilePath $logPath |
-            Write-Host
-        $benchmarkExitCode = $LASTEXITCODE
-    }
-    finally {
-        Pop-Location
-    }
-    if ($benchmarkExitCode -ne 0) {
-        throw "Release-core benchmark failed in '$SourceRoot'."
-    }
-
     $resultRoot = [IO.Path]::Combine(
         $SourceRoot,
         'tests',
         'CSharpDB.Benchmarks',
         'bin',
         'Release')
+    $resultPattern = "$($Suite.Name)-*-median-of-$RepeatCount.csv"
+    $existingResults = @(
+        if (Test-Path -LiteralPath $resultRoot -PathType Container) {
+            Get-ChildItem `
+                -LiteralPath $resultRoot `
+                -File `
+                -Recurse `
+                -Filter $resultPattern
+        }
+    )
+    if ($existingResults.Count -ne 0) {
+        throw (
+            "Release-core suite '$($Suite.Name)' found " +
+            "$($existingResults.Count) pre-existing median CSV file(s) in " +
+            "'$resultRoot'.")
+    }
+
+    New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+    $destinationPath = Join-Path $Destination "$($Suite.Name).csv"
+    if (Test-Path -LiteralPath $destinationPath) {
+        throw "Release-core destination already exists: $destinationPath"
+    }
+
+    Add-Content `
+        -LiteralPath $logPath `
+        -Value @(
+            '',
+            "=== SUITE $($Suite.Name) / $RunName ===",
+            "Argument: $($Suite.Argument)",
+            ''
+        )
+    Push-Location $SourceRoot
+    try {
+        & dotnet run `
+            -c Release `
+            --no-build `
+            --no-restore `
+            --project $project `
+            -- `
+            $Suite.Argument `
+            --repeat $RepeatCount `
+            --repro 2>&1 |
+                Tee-Object -FilePath $logPath -Append |
+                Write-Host
+        $benchmarkExitCode = $LASTEXITCODE
+    }
+    finally {
+        Pop-Location
+    }
+    if ($benchmarkExitCode -ne 0) {
+        throw (
+            "Release-core suite '$($Suite.Name)' failed in " +
+            "'$SourceRoot'.")
+    }
+
     if (-not (Test-Path -LiteralPath $resultRoot -PathType Container)) {
         throw "Release-core benchmark output directory not found: $resultRoot"
     }
-    New-Item -ItemType Directory -Path $Destination -Force | Out-Null
-    $suiteNames = @(
-        'master-table',
-        'durable-sql-batching',
-        'concurrent-write-diagnostics',
-        'hybrid-storage-mode',
-        'hybrid-hot-set-read',
-        'hybrid-cold-open',
-        'sqlite-compare'
-    )
-    foreach ($suiteName in $suiteNames) {
-        $result = Get-ChildItem `
+    $results = @(
+        Get-ChildItem `
             -LiteralPath $resultRoot `
             -File `
             -Recurse `
-            -Filter "$suiteName-*-median-of-$RepeatCount.csv" |
-                Sort-Object LastWriteTimeUtc, FullName |
-                Select-Object -Last 1
-        if ($null -eq $result) {
-            throw "Release-core suite '$suiteName' did not produce a median CSV."
-        }
-        Copy-Item -LiteralPath $result.FullName -Destination (Join-Path $Destination "$suiteName.csv")
+            -Filter $resultPattern
+    )
+    if ($results.Count -ne 1) {
+        throw (
+            "Release-core suite '$($Suite.Name)' produced " +
+            "$($results.Count) median CSV file(s); expected exactly one.")
     }
+    Copy-Item -LiteralPath $results[0].FullName -Destination $destinationPath
 }
 
 try {
@@ -307,19 +456,57 @@ try {
     }
     $candidateAdded = $true
 
-    foreach ($run in $runOrder) {
-        if ($run -eq 'previous') {
-            Invoke-ReleaseCore `
+    foreach ($revision in $revisionOrder) {
+        if ($revision -eq 'previous') {
+            Invoke-BenchmarkBuild `
                 -SourceRoot $baselineWorktree `
-                -Destination $baselineResults `
                 -RunName 'previous-release'
         }
         else {
-            Invoke-ReleaseCore `
+            Invoke-BenchmarkBuild `
                 -SourceRoot $candidateWorktree `
-                -Destination $candidateResults `
                 -RunName 'candidate'
         }
+    }
+
+    $executionOrdinal = 0
+    foreach ($entry in $executionPlan) {
+        $executionOrdinal++
+        Write-ExecutionEvent `
+            -Ordinal $executionOrdinal `
+            -Suite $entry.Suite.Name `
+            -Revision $entry.Revision `
+            -State 'START'
+        try {
+            if ($entry.Revision -eq 'previous') {
+                Invoke-ReleaseCoreSuite `
+                    -SourceRoot $baselineWorktree `
+                    -Destination $baselineResults `
+                    -RunName 'previous-release' `
+                    -Suite $entry.Suite
+            }
+            else {
+                Invoke-ReleaseCoreSuite `
+                    -SourceRoot $candidateWorktree `
+                    -Destination $candidateResults `
+                    -RunName 'candidate' `
+                    -Suite $entry.Suite
+            }
+        }
+        catch {
+            Write-ExecutionEvent `
+                -Ordinal $executionOrdinal `
+                -Suite $entry.Suite.Name `
+                -Revision $entry.Revision `
+                -State 'FAIL' `
+                -Detail $_.Exception.Message
+            throw
+        }
+        Write-ExecutionEvent `
+            -Ordinal $executionOrdinal `
+            -Suite $entry.Suite.Name `
+            -Revision $entry.Revision `
+            -State 'PASS'
     }
 
     try {
@@ -328,7 +515,8 @@ try {
             -CandidateResultsPath $candidateResults `
             -ReportPath $reportPath `
             -MaxThroughputRegressionPercent $MaxThroughputRegressionPercent `
-            -MaxP99RegressionPercent $MaxP99RegressionPercent
+            -MaxP99RegressionPercent $MaxP99RegressionPercent `
+            -MaxP99RegressionMilliseconds $MaxP99RegressionMilliseconds
     }
     finally {
         if (Test-Path -LiteralPath $reportPath -PathType Leaf) {
@@ -339,7 +527,11 @@ try {
                 "- Previous ref: ``$PreviousRef`` (``$previousCommit``)",
                 "- Candidate ref: ``$CandidateRef`` (``$candidateCommit``)",
                 "- Qualification pass: $QualificationPass",
-                "- Run order: $($runOrder -join ' then ')",
+                '- Execution strategy: suite-interleaved',
+                "- Revision order within each suite: $($revisionOrder -join ' then ')",
+                "- Suite order: $suiteOrder",
+                "- Execution order: $executionOrder",
+                "- Execution log: ``$executionLogPath``",
                 "- Repeat count: $RepeatCount",
                 "- Runner: ``$([Environment]::MachineName)``",
                 "- OS: ``$([Runtime.InteropServices.RuntimeInformation]::OSDescription)``",

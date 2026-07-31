@@ -72,9 +72,14 @@ automatically by the tag release workflow before any publishing job starts.
 The workflow also runs the full release-core benchmark against the previous
 release in two independent clean Windows jobs. When no override is provided,
 the nearest prior semantic release tag reachable from the candidate is
-selected automatically. Pass 1 measures the previous release before the
-candidate; pass 2 reverses that order. Both same-runner comparisons must pass
-before any publishing job can start.
+selected automatically. Both revisions are built once, then each release-core
+suite is measured as an adjacent pair of isolated revision processes. Pass 1
+measures the previous release before the candidate within every pair; pass 2
+reverses every pair. The gate rejects throughput regressions above 15%. A P99
+regression must exceed both 25% and 0.05 ms to fail, so tiny
+percentage-amplified timing noise remains reported without blocking the
+release. Both same-runner comparisons must pass before any publishing job can
+start.
 
 The performance comparison is intentionally separate from the faster local
 qualification command above. To reproduce it locally, start with a clean
@@ -98,7 +103,9 @@ $PerformanceRoot = Join-Path `
 
 Each pass runs the complete release-core suite for both revisions and can take
 several hours. The comparison scripts do not update promoted benchmark
-manifests or write generated results into the source tree.
+manifests or write generated results into the source tree. Preflight metadata,
+CSV evidence, logs, and comparison reports remain in the runner-owned output
+directory.
 
 3. Publish one local archive for a fast packaging check.
 

@@ -15,13 +15,20 @@ param(
     [double] $MaxThroughputRegressionPercent = 15,
 
     [ValidateRange(0, 500)]
-    [double] $MaxP99RegressionPercent = 25
+    [double] $MaxP99RegressionPercent = 25,
+
+    [ValidateRange(0, 1000)]
+    [double] $MaxP99RegressionMilliseconds = 0.05
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $invariant = [Globalization.CultureInfo]::InvariantCulture
+$maxP99RegressionMillisecondsExact = [decimal]::Parse(
+    $MaxP99RegressionMilliseconds.ToString('R', $invariant),
+    [Globalization.NumberStyles]::Float,
+    $invariant)
 $baselineRoot = [IO.Path]::GetFullPath($BaselineResultsPath)
 $candidateRoot = [IO.Path]::GetFullPath($CandidateResultsPath)
 $resolvedReportPath = [IO.Path]::GetFullPath($ReportPath)
@@ -57,9 +64,38 @@ function Convert-ToMetric {
     return $metric
 }
 
+function Convert-ToDecimalMetric {
+    param(
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string] $Value,
+
+        [Parameter(Mandatory)]
+        [string] $Description
+    )
+
+    [decimal] $metric = 0
+    if ([string]::IsNullOrWhiteSpace($Value) -or
+        -not [decimal]::TryParse(
+            $Value,
+            [Globalization.NumberStyles]::Float,
+            $invariant,
+            [ref] $metric) -or
+        $metric -lt 0) {
+        throw "Release-core metric '$Description' is missing or invalid: '$Value'."
+    }
+
+    return $metric
+}
+
 function Format-Percent {
     param([double] $Value)
     return $Value.ToString('0.00', $invariant)
+}
+
+function Format-Milliseconds {
+    param([decimal] $Value)
+    return $Value.ToString('0.0000', $invariant)
 }
 
 function Convert-ToMarkdownCell {
@@ -277,8 +313,10 @@ foreach ($fileName in $allFileNames) {
         try {
             $baselineThroughput = Convert-ToMetric $baselineRow.OpsPerSec "$fileName/$rowName/baseline OpsPerSec"
             $candidateThroughput = Convert-ToMetric $candidateRow.OpsPerSec "$fileName/$rowName/candidate OpsPerSec"
-            $baselineP99 = Convert-ToMetric $baselineRow.P99 "$fileName/$rowName/baseline P99"
-            $candidateP99 = Convert-ToMetric $candidateRow.P99 "$fileName/$rowName/candidate P99"
+            $baselineP99Exact = Convert-ToDecimalMetric $baselineRow.P99 "$fileName/$rowName/baseline P99"
+            $candidateP99Exact = Convert-ToDecimalMetric $candidateRow.P99 "$fileName/$rowName/candidate P99"
+            $baselineP99 = [double] $baselineP99Exact
+            $candidateP99 = [double] $candidateP99Exact
         }
         catch {
             $results.Add([pscustomobject]@{
@@ -304,16 +342,38 @@ foreach ($fileName in $allFileNames) {
         else {
             (($candidateP99 - $baselineP99) / $baselineP99) * 100
         }
+        $p99RegressionMilliseconds = $candidateP99Exact - $baselineP99Exact
+        $p99RelativeLimitExceeded =
+            $p99Regression -gt $MaxP99RegressionPercent
+        $p99AbsoluteLimitExceeded =
+            $p99RegressionMilliseconds -gt $maxP99RegressionMillisecondsExact
+        $p99Failed =
+            $p99RelativeLimitExceeded -and $p99AbsoluteLimitExceeded
+        $notes = if ($p99RelativeLimitExceeded) {
+            $absoluteOutcome = if ($p99AbsoluteLimitExceeded) {
+                'exceeded'
+            }
+            else {
+                'did not exceed'
+            }
+            "P99 increased by $(Format-Milliseconds $p99RegressionMilliseconds) ms, " +
+                "which $absoluteOutcome the " +
+                "$(Format-Milliseconds $maxP99RegressionMillisecondsExact) ms " +
+                'absolute allowance.'
+        }
+        else {
+            ''
+        }
 
         $failed = $throughputRegression -gt $MaxThroughputRegressionPercent -or
-            $p99Regression -gt $MaxP99RegressionPercent
+            $p99Failed
         $results.Add([pscustomobject]@{
             Suite = $baselineFile.BaseName
             Row = $baselineRow.Name
             ThroughputRegression = $throughputRegression
             P99Regression = $p99Regression
             Status = if ($failed) { 'FAIL' } else { 'PASS' }
-            Notes = ''
+            Notes = $notes
         })
     }
 }
@@ -328,6 +388,11 @@ $lines.Add("- Baseline results: ``$baselineRoot``")
 $lines.Add("- Candidate results: ``$candidateRoot``")
 $lines.Add("- Throughput regression limit: $MaxThroughputRegressionPercent%")
 $lines.Add("- P99 regression limit: $MaxP99RegressionPercent%")
+$lines.Add(
+    "- P99 absolute regression allowance: " +
+        "$(Format-Milliseconds $maxP99RegressionMillisecondsExact) ms")
+$lines.Add(
+    '- P99 failure rule: relative and absolute limits must both be exceeded')
 $lines.Add("- Result: **$(if ($failures.Count -eq 0) { 'PASS' } else { 'FAIL' })**")
 $lines.Add('')
 $lines.Add('| Suite | Row | Throughput regression | P99 regression | Status | Notes |')

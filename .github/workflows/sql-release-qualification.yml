@@ -136,7 +136,10 @@ jobs:
             -PreviousRef $env:PREVIOUS_RELEASE_REF `
             -CandidateRef $env:CANDIDATE_REF `
             -OutputPath $env:PERFORMANCE_OUTPUT `
-            -QualificationPass ${{ matrix.qualification_pass }}
+            -QualificationPass ${{ matrix.qualification_pass }} `
+            -MaxThroughputRegressionPercent 15 `
+            -MaxP99RegressionPercent 25 `
+            -MaxP99RegressionMilliseconds 0.05
 
       - name: Upload previous-release performance evidence
         if: always()
@@ -144,6 +147,7 @@ jobs:
         with:
           name: previous-release-performance-${{ github.sha }}-pass-${{ matrix.qualification_pass }}
           path: |
+            ${{ env.PERFORMANCE_OUTPUT }}/previous-release-performance-preflight.md
             ${{ env.PERFORMANCE_OUTPUT }}/previous-release-performance.md
             ${{ env.PERFORMANCE_OUTPUT }}/baseline-results
             ${{ env.PERFORMANCE_OUTPUT }}/candidate-results

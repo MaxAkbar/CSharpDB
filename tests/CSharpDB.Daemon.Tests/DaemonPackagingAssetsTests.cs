@@ -97,6 +97,12 @@ public sealed class DaemonPackagingAssetsTests
         Assert.Contains(
             "-QualificationPass ${{ matrix.qualification_pass }}",
             normalized);
+        Assert.Contains("-MaxThroughputRegressionPercent 15", normalized);
+        Assert.Contains("-MaxP99RegressionPercent 25", normalized);
+        Assert.Contains("-MaxP99RegressionMilliseconds 0.05", normalized);
+        Assert.Contains(
+            "previous-release-performance-preflight.md",
+            normalized);
         Assert.Contains("baseline-results", normalized);
         Assert.Contains("candidate-results", normalized);
     }

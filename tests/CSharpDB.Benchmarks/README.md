@@ -459,11 +459,17 @@ prior semantic release tag reachable from the candidate is selected
 automatically; an explicit tag or commit can still override that choice. The
 previous revision must be an ancestor of the candidate, and each output
 directory must be absent or empty and outside the repository. Each pass checks
-all seven release-core CSV files for exact schema and row-name parity, rejects
-invalid metrics, and fails when throughput falls more than 15% or P99 rises
-more than 25%. The second pass reverses execution order to expose
-order-sensitive runner effects. Evidence includes the copied CSV files,
-separate logs, commit identities, run order, and a Markdown report. This
+all seven release-core CSV files for exact schema and row-name parity and
+rejects invalid metrics. The two revisions are built once, then measured in
+suite-interleaved, isolated processes: pass 1 runs previous then candidate
+within every suite pair, while pass 2 reverses every pair. This keeps comparable
+measurements adjacent and still exposes order-sensitive runner effects.
+Throughput fails above a 15% regression. P99 fails only when its increase
+exceeds both 25% and the 0.05 ms absolute allowance; percentage-only P99
+crossings remain visible in the report notes. Evidence includes an up-front
+preflight record, copied CSV files, revision logs with suite boundaries, commit
+identities, the planned order, a chronological start/pass/fail execution log,
+and a Markdown report. This
 qualification does not promote or modify benchmark baselines.
 
 Run the release guardrail comparison:
