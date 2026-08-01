@@ -172,6 +172,7 @@ public static class LogicalConflictRangeBenchmark
         {
             Name = result.Name,
             TotalOps = successfulCommits,
+            LatencySamples = result.LatencySamples,
             ElapsedMs = result.ElapsedMs,
             P50Ms = result.P50Ms,
             P90Ms = result.P90Ms,

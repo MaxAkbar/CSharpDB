@@ -97,6 +97,7 @@ public static class CrashRecoveryBenchmark
             {
                 Name = recoveryResult.Name,
                 TotalOps = recoveryResult.TotalOps,
+                LatencySamples = recoveryResult.LatencySamples,
                 ElapsedMs = recoveryResult.ElapsedMs,
                 P50Ms = recoveryResult.P50Ms,
                 P90Ms = recoveryResult.P90Ms,

@@ -211,6 +211,7 @@ public static class DirectFileCacheTransportBenchmark
         {
             Name = $"{GetPrefix(tunedFileCache)}_Sql_ConcurrentReads_{ConcurrentReaderCount}readers",
             TotalOps = totalReaderOps,
+            LatencySamples = readerHistograms.Sum(static histogram => histogram.SampleCount),
             ElapsedMs = MeasuredDuration.TotalMilliseconds,
             P50Ms = readerHistograms.Average(static h => h.Percentile(0.50)),
             P90Ms = readerHistograms.Average(static h => h.Percentile(0.90)),

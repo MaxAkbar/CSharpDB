@@ -390,6 +390,7 @@ public static class ConcurrentSqliteCApiComparisonBenchmark
         {
             Name = name,
             TotalOps = stats.SuccessfulCommits,
+            LatencySamples = histogram.SampleCount,
             ElapsedMs = stats.ElapsedMs,
             P50Ms = histogram.Percentile(0.50),
             P90Ms = histogram.Percentile(0.90),

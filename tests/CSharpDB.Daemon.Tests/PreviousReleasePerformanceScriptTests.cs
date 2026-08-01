@@ -1,9 +1,12 @@
 using System.Diagnostics;
+using System.Globalization;
 
 namespace CSharpDB.Daemon.Tests;
 
 public sealed class PreviousReleasePerformanceScriptTests
 {
+    private const int ComparisonRepeatCount = 3;
+
     [Fact]
     public async Task Comparer_AcceptsMatchingResultsWithinLimits()
     {
@@ -13,30 +16,10 @@ public sealed class PreviousReleasePerformanceScriptTests
             string baseline = Directory.CreateDirectory(Path.Combine(temporaryRoot, "baseline")).FullName;
             string candidate = Directory.CreateDirectory(Path.Combine(temporaryRoot, "candidate")).FullName;
             string report = Path.Combine(temporaryRoot, "comparison.md");
-            File.WriteAllLines(
-                Path.Combine(baseline, "suite.csv"),
-                ["Name,OpsPerSec,P99", "lookup,100,10"]);
-            File.WriteAllLines(
-                Path.Combine(candidate, "suite.csv"),
-                ["Name,OpsPerSec,P99", "lookup,90,12"]);
+            WriteComparisonEvidence(baseline, "lookup", [100m, 100m, 100m], [10m, 10m, 10m]);
+            WriteComparisonEvidence(candidate, "lookup", [90m, 90m, 90m], [12m, 12m, 12m]);
 
-            ProcessResult result = await RunProcessAsync(
-                "pwsh",
-                "-NoLogo",
-                "-NoProfile",
-                "-File",
-                Path.Combine(
-                    FindRepoRoot(),
-                    "tests",
-                    "CSharpDB.Benchmarks",
-                    "scripts",
-                    "Compare-ReleaseCore.ps1"),
-                "-BaselineResultsPath",
-                baseline,
-                "-CandidateResultsPath",
-                candidate,
-                "-ReportPath",
-                report);
+            ProcessResult result = await RunComparerAsync(baseline, candidate, report);
 
             Assert.True(result.ExitCode == 0, result.CombinedOutput);
             string contents = File.ReadAllText(report);
@@ -58,12 +41,16 @@ public sealed class PreviousReleasePerformanceScriptTests
             string baseline = Directory.CreateDirectory(Path.Combine(temporaryRoot, "baseline")).FullName;
             string candidate = Directory.CreateDirectory(Path.Combine(temporaryRoot, "candidate")).FullName;
             string report = Path.Combine(temporaryRoot, "comparison.md");
-            File.WriteAllLines(
-                Path.Combine(baseline, "suite.csv"),
-                ["Name,OpsPerSec,P99", "hot-read,41557.5,0.0328"]);
-            File.WriteAllLines(
-                Path.Combine(candidate, "suite.csv"),
-                ["Name,OpsPerSec,P99", "hot-read,43518.0,0.0503"]);
+            WriteComparisonEvidence(
+                baseline,
+                "hot-read",
+                [41557.5m, 41557.5m, 41557.5m],
+                [0.0328m, 0.0328m, 0.0328m]);
+            WriteComparisonEvidence(
+                candidate,
+                "hot-read",
+                [43518.0m, 43518.0m, 43518.0m],
+                [0.0503m, 0.0503m, 0.0503m]);
 
             ProcessResult result = await RunComparerAsync(baseline, candidate, report);
 
@@ -75,7 +62,8 @@ public sealed class PreviousReleasePerformanceScriptTests
                 contents);
             Assert.Contains(
                 "| suite | hot-read | -4.72% | 53.35% | PASS | " +
-                "P99 increased by 0.0175 ms, which did not exceed the " +
+                "P99 percentage-only crossing: P99 increased by 0.0175 ms, " +
+                "which did not exceed the " +
                 "0.0500 ms absolute allowance. |",
                 contents);
         }
@@ -95,12 +83,8 @@ public sealed class PreviousReleasePerformanceScriptTests
             string candidate = Directory.CreateDirectory(Path.Combine(temporaryRoot, "candidate")).FullName;
             string boundaryReport = Path.Combine(temporaryRoot, "boundary.md");
             string failureReport = Path.Combine(temporaryRoot, "failure.md");
-            File.WriteAllLines(
-                Path.Combine(baseline, "suite.csv"),
-                ["Name,OpsPerSec,P99", "lookup,100,0.0321"]);
-            File.WriteAllLines(
-                Path.Combine(candidate, "suite.csv"),
-                ["Name,OpsPerSec,P99", "lookup,100,0.0821"]);
+            WriteComparisonEvidence(baseline, "lookup", [100m, 100m, 100m], [0.0321m, 0.0321m, 0.0321m]);
+            WriteComparisonEvidence(candidate, "lookup", [100m, 100m, 100m], [0.0821m, 0.0821m, 0.0821m]);
 
             ProcessResult boundary = await RunComparerAsync(
                 baseline,
@@ -110,13 +94,12 @@ public sealed class PreviousReleasePerformanceScriptTests
             Assert.True(boundary.ExitCode == 0, boundary.CombinedOutput);
             Assert.Contains(
                 "| suite | lookup | 0.00% | 155.76% | PASS | " +
-                "P99 increased by 0.0500 ms, which did not exceed the " +
+                "P99 percentage-only crossing: P99 increased by 0.0500 ms, " +
+                "which did not exceed the " +
                 "0.0500 ms absolute allowance. |",
                 File.ReadAllText(boundaryReport));
 
-            File.WriteAllLines(
-                Path.Combine(candidate, "suite.csv"),
-                ["Name,OpsPerSec,P99", "lookup,100,0.0822"]);
+            WriteComparisonEvidence(candidate, "lookup", [100m, 100m, 100m], [0.0822m, 0.0822m, 0.0822m]);
             ProcessResult failure = await RunComparerAsync(
                 baseline,
                 candidate,
@@ -124,8 +107,8 @@ public sealed class PreviousReleasePerformanceScriptTests
 
             Assert.NotEqual(0, failure.ExitCode);
             Assert.Contains(
-                "| suite | lookup | 0.00% | 156.07% | FAIL | " +
-                "P99 increased by 0.0501 ms, which exceeded the " +
+                "| suite | lookup | 0.00% | 156.07% | REGRESSION | " +
+                "Confirmed candidate P99 regression: P99 increased by 0.0501 ms, which exceeded the " +
                 "0.0500 ms absolute allowance. |",
                 File.ReadAllText(failureReport));
         }
@@ -144,12 +127,16 @@ public sealed class PreviousReleasePerformanceScriptTests
             string baseline = Directory.CreateDirectory(Path.Combine(temporaryRoot, "baseline")).FullName;
             string candidate = Directory.CreateDirectory(Path.Combine(temporaryRoot, "candidate")).FullName;
             string report = Path.Combine(temporaryRoot, "comparison.md");
-            File.WriteAllLines(
-                Path.Combine(baseline, "suite.csv"),
-                ["Name,OpsPerSec,P99", "hot-read,41557.5,0.0328"]);
-            File.WriteAllLines(
-                Path.Combine(candidate, "suite.csv"),
-                ["Name,OpsPerSec,P99", "hot-read,43518.0,0.0503"]);
+            WriteComparisonEvidence(
+                baseline,
+                "hot-read",
+                [41557.5m, 41557.5m, 41557.5m],
+                [0.0328m, 0.0328m, 0.0328m]);
+            WriteComparisonEvidence(
+                candidate,
+                "hot-read",
+                [43518.0m, 43518.0m, 43518.0m],
+                [0.0503m, 0.0503m, 0.0503m]);
 
             ProcessResult result = await RunComparerAsync(
                 baseline,
@@ -160,7 +147,7 @@ public sealed class PreviousReleasePerformanceScriptTests
 
             Assert.NotEqual(0, result.ExitCode);
             Assert.Contains(
-                "| suite | hot-read | -4.72% | 53.35% | FAIL |",
+                "| suite | hot-read | -4.72% | 53.35% | REGRESSION |",
                 File.ReadAllText(report));
         }
         finally
@@ -170,7 +157,7 @@ public sealed class PreviousReleasePerformanceScriptTests
     }
 
     [Fact]
-    public async Task Comparer_RejectsResultSetDriftAndNonFiniteMetrics()
+    public async Task Comparer_RejectsResultSetDriftAsInvalidEvidence()
     {
         string temporaryRoot = CreateTemporaryRoot();
         try
@@ -178,36 +165,227 @@ public sealed class PreviousReleasePerformanceScriptTests
             string baseline = Directory.CreateDirectory(Path.Combine(temporaryRoot, "baseline")).FullName;
             string candidate = Directory.CreateDirectory(Path.Combine(temporaryRoot, "candidate")).FullName;
             string report = Path.Combine(temporaryRoot, "comparison.md");
-            File.WriteAllLines(
-                Path.Combine(baseline, "suite.csv"),
-                ["Name,OpsPerSec,P99", "lookup,100,10"]);
-            File.WriteAllLines(
-                Path.Combine(candidate, "suite.csv"),
-                ["Name,OpsPerSec,P99", "lookup,NaN,10", "candidate-only,100,10"]);
+            WriteComparisonEvidence(baseline, "lookup", [100m, 100m, 100m], [10m, 10m, 10m]);
+            WriteComparisonEvidence(candidate, "lookup", [100m, 100m, 100m], [10m, 10m, 10m]);
+            string candidateMedian = Path.Combine(candidate, "suite.csv");
+            File.AppendAllText(
+                candidateMedian,
+                Environment.NewLine + CreateEvidenceRow("candidate-only", 100m, 10m, aggregate: true));
 
-            ProcessResult result = await RunProcessAsync(
-                "pwsh",
-                "-NoLogo",
-                "-NoProfile",
-                "-File",
-                Path.Combine(
-                    FindRepoRoot(),
-                    "tests",
-                    "CSharpDB.Benchmarks",
-                    "scripts",
-                    "Compare-ReleaseCore.ps1"),
-                "-BaselineResultsPath",
-                baseline,
-                "-CandidateResultsPath",
-                candidate,
-                "-ReportPath",
-                report);
+            ProcessResult result = await RunComparerAsync(baseline, candidate, report);
 
             Assert.NotEqual(0, result.ExitCode);
             string contents = File.ReadAllText(report);
             Assert.Contains("- Result: **FAIL**", contents);
-            Assert.Contains("Baseline row is missing.", contents);
-            Assert.Contains("missing or invalid", contents);
+            Assert.Contains("INVALID", contents);
+            Assert.Contains("row set does not match", contents);
+        }
+        finally
+        {
+            DeleteTemporaryRoot(temporaryRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Comparer_RejectsInsufficientLatencySamplesAsInvalidEvidence()
+    {
+        string temporaryRoot = CreateTemporaryRoot();
+        try
+        {
+            string baseline = Directory.CreateDirectory(Path.Combine(temporaryRoot, "baseline")).FullName;
+            string candidate = Directory.CreateDirectory(Path.Combine(temporaryRoot, "candidate")).FullName;
+            string report = Path.Combine(temporaryRoot, "comparison.md");
+            WriteComparisonEvidence(baseline, "lookup", [100m, 100m, 100m], [10m, 10m, 10m]);
+            WriteComparisonEvidence(
+                candidate,
+                "lookup",
+                [100m, 100m, 100m],
+                [10m, 10m, 10m],
+                latencySamples: 99);
+
+            ProcessResult result = await RunComparerAsync(baseline, candidate, report);
+
+            Assert.NotEqual(0, result.ExitCode);
+            string contents = File.ReadAllText(report);
+            Assert.Contains("| suite | lookup | n/a | n/a | INVALID |", contents);
+            Assert.Contains("LatencySamples", contents);
+            Assert.Contains("must be at least 100", contents);
+        }
+        finally
+        {
+            DeleteTemporaryRoot(temporaryRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Comparer_AllowsOneRawOutlierWhenStrictMajorityIsStable()
+    {
+        string temporaryRoot = CreateTemporaryRoot();
+        try
+        {
+            string baseline = Directory.CreateDirectory(Path.Combine(temporaryRoot, "baseline")).FullName;
+            string candidate = Directory.CreateDirectory(Path.Combine(temporaryRoot, "candidate")).FullName;
+            string report = Path.Combine(temporaryRoot, "comparison.md");
+            WriteComparisonEvidence(baseline, "lookup", [100m, 100m, 100m], [10m, 10m, 10m]);
+            WriteComparisonEvidence(candidate, "lookup", [70m, 100m, 100m], [14m, 10m, 10m]);
+
+            ProcessResult result = await RunComparerAsync(baseline, candidate, report);
+
+            Assert.True(result.ExitCode == 0, result.CombinedOutput);
+            string contents = File.ReadAllText(report);
+            Assert.Contains("| suite | lookup | 0.00% | 0.00% | PASS |", contents);
+            Assert.Contains("Tolerated raw-run outlier with a strict stable majority", contents);
+            Assert.Contains("Candidate run 1: throughput deviates 30.00%", contents);
+            Assert.Contains("P99 deviates 40.00% (4.0000 ms)", contents);
+        }
+        finally
+        {
+            DeleteTemporaryRoot(temporaryRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Comparer_RejectsWhenDifferentMetricOutliersLeaveNoStableMajority()
+    {
+        string temporaryRoot = CreateTemporaryRoot();
+        try
+        {
+            string baseline = Directory.CreateDirectory(Path.Combine(temporaryRoot, "baseline")).FullName;
+            string candidate = Directory.CreateDirectory(Path.Combine(temporaryRoot, "candidate")).FullName;
+            string report = Path.Combine(temporaryRoot, "comparison.md");
+            WriteComparisonEvidence(baseline, "lookup", [100m, 100m, 100m], [10m, 10m, 10m]);
+            WriteComparisonEvidence(candidate, "lookup", [70m, 100m, 100m], [10m, 10m, 14m]);
+
+            ProcessResult result = await RunComparerAsync(baseline, candidate, report);
+
+            Assert.NotEqual(0, result.ExitCode);
+            string contents = File.ReadAllText(report);
+            Assert.Contains("| suite | lookup | n/a | n/a | UNSTABLE |", contents);
+            Assert.Contains("Insufficient stability", contents);
+            Assert.Contains("Candidate has 1/3 whole runs within both limits", contents);
+            Assert.Contains("at least 2 are required", contents);
+            Assert.Contains("Candidate run 1: throughput deviates 30.00%", contents);
+            Assert.Contains("Candidate run 3: P99 deviates 40.00% (4.0000 ms)", contents);
+        }
+        finally
+        {
+            DeleteTemporaryRoot(temporaryRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Comparer_RequiresThreeOfFiveWholeRunsForAStableMajority()
+    {
+        string temporaryRoot = CreateTemporaryRoot();
+        try
+        {
+            string baseline = Directory.CreateDirectory(Path.Combine(temporaryRoot, "baseline")).FullName;
+            string candidate = Directory.CreateDirectory(Path.Combine(temporaryRoot, "candidate")).FullName;
+            string passReport = Path.Combine(temporaryRoot, "pass.md");
+            string failureReport = Path.Combine(temporaryRoot, "failure.md");
+            WriteComparisonEvidence(
+                baseline,
+                "lookup",
+                [100m, 100m, 100m, 100m, 100m],
+                [10m, 10m, 10m, 10m, 10m]);
+            WriteComparisonEvidence(
+                candidate,
+                "lookup",
+                [70m, 100m, 100m, 100m, 130m],
+                [10m, 10m, 10m, 10m, 10m]);
+
+            ProcessResult passing = await RunComparerAsync(
+                baseline,
+                candidate,
+                passReport,
+                "-RepeatCount",
+                "5");
+
+            Assert.True(passing.ExitCode == 0, passing.CombinedOutput);
+            Assert.Contains("(3/5; 3 required)", File.ReadAllText(passReport));
+
+            WriteComparisonEvidence(
+                candidate,
+                "lookup",
+                [70m, 80m, 100m, 100m, 130m],
+                [10m, 10m, 10m, 10m, 10m]);
+            ProcessResult failing = await RunComparerAsync(
+                baseline,
+                candidate,
+                failureReport,
+                "-RepeatCount",
+                "5");
+
+            Assert.NotEqual(0, failing.ExitCode);
+            Assert.Contains(
+                "Candidate has 2/5 whole runs within both limits; at least 3 are required",
+                File.ReadAllText(failureReport));
+        }
+        finally
+        {
+            DeleteTemporaryRoot(temporaryRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Comparer_AllowsRawP99DeviationAtAbsoluteStabilityAllowance()
+    {
+        string temporaryRoot = CreateTemporaryRoot();
+        try
+        {
+            string baseline = Directory.CreateDirectory(Path.Combine(temporaryRoot, "baseline")).FullName;
+            string candidate = Directory.CreateDirectory(Path.Combine(temporaryRoot, "candidate")).FullName;
+            string report = Path.Combine(temporaryRoot, "comparison.md");
+            WriteComparisonEvidence(
+                baseline,
+                "lookup",
+                [100m, 100m, 100m],
+                [0.0321m, 0.0321m, 0.0821m]);
+            WriteComparisonEvidence(
+                candidate,
+                "lookup",
+                [100m, 100m, 100m],
+                [0.0321m, 0.0321m, 0.0821m]);
+
+            ProcessResult result = await RunComparerAsync(baseline, candidate, report);
+
+            Assert.True(result.ExitCode == 0, result.CombinedOutput);
+            string contents = File.ReadAllText(report);
+            Assert.Contains("- Result: **PASS**", contents);
+            Assert.Contains("| suite | lookup | 0.00% | 0.00% | PASS |", contents);
+            Assert.DoesNotContain("| suite | lookup | n/a | n/a | UNSTABLE |", contents);
+        }
+        finally
+        {
+            DeleteTemporaryRoot(temporaryRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Comparer_RejectsMedianMismatchAsInvalidEvidence()
+    {
+        string temporaryRoot = CreateTemporaryRoot();
+        try
+        {
+            string baseline = Directory.CreateDirectory(Path.Combine(temporaryRoot, "baseline")).FullName;
+            string candidate = Directory.CreateDirectory(Path.Combine(temporaryRoot, "candidate")).FullName;
+            string report = Path.Combine(temporaryRoot, "comparison.md");
+            WriteComparisonEvidence(baseline, "lookup", [100m, 100m, 100m], [10m, 10m, 10m]);
+            WriteComparisonEvidence(
+                candidate,
+                "lookup",
+                [100m, 100m, 100m],
+                [10m, 10m, 10m],
+                medianOpsOverride: 101m);
+
+            ProcessResult result = await RunComparerAsync(baseline, candidate, report);
+
+            Assert.NotEqual(0, result.ExitCode);
+            string contents = File.ReadAllText(report);
+            Assert.Contains("| suite | lookup | n/a | n/a | INVALID |", contents);
+            Assert.Contains(
+                "Candidate median OpsPerSec does not match the raw-run median (101 versus 100).",
+                contents);
         }
         finally
         {
@@ -246,6 +424,9 @@ public sealed class PreviousReleasePerformanceScriptTests
             File.WriteAllText(
                 Path.Combine(benchmarkRoot, "CSharpDB.Benchmarks.csproj"),
                 "<Project Sdk=\"Microsoft.NET.Sdk\" />");
+            File.WriteAllText(
+                Path.Combine(benchmarkRoot, "Program.cs"),
+                "internal static class Program { private static void Main() { } }");
             string trackedFile = Path.Combine(sourceRoot, "release.txt");
             File.WriteAllText(trackedFile, "previous");
 
@@ -260,6 +441,24 @@ public sealed class PreviousReleasePerformanceScriptTests
             await AssertProcessSucceeded("git", "-C", sourceRoot, "add", "release.txt");
             await AssertProcessSucceeded("git", "-C", sourceRoot, "commit", "-m", "candidate");
             await AssertProcessSucceeded("git", "-C", sourceRoot, "tag", "v4.4.0");
+
+            ProcessResult invalidRepeat = await RunProcessAsync(
+                "pwsh",
+                "-NoLogo",
+                "-NoProfile",
+                "-File",
+                Path.Combine(scriptRoot, "Test-PreviousReleasePerformance.ps1"),
+                "-CandidateRef",
+                "HEAD",
+                "-OutputPath",
+                Path.Combine(temporaryRoot, "invalid-repeat-evidence"),
+                "-RepeatCount",
+                "2",
+                "-PreflightOnly");
+
+            Assert.NotEqual(0, invalidRepeat.ExitCode);
+            Assert.Contains("does not belong to the set", invalidRepeat.CombinedOutput);
+            Assert.Contains("3,5,7,9", invalidRepeat.CombinedOutput);
 
             string evidence = Path.Combine(temporaryRoot, "evidence");
             ProcessResult result = await RunProcessAsync(
@@ -360,6 +559,9 @@ public sealed class PreviousReleasePerformanceScriptTests
             File.WriteAllText(
                 Path.Combine(benchmarkRoot, "CSharpDB.Benchmarks.csproj"),
                 "<Project Sdk=\"Microsoft.NET.Sdk\" />");
+            File.WriteAllText(
+                Path.Combine(benchmarkRoot, "Program.cs"),
+                "internal static class Program { private static void Main() { } }");
             string trackedFile = Path.Combine(sourceRoot, "release.txt");
             File.WriteAllText(trackedFile, "previous");
 
@@ -410,8 +612,41 @@ public sealed class PreviousReleasePerformanceScriptTests
             Assert.Equal(
                 7,
                 Directory.GetFiles(Path.Combine(evidence, "candidate-results"), "*.csv").Length);
+            string[] suiteNames =
+            [
+                "master-table",
+                "durable-sql-batching",
+                "concurrent-write-diagnostics",
+                "hybrid-storage-mode",
+                "hybrid-hot-set-read",
+                "hybrid-cold-open",
+                "sqlite-compare",
+            ];
+            foreach (string resultDirectory in new[] { "baseline-results", "candidate-results" })
+            {
+                string rawRoot = Path.Combine(evidence, resultDirectory, "raw");
+                Assert.Equal(
+                    21,
+                    Directory.GetFiles(rawRoot, "*.csv", SearchOption.AllDirectories).Length);
+                foreach (string suiteName in suiteNames)
+                {
+                    string[] rawFileNames = Directory
+                        .GetFiles(Path.Combine(rawRoot, suiteName), "*.csv")
+                        .Select(path => Path.GetFileName(path)!)
+                        .OrderBy(name => name, StringComparer.Ordinal)
+                        .ToArray();
+                    Assert.Equal(
+                        new[] { "run-1.csv", "run-2.csv", "run-3.csv" },
+                        rawFileNames);
+                }
+            }
             Assert.True(File.Exists(Path.Combine(evidence, "logs", "previous-release.log")));
             Assert.True(File.Exists(Path.Combine(evidence, "logs", "candidate.log")));
+            string harnessManifest = File.ReadAllText(
+                Path.Combine(evidence, "logs", "candidate-benchmark-harness.sha256"));
+            Assert.Contains("HarnessSha256=", harnessManifest);
+            Assert.Contains("*CSharpDB.Benchmarks.csproj", harnessManifest);
+            Assert.Contains("*Program.cs", harnessManifest);
             Assert.False(Directory.Exists(Path.Combine(evidence, "baseline-source")));
             Assert.False(Directory.Exists(Path.Combine(evidence, "candidate-source")));
 
@@ -473,6 +708,107 @@ public sealed class PreviousReleasePerformanceScriptTests
         }
     }
 
+    private const string EvidenceHeader =
+        "Name,TotalOps,LatencySamples,ElapsedMs,OpsPerSec,P50,P90,P95,P99,P999," +
+        "Min,Max,Mean,StdDev,ExtraInfo";
+
+    private static void WriteComparisonEvidence(
+        string resultsRoot,
+        string rowName,
+        IReadOnlyList<decimal> opsRuns,
+        IReadOnlyList<decimal> p99Runs,
+        int latencySamples = 200,
+        decimal? medianOpsOverride = null,
+        decimal? medianP99Override = null)
+    {
+        if (opsRuns.Count == 0 || opsRuns.Count != p99Runs.Count)
+        {
+            throw new ArgumentException(
+                "Comparison evidence requires matching non-empty throughput and P99 raw runs.");
+        }
+
+        int repeatCount = opsRuns.Count;
+        Directory.CreateDirectory(resultsRoot);
+        string rawSuiteRoot = Directory
+            .CreateDirectory(Path.Combine(resultsRoot, "raw", "suite"))
+            .FullName;
+        decimal medianOps = medianOpsOverride ?? GetMedian(opsRuns);
+        decimal medianP99 = medianP99Override ?? GetMedian(p99Runs);
+        File.WriteAllLines(
+            Path.Combine(resultsRoot, "suite.csv"),
+            [
+                EvidenceHeader,
+                CreateEvidenceRow(
+                    rowName,
+                    medianOps,
+                    medianP99,
+                    aggregate: true,
+                    latencySamples,
+                    aggregateRepeatCount: repeatCount),
+            ]);
+
+        for (int index = 0; index < repeatCount; index++)
+        {
+            File.WriteAllLines(
+                Path.Combine(rawSuiteRoot, $"run-{index + 1}.csv"),
+                [
+                    EvidenceHeader,
+                    CreateEvidenceRow(
+                        rowName,
+                        opsRuns[index],
+                        p99Runs[index],
+                        aggregate: false,
+                        latencySamples,
+                        runNumber: index + 1),
+                ]);
+        }
+    }
+
+    private static decimal GetMedian(IReadOnlyList<decimal> values)
+    {
+        return values
+            .OrderBy(value => value)
+            .ElementAt(values.Count / 2);
+    }
+
+    private static string CreateEvidenceRow(
+        string name,
+        decimal opsPerSecond,
+        decimal p99,
+        bool aggregate,
+        int latencySamples = 200,
+        int? runNumber = null,
+        int aggregateRepeatCount = ComparisonRepeatCount)
+    {
+        string extraInfo = aggregate
+            ? $"Aggregate=median-of-{aggregateRepeatCount}"
+            : $"Run={runNumber}";
+        return string.Join(
+            ',',
+            [
+                name,
+                "1000",
+                latencySamples.ToString(CultureInfo.InvariantCulture),
+                "10000",
+                FormatEvidenceNumber(opsPerSecond),
+                "1",
+                "2",
+                "3",
+                FormatEvidenceNumber(p99),
+                FormatEvidenceNumber(p99),
+                "0.1",
+                "100",
+                "1",
+                "0.1",
+                extraInfo,
+            ]);
+    }
+
+    private static string FormatEvidenceNumber(decimal value)
+    {
+        return value.ToString(CultureInfo.InvariantCulture);
+    }
+
     private static async Task AssertProcessSucceeded(string fileName, params string[] arguments)
     {
         ProcessResult result = await RunProcessAsync(fileName, arguments);
@@ -532,24 +868,37 @@ public sealed class PreviousReleasePerformanceScriptTests
                 (Get-Location).Path `
                 'tests/CSharpDB.Benchmarks/bin/Release/net10.0/results'
             New-Item -ItemType Directory -Path $resultRoot -Force | Out-Null
+            $runStamp = '20260731-120000'
+            $header = 'Name,TotalOps,LatencySamples,ElapsedMs,OpsPerSec,P50,P90,P95,P99,P999,Min,Max,Mean,StdDev,ExtraInfo'
             $resultPath = Join-Path `
                 $resultRoot `
-                "$suiteName-smoke-median-of-$repeatCount.csv"
+                "$suiteName-$runStamp-median-of-$repeatCount.csv"
             [IO.File]::WriteAllLines(
                 $resultPath,
                 @(
-                    'Name,OpsPerSec,P99',
-                    "$suiteName-row,100,1"
+                    $header,
+                    "$suiteName-row,1000,1000,10000,100,1,1,1,1,1,1,1,1,1,Aggregate=median-of-$repeatCount"
                 ))
+            for ($runIndex = 1; $runIndex -le [int] $repeatCount; $runIndex++) {
+                $rawPath = Join-Path `
+                    $resultRoot `
+                    "$suiteName-$runStamp-run$runIndex.csv"
+                [IO.File]::WriteAllLines(
+                    $rawPath,
+                    @(
+                        $header,
+                        "$suiteName-row,1000,1000,10000,100,1,1,1,1,1,1,1,1,1,Run=$runIndex"
+                    ))
+            }
             if ($env:FAKE_DOTNET_DUPLICATE_SUITE -eq $suiteName) {
                 $duplicatePath = Join-Path `
                     $resultRoot `
-                    "$suiteName-smoke-extra-median-of-$repeatCount.csv"
+                    "$suiteName-$runStamp-extra-median-of-$repeatCount.csv"
                 [IO.File]::WriteAllLines(
                     $duplicatePath,
                     @(
-                        'Name,OpsPerSec,P99',
-                        "$suiteName-row,100,1"
+                        $header,
+                        "$suiteName-row,1000,1000,10000,100,1,1,1,1,1,1,1,1,1,Aggregate=median-of-$repeatCount"
                     ))
             }
             Add-Content `
@@ -610,9 +959,18 @@ public sealed class PreviousReleasePerformanceScriptTests
             baseline,
             "-CandidateResultsPath",
             candidate,
+            "-BaselineRawResultsPath",
+            Path.Combine(baseline, "raw"),
+            "-CandidateRawResultsPath",
+            Path.Combine(candidate, "raw"),
             "-ReportPath",
             report,
         ];
+        if (!additionalArguments.Contains("-RepeatCount", StringComparer.OrdinalIgnoreCase))
+        {
+            arguments.Add("-RepeatCount");
+            arguments.Add(ComparisonRepeatCount.ToString(CultureInfo.InvariantCulture));
+        }
         arguments.AddRange(additionalArguments);
         return RunProcessAsync("pwsh", [.. arguments]);
     }

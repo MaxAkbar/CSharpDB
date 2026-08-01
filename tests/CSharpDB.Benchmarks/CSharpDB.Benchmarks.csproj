@@ -32,4 +32,8 @@
     <ProjectReference Include="..\..\src\CSharpDB.Storage.Diagnostics\CSharpDB.Storage.Diagnostics.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="CSharpDB.Benchmarks.Tests" />
+  </ItemGroup>
+
 </Project>

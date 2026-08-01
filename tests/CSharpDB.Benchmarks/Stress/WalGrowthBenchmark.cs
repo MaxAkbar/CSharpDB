@@ -79,6 +79,7 @@ public static class WalGrowthBenchmark
                 {
                     Name = readResult.Name,
                     TotalOps = readResult.TotalOps,
+                    LatencySamples = readResult.LatencySamples,
                     ElapsedMs = readResult.ElapsedMs,
                     P50Ms = readResult.P50Ms,
                     P90Ms = readResult.P90Ms,
@@ -123,6 +124,7 @@ public static class WalGrowthBenchmark
             {
                 Name = postResult.Name,
                 TotalOps = postResult.TotalOps,
+                LatencySamples = postResult.LatencySamples,
                 ElapsedMs = postResult.ElapsedMs,
                 P50Ms = postResult.P50Ms,
                 P90Ms = postResult.P90Ms,

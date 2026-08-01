@@ -467,28 +467,45 @@ public static class DurableSqlBatchingBenchmark
 
         TimeSpan warmupDuration = TimeSpan.FromSeconds(2);
         TimeSpan measuredDuration = TimeSpan.FromSeconds(10);
+        TimeSpan maximumMeasuredDuration = TimeSpan.FromSeconds(30);
+        const int minimumLatencySamples = 100;
 
-        var warmupEnd = DateTime.UtcNow + warmupDuration;
-        while (DateTime.UtcNow < warmupEnd)
+        var warmupSw = Stopwatch.StartNew();
+        while (warmupSw.Elapsed < warmupDuration)
             await OperationAsync();
 
-        GC.Collect();
-        GC.WaitForPendingFinalizers();
-        GC.Collect();
+        warmupSw.Stop();
+        MacroBenchmarkRunner.StabilizeAfterWarmup();
 
         bench.Db.ResetWalFlushDiagnostics();
         bench.Db.ResetCommitPathDiagnostics();
 
         var histogram = new LatencyHistogram();
         var totalSw = Stopwatch.StartNew();
-        var measuredEnd = DateTime.UtcNow + measuredDuration;
 
-        while (DateTime.UtcNow < measuredEnd)
+        while (totalSw.Elapsed < measuredDuration ||
+               histogram.SampleCount < minimumLatencySamples)
         {
+            if (totalSw.Elapsed >= maximumMeasuredDuration)
+            {
+                throw new InvalidOperationException(
+                    $"Durable SQL batching scenario '{scenario.Name}' retained only " +
+                    $"{histogram.SampleCount} latency samples within " +
+                    $"{maximumMeasuredDuration.TotalSeconds:F0} seconds; " +
+                    $"at least {minimumLatencySamples} are required for release qualification.");
+            }
+
             var sw = Stopwatch.StartNew();
             await OperationAsync();
             sw.Stop();
             histogram.Record(sw.Elapsed.TotalMilliseconds);
+
+            if (totalSw.Elapsed > maximumMeasuredDuration)
+            {
+                throw new InvalidOperationException(
+                    $"Durable SQL batching scenario '{scenario.Name}' exceeded the " +
+                    $"{maximumMeasuredDuration.TotalSeconds:F0}-second measurement cap.");
+            }
         }
 
         totalSw.Stop();
@@ -511,6 +528,7 @@ public static class DurableSqlBatchingBenchmark
         {
             Name = $"DurableSqlBatching_{scenario.Name}_10s",
             TotalOps = histogram.Count,
+            LatencySamples = histogram.SampleCount,
             ElapsedMs = totalSw.Elapsed.TotalMilliseconds,
             P50Ms = histogram.Percentile(0.50),
             P90Ms = histogram.Percentile(0.90),

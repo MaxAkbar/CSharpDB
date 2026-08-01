@@ -87,6 +87,7 @@ public static class OptimizerCloseOutBenchmark
         {
             Name = $"OptimizerCloseOut_{phase}_{scenario.Name}",
             TotalOps = Iterations,
+            LatencySamples = histogram.SampleCount,
             ElapsedMs = sw.Elapsed.TotalMilliseconds,
             P50Ms = histogram.Percentile(0.50),
             P90Ms = histogram.Percentile(0.90),

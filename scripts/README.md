@@ -72,14 +72,27 @@ automatically by the tag release workflow before any publishing job starts.
 The workflow also runs the full release-core benchmark against the previous
 release in two independent clean Windows jobs. When no override is provided,
 the nearest prior semantic release tag reachable from the candidate is
-selected automatically. Both revisions are built once, then each release-core
-suite is measured as an adjacent pair of isolated revision processes. Pass 1
-measures the previous release before the candidate within every pair; pass 2
-reverses every pair. The gate rejects throughput regressions above 15%. A P99
-regression must exceed both 25% and 0.05 ms to fail, so tiny
-percentage-amplified timing noise remains reported without blocking the
-release. Both same-runner comparisons must pass before any publishing job can
-start.
+selected automatically. A hash-verified copy of the candidate benchmark source
+is used for both engine revisions, while revision-specific root build inputs
+are hashed and reported separately. In paired mode, qualification uses `3`,
+`5`, `7`, or `9` pairs per order stratum; CI uses three
+previous-candidate and three candidate-previous pairs. Both revisions are
+built once. Each isolated sample receives the same unrecorded warmup, pair
+members run adjacently, and pair order alternates within every suite. The
+qualification pass determines which order starts first.
+
+Every raw sample, aggregate, pair-manifest row, and copied-raw SHA-256 digest is
+retained. The comparison requires exact manifest, schema, and row parity,
+requires at least 100 retained latency observations per gate row, and fails
+closed when evidence is invalid or order-sensitive. In each order stratum,
+throughput and P99 independently require strict stable majorities; their
+outliers may be different pairs. Throughput effects use a 15% stability band,
+while P99 effects are stable when they remain within either 25% or 0.0500 ms of
+their stratum median effect. After those checks, both order strata must cross
+the 15% throughput gate to confirm a regression. A P99 regression requires a
+strict majority of the same pairs in both order strata to exceed 25% and 0.05
+ms, so tiny percentage-amplified timing noise remains reported without blocking
+the release. Both clean qualifications must pass before publishing can start.
 
 The performance comparison is intentionally separate from the faster local
 qualification command above. To reproduce it locally, start with a clean
@@ -93,19 +106,55 @@ $PerformanceRoot = Join-Path `
 .\tests\CSharpDB.Benchmarks\scripts\Test-PreviousReleasePerformance.ps1 `
   -CandidateRef HEAD `
   -OutputPath (Join-Path $PerformanceRoot 'pass-1') `
-  -QualificationPass 1
+  -QualificationPass 1 `
+  -Paired `
+  -RepeatCount 3
 
 .\tests\CSharpDB.Benchmarks\scripts\Test-PreviousReleasePerformance.ps1 `
   -CandidateRef HEAD `
   -OutputPath (Join-Path $PerformanceRoot 'pass-2') `
-  -QualificationPass 2
+  -QualificationPass 2 `
+  -Paired `
+  -RepeatCount 3
 ```
 
 Each pass runs the complete release-core suite for both revisions and can take
-several hours. The comparison scripts do not update promoted benchmark
-manifests or write generated results into the source tree. Preflight metadata,
-CSV evidence, logs, and comparison reports remain in the runner-owned output
-directory.
+several hours. `-SuiteName` can select named suites for a diagnostic run. The
+workflow shuts down .NET build servers and waits 30 seconds after building; this
+fixed wait does not prove that CPU or disk activity is idle, so local runs
+should use a dedicated machine without concurrent builds.
+
+For a same-artifact exact-row A/A diagnostic, use an absent or empty output
+directory outside the checkout:
+
+```powershell
+.\tests\CSharpDB.Benchmarks\scripts\Test-PreviousReleasePerformance.ps1 `
+  -PreviousRef HEAD -CandidateRef HEAD `
+  -OutputPath (Join-Path ([IO.Path]::GetTempPath()) "csharpdb-hybrid-aa-$([Guid]::NewGuid().ToString('N'))") `
+  -QualificationPass 1 -Paired -RepeatCount 5 `
+  -AllowSameRevision -ShareSameRevisionArtifact `
+  -HybridStorageScenarioName 'Storage_HybridIncrementalDurable_Sql_SingleInsert_5s' `
+  -PostBuildQuiescenceSeconds 30
+```
+
+Five repeats mean five pairs per order, ten pairs total. The exact,
+case-sensitive scenario replaces the seven-suite plan and takes precedence over
+`-SuiteName`. Each logical invocation performs one internal two-second warmup,
+then records until it has both 30 measured seconds and 10,000 retained latency
+samples; failure to reach both by the 120-second measured-phase cap fails
+closed. `-AllowSameRevision` alone permits A/A but still uses two builds;
+`-ShareSameRevisionArtifact` additionally requires equal commits and makes both
+labels invoke one DLL directly. Its path and SHA-256 identity are recorded and
+the hash is checked before and after every sample.
+
+These controls diagnose the harness only and cannot replace either
+previous-release qualification pass or promote a baseline.
+`-PostBuildQuiescenceSeconds` is an opt-in build-server shutdown plus fixed wait,
+not a machine-idleness guarantee, and it can affect concurrent .NET builds.
+Preflight metadata, hash manifests, raw and aggregate CSV evidence, logs, and
+reports must remain in the runner-owned external directory. Never copy or
+commit them into source paths. Diagnostic runs do not update the curated
+`release-core-manifest.json` and do not introduce generated diagnostic JSON.
 
 3. Publish one local archive for a fast packaging check.
 

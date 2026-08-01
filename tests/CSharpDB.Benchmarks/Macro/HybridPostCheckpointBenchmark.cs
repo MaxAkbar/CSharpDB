@@ -141,6 +141,7 @@ public static class HybridPostCheckpointBenchmark
         {
             Name = baseResult.Name,
             TotalOps = baseResult.TotalOps,
+            LatencySamples = baseResult.LatencySamples,
             ElapsedMs = baseResult.ElapsedMs,
             P50Ms = baseResult.P50Ms,
             P90Ms = baseResult.P90Ms,

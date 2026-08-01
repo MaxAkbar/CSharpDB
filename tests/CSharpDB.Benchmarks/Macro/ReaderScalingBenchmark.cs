@@ -124,6 +124,7 @@ public static class ReaderScalingBenchmark
         {
             Name = $"{resultPrefix}_Readers",
             TotalOps = totalReaderOps,
+            LatencySamples = readerHistograms.Sum(static histogram => histogram.SampleCount),
             ElapsedMs = totalSw,
             P50Ms = avgReaderP50,
             P90Ms = readerHistograms.Average(h => h.Percentile(0.90)),

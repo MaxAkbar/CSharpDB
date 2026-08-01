@@ -41,6 +41,7 @@ public static class Program
 
         int repeatCount = ParseRepeatCount(args);
         bool enableRepro = HasFlag(args, "--repro");
+        bool warmupSingleSample = HasFlag(args, "--warmup-single-sample");
         int? requestedCpuThreads = ParseCpuThreads(args);
         bool reproConfigured = false;
 
@@ -54,6 +55,7 @@ public static class Program
         }
 
         var mode = GetPrimaryMode(args);
+        ValidateWarmupSingleSampleOption(mode, repeatCount, warmupSingleSample);
         switch (mode)
         {
             case "--micro":
@@ -83,7 +85,11 @@ public static class Program
 
             case "--durable-sql-batching":
                 EnsureReproConfigured();
-                await RunSuiteWithRepeatsAsync("durable-sql-batching", RunDurableSqlBatchingOnceAsync, repeatCount);
+                await RunSuiteWithRepeatsAsync(
+                    "durable-sql-batching",
+                    RunDurableSqlBatchingOnceAsync,
+                    repeatCount,
+                    warmupSingleSample);
                 return;
 
             case "--durable-sql-batching-scenario":
@@ -196,7 +202,11 @@ public static class Program
 
             case "--concurrent-write-diagnostics":
                 EnsureReproConfigured();
-                await RunSuiteWithRepeatsAsync("concurrent-write-diagnostics", RunConcurrentWriteDiagnosticsOnceAsync, repeatCount);
+                await RunSuiteWithRepeatsAsync(
+                    "concurrent-write-diagnostics",
+                    RunConcurrentWriteDiagnosticsOnceAsync,
+                    repeatCount,
+                    warmupSingleSample);
                 return;
 
             case "--concurrent-write-scenario":
@@ -240,17 +250,37 @@ public static class Program
 
             case "--hybrid-storage-mode":
                 EnsureReproConfigured();
-                await RunSuiteWithRepeatsAsync("hybrid-storage-mode", RunHybridStorageModeOnceAsync, repeatCount);
+                await RunSuiteWithRepeatsAsync(
+                    "hybrid-storage-mode",
+                    RunHybridStorageModeOnceAsync,
+                    repeatCount,
+                    warmupSingleSample);
+                return;
+
+            case "--hybrid-storage-mode-scenario":
+                EnsureReproConfigured();
+                await RunHybridStorageModeScenarioWithRepeatsAsync(
+                    GetRequiredOptionValue(args, "--hybrid-storage-mode-scenario"),
+                    repeatCount,
+                    warmupSingleSample);
                 return;
 
             case "--master-table":
                 EnsureReproConfigured();
-                await RunSuiteWithRepeatsAsync("master-table", RunMasterComparisonOnceAsync, repeatCount);
+                await RunSuiteWithRepeatsAsync(
+                    "master-table",
+                    RunMasterComparisonOnceAsync,
+                    repeatCount,
+                    warmupSingleSample);
                 return;
 
             case "--sqlite-compare":
                 EnsureReproConfigured();
-                await RunSuiteWithRepeatsAsync("sqlite-compare", RunSqliteComparisonOnceAsync, repeatCount);
+                await RunSuiteWithRepeatsAsync(
+                    "sqlite-compare",
+                    RunSqliteComparisonOnceAsync,
+                    repeatCount,
+                    warmupSingleSample);
                 return;
 
             case "--strict-insert-compare":
@@ -286,12 +316,16 @@ public static class Program
 
             case "--hybrid-cold-open":
                 EnsureReproConfigured();
-                await RunSuiteWithRepeatsAsync("hybrid-cold-open", RunHybridColdOpenOnceAsync, repeatCount);
+                await RunHybridColdOpenWithRepeatsAsync(repeatCount, warmupSingleSample);
                 return;
 
             case "--hybrid-hot-set-read":
                 EnsureReproConfigured();
-                await RunSuiteWithRepeatsAsync("hybrid-hot-set-read", RunHybridHotSetReadOnceAsync, repeatCount);
+                await RunSuiteWithRepeatsAsync(
+                    "hybrid-hot-set-read",
+                    RunHybridHotSetReadOnceAsync,
+                    repeatCount,
+                    warmupSingleSample);
                 return;
 
             case "--hybrid-post-checkpoint":
@@ -360,7 +394,7 @@ public static class Program
                 await RunSuiteWithRepeatsAsync("hybrid-storage-mode", RunHybridStorageModeOnceAsync, repeatCount);
                 Console.WriteLine();
                 Console.WriteLine("=== Hybrid Cold Open Benchmark ===");
-                await RunSuiteWithRepeatsAsync("hybrid-cold-open", RunHybridColdOpenOnceAsync, repeatCount);
+                await RunHybridColdOpenWithRepeatsAsync(repeatCount);
                 Console.WriteLine();
                 Console.WriteLine("=== Hybrid Hot-Set Read Benchmark ===");
                 await RunSuiteWithRepeatsAsync("hybrid-hot-set-read", RunHybridHotSetReadOnceAsync, repeatCount);
@@ -557,7 +591,7 @@ public static class Program
         {
             EnsureReproConfigured();
             if (ranAny) Console.WriteLine();
-            await RunSuiteWithRepeatsAsync("hybrid-cold-open", RunHybridColdOpenOnceAsync, repeatCount);
+            await RunHybridColdOpenWithRepeatsAsync(repeatCount);
             ranAny = true;
         }
 
@@ -954,6 +988,25 @@ public static class Program
         return await HybridStorageModeBenchmark.RunAsync();
     }
 
+    internal static Task RunHybridStorageModeScenarioWithRepeatsAsync(
+        string scenarioName,
+        int repeatCount,
+        bool warmupSingleSample,
+        string? outputDirectory = null,
+        Func<string, Task<BenchmarkResult>>? runScenarioAsync = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(scenarioName);
+        runScenarioAsync ??= HybridStorageModeBenchmark.RunNamedQualificationScenarioAsync;
+
+        return RunSuiteWithRepeatsAsync(
+            "hybrid-storage-mode-scenario",
+            async () => [await runScenarioAsync(scenarioName)],
+            repeatCount,
+            warmupSingleSample,
+            outputDirectory,
+            scenarioProvidesWarmup: true);
+    }
+
     private static async Task<List<BenchmarkResult>> RunMasterComparisonOnceAsync()
     {
         Console.WriteLine("--- Master Comparison Benchmark ---");
@@ -998,10 +1051,14 @@ public static class Program
             EfCoreComparisonBenchmark.ConnectionLifetimeMode.HybridSharedConnectionPerRun);
     }
 
-    private static async Task<List<BenchmarkResult>> RunHybridColdOpenOnceAsync()
+    private static async Task RunHybridColdOpenWithRepeatsAsync(
+        int repeatCount,
+        bool warmupSingleSample = false)
     {
         Console.WriteLine("--- Hybrid Cold Open Benchmark ---");
-        return await HybridColdOpenBenchmark.RunAsync();
+        List<IReadOnlyList<BenchmarkResult>> runs =
+            await HybridColdOpenBenchmark.RunRepeatedAsync(repeatCount, warmupSingleSample);
+        WriteSuiteResults("hybrid-cold-open", runs);
     }
 
     private static async Task<List<BenchmarkResult>> RunHybridHotSetReadOnceAsync()
@@ -1086,7 +1143,7 @@ public static class Program
             "efcore-compare" => RunSuiteWithRepeatsAsync("efcore-compare", RunEfCoreComparisonOnceAsync, repeatCount),
             "efcore-compare-auto-open-close" => RunSuiteWithRepeatsAsync("efcore-compare-auto-open-close", RunEfCoreAutoOpenCloseComparisonOnceAsync, repeatCount),
             "efcore-compare-hybrid-shared-connection" => RunSuiteWithRepeatsAsync("efcore-compare-hybrid-shared-connection", RunEfCoreHybridSharedConnectionComparisonOnceAsync, repeatCount),
-            "hybrid-cold-open" => RunSuiteWithRepeatsAsync("hybrid-cold-open", RunHybridColdOpenOnceAsync, repeatCount),
+            "hybrid-cold-open" => RunHybridColdOpenWithRepeatsAsync(repeatCount),
             "hybrid-hot-set-read" => RunSuiteWithRepeatsAsync("hybrid-hot-set-read", RunHybridHotSetReadOnceAsync, repeatCount),
             "hybrid-post-checkpoint" => RunSuiteWithRepeatsAsync("hybrid-post-checkpoint", RunHybridPostCheckpointOnceAsync, repeatCount),
             "stress" => RunSuiteWithRepeatsAsync("stress", RunStressTestsOnceAsync, repeatCount),
@@ -1095,29 +1152,40 @@ public static class Program
         };
     }
 
-    private static async Task RunSuiteWithRepeatsAsync(
+    internal static async Task RunSuiteWithRepeatsAsync(
         string suiteName,
         Func<Task<List<BenchmarkResult>>> runOnceAsync,
-        int repeatCount)
+        int repeatCount,
+        bool warmupSingleSample = false,
+        string? outputDirectory = null,
+        bool scenarioProvidesWarmup = false)
     {
-        var outputDir = Path.Combine(AppContext.BaseDirectory, "results");
+        if (repeatCount <= 0)
+            throw new ArgumentOutOfRangeException(nameof(repeatCount), "Repeat count must be positive.");
+        if (warmupSingleSample && repeatCount != 1)
+        {
+            throw new ArgumentException(
+                "Single-sample warmup requires exactly one recorded repeat.",
+                nameof(warmupSingleSample));
+        }
+
+        string outputDir = outputDirectory ?? Path.Combine(AppContext.BaseDirectory, "results");
         Directory.CreateDirectory(outputDir);
         string runStamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
         var allRuns = new List<IReadOnlyList<BenchmarkResult>>(repeatCount);
 
-        if (repeatCount > 1)
+        bool runOuterWarmup = !scenarioProvidesWarmup && (repeatCount > 1 || warmupSingleSample);
+        if (runOuterWarmup)
         {
             Console.WriteLine($"=== {suiteName.ToUpperInvariant()} Warmup (not recorded) ===");
             await runOnceAsync();
             Console.WriteLine();
-            GC.Collect();
-            GC.WaitForPendingFinalizers();
-            GC.Collect();
+            MacroBenchmarkRunner.StabilizeAfterWarmup();
         }
 
         for (int i = 0; i < repeatCount; i++)
         {
-            if (repeatCount > 1)
+            if (repeatCount > 1 || warmupSingleSample)
                 Console.WriteLine($"=== {suiteName.ToUpperInvariant()} Run {i + 1}/{repeatCount} ===");
 
             var runResults = await runOnceAsync();
@@ -1145,6 +1213,41 @@ public static class Program
         CsvReporter.PrintSummaryTable(medianResults);
     }
 
+    internal static void WriteSuiteResults(
+        string suiteName,
+        IReadOnlyList<IReadOnlyList<BenchmarkResult>> allRuns,
+        string? outputDirectory = null)
+    {
+        if (allRuns.Count == 0)
+            throw new InvalidOperationException($"Benchmark suite '{suiteName}' produced no runs.");
+
+        string outputDir = outputDirectory ?? Path.Combine(AppContext.BaseDirectory, "results");
+        Directory.CreateDirectory(outputDir);
+        string runStamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
+
+        for (int runIndex = 0; runIndex < allRuns.Count; runIndex++)
+        {
+            string outputFileName = allRuns.Count == 1
+                ? $"{suiteName}-{runStamp}.csv"
+                : $"{suiteName}-{runStamp}-run{runIndex + 1}.csv";
+            string outputPath = Path.Combine(outputDir, outputFileName);
+            CsvReporter.WriteResults(outputPath, allRuns[runIndex]);
+            Console.WriteLine($"\nResults written to {outputPath}");
+            CsvReporter.PrintSummaryTable(allRuns[runIndex]);
+        }
+
+        if (allRuns.Count <= 1)
+            return;
+
+        var medianResults = BenchmarkResultAggregator.MedianAcrossRuns(allRuns);
+        string medianOutputPath = Path.Combine(
+            outputDir,
+            $"{suiteName}-{runStamp}-median-of-{allRuns.Count}.csv");
+        CsvReporter.WriteResults(medianOutputPath, medianResults);
+        Console.WriteLine($"\nMedian summary written to {medianOutputPath}");
+        CsvReporter.PrintSummaryTable(medianResults);
+    }
+
     private static string[] StripCustomArgs(string[] args)
     {
         var filtered = new List<string>(args.Length);
@@ -1157,7 +1260,8 @@ public static class Program
                 continue;
             }
 
-            if (args[i].Equals("--repro", StringComparison.OrdinalIgnoreCase))
+            if (args[i].Equals("--repro", StringComparison.OrdinalIgnoreCase) ||
+                args[i].Equals("--warmup-single-sample", StringComparison.OrdinalIgnoreCase))
                 continue;
 
             filtered.Add(args[i]);
@@ -1272,6 +1376,37 @@ public static class Program
         return repeatCount;
     }
 
+    internal static void ValidateWarmupSingleSampleOption(
+        string primaryMode,
+        int repeatCount,
+        bool warmupSingleSample)
+    {
+        if (!warmupSingleSample)
+            return;
+
+        if (repeatCount != 1)
+        {
+            throw new ArgumentException(
+                "--warmup-single-sample is valid only with --repeat 1.");
+        }
+
+        string suiteKey = primaryMode.StartsWith("--", StringComparison.Ordinal)
+            ? primaryMode[2..]
+            : primaryMode;
+        bool isHybridStorageScenario = suiteKey.Equals(
+            "hybrid-storage-mode-scenario",
+            StringComparison.OrdinalIgnoreCase);
+        if (!isHybridStorageScenario &&
+            !s_releaseCoreSuiteKeys.Contains(suiteKey, StringComparer.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException(
+                "--warmup-single-sample is supported only by the seven direct release-core " +
+                "suite modes and --hybrid-storage-mode-scenario: " +
+                string.Join(", ", s_releaseCoreSuiteKeys.Select(static key => $"--{key}")) +
+                ".");
+        }
+    }
+
     private static int? ParseCpuThreads(string[] args)
     {
         int? cpuThreads = null;
@@ -1353,7 +1488,8 @@ public static class Program
                 continue;
             }
 
-            if (args[i].Equals("--repro", StringComparison.OrdinalIgnoreCase))
+            if (args[i].Equals("--repro", StringComparison.OrdinalIgnoreCase) ||
+                args[i].Equals("--warmup-single-sample", StringComparison.OrdinalIgnoreCase))
                 continue;
 
             return args[i].ToLowerInvariant();
@@ -1398,6 +1534,7 @@ public static class Program
         Console.WriteLine("  dotnet run -- --concurrent-adonet-compare-scenario SQLite_AdoNet_Disjoint_W8  Run one concurrent ADO.NET comparison scenario");
         Console.WriteLine("  dotnet run -- --direct-file-cache-transport  Run focused direct default-vs-tuned file-cache benchmark");
         Console.WriteLine("  dotnet run -- --hybrid-storage-mode  Run focused storage-mode coverage plus the Plan 2 bulk insert durability/residency matrix");
+        Console.WriteLine("  dotnet run -- --hybrid-storage-mode-scenario <exact-row-name>  Run one storage-mode row with qualification timing and sample floors");
         Console.WriteLine("  dotnet run -- --master-table  Run only the CSharpDB rows used by the README master comparison table");
         Console.WriteLine("  dotnet run -- --sqlite-compare  Run local SQLite WAL+FULL apples-to-apples SQL comparison rows");
         Console.WriteLine("  dotnet run -- --strict-insert-compare  Run strict ADO.NET raw-vs-prepared insert comparison for CSharpDB and SQLite");
@@ -1415,6 +1552,7 @@ public static class Program
         Console.WriteLine("  dotnet run -- --scaling            Run scaling experiments");
         Console.WriteLine("  dotnet run -- --macro --stress --scaling --write-diagnostics --durable-sql-batching --write-transaction-diagnostics --commit-fan-in-diagnostics --insert-fan-in-diagnostics --checkpoint-retention-diagnostics --optimizer-closeout --adaptive-reoptimization --async-io-closeout --concurrent-write-diagnostics --concurrent-sqlite-capi-compare --direct-file-cache-transport --hybrid-storage-mode --master-table --sqlite-compare --strict-insert-compare --native-aot-insert-compare --efcore-compare --efcore-compare-hybrid-shared-connection --efcore-compare-auto-open-close --hybrid-cold-open --hybrid-hot-set-read --hybrid-post-checkpoint   Run non-micro suites in one invocation");
         Console.WriteLine("  dotnet run -- --macro --repeat 3   Repeat suite and emit median-of-N CSV");
+        Console.WriteLine("  dotnet run -- --master-table --repeat 1 --warmup-single-sample --repro   Warm up without recording, then emit one release-core suite sample");
         Console.WriteLine("  dotnet run -- --master-table --repeat 3 --repro   Run a stable median master comparison refresh");
         Console.WriteLine("  dotnet run -- --sqlite-compare --repeat 3 --repro   Run a stable local SQLite median comparison capture");
         Console.WriteLine("  dotnet run -- --strict-insert-compare --repeat 3 --repro   Run a stable strict insert comparison capture");

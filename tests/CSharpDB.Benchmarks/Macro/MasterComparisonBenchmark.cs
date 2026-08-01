@@ -126,6 +126,7 @@ public static class MasterComparisonBenchmark
         {
             Name = mapping.Name,
             TotalOps = checked(source.TotalOps * mapping.OpsMultiplier),
+            LatencySamples = source.LatencySamples,
             ElapsedMs = source.ElapsedMs,
             P50Ms = source.P50Ms,
             P90Ms = source.P90Ms,

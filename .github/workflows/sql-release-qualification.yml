@@ -132,11 +132,16 @@ jobs:
           PREVIOUS_RELEASE_REF: ${{ inputs.previous_release_ref }}
           CANDIDATE_REF: ${{ inputs.release_commit || github.sha }}
         run: |
+          # Same-revision/shared-artifact, exact-scenario, and five-pair controls
+          # are diagnostics only and are intentionally excluded from this gate.
           ./tests/CSharpDB.Benchmarks/scripts/Test-PreviousReleasePerformance.ps1 `
             -PreviousRef $env:PREVIOUS_RELEASE_REF `
             -CandidateRef $env:CANDIDATE_REF `
             -OutputPath $env:PERFORMANCE_OUTPUT `
             -QualificationPass ${{ matrix.qualification_pass }} `
+            -Paired `
+            -RepeatCount 3 `
+            -PostBuildQuiescenceSeconds 30 `
             -MaxThroughputRegressionPercent 15 `
             -MaxP99RegressionPercent 25 `
             -MaxP99RegressionMilliseconds 0.05

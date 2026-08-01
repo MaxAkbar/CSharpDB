@@ -7,6 +7,14 @@ public sealed class BenchmarkResult
 {
     public required string Name { get; init; }
     public int TotalOps { get; init; }
+    /// <summary>
+    /// Number of distinct retained latency observations used to compute the
+    /// percentile and summary fields. This can differ from <see cref="TotalOps"/>
+    /// when an observation represents a batch or when latency sampling is enabled.
+    /// A value of zero means the benchmark has not reported this count; release
+    /// qualification rejects that as incomplete evidence.
+    /// </summary>
+    public required int LatencySamples { get; init; }
     public double ElapsedMs { get; init; }
     public double OpsPerSecond => TotalOps > 0 && ElapsedMs > 0
         ? TotalOps / (ElapsedMs / 1000.0)
@@ -34,6 +42,7 @@ public sealed class BenchmarkResult
         {
             Name = name,
             TotalOps = histogram.Count,
+            LatencySamples = histogram.SampleCount,
             ElapsedMs = elapsedMs,
             P50Ms = histogram.Percentile(0.50),
             P90Ms = histogram.Percentile(0.90),

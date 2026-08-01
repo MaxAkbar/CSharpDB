@@ -184,6 +184,7 @@ public static class DurableWriteDiagnosticsBenchmark
         {
             Name = name,
             TotalOps = histogram.Count,
+            LatencySamples = histogram.SampleCount,
             ElapsedMs = elapsedMs,
             P50Ms = histogram.Percentile(0.50),
             P90Ms = histogram.Percentile(0.90),

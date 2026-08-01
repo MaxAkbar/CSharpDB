@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using CSharpDB.Benchmarks.Infrastructure;
 using CSharpDB.Engine;
 
@@ -6,9 +7,11 @@ namespace CSharpDB.Benchmarks.Macro;
 public static class HybridColdOpenBenchmark
 {
     private const int SeedCount = 200_000;
-    private const int MeasuredIterations = 15;
+    private const int MinimumMeasuredIterations = 500;
     private const int SqlLookupId = 175_321;
     private const int CollectionLookupId = 175_321;
+    private static readonly TimeSpan MinimumMeasuredDuration = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan MaximumMeasuredDuration = TimeSpan.FromSeconds(90);
 
     private sealed record BenchDoc(string Name, int Value, string Category);
 
@@ -22,27 +25,55 @@ public static class HybridColdOpenBenchmark
 
     public static async Task<List<BenchmarkResult>> RunAsync()
     {
+        List<IReadOnlyList<BenchmarkResult>> runs = await RunRepeatedAsync(1);
+        return runs[0].ToList();
+    }
+
+    public static async Task<List<IReadOnlyList<BenchmarkResult>>> RunRepeatedAsync(
+        int repeatCount,
+        bool warmupSingleSample = false)
+    {
+        bool warmUpEachScenario = ShouldWarmUpEachScenario(repeatCount, warmupSingleSample);
+
         await using var inputs = await SeededInputs.CreateAsync();
         await PrimeCodePathsAsync();
 
-        var results = new List<BenchmarkResult>();
+        var scenarios = new List<Func<Task<BenchmarkResult>>>();
         foreach (StorageMode mode in Enum.GetValues<StorageMode>())
         {
-            results.Add(await RunSqlOpenOnlyAsync(mode, inputs.SqlFilePath));
-            results.Add(await RunSqlOpenAndFirstLookupAsync(mode, inputs.SqlFilePath));
-            results.Add(await RunCollectionOpenOnlyAsync(mode, inputs.CollectionFilePath));
-            results.Add(await RunCollectionOpenAndFirstGetAsync(mode, inputs.CollectionFilePath));
+            StorageMode scenarioMode = mode;
+            scenarios.Add(() => RunSqlOpenOnlyAsync(scenarioMode, inputs.SqlFilePath));
+            scenarios.Add(() => RunSqlOpenAndFirstLookupAsync(scenarioMode, inputs.SqlFilePath));
+            scenarios.Add(() => RunCollectionOpenOnlyAsync(scenarioMode, inputs.CollectionFilePath));
+            scenarios.Add(() => RunCollectionOpenAndFirstGetAsync(scenarioMode, inputs.CollectionFilePath));
         }
 
-        return results;
+        return await ScenarioMajorBenchmarkRunner.RunAsync(
+            scenarios,
+            repeatCount,
+            warmUpEachScenario);
+    }
+
+    internal static bool ShouldWarmUpEachScenario(
+        int repeatCount,
+        bool warmupSingleSample)
+    {
+        if (repeatCount <= 0)
+            throw new ArgumentOutOfRangeException(nameof(repeatCount), "Repeat count must be positive.");
+        if (warmupSingleSample && repeatCount != 1)
+        {
+            throw new ArgumentException(
+                "Single-sample warmup requires exactly one recorded repeat.",
+                nameof(warmupSingleSample));
+        }
+
+        return repeatCount > 1 || warmupSingleSample;
     }
 
     private static Task<BenchmarkResult> RunSqlOpenOnlyAsync(StorageMode mode, string filePath)
     {
-        return MacroBenchmarkRunner.RunAsync(
+        return RunColdScenarioAsync(
             $"{GetPrefix(mode)}_Sql_OpenOnly_{SeedCount}",
-            warmupIterations: 0,
-            measuredIterations: MeasuredIterations,
             async () =>
             {
                 await using var db = await OpenSqlDatabaseAsync(mode, filePath);
@@ -51,10 +82,8 @@ public static class HybridColdOpenBenchmark
 
     private static Task<BenchmarkResult> RunSqlOpenAndFirstLookupAsync(StorageMode mode, string filePath)
     {
-        return MacroBenchmarkRunner.RunAsync(
+        return RunColdScenarioAsync(
             $"{GetPrefix(mode)}_Sql_OpenAndFirstLookup_{SeedCount}",
-            warmupIterations: 0,
-            measuredIterations: MeasuredIterations,
             async () =>
             {
                 await using var db = await OpenSqlDatabaseAsync(mode, filePath);
@@ -66,10 +95,8 @@ public static class HybridColdOpenBenchmark
 
     private static Task<BenchmarkResult> RunCollectionOpenOnlyAsync(StorageMode mode, string filePath)
     {
-        return MacroBenchmarkRunner.RunAsync(
+        return RunColdScenarioAsync(
             $"{GetPrefix(mode)}_Collection_OpenOnly_{SeedCount}",
-            warmupIterations: 0,
-            measuredIterations: MeasuredIterations,
             async () =>
             {
                 await using var db = await OpenCollectionDatabaseAsync(mode, filePath);
@@ -78,10 +105,8 @@ public static class HybridColdOpenBenchmark
 
     private static Task<BenchmarkResult> RunCollectionOpenAndFirstGetAsync(StorageMode mode, string filePath)
     {
-        return MacroBenchmarkRunner.RunAsync(
+        return RunColdScenarioAsync(
             $"{GetPrefix(mode)}_Collection_OpenAndFirstGet_{SeedCount}",
-            warmupIterations: 0,
-            measuredIterations: MeasuredIterations,
             async () =>
             {
                 await using var db = await OpenCollectionDatabaseAsync(mode, filePath);
@@ -90,6 +115,52 @@ public static class HybridColdOpenBenchmark
                 if (document is null || document.Value != CollectionLookupId)
                     throw new InvalidOperationException($"Document 'doc:{CollectionLookupId}' was not found or was invalid.");
             });
+    }
+
+    private static async Task<BenchmarkResult> RunColdScenarioAsync(
+        string name,
+        Func<Task> operation)
+    {
+        MacroBenchmarkRunner.StabilizeAfterWarmup();
+
+        var histogram = new LatencyHistogram();
+        var totalSw = Stopwatch.StartNew();
+        while (histogram.SampleCount < MinimumMeasuredIterations ||
+               totalSw.Elapsed < MinimumMeasuredDuration)
+        {
+            if (totalSw.Elapsed >= MaximumMeasuredDuration)
+            {
+                throw new InvalidOperationException(
+                    $"Cold-open scenario '{name}' retained only " +
+                    $"{histogram.SampleCount} latency samples within " +
+                    $"{MaximumMeasuredDuration.TotalSeconds:F0} seconds; at least " +
+                    $"{MinimumMeasuredIterations} samples and " +
+                    $"{MinimumMeasuredDuration.TotalSeconds:F0} seconds are required.");
+            }
+
+            var sw = Stopwatch.StartNew();
+            await operation();
+            sw.Stop();
+            histogram.Record(sw.Elapsed.TotalMilliseconds);
+
+            if (totalSw.Elapsed > MaximumMeasuredDuration)
+            {
+                throw new InvalidOperationException(
+                    $"Cold-open scenario '{name}' exceeded the " +
+                    $"{MaximumMeasuredDuration.TotalSeconds:F0}-second measurement cap.");
+            }
+        }
+        totalSw.Stop();
+
+        BenchmarkResult result = BenchmarkResult.FromHistogram(
+            name,
+            histogram,
+            totalSw.Elapsed.TotalMilliseconds);
+        Console.WriteLine(
+            $"  {name}: {result.OpsPerSecond:N0} ops/sec, " +
+            $"P50={result.P50Ms:F3}ms, P99={result.P99Ms:F3}ms, " +
+            $"P999={result.P999Ms:F3}ms");
+        return result;
     }
 
     private static async Task PrimeCodePathsAsync()

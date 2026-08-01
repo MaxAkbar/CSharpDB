@@ -6,7 +6,10 @@ This README is the stable, user-facing performance summary for CSharpDB. It answ
 - Which benchmark produced each published number?
 - Is the latest release benchmark run clean enough to promote?
 
-Historical release logs, failed-run notes, and investigation detail live in [HISTORY.md](HISTORY.md). The full harness catalog lives in [BENCHMARK_CATALOG.md](BENCHMARK_CATALOG.md).
+Historical release summaries, external evidence identifiers, and investigation
+detail live in [HISTORY.md](HISTORY.md). Generated benchmark evidence remains
+outside the repository. The full harness catalog lives in
+[BENCHMARK_CATALOG.md](BENCHMARK_CATALOG.md).
 
 Phase 2 staged-migration target qualification is available with:
 
@@ -44,7 +47,9 @@ Core rules:
 
 - The main README is user-first. It should stay short enough to scan.
 - `--all` is diagnostic only. It is never a direct source for published tables.
-- Failed release runs go to [HISTORY.md](HISTORY.md), not into the current scorecard.
+- Failed release runs may add a concise human-authored summary or external
+  evidence identifier to [HISTORY.md](HISTORY.md), not raw CSVs, manifests,
+  logs, reports, or temporary files.
 - Targeted reruns can diagnose a problem, but they do not replace current published numbers unless the full release-core promotion rule passes.
 - The generated region below is owned by `scripts/Update-BenchmarkReadme.ps1` and `release-core-manifest.json`.
 
@@ -446,31 +451,116 @@ $ComparisonRoot = Join-Path `
 pwsh -NoProfile .\tests\CSharpDB.Benchmarks\scripts\Test-PreviousReleasePerformance.ps1 `
   -CandidateRef HEAD `
   -OutputPath (Join-Path $ComparisonRoot 'pass-1') `
-  -QualificationPass 1
+  -QualificationPass 1 `
+  -Paired `
+  -RepeatCount 3
 
 pwsh -NoProfile .\tests\CSharpDB.Benchmarks\scripts\Test-PreviousReleasePerformance.ps1 `
   -CandidateRef HEAD `
   -OutputPath (Join-Path $ComparisonRoot 'pass-2') `
-  -QualificationPass 2
+  -QualificationPass 2 `
+  -Paired `
+  -RepeatCount 3
 ```
 
 The repository must be clean. When `-PreviousRef` is omitted, the nearest
 prior semantic release tag reachable from the candidate is selected
 automatically; an explicit tag or commit can still override that choice. The
 previous revision must be an ancestor of the candidate, and each output
-directory must be absent or empty and outside the repository. Each pass checks
-all seven release-core CSV files for exact schema and row-name parity and
-rejects invalid metrics. The two revisions are built once, then measured in
-suite-interleaved, isolated processes: pass 1 runs previous then candidate
-within every suite pair, while pass 2 reverses every pair. This keeps comparable
-measurements adjacent and still exposes order-sensitive runner effects.
-Throughput fails above a 15% regression. P99 fails only when its increase
-exceeds both 25% and the 0.05 ms absolute allowance; percentage-only P99
-crossings remain visible in the report notes. Evidence includes an up-front
-preflight record, copied CSV files, revision logs with suite boundaries, commit
-identities, the planned order, a chronological start/pass/fail execution log,
-and a Markdown report. This
-qualification does not promote or modify benchmark baselines.
+directory must be absent or empty and outside the repository. In paired mode,
+qualification accepts `3`, `5`, `7`, or `9` pairs per order stratum and CI uses
+`3`: three previous-candidate pairs and three candidate-previous pairs, or six
+recorded samples per revision. The candidate benchmark source is hash-verified
+and synchronized into the previous-release worktree so both engines run the
+same benchmark source. Candidate and previous root build inputs are hashed and
+reported separately because they remain revision-specific. The revisions are
+built once. Each isolated sample then receives the same unrecorded warmup and
+produces exactly one recorded CSV. Pair members run adjacently, pair order
+alternates within each suite, and the qualification pass controls which order
+runs first.
+
+Each pass retains the pair manifest, every raw sample, and an aggregate for all
+seven release-core suites. The comparer requires exact manifest, schema, and
+row-name parity, positive gate metrics, at least 100 retained latency
+observations per row, unique evidence paths, and the declared adjacent order.
+It compares candidate/baseline log ratios separately for each order stratum.
+Throughput and P99 independently require a strict stable majority in each
+stratum; the stable pairs for the two metrics need not be the same. Throughput
+effects must remain within 15% of their stratum median, while P99 effects are
+stable when they remain within either 25% or 0.0500 ms of their stratum median
+effect. With three pairs per order, one throughput outlier and one P99 outlier
+may therefore be tolerated even when they occur in different pairs. `INVALID`,
+`UNSTABLE`, and `ORDER-SENSITIVE` all block qualification. A regression is
+confirmed only when both stable order strata cross the same gate; the P99 gate
+requires a strict majority of the same pairs to exceed both its relative and
+absolute limits.
+
+The cold-open suite measures its repeated samples scenario-by-scenario, with an
+unrecorded same-scenario warmup, so runtime and machine drift across that long
+suite cannot masquerade as raw-run instability. Its read-only scenarios share
+one immutable seeded corpus, and each paired sample CSV contains exactly one
+recorded result for every scenario.
+
+For stable evidence, throughput fails above a 15% candidate regression. P99
+fails only when its increase exceeds both 25% and the 0.05 ms absolute
+allowance; percentage-only P99 crossings remain visible in the report notes.
+Evidence includes an up-front preflight record, the benchmark-source hash
+manifest, separate revision build-input manifests, pair manifest, persisted
+raw-evidence SHA-256 manifest, raw and aggregate CSV files, revision logs with
+suite boundaries, commit identities, the planned order, a chronological
+start/pass/fail execution log, and a Markdown report. All generated evidence
+must remain in an absent or empty directory outside the checkout and must not
+be copied into benchmark result or other source directories. It never updates
+the deliberately curated `release-core-manifest.json`, and diagnostic runs
+introduce no generated JSON.
+
+### Focused A/A and exact-row diagnostics
+
+Use the exact-row control to investigate a noisy hybrid-storage result before
+running another full cross-version qualification:
+
+```powershell
+$DiagnosticRoot = Join-Path `
+  ([IO.Path]::GetTempPath()) `
+  "csharpdb-hybrid-aa-$([Guid]::NewGuid().ToString('N'))"
+
+pwsh -NoProfile .\tests\CSharpDB.Benchmarks\scripts\Test-PreviousReleasePerformance.ps1 `
+  -PreviousRef HEAD `
+  -CandidateRef HEAD `
+  -OutputPath $DiagnosticRoot `
+  -QualificationPass 1 `
+  -Paired `
+  -RepeatCount 5 `
+  -AllowSameRevision `
+  -ShareSameRevisionArtifact `
+  -HybridStorageScenarioName 'Storage_HybridIncrementalDurable_Sql_SingleInsert_5s' `
+  -PostBuildQuiescenceSeconds 30
+```
+
+`-RepeatCount 5` means five pairs per order: ten pairs and twenty logical
+invocations. The scenario name is case-sensitive and must match a published
+hybrid-storage row exactly. `-HybridStorageScenarioName` replaces the
+seven-suite plan and takes precedence over `-SuiteName`. Each invocation owns
+one two-second unrecorded warmup, then measures until it has both at least 30
+seconds and at least 10,000 retained latency samples. The 120-second measured
+phase cap fails explicitly if both floors have not been reached; undersampled
+evidence is never accepted. The paired runner does not add a second outer
+warmup for this mode, and the raw row records the measured begin/end UTC times.
+
+`-AllowSameRevision` only permits an A/A comparison; by itself it still creates
+and builds two worktrees. `-ShareSameRevisionArtifact` is the stronger control:
+it requires paired mode, `-AllowSameRevision`, and two refs resolving to the
+same commit, then builds once and invokes the identical candidate DLL directly
+for both logical labels. Its SHA-256 is checked immediately before and after
+every sample, and its path and identity are retained with the evidence.
+`-PostBuildQuiescenceSeconds` shuts down the .NET build servers and performs the
+requested fixed wait, failing if shutdown fails. It does not prove that the
+machine or disk is idle, so use a dedicated runner without concurrent builds.
+The release workflow uses a 30-second post-build wait.
+
+A/A and exact-row results are harness diagnostics only. They cannot satisfy the
+previous-release gate, replace either clean qualification pass, promote a
+baseline, or modify published benchmark numbers.
 
 Run the release guardrail comparison:
 
@@ -496,14 +586,22 @@ pwsh -NoProfile .\tests\CSharpDB.Benchmarks\scripts\Update-BenchmarkReadme.ps1 `
 Promotion checklist:
 
 - The release-core suite was run with `--repeat 3 --repro`.
+- Both order-reversed previous-release comparisons passed with the same
+  hash-verified candidate harness and retained raw evidence.
+- No comparison row is `INVALID`, `UNSTABLE`, `ORDER-SENSITIVE`, or
+  `REGRESSION`, and every gate row has at least 100 retained latency
+  observations. Exact hybrid diagnostic rows use the stronger 10,000-sample
+  floor described above.
 - The release guardrail result is clean.
 - The manifest points only to the approved median artifacts.
 - The generated README diff only changes benchmark numbers, source artifacts, or snapshot metadata.
-- Failed or noisy runs are recorded in [HISTORY.md](HISTORY.md).
+- Failed or noisy runs receive only a concise human-authored summary or external
+  evidence identifier in [HISTORY.md](HISTORY.md); generated evidence is never
+  checked in.
 
 Related files:
 
-- [HISTORY.md](HISTORY.md): previous release logs, failed runs, and investigation notes.
+- [HISTORY.md](HISTORY.md): human-authored release summaries, external evidence identifiers, and investigation notes.
 - [BENCHMARK_CATALOG.md](BENCHMARK_CATALOG.md): complete harness list and classification.
 - [SQLITE_COMPARISON.md](SQLITE_COMPARISON.md): focused same-runner CSharpDB vs SQLite comparison.
 - `release-core-manifest.json`: source-of-truth manifest for published README tables.

@@ -237,6 +237,7 @@ public static class SqliteComparisonBenchmark
                 ? $"SQLite_WalFull_Sql_ConcurrentReadsBurst{ReusedSessionBurstReads}_{ConcurrentReaderCount}readers"
                 : $"SQLite_WalFull_Sql_ConcurrentReads_{ConcurrentReaderCount}readers",
             TotalOps = histograms.Sum(static histogram => histogram.Count),
+            LatencySamples = histograms.Sum(static histogram => histogram.SampleCount),
             ElapsedMs = MeasuredDuration.TotalMilliseconds,
             P50Ms = histograms.Average(static histogram => histogram.Percentile(0.50)),
             P90Ms = histograms.Average(static histogram => histogram.Percentile(0.90)),
@@ -401,6 +402,7 @@ public static class SqliteComparisonBenchmark
         {
             Name = source.Name,
             TotalOps = totalOps ?? source.TotalOps,
+            LatencySamples = source.LatencySamples,
             ElapsedMs = source.ElapsedMs,
             P50Ms = source.P50Ms,
             P90Ms = source.P90Ms,
