@@ -467,6 +467,69 @@ public sealed class HybridStorageModeQualificationTests
     }
 
     [Fact]
+    public async Task LegacyConcurrentPhase_DelayedSchedulingCannotCancelReadersBeforeTheyStart()
+    {
+        const int readerCount = 2;
+        TimeSpan measuredDuration = TimeSpan.FromMilliseconds(250);
+        var scheduledReaders = new List<Func<Task>>();
+        var scheduledCompletions = new List<TaskCompletionSource>();
+        int enteredReaderCount = 0;
+
+        Task ScheduleReader(Func<Task> reader)
+        {
+            var completion = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            scheduledReaders.Add(
+                async () =>
+                {
+                    try
+                    {
+                        await reader();
+                        completion.TrySetResult();
+                    }
+                    catch (Exception exception)
+                    {
+                        completion.TrySetException(exception);
+                    }
+                });
+            scheduledCompletions.Add(completion);
+            return completion.Task;
+        }
+
+        Task phaseTask = HybridStorageModeBenchmark.RunLegacyConcurrentReaderWorkersAsync(
+            readerCount,
+            measuredDuration,
+            async (_, ct) =>
+            {
+                Assert.False(
+                    ct.IsCancellationRequested,
+                    "Measurement cancellation started before every reader entered.");
+                Interlocked.Increment(ref enteredReaderCount);
+                await WaitForCoordinatedCancellationAsync(ct);
+            },
+            ScheduleReader);
+
+        Assert.Equal(readerCount, scheduledReaders.Count);
+        await Task.Delay(
+            measuredDuration + TimeSpan.FromMilliseconds(50),
+            TestContext.Current.CancellationToken);
+        Assert.False(phaseTask.IsCompleted);
+
+        Task[] startedReaders = scheduledReaders
+            .Select(static reader => Task.Run(reader))
+            .ToArray();
+        await phaseTask.WaitAsync(
+            TimeSpan.FromSeconds(2),
+            TestContext.Current.CancellationToken);
+        await Task.WhenAll(startedReaders);
+
+        Assert.Equal(readerCount, enteredReaderCount);
+        Assert.All(
+            scheduledCompletions,
+            static completion => Assert.True(completion.Task.IsCompletedSuccessfully));
+    }
+
+    [Fact]
     public void ConcurrentAndReadSetupPaths_DefaultToLegacyOnly()
     {
         Assert.Equal(

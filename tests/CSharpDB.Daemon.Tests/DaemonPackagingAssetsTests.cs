@@ -103,6 +103,11 @@ public sealed class DaemonPackagingAssetsTests
             normalized);
         Assert.DoesNotContain("default: v4.3.0", normalized);
         Assert.Contains("previous-release-performance:", normalized);
+        Assert.Contains(
+            "  previous-release-performance:\n" +
+            "    name: Windows previous-release performance / clean pass ${{ matrix.qualification_pass }}\n" +
+            "    needs: qualify\n",
+            normalized);
         Assert.Contains("Test-PreviousReleasePerformance.ps1", normalized);
         Assert.Contains(
             "-CandidateRef $env:CANDIDATE_REF",
@@ -149,6 +154,28 @@ public sealed class DaemonPackagingAssetsTests
             System.Text.RegularExpressions.Regex.Matches(
                 normalized,
                 @"(?m)^    needs: build-and-test$").Count);
+    }
+
+    [Fact]
+    public void PreviousReleasePerformanceScript_UsesLongPathSafeWorktreeLifecycle()
+    {
+        string repoRoot = FindRepoRoot();
+        string script = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "tests",
+            "CSharpDB.Benchmarks",
+            "scripts",
+            "Test-PreviousReleasePerformance.ps1"));
+
+        Assert.Equal(
+            4,
+            System.Text.RegularExpressions.Regex.Matches(
+                script,
+                @"(?m)^\s*& git -C \$repositoryRoot -c core\.longpaths=true").Count);
+        Assert.Contains("$candidateRemoveOutput = @(", script);
+        Assert.Contains("$baselineRemoveOutput = @(", script);
+        Assert.Contains("$candidateRemoveFailure +=", script);
+        Assert.Contains("$baselineRemoveFailure +=", script);
     }
 
     [Fact]

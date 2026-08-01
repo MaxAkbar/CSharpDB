@@ -103,6 +103,7 @@ jobs:
 
   previous-release-performance:
     name: Windows previous-release performance / clean pass ${{ matrix.qualification_pass }}
+    needs: qualify
     runs-on: windows-latest
     timeout-minutes: 300
     strategy:

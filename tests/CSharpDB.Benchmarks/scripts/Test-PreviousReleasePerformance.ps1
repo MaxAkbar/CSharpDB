@@ -2205,13 +2205,15 @@ try {
         [IO.File]::WriteAllLines($pairedRawDigestManifestPath, [string[]] @())
     }
 
-    & git -C $repositoryRoot worktree add --detach $baselineWorktree $previousCommit
+    & git -C $repositoryRoot -c core.longpaths=true `
+        worktree add --detach $baselineWorktree $previousCommit
     if ($LASTEXITCODE -ne 0) {
         throw "Could not create the previous-release worktree."
     }
     $baselineAdded = $true
 
-    & git -C $repositoryRoot worktree add --detach $candidateWorktree $candidateCommit
+    & git -C $repositoryRoot -c core.longpaths=true `
+        worktree add --detach $candidateWorktree $candidateCommit
     if ($LASTEXITCODE -ne 0) {
         throw "Could not create the candidate worktree."
     }
@@ -2679,10 +2681,22 @@ finally {
                 $_.Exception.Message)
         }
         if ($candidateCleanupSafe) {
-            & git -C $repositoryRoot worktree remove --force $candidateWorktree 2>&1 |
-                Out-Null
-            if ($LASTEXITCODE -ne 0) {
-                $cleanupFailures.Add("Could not remove candidate worktree '$candidateWorktree'.")
+            $candidateRemoveOutput = @(
+                & git -C $repositoryRoot -c core.longpaths=true `
+                    worktree remove --force $candidateWorktree 2>&1
+            )
+            $candidateRemoveExitCode = $LASTEXITCODE
+            if ($candidateRemoveExitCode -ne 0) {
+                $candidateRemoveDetails = (
+                    $candidateRemoveOutput | ForEach-Object { [string] $_ }
+                ) -join [Environment]::NewLine
+                $candidateRemoveFailure =
+                    "Could not remove candidate worktree '$candidateWorktree'."
+                if (-not [string]::IsNullOrWhiteSpace($candidateRemoveDetails)) {
+                    $candidateRemoveFailure +=
+                        [Environment]::NewLine + $candidateRemoveDetails
+                }
+                $cleanupFailures.Add($candidateRemoveFailure)
             }
         }
     }
@@ -2705,11 +2719,22 @@ finally {
                 $_.Exception.Message)
         }
         if ($baselineCleanupSafe) {
-            & git -C $repositoryRoot worktree remove --force $baselineWorktree 2>&1 |
-                Out-Null
-            if ($LASTEXITCODE -ne 0) {
-                $cleanupFailures.Add(
-                    "Could not remove previous-release worktree '$baselineWorktree'.")
+            $baselineRemoveOutput = @(
+                & git -C $repositoryRoot -c core.longpaths=true `
+                    worktree remove --force $baselineWorktree 2>&1
+            )
+            $baselineRemoveExitCode = $LASTEXITCODE
+            if ($baselineRemoveExitCode -ne 0) {
+                $baselineRemoveDetails = (
+                    $baselineRemoveOutput | ForEach-Object { [string] $_ }
+                ) -join [Environment]::NewLine
+                $baselineRemoveFailure =
+                    "Could not remove previous-release worktree '$baselineWorktree'."
+                if (-not [string]::IsNullOrWhiteSpace($baselineRemoveDetails)) {
+                    $baselineRemoveFailure +=
+                        [Environment]::NewLine + $baselineRemoveDetails
+                }
+                $cleanupFailures.Add($baselineRemoveFailure)
             }
         }
     }

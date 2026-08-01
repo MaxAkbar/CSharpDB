@@ -368,33 +368,26 @@ public static class HybridStorageModeBenchmark
         for (int i = 0; i < histograms.Length; i++)
             histograms[i] = new LatencyHistogram(latencySampleEvery);
 
-        using var cts = new CancellationTokenSource(MeasuredDuration);
-        var readerTasks = new Task[ConcurrentReaderCount];
-        for (int readerIndex = 0; readerIndex < readerTasks.Length; readerIndex++)
-        {
-            LatencyHistogram histogram = histograms[readerIndex];
-            readerTasks[readerIndex] = Task.Run(
-                () => reuseSessionBurstReads
-                    ? RunReusedReaderLoopAsync(
-                        db,
-                        histogram,
-                        latencySampleRecorded: null,
-                        completionElapsedProvider: null,
-                        maximumMeasuredDuration: TimeSpan.Zero,
-                        discardCompletedAfterCancellation: false,
-                        cts.Token)
-                    : RunPerQueryReaderLoopAsync(
-                        db,
-                        histogram,
-                        latencySampleRecorded: null,
-                        completionElapsedProvider: null,
-                        maximumMeasuredDuration: TimeSpan.Zero,
-                        discardCompletedAfterCancellation: false,
-                        cts.Token),
-                cts.Token);
-        }
-
-        await Task.WhenAll(readerTasks);
+        await RunLegacyConcurrentReaderWorkersAsync(
+            ConcurrentReaderCount,
+            MeasuredDuration,
+            (readerIndex, ct) => reuseSessionBurstReads
+                ? RunReusedReaderLoopAsync(
+                    db,
+                    histograms[readerIndex],
+                    latencySampleRecorded: null,
+                    completionElapsedProvider: null,
+                    maximumMeasuredDuration: TimeSpan.Zero,
+                    discardCompletedAfterCancellation: false,
+                    ct)
+                : RunPerQueryReaderLoopAsync(
+                    db,
+                    histograms[readerIndex],
+                    latencySampleRecorded: null,
+                    completionElapsedProvider: null,
+                    maximumMeasuredDuration: TimeSpan.Zero,
+                    discardCompletedAfterCancellation: false,
+                    ct));
 
         return CreateConcurrentReadResult(
             benchmarkName,
@@ -405,6 +398,47 @@ public static class HybridStorageModeBenchmark
             qualificationSettings: null,
             measurementStartedUtc: null,
             measurementEndedUtc: null);
+    }
+
+    internal static async Task RunLegacyConcurrentReaderWorkersAsync(
+        int readerCount,
+        TimeSpan measuredDuration,
+        Func<int, CancellationToken, Task> readerLoop,
+        Func<Func<Task>, Task>? scheduleReader = null)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(readerCount, 1);
+        if (measuredDuration < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(measuredDuration));
+        ArgumentNullException.ThrowIfNull(readerLoop);
+
+        scheduleReader ??= static reader => Task.Run(reader);
+
+        using var phaseCts = new CancellationTokenSource();
+        var allReadersReady = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var measurementStart = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var readerTasks = new Task[readerCount];
+        int readyReaderCount = 0;
+
+        for (int readerIndex = 0; readerIndex < readerTasks.Length; readerIndex++)
+        {
+            int capturedReaderIndex = readerIndex;
+            readerTasks[readerIndex] = scheduleReader(
+                async () =>
+                {
+                    if (Interlocked.Increment(ref readyReaderCount) == readerCount)
+                        allReadersReady.TrySetResult();
+
+                    await measurementStart.Task.ConfigureAwait(false);
+                    await readerLoop(capturedReaderIndex, phaseCts.Token).ConfigureAwait(false);
+                });
+        }
+
+        await allReadersReady.Task.ConfigureAwait(false);
+        phaseCts.CancelAfter(measuredDuration);
+        measurementStart.TrySetResult();
+        await Task.WhenAll(readerTasks).ConfigureAwait(false);
     }
 
     private static async Task<BenchmarkResult> RunQualifiedConcurrentReadsAsync(

@@ -230,7 +230,7 @@ public sealed class PreviousReleasePairedRunnerScriptTests
                 "-ShareSameRevisionArtifact",
                 "-PreflightOnly");
             Assert.NotEqual(0, sharingDifferentRevisions.ExitCode);
-            Assert.Contains(
+            AssertDiagnosticContains(
                 "requires previous and candidate refs to resolve to the same commit",
                 sharingDifferentRevisions.CombinedOutput);
         }
@@ -1210,7 +1210,7 @@ public sealed class PreviousReleasePairedRunnerScriptTests
                 "master-table");
 
             Assert.NotEqual(0, result.ExitCode);
-            Assert.Contains(
+            AssertDiagnosticContains(
                 "Paired benchmark artifact manifest changed before closeout",
                 result.CombinedOutput);
             Assert.Equal(
@@ -1871,6 +1871,23 @@ public sealed class PreviousReleasePairedRunnerScriptTests
             Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(path);
         return path;
+    }
+
+    private static void AssertDiagnosticContains(string expected, string actual)
+    {
+        Assert.Contains(
+            NormalizeDiagnostic(expected),
+            NormalizeDiagnostic(actual),
+            StringComparison.Ordinal);
+    }
+
+    private static string NormalizeDiagnostic(string value)
+    {
+        string withoutAnsi = System.Text.RegularExpressions.Regex.Replace(
+            value,
+            "\u001b\\[[0-?]*[ -/]*[@-~]",
+            string.Empty);
+        return System.Text.RegularExpressions.Regex.Replace(withoutAnsi, "\\s+", " ").Trim();
     }
 
     private static void DeleteTemporaryRoot(string path)

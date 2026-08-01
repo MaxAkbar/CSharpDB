@@ -520,7 +520,9 @@ public sealed class PreviousReleasePerformanceScriptTests
                 "-PreflightOnly");
 
             Assert.NotEqual(0, dirtyResult.ExitCode);
-            Assert.Contains("requires a clean repository worktree", dirtyResult.CombinedOutput);
+            AssertDiagnosticContains(
+                "requires a clean repository worktree",
+                dirtyResult.CombinedOutput);
         }
         finally
         {
@@ -691,7 +693,7 @@ public sealed class PreviousReleasePerformanceScriptTests
                 "2");
 
             Assert.NotEqual(0, duplicate.ExitCode);
-            Assert.Contains(
+            AssertDiagnosticContains(
                 "produced 2 median CSV file(s); expected exactly one",
                 duplicate.CombinedOutput);
             Assert.False(Directory.Exists(Path.Combine(duplicateEvidence, "baseline-source")));
@@ -1049,6 +1051,23 @@ public sealed class PreviousReleasePerformanceScriptTests
             Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(path);
         return path;
+    }
+
+    private static void AssertDiagnosticContains(string expected, string actual)
+    {
+        Assert.Contains(
+            NormalizeDiagnostic(expected),
+            NormalizeDiagnostic(actual),
+            StringComparison.Ordinal);
+    }
+
+    private static string NormalizeDiagnostic(string value)
+    {
+        string withoutAnsi = System.Text.RegularExpressions.Regex.Replace(
+            value,
+            "\u001b\\[[0-?]*[ -/]*[@-~]",
+            string.Empty);
+        return System.Text.RegularExpressions.Regex.Replace(withoutAnsi, "\\s+", " ").Trim();
     }
 
     private static void DeleteTemporaryRoot(string path)
