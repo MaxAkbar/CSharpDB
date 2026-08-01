@@ -58,9 +58,6 @@ jobs:
           - 1
           - 2
 
-    env:
-      QUALIFICATION_OUTPUT: ${{ runner.temp }}/csharpdb-sql-release-qualification/${{ github.sha }}/${{ matrix.os }}/pass-${{ matrix.qualification_pass }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -84,6 +81,7 @@ jobs:
       - name: Run SQL release qualification
         shell: pwsh
         env:
+          QUALIFICATION_OUTPUT: ${{ runner.temp }}/csharpdb-sql-release-qualification/${{ github.sha }}/${{ matrix.os }}/pass-${{ matrix.qualification_pass }}
           RELEASE_VERSION: ${{ inputs.release_version }}
           RELEASE_COMMIT: ${{ inputs.release_commit }}
         run: |
@@ -99,7 +97,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: sql-release-qualification-${{ github.sha }}-${{ matrix.os }}-pass-${{ matrix.qualification_pass }}
-          path: ${{ env.QUALIFICATION_OUTPUT }}/evidence
+          path: ${{ runner.temp }}/csharpdb-sql-release-qualification/${{ github.sha }}/${{ matrix.os }}/pass-${{ matrix.qualification_pass }}/evidence
           if-no-files-found: warn
           retention-days: 14
 
@@ -113,9 +111,6 @@ jobs:
         qualification_pass:
           - 1
           - 2
-
-    env:
-      PERFORMANCE_OUTPUT: ${{ runner.temp }}/csharpdb-previous-release-performance/${{ github.sha }}/pass-${{ matrix.qualification_pass }}
 
     steps:
       - name: Checkout
@@ -132,6 +127,7 @@ jobs:
       - name: Compare with previous release
         shell: pwsh
         env:
+          PERFORMANCE_OUTPUT: ${{ runner.temp }}/csharpdb-previous-release-performance/${{ github.sha }}/pass-${{ matrix.qualification_pass }}
           PREVIOUS_RELEASE_REF: ${{ inputs.previous_release_ref }}
           CANDIDATE_REF: ${{ inputs.release_commit || github.sha }}
         run: |
@@ -155,10 +151,10 @@ jobs:
         with:
           name: previous-release-performance-${{ github.sha }}-pass-${{ matrix.qualification_pass }}
           path: |
-            ${{ env.PERFORMANCE_OUTPUT }}/previous-release-performance-preflight.md
-            ${{ env.PERFORMANCE_OUTPUT }}/previous-release-performance.md
-            ${{ env.PERFORMANCE_OUTPUT }}/baseline-results
-            ${{ env.PERFORMANCE_OUTPUT }}/candidate-results
-            ${{ env.PERFORMANCE_OUTPUT }}/logs
+            ${{ runner.temp }}/csharpdb-previous-release-performance/${{ github.sha }}/pass-${{ matrix.qualification_pass }}/previous-release-performance-preflight.md
+            ${{ runner.temp }}/csharpdb-previous-release-performance/${{ github.sha }}/pass-${{ matrix.qualification_pass }}/previous-release-performance.md
+            ${{ runner.temp }}/csharpdb-previous-release-performance/${{ github.sha }}/pass-${{ matrix.qualification_pass }}/baseline-results
+            ${{ runner.temp }}/csharpdb-previous-release-performance/${{ github.sha }}/pass-${{ matrix.qualification_pass }}/candidate-results
+            ${{ runner.temp }}/csharpdb-previous-release-performance/${{ github.sha }}/pass-${{ matrix.qualification_pass }}/logs
           if-no-files-found: warn
           retention-days: 14

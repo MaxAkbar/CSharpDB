@@ -85,6 +85,12 @@ public sealed class DaemonPackagingAssetsTests
             normalized);
         Assert.Contains("Test-SqlReleaseQualification.ps1", normalized);
         Assert.Contains("${{ runner.temp }}", normalized);
+        Assert.DoesNotContain(
+            "    env:\n      QUALIFICATION_OUTPUT: ${{ runner.temp }}",
+            normalized);
+        Assert.DoesNotContain(
+            "    env:\n      PERFORMANCE_OUTPUT: ${{ runner.temp }}",
+            normalized);
         Assert.Contains("previous_release_ref:", normalized);
         Assert.Contains(
             "empty discovers the nearest prior semantic release",
