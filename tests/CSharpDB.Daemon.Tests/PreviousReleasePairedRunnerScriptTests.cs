@@ -51,6 +51,7 @@ public sealed class PreviousReleasePairedRunnerScriptTests
                 "recorded samples per revision: 6)",
                 preflight);
             Assert.Contains("- Planned pair manifest: `", preflight);
+            Assert.Contains("- Planned paired benchmark artifact manifest: `", preflight);
 
             string executionLine = Assert.Single(
                 File.ReadLines(Path.Combine(
@@ -318,7 +319,7 @@ public sealed class PreviousReleasePairedRunnerScriptTests
     public async Task SharedArtifactScenarioRunner_UsesOneCandidateArtifactForBothLabels()
     {
         const string scenarioName = "Storage_FileBacked_Sql_SingleInsert_5s";
-        const string artifactPayload = "fake release-core benchmark artifact";
+        const string artifactPayload = "fake release-core benchmark artifact:candidate-source";
         string temporaryRoot = CreateTemporaryRoot();
         try
         {
@@ -430,6 +431,46 @@ public sealed class PreviousReleasePairedRunnerScriptTests
             string expectedArtifactHash = Convert
                 .ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(artifactPayload)))
                 .ToLowerInvariant();
+            string artifactIdentityManifest = Path.Combine(
+                evidence,
+                "logs",
+                "paired-benchmark-artifacts.sha256");
+            Assert.Equal("true", ReadManifestValue(
+                artifactIdentityManifest,
+                "SharedSameRevisionArtifact"));
+            Assert.Equal(invokedArtifact, ReadManifestValue(
+                artifactIdentityManifest,
+                "PreviousArtifactPath"));
+            Assert.Equal(invokedArtifact, ReadManifestValue(
+                artifactIdentityManifest,
+                "CandidateArtifactPath"));
+            Assert.Equal(expectedArtifactHash, ReadManifestValue(
+                artifactIdentityManifest,
+                "PreviousArtifactSha256"));
+            Assert.Equal(expectedArtifactHash, ReadManifestValue(
+                artifactIdentityManifest,
+                "CandidateArtifactSha256"));
+            string expectedClosureHash = GetFakeClosureHash("candidate-source");
+            Assert.Equal("7", ReadManifestValue(
+                artifactIdentityManifest,
+                "PreviousClosureFileCount"));
+            Assert.Equal("7", ReadManifestValue(
+                artifactIdentityManifest,
+                "CandidateClosureFileCount"));
+            Assert.Equal(expectedClosureHash, ReadManifestValue(
+                artifactIdentityManifest,
+                "PreviousClosureSha256"));
+            Assert.Equal(expectedClosureHash, ReadManifestValue(
+                artifactIdentityManifest,
+                "CandidateClosureSha256"));
+            AssertArtifactClosureRecords(
+                artifactIdentityManifest,
+                "Previous",
+                "candidate-source");
+            AssertArtifactClosureRecords(
+                artifactIdentityManifest,
+                "Candidate",
+                "candidate-source");
             string preflight = File.ReadAllText(Path.Combine(
                 evidence,
                 "previous-release-performance-preflight.md"));
@@ -444,6 +485,16 @@ public sealed class PreviousReleasePairedRunnerScriptTests
                 Assert.Contains(
                     $"- Shared benchmark artifact SHA-256: `{expectedArtifactHash}`",
                     document);
+                Assert.Contains(
+                    $"- Previous benchmark artifact execution path: `{invokedArtifact}`",
+                    document);
+                Assert.Contains(
+                    $"- Candidate benchmark artifact execution path: `{invokedArtifact}`",
+                    document);
+                Assert.Contains(
+                    $"runnable closure: 7 files; SHA-256 `{expectedClosureHash}`",
+                    document);
+                Assert.Contains("paired-benchmark-artifacts.sha256", document);
                 Assert.Contains("measurements will wait 1 second(s)", document);
                 Assert.Contains("paired-raw-evidence.sha256", document);
                 Assert.Contains("20 files verified", document);
@@ -481,6 +532,7 @@ public sealed class PreviousReleasePairedRunnerScriptTests
             Assert.Equal(2, File.ReadAllLines(candidateAggregate).Length);
             Assert.StartsWith(scenarioName + ",", File.ReadLines(baselineAggregate).Last());
             Assert.StartsWith(scenarioName + ",", File.ReadLines(candidateAggregate).Last());
+            AssertCloseoutResult(evidence, "PASS");
         }
         finally
         {
@@ -489,7 +541,7 @@ public sealed class PreviousReleasePairedRunnerScriptTests
     }
 
     [Fact]
-    public async Task PairedRunner_ProducesAdjacentManifestAndSixSamplesPerRevision()
+    public async Task PairedRunner_UsesRevisionSpecificDirectArtifactsAndProducesAdjacentPairs()
     {
         string temporaryRoot = CreateTemporaryRoot();
         try
@@ -525,17 +577,73 @@ public sealed class PreviousReleasePairedRunnerScriptTests
                 "3",
                 "-Paired",
                 "-SuiteName",
-                "master-table");
+                "master-table",
+                "-PostBuildQuiescenceSeconds",
+                "1");
 
             Assert.True(result.ExitCode == 0, result.CombinedOutput);
 
             string[] invocations = File.ReadAllLines(invocationLog);
-            Assert.Equal(2, invocations.Count(line => line.Contains("|build", StringComparison.Ordinal)));
+            string[] builds = invocations
+                .Where(line => line.Contains("|build", StringComparison.Ordinal) &&
+                    !line.Contains("|build-server|", StringComparison.Ordinal))
+                .ToArray();
+            Assert.Equal(2, builds.Length);
+            Assert.Contains("baseline-source|build", builds);
+            Assert.Contains("candidate-source|build", builds);
+            int shutdownIndex = Array.FindIndex(
+                invocations,
+                line => line.EndsWith("|build-server|shutdown", StringComparison.Ordinal));
+            Assert.True(shutdownIndex >= 0, "Expected one build-server shutdown.");
+            Assert.Single(
+                invocations,
+                line => line.EndsWith("|build-server|shutdown", StringComparison.Ordinal));
+            Assert.All(
+                builds,
+                build => Assert.True(
+                    Array.IndexOf(invocations, build) < shutdownIndex,
+                    "Both revision artifacts must be built before shutdown."));
             string[] runs = invocations
                 .Where(line => line.Contains("|run|", StringComparison.Ordinal))
                 .ToArray();
             Assert.Equal(12, runs.Length);
-            Assert.All(runs, run => Assert.Contains("|mode=project|", run));
+            int firstRunIndex = Array.FindIndex(
+                invocations,
+                line => line.Contains("|run|", StringComparison.Ordinal));
+            Assert.True(shutdownIndex < firstRunIndex, "Measurements must begin after shutdown.");
+            Assert.DoesNotContain(
+                invocations.Skip(shutdownIndex + 1),
+                line => line.Contains("|build", StringComparison.Ordinal) ||
+                    line.Contains("|mode=project|", StringComparison.Ordinal));
+
+            string previousArtifact = Path.GetFullPath(Path.Combine(
+                evidence,
+                "baseline-source",
+                "tests",
+                "CSharpDB.Benchmarks",
+                "bin",
+                "Release",
+                "net10.0",
+                "CSharpDB.Benchmarks.dll"));
+            string candidateArtifact = Path.GetFullPath(Path.Combine(
+                evidence,
+                "candidate-source",
+                "tests",
+                "CSharpDB.Benchmarks",
+                "bin",
+                "Release",
+                "net10.0",
+                "CSharpDB.Benchmarks.dll"));
+            string previousArtifactHash = GetFakeArtifactHash("baseline-source");
+            string candidateArtifactHash = GetFakeArtifactHash("candidate-source");
+            Assert.NotEqual(previousArtifactHash, candidateArtifactHash);
+            Assert.All(
+                runs,
+                run =>
+                {
+                    Assert.Contains("|mode=direct|", run);
+                    Assert.DoesNotContain("|project=", run);
+                });
             for (int pairIndex = 0; pairIndex < 6; pairIndex++)
             {
                 bool previousFirst = pairIndex % 2 == 0;
@@ -547,7 +655,58 @@ public sealed class PreviousReleasePairedRunnerScriptTests
                     runs[(pairIndex * 2) + 1]);
                 Assert.Contains("|repeat=1|warmup=True", runs[pairIndex * 2]);
                 Assert.Contains("|repeat=1|warmup=True", runs[(pairIndex * 2) + 1]);
+                Assert.EndsWith(
+                    "|artifact=" + (previousFirst ? previousArtifact : candidateArtifact),
+                    runs[pairIndex * 2]);
+                Assert.EndsWith(
+                    "|artifact=" + (previousFirst ? candidateArtifact : previousArtifact),
+                    runs[(pairIndex * 2) + 1]);
             }
+
+            string artifactManifestPath = Path.Combine(
+                evidence,
+                "logs",
+                "paired-benchmark-artifacts.sha256");
+            Assert.Equal(
+                "csharpdb-paired-benchmark-artifacts/v2",
+                ReadManifestValue(artifactManifestPath, "FormatVersion"));
+            Assert.Equal("false", ReadManifestValue(
+                artifactManifestPath,
+                "SharedSameRevisionArtifact"));
+            Assert.Equal(previousArtifact, ReadManifestValue(
+                artifactManifestPath,
+                "PreviousArtifactPath"));
+            Assert.Equal(previousArtifactHash, ReadManifestValue(
+                artifactManifestPath,
+                "PreviousArtifactSha256"));
+            Assert.Equal(candidateArtifact, ReadManifestValue(
+                artifactManifestPath,
+                "CandidateArtifactPath"));
+            Assert.Equal(candidateArtifactHash, ReadManifestValue(
+                artifactManifestPath,
+                "CandidateArtifactSha256"));
+            string previousClosureHash = GetFakeClosureHash("baseline-source");
+            string candidateClosureHash = GetFakeClosureHash("candidate-source");
+            Assert.Equal("7", ReadManifestValue(
+                artifactManifestPath,
+                "PreviousClosureFileCount"));
+            Assert.Equal(previousClosureHash, ReadManifestValue(
+                artifactManifestPath,
+                "PreviousClosureSha256"));
+            Assert.Equal("7", ReadManifestValue(
+                artifactManifestPath,
+                "CandidateClosureFileCount"));
+            Assert.Equal(candidateClosureHash, ReadManifestValue(
+                artifactManifestPath,
+                "CandidateClosureSha256"));
+            AssertArtifactClosureRecords(
+                artifactManifestPath,
+                "Previous",
+                "baseline-source");
+            AssertArtifactClosureRecords(
+                artifactManifestPath,
+                "Candidate",
+                "candidate-source");
 
             string manifestPath = Path.Combine(evidence, "logs", "paired-execution.csv");
             string[] manifestLines = File.ReadAllLines(manifestPath);
@@ -606,14 +765,53 @@ public sealed class PreviousReleasePairedRunnerScriptTests
             Assert.DoesNotContain(
                 executionEvents,
                 line => line.Contains("|FAIL|", StringComparison.Ordinal));
-            Assert.Contains(
-                "- Result: **PASS**",
-                File.ReadAllText(Path.Combine(evidence, "previous-release-performance.md")));
-            Assert.Contains(
-                "12 files verified",
-                File.ReadAllText(Path.Combine(
-                    evidence,
-                    "previous-release-performance-preflight.md")));
+            Assert.All(
+                starts.Where(line => line.Contains("|previous|", StringComparison.Ordinal)),
+                line =>
+                {
+                    Assert.Contains($"SourceRoot={Path.Combine(evidence, "baseline-source")}", line);
+                    Assert.Contains($"ArtifactPath={previousArtifact}", line);
+                    Assert.Contains($"ArtifactSha256={previousArtifactHash}", line);
+                    Assert.Contains("ClosureFileCount=7", line);
+                    Assert.Contains($"ClosureSha256={previousClosureHash}", line);
+                });
+            Assert.All(
+                starts.Where(line => line.Contains("|candidate|", StringComparison.Ordinal)),
+                line =>
+                {
+                    Assert.Contains($"SourceRoot={Path.Combine(evidence, "candidate-source")}", line);
+                    Assert.Contains($"ArtifactPath={candidateArtifact}", line);
+                    Assert.Contains($"ArtifactSha256={candidateArtifactHash}", line);
+                    Assert.Contains("ClosureFileCount=7", line);
+                    Assert.Contains($"ClosureSha256={candidateClosureHash}", line);
+                });
+
+            string preflight = File.ReadAllText(Path.Combine(
+                evidence,
+                "previous-release-performance-preflight.md"));
+            string report = File.ReadAllText(Path.Combine(
+                evidence,
+                "previous-release-performance.md"));
+            foreach (string document in new[] { preflight, report })
+            {
+                Assert.Contains("- Same-revision artifact sharing: disabled", document);
+                Assert.Contains($"- Previous benchmark artifact execution path: `{previousArtifact}`", document);
+                Assert.Contains($"- Previous benchmark artifact SHA-256: `{previousArtifactHash}`", document);
+                Assert.Contains($"- Previous runnable closure: 7 files; SHA-256 `{previousClosureHash}`", document);
+                Assert.Contains($"- Candidate benchmark artifact execution path: `{candidateArtifact}`", document);
+                Assert.Contains($"- Candidate benchmark artifact SHA-256: `{candidateArtifactHash}`", document);
+                Assert.Contains($"- Candidate runnable closure: 7 files; SHA-256 `{candidateClosureHash}`", document);
+                Assert.Contains("paired-benchmark-artifacts.sha256", document);
+                Assert.Contains("may not exist after cleanup", document);
+            }
+            Assert.Contains("- Result: **PASS**", report);
+            Assert.Contains("12 files verified", preflight);
+            AssertCloseoutResult(evidence, "PASS");
+            Assert.Contains("artifact closeout: **PASS**", File.ReadAllText(Path.Combine(
+                evidence,
+                "previous-release-performance-preflight.md")));
+            Assert.False(Directory.Exists(Path.Combine(evidence, "baseline-source")));
+            Assert.False(Directory.Exists(Path.Combine(evidence, "candidate-source")));
         }
         finally
         {
@@ -689,10 +887,25 @@ public sealed class PreviousReleasePairedRunnerScriptTests
             Assert.Contains(
                 "DOTNET_CLI_HOME_AFTER=sentinel-dotnet-home",
                 result.CombinedOutput);
-            Assert.Equal(
-                4,
-                File.ReadLines(invocationLog)
-                    .Count(line => line.Contains("|run|", StringComparison.Ordinal)));
+            string[] runs = File.ReadLines(invocationLog)
+                .Where(line => line.Contains("|run|", StringComparison.Ordinal))
+                .ToArray();
+            Assert.Equal(4, runs.Length);
+            Assert.All(runs, run => Assert.Contains("|mode=direct|", run));
+            Assert.DoesNotContain(runs, run => run.Contains("|mode=project|", StringComparison.Ordinal));
+
+            string artifactManifestPath = Path.Combine(
+                evidence,
+                "logs",
+                "paired-benchmark-artifacts.sha256");
+            Assert.True(File.Exists(artifactManifestPath));
+            Assert.Equal(GetFakeArtifactHash("baseline-source"), ReadManifestValue(
+                artifactManifestPath,
+                "PreviousArtifactSha256"));
+            Assert.Equal(GetFakeArtifactHash("candidate-source"), ReadManifestValue(
+                artifactManifestPath,
+                "CandidateArtifactSha256"));
+            AssertCloseoutResult(evidence, "PASS");
 
             string[] executionEvents = File.ReadAllLines(Path.Combine(
                 evidence,
@@ -734,6 +947,307 @@ public sealed class PreviousReleasePairedRunnerScriptTests
                 Path.Combine(evidence, "candidate-source"),
                 worktreeList.CombinedOutput,
                 StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            DeleteTemporaryRoot(temporaryRoot);
+        }
+    }
+
+    [Fact]
+    public async Task PairedRunner_RejectsLinkedDirectoryInArtifactClosure()
+    {
+        string temporaryRoot = CreateTemporaryRoot();
+        try
+        {
+            TestRepository repository = await CreateTestRepositoryAsync(temporaryRoot);
+            string fakeToolRoot = Path.Combine(temporaryRoot, "fake-tools");
+            CreatePairedFakeDotnetTool(fakeToolRoot);
+            string invocationLog = Path.Combine(temporaryRoot, "fake-dotnet.log");
+            string linkTarget = Path.Combine(temporaryRoot, "closure-link-target");
+            Directory.CreateDirectory(linkTarget);
+            string targetSentinel = Path.Combine(linkTarget, "must-not-be-followed.bin");
+            File.WriteAllText(targetSentinel, "external linked content");
+            string evidence = Path.Combine(temporaryRoot, "linked-closure-evidence");
+            Dictionary<string, string> environment = new()
+            {
+                ["PATH"] = fakeToolRoot + Path.PathSeparator +
+                    (Environment.GetEnvironmentVariable("PATH") ?? string.Empty),
+                ["FAKE_DOTNET_LOG"] = invocationLog,
+                ["FAKE_DOTNET_CREATE_CLOSURE_DIRECTORY_LINK"] = "1",
+                ["FAKE_DOTNET_CLOSURE_DIRECTORY_LINK_TARGET"] = linkTarget,
+            };
+
+            ProcessResult result = await RunProcessWithEnvironmentAsync(
+                "pwsh",
+                environment,
+                "-NoLogo",
+                "-NoProfile",
+                "-File",
+                repository.RunnerScript,
+                "-PreviousRef",
+                "v4.3.0",
+                "-CandidateRef",
+                "HEAD",
+                "-OutputPath",
+                evidence,
+                "-QualificationPass",
+                "1",
+                "-RepeatCount",
+                "3",
+                "-Paired",
+                "-SuiteName",
+                "master-table");
+
+            Assert.NotEqual(0, result.ExitCode);
+            Assert.Contains(
+                "Benchmark artifact closure directory cannot be a reparse point or link",
+                result.CombinedOutput);
+            Assert.Contains(
+                "worktree link entry or entries before cleanup",
+                result.CombinedOutput);
+            Assert.DoesNotContain(
+                File.ReadLines(invocationLog),
+                line => line.Contains("|run|", StringComparison.Ordinal));
+            Assert.True(File.Exists(targetSentinel));
+            Assert.False(Directory.Exists(Path.Combine(evidence, "baseline-source")));
+            Assert.False(Directory.Exists(Path.Combine(evidence, "candidate-source")));
+            ProcessResult worktreeList = await RunProcessAsync(
+                "git",
+                "-C",
+                repository.SourceRoot,
+                "worktree",
+                "list",
+                "--porcelain");
+            Assert.True(worktreeList.ExitCode == 0, worktreeList.CombinedOutput);
+            Assert.DoesNotContain(
+                Path.Combine(evidence, "baseline-source"),
+                worktreeList.CombinedOutput,
+                StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(
+                Path.Combine(evidence, "candidate-source"),
+                worktreeList.CombinedOutput,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            DeleteTemporaryRoot(temporaryRoot);
+        }
+    }
+
+    [Fact]
+    public async Task PairedRunner_RejectsDependencyChangedBeforeInvocation()
+    {
+        string temporaryRoot = CreateTemporaryRoot();
+        try
+        {
+            TestRepository repository = await CreateTestRepositoryAsync(temporaryRoot);
+            string fakeToolRoot = Path.Combine(temporaryRoot, "fake-tools");
+            CreatePairedFakeDotnetTool(fakeToolRoot);
+            string invocationLog = Path.Combine(temporaryRoot, "fake-dotnet.log");
+            string evidence = Path.Combine(temporaryRoot, "before-invocation-tamper");
+            string previousDependency = Path.GetFullPath(Path.Combine(
+                evidence,
+                "baseline-source",
+                "tests",
+                "CSharpDB.Benchmarks",
+                "bin",
+                "Release",
+                "net10.0",
+                "CSharpDB.Fake.Dependency.dll"));
+            Dictionary<string, string> environment = new()
+            {
+                ["PATH"] = fakeToolRoot + Path.PathSeparator +
+                    (Environment.GetEnvironmentVariable("PATH") ?? string.Empty),
+                ["FAKE_DOTNET_LOG"] = invocationLog,
+                ["FAKE_DOTNET_MUTATE_AFTER_SHUTDOWN"] = previousDependency,
+            };
+
+            ProcessResult result = await RunProcessWithEnvironmentAsync(
+                "pwsh",
+                environment,
+                "-NoLogo",
+                "-NoProfile",
+                "-File",
+                repository.RunnerScript,
+                "-PreviousRef",
+                "v4.3.0",
+                "-CandidateRef",
+                "HEAD",
+                "-OutputPath",
+                evidence,
+                "-QualificationPass",
+                "1",
+                "-RepeatCount",
+                "3",
+                "-Paired",
+                "-SuiteName",
+                "master-table",
+                "-PostBuildQuiescenceSeconds",
+                "1");
+
+            Assert.NotEqual(0, result.ExitCode);
+            Assert.Contains(
+                "Benchmark artifact closure changed before invocation.",
+                result.CombinedOutput);
+            Assert.DoesNotContain(
+                File.ReadLines(invocationLog),
+                line => line.Contains("|run|", StringComparison.Ordinal));
+            AssertArtifactIntegrityFailureEvidence(
+                evidence,
+                expectedFailureText: "closure changed before invocation");
+            Assert.False(Directory.Exists(Path.Combine(evidence, "baseline-source")));
+            Assert.False(Directory.Exists(Path.Combine(evidence, "candidate-source")));
+        }
+        finally
+        {
+            DeleteTemporaryRoot(temporaryRoot);
+        }
+    }
+
+    [Fact]
+    public async Task PairedRunner_RejectsDependencyChangedAfterInvocation()
+    {
+        string temporaryRoot = CreateTemporaryRoot();
+        try
+        {
+            TestRepository repository = await CreateTestRepositoryAsync(temporaryRoot);
+            string fakeToolRoot = Path.Combine(temporaryRoot, "fake-tools");
+            CreatePairedFakeDotnetTool(fakeToolRoot);
+            string invocationLog = Path.Combine(temporaryRoot, "fake-dotnet.log");
+            string evidence = Path.Combine(temporaryRoot, "after-invocation-tamper");
+            Dictionary<string, string> environment = new()
+            {
+                ["PATH"] = fakeToolRoot + Path.PathSeparator +
+                    (Environment.GetEnvironmentVariable("PATH") ?? string.Empty),
+                ["FAKE_DOTNET_LOG"] = invocationLog,
+                ["FAKE_DOTNET_MUTATE_DEPENDENCY_ON_RUN"] = "1",
+            };
+
+            ProcessResult result = await RunProcessWithEnvironmentAsync(
+                "pwsh",
+                environment,
+                "-NoLogo",
+                "-NoProfile",
+                "-File",
+                repository.RunnerScript,
+                "-PreviousRef",
+                "v4.3.0",
+                "-CandidateRef",
+                "HEAD",
+                "-OutputPath",
+                evidence,
+                "-QualificationPass",
+                "1",
+                "-RepeatCount",
+                "3",
+                "-Paired",
+                "-SuiteName",
+                "master-table");
+
+            Assert.NotEqual(0, result.ExitCode);
+            Assert.Contains(
+                "Benchmark artifact closure changed after invocation.",
+                result.CombinedOutput);
+            Assert.Single(
+                File.ReadLines(invocationLog),
+                line => line.Contains("|run|", StringComparison.Ordinal));
+            AssertArtifactIntegrityFailureEvidence(
+                evidence,
+                expectedFailureText: "closure changed after invocation");
+            Assert.False(Directory.Exists(Path.Combine(evidence, "baseline-source")));
+            Assert.False(Directory.Exists(Path.Combine(evidence, "candidate-source")));
+        }
+        finally
+        {
+            DeleteTemporaryRoot(temporaryRoot);
+        }
+    }
+
+    [Fact]
+    public async Task PairedRunner_RejectsArtifactManifestChangedMidRunAtCloseout()
+    {
+        string temporaryRoot = CreateTemporaryRoot();
+        try
+        {
+            TestRepository repository = await CreateTestRepositoryAsync(temporaryRoot);
+            string fakeToolRoot = Path.Combine(temporaryRoot, "fake-tools");
+            CreatePairedFakeDotnetTool(fakeToolRoot);
+            string invocationLog = Path.Combine(temporaryRoot, "fake-dotnet.log");
+            string evidence = Path.Combine(temporaryRoot, "manifest-tamper");
+            string artifactManifestPath = Path.Combine(
+                evidence,
+                "logs",
+                "paired-benchmark-artifacts.sha256");
+            Dictionary<string, string> environment = new()
+            {
+                ["PATH"] = fakeToolRoot + Path.PathSeparator +
+                    (Environment.GetEnvironmentVariable("PATH") ?? string.Empty),
+                ["FAKE_DOTNET_LOG"] = invocationLog,
+                ["FAKE_DOTNET_MUTATE_MANIFEST_ON_RUN"] = "4",
+                ["FAKE_DOTNET_ARTIFACT_MANIFEST"] = artifactManifestPath,
+            };
+
+            ProcessResult result = await RunProcessWithEnvironmentAsync(
+                "pwsh",
+                environment,
+                "-NoLogo",
+                "-NoProfile",
+                "-File",
+                repository.RunnerScript,
+                "-PreviousRef",
+                "v4.3.0",
+                "-CandidateRef",
+                "HEAD",
+                "-OutputPath",
+                evidence,
+                "-QualificationPass",
+                "1",
+                "-RepeatCount",
+                "3",
+                "-Paired",
+                "-SuiteName",
+                "master-table");
+
+            Assert.NotEqual(0, result.ExitCode);
+            Assert.Contains(
+                "Paired benchmark artifact manifest changed before closeout",
+                result.CombinedOutput);
+            Assert.Equal(
+                12,
+                File.ReadLines(invocationLog)
+                    .Count(line => line.Contains("|run|", StringComparison.Ordinal)));
+            AssertRawDigestManifest(evidence, expectedFileCount: 12);
+            Assert.Equal(
+                7,
+                File.ReadAllLines(Path.Combine(
+                    evidence,
+                    "logs",
+                    "paired-execution.csv")).Length);
+            string[] executionEvents = File.ReadAllLines(Path.Combine(
+                evidence,
+                "logs",
+                "execution-order.log"));
+            Assert.Equal(
+                12,
+                executionEvents.Count(line => line.Contains("|PASS|", StringComparison.Ordinal)));
+            Assert.DoesNotContain(
+                executionEvents,
+                line => line.Contains("|FAIL|", StringComparison.Ordinal));
+            Assert.Contains("TamperedOnRun=4", File.ReadAllText(artifactManifestPath));
+            AssertCloseoutResult(evidence, "FAIL");
+            Assert.Contains(
+                "artifact closeout: **FAIL**",
+                File.ReadAllText(Path.Combine(
+                    evidence,
+                    "previous-release-performance-preflight.md")));
+            Assert.Contains(
+                "artifact closeout: **FAIL**",
+                File.ReadAllText(Path.Combine(
+                    evidence,
+                    "previous-release-performance.md")));
+            Assert.False(Directory.Exists(Path.Combine(evidence, "baseline-source")));
+            Assert.False(Directory.Exists(Path.Combine(evidence, "candidate-source")));
         }
         finally
         {
@@ -834,6 +1348,45 @@ public sealed class PreviousReleasePairedRunnerScriptTests
         }
     }
 
+    private static void AssertArtifactIntegrityFailureEvidence(
+        string evidenceRoot,
+        string expectedFailureText)
+    {
+        string artifactManifestPath = Path.Combine(
+            evidenceRoot,
+            "logs",
+            "paired-benchmark-artifacts.sha256");
+        Assert.True(File.Exists(artifactManifestPath));
+        Assert.Equal(GetFakeArtifactHash("baseline-source"), ReadManifestValue(
+            artifactManifestPath,
+            "PreviousArtifactSha256"));
+        Assert.Equal(GetFakeArtifactHash("candidate-source"), ReadManifestValue(
+            artifactManifestPath,
+            "CandidateArtifactSha256"));
+        AssertCloseoutResult(evidenceRoot, "FAIL");
+
+        string[] executionEvents = File.ReadAllLines(Path.Combine(
+            evidenceRoot,
+            "logs",
+            "execution-order.log"));
+        Assert.Single(
+            executionEvents,
+            line => line.Contains("|START|", StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            executionEvents,
+            line => line.Contains("|PASS|", StringComparison.Ordinal));
+        string failure = Assert.Single(
+            executionEvents,
+            line => line.Contains("|FAIL|", StringComparison.Ordinal));
+        Assert.Contains(expectedFailureText, failure);
+
+        AssertRawDigestManifest(evidenceRoot, expectedFileCount: 0);
+        Assert.Single(File.ReadAllLines(Path.Combine(
+            evidenceRoot,
+            "logs",
+            "paired-execution.csv")));
+    }
+
     private static string ReadManifestValue(string manifestPath, string name)
     {
         string prefix = name + "=";
@@ -841,6 +1394,109 @@ public sealed class PreviousReleasePairedRunnerScriptTests
             File.ReadLines(manifestPath),
             candidate => candidate.StartsWith(prefix, StringComparison.Ordinal));
         return line[prefix.Length..];
+    }
+
+    private static string GetFakeArtifactHash(string sourceName)
+    {
+        string payload = $"fake release-core benchmark artifact:{sourceName}";
+        return GetTextSha256(payload);
+    }
+
+    private static IReadOnlyList<(string RelativePath, string Sha256)>
+        GetFakeClosureRecords(string sourceName)
+    {
+        return new (string RelativePath, string Sha256)[]
+        {
+            (
+                "CSharpDB.Benchmarks.dll",
+                GetFakeArtifactHash(sourceName)),
+            (
+                "CSharpDB.Benchmarks.deps.json",
+                GetTextSha256($"{{\"source\":\"{sourceName}\"}}")),
+            (
+                "CSharpDB.Benchmarks.runtimeconfig.json",
+                GetTextSha256($"{{\"runtimeOptions\":{{\"source\":\"{sourceName}\"}}}}")),
+            (
+                "CSharpDB.Fake.Dependency.dll",
+                GetTextSha256($"fake managed dependency:{sourceName}")),
+            (
+                "runtimes/fake/native/csharpdb-fake-native.bin",
+                GetTextSha256($"fake native dependency:{sourceName}")),
+            (
+                "runtimes/fake/results/nested-results-dependency.bin",
+                GetTextSha256($"fake nested results dependency:{sourceName}")),
+            (
+                "runtimes/fake/CSharpDB.Benchmarks-Job-runtime/nested-job-dependency.bin",
+                GetTextSha256($"fake nested job dependency:{sourceName}")),
+        }
+        .OrderBy(record => record.RelativePath, StringComparer.Ordinal)
+        .ToArray();
+    }
+
+    private static string GetFakeClosureHash(string sourceName)
+    {
+        string payload = string.Join(
+            "\n",
+            GetFakeClosureRecords(sourceName)
+                .Select(record => $"{record.Sha256} *{record.RelativePath}")) + "\n";
+        return GetTextSha256(payload);
+    }
+
+    private static string GetTextSha256(string value)
+    {
+        return Convert
+            .ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)))
+            .ToLowerInvariant();
+    }
+
+    private static void AssertArtifactClosureRecords(
+        string manifestPath,
+        string revisionPrefix,
+        string sourceName)
+    {
+        string prefix = revisionPrefix + "ClosureFile=";
+        string[] actualRecords = File.ReadLines(manifestPath)
+            .Where(line => line.StartsWith(prefix, StringComparison.Ordinal))
+            .Select(line => line[prefix.Length..])
+            .ToArray();
+        string[] expectedRecords = GetFakeClosureRecords(sourceName)
+            .Select(record => $"{record.Sha256} *{record.RelativePath}")
+            .ToArray();
+        Assert.Equal(expectedRecords, actualRecords);
+        Assert.DoesNotContain(
+            actualRecords,
+            record =>
+            {
+                string relativePath = record[(record.IndexOf(" *", StringComparison.Ordinal) + 2)..];
+                return relativePath.StartsWith("results/", StringComparison.Ordinal) ||
+                    relativePath.StartsWith("CSharpDB.Benchmarks-Job-", StringComparison.Ordinal);
+            });
+        Assert.Contains(
+            actualRecords,
+            record => record.EndsWith(
+                " *runtimes/fake/results/nested-results-dependency.bin",
+                StringComparison.Ordinal));
+        Assert.Contains(
+            actualRecords,
+            record => record.EndsWith(
+                " *runtimes/fake/CSharpDB.Benchmarks-Job-runtime/nested-job-dependency.bin",
+                StringComparison.Ordinal));
+
+        string[] manifestLines = File.ReadAllLines(manifestPath);
+        Assert.Contains("ClosureExclusion=top-level directory segment results", manifestLines);
+        Assert.Contains(
+            "ClosureExclusion=top-level directory segment CSharpDB.Benchmarks-Job-*",
+            manifestLines);
+    }
+
+    private static void AssertCloseoutResult(string evidenceRoot, string expectedResult)
+    {
+        string closeoutPath = Path.Combine(
+            evidenceRoot,
+            "logs",
+            "paired-benchmark-artifact-closeout.log");
+        Assert.True(File.Exists(closeoutPath));
+        Assert.Equal(expectedResult, ReadManifestValue(closeoutPath, "Result"));
     }
 
     private static void CreatePairedFakeDotnetTool(string toolRoot)
@@ -866,7 +1522,66 @@ public sealed class PreviousReleasePairedRunnerScriptTests
                 New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
                 [IO.File]::WriteAllText(
                     (Join-Path $artifactRoot 'CSharpDB.Benchmarks.dll'),
-                    'fake release-core benchmark artifact')
+                    "fake release-core benchmark artifact:$sourceName")
+                [IO.File]::WriteAllText(
+                    (Join-Path $artifactRoot 'CSharpDB.Benchmarks.deps.json'),
+                    "{`"source`":`"$sourceName`"}")
+                [IO.File]::WriteAllText(
+                    (Join-Path $artifactRoot 'CSharpDB.Benchmarks.runtimeconfig.json'),
+                    "{`"runtimeOptions`":{`"source`":`"$sourceName`"}}")
+                [IO.File]::WriteAllText(
+                    (Join-Path $artifactRoot 'CSharpDB.Fake.Dependency.dll'),
+                    "fake managed dependency:$sourceName")
+                $nativeRoot = Join-Path $artifactRoot 'runtimes/fake/native'
+                New-Item -ItemType Directory -Path $nativeRoot -Force | Out-Null
+                [IO.File]::WriteAllText(
+                    (Join-Path $nativeRoot 'csharpdb-fake-native.bin'),
+                    "fake native dependency:$sourceName")
+                $nestedResultsRoot = Join-Path $artifactRoot 'runtimes/fake/results'
+                New-Item -ItemType Directory -Path $nestedResultsRoot -Force | Out-Null
+                [IO.File]::WriteAllText(
+                    (Join-Path $nestedResultsRoot 'nested-results-dependency.bin'),
+                    "fake nested results dependency:$sourceName")
+                $nestedJobRoot = Join-Path `
+                    $artifactRoot `
+                    'runtimes/fake/CSharpDB.Benchmarks-Job-runtime'
+                New-Item -ItemType Directory -Path $nestedJobRoot -Force | Out-Null
+                [IO.File]::WriteAllText(
+                    (Join-Path $nestedJobRoot 'nested-job-dependency.bin'),
+                    "fake nested job dependency:$sourceName")
+                $ignoredResultsRoot = Join-Path $artifactRoot 'results'
+                New-Item -ItemType Directory -Path $ignoredResultsRoot -Force | Out-Null
+                [IO.File]::WriteAllText(
+                    (Join-Path $ignoredResultsRoot 'runtime-output.tmp'),
+                    'excluded runtime output')
+                $ignoredJobRoot = Join-Path `
+                    $artifactRoot `
+                    'CSharpDB.Benchmarks-Job-fake'
+                New-Item -ItemType Directory -Path $ignoredJobRoot -Force | Out-Null
+                [IO.File]::WriteAllText(
+                    (Join-Path $ignoredJobRoot 'runtime-output.tmp'),
+                    'excluded benchmark job output')
+                if (-not [string]::IsNullOrWhiteSpace(
+                        $env:FAKE_DOTNET_CREATE_CLOSURE_DIRECTORY_LINK)) {
+                    if ([string]::IsNullOrWhiteSpace(
+                            $env:FAKE_DOTNET_CLOSURE_DIRECTORY_LINK_TARGET)) {
+                        Write-Error 'Missing fake closure directory link target.'
+                        exit 1
+                    }
+                    $linkItemType = if ($IsWindows) { 'Junction' } else { 'SymbolicLink' }
+                    New-Item `
+                        -ItemType $linkItemType `
+                        -Path (Join-Path $artifactRoot 'linked-dependency-directory') `
+                        -Target ([IO.Path]::GetFullPath(
+                            $env:FAKE_DOTNET_CLOSURE_DIRECTORY_LINK_TARGET)) |
+                        Out-Null
+                    New-Item `
+                        -ItemType $linkItemType `
+                        -Path (Join-Path (Get-Location).Path 'linked-worktree-directory') `
+                        -Target ([IO.Path]::GetFullPath(
+                            $env:FAKE_DOTNET_CLOSURE_DIRECTORY_LINK_TARGET)) |
+                        Out-Null
+                }
                 Add-Content -LiteralPath $env:FAKE_DOTNET_LOG -Value "$sourceName|build"
                 Write-Output "Fake build: $sourceName"
                 exit 0
@@ -879,6 +1594,13 @@ public sealed class PreviousReleasePairedRunnerScriptTests
                 Add-Content `
                     -LiteralPath $env:FAKE_DOTNET_LOG `
                     -Value "$sourceName|build-server|shutdown"
+                if (-not [string]::IsNullOrWhiteSpace(
+                        $env:FAKE_DOTNET_MUTATE_AFTER_SHUTDOWN)) {
+                    [IO.File]::AppendAllText(
+                        [IO.Path]::GetFullPath(
+                            $env:FAKE_DOTNET_MUTATE_AFTER_SHUTDOWN),
+                        ':mutated-after-shutdown')
+                }
                 Write-Output 'Fake build servers shut down.'
                 exit 0
             }
@@ -997,6 +1719,43 @@ public sealed class PreviousReleasePairedRunnerScriptTests
             [IO.File]::WriteAllLines(
                 $resultPath,
                 [string[]] $outputRows)
+            [int] $mutateArtifactOnRun = 0
+            if ($isDirectArtifact -and
+                -not [string]::IsNullOrWhiteSpace(
+                    $env:FAKE_DOTNET_MUTATE_ARTIFACT_ON_RUN) -and
+                [int]::TryParse(
+                    $env:FAKE_DOTNET_MUTATE_ARTIFACT_ON_RUN,
+                    [ref] $mutateArtifactOnRun) -and
+                $currentRunNumber -eq $mutateArtifactOnRun) {
+                [IO.File]::AppendAllText(
+                    [IO.Path]::GetFullPath($command),
+                    ":mutated-on-run-$currentRunNumber")
+            }
+            [int] $mutateDependencyOnRun = 0
+            if ($isDirectArtifact -and
+                -not [string]::IsNullOrWhiteSpace(
+                    $env:FAKE_DOTNET_MUTATE_DEPENDENCY_ON_RUN) -and
+                [int]::TryParse(
+                    $env:FAKE_DOTNET_MUTATE_DEPENDENCY_ON_RUN,
+                    [ref] $mutateDependencyOnRun) -and
+                $currentRunNumber -eq $mutateDependencyOnRun) {
+                [IO.File]::AppendAllText(
+                    (Join-Path `
+                        (Split-Path -Parent ([IO.Path]::GetFullPath($command))) `
+                        'CSharpDB.Fake.Dependency.dll'),
+                    ":mutated-on-run-$currentRunNumber")
+            }
+            [int] $mutateManifestOnRun = 0
+            if (-not [string]::IsNullOrWhiteSpace(
+                    $env:FAKE_DOTNET_MUTATE_MANIFEST_ON_RUN) -and
+                [int]::TryParse(
+                    $env:FAKE_DOTNET_MUTATE_MANIFEST_ON_RUN,
+                    [ref] $mutateManifestOnRun) -and
+                $currentRunNumber -eq $mutateManifestOnRun) {
+                [IO.File]::AppendAllText(
+                    [IO.Path]::GetFullPath($env:FAKE_DOTNET_ARTIFACT_MANIFEST),
+                    "`nTamperedOnRun=$currentRunNumber")
+            }
             Write-Output "Fake paired run: $sourceName/$suiteName"
             """);
 

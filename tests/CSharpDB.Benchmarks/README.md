@@ -474,10 +474,23 @@ recorded samples per revision. The candidate benchmark source is hash-verified
 and synchronized into the previous-release worktree so both engines run the
 same benchmark source. Candidate and previous root build inputs are hashed and
 reported separately because they remain revision-specific. The revisions are
-built once. Each isolated sample then receives the same unrecorded warmup and
-produces exactly one recorded CSV. Pair members run adjacently, pair order
-alternates within each suite, and the qualification pass controls which order
-runs first.
+built once. The runner resolves the exact `CSharpDB.Benchmarks.dll` produced for
+each revision and captures the complete immutable runnable closure rooted at
+that DLL's directory. The closure contains every file recursively, including
+managed and native dependencies plus `.deps.json` and runtime configuration,
+sorted by normalized relative path. Before enumerating files, the runner walks
+the directory tree without following links and rejects any symlink, junction,
+or other reparse-point directory. Only top-level directories named `results` or
+starting with `CSharpDB.Benchmarks-Job-` are excluded as known runtime-generated
+benchmark output; nested directories with those names remain hashed. The
+external manifest retains every relative path and file
+SHA-256 plus the closure file count and composite SHA-256. Samples invoke the
+resolved DLL directly rather than evaluating its project. Immediately before
+and after every paired sample, the runner recomputes the exact eligible path set
+and every hash; added, removed, or modified immutable files fail closed. Each
+isolated sample receives the same unrecorded warmup and produces exactly one
+recorded CSV. Pair members run adjacently, pair order alternates within each
+suite, and the qualification pass controls which order runs first.
 
 Each pass retains the pair manifest, every raw sample, and an aggregate for all
 seven release-core suites. The comparer requires exact manifest, schema, and
@@ -505,14 +518,25 @@ For stable evidence, throughput fails above a 15% candidate regression. P99
 fails only when its increase exceeds both 25% and the 0.05 ms absolute
 allowance; percentage-only P99 crossings remain visible in the report notes.
 Evidence includes an up-front preflight record, the benchmark-source hash
-manifest, separate revision build-input manifests, pair manifest, persisted
-raw-evidence SHA-256 manifest, raw and aggregate CSV files, revision logs with
-suite boundaries, commit identities, the planned order, a chronological
-start/pass/fail execution log, and a Markdown report. All generated evidence
-must remain in an absent or empty directory outside the checkout and must not
-be copied into benchmark result or other source directories. It never updates
-the deliberately curated `release-core-manifest.json`, and diagnostic runs
-introduce no generated JSON.
+manifest, separate revision build-input manifests, the paired benchmark-artifact
+identity manifest, pair manifest, persisted raw-evidence SHA-256 manifest, raw
+and aggregate CSV files, revision logs with suite boundaries, commit identities,
+the planned order, a chronological start/pass/fail execution log, and a Markdown
+report. Artifact paths identify detached execution worktrees and may no longer
+exist after cleanup; their commits and hashes remain in the external evidence.
+At qualification closeout, before either worktree is removed, the runner
+revalidates the exact persisted artifact-manifest contents and both runnable
+closures and writes a separate PASS/FAIL closeout log. That audit still runs
+after an earlier benchmark or comparison failure without replacing the earlier
+failure as the primary diagnostic. Before forced worktree removal, the runner
+walks each complete worktree without following links, detaches file and
+directory links deepest-first without traversing their targets, verifies that
+no link remains, and only then invokes Git cleanup. An audit or detachment
+failure leaves that worktree registered for explicit manual cleanup.
+All generated evidence must remain in an absent or empty directory outside the
+checkout and must not be copied into benchmark result or other source
+directories. It never updates the deliberately curated
+`release-core-manifest.json`, and diagnostic runs introduce no generated JSON.
 
 ### Focused A/A and exact-row diagnostics
 
@@ -547,12 +571,15 @@ phase cap fails explicitly if both floors have not been reached; undersampled
 evidence is never accepted. The paired runner does not add a second outer
 warmup for this mode, and the raw row records the measured begin/end UTC times.
 
+All paired comparisons invoke their revision-specific DLLs directly and verify
+their complete runnable closures immediately before and after every sample.
 `-AllowSameRevision` only permits an A/A comparison; by itself it still creates
 and builds two worktrees. `-ShareSameRevisionArtifact` is the stronger control:
 it requires paired mode, `-AllowSameRevision`, and two refs resolving to the
-same commit, then builds once and invokes the identical candidate DLL directly
-for both logical labels. Its SHA-256 is checked immediately before and after
-every sample, and its path and identity are retained with the evidence.
+same commit, then builds once and maps the identical candidate DLL to both
+logical labels. Both logical identities, their shared execution-time path, and
+the same closure identity and per-file records are retained with the external
+evidence.
 `-PostBuildQuiescenceSeconds` shuts down the .NET build servers and performs the
 requested fixed wait, failing if shutdown fails. It does not prove that the
 machine or disk is idle, so use a dedicated runner without concurrent builds.

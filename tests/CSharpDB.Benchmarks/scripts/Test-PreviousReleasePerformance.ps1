@@ -381,6 +381,8 @@ $logRoot = Join-Path $outputRoot 'logs'
 $executionLogPath = Join-Path $logRoot 'execution-order.log'
 $pairManifestPath = Join-Path $logRoot 'paired-execution.csv'
 $pairedRawDigestManifestPath = Join-Path $logRoot 'paired-raw-evidence.sha256'
+$pairedArtifactManifestPath = Join-Path $logRoot 'paired-benchmark-artifacts.sha256'
+$pairedArtifactCloseoutPath = Join-Path $logRoot 'paired-benchmark-artifact-closeout.log'
 $harnessManifestPath = Join-Path $logRoot 'candidate-benchmark-harness.sha256'
 $candidateBuildInputsManifestPath = Join-Path $logRoot 'candidate-effective-build-inputs.sha256'
 $previousBuildInputsManifestPath = Join-Path $logRoot 'previous-effective-build-inputs.sha256'
@@ -408,7 +410,8 @@ $artifactSharingDescription = if ($ShareSameRevisionArtifact) {
         "invoke the candidate worktree ``$candidateWorktree``"
 }
 else {
-    '- Same-revision artifact sharing: disabled'
+    '- Same-revision artifact sharing: disabled; each paired revision will ' +
+        'invoke its own verified build artifact'
 }
 $quiescenceDescription = if ($PostBuildQuiescenceSeconds -gt 0) {
     '- Post-build quiescence: dotnet build servers will be shut down, then ' +
@@ -449,6 +452,12 @@ $preflight = @(
     $(if ($Paired) {
             "- Planned paired raw SHA-256 manifest: ``$pairedRawDigestManifestPath``"
         }),
+    $(if ($Paired) {
+            "- Planned paired benchmark artifact manifest: ``$pairedArtifactManifestPath``"
+        }),
+    $(if ($Paired) {
+            "- Planned paired benchmark artifact closeout: ``$pairedArtifactCloseoutPath``"
+        }),
     "- Output root: ``$outputRoot``"
 )
 [IO.File]::WriteAllLines($preflightPath, $preflight)
@@ -470,6 +479,9 @@ $candidateBuildInputsIdentity = ''
 $previousBuildInputsIdentity = ''
 $sharedArtifactPath = ''
 $sharedArtifactSha256 = ''
+$pairedArtifacts = @{}
+$pairedArtifactManifestLines = [string[]] @()
+$pairedArtifactManifestPersisted = $false
 $pairedRawDigestCount = 0
 $primaryFailure = $null
 $cleanupFailures = [Collections.Generic.List[string]]::new()
@@ -799,20 +811,364 @@ function Invoke-BenchmarkBuild {
     }
 }
 
+function Test-BenchmarkArtifactClosureLink {
+    param(
+        [Parameter(Mandatory)]
+        [IO.FileSystemInfo] $Item
+    )
+
+    if (($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        return $true
+    }
+    try {
+        return -not [string]::IsNullOrEmpty([string] $Item.LinkTarget)
+    }
+    catch {
+        throw "Could not inspect benchmark artifact closure link metadata: $($Item.FullName)"
+    }
+}
+
+function Get-BenchmarkArtifactClosureDirectories {
+    param(
+        [Parameter(Mandatory)]
+        [string] $ClosureRoot
+    )
+
+    $rootDirectory = Get-Item -LiteralPath $ClosureRoot -Force
+    if (Test-BenchmarkArtifactClosureLink -Item $rootDirectory) {
+        throw "Benchmark artifact closure root cannot be a reparse point or link: $ClosureRoot"
+    }
+
+    $pendingDirectories = [Collections.Generic.Queue[IO.DirectoryInfo]]::new()
+    $closureDirectories = [Collections.Generic.List[IO.DirectoryInfo]]::new()
+    $pendingDirectories.Enqueue($rootDirectory)
+    while ($pendingDirectories.Count -ne 0) {
+        $currentDirectory = $pendingDirectories.Dequeue()
+        $closureDirectories.Add($currentDirectory)
+        $childDirectoryList = [Collections.Generic.List[object]]::new()
+        foreach ($childDirectory in @(
+                Get-ChildItem `
+                    -LiteralPath $currentDirectory.FullName `
+                    -Directory `
+                    -Force)) {
+            $childDirectoryList.Add($childDirectory)
+        }
+        $childDirectoryList.Sort(
+            [Comparison[object]] {
+                param($left, $right)
+                return [StringComparer]::Ordinal.Compare(
+                    [string] $left.FullName,
+                    [string] $right.FullName)
+            })
+        foreach ($childDirectory in $childDirectoryList) {
+            if (Test-BenchmarkArtifactClosureLink -Item $childDirectory) {
+                throw (
+                    'Benchmark artifact closure directory cannot be a reparse ' +
+                    "point or link: $($childDirectory.FullName)")
+            }
+            $pendingDirectories.Enqueue($childDirectory)
+        }
+    }
+
+    return $closureDirectories.ToArray()
+}
+
+function Test-PathStrictlyWithinRoot {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Root,
+
+        [Parameter(Mandatory)]
+        [string] $Path
+    )
+
+    $relativePath = [IO.Path]::GetRelativePath(
+        [IO.Path]::GetFullPath($Root),
+        [IO.Path]::GetFullPath($Path))
+    $parentPrefix = '..' + [IO.Path]::DirectorySeparatorChar
+    $alternateParentPrefix = '..' + [IO.Path]::AltDirectorySeparatorChar
+    return $relativePath -cne '.' -and
+        -not [IO.Path]::IsPathFullyQualified($relativePath) -and
+        $relativePath -cne '..' -and
+        -not $relativePath.StartsWith($parentPrefix, [StringComparison]::Ordinal) -and
+        -not $relativePath.StartsWith(
+            $alternateParentPrefix,
+            [StringComparison]::Ordinal)
+}
+
+function Get-WorktreeLinkEntriesForCleanup {
+    param(
+        [Parameter(Mandatory)]
+        [string] $WorktreeRoot
+    )
+
+    $resolvedWorktreeRoot = [IO.Path]::GetFullPath($WorktreeRoot)
+    $rootDirectory = Get-Item -LiteralPath $resolvedWorktreeRoot -Force
+    if (Test-BenchmarkArtifactClosureLink -Item $rootDirectory) {
+        throw "Detached worktree root is a reparse point or link: $resolvedWorktreeRoot"
+    }
+
+    $pendingDirectories = [Collections.Generic.Queue[IO.DirectoryInfo]]::new()
+    $linkEntries = [Collections.Generic.List[object]]::new()
+    $pendingDirectories.Enqueue($rootDirectory)
+    while ($pendingDirectories.Count -ne 0) {
+        $queuedDirectory = $pendingDirectories.Dequeue()
+        $currentDirectory = Get-Item -LiteralPath $queuedDirectory.FullName -Force
+        if (Test-BenchmarkArtifactClosureLink -Item $currentDirectory) {
+            if (-not (Test-PathStrictlyWithinRoot `
+                    -Root $resolvedWorktreeRoot `
+                    -Path $currentDirectory.FullName)) {
+                throw (
+                    'Detached worktree link entry is not strictly inside its ' +
+                    "worktree: $($currentDirectory.FullName)")
+            }
+            $relativePath = [IO.Path]::GetRelativePath(
+                $resolvedWorktreeRoot,
+                $currentDirectory.FullName).
+                    Replace('\', '/')
+            $linkEntries.Add([pscustomobject]@{
+                FullName = [IO.Path]::GetFullPath($currentDirectory.FullName)
+                RelativePath = $relativePath
+                Depth = $relativePath.Split('/').Length
+                IsDirectory = $true
+            })
+            continue
+        }
+
+        $childEntryList = [Collections.Generic.List[object]]::new()
+        foreach ($childEntry in @(
+                Get-ChildItem -LiteralPath $currentDirectory.FullName -Force)) {
+            $childEntryList.Add($childEntry)
+        }
+        $childEntryList.Sort(
+            [Comparison[object]] {
+                param($left, $right)
+                return [StringComparer]::Ordinal.Compare(
+                    [string] $left.FullName,
+                    [string] $right.FullName)
+            })
+        foreach ($childEntry in $childEntryList) {
+            $fullEntryPath = [IO.Path]::GetFullPath($childEntry.FullName)
+            if (-not (Test-PathStrictlyWithinRoot `
+                    -Root $resolvedWorktreeRoot `
+                    -Path $fullEntryPath)) {
+                throw (
+                    'Detached worktree entry is not strictly inside its ' +
+                    "worktree: $fullEntryPath")
+            }
+            if (Test-BenchmarkArtifactClosureLink -Item $childEntry) {
+                $relativePath = [IO.Path]::GetRelativePath(
+                    $resolvedWorktreeRoot,
+                    $fullEntryPath).
+                        Replace('\', '/')
+                $linkEntries.Add([pscustomobject]@{
+                    FullName = $fullEntryPath
+                    RelativePath = $relativePath
+                    Depth = $relativePath.Split('/').Length
+                    IsDirectory = $childEntry -is [IO.DirectoryInfo]
+                })
+                continue
+            }
+            if ($childEntry -is [IO.DirectoryInfo]) {
+                $pendingDirectories.Enqueue($childEntry)
+            }
+        }
+    }
+
+    $linkEntries.Sort(
+        [Comparison[object]] {
+            param($left, $right)
+            $depthComparison = ([int] $right.Depth).CompareTo([int] $left.Depth)
+            if ($depthComparison -ne 0) {
+                return $depthComparison
+            }
+            return [StringComparer]::Ordinal.Compare(
+                [string] $left.RelativePath,
+                [string] $right.RelativePath)
+        })
+    return $linkEntries.ToArray()
+}
+
+function Disconnect-WorktreeLinksForCleanup {
+    param(
+        [Parameter(Mandatory)]
+        [string] $WorktreeRoot
+    )
+
+    $resolvedWorktreeRoot = [IO.Path]::GetFullPath($WorktreeRoot)
+    [object[]] $linkEntries = @(
+        Get-WorktreeLinkEntriesForCleanup -WorktreeRoot $resolvedWorktreeRoot
+    )
+    foreach ($linkEntry in $linkEntries) {
+        if (-not (Test-PathStrictlyWithinRoot `
+                -Root $resolvedWorktreeRoot `
+                -Path $linkEntry.FullName)) {
+            throw (
+                'Refusing to detach a worktree link entry outside the exact ' +
+                "worktree: $($linkEntry.FullName)")
+        }
+        $currentEntry = Get-Item `
+            -LiteralPath $linkEntry.FullName `
+            -Force `
+            -ErrorAction Stop
+        if (-not (Test-BenchmarkArtifactClosureLink -Item $currentEntry)) {
+            throw (
+                'Worktree cleanup entry is no longer a link; refusing to ' +
+                "delete it: $($linkEntry.FullName)")
+        }
+        if ($currentEntry -is [IO.DirectoryInfo]) {
+            [IO.Directory]::Delete($linkEntry.FullName, $false)
+        }
+        else {
+            [IO.File]::Delete($linkEntry.FullName)
+        }
+        $remainingEntry = Get-Item `
+            -LiteralPath $linkEntry.FullName `
+            -Force `
+            -ErrorAction SilentlyContinue
+        if ($null -ne $remainingEntry) {
+            throw "Worktree link entry remains after non-recursive detachment: $($linkEntry.FullName)"
+        }
+    }
+
+    [object[]] $remainingLinks = @(
+        Get-WorktreeLinkEntriesForCleanup -WorktreeRoot $resolvedWorktreeRoot
+    )
+    if ($remainingLinks.Count -ne 0) {
+        throw (
+            "Detached worktree still contains $($remainingLinks.Count) link entry or entries: " +
+            (($remainingLinks | ForEach-Object RelativePath) -join ', '))
+    }
+    return $linkEntries.Count
+}
+
+function Test-BenchmarkArtifactClosureExcludedPath {
+    param(
+        [Parameter(Mandatory)]
+        [string] $RelativePath
+    )
+
+    $segments = $RelativePath.Replace('\', '/').Split(
+        '/',
+        [StringSplitOptions]::RemoveEmptyEntries)
+    if ($segments.Length -lt 2) {
+        return $false
+    }
+    $topLevelDirectory = $segments[0]
+    return $topLevelDirectory -ceq 'results' -or
+        $topLevelDirectory.StartsWith(
+            'CSharpDB.Benchmarks-Job-',
+            [StringComparison]::Ordinal)
+}
+
+function Get-BenchmarkArtifactClosure {
+    param(
+        [Parameter(Mandatory)]
+        [string] $ArtifactPath
+    )
+
+    $resolvedArtifactPath = [IO.Path]::GetFullPath($ArtifactPath)
+    if (-not (Test-Path -LiteralPath $resolvedArtifactPath -PathType Leaf)) {
+        throw "Benchmark entry artifact is missing: $resolvedArtifactPath"
+    }
+    $closureRoot = [IO.Path]::GetFullPath((Split-Path -Parent $resolvedArtifactPath))
+    [object[]] $closureDirectories = @(
+        Get-BenchmarkArtifactClosureDirectories -ClosureRoot $closureRoot
+    )
+
+    $unsortedRecords = @(
+        foreach ($closureDirectory in $closureDirectories) {
+            $currentDirectory = Get-Item -LiteralPath $closureDirectory.FullName -Force
+            if (Test-BenchmarkArtifactClosureLink -Item $currentDirectory) {
+                throw (
+                    'Benchmark artifact closure directory became a reparse ' +
+                    "point or link before file enumeration: $($currentDirectory.FullName)")
+            }
+            Get-ChildItem -LiteralPath $currentDirectory.FullName -File -Force |
+            ForEach-Object {
+                $relativePath = [IO.Path]::GetRelativePath(
+                    $closureRoot,
+                    $_.FullName).
+                        Replace('\', '/')
+                if (-not (Test-BenchmarkArtifactClosureExcludedPath `
+                        -RelativePath $relativePath)) {
+                    if (Test-BenchmarkArtifactClosureLink -Item $_) {
+                        throw (
+                            'Benchmark artifact closure file cannot be a ' +
+                            "reparse point or link: $($_.FullName)")
+                    }
+                    if ($relativePath.Contains("`r") -or $relativePath.Contains("`n")) {
+                        throw "Benchmark artifact closure path cannot contain a line break: $($_.FullName)"
+                    }
+                    [pscustomobject]@{
+                        RelativePath = $relativePath
+                        FullName = [IO.Path]::GetFullPath($_.FullName)
+                        Sha256 = (Get-FileHash `
+                                -LiteralPath $_.FullName `
+                                -Algorithm SHA256).
+                            Hash.
+                            ToLowerInvariant()
+                    }
+                }
+            }
+        }
+    )
+    $recordList = [Collections.Generic.List[object]]::new()
+    foreach ($record in $unsortedRecords) {
+        $recordList.Add($record)
+    }
+    $recordList.Sort(
+        [Comparison[object]] {
+            param($left, $right)
+            return [StringComparer]::Ordinal.Compare(
+                [string] $left.RelativePath,
+                [string] $right.RelativePath)
+        })
+    [object[]] $records = $recordList.ToArray()
+    if ($records.Count -eq 0) {
+        throw "Benchmark artifact closure contains no immutable files: $closureRoot"
+    }
+    $entryRelativePath = [IO.Path]::GetRelativePath(
+        $closureRoot,
+        $resolvedArtifactPath).
+            Replace('\', '/')
+    $entryRecords = @($records | Where-Object RelativePath -CEQ $entryRelativePath)
+    if ($entryRecords.Count -ne 1) {
+        throw (
+            "Benchmark artifact closure contains $($entryRecords.Count) entry DLL " +
+            "record(s) named '$entryRelativePath'; expected one.")
+    }
+
+    [string[]] $identityLines = @(
+        $records | ForEach-Object { "$($_.Sha256) *$($_.RelativePath)" }
+    )
+    $identityPayload = ($identityLines -join "`n") + "`n"
+    $identityBytes = [Security.Cryptography.SHA256]::HashData(
+        [Text.Encoding]::UTF8.GetBytes($identityPayload))
+    return [pscustomobject]@{
+        Root = $closureRoot
+        FileCount = $records.Count
+        Sha256 = [Convert]::ToHexString($identityBytes).ToLowerInvariant()
+        Records = [object[]] $records
+        EntrySha256 = $entryRecords[0].Sha256
+    }
+}
+
 function Get-BenchmarkArtifactIdentity {
     param(
         [Parameter(Mandatory)]
         [string] $SourceRoot
     )
 
+    $resolvedSourceRoot = [IO.Path]::GetFullPath($SourceRoot)
     $artifactRoot = [IO.Path]::Combine(
-        $SourceRoot,
+        $resolvedSourceRoot,
         'tests',
         'CSharpDB.Benchmarks',
         'bin',
         'Release')
     if (-not (Test-Path -LiteralPath $artifactRoot -PathType Container)) {
-        throw "Shared benchmark artifact directory not found: $artifactRoot"
+        throw "Benchmark artifact directory not found: $artifactRoot"
     }
     $artifacts = @(
         Get-ChildItem `
@@ -829,17 +1185,94 @@ function Get-BenchmarkArtifactIdentity {
     )
     if ($artifacts.Count -ne 1) {
         throw (
-            "Shared benchmark build produced $($artifacts.Count) runnable " +
+            "Benchmark build produced $($artifacts.Count) runnable " +
             "CSharpDB.Benchmarks.dll artifact(s) under '$artifactRoot'; expected one.")
     }
 
+    $resolvedArtifactPath = [IO.Path]::GetFullPath($artifacts[0].FullName)
+    $closure = Get-BenchmarkArtifactClosure -ArtifactPath $resolvedArtifactPath
     return [pscustomobject]@{
-        Path = [IO.Path]::GetFullPath($artifacts[0].FullName)
-        Sha256 = (Get-FileHash `
-                -LiteralPath $artifacts[0].FullName `
-                -Algorithm SHA256).
-            Hash.
-            ToLowerInvariant()
+        SourceRoot = $resolvedSourceRoot
+        Path = $resolvedArtifactPath
+        Sha256 = $closure.EntrySha256
+        ClosureRoot = $closure.Root
+        ClosureFileCount = $closure.FileCount
+        ClosureSha256 = $closure.Sha256
+        ClosureRecords = [object[]] $closure.Records
+    }
+}
+
+function Assert-BenchmarkArtifactHash {
+    param(
+        [Parameter(Mandatory)]
+        [string] $ArtifactPath,
+
+        [Parameter(Mandatory)]
+        [string] $ExpectedSha256,
+
+        [Parameter(Mandatory)]
+        [string] $Context
+    )
+
+    if ($ExpectedSha256 -cnotmatch '^[0-9a-f]{64}$') {
+        throw 'Benchmark artifact verification requires a lowercase SHA-256 identity.'
+    }
+    $resolvedArtifactPath = [IO.Path]::GetFullPath($ArtifactPath)
+    if (-not (Test-Path -LiteralPath $resolvedArtifactPath -PathType Leaf)) {
+        throw "Benchmark artifact is missing $($Context): $resolvedArtifactPath"
+    }
+    $actualSha256 = (Get-FileHash `
+            -LiteralPath $resolvedArtifactPath `
+            -Algorithm SHA256).
+        Hash.
+        ToLowerInvariant()
+    if ($actualSha256 -cne $ExpectedSha256) {
+        throw (
+            "Benchmark artifact changed $Context. " +
+            "Expected $ExpectedSha256; found $actualSha256.")
+    }
+}
+
+function Assert-BenchmarkArtifactClosure {
+    param(
+        [Parameter(Mandatory)]
+        [object] $Artifact,
+
+        [Parameter(Mandatory)]
+        [string] $Context
+    )
+
+    $currentClosure = Get-BenchmarkArtifactClosure -ArtifactPath $Artifact.Path
+    [string[]] $expectedLines = @(
+        $Artifact.ClosureRecords |
+            ForEach-Object { "$($_.Sha256) *$($_.RelativePath)" }
+    )
+    [string[]] $currentLines = @(
+        $currentClosure.Records |
+            ForEach-Object { "$($_.Sha256) *$($_.RelativePath)" }
+    )
+    $differences = @(
+        Compare-Object `
+            -ReferenceObject $expectedLines `
+            -DifferenceObject $currentLines `
+            -CaseSensitive
+    )
+    if ($currentClosure.FileCount -ne $Artifact.ClosureFileCount -or
+        $currentClosure.Sha256 -cne $Artifact.ClosureSha256 -or
+        $differences.Count -ne 0) {
+        $differenceSummary = @(
+            $differences |
+                Select-Object -First 10 |
+                ForEach-Object { "$($_.InputObject) $($_.SideIndicator)" }
+        ) -join '; '
+        if ([string]::IsNullOrWhiteSpace($differenceSummary)) {
+            $differenceSummary = 'composite identity or file count differs'
+        }
+        throw (
+            "Benchmark artifact closure changed $Context. " +
+            "Expected $($Artifact.ClosureFileCount) files/$($Artifact.ClosureSha256); " +
+            "found $($currentClosure.FileCount) files/$($currentClosure.Sha256). " +
+            "Differences: $differenceSummary")
     }
 }
 
@@ -1149,6 +1582,197 @@ function Write-LinesAtomically {
     }
 }
 
+function Write-PairedBenchmarkArtifactManifest {
+    param(
+        [Parameter(Mandatory)]
+        [Collections.IDictionary] $Artifacts,
+
+        [Parameter(Mandatory)]
+        [string] $PreviousCommit,
+
+        [Parameter(Mandatory)]
+        [string] $CandidateCommit,
+
+        [Parameter(Mandatory)]
+        [string] $ManifestPath,
+
+        [switch] $SharedSameRevisionArtifact
+    )
+
+    if ($Artifacts.Count -ne 2 -or
+        -not $Artifacts.Contains('previous') -or
+        -not $Artifacts.Contains('candidate')) {
+        throw 'Paired benchmark artifact identity requires previous and candidate entries.'
+    }
+
+    $previousArtifact = $Artifacts['previous']
+    $candidateArtifact = $Artifacts['candidate']
+    foreach ($entry in @(
+            [pscustomobject]@{ Name = 'previous'; Artifact = $previousArtifact },
+            [pscustomobject]@{ Name = 'candidate'; Artifact = $candidateArtifact })) {
+        Assert-BenchmarkArtifactHash `
+            -ArtifactPath $entry.Artifact.Path `
+            -ExpectedSha256 $entry.Artifact.Sha256 `
+            -Context "before $($entry.Name) manifest persistence"
+        Assert-BenchmarkArtifactClosure `
+            -Artifact $entry.Artifact `
+            -Context "before $($entry.Name) manifest persistence"
+    }
+
+    $sharingValue = if ($SharedSameRevisionArtifact) { 'true' } else { 'false' }
+    [string[]] $manifestLines = @(
+        'FormatVersion=csharpdb-paired-benchmark-artifacts/v2'
+        "SharedSameRevisionArtifact=$sharingValue"
+        'ClosureDefinition=all files recursively under the entry DLL directory, sorted by normalized relative path'
+        'ClosureExclusion=top-level directory segment results'
+        'ClosureExclusion=top-level directory segment CSharpDB.Benchmarks-Job-*'
+        "PreviousCommit=$PreviousCommit"
+        "PreviousArtifactPath=$($previousArtifact.Path)"
+        "PreviousArtifactSha256=$($previousArtifact.Sha256)"
+        "PreviousClosureRoot=$($previousArtifact.ClosureRoot)"
+        "PreviousClosureFileCount=$($previousArtifact.ClosureFileCount)"
+        "PreviousClosureSha256=$($previousArtifact.ClosureSha256)"
+        foreach ($record in $previousArtifact.ClosureRecords) {
+            "PreviousClosureFile=$($record.Sha256) *$($record.RelativePath)"
+        }
+        "CandidateCommit=$CandidateCommit"
+        "CandidateArtifactPath=$($candidateArtifact.Path)"
+        "CandidateArtifactSha256=$($candidateArtifact.Sha256)"
+        "CandidateClosureRoot=$($candidateArtifact.ClosureRoot)"
+        "CandidateClosureFileCount=$($candidateArtifact.ClosureFileCount)"
+        "CandidateClosureSha256=$($candidateArtifact.ClosureSha256)"
+        foreach ($record in $candidateArtifact.ClosureRecords) {
+            "CandidateClosureFile=$($record.Sha256) *$($record.RelativePath)"
+        }
+    )
+    Write-LinesAtomically -Path $ManifestPath -Lines $manifestLines
+
+    $persistedLines = [IO.File]::ReadAllLines($ManifestPath)
+    if ($persistedLines.Count -ne $manifestLines.Count) {
+        throw 'Paired benchmark artifact manifest persistence verification failed.'
+    }
+    for ($lineIndex = 0; $lineIndex -lt $manifestLines.Count; $lineIndex++) {
+        if ($persistedLines[$lineIndex] -cne $manifestLines[$lineIndex]) {
+            throw 'Paired benchmark artifact manifest persistence verification failed.'
+        }
+    }
+
+    foreach ($entry in @(
+            [pscustomobject]@{ Name = 'previous'; Artifact = $previousArtifact },
+            [pscustomobject]@{ Name = 'candidate'; Artifact = $candidateArtifact })) {
+        Assert-BenchmarkArtifactHash `
+            -ArtifactPath $entry.Artifact.Path `
+            -ExpectedSha256 $entry.Artifact.Sha256 `
+            -Context "after $($entry.Name) manifest persistence"
+        Assert-BenchmarkArtifactClosure `
+            -Artifact $entry.Artifact `
+            -Context "after $($entry.Name) manifest persistence"
+    }
+    return $manifestLines
+}
+
+function Assert-PairedBenchmarkArtifactCloseout {
+    param(
+        [Parameter(Mandatory)]
+        [Collections.IDictionary] $Artifacts,
+
+        [Parameter(Mandatory)]
+        [string] $ManifestPath,
+
+        [Parameter(Mandatory)]
+        [string[]] $ExpectedManifestLines
+    )
+
+    $integrityFailures = [Collections.Generic.List[string]]::new()
+    try {
+        if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
+            throw "Paired benchmark artifact manifest is missing: $ManifestPath"
+        }
+        $actualManifestLines = [IO.File]::ReadAllLines($ManifestPath)
+        if ($actualManifestLines.Count -ne $ExpectedManifestLines.Count) {
+            throw (
+                'Paired benchmark artifact manifest changed before closeout. ' +
+                "Expected $($ExpectedManifestLines.Count) lines; " +
+                "found $($actualManifestLines.Count).")
+        }
+        for ($lineIndex = 0; $lineIndex -lt $ExpectedManifestLines.Count; $lineIndex++) {
+            if ($actualManifestLines[$lineIndex] -cne $ExpectedManifestLines[$lineIndex]) {
+                throw (
+                    'Paired benchmark artifact manifest changed before closeout at ' +
+                    "line $($lineIndex + 1).")
+            }
+        }
+    }
+    catch {
+        $integrityFailures.Add($_.Exception.Message)
+    }
+
+    foreach ($revision in @('previous', 'candidate')) {
+        if (-not $Artifacts.Contains($revision)) {
+            $integrityFailures.Add("Paired benchmark artifact identity is missing '$revision'.")
+            continue
+        }
+        $artifact = $Artifacts[$revision]
+        try {
+            Assert-BenchmarkArtifactHash `
+                -ArtifactPath $artifact.Path `
+                -ExpectedSha256 $artifact.Sha256 `
+                -Context "at $revision qualification closeout"
+        }
+        catch {
+            $integrityFailures.Add($_.Exception.Message)
+        }
+        try {
+            Assert-BenchmarkArtifactClosure `
+                -Artifact $artifact `
+                -Context "at $revision qualification closeout"
+        }
+        catch {
+            $integrityFailures.Add($_.Exception.Message)
+        }
+    }
+
+    if ($integrityFailures.Count -ne 0) {
+        throw (
+            'Paired benchmark artifact closeout integrity failed: ' +
+            ($integrityFailures -join ' | '))
+    }
+}
+
+function Write-PairedBenchmarkArtifactCloseoutEvidence {
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet('PASS', 'FAIL')]
+        [string] $Result,
+
+        [Parameter(Mandatory)]
+        [string] $Detail
+    )
+
+    $safeDetail = $Detail.
+        Replace("`r", ' ').
+        Replace("`n", ' ')
+    $timestamp = [DateTimeOffset]::UtcNow.ToString(
+        'o',
+        [Globalization.CultureInfo]::InvariantCulture)
+    Write-LinesAtomically `
+        -Path $pairedArtifactCloseoutPath `
+        -Lines @(
+            'FormatVersion=csharpdb-paired-benchmark-artifact-closeout/v1',
+            "Result=$Result",
+            "TimestampUtc=$timestamp",
+            "ArtifactManifest=$pairedArtifactManifestPath",
+            "Detail=$safeDetail"
+        )
+    $summary = (
+        "- Paired benchmark artifact closeout: **$Result**; " +
+        "evidence ``$pairedArtifactCloseoutPath``; $safeDetail")
+    Add-Content -LiteralPath $preflightPath -Value $summary
+    if (Test-Path -LiteralPath $reportPath -PathType Leaf) {
+        Add-Content -LiteralPath $reportPath -Value $summary
+    }
+}
+
 function Add-PairedRawEvidenceDigest {
     param([Parameter(Mandatory)][string] $RawPath)
 
@@ -1427,38 +2051,29 @@ function Invoke-ReleaseCoreSample {
         [Parameter(Mandatory)]
         [string] $PairId,
 
-        [string] $ArtifactPath = '',
+        [Parameter(Mandatory)]
+        [object] $ArtifactIdentity,
 
-        [string] $ExpectedArtifactSha256 = ''
+        [Parameter(Mandatory)]
+        [string] $ArtifactPath,
+
+        [Parameter(Mandatory)]
+        [string] $ExpectedArtifactSha256
     )
 
-    $useDirectArtifact =
-        -not [string]::IsNullOrWhiteSpace($ArtifactPath) -or
-        -not [string]::IsNullOrWhiteSpace($ExpectedArtifactSha256)
-    if ($useDirectArtifact -and
-        ([string]::IsNullOrWhiteSpace($ArtifactPath) -or
-            [string]::IsNullOrWhiteSpace($ExpectedArtifactSha256))) {
+    if ([string]::IsNullOrWhiteSpace($ArtifactPath) -or
+        [string]::IsNullOrWhiteSpace($ExpectedArtifactSha256)) {
         throw 'Direct benchmark execution requires both an artifact path and SHA-256.'
     }
-    if ($useDirectArtifact -and
-        $ExpectedArtifactSha256 -cnotmatch '^[0-9a-f]{64}$') {
+    if ($ExpectedArtifactSha256 -cnotmatch '^[0-9a-f]{64}$') {
         throw 'Direct benchmark execution requires a lowercase SHA-256 identity.'
     }
-    $resolvedArtifactPath = if ($useDirectArtifact) {
-        [IO.Path]::GetFullPath($ArtifactPath)
-    }
-    else {
-        ''
-    }
-    if ($useDirectArtifact -and
-        -not (Test-Path -LiteralPath $resolvedArtifactPath -PathType Leaf)) {
-        throw "Shared benchmark artifact is missing: $resolvedArtifactPath"
-    }
-    $project = if ($useDirectArtifact) {
-        ''
-    }
-    else {
-        Get-BenchmarkProject -SourceRoot $SourceRoot
+    $resolvedArtifactPath = [IO.Path]::GetFullPath($ArtifactPath)
+    if (-not $resolvedArtifactPath.Equals(
+            [IO.Path]::GetFullPath([string] $ArtifactIdentity.Path),
+            $pathComparison) -or
+        $ExpectedArtifactSha256 -cne [string] $ArtifactIdentity.Sha256) {
+        throw 'Paired benchmark artifact parameters do not match the captured closure identity.'
     }
     $nativeArguments = [string[]] @($Suite.Arguments)
     $logPath = Join-Path $logRoot "$RunName.log"
@@ -1490,61 +2105,24 @@ function Invoke-ReleaseCoreSample {
     Add-Content -LiteralPath $logPath -Value @(
         '',
         "=== PAIRED SAMPLE $($Suite.Name) / $PairId / $RunName ===",
-        $(if ($useDirectArtifact) {
-                "Direct artifact: $resolvedArtifactPath"
-            }
-            else {
-                "Project: $project"
-            }),
-        $(if ($useDirectArtifact) {
-                "Expected artifact SHA-256: $ExpectedArtifactSha256"
-            }),
+        "Direct artifact: $resolvedArtifactPath",
+        "Expected artifact SHA-256: $ExpectedArtifactSha256",
+        "Expected runnable closure file count: $($ArtifactIdentity.ClosureFileCount)",
+        "Expected runnable closure SHA-256: $($ArtifactIdentity.ClosureSha256)",
         "Arguments: $($nativeArguments -join ' ')",
         ''
     )
     Push-Location $SourceRoot
     try {
-        if ($useDirectArtifact) {
-            $beforeHash = (Get-FileHash `
-                    -LiteralPath $resolvedArtifactPath `
-                    -Algorithm SHA256).
-                Hash.
-                ToLowerInvariant()
-            if ($beforeHash -cne $ExpectedArtifactSha256) {
-                throw (
-                    'Shared benchmark artifact changed before invocation. ' +
-                    "Expected $ExpectedArtifactSha256; found $beforeHash.")
-            }
-            try {
-                & dotnet $resolvedArtifactPath `
-                    @nativeArguments `
-                    --repeat 1 `
-                    --warmup-single-sample `
-                    --repro 2>&1 |
-                        Tee-Object -FilePath $logPath -Append |
-                        Write-Host
-                $benchmarkExitCode = $LASTEXITCODE
-            }
-            finally {
-                $afterHash = (Get-FileHash `
-                        -LiteralPath $resolvedArtifactPath `
-                        -Algorithm SHA256).
-                    Hash.
-                    ToLowerInvariant()
-                if ($afterHash -cne $ExpectedArtifactSha256) {
-                    throw (
-                        'Shared benchmark artifact changed during invocation. ' +
-                        "Expected $ExpectedArtifactSha256; found $afterHash.")
-                }
-            }
-        }
-        else {
-            & dotnet run `
-                -c Release `
-                --no-build `
-                --no-restore `
-                --project $project `
-                -- `
+        Assert-BenchmarkArtifactHash `
+            -ArtifactPath $resolvedArtifactPath `
+            -ExpectedSha256 $ExpectedArtifactSha256 `
+            -Context 'before invocation'
+        Assert-BenchmarkArtifactClosure `
+            -Artifact $ArtifactIdentity `
+            -Context 'before invocation'
+        try {
+            & dotnet $resolvedArtifactPath `
                 @nativeArguments `
                 --repeat 1 `
                 --warmup-single-sample `
@@ -1552,6 +2130,15 @@ function Invoke-ReleaseCoreSample {
                     Tee-Object -FilePath $logPath -Append |
                     Write-Host
             $benchmarkExitCode = $LASTEXITCODE
+        }
+        finally {
+            Assert-BenchmarkArtifactHash `
+                -ArtifactPath $resolvedArtifactPath `
+                -ExpectedSha256 $ExpectedArtifactSha256 `
+                -Context 'after invocation'
+            Assert-BenchmarkArtifactClosure `
+                -Artifact $ArtifactIdentity `
+                -Context 'after invocation'
         }
     }
     finally {
@@ -1672,6 +2259,8 @@ try {
             -SourceRoot $candidateWorktree
         $sharedArtifactPath = $sharedArtifact.Path
         $sharedArtifactSha256 = $sharedArtifact.Sha256
+        $pairedArtifacts['previous'] = $sharedArtifact
+        $pairedArtifacts['candidate'] = $sharedArtifact
         Add-Content `
             -LiteralPath $preflightPath `
             -Value @(
@@ -1691,6 +2280,10 @@ try {
                     -HarnessIdentity $candidateHarnessIdentity `
                     -BuildInputsIdentity $previousBuildInputsIdentity `
                     -BuildInputsManifestPath $previousBuildInputsManifestPath
+                if ($Paired) {
+                    $pairedArtifacts['previous'] = Get-BenchmarkArtifactIdentity `
+                        -SourceRoot $baselineWorktree
+                }
             }
             else {
                 Invoke-BenchmarkBuild `
@@ -1699,8 +2292,43 @@ try {
                     -HarnessIdentity $candidateHarnessIdentity `
                     -BuildInputsIdentity $candidateBuildInputsIdentity `
                     -BuildInputsManifestPath $candidateBuildInputsManifestPath
+                if ($Paired) {
+                    $pairedArtifacts['candidate'] = Get-BenchmarkArtifactIdentity `
+                        -SourceRoot $candidateWorktree
+                }
             }
         }
+    }
+    if ($Paired) {
+        if ($pairedArtifacts.Count -ne 2 -or
+            -not $pairedArtifacts.ContainsKey('previous') -or
+            -not $pairedArtifacts.ContainsKey('candidate')) {
+            throw 'Paired benchmark builds did not produce both revision artifacts.'
+        }
+        $pairedArtifactManifestLines = [string[]] @(
+            Write-PairedBenchmarkArtifactManifest `
+                -Artifacts $pairedArtifacts `
+                -PreviousCommit $previousCommit `
+                -CandidateCommit $candidateCommit `
+                -ManifestPath $pairedArtifactManifestPath `
+                -SharedSameRevisionArtifact:$ShareSameRevisionArtifact
+        )
+        $pairedArtifactManifestPersisted = $true
+        $previousArtifact = $pairedArtifacts['previous']
+        $candidateArtifact = $pairedArtifacts['candidate']
+        Add-Content `
+            -LiteralPath $preflightPath `
+            -Value @(
+                "- Previous benchmark artifact execution path: ``$($previousArtifact.Path)``",
+                "- Previous benchmark artifact SHA-256: ``$($previousArtifact.Sha256)``",
+                "- Previous runnable closure: $($previousArtifact.ClosureFileCount) files; SHA-256 ``$($previousArtifact.ClosureSha256)``",
+                "- Candidate benchmark artifact execution path: ``$($candidateArtifact.Path)``",
+                "- Candidate benchmark artifact SHA-256: ``$($candidateArtifact.Sha256)``",
+                "- Candidate runnable closure: $($candidateArtifact.ClosureFileCount) files; SHA-256 ``$($candidateArtifact.ClosureSha256)``",
+                "- Paired benchmark artifact manifest: ``$pairedArtifactManifestPath``",
+                '- Benchmark artifact paths identify detached execution worktrees and may not exist after cleanup.'
+            )
+        Write-Host "Paired benchmark artifact identities persisted: $pairedArtifactManifestPath"
     }
     Invoke-PostBuildQuiescence
 
@@ -1729,15 +2357,16 @@ try {
                 for ($position = 0; $position -lt $pairRevisionOrder.Count; $position++) {
                     $revision = $pairRevisionOrder[$position]
                     $executionOrdinal++
+                    $artifactIdentity = $pairedArtifacts[$revision]
+                    $sourceRoot = [string] $artifactIdentity.SourceRoot
                     $eventDetail = (
                         "PairId=$($pair.Id);Order=$($pair.Order);" +
-                        "Position=$($position + 1)")
-                    if ($ShareSameRevisionArtifact) {
-                        $eventDetail += (
-                            ";SourceRoot=$candidateWorktree;" +
-                            "ArtifactPath=$sharedArtifactPath;" +
-                            "ArtifactSha256=$sharedArtifactSha256")
-                    }
+                        "Position=$($position + 1);" +
+                        "SourceRoot=$sourceRoot;" +
+                        "ArtifactPath=$($artifactIdentity.Path);" +
+                        "ArtifactSha256=$($artifactIdentity.Sha256);" +
+                        "ClosureFileCount=$($artifactIdentity.ClosureFileCount);" +
+                        "ClosureSha256=$($artifactIdentity.ClosureSha256)")
                     Write-ExecutionEvent `
                         -Ordinal $executionOrdinal `
                         -Suite $suite.Name `
@@ -1745,17 +2374,6 @@ try {
                         -State 'START' `
                         -Detail $eventDetail
                     try {
-                        $sourceRoot = if ($ShareSameRevisionArtifact) {
-                            $candidateWorktree
-                        }
-                        else {
-                            if ($revision -eq 'previous') {
-                                $baselineWorktree
-                            }
-                            else {
-                                $candidateWorktree
-                            }
-                        }
                         $destination = if ($revision -eq 'previous') {
                             $baselineResults
                         }
@@ -1774,11 +2392,9 @@ try {
                             RunName = $runName
                             Suite = $suite
                             PairId = $pair.Id
-                        }
-                        if ($ShareSameRevisionArtifact) {
-                            $sampleParameters['ArtifactPath'] = $sharedArtifactPath
-                            $sampleParameters['ExpectedArtifactSha256'] =
-                                $sharedArtifactSha256
+                            ArtifactIdentity = $artifactIdentity
+                            ArtifactPath = [string] $artifactIdentity.Path
+                            ExpectedArtifactSha256 = [string] $artifactIdentity.Sha256
                         }
                         $samplePath = Invoke-ReleaseCoreSample @sampleParameters
                         $pairRawPaths[$revision] = $samplePath
@@ -1932,6 +2548,38 @@ try {
                 $(if ($ShareSameRevisionArtifact) {
                         "- Shared benchmark artifact SHA-256: ``$sharedArtifactSha256``"
                     }),
+                $(if ($Paired) {
+                        "- Previous benchmark artifact execution path: " +
+                            "``$(($pairedArtifacts['previous']).Path)``"
+                    }),
+                $(if ($Paired) {
+                        "- Previous benchmark artifact SHA-256: " +
+                            "``$(($pairedArtifacts['previous']).Sha256)``"
+                    }),
+                $(if ($Paired) {
+                        "- Previous runnable closure: " +
+                            "$(($pairedArtifacts['previous']).ClosureFileCount) files; " +
+                            "SHA-256 ``$(($pairedArtifacts['previous']).ClosureSha256)``"
+                    }),
+                $(if ($Paired) {
+                        "- Candidate benchmark artifact execution path: " +
+                            "``$(($pairedArtifacts['candidate']).Path)``"
+                    }),
+                $(if ($Paired) {
+                        "- Candidate benchmark artifact SHA-256: " +
+                            "``$(($pairedArtifacts['candidate']).Sha256)``"
+                    }),
+                $(if ($Paired) {
+                        "- Candidate runnable closure: " +
+                            "$(($pairedArtifacts['candidate']).ClosureFileCount) files; " +
+                            "SHA-256 ``$(($pairedArtifacts['candidate']).ClosureSha256)``"
+                    }),
+                $(if ($Paired) {
+                        "- Paired benchmark artifact manifest: ``$pairedArtifactManifestPath``"
+                    }),
+                $(if ($Paired) {
+                        '- Benchmark artifact paths identify detached execution worktrees and may not exist after cleanup.'
+                    }),
                 $quiescenceDescription,
                 $(if ($Paired) { "- Pair manifest: ``$pairManifestPath``" }),
                 $(if ($Paired) {
@@ -1961,18 +2609,108 @@ catch {
     $primaryFailure = $_
 }
 finally {
+    if ($Paired -and $pairedArtifactManifestPersisted) {
+        $artifactCloseoutFailure = $null
+        $artifactCloseoutDetail = ''
+        try {
+            Assert-PairedBenchmarkArtifactCloseout `
+                -Artifacts $pairedArtifacts `
+                -ManifestPath $pairedArtifactManifestPath `
+                -ExpectedManifestLines $pairedArtifactManifestLines
+            $artifactCloseoutDetail = (
+                'Persisted manifest and both runnable closures match their ' +
+                'post-build identities.')
+        }
+        catch {
+            $artifactCloseoutFailure = $_
+            $artifactCloseoutDetail = $_.Exception.Message
+        }
+
+        $artifactCloseoutResult = if ($null -eq $artifactCloseoutFailure) {
+            'PASS'
+        }
+        else {
+            'FAIL'
+        }
+        try {
+            Write-PairedBenchmarkArtifactCloseoutEvidence `
+                -Result $artifactCloseoutResult `
+                -Detail $artifactCloseoutDetail
+        }
+        catch {
+            if ($null -eq $artifactCloseoutFailure) {
+                $artifactCloseoutFailure = $_
+            }
+            else {
+                $cleanupFailures.Add(
+                    'Could not persist paired benchmark artifact closeout evidence: ' +
+                    $_.Exception.Message)
+            }
+        }
+
+        if ($null -ne $artifactCloseoutFailure) {
+            if ($null -eq $primaryFailure) {
+                $primaryFailure = $artifactCloseoutFailure
+            }
+            else {
+                $cleanupFailures.Add(
+                    'Paired benchmark artifact closeout also failed: ' +
+                    $artifactCloseoutFailure.Exception.Message)
+            }
+        }
+    }
+
     if ($candidateAdded) {
-        & git -C $repositoryRoot worktree remove --force $candidateWorktree 2>&1 |
-            Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            $cleanupFailures.Add("Could not remove candidate worktree '$candidateWorktree'.")
+        $candidateCleanupSafe = $true
+        try {
+            $detachedCandidateLinks = Disconnect-WorktreeLinksForCleanup `
+                -WorktreeRoot $candidateWorktree
+            if ($detachedCandidateLinks -ne 0) {
+                Write-Warning (
+                    "Detached $detachedCandidateLinks candidate worktree link " +
+                    'entry or entries before cleanup.')
+            }
+        }
+        catch {
+            $candidateCleanupSafe = $false
+            $cleanupFailures.Add(
+                'Skipped candidate worktree removal because its link-safety ' +
+                "audit failed. Manual cleanup is required at '$candidateWorktree'. " +
+                $_.Exception.Message)
+        }
+        if ($candidateCleanupSafe) {
+            & git -C $repositoryRoot worktree remove --force $candidateWorktree 2>&1 |
+                Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                $cleanupFailures.Add("Could not remove candidate worktree '$candidateWorktree'.")
+            }
         }
     }
     if ($baselineAdded) {
-        & git -C $repositoryRoot worktree remove --force $baselineWorktree 2>&1 |
-            Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            $cleanupFailures.Add("Could not remove previous-release worktree '$baselineWorktree'.")
+        $baselineCleanupSafe = $true
+        try {
+            $detachedBaselineLinks = Disconnect-WorktreeLinksForCleanup `
+                -WorktreeRoot $baselineWorktree
+            if ($detachedBaselineLinks -ne 0) {
+                Write-Warning (
+                    "Detached $detachedBaselineLinks previous-release worktree link " +
+                    'entry or entries before cleanup.')
+            }
+        }
+        catch {
+            $baselineCleanupSafe = $false
+            $cleanupFailures.Add(
+                'Skipped previous-release worktree removal because its ' +
+                "link-safety audit failed. Manual cleanup is required at '$baselineWorktree'. " +
+                $_.Exception.Message)
+        }
+        if ($baselineCleanupSafe) {
+            & git -C $repositoryRoot worktree remove --force $baselineWorktree 2>&1 |
+                Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                $cleanupFailures.Add(
+                    "Could not remove previous-release worktree '$baselineWorktree'.")
+            }
         }
     }
 

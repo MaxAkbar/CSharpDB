@@ -122,7 +122,26 @@ Each pass runs the complete release-core suite for both revisions and can take
 several hours. `-SuiteName` can select named suites for a diagnostic run. The
 workflow shuts down .NET build servers and waits 30 seconds after building; this
 fixed wait does not prove that CPU or disk activity is idle, so local runs
-should use a dedicated machine without concurrent builds.
+should use a dedicated machine without concurrent builds. Before that shutdown,
+paired mode resolves each revision's exact `CSharpDB.Benchmarks.dll` and hashes
+the complete runnable directory closure: every recursively discovered file,
+relative-path sorted, including managed/native dependencies, `.deps.json`, and
+runtime configuration. The directory tree is inspected without following links;
+any symlink, junction, or other reparse-point directory fails qualification.
+Only top-level `results` and `CSharpDB.Benchmarks-Job-*` directories are excluded
+as known generated benchmark output; nested directories with those names remain
+hashed. Every sample invokes its resolved DLL directly and recomputes
+the exact eligible file set and all hashes immediately before and after
+execution. Entry-DLL identities, closure counts/composite identities, and every
+relative file/hash record are retained in the external
+`paired-benchmark-artifacts.sha256` manifest. Before cleanup, closeout verifies
+the unchanged persisted manifest and both closures and writes a separate
+PASS/FAIL log. Before Git removes either detached worktree, a non-following
+whole-worktree audit detaches file and directory links deepest-first and verifies
+that none remain. If that safety pass fails, removal is skipped and the manual
+cleanup path is reported. Recorded execution paths may therefore no longer exist
+after successful cleanup even though their commits and complete identities
+remain auditable.
 
 For a same-artifact exact-row A/A diagnostic, use an absent or empty output
 directory outside the checkout:
@@ -142,10 +161,12 @@ case-sensitive scenario replaces the seven-suite plan and takes precedence over
 `-SuiteName`. Each logical invocation performs one internal two-second warmup,
 then records until it has both 30 measured seconds and 10,000 retained latency
 samples; failure to reach both by the 120-second measured-phase cap fails
-closed. `-AllowSameRevision` alone permits A/A but still uses two builds;
-`-ShareSameRevisionArtifact` additionally requires equal commits and makes both
-labels invoke one DLL directly. Its path and SHA-256 identity are recorded and
-the hash is checked before and after every sample.
+closed. All paired comparisons use exact direct DLL execution and pre/post
+verification of the complete runnable closure. `-AllowSameRevision` alone
+permits A/A but still uses two builds; `-ShareSameRevisionArtifact` additionally
+requires equal commits and maps one candidate DLL and closure to both labels.
+Both logical identities, the shared execution-time path, and all relative
+closure file hashes are recorded.
 
 These controls diagnose the harness only and cannot replace either
 previous-release qualification pass or promote a baseline.
