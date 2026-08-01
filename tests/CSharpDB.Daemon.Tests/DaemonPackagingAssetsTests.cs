@@ -71,6 +71,7 @@ public sealed class DaemonPackagingAssetsTests
 
         Assert.Contains("workflow_call:", normalized);
         Assert.Contains("workflow_dispatch:", normalized);
+        Assert.Contains("qualification-*", normalized);
         Assert.Contains("clean: true", normalized);
         Assert.Contains("- ubuntu-latest", normalized);
         Assert.Contains("- windows-latest", normalized);
@@ -97,7 +98,7 @@ public sealed class DaemonPackagingAssetsTests
         Assert.Contains(
             "-QualificationPass ${{ matrix.qualification_pass }}",
             normalized);
-        Assert.Contains("-Paired", normalized);
+        Assert.DoesNotContain("-Paired", normalized);
         Assert.Contains("-RepeatCount 3", normalized);
         Assert.Contains("-PostBuildQuiescenceSeconds 30", normalized);
         Assert.Contains("-MaxThroughputRegressionPercent 15", normalized);

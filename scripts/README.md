@@ -69,30 +69,28 @@ The authoritative GitHub `SQL Release Qualification` workflow executes this
 same check in two independent clean jobs on each of Windows, Linux, and macOS.
 It can be started manually for a release candidate and is also required
 automatically by the tag release workflow before any publishing job starts.
+Before the workflow has first reached the default branch, pushing a non-release
+`qualification-*` tag runs it from that exact candidate commit without invoking
+the `v*` publishing workflow. Once registered on the default branch, normal
+manual dispatch can target any release-candidate branch.
 The workflow also runs the full release-core benchmark against the previous
 release in two independent clean Windows jobs. When no override is provided,
 the nearest prior semantic release tag reachable from the candidate is
 selected automatically. A hash-verified copy of the candidate benchmark source
 is used for both engine revisions, while revision-specific root build inputs
-are hashed and reported separately. In paired mode, qualification uses `3`,
-`5`, `7`, or `9` pairs per order stratum; CI uses three
-previous-candidate and three candidate-previous pairs. Both revisions are
-built once. Each isolated sample receives the same unrecorded warmup, pair
-members run adjacently, and pair order alternates within every suite. The
-qualification pass determines which order starts first.
+are hashed and reported separately. Each suite runs once per revision with one
+unrecorded warmup followed by three recorded samples. Pass one runs the previous
+revision before the candidate within every suite; pass two reverses that order.
+Both revisions are built once per pass.
 
-Every raw sample, aggregate, pair-manifest row, and copied-raw SHA-256 digest is
-retained. The comparison requires exact manifest, schema, and row parity,
-requires at least 100 retained latency observations per gate row, and fails
-closed when evidence is invalid or order-sensitive. In each order stratum,
-throughput and P99 independently require strict stable majorities; their
-outliers may be different pairs. Throughput effects use a 15% stability band,
-while P99 effects are stable when they remain within either 25% or 0.0500 ms of
-their stratum median effect. After those checks, both order strata must cross
-the 15% throughput gate to confirm a regression. A P99 regression requires a
-strict majority of the same pairs in both order strata to exceed 25% and 0.05
-ms, so tiny percentage-amplified timing noise remains reported without blocking
-the release. Both clean qualifications must pass before publishing can start.
+Every raw sample and recomputed median is retained. The comparison requires
+exact schema and row parity, positive metrics, and at least 100 retained latency
+observations per gate row. A strict majority of raw runs must remain within the
+configured throughput and P99 stability bands for both revisions; malformed or
+unstable evidence fails closed. A stable candidate fails above the 15%
+throughput regression limit or when P99 exceeds both 25% and 0.05 ms. Both clean,
+order-reversed qualifications must pass before publishing can start. The
+higher-cost balanced-pair mode remains available for focused diagnostics.
 
 The performance comparison is intentionally separate from the faster local
 qualification command above. To reproduce it locally, start with a clean
@@ -107,14 +105,12 @@ $PerformanceRoot = Join-Path `
   -CandidateRef HEAD `
   -OutputPath (Join-Path $PerformanceRoot 'pass-1') `
   -QualificationPass 1 `
-  -Paired `
   -RepeatCount 3
 
 .\tests\CSharpDB.Benchmarks\scripts\Test-PreviousReleasePerformance.ps1 `
   -CandidateRef HEAD `
   -OutputPath (Join-Path $PerformanceRoot 'pass-2') `
   -QualificationPass 2 `
-  -Paired `
   -RepeatCount 3
 ```
 
@@ -122,26 +118,11 @@ Each pass runs the complete release-core suite for both revisions and can take
 several hours. `-SuiteName` can select named suites for a diagnostic run. The
 workflow shuts down .NET build servers and waits 30 seconds after building; this
 fixed wait does not prove that CPU or disk activity is idle, so local runs
-should use a dedicated machine without concurrent builds. Before that shutdown,
-paired mode resolves each revision's exact `CSharpDB.Benchmarks.dll` and hashes
-the complete runnable directory closure: every recursively discovered file,
-relative-path sorted, including managed/native dependencies, `.deps.json`, and
-runtime configuration. The directory tree is inspected without following links;
-any symlink, junction, or other reparse-point directory fails qualification.
-Only top-level `results` and `CSharpDB.Benchmarks-Job-*` directories are excluded
-as known generated benchmark output; nested directories with those names remain
-hashed. Every sample invokes its resolved DLL directly and recomputes
-the exact eligible file set and all hashes immediately before and after
-execution. Entry-DLL identities, closure counts/composite identities, and every
-relative file/hash record are retained in the external
-`paired-benchmark-artifacts.sha256` manifest. Before cleanup, closeout verifies
-the unchanged persisted manifest and both closures and writes a separate
-PASS/FAIL log. Before Git removes either detached worktree, a non-following
-whole-worktree audit detaches file and directory links deepest-first and verifies
-that none remain. If that safety pass fails, removal is skipped and the manual
-cleanup path is reported. Recorded execution paths may therefore no longer exist
-after successful cleanup even though their commits and complete identities
-remain auditable.
+should use a dedicated machine without concurrent builds. The release gate
+retains three raw CSVs plus a median for every suite and revision, verifies each
+copy, records the synchronized candidate harness and revision-specific build
+inputs, and removes its detached worktrees only after a non-following link audit.
+Generated evidence remains outside the repository.
 
 For a same-artifact exact-row A/A diagnostic, use an absent or empty output
 directory outside the checkout:

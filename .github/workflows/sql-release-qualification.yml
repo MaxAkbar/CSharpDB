@@ -1,6 +1,9 @@
 name: SQL Release Qualification
 
 on:
+  push:
+    tags:
+      - "qualification-*"
   workflow_call:
     inputs:
       release_version:
@@ -132,14 +135,14 @@ jobs:
           PREVIOUS_RELEASE_REF: ${{ inputs.previous_release_ref }}
           CANDIDATE_REF: ${{ inputs.release_commit || github.sha }}
         run: |
-          # Same-revision/shared-artifact, exact-scenario, and five-pair controls
-          # are diagnostics only and are intentionally excluded from this gate.
+          # Balanced-pair, same-revision/shared-artifact, and exact-scenario
+          # controls remain diagnostics. The release gate uses one warmup plus
+          # three recorded runs per revision; pass two reverses revision order.
           ./tests/CSharpDB.Benchmarks/scripts/Test-PreviousReleasePerformance.ps1 `
             -PreviousRef $env:PREVIOUS_RELEASE_REF `
             -CandidateRef $env:CANDIDATE_REF `
             -OutputPath $env:PERFORMANCE_OUTPUT `
             -QualificationPass ${{ matrix.qualification_pass }} `
-            -Paired `
             -RepeatCount 3 `
             -PostBuildQuiescenceSeconds 30 `
             -MaxThroughputRegressionPercent 15 `

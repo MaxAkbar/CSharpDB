@@ -452,91 +452,60 @@ pwsh -NoProfile .\tests\CSharpDB.Benchmarks\scripts\Test-PreviousReleasePerforma
   -CandidateRef HEAD `
   -OutputPath (Join-Path $ComparisonRoot 'pass-1') `
   -QualificationPass 1 `
-  -Paired `
   -RepeatCount 3
 
 pwsh -NoProfile .\tests\CSharpDB.Benchmarks\scripts\Test-PreviousReleasePerformance.ps1 `
   -CandidateRef HEAD `
   -OutputPath (Join-Path $ComparisonRoot 'pass-2') `
   -QualificationPass 2 `
-  -Paired `
   -RepeatCount 3
 ```
+
+GitHub runs this comparison together with the cross-platform qualification when
+a non-release `qualification-*` tag is pushed. This permits exact pre-merge
+qualification before the workflow is registered on the default branch; `v*`
+tags remain reserved for the publishing workflow.
 
 The repository must be clean. When `-PreviousRef` is omitted, the nearest
 prior semantic release tag reachable from the candidate is selected
 automatically; an explicit tag or commit can still override that choice. The
 previous revision must be an ancestor of the candidate, and each output
-directory must be absent or empty and outside the repository. In paired mode,
-qualification accepts `3`, `5`, `7`, or `9` pairs per order stratum and CI uses
-`3`: three previous-candidate pairs and three candidate-previous pairs, or six
-recorded samples per revision. The candidate benchmark source is hash-verified
-and synchronized into the previous-release worktree so both engines run the
-same benchmark source. Candidate and previous root build inputs are hashed and
-reported separately because they remain revision-specific. The revisions are
-built once. The runner resolves the exact `CSharpDB.Benchmarks.dll` produced for
-each revision and captures the complete immutable runnable closure rooted at
-that DLL's directory. The closure contains every file recursively, including
-managed and native dependencies plus `.deps.json` and runtime configuration,
-sorted by normalized relative path. Before enumerating files, the runner walks
-the directory tree without following links and rejects any symlink, junction,
-or other reparse-point directory. Only top-level directories named `results` or
-starting with `CSharpDB.Benchmarks-Job-` are excluded as known runtime-generated
-benchmark output; nested directories with those names remain hashed. The
-external manifest retains every relative path and file
-SHA-256 plus the closure file count and composite SHA-256. Samples invoke the
-resolved DLL directly rather than evaluating its project. Immediately before
-and after every paired sample, the runner recomputes the exact eligible path set
-and every hash; added, removed, or modified immutable files fail closed. Each
-isolated sample receives the same unrecorded warmup and produces exactly one
-recorded CSV. Pair members run adjacently, pair order alternates within each
-suite, and the qualification pass controls which order runs first.
+directory must be absent or empty and outside the repository. The release gate
+uses the suite-interleaved mode shown above: pass one runs the previous revision
+before the candidate within every suite, and pass two reverses that order. The
+candidate benchmark source is hash-verified and synchronized into the
+previous-release worktree so both engines run the same harness. Candidate and
+previous root build inputs are hashed and reported separately because they
+remain revision-specific, and both revisions are built once per pass.
 
-Each pass retains the pair manifest, every raw sample, and an aggregate for all
-seven release-core suites. The comparer requires exact manifest, schema, and
-row-name parity, positive gate metrics, at least 100 retained latency
-observations per row, unique evidence paths, and the declared adjacent order.
-It compares candidate/baseline log ratios separately for each order stratum.
-Throughput and P99 independently require a strict stable majority in each
-stratum; the stable pairs for the two metrics need not be the same. Throughput
-effects must remain within 15% of their stratum median, while P99 effects are
-stable when they remain within either 25% or 0.0500 ms of their stratum median
-effect. With three pairs per order, one throughput outlier and one P99 outlier
-may therefore be tolerated even when they occur in different pairs. `INVALID`,
-`UNSTABLE`, and `ORDER-SENSITIVE` all block qualification. A regression is
-confirmed only when both stable order strata cross the same gate; the P99 gate
-requires a strict majority of the same pairs to exceed both its relative and
-absolute limits.
+Each suite/revision invocation performs one unrecorded warmup followed by three
+recorded runs and emits a median-of-three aggregate. Cold-open applies the same
+shape scenario by scenario so long-suite drift cannot masquerade as repetition
+stability. Each pass retains all three raw CSVs plus the aggregate for every one
+of the seven suites and both revisions. Copied evidence is hash-checked before
+the source result is removed.
 
-The cold-open suite measures its repeated samples scenario-by-scenario, with an
-unrecorded same-scenario warmup, so runtime and machine drift across that long
-suite cannot masquerade as raw-run instability. Its read-only scenarios share
-one immutable seeded corpus, and each paired sample CSV contains exactly one
-recorded result for every scenario.
+The comparer requires exact schema and row-name parity across raw and aggregate
+evidence, positive gate metrics, at least 100 retained latency observations per
+row, and exact recomputation of median throughput and P99. Both revisions must
+provide a strict stable majority of raw runs. `INVALID` and `UNSTABLE` evidence
+block qualification. For stable evidence, throughput fails above a 15%
+candidate regression. P99 fails only when its increase exceeds both 25% and the
+0.05 ms absolute allowance, so percentage-amplified sub-millisecond noise remains
+visible without blocking by itself. Both clean, order-reversed passes must pass.
 
-For stable evidence, throughput fails above a 15% candidate regression. P99
-fails only when its increase exceeds both 25% and the 0.05 ms absolute
-allowance; percentage-only P99 crossings remain visible in the report notes.
-Evidence includes an up-front preflight record, the benchmark-source hash
-manifest, separate revision build-input manifests, the paired benchmark-artifact
-identity manifest, pair manifest, persisted raw-evidence SHA-256 manifest, raw
-and aggregate CSV files, revision logs with suite boundaries, commit identities,
-the planned order, a chronological start/pass/fail execution log, and a Markdown
-report. Artifact paths identify detached execution worktrees and may no longer
-exist after cleanup; their commits and hashes remain in the external evidence.
-At qualification closeout, before either worktree is removed, the runner
-revalidates the exact persisted artifact-manifest contents and both runnable
-closures and writes a separate PASS/FAIL closeout log. That audit still runs
-after an earlier benchmark or comparison failure without replacing the earlier
-failure as the primary diagnostic. Before forced worktree removal, the runner
-walks each complete worktree without following links, detaches file and
-directory links deepest-first without traversing their targets, verifies that
-no link remains, and only then invokes Git cleanup. An audit or detachment
-failure leaves that worktree registered for explicit manual cleanup.
-All generated evidence must remain in an absent or empty directory outside the
-checkout and must not be copied into benchmark result or other source
-directories. It never updates the deliberately curated
-`release-core-manifest.json`, and diagnostic runs introduce no generated JSON.
+Evidence includes an up-front preflight record, benchmark-source hash manifest,
+separate revision build-input manifests, raw and aggregate CSV files, revision
+logs with suite boundaries, commit identities, the planned order, a chronological
+start/pass/fail execution log, and a Markdown report. Before forced worktree
+removal, the runner performs a non-following link audit and leaves any unsafe
+worktree registered for explicit cleanup. All generated evidence stays in the
+caller-selected directory outside the checkout; it never updates the curated
+`release-core-manifest.json` or introduces generated JSON into the repository.
+
+The higher-cost balanced paired mode remains available below for focused A/A,
+exact-row, and order-sensitivity investigations. It is not the routine release
+gate and cannot replace either complete suite-interleaved qualification pass.
 
 ### Focused A/A and exact-row diagnostics
 
