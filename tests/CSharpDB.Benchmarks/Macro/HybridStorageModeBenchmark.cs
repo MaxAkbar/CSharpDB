@@ -859,7 +859,7 @@ public static class HybridStorageModeBenchmark
                     qualificationSettings.MinimumMeasuredDuration,
                     qualificationSettings.MinimumLatencySamples))
             {
-                DateTimeOffset measurementEndedUtc = deadline.UtcNow;
+                DateTimeOffset measurementEndedUtc = deadline.StartedUtc + elapsed;
                 BenchmarkResult result = BenchmarkResult.FromHistogram(
                     benchmarkName,
                     histogram,
@@ -891,7 +891,23 @@ public static class HybridStorageModeBenchmark
             }
 
             var operationStopwatch = Stopwatch.StartNew();
-            Task operationTask = operation(deadline.Token);
+            Task operationTask;
+            try
+            {
+                operationTask = operation(deadline.Token);
+            }
+            catch (OperationCanceledException) when (deadline.Token.IsCancellationRequested)
+            {
+                throw await CreateQualificationCapAfterCancellationAsync(
+                    benchmarkName,
+                    qualificationSettings,
+                    deadline.Elapsed,
+                    histogram.SampleCount,
+                    inFlightTask: null,
+                    deadline,
+                    cancellationDrainTimeout,
+                    "in-flight operation");
+            }
             if (!operationTask.IsCompleted)
             {
                 Task completedTask = await Task.WhenAny(operationTask, deadline.Expired);
@@ -909,7 +925,22 @@ public static class HybridStorageModeBenchmark
                 }
             }
 
-            await operationTask;
+            try
+            {
+                await operationTask;
+            }
+            catch (OperationCanceledException) when (deadline.Token.IsCancellationRequested)
+            {
+                throw await CreateQualificationCapAfterCancellationAsync(
+                    benchmarkName,
+                    qualificationSettings,
+                    deadline.Elapsed,
+                    histogram.SampleCount,
+                    inFlightTask: null,
+                    deadline,
+                    cancellationDrainTimeout,
+                    "in-flight operation");
+            }
             operationStopwatch.Stop();
 
             TimeSpan completionElapsed = deadline.Elapsed;

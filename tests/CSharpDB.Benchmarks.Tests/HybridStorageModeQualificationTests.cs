@@ -1,3 +1,4 @@
+using System.Globalization;
 using CSharpDB.Benchmarks.Infrastructure;
 using CSharpDB.Benchmarks.Macro;
 using BenchmarkProgram = CSharpDB.Benchmarks.Program;
@@ -129,6 +130,42 @@ public sealed class HybridStorageModeQualificationTests
     }
 
     [Fact]
+    public async Task MeasuredOperation_WallClockSkew_DoesNotChangeRecordedInterval()
+    {
+        HybridStorageModeBenchmark.QualificationSettings settings = CreateFastSettings();
+        TimeSpan wallClockSkew = TimeSpan.FromHours(3);
+        using var deadline = new ManualQualificationDeadline(wallClockSkew);
+        deadline.AdvanceTo(TimeSpan.FromSeconds(1));
+
+        BenchmarkResult result = await HybridStorageModeBenchmark.RunQualificationMeasuredOperationCoreAsync(
+            FileBackedSqlSingleInsert,
+            settings,
+            _ => Task.CompletedTask,
+            deadline,
+            TimeSpan.FromMilliseconds(25));
+
+        Dictionary<string, string> extraInfo = result.ExtraInfo!
+            .Split(';', StringSplitOptions.TrimEntries)
+            .Select(static token => token.Split('=', 2))
+            .ToDictionary(static token => token[0], static token => token[1]);
+        DateTimeOffset measurementBeginUtc = DateTimeOffset.ParseExact(
+            extraInfo["measurement-begin-utc"],
+            "O",
+            CultureInfo.InvariantCulture);
+        DateTimeOffset measurementEndUtc = DateTimeOffset.ParseExact(
+            extraInfo["measurement-end-utc"],
+            "O",
+            CultureInfo.InvariantCulture);
+
+        Assert.Equal(deadline.StartedUtc, measurementBeginUtc);
+        Assert.Equal(deadline.StartedUtc + TimeSpan.FromSeconds(1), measurementEndUtc);
+        Assert.NotEqual(deadline.UtcNow, measurementEndUtc);
+        Assert.Equal(
+            TimeSpan.FromMilliseconds(result.ElapsedMs),
+            measurementEndUtc - measurementBeginUtc);
+    }
+
+    [Fact]
     public async Task MeasuredOperation_SampleCompletingAfterDeadline_IsRejected()
     {
         HybridStorageModeBenchmark.QualificationSettings settings = CreateFastSettings();
@@ -143,6 +180,29 @@ public sealed class HybridStorageModeQualificationTests
                 {
                     deadline.AdvanceTo(settings.MaximumMeasuredDuration.Add(TimeSpan.FromTicks(1)), expire: true);
                     return Task.CompletedTask;
+                },
+                deadline,
+                TimeSpan.FromMilliseconds(25)));
+
+        Assert.Contains("measurement cap", exception.Message);
+        Assert.Contains("0 retained latency samples", exception.Message);
+        Assert.True(deadline.Token.IsCancellationRequested);
+    }
+
+    [Fact]
+    public async Task MeasuredOperation_DeadlineCancellationCompletingTask_IsExplicitCap()
+    {
+        HybridStorageModeBenchmark.QualificationSettings settings = CreateFastSettings();
+        using var deadline = new ManualQualificationDeadline();
+
+        InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => HybridStorageModeBenchmark.RunQualificationMeasuredOperationCoreAsync(
+                FileBackedSqlSingleInsert,
+                settings,
+                _ =>
+                {
+                    deadline.AdvanceTo(settings.MaximumMeasuredDuration, expire: true);
+                    return Task.FromCanceled(deadline.Token);
                 },
                 deadline,
                 TimeSpan.FromMilliseconds(25)));
@@ -532,16 +592,18 @@ public sealed class HybridStorageModeQualificationTests
         private readonly CancellationTokenSource _cts = new();
         private readonly TaskCompletionSource _expired =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TimeSpan _utcNowSkew;
         private long _elapsedTicks;
 
-        internal ManualQualificationDeadline()
+        internal ManualQualificationDeadline(TimeSpan utcNowSkew = default)
         {
             StartedUtc = new DateTimeOffset(2026, 7, 31, 19, 30, 0, TimeSpan.Zero);
+            _utcNowSkew = utcNowSkew;
         }
 
         public TimeSpan Elapsed => TimeSpan.FromTicks(Interlocked.Read(ref _elapsedTicks));
         public DateTimeOffset StartedUtc { get; }
-        public DateTimeOffset UtcNow => StartedUtc + Elapsed;
+        public DateTimeOffset UtcNow => StartedUtc + Elapsed + _utcNowSkew;
         public CancellationToken Token => _cts.Token;
         public Task Expired => _expired.Task;
 

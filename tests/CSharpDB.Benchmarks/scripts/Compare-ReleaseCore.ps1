@@ -55,6 +55,8 @@ $maxP99RegressionMillisecondsExact = [decimal]::Parse(
 $stabilityThroughputPercent = [decimal] 15
 $stabilityP99Percent = [decimal] 25
 $stabilityP99Milliseconds = [decimal] 0.05
+$hybridQualificationSuite = 'hybrid-storage-mode-scenario'
+$qualificationElapsedCaptureToleranceMilliseconds = [decimal] 1
 $requiredColumns = @(
     'Name',
     'TotalOps',
@@ -191,6 +193,240 @@ function Get-GateMetrics {
         LatencySamples = $latencySamples
         OpsPerSec = $opsPerSecond
         P99 = $p99
+    }
+}
+
+function Read-UniqueExtraInfoTokens {
+    param(
+        [AllowNull()]
+        [object] $ExtraInfo,
+
+        [Parameter(Mandatory)]
+        [string] $Description
+    )
+
+    if ($null -eq $ExtraInfo -or
+        [string]::IsNullOrWhiteSpace([string] $ExtraInfo)) {
+        throw "Hybrid qualification '$Description ExtraInfo' is empty."
+    }
+
+    $tokens = [Collections.Generic.Dictionary[string, string]]::new(
+        [StringComparer]::Ordinal)
+    foreach ($rawToken in ([string] $ExtraInfo).Split(';')) {
+        $token = $rawToken.Trim()
+        if ([string]::IsNullOrWhiteSpace($token)) {
+            throw (
+                "Hybrid qualification '$Description ExtraInfo' contains an empty token.")
+        }
+
+        $separatorIndex = $token.IndexOf('=', [StringComparison]::Ordinal)
+        if ($separatorIndex -le 0 -or $separatorIndex -eq $token.Length - 1) {
+            throw (
+                "Hybrid qualification '$Description ExtraInfo' token '$token' must " +
+                    'contain a non-empty key and value separated by =.')
+        }
+
+        $key = $token.Substring(0, $separatorIndex).Trim()
+        $value = $token.Substring($separatorIndex + 1).Trim()
+        if ([string]::IsNullOrWhiteSpace($key) -or
+            [string]::IsNullOrWhiteSpace($value)) {
+            throw (
+                "Hybrid qualification '$Description ExtraInfo' token '$token' must " +
+                    'contain a non-empty key and value separated by =.')
+        }
+        if (-not $tokens.TryAdd($key, $value)) {
+            throw (
+                "Hybrid qualification '$Description ExtraInfo' contains duplicate " +
+                    "token '$key'.")
+        }
+    }
+
+    return ,$tokens
+}
+
+function Get-RequiredQualificationToken {
+    param(
+        [Parameter(Mandatory)]
+        [Collections.Generic.Dictionary[string, string]] $Tokens,
+
+        [Parameter(Mandatory)]
+        [string] $Key,
+
+        [Parameter(Mandatory)]
+        [string] $Description
+    )
+
+    [string] $value = ''
+    if (-not $Tokens.TryGetValue($Key, [ref] $value)) {
+        throw (
+            "Hybrid qualification '$Description ExtraInfo' is missing required " +
+                "token '$Key'.")
+    }
+
+    return $value
+}
+
+function Convert-ToQualificationInteger {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Value,
+
+        [Parameter(Mandatory)]
+        [string] $Key,
+
+        [Parameter(Mandatory)]
+        [string] $Description
+    )
+
+    [long] $number = 0
+    if (-not [long]::TryParse(
+            $Value,
+            $integerStyles,
+            $invariant,
+            [ref] $number)) {
+        throw (
+            "Hybrid qualification '$Description ExtraInfo' token '$Key' must be " +
+                "an integer: '$Value'.")
+    }
+
+    return $number
+}
+
+function Convert-ToRoundTripUtcTimestamp {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Value,
+
+        [Parameter(Mandatory)]
+        [string] $Key,
+
+        [Parameter(Mandatory)]
+        [string] $Description
+    )
+
+    [DateTimeOffset] $timestamp = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParseExact(
+            $Value,
+            'O',
+            $invariant,
+            [Globalization.DateTimeStyles]::RoundtripKind,
+            [ref] $timestamp) -or
+        $timestamp.Offset -ne [TimeSpan]::Zero) {
+        throw (
+            "Hybrid qualification '$Description ExtraInfo' token '$Key' must be " +
+                "a round-trip UTC timestamp: '$Value'.")
+    }
+
+    return $timestamp
+}
+
+function Assert-HybridQualificationEvidence {
+    param(
+        [Parameter(Mandatory)]
+        [object] $Row,
+
+        [Parameter(Mandatory)]
+        [object] $Metrics,
+
+        [Parameter(Mandatory)]
+        [string] $Description
+    )
+
+    $tokens = Read-UniqueExtraInfoTokens `
+        -ExtraInfo $Row.ExtraInfo `
+        -Description $Description
+    $qualification = Get-RequiredQualificationToken `
+        -Tokens $tokens `
+        -Key 'qualification' `
+        -Description $Description
+    if ($qualification -cne 'true') {
+        throw (
+            "Hybrid qualification '$Description ExtraInfo' token 'qualification' " +
+                "must be 'true': '$qualification'.")
+    }
+
+    $requiredIntegerTokens = [ordered]@{
+        'unrecorded-warmup-seconds' = [long] 2
+        'minimum-measured-seconds' = [long] 30
+        'minimum-retained-latency-samples' = [long] 10000
+        'measurement-cap-seconds' = [long] 120
+    }
+    $integerValues = @{}
+    foreach ($key in $requiredIntegerTokens.Keys) {
+        $rawValue = Get-RequiredQualificationToken `
+            -Tokens $tokens `
+            -Key $key `
+            -Description $Description
+        $integerValue = Convert-ToQualificationInteger `
+            -Value $rawValue `
+            -Key $key `
+            -Description $Description
+        $expectedValue = $requiredIntegerTokens[$key]
+        if ($integerValue -ne $expectedValue) {
+            throw (
+                "Hybrid qualification '$Description ExtraInfo' token '$key' must " +
+                    "be ${expectedValue}: '$rawValue'.")
+        }
+        $integerValues[$key] = $integerValue
+    }
+
+    $measurementBeginUtc = Convert-ToRoundTripUtcTimestamp `
+        -Value (Get-RequiredQualificationToken `
+            -Tokens $tokens `
+            -Key 'measurement-begin-utc' `
+            -Description $Description) `
+        -Key 'measurement-begin-utc' `
+        -Description $Description
+    $measurementEndUtc = Convert-ToRoundTripUtcTimestamp `
+        -Value (Get-RequiredQualificationToken `
+            -Tokens $tokens `
+            -Key 'measurement-end-utc' `
+            -Description $Description) `
+        -Key 'measurement-end-utc' `
+        -Description $Description
+    $measurementIntervalMilliseconds =
+        [decimal] ($measurementEndUtc - $measurementBeginUtc).Ticks / 10000
+    if ($measurementIntervalMilliseconds -le 0) {
+        throw (
+            "Hybrid qualification '$Description' measurement interval must be " +
+                'strictly positive.')
+    }
+
+    $elapsedDifference = [decimal]::Abs(
+        $Metrics.ElapsedMs - $measurementIntervalMilliseconds)
+    if ($elapsedDifference -gt $qualificationElapsedCaptureToleranceMilliseconds) {
+        throw (
+            "Hybrid qualification '$Description ElapsedMs' must match the UTC " +
+                'measurement interval within ' +
+                "$(Format-ExactNumber $qualificationElapsedCaptureToleranceMilliseconds) ms: " +
+                "elapsed=$(Format-ExactNumber $Metrics.ElapsedMs) ms; " +
+                "interval=$(Format-ExactNumber $measurementIntervalMilliseconds) ms.")
+    }
+
+    $minimumElapsedMilliseconds =
+        [decimal] $integerValues['minimum-measured-seconds'] * 1000
+    $maximumElapsedMilliseconds =
+        [decimal] $integerValues['measurement-cap-seconds'] * 1000
+    if ($Metrics.ElapsedMs -lt $minimumElapsedMilliseconds) {
+        throw (
+            "Hybrid qualification '$Description ElapsedMs' must be at least " +
+                "$(Format-ExactNumber $minimumElapsedMilliseconds) ms: " +
+                "'$(Format-ExactNumber $Metrics.ElapsedMs)'.")
+    }
+    if ($Metrics.ElapsedMs -gt $maximumElapsedMilliseconds) {
+        throw (
+            "Hybrid qualification '$Description ElapsedMs' must not exceed " +
+                "$(Format-ExactNumber $maximumElapsedMilliseconds) ms: " +
+                "'$(Format-ExactNumber $Metrics.ElapsedMs)'.")
+    }
+
+    $minimumLatencySamples =
+        [long] $integerValues['minimum-retained-latency-samples']
+    if ($Metrics.LatencySamples -lt $minimumLatencySamples) {
+        throw (
+            "Hybrid qualification '$Description LatencySamples' must be at least " +
+                "the declared minimum of ${minimumLatencySamples}: " +
+                "'$($Metrics.LatencySamples)'.")
     }
 }
 
@@ -1157,14 +1393,28 @@ function Invoke-PairedComparison {
             $rowIssues = [Collections.Generic.List[string]]::new()
             foreach ($entry in $pairEvidence) {
                 try {
+                    $baselineRow = $entry.Baseline.RowsByName[$rowName]
+                    $candidateRow = $entry.Candidate.RowsByName[$rowName]
+                    $baselineDescription =
+                        "$suiteName/$rowName/$($entry.Pair.PairId)/baseline"
+                    $candidateDescription =
+                        "$suiteName/$rowName/$($entry.Pair.PairId)/candidate"
                     $baselineMetrics = Get-GateMetrics `
-                        -Row $entry.Baseline.RowsByName[$rowName] `
-                        -Description (
-                            "$suiteName/$rowName/$($entry.Pair.PairId)/baseline")
+                        -Row $baselineRow `
+                        -Description $baselineDescription
                     $candidateMetrics = Get-GateMetrics `
-                        -Row $entry.Candidate.RowsByName[$rowName] `
-                        -Description (
-                            "$suiteName/$rowName/$($entry.Pair.PairId)/candidate")
+                        -Row $candidateRow `
+                        -Description $candidateDescription
+                    if ($suiteName -ceq $hybridQualificationSuite) {
+                        Assert-HybridQualificationEvidence `
+                            -Row $baselineRow `
+                            -Metrics $baselineMetrics `
+                            -Description $baselineDescription
+                        Assert-HybridQualificationEvidence `
+                            -Row $candidateRow `
+                            -Metrics $candidateMetrics `
+                            -Description $candidateDescription
+                    }
                     $effects.Add([pscustomobject]@{
                         PairId = $entry.Pair.PairId
                         Order = $entry.Pair.Order

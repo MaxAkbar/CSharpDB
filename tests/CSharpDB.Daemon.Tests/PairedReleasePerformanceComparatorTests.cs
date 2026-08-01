@@ -7,6 +7,15 @@ public sealed class PairedReleasePerformanceComparatorTests
 {
     private const int RepeatCount = 3;
     private const string SuiteName = "suite";
+    private const string HybridQualificationSuiteName =
+        "hybrid-storage-mode-scenario";
+    private const string ValidQualificationExtraInfo =
+        "qualification=true; unrecorded-warmup-seconds=2; " +
+        "minimum-measured-seconds=30; " +
+        "minimum-retained-latency-samples=10000; " +
+        "measurement-cap-seconds=120; " +
+        "measurement-begin-utc=2026-07-31T12:00:00.0000000+00:00; " +
+        "measurement-end-utc=2026-07-31T12:00:30.0000000+00:00";
     private const string EvidenceHeader =
         "Name,TotalOps,LatencySamples,ElapsedMs,OpsPerSec,P50,P90,P95,P99,P999," +
         "Min,Max,Mean,StdDev,ExtraInfo";
@@ -432,6 +441,85 @@ public sealed class PairedReleasePerformanceComparatorTests
     }
 
     [Fact]
+    public async Task PairedComparer_AcceptsCompleteHybridQualificationEvidence()
+    {
+        string temporaryRoot = CreateTemporaryRoot();
+        try
+        {
+            ComparisonLayout layout = CreateLayout(
+                temporaryRoot,
+                HybridQualificationSuiteName);
+            CreateBalancedEvidence(
+                layout,
+                (_, _) => SingleRow(
+                    "qualified-scenario",
+                    CreateHybridQualificationMeasurement()));
+
+            ProcessResult result = await RunComparerAsync(layout);
+
+            Assert.True(result.ExitCode == 0, result.CombinedOutput);
+            string report = File.ReadAllText(layout.ReportPath);
+            Assert.Contains(
+                "| hybrid-storage-mode-scenario | qualified-scenario | 0.00% | " +
+                "0.00% | 0.0000 ms | PASS |",
+                report);
+        }
+        finally
+        {
+            DeleteTemporaryRoot(temporaryRoot);
+        }
+    }
+
+    [Theory]
+    [InlineData("missing-token", "missing required token 'qualification'")]
+    [InlineData("malformed-token", "must contain a non-empty key and value")]
+    [InlineData("duplicate-token", "contains duplicate token 'qualification'")]
+    [InlineData("qualification-false", "token 'qualification' must be 'true'")]
+    [InlineData("warmup", "token 'unrecorded-warmup-seconds' must be 2")]
+    [InlineData("minimum-duration", "token 'minimum-measured-seconds' must be 30")]
+    [InlineData("minimum-samples", "token 'minimum-retained-latency-samples' must be 10000")]
+    [InlineData("cap", "token 'measurement-cap-seconds' must be 120")]
+    [InlineData("non-integer", "token 'measurement-cap-seconds' must be an integer")]
+    [InlineData("invalid-timestamp", "must be a round-trip UTC timestamp")]
+    [InlineData("non-utc-timestamp", "must be a round-trip UTC timestamp")]
+    [InlineData("non-positive-interval", "measurement interval must be strictly positive")]
+    [InlineData("elapsed-mismatch", "must match the UTC measurement interval within 1 ms")]
+    [InlineData("elapsed-below-minimum", "ElapsedMs' must be at least 30000 ms")]
+    [InlineData("elapsed-above-cap", "ElapsedMs' must not exceed 120000 ms")]
+    [InlineData("samples-below-minimum", "declared minimum of 10000")]
+    public async Task PairedComparer_RejectsIncompleteHybridQualificationEvidence(
+        string defect,
+        string expectedDiagnostic)
+    {
+        string temporaryRoot = CreateTemporaryRoot();
+        try
+        {
+            ComparisonLayout layout = CreateLayout(
+                temporaryRoot,
+                HybridQualificationSuiteName);
+            CreateBalancedEvidence(
+                layout,
+                (_, _) => SingleRow(
+                    "qualified-scenario",
+                    CreateHybridQualificationMeasurement(defect)));
+
+            ProcessResult result = await RunComparerAsync(layout);
+
+            Assert.NotEqual(0, result.ExitCode);
+            string report = File.ReadAllText(layout.ReportPath);
+            Assert.Contains(
+                "| hybrid-storage-mode-scenario | qualified-scenario | n/a | n/a | " +
+                "n/a | INVALID |",
+                report);
+            Assert.Contains(expectedDiagnostic, report);
+        }
+        finally
+        {
+            DeleteTemporaryRoot(temporaryRoot);
+        }
+    }
+
+    [Fact]
     public async Task PairedComparer_AllowsEffectsExactlyAtConfiguredLimits()
     {
         string temporaryRoot = CreateTemporaryRoot();
@@ -614,15 +702,17 @@ public sealed class PairedReleasePerformanceComparatorTests
         }
     }
 
-    private static ComparisonLayout CreateLayout(string root)
+    private static ComparisonLayout CreateLayout(
+        string root,
+        string suiteName = SuiteName)
     {
         string baseline = Directory.CreateDirectory(Path.Combine(root, "baseline")).FullName;
         string candidate = Directory.CreateDirectory(Path.Combine(root, "candidate")).FullName;
         string baselineRaw = Directory
-            .CreateDirectory(Path.Combine(baseline, "raw", SuiteName))
+            .CreateDirectory(Path.Combine(baseline, "raw", suiteName))
             .FullName;
         string candidateRaw = Directory
-            .CreateDirectory(Path.Combine(candidate, "raw", SuiteName))
+            .CreateDirectory(Path.Combine(candidate, "raw", suiteName))
             .FullName;
         return new(
             baseline,
@@ -630,7 +720,8 @@ public sealed class PairedReleasePerformanceComparatorTests
             baselineRaw,
             candidateRaw,
             Path.Combine(root, "pairs.csv"),
-            Path.Combine(root, "comparison.md"));
+            Path.Combine(root, "comparison.md"),
+            suiteName);
     }
 
     private static List<PairDefinition> CreateBalancedEvidence(
@@ -662,7 +753,7 @@ public sealed class PairedReleasePerformanceComparatorTests
                 ? "candidate"
                 : "previous";
             pairs.Add(new(
-                SuiteName,
+                layout.SuiteName,
                 pairId,
                 order,
                 firstRevision,
@@ -673,13 +764,96 @@ public sealed class PairedReleasePerformanceComparatorTests
         WriteManifest(layout.ManifestPath, pairs);
         File.Copy(
             pairs[0].BaselineRaw,
-            Path.Combine(layout.BaselineRoot, $"{SuiteName}.csv"),
+            Path.Combine(layout.BaselineRoot, $"{layout.SuiteName}.csv"),
             overwrite: true);
         File.Copy(
             pairs[0].CandidateRaw,
-            Path.Combine(layout.CandidateRoot, $"{SuiteName}.csv"),
+            Path.Combine(layout.CandidateRoot, $"{layout.SuiteName}.csv"),
             overwrite: true);
         return pairs;
+    }
+
+    private static Measurement CreateHybridQualificationMeasurement(
+        string? defect = null)
+    {
+        string candidateExtraInfo = defect switch
+        {
+            null => ValidQualificationExtraInfo,
+            "missing-token" => ValidQualificationExtraInfo.Replace(
+                "qualification=true; ",
+                string.Empty,
+                StringComparison.Ordinal),
+            "malformed-token" => ValidQualificationExtraInfo + "; malformed",
+            "duplicate-token" =>
+                ValidQualificationExtraInfo + "; qualification=true",
+            "qualification-false" => ValidQualificationExtraInfo.Replace(
+                "qualification=true",
+                "qualification=false",
+                StringComparison.Ordinal),
+            "warmup" => ValidQualificationExtraInfo.Replace(
+                "unrecorded-warmup-seconds=2",
+                "unrecorded-warmup-seconds=1",
+                StringComparison.Ordinal),
+            "minimum-duration" => ValidQualificationExtraInfo.Replace(
+                "minimum-measured-seconds=30",
+                "minimum-measured-seconds=29",
+                StringComparison.Ordinal),
+            "minimum-samples" => ValidQualificationExtraInfo.Replace(
+                "minimum-retained-latency-samples=10000",
+                "minimum-retained-latency-samples=9999",
+                StringComparison.Ordinal),
+            "cap" => ValidQualificationExtraInfo.Replace(
+                "measurement-cap-seconds=120",
+                "measurement-cap-seconds=119",
+                StringComparison.Ordinal),
+            "non-integer" => ValidQualificationExtraInfo.Replace(
+                "measurement-cap-seconds=120",
+                "measurement-cap-seconds=120.0",
+                StringComparison.Ordinal),
+            "invalid-timestamp" => ValidQualificationExtraInfo.Replace(
+                "2026-07-31T12:00:00.0000000+00:00",
+                "not-a-timestamp",
+                StringComparison.Ordinal),
+            "non-utc-timestamp" => ValidQualificationExtraInfo.Replace(
+                "2026-07-31T12:00:00.0000000+00:00",
+                "2026-07-31T12:00:00.0000000-07:00",
+                StringComparison.Ordinal),
+            "non-positive-interval" => ValidQualificationExtraInfo.Replace(
+                "2026-07-31T12:00:30.0000000+00:00",
+                "2026-07-31T12:00:00.0000000+00:00",
+                StringComparison.Ordinal),
+            "elapsed-below-minimum" => ValidQualificationExtraInfo.Replace(
+                "2026-07-31T12:00:30.0000000+00:00",
+                "2026-07-31T12:00:29.0000000+00:00",
+                StringComparison.Ordinal),
+            "elapsed-above-cap" => ValidQualificationExtraInfo.Replace(
+                "2026-07-31T12:00:30.0000000+00:00",
+                "2026-07-31T12:02:01.0000000+00:00",
+                StringComparison.Ordinal),
+            "elapsed-mismatch" or "samples-below-minimum" =>
+                ValidQualificationExtraInfo,
+            _ => throw new ArgumentOutOfRangeException(nameof(defect), defect, null),
+        };
+        decimal candidateElapsedMs = defect switch
+        {
+            "elapsed-mismatch" => 30_002m,
+            "elapsed-below-minimum" => 29_000m,
+            "elapsed-above-cap" => 121_000m,
+            _ => 30_000m,
+        };
+        int candidateSamples = defect == "samples-below-minimum" ? 9_999 : 10_000;
+
+        return new(
+            BaselineOps: 100m,
+            CandidateOps: 100m,
+            BaselineP99: 10m,
+            CandidateP99: 10m,
+            BaselineSamples: 10_000,
+            CandidateSamples: candidateSamples,
+            BaselineElapsedMs: 30_000m,
+            CandidateElapsedMs: candidateElapsedMs,
+            BaselineExtraInfo: ValidQualificationExtraInfo,
+            CandidateExtraInfo: candidateExtraInfo);
     }
 
     private static IReadOnlyDictionary<string, Measurement> SingleRow(
@@ -715,13 +889,13 @@ public sealed class PairedReleasePerformanceComparatorTests
 
         const string aggregateTag = "Aggregate=median-of-3";
         File.WriteAllLines(
-            Path.Combine(layout.BaselineRoot, $"{SuiteName}.csv"),
+            Path.Combine(layout.BaselineRoot, $"{layout.SuiteName}.csv"),
             [
                 EvidenceHeader,
                 CreateEvidenceRow(rowName, 100m, 10m, 200, aggregateTag),
             ]);
         File.WriteAllLines(
-            Path.Combine(layout.CandidateRoot, $"{SuiteName}.csv"),
+            Path.Combine(layout.CandidateRoot, $"{layout.SuiteName}.csv"),
             [
                 EvidenceHeader,
                 CreateEvidenceRow(rowName, 100m, 10m, 200, aggregateTag),
@@ -743,7 +917,19 @@ public sealed class PairedReleasePerformanceComparatorTests
             int samples = baseline
                 ? measurement.BaselineSamples
                 : measurement.CandidateSamples;
-            lines.Add(CreateEvidenceRow(name, ops, p99, samples));
+            decimal elapsedMs = baseline
+                ? measurement.BaselineElapsedMs
+                : measurement.CandidateElapsedMs;
+            string extraInfo = baseline
+                ? measurement.BaselineExtraInfo
+                : measurement.CandidateExtraInfo;
+            lines.Add(CreateEvidenceRow(
+                name,
+                ops,
+                p99,
+                samples,
+                extraInfo,
+                elapsedMs));
         }
         File.WriteAllLines(path, lines);
     }
@@ -753,7 +939,8 @@ public sealed class PairedReleasePerformanceComparatorTests
         decimal opsPerSecond,
         decimal p99,
         int latencySamples,
-        string extraInfo = "Pair=raw")
+        string extraInfo = "Pair=raw",
+        decimal elapsedMs = 10_000m)
     {
         return string.Join(
             ',',
@@ -761,7 +948,7 @@ public sealed class PairedReleasePerformanceComparatorTests
                 ToCsvCell(name),
                 "1000",
                 latencySamples.ToString(CultureInfo.InvariantCulture),
-                "10000",
+                FormatNumber(elapsedMs),
                 FormatNumber(opsPerSecond),
                 "1",
                 "2",
@@ -953,7 +1140,8 @@ public sealed class PairedReleasePerformanceComparatorTests
         string BaselineRawRoot,
         string CandidateRawRoot,
         string ManifestPath,
-        string ReportPath);
+        string ReportPath,
+        string SuiteName);
 
     private sealed record Measurement(
         decimal BaselineOps,
@@ -961,7 +1149,11 @@ public sealed class PairedReleasePerformanceComparatorTests
         decimal BaselineP99,
         decimal CandidateP99,
         int BaselineSamples = 200,
-        int CandidateSamples = 200);
+        int CandidateSamples = 200,
+        decimal BaselineElapsedMs = 10_000m,
+        decimal CandidateElapsedMs = 10_000m,
+        string BaselineExtraInfo = "Pair=raw",
+        string CandidateExtraInfo = "Pair=raw");
 
     private sealed record PairDefinition(
         string Suite,

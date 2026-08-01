@@ -981,7 +981,14 @@ public sealed class PreviousReleasePairedRunnerScriptTests
             $header = 'Name,TotalOps,LatencySamples,ElapsedMs,OpsPerSec,P50,P90,P95,P99,P999,Min,Max,Mean,StdDev,ExtraInfo'
             $outputRows = @($header)
             if (-not [string]::IsNullOrWhiteSpace($scenarioName)) {
-                $outputRows += "$scenarioName,1000,1000,10000,100,1,1,1,1,1,1,1,1,1,Sample=$sourceName"
+                $qualificationInfo =
+                    'qualification=true; unrecorded-warmup-seconds=2; ' +
+                    'minimum-measured-seconds=30; ' +
+                    'minimum-retained-latency-samples=10000; ' +
+                    'measurement-cap-seconds=120; ' +
+                    'measurement-begin-utc=2026-07-31T12:00:00.0000000+00:00; ' +
+                    'measurement-end-utc=2026-07-31T12:00:30.0000000+00:00'
+                $outputRows += "$scenarioName,10000,10000,30000,333.3333,1,1,1,1,1,1,1,1,1,$qualificationInfo"
             }
             else {
                 $outputRows += "$suiteName-row-a,1000,1000,10000,100,1,1,1,1,1,1,1,1,1,Sample=$sourceName"
