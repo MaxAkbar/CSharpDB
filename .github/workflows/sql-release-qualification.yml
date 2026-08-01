@@ -127,7 +127,8 @@ jobs:
       - name: Compare with previous release
         shell: pwsh
         env:
-          PERFORMANCE_OUTPUT: ${{ runner.temp }}/csharpdb-previous-release-performance/${{ github.sha }}/pass-${{ matrix.qualification_pass }}
+          # Keep detached worktrees below the legacy Windows MAX_PATH limit.
+          PERFORMANCE_OUTPUT: ${{ runner.temp }}/cdb-perf/p${{ matrix.qualification_pass }}
           PREVIOUS_RELEASE_REF: ${{ inputs.previous_release_ref }}
           CANDIDATE_REF: ${{ inputs.release_commit || github.sha }}
         run: |
@@ -151,10 +152,10 @@ jobs:
         with:
           name: previous-release-performance-${{ github.sha }}-pass-${{ matrix.qualification_pass }}
           path: |
-            ${{ runner.temp }}/csharpdb-previous-release-performance/${{ github.sha }}/pass-${{ matrix.qualification_pass }}/previous-release-performance-preflight.md
-            ${{ runner.temp }}/csharpdb-previous-release-performance/${{ github.sha }}/pass-${{ matrix.qualification_pass }}/previous-release-performance.md
-            ${{ runner.temp }}/csharpdb-previous-release-performance/${{ github.sha }}/pass-${{ matrix.qualification_pass }}/baseline-results
-            ${{ runner.temp }}/csharpdb-previous-release-performance/${{ github.sha }}/pass-${{ matrix.qualification_pass }}/candidate-results
-            ${{ runner.temp }}/csharpdb-previous-release-performance/${{ github.sha }}/pass-${{ matrix.qualification_pass }}/logs
+            ${{ runner.temp }}/cdb-perf/p${{ matrix.qualification_pass }}/previous-release-performance-preflight.md
+            ${{ runner.temp }}/cdb-perf/p${{ matrix.qualification_pass }}/previous-release-performance.md
+            ${{ runner.temp }}/cdb-perf/p${{ matrix.qualification_pass }}/baseline-results
+            ${{ runner.temp }}/cdb-perf/p${{ matrix.qualification_pass }}/candidate-results
+            ${{ runner.temp }}/cdb-perf/p${{ matrix.qualification_pass }}/logs
           if-no-files-found: warn
           retention-days: 14

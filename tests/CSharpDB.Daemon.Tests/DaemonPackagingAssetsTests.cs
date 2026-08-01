@@ -91,6 +91,12 @@ public sealed class DaemonPackagingAssetsTests
         Assert.DoesNotContain(
             "    env:\n      PERFORMANCE_OUTPUT: ${{ runner.temp }}",
             normalized);
+        Assert.Contains(
+            "PERFORMANCE_OUTPUT: ${{ runner.temp }}/cdb-perf/p${{ matrix.qualification_pass }}",
+            normalized);
+        Assert.DoesNotContain(
+            "csharpdb-previous-release-performance/${{ github.sha }}",
+            normalized);
         Assert.Contains("previous_release_ref:", normalized);
         Assert.Contains(
             "empty discovers the nearest prior semantic release",
