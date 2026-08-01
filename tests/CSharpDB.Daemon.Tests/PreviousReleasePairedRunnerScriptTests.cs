@@ -6,6 +6,23 @@ namespace CSharpDB.Daemon.Tests;
 
 public sealed class PreviousReleasePairedRunnerScriptTests
 {
+    [Fact]
+    public void DiagnosticNormalization_RejoinsPowerShellConciseViewContinuationLines()
+    {
+        const string diagnostic =
+            "\u001b[31;1mException: paired benchmark validation failed\u001b[0m\n" +
+            "\u001b[36;1mLine |\u001b[0m\n" +
+            "  84 |  throw $message\n" +
+            "     \u001b[36;1m|\u001b[0m  ~~~~~~~~~~~~~~\n" +
+            "     \u001b[36;1m|\u001b[0m requires previous and candidate refs to resolve\n" +
+            "     \u001b[36;1m|\u001b[0m to the same commit";
+
+        AssertDiagnosticContains(
+            "requires previous and candidate refs to resolve to the same commit",
+            diagnostic);
+        Assert.Equal("| column-zero content", NormalizeDiagnostic("| column-zero content"));
+    }
+
     [Theory]
     [InlineData(1, "previous", "candidate")]
     [InlineData(2, "candidate", "previous")]
@@ -1887,7 +1904,15 @@ public sealed class PreviousReleasePairedRunnerScriptTests
             value,
             "\u001b\\[[0-?]*[ -/]*[@-~]",
             string.Empty);
-        return System.Text.RegularExpressions.Regex.Replace(withoutAnsi, "\\s+", " ").Trim();
+        string withoutPowerShellGutters = System.Text.RegularExpressions.Regex.Replace(
+            withoutAnsi,
+            "^[\\t ]+\\|[\\t ]?",
+            string.Empty,
+            System.Text.RegularExpressions.RegexOptions.Multiline);
+        return System.Text.RegularExpressions.Regex.Replace(
+            withoutPowerShellGutters,
+            "\\s+",
+            " ").Trim();
     }
 
     private static void DeleteTemporaryRoot(string path)

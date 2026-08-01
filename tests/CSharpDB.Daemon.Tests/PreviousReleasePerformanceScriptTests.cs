@@ -8,6 +8,23 @@ public sealed class PreviousReleasePerformanceScriptTests
     private const int ComparisonRepeatCount = 3;
 
     [Fact]
+    public void DiagnosticNormalization_RejoinsPowerShellConciseViewContinuationLines()
+    {
+        const string diagnostic =
+            "\u001b[31;1mException: benchmark validation failed\u001b[0m\n" +
+            "\u001b[36;1mLine |\u001b[0m\n" +
+            "  42 |  throw $message\n" +
+            "     \u001b[36;1m|\u001b[0m  ~~~~~~~~~~~~~~\n" +
+            "     \u001b[36;1m|\u001b[0m produced 2 median CSV file(s); expected\n" +
+            "     \u001b[36;1m|\u001b[0m exactly one";
+
+        AssertDiagnosticContains(
+            "produced 2 median CSV file(s); expected exactly one",
+            diagnostic);
+        Assert.Equal("| column-zero content", NormalizeDiagnostic("| column-zero content"));
+    }
+
+    [Fact]
     public async Task Comparer_AcceptsMatchingResultsWithinLimits()
     {
         string temporaryRoot = CreateTemporaryRoot();
@@ -1067,7 +1084,15 @@ public sealed class PreviousReleasePerformanceScriptTests
             value,
             "\u001b\\[[0-?]*[ -/]*[@-~]",
             string.Empty);
-        return System.Text.RegularExpressions.Regex.Replace(withoutAnsi, "\\s+", " ").Trim();
+        string withoutPowerShellGutters = System.Text.RegularExpressions.Regex.Replace(
+            withoutAnsi,
+            "^[\\t ]+\\|[\\t ]?",
+            string.Empty,
+            System.Text.RegularExpressions.RegexOptions.Multiline);
+        return System.Text.RegularExpressions.Regex.Replace(
+            withoutPowerShellGutters,
+            "\\s+",
+            " ").Trim();
     }
 
     private static void DeleteTemporaryRoot(string path)
