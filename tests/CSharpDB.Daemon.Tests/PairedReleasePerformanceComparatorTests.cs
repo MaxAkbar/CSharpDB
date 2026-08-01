@@ -16,6 +16,11 @@ public sealed class PairedReleasePerformanceComparatorTests
         "measurement-cap-seconds=120; " +
         "measurement-begin-utc=2026-07-31T12:00:00.0000000+00:00; " +
         "measurement-end-utc=2026-07-31T12:00:30.0000000+00:00";
+    private const string Plan2LegacyProseExtraInfo =
+        "durability=full durable file-backed commits; " +
+        "each acknowledged commit forces durable backing-file visibility; " +
+        "residency=bounded resident set; " +
+        ValidQualificationExtraInfo;
     private const string EvidenceHeader =
         "Name,TotalOps,LatencySamples,ElapsedMs,OpsPerSec,P50,P90,P95,P99,P999," +
         "Min,Max,Mean,StdDev,ExtraInfo";
@@ -470,9 +475,48 @@ public sealed class PairedReleasePerformanceComparatorTests
         }
     }
 
+    [Fact]
+    public async Task PairedComparer_AcceptsPlan2LegacyProseAlongsideQualificationEvidence()
+    {
+        string temporaryRoot = CreateTemporaryRoot();
+        try
+        {
+            ComparisonLayout layout = CreateLayout(
+                temporaryRoot,
+                HybridQualificationSuiteName);
+            CreateBalancedEvidence(
+                layout,
+                (_, _) =>
+                {
+                    Measurement measurement = CreateHybridQualificationMeasurement();
+                    return SingleRow(
+                        "qualified-plan2-scenario",
+                        measurement with
+                        {
+                            BaselineExtraInfo = Plan2LegacyProseExtraInfo,
+                            CandidateExtraInfo = Plan2LegacyProseExtraInfo,
+                        });
+                });
+
+            ProcessResult result = await RunComparerAsync(layout);
+
+            Assert.True(result.ExitCode == 0, result.CombinedOutput);
+            string report = File.ReadAllText(layout.ReportPath);
+            Assert.Contains(
+                "| hybrid-storage-mode-scenario | qualified-plan2-scenario | 0.00% | " +
+                "0.00% | 0.0000 ms | PASS |",
+                report);
+        }
+        finally
+        {
+            DeleteTemporaryRoot(temporaryRoot);
+        }
+    }
+
     [Theory]
     [InlineData("missing-token", "missing required token 'qualification'")]
     [InlineData("malformed-token", "must contain a non-empty key and value")]
+    [InlineData("wrong-case-token", "missing required token 'qualification'")]
     [InlineData("duplicate-token", "contains duplicate token 'qualification'")]
     [InlineData("qualification-false", "token 'qualification' must be 'true'")]
     [InlineData("warmup", "token 'unrecorded-warmup-seconds' must be 2")]
@@ -783,7 +827,14 @@ public sealed class PairedReleasePerformanceComparatorTests
                 "qualification=true; ",
                 string.Empty,
                 StringComparison.Ordinal),
-            "malformed-token" => ValidQualificationExtraInfo + "; malformed",
+            "malformed-token" => ValidQualificationExtraInfo.Replace(
+                "qualification=true",
+                "qualification=",
+                StringComparison.Ordinal),
+            "wrong-case-token" => ValidQualificationExtraInfo.Replace(
+                "qualification=true",
+                "Qualification=true",
+                StringComparison.Ordinal),
             "duplicate-token" =>
                 ValidQualificationExtraInfo + "; qualification=true",
             "qualification-false" => ValidQualificationExtraInfo.Replace(

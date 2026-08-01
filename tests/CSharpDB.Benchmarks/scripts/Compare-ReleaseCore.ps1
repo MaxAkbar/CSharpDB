@@ -57,6 +57,19 @@ $stabilityP99Percent = [decimal] 25
 $stabilityP99Milliseconds = [decimal] 0.05
 $hybridQualificationSuite = 'hybrid-storage-mode-scenario'
 $qualificationElapsedCaptureToleranceMilliseconds = [decimal] 1
+$requiredHybridQualificationTokenKeys =
+    [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+foreach ($requiredHybridQualificationTokenKey in @(
+        'qualification',
+        'unrecorded-warmup-seconds',
+        'minimum-measured-seconds',
+        'minimum-retained-latency-samples',
+        'measurement-cap-seconds',
+        'measurement-begin-utc',
+        'measurement-end-utc')) {
+    [void] $requiredHybridQualificationTokenKeys.Add(
+        $requiredHybridQualificationTokenKey)
+}
 $requiredColumns = @(
     'Name',
     'TotalOps',
@@ -215,21 +228,26 @@ function Read-UniqueExtraInfoTokens {
     foreach ($rawToken in ([string] $ExtraInfo).Split(';')) {
         $token = $rawToken.Trim()
         if ([string]::IsNullOrWhiteSpace($token)) {
-            throw (
-                "Hybrid qualification '$Description ExtraInfo' contains an empty token.")
+            continue
         }
 
         $separatorIndex = $token.IndexOf('=', [StringComparison]::Ordinal)
-        if ($separatorIndex -le 0 -or $separatorIndex -eq $token.Length - 1) {
-            throw (
-                "Hybrid qualification '$Description ExtraInfo' token '$token' must " +
-                    'contain a non-empty key and value separated by =.')
+        if ($separatorIndex -lt 0) {
+            if ($requiredHybridQualificationTokenKeys.Contains($token)) {
+                throw (
+                    "Hybrid qualification '$Description ExtraInfo' token '$token' must " +
+                        'contain a non-empty key and value separated by =.')
+            }
+            continue
         }
 
         $key = $token.Substring(0, $separatorIndex).Trim()
+        if (-not $requiredHybridQualificationTokenKeys.Contains($key)) {
+            continue
+        }
+
         $value = $token.Substring($separatorIndex + 1).Trim()
-        if ([string]::IsNullOrWhiteSpace($key) -or
-            [string]::IsNullOrWhiteSpace($value)) {
+        if ([string]::IsNullOrWhiteSpace($value)) {
             throw (
                 "Hybrid qualification '$Description ExtraInfo' token '$token' must " +
                     'contain a non-empty key and value separated by =.')
