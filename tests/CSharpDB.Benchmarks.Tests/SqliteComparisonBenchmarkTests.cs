@@ -34,6 +34,67 @@ public sealed class SqliteComparisonBenchmarkTests
     }
 
     [Fact]
+    public void MeasurementStopArbiter_PreservesEarlierTargetPublishedAfterDeadline()
+    {
+        var arbiter = new SqliteComparisonBenchmark.MeasurementStopArbiter();
+        var deadlineDecision = new SqliteComparisonBenchmark.MeasurementStopDecision(
+            SqliteComparisonBenchmark.ConcurrentStopReason.Deadline,
+            TimeSpan.FromSeconds(90),
+            RetainedLatencySamples: 500);
+        var earlierTargetDecision = new SqliteComparisonBenchmark.MeasurementStopDecision(
+            SqliteComparisonBenchmark.ConcurrentStopReason.TargetReached,
+            TimeSpan.FromSeconds(5),
+            RetainedLatencySamples: 100);
+
+        arbiter.Publish(deadlineDecision);
+        arbiter.Publish(earlierTargetDecision);
+
+        Assert.True(arbiter.Signal.IsCompletedSuccessfully);
+        Assert.Equal(earlierTargetDecision, arbiter.Decision);
+    }
+
+    [Fact]
+    public void FinalWorkerStopDecision_DoesNotMaskPrematureReaderExit()
+    {
+        var arbiter = new SqliteComparisonBenchmark.MeasurementStopArbiter();
+        arbiter.Publish(new SqliteComparisonBenchmark.MeasurementStopDecision(
+            SqliteComparisonBenchmark.ConcurrentStopReason.TargetReached,
+            TimeSpan.FromSeconds(5),
+            RetainedLatencySamples: 100));
+
+        SqliteComparisonBenchmark.MeasurementStopDecision? finalDecision =
+            SqliteComparisonBenchmark.GetFinalWorkerStopDecision(
+                SqliteComparisonBenchmark.ConcurrentStopReason.ReaderExited,
+                arbiter);
+
+        Assert.Null(finalDecision);
+    }
+
+    [Fact]
+    public void ConcurrentReaderExitCoordinator_PreservesEventOrdering()
+    {
+        int unexpectedExitCount = 0;
+        var unexpectedFirst = new SqliteComparisonBenchmark.ConcurrentReaderExitCoordinator(
+            () => unexpectedExitCount++);
+        var completedReader = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        completedReader.TrySetResult();
+        unexpectedFirst.AttachReaderTask(completedReader.Task);
+        unexpectedFirst.MarkCoordinatedExit();
+
+        var coordinatedFirst = new SqliteComparisonBenchmark.ConcurrentReaderExitCoordinator(
+            () => unexpectedExitCount++);
+        var runningReader = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        coordinatedFirst.AttachReaderTask(runningReader.Task);
+        coordinatedFirst.MarkCoordinatedExit();
+        runningReader.TrySetResult();
+        coordinatedFirst.MarkReaderCompleted();
+
+        Assert.Equal(1, unexpectedExitCount);
+    }
+
+    [Fact]
     public async Task SequentialMeasurement_ContinuesUntilDurationAndRealSampleTargetsAreMet()
     {
         SqliteComparisonBenchmark.MeasurementPolicy policy = CreateFastPolicy(minimumSamples: 3);
@@ -56,6 +117,34 @@ public sealed class SqliteComparisonBenchmarkTests
         Assert.True(result.TotalOps >= 3);
         Assert.Equal(result.TotalOps, result.LatencySamples);
         Assert.InRange(operationCount - result.TotalOps, 0, 1);
+        Assert.Equal(policy.MinimumMeasuredDuration.TotalMilliseconds, result.ElapsedMs);
+    }
+
+    [Fact]
+    public async Task SequentialMeasurement_FastWorkerStopsAtItsCapturedTarget()
+    {
+        SqliteComparisonBenchmark.MeasurementPolicy policy = CreateFastPolicy(minimumSamples: 3);
+        using var deadline = new ManualMeasurementDeadline();
+        int operationCount = 0;
+
+        BenchmarkResult result = await SqliteComparisonBenchmark.RunSequentialScenarioCoreAsync(
+            "sqlite-worker-target",
+            _ =>
+            {
+                int completedOperations = Interlocked.Increment(ref operationCount);
+                if (completedOperations == policy.MinimumLatencySamples)
+                    deadline.AdvanceTo(policy.MinimumMeasuredDuration);
+                return Task.CompletedTask;
+            },
+            policy,
+            deadline,
+            TimeSpan.FromMilliseconds(25)).WaitAsync(
+                TimeSpan.FromSeconds(1),
+                TestContext.Current.CancellationToken);
+
+        Assert.Equal(policy.MinimumLatencySamples, operationCount);
+        Assert.Equal(policy.MinimumLatencySamples, result.TotalOps);
+        Assert.Equal(policy.MinimumLatencySamples, result.LatencySamples);
         Assert.Equal(policy.MinimumMeasuredDuration.TotalMilliseconds, result.ElapsedMs);
     }
 
@@ -205,6 +294,31 @@ public sealed class SqliteComparisonBenchmarkTests
     }
 
     [Fact]
+    public async Task Warmup_FastWorkerStopsAtDurationWithoutTimerExpiration()
+    {
+        TimeSpan warmupDuration = TimeSpan.FromSeconds(2);
+        using var deadline = new ManualMeasurementDeadline();
+        int operationCount = 0;
+
+        await SqliteComparisonBenchmark.RunWarmupCoreAsync(
+            "sqlite-worker-warmup",
+            _ =>
+            {
+                Interlocked.Increment(ref operationCount);
+                deadline.AdvanceTo(warmupDuration);
+                return Task.CompletedTask;
+            },
+            warmupDuration,
+            deadline,
+            TimeSpan.FromMilliseconds(25)).WaitAsync(
+                TimeSpan.FromSeconds(1),
+                TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, operationCount);
+        Assert.False(deadline.Expired.IsCompleted);
+    }
+
+    [Fact]
     public async Task SequentialMeasurement_PreservesSynchronousWorkerFailure()
     {
         SqliteComparisonBenchmark.MeasurementPolicy policy = CreateFastPolicy();
@@ -268,7 +382,9 @@ public sealed class SqliteComparisonBenchmarkTests
                     Assert.False(
                         ct.IsCancellationRequested,
                         "Measurement cancellation started before every reader entered.");
-                    Assert.True(tryRecord(static () => { }, retainsLatencySample: true));
+                    Assert.True(tryRecord(
+                        static () => { },
+                        retainsLatencySample: true).Accepted);
                     if (Interlocked.Increment(ref enteredReaderCount) == readerCount)
                         deadline.AdvanceTo(policy.MinimumMeasuredDuration);
                     await WaitForCoordinatedCancellationAsync(ct);
@@ -324,12 +440,20 @@ public sealed class SqliteComparisonBenchmarkTests
                 policy,
                 async (_, tryRecord, ct) =>
                 {
-                    Assert.True(tryRecord(static () => { }, retainsLatencySample: true));
-                    Assert.True(tryRecord(static () => { }, retainsLatencySample: true));
+                    Assert.True(tryRecord(
+                        static () => { },
+                        retainsLatencySample: true).Accepted);
+                    Assert.True(tryRecord(
+                        static () => { },
+                        retainsLatencySample: true).Accepted);
                     deadline.AdvanceTo(policy.MinimumMeasuredDuration);
                     firstTwoSamplesRetained.TrySetResult();
                     await retainFinalSample.Task;
-                    Assert.True(tryRecord(static () => { }, retainsLatencySample: true));
+                    SqliteComparisonBenchmark.ConcurrentRecordResult finalRecord = tryRecord(
+                        static () => { },
+                        retainsLatencySample: true);
+                    Assert.True(finalRecord.Accepted);
+                    Assert.False(finalRecord.ShouldContinue);
                     await WaitForCoordinatedCancellationAsync(ct);
                 },
                 deadline,
@@ -346,6 +470,105 @@ public sealed class SqliteComparisonBenchmarkTests
             TestContext.Current.CancellationToken);
 
         Assert.Equal(3, result.RetainedLatencySamples);
+    }
+
+    [Fact]
+    public async Task ConcurrentReaders_FastWorkerStopsAtItsCapturedTarget()
+    {
+        SqliteComparisonBenchmark.MeasurementPolicy policy = CreateFastPolicy();
+        using var deadline = new ManualMeasurementDeadline();
+        int recordAttempts = 0;
+
+        SqliteComparisonBenchmark.ConcurrentReaderPhaseResult result =
+            await SqliteComparisonBenchmark.RunConcurrentReaderWorkersAsync(
+                "sqlite-concurrent-worker-target",
+                readerCount: 1,
+                policy,
+                (_, tryRecord, _) =>
+                {
+                    while (true)
+                    {
+                        int attempt = Interlocked.Increment(ref recordAttempts);
+                        if (attempt == 1)
+                            deadline.AdvanceTo(policy.MinimumMeasuredDuration);
+                        if (!tryRecord(
+                                static () => { },
+                                retainsLatencySample: true).ShouldContinue)
+                            return Task.CompletedTask;
+                    }
+                },
+                deadline,
+                TimeSpan.FromMilliseconds(25)).WaitAsync(
+                    TimeSpan.FromSeconds(1),
+                    TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, recordAttempts);
+        Assert.Equal(1, result.RetainedLatencySamples);
+        Assert.Equal(policy.MinimumMeasuredDuration, result.Elapsed);
+    }
+
+    [Fact]
+    public async Task ConcurrentReaders_CapBeforeRecordRejectsPostCapMutation()
+    {
+        SqliteComparisonBenchmark.MeasurementPolicy policy = CreateFastPolicy();
+        using var deadline = new ManualMeasurementDeadline();
+        int recordedMutations = 0;
+
+        InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => SqliteComparisonBenchmark.RunConcurrentReaderWorkersAsync(
+                "sqlite-concurrent-worker-cap",
+                readerCount: 1,
+                policy,
+                (_, tryRecord, _) =>
+                {
+                    deadline.AdvanceTo(policy.MaximumMeasuredDuration);
+                    SqliteComparisonBenchmark.ConcurrentRecordResult recordResult = tryRecord(
+                        () => Interlocked.Increment(ref recordedMutations),
+                        retainsLatencySample: true);
+                    Assert.False(recordResult.Accepted);
+                    Assert.False(recordResult.ShouldContinue);
+                    return Task.CompletedTask;
+                },
+                deadline,
+                TimeSpan.FromMilliseconds(25)).WaitAsync(
+                    TimeSpan.FromSeconds(1),
+                    TestContext.Current.CancellationToken));
+
+        Assert.Contains("90-second measurement cap", exception.Message);
+        Assert.Contains("0 retained latency samples", exception.Message);
+        Assert.Equal(0, Volatile.Read(ref recordedMutations));
+    }
+
+    [Fact]
+    public async Task ConcurrentReaders_PreCapCompletionWinsWhenRecordingCrossesCap()
+    {
+        SqliteComparisonBenchmark.MeasurementPolicy policy = CreateFastPolicy();
+        using var deadline = new ManualMeasurementDeadline();
+
+        SqliteComparisonBenchmark.ConcurrentReaderPhaseResult result =
+            await SqliteComparisonBenchmark.RunConcurrentReaderWorkersAsync(
+                "sqlite-concurrent-pre-cap-completion",
+                readerCount: 1,
+                policy,
+                (_, tryRecord, _) =>
+                {
+                    deadline.AdvanceTo(policy.MinimumMeasuredDuration);
+                    SqliteComparisonBenchmark.ConcurrentRecordResult recordResult = tryRecord(
+                        () => deadline.AdvanceTo(
+                            policy.MaximumMeasuredDuration,
+                            expire: true),
+                        retainsLatencySample: true);
+                    Assert.True(recordResult.Accepted);
+                    Assert.False(recordResult.ShouldContinue);
+                    return Task.CompletedTask;
+                },
+                deadline,
+                TimeSpan.FromMilliseconds(25)).WaitAsync(
+                    TimeSpan.FromSeconds(1),
+                    TestContext.Current.CancellationToken);
+
+        Assert.Equal(policy.MinimumMeasuredDuration, result.Elapsed);
+        Assert.Equal(1, result.RetainedLatencySamples);
     }
 
     [Fact]
@@ -366,12 +589,12 @@ public sealed class SqliteComparisonBenchmarkTests
                 {
                     Assert.True(tryRecord(
                         () => Interlocked.Increment(ref recordedMutations),
-                        retainsLatencySample: true));
+                        retainsLatencySample: true).Accepted);
                     deadline.AdvanceTo(policy.MinimumMeasuredDuration);
                     await WaitForCoordinatedCancellationAsync(ct);
                     bool accepted = tryRecord(
                         () => Interlocked.Increment(ref recordedMutations),
-                        retainsLatencySample: true);
+                        retainsLatencySample: true).Accepted;
                     postCancellationAttempt.TrySetResult(accepted);
                 },
                 deadline,
@@ -405,7 +628,9 @@ public sealed class SqliteComparisonBenchmarkTests
                 policy,
                 (_, tryRecord, _) =>
                 {
-                    Assert.True(tryRecord(static () => { }, retainsLatencySample: true));
+                    Assert.True(tryRecord(
+                        static () => { },
+                        retainsLatencySample: true).Accepted);
                     deadline.AdvanceTo(policy.MinimumMeasuredDuration);
                     return releaseWorker.Task;
                 },
@@ -421,8 +646,9 @@ public sealed class SqliteComparisonBenchmarkTests
                     TestContext.Current.CancellationToken));
 
             Assert.Contains("sqlite-unresponsive-reader", exception.Message);
-            Assert.Contains("did not stop 1 reader workers", exception.Message);
+            Assert.Contains("did not stop 1 reader worker", exception.Message);
             Assert.Contains("0.025 seconds", exception.Message);
+            Assert.DoesNotContain("measurement cap", exception.ToString());
         }
         finally
         {
@@ -432,6 +658,65 @@ public sealed class SqliteComparisonBenchmarkTests
                 await detachedTask.WaitAsync(
                     TimeSpan.FromSeconds(1),
                     TestContext.Current.CancellationToken);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ConcurrentReaders_TimeoutPreservesCompletedWorkerFailureAndCap()
+    {
+        SqliteComparisonBenchmark.MeasurementPolicy policy = CreateFastPolicy();
+        using var deadline = new ManualMeasurementDeadline();
+        var releaseWorker = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        Task? detachedTask = null;
+
+        Task<SqliteComparisonBenchmark.ConcurrentReaderPhaseResult> phaseTask =
+            SqliteComparisonBenchmark.RunConcurrentReaderWorkersAsync(
+                "sqlite-timeout-with-reader-failure",
+                readerCount: 2,
+                policy,
+                (readerIndex, _, _) =>
+                {
+                    if (readerIndex == 0)
+                    {
+                        deadline.AdvanceTo(policy.MaximumMeasuredDuration, expire: true);
+                        return Task.FromException(
+                            new ApplicationException("sqlite reader sentinel"));
+                    }
+
+                    return releaseWorker.Task;
+                },
+                deadline,
+                TimeSpan.FromMilliseconds(25),
+                detachedWorkRegistrar: task => detachedTask = task);
+
+        try
+        {
+            InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => phaseTask.WaitAsync(
+                    TimeSpan.FromSeconds(1),
+                    TestContext.Current.CancellationToken));
+
+            Assert.Contains("did not stop 1 reader worker", exception.Message);
+            Assert.Contains("sqlite reader sentinel", exception.ToString());
+            Assert.Contains("90-second measurement cap", exception.ToString());
+        }
+        finally
+        {
+            releaseWorker.TrySetResult();
+            if (detachedTask is not null)
+            {
+                try
+                {
+                    await detachedTask.WaitAsync(
+                        TimeSpan.FromSeconds(1),
+                        TestContext.Current.CancellationToken);
+                }
+                catch (ApplicationException exception)
+                {
+                    Assert.Equal("sqlite reader sentinel", exception.Message);
+                }
             }
         }
     }

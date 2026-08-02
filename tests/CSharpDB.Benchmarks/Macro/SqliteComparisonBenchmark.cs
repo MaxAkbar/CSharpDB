@@ -342,6 +342,7 @@ public static class SqliteComparisonBenchmark
             policy.MinimumLatencySamples,
             minimumSamplesReached);
         var recordingGate = new ConcurrentRecordingGate(sampleCounter);
+        var workerStopArbiter = new MeasurementStopArbiter();
         Task scenarioWorker = Task.Run(
             async () =>
             {
@@ -354,10 +355,33 @@ public static class SqliteComparisonBenchmark
                         var operationStopwatch = Stopwatch.StartNew();
                         await operation(deadline.Token).ConfigureAwait(false);
                         operationStopwatch.Stop();
+                        TimeSpan completionElapsed = deadline.Elapsed;
+                        MeasurementStopDecision? capDecision = ObserveMeasurementStop(
+                            completionElapsed,
+                            policy,
+                            sampleCounter.RetainedLatencySamples,
+                            includeTarget: false);
+                        if (capDecision is not null)
+                        {
+                            workerStopArbiter.Publish(capDecision);
+                            return;
+                        }
+
                         if (!recordingGate.TryRecord(
                                 () => histogram.Record(operationStopwatch.Elapsed.TotalMilliseconds),
                                 retainsLatencySample: true))
                         {
+                            return;
+                        }
+
+                        MeasurementStopDecision? stopDecision = ObserveMeasurementStop(
+                            completionElapsed,
+                            policy,
+                            sampleCounter.RetainedLatencySamples,
+                            includeTarget: true);
+                        if (stopDecision is not null)
+                        {
+                            workerStopArbiter.Publish(stopDecision);
                             return;
                         }
                     }
@@ -375,9 +399,19 @@ public static class SqliteComparisonBenchmark
         Task minimumDurationReached = deadline.WaitUntilAsync(policy.MinimumMeasuredDuration);
         ConcurrentStopReason stopReason;
         TimeSpan measurementElapsed;
+        MeasurementStopDecision? capturedStopDecision = null;
 
         while (true)
         {
+            if (workerStopArbiter.Signal.IsCompleted)
+            {
+                capturedStopDecision = workerStopArbiter.Decision ?? throw new InvalidOperationException(
+                    "The SQLite worker stop signal completed without a decision.");
+                stopReason = capturedStopDecision.Reason;
+                measurementElapsed = capturedStopDecision.Elapsed;
+                break;
+            }
+
             measurementElapsed = deadline.Elapsed;
             int sampleCount = sampleCounter.RetainedLatencySamples;
             if (!deadline.Expired.IsCompleted &&
@@ -385,6 +419,11 @@ public static class SqliteComparisonBenchmark
                 HasMetMeasurementTarget(measurementElapsed, sampleCount, policy))
             {
                 stopReason = ConcurrentStopReason.TargetReached;
+                capturedStopDecision = new MeasurementStopDecision(
+                    stopReason,
+                    measurementElapsed,
+                    sampleCount);
+                workerStopArbiter.Publish(capturedStopDecision);
                 break;
             }
 
@@ -398,6 +437,11 @@ public static class SqliteComparisonBenchmark
                 measurementElapsed >= policy.MaximumMeasuredDuration)
             {
                 stopReason = ConcurrentStopReason.Deadline;
+                capturedStopDecision = new MeasurementStopDecision(
+                    stopReason,
+                    measurementElapsed,
+                    sampleCount);
+                workerStopArbiter.Publish(capturedStopDecision);
                 break;
             }
 
@@ -417,19 +461,14 @@ public static class SqliteComparisonBenchmark
                 durationSignal,
                 sampleSignal,
                 deadline.Expired,
+                workerStopArbiter.Signal,
                 scenarioWorker).ConfigureAwait(false);
         }
 
         await recordingGate.CloseAsync();
         var recordingSnapshot = new ConcurrentRecordingSnapshot(
             sampleCounter.RetainedLatencySamples);
-        measurementElapsed = deadline.Elapsed;
-        if (stopReason == ConcurrentStopReason.TargetReached &&
-            (deadline.Expired.IsCompleted ||
-             measurementElapsed >= policy.MaximumMeasuredDuration))
-        {
-            stopReason = ConcurrentStopReason.Deadline;
-        }
+        measurementElapsed = capturedStopDecision?.Elapsed ?? deadline.Elapsed;
 
         deadline.Cancel();
         bool workerStopped = await WaitForTaskCompletionWithinAsync(
@@ -454,6 +493,12 @@ public static class SqliteComparisonBenchmark
         }
 
         await scenarioWorker.ConfigureAwait(false);
+
+        if (GetFinalWorkerStopDecision(stopReason, workerStopArbiter) is { } finalStopDecision)
+        {
+            stopReason = finalStopDecision.Reason;
+            measurementElapsed = finalStopDecision.Elapsed;
+        }
 
         if (stopReason == ConcurrentStopReason.ReaderExited)
         {
@@ -510,6 +555,17 @@ public static class SqliteComparisonBenchmark
             TaskCreationOptions.RunContinuationsAsynchronously);
         var readerTasks = new Task[readerCount];
         int readyReaderCount = 0;
+        int unexpectedReaderExit = 0;
+        ConcurrentReaderExitCoordinator[] readerExitCoordinators = Enumerable
+            .Range(0, readerCount)
+            .Select(_ => new ConcurrentReaderExitCoordinator(
+                () =>
+                {
+                    Interlocked.Exchange(ref unexpectedReaderExit, 1);
+                    readerExited.TrySetResult();
+                }))
+            .ToArray();
+        using var readerCts = new CancellationTokenSource();
         var sampleCounter = new MeasurementSampleCounter(
             policy.MinimumLatencySamples,
             minimumSamplesReached);
@@ -517,10 +573,75 @@ public static class SqliteComparisonBenchmark
             .Range(0, readerCount)
             .Select(_ => new ConcurrentRecordingGate(sampleCounter))
             .ToArray();
+        var workerStopArbiter = new MeasurementStopArbiter();
+
+        void MarkAllReaderExitsCoordinated()
+        {
+            foreach (ConcurrentReaderExitCoordinator coordinator in readerExitCoordinators)
+                coordinator.MarkCoordinatedExit();
+        }
+
+        ConcurrentRecordResult TryRecordAndObserveStop(
+            int readerIndex,
+            Action record,
+            bool retainsLatencySample)
+        {
+            if (workerStopArbiter.Signal.IsCompleted)
+            {
+                readerExitCoordinators[readerIndex].MarkCoordinatedExit();
+                return new ConcurrentRecordResult(Accepted: false, ShouldContinue: false);
+            }
+
+            TimeSpan completionElapsed = deadline.Elapsed;
+            MeasurementStopDecision? capDecision = ObserveMeasurementStop(
+                completionElapsed,
+                policy,
+                sampleCounter.RetainedLatencySamples,
+                includeTarget: false);
+            if (capDecision is not null)
+            {
+                MarkAllReaderExitsCoordinated();
+                workerStopArbiter.Publish(capDecision);
+                foreach (ConcurrentRecordingGate gate in recordingGates)
+                    gate.Close();
+
+                return new ConcurrentRecordResult(Accepted: false, ShouldContinue: false);
+            }
+
+            if (!recordingGates[readerIndex].TryRecord(record, retainsLatencySample))
+            {
+                readerExitCoordinators[readerIndex].MarkCoordinatedExit();
+                return new ConcurrentRecordResult(Accepted: false, ShouldContinue: false);
+            }
+
+            MeasurementStopDecision? stopDecision = ObserveMeasurementStop(
+                completionElapsed,
+                policy,
+                sampleCounter.RetainedLatencySamples,
+                includeTarget: true);
+            if (stopDecision is not null)
+            {
+                MarkAllReaderExitsCoordinated();
+                workerStopArbiter.Publish(stopDecision);
+                foreach (ConcurrentRecordingGate gate in recordingGates)
+                    gate.Close();
+
+                return new ConcurrentRecordResult(Accepted: true, ShouldContinue: false);
+            }
+
+            var recordResult = new ConcurrentRecordResult(
+                Accepted: true,
+                ShouldContinue: !workerStopArbiter.Signal.IsCompleted);
+            if (!recordResult.ShouldContinue)
+                readerExitCoordinators[readerIndex].MarkCoordinatedExit();
+            return recordResult;
+        }
 
         for (int readerIndex = 0; readerIndex < readerTasks.Length; readerIndex++)
         {
             int capturedReaderIndex = readerIndex;
+            ConcurrentReaderExitCoordinator readerExitCoordinator =
+                readerExitCoordinators[readerIndex];
             readerTasks[readerIndex] = scheduleReader(
                 async () =>
                 {
@@ -528,10 +649,40 @@ public static class SqliteComparisonBenchmark
                         allReadersReady.TrySetResult();
 
                     await measurementStart.Task.ConfigureAwait(false);
-                    await readerLoop(
-                        capturedReaderIndex,
-                        recordingGates[capturedReaderIndex].TryRecord,
-                        deadline.Token).ConfigureAwait(false);
+                    Task readerLoopTask;
+                    try
+                    {
+                        readerLoopTask = readerLoop(
+                            capturedReaderIndex,
+                            (record, retainsLatencySample) => TryRecordAndObserveStop(
+                                capturedReaderIndex,
+                                record,
+                                retainsLatencySample),
+                            readerCts.Token) ?? throw new InvalidOperationException(
+                                "A SQLite concurrent-reader worker returned a null task.");
+                    }
+                    catch
+                    {
+                        readerExitCoordinator.MarkReaderCompleted();
+                        throw;
+                    }
+
+                    readerExitCoordinator.AttachReaderTask(readerLoopTask);
+                    _ = readerLoopTask.ContinueWith(
+                        static (_, state) =>
+                            ((ConcurrentReaderExitCoordinator)state!).MarkReaderCompleted(),
+                        readerExitCoordinator,
+                        CancellationToken.None,
+                        TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default);
+                    try
+                    {
+                        await readerLoopTask.ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        readerExitCoordinator.MarkReaderCompleted();
+                    }
                 });
 
             _ = readerTasks[readerIndex].ContinueWith(
@@ -549,23 +700,53 @@ public static class SqliteComparisonBenchmark
         Task allReaders = Task.WhenAll(readerTasks);
         ConcurrentStopReason stopReason;
         TimeSpan measurementElapsed;
+        MeasurementStopDecision? capturedStopDecision = null;
 
         while (true)
         {
+            if (Volatile.Read(ref unexpectedReaderExit) != 0)
+            {
+                stopReason = ConcurrentStopReason.ReaderExited;
+                measurementElapsed = deadline.Elapsed;
+                break;
+            }
+
+            if (workerStopArbiter.Signal.IsCompleted)
+            {
+                MarkAllReaderExitsCoordinated();
+                capturedStopDecision = workerStopArbiter.Decision ?? throw new InvalidOperationException(
+                    "The SQLite worker stop signal completed without a decision.");
+                stopReason = capturedStopDecision.Reason;
+                measurementElapsed = capturedStopDecision.Elapsed;
+                break;
+            }
+
             measurementElapsed = deadline.Elapsed;
             int sampleCount = sampleCounter.RetainedLatencySamples;
             if (!deadline.Expired.IsCompleted &&
                 measurementElapsed < policy.MaximumMeasuredDuration &&
                 HasMetMeasurementTarget(measurementElapsed, sampleCount, policy))
             {
+                MarkAllReaderExitsCoordinated();
                 stopReason = ConcurrentStopReason.TargetReached;
+                capturedStopDecision = new MeasurementStopDecision(
+                    stopReason,
+                    measurementElapsed,
+                    sampleCount);
+                workerStopArbiter.Publish(capturedStopDecision);
                 break;
             }
 
             if (deadline.Expired.IsCompleted ||
                 measurementElapsed >= policy.MaximumMeasuredDuration)
             {
+                MarkAllReaderExitsCoordinated();
                 stopReason = ConcurrentStopReason.Deadline;
+                capturedStopDecision = new MeasurementStopDecision(
+                    stopReason,
+                    measurementElapsed,
+                    sampleCount);
+                workerStopArbiter.Publish(capturedStopDecision);
                 break;
             }
 
@@ -585,42 +766,59 @@ public static class SqliteComparisonBenchmark
                 durationSignal,
                 sampleSignal,
                 deadline.Expired,
+                workerStopArbiter.Signal,
                 readerExited.Task).ConfigureAwait(false);
         }
 
         await Task.WhenAll(recordingGates.Select(static gate => gate.CloseAsync()));
         var recordingSnapshot = new ConcurrentRecordingSnapshot(
             sampleCounter.RetainedLatencySamples);
-        measurementElapsed = deadline.Elapsed;
-        if (stopReason == ConcurrentStopReason.TargetReached &&
-            (deadline.Expired.IsCompleted ||
-             measurementElapsed >= policy.MaximumMeasuredDuration))
-        {
-            stopReason = ConcurrentStopReason.Deadline;
-        }
+        measurementElapsed = capturedStopDecision?.Elapsed ?? deadline.Elapsed;
+        bool measurementCapReachedAtStop =
+            stopReason == ConcurrentStopReason.Deadline ||
+            deadline.Expired.IsCompleted ||
+            measurementElapsed >= policy.MaximumMeasuredDuration;
+        MarkAllReaderExitsCoordinated();
         deadline.Cancel();
+        readerCts.Cancel();
         bool readersStopped = await WaitForTaskCompletionWithinAsync(
             allReaders,
             cancellationDrainTimeout);
         if (!readersStopped)
         {
             ObserveFaultEventually(allReaders);
-            Exception? innerException = stopReason == ConcurrentStopReason.Deadline
+            int outstandingReaders = readerTasks.Count(static task => !task.IsCompleted);
+            Exception? workerFailure = GetCompletedWorkerFailure(readerTasks);
+            Exception? capException = measurementCapReachedAtStop
                 ? CreateMeasurementCapException(
                     name,
                     policy,
                     measurementElapsed,
                     recordingSnapshot.RetainedLatencySamples)
-                : GetCompletedWorkerFailure(readerTasks);
+                : null;
+            Exception? innerException = CombineFailures(workerFailure, capException);
+            string outstandingReaderDescription = outstandingReaders == 1
+                ? "1 reader worker"
+                : $"{outstandingReaders} reader workers";
             detachedWorkRegistrar?.Invoke(allReaders);
             throw CreateUnresponsiveException(
                 name,
-                $"{readerCount} reader workers",
+                outstandingReaderDescription,
                 cancellationDrainTimeout,
                 innerException);
         }
 
         await allReaders.ConfigureAwait(false);
+
+        if (Volatile.Read(ref unexpectedReaderExit) != 0)
+        {
+            stopReason = ConcurrentStopReason.ReaderExited;
+        }
+        else if (GetFinalWorkerStopDecision(stopReason, workerStopArbiter) is { } finalStopDecision)
+        {
+            stopReason = finalStopDecision.Reason;
+            measurementElapsed = finalStopDecision.Elapsed;
+        }
 
         if (stopReason == ConcurrentStopReason.ReaderExited)
         {
@@ -664,9 +862,13 @@ public static class SqliteComparisonBenchmark
             }
 
             sw.Stop();
-            _ = tryRecord(
+            ConcurrentRecordResult recordResult = tryRecord(
                 () => histogram.Record(sw.Elapsed.TotalMilliseconds),
                 retainsLatencySample: true);
+            if (!recordResult.ShouldContinue)
+            {
+                return;
+            }
         }
     }
 
@@ -690,16 +892,24 @@ public static class SqliteComparisonBenchmark
 
                     if (sw is null)
                     {
-                        _ = tryRecord(
+                        ConcurrentRecordResult recordResult = tryRecord(
                             histogram.RecordUnsampled,
                             retainsLatencySample: false);
+                        if (!recordResult.ShouldContinue)
+                        {
+                            return;
+                        }
                     }
                     else
                     {
                         sw.Stop();
-                        _ = tryRecord(
+                        ConcurrentRecordResult recordResult = tryRecord(
                             () => histogram.Record(sw.Elapsed.TotalMilliseconds),
                             retainsLatencySample: true);
+                        if (!recordResult.ShouldContinue)
+                        {
+                            return;
+                        }
                     }
                 }
             }
@@ -757,7 +967,11 @@ public static class SqliteComparisonBenchmark
                 try
                 {
                     while (!deadline.Token.IsCancellationRequested)
+                    {
                         await operation(deadline.Token).ConfigureAwait(false);
+                        if (deadline.Elapsed >= warmupDuration)
+                            return;
+                    }
                 }
                 catch (OperationCanceledException) when (deadline.Token.IsCancellationRequested)
                 {
@@ -798,6 +1012,42 @@ public static class SqliteComparisonBenchmark
         MeasurementPolicy policy)
         => elapsed >= policy.MinimumMeasuredDuration &&
            retainedLatencySamples >= policy.MinimumLatencySamples;
+
+    internal static MeasurementStopDecision? GetFinalWorkerStopDecision(
+        ConcurrentStopReason selectedReason,
+        MeasurementStopArbiter workerStopArbiter)
+    {
+        ArgumentNullException.ThrowIfNull(workerStopArbiter);
+        return selectedReason == ConcurrentStopReason.ReaderExited
+            ? null
+            : workerStopArbiter.Decision;
+    }
+
+    private static MeasurementStopDecision? ObserveMeasurementStop(
+        TimeSpan completionElapsed,
+        MeasurementPolicy policy,
+        int retainedLatencySamples,
+        bool includeTarget)
+    {
+        if (completionElapsed >= policy.MaximumMeasuredDuration)
+        {
+            return new MeasurementStopDecision(
+                ConcurrentStopReason.Deadline,
+                completionElapsed,
+                retainedLatencySamples);
+        }
+
+        if (includeTarget &&
+            HasMetMeasurementTarget(completionElapsed, retainedLatencySamples, policy))
+        {
+            return new MeasurementStopDecision(
+                ConcurrentStopReason.TargetReached,
+                completionElapsed,
+                retainedLatencySamples);
+        }
+
+        return null;
+    }
 
     internal static InvalidOperationException CreateMeasurementCapException(
         string name,
@@ -842,6 +1092,20 @@ public static class SqliteComparisonBenchmark
             0 => null,
             1 => failures[0],
             _ => new AggregateException(failures),
+        };
+    }
+
+    private static Exception? CombineFailures(params Exception?[] failures)
+    {
+        Exception[] presentFailures = failures
+            .Where(static failure => failure is not null)
+            .Cast<Exception>()
+            .ToArray();
+        return presentFailures.Length switch
+        {
+            0 => null,
+            1 => presentFailures[0],
+            _ => new AggregateException(presentFailures),
         };
     }
 
@@ -1101,7 +1365,11 @@ public static class SqliteComparisonBenchmark
         TimeSpan Elapsed,
         int RetainedLatencySamples);
 
-    internal delegate bool TryRecordConcurrentOperation(
+    internal readonly record struct ConcurrentRecordResult(
+        bool Accepted,
+        bool ShouldContinue);
+
+    internal delegate ConcurrentRecordResult TryRecordConcurrentOperation(
         Action record,
         bool retainsLatencySample);
 
@@ -1147,10 +1415,15 @@ public static class SqliteComparisonBenchmark
 
         internal async Task CloseAsync()
         {
+            Close();
+            await _drained.Task.ConfigureAwait(false);
+        }
+
+        internal void Close()
+        {
             Interlocked.Exchange(ref _closed, 1);
             if (Volatile.Read(ref _inFlightRecorders) == 0)
                 _drained.TrySetResult();
-            await _drained.Task.ConfigureAwait(false);
         }
 
         private void ExitRecorder()
@@ -1187,13 +1460,139 @@ public static class SqliteComparisonBenchmark
         }
     }
 
+    internal sealed class ConcurrentReaderExitCoordinator
+    {
+        private const int Running = 0;
+        private const int CoordinatedExit = 1;
+        private const int UnexpectedExit = 2;
+
+        private readonly object _gate = new();
+        private readonly Action _onUnexpectedExit;
+        private int _state = Running;
+        private Task? _readerTask;
+
+        internal ConcurrentReaderExitCoordinator(Action onUnexpectedExit)
+        {
+            ArgumentNullException.ThrowIfNull(onUnexpectedExit);
+            _onUnexpectedExit = onUnexpectedExit;
+        }
+
+        internal void AttachReaderTask(Task readerTask)
+        {
+            ArgumentNullException.ThrowIfNull(readerTask);
+            bool notifyUnexpectedExit = false;
+            lock (_gate)
+            {
+                _readerTask = readerTask;
+                if (_state == Running && readerTask.IsCompleted)
+                {
+                    _state = UnexpectedExit;
+                    notifyUnexpectedExit = true;
+                }
+            }
+
+            if (notifyUnexpectedExit)
+                _onUnexpectedExit();
+        }
+
+        internal void MarkCoordinatedExit()
+        {
+            bool notifyUnexpectedExit = false;
+            lock (_gate)
+            {
+                if (_state != Running)
+                    return;
+
+                if (_readerTask?.IsCompleted == true)
+                {
+                    _state = UnexpectedExit;
+                    notifyUnexpectedExit = true;
+                }
+                else
+                {
+                    _state = CoordinatedExit;
+                }
+            }
+
+            if (notifyUnexpectedExit)
+                _onUnexpectedExit();
+        }
+
+        internal void MarkReaderCompleted()
+        {
+            bool notifyUnexpectedExit = false;
+            lock (_gate)
+            {
+                if (_state == Running)
+                {
+                    _state = UnexpectedExit;
+                    notifyUnexpectedExit = true;
+                }
+            }
+
+            if (notifyUnexpectedExit)
+                _onUnexpectedExit();
+        }
+    }
+
     private sealed record ConcurrentRecordingSnapshot(int RetainedLatencySamples);
 
-    private enum ConcurrentStopReason
+    internal sealed record MeasurementStopDecision(
+        ConcurrentStopReason Reason,
+        TimeSpan Elapsed,
+        int RetainedLatencySamples);
+
+    internal enum ConcurrentStopReason
     {
         TargetReached,
         Deadline,
         ReaderExited,
+    }
+
+    internal sealed class MeasurementStopArbiter
+    {
+        private readonly object _gate = new();
+        private readonly TaskCompletionSource _signal =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private MeasurementStopDecision? _decision;
+
+        internal Task Signal => _signal.Task;
+
+        internal MeasurementStopDecision? Decision
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _decision;
+                }
+            }
+        }
+
+        internal void Publish(MeasurementStopDecision decision)
+        {
+            ArgumentNullException.ThrowIfNull(decision);
+
+            lock (_gate)
+            {
+                if (_decision is null || IsEarlierDecision(decision, _decision))
+                    _decision = decision;
+            }
+
+            _signal.TrySetResult();
+        }
+
+        private static bool IsEarlierDecision(
+            MeasurementStopDecision candidate,
+            MeasurementStopDecision current)
+        {
+            int elapsedComparison = candidate.Elapsed.CompareTo(current.Elapsed);
+            if (elapsedComparison != 0)
+                return elapsedComparison < 0;
+
+            return candidate.Reason == ConcurrentStopReason.Deadline &&
+                   current.Reason != ConcurrentStopReason.Deadline;
+        }
     }
 
     private sealed class StopwatchMeasurementDeadline : IMeasurementDeadline

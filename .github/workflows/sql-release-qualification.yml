@@ -142,15 +142,16 @@ jobs:
           PREVIOUS_RELEASE_REF: ${{ inputs.previous_release_ref }}
           CANDIDATE_REF: ${{ inputs.release_commit || github.sha }}
         run: |
-          # Balanced-pair, same-revision/shared-artifact, and exact-scenario
-          # controls remain diagnostics. The release gate uses one warmup plus
-          # three recorded runs per revision; pass two reverses revision order.
+          # Concurrent-write diagnostics use balanced adjacent revision pairs
+          # to control host drift. Other suites retain one warmup plus three
+          # recorded runs per revision; pass two reverses revision order.
           ./tests/CSharpDB.Benchmarks/scripts/Test-PreviousReleasePerformance.ps1 `
             -PreviousRef $env:PREVIOUS_RELEASE_REF `
             -CandidateRef $env:CANDIDATE_REF `
             -OutputPath $env:PERFORMANCE_OUTPUT `
             -QualificationPass ${{ matrix.qualification_pass }} `
             -SuiteName $env:PERFORMANCE_SUITE `
+            -Paired:($env:PERFORMANCE_SUITE -eq 'concurrent-write-diagnostics') `
             -RepeatCount 3 `
             -PostBuildQuiescenceSeconds 30 `
             -MaxThroughputRegressionPercent 15 `

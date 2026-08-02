@@ -157,7 +157,12 @@ public sealed class DaemonPackagingAssetsTests
         Assert.Contains("PERFORMANCE_SUITE: ${{ matrix.suite }}", performanceJob);
         Assert.Contains("-SuiteName $env:PERFORMANCE_SUITE", performanceJob);
         Assert.Contains("timeout-minutes: 300", performanceJob);
-        Assert.DoesNotContain("-Paired", normalized);
+        const string pairedSuiteSwitch =
+            "-Paired:($env:PERFORMANCE_SUITE -eq 'concurrent-write-diagnostics')";
+        Assert.Contains(pairedSuiteSwitch, performanceJob);
+        Assert.Single(System.Text.RegularExpressions.Regex.Matches(
+            performanceJob,
+            System.Text.RegularExpressions.Regex.Escape(pairedSuiteSwitch)));
         Assert.Contains("-RepeatCount 3", normalized);
         Assert.Contains("-PostBuildQuiescenceSeconds 30", normalized);
         Assert.Contains("-MaxThroughputRegressionPercent 15", normalized);

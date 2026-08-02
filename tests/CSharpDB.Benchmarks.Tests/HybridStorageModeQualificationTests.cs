@@ -698,6 +698,121 @@ public sealed class HybridStorageModeQualificationTests
     }
 
     [Fact]
+    public async Task ConcurrentPhase_ReaderExitAtConfiguredCap_IsCoordinatedCompletion()
+    {
+        TimeSpan phaseDuration = TimeSpan.FromSeconds(2);
+        using var deadline = new ManualQualificationDeadline();
+
+        HybridStorageModeBenchmark.ConcurrentReaderPhaseResult result =
+            await HybridStorageModeBenchmark.RunConcurrentReaderPhaseCoreAsync(
+                "qualified-concurrent-warmup",
+                readerCount: 1,
+                latencySampleEvery: 1,
+                minimumMeasuredDuration: phaseDuration,
+                minimumLatencySamples: 0,
+                maximumMeasuredDuration: phaseDuration,
+                failAtMaximum: false,
+                (_, _, recordCompletion, _) =>
+                {
+                    // Reproduce the production race: the operation completes exactly at the
+                    // stopwatch cap before timer cancellation propagates. The reader reports
+                    // that boundary through the recording gate before it returns.
+                    deadline.AdvanceTo(phaseDuration);
+                    Assert.False(recordCompletion!(deadline.Elapsed, null));
+                    return Task.CompletedTask;
+                },
+                deadline,
+                TimeSpan.FromMilliseconds(25));
+
+        Assert.Equal(phaseDuration, result.Elapsed);
+        Assert.Equal(0, result.Histograms.Sum(static histogram => histogram.SampleCount));
+        Assert.True(deadline.Token.IsCancellationRequested);
+    }
+
+    [Fact]
+    public async Task ConcurrentPhase_CancellationCallbackCompletionIsCoordinated()
+    {
+        TimeSpan phaseDuration = TimeSpan.FromSeconds(2);
+        using var deadline = new ManualQualificationDeadline();
+        var readerStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Task<HybridStorageModeBenchmark.ConcurrentReaderPhaseResult> phaseTask =
+            HybridStorageModeBenchmark.RunConcurrentReaderPhaseCoreAsync(
+                "qualified-concurrent-cancellation-callback",
+                readerCount: 1,
+                latencySampleEvery: 1,
+                minimumMeasuredDuration: phaseDuration,
+                minimumLatencySamples: 0,
+                maximumMeasuredDuration: phaseDuration,
+                failAtMaximum: false,
+                (_, _, _, ct) =>
+                {
+                    var completion = new TaskCompletionSource();
+                    _ = ct.Register(() => completion.TrySetResult());
+                    readerStarted.TrySetResult();
+                    return completion.Task;
+                },
+                deadline,
+                TimeSpan.FromMilliseconds(25));
+
+        await readerStarted.Task.WaitAsync(
+            TimeSpan.FromSeconds(1),
+            TestContext.Current.CancellationToken);
+        deadline.AdvanceTo(phaseDuration, expire: true);
+
+        HybridStorageModeBenchmark.ConcurrentReaderPhaseResult result =
+            await phaseTask.WaitAsync(
+                TimeSpan.FromSeconds(1),
+                TestContext.Current.CancellationToken);
+
+        Assert.Equal(phaseDuration, result.Elapsed);
+        Assert.True(deadline.Token.IsCancellationRequested);
+    }
+
+    [Fact]
+    public async Task ConcurrentPhase_PreCapReturnRemainsUnexpectedAfterDeadlineAdvances()
+    {
+        TimeSpan phaseDuration = TimeSpan.FromSeconds(2);
+        using var deadline = new ManualQualificationDeadline();
+        var readerStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseReader = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Task<HybridStorageModeBenchmark.ConcurrentReaderPhaseResult> phaseTask =
+            HybridStorageModeBenchmark.RunConcurrentReaderPhaseCoreAsync(
+                "qualified-concurrent-premature-return",
+                readerCount: 1,
+                latencySampleEvery: 1,
+                minimumMeasuredDuration: TimeSpan.FromSeconds(1),
+                minimumLatencySamples: 1,
+                maximumMeasuredDuration: phaseDuration,
+                failAtMaximum: true,
+                (_, _, _, _) =>
+                {
+                    readerStarted.TrySetResult();
+                    return releaseReader.Task;
+                },
+                deadline,
+                TimeSpan.FromMilliseconds(25));
+
+        await readerStarted.Task.WaitAsync(
+            TimeSpan.FromSeconds(1),
+            TestContext.Current.CancellationToken);
+        deadline.AdvanceTo(TimeSpan.FromSeconds(1));
+        releaseReader.TrySetResult();
+        deadline.AdvanceTo(phaseDuration, expire: true);
+
+        InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => phaseTask.WaitAsync(
+                TimeSpan.FromSeconds(1),
+                TestContext.Current.CancellationToken));
+
+        Assert.Contains("exit before coordinated cancellation", exception.Message);
+    }
+
+    [Fact]
     public async Task ConcurrentPhase_ReaderFailure_IsPropagated()
     {
         using var deadline = new ManualQualificationDeadline();
@@ -769,6 +884,68 @@ public sealed class HybridStorageModeQualificationTests
             if (detachedReaders is not null)
             {
                 await AwaitDetachedWorkerAsync(detachedReaders);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ConcurrentPhase_UnresponsiveReaderPreservesCompletedReaderFailure()
+    {
+        using var deadline = new ManualQualificationDeadline();
+        var readersStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var failReader = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseReader = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task? detachedReaders = null;
+        int startedCount = 0;
+
+        Task<HybridStorageModeBenchmark.ConcurrentReaderPhaseResult> runTask =
+            HybridStorageModeBenchmark.RunConcurrentReaderPhaseCoreAsync(
+                "qualified-concurrent-failure-and-timeout",
+                readerCount: 2,
+                latencySampleEvery: 1,
+                minimumMeasuredDuration: TimeSpan.FromSeconds(1),
+                minimumLatencySamples: 1,
+                maximumMeasuredDuration: TimeSpan.FromSeconds(2),
+                failAtMaximum: true,
+                (readerIndex, _, _, _) =>
+                {
+                    if (Interlocked.Increment(ref startedCount) == 2)
+                        readersStarted.TrySetResult();
+                    return readerIndex == 0 ? failReader.Task : releaseReader.Task;
+                },
+                deadline,
+                TimeSpan.FromMilliseconds(25),
+                detachedWorkRegistrar: task => detachedReaders = task);
+
+        await readersStarted.Task.WaitAsync(
+            TimeSpan.FromSeconds(1),
+            TestContext.Current.CancellationToken);
+        deadline.AdvanceTo(TimeSpan.FromSeconds(2), expire: true);
+        failReader.TrySetException(new ApplicationException("hybrid reader sentinel"));
+        try
+        {
+            InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => runTask.WaitAsync(
+                    TimeSpan.FromSeconds(1),
+                    TestContext.Current.CancellationToken));
+
+            Assert.Contains("did not stop 1 concurrent reader(s)", exception.Message);
+            Assert.Contains("hybrid reader sentinel", exception.ToString());
+            Assert.NotNull(detachedReaders);
+        }
+        finally
+        {
+            releaseReader.TrySetResult();
+            if (detachedReaders is not null)
+            {
+                try
+                {
+                    await AwaitDetachedWorkerAsync(detachedReaders);
+                }
+                catch (ApplicationException exception)
+                {
+                    Assert.Equal("hybrid reader sentinel", exception.Message);
+                }
             }
         }
     }

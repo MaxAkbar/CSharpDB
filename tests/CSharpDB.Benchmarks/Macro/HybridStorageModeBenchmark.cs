@@ -513,17 +513,22 @@ public static class HybridStorageModeBenchmark
 
             sw.Stop();
             TimeSpan completionElapsed = completionElapsedProvider?.Invoke() ?? TimeSpan.Zero;
-            if (discardCompletedAfterCancellation &&
-                (ct.IsCancellationRequested || completionElapsed > maximumMeasuredDuration))
+            if (completionRecorder is null)
+            {
+                if (discardCompletedAfterCancellation &&
+                    (ct.IsCancellationRequested || completionElapsed > maximumMeasuredDuration))
+                {
+                    return;
+                }
+
+                histogram.Record(sw.Elapsed.TotalMilliseconds);
+            }
+            else if (!completionRecorder(completionElapsed, sw.Elapsed.TotalMilliseconds))
             {
                 return;
             }
 
-            if (completionRecorder is null)
-            {
-                histogram.Record(sw.Elapsed.TotalMilliseconds);
-            }
-            else if (!completionRecorder(completionElapsed, sw.Elapsed.TotalMilliseconds))
+            if (discardCompletedAfterCancellation && ct.IsCancellationRequested)
             {
                 return;
             }
@@ -556,25 +561,29 @@ public static class HybridStorageModeBenchmark
                 }
 
                 TimeSpan completionElapsed = completionElapsedProvider?.Invoke() ?? TimeSpan.Zero;
-                if (discardCompletedAfterCancellation &&
-                    (ct.IsCancellationRequested || completionElapsed > maximumMeasuredDuration))
-                {
-                    return;
-                }
-
                 sw?.Stop();
                 if (completionRecorder is not null)
                 {
                     if (!completionRecorder(completionElapsed, sw?.Elapsed.TotalMilliseconds))
                         return;
                 }
-                else if (sw is null)
-                {
-                    histogram.RecordUnsampled();
-                }
                 else
                 {
-                    histogram.Record(sw.Elapsed.TotalMilliseconds);
+                    if (discardCompletedAfterCancellation &&
+                        (ct.IsCancellationRequested || completionElapsed > maximumMeasuredDuration))
+                    {
+                        return;
+                    }
+
+                    if (sw is null)
+                        histogram.RecordUnsampled();
+                    else
+                        histogram.Record(sw.Elapsed.TotalMilliseconds);
+                }
+
+                if (discardCompletedAfterCancellation && ct.IsCancellationRequested)
+                {
+                    return;
                 }
             }
         }
@@ -649,7 +658,6 @@ public static class HybridStorageModeBenchmark
         for (int i = 0; i < histograms.Length; i++)
             histograms[i] = new LatencyHistogram(latencySampleEvery);
 
-        CancellationToken deadlineCancellationToken = deadline.Token;
         Task expirationTask = deadline.Expired;
         var recordingGate = new ConcurrentRecordingGate(
             deadline,
@@ -657,10 +665,13 @@ public static class HybridStorageModeBenchmark
             minimumMeasuredDuration,
             minimumLatencySamples,
             maximumMeasuredDuration);
-        int coordinatedStopRequested = 0;
         int unexpectedReaderExit = 0;
-        using var phaseCts = CancellationTokenSource.CreateLinkedTokenSource(
-            deadlineCancellationToken);
+        ConcurrentReaderExitCoordinator[] readerExitCoordinators = Enumerable
+            .Range(0, readerCount)
+            .Select(_ => new ConcurrentReaderExitCoordinator(
+                () => Interlocked.Exchange(ref unexpectedReaderExit, 1)))
+            .ToArray();
+        using var phaseCts = new CancellationTokenSource();
         var allReadersReady = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var measurementStart = new TaskCompletionSource(
@@ -671,6 +682,8 @@ public static class HybridStorageModeBenchmark
         {
             int capturedReaderIndex = readerIndex;
             LatencyHistogram histogram = histograms[readerIndex];
+            ConcurrentReaderExitCoordinator readerExitCoordinator =
+                readerExitCoordinators[readerIndex];
             readerTasks[readerIndex] = scheduleReader(
                 async () =>
                 {
@@ -678,25 +691,46 @@ public static class HybridStorageModeBenchmark
                         allReadersReady.TrySetResult();
 
                     await measurementStart.Task.ConfigureAwait(false);
+                    Task readerLoopTask;
                     try
                     {
-                        await readerLoop(
+                        readerLoopTask = readerLoop(
                             capturedReaderIndex,
                             histogram,
-                            (completionElapsed, latencyMilliseconds) => recordingGate.TryRecord(
-                                histogram,
-                                completionElapsed,
-                                latencyMilliseconds),
-                            phaseCts.Token).ConfigureAwait(false);
+                            (completionElapsed, latencyMilliseconds) =>
+                            {
+                                bool accepted = recordingGate.TryRecord(
+                                    histogram,
+                                    completionElapsed,
+                                    latencyMilliseconds);
+                                if (!accepted || recordingGate.TargetReached)
+                                    readerExitCoordinator.MarkCoordinatedExit();
+                                return accepted;
+                            },
+                            phaseCts.Token) ?? throw new InvalidOperationException(
+                                "A hybrid storage concurrent reader returned a null task.");
+                    }
+                    catch
+                    {
+                        readerExitCoordinator.MarkReaderCompleted();
+                        throw;
+                    }
+
+                    readerExitCoordinator.AttachReaderTask(readerLoopTask);
+                    _ = readerLoopTask.ContinueWith(
+                        static (_, state) =>
+                            ((ConcurrentReaderExitCoordinator)state!).MarkReaderCompleted(),
+                        readerExitCoordinator,
+                        CancellationToken.None,
+                        TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default);
+                    try
+                    {
+                        await readerLoopTask.ConfigureAwait(false);
                     }
                     finally
                     {
-                        if (Volatile.Read(ref coordinatedStopRequested) == 0 &&
-                            !phaseCts.IsCancellationRequested &&
-                            !recordingGate.IsClosed)
-                        {
-                            Interlocked.Exchange(ref unexpectedReaderExit, 1);
-                        }
+                        readerExitCoordinator.MarkReaderCompleted();
                     }
                 });
         }
@@ -707,9 +741,10 @@ public static class HybridStorageModeBenchmark
         Task readinessWinner = await Task.WhenAny(readinessTask, firstReaderCompletion);
         if (readinessWinner != readinessTask && !readinessTask.IsCompleted)
         {
-            Interlocked.Exchange(ref coordinatedStopRequested, 1);
             recordingGate.Close();
             measurementStart.TrySetResult();
+            foreach (ConcurrentReaderExitCoordinator coordinator in readerExitCoordinators)
+                coordinator.MarkCoordinatedExit();
             phaseCts.Cancel();
             bool preStartReadersStopped = await WaitForTaskCompletionWithinAsync(
                 allReaders,
@@ -774,7 +809,8 @@ public static class HybridStorageModeBenchmark
         }
 
         DateTimeOffset measurementEndedUtc = deadline.StartedUtc + stoppedElapsed;
-        Interlocked.Exchange(ref coordinatedStopRequested, 1);
+        foreach (ConcurrentReaderExitCoordinator coordinator in readerExitCoordinators)
+            coordinator.MarkCoordinatedExit();
         if (stopReason == ConcurrentPhaseStopReason.Deadline)
             deadline.Cancel();
         phaseCts.Cancel();
@@ -786,6 +822,7 @@ public static class HybridStorageModeBenchmark
         {
             detachedWorkRegistrar?.Invoke(allReaders);
             int outstandingReaders = readerTasks.Count(static task => !task.IsCompleted);
+            Exception? completedReaderFailure = GetCompletedReaderFailure(readerTasks);
             Exception? capException = failAtMaximum && stopReason == ConcurrentPhaseStopReason.Deadline
                 ? CreateQualificationCapException(
                     benchmarkName,
@@ -795,22 +832,24 @@ public static class HybridStorageModeBenchmark
                     minimumMeasuredDuration,
                     minimumLatencySamples)
                 : null;
+            Exception? innerException = CombineQualificationFailures(
+                completedReaderFailure,
+                capException);
             throw CreateQualificationUnresponsiveException(
                 benchmarkName,
                 $"{outstandingReaders} concurrent reader(s)",
                 cancellationDrainTimeout,
-                capException);
+                innerException);
         }
 
-        if (stopReason == ConcurrentPhaseStopReason.UnexpectedReaderExit)
+        await allReaders;
+        if (stopReason == ConcurrentPhaseStopReason.UnexpectedReaderExit ||
+            Volatile.Read(ref unexpectedReaderExit) != 0)
         {
-            await allReaders;
             throw new InvalidOperationException(
                 $"Hybrid storage qualification scenario '{benchmarkName}' had a concurrent reader " +
                 "exit before coordinated cancellation; the requested reader count was not maintained.");
         }
-
-        await allReaders;
         int finalLatencySamples = recordingGate.RetainedLatencySamples;
         if (stopReason == ConcurrentPhaseStopReason.Deadline && failAtMaximum)
         {
@@ -1236,6 +1275,109 @@ public static class HybridStorageModeBenchmark
         }
     }
 
+    private static Exception? GetCompletedReaderFailure(IEnumerable<Task> readerTasks)
+    {
+        Exception[] failures = readerTasks
+            .Where(static task => task.IsFaulted)
+            .SelectMany(static task => task.Exception?.InnerExceptions ?? [])
+            .ToArray();
+        return failures.Length switch
+        {
+            0 => null,
+            1 => failures[0],
+            _ => new AggregateException(failures),
+        };
+    }
+
+    private static Exception? CombineQualificationFailures(params Exception?[] failures)
+    {
+        Exception[] presentFailures = failures
+            .Where(static failure => failure is not null)
+            .Cast<Exception>()
+            .ToArray();
+        return presentFailures.Length switch
+        {
+            0 => null,
+            1 => presentFailures[0],
+            _ => new AggregateException(presentFailures),
+        };
+    }
+
+    private sealed class ConcurrentReaderExitCoordinator
+    {
+        private const int Running = 0;
+        private const int CoordinatedExit = 1;
+        private const int UnexpectedExit = 2;
+
+        private readonly object _gate = new();
+        private readonly Action _onUnexpectedExit;
+        private int _state = Running;
+        private Task? _readerTask;
+
+        internal ConcurrentReaderExitCoordinator(Action onUnexpectedExit)
+        {
+            ArgumentNullException.ThrowIfNull(onUnexpectedExit);
+            _onUnexpectedExit = onUnexpectedExit;
+        }
+
+        internal void AttachReaderTask(Task readerTask)
+        {
+            ArgumentNullException.ThrowIfNull(readerTask);
+            bool notifyUnexpectedExit = false;
+            lock (_gate)
+            {
+                _readerTask = readerTask;
+                if (_state == Running && readerTask.IsCompleted)
+                {
+                    _state = UnexpectedExit;
+                    notifyUnexpectedExit = true;
+                }
+            }
+
+            if (notifyUnexpectedExit)
+                _onUnexpectedExit();
+        }
+
+        internal void MarkCoordinatedExit()
+        {
+            bool notifyUnexpectedExit = false;
+            lock (_gate)
+            {
+                if (_state != Running)
+                    return;
+
+                if (_readerTask?.IsCompleted == true)
+                {
+                    _state = UnexpectedExit;
+                    notifyUnexpectedExit = true;
+                }
+                else
+                {
+                    _state = CoordinatedExit;
+                }
+            }
+
+            if (notifyUnexpectedExit)
+                _onUnexpectedExit();
+        }
+
+        internal void MarkReaderCompleted()
+        {
+            bool notifyUnexpectedExit = false;
+            lock (_gate)
+            {
+                if (_state == Running)
+                {
+                    _state = UnexpectedExit;
+                    notifyUnexpectedExit = true;
+                }
+            }
+
+            if (notifyUnexpectedExit)
+                _onUnexpectedExit();
+        }
+    }
+
     private static void ObserveFaultEventually(Task task)
     {
         _ = task.ContinueWith(
@@ -1306,7 +1448,7 @@ public static class HybridStorageModeBenchmark
                 if (sampleElapsed < TimeSpan.Zero)
                     return false;
                 if (_expirationTask.IsCompleted ||
-                    sampleElapsed > _maximumMeasuredDuration)
+                    sampleElapsed >= _maximumMeasuredDuration)
                 {
                     Close();
                     return false;
