@@ -20,6 +20,7 @@ public static class DirectFileCacheTransportBenchmark
     private static readonly TimeSpan WarmupDuration = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan MeasuredDuration = TimeSpan.FromSeconds(10);
     internal static readonly TimeSpan MaximumReleaseCoreMeasuredDuration = TimeSpan.FromSeconds(90);
+    private static readonly TimeSpan WarmupCompletionTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan CancellationDrainTimeout = TimeSpan.FromSeconds(1);
 
     public static async Task<List<BenchmarkResult>> RunAsync()
@@ -433,30 +434,57 @@ public static class DirectFileCacheTransportBenchmark
         Func<CancellationToken, Task> operation,
         Action<Task> detachedWorkRegistrar)
     {
-        using var phaseCts = new CancellationTokenSource();
+        using var warmupStopCts = new CancellationTokenSource();
+        await RunWarmupCoreAsync(
+            operation,
+            warmupStopCts,
+            WarmupDuration,
+            WarmupCompletionTimeout,
+            detachedWorkRegistrar);
+    }
+
+    internal static async Task RunWarmupCoreAsync(
+        Func<CancellationToken, Task> operation,
+        CancellationTokenSource warmupStopCts,
+        TimeSpan warmupDuration,
+        TimeSpan completionTimeout,
+        Action<Task>? detachedWorkRegistrar = null)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+        ArgumentNullException.ThrowIfNull(warmupStopCts);
+        if (warmupDuration <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(warmupDuration));
+        if (completionTimeout < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(completionTimeout));
+
         var workerReady = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var warmupStart = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
         Task workerTask = StartControllerVisibleWorkerAsync(
-            async ct =>
+            async stopToken =>
             {
                 workerReady.TrySetResult();
                 await warmupStart.Task.ConfigureAwait(false);
-                while (!ct.IsCancellationRequested)
-                    await operation(ct).ConfigureAwait(false);
+                while (!stopToken.IsCancellationRequested)
+                {
+                    // The warmup duration is a soft boundary. Durable operations may
+                    // become intentionally non-cancellable once commit begins, so let
+                    // the in-flight operation finish and stop before starting another.
+                    await operation(CancellationToken.None).ConfigureAwait(false);
+                }
             },
-            phaseCts.Token);
+            warmupStopCts.Token);
 
         await workerReady.Task.ConfigureAwait(false);
-        phaseCts.CancelAfter(WarmupDuration);
-        Task deadlineTask = Task.Delay(Timeout.InfiniteTimeSpan, phaseCts.Token);
+        warmupStopCts.CancelAfter(warmupDuration);
+        Task deadlineTask = Task.Delay(Timeout.InfiniteTimeSpan, warmupStopCts.Token);
         warmupStart.TrySetResult();
         _ = await AwaitControllerVisibleWorkerAsync(
             workerTask,
             deadlineTask,
-            phaseCts,
-            CancellationDrainTimeout,
+            warmupStopCts,
+            completionTimeout,
             "direct benchmark warmup worker",
             detachedWorkRegistrar: detachedWorkRegistrar);
     }

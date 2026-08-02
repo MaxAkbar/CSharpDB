@@ -131,6 +131,93 @@ public sealed class ReleaseCoreMeasurementFloorTests
     }
 
     [Fact]
+    public async Task DirectWarmup_SoftDeadlineDoesNotCancelInFlightOperation()
+    {
+        using var warmupStopCts = new CancellationTokenSource();
+        var operationStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseOperation = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        CancellationToken observedOperationToken = default;
+        int operationCount = 0;
+
+        Task warmupTask = DirectFileCacheTransportBenchmark.RunWarmupCoreAsync(
+            async operationToken =>
+            {
+                Interlocked.Increment(ref operationCount);
+                observedOperationToken = operationToken;
+                operationStarted.TrySetResult();
+                await releaseOperation.Task.ConfigureAwait(false);
+            },
+            warmupStopCts,
+            TimeSpan.FromMinutes(1),
+            TimeSpan.FromSeconds(1));
+
+        await operationStarted.Task.WaitAsync(
+            TimeSpan.FromSeconds(1),
+            TestContext.Current.CancellationToken);
+        warmupStopCts.Cancel();
+
+        Assert.False(observedOperationToken.CanBeCanceled);
+        Assert.False(warmupTask.IsCompleted);
+
+        releaseOperation.TrySetResult();
+        await warmupTask.WaitAsync(
+            TimeSpan.FromSeconds(1),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, Volatile.Read(ref operationCount));
+    }
+
+    [Fact]
+    public async Task DirectWarmup_UnresponsiveOperationHasBoundedCompletionAndObservedLifetime()
+    {
+        using var warmupStopCts = new CancellationTokenSource();
+        var operationStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseOperation = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        Task? quarantinedWorker = null;
+
+        Task warmupTask = DirectFileCacheTransportBenchmark.RunWarmupCoreAsync(
+            async _ =>
+            {
+                operationStarted.TrySetResult();
+                await releaseOperation.Task.ConfigureAwait(false);
+            },
+            warmupStopCts,
+            TimeSpan.FromMinutes(1),
+            TimeSpan.FromMilliseconds(25),
+            task => quarantinedWorker = task);
+
+        await operationStarted.Task.WaitAsync(
+            TimeSpan.FromSeconds(1),
+            TestContext.Current.CancellationToken);
+        warmupStopCts.Cancel();
+        try
+        {
+            InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => warmupTask.WaitAsync(
+                    TimeSpan.FromSeconds(1),
+                    TestContext.Current.CancellationToken));
+
+            Assert.Contains("did not stop direct benchmark warmup worker", exception.Message);
+            Assert.NotNull(quarantinedWorker);
+            Assert.False(quarantinedWorker.IsCompleted);
+        }
+        finally
+        {
+            releaseOperation.TrySetResult();
+            if (quarantinedWorker is not null)
+            {
+                await quarantinedWorker.WaitAsync(
+                    TimeSpan.FromSeconds(1),
+                    TestContext.Current.CancellationToken);
+            }
+        }
+    }
+
+    [Fact]
     public void ConcurrentDurableRows_RequireNominalDurationAndOneHundredRealSamples()
     {
         Assert.Equal(100, ConcurrentDurableWriteBenchmark.MinimumReleaseCoreLatencySamples);
