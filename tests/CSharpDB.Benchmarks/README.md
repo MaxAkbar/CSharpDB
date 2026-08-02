@@ -452,6 +452,7 @@ pwsh -NoProfile .\tests\CSharpDB.Benchmarks\scripts\Test-PreviousReleasePerforma
   -CandidateRef HEAD `
   -OutputPath (Join-Path $ComparisonRoot 'pass-1') `
   -QualificationPass 1 `
+  -Paired `
   -SuiteName master-table `
   -RepeatCount 3
 
@@ -459,6 +460,7 @@ pwsh -NoProfile .\tests\CSharpDB.Benchmarks\scripts\Test-PreviousReleasePerforma
   -CandidateRef HEAD `
   -OutputPath (Join-Path $ComparisonRoot 'pass-2') `
   -QualificationPass 2 `
+  -Paired `
   -SuiteName master-table `
   -RepeatCount 3
 ```
@@ -473,27 +475,30 @@ prior semantic release tag reachable from the candidate is selected
 automatically; an explicit tag or commit can still override that choice. The
 previous revision must be an ancestor of the candidate, and each output
 directory must be absent or empty and outside the repository. The release gate
-runs only the established master-table scorecard: pass one runs the previous
-revision before the candidate, and pass two reverses that order. The
-candidate benchmark source is hash-verified and synchronized into the
+runs only the established master-table scorecard in balanced paired mode. Each
+pass runs adjacent previous/candidate pairs, alternating the pair order; pass
+one starts with the previous revision, and pass two starts with the candidate.
+The candidate benchmark source is hash-verified and synchronized into the
 previous-release worktree so both engines run the same harness. Candidate and
 previous root build inputs are hashed and reported separately because they
 remain revision-specific, and both revisions are built once per pass.
 
-Each master-table/revision invocation performs one unrecorded warmup followed by
-three recorded runs and emits a median-of-three aggregate. Each pass retains all
-three raw CSVs plus the aggregate for both revisions. Copied evidence is
-hash-checked before the source result is removed.
+With `-RepeatCount 3`, each pass runs three pairs in each order: six adjacent
+pairs and twelve logical invocations. Every logical invocation performs one
+unrecorded warmup followed by one recorded sample. Each pass retains all six raw
+CSVs and the recomputed aggregate for each revision, the pair manifest, and the
+paired comparison report. Copied evidence is hash-checked before the source
+result is removed.
 
 The comparer requires exact schema and row-name parity across raw and aggregate
 evidence, positive gate metrics, at least 100 retained latency observations per
-row, and exact recomputation of median throughput and P99. Both revisions must
-provide a strict stable majority of raw runs. `INVALID` and `UNSTABLE` evidence
-block qualification. For stable evidence, throughput fails above a 15%
-candidate regression. P99 fails only when its increase exceeds both 25% and the
-0.05 ms absolute allowance, so percentage-amplified sub-millisecond noise remains
-visible without blocking by itself. Both clean, order-reversed master-table
-passes must pass.
+row, and exact recomputation of throughput and P99 comparisons. Each revision
+order stratum must provide a strict stable majority of paired effects. `INVALID`,
+`UNSTABLE`, and `ORDER-SENSITIVE` evidence block qualification. For stable
+evidence, throughput fails above a 15% candidate regression. P99 fails only when
+its increase exceeds both 25% and the 0.05 ms absolute allowance, so
+percentage-amplified sub-millisecond noise remains visible without blocking by
+itself. Both clean, balanced paired master-table passes must pass.
 
 The existing scheduled perf-guardrail workflow remains report-only and includes
 the durable SQL batching baseline plus its configured micro and diagnostic
@@ -510,9 +515,9 @@ worktree registered for explicit cleanup. All generated evidence stays in the
 caller-selected directory outside the checkout; it never updates the curated
 `release-core-manifest.json` or introduces generated JSON into the repository.
 
-The higher-cost balanced paired mode remains available below for focused A/A,
-exact-row, and order-sensitivity investigations. It is not the routine release
-gate and cannot replace either blocking master-table qualification pass.
+The same balanced paired mode is also available below for focused A/A, exact-row,
+and order-sensitivity investigations. Those diagnostic forms do not replace
+either blocking cross-version master-table qualification pass.
 
 ### Focused A/A and exact-row diagnostics
 
@@ -562,8 +567,8 @@ machine or disk is idle, so use a dedicated runner without concurrent builds.
 The release workflow uses a 30-second post-build wait.
 
 A/A and exact-row results are harness diagnostics only. They cannot satisfy the
-previous-release gate, replace either clean master-table qualification pass,
-promote a baseline, or modify published benchmark numbers.
+previous-release gate, replace either balanced paired master-table qualification
+pass, promote a baseline, or modify published benchmark numbers.
 
 Run the release guardrail comparison:
 
@@ -589,7 +594,7 @@ pwsh -NoProfile .\tests\CSharpDB.Benchmarks\scripts\Update-BenchmarkReadme.ps1 `
 Promotion checklist:
 
 - The release-core suite was run with `--repeat 3 --repro`.
-- Both order-reversed previous-release master-table comparisons passed with the
+- Both balanced paired previous-release master-table comparisons passed with the
   same hash-verified candidate harness and retained raw evidence.
 - No comparison row is `INVALID`, `UNSTABLE`, `ORDER-SENSITIVE`, or
   `REGRESSION`, and every gate row has at least 100 retained latency

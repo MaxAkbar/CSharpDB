@@ -59,7 +59,7 @@ public sealed class DaemonPackagingAssetsTests
     }
 
     [Fact]
-    public void SqlReleaseQualificationWorkflow_RunsTwoCleanPassesAndBlocksOnlyOnMasterTable()
+    public void SqlReleaseQualificationWorkflow_RunsTwoCleanBalancedPairedPassesAndBlocksOnlyOnMasterTable()
     {
         string repoRoot = FindRepoRoot();
         string workflow = File.ReadAllText(Path.Combine(
@@ -111,7 +111,7 @@ public sealed class DaemonPackagingAssetsTests
         string performanceJob = normalized[performanceJobIndex..];
         Assert.Contains(
             "  previous-release-performance:\n" +
-            "    name: Windows previous-release master-table / clean pass ${{ matrix.qualification_pass }}\n" +
+            "    name: Windows previous-release master-table / balanced paired pass ${{ matrix.qualification_pass }}\n" +
             "    needs: qualify\n",
             performanceJob);
         Assert.Contains(
@@ -132,6 +132,7 @@ public sealed class DaemonPackagingAssetsTests
             normalized);
         Assert.Contains("-SuiteName master-table", performanceJob);
         Assert.Contains("timeout-minutes: 300", performanceJob);
+        Assert.Contains("            -Paired `\n", performanceJob);
         Assert.DoesNotContain("-Paired:", performanceJob);
         string[] supplementalSuites =
         [

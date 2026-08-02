@@ -73,24 +73,27 @@ Before the workflow has first reached the default branch, pushing a non-release
 `qualification-*` tag runs it from that exact candidate commit without invoking
 the `v*` publishing workflow. Once registered on the default branch, normal
 manual dispatch can target any release-candidate branch.
-The workflow also runs the full release-core benchmark against the previous
-release in two independent clean Windows jobs. When no override is provided,
-the nearest prior semantic release tag reachable from the candidate is
-selected automatically. A hash-verified copy of the candidate benchmark source
-is used for both engine revisions, while revision-specific root build inputs
-are hashed and reported separately. Each suite runs once per revision with one
-unrecorded warmup followed by three recorded samples. Pass one runs the previous
-revision before the candidate within every suite; pass two reverses that order.
-Both revisions are built once per pass.
+The workflow also runs the established master-table scorecard against the
+previous release in two independent clean Windows jobs. When no override is
+provided, the nearest prior semantic release tag reachable from the candidate
+is selected automatically. A hash-verified copy of the candidate benchmark
+source is used for both engine revisions, while revision-specific root build
+inputs are hashed and reported separately. Both revisions are built once per
+pass. With `-RepeatCount 3`, each pass runs six adjacent pairs and alternates
+the pair order: three in each revision order and six recorded samples per
+revision. Pass one starts with the previous revision; pass two starts with the
+candidate. Every logical invocation has one unrecorded warmup followed by one
+recorded sample.
 
-Every raw sample and recomputed median is retained. The comparison requires
-exact schema and row parity, positive metrics, and at least 100 retained latency
-observations per gate row. A strict majority of raw runs must remain within the
-configured throughput and P99 stability bands for both revisions; malformed or
-unstable evidence fails closed. A stable candidate fails above the 15%
-throughput regression limit or when P99 exceeds both 25% and 0.05 ms. Both clean,
-order-reversed qualifications must pass before publishing can start. The
-higher-cost balanced-pair mode remains available for focused diagnostics.
+Every raw sample, recomputed aggregate, and pair manifest is retained. The
+comparison requires exact schema and row parity, positive metrics, and at least
+100 retained latency observations per gate row. A strict majority of paired
+effects must remain within the configured throughput and P99 stability bands in
+each order stratum. Malformed, unstable, or order-sensitive evidence fails
+closed. A stable candidate fails above the 15% throughput regression limit or
+when P99 exceeds both 25% and 0.05 ms. Both clean, balanced paired qualifications
+must pass before publishing can start. The paired runner also supports focused
+A/A, exact-row, and order-sensitivity diagnostics.
 
 The performance comparison is intentionally separate from the faster local
 qualification command above. To reproduce it locally, start with a clean
@@ -105,24 +108,32 @@ $PerformanceRoot = Join-Path `
   -CandidateRef HEAD `
   -OutputPath (Join-Path $PerformanceRoot 'pass-1') `
   -QualificationPass 1 `
-  -RepeatCount 3
+  -Paired `
+  -SuiteName master-table `
+  -RepeatCount 3 `
+  -PostBuildQuiescenceSeconds 30
 
 .\tests\CSharpDB.Benchmarks\scripts\Test-PreviousReleasePerformance.ps1 `
   -CandidateRef HEAD `
   -OutputPath (Join-Path $PerformanceRoot 'pass-2') `
   -QualificationPass 2 `
-  -RepeatCount 3
+  -Paired `
+  -SuiteName master-table `
+  -RepeatCount 3 `
+  -PostBuildQuiescenceSeconds 30
 ```
 
-Each pass runs the complete release-core suite for both revisions and can take
-several hours. `-SuiteName` can select named suites for a diagnostic run. The
-workflow shuts down .NET build servers and waits 30 seconds after building; this
-fixed wait does not prove that CPU or disk activity is idle, so local runs
-should use a dedicated machine without concurrent builds. The release gate
-retains three raw CSVs plus a median for every suite and revision, verifies each
-copy, records the synchronized candidate harness and revision-specific build
-inputs, and removes its detached worktrees only after a non-following link audit.
-Generated evidence remains outside the repository.
+Each pass runs the master-table scorecard in twelve logical invocations. Because
+each invocation has a full warmup and recorded run, this is effectively 24 full
+master-table executions and can take several hours. `-SuiteName` can select
+other named suites for a diagnostic run. The workflow shuts down .NET build
+servers and waits 30 seconds after building; this fixed wait does not prove that
+CPU or disk activity is idle, so local runs should use a dedicated machine
+without concurrent builds. The release gate retains six raw CSVs plus a
+recomputed aggregate for every revision, verifies each copy, records the pair
+order, synchronized candidate harness, and revision-specific build inputs, and
+removes its detached worktrees only after a non-following link audit. Generated
+evidence remains outside the repository.
 
 For a same-artifact exact-row A/A diagnostic, use an absent or empty output
 directory outside the checkout:
@@ -149,8 +160,8 @@ requires equal commits and maps one candidate DLL and closure to both labels.
 Both logical identities, the shared execution-time path, and all relative
 closure file hashes are recorded.
 
-These controls diagnose the harness only and cannot replace either
-previous-release qualification pass or promote a baseline.
+These controls diagnose the harness only and cannot replace either balanced
+paired cross-version qualification pass or promote a baseline.
 `-PostBuildQuiescenceSeconds` is an opt-in build-server shutdown plus fixed wait,
 not a machine-idleness guarantee, and it can affect concurrent .NET builds.
 Preflight metadata, hash manifests, raw and aggregate CSV evidence, logs, and

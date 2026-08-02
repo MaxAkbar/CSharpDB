@@ -102,7 +102,7 @@ jobs:
           retention-days: 14
 
   previous-release-performance:
-    name: Windows previous-release master-table / clean pass ${{ matrix.qualification_pass }}
+    name: Windows previous-release master-table / balanced paired pass ${{ matrix.qualification_pass }}
     needs: qualify
     runs-on: windows-latest
     timeout-minutes: 300
@@ -134,12 +134,14 @@ jobs:
           CANDIDATE_REF: ${{ inputs.release_commit || github.sha }}
         run: |
           # The established release-core scorecard remains the blocking
-          # performance gate. Pass two reverses revision order.
+          # performance gate. Samples run as balanced adjacent pairs; pass two
+          # reverses the initial revision order.
           ./tests/CSharpDB.Benchmarks/scripts/Test-PreviousReleasePerformance.ps1 `
             -PreviousRef $env:PREVIOUS_RELEASE_REF `
             -CandidateRef $env:CANDIDATE_REF `
             -OutputPath $env:PERFORMANCE_OUTPUT `
             -QualificationPass ${{ matrix.qualification_pass }} `
+            -Paired `
             -SuiteName master-table `
             -RepeatCount 3 `
             -PostBuildQuiescenceSeconds 30 `
