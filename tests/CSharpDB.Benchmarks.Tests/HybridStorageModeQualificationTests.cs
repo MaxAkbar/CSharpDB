@@ -110,6 +110,30 @@ public sealed class HybridStorageModeQualificationTests
     }
 
     [Fact]
+    public void ReleaseCoreMeasurementPolicy_PreservesWarmupAndRequiresComparatorSampleFloor()
+    {
+        HybridStorageModeBenchmark.QualificationSettings settings =
+            HybridStorageModeBenchmark.CreateReleaseCoreMeasurementSettings(
+                TimeSpan.FromSeconds(5));
+
+        Assert.Equal(TimeSpan.FromSeconds(2), settings.WarmupDuration);
+        Assert.Equal(TimeSpan.FromSeconds(5), settings.MinimumMeasuredDuration);
+        Assert.Equal(100, settings.MinimumLatencySamples);
+        Assert.Equal(TimeSpan.FromSeconds(90), settings.MaximumMeasuredDuration);
+
+        Assert.False(HybridStorageModeBenchmark.HasMetQualificationTarget(
+            TimeSpan.FromSeconds(5),
+            retainedLatencySamples: 99,
+            settings.MinimumMeasuredDuration,
+            settings.MinimumLatencySamples));
+        Assert.True(HybridStorageModeBenchmark.HasMetQualificationTarget(
+            TimeSpan.FromSeconds(5),
+            retainedLatencySamples: 100,
+            settings.MinimumMeasuredDuration,
+            settings.MinimumLatencySamples));
+    }
+
+    [Fact]
     public async Task MeasuredOperation_TargetReachedBeforeDeadline_IsAccepted()
     {
         HybridStorageModeBenchmark.QualificationSettings settings = CreateFastSettings();
@@ -219,6 +243,7 @@ public sealed class HybridStorageModeQualificationTests
         using var deadline = new ManualQualificationDeadline();
         var operationStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseOperation = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task? detachedWorker = null;
 
         Task<BenchmarkResult> runTask =
             HybridStorageModeBenchmark.RunQualificationMeasuredOperationCoreAsync(
@@ -230,7 +255,8 @@ public sealed class HybridStorageModeQualificationTests
                     return releaseOperation.Task;
                 },
                 deadline,
-                TimeSpan.FromMilliseconds(25));
+                TimeSpan.FromMilliseconds(25),
+                task => detachedWorker = task);
 
         await operationStarted.Task.WaitAsync(
             TimeSpan.FromSeconds(1),
@@ -246,11 +272,233 @@ public sealed class HybridStorageModeQualificationTests
             Assert.Contains("measurement cap", exception.Message);
             Assert.Contains("did not stop in-flight operation", exception.Message);
             Assert.True(deadline.Token.IsCancellationRequested);
+            Assert.NotNull(detachedWorker);
         }
         finally
         {
             releaseOperation.TrySetResult();
+            if (detachedWorker is not null)
+            {
+                await AwaitDetachedWorkerAsync(detachedWorker);
+            }
         }
+    }
+
+    [Fact]
+    public async Task MeasuredOperation_SynchronouslyBlockingWork_IsBoundedAndExplicit()
+    {
+        HybridStorageModeBenchmark.QualificationSettings settings = CreateFastSettings();
+        using var deadline = new ManualQualificationDeadline();
+        using var releaseOperation = new ManualResetEventSlim();
+        var operationStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var operationExited = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        Task? detachedWorker = null;
+
+        Task<BenchmarkResult> runTask = Task.Run(async () =>
+            await HybridStorageModeBenchmark.RunQualificationMeasuredOperationCoreAsync(
+                FileBackedSqlSingleInsert,
+                settings,
+                _ =>
+                {
+                    operationStarted.TrySetResult();
+                    releaseOperation.Wait();
+                    operationExited.TrySetResult();
+                    return Task.CompletedTask;
+                },
+                deadline,
+                TimeSpan.FromMilliseconds(25),
+                task => detachedWorker = task));
+
+        await operationStarted.Task.WaitAsync(
+            TimeSpan.FromSeconds(1),
+            TestContext.Current.CancellationToken);
+        deadline.AdvanceTo(settings.MaximumMeasuredDuration, expire: true);
+        try
+        {
+            InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => runTask.WaitAsync(
+                    TimeSpan.FromSeconds(1),
+                    TestContext.Current.CancellationToken));
+
+            Assert.Contains("measurement cap", exception.Message);
+            Assert.Contains("did not stop in-flight operation", exception.Message);
+            Assert.NotNull(detachedWorker);
+        }
+        finally
+        {
+            releaseOperation.Set();
+            await operationExited.Task.WaitAsync(
+                TimeSpan.FromSeconds(1),
+                TestContext.Current.CancellationToken);
+            if (detachedWorker is not null)
+            {
+                await AwaitDetachedWorkerAsync(detachedWorker);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Warmup_SynchronouslyBlockingWork_IsBoundedAndExplicit()
+    {
+        using var deadline = new ManualQualificationDeadline();
+        using var releaseOperation = new ManualResetEventSlim();
+        var operationStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var operationExited = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        Task? detachedWorker = null;
+
+        Task runTask = Task.Run(async () =>
+            await HybridStorageModeBenchmark.RunQualificationWarmupCoreAsync(
+                FileBackedSqlSingleInsert,
+                _ =>
+                {
+                    operationStarted.TrySetResult();
+                    releaseOperation.Wait();
+                    operationExited.TrySetResult();
+                    return Task.CompletedTask;
+                },
+                TimeSpan.FromSeconds(2),
+                deadline,
+                TimeSpan.FromMilliseconds(25),
+                task => detachedWorker = task),
+            TestContext.Current.CancellationToken);
+
+        await operationStarted.Task.WaitAsync(
+            TimeSpan.FromSeconds(1),
+            TestContext.Current.CancellationToken);
+        deadline.AdvanceTo(TimeSpan.FromSeconds(2), expire: true);
+        try
+        {
+            InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => runTask.WaitAsync(
+                    TimeSpan.FromSeconds(1),
+                    TestContext.Current.CancellationToken));
+
+            Assert.Contains("warmup operation", exception.Message);
+            Assert.Contains("did not stop", exception.Message);
+            Assert.NotNull(detachedWorker);
+        }
+        finally
+        {
+            releaseOperation.Set();
+            await operationExited.Task.WaitAsync(
+                TimeSpan.FromSeconds(1),
+                TestContext.Current.CancellationToken);
+            if (detachedWorker is not null)
+            {
+                await AwaitDetachedWorkerAsync(detachedWorker);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task MeasuredOperation_DeadlineStartsOnlyAfterScheduledWorkerIsReady()
+    {
+        HybridStorageModeBenchmark.QualificationSettings settings = CreateFastSettings();
+        using var deadline = new ManualQualificationDeadline();
+        Func<Task<BenchmarkResult>>? scheduledWorker = null;
+        var scheduledCompletion = new TaskCompletionSource<BenchmarkResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Task<BenchmarkResult> ScheduleWorker(Func<Task<BenchmarkResult>> worker)
+        {
+            scheduledWorker = worker;
+            return scheduledCompletion.Task;
+        }
+
+        Task<BenchmarkResult> runTask =
+            HybridStorageModeBenchmark.RunQualificationMeasuredOperationCoreAsync(
+                FileBackedSqlSingleInsert,
+                settings,
+                _ =>
+                {
+                    Assert.Equal(1, deadline.StartCount);
+                    deadline.AdvanceTo(settings.MinimumMeasuredDuration);
+                    return Task.CompletedTask;
+                },
+                deadline,
+                TimeSpan.FromMilliseconds(25),
+                scheduleWorker: ScheduleWorker);
+
+        Assert.NotNull(scheduledWorker);
+        Assert.Equal(0, deadline.StartCount);
+        await Task.Delay(
+            TimeSpan.FromMilliseconds(50),
+            TestContext.Current.CancellationToken);
+        Assert.Equal(0, deadline.StartCount);
+        Assert.False(runTask.IsCompleted);
+
+        Task scheduledExecution = CompleteScheduledWorkerAsync(
+            scheduledWorker!,
+            scheduledCompletion,
+            TestContext.Current.CancellationToken);
+        BenchmarkResult result = await runTask.WaitAsync(
+            TimeSpan.FromSeconds(1),
+            TestContext.Current.CancellationToken);
+        await scheduledExecution;
+
+        Assert.Equal(1, deadline.StartCount);
+        Assert.Equal(settings.MinimumMeasuredDuration.TotalMilliseconds, result.ElapsedMs);
+    }
+
+    [Fact]
+    public async Task Warmup_DeadlineStartsOnlyAfterScheduledWorkerIsReady()
+    {
+        using var deadline = new ManualQualificationDeadline();
+        Func<Task>? scheduledWorker = null;
+        var scheduledCompletion = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Task ScheduleWorker(Func<Task> worker)
+        {
+            scheduledWorker = worker;
+            return scheduledCompletion.Task;
+        }
+
+        Task runTask = HybridStorageModeBenchmark.RunQualificationWarmupCoreAsync(
+            FileBackedSqlSingleInsert,
+            _ =>
+            {
+                Assert.Equal(1, deadline.StartCount);
+                deadline.AdvanceTo(TimeSpan.FromSeconds(2));
+                return Task.CompletedTask;
+            },
+            TimeSpan.FromSeconds(2),
+            deadline,
+            TimeSpan.FromMilliseconds(25),
+            scheduleWorker: ScheduleWorker);
+
+        Assert.NotNull(scheduledWorker);
+        Assert.Equal(0, deadline.StartCount);
+        await Task.Delay(
+            TimeSpan.FromMilliseconds(50),
+            TestContext.Current.CancellationToken);
+        Assert.Equal(0, deadline.StartCount);
+        Assert.False(runTask.IsCompleted);
+
+        Task scheduledExecution = Task.Run(
+            async () =>
+            {
+                try
+                {
+                    await scheduledWorker!();
+                    scheduledCompletion.TrySetResult();
+                }
+                catch (Exception exception)
+                {
+                    scheduledCompletion.TrySetException(exception);
+                }
+            },
+            TestContext.Current.CancellationToken);
+        await runTask.WaitAsync(
+            TimeSpan.FromSeconds(1),
+            TestContext.Current.CancellationToken);
+        await scheduledExecution;
+
+        Assert.Equal(1, deadline.StartCount);
     }
 
     [Fact]
@@ -285,10 +533,9 @@ public sealed class HybridStorageModeQualificationTests
                 minimumLatencySamples: 1,
                 maximumMeasuredDuration: TimeSpan.FromSeconds(2),
                 failAtMaximum: true,
-                async (_, histogram, sampleRecorded, ct) =>
+                async (_, _, recordCompletion, ct) =>
                 {
-                    histogram.Record(0.1);
-                    sampleRecorded?.Invoke(TimeSpan.FromSeconds(1));
+                    recordCompletion?.Invoke(TimeSpan.FromSeconds(1), 0.1);
                     await WaitForCoordinatedCancellationAsync(ct);
                 },
                 deadline,
@@ -312,10 +559,9 @@ public sealed class HybridStorageModeQualificationTests
                 minimumLatencySamples: 1,
                 maximumMeasuredDuration: TimeSpan.FromSeconds(2),
                 failAtMaximum: true,
-                async (_, histogram, sampleRecorded, ct) =>
+                async (_, _, recordCompletion, ct) =>
                 {
-                    histogram.Record(0.1);
-                    sampleRecorded?.Invoke(TimeSpan.FromSeconds(1.9));
+                    recordCompletion?.Invoke(TimeSpan.FromSeconds(1.9), 0.1);
                     deadline.AdvanceTo(TimeSpan.FromSeconds(2.1), expire: true);
                     await WaitForCoordinatedCancellationAsync(ct);
                 },
@@ -346,11 +592,11 @@ public sealed class HybridStorageModeQualificationTests
                 minimumLatencySamples: 1,
                 maximumMeasuredDuration: TimeSpan.FromSeconds(2),
                 failAtMaximum: true,
-                async (_, _, sampleRecorded, ct) =>
+                async (_, _, recordCompletion, ct) =>
                 {
                     readerStarted.TrySetResult();
                     await releaseReader.Task;
-                    sampleRecorded?.Invoke(TimeSpan.FromSeconds(2.1));
+                    recordCompletion?.Invoke(TimeSpan.FromSeconds(2.1), 0.1);
                     sampleAttempted.TrySetResult();
                     await WaitForCoordinatedCancellationAsync(ct);
                 },
@@ -372,6 +618,60 @@ public sealed class HybridStorageModeQualificationTests
                 TestContext.Current.CancellationToken));
         Assert.Contains("measurement cap", exception.Message);
         Assert.Contains("0 retained latency samples", exception.Message);
+    }
+
+    [Fact]
+    public async Task ConcurrentPhase_TargetCutoffExcludesLaterCompletions()
+    {
+        using var deadline = new ManualQualificationDeadline();
+        var secondReaderReady = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSecondReader = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondRecordAttempted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        bool secondRecordAccepted = true;
+
+        HybridStorageModeBenchmark.ConcurrentReaderPhaseResult result =
+            await HybridStorageModeBenchmark.RunConcurrentReaderPhaseCoreAsync(
+                "qualified-concurrent",
+                readerCount: 2,
+                latencySampleEvery: 1,
+                minimumMeasuredDuration: TimeSpan.FromSeconds(1),
+                minimumLatencySamples: 1,
+                maximumMeasuredDuration: TimeSpan.FromSeconds(2),
+                failAtMaximum: true,
+                async (readerIndex, _, recordCompletion, ct) =>
+                {
+                    if (readerIndex == 0)
+                    {
+                        await secondReaderReady.Task;
+                        Assert.True(recordCompletion!(TimeSpan.FromSeconds(1), 0.1));
+                        releaseSecondReader.TrySetResult();
+                    }
+                    else
+                    {
+                        secondReaderReady.TrySetResult();
+                        await releaseSecondReader.Task;
+                        secondRecordAccepted = recordCompletion!(
+                            TimeSpan.FromSeconds(1.5),
+                            0.2);
+                        secondRecordAttempted.TrySetResult();
+                    }
+
+                    await WaitForCoordinatedCancellationAsync(ct);
+                },
+                deadline,
+                TimeSpan.FromMilliseconds(25));
+
+        await secondRecordAttempted.Task.WaitAsync(
+            TimeSpan.FromSeconds(1),
+            TestContext.Current.CancellationToken);
+        Assert.False(secondRecordAccepted);
+        Assert.Equal(1, result.Histograms.Sum(static histogram => histogram.Count));
+        Assert.Equal(1, result.Histograms.Sum(static histogram => histogram.SampleCount));
+        Assert.Equal(TimeSpan.FromSeconds(1), result.Elapsed);
+        Assert.Equal(deadline.StartedUtc + TimeSpan.FromSeconds(1), result.MeasurementEndedUtc);
     }
 
     [Fact]
@@ -426,6 +726,7 @@ public sealed class HybridStorageModeQualificationTests
         using var deadline = new ManualQualificationDeadline();
         var readersStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseReaders = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task? detachedReaders = null;
         int startedCount = 0;
 
         Task<HybridStorageModeBenchmark.ConcurrentReaderPhaseResult> runTask =
@@ -444,7 +745,8 @@ public sealed class HybridStorageModeQualificationTests
                     return releaseReaders.Task;
                 },
                 deadline,
-                TimeSpan.FromMilliseconds(25));
+                TimeSpan.FromMilliseconds(25),
+                detachedWorkRegistrar: task => detachedReaders = task);
 
         await readersStarted.Task.WaitAsync(
             TimeSpan.FromSeconds(1),
@@ -459,11 +761,150 @@ public sealed class HybridStorageModeQualificationTests
 
             Assert.Contains("measurement cap", exception.Message);
             Assert.Contains("did not stop 2 concurrent reader(s)", exception.Message);
+            Assert.NotNull(detachedReaders);
         }
         finally
         {
             releaseReaders.TrySetResult();
+            if (detachedReaders is not null)
+            {
+                await AwaitDetachedWorkerAsync(detachedReaders);
+            }
         }
+    }
+
+    [Fact]
+    public async Task ConcurrentPhase_PreStartReaderExitHasBoundedDrain()
+    {
+        using var deadline = new ManualQualificationDeadline();
+        var releaseScheduledReader = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        Task? detachedReaders = null;
+        int scheduledReaderCount = 0;
+
+        Task ScheduleReader(Func<Task> _)
+            => Interlocked.Increment(ref scheduledReaderCount) == 1
+                ? Task.CompletedTask
+                : releaseScheduledReader.Task;
+
+        Task<HybridStorageModeBenchmark.ConcurrentReaderPhaseResult> runTask =
+            HybridStorageModeBenchmark.RunConcurrentReaderPhaseCoreAsync(
+                "qualified-concurrent-pre-start",
+                readerCount: 2,
+                latencySampleEvery: 1,
+                minimumMeasuredDuration: TimeSpan.FromSeconds(1),
+                minimumLatencySamples: 1,
+                maximumMeasuredDuration: TimeSpan.FromSeconds(2),
+                failAtMaximum: true,
+                (_, _, _, ct) => WaitForCoordinatedCancellationAsync(ct),
+                deadline,
+                TimeSpan.FromMilliseconds(25),
+                ScheduleReader,
+                task => detachedReaders = task);
+
+        try
+        {
+            InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => runTask.WaitAsync(
+                    TimeSpan.FromSeconds(1),
+                    TestContext.Current.CancellationToken));
+
+            Assert.Contains("before measurement start", exception.Message);
+            Assert.NotNull(detachedReaders);
+            Assert.Equal(0, deadline.StartCount);
+        }
+        finally
+        {
+            releaseScheduledReader.TrySetResult();
+            if (detachedReaders is not null)
+            {
+                await AwaitDetachedWorkerAsync(detachedReaders);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ConcurrentPhase_DeadlineStartsOnlyAfterEveryScheduledReaderIsReady()
+    {
+        const int readerCount = 2;
+        using var deadline = new ManualQualificationDeadline();
+        var scheduledReaders = new List<Func<Task>>();
+        var scheduledCompletions = new List<TaskCompletionSource>();
+        var scheduledReady = new List<TaskCompletionSource>();
+
+        Task ScheduleReader(Func<Task> reader)
+        {
+            var completion = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var ready = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            scheduledReaders.Add(
+                async () =>
+                {
+                    try
+                    {
+                        Task readerTask = reader();
+                        ready.TrySetResult();
+                        await readerTask;
+                        completion.TrySetResult();
+                    }
+                    catch (Exception exception)
+                    {
+                        completion.TrySetException(exception);
+                    }
+                });
+            scheduledCompletions.Add(completion);
+            scheduledReady.Add(ready);
+            return completion.Task;
+        }
+
+        Task<HybridStorageModeBenchmark.ConcurrentReaderPhaseResult> phaseTask =
+            HybridStorageModeBenchmark.RunConcurrentReaderPhaseCoreAsync(
+                "qualified-concurrent",
+                readerCount,
+                latencySampleEvery: 1,
+                minimumMeasuredDuration: TimeSpan.FromSeconds(1),
+                minimumLatencySamples: 1,
+                maximumMeasuredDuration: TimeSpan.FromSeconds(2),
+                failAtMaximum: true,
+                async (_, _, recordCompletion, ct) =>
+                {
+                    recordCompletion!(TimeSpan.FromSeconds(1), 0.1);
+                    await WaitForCoordinatedCancellationAsync(ct);
+                },
+                deadline,
+                TimeSpan.FromMilliseconds(25),
+                ScheduleReader);
+
+        Assert.Equal(readerCount, scheduledReaders.Count);
+        Assert.Equal(0, deadline.StartCount);
+
+        Task firstReader = Task.Run(
+            scheduledReaders[0],
+            TestContext.Current.CancellationToken);
+        await scheduledReady[0].Task.WaitAsync(
+            TimeSpan.FromSeconds(1),
+            TestContext.Current.CancellationToken);
+        Assert.Equal(0, deadline.StartCount);
+        Assert.False(phaseTask.IsCompleted);
+
+        Task secondReader = Task.Run(
+            scheduledReaders[1],
+            TestContext.Current.CancellationToken);
+        await scheduledReady[1].Task.WaitAsync(
+            TimeSpan.FromSeconds(1),
+            TestContext.Current.CancellationToken);
+        HybridStorageModeBenchmark.ConcurrentReaderPhaseResult result =
+            await phaseTask.WaitAsync(
+                TimeSpan.FromSeconds(1),
+                TestContext.Current.CancellationToken);
+        await Task.WhenAll(firstReader, secondReader);
+
+        Assert.Equal(1, deadline.StartCount);
+        Assert.Equal(TimeSpan.FromSeconds(1), result.Elapsed);
+        Assert.All(
+            scheduledCompletions,
+            static completion => Assert.True(completion.Task.IsCompletedSuccessfully));
     }
 
     [Fact]
@@ -530,10 +971,10 @@ public sealed class HybridStorageModeQualificationTests
     }
 
     [Fact]
-    public void ConcurrentAndReadSetupPaths_DefaultToLegacyOnly()
+    public void ConcurrentPath_DefaultsToReleaseCoreQualificationWhileReadPrimingRemainsCompatible()
     {
         Assert.Equal(
-            HybridStorageModeBenchmark.ConcurrentExecutionPath.Legacy,
+            HybridStorageModeBenchmark.ConcurrentExecutionPath.Qualification,
             HybridStorageModeBenchmark.GetConcurrentExecutionPath(qualificationSettings: null));
         Assert.True(HybridStorageModeBenchmark.UsesLegacyReadPriming(qualificationSettings: null));
 
@@ -631,6 +1072,22 @@ public sealed class HybridStorageModeQualificationTests
             P99Ms = 5,
         };
 
+    private static Task CompleteScheduledWorkerAsync(
+        Func<Task<BenchmarkResult>> scheduledWorker,
+        TaskCompletionSource<BenchmarkResult> scheduledCompletion,
+        CancellationToken cancellationToken)
+        => Task.Run(async () =>
+        {
+            try
+            {
+                scheduledCompletion.TrySetResult(await scheduledWorker());
+            }
+            catch (Exception exception)
+            {
+                scheduledCompletion.TrySetException(exception);
+            }
+        }, cancellationToken);
+
     private static HybridStorageModeBenchmark.QualificationSettings CreateFastSettings()
         => new(
             WarmupDuration: TimeSpan.Zero,
@@ -646,6 +1103,20 @@ public sealed class HybridStorageModeQualificationTests
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
+        }
+    }
+
+    private static async Task AwaitDetachedWorkerAsync(Task worker)
+    {
+        try
+        {
+            await worker.WaitAsync(
+                TimeSpan.FromSeconds(1),
+                TestContext.Current.CancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            // Coordinated deadline cancellation is the expected detached-worker exit.
         }
     }
 
@@ -669,6 +1140,14 @@ public sealed class HybridStorageModeQualificationTests
         public DateTimeOffset UtcNow => StartedUtc + Elapsed + _utcNowSkew;
         public CancellationToken Token => _cts.Token;
         public Task Expired => _expired.Task;
+        public int StartCount => Volatile.Read(ref _startCount);
+
+        private int _startCount;
+
+        public void Start()
+        {
+            Interlocked.CompareExchange(ref _startCount, 1, 0);
+        }
 
         internal void AdvanceTo(TimeSpan elapsed, bool expire = false)
         {

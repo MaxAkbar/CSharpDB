@@ -7,12 +7,17 @@ namespace CSharpDB.Benchmarks.Infrastructure;
 /// </summary>
 public sealed class BenchmarkDatabase : IAsyncDisposable, IDisposable
 {
+    private readonly object _lifetimeGate = new();
     private readonly string _filePath;
     private readonly DatabaseOptions _options;
+    private readonly List<Task> _detachedWork = [];
     private Database? _db;
+    private int _disposeRequested;
+    private int _resourcesDisposed;
 
     public string FilePath => _filePath;
     public Database Db => _db ?? throw new InvalidOperationException("Database not open.");
+    internal Task DeferredCleanupCompletion { get; private set; } = Task.CompletedTask;
 
     private BenchmarkDatabase(string filePath, Database db, DatabaseOptions options)
     {
@@ -104,21 +109,85 @@ public sealed class BenchmarkDatabase : IAsyncDisposable, IDisposable
         return _db;
     }
 
-    public async ValueTask DisposeAsync()
+    internal void QuarantineDetachedWork(Task task)
     {
-        if (_db != null)
-        {
-            await _db.DisposeAsync();
-            _db = null;
-        }
-        CleanupFiles();
+        ArgumentNullException.ThrowIfNull(task);
+        ObserveFaultEventually(task);
+        lock (_lifetimeGate)
+            _detachedWork.Add(task);
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _disposeRequested, 1) != 0)
+            return ValueTask.CompletedTask;
+
+        Task[] pendingWork = GetPendingDetachedWork();
+        if (pendingWork.Length == 0)
+            return DisposeResourcesAsync();
+
+        Task deferredCleanup = DisposeAfterDetachedWorkAsync(Task.WhenAll(pendingWork));
+        lock (_lifetimeGate)
+            DeferredCleanupCompletion = deferredCleanup;
+        return ValueTask.CompletedTask;
     }
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposeRequested, 1) != 0)
+            return;
+
+        Task[] pendingWork = GetPendingDetachedWork();
+        if (pendingWork.Length == 0)
+        {
+            DisposeResourcesAsync().AsTask().GetAwaiter().GetResult();
+            return;
+        }
+
+        Task deferredCleanup = DisposeAfterDetachedWorkAsync(Task.WhenAll(pendingWork));
+        lock (_lifetimeGate)
+            DeferredCleanupCompletion = deferredCleanup;
+    }
+
+    private Task[] GetPendingDetachedWork()
+    {
+        lock (_lifetimeGate)
+        {
+            return _detachedWork
+                .Where(static task => !task.IsCompleted)
+                .ToArray();
+        }
+    }
+
+    private async Task DisposeAfterDetachedWorkAsync(Task lifetime)
+    {
+        try
+        {
+            await lifetime.ConfigureAwait(false);
+        }
+        catch
+        {
+            // The benchmark diagnostic already owns detached worker failures.
+        }
+
+        try
+        {
+            await DisposeResourcesAsync().ConfigureAwait(false);
+        }
+        catch
+        {
+            // Deferred cleanup cannot replace the benchmark's explicit failure.
+        }
+    }
+
+    private async ValueTask DisposeResourcesAsync()
+    {
+        if (Interlocked.Exchange(ref _resourcesDisposed, 1) != 0)
+            return;
+
         if (_db != null)
         {
-            _db.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            await _db.DisposeAsync().ConfigureAwait(false);
             _db = null;
         }
         CleanupFiles();
@@ -128,5 +197,14 @@ public sealed class BenchmarkDatabase : IAsyncDisposable, IDisposable
     {
         try { if (File.Exists(_filePath)) File.Delete(_filePath); } catch { }
         try { if (File.Exists(_filePath + ".wal")) File.Delete(_filePath + ".wal"); } catch { }
+    }
+
+    private static void ObserveFaultEventually(Task task)
+    {
+        _ = task.ContinueWith(
+            static completedTask => _ = completedTask.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 }

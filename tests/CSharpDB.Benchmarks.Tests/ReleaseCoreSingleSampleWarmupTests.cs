@@ -103,6 +103,172 @@ public sealed class ReleaseCoreSingleSampleWarmupTests
     }
 
     [Fact]
+    public async Task SuiteRunner_ReleaseCoreRowBelowSampleFloorFailsBeforeCsvEmission()
+    {
+        string temporaryRoot = CreateTemporaryDirectory();
+        try
+        {
+            InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => BenchmarkProgram.RunSuiteWithRepeatsAsync(
+                    "master-table",
+                    () => Task.FromResult(new List<BenchmarkResult>
+                    {
+                        CreateResult(invocation: 99),
+                    }),
+                    repeatCount: 1,
+                    outputDirectory: temporaryRoot));
+
+            Assert.Contains("master-table", exception.Message);
+            Assert.Contains("single-sample-row", exception.Message);
+            Assert.Contains("99 retained latency samples", exception.Message);
+            Assert.Contains("100", exception.Message);
+            Assert.Empty(Directory.GetFiles(temporaryRoot, "*.csv"));
+        }
+        finally
+        {
+            Directory.Delete(temporaryRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task SuiteRunner_EmptyReleaseCoreResultFailsBeforeCsvEmission()
+    {
+        string temporaryRoot = CreateTemporaryDirectory();
+        try
+        {
+            InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => BenchmarkProgram.RunSuiteWithRepeatsAsync(
+                    "master-table",
+                    static () => Task.FromResult(new List<BenchmarkResult>()),
+                    repeatCount: 1,
+                    outputDirectory: temporaryRoot));
+
+            Assert.Contains("master-table", exception.Message);
+            Assert.Contains("no benchmark rows", exception.Message);
+            Assert.Empty(Directory.GetFiles(temporaryRoot, "*.csv"));
+        }
+        finally
+        {
+            Directory.Delete(temporaryRoot, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("TotalOps")]
+    [InlineData("ElapsedMs")]
+    [InlineData("OpsPerSec")]
+    [InlineData("P99")]
+    public async Task SuiteRunner_InvalidComparatorMetricFailsBeforeCsvEmission(
+        string invalidMetric)
+    {
+        string temporaryRoot = CreateTemporaryDirectory();
+        try
+        {
+            BenchmarkResult invalidResult = new()
+            {
+                Name = "invalid-release-row",
+                TotalOps = invalidMetric switch
+                {
+                    "TotalOps" => 0,
+                    "OpsPerSec" => 1,
+                    _ => int.MaxValue,
+                },
+                LatencySamples = 100,
+                ElapsedMs = invalidMetric switch
+                {
+                    "ElapsedMs" => 0.004,
+                    "OpsPerSec" => 100_000,
+                    _ => 1_000,
+                },
+                P99Ms = invalidMetric == "P99" ? 0.00004 : 1,
+            };
+
+            InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => BenchmarkProgram.RunSuiteWithRepeatsAsync(
+                    "master-table",
+                    () => Task.FromResult(new List<BenchmarkResult> { invalidResult }),
+                    repeatCount: 1,
+                    outputDirectory: temporaryRoot));
+
+            Assert.Contains("master-table", exception.Message);
+            Assert.Contains("invalid-release-row", exception.Message);
+            Assert.Contains(invalidMetric, exception.Message);
+            Assert.Contains("positive finite value", exception.Message);
+            Assert.Empty(Directory.GetFiles(temporaryRoot, "*.csv"));
+        }
+        finally
+        {
+            Directory.Delete(temporaryRoot, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("empty")]
+    [InlineData("undersampled")]
+    [InlineData("invalid-metric")]
+    public void ColdOpenWriter_InvalidReleaseEvidenceFailsBeforeCsvEmission(
+        string evidenceKind)
+    {
+        string temporaryRoot = CreateTemporaryDirectory();
+        try
+        {
+            IReadOnlyList<BenchmarkResult> rows = evidenceKind switch
+            {
+                "empty" => [],
+                "undersampled" => [CreateResult(99)],
+                "invalid-metric" =>
+                [
+                    new BenchmarkResult
+                    {
+                        Name = "invalid-cold-open-row",
+                        TotalOps = 100,
+                        LatencySamples = 100,
+                        ElapsedMs = 1_000,
+                        P99Ms = 0.00004,
+                    },
+                ],
+                _ => throw new ArgumentOutOfRangeException(nameof(evidenceKind)),
+            };
+
+            InvalidOperationException exception = Assert.Throws<InvalidOperationException>(
+                () => BenchmarkProgram.WriteSuiteResults(
+                    "hybrid-cold-open",
+                    [rows],
+                    outputDirectory: temporaryRoot));
+
+            Assert.Contains("hybrid-cold-open", exception.Message);
+            Assert.Empty(Directory.GetFiles(temporaryRoot, "*.csv"));
+        }
+        finally
+        {
+            Directory.Delete(temporaryRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task SuiteRunner_NonReleaseSuiteDoesNotApplyReleaseSampleFloor()
+    {
+        string temporaryRoot = CreateTemporaryDirectory();
+        try
+        {
+            await BenchmarkProgram.RunSuiteWithRepeatsAsync(
+                "diagnostic-only-test",
+                () => Task.FromResult(new List<BenchmarkResult>
+                {
+                    CreateResult(invocation: 1),
+                }),
+                repeatCount: 1,
+                outputDirectory: temporaryRoot);
+
+            Assert.Single(Directory.GetFiles(temporaryRoot, "*.csv"));
+        }
+        finally
+        {
+            Directory.Delete(temporaryRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task ScenarioMajorRunner_RepeatOneWarmupIsNotRecorded()
     {
         int invocationCount = 0;

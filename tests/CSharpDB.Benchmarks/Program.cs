@@ -14,6 +14,8 @@ namespace CSharpDB.Benchmarks;
 
 public static class Program
 {
+    internal const int MinimumReleaseCoreLatencySamples = 100;
+
     private static readonly string[] s_releaseCoreSuiteKeys =
     [
         "master-table",
@@ -1195,6 +1197,7 @@ public static class Program
                 ? $"{suiteName}-{runStamp}.csv"
                 : $"{suiteName}-{runStamp}-run{i + 1}.csv";
             string outputPath = Path.Combine(outputDir, outputFileName);
+            ValidateReleaseCoreResults(suiteName, runResults);
             CsvReporter.WriteResults(outputPath, runResults);
             Console.WriteLine($"\nResults written to {outputPath}");
             CsvReporter.PrintSummaryTable(runResults);
@@ -1208,6 +1211,7 @@ public static class Program
 
         var medianResults = BenchmarkResultAggregator.MedianAcrossRuns(allRuns);
         string medianOutputPath = Path.Combine(outputDir, $"{suiteName}-{runStamp}-median-of-{repeatCount}.csv");
+        ValidateReleaseCoreResults(suiteName, medianResults);
         CsvReporter.WriteResults(medianOutputPath, medianResults);
         Console.WriteLine($"\nMedian summary written to {medianOutputPath}");
         CsvReporter.PrintSummaryTable(medianResults);
@@ -1231,6 +1235,7 @@ public static class Program
                 ? $"{suiteName}-{runStamp}.csv"
                 : $"{suiteName}-{runStamp}-run{runIndex + 1}.csv";
             string outputPath = Path.Combine(outputDir, outputFileName);
+            ValidateReleaseCoreResults(suiteName, allRuns[runIndex]);
             CsvReporter.WriteResults(outputPath, allRuns[runIndex]);
             Console.WriteLine($"\nResults written to {outputPath}");
             CsvReporter.PrintSummaryTable(allRuns[runIndex]);
@@ -1243,9 +1248,87 @@ public static class Program
         string medianOutputPath = Path.Combine(
             outputDir,
             $"{suiteName}-{runStamp}-median-of-{allRuns.Count}.csv");
+        ValidateReleaseCoreResults(suiteName, medianResults);
         CsvReporter.WriteResults(medianOutputPath, medianResults);
         Console.WriteLine($"\nMedian summary written to {medianOutputPath}");
         CsvReporter.PrintSummaryTable(medianResults);
+    }
+
+    internal static void ValidateReleaseCoreResults(
+        string suiteName,
+        IReadOnlyList<BenchmarkResult> results)
+    {
+        if (!s_releaseCoreSuiteKeys.Contains(suiteName, StringComparer.Ordinal))
+            return;
+
+        if (results.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"Release-core suite '{suiteName}' produced no benchmark rows; " +
+                "a release qualification CSV cannot be emitted without measurement evidence.");
+        }
+
+        foreach (BenchmarkResult result in results)
+        {
+            if (result.LatencySamples >= MinimumReleaseCoreLatencySamples)
+            {
+                ValidatePositiveReleaseCoreMetric(
+                    suiteName,
+                    result.Name,
+                    "TotalOps",
+                    result.TotalOps,
+                    "0");
+                ValidatePositiveReleaseCoreMetric(
+                    suiteName,
+                    result.Name,
+                    "ElapsedMs",
+                    result.ElapsedMs,
+                    "F2");
+                ValidatePositiveReleaseCoreMetric(
+                    suiteName,
+                    result.Name,
+                    "OpsPerSec",
+                    result.OpsPerSecond,
+                    "F1");
+                ValidatePositiveReleaseCoreMetric(
+                    suiteName,
+                    result.Name,
+                    "P99",
+                    result.P99Ms,
+                    "F4");
+                continue;
+            }
+
+            throw new InvalidOperationException(
+                $"Release-core suite '{suiteName}' row '{result.Name}' produced " +
+                $"{result.LatencySamples:N0} retained latency samples; at least " +
+                $"{MinimumReleaseCoreLatencySamples:N0} are required before CSV emission.");
+        }
+    }
+
+    private static void ValidatePositiveReleaseCoreMetric(
+        string suiteName,
+        string rowName,
+        string metricName,
+        double value,
+        string csvFormat)
+    {
+        string emittedValue = value.ToString(csvFormat, CultureInfo.InvariantCulture);
+        if (double.TryParse(
+                emittedValue,
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out double parsedValue) &&
+            double.IsFinite(parsedValue) &&
+            parsedValue > 0)
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(
+            $"Release-core suite '{suiteName}' row '{rowName}' produced invalid " +
+            $"{metricName} '{value}' (CSV value '{emittedValue}'); a positive finite value " +
+            "is required before CSV emission.");
     }
 
     private static string[] StripCustomArgs(string[] args)

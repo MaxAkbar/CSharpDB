@@ -102,7 +102,7 @@ jobs:
           retention-days: 14
 
   previous-release-performance:
-    name: Windows previous-release performance / clean pass ${{ matrix.qualification_pass }}
+    name: Windows previous-release performance / ${{ matrix.suite }} / clean pass ${{ matrix.qualification_pass }}
     needs: qualify
     runs-on: windows-latest
     timeout-minutes: 300
@@ -112,6 +112,14 @@ jobs:
         qualification_pass:
           - 1
           - 2
+        suite:
+          - master-table
+          - durable-sql-batching
+          - concurrent-write-diagnostics
+          - hybrid-storage-mode
+          - hybrid-hot-set-read
+          - hybrid-cold-open
+          - sqlite-compare
 
     steps:
       - name: Checkout
@@ -130,6 +138,7 @@ jobs:
         env:
           # Keep detached worktrees below the legacy Windows MAX_PATH limit.
           PERFORMANCE_OUTPUT: ${{ runner.temp }}/cdb-perf/p${{ matrix.qualification_pass }}
+          PERFORMANCE_SUITE: ${{ matrix.suite }}
           PREVIOUS_RELEASE_REF: ${{ inputs.previous_release_ref }}
           CANDIDATE_REF: ${{ inputs.release_commit || github.sha }}
         run: |
@@ -141,6 +150,7 @@ jobs:
             -CandidateRef $env:CANDIDATE_REF `
             -OutputPath $env:PERFORMANCE_OUTPUT `
             -QualificationPass ${{ matrix.qualification_pass }} `
+            -SuiteName $env:PERFORMANCE_SUITE `
             -RepeatCount 3 `
             -PostBuildQuiescenceSeconds 30 `
             -MaxThroughputRegressionPercent 15 `
@@ -151,7 +161,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: previous-release-performance-${{ github.sha }}-pass-${{ matrix.qualification_pass }}
+          name: previous-release-performance-${{ github.sha }}-${{ matrix.suite }}-pass-${{ matrix.qualification_pass }}-attempt-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/cdb-perf/p${{ matrix.qualification_pass }}/previous-release-performance-preflight.md
             ${{ runner.temp }}/cdb-perf/p${{ matrix.qualification_pass }}/previous-release-performance.md

@@ -18,6 +18,10 @@ namespace CSharpDB.Benchmarks.Macro;
 public static class ConcurrentDurableWriteBenchmark
 {
     private const int ExplicitIdWriterRangeSpan = 1_000_000;
+    internal const int MinimumReleaseCoreLatencySamples = 100;
+    internal static readonly TimeSpan NominalReleaseCoreMeasuredDuration = TimeSpan.FromSeconds(10);
+    internal static readonly TimeSpan MaximumReleaseCoreMeasuredDuration = TimeSpan.FromSeconds(90);
+    private static readonly TimeSpan CancellationDrainTimeout = TimeSpan.FromSeconds(1);
     private static int[] _nextDisjointIds = [];
 
     private static readonly ConcurrentWriteScenario[] s_scenarios =
@@ -80,7 +84,12 @@ public static class ConcurrentDurableWriteBenchmark
         await using var bench = await BenchmarkDatabase.CreateAsync(options: options);
         await bench.ReopenAsync();
 
-        await RunPhaseAsync(bench.Db, scenario.WriterCount, TimeSpan.FromSeconds(2), recordLatencies: false);
+        await RunPhaseAsync(
+            bench.Db,
+            scenario.WriterCount,
+            TimeSpan.FromSeconds(2),
+            recordLatencies: false,
+            bench.QuarantineDetachedWork);
 
         GC.Collect();
         GC.WaitForPendingFinalizers();
@@ -88,7 +97,12 @@ public static class ConcurrentDurableWriteBenchmark
 
         bench.Db.ResetWalFlushDiagnostics();
         bench.Db.ResetCommitPathDiagnostics();
-        var stats = await RunPhaseAsync(bench.Db, scenario.WriterCount, TimeSpan.FromSeconds(10), recordLatencies: true);
+        var stats = await RunPhaseAsync(
+            bench.Db,
+            scenario.WriterCount,
+            NominalReleaseCoreMeasuredDuration,
+            recordLatencies: true,
+            bench.QuarantineDetachedWork);
         WalFlushDiagnosticsSnapshot walDiagnostics = bench.Db.GetWalFlushDiagnosticsSnapshot();
         CommitPathDiagnosticsSnapshot commitPathDiagnostics = bench.Db.GetCommitPathDiagnosticsSnapshot();
 
@@ -136,15 +150,25 @@ public static class ConcurrentDurableWriteBenchmark
         Database db,
         int writerCount,
         TimeSpan duration,
-        bool recordLatencies)
+        bool recordLatencies,
+        Action<Task> detachedWorkRegistrar)
     {
+        ArgumentNullException.ThrowIfNull(detachedWorkRegistrar);
         var startGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allWritersReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var writerTasks = new Task<WriterStats>[writerCount];
-        long durationTicks = (long)(duration.TotalSeconds * Stopwatch.Frequency);
+        using var phaseCts = new CancellationTokenSource();
+        object[] writerRecorderGates = Enumerable.Range(0, writerCount)
+            .Select(static _ => new object())
+            .ToArray();
+        int measurementClosed = 0;
+        int readyWriterCount = 0;
+        int retainedLatencySamples = 0;
 
         for (int writerIndex = 0; writerIndex < writerCount; writerIndex++)
         {
             int localWriterIndex = writerIndex;
+            object recorderGate = writerRecorderGates[writerIndex];
             // Each logical writer runs as its own Task against the same Database
             // instance so the benchmark captures in-process contention.
             writerTasks[writerIndex] = Task.Run(async () =>
@@ -154,10 +178,11 @@ public static class ConcurrentDurableWriteBenchmark
                 int busyCount = 0;
                 int fatalErrorCount = 0;
 
+                if (Interlocked.Increment(ref readyWriterCount) == writerCount)
+                    allWritersReady.TrySetResult();
                 await startGate.Task.ConfigureAwait(false);
-                long startedAt = Stopwatch.GetTimestamp();
 
-                while (Stopwatch.GetTimestamp() - startedAt < durationTicks)
+                while (!phaseCts.IsCancellationRequested)
                 {
                     int id = Interlocked.Increment(ref _nextDisjointIds[localWriterIndex]);
                     string sql =
@@ -165,11 +190,27 @@ public static class ConcurrentDurableWriteBenchmark
                     var sw = Stopwatch.StartNew();
                     try
                     {
-                        await db.ExecuteAsync(sql, CancellationToken.None).ConfigureAwait(false);
+                        await db.ExecuteAsync(sql, phaseCts.Token).ConfigureAwait(false);
                         sw.Stop();
 
-                        successfulCommits++;
-                        localLatencies?.Add(sw.Elapsed.TotalMilliseconds);
+                        if (Volatile.Read(ref measurementClosed) != 0)
+                            break;
+
+                        lock (recorderGate)
+                        {
+                            if (Volatile.Read(ref measurementClosed) != 0)
+                                break;
+
+                            successfulCommits++;
+                            localLatencies?.Add(sw.Elapsed.TotalMilliseconds);
+                            if (recordLatencies)
+                                Interlocked.Increment(ref retainedLatencySamples);
+                        }
+                    }
+                    catch (OperationCanceledException) when (phaseCts.IsCancellationRequested)
+                    {
+                        sw.Stop();
+                        break;
                     }
                     catch (CSharpDbException ex) when (ex.Code == ErrorCode.Busy)
                     {
@@ -191,10 +232,76 @@ public static class ConcurrentDurableWriteBenchmark
             });
         }
 
+        await allWritersReady.Task.ConfigureAwait(false);
         var totalSw = Stopwatch.StartNew();
+        TimeSpan maximumDuration = recordLatencies
+            ? MaximumReleaseCoreMeasuredDuration
+            : duration;
+        phaseCts.CancelAfter(maximumDuration);
         startGate.TrySetResult();
-        WriterStats[] completed = await Task.WhenAll(writerTasks);
-        totalSw.Stop();
+        Task<WriterStats[]> allWriters = Task.WhenAll(writerTasks);
+        Task<Task<WriterStats>> firstWriterCompletion = Task.WhenAny(writerTasks);
+        bool measurementCapReached = false;
+
+        while (true)
+        {
+            TimeSpan elapsed = totalSw.Elapsed;
+            bool targetReached = recordLatencies
+                ? HasMetReleaseCoreMeasurementTarget(elapsed, GetRetainedLatencySamples())
+                : elapsed >= duration;
+            if (targetReached && elapsed <= maximumDuration)
+                break;
+
+            if (phaseCts.IsCancellationRequested || elapsed >= maximumDuration)
+            {
+                measurementCapReached = recordLatencies;
+                break;
+            }
+
+            if (firstWriterCompletion.IsCompleted)
+            {
+                Task<WriterStats> completedWriter = await firstWriterCompletion;
+                Exception? earlyFailure = completedWriter.Exception?.Flatten().InnerExceptions[0];
+                if (earlyFailure is null && completedWriter.IsCanceled)
+                {
+                    earlyFailure = new TaskCanceledException(
+                        "A concurrent durable-write worker was canceled before coordinated cancellation.");
+                }
+
+                _ = CloseMeasurement();
+                phaseCts.Cancel();
+                await WaitForWriterDrainAsync(
+                    allWriters,
+                    CancellationDrainTimeout,
+                    earlyFailure,
+                    detachedWorkRegistrar);
+                throw new InvalidOperationException(
+                    "A concurrent durable-write worker exited before the measurement target was reached.",
+                    earlyFailure);
+            }
+
+            await Task.WhenAny(
+                firstWriterCompletion,
+                Task.Delay(TimeSpan.FromMilliseconds(10)));
+        }
+
+        TimeSpan measuredElapsed = CloseMeasurement();
+        int finalRetainedLatencySamples = GetRetainedLatencySamples();
+        InvalidOperationException? capException = measurementCapReached
+            ? CreateReleaseCoreMeasurementCapException(
+                measuredElapsed,
+                finalRetainedLatencySamples)
+            : null;
+        phaseCts.Cancel();
+        await WaitForWriterDrainAsync(
+            allWriters,
+            CancellationDrainTimeout,
+            capException,
+            detachedWorkRegistrar);
+        WriterStats[] completed = await allWriters;
+
+        if (capException is not null)
+            throw capException;
 
         var combinedLatencies = new List<double>(completed.Sum(static s => s.CommitLatenciesMs.Count));
         int successfulCommits = 0;
@@ -214,7 +321,72 @@ public static class ConcurrentDurableWriteBenchmark
             successfulCommits,
             busyCount,
             fatalErrorCount,
-            totalSw.Elapsed.TotalMilliseconds);
+            measuredElapsed.TotalMilliseconds);
+
+        int GetRetainedLatencySamples()
+            => Volatile.Read(ref retainedLatencySamples);
+
+        TimeSpan CloseMeasurement()
+        {
+            Interlocked.Exchange(ref measurementClosed, 1);
+            TimeSpan cutoffElapsed = totalSw.Elapsed;
+            foreach (object recorderGate in writerRecorderGates)
+            {
+                lock (recorderGate)
+                {
+                    // Establish a barrier with an in-flight recorder. New recorders
+                    // observe measurementClosed before entering their per-writer gate.
+                }
+            }
+
+            return cutoffElapsed;
+        }
+    }
+
+    internal static bool HasMetReleaseCoreMeasurementTarget(
+        TimeSpan elapsed,
+        int retainedLatencySamples)
+        => elapsed >= NominalReleaseCoreMeasuredDuration &&
+           retainedLatencySamples >= MinimumReleaseCoreLatencySamples;
+
+    internal static InvalidOperationException CreateReleaseCoreMeasurementCapException(
+        TimeSpan elapsed,
+        int retainedLatencySamples)
+        => new(
+            $"Concurrent durable-write benchmark reached its " +
+            $"{MaximumReleaseCoreMeasuredDuration.TotalSeconds:F0}-second measurement cap after " +
+            $"{elapsed.TotalSeconds:F1} seconds with {retainedLatencySamples:N0} retained latency samples. " +
+            $"Release qualification requires at least " +
+            $"{NominalReleaseCoreMeasuredDuration.TotalSeconds:F0} measured seconds and " +
+            $"{MinimumReleaseCoreLatencySamples:N0} retained latency samples.");
+
+    internal static async Task WaitForWriterDrainAsync(
+        Task allWriters,
+        TimeSpan cancellationDrainTimeout,
+        Exception? pendingFailure = null,
+        Action<Task>? detachedWorkRegistrar = null)
+    {
+        ArgumentNullException.ThrowIfNull(allWriters);
+        if (cancellationDrainTimeout < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(cancellationDrainTimeout));
+
+        try
+        {
+            await allWriters.WaitAsync(cancellationDrainTimeout);
+        }
+        catch (TimeoutException)
+        {
+            detachedWorkRegistrar?.Invoke(allWriters);
+            _ = allWriters.ContinueWith(
+                static task => _ = task.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            throw new InvalidOperationException(
+                "Coordinated cancellation for the concurrent durable-write benchmark did not stop " +
+                $"all writers within {cancellationDrainTimeout.TotalSeconds:F3} seconds.",
+                pendingFailure);
+        }
     }
 
     private static string FormatBatchWindow(TimeSpan batchWindow)

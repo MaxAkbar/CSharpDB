@@ -521,6 +521,43 @@ public sealed class PreviousReleasePerformanceScriptTests
             Assert.False(Directory.Exists(Path.Combine(evidence, "baseline-source")));
             Assert.False(Directory.Exists(Path.Combine(evidence, "candidate-source")));
 
+            string selectedSuiteEvidence = Path.Combine(
+                temporaryRoot,
+                "selected-suite-evidence");
+            ProcessResult selectedSuiteResult = await RunProcessAsync(
+                "pwsh",
+                "-NoLogo",
+                "-NoProfile",
+                "-File",
+                Path.Combine(scriptRoot, "Test-PreviousReleasePerformance.ps1"),
+                "-CandidateRef",
+                "HEAD",
+                "-OutputPath",
+                selectedSuiteEvidence,
+                "-QualificationPass",
+                "1",
+                "-SuiteName",
+                "hybrid-cold-open",
+                "-PreflightOnly");
+
+            Assert.True(
+                selectedSuiteResult.ExitCode == 0,
+                selectedSuiteResult.CombinedOutput);
+            string selectedSuitePreflight = File.ReadAllText(Path.Combine(
+                selectedSuiteEvidence,
+                "previous-release-performance-preflight.md"));
+            Assert.Contains(
+                "- Revision order within each suite: previous then candidate",
+                selectedSuitePreflight);
+            Assert.Contains(
+                "- Suite order: hybrid-cold-open",
+                selectedSuitePreflight);
+            Assert.Contains(
+                "- Execution order: hybrid-cold-open/previous, " +
+                "hybrid-cold-open/candidate",
+                selectedSuitePreflight);
+            Assert.DoesNotContain("master-table/", selectedSuitePreflight);
+
             File.AppendAllText(trackedFile, Environment.NewLine + "dirty");
             ProcessResult dirtyResult = await RunProcessAsync(
                 "pwsh",
@@ -690,6 +727,66 @@ public sealed class PreviousReleasePerformanceScriptTests
             Assert.DoesNotContain(
                 executionEvents,
                 line => line.Contains("|FAIL|", StringComparison.Ordinal));
+
+            string selectedSuiteEvidence = Path.Combine(
+                temporaryRoot,
+                "selected-suite-run-evidence");
+            string selectedSuiteInvocationLog = Path.Combine(
+                temporaryRoot,
+                "selected-suite-fake-dotnet.log");
+            var selectedSuiteEnvironment = new Dictionary<string, string>(environment)
+            {
+                ["FAKE_DOTNET_LOG"] = selectedSuiteInvocationLog,
+            };
+            ProcessResult selectedSuite = await RunProcessWithEnvironmentAsync(
+                "pwsh",
+                selectedSuiteEnvironment,
+                "-NoLogo",
+                "-NoProfile",
+                "-File",
+                Path.Combine(scriptRoot, "Test-PreviousReleasePerformance.ps1"),
+                "-PreviousRef",
+                "v4.3.0",
+                "-CandidateRef",
+                "HEAD",
+                "-OutputPath",
+                selectedSuiteEvidence,
+                "-QualificationPass",
+                "1",
+                "-SuiteName",
+                "hybrid-cold-open");
+
+            Assert.True(selectedSuite.ExitCode == 0, selectedSuite.CombinedOutput);
+            Assert.Contains(
+                "- Result: **PASS**",
+                File.ReadAllText(Path.Combine(
+                    selectedSuiteEvidence,
+                    "previous-release-performance.md")));
+            Assert.Equal(
+                new[] { "hybrid-cold-open.csv" },
+                Directory.GetFiles(
+                        Path.Combine(selectedSuiteEvidence, "baseline-results"),
+                        "*.csv")
+                    .Select(path => Path.GetFileName(path)!)
+                    .ToArray());
+            Assert.Equal(
+                new[] { "hybrid-cold-open.csv" },
+                Directory.GetFiles(
+                        Path.Combine(selectedSuiteEvidence, "candidate-results"),
+                        "*.csv")
+                    .Select(path => Path.GetFileName(path)!)
+                    .ToArray());
+            string[] selectedSuiteRuns = File.ReadAllLines(selectedSuiteInvocationLog)
+                .Where(line => line.Contains("|run|", StringComparison.Ordinal))
+                .ToArray();
+            Assert.Collection(
+                selectedSuiteRuns,
+                line => Assert.Contains(
+                    "baseline-source|run|hybrid-cold-open|repeat=3",
+                    line),
+                line => Assert.Contains(
+                    "candidate-source|run|hybrid-cold-open|repeat=3",
+                    line));
 
             string duplicateEvidence = Path.Combine(temporaryRoot, "duplicate-evidence");
             environment["FAKE_DOTNET_DUPLICATE_SUITE"] = "master-table";

@@ -102,12 +102,51 @@ public sealed class DaemonPackagingAssetsTests
             "empty discovers the nearest prior semantic release",
             normalized);
         Assert.DoesNotContain("default: v4.3.0", normalized);
-        Assert.Contains("previous-release-performance:", normalized);
+        int performanceJobIndex = normalized.IndexOf(
+            "  previous-release-performance:\n",
+            StringComparison.Ordinal);
+        Assert.True(
+            performanceJobIndex >= 0,
+            "Performance qualification job must be present.");
+        string performanceJob = normalized[performanceJobIndex..];
         Assert.Contains(
             "  previous-release-performance:\n" +
-            "    name: Windows previous-release performance / clean pass ${{ matrix.qualification_pass }}\n" +
+            "    name: Windows previous-release performance / ${{ matrix.suite }} / clean pass ${{ matrix.qualification_pass }}\n" +
             "    needs: qualify\n",
-            normalized);
+            performanceJob);
+        Assert.Contains(
+            "        qualification_pass:\n" +
+            "          - 1\n" +
+            "          - 2\n" +
+            "        suite:\n",
+            performanceJob);
+        Assert.Contains(
+            "    strategy:\n      fail-fast: false\n      matrix:\n",
+            performanceJob);
+        string[] expectedPerformanceSuites =
+        [
+            "master-table",
+            "durable-sql-batching",
+            "concurrent-write-diagnostics",
+            "hybrid-storage-mode",
+            "hybrid-hot-set-read",
+            "hybrid-cold-open",
+            "sqlite-compare",
+        ];
+        System.Text.RegularExpressions.Match suiteMatrixMatch =
+            System.Text.RegularExpressions.Regex.Match(
+                performanceJob,
+                @"(?m)^        suite:\n(?<suites>(?:          - [a-z0-9-]+\n)+)");
+        Assert.True(
+            suiteMatrixMatch.Success,
+            "Performance qualification must define a suite matrix.");
+        string[] actualPerformanceSuites = suiteMatrixMatch
+            .Groups["suites"]
+            .Value
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => line[12..])
+            .ToArray();
+        Assert.Equal(expectedPerformanceSuites, actualPerformanceSuites);
         Assert.Contains("Test-PreviousReleasePerformance.ps1", normalized);
         Assert.Contains(
             "-CandidateRef $env:CANDIDATE_REF",
@@ -115,6 +154,9 @@ public sealed class DaemonPackagingAssetsTests
         Assert.Contains(
             "-QualificationPass ${{ matrix.qualification_pass }}",
             normalized);
+        Assert.Contains("PERFORMANCE_SUITE: ${{ matrix.suite }}", performanceJob);
+        Assert.Contains("-SuiteName $env:PERFORMANCE_SUITE", performanceJob);
+        Assert.Contains("timeout-minutes: 300", performanceJob);
         Assert.DoesNotContain("-Paired", normalized);
         Assert.Contains("-RepeatCount 3", normalized);
         Assert.Contains("-PostBuildQuiescenceSeconds 30", normalized);
@@ -126,6 +168,17 @@ public sealed class DaemonPackagingAssetsTests
             normalized);
         Assert.Contains("baseline-results", normalized);
         Assert.Contains("candidate-results", normalized);
+        Assert.Contains(
+            "name: previous-release-performance-${{ github.sha }}-${{ matrix.suite }}-pass-${{ matrix.qualification_pass }}-attempt-${{ github.run_attempt }}",
+            normalized);
+        Assert.Equal(
+            5,
+            System.Text.RegularExpressions.Regex.Matches(
+                performanceJob,
+                @"\$\{\{ runner\.temp \}\}/cdb-perf/p\$\{\{ matrix\.qualification_pass \}\}/(?:previous-release-performance(?:-preflight)?\.md|baseline-results|candidate-results|logs)").Count);
+        Assert.DoesNotContain(
+            "cdb-perf/${{ matrix.suite }}",
+            performanceJob);
     }
 
     [Fact]
