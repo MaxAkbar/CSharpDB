@@ -149,6 +149,65 @@ public sealed class SqliteComparisonBenchmarkTests
     }
 
     [Fact]
+    public async Task PreparedBulkTransaction_CancelledWorkerRollsBackWithinDrain()
+    {
+        SqliteComparisonBenchmark.MeasurementPolicy policy = CreateFastPolicy();
+        using var deadline = new ManualMeasurementDeadline();
+        using var firstRowStarted = new ManualResetEventSlim();
+        using var releaseFirstRow = new ManualResetEventSlim();
+        int executedRows = 0;
+        int commitCount = 0;
+        int rollbackCount = 0;
+
+        Task<BenchmarkResult> runTask = SqliteComparisonBenchmark.RunSequentialScenarioCoreAsync(
+            "SQLite_WalFull_Sql_PreparedBulk4Col_B10000_5s",
+            ct =>
+            {
+                SqliteComparisonBenchmark.ExecuteCancellableBatchTransaction(
+                    rowCount: 10_000,
+                    executeRow: () =>
+                    {
+                        if (Interlocked.Increment(ref executedRows) == 1)
+                        {
+                            firstRowStarted.Set();
+                            releaseFirstRow.Wait();
+                        }
+                    },
+                    commit: () => Interlocked.Increment(ref commitCount),
+                    rollback: () => Interlocked.Increment(ref rollbackCount),
+                    ct);
+                return Task.CompletedTask;
+            },
+            policy,
+            deadline,
+            TimeSpan.FromMilliseconds(100));
+
+        try
+        {
+            Assert.True(firstRowStarted.Wait(
+                TimeSpan.FromSeconds(1),
+                TestContext.Current.CancellationToken));
+            deadline.AdvanceTo(policy.MaximumMeasuredDuration, expire: true);
+            releaseFirstRow.Set();
+
+            InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => runTask.WaitAsync(
+                    TimeSpan.FromSeconds(1),
+                    TestContext.Current.CancellationToken));
+
+            Assert.Contains("90-second measurement cap", exception.Message);
+            Assert.DoesNotContain("did not stop scenario worker", exception.Message);
+            Assert.Equal(1, executedRows);
+            Assert.Equal(0, commitCount);
+            Assert.Equal(1, rollbackCount);
+        }
+        finally
+        {
+            releaseFirstRow.Set();
+        }
+    }
+
+    [Fact]
     public async Task SequentialMeasurement_UnresponsiveOperationIsBoundedAndExplicit()
     {
         SqliteComparisonBenchmark.MeasurementPolicy policy = CreateFastPolicy();

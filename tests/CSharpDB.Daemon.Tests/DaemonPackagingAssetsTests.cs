@@ -59,7 +59,7 @@ public sealed class DaemonPackagingAssetsTests
     }
 
     [Fact]
-    public void SqlReleaseQualificationWorkflow_RunsTwoCleanPassesOnEverySupportedOs()
+    public void SqlReleaseQualificationWorkflow_RunsTwoCleanPassesAndBlocksOnlyOnMasterTable()
     {
         string repoRoot = FindRepoRoot();
         string workflow = File.ReadAllText(Path.Combine(
@@ -111,42 +111,18 @@ public sealed class DaemonPackagingAssetsTests
         string performanceJob = normalized[performanceJobIndex..];
         Assert.Contains(
             "  previous-release-performance:\n" +
-            "    name: Windows previous-release performance / ${{ matrix.suite }} / clean pass ${{ matrix.qualification_pass }}\n" +
+            "    name: Windows previous-release master-table / clean pass ${{ matrix.qualification_pass }}\n" +
             "    needs: qualify\n",
             performanceJob);
         Assert.Contains(
             "        qualification_pass:\n" +
             "          - 1\n" +
-            "          - 2\n" +
-            "        suite:\n",
+            "          - 2\n",
             performanceJob);
         Assert.Contains(
             "    strategy:\n      fail-fast: false\n      matrix:\n",
             performanceJob);
-        string[] expectedPerformanceSuites =
-        [
-            "master-table",
-            "durable-sql-batching",
-            "concurrent-write-diagnostics",
-            "hybrid-storage-mode",
-            "hybrid-hot-set-read",
-            "hybrid-cold-open",
-            "sqlite-compare",
-        ];
-        System.Text.RegularExpressions.Match suiteMatrixMatch =
-            System.Text.RegularExpressions.Regex.Match(
-                performanceJob,
-                @"(?m)^        suite:\n(?<suites>(?:          - [a-z0-9-]+\n)+)");
-        Assert.True(
-            suiteMatrixMatch.Success,
-            "Performance qualification must define a suite matrix.");
-        string[] actualPerformanceSuites = suiteMatrixMatch
-            .Groups["suites"]
-            .Value
-            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
-            .Select(line => line[12..])
-            .ToArray();
-        Assert.Equal(expectedPerformanceSuites, actualPerformanceSuites);
+        Assert.DoesNotContain("        suite:\n", performanceJob);
         Assert.Contains("Test-PreviousReleasePerformance.ps1", normalized);
         Assert.Contains(
             "-CandidateRef $env:CANDIDATE_REF",
@@ -154,15 +130,20 @@ public sealed class DaemonPackagingAssetsTests
         Assert.Contains(
             "-QualificationPass ${{ matrix.qualification_pass }}",
             normalized);
-        Assert.Contains("PERFORMANCE_SUITE: ${{ matrix.suite }}", performanceJob);
-        Assert.Contains("-SuiteName $env:PERFORMANCE_SUITE", performanceJob);
+        Assert.Contains("-SuiteName master-table", performanceJob);
         Assert.Contains("timeout-minutes: 300", performanceJob);
-        const string pairedSuiteSwitch =
-            "-Paired:($env:PERFORMANCE_SUITE -eq 'concurrent-write-diagnostics')";
-        Assert.Contains(pairedSuiteSwitch, performanceJob);
-        Assert.Single(System.Text.RegularExpressions.Regex.Matches(
-            performanceJob,
-            System.Text.RegularExpressions.Regex.Escape(pairedSuiteSwitch)));
+        Assert.DoesNotContain("-Paired:", performanceJob);
+        string[] supplementalSuites =
+        [
+            "durable-sql-batching",
+            "concurrent-write-diagnostics",
+            "hybrid-storage-mode",
+            "hybrid-hot-set-read",
+            "hybrid-cold-open",
+            "sqlite-compare",
+        ];
+        foreach (string suite in supplementalSuites)
+            Assert.DoesNotContain(suite, performanceJob);
         Assert.Contains("-RepeatCount 3", normalized);
         Assert.Contains("-PostBuildQuiescenceSeconds 30", normalized);
         Assert.Contains("-MaxThroughputRegressionPercent 15", normalized);
@@ -174,7 +155,7 @@ public sealed class DaemonPackagingAssetsTests
         Assert.Contains("baseline-results", normalized);
         Assert.Contains("candidate-results", normalized);
         Assert.Contains(
-            "name: previous-release-performance-${{ github.sha }}-${{ matrix.suite }}-pass-${{ matrix.qualification_pass }}-attempt-${{ github.run_attempt }}",
+            "name: previous-release-performance-${{ github.sha }}-master-table-pass-${{ matrix.qualification_pass }}-attempt-${{ github.run_attempt }}",
             normalized);
         Assert.Equal(
             5,
@@ -184,6 +165,52 @@ public sealed class DaemonPackagingAssetsTests
         Assert.DoesNotContain(
             "cdb-perf/${{ matrix.suite }}",
             performanceJob);
+    }
+
+    [Fact]
+    public void SupplementalPerformanceSuites_RemainReportOnlyOrManualDiagnostics()
+    {
+        string repoRoot = FindRepoRoot();
+        string releaseWorkflow = File.ReadAllText(Path.Combine(
+            repoRoot,
+            ".github",
+            "workflows",
+            "sql-release-qualification.yml"));
+        string guardrailWorkflow = File.ReadAllText(Path.Combine(
+            repoRoot,
+            ".github",
+            "workflows",
+            "perf-guardrails.yml"));
+        string releaseThresholds = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "tests",
+            "CSharpDB.Benchmarks",
+            "perf-thresholds.json"));
+        string manualComparisonScript = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "tests",
+            "CSharpDB.Benchmarks",
+            "scripts",
+            "Test-PreviousReleasePerformance.ps1"));
+
+        Assert.Contains("schedule:", guardrailWorkflow);
+        Assert.Contains("-NoFailOnRegression", guardrailWorkflow);
+        Assert.Contains("--durable-sql-batching", releaseThresholds);
+
+        string[] manualSupplementalSuites =
+        [
+            "durable-sql-batching",
+            "concurrent-write-diagnostics",
+            "hybrid-storage-mode",
+            "hybrid-hot-set-read",
+            "hybrid-cold-open",
+            "sqlite-compare",
+        ];
+        foreach (string suite in manualSupplementalSuites)
+        {
+            Assert.Contains($"Name = '{suite}'", manualComparisonScript);
+            Assert.DoesNotContain(suite, releaseWorkflow);
+        }
     }
 
     [Fact]

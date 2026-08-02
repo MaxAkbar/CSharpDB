@@ -144,42 +144,35 @@ public static class SqliteComparisonBenchmark
 
         BenchmarkResult transactionResult = await RunSequentialScenarioAsync(
             GetPreparedBulkInsertName(batchSize),
-            async ct =>
+            ct =>
             {
                 using var transaction = context.KeeperConnection.BeginTransaction();
                 command.Transaction = transaction;
                 try
                 {
-                    for (int i = 0; i < batchSize; i++)
-                    {
-                        int id = nextId++;
-                        idParam.Value = id;
-                        valueParam.Value = id;
-                        textParam.Value = "durable_batch";
-                        categoryParam.Value = "Alpha";
-
-                        int rowsAffected = await command.ExecuteNonQueryAsync(ct);
-                        if (rowsAffected != 1)
+                    ExecuteCancellableBatchTransaction(
+                        batchSize,
+                        () =>
                         {
-                            throw new InvalidOperationException(
-                                $"Expected one inserted row for id={id}, observed {rowsAffected}.");
-                        }
-                    }
+                            int id = nextId++;
+                            idParam.Value = id;
+                            valueParam.Value = id;
+                            textParam.Value = "durable_batch";
+                            categoryParam.Value = "Alpha";
 
-                    transaction.Commit();
-                }
-                catch
-                {
-                    try
-                    {
-                        transaction.Rollback();
-                    }
-                    catch
-                    {
-                        // Preserve the original benchmark failure.
-                    }
-
-                    throw;
+                            // Microsoft.Data.Sqlite executes ADO.NET async methods synchronously, so
+                            // enforce cancellation between rows while this worker owns the transaction.
+                            int rowsAffected = command.ExecuteNonQuery();
+                            if (rowsAffected != 1)
+                            {
+                                throw new InvalidOperationException(
+                                    $"Expected one inserted row for id={id}, observed {rowsAffected}.");
+                            }
+                        },
+                        transaction.Commit,
+                        transaction.Rollback,
+                        ct);
+                    return Task.CompletedTask;
                 }
                 finally
                 {
@@ -198,6 +191,44 @@ public static class SqliteComparisonBenchmark
                 "workload=prepared statement reuse inside one explicit transaction",
                 "surface=sqlite-adonet",
                 CreateMeasurementPolicyNote(DefaultMeasurementPolicy)));
+    }
+
+    internal static void ExecuteCancellableBatchTransaction(
+        int rowCount,
+        Action executeRow,
+        Action commit,
+        Action rollback,
+        CancellationToken ct)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(rowCount);
+        ArgumentNullException.ThrowIfNull(executeRow);
+        ArgumentNullException.ThrowIfNull(commit);
+        ArgumentNullException.ThrowIfNull(rollback);
+
+        try
+        {
+            for (int i = 0; i < rowCount; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+                executeRow();
+            }
+
+            ct.ThrowIfCancellationRequested();
+            commit();
+        }
+        catch
+        {
+            try
+            {
+                rollback();
+            }
+            catch
+            {
+                // Preserve the original benchmark failure.
+            }
+
+            throw;
+        }
     }
 
     private static async Task<BenchmarkResult> RunSqlPointLookupAsync()

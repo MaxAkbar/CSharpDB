@@ -24,8 +24,13 @@ public static class HybridStorageModeBenchmark
     internal static readonly TimeSpan MaximumReleaseCoreMeasuredDuration = TimeSpan.FromSeconds(90);
     private static readonly InsertTradeoffScenario[] s_insertTradeoffScenarios = CreateInsertTradeoffScenarios();
     private static readonly ScenarioDefinition[] s_scenarios = CreateScenarioDefinitions();
+    private static readonly ScenarioDefinition[] s_masterComparisonScenarios = s_scenarios
+        .Where(static scenario => scenario.Name.StartsWith("Storage_", StringComparison.Ordinal))
+        .ToArray();
     private static readonly IReadOnlyList<string> s_scenarioNames = Array.AsReadOnly(
         s_scenarios.Select(static scenario => scenario.Name).ToArray());
+    private static readonly IReadOnlyList<string> s_masterComparisonScenarioNames = Array.AsReadOnly(
+        s_masterComparisonScenarios.Select(static scenario => scenario.Name).ToArray());
 
     internal static QualificationSettings DefaultQualificationSettings { get; } = new(
         WarmupDuration: TimeSpan.FromSeconds(2),
@@ -54,10 +59,22 @@ public static class HybridStorageModeBenchmark
     /// </summary>
     public static IReadOnlyList<string> ScenarioNames => s_scenarioNames;
 
+    internal static IReadOnlyList<string> MasterComparisonScenarioNames =>
+        s_masterComparisonScenarioNames;
+
     public static async Task<List<BenchmarkResult>> RunAsync()
     {
         var results = new List<BenchmarkResult>(s_scenarios.Length);
         foreach (ScenarioDefinition scenario in s_scenarios)
+            results.Add(await scenario.RunAsync(null));
+
+        return results;
+    }
+
+    internal static async Task<List<BenchmarkResult>> RunMasterComparisonSubsetAsync()
+    {
+        var results = new List<BenchmarkResult>(s_masterComparisonScenarios.Length);
+        foreach (ScenarioDefinition scenario in s_masterComparisonScenarios)
             results.Add(await scenario.RunAsync(null));
 
         return results;
@@ -284,7 +301,9 @@ public static class HybridStorageModeBenchmark
     {
         await using var context = await InsertTradeoffContext.CreateAsync(scenario);
         var db = context.Database;
-        var batch = db.PrepareInsertBatch("bench", initialCapacity: InsertTradeoffRowsPerCommit);
+        InsertBatch batch = db.PrepareInsertBatch(
+            "bench",
+            initialCapacity: InsertTradeoffRowsPerCommit);
         var rowBuffer = new DbValue[4];
         DbValue textValue = DbValue.FromText("durable_batch");
         DbValue categoryValue = DbValue.FromText("Alpha");
@@ -309,7 +328,13 @@ public static class HybridStorageModeBenchmark
             InsertTradeoffMeasuredDuration,
             qualificationSettings,
             OperationAsync,
-            context.QuarantineDetachedWork);
+            context.QuarantineDetachedWork,
+            prepareMeasuredPhase: () =>
+            {
+                batch = db.PrepareInsertBatch(
+                    "bench",
+                    initialCapacity: InsertTradeoffRowsPerCommit);
+            });
 
         double rowsPerSecond = rawResult.OpsPerSecond * InsertTradeoffRowsPerCommit;
         string? extraInfo = AppendExtraInfo(
@@ -909,12 +934,13 @@ public static class HybridStorageModeBenchmark
         };
     }
 
-    private static async Task<BenchmarkResult> RunTimedOperationAsync(
+    internal static async Task<BenchmarkResult> RunTimedOperationAsync(
         string benchmarkName,
         TimeSpan normalMeasuredDuration,
         QualificationSettings? qualificationSettings,
         Func<CancellationToken, Task> operation,
-        Action<Task>? detachedWorkRegistrar)
+        Action<Task>? detachedWorkRegistrar,
+        Action? prepareMeasuredPhase = null)
     {
         QualificationSettings effectiveSettings = qualificationSettings ??
             CreateReleaseCoreMeasurementSettings(normalMeasuredDuration);
@@ -925,6 +951,7 @@ public static class HybridStorageModeBenchmark
             effectiveSettings.WarmupDuration,
             detachedWorkRegistrar);
         MacroBenchmarkRunner.StabilizeAfterWarmup();
+        prepareMeasuredPhase?.Invoke();
 
         using var deadline = new StopwatchQualificationDeadline(
             effectiveSettings.MaximumMeasuredDuration);

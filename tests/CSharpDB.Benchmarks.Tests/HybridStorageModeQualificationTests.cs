@@ -1,6 +1,8 @@
 using System.Globalization;
 using CSharpDB.Benchmarks.Infrastructure;
 using CSharpDB.Benchmarks.Macro;
+using CSharpDB.Engine;
+using CSharpDB.Primitives;
 using BenchmarkProgram = CSharpDB.Benchmarks.Program;
 
 namespace CSharpDB.Benchmarks.Tests;
@@ -29,6 +31,23 @@ public sealed class HybridStorageModeQualificationTests
         Assert.Contains(FileBackedSqlSingleInsert, names);
         Assert.Contains(FileBackedDurableWriteOptimized, names);
         Assert.Contains(HybridSqlSingleInsert, names);
+    }
+
+    [Fact]
+    public void MasterComparisonScenarioNames_PreserveStorageRowsAndExcludeInsertTradeoffs()
+    {
+        string[] expectedNames = HybridStorageModeBenchmark.ScenarioNames
+            .Where(static name => name.StartsWith("Storage_", StringComparison.Ordinal))
+            .ToArray();
+
+        IReadOnlyList<string> actualNames =
+            HybridStorageModeBenchmark.MasterComparisonScenarioNames;
+
+        Assert.Equal(24, actualNames.Count);
+        Assert.Equal(expectedNames, actualNames);
+        Assert.DoesNotContain(
+            actualNames,
+            static name => name.StartsWith("StoragePlan2_", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -79,6 +98,84 @@ public sealed class HybridStorageModeQualificationTests
 
         Assert.Contains("measurement cap", exception.Message);
         Assert.DoesNotContain("Rollback", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task TimedOperation_CancellationRollbackRepreparesBatchForMeasurement()
+    {
+        string temporaryRoot = CreateTemporaryDirectory();
+        string databasePath = Path.Combine(temporaryRoot, "phase-boundary.db");
+        var settings = new HybridStorageModeBenchmark.QualificationSettings(
+            WarmupDuration: TimeSpan.FromMilliseconds(10),
+            MinimumMeasuredDuration: TimeSpan.FromMilliseconds(1),
+            MinimumLatencySamples: 1,
+            MaximumMeasuredDuration: TimeSpan.FromSeconds(1));
+
+        try
+        {
+            await using Database db = await Database.OpenAsync(
+                databasePath,
+                TestContext.Current.CancellationToken);
+            await db.ExecuteAsync(
+                "CREATE TABLE bench (id INTEGER PRIMARY KEY, value INTEGER)",
+                TestContext.Current.CancellationToken);
+
+            InsertBatch batch = db.PrepareInsertBatch("bench", initialCapacity: 1);
+            bool measuredPhasePrepared = false;
+            int nextId = 1;
+
+            async Task OperationAsync(CancellationToken ct)
+            {
+                bool transactionStarted = false;
+                try
+                {
+                    await db.BeginTransactionAsync(
+                        measuredPhasePrepared ? ct : CancellationToken.None);
+                    transactionStarted = true;
+                    int id = nextId++;
+                    batch.AddRow(DbValue.FromInteger(id), DbValue.FromInteger(id * 10L));
+                    if (!measuredPhasePrepared)
+                        await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+
+                    Assert.Equal(1, await batch.ExecuteAsync(ct));
+                    await db.CommitAsync(ct);
+                    transactionStarted = false;
+                }
+                catch
+                {
+                    if (transactionStarted)
+                        await db.RollbackAsync(CancellationToken.None);
+                    throw;
+                }
+            }
+
+            BenchmarkResult result = await HybridStorageModeBenchmark.RunTimedOperationAsync(
+                    "StoragePlan2_PhaseBoundaryRegression",
+                    settings.MinimumMeasuredDuration,
+                    settings,
+                    OperationAsync,
+                    detachedWorkRegistrar: null,
+                    prepareMeasuredPhase: () =>
+                    {
+                        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(
+                            () => batch.AddRow(DbValue.FromInteger(-1), DbValue.FromInteger(-10)));
+                        Assert.Contains(
+                            "schema changed",
+                            exception.Message,
+                            StringComparison.OrdinalIgnoreCase);
+                        batch = db.PrepareInsertBatch("bench", initialCapacity: 1);
+                        measuredPhasePrepared = true;
+                    })
+                .WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+            Assert.True(measuredPhasePrepared);
+            Assert.True(result.ElapsedMs >= settings.MinimumMeasuredDuration.TotalMilliseconds);
+            Assert.True(result.LatencySamples >= settings.MinimumLatencySamples);
+        }
+        finally
+        {
+            Directory.Delete(temporaryRoot, recursive: true);
+        }
     }
 
     [Fact]
