@@ -23,6 +23,9 @@ param(
     [ValidateRange(0, 1000)]
     [double] $MaxP99RegressionMilliseconds = 0.05,
 
+    [ValidateSet('P95', 'P99')]
+    [string] $BlockingLatencyPercentile = 'P99',
+
     [switch] $Paired,
 
     [string[]] $SuiteName = @(),
@@ -380,7 +383,8 @@ $executionOrder = (
             }
         }
 ) -join ', '
-$p99AbsoluteAllowance = $MaxP99RegressionMilliseconds.ToString(
+$blockingLatencyLabel = $BlockingLatencyPercentile.ToUpperInvariant()
+$latencyAbsoluteAllowance = $MaxP99RegressionMilliseconds.ToString(
     '0.0000',
     [Globalization.CultureInfo]::InvariantCulture)
 $baselineWorktree = Join-Path $outputRoot 'baseline-source'
@@ -455,9 +459,12 @@ $preflight = @(
         }),
     $quiescenceDescription,
     "- Throughput regression limit: $MaxThroughputRegressionPercent%",
-    "- P99 regression limit: $MaxP99RegressionPercent%",
-    "- P99 absolute regression allowance: $p99AbsoluteAllowance ms",
-    '- P99 failure rule: relative and absolute limits must both be exceeded',
+    "- $blockingLatencyLabel regression limit: $MaxP99RegressionPercent%",
+    "- $blockingLatencyLabel absolute regression allowance: $latencyAbsoluteAllowance ms",
+    "- $blockingLatencyLabel failure rule: relative and absolute limits must both be exceeded",
+    $(if ($blockingLatencyLabel -cne 'P99') {
+            '- Blocking latency percentile: P95. P99 remains recorded as a non-blocking diagnostic.'
+        }),
     '- Benchmark source harness: candidate benchmark-project files synchronized to both engines; revision-specific effective build inputs are recorded separately during execution',
     "- Previous ref: ``$PreviousRef`` (``$previousCommit``)",
     "- Candidate ref: ``$CandidateRef`` (``$candidateCommit``)",
@@ -2533,6 +2540,7 @@ try {
             MaxThroughputRegressionPercent = $MaxThroughputRegressionPercent
             MaxP99RegressionPercent = $MaxP99RegressionPercent
             MaxP99RegressionMilliseconds = $MaxP99RegressionMilliseconds
+            BlockingLatencyPercentile = $BlockingLatencyPercentile
         }
         if ($Paired) {
             $comparisonParameters['PairManifestPath'] = $pairManifestPath

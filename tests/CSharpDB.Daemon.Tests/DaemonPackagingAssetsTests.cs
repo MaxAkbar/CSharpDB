@@ -129,11 +129,14 @@ public sealed class DaemonPackagingAssetsTests
         Assert.Contains("MaxThroughputRegressionPercent = $MaxThroughputRegressionPercent", wrapper);
         Assert.Contains("MaxP99RegressionPercent = $MaxP99RegressionPercent", wrapper);
         Assert.Contains("MaxP99RegressionMilliseconds = $MaxP99RegressionMilliseconds", wrapper);
+        Assert.Contains("BlockingLatencyPercentile = $BlockingLatencyPercentile", wrapper);
         Assert.Contains("CSHARPDB_BENCH_DURABILITY", wrapper);
         Assert.Contains("'Durable'", wrapper);
         Assert.Contains("ConfirmDedicatedFixedSsd", wrapper);
         Assert.Contains("csharpdb/local-durable-performance", wrapper);
-        Assert.Contains("durable-v1", wrapper);
+        Assert.Contains("durable-v2", wrapper);
+        Assert.Contains("[string] $BlockingLatencyPercentile = 'P95'", wrapper);
+        Assert.Contains("P99 latency: diagnostic only", wrapper);
         Assert.Contains("Use -NoGitHubStatus for diagnostic overrides", wrapper);
         Assert.Contains("Invoke-GitHubStatus", wrapper);
         Assert.Contains("continuing to collect the second pass", wrapper);
@@ -221,7 +224,7 @@ public sealed class DaemonPackagingAssetsTests
         Assert.Contains("statuses: read", normalized);
         Assert.Contains("LOCAL_DURABLE_ATTESTOR", normalized);
         Assert.Contains("github.repository_owner", normalized);
-        Assert.Contains("policy=durable-v1", normalized);
+        Assert.Contains("policy=durable-v2", normalized);
         Assert.Contains(
             "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/statuses?per_page=100",
             normalized);

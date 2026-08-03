@@ -91,6 +91,103 @@ public sealed class PreviousReleasePerformanceScriptTests
     }
 
     [Fact]
+    public async Task Comparer_P95SelectionIgnoresP99ForStatusButReportsIt()
+    {
+        string temporaryRoot = CreateTemporaryRoot();
+        try
+        {
+            string baseline = Directory.CreateDirectory(
+                Path.Combine(temporaryRoot, "baseline")).FullName;
+            string candidate = Directory.CreateDirectory(
+                Path.Combine(temporaryRoot, "candidate")).FullName;
+            string report = Path.Combine(temporaryRoot, "comparison.md");
+            WriteComparisonEvidence(
+                baseline,
+                "lookup",
+                [100m, 100m, 100m],
+                [10m, 10m, 10m],
+                p95Runs: [5m, 5m, 5m]);
+            WriteComparisonEvidence(
+                candidate,
+                "lookup",
+                [100m, 100m, 100m],
+                [20m, 20m, 20m],
+                p95Runs: [5.5m, 5.5m, 5.5m]);
+
+            ProcessResult result = await RunComparerAsync(
+                baseline,
+                candidate,
+                report,
+                "-BlockingLatencyPercentile",
+                "P95");
+
+            Assert.True(result.ExitCode == 0, result.CombinedOutput);
+            string contents = File.ReadAllText(report);
+            Assert.Contains(
+                "- Blocking latency percentile: P95. P99 is retained as a " +
+                "non-blocking diagnostic",
+                contents);
+            Assert.Contains(
+                "| Suite | Row | Throughput regression | P95 regression | " +
+                "P99 diagnostic regression |",
+                contents);
+            Assert.Contains(
+                "| suite | lookup | 0.00% | 10.00% | 100.00% | PASS |",
+                contents);
+            Assert.DoesNotContain("P99 failure rule", contents);
+        }
+        finally
+        {
+            DeleteTemporaryRoot(temporaryRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Comparer_P95SelectionRecomputesP95Median()
+    {
+        string temporaryRoot = CreateTemporaryRoot();
+        try
+        {
+            string baseline = Directory.CreateDirectory(
+                Path.Combine(temporaryRoot, "baseline")).FullName;
+            string candidate = Directory.CreateDirectory(
+                Path.Combine(temporaryRoot, "candidate")).FullName;
+            string report = Path.Combine(temporaryRoot, "comparison.md");
+            WriteComparisonEvidence(
+                baseline,
+                "lookup",
+                [100m, 100m, 100m],
+                [10m, 10m, 10m],
+                p95Runs: [5m, 5m, 5m],
+                medianP95Override: 6m);
+            WriteComparisonEvidence(
+                candidate,
+                "lookup",
+                [100m, 100m, 100m],
+                [10m, 10m, 10m],
+                p95Runs: [5m, 5m, 5m]);
+
+            ProcessResult result = await RunComparerAsync(
+                baseline,
+                candidate,
+                report,
+                "-BlockingLatencyPercentile",
+                "P95");
+
+            Assert.NotEqual(0, result.ExitCode);
+            string contents = File.ReadAllText(report);
+            Assert.Contains("INVALID", contents);
+            Assert.Contains(
+                "Baseline median P95 does not match the raw-run median",
+                contents);
+        }
+        finally
+        {
+            DeleteTemporaryRoot(temporaryRoot);
+        }
+    }
+
+    [Fact]
     public async Task Comparer_RequiresRelativeAndAbsoluteP99LimitsToBeExceeded()
     {
         string temporaryRoot = CreateTemporaryRoot();
@@ -626,6 +723,7 @@ public sealed class PreviousReleasePerformanceScriptTests
     [InlineData("-MaxThroughputRegressionPercent", "100")]
     [InlineData("-MaxP99RegressionPercent", "500")]
     [InlineData("-MaxP99RegressionMilliseconds", "1000")]
+    [InlineData("-BlockingLatencyPercentile", "P99")]
     public async Task LocalDurableWrapper_NonCanonicalSettingsCannotPublishOfficialStatus(
         string settingName,
         string settingValue)
@@ -652,7 +750,7 @@ public sealed class PreviousReleasePerformanceScriptTests
             settingValue);
 
         Assert.NotEqual(0, result.ExitCode);
-        AssertDiagnosticContains("requires canonical policy 'durable-v1'", result.CombinedOutput);
+        AssertDiagnosticContains("requires canonical policy 'durable-v2'", result.CombinedOutput);
         AssertDiagnosticContains("Use -NoGitHubStatus for diagnostic overrides", result.CombinedOutput);
     }
 
@@ -698,7 +796,8 @@ public sealed class PreviousReleasePerformanceScriptTests
                     [int] $PostBuildQuiescenceSeconds = 0,
                     [double] $MaxThroughputRegressionPercent = 15,
                     [double] $MaxP99RegressionPercent = 25,
-                    [double] $MaxP99RegressionMilliseconds = 0.05)
+                    [double] $MaxP99RegressionMilliseconds = 0.05,
+                    [string] $BlockingLatencyPercentile = 'P99')
 
                 $ErrorActionPreference = 'Stop'
                 New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
@@ -719,7 +818,8 @@ public sealed class PreviousReleasePerformanceScriptTests
                     @('# Previous-release performance', '', '- Result: **PASS**'))
                 Add-Content -LiteralPath $env:FAKE_LOCAL_DURABLE_LOG -Value (
                     "$QualificationPass|$PreviousRef|$CandidateRef|" +
-                    "$env:CSHARPDB_BENCH_DURABILITY|$($SuiteName -join ',')")
+                    "$env:CSHARPDB_BENCH_DURABILITY|$($SuiteName -join ',')|" +
+                    "$BlockingLatencyPercentile")
                 if ($QualificationPass -eq 1 -and $env:FAKE_FAIL_PASS_ONE -eq '1') {
                     throw 'Simulated pass-one failure.'
                 }
@@ -812,14 +912,18 @@ public sealed class PreviousReleasePerformanceScriptTests
             Assert.True(success.ExitCode == 0, success.CombinedOutput);
             string[] successLines = File.ReadAllLines(successLog);
             Assert.Equal(2, successLines.Length);
-            Assert.Equal($"1||{candidateCommit}|Durable|master-table-durable-writes", successLines[0]);
             Assert.Equal(
-                $"2|{previousCommit}|{candidateCommit}|Durable|master-table-durable-writes",
+                $"1||{candidateCommit}|Durable|master-table-durable-writes|P95",
+                successLines[0]);
+            Assert.Equal(
+                $"2|{previousCommit}|{candidateCommit}|Durable|master-table-durable-writes|P95",
                 successLines[1]);
             string successSummary = File.ReadAllText(Path.Combine(
                 successEvidence,
                 "local-durable-performance.md"));
             Assert.Contains("- Result: **PASS**", successSummary);
+            Assert.Contains("- Blocking latency percentile: `P95`", successSummary);
+            Assert.Contains("- P99 latency: diagnostic only", successSummary);
             Assert.Contains(
                 "GitHub release status: `csharpdb/local-durable-performance` " +
                 "in `example/csharpdb`",
@@ -833,7 +937,7 @@ public sealed class PreviousReleasePerformanceScriptTests
             Assert.Contains($"repos/example/csharpdb/statuses/{candidateCommit}", githubCalls[2]);
             Assert.Contains("state=success", githubCalls[2]);
             Assert.Contains("context=csharpdb/local-durable-performance", githubCalls[2]);
-            Assert.Contains("description=policy=durable-v1", githubCalls[2]);
+            Assert.Contains("description=policy=durable-v2", githubCalls[2]);
             Assert.Contains($"baseline={previousCommit}", githubCalls[2]);
 
             string pendingStatusFailureLog = Path.Combine(
@@ -960,7 +1064,7 @@ public sealed class PreviousReleasePerformanceScriptTests
             Assert.Contains("state=pending", failureGitHubCalls[1]);
             Assert.Contains("state=failure", failureGitHubCalls[2]);
             Assert.Contains("context=csharpdb/local-durable-performance", failureGitHubCalls[2]);
-            Assert.Contains("description=policy=durable-v1", failureGitHubCalls[2]);
+            Assert.Contains("description=policy=durable-v2", failureGitHubCalls[2]);
         }
         finally
         {
@@ -1219,12 +1323,20 @@ public sealed class PreviousReleasePerformanceScriptTests
         IReadOnlyList<decimal> p99Runs,
         int latencySamples = 200,
         decimal? medianOpsOverride = null,
-        decimal? medianP99Override = null)
+        decimal? medianP99Override = null,
+        IReadOnlyList<decimal>? p95Runs = null,
+        decimal? medianP95Override = null)
     {
         if (opsRuns.Count == 0 || opsRuns.Count != p99Runs.Count)
         {
             throw new ArgumentException(
                 "Comparison evidence requires matching non-empty throughput and P99 raw runs.");
+        }
+        p95Runs ??= p99Runs;
+        if (opsRuns.Count != p95Runs.Count)
+        {
+            throw new ArgumentException(
+                "Comparison evidence requires matching P95 raw runs.");
         }
 
         int repeatCount = opsRuns.Count;
@@ -1234,6 +1346,7 @@ public sealed class PreviousReleasePerformanceScriptTests
             .FullName;
         decimal medianOps = medianOpsOverride ?? GetMedian(opsRuns);
         decimal medianP99 = medianP99Override ?? GetMedian(p99Runs);
+        decimal medianP95 = medianP95Override ?? GetMedian(p95Runs);
         File.WriteAllLines(
             Path.Combine(resultsRoot, "suite.csv"),
             [
@@ -1244,7 +1357,8 @@ public sealed class PreviousReleasePerformanceScriptTests
                     medianP99,
                     aggregate: true,
                     latencySamples,
-                    aggregateRepeatCount: repeatCount),
+                    aggregateRepeatCount: repeatCount,
+                    p95: medianP95),
             ]);
 
         for (int index = 0; index < repeatCount; index++)
@@ -1259,7 +1373,8 @@ public sealed class PreviousReleasePerformanceScriptTests
                         p99Runs[index],
                         aggregate: false,
                         latencySamples,
-                        runNumber: index + 1),
+                        runNumber: index + 1,
+                        p95: p95Runs[index]),
                 ]);
         }
     }
@@ -1278,7 +1393,8 @@ public sealed class PreviousReleasePerformanceScriptTests
         bool aggregate,
         int latencySamples = 200,
         int? runNumber = null,
-        int aggregateRepeatCount = ComparisonRepeatCount)
+        int aggregateRepeatCount = ComparisonRepeatCount,
+        decimal? p95 = null)
     {
         string extraInfo = aggregate
             ? $"Aggregate=median-of-{aggregateRepeatCount}"
@@ -1293,7 +1409,7 @@ public sealed class PreviousReleasePerformanceScriptTests
                 FormatEvidenceNumber(opsPerSecond),
                 "1",
                 "2",
-                "3",
+                FormatEvidenceNumber(p95 ?? p99),
                 FormatEvidenceNumber(p99),
                 FormatEvidenceNumber(p99),
                 "0.1",

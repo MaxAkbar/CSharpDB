@@ -30,6 +30,9 @@ param(
     [ValidateRange(0, 1000)]
     [double] $MaxP99RegressionMilliseconds = 0.05,
 
+    [ValidateSet('P95', 'P99')]
+    [string] $BlockingLatencyPercentile = 'P99',
+
     [ValidateNotNullOrEmpty()]
     [string] $PairManifestPath
 )
@@ -44,17 +47,18 @@ $maxThroughputRegressionPercentExact = [decimal]::Parse(
     $MaxThroughputRegressionPercent.ToString('R', $invariant),
     $numberStyles,
     $invariant)
-$maxP99RegressionPercentExact = [decimal]::Parse(
+$maxLatencyRegressionPercentExact = [decimal]::Parse(
     $MaxP99RegressionPercent.ToString('R', $invariant),
     $numberStyles,
     $invariant)
-$maxP99RegressionMillisecondsExact = [decimal]::Parse(
+$maxLatencyRegressionMillisecondsExact = [decimal]::Parse(
     $MaxP99RegressionMilliseconds.ToString('R', $invariant),
     $numberStyles,
     $invariant)
 $stabilityThroughputPercent = [decimal] 15
-$stabilityP99Percent = [decimal] 25
-$stabilityP99Milliseconds = [decimal] 0.05
+$blockingLatencyLabel = $BlockingLatencyPercentile.ToUpperInvariant()
+$stabilityLatencyPercent = [decimal] 25
+$stabilityLatencyMilliseconds = [decimal] 0.05
 $hybridQualificationSuite = 'hybrid-storage-mode-scenario'
 $qualificationElapsedCaptureToleranceMilliseconds = [decimal] 1
 $requiredHybridQualificationTokenKeys =
@@ -76,9 +80,10 @@ $requiredColumns = @(
     'ElapsedMs',
     'LatencySamples',
     'OpsPerSec',
+    $blockingLatencyLabel,
     'P99',
     'ExtraInfo'
-)
+) | Select-Object -Unique
 $pairedEvidenceColumns = @(
     'Name',
     'TotalOps',
@@ -190,9 +195,17 @@ function Get-GateMetrics {
     $opsPerSecond = Convert-ToPositiveDecimalMetric `
         -Value $Row.OpsPerSec `
         -Description "$Description OpsPerSec"
-    $p99 = Convert-ToPositiveDecimalMetric `
-        -Value $Row.P99 `
-        -Description "$Description P99"
+    $blockingLatency = Convert-ToPositiveDecimalMetric `
+        -Value $Row.PSObject.Properties[$blockingLatencyLabel].Value `
+        -Description "$Description $blockingLatencyLabel"
+    $diagnosticP99 = if ($blockingLatencyLabel -ceq 'P99') {
+        $blockingLatency
+    }
+    else {
+        Convert-ToPositiveDecimalMetric `
+            -Value $Row.P99 `
+            -Description "$Description P99"
+    }
 
     if ($latencySamples -lt 100) {
         throw (
@@ -205,7 +218,8 @@ function Get-GateMetrics {
         ElapsedMs = $elapsedMilliseconds
         LatencySamples = $latencySamples
         OpsPerSec = $opsPerSecond
-        P99 = $p99
+        BlockingLatency = $blockingLatency
+        DiagnosticP99 = $diagnosticP99
     }
 }
 
@@ -667,14 +681,17 @@ function Get-StabilityAssessment {
                     "$(Format-Percent $throughputDeviation)% from its revision median.")
         }
 
-        $p99Delta = [decimal]::Abs($raw.Metrics.P99 - $MedianMetrics.P99)
-        $p99Deviation = ($p99Delta / $MedianMetrics.P99) * 100
-        if ($p99Deviation -gt $stabilityP99Percent -and
-            $p99Delta -gt $stabilityP99Milliseconds) {
+        $latencyDelta = [decimal]::Abs(
+            $raw.Metrics.BlockingLatency - $MedianMetrics.BlockingLatency)
+        $latencyDeviation =
+            ($latencyDelta / $MedianMetrics.BlockingLatency) * 100
+        if ($latencyDeviation -gt $stabilityLatencyPercent -and
+            $latencyDelta -gt $stabilityLatencyMilliseconds) {
             $runIssues.Add(
-                'P99 deviates ' +
-                    "$(Format-Percent $p99Deviation)% " +
-                    "($(Format-Milliseconds $p99Delta) ms) from its revision median.")
+                "$blockingLatencyLabel deviates " +
+                    "$(Format-Percent $latencyDeviation)% " +
+                    "($(Format-Milliseconds $latencyDelta) ms) " +
+                    'from its revision median.')
         }
 
         if ($runIssues.Count -eq 0) {
@@ -717,8 +734,10 @@ function New-EvidenceResult {
         Suite = $Suite
         Row = $Row
         ThroughputRegression = $null
-        P99Regression = $null
-        P99Difference = $null
+        LatencyRegression = $null
+        LatencyDifference = $null
+        DiagnosticP99Regression = $null
+        DiagnosticP99Difference = $null
         Status = $Status
         Notes = $Notes
     }
@@ -1108,21 +1127,27 @@ function Get-PairedStratumAssessment {
 
     $medianThroughputLog = Get-MedianDouble `
         -Values ([double[]] @($Effects | ForEach-Object ThroughputLog))
-    $medianP99Log = Get-MedianDouble `
-        -Values ([double[]] @($Effects | ForEach-Object P99Log))
-    $medianP99Difference = Get-MedianDecimal `
-        -Values ([decimal[]] @($Effects | ForEach-Object P99Difference))
+    $medianLatencyLog = Get-MedianDouble `
+        -Values ([double[]] @($Effects | ForEach-Object LatencyLog))
+    $medianDiagnosticP99Log = Get-MedianDouble `
+        -Values ([double[]] @($Effects | ForEach-Object DiagnosticP99Log))
+    $medianLatencyDifference = Get-MedianDecimal `
+        -Values ([decimal[]] @($Effects | ForEach-Object LatencyDifference))
+    $medianDiagnosticP99Difference = Get-MedianDecimal `
+        -Values ([decimal[]] @(
+                $Effects | ForEach-Object DiagnosticP99Difference
+            ))
     $medianThroughputRatio = Get-MedianDecimal `
         -Values ([decimal[]] @($Effects | ForEach-Object ThroughputRatio))
-    $medianP99Ratio = Get-MedianDecimal `
-        -Values ([decimal[]] @($Effects | ForEach-Object P99Ratio))
+    $medianLatencyRatio = Get-MedianDecimal `
+        -Values ([decimal[]] @($Effects | ForEach-Object LatencyRatio))
     $throughputOutliers = [Collections.Generic.List[string]]::new()
-    $p99Outliers = [Collections.Generic.List[string]]::new()
+    $latencyOutliers = [Collections.Generic.List[string]]::new()
     $stableThroughputPairCount = 0
-    $stableP99PairCount = 0
-    $p99RelativeCrossingPairCount = 0
-    $p99AbsoluteCrossingPairCount = 0
-    $p99BothLimitsPairCount = 0
+    $stableLatencyPairCount = 0
+    $latencyRelativeCrossingPairCount = 0
+    $latencyAbsoluteCrossingPairCount = 0
+    $latencyBothLimitsPairCount = 0
 
     foreach ($effect in $Effects) {
         $throughputDeviation = [decimal]::Abs(
@@ -1136,75 +1161,80 @@ function Get-PairedStratumAssessment {
             $stableThroughputPairCount++
         }
 
-        $p99Deviation = [decimal]::Abs(
-            (($effect.P99Ratio / $medianP99Ratio) - 1) * 100)
-        $p99DifferenceDeviation = [decimal]::Abs(
-            $effect.P99Difference - $medianP99Difference)
-        if ($p99Deviation -gt $stabilityP99Percent -and
-            $p99DifferenceDeviation -gt $stabilityP99Milliseconds) {
-            $p99Outliers.Add(
-                "$Order pair $($effect.PairId): P99 effect deviates " +
-                    "$(Format-Percent $p99Deviation)% " +
-                    "($(Format-Milliseconds $p99DifferenceDeviation) ms) " +
+        $latencyDeviation = [decimal]::Abs(
+            (($effect.LatencyRatio / $medianLatencyRatio) - 1) * 100)
+        $latencyDifferenceDeviation = [decimal]::Abs(
+            $effect.LatencyDifference - $medianLatencyDifference)
+        if ($latencyDeviation -gt $stabilityLatencyPercent -and
+            $latencyDifferenceDeviation -gt $stabilityLatencyMilliseconds) {
+            $latencyOutliers.Add(
+                "$Order pair $($effect.PairId): $blockingLatencyLabel effect deviates " +
+                    "$(Format-Percent $latencyDeviation)% " +
+                    "($(Format-Milliseconds $latencyDifferenceDeviation) ms) " +
                     'from its order-stratum median.')
         }
         else {
-            $stableP99PairCount++
+            $stableLatencyPairCount++
         }
 
-        $pairP99Regression = ($effect.P99Ratio - 1) * 100
-        $pairP99RelativeCrossed =
-            $pairP99Regression -gt $maxP99RegressionPercentExact
-        $pairP99AbsoluteCrossed =
-            $effect.P99Difference -gt $maxP99RegressionMillisecondsExact
-        if ($pairP99RelativeCrossed) {
-            $p99RelativeCrossingPairCount++
+        $pairLatencyRegression = ($effect.LatencyRatio - 1) * 100
+        $pairLatencyRelativeCrossed =
+            $pairLatencyRegression -gt $maxLatencyRegressionPercentExact
+        $pairLatencyAbsoluteCrossed =
+            $effect.LatencyDifference -gt $maxLatencyRegressionMillisecondsExact
+        if ($pairLatencyRelativeCrossed) {
+            $latencyRelativeCrossingPairCount++
         }
-        if ($pairP99AbsoluteCrossed) {
-            $p99AbsoluteCrossingPairCount++
+        if ($pairLatencyAbsoluteCrossed) {
+            $latencyAbsoluteCrossingPairCount++
         }
-        if ($pairP99RelativeCrossed -and $pairP99AbsoluteCrossed) {
-            $p99BothLimitsPairCount++
+        if ($pairLatencyRelativeCrossed -and $pairLatencyAbsoluteCrossed) {
+            $latencyBothLimitsPairCount++
         }
 
     }
 
     $requiredStablePairCount = [int] ([Math]::Floor($Effects.Count / 2) + 1)
     $throughputRegression = (1 - $medianThroughputRatio) * 100
-    $p99Regression = ($medianP99Ratio - 1) * 100
+    $latencyRegression = ($medianLatencyRatio - 1) * 100
+    $diagnosticP99Regression =
+        (([decimal] [Math]::Exp($medianDiagnosticP99Log)) - 1) * 100
     $throughputFailed =
         $throughputRegression -gt $maxThroughputRegressionPercentExact
-    $p99RelativeLimitExceeded =
-        $p99RelativeCrossingPairCount -ge $requiredStablePairCount
-    $p99AbsoluteLimitExceeded =
-        $p99AbsoluteCrossingPairCount -ge $requiredStablePairCount
-    $p99Failed = $p99BothLimitsPairCount -ge $requiredStablePairCount
+    $latencyRelativeLimitExceeded =
+        $latencyRelativeCrossingPairCount -ge $requiredStablePairCount
+    $latencyAbsoluteLimitExceeded =
+        $latencyAbsoluteCrossingPairCount -ge $requiredStablePairCount
+    $latencyFailed = $latencyBothLimitsPairCount -ge $requiredStablePairCount
 
     return [pscustomobject]@{
         Order = $Order
         IsStable =
             $stableThroughputPairCount -ge $requiredStablePairCount -and
-            $stableP99PairCount -ge $requiredStablePairCount
+            $stableLatencyPairCount -ge $requiredStablePairCount
         StableThroughputPairCount = $stableThroughputPairCount
-        StableP99PairCount = $stableP99PairCount
+        StableLatencyPairCount = $stableLatencyPairCount
         RequiredStablePairCount = $requiredStablePairCount
         TotalPairCount = $Effects.Count
         MedianThroughputLog = $medianThroughputLog
-        MedianP99Log = $medianP99Log
+        MedianLatencyLog = $medianLatencyLog
+        MedianDiagnosticP99Log = $medianDiagnosticP99Log
         MedianThroughputRatio = $medianThroughputRatio
-        MedianP99Ratio = $medianP99Ratio
-        MedianP99Difference = $medianP99Difference
+        MedianLatencyRatio = $medianLatencyRatio
+        MedianLatencyDifference = $medianLatencyDifference
+        MedianDiagnosticP99Difference = $medianDiagnosticP99Difference
         ThroughputRegression = $throughputRegression
-        P99Regression = $p99Regression
+        LatencyRegression = $latencyRegression
+        DiagnosticP99Regression = $diagnosticP99Regression
         ThroughputFailed = $throughputFailed
-        P99RelativeLimitExceeded = $p99RelativeLimitExceeded
-        P99AbsoluteLimitExceeded = $p99AbsoluteLimitExceeded
-        P99RelativeCrossingPairCount = $p99RelativeCrossingPairCount
-        P99AbsoluteCrossingPairCount = $p99AbsoluteCrossingPairCount
-        P99BothLimitsPairCount = $p99BothLimitsPairCount
-        P99Failed = $p99Failed
+        LatencyRelativeLimitExceeded = $latencyRelativeLimitExceeded
+        LatencyAbsoluteLimitExceeded = $latencyAbsoluteLimitExceeded
+        LatencyRelativeCrossingPairCount = $latencyRelativeCrossingPairCount
+        LatencyAbsoluteCrossingPairCount = $latencyAbsoluteCrossingPairCount
+        LatencyBothLimitsPairCount = $latencyBothLimitsPairCount
+        LatencyFailed = $latencyFailed
         ThroughputOutliers = [string[]] @($throughputOutliers)
-        P99Outliers = [string[]] @($p99Outliers)
+        LatencyOutliers = [string[]] @($latencyOutliers)
     }
 }
 
@@ -1237,32 +1267,51 @@ function Write-PairedComparisonReport {
     $lines.Add("- Validated pairs: $PairCount")
     $lines.Add("- Repeat count per order stratum: $RepeatCount")
     $lines.Add("- Throughput regression limit: $MaxThroughputRegressionPercent%")
-    $lines.Add("- P99 regression limit: $MaxP99RegressionPercent%")
+    $lines.Add("- $blockingLatencyLabel regression limit: $MaxP99RegressionPercent%")
     $lines.Add(
-        '- P99 absolute regression allowance: ' +
-            "$(Format-Milliseconds $maxP99RegressionMillisecondsExact) ms")
+        "- $blockingLatencyLabel absolute regression allowance: " +
+            "$(Format-Milliseconds $maxLatencyRegressionMillisecondsExact) ms")
     $lines.Add(
-        '- P99 failure rule: a strict majority of the same pairs in each order ' +
+        "- $blockingLatencyLabel failure rule: a strict majority of the same " +
+            'pairs in each order ' +
             'stratum must exceed both the relative and absolute limits.')
     $lines.Add(
-        '- Pair stability rule: throughput and P99 each require their own strict ' +
+        "- Pair stability rule: throughput and $blockingLatencyLabel each require " +
+            'their own strict ' +
             'majority of pair effects in each order stratum. Throughput must stay ' +
-            'within 15% of its stratum median; P99 must stay within either 25% or ' +
+            "within 15% of its stratum median; $blockingLatencyLabel must stay " +
+            'within either 25% or ' +
             '0.0500 ms of its stratum median effect.')
     $lines.Add(
         '- Combined effects equally average the previous-candidate and ' +
-            'candidate-previous median log ratios; the P99 difference equally ' +
+            "candidate-previous median log ratios; the $blockingLatencyLabel " +
+            'difference equally ' +
             'averages their median millisecond differences.')
+    if ($blockingLatencyLabel -cne 'P99') {
+        $lines.Add(
+            '- Blocking latency percentile: P95. P99 is retained as a ' +
+                'non-blocking diagnostic and does not affect stability, order, ' +
+                'or regression status.')
+    }
     $lines.Add("- Invalid evidence rows: $($invalidEvidence.Count)")
     $lines.Add("- Insufficient stability rows: $($unstableEvidence.Count)")
     $lines.Add("- Order-sensitive rows: $($orderSensitiveEvidence.Count)")
     $lines.Add("- Confirmed regression rows: $($confirmedRegressions.Count)")
     $lines.Add("- Result: **$(if ($failures.Count -eq 0) { 'PASS' } else { 'FAIL' })**")
     $lines.Add('')
-    $lines.Add(
-        '| Suite | Row | Throughput regression | P99 regression | ' +
-            'P99 difference | Status | Notes |')
-    $lines.Add('|---|---|---:|---:|---:|---|---|')
+    if ($blockingLatencyLabel -ceq 'P99') {
+        $lines.Add(
+            '| Suite | Row | Throughput regression | P99 regression | ' +
+                'P99 difference | Status | Notes |')
+        $lines.Add('|---|---|---:|---:|---:|---|---|')
+    }
+    else {
+        $lines.Add(
+            '| Suite | Row | Throughput regression | P95 regression | ' +
+                'P95 difference | P99 diagnostic regression | ' +
+                'P99 diagnostic difference | Status | Notes |')
+        $lines.Add('|---|---|---:|---:|---:|---:|---:|---|---|')
+    }
     foreach ($result in $Results) {
         $throughput = if ($null -eq $result.ThroughputRegression) {
             'n/a'
@@ -1270,24 +1319,45 @@ function Write-PairedComparisonReport {
         else {
             "$(Format-Percent $result.ThroughputRegression)%"
         }
-        $p99 = if ($null -eq $result.P99Regression) {
+        $latency = if ($null -eq $result.LatencyRegression) {
             'n/a'
         }
         else {
-            "$(Format-Percent $result.P99Regression)%"
+            "$(Format-Percent $result.LatencyRegression)%"
         }
-        $p99Difference = if ($null -eq $result.P99Difference) {
+        $latencyDifference = if ($null -eq $result.LatencyDifference) {
             'n/a'
         }
         else {
-            "$(Format-Milliseconds $result.P99Difference) ms"
+            "$(Format-Milliseconds $result.LatencyDifference) ms"
         }
         $suiteName = Convert-ToMarkdownCell $result.Suite
         $rowName = Convert-ToMarkdownCell $result.Row
         $notes = Convert-ToMarkdownCell $result.Notes
-        $lines.Add(
-            "| $suiteName | $rowName | $throughput | $p99 | $p99Difference | " +
-                "$($result.Status) | $notes |")
+        if ($blockingLatencyLabel -ceq 'P99') {
+            $lines.Add(
+                "| $suiteName | $rowName | $throughput | $latency | " +
+                    "$latencyDifference | $($result.Status) | $notes |")
+        }
+        else {
+            $diagnosticP99 = if ($null -eq $result.DiagnosticP99Regression) {
+                'n/a'
+            }
+            else {
+                "$(Format-Percent $result.DiagnosticP99Regression)%"
+            }
+            $diagnosticP99Difference =
+                if ($null -eq $result.DiagnosticP99Difference) {
+                    'n/a'
+                }
+                else {
+                    "$(Format-Milliseconds $result.DiagnosticP99Difference) ms"
+                }
+            $lines.Add(
+                "| $suiteName | $rowName | $throughput | $latency | " +
+                    "$latencyDifference | $diagnosticP99 | " +
+                    "$diagnosticP99Difference | $($result.Status) | $notes |")
+        }
     }
 
     [IO.File]::WriteAllLines($resolvedReportPath, $lines)
@@ -1439,14 +1509,23 @@ function Invoke-PairedComparison {
                         ThroughputLog = [Math]::Log(
                             [double] $candidateMetrics.OpsPerSec /
                                 [double] $baselineMetrics.OpsPerSec)
-                        P99Log = [Math]::Log(
-                            [double] $candidateMetrics.P99 /
-                                [double] $baselineMetrics.P99)
+                        LatencyLog = [Math]::Log(
+                            [double] $candidateMetrics.BlockingLatency /
+                                [double] $baselineMetrics.BlockingLatency)
+                        DiagnosticP99Log = [Math]::Log(
+                            [double] $candidateMetrics.DiagnosticP99 /
+                                [double] $baselineMetrics.DiagnosticP99)
                         ThroughputRatio =
                             $candidateMetrics.OpsPerSec / $baselineMetrics.OpsPerSec
-                        P99Ratio = $candidateMetrics.P99 / $baselineMetrics.P99
-                        P99Difference =
-                            $candidateMetrics.P99 - $baselineMetrics.P99
+                        LatencyRatio =
+                            $candidateMetrics.BlockingLatency /
+                                $baselineMetrics.BlockingLatency
+                        LatencyDifference =
+                            $candidateMetrics.BlockingLatency -
+                                $baselineMetrics.BlockingLatency
+                        DiagnosticP99Difference =
+                            $candidateMetrics.DiagnosticP99 -
+                                $baselineMetrics.DiagnosticP99
                     })
                 }
                 catch {
@@ -1488,9 +1567,9 @@ function Invoke-PairedComparison {
                         else {
                             ''
                         }
-                    $p99OutlierDetail =
-                        if (@($stratum.P99Outliers).Count -gt 0) {
-                            "; outliers: $($stratum.P99Outliers -join ' ')"
+                    $latencyOutlierDetail =
+                        if (@($stratum.LatencyOutliers).Count -gt 0) {
+                            "; outliers: $($stratum.LatencyOutliers -join ' ')"
                         }
                         else {
                             ''
@@ -1500,11 +1579,11 @@ function Invoke-PairedComparison {
                             "$($stratum.StableThroughputPairCount)/" +
                             "$($stratum.TotalPairCount) " +
                             "($($stratum.RequiredStablePairCount) required)" +
-                            "$throughputOutlierDetail; P99 stability=" +
-                            "$($stratum.StableP99PairCount)/" +
+                            "$throughputOutlierDetail; $blockingLatencyLabel stability=" +
+                            "$($stratum.StableLatencyPairCount)/" +
                             "$($stratum.TotalPairCount) " +
                             "($($stratum.RequiredStablePairCount) required)" +
-                            "$p99OutlierDetail.")
+                            "$latencyOutlierDetail.")
                 }
                 $pairedResults.Add((New-EvidenceResult `
                             -Suite $suiteName `
@@ -1519,25 +1598,37 @@ function Invoke-PairedComparison {
             $combinedThroughputLog =
                 ($strata[0].MedianThroughputLog +
                     $strata[1].MedianThroughputLog) / 2
-            $combinedP99Log =
-                ($strata[0].MedianP99Log + $strata[1].MedianP99Log) / 2
+            $combinedLatencyLog =
+                ($strata[0].MedianLatencyLog +
+                    $strata[1].MedianLatencyLog) / 2
+            $combinedDiagnosticP99Log =
+                ($strata[0].MedianDiagnosticP99Log +
+                    $strata[1].MedianDiagnosticP99Log) / 2
             $combinedThroughputRegression = Convert-DoubleToDecimal `
                 -Value ((1 - [Math]::Exp($combinedThroughputLog)) * 100) `
                 -Description "$suiteName/$rowName combined throughput effect"
-            $combinedP99Regression = Convert-DoubleToDecimal `
-                -Value (([Math]::Exp($combinedP99Log) - 1) * 100) `
-                -Description "$suiteName/$rowName combined P99 effect"
-            $combinedP99Difference =
-                ($strata[0].MedianP99Difference +
-                    $strata[1].MedianP99Difference) / 2
+            $combinedLatencyRegression = Convert-DoubleToDecimal `
+                -Value (([Math]::Exp($combinedLatencyLog) - 1) * 100) `
+                -Description (
+                    "$suiteName/$rowName combined $blockingLatencyLabel effect")
+            $combinedLatencyDifference =
+                ($strata[0].MedianLatencyDifference +
+                    $strata[1].MedianLatencyDifference) / 2
+            $combinedDiagnosticP99Regression = Convert-DoubleToDecimal `
+                -Value (([Math]::Exp($combinedDiagnosticP99Log) - 1) * 100) `
+                -Description "$suiteName/$rowName combined diagnostic P99 effect"
+            $combinedDiagnosticP99Difference =
+                ($strata[0].MedianDiagnosticP99Difference +
+                    $strata[1].MedianDiagnosticP99Difference) / 2
 
             $throughputDisagrees =
                 $strata[0].ThroughputFailed -ne $strata[1].ThroughputFailed
-            $p99Disagrees = $strata[0].P99Failed -ne $strata[1].P99Failed
-            $status = if ($throughputDisagrees -or $p99Disagrees) {
+            $latencyDisagrees =
+                $strata[0].LatencyFailed -ne $strata[1].LatencyFailed
+            $status = if ($throughputDisagrees -or $latencyDisagrees) {
                 'ORDER-SENSITIVE'
             }
-            elseif ($strata[0].ThroughputFailed -or $strata[0].P99Failed) {
+            elseif ($strata[0].ThroughputFailed -or $strata[0].LatencyFailed) {
                 'REGRESSION'
             }
             else {
@@ -1549,26 +1640,44 @@ function Invoke-PairedComparison {
                 'Order strata: ' +
                     "$($strata[0].Order) throughput=" +
                     "$(Format-Percent $strata[0].ThroughputRegression)%, " +
-                    "P99=$(Format-Percent $strata[0].P99Regression)%, " +
-                    "P99 difference=" +
-                    "$(Format-Milliseconds $strata[0].MedianP99Difference) ms, " +
-                    "P99 both-limit pairs=$($strata[0].P99BothLimitsPairCount)/" +
+                    "$blockingLatencyLabel=" +
+                    "$(Format-Percent $strata[0].LatencyRegression)%, " +
+                    "$blockingLatencyLabel difference=" +
+                    "$(Format-Milliseconds $strata[0].MedianLatencyDifference) ms, " +
+                    "$blockingLatencyLabel both-limit pairs=" +
+                    "$($strata[0].LatencyBothLimitsPairCount)/" +
                     "$($strata[0].TotalPairCount), stability throughput=" +
                     "$($strata[0].StableThroughputPairCount)/" +
-                    "$($strata[0].TotalPairCount), P99=" +
-                    "$($strata[0].StableP99PairCount)/" +
+                    "$($strata[0].TotalPairCount), $blockingLatencyLabel=" +
+                    "$($strata[0].StableLatencyPairCount)/" +
                     "$($strata[0].TotalPairCount); " +
                     "$($strata[1].Order) throughput=" +
                     "$(Format-Percent $strata[1].ThroughputRegression)%, " +
-                    "P99=$(Format-Percent $strata[1].P99Regression)%, " +
-                    "P99 difference=" +
-                    "$(Format-Milliseconds $strata[1].MedianP99Difference) ms, " +
-                    "P99 both-limit pairs=$($strata[1].P99BothLimitsPairCount)/" +
+                    "$blockingLatencyLabel=" +
+                    "$(Format-Percent $strata[1].LatencyRegression)%, " +
+                    "$blockingLatencyLabel difference=" +
+                    "$(Format-Milliseconds $strata[1].MedianLatencyDifference) ms, " +
+                    "$blockingLatencyLabel both-limit pairs=" +
+                    "$($strata[1].LatencyBothLimitsPairCount)/" +
                     "$($strata[1].TotalPairCount), stability throughput=" +
                     "$($strata[1].StableThroughputPairCount)/" +
-                    "$($strata[1].TotalPairCount), P99=" +
-                    "$($strata[1].StableP99PairCount)/" +
+                    "$($strata[1].TotalPairCount), $blockingLatencyLabel=" +
+                    "$($strata[1].StableLatencyPairCount)/" +
                     "$($strata[1].TotalPairCount).")
+            if ($blockingLatencyLabel -cne 'P99') {
+                $diagnosticP99Difference0 = Format-Milliseconds `
+                    $strata[0].MedianDiagnosticP99Difference
+                $diagnosticP99Difference1 = Format-Milliseconds `
+                    $strata[1].MedianDiagnosticP99Difference
+                $notes.Add(
+                    'Non-blocking P99 diagnostics by order: ' +
+                        "$($strata[0].Order) P99=" +
+                        "$(Format-Percent $strata[0].DiagnosticP99Regression)%, " +
+                        "P99 difference=$diagnosticP99Difference0 ms; " +
+                        "$($strata[1].Order) P99=" +
+                        "$(Format-Percent $strata[1].DiagnosticP99Regression)%, " +
+                        "P99 difference=$diagnosticP99Difference1 ms.")
+            }
             foreach ($stratum in $strata) {
                 if (@($stratum.ThroughputOutliers).Count -gt 0) {
                     $notes.Add(
@@ -1579,27 +1688,30 @@ function Invoke-PairedComparison {
                             "$($stratum.RequiredStablePairCount) required): " +
                             "$($stratum.ThroughputOutliers -join ' ')")
                 }
-                if (@($stratum.P99Outliers).Count -gt 0) {
+                if (@($stratum.LatencyOutliers).Count -gt 0) {
                     $notes.Add(
-                        'Tolerated paired outlier for P99 with a strict stable ' +
+                        "Tolerated paired outlier for $blockingLatencyLabel with a " +
+                            'strict stable ' +
                             "majority in $($stratum.Order) " +
-                            "($($stratum.StableP99PairCount)/" +
+                            "($($stratum.StableLatencyPairCount)/" +
                             "$($stratum.TotalPairCount); " +
                             "$($stratum.RequiredStablePairCount) required): " +
-                            "$($stratum.P99Outliers -join ' ')")
+                            "$($stratum.LatencyOutliers -join ' ')")
                 }
-                if ($stratum.P99RelativeLimitExceeded -and
-                    -not $stratum.P99Failed) {
-                    if ($stratum.P99AbsoluteLimitExceeded) {
+                if ($stratum.LatencyRelativeLimitExceeded -and
+                    -not $stratum.LatencyFailed) {
+                    if ($stratum.LatencyAbsoluteLimitExceeded) {
                         $notes.Add(
-                            "Disjoint P99 crossings in $($stratum.Order): relative " +
+                            "Disjoint $blockingLatencyLabel crossings in " +
+                                "$($stratum.Order): relative " +
                                 'and absolute limits each have a strict majority, but ' +
                                 'a strict majority of the same pairs did not exceed both.')
                     }
                     else {
                         $notes.Add(
-                            "P99 percentage-only crossing in $($stratum.Order): " +
-                                "$($stratum.P99RelativeCrossingPairCount)/" +
+                            "$blockingLatencyLabel percentage-only crossing in " +
+                                "$($stratum.Order): " +
+                                "$($stratum.LatencyRelativeCrossingPairCount)/" +
                                 "$($stratum.TotalPairCount) pairs exceeded the relative " +
                                 'limit, but a strict majority of the same pairs did not ' +
                                 'also exceed the absolute allowance.')
@@ -1616,8 +1728,8 @@ function Invoke-PairedComparison {
                 if ($strata[0].ThroughputFailed) {
                     $confirmedMetrics.Add('throughput')
                 }
-                if ($strata[0].P99Failed) {
-                    $confirmedMetrics.Add('P99')
+                if ($strata[0].LatencyFailed) {
+                    $confirmedMetrics.Add($blockingLatencyLabel)
                 }
                 $notes.Add(
                     'Confirmed paired candidate regression in both order strata: ' +
@@ -1628,8 +1740,10 @@ function Invoke-PairedComparison {
                 Suite = $suiteName
                 Row = $rowName
                 ThroughputRegression = $combinedThroughputRegression
-                P99Regression = $combinedP99Regression
-                P99Difference = $combinedP99Difference
+                LatencyRegression = $combinedLatencyRegression
+                LatencyDifference = $combinedLatencyDifference
+                DiagnosticP99Regression = $combinedDiagnosticP99Regression
+                DiagnosticP99Difference = $combinedDiagnosticP99Difference
                 Status = $status
                 Notes = $notes -join ' '
             })
@@ -1875,15 +1989,15 @@ foreach ($fileName in $allFileNames) {
                     $candidateRawMetrics |
                         ForEach-Object { $_.Metrics.OpsPerSec }
                 ))
-        $recomputedBaselineP99 = Get-MedianDecimal `
+        $recomputedBaselineLatency = Get-MedianDecimal `
             -Values ([decimal[]] @(
                     $baselineRawMetrics |
-                        ForEach-Object { $_.Metrics.P99 }
+                        ForEach-Object { $_.Metrics.BlockingLatency }
                 ))
-        $recomputedCandidateP99 = Get-MedianDecimal `
+        $recomputedCandidateLatency = Get-MedianDecimal `
             -Values ([decimal[]] @(
                     $candidateRawMetrics |
-                        ForEach-Object { $_.Metrics.P99 }
+                        ForEach-Object { $_.Metrics.BlockingLatency }
                 ))
 
         if ($baselineMedianMetrics.OpsPerSec -ne $recomputedBaselineThroughput) {
@@ -1898,17 +2012,21 @@ foreach ($fileName in $allFileNames) {
                     "($(Format-ExactNumber $candidateMedianMetrics.OpsPerSec) versus " +
                     "$(Format-ExactNumber $recomputedCandidateThroughput)).")
         }
-        if ($baselineMedianMetrics.P99 -ne $recomputedBaselineP99) {
+        if ($baselineMedianMetrics.BlockingLatency -ne
+            $recomputedBaselineLatency) {
             $evidenceIssues.Add(
-                'Baseline median P99 does not match the raw-run median ' +
-                    "($(Format-ExactNumber $baselineMedianMetrics.P99) versus " +
-                    "$(Format-ExactNumber $recomputedBaselineP99)).")
+                "Baseline median $blockingLatencyLabel does not match the " +
+                    'raw-run median ' +
+                    "($(Format-ExactNumber $baselineMedianMetrics.BlockingLatency) " +
+                    "versus $(Format-ExactNumber $recomputedBaselineLatency)).")
         }
-        if ($candidateMedianMetrics.P99 -ne $recomputedCandidateP99) {
+        if ($candidateMedianMetrics.BlockingLatency -ne
+            $recomputedCandidateLatency) {
             $evidenceIssues.Add(
-                'Candidate median P99 does not match the raw-run median ' +
-                    "($(Format-ExactNumber $candidateMedianMetrics.P99) versus " +
-                    "$(Format-ExactNumber $recomputedCandidateP99)).")
+                "Candidate median $blockingLatencyLabel does not match the " +
+                    'raw-run median ' +
+                    "($(Format-ExactNumber $candidateMedianMetrics.BlockingLatency) " +
+                    "versus $(Format-ExactNumber $recomputedCandidateLatency)).")
         }
 
         if ($evidenceIssues.Count -gt 0) {
@@ -1959,19 +2077,26 @@ foreach ($fileName in $allFileNames) {
         $throughputRegression =
             (($baselineMedianMetrics.OpsPerSec - $candidateMedianMetrics.OpsPerSec) /
                 $baselineMedianMetrics.OpsPerSec) * 100
-        $p99Regression =
-            (($candidateMedianMetrics.P99 - $baselineMedianMetrics.P99) /
-                $baselineMedianMetrics.P99) * 100
-        $p99RegressionMilliseconds =
-            $candidateMedianMetrics.P99 - $baselineMedianMetrics.P99
+        $latencyRegression =
+            (($candidateMedianMetrics.BlockingLatency -
+                    $baselineMedianMetrics.BlockingLatency) /
+                $baselineMedianMetrics.BlockingLatency) * 100
+        $latencyRegressionMilliseconds =
+            $candidateMedianMetrics.BlockingLatency -
+                $baselineMedianMetrics.BlockingLatency
+        $diagnosticP99Regression =
+            (($candidateMedianMetrics.DiagnosticP99 -
+                    $baselineMedianMetrics.DiagnosticP99) /
+                $baselineMedianMetrics.DiagnosticP99) * 100
         $throughputFailed =
             $throughputRegression -gt $maxThroughputRegressionPercentExact
-        $p99RelativeLimitExceeded =
-            $p99Regression -gt $maxP99RegressionPercentExact
-        $p99AbsoluteLimitExceeded =
-            $p99RegressionMilliseconds -gt $maxP99RegressionMillisecondsExact
-        $p99Failed =
-            $p99RelativeLimitExceeded -and $p99AbsoluteLimitExceeded
+        $latencyRelativeLimitExceeded =
+            $latencyRegression -gt $maxLatencyRegressionPercentExact
+        $latencyAbsoluteLimitExceeded =
+            $latencyRegressionMilliseconds -gt
+                $maxLatencyRegressionMillisecondsExact
+        $latencyFailed =
+            $latencyRelativeLimitExceeded -and $latencyAbsoluteLimitExceeded
         $notes = [Collections.Generic.List[string]]::new()
         foreach ($assessment in @($baselineStability, $candidateStability)) {
             if (@($assessment.Outliers).Count -eq 0) {
@@ -1989,33 +2114,39 @@ foreach ($fileName in $allFileNames) {
                 'Confirmed candidate throughput regression exceeded the ' +
                     "$(Format-Percent $maxThroughputRegressionPercentExact)% limit.")
         }
-        if ($p99RelativeLimitExceeded) {
-            $absoluteOutcome = if ($p99AbsoluteLimitExceeded) {
+        if ($latencyRelativeLimitExceeded) {
+            $absoluteOutcome = if ($latencyAbsoluteLimitExceeded) {
                 'exceeded'
             }
             else {
                 'did not exceed'
             }
-            $p99Prefix = if ($p99Failed) {
-                'Confirmed candidate P99 regression:'
+            $latencyPrefix = if ($latencyFailed) {
+                "Confirmed candidate $blockingLatencyLabel regression:"
             }
             else {
-                'P99 percentage-only crossing:'
+                "$blockingLatencyLabel percentage-only crossing:"
             }
             $notes.Add(
-                "$p99Prefix P99 increased by " +
-                    "$(Format-Milliseconds $p99RegressionMilliseconds) ms, " +
+                "$latencyPrefix $blockingLatencyLabel increased by " +
+                    "$(Format-Milliseconds $latencyRegressionMilliseconds) ms, " +
                     "which $absoluteOutcome the " +
-                    "$(Format-Milliseconds $maxP99RegressionMillisecondsExact) ms " +
+                    "$(Format-Milliseconds $maxLatencyRegressionMillisecondsExact) " +
+                    'ms ' +
                     'absolute allowance.')
         }
 
-        $failed = $throughputFailed -or $p99Failed
+        $failed = $throughputFailed -or $latencyFailed
         $results.Add([pscustomobject]@{
             Suite = $suiteName
             Row = $rowName
             ThroughputRegression = $throughputRegression
-            P99Regression = $p99Regression
+            LatencyRegression = $latencyRegression
+            LatencyDifference = $latencyRegressionMilliseconds
+            DiagnosticP99Regression = $diagnosticP99Regression
+            DiagnosticP99Difference =
+                $candidateMedianMetrics.DiagnosticP99 -
+                    $baselineMedianMetrics.DiagnosticP99
             Status = if ($failed) { 'REGRESSION' } else { 'PASS' }
             Notes = $notes -join ' '
         })
@@ -2037,24 +2168,39 @@ $lines.Add("- Baseline raw results: ``$baselineRawRoot``")
 $lines.Add("- Candidate raw results: ``$candidateRawRoot``")
 $lines.Add("- Repeat count: $RepeatCount")
 $lines.Add("- Throughput regression limit: $MaxThroughputRegressionPercent%")
-$lines.Add("- P99 regression limit: $MaxP99RegressionPercent%")
+$lines.Add("- $blockingLatencyLabel regression limit: $MaxP99RegressionPercent%")
 $lines.Add(
-    '- P99 absolute regression allowance: ' +
-        "$(Format-Milliseconds $maxP99RegressionMillisecondsExact) ms")
+    "- $blockingLatencyLabel absolute regression allowance: " +
+        "$(Format-Milliseconds $maxLatencyRegressionMillisecondsExact) ms")
 $lines.Add(
-    '- P99 failure rule: relative and absolute limits must both be exceeded')
+    "- $blockingLatencyLabel failure rule: relative and absolute limits must " +
+        'both be exceeded')
 $lines.Add(
     '- Stability rule: a strict majority of whole raw runs must keep throughput ' +
-        'within 15% of the revision median and P99 within either 25% or ' +
+        "within 15% of the revision median and $blockingLatencyLabel within " +
+        'either 25% or ' +
         '0.0500 ms of the revision median; tolerated outlier runs remain visible ' +
         'in row notes.')
+if ($blockingLatencyLabel -cne 'P99') {
+    $lines.Add(
+        '- Blocking latency percentile: P95. P99 is retained as a non-blocking ' +
+            'diagnostic and does not affect stability or regression status.')
+}
 $lines.Add("- Invalid evidence rows: $($invalidEvidence.Count)")
 $lines.Add("- Insufficient stability rows: $($unstableEvidence.Count)")
 $lines.Add("- Confirmed regression rows: $($confirmedRegressions.Count)")
 $lines.Add("- Result: **$(if ($failures.Count -eq 0) { 'PASS' } else { 'FAIL' })**")
 $lines.Add('')
-$lines.Add('| Suite | Row | Throughput regression | P99 regression | Status | Notes |')
-$lines.Add('|---|---|---:|---:|---|---|')
+if ($blockingLatencyLabel -ceq 'P99') {
+    $lines.Add('| Suite | Row | Throughput regression | P99 regression | Status | Notes |')
+    $lines.Add('|---|---|---:|---:|---|---|')
+}
+else {
+    $lines.Add(
+        '| Suite | Row | Throughput regression | P95 regression | ' +
+            'P99 diagnostic regression | Status | Notes |')
+    $lines.Add('|---|---|---:|---:|---:|---|---|')
+}
 foreach ($result in $results) {
     $throughput = if ($null -eq $result.ThroughputRegression) {
         'n/a'
@@ -2062,16 +2208,31 @@ foreach ($result in $results) {
     else {
         "$(Format-Percent $result.ThroughputRegression)%"
     }
-    $p99 = if ($null -eq $result.P99Regression) {
+    $latency = if ($null -eq $result.LatencyRegression) {
         'n/a'
     }
     else {
-        "$(Format-Percent $result.P99Regression)%"
+        "$(Format-Percent $result.LatencyRegression)%"
     }
     $suiteName = Convert-ToMarkdownCell $result.Suite
     $rowName = Convert-ToMarkdownCell $result.Row
     $notes = Convert-ToMarkdownCell $result.Notes
-    $lines.Add("| $suiteName | $rowName | $throughput | $p99 | $($result.Status) | $notes |")
+    if ($blockingLatencyLabel -ceq 'P99') {
+        $lines.Add(
+            "| $suiteName | $rowName | $throughput | $latency | " +
+                "$($result.Status) | $notes |")
+    }
+    else {
+        $diagnosticP99 = if ($null -eq $result.DiagnosticP99Regression) {
+            'n/a'
+        }
+        else {
+            "$(Format-Percent $result.DiagnosticP99Regression)%"
+        }
+        $lines.Add(
+            "| $suiteName | $rowName | $throughput | $latency | " +
+                "$diagnosticP99 | $($result.Status) | $notes |")
+    }
 }
 
 [IO.File]::WriteAllLines($resolvedReportPath, $lines)

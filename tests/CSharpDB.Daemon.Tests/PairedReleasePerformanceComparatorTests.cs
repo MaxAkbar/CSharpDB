@@ -277,6 +277,148 @@ public sealed class PairedReleasePerformanceComparatorTests
     }
 
     [Fact]
+    public async Task PairedComparer_P95SelectionBlocksOnP95AndReportsP99ByOrder()
+    {
+        string temporaryRoot = CreateTemporaryRoot();
+        try
+        {
+            ComparisonLayout layout = CreateLayout(temporaryRoot);
+            CreateBalancedEvidence(
+                layout,
+                (order, _) =>
+                {
+                    Measurement measurement = order == "previous-candidate"
+                        ? new(
+                            100m,
+                            100m,
+                            10m,
+                            20m,
+                            BaselineP95: 10m,
+                            CandidateP95: 11m)
+                        : new(
+                            100m,
+                            100m,
+                            20m,
+                            10m,
+                            BaselineP95: 10m,
+                            CandidateP95: 11m);
+                    return SingleRow("p95-blocking", measurement);
+                });
+
+            ProcessResult result = await RunComparerAsync(
+                layout,
+                "-BlockingLatencyPercentile",
+                "P95");
+
+            Assert.True(result.ExitCode == 0, result.CombinedOutput);
+            string report = File.ReadAllText(layout.ReportPath);
+            Assert.Contains(
+                "- Blocking latency percentile: P95. P99 is retained as a " +
+                "non-blocking diagnostic",
+                report);
+            Assert.Contains(
+                "| Suite | Row | Throughput regression | P95 regression | " +
+                "P95 difference | P99 diagnostic regression |",
+                report);
+            Assert.Contains(
+                "| suite | p95-blocking | 0.00% | 10.00% | 1.0000 ms | " +
+                "0.00% | 0.0000 ms | PASS |",
+                report);
+            Assert.Contains(
+                "Non-blocking P99 diagnostics by order: previous-candidate " +
+                "P99=100.00%, P99 difference=10.0000 ms; " +
+                "candidate-previous P99=-50.00%, P99 difference=-10.0000 ms.",
+                report);
+            Assert.DoesNotContain("P99 stability=", report);
+        }
+        finally
+        {
+            DeleteTemporaryRoot(temporaryRoot);
+        }
+    }
+
+    [Fact]
+    public async Task PairedComparer_P95SelectionRejectsConfirmedP95Regression()
+    {
+        string temporaryRoot = CreateTemporaryRoot();
+        try
+        {
+            ComparisonLayout layout = CreateLayout(temporaryRoot);
+            CreateBalancedEvidence(
+                layout,
+                (_, _) => SingleRow(
+                    "p95-regression",
+                    new(
+                        100m,
+                        100m,
+                        10m,
+                        10m,
+                        BaselineP95: 10m,
+                        CandidateP95: 13m)));
+
+            ProcessResult result = await RunComparerAsync(
+                layout,
+                "-BlockingLatencyPercentile",
+                "P95");
+
+            Assert.NotEqual(0, result.ExitCode);
+            string report = File.ReadAllText(layout.ReportPath);
+            Assert.Contains(
+                "| suite | p95-regression | 0.00% | 30.00% | 3.0000 ms | " +
+                "0.00% | 0.0000 ms | REGRESSION |",
+                report);
+            Assert.Contains(
+                "Confirmed paired candidate regression in both order strata: P95.",
+                report);
+        }
+        finally
+        {
+            DeleteTemporaryRoot(temporaryRoot);
+        }
+    }
+
+    [Fact]
+    public async Task PairedComparer_P95SelectionUsesP95ForOrderSensitivity()
+    {
+        string temporaryRoot = CreateTemporaryRoot();
+        try
+        {
+            ComparisonLayout layout = CreateLayout(temporaryRoot);
+            CreateBalancedEvidence(
+                layout,
+                (order, _) => SingleRow(
+                    "p95-order-sensitive",
+                    new(
+                        100m,
+                        100m,
+                        10m,
+                        10m,
+                        BaselineP95: 10m,
+                        CandidateP95: order == "previous-candidate" ? 13m : 10m)));
+
+            ProcessResult result = await RunComparerAsync(
+                layout,
+                "-BlockingLatencyPercentile",
+                "P95");
+
+            Assert.NotEqual(0, result.ExitCode);
+            string report = File.ReadAllText(layout.ReportPath);
+            Assert.Contains("- Order-sensitive rows: 1", report);
+            Assert.Contains(
+                "| suite | p95-order-sensitive | 0.00% | 14.02% | 1.5000 ms | " +
+                "0.00% | 0.0000 ms | ORDER-SENSITIVE |",
+                report);
+            Assert.Contains(
+                "Order-sensitive paired effect: the two order strata disagree",
+                report);
+        }
+        finally
+        {
+            DeleteTemporaryRoot(temporaryRoot);
+        }
+    }
+
+    [Fact]
     public async Task PairedComparer_DisjointP99CrossingsDoNotSatisfyAndRule()
     {
         string temporaryRoot = CreateTemporaryRoot();
@@ -943,13 +1085,13 @@ public sealed class PairedReleasePerformanceComparatorTests
             Path.Combine(layout.BaselineRoot, $"{layout.SuiteName}.csv"),
             [
                 EvidenceHeader,
-                CreateEvidenceRow(rowName, 100m, 10m, 200, aggregateTag),
+                CreateEvidenceRow(rowName, 100m, 3m, 10m, 200, aggregateTag),
             ]);
         File.WriteAllLines(
             Path.Combine(layout.CandidateRoot, $"{layout.SuiteName}.csv"),
             [
                 EvidenceHeader,
-                CreateEvidenceRow(rowName, 100m, 10m, 200, aggregateTag),
+                CreateEvidenceRow(rowName, 100m, 3m, 10m, 200, aggregateTag),
             ]);
     }
 
@@ -964,6 +1106,9 @@ public sealed class PairedReleasePerformanceComparatorTests
                      StringComparer.Ordinal))
         {
             decimal ops = baseline ? measurement.BaselineOps : measurement.CandidateOps;
+            decimal p95 = baseline
+                ? measurement.BaselineP95 ?? 3m
+                : measurement.CandidateP95 ?? 3m;
             decimal p99 = baseline ? measurement.BaselineP99 : measurement.CandidateP99;
             int samples = baseline
                 ? measurement.BaselineSamples
@@ -977,6 +1122,7 @@ public sealed class PairedReleasePerformanceComparatorTests
             lines.Add(CreateEvidenceRow(
                 name,
                 ops,
+                p95,
                 p99,
                 samples,
                 extraInfo,
@@ -988,6 +1134,7 @@ public sealed class PairedReleasePerformanceComparatorTests
     private static string CreateEvidenceRow(
         string name,
         decimal opsPerSecond,
+        decimal p95,
         decimal p99,
         int latencySamples,
         string extraInfo = "Pair=raw",
@@ -1003,7 +1150,7 @@ public sealed class PairedReleasePerformanceComparatorTests
                 FormatNumber(opsPerSecond),
                 "1",
                 "2",
-                "3",
+                FormatNumber(p95),
                 FormatNumber(p99),
                 FormatNumber(p99),
                 "0.1",
@@ -1041,10 +1188,12 @@ public sealed class PairedReleasePerformanceComparatorTests
         return value.ToString(CultureInfo.InvariantCulture);
     }
 
-    private static Task<ProcessResult> RunComparerAsync(ComparisonLayout layout)
+    private static Task<ProcessResult> RunComparerAsync(
+        ComparisonLayout layout,
+        params string[] additionalArguments)
     {
-        return RunProcessAsync(
-            "pwsh",
+        List<string> arguments =
+        [
             "-NoLogo",
             "-NoProfile",
             "-File",
@@ -1067,7 +1216,10 @@ public sealed class PairedReleasePerformanceComparatorTests
             "-ReportPath",
             layout.ReportPath,
             "-PairManifestPath",
-            layout.ManifestPath);
+            layout.ManifestPath,
+        ];
+        arguments.AddRange(additionalArguments);
+        return RunProcessAsync("pwsh", arguments.ToArray());
     }
 
     private static Task<ProcessResult> RunLegacyComparerAsync(ComparisonLayout layout)
@@ -1204,7 +1356,9 @@ public sealed class PairedReleasePerformanceComparatorTests
         decimal BaselineElapsedMs = 10_000m,
         decimal CandidateElapsedMs = 10_000m,
         string BaselineExtraInfo = "Pair=raw",
-        string CandidateExtraInfo = "Pair=raw");
+        string CandidateExtraInfo = "Pair=raw",
+        decimal? BaselineP95 = null,
+        decimal? CandidateP95 = null);
 
     private sealed record PairDefinition(
         string Suite,

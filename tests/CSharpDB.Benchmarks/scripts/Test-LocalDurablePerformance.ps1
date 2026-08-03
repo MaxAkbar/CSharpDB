@@ -23,6 +23,9 @@ param(
     [ValidateRange(0, 1000)]
     [double] $MaxP99RegressionMilliseconds = 0.05,
 
+    [ValidateSet('P95', 'P99')]
+    [string] $BlockingLatencyPercentile = 'P95',
+
     [switch] $ConfirmDedicatedFixedSsd,
 
     [string] $GitHubRepository = '',
@@ -32,12 +35,13 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$statusPolicy = 'durable-v1'
+$statusPolicy = 'durable-v2'
 $canonicalRepeatCount = 3
 $canonicalPostBuildQuiescenceSeconds = 30
 $canonicalMaxThroughputRegressionPercent = 15.0
 $canonicalMaxP99RegressionPercent = 25.0
 $canonicalMaxP99RegressionMilliseconds = 0.05
+$canonicalBlockingLatencyPercentile = 'P95'
 
 if (-not $IsWindows) {
     throw 'Local durable performance qualification requires a dedicated Windows machine with a fixed SSD.'
@@ -70,6 +74,10 @@ if (-not $NoGitHubStatus) {
     if ($MaxP99RegressionMilliseconds -ne $canonicalMaxP99RegressionMilliseconds) {
         $nonCanonicalSettings.Add(
             "MaxP99RegressionMilliseconds must be $canonicalMaxP99RegressionMilliseconds")
+    }
+    if ($BlockingLatencyPercentile -cne $canonicalBlockingLatencyPercentile) {
+        $nonCanonicalSettings.Add(
+            "BlockingLatencyPercentile must be $canonicalBlockingLatencyPercentile")
     }
     if ($nonCanonicalSettings.Count -gt 0) {
         throw (
@@ -244,6 +252,7 @@ try {
             MaxThroughputRegressionPercent = $MaxThroughputRegressionPercent
             MaxP99RegressionPercent = $MaxP99RegressionPercent
             MaxP99RegressionMilliseconds = $MaxP99RegressionMilliseconds
+            BlockingLatencyPercentile = $BlockingLatencyPercentile
         }
         if (-not [string]::IsNullOrWhiteSpace($previousCommit)) {
             $parameters.PreviousRef = $previousCommit
@@ -318,6 +327,13 @@ function Write-LocalSummary {
         "- Repeat count per order: $RepeatCount",
         '- Durability mode: `Durable`',
         "- Status policy: ``$statusPolicy``",
+        "- Blocking latency percentile: ``$BlockingLatencyPercentile``",
+        $(if ($BlockingLatencyPercentile -ceq 'P99') {
+            '- P99 latency: blocking for this diagnostic run'
+        }
+        else {
+            '- P99 latency: diagnostic only'
+        }),
         '- Dedicated fixed SSD: confirmed by the release operator',
         "- Machine: ``$env:COMPUTERNAME``",
         "- Benchmark temporary root: ``$benchmarkTemporaryRoot``",

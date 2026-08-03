@@ -474,8 +474,11 @@ prior process value afterward.
 
 Only the canonical release policy may publish the official status: automatic
 previous-release discovery, three repeats per order, a 30-second post-build
-wait, a 15% throughput limit, and the combined 25% plus 0.05 ms P99 rule. To
-change any of those settings or supply `-PreviousRef`, also supply
+wait, a 15% throughput limit, and the combined 25% plus 0.05 ms P95 rule. P99
+remains required and validated; valid P99 measurements are reported
+diagnostically but do not affect stability, order-sensitivity, or regression
+status. To change any of those settings, select another blocking percentile,
+or supply `-PreviousRef`, also supply
 `-NoGitHubStatus`; that run is diagnostic and cannot authorize a release.
 
 The candidate benchmark source is hash-verified and synchronized into the
@@ -493,14 +496,22 @@ on an idle fixed-SSD machine.
 
 The comparer requires exact schema and row-name parity across raw and aggregate
 evidence, positive gate metrics, at least 100 retained latency observations per
-row, and exact recomputation of throughput and P99 comparisons. Each revision
-order stratum must provide a strict stable majority of paired effects. `INVALID`,
-`UNSTABLE`, and `ORDER-SENSITIVE` evidence block qualification. For stable
-evidence, throughput fails above a 15% candidate regression. P99 fails only when
-its increase exceeds both 25% and the 0.05 ms absolute allowance, so
+row, and exact recomputation of throughput and P95 comparisons. Each revision
+order stratum must provide a strict stable majority of paired effects for
+throughput and blocking P95 latency. `INVALID` evidence, and `UNSTABLE` or
+`ORDER-SENSITIVE` blocking assessments, fail qualification. For stable
+evidence, throughput fails above a 15% candidate regression. P95 fails only
+when its increase exceeds both 25% and the 0.05 ms absolute allowance, so
 percentage-amplified sub-millisecond noise remains visible without blocking by
-itself. Both clean, balanced paired durable-write passes must pass before the
-release tag is created.
+itself. P99 remains required, validated diagnostic evidence, but valid P99
+values do not affect stability, order-sensitivity, or regression status. Both
+clean, balanced paired durable-write passes must pass before the release tag is
+created.
+
+This short suite does not claim release-grade P99 qualification. A future
+blocking P99 policy requires a separately designed longer experiment with
+enough tail observations and repeatability to distinguish engine behavior from
+machine-state noise; it is not inferred from this P95 gate.
 
 GitHub's `SQL Release Qualification` workflow retains the two clean Windows,
 Linux, and macOS functional passes and two blocking comparisons of the 18 stable
@@ -514,7 +525,7 @@ with permission to create commit statuses is therefore required. The
 cannot qualify a release. The release workflow accepts the status only from the
 login configured in the `LOCAL_DURABLE_ATTESTOR` repository variable, or from
 the repository owner when that variable is unset, and requires a canonical
-`durable-v1` policy attestation.
+`durable-v2` policy attestation.
 
 The existing scheduled perf-guardrail workflow remains report-only and includes
 the durable SQL batching baseline plus its configured micro and diagnostic
@@ -615,7 +626,8 @@ Promotion checklist:
 - Both balanced paired local durable-write comparisons passed with the
   same hash-verified candidate harness and retained raw evidence, and the exact
   candidate commit has a successful `csharpdb/local-durable-performance`
-  status.
+  `durable-v2` status. Blocking P95 and throughput evidence passed; diagnostic
+  P99 was retained but did not determine the result.
 - No comparison row is `INVALID`, `UNSTABLE`, `ORDER-SENSITIVE`, or
   `REGRESSION`, and every gate row has at least 100 retained latency
   observations. Exact hybrid diagnostic rows use the stronger 10,000-sample

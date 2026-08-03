@@ -39,9 +39,9 @@ jobs:
             echo "::error::The ${PERFORMANCE_STATUS_CONTEXT} status was created by ${creator}, not the configured attestor ${EXPECTED_STATUS_CREATOR}."
             exit 1
           fi
-          attestation_pattern='^policy=durable-v1; baseline=[0-9a-f]{40}; reports=[0-9A-F]{8}/[0-9A-F]{8}$'
+          attestation_pattern='^policy=durable-v2; baseline=[0-9a-f]{40}; reports=[0-9A-F]{8}/[0-9A-F]{8}$'
           if [[ ! "$description" =~ $attestation_pattern ]]; then
-            echo "::error::The ${PERFORMANCE_STATUS_CONTEXT} status does not contain a canonical durable-v1 attestation."
+            echo "::error::The ${PERFORMANCE_STATUS_CONTEXT} status does not contain a canonical durable-v2 attestation."
             exit 1
           fi
 

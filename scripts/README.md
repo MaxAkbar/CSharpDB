@@ -171,10 +171,13 @@ client call, combines checksums, and attaches everything to the GitHub Release.
 `-NoGitHubStatus` is available only for diagnostics and wrapper tests. A run with
 that switch does not satisfy the release workflow's matching-commit check.
 The official status is available only with automatic previous-release discovery
-and the canonical `durable-v1` repeat, quiescence, and regression settings; any
-override requires `-NoGitHubStatus`. The workflow accepts the status only from
-the login named by the `LOCAL_DURABLE_ATTESTOR` repository variable, falling
-back to the repository owner when the variable is unset.
+and the canonical `durable-v2` repeat, quiescence, and regression settings. That
+policy blocks on throughput and P95 while retaining P99 as diagnostic evidence;
+selecting P99 or any other override requires `-NoGitHubStatus`. A truly blocking
+P99 qualification would require a separately designed longer experiment with
+enough tail observations and repeatability. The workflow accepts the status
+only from the login named by the `LOCAL_DURABLE_ATTESTOR` repository variable,
+falling back to the repository owner when the variable is unset.
 
 ## Operator Walkthrough
 
