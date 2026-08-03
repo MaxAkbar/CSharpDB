@@ -1,6 +1,6 @@
 # Observability And Diagnostics Plan
 
-Internal implementation plan for the CSharpDB 4.4.0 observability and
+Internal implementation plan for CSharpDB observability and
 operational-diagnostics work. This plan covers embedded use, the standalone
 REST host, the combined daemon, remote clients, and Admin.
 
@@ -35,7 +35,7 @@ Prometheus metrics, check health, inspect current and recent database activity,
 and understand storage or maintenance problems without exposing SQL values,
 credentials, or database contents by default.
 
-The 4.4.0 observability work is complete only when CSharpDB can:
+The observability work is complete only when CSharpDB can:
 
 - Emit stable structured operational logs with correlation identifiers.
 - Record query execution without logging SQL text or parameter values by
@@ -260,7 +260,7 @@ Phases are ordered by dependency, not calendar estimate.
 
 | Phase | Primary outcome | Depends on |
 | --- | --- | --- |
-| 0 | Contracts, safety policy, correlation, and benchmark baseline. | Current 4.3.0 baseline. |
+| 0 | Contracts, safety policy, correlation, and benchmark baseline. | Baseline recorded when Phase 0 begins. |
 | 1 | Structured logging plus query and slow-query logging. | Phase 0. |
 | 2 | Active/recent queries, query plans, connections, and sessions. | Phases 0 and 1. |
 | 3 | Runtime storage, WAL, backup, and restore diagnostics. | Phase 0; can overlap late Phase 2 work. |
@@ -710,7 +710,7 @@ Exit gate:
 Status: `Not started`
 
 Goal: prove the complete feature set is safe, interoperable, performant, and
-usable before closing 4.4.0.
+usable before closing the observability milestone.
 
 Work:
 
@@ -750,7 +750,7 @@ Deliverables:
 - Complete public documentation and sample.
 - Cross-platform, core/Native AOT, host publishing, redaction, cardinality,
   concurrency, and performance evidence.
-- 4.4.0 release notes and qualified packages.
+- Release notes and qualified packages for the release that first ships observability.
 
 Exit gate:
 
@@ -887,7 +887,7 @@ file path, and error message are prohibited metric dimensions.
 
 ## Compatibility And Rollout
 
-- Treat the observability schema as a versioned public contract after 4.4.0.
+- Treat the observability schema as a versioned public contract after its first supported release.
 - Add new metrics and fields compatibly; do not silently change the meaning or
   unit of an existing instrument.
 - Deprecate a metric or field for at least one minor release before removal
@@ -924,7 +924,7 @@ file path, and error message are prohibited metric dimensions.
 
 ## Assumptions
 
-- Version 4.4.0 starts from the merged 4.3.0 baseline.
+- Phase 0 records the merged baseline before implementation begins.
 - .NET `ActivitySource`, `Meter`, and `ILogger` remain the primary integration
   points.
 - The standalone API and daemon continue sharing

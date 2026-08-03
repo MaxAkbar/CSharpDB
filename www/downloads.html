@@ -48,6 +48,7 @@
             padding: 0.3rem 1rem;
             font-size: 0.85rem;
             font-weight: 600;
+            text-decoration: none;
             color: var(--accent);
             border: 1px solid var(--accent);
             border-radius: 999px;
@@ -119,10 +120,6 @@
             align-items: center;
             gap: 0.75rem;
             flex-wrap: wrap;
-        }
-        .dl-card .dl-size {
-            font-size: 0.78rem;
-            color: var(--text-muted);
         }
         .dl-btn {
             display: inline-flex;
@@ -253,7 +250,7 @@
             <div class="dl-hero">
                 <h1>Downloads</h1>
                 <p>NuGet packages for .NET, pre-built native libraries for cross-language interop, and the C header file.</p>
-                <span class="dl-version-badge">Latest: v2.7.0</span>
+                <a class="dl-version-badge" href="#all-releases">View latest release</a>
             </div>
 
             <!-- ───────── NuGet Packages ───────── -->
@@ -279,7 +276,7 @@
                         <div class="dl-desc">All-in-one meta-package. Includes the engine, SQL, storage, and execution layers. This is the recommended entry point.</div>
                         <div class="dl-meta">
                             <a href="https://www.nuget.org/packages/CSharpDB" class="dl-btn dl-btn-primary" target="_blank" rel="noopener">NuGet</a>
-                            <a href="https://github.com/MaxAkbar/CSharpDB/releases/download/v2.7.0/CSharpDB.2.7.0.nupkg" class="dl-btn dl-btn-ghost">.nupkg</a>
+                            <a href="https://www.nuget.org/packages/CSharpDB#versions-body-tab" class="dl-btn dl-btn-ghost" target="_blank" rel="noopener">Versions</a>
                         </div>
                     </div>
 
@@ -293,7 +290,7 @@
                         <div class="dl-desc">Unified client SDK with pluggable transports (Direct, HTTP, gRPC). Single API for in-process and remote access.</div>
                         <div class="dl-meta">
                             <a href="https://www.nuget.org/packages/CSharpDB.Client" class="dl-btn dl-btn-primary" target="_blank" rel="noopener">NuGet</a>
-                            <a href="https://github.com/MaxAkbar/CSharpDB/releases/download/v2.7.0/CSharpDB.Client.2.7.0.nupkg" class="dl-btn dl-btn-ghost">.nupkg</a>
+                            <a href="https://www.nuget.org/packages/CSharpDB.Client#versions-body-tab" class="dl-btn dl-btn-ghost" target="_blank" rel="noopener">Versions</a>
                         </div>
                     </div>
 
@@ -307,7 +304,7 @@
                         <div class="dl-desc">ADO.NET provider. Standard <code>DbConnection</code> / <code>DbCommand</code> / <code>DbDataReader</code> for ORM and data library compatibility.</div>
                         <div class="dl-meta">
                             <a href="https://www.nuget.org/packages/CSharpDB.Data" class="dl-btn dl-btn-primary" target="_blank" rel="noopener">NuGet</a>
-                            <a href="https://github.com/MaxAkbar/CSharpDB/releases/download/v2.7.0/CSharpDB.Data.2.7.0.nupkg" class="dl-btn dl-btn-ghost">.nupkg</a>
+                            <a href="https://www.nuget.org/packages/CSharpDB.Data#versions-body-tab" class="dl-btn dl-btn-ghost" target="_blank" rel="noopener">Versions</a>
                         </div>
                     </div>
 
@@ -321,7 +318,7 @@
                         <div class="dl-desc">Shared types (<code>DbValue</code>, <code>Schema</code>, <code>ErrorCodes</code>). Reference this for low-level or shared-type usage.</div>
                         <div class="dl-meta">
                             <a href="https://www.nuget.org/packages/CSharpDB.Primitives" class="dl-btn dl-btn-primary" target="_blank" rel="noopener">NuGet</a>
-                            <a href="https://github.com/MaxAkbar/CSharpDB/releases/download/v2.7.0/CSharpDB.Primitives.2.7.0.nupkg" class="dl-btn dl-btn-ghost">.nupkg</a>
+                            <a href="https://www.nuget.org/packages/CSharpDB.Primitives#versions-body-tab" class="dl-btn dl-btn-ghost" target="_blank" rel="noopener">Versions</a>
                         </div>
                     </div>
                 </div>
@@ -346,32 +343,32 @@
                             <tr>
                                 <td><code>CSharpDB.Engine</code></td>
                                 <td>Top-level Database API and Collection&lt;T&gt; (NoSQL)</td>
-                                <td><a href="https://github.com/MaxAkbar/CSharpDB/releases/download/v2.7.0/CSharpDB.Engine.2.7.0.nupkg" class="dl-btn dl-btn-ghost">.nupkg</a></td>
+                                <td><a href="https://www.nuget.org/packages/CSharpDB.Engine" class="dl-btn dl-btn-primary" target="_blank" rel="noopener">NuGet</a></td>
                             </tr>
                             <tr>
                                 <td><code>CSharpDB.Execution</code></td>
                                 <td>Query planner, operators, and expression evaluator</td>
-                                <td><a href="https://github.com/MaxAkbar/CSharpDB/releases/download/v2.7.0/CSharpDB.Execution.2.7.0.nupkg" class="dl-btn dl-btn-ghost">.nupkg</a></td>
+                                <td><a href="https://www.nuget.org/packages/CSharpDB.Execution" class="dl-btn dl-btn-primary" target="_blank" rel="noopener">NuGet</a></td>
                             </tr>
                             <tr>
                                 <td><code>CSharpDB.Sql</code></td>
                                 <td>Tokenizer, parser, AST, and script splitter</td>
-                                <td><a href="https://github.com/MaxAkbar/CSharpDB/releases/download/v2.7.0/CSharpDB.Sql.2.7.0.nupkg" class="dl-btn dl-btn-ghost">.nupkg</a></td>
+                                <td><a href="https://www.nuget.org/packages/CSharpDB.Sql" class="dl-btn dl-btn-primary" target="_blank" rel="noopener">NuGet</a></td>
                             </tr>
                             <tr>
                                 <td><code>CSharpDB.Storage</code></td>
                                 <td>Pager, B+tree, WAL, and file I/O</td>
-                                <td><a href="https://github.com/MaxAkbar/CSharpDB/releases/download/v2.7.0/CSharpDB.Storage.2.7.0.nupkg" class="dl-btn dl-btn-ghost">.nupkg</a></td>
+                                <td><a href="https://www.nuget.org/packages/CSharpDB.Storage" class="dl-btn dl-btn-primary" target="_blank" rel="noopener">NuGet</a></td>
                             </tr>
                             <tr>
                                 <td><code>CSharpDB.Storage.Diagnostics</code></td>
                                 <td>Storage diagnostics and integrity checking</td>
-                                <td><a href="https://github.com/MaxAkbar/CSharpDB/releases/download/v2.7.0/CSharpDB.Storage.Diagnostics.2.7.0.nupkg" class="dl-btn dl-btn-ghost">.nupkg</a></td>
+                                <td><a href="https://www.nuget.org/packages/CSharpDB.Storage.Diagnostics" class="dl-btn dl-btn-primary" target="_blank" rel="noopener">NuGet</a></td>
                             </tr>
                             <tr>
                                 <td><code>CSharpDB.Pipelines</code></td>
                                 <td>ETL pipeline engine</td>
-                                <td><a href="https://github.com/MaxAkbar/CSharpDB/releases/download/v2.7.0/CSharpDB.Pipelines.2.7.0.nupkg" class="dl-btn dl-btn-ghost">.nupkg</a></td>
+                                <td><a href="https://www.nuget.org/packages/CSharpDB.Pipelines" class="dl-btn dl-btn-primary" target="_blank" rel="noopener">NuGet</a></td>
                             </tr>
                         </tbody>
                     </table>
@@ -393,8 +390,7 @@
                         </div>
                         <div class="dl-desc"><code>CSharpDB.Native.dll</code> &mdash; Windows shared library for x64.</div>
                         <div class="dl-meta">
-                            <a href="https://github.com/MaxAkbar/CSharpDB/releases/download/v2.7.0/CSharpDB.Native.dll" class="dl-btn dl-btn-primary">Download .dll</a>
-                            <span class="dl-size">6.9 MB</span>
+                            <a href="https://github.com/MaxAkbar/CSharpDB/releases/latest/download/CSharpDB.Native.dll" class="dl-btn dl-btn-primary">Download .dll</a>
                         </div>
                     </div>
 
@@ -407,8 +403,7 @@
                         </div>
                         <div class="dl-desc"><code>CSharpDB.Native.so</code> &mdash; Linux shared library for x64.</div>
                         <div class="dl-meta">
-                            <a href="https://github.com/MaxAkbar/CSharpDB/releases/download/v2.7.0/CSharpDB.Native.so" class="dl-btn dl-btn-primary">Download .so</a>
-                            <span class="dl-size">6.8 MB</span>
+                            <a href="https://github.com/MaxAkbar/CSharpDB/releases/latest/download/CSharpDB.Native.so" class="dl-btn dl-btn-primary">Download .so</a>
                         </div>
                     </div>
 
@@ -421,8 +416,7 @@
                         </div>
                         <div class="dl-desc"><code>CSharpDB.Native.dylib</code> &mdash; macOS shared library for Apple Silicon.</div>
                         <div class="dl-meta">
-                            <a href="https://github.com/MaxAkbar/CSharpDB/releases/download/v2.7.0/CSharpDB.Native.dylib" class="dl-btn dl-btn-primary">Download .dylib</a>
-                            <span class="dl-size">6.5 MB</span>
+                            <a href="https://github.com/MaxAkbar/CSharpDB/releases/latest/download/CSharpDB.Native.dylib" class="dl-btn dl-btn-primary">Download .dylib</a>
                         </div>
                     </div>
 
@@ -433,10 +427,9 @@
                             </div>
                             <h3>C Header</h3>
                         </div>
-                        <div class="dl-desc"><code>csharpdb.h</code> &mdash; C header file with all 20 exported function declarations.</div>
+                        <div class="dl-desc"><code>csharpdb.h</code> &mdash; C header file for the public native function declarations.</div>
                         <div class="dl-meta">
-                            <a href="https://github.com/MaxAkbar/CSharpDB/releases/download/v2.7.0/csharpdb.h" class="dl-btn dl-btn-primary">Download .h</a>
-                            <span class="dl-size">9 KB</span>
+                            <a href="https://github.com/MaxAkbar/CSharpDB/releases/latest/download/csharpdb.h" class="dl-btn dl-btn-primary">Download .h</a>
                         </div>
                     </div>
                 </div>
@@ -451,7 +444,7 @@
 
                 <div class="dl-cli-note">
                     <h4>Migration release archives</h4>
-                    <p>The v4.3.0 migration release produces framework-dependent archives for Windows x64, Linux x64, and macOS Apple silicon. Each archive requires the .NET 10 runtime and keeps its applicable fixed optional adapters, notices, licenses, and installers together. The Access adapter is Windows-only. Verify the downloaded archive against <code>MIGRATION-SHA256SUMS.txt</code> from the same GitHub release and preserve its directory layout.</p>
+                    <p>The current migration release produces framework-dependent archives for Windows x64, Linux x64, and macOS Apple silicon. Each archive requires the .NET 10 runtime and keeps its applicable fixed optional adapters, notices, licenses, and installers together. The Access adapter is Windows-only. Verify the downloaded archive against <code>MIGRATION-SHA256SUMS.txt</code> from the same GitHub release and preserve its directory layout.</p>
                     <p>Find published assets on <a href="#all-releases">the releases page</a>, then follow the <a href="docs/database-migration.html">database migration guide</a>.</p>
                 </div>
 
@@ -466,8 +459,9 @@ dotnet publish src/CSharpDB.Cli -c Release -r win-x64 --self-contained -o ./publ
 dotnet publish src/CSharpDB.Cli -c Release -r linux-x64 --self-contained -o ./publish
 dotnet publish src/CSharpDB.Cli -c Release -r osx-arm64 --self-contained -o ./publish</code></pre></div>
                     <p>Those direct commands publish the base CLI only. They do not produce the optional Access, SQL Server, or MySQL worker layout required by provider-specific commands. To build the reviewed framework-dependent migration archives and their applicable workers, use the repository release publisher:</p>
-                    <div class="code-block" data-title="PowerShell"><pre><code>.\scripts\Publish-CSharpDbMigrationRelease.ps1 `
-  -Version 4.3.0</code></pre></div>
+                    <div class="code-block" data-title="PowerShell"><pre><code>$Version = (Read-Host 'Release version without the v prefix').Trim()
+.\scripts\Publish-CSharpDbMigrationRelease.ps1 `
+  -Version $Version</code></pre></div>
                 </div>
 
                 <p style="margin-top: 1rem; font-size: 0.88rem; color: var(--text-muted);">See the <a href="docs/cli.html">CLI Reference</a> for general command documentation or <a href="docs/database-migration.html">Move Data into CSharpDB</a> for the end-to-end migration workflow.</p>

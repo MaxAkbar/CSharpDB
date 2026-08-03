@@ -1,8 +1,8 @@
 # What's New
 
-## version4.4.0
+## Current Release
 
-version4.4.0 completes the bounded SQL implementation and makes its release claims reproducible. The public reference, provider behavior, migration capability contracts, recovery tests, and release workflow now describe the same supported surface; publishing remains gated on the recorded qualification passes described below.
+The current release completes the bounded SQL implementation and makes its release claims reproducible. The public reference, provider behavior, migration capability contracts, recovery tests, and release workflow now describe the same supported surface; publishing remains gated on the recorded qualification passes described below.
 
 ### SQL and Schema Coverage
 

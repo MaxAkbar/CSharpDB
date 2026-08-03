@@ -7,7 +7,7 @@ on:
   workflow_call:
     inputs:
       release_version:
-        description: Optional release tag, such as v4.4.0
+        description: Optional semantic release tag
         required: false
         default: ""
         type: string
@@ -24,7 +24,7 @@ on:
   workflow_dispatch:
     inputs:
       release_version:
-        description: Optional release tag, such as v4.4.0
+        description: Optional semantic release tag
         required: false
         default: ""
         type: string

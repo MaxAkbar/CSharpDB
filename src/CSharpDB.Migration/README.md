@@ -8,7 +8,8 @@ require a new format or contract version rather than changing v1 in place.
 ## Install
 
 ```powershell
-dotnet add package CSharpDB.Migration --version 4.4.0
+$PackageVersion = (Read-Host 'CSharpDB package version').Trim()
+dotnet add package CSharpDB.Migration --version $PackageVersion
 ```
 
 Use this package when building a .NET tool or workflow that authors, validates,

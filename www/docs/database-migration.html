@@ -352,8 +352,8 @@ csharpdb migrate query-check .\query.sql `
 
                 <h3 id="ef-migration-analyzer">EF Core migration chain analysis</h3>
                 <p>The EF Core analyzer is a separate .NET tool so design-time dependencies and trusted application loading do not enter the base CLI:</p>
-                <div class="code-block" data-title="PowerShell"><pre><code>dotnet tool install --global CSharpDB.EntityFrameworkCore.Tools `
-  --version 4.4.0
+                <div class="code-block" data-title="PowerShell"><pre><code>$PackageVersion = (Read-Host 'CSharpDB package version').Trim()
+dotnet tool install --global CSharpDB.EntityFrameworkCore.Tools --version $PackageVersion
 
 dotnet csharpdb-ef analyze `
   --project .\MyApp.csproj `
@@ -364,11 +364,12 @@ dotnet csharpdb-ef analyze `
 
                 <h2 id="dual-run">Read-only Dual-run Validation</h2>
                 <p>The <code>CSharpDB.Migration.DualRun</code> SDK compares a reviewed query pack against a read-only source snapshot and the staged CSharpDB target. It uses typed parameters, the same versioned canonical value encoding used by migration validation, ordered or duplicate-preserving unordered comparison, bounded resource limits, and digest-verified reports that omit SQL and data values.</p>
-                <div class="code-block" data-title=".NET CLI"><pre><code>dotnet add package CSharpDB.Migration.DualRun --version 4.4.0</code></pre></div>
+                <div class="code-block" data-title="PowerShell"><pre><code>$PackageVersion = (Read-Host 'CSharpDB package version').Trim()
+dotnet add package CSharpDB.Migration.DualRun --version $PackageVersion</code></pre></div>
                 <p>Dual-run is additional cutover evidence, not an import path and not a replacement for schema, row-count, and checksum validation. Both endpoint snapshot identities and the canonicalization contract must be recorded. Any provider error, timeout, safety rejection, incoherent snapshot, or resource-limit exhaustion is <code>Inconclusive</code>, never a pass. The generic ADO.NET source route requires both an exact reviewed query allowlist and a provider-enforced read-only connection.</p>
                 <p>Version 1 retains bounded row digests in memory and does not spill dual-run comparison state to disk. Set row and canonical-byte limits for the available memory. A provider can materialize a field before the SDK checks its cell limit, so this API is not a process-isolation boundary for untrusted providers or unrestricted query text.</p>
                 <div class="callout callout-info">
-                    <strong>Current surface:</strong> dual-run is a reusable NuGet SDK with a complete SQLite-to-CSharpDB example in its <a href="https://www.nuget.org/packages/CSharpDB.Migration.DualRun/4.4.0">package documentation</a>. A general live-database CLI is intentionally not exposed until provider-specific snapshot and read-only guarantees are qualified.
+                    <strong>Current surface:</strong> dual-run is a reusable NuGet SDK with a complete SQLite-to-CSharpDB example in its <a href="https://www.nuget.org/packages/CSharpDB.Migration.DualRun">package documentation</a>. A general live-database CLI is intentionally not exposed until provider-specific snapshot and read-only guarantees are qualified.
                 </div>
 
                 <h2 id="export-csharpdb">Export CSharpDB to CSV or JSON</h2>

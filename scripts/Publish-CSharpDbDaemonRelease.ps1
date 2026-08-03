@@ -28,7 +28,11 @@ to artifacts/daemon-release.
 Passes --no-restore to dotnet publish.
 
 .EXAMPLE
-.\scripts\Publish-CSharpDbDaemonRelease.ps1 -Version 3.4.0 -Runtime win-x64
+$Version = (Read-Host 'Release version without the v prefix').Trim()
+if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') {
+    throw 'Enter a semantic release version in major.minor.patch form.'
+}
+.\scripts\Publish-CSharpDbDaemonRelease.ps1 -Version $Version -Runtime win-x64
 
 Publishes and archives the Windows x64 daemon release artifact.
 #>

@@ -117,6 +117,10 @@ commit them into source paths. Diagnostic runs do not update the curated
 3. Publish one local archive for a fast packaging check.
 
 ```powershell
+$Version = (Read-Host 'Release version without the v prefix').Trim()
+if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') {
+  throw 'Enter a semantic release version in major.minor.patch form.'
+}
 .\scripts\Publish-CSharpDbDaemonRelease.ps1 `
   -Version $Version `
   -Runtime win-x64 `
@@ -137,7 +141,10 @@ Get-Content artifacts\daemon-release-local\archives\SHA256SUMS.txt
 ```powershell
 git switch main
 git pull --ff-only
-$Version = '4.4.0'
+$Version = (Read-Host 'Release version without the v prefix').Trim()
+if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') {
+  throw 'Enter a semantic release version in major.minor.patch form.'
+}
 $Tag = "v$Version"
 $TagCommit = (git rev-parse 'HEAD^{commit}').Trim()
 
@@ -318,8 +325,12 @@ What it does:
 Examples:
 
 ```powershell
-.\scripts\Publish-CSharpDbDaemonRelease.ps1 -Version 3.4.0 -Runtime win-x64
-.\scripts\Publish-CSharpDbDaemonRelease.ps1 -Version 3.4.0 -Runtime linux-x64,osx-arm64
+$Version = (Read-Host 'Release version without the v prefix').Trim()
+if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') {
+  throw 'Enter a semantic release version in major.minor.patch form.'
+}
+.\scripts\Publish-CSharpDbDaemonRelease.ps1 -Version $Version -Runtime win-x64
+.\scripts\Publish-CSharpDbDaemonRelease.ps1 -Version $Version -Runtime linux-x64,osx-arm64
 ```
 
 Default runtimes:
@@ -333,9 +344,9 @@ provided.
 
 ### `Publish-CSharpDbMigrationRelease.ps1`
 
-Use this to create the installable combined migration CLI archives for
-v4.4.0. It composes the reviewed SQL Server and MySQL bundle publishers for
-every runtime and the reviewed Microsoft Access bundle publisher for
+Use this to create the installable combined migration CLI archives for a
+CSharpDB release. It composes the reviewed SQL Server and MySQL bundle publishers
+for every runtime and the reviewed Microsoft Access bundle publisher for
 `win-x64`, instead of rebuilding any provider layout itself.
 
 What it does:
@@ -359,8 +370,9 @@ What it does:
 The default RIDs are `win-x64`, `linux-x64`, and `osx-arm64`:
 
 ```powershell
+$Version = (Read-Host 'Release version without the v prefix').Trim()
 .\scripts\Publish-CSharpDbMigrationRelease.ps1 `
-  -Version 4.4.0
+  -Version $Version
 ```
 
 The publisher requires PowerShell 7.4 or later.
@@ -368,8 +380,9 @@ The publisher requires PowerShell 7.4 or later.
 For a single local packaging check:
 
 ```powershell
+$Version = (Read-Host 'Release version without the v prefix').Trim()
 .\scripts\Publish-CSharpDbMigrationRelease.ps1 `
-  -Version 4.4.0 `
+  -Version $Version `
   -Runtime win-x64 `
   -OutputRoot artifacts\migration-release-local
 ```
@@ -563,9 +576,10 @@ selected nupkg identity and hash, installs only from that feed, and runs the
 same checks.
 
 ```powershell
+$Version = (Read-Host 'Release version without the v prefix').Trim()
 .\scripts\Test-EfCoreMigrationTool.ps1 `
   -FeedPath artifacts/nuget `
-  -Version 4.4.0
+  -Version $Version
 ```
 
 ### `Publish-CSharpDbAdminStorePackage.ps1`
@@ -588,15 +602,17 @@ What it does:
 Example:
 
 ```powershell
-.\scripts\Publish-CSharpDbAdminStorePackage.ps1 -Version 3.4.0
+$Version = (Read-Host 'Release version without the v prefix').Trim()
+.\scripts\Publish-CSharpDbAdminStorePackage.ps1 -Version $Version
 ```
 
 For local App Installer testing, import the exported test certificate from an
 elevated PowerShell session before double-clicking the `.msix`:
 
 ```powershell
+$Version = (Read-Host 'Release version without the v prefix').Trim()
 Import-Certificate `
-  -FilePath artifacts\admin-store\packages\csharpdb-studio-v3.4.0-win-x64-local-test.cer `
+  -FilePath "artifacts\admin-store\packages\csharpdb-studio-v$Version-win-x64-local-test.cer" `
   -CertStoreLocation Cert:\LocalMachine\TrustedPeople
 ```
 
@@ -623,7 +639,11 @@ The archive can be extracted anywhere and launched with
 `ADMIN-SHA256SUMS.txt`.
 
 ```powershell
-.\scripts\Publish-CSharpDbAdminRelease.ps1 -Version 4.4.0
+$Version = (Read-Host 'Release version without the v prefix').Trim()
+if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') {
+  throw 'Enter a semantic release version in major.minor.patch form.'
+}
+.\scripts\Publish-CSharpDbAdminRelease.ps1 -Version $Version
 ```
 
 ## Daemon Service Installers
