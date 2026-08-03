@@ -9,6 +9,8 @@ public sealed class ReleaseCoreSingleSampleWarmupTests
 {
     [Theory]
     [InlineData("--master-table")]
+    [InlineData("--master-table-durable-writes")]
+    [InlineData("--master-table-hosted-stable")]
     [InlineData("--durable-sql-batching")]
     [InlineData("--concurrent-write-diagnostics")]
     [InlineData("--hybrid-storage-mode")]
@@ -46,7 +48,7 @@ public sealed class ReleaseCoreSingleSampleWarmupTests
                 repeatCount: 1,
                 warmupSingleSample: true));
 
-        Assert.Contains("direct release-core suite modes", exception.Message);
+        Assert.Contains("direct release-evidence suite modes", exception.Message);
     }
 
     [Fact]
@@ -102,15 +104,19 @@ public sealed class ReleaseCoreSingleSampleWarmupTests
         }
     }
 
-    [Fact]
-    public async Task SuiteRunner_ReleaseCoreRowBelowSampleFloorFailsBeforeCsvEmission()
+    [Theory]
+    [InlineData("master-table")]
+    [InlineData("master-table-durable-writes")]
+    [InlineData("master-table-hosted-stable")]
+    public async Task SuiteRunner_ReleaseEvidenceRowBelowSampleFloorFailsBeforeCsvEmission(
+        string suiteName)
     {
         string temporaryRoot = CreateTemporaryDirectory();
         try
         {
             InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => BenchmarkProgram.RunSuiteWithRepeatsAsync(
-                    "master-table",
+                    suiteName,
                     () => Task.FromResult(new List<BenchmarkResult>
                     {
                         CreateResult(invocation: 99),
@@ -118,7 +124,7 @@ public sealed class ReleaseCoreSingleSampleWarmupTests
                     repeatCount: 1,
                     outputDirectory: temporaryRoot));
 
-            Assert.Contains("master-table", exception.Message);
+            Assert.Contains(suiteName, exception.Message);
             Assert.Contains("single-sample-row", exception.Message);
             Assert.Contains("99 retained latency samples", exception.Message);
             Assert.Contains("100", exception.Message);

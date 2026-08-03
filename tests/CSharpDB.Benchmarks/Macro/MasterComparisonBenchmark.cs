@@ -5,6 +5,43 @@ namespace CSharpDB.Benchmarks.Macro;
 public static class MasterComparisonBenchmark
 {
     private const int BatchSize = 100;
+    private static readonly IReadOnlyList<string> s_durableWriteRowNames = Array.AsReadOnly(
+        [
+            "MasterComparison_Sql_FileBacked_SingleInsert",
+            "MasterComparison_Sql_FileBacked_BatchInsertRows",
+            "MasterComparison_Sql_HybridIncrementalDurable_SingleInsert",
+            "MasterComparison_Sql_HybridIncrementalDurable_BatchInsertRows",
+            "MasterComparison_Sql_DirectClientLocalProcess_SingleInsert",
+            "MasterComparison_Sql_DirectClientLocalProcess_BatchInsertRows",
+            "MasterComparison_Collection_FileBacked_SinglePut",
+            "MasterComparison_Collection_FileBacked_BatchPutDocs",
+            "MasterComparison_Collection_HybridIncrementalDurable_SinglePut",
+            "MasterComparison_Collection_HybridIncrementalDurable_BatchPutDocs",
+        ]);
+    private static readonly IReadOnlyList<string> s_hostedStableRowNames = Array.AsReadOnly(
+        [
+            "MasterComparison_Sql_FileBacked_PointLookup",
+            "MasterComparison_Sql_FileBacked_ConcurrentReadsPerQuery",
+            "MasterComparison_Sql_FileBacked_ConcurrentReadsBurst32",
+            "MasterComparison_Sql_HybridIncrementalDurable_PointLookup",
+            "MasterComparison_Sql_HybridIncrementalDurable_ConcurrentReadsPerQuery",
+            "MasterComparison_Sql_HybridIncrementalDurable_ConcurrentReadsBurst32",
+            "MasterComparison_Sql_DirectClientLocalProcess_PointLookup",
+            "MasterComparison_Sql_DirectClientLocalProcess_ConcurrentReadsPerQuery",
+            "MasterComparison_Sql_InMemory_SingleInsert",
+            "MasterComparison_Sql_InMemory_BatchInsertRows",
+            "MasterComparison_Sql_InMemory_PointLookup",
+            "MasterComparison_Sql_InMemory_ConcurrentReadsPerQuery",
+            "MasterComparison_Sql_InMemory_ConcurrentReadsBurst32",
+            "MasterComparison_Collection_FileBacked_PointGet",
+            "MasterComparison_Collection_HybridIncrementalDurable_PointGet",
+            "MasterComparison_Collection_InMemory_SinglePut",
+            "MasterComparison_Collection_InMemory_BatchPutDocs",
+            "MasterComparison_Collection_InMemory_PointGet",
+        ]);
+
+    internal static IReadOnlyList<string> DurableWriteRowNames => s_durableWriteRowNames;
+    internal static IReadOnlyList<string> HostedStableRowNames => s_hostedStableRowNames;
 
     public static async Task<List<BenchmarkResult>> RunAsync()
     {
@@ -16,6 +53,43 @@ public static class MasterComparisonBenchmark
             hybridStorageResults,
             MapHybridStorageResult));
         results.AddRange(Remap(await DirectFileCacheTransportBenchmark.RunMasterComparisonSubsetAsync(), MapDirectClientResult));
+        SortResults(results);
+
+        return results;
+    }
+
+    internal static async Task<List<BenchmarkResult>> RunDurableWritesAsync()
+    {
+        var results = new List<BenchmarkResult>(s_durableWriteRowNames.Count);
+        results.AddRange(Remap(
+            await HybridStorageModeBenchmark.RunMasterComparisonDurableWriteSubsetAsync(),
+            MapHybridStorageResult));
+        results.AddRange(Remap(
+            await DirectFileCacheTransportBenchmark.RunMasterComparisonDurableWriteSubsetAsync(),
+            MapDirectClientResult));
+        SortResults(results);
+        ValidateRowContract(results, s_durableWriteRowNames, "durable ten-row");
+
+        return results;
+    }
+
+    internal static async Task<List<BenchmarkResult>> RunHostedStableRowsAsync()
+    {
+        var results = new List<BenchmarkResult>(s_hostedStableRowNames.Count);
+        results.AddRange(Remap(
+            await HybridStorageModeBenchmark.RunMasterComparisonHostedStableSubsetAsync(),
+            MapHybridStorageResult));
+        results.AddRange(Remap(
+            await DirectFileCacheTransportBenchmark.RunMasterComparisonHostedStableSubsetAsync(),
+            MapDirectClientResult));
+        SortResults(results);
+        ValidateRowContract(results, s_hostedStableRowNames, "hosted stable eighteen-row");
+
+        return results;
+    }
+
+    private static void SortResults(List<BenchmarkResult> results)
+    {
         results.Sort(static (left, right) =>
         {
             int familyOrder = GetFamilyOrder(left.Name).CompareTo(GetFamilyOrder(right.Name));
@@ -28,8 +102,19 @@ public static class MasterComparisonBenchmark
 
             return string.CompareOrdinal(left.Name, right.Name);
         });
+    }
 
-        return results;
+    private static void ValidateRowContract(
+        IReadOnlyList<BenchmarkResult> results,
+        IReadOnlyList<string> expectedNames,
+        string description)
+    {
+        string[] actualNames = results.Select(static result => result.Name).ToArray();
+        if (!actualNames.SequenceEqual(expectedNames, StringComparer.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"The {description} master-table subset no longer matches its release contract.");
+        }
     }
 
     private static List<BenchmarkResult> Remap(

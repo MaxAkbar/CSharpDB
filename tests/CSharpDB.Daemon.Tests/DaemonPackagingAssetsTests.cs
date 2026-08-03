@@ -59,7 +59,7 @@ public sealed class DaemonPackagingAssetsTests
     }
 
     [Fact]
-    public void SqlReleaseQualificationWorkflow_RunsTwoCleanBalancedPairedPassesAndBlocksOnlyOnMasterTable()
+    public void SqlReleaseQualificationWorkflow_RunsFunctionalAndHostedStablePerformancePasses()
     {
         string repoRoot = FindRepoRoot();
         string workflow = File.ReadAllText(Path.Combine(
@@ -88,84 +88,65 @@ public sealed class DaemonPackagingAssetsTests
         Assert.DoesNotContain(
             "    env:\n      QUALIFICATION_OUTPUT: ${{ runner.temp }}",
             normalized);
-        Assert.DoesNotContain(
-            "    env:\n      PERFORMANCE_OUTPUT: ${{ runner.temp }}",
-            normalized);
-        Assert.Contains(
-            "PERFORMANCE_OUTPUT: ${{ runner.temp }}/cdb-perf/p${{ matrix.qualification_pass }}",
-            normalized);
-        Assert.DoesNotContain(
-            "csharpdb-previous-release-performance/${{ github.sha }}",
-            normalized);
         Assert.Contains("previous_release_ref:", normalized);
-        Assert.Contains(
-            "empty discovers the nearest prior semantic release",
-            normalized);
-        Assert.DoesNotContain("default: v4.3.0", normalized);
-        int performanceJobIndex = normalized.IndexOf(
-            "  previous-release-performance:\n",
-            StringComparison.Ordinal);
-        Assert.True(
-            performanceJobIndex >= 0,
-            "Performance qualification job must be present.");
-        string performanceJob = normalized[performanceJobIndex..];
-        Assert.Contains(
-            "  previous-release-performance:\n" +
-            "    name: Windows previous-release master-table / balanced paired pass ${{ matrix.qualification_pass }}\n" +
-            "    needs: qualify\n",
-            performanceJob);
-        Assert.Contains(
-            "        qualification_pass:\n" +
-            "          - 1\n" +
-            "          - 2\n",
-            performanceJob);
-        Assert.Contains(
-            "    strategy:\n      fail-fast: false\n      matrix:\n",
-            performanceJob);
-        Assert.DoesNotContain("        suite:\n", performanceJob);
+        Assert.Contains("previous-release-hosted-stable-performance:", normalized);
         Assert.Contains("Test-PreviousReleasePerformance.ps1", normalized);
-        Assert.Contains(
-            "-CandidateRef $env:CANDIDATE_REF",
-            normalized);
-        Assert.Contains(
-            "-QualificationPass ${{ matrix.qualification_pass }}",
-            normalized);
-        Assert.Contains("-SuiteName master-table", performanceJob);
-        Assert.Contains("timeout-minutes: 300", performanceJob);
-        Assert.Contains("            -Paired `\n", performanceJob);
-        Assert.DoesNotContain("-Paired:", performanceJob);
-        string[] supplementalSuites =
-        [
-            "durable-sql-batching",
-            "concurrent-write-diagnostics",
-            "hybrid-storage-mode",
-            "hybrid-hot-set-read",
-            "hybrid-cold-open",
-            "sqlite-compare",
-        ];
-        foreach (string suite in supplementalSuites)
-            Assert.DoesNotContain(suite, performanceJob);
+        Assert.Contains("PERFORMANCE_OUTPUT", normalized);
+        Assert.Contains("-SuiteName master-table-hosted-stable", normalized);
         Assert.Contains("-RepeatCount 3", normalized);
         Assert.Contains("-PostBuildQuiescenceSeconds 30", normalized);
         Assert.Contains("-MaxThroughputRegressionPercent 15", normalized);
         Assert.Contains("-MaxP99RegressionPercent 25", normalized);
         Assert.Contains("-MaxP99RegressionMilliseconds 0.05", normalized);
-        Assert.Contains(
-            "previous-release-performance-preflight.md",
-            normalized);
-        Assert.Contains("baseline-results", normalized);
-        Assert.Contains("candidate-results", normalized);
-        Assert.Contains(
-            "name: previous-release-performance-${{ github.sha }}-master-table-pass-${{ matrix.qualification_pass }}-attempt-${{ github.run_attempt }}",
-            normalized);
-        Assert.Equal(
-            5,
-            System.Text.RegularExpressions.Regex.Matches(
-                performanceJob,
-                @"\$\{\{ runner\.temp \}\}/cdb-perf/p\$\{\{ matrix\.qualification_pass \}\}/(?:previous-release-performance(?:-preflight)?\.md|baseline-results|candidate-results|logs)").Count);
-        Assert.DoesNotContain(
-            "cdb-perf/${{ matrix.suite }}",
-            performanceJob);
+        Assert.Contains("timeout-minutes: 180", normalized);
+        Assert.DoesNotContain("master-table-durable-writes", normalized);
+    }
+
+    [Fact]
+    public void LocalDurablePerformanceScript_RunsTwoSequentialFailClosedPassesOutsideGitHub()
+    {
+        string repoRoot = FindRepoRoot();
+        string wrapper = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "tests",
+            "CSharpDB.Benchmarks",
+            "scripts",
+            "Test-LocalDurablePerformance.ps1"));
+        string comparison = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "tests",
+            "CSharpDB.Benchmarks",
+            "scripts",
+            "Test-PreviousReleasePerformance.ps1"));
+
+        Assert.Contains("foreach ($qualificationPass in 1, 2)", wrapper);
+        Assert.Contains("CandidateRef = $candidateCommit", wrapper);
+        Assert.Contains("PreviousRef = $previousCommit", wrapper);
+        Assert.Contains("Paired = $true", wrapper);
+        Assert.Contains("SuiteName = @('master-table-durable-writes')", wrapper);
+        Assert.Contains("RepeatCount = $RepeatCount", wrapper);
+        Assert.Contains("PostBuildQuiescenceSeconds = $PostBuildQuiescenceSeconds", wrapper);
+        Assert.Contains("MaxThroughputRegressionPercent = $MaxThroughputRegressionPercent", wrapper);
+        Assert.Contains("MaxP99RegressionPercent = $MaxP99RegressionPercent", wrapper);
+        Assert.Contains("MaxP99RegressionMilliseconds = $MaxP99RegressionMilliseconds", wrapper);
+        Assert.Contains("CSHARPDB_BENCH_DURABILITY", wrapper);
+        Assert.Contains("'Durable'", wrapper);
+        Assert.Contains("ConfirmDedicatedFixedSsd", wrapper);
+        Assert.Contains("csharpdb/local-durable-performance", wrapper);
+        Assert.Contains("durable-v1", wrapper);
+        Assert.Contains("Use -NoGitHubStatus for diagnostic overrides", wrapper);
+        Assert.Contains("Invoke-GitHubStatus", wrapper);
+        Assert.Contains("continuing to collect the second pass", wrapper);
+        Assert.Contains("requires a clean repository worktree", wrapper);
+        Assert.Contains("output must be outside the repository", wrapper);
+        Assert.Contains("local-durable-performance.md", wrapper);
+        Assert.DoesNotContain("Start-Job", wrapper);
+        Assert.DoesNotContain(".json", wrapper, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("Name = 'master-table-durable-writes'", comparison);
+        Assert.Contains("Arguments = @('--master-table-durable-writes')", comparison);
+        Assert.Contains("Name = 'master-table-hosted-stable'", comparison);
+        Assert.Contains("Arguments = @('--master-table-hosted-stable')", comparison);
     }
 
     [Fact]
@@ -215,7 +196,7 @@ public sealed class DaemonPackagingAssetsTests
     }
 
     [Fact]
-    public void ReleaseWorkflow_GatesEveryPublisherOnReusableQualification()
+    public void ReleaseWorkflow_GatesEveryPublisherOnFunctionalHostedAndLocalQualification()
     {
         string repoRoot = FindRepoRoot();
         string workflow = File.ReadAllText(Path.Combine(
@@ -235,11 +216,28 @@ public sealed class DaemonPackagingAssetsTests
             "release_commit: ${{ github.sha }}",
             normalized);
         Assert.DoesNotContain("previous_release_ref:", normalized);
+        Assert.Contains("verify-local-durable-performance:", normalized);
+        Assert.Contains("csharpdb/local-durable-performance", normalized);
+        Assert.Contains("statuses: read", normalized);
+        Assert.Contains("LOCAL_DURABLE_ATTESTOR", normalized);
+        Assert.Contains("github.repository_owner", normalized);
+        Assert.Contains("policy=durable-v1", normalized);
+        Assert.Contains(
+            "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/statuses?per_page=100",
+            normalized);
+        Assert.Contains("[0] // {}", normalized);
+        Assert.Contains("$state\" != \"success", normalized);
+        Assert.Contains("${creator,,}", normalized);
+        Assert.Contains("attestation_pattern", normalized);
         Assert.Equal(
             5,
             System.Text.RegularExpressions.Regex.Matches(
                 normalized,
                 @"(?m)^    needs: build-and-test$").Count);
+        Assert.Single(
+            System.Text.RegularExpressions.Regex.Matches(
+                normalized,
+                @"(?m)^    needs: verify-local-durable-performance$"));
     }
 
     [Fact]

@@ -1631,6 +1631,8 @@ public sealed class PreviousReleasePairedRunnerScriptTests
 
             $suiteMap = @{
                 '--master-table' = 'master-table'
+                '--master-table-durable-writes' = 'master-table-durable-writes'
+                '--master-table-hosted-stable' = 'master-table-hosted-stable'
                 '--durable-sql-batching' = 'durable-sql-batching'
                 '--concurrent-write-diagnostics' = 'concurrent-write-diagnostics'
                 '--hybrid-storage-mode' = 'hybrid-storage-mode'

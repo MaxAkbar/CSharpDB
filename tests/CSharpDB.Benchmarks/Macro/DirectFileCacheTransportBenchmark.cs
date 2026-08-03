@@ -22,6 +22,32 @@ public static class DirectFileCacheTransportBenchmark
     internal static readonly TimeSpan MaximumReleaseCoreMeasuredDuration = TimeSpan.FromSeconds(90);
     private static readonly TimeSpan WarmupCompletionTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan CancellationDrainTimeout = TimeSpan.FromSeconds(1);
+    private static readonly IReadOnlyList<MasterComparisonScenario> s_masterComparisonDurableWriteScenarios =
+        Array.AsReadOnly(
+        [
+            MasterComparisonScenario.SqlSingleInsert,
+            MasterComparisonScenario.SqlBatchInsert,
+        ]);
+    private static readonly IReadOnlyList<MasterComparisonScenario> s_masterComparisonHostedStableScenarios =
+        Array.AsReadOnly(
+        [
+            MasterComparisonScenario.SqlPointLookup,
+            MasterComparisonScenario.SqlConcurrentReads,
+        ]);
+
+    internal enum MasterComparisonScenario
+    {
+        SqlSingleInsert,
+        SqlBatchInsert,
+        SqlPointLookup,
+        SqlConcurrentReads,
+    }
+
+    internal static IReadOnlyList<MasterComparisonScenario> MasterComparisonDurableWriteScenarios =>
+        s_masterComparisonDurableWriteScenarios;
+
+    internal static IReadOnlyList<MasterComparisonScenario> MasterComparisonHostedStableScenarios =>
+        s_masterComparisonHostedStableScenarios;
 
     public static async Task<List<BenchmarkResult>> RunAsync()
     {
@@ -41,13 +67,42 @@ public static class DirectFileCacheTransportBenchmark
 
     internal static async Task<List<BenchmarkResult>> RunMasterComparisonSubsetAsync()
     {
-        var results = new List<BenchmarkResult>(capacity: 4)
+        return await RunMasterComparisonScenariosAsync(
+        [
+            .. s_masterComparisonDurableWriteScenarios,
+            .. s_masterComparisonHostedStableScenarios,
+        ]);
+    }
+
+    internal static async Task<List<BenchmarkResult>> RunMasterComparisonDurableWriteSubsetAsync()
+    {
+        return await RunMasterComparisonScenariosAsync(s_masterComparisonDurableWriteScenarios);
+    }
+
+    internal static async Task<List<BenchmarkResult>> RunMasterComparisonHostedStableSubsetAsync()
+    {
+        return await RunMasterComparisonScenariosAsync(s_masterComparisonHostedStableScenarios);
+    }
+
+    private static async Task<List<BenchmarkResult>> RunMasterComparisonScenariosAsync(
+        IReadOnlyList<MasterComparisonScenario> scenarios)
+    {
+        var results = new List<BenchmarkResult>(scenarios.Count);
+        foreach (MasterComparisonScenario scenario in scenarios)
         {
-            await RunSqlSingleInsertAsync(tunedFileCache: true),
-            await RunSqlBatchInsertAsync(tunedFileCache: true),
-            await RunSqlPointLookupAsync(tunedFileCache: true),
-            await RunSqlConcurrentReadsAsync(tunedFileCache: true),
-        };
+            results.Add(await (scenario switch
+            {
+                MasterComparisonScenario.SqlSingleInsert =>
+                    RunSqlSingleInsertAsync(tunedFileCache: true),
+                MasterComparisonScenario.SqlBatchInsert =>
+                    RunSqlBatchInsertAsync(tunedFileCache: true),
+                MasterComparisonScenario.SqlPointLookup =>
+                    RunSqlPointLookupAsync(tunedFileCache: true),
+                MasterComparisonScenario.SqlConcurrentReads =>
+                    RunSqlConcurrentReadsAsync(tunedFileCache: true),
+                _ => throw new ArgumentOutOfRangeException(nameof(scenario), scenario, null),
+            }));
+        }
 
         return results;
     }

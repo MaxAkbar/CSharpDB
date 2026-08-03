@@ -7,6 +7,8 @@ This file lists the available benchmark harnesses and how they are used. The mai
 | Class | Meaning |
 |---|---|
 | `core` | Feeds the generated README scorecard and current core result tables. |
+| `hosted release gate` | Required previous-release comparison on GitHub-hosted Windows runners. |
+| `local release gate` | Required pre-tag comparison on one idle fixed-SSD Windows machine. |
 | `release guardrail` | Used by `Run-Perf-Guardrails.ps1 -Mode release` or PR guardrails. |
 | `diagnostic` | Kept for investigations, tuning, comparisons, and one-off validation. |
 
@@ -23,6 +25,13 @@ This file lists the available benchmark harnesses and how they are used. The mai
 | `--sqlite-compare --repeat 3 --repro` | `core` | Local SQLite WAL+FULL comparison rows. |
 
 Use `--release-core --repeat 3 --repro` to run the core suites in one command.
+
+## Release Gates
+
+| Command | Class | Purpose |
+|---|---|---|
+| `--master-table-durable-writes` | `local release gate` | Ten file-backed, hybrid durable, and direct-client SQL/collection single and batch write rows. Normally invoked through `scripts/Test-LocalDurablePerformance.ps1` for two sequential paired passes. |
+| `--master-table-hosted-stable` | `hosted release gate` | The other 18 master-table rows: persistent reads plus in-memory reads and writes. Invoked by SQL Release Qualification in two balanced paired Windows jobs. |
 
 ## Release Guardrails
 

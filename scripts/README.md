@@ -66,74 +66,19 @@ Markdown result are written beneath the caller-selected output path outside
 the repository. The source tree must be clean before and after the run.
 
 The authoritative GitHub `SQL Release Qualification` workflow executes this
-same check in two independent clean jobs on each of Windows, Linux, and macOS.
-It can be started manually for a release candidate and is also required
-automatically by the tag release workflow before any publishing job starts.
-Before the workflow has first reached the default branch, pushing a non-release
-`qualification-*` tag runs it from that exact candidate commit without invoking
-the `v*` publishing workflow. Once registered on the default branch, normal
-manual dispatch can target any release-candidate branch.
-The workflow also runs the established master-table scorecard against the
-previous release in two independent clean Windows jobs. When no override is
-provided, the nearest prior semantic release tag reachable from the candidate
-is selected automatically. A hash-verified copy of the candidate benchmark
-source is used for both engine revisions, while revision-specific root build
-inputs are hashed and reported separately. Both revisions are built once per
-pass. With `-RepeatCount 3`, each pass runs six adjacent pairs and alternates
-the pair order: three in each revision order and six recorded samples per
-revision. Pass one starts with the previous revision; pass two starts with the
-candidate. Every logical invocation has one unrecorded warmup followed by one
-recorded sample.
+same functional check in two independent clean jobs on each of Windows, Linux,
+and macOS. It can be started manually for a release candidate and is also
+required automatically by the tag release workflow before any publishing job
+starts. Before the workflow has first reached the default branch, pushing a
+non-release `qualification-*` tag runs it from that exact candidate commit
+without invoking the `v*` publishing workflow. Once registered on the default
+branch, normal manual dispatch can target any release-candidate branch. The
+workflow also keeps the 18 persistent-read and in-memory master-table rows
+blocking in two balanced paired Windows jobs. Only the ten disk-sensitive
+durable writes are excluded from hosted performance qualification.
 
-Every raw sample, recomputed aggregate, and pair manifest is retained. The
-comparison requires exact schema and row parity, positive metrics, and at least
-100 retained latency observations per gate row. A strict majority of paired
-effects must remain within the configured throughput and P99 stability bands in
-each order stratum. Malformed, unstable, or order-sensitive evidence fails
-closed. A stable candidate fails above the 15% throughput regression limit or
-when P99 exceeds both 25% and 0.05 ms. Both clean, balanced paired qualifications
-must pass before publishing can start. The paired runner also supports focused
-A/A, exact-row, and order-sensitivity diagnostics.
-
-The performance comparison is intentionally separate from the faster local
-qualification command above. To reproduce it locally, start with a clean
-worktree and choose two empty output directories outside the repository:
-
-```powershell
-$PerformanceRoot = Join-Path `
-  ([IO.Path]::GetTempPath()) `
-  "csharpdb-previous-release-$([Guid]::NewGuid().ToString('N'))"
-
-.\tests\CSharpDB.Benchmarks\scripts\Test-PreviousReleasePerformance.ps1 `
-  -CandidateRef HEAD `
-  -OutputPath (Join-Path $PerformanceRoot 'pass-1') `
-  -QualificationPass 1 `
-  -Paired `
-  -SuiteName master-table `
-  -RepeatCount 3 `
-  -PostBuildQuiescenceSeconds 30
-
-.\tests\CSharpDB.Benchmarks\scripts\Test-PreviousReleasePerformance.ps1 `
-  -CandidateRef HEAD `
-  -OutputPath (Join-Path $PerformanceRoot 'pass-2') `
-  -QualificationPass 2 `
-  -Paired `
-  -SuiteName master-table `
-  -RepeatCount 3 `
-  -PostBuildQuiescenceSeconds 30
-```
-
-Each pass runs the master-table scorecard in twelve logical invocations. Because
-each invocation has a full warmup and recorded run, this is effectively 24 full
-master-table executions and can take several hours. `-SuiteName` can select
-other named suites for a diagnostic run. The workflow shuts down .NET build
-servers and waits 30 seconds after building; this fixed wait does not prove that
-CPU or disk activity is idle, so local runs should use a dedicated machine
-without concurrent builds. The release gate retains six raw CSVs plus a
-recomputed aggregate for every revision, verifies each copy, records the pair
-order, synchronized candidate harness, and revision-specific build inputs, and
-removes its detached worktrees only after a non-following link audit. Generated
-evidence remains outside the repository.
+The durable-write comparison is run against the final release commit immediately
+before tagging in step 5 below.
 
 For a same-artifact exact-row A/A diagnostic, use an absent or empty output
 directory outside the checkout:
@@ -185,15 +130,21 @@ Get-ChildItem artifacts\daemon-release-local\archives
 Get-Content artifacts\daemon-release-local\archives\SHA256SUMS.txt
 ```
 
-5. After the pull request is merged, update local `main`, create the tag at the
-   merge commit, and run release validation before pushing the tag.
+5. After the pull request is merged, update local `main`, qualify the exact merge
+   commit on the dedicated fixed-SSD Windows machine, then create and push the
+   tag.
 
 ```powershell
 git switch main
 git pull --ff-only
-$Version = '4.2.0'
+$Version = '4.4.0'
 $Tag = "v$Version"
 $TagCommit = (git rev-parse 'HEAD^{commit}').Trim()
+
+.\tests\CSharpDB.Benchmarks\scripts\Test-LocalDurablePerformance.ps1 `
+  -CandidateRef $TagCommit `
+  -ConfirmDedicatedFixedSsd
+
 git tag $Tag $TagCommit
 
 .\scripts\Test-ReleaseTag.ps1 `
@@ -203,11 +154,27 @@ git tag $Tag $TagCommit
 git push origin $Tag
 ```
 
-The GitHub Release workflow first completes both clean qualification passes on
-Windows, Linux, and macOS. It then publishes the daemon archives for
+The local wrapper forces durable mode and runs the ten durable SQL/collection
+single and batch write rows in two sequential balanced paired passes. On an idle
+fixed-SSD machine they normally take 75-100 minutes total. It pins the candidate
+and previous commits, retains hash-verified raw evidence and a Markdown summary
+outside the repository, creates no repository JSON, and publishes the
+`csharpdb/local-durable-performance` status only after both passes succeed. The
+release workflow requires that matching-commit status, completes both clean
+functional passes on Windows, Linux, and macOS, and runs the 18 persistent-read
+and in-memory performance rows on hosted Windows runners. It then
+publishes the daemon archives for
 `win-x64`, `linux-x64`, and `osx-arm64`, smoke-starts each extracted binary,
 calls the daemon REST `/api/info` endpoint, verifies a gRPC `GetInfoAsync`
 client call, combines checksums, and attaches everything to the GitHub Release.
+
+`-NoGitHubStatus` is available only for diagnostics and wrapper tests. A run with
+that switch does not satisfy the release workflow's matching-commit check.
+The official status is available only with automatic previous-release discovery
+and the canonical `durable-v1` repeat, quiescence, and regression settings; any
+override requires `-NoGitHubStatus`. The workflow accepts the status only from
+the login named by the `LOCAL_DURABLE_ATTESTOR` repository variable, falling
+back to the repository owner when the variable is unset.
 
 ## Operator Walkthrough
 

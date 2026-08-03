@@ -27,6 +27,38 @@ public static class HybridStorageModeBenchmark
     private static readonly ScenarioDefinition[] s_masterComparisonScenarios = s_scenarios
         .Where(static scenario => scenario.Name.StartsWith("Storage_", StringComparison.Ordinal))
         .ToArray();
+    private static readonly IReadOnlyList<string> s_masterComparisonDurableWriteScenarioNames =
+        Array.AsReadOnly(
+        [
+            "Storage_FileBacked_Sql_SingleInsert_5s",
+            "Storage_FileBacked_Sql_Batch100_5s",
+            "Storage_HybridIncrementalDurable_Sql_SingleInsert_5s",
+            "Storage_HybridIncrementalDurable_Sql_Batch100_5s",
+            "Storage_FileBacked_Collection_Put_5s",
+            "Storage_FileBacked_Collection_Batch100_5s",
+            "Storage_HybridIncrementalDurable_Collection_Put_5s",
+            "Storage_HybridIncrementalDurable_Collection_Batch100_5s",
+        ]);
+    private static readonly IReadOnlyList<string> s_masterComparisonHostedStableScenarioNames =
+        Array.AsReadOnly(
+        [
+            "Storage_FileBacked_Sql_PointLookup_20000",
+            "Storage_FileBacked_Sql_ConcurrentReads_8readers",
+            "Storage_FileBacked_Sql_ConcurrentReadsBurst32_8readers",
+            "Storage_FileBacked_Collection_Get_20000",
+            "Storage_HybridIncrementalDurable_Sql_PointLookup_20000",
+            "Storage_HybridIncrementalDurable_Sql_ConcurrentReads_8readers",
+            "Storage_HybridIncrementalDurable_Sql_ConcurrentReadsBurst32_8readers",
+            "Storage_HybridIncrementalDurable_Collection_Get_20000",
+            "Storage_InMemory_Sql_SingleInsert_5s",
+            "Storage_InMemory_Sql_Batch100_5s",
+            "Storage_InMemory_Sql_PointLookup_20000",
+            "Storage_InMemory_Sql_ConcurrentReads_8readers",
+            "Storage_InMemory_Sql_ConcurrentReadsBurst32_8readers",
+            "Storage_InMemory_Collection_Put_5s",
+            "Storage_InMemory_Collection_Batch100_5s",
+            "Storage_InMemory_Collection_Get_20000",
+        ]);
     private static readonly IReadOnlyList<string> s_scenarioNames = Array.AsReadOnly(
         s_scenarios.Select(static scenario => scenario.Name).ToArray());
     private static readonly IReadOnlyList<string> s_masterComparisonScenarioNames = Array.AsReadOnly(
@@ -62,6 +94,12 @@ public static class HybridStorageModeBenchmark
     internal static IReadOnlyList<string> MasterComparisonScenarioNames =>
         s_masterComparisonScenarioNames;
 
+    internal static IReadOnlyList<string> MasterComparisonDurableWriteScenarioNames =>
+        s_masterComparisonDurableWriteScenarioNames;
+
+    internal static IReadOnlyList<string> MasterComparisonHostedStableScenarioNames =>
+        s_masterComparisonHostedStableScenarioNames;
+
     public static async Task<List<BenchmarkResult>> RunAsync()
     {
         var results = new List<BenchmarkResult>(s_scenarios.Length);
@@ -76,6 +114,24 @@ public static class HybridStorageModeBenchmark
         var results = new List<BenchmarkResult>(s_masterComparisonScenarios.Length);
         foreach (ScenarioDefinition scenario in s_masterComparisonScenarios)
             results.Add(await scenario.RunAsync(null));
+
+        return results;
+    }
+
+    internal static async Task<List<BenchmarkResult>> RunMasterComparisonDurableWriteSubsetAsync()
+    {
+        var results = new List<BenchmarkResult>(s_masterComparisonDurableWriteScenarioNames.Count);
+        foreach (string scenarioName in s_masterComparisonDurableWriteScenarioNames)
+            results.Add(await GetScenario(scenarioName).RunAsync(null));
+
+        return results;
+    }
+
+    internal static async Task<List<BenchmarkResult>> RunMasterComparisonHostedStableSubsetAsync()
+    {
+        var results = new List<BenchmarkResult>(s_masterComparisonHostedStableScenarioNames.Count);
+        foreach (string scenarioName in s_masterComparisonHostedStableScenarioNames)
+            results.Add(await GetScenario(scenarioName).RunAsync(null));
 
         return results;
     }

@@ -558,6 +558,41 @@ public sealed class PreviousReleasePerformanceScriptTests
                 selectedSuitePreflight);
             Assert.DoesNotContain("master-table/", selectedSuitePreflight);
 
+            string durableEvidence = Path.Combine(
+                temporaryRoot,
+                "durable-suite-evidence");
+            ProcessResult durableResult = await RunProcessAsync(
+                "pwsh",
+                "-NoLogo",
+                "-NoProfile",
+                "-File",
+                Path.Combine(scriptRoot, "Test-PreviousReleasePerformance.ps1"),
+                "-CandidateRef",
+                "HEAD",
+                "-OutputPath",
+                durableEvidence,
+                "-QualificationPass",
+                "1",
+                "-Paired",
+                "-SuiteName",
+                "master-table-durable-writes",
+                "-PreflightOnly");
+
+            Assert.True(durableResult.ExitCode == 0, durableResult.CombinedOutput);
+            string durablePreflight = File.ReadAllText(Path.Combine(
+                durableEvidence,
+                "previous-release-performance-preflight.md"));
+            Assert.Contains("- Suite order: master-table-durable-writes", durablePreflight);
+            Assert.Contains(
+                "- Paired repeats per order: 3 (total pairs per suite: 6; " +
+                "recorded samples per revision: 6)",
+                durablePreflight);
+            Assert.Contains(
+                "master-table-durable-writes/pair-01/previous, " +
+                "master-table-durable-writes/pair-01/candidate",
+                durablePreflight);
+            Assert.DoesNotContain("master-table/pair-", durablePreflight);
+
             File.AppendAllText(trackedFile, Environment.NewLine + "dirty");
             ProcessResult dirtyResult = await RunProcessAsync(
                 "pwsh",
@@ -577,6 +612,355 @@ public sealed class PreviousReleasePerformanceScriptTests
             AssertDiagnosticContains(
                 "requires a clean repository worktree",
                 dirtyResult.CombinedOutput);
+        }
+        finally
+        {
+            DeleteTemporaryRoot(temporaryRoot);
+        }
+    }
+
+    [Theory]
+    [InlineData("-PreviousRef", "v4.3.0")]
+    [InlineData("-RepeatCount", "5")]
+    [InlineData("-PostBuildQuiescenceSeconds", "0")]
+    [InlineData("-MaxThroughputRegressionPercent", "100")]
+    [InlineData("-MaxP99RegressionPercent", "500")]
+    [InlineData("-MaxP99RegressionMilliseconds", "1000")]
+    public async Task LocalDurableWrapper_NonCanonicalSettingsCannotPublishOfficialStatus(
+        string settingName,
+        string settingValue)
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        string script = Path.Combine(
+            FindRepoRoot(),
+            "tests",
+            "CSharpDB.Benchmarks",
+            "scripts",
+            "Test-LocalDurablePerformance.ps1");
+        ProcessResult result = await RunProcessAsync(
+            "pwsh",
+            "-NoLogo",
+            "-NoProfile",
+            "-File",
+            script,
+            "-ConfirmDedicatedFixedSsd",
+            "-GitHubRepository",
+            "example/csharpdb",
+            settingName,
+            settingValue);
+
+        Assert.NotEqual(0, result.ExitCode);
+        AssertDiagnosticContains("requires canonical policy 'durable-v1'", result.CombinedOutput);
+        AssertDiagnosticContains("Use -NoGitHubStatus for diagnostic overrides", result.CombinedOutput);
+    }
+
+    [Fact]
+    public async Task LocalDurableWrapper_PinsCommitsRunsBothPassesAndPropagatesFailure()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        string temporaryRoot = CreateTemporaryRoot();
+        try
+        {
+            string sourceRoot = Path.Combine(temporaryRoot, "repository");
+            string scriptRoot = Path.Combine(
+                sourceRoot,
+                "tests",
+                "CSharpDB.Benchmarks",
+                "scripts");
+            Directory.CreateDirectory(scriptRoot);
+
+            string repositoryRoot = FindRepoRoot();
+            File.Copy(
+                Path.Combine(
+                    repositoryRoot,
+                    "tests",
+                    "CSharpDB.Benchmarks",
+                    "scripts",
+                    "Test-LocalDurablePerformance.ps1"),
+                Path.Combine(scriptRoot, "Test-LocalDurablePerformance.ps1"));
+            File.WriteAllText(
+                Path.Combine(scriptRoot, "Test-PreviousReleasePerformance.ps1"),
+                """
+                #requires -Version 7.0
+                [CmdletBinding()]
+                param(
+                    [string] $PreviousRef = '',
+                    [string] $CandidateRef = 'HEAD',
+                    [string] $OutputPath = '',
+                    [int] $QualificationPass = 1,
+                    [switch] $Paired,
+                    [string[]] $SuiteName = @(),
+                    [int] $RepeatCount = 3,
+                    [int] $PostBuildQuiescenceSeconds = 0,
+                    [double] $MaxThroughputRegressionPercent = 15,
+                    [double] $MaxP99RegressionPercent = 25,
+                    [double] $MaxP99RegressionMilliseconds = 0.05)
+
+                $ErrorActionPreference = 'Stop'
+                New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
+                $resolvedPrevious = if ([string]::IsNullOrWhiteSpace($PreviousRef)) {
+                    $env:FAKE_PREVIOUS_COMMIT
+                }
+                else {
+                    $PreviousRef
+                }
+                [IO.File]::WriteAllLines(
+                    (Join-Path $OutputPath 'previous-release-performance-preflight.md'),
+                    @(
+                        '# Previous-release performance preflight',
+                        '',
+                        "- Previous ref: ``v4.3.0`` (``$resolvedPrevious``)"))
+                [IO.File]::WriteAllLines(
+                    (Join-Path $OutputPath 'previous-release-performance.md'),
+                    @('# Previous-release performance', '', '- Result: **PASS**'))
+                Add-Content -LiteralPath $env:FAKE_LOCAL_DURABLE_LOG -Value (
+                    "$QualificationPass|$PreviousRef|$CandidateRef|" +
+                    "$env:CSHARPDB_BENCH_DURABILITY|$($SuiteName -join ',')")
+                if ($QualificationPass -eq 1 -and $env:FAKE_FAIL_PASS_ONE -eq '1') {
+                    throw 'Simulated pass-one failure.'
+                }
+                """);
+            File.WriteAllText(Path.Combine(sourceRoot, "release.txt"), "previous");
+
+            await AssertProcessSucceeded("git", "-C", sourceRoot, "init");
+            await AssertProcessSucceeded("git", "-C", sourceRoot, "config", "user.email", "test@example.invalid");
+            await AssertProcessSucceeded("git", "-C", sourceRoot, "config", "user.name", "CSharpDB Tests");
+            await AssertProcessSucceeded("git", "-C", sourceRoot, "config", "commit.gpgsign", "false");
+            await AssertProcessSucceeded("git", "-C", sourceRoot, "add", ".");
+            await AssertProcessSucceeded("git", "-C", sourceRoot, "commit", "-m", "previous release");
+            string previousCommit = (await RunProcessAsync(
+                "git",
+                "-C",
+                sourceRoot,
+                "rev-parse",
+                "HEAD")).StandardOutput.Trim();
+            await AssertProcessSucceeded("git", "-C", sourceRoot, "tag", "v4.3.0");
+            File.WriteAllText(Path.Combine(sourceRoot, "release.txt"), "candidate");
+            await AssertProcessSucceeded("git", "-C", sourceRoot, "add", "release.txt");
+            await AssertProcessSucceeded("git", "-C", sourceRoot, "commit", "-m", "candidate");
+            string candidateCommit = (await RunProcessAsync(
+                "git",
+                "-C",
+                sourceRoot,
+                "rev-parse",
+                "HEAD")).StandardOutput.Trim();
+
+            string fakeGitHubRoot = Path.Combine(temporaryRoot, "fake-github");
+            Directory.CreateDirectory(fakeGitHubRoot);
+            File.WriteAllText(
+                Path.Combine(fakeGitHubRoot, "fake-gh.ps1"),
+                """
+                param(
+                    [Parameter(ValueFromRemainingArguments = $true)]
+                    [string[]] $Arguments)
+
+                Add-Content -LiteralPath $env:FAKE_GH_LOG -Value ($Arguments -join '|')
+                if ($Arguments.Count -ge 2 -and
+                    $Arguments[0] -eq 'auth' -and
+                    $Arguments[1] -eq 'status') {
+                    exit 0
+                }
+                if ($Arguments.Count -ge 1 -and $Arguments[0] -eq 'api') {
+                    if (-not [string]::IsNullOrWhiteSpace($env:FAKE_GH_FAIL_STATE) -and
+                        $Arguments -contains "state=$env:FAKE_GH_FAIL_STATE") {
+                        Write-Error "Simulated GitHub $env:FAKE_GH_FAIL_STATE status failure."
+                        exit 1
+                    }
+                    exit 0
+                }
+                Write-Error "Unexpected fake gh command: $($Arguments -join ' ')"
+                exit 1
+                """);
+            File.WriteAllText(
+                Path.Combine(fakeGitHubRoot, "gh.cmd"),
+                """
+                @echo off
+                pwsh -NoLogo -NoProfile -File "%~dp0fake-gh.ps1" %*
+                exit /b %ERRORLEVEL%
+                """);
+
+            string successLog = Path.Combine(temporaryRoot, "success.log");
+            string githubLog = Path.Combine(temporaryRoot, "github.log");
+            string successEvidence = Path.Combine(temporaryRoot, "success-evidence");
+            ProcessResult success = await RunProcessWithEnvironmentAsync(
+                "pwsh",
+                new Dictionary<string, string>
+                {
+                    ["FAKE_PREVIOUS_COMMIT"] = previousCommit,
+                    ["FAKE_LOCAL_DURABLE_LOG"] = successLog,
+                    ["FAKE_GH_LOG"] = githubLog,
+                    ["PATH"] = fakeGitHubRoot + Path.PathSeparator +
+                        (Environment.GetEnvironmentVariable("PATH") ?? string.Empty),
+                    ["CSHARPDB_BENCH_DURABILITY"] = "Buffered",
+                },
+                "-NoLogo",
+                "-NoProfile",
+                "-File",
+                Path.Combine(scriptRoot, "Test-LocalDurablePerformance.ps1"),
+                "-CandidateRef",
+                "HEAD",
+                "-OutputPath",
+                successEvidence,
+                "-ConfirmDedicatedFixedSsd",
+                "-GitHubRepository",
+                "example/csharpdb");
+
+            Assert.True(success.ExitCode == 0, success.CombinedOutput);
+            string[] successLines = File.ReadAllLines(successLog);
+            Assert.Equal(2, successLines.Length);
+            Assert.Equal($"1||{candidateCommit}|Durable|master-table-durable-writes", successLines[0]);
+            Assert.Equal(
+                $"2|{previousCommit}|{candidateCommit}|Durable|master-table-durable-writes",
+                successLines[1]);
+            string successSummary = File.ReadAllText(Path.Combine(
+                successEvidence,
+                "local-durable-performance.md"));
+            Assert.Contains("- Result: **PASS**", successSummary);
+            Assert.Contains(
+                "GitHub release status: `csharpdb/local-durable-performance` " +
+                "in `example/csharpdb`",
+                successSummary);
+            string[] githubCalls = File.ReadAllLines(githubLog);
+            Assert.Equal(3, githubCalls.Length);
+            Assert.Equal("auth|status", githubCalls[0]);
+            Assert.Contains($"repos/example/csharpdb/statuses/{candidateCommit}", githubCalls[1]);
+            Assert.Contains("state=pending", githubCalls[1]);
+            Assert.Contains("context=csharpdb/local-durable-performance", githubCalls[1]);
+            Assert.Contains($"repos/example/csharpdb/statuses/{candidateCommit}", githubCalls[2]);
+            Assert.Contains("state=success", githubCalls[2]);
+            Assert.Contains("context=csharpdb/local-durable-performance", githubCalls[2]);
+            Assert.Contains("description=policy=durable-v1", githubCalls[2]);
+            Assert.Contains($"baseline={previousCommit}", githubCalls[2]);
+
+            string pendingStatusFailureLog = Path.Combine(
+                temporaryRoot,
+                "pending-status-failure.log");
+            string pendingStatusFailureGitHubLog = Path.Combine(
+                temporaryRoot,
+                "pending-status-failure-github.log");
+            ProcessResult pendingStatusFailure = await RunProcessWithEnvironmentAsync(
+                "pwsh",
+                new Dictionary<string, string>
+                {
+                    ["FAKE_PREVIOUS_COMMIT"] = previousCommit,
+                    ["FAKE_LOCAL_DURABLE_LOG"] = pendingStatusFailureLog,
+                    ["FAKE_GH_LOG"] = pendingStatusFailureGitHubLog,
+                    ["FAKE_GH_FAIL_STATE"] = "pending",
+                    ["PATH"] = fakeGitHubRoot + Path.PathSeparator +
+                        (Environment.GetEnvironmentVariable("PATH") ?? string.Empty),
+                },
+                "-NoLogo",
+                "-NoProfile",
+                "-File",
+                Path.Combine(scriptRoot, "Test-LocalDurablePerformance.ps1"),
+                "-CandidateRef",
+                "HEAD",
+                "-OutputPath",
+                Path.Combine(temporaryRoot, "pending-status-failure-evidence"),
+                "-ConfirmDedicatedFixedSsd",
+                "-GitHubRepository",
+                "example/csharpdb");
+
+            Assert.NotEqual(0, pendingStatusFailure.ExitCode);
+            AssertDiagnosticContains(
+                "Could not publish GitHub status 'csharpdb/local-durable-performance'",
+                pendingStatusFailure.CombinedOutput);
+            Assert.False(File.Exists(pendingStatusFailureLog));
+            string[] pendingStatusFailureCalls = File.ReadAllLines(
+                pendingStatusFailureGitHubLog);
+            Assert.Equal(2, pendingStatusFailureCalls.Length);
+            Assert.Contains("state=pending", pendingStatusFailureCalls[1]);
+
+            string successStatusFailureLog = Path.Combine(
+                temporaryRoot,
+                "success-status-failure.log");
+            string successStatusFailureGitHubLog = Path.Combine(
+                temporaryRoot,
+                "success-status-failure-github.log");
+            string successStatusFailureEvidence = Path.Combine(
+                temporaryRoot,
+                "success-status-failure-evidence");
+            ProcessResult successStatusFailure = await RunProcessWithEnvironmentAsync(
+                "pwsh",
+                new Dictionary<string, string>
+                {
+                    ["FAKE_PREVIOUS_COMMIT"] = previousCommit,
+                    ["FAKE_LOCAL_DURABLE_LOG"] = successStatusFailureLog,
+                    ["FAKE_GH_LOG"] = successStatusFailureGitHubLog,
+                    ["FAKE_GH_FAIL_STATE"] = "success",
+                    ["PATH"] = fakeGitHubRoot + Path.PathSeparator +
+                        (Environment.GetEnvironmentVariable("PATH") ?? string.Empty),
+                },
+                "-NoLogo",
+                "-NoProfile",
+                "-File",
+                Path.Combine(scriptRoot, "Test-LocalDurablePerformance.ps1"),
+                "-CandidateRef",
+                "HEAD",
+                "-OutputPath",
+                successStatusFailureEvidence,
+                "-ConfirmDedicatedFixedSsd",
+                "-GitHubRepository",
+                "example/csharpdb");
+
+            Assert.NotEqual(0, successStatusFailure.ExitCode);
+            Assert.Equal(2, File.ReadAllLines(successStatusFailureLog).Length);
+            string successStatusFailureSummary = File.ReadAllText(Path.Combine(
+                successStatusFailureEvidence,
+                "local-durable-performance.md"));
+            Assert.Contains("- Result: **FAIL**", successStatusFailureSummary);
+            Assert.Contains(
+                "Could not publish GitHub status",
+                successStatusFailureSummary);
+            string[] successStatusFailureCalls = File.ReadAllLines(
+                successStatusFailureGitHubLog);
+            Assert.Equal(3, successStatusFailureCalls.Length);
+            Assert.Contains("state=pending", successStatusFailureCalls[1]);
+            Assert.Contains("state=success", successStatusFailureCalls[2]);
+
+            string failureLog = Path.Combine(temporaryRoot, "failure.log");
+            string failureGitHubLog = Path.Combine(temporaryRoot, "failure-github.log");
+            string failureEvidence = Path.Combine(temporaryRoot, "failure-evidence");
+            ProcessResult failure = await RunProcessWithEnvironmentAsync(
+                "pwsh",
+                new Dictionary<string, string>
+                {
+                    ["FAKE_PREVIOUS_COMMIT"] = previousCommit,
+                    ["FAKE_LOCAL_DURABLE_LOG"] = failureLog,
+                    ["FAKE_GH_LOG"] = failureGitHubLog,
+                    ["PATH"] = fakeGitHubRoot + Path.PathSeparator +
+                        (Environment.GetEnvironmentVariable("PATH") ?? string.Empty),
+                    ["FAKE_FAIL_PASS_ONE"] = "1",
+                },
+                "-NoLogo",
+                "-NoProfile",
+                "-File",
+                Path.Combine(scriptRoot, "Test-LocalDurablePerformance.ps1"),
+                "-CandidateRef",
+                "HEAD",
+                "-OutputPath",
+                failureEvidence,
+                "-ConfirmDedicatedFixedSsd",
+                "-GitHubRepository",
+                "example/csharpdb");
+
+            Assert.NotEqual(0, failure.ExitCode);
+            Assert.Equal(2, File.ReadAllLines(failureLog).Length);
+            string failureSummary = File.ReadAllText(Path.Combine(
+                failureEvidence,
+                "local-durable-performance.md"));
+            Assert.Contains("- Result: **FAIL**", failureSummary);
+            Assert.Contains("Simulated pass-one failure", failureSummary);
+            string[] failureGitHubCalls = File.ReadAllLines(failureGitHubLog);
+            Assert.Equal(3, failureGitHubCalls.Length);
+            Assert.Contains("state=pending", failureGitHubCalls[1]);
+            Assert.Contains("state=failure", failureGitHubCalls[2]);
+            Assert.Contains("context=csharpdb/local-durable-performance", failureGitHubCalls[2]);
+            Assert.Contains("description=policy=durable-v1", failureGitHubCalls[2]);
         }
         finally
         {
@@ -959,6 +1343,8 @@ public sealed class PreviousReleasePerformanceScriptTests
 
             $suiteMap = @{
                 '--master-table' = 'master-table'
+                '--master-table-durable-writes' = 'master-table-durable-writes'
+                '--master-table-hosted-stable' = 'master-table-hosted-stable'
                 '--durable-sql-batching' = 'durable-sql-batching'
                 '--concurrent-write-diagnostics' = 'concurrent-write-diagnostics'
                 '--hybrid-storage-mode' = 'hybrid-storage-mode'

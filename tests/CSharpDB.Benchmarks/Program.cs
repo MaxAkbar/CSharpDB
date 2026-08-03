@@ -15,6 +15,8 @@ namespace CSharpDB.Benchmarks;
 public static class Program
 {
     internal const int MinimumReleaseCoreLatencySamples = 100;
+    internal const string DurableMasterWriteSuiteKey = "master-table-durable-writes";
+    internal const string HostedStableMasterSuiteKey = "master-table-hosted-stable";
 
     private static readonly string[] s_releaseCoreSuiteKeys =
     [
@@ -25,6 +27,12 @@ public static class Program
         "hybrid-hot-set-read",
         "hybrid-cold-open",
         "sqlite-compare",
+    ];
+    private static readonly string[] s_releaseEvidenceSuiteKeys =
+    [
+        .. s_releaseCoreSuiteKeys,
+        DurableMasterWriteSuiteKey,
+        HostedStableMasterSuiteKey,
     ];
 
     public static async Task Main(string[] args)
@@ -272,6 +280,24 @@ public static class Program
                 await RunSuiteWithRepeatsAsync(
                     "master-table",
                     RunMasterComparisonOnceAsync,
+                    repeatCount,
+                    warmupSingleSample);
+                return;
+
+            case "--master-table-durable-writes":
+                EnsureReproConfigured();
+                await RunSuiteWithRepeatsAsync(
+                    DurableMasterWriteSuiteKey,
+                    RunMasterComparisonDurableWritesOnceAsync,
+                    repeatCount,
+                    warmupSingleSample);
+                return;
+
+            case "--master-table-hosted-stable":
+                EnsureReproConfigured();
+                await RunSuiteWithRepeatsAsync(
+                    HostedStableMasterSuiteKey,
+                    RunMasterComparisonHostedStableOnceAsync,
                     repeatCount,
                     warmupSingleSample);
                 return;
@@ -1015,6 +1041,18 @@ public static class Program
         return await MasterComparisonBenchmark.RunAsync();
     }
 
+    private static async Task<List<BenchmarkResult>> RunMasterComparisonDurableWritesOnceAsync()
+    {
+        Console.WriteLine("--- Durable Master Comparison Writes ---");
+        return await MasterComparisonBenchmark.RunDurableWritesAsync();
+    }
+
+    private static async Task<List<BenchmarkResult>> RunMasterComparisonHostedStableOnceAsync()
+    {
+        Console.WriteLine("--- Hosted-Stable Master Comparison Rows ---");
+        return await MasterComparisonBenchmark.RunHostedStableRowsAsync();
+    }
+
     private static async Task<List<BenchmarkResult>> RunSqliteComparisonOnceAsync()
     {
         Console.WriteLine("--- SQLite Comparison Benchmark ---");
@@ -1258,7 +1296,7 @@ public static class Program
         string suiteName,
         IReadOnlyList<BenchmarkResult> results)
     {
-        if (!s_releaseCoreSuiteKeys.Contains(suiteName, StringComparer.Ordinal))
+        if (!s_releaseEvidenceSuiteKeys.Contains(suiteName, StringComparer.Ordinal))
             return;
 
         if (results.Count == 0)
@@ -1480,12 +1518,12 @@ public static class Program
             "hybrid-storage-mode-scenario",
             StringComparison.OrdinalIgnoreCase);
         if (!isHybridStorageScenario &&
-            !s_releaseCoreSuiteKeys.Contains(suiteKey, StringComparer.OrdinalIgnoreCase))
+            !s_releaseEvidenceSuiteKeys.Contains(suiteKey, StringComparer.OrdinalIgnoreCase))
         {
             throw new ArgumentException(
-                "--warmup-single-sample is supported only by the seven direct release-core " +
+                "--warmup-single-sample is supported only by the direct release-evidence " +
                 "suite modes and --hybrid-storage-mode-scenario: " +
-                string.Join(", ", s_releaseCoreSuiteKeys.Select(static key => $"--{key}")) +
+                string.Join(", ", s_releaseEvidenceSuiteKeys.Select(static key => $"--{key}")) +
                 ".");
         }
     }
@@ -1619,6 +1657,8 @@ public static class Program
         Console.WriteLine("  dotnet run -- --hybrid-storage-mode  Run focused storage-mode coverage plus the Plan 2 bulk insert durability/residency matrix");
         Console.WriteLine("  dotnet run -- --hybrid-storage-mode-scenario <exact-row-name>  Run one storage-mode row with qualification timing and sample floors");
         Console.WriteLine("  dotnet run -- --master-table  Run only the CSharpDB rows used by the README master comparison table");
+        Console.WriteLine("  dotnet run -- --master-table-durable-writes  Run the ten durable write rows used by local release qualification");
+        Console.WriteLine("  dotnet run -- --master-table-hosted-stable  Run the eighteen read/in-memory rows used by hosted release qualification");
         Console.WriteLine("  dotnet run -- --sqlite-compare  Run local SQLite WAL+FULL apples-to-apples SQL comparison rows");
         Console.WriteLine("  dotnet run -- --strict-insert-compare  Run strict ADO.NET raw-vs-prepared insert comparison for CSharpDB and SQLite");
         Console.WriteLine("  dotnet run -- --native-aot-insert-compare  Run raw+prepared insert comparison for CSharpDB ADO.NET, CSharpDB NativeAOT FFI, and SQLite");
@@ -1636,6 +1676,8 @@ public static class Program
         Console.WriteLine("  dotnet run -- --macro --stress --scaling --write-diagnostics --durable-sql-batching --write-transaction-diagnostics --commit-fan-in-diagnostics --insert-fan-in-diagnostics --checkpoint-retention-diagnostics --optimizer-closeout --adaptive-reoptimization --async-io-closeout --concurrent-write-diagnostics --concurrent-sqlite-capi-compare --direct-file-cache-transport --hybrid-storage-mode --master-table --sqlite-compare --strict-insert-compare --native-aot-insert-compare --efcore-compare --efcore-compare-hybrid-shared-connection --efcore-compare-auto-open-close --hybrid-cold-open --hybrid-hot-set-read --hybrid-post-checkpoint   Run non-micro suites in one invocation");
         Console.WriteLine("  dotnet run -- --macro --repeat 3   Repeat suite and emit median-of-N CSV");
         Console.WriteLine("  dotnet run -- --master-table --repeat 1 --warmup-single-sample --repro   Warm up without recording, then emit one release-core suite sample");
+        Console.WriteLine("  dotnet run -- --master-table-durable-writes --repeat 1 --warmup-single-sample --repro   Warm up and record one local durable qualification sample");
+        Console.WriteLine("  dotnet run -- --master-table-hosted-stable --repeat 1 --warmup-single-sample --repro   Warm up and record one hosted-stable qualification sample");
         Console.WriteLine("  dotnet run -- --master-table --repeat 3 --repro   Run a stable median master comparison refresh");
         Console.WriteLine("  dotnet run -- --sqlite-compare --repeat 3 --repro   Run a stable local SQLite median comparison capture");
         Console.WriteLine("  dotnet run -- --strict-insert-compare --repeat 3 --repro   Run a stable strict insert comparison capture");

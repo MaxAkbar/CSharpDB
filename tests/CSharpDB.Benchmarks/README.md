@@ -441,43 +441,43 @@ Run the balanced release-core benchmark suite:
 dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --release-core --repeat 3 --repro
 ```
 
-Compare a release candidate with the previous release on the same machine:
+Qualify durable-write performance against the previous release on one idle,
+fixed-SSD Windows machine before creating the release tag:
 
 ```powershell
-$ComparisonRoot = Join-Path `
-  ([IO.Path]::GetTempPath()) `
-  "csharpdb-previous-release-$([Guid]::NewGuid().ToString('N'))"
+git switch main
+git pull --ff-only
+$CandidateCommit = (git rev-parse 'HEAD^{commit}').Trim()
 
-pwsh -NoProfile .\tests\CSharpDB.Benchmarks\scripts\Test-PreviousReleasePerformance.ps1 `
-  -CandidateRef HEAD `
-  -OutputPath (Join-Path $ComparisonRoot 'pass-1') `
-  -QualificationPass 1 `
-  -Paired `
-  -SuiteName master-table `
-  -RepeatCount 3
-
-pwsh -NoProfile .\tests\CSharpDB.Benchmarks\scripts\Test-PreviousReleasePerformance.ps1 `
-  -CandidateRef HEAD `
-  -OutputPath (Join-Path $ComparisonRoot 'pass-2') `
-  -QualificationPass 2 `
-  -Paired `
-  -SuiteName master-table `
-  -RepeatCount 3
+pwsh -NoProfile .\tests\CSharpDB.Benchmarks\scripts\Test-LocalDurablePerformance.ps1 `
+  -CandidateRef $CandidateCommit `
+  -ConfirmDedicatedFixedSsd
 ```
 
-GitHub runs this comparison together with the cross-platform qualification when
-a non-release `qualification-*` tag is pushed. This permits exact pre-merge
-qualification before the workflow is registered on the default branch; `v*`
-tags remain reserved for the publishing workflow.
+The repository must be clean because both revisions are built from committed
+source. The wrapper resolves the candidate to one immutable commit. When
+`-PreviousRef` is omitted, the nearest prior semantic release reachable from
+that candidate is discovered during pass 1 and pinned for pass 2. The previous
+revision must be an ancestor of the candidate, and generated evidence is written
+to a unique temporary directory outside the repository unless `-OutputPath`
+selects another absent or empty external directory.
 
-The repository must be clean. When `-PreviousRef` is omitted, the nearest
-prior semantic release tag reachable from the candidate is selected
-automatically; an explicit tag or commit can still override that choice. The
-previous revision must be an ancestor of the candidate, and each output
-directory must be absent or empty and outside the repository. The release gate
-runs only the established master-table scorecard in balanced paired mode. Each
-pass runs adjacent previous/candidate pairs, alternating the pair order; pass
-one starts with the previous revision, and pass two starts with the candidate.
+The local release gate runs only `master-table-durable-writes`: ten durable SQL
+and collection single/batch write rows from file-backed, hybrid incremental-
+durable, and direct-client paths. It intentionally excludes reads and in-memory
+rows. The other 18 master-table rows remain a blocking two-pass comparison on
+GitHub-hosted Windows runners. Pass 1 starts with the previous revision; pass 2
+starts with the candidate. Both local passes run sequentially so they never
+contend for the same disk. The wrapper forces
+`CSHARPDB_BENCH_DURABILITY=Durable` for its children and restores the caller's
+prior process value afterward.
+
+Only the canonical release policy may publish the official status: automatic
+previous-release discovery, three repeats per order, a 30-second post-build
+wait, a 15% throughput limit, and the combined 25% plus 0.05 ms P99 rule. To
+change any of those settings or supply `-PreviousRef`, also supply
+`-NoGitHubStatus`; that run is diagnostic and cannot authorize a release.
+
 The candidate benchmark source is hash-verified and synchronized into the
 previous-release worktree so both engines run the same harness. Candidate and
 previous root build inputs are hashed and reported separately because they
@@ -488,7 +488,8 @@ pairs and twelve logical invocations. Every logical invocation performs one
 unrecorded warmup followed by one recorded sample. Each pass retains all six raw
 CSVs and the recomputed aggregate for each revision, the pair manifest, and the
 paired comparison report. Copied evidence is hash-checked before the source
-result is removed.
+result is removed. Both passes normally complete in about 75-100 minutes total
+on an idle fixed-SSD machine.
 
 The comparer requires exact schema and row-name parity across raw and aggregate
 evidence, positive gate metrics, at least 100 retained latency observations per
@@ -498,7 +499,22 @@ order stratum must provide a strict stable majority of paired effects. `INVALID`
 evidence, throughput fails above a 15% candidate regression. P99 fails only when
 its increase exceeds both 25% and the 0.05 ms absolute allowance, so
 percentage-amplified sub-millisecond noise remains visible without blocking by
-itself. Both clean, balanced paired master-table passes must pass.
+itself. Both clean, balanced paired durable-write passes must pass before the
+release tag is created.
+
+GitHub's `SQL Release Qualification` workflow retains the two clean Windows,
+Linux, and macOS functional passes and two blocking comparisons of the 18 stable
+master-table rows, but no longer runs the ten disk-sensitive rows on transient
+hosted storage. A normal local gate run publishes the
+`csharpdb/local-durable-performance` commit status only after both passes
+succeed. The release workflow requires that success status on the exact tagged
+commit before any package or archive can be published. GitHub CLI authentication
+with permission to create commit statuses is therefore required. The
+`-NoGitHubStatus` switch is for local diagnostics and tests only; a run using it
+cannot qualify a release. The release workflow accepts the status only from the
+login configured in the `LOCAL_DURABLE_ATTESTOR` repository variable, or from
+the repository owner when that variable is unset, and requires a canonical
+`durable-v1` policy attestation.
 
 The existing scheduled perf-guardrail workflow remains report-only and includes
 the durable SQL batching baseline plus its configured micro and diagnostic
@@ -517,7 +533,7 @@ caller-selected directory outside the checkout; it never updates the curated
 
 The same balanced paired mode is also available below for focused A/A, exact-row,
 and order-sensitivity investigations. Those diagnostic forms do not replace
-either blocking cross-version master-table qualification pass.
+either blocking local durable-write qualification pass.
 
 ### Focused A/A and exact-row diagnostics
 
@@ -567,7 +583,7 @@ machine or disk is idle, so use a dedicated runner without concurrent builds.
 The release workflow uses a 30-second post-build wait.
 
 A/A and exact-row results are harness diagnostics only. They cannot satisfy the
-previous-release gate, replace either balanced paired master-table qualification
+previous-release gate, replace either balanced paired durable-write qualification
 pass, promote a baseline, or modify published benchmark numbers.
 
 Run the release guardrail comparison:
@@ -594,8 +610,12 @@ pwsh -NoProfile .\tests\CSharpDB.Benchmarks\scripts\Update-BenchmarkReadme.ps1 `
 Promotion checklist:
 
 - The release-core suite was run with `--repeat 3 --repro`.
-- Both balanced paired previous-release master-table comparisons passed with the
-  same hash-verified candidate harness and retained raw evidence.
+- Both hosted-stable previous-release comparisons passed for the candidate
+  commit.
+- Both balanced paired local durable-write comparisons passed with the
+  same hash-verified candidate harness and retained raw evidence, and the exact
+  candidate commit has a successful `csharpdb/local-durable-performance`
+  status.
 - No comparison row is `INVALID`, `UNSTABLE`, `ORDER-SENSITIVE`, or
   `REGRESSION`, and every gate row has at least 100 retained latency
   observations. Exact hybrid diagnostic rows use the stronger 10,000-sample
@@ -614,5 +634,6 @@ Related files:
 - [SQLITE_COMPARISON.md](SQLITE_COMPARISON.md): focused same-runner CSharpDB vs SQLite comparison.
 - `release-core-manifest.json`: source-of-truth manifest for published README tables.
 - `scripts/Compare-ReleaseCore.ps1`: strict same-runner release comparison.
+- `scripts/Test-LocalDurablePerformance.ps1`: sequential two-pass local release gate.
 - `scripts/Test-PreviousReleasePerformance.ps1`: clean two-revision benchmark runner.
 - `scripts/Update-BenchmarkReadme.ps1`: generated-results updater.

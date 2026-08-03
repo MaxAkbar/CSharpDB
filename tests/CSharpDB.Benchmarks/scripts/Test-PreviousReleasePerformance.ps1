@@ -257,7 +257,7 @@ $revisionOrder = if ($QualificationPass -eq 1) {
 else {
     @('candidate', 'previous')
 }
-$suiteDefinitions = @(
+$defaultSuiteDefinitions = @(
     [pscustomobject]@{ Name = 'master-table'; Arguments = @('--master-table'); ExpectedRowName = $null }
     [pscustomobject]@{ Name = 'durable-sql-batching'; Arguments = @('--durable-sql-batching'); ExpectedRowName = $null }
     [pscustomobject]@{ Name = 'concurrent-write-diagnostics'; Arguments = @('--concurrent-write-diagnostics'); ExpectedRowName = $null }
@@ -266,6 +266,20 @@ $suiteDefinitions = @(
     [pscustomobject]@{ Name = 'hybrid-cold-open'; Arguments = @('--hybrid-cold-open'); ExpectedRowName = $null }
     [pscustomobject]@{ Name = 'sqlite-compare'; Arguments = @('--sqlite-compare'); ExpectedRowName = $null }
 )
+$selectableSuiteDefinitions = @(
+    $defaultSuiteDefinitions
+    [pscustomobject]@{
+        Name = 'master-table-durable-writes'
+        Arguments = @('--master-table-durable-writes')
+        ExpectedRowName = $null
+    }
+    [pscustomobject]@{
+        Name = 'master-table-hosted-stable'
+        Arguments = @('--master-table-hosted-stable')
+        ExpectedRowName = $null
+    }
+)
+$suiteDefinitions = @($defaultSuiteDefinitions)
 if ($hasHybridStorageScenario) {
     $suiteDefinitions = @(
         [pscustomobject]@{
@@ -285,15 +299,15 @@ elseif ($SuiteName.Count -gt 0) {
             Sort-Object -Unique
     )
     $unknownSuites = @(
-        $requestedSuites | Where-Object { $_ -cnotin $suiteDefinitions.Name }
+        $requestedSuites | Where-Object { $_ -cnotin $selectableSuiteDefinitions.Name }
     )
     if ($unknownSuites.Count -gt 0) {
         throw (
             "Unknown release-core suite name(s): $($unknownSuites -join ', '). " +
-            "Supported suites: $($suiteDefinitions.Name -join ', ').")
+            "Supported suites: $($selectableSuiteDefinitions.Name -join ', ').")
     }
     $suiteDefinitions = @(
-        $suiteDefinitions | Where-Object { $_.Name -cin $requestedSuites }
+        $selectableSuiteDefinitions | Where-Object { $_.Name -cin $requestedSuites }
     )
 }
 if ($suiteDefinitions.Count -eq 0) {
