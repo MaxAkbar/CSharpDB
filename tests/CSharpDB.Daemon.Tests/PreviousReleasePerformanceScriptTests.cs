@@ -772,14 +772,39 @@ public sealed class PreviousReleasePerformanceScriptTests
             Directory.CreateDirectory(scriptRoot);
 
             string repositoryRoot = FindRepoRoot();
-            File.Copy(
-                Path.Combine(
-                    repositoryRoot,
-                    "tests",
-                    "CSharpDB.Benchmarks",
-                    "scripts",
-                    "Test-LocalDurablePerformance.ps1"),
-                Path.Combine(scriptRoot, "Test-LocalDurablePerformance.ps1"));
+            string localDurableWrapper = File.ReadAllText(Path.Combine(
+                repositoryRoot,
+                "tests",
+                "CSharpDB.Benchmarks",
+                "scripts",
+                "Test-LocalDurablePerformance.ps1"));
+            const string environmentGuardInsertionPoint = "$status = Invoke-Git `";
+            Assert.Contains(environmentGuardInsertionPoint, localDurableWrapper);
+            localDurableWrapper = localDurableWrapper.Replace(
+                environmentGuardInsertionPoint,
+                """
+                # Test-only environment probes keep this wrapper test independent of the host.
+                function Get-PendingRestartReasons {
+                    if ($env:FAKE_PENDING_RESTART -eq '1') {
+                        return @('Simulated pending restart')
+                    }
+                    return @()
+                }
+                function Get-ActiveInstallerReasons { return @() }
+                function Get-InstallerActivityReasons {
+                    param([DateTimeOffset] $SinceUtc)
+                    if ($env:FAKE_INSTALLER_ACTIVITY -eq '1') {
+                        return @('Simulated MsiInstaller event 1040')
+                    }
+                    return @()
+                }
+
+                $status = Invoke-Git `
+                """,
+                StringComparison.Ordinal);
+            File.WriteAllText(
+                Path.Combine(scriptRoot, "Test-LocalDurablePerformance.ps1"),
+                localDurableWrapper);
             File.WriteAllText(
                 Path.Combine(scriptRoot, "Test-PreviousReleasePerformance.ps1"),
                 """
@@ -939,6 +964,91 @@ public sealed class PreviousReleasePerformanceScriptTests
             Assert.Contains("context=csharpdb/local-durable-performance", githubCalls[2]);
             Assert.Contains("description=policy=durable-v2", githubCalls[2]);
             Assert.Contains($"baseline={previousCommit}", githubCalls[2]);
+
+            string pendingRestartLog = Path.Combine(
+                temporaryRoot,
+                "pending-restart.log");
+            string pendingRestartGitHubLog = Path.Combine(
+                temporaryRoot,
+                "pending-restart-github.log");
+            ProcessResult pendingRestart = await RunProcessWithEnvironmentAsync(
+                "pwsh",
+                new Dictionary<string, string>
+                {
+                    ["FAKE_PREVIOUS_COMMIT"] = previousCommit,
+                    ["FAKE_LOCAL_DURABLE_LOG"] = pendingRestartLog,
+                    ["FAKE_GH_LOG"] = pendingRestartGitHubLog,
+                    ["FAKE_PENDING_RESTART"] = "1",
+                    ["PATH"] = fakeGitHubRoot + Path.PathSeparator +
+                        (Environment.GetEnvironmentVariable("PATH") ?? string.Empty),
+                },
+                "-NoLogo",
+                "-NoProfile",
+                "-File",
+                Path.Combine(scriptRoot, "Test-LocalDurablePerformance.ps1"),
+                "-CandidateRef",
+                "HEAD",
+                "-OutputPath",
+                Path.Combine(temporaryRoot, "pending-restart-evidence"),
+                "-ConfirmDedicatedFixedSsd",
+                "-GitHubRepository",
+                "example/csharpdb");
+
+            Assert.NotEqual(0, pendingRestart.ExitCode);
+            AssertDiagnosticContains("Simulated pending restart", pendingRestart.CombinedOutput);
+            AssertDiagnosticContains(
+                "Restart the machine, allow installers and updates to finish, then retry",
+                pendingRestart.CombinedOutput);
+            Assert.False(File.Exists(pendingRestartLog));
+            Assert.False(File.Exists(pendingRestartGitHubLog));
+
+            string installerActivityLog = Path.Combine(
+                temporaryRoot,
+                "installer-activity.log");
+            string installerActivityGitHubLog = Path.Combine(
+                temporaryRoot,
+                "installer-activity-github.log");
+            string installerActivityEvidence = Path.Combine(
+                temporaryRoot,
+                "installer-activity-evidence");
+            ProcessResult installerActivity = await RunProcessWithEnvironmentAsync(
+                "pwsh",
+                new Dictionary<string, string>
+                {
+                    ["FAKE_PREVIOUS_COMMIT"] = previousCommit,
+                    ["FAKE_LOCAL_DURABLE_LOG"] = installerActivityLog,
+                    ["FAKE_GH_LOG"] = installerActivityGitHubLog,
+                    ["FAKE_INSTALLER_ACTIVITY"] = "1",
+                    ["PATH"] = fakeGitHubRoot + Path.PathSeparator +
+                        (Environment.GetEnvironmentVariable("PATH") ?? string.Empty),
+                },
+                "-NoLogo",
+                "-NoProfile",
+                "-File",
+                Path.Combine(scriptRoot, "Test-LocalDurablePerformance.ps1"),
+                "-CandidateRef",
+                "HEAD",
+                "-OutputPath",
+                installerActivityEvidence,
+                "-ConfirmDedicatedFixedSsd",
+                "-GitHubRepository",
+                "example/csharpdb");
+
+            Assert.NotEqual(0, installerActivity.ExitCode);
+            Assert.Single(File.ReadAllLines(installerActivityLog));
+            AssertDiagnosticContains(
+                "Pass 1 detected installer or pending-restart activity; remaining passes will not run",
+                installerActivity.CombinedOutput);
+            string installerActivitySummary = File.ReadAllText(Path.Combine(
+                installerActivityEvidence,
+                "local-durable-performance.md"));
+            Assert.Contains("- Result: **FAIL**", installerActivitySummary);
+            Assert.Contains("Simulated MsiInstaller event 1040", installerActivitySummary);
+            string[] installerActivityGitHubCalls = File.ReadAllLines(
+                installerActivityGitHubLog);
+            Assert.Equal(3, installerActivityGitHubCalls.Length);
+            Assert.Contains("state=pending", installerActivityGitHubCalls[1]);
+            Assert.Contains("state=failure", installerActivityGitHubCalls[2]);
 
             string pendingStatusFailureLog = Path.Combine(
                 temporaryRoot,

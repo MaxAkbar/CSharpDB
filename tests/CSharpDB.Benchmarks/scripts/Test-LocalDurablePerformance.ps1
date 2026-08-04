@@ -140,6 +140,113 @@ function Invoke-GitHubStatus {
     }
 }
 
+function Get-PendingRestartReasons {
+    $reasons = [Collections.Generic.List[string]]::new()
+
+    if (Test-Path -LiteralPath `
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') {
+        $reasons.Add('Component Based Servicing reports a pending restart')
+    }
+    if (Test-Path -LiteralPath `
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired') {
+        $reasons.Add('Windows Update reports a pending restart')
+    }
+
+    try {
+        $pendingFileRenames = @(
+            (Get-ItemProperty `
+                -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' `
+                -Name PendingFileRenameOperations `
+                -ErrorAction SilentlyContinue).PendingFileRenameOperations
+        )
+        if ($pendingFileRenames.Count -gt 0) {
+            $reasons.Add(
+                "Windows has $($pendingFileRenames.Count) pending file rename operation(s)")
+        }
+    }
+    catch {
+        $reasons.Add(
+            "Could not inspect pending file rename operations: $($_.Exception.Message)")
+    }
+
+    return @($reasons)
+}
+
+function Get-ActiveInstallerReasons {
+    $installerProcesses = @(
+        Get-Process -Name msiexec -ErrorAction SilentlyContinue |
+            Sort-Object Id
+    )
+    if ($installerProcesses.Count -eq 0) {
+        return @()
+    }
+
+    $processIds = ($installerProcesses | ForEach-Object { $_.Id }) -join ', '
+    return @("Windows Installer is active (msiexec process id(s): $processIds)")
+}
+
+function Get-InstallerActivityReasons {
+    param(
+        [Parameter(Mandatory)]
+        [DateTimeOffset] $SinceUtc
+    )
+
+    try {
+        $transactions = @(
+            Get-WinEvent `
+                -FilterHashtable @{
+                    LogName = 'Application'
+                    ProviderName = 'MsiInstaller'
+                    Id = 1040
+                    StartTime = $SinceUtc.LocalDateTime
+                } `
+                -ErrorAction Stop
+        )
+    }
+    catch {
+        if ($_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*') {
+            return @()
+        }
+        return @(
+            "Could not inspect Windows Installer activity: $($_.Exception.Message)")
+    }
+
+    if ($transactions.Count -eq 0) {
+        return @()
+    }
+
+    $transactionDetails = @(
+        $transactions |
+            Sort-Object TimeCreated |
+            ForEach-Object {
+                $message = ($_.Message -replace '\r?\n', ' ' -replace '\s+', ' ').Trim()
+                "$($_.TimeCreated.ToUniversalTime().ToString('O')): $message"
+            }
+    )
+    return @(
+        "Windows Installer transaction(s) started during qualification: " +
+        ($transactionDetails -join ' | ')
+    )
+}
+
+function Assert-QuiescentLocalEnvironment {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Stage
+    )
+
+    $issues = @(
+        Get-PendingRestartReasons
+        Get-ActiveInstallerReasons
+    )
+    if ($issues.Count -gt 0) {
+        throw (
+            "Local durable performance qualification requires a quiescent Windows " +
+            "environment at $Stage. $($issues -join '; '). Restart the machine, " +
+            'allow installers and updates to finish, then retry.')
+    }
+}
+
 $status = Invoke-Git `
     -Arguments @('status', '--porcelain=v1', '--untracked-files=all') `
     -FailureMessage 'Could not inspect the repository worktree.'
@@ -189,6 +296,7 @@ else {
 }
 
 $statusContext = 'csharpdb/local-durable-performance'
+Assert-QuiescentLocalEnvironment -Stage 'preflight'
 if (-not $NoGitHubStatus) {
     $authOutput = @(& gh auth status 2>&1)
     if ($LASTEXITCODE -ne 0) {
@@ -240,6 +348,8 @@ try {
     Write-Host "Evidence root: $outputRoot"
 
     foreach ($qualificationPass in 1, 2) {
+        Assert-QuiescentLocalEnvironment -Stage "the start of pass $qualificationPass"
+        $passEnvironmentStartedUtc = [DateTimeOffset]::UtcNow
         $passOutput = Join-Path $outputRoot "pass-$qualificationPass"
         $parameters = @{
             CandidateRef = $candidateCommit
@@ -271,6 +381,21 @@ try {
             else {
                 Write-Warning 'Pass 2 failed.'
             }
+        }
+
+        $environmentIssues = @(
+            Get-InstallerActivityReasons -SinceUtc $passEnvironmentStartedUtc
+            Get-PendingRestartReasons
+            Get-ActiveInstallerReasons
+        )
+        if ($environmentIssues.Count -gt 0) {
+            $passFailures.Add(
+                "Pass $qualificationPass environment contamination: " +
+                ($environmentIssues -join '; '))
+            Write-Warning (
+                "Pass $qualificationPass detected installer or pending-restart activity; " +
+                'remaining passes will not run.')
+            break
         }
 
         if ($qualificationPass -eq 1 -and [string]::IsNullOrWhiteSpace($previousCommit)) {

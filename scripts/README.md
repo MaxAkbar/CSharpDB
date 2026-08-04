@@ -12,9 +12,11 @@ and are included in daemon release archives.
 
 The release and local workflow notes are grouped by audience:
 
-- Release maintainers use `scripts/Publish-CSharpDbDaemonRelease.ps1` directly
-  for local packaging checks. The GitHub Release workflow also uses this script
-  when a `v*` tag is pushed.
+- Release maintainers use `scripts/Publish-ReleaseTag.ps1` to qualify the exact
+  merged `main` commit and publish its release tag. They can use
+  `scripts/Publish-CSharpDbDaemonRelease.ps1` directly for local packaging
+  checks. The GitHub Release workflow also uses the daemon publisher after the
+  guarded `v*` tag is pushed.
 - Store release maintainers use
   `scripts/Publish-CSharpDbAdminStorePackage.ps1` on Windows to produce the
   CSharpDB Studio MSIX and `.msixupload` artifacts for Partner Center.
@@ -134,9 +136,8 @@ Get-ChildItem artifacts\daemon-release-local\archives
 Get-Content artifacts\daemon-release-local\archives\SHA256SUMS.txt
 ```
 
-5. After the pull request is merged, update local `main`, qualify the exact merge
-   commit on the dedicated fixed-SSD Windows machine, then create and push the
-   tag.
+5. After the pull request is merged, update local `main`, then run the canonical
+   release-tag publisher on the dedicated fixed-SSD Windows machine.
 
 ```powershell
 git switch main
@@ -145,33 +146,54 @@ $Version = (Read-Host 'Release version without the v prefix').Trim()
 if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') {
   throw 'Enter a semantic release version in major.minor.patch form.'
 }
-$Tag = "v$Version"
-$TagCommit = (git rev-parse 'HEAD^{commit}').Trim()
 
-.\tests\CSharpDB.Benchmarks\scripts\Test-LocalDurablePerformance.ps1 `
-  -CandidateRef $TagCommit `
+.\scripts\Publish-ReleaseTag.ps1 `
+  -Version $Version `
   -ConfirmDedicatedFixedSsd
-
-git tag $Tag $TagCommit
-
-.\scripts\Test-ReleaseTag.ps1 `
-  -Version $Tag `
-  -TagCommit $TagCommit
-
-git push origin $Tag
 ```
 
-The local wrapper forces durable mode and runs the ten durable SQL/collection
-single and batch write rows in two sequential balanced paired passes. On an idle
-fixed-SSD machine they normally take 75-100 minutes total. It pins the candidate
-and previous commits, retains hash-verified raw evidence and a Markdown summary
-outside the repository, creates no repository JSON, and publishes the
-`csharpdb/local-durable-performance` status only after both passes succeed. The
-release workflow requires that matching-commit status, completes both clean
-functional passes on Windows, Linux, and macOS, and runs the 18 persistent-read
-and in-memory performance rows on hosted Windows runners. It then
-publishes the daemon archives for
-`win-x64`, `linux-x64`, and `osx-arm64`, smoke-starts each extracted binary,
+`Publish-ReleaseTag.ps1` is the only supported way to create a release tag. Do
+not create release tags in the GitHub UI or with raw `git tag` / `git push`
+commands; those paths bypass the preflight and cause the fail-closed Release
+workflow to reject the tag. The publisher requires a clean, checked-out `main`,
+fetches `origin/main`, and requires local `HEAD` to equal that remote commit. It
+also validates the requested version and requires a canonical
+`csharpdb/local-durable-performance` success status from the configured attestor
+on that exact SHA before it creates or pushes the tag.
+
+When that exact commit already has a valid status, the publisher reuses it and
+does not rerun the benchmarks. Otherwise `-ConfirmDedicatedFixedSsd` authorizes
+the publisher to run the local durable wrapper. That wrapper forces durable mode
+and runs the ten durable SQL/collection single and batch write rows in two
+sequential balanced paired passes. On an idle fixed-SSD machine this normally
+takes 75–100 minutes total. It pins the candidate and previous commits, retains
+hash-verified raw evidence and a Markdown summary outside the repository,
+creates no repository JSON, and publishes the status only after both passes
+succeed. Without a reusable status or the confirmation switch, the publisher
+stops before creating a tag and explains how to run the required qualification.
+
+The wrapper's Windows quiescence preflight refuses to start while `msiexec` is
+active or Windows reports a pending restart, including pending file-renames. It
+also audits Windows Installer transactions after each pass. Installer activity
+during either pass, or a pending-restart condition detected afterward,
+contaminates the evidence and prevents qualification. Contamination after pass 1
+stops the run before pass 2. Finish application or .NET workload installers,
+restart Windows when requested, and begin a new clean run rather than reusing
+contaminated evidence.
+
+The command is idempotent for the same version and exact commit: it safely
+reuses a valid status and an existing local or remote tag that already points to
+that commit. It rejects a same-named tag that points elsewhere. Optional
+`-GitHubRepository owner/name` and `-ExpectedStatusCreator login` arguments are
+available when repository discovery or the configured attestor must be supplied
+explicitly.
+
+The Release workflow remains a fail-closed backstop. It independently requires
+the matching-commit status, completes both clean functional passes on Windows,
+Linux, and macOS, and runs the 18 persistent-read and in-memory performance rows
+on hosted Windows runners before publishing. It then publishes the daemon
+archives for `win-x64`, `linux-x64`, and `osx-arm64`, smoke-starts each extracted
+binary,
 calls the daemon REST `/api/info` endpoint, verifies a gRPC `GetInfoAsync`
 client call, combines checksums, and attaches everything to the GitHub Release.
 

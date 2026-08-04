@@ -441,26 +441,52 @@ Run the balanced release-core benchmark suite:
 dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --release-core --repeat 3 --repro
 ```
 
-Qualify durable-write performance against the previous release on one idle,
-fixed-SSD Windows machine before creating the release tag:
+After the release pull request is merged, update local `main` and use the
+canonical publisher on one idle, fixed-SSD Windows machine. This command owns
+both exact-commit durable qualification and release-tag publication:
 
 ```powershell
 git switch main
 git pull --ff-only
-$CandidateCommit = (git rev-parse 'HEAD^{commit}').Trim()
+$Version = (Read-Host 'Release version without the v prefix').Trim()
 
-pwsh -NoProfile .\tests\CSharpDB.Benchmarks\scripts\Test-LocalDurablePerformance.ps1 `
-  -CandidateRef $CandidateCommit `
+.\scripts\Publish-ReleaseTag.ps1 `
+  -Version $Version `
   -ConfirmDedicatedFixedSsd
 ```
 
-The repository must be clean because both revisions are built from committed
-source. The wrapper resolves the candidate to one immutable commit. When
-`-PreviousRef` is omitted, the nearest prior semantic release reachable from
-that candidate is discovered during pass 1 and pinned for pass 2. The previous
-revision must be an ancestor of the candidate, and generated evidence is written
-to a unique temporary directory outside the repository unless `-OutputPath`
-selects another absent or empty external directory.
+Do not create a release tag in the GitHub UI or with raw `git tag` / `git push`
+commands. Those paths bypass the release preflight and the fail-closed Release
+workflow will reject the tag. `Publish-ReleaseTag.ps1` requires a clean,
+checked-out `main`, fetches `origin/main`, requires local `HEAD` to equal that
+remote commit, validates the version, and requires a canonical
+`csharpdb/local-durable-performance` success status from the configured attestor
+on that exact SHA.
+
+If that exact commit already has a valid status, the publisher reuses it without
+rerunning the benchmarks. If it does not, the confirmation switch permits the
+publisher to run `Test-LocalDurablePerformance.ps1`; this normally takes about
+75–100 minutes on an idle fixed-SSD machine. Without a reusable status or
+`-ConfirmDedicatedFixedSsd`, it stops before creating a tag and tells the
+operator how to qualify the commit. The publisher is idempotent for the same
+version and exact commit: an existing local or remote tag at that commit is
+reused, while a same-named tag at another commit is rejected.
+
+During a new qualification, the repository must remain clean because both
+revisions are built from committed source. The wrapper resolves the candidate to
+one immutable commit. It discovers the nearest prior semantic release reachable
+from that candidate during pass 1 and pins it for pass 2. The previous revision
+must be an ancestor of the candidate, and generated evidence is written to a
+unique temporary directory outside the repository.
+
+The Windows quiescence preflight refuses to start while `msiexec` is active or
+Windows reports a pending restart, including pending file-renames. The wrapper
+also audits Windows Installer transactions after each pass. New installer
+activity or a pending-restart condition detected afterward contaminates that
+timing evidence and prevents qualification. Contamination after pass 1 stops the
+run before pass 2. Finish application or .NET workload installers, restart
+Windows when requested, and begin a new clean run instead of reusing
+contaminated evidence.
 
 The local release gate runs only `master-table-durable-writes`: ten durable SQL
 and collection single/batch write rows from file-backed, hybrid incremental-
@@ -486,13 +512,13 @@ previous-release worktree so both engines run the same harness. Candidate and
 previous root build inputs are hashed and reported separately because they
 remain revision-specific, and both revisions are built once per pass.
 
-With `-RepeatCount 3`, each pass runs three pairs in each order: six adjacent
-pairs and twelve logical invocations. Every logical invocation performs one
-unrecorded warmup followed by one recorded sample. Each pass retains all six raw
+With the canonical repeat count of three, each pass runs three pairs in each
+order: six adjacent pairs and twelve logical invocations. Every logical
+invocation performs one unrecorded warmup followed by one recorded sample. Each
+pass retains all six raw
 CSVs and the recomputed aggregate for each revision, the pair manifest, and the
 paired comparison report. Copied evidence is hash-checked before the source
-result is removed. Both passes normally complete in about 75-100 minutes total
-on an idle fixed-SSD machine.
+result is removed.
 
 The comparer requires exact schema and row-name parity across raw and aggregate
 evidence, positive gate metrics, at least 100 retained latency observations per
@@ -525,7 +551,8 @@ with permission to create commit statuses is therefore required. The
 cannot qualify a release. The release workflow accepts the status only from the
 login configured in the `LOCAL_DURABLE_ATTESTOR` repository variable, or from
 the repository owner when that variable is unset, and requires a canonical
-`durable-v2` policy attestation.
+`durable-v2` policy attestation. This check remains a fail-closed backstop; it
+does not replace the preflight performed by `Publish-ReleaseTag.ps1`.
 
 The existing scheduled perf-guardrail workflow remains report-only and includes
 the durable SQL batching baseline plus its configured micro and diagnostic
