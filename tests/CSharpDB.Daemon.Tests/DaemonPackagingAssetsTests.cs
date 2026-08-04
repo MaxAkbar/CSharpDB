@@ -98,6 +98,7 @@ public sealed class DaemonPackagingAssetsTests
         Assert.Contains("-MaxThroughputRegressionPercent 15", normalized);
         Assert.Contains("-MaxP99RegressionPercent 25", normalized);
         Assert.Contains("-MaxP99RegressionMilliseconds 0.05", normalized);
+        Assert.Contains("-BlockingLatencyPercentile P95", normalized);
         Assert.Contains("timeout-minutes: 180", normalized);
         Assert.DoesNotContain("master-table-durable-writes", normalized);
     }

@@ -16,7 +16,6 @@ public static class HybridStorageModeBenchmark
     private const int ReusedSessionBurstReads = 32;
     private const int HighThroughputLatencySampleEvery = 128;
     internal const int MinimumReleaseCoreLatencySamples = 100;
-    private static readonly TimeSpan QualificationCancellationDrainTimeout = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan QualificationControllerPollInterval = TimeSpan.FromMilliseconds(10);
     private static readonly TimeSpan WarmupDuration = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan MeasuredDuration = TimeSpan.FromSeconds(5);
@@ -708,7 +707,7 @@ public static class HybridStorageModeBenchmark
                     discardCompletedAfterCancellation: true,
                     ct),
             deadline,
-            QualificationCancellationDrainTimeout,
+            ReleaseWorkerCancellationPolicy.CoordinatedDrainTimeout,
             detachedWorkRegistrar: detachedWorkRegistrar);
     }
 
@@ -1019,7 +1018,7 @@ public static class HybridStorageModeBenchmark
             effectiveSettings,
             operation,
             deadline,
-            QualificationCancellationDrainTimeout,
+            ReleaseWorkerCancellationPolicy.CoordinatedDrainTimeout,
             detachedWorkRegistrar);
     }
 
@@ -1193,7 +1192,7 @@ public static class HybridStorageModeBenchmark
             operation,
             warmupDuration,
             deadline,
-            QualificationCancellationDrainTimeout,
+            ReleaseWorkerCancellationPolicy.CoordinatedDrainTimeout,
             detachedWorkRegistrar);
     }
 

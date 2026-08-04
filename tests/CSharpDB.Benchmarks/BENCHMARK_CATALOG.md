@@ -31,7 +31,7 @@ Use `--release-core --repeat 3 --repro` to run the core suites in one command.
 | Command | Class | Purpose |
 |---|---|---|
 | `--master-table-durable-writes` | `local release gate` | Ten file-backed, hybrid durable, and direct-client SQL/collection single and batch write rows. Normally invoked through `scripts/Test-LocalDurablePerformance.ps1` for two sequential paired passes. |
-| `--master-table-hosted-stable` | `hosted release gate` | The other 18 master-table rows: persistent reads plus in-memory reads and writes. Invoked by SQL Release Qualification in two balanced paired Windows jobs. |
+| `--master-table-hosted-stable` | `hosted release gate` | The other 18 master-table rows: persistent reads plus in-memory reads and writes. Invoked by SQL Release Qualification in two balanced paired Windows jobs with throughput and P95 blocking; P99 remains diagnostic. |
 
 ## Release Guardrails
 

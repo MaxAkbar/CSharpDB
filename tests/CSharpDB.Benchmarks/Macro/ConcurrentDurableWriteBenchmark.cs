@@ -21,7 +21,7 @@ public static class ConcurrentDurableWriteBenchmark
     internal const int MinimumReleaseCoreLatencySamples = 100;
     internal static readonly TimeSpan NominalReleaseCoreMeasuredDuration = TimeSpan.FromSeconds(10);
     internal static readonly TimeSpan MaximumReleaseCoreMeasuredDuration = TimeSpan.FromSeconds(90);
-    private static readonly TimeSpan CancellationDrainTimeout = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan FailureCleanupDrainTimeout = TimeSpan.FromSeconds(1);
     private static int[] _nextDisjointIds = [];
 
     private static readonly ConcurrentWriteScenario[] s_scenarios =
@@ -272,7 +272,7 @@ public static class ConcurrentDurableWriteBenchmark
                 phaseCts.Cancel();
                 await WaitForWriterDrainAsync(
                     allWriters,
-                    CancellationDrainTimeout,
+                    FailureCleanupDrainTimeout,
                     earlyFailure,
                     detachedWorkRegistrar);
                 throw new InvalidOperationException(
@@ -295,7 +295,7 @@ public static class ConcurrentDurableWriteBenchmark
         phaseCts.Cancel();
         await WaitForWriterDrainAsync(
             allWriters,
-            CancellationDrainTimeout,
+            ReleaseWorkerCancellationPolicy.CoordinatedDrainTimeout,
             capException,
             detachedWorkRegistrar);
         WriterStats[] completed = await allWriters;

@@ -551,7 +551,13 @@ machine-state noise; it is not inferred from this P95 gate.
 GitHub's `SQL Release Qualification` workflow retains the two clean Windows,
 Linux, and macOS functional passes and two blocking comparisons of the 18 stable
 master-table rows, but no longer runs the ten disk-sensitive rows on transient
-hosted storage. A normal local gate run publishes the
+hosted storage. The hosted comparisons use the same 15% throughput and combined
+25% plus 0.05 ms P95 blocking limits; P99 is required and reported but remains
+diagnostic because the short hosted experiment is not a release-grade tail
+measurement. Normal coordinated benchmark shutdown permits up to 30 seconds for
+workers to observe cancellation on a busy runner; genuinely unresponsive work
+still fails with a bounded diagnostic and is quarantined from cleanup. A normal
+local gate run publishes the
 `csharpdb/local-durable-performance` commit status only after both passes
 succeed. The release workflow requires that success status on the exact tagged
 commit before any package or archive can be published. GitHub CLI authentication

@@ -201,9 +201,10 @@ explicitly.
 The Release workflow remains a fail-closed backstop. It independently requires
 the matching-commit status, completes both clean functional passes on Windows,
 Linux, and macOS, and runs the 18 persistent-read and in-memory performance rows
-on hosted Windows runners before publishing. It then publishes the daemon
-archives for `win-x64`, `linux-x64`, and `osx-arm64`, smoke-starts each extracted
-binary,
+on hosted Windows runners before publishing. Those hosted comparisons block on
+throughput and P95 while retaining P99 as required diagnostic evidence. It then
+publishes the daemon archives for `win-x64`, `linux-x64`, and `osx-arm64`,
+smoke-starts each extracted binary,
 calls the daemon REST `/api/info` endpoint, verifies a gRPC `GetInfoAsync`
 client call, combines checksums, and attaches everything to the GitHub Release.
 

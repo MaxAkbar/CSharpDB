@@ -61,7 +61,7 @@ public sealed class ReleaseCoreMeasurementFloorTests
             phaseCts.Token);
 
         await workerEntered.Task.WaitAsync(
-            TimeSpan.FromSeconds(1),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
         deadline.TrySetResult();
         try
@@ -85,7 +85,7 @@ public sealed class ReleaseCoreMeasurementFloorTests
         {
             releaseWorker.Set();
             await workerTask.WaitAsync(
-                TimeSpan.FromSeconds(1),
+                BenchmarkTestWatchdog.SchedulingTimeout,
                 TestContext.Current.CancellationToken);
         }
     }
@@ -115,7 +115,7 @@ public sealed class ReleaseCoreMeasurementFloorTests
             phaseCts.Token);
 
         await workerEntered.Task.WaitAsync(
-            TimeSpan.FromSeconds(1),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
         deadline.TrySetResult();
 
@@ -128,6 +128,56 @@ public sealed class ReleaseCoreMeasurementFloorTests
                 "faulting test worker"));
 
         Assert.Equal("worker fault sentinel", exception.Message);
+    }
+
+    [Fact]
+    public void ReleaseWorkerCancellationPolicy_AllowsHostedSchedulingGrace()
+    {
+        Assert.Equal(
+            TimeSpan.FromSeconds(30),
+            ReleaseWorkerCancellationPolicy.CoordinatedDrainTimeout);
+    }
+
+    [Fact]
+    public async Task DirectConcurrentWorkerDrain_IsBoundedAndRetainsPendingFailure()
+    {
+        var workers = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var pendingFailure = new ApplicationException("early worker sentinel");
+        Task? quarantinedWorkers = null;
+        try
+        {
+            InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => DirectFileCacheTransportBenchmark.WaitForConcurrentWorkerDrainAsync(
+                    workers.Task,
+                    "direct test row",
+                    TimeSpan.FromMilliseconds(25),
+                    pendingFailure,
+                    task => quarantinedWorkers = task));
+
+            Assert.Contains("did not stop all workers", exception.Message);
+            Assert.Contains("0.025 seconds", exception.Message);
+            Assert.Same(pendingFailure, exception.InnerException);
+            Assert.Same(workers.Task, quarantinedWorkers);
+        }
+        finally
+        {
+            workers.TrySetResult();
+        }
+    }
+
+    [Fact]
+    public async Task DirectConcurrentWorkerDrain_PreservesWorkerFault()
+    {
+        var workerFailure = new ApplicationException("direct worker fault sentinel");
+
+        ApplicationException exception = await Assert.ThrowsAsync<ApplicationException>(
+            () => DirectFileCacheTransportBenchmark.WaitForConcurrentWorkerDrainAsync(
+                Task.FromException(workerFailure),
+                "direct test row",
+                TimeSpan.FromSeconds(1)));
+
+        Assert.Same(workerFailure, exception);
     }
 
     [Fact]
@@ -154,7 +204,7 @@ public sealed class ReleaseCoreMeasurementFloorTests
             TimeSpan.FromSeconds(1));
 
         await operationStarted.Task.WaitAsync(
-            TimeSpan.FromSeconds(1),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
         warmupStopCts.Cancel();
 
@@ -163,7 +213,7 @@ public sealed class ReleaseCoreMeasurementFloorTests
 
         releaseOperation.TrySetResult();
         await warmupTask.WaitAsync(
-            TimeSpan.FromSeconds(1),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
 
         Assert.Equal(1, Volatile.Read(ref operationCount));
@@ -191,14 +241,14 @@ public sealed class ReleaseCoreMeasurementFloorTests
             task => quarantinedWorker = task);
 
         await operationStarted.Task.WaitAsync(
-            TimeSpan.FromSeconds(1),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
         warmupStopCts.Cancel();
         try
         {
             InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => warmupTask.WaitAsync(
-                    TimeSpan.FromSeconds(1),
+                    BenchmarkTestWatchdog.SchedulingTimeout,
                     TestContext.Current.CancellationToken));
 
             Assert.Contains("did not stop direct benchmark warmup worker", exception.Message);
@@ -211,7 +261,7 @@ public sealed class ReleaseCoreMeasurementFloorTests
             if (quarantinedWorker is not null)
             {
                 await quarantinedWorker.WaitAsync(
-                    TimeSpan.FromSeconds(1),
+                    BenchmarkTestWatchdog.SchedulingTimeout,
                     TestContext.Current.CancellationToken);
             }
         }
@@ -311,7 +361,7 @@ public sealed class ReleaseCoreMeasurementFloorTests
 
             detachedWork.TrySetResult();
             await benchmark.DeferredCleanupCompletion.WaitAsync(
-                TimeSpan.FromSeconds(5),
+                BenchmarkTestWatchdog.SchedulingTimeout,
                 TestContext.Current.CancellationToken);
 
             Assert.Throws<InvalidOperationException>(() => benchmark.Db);
@@ -322,7 +372,7 @@ public sealed class ReleaseCoreMeasurementFloorTests
             detachedWork.TrySetResult();
             await benchmark.DisposeAsync();
             await benchmark.DeferredCleanupCompletion.WaitAsync(
-                TimeSpan.FromSeconds(5),
+                BenchmarkTestWatchdog.SchedulingTimeout,
                 TestContext.Current.CancellationToken);
         }
     }
