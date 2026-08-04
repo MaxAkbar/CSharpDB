@@ -813,7 +813,112 @@ public sealed class PreviousReleasePerformanceScriptTests
                             [pscustomobject]@{ Value = '1234' })
                     }
                 }
+                function New-FakeApplicationEvent {
+                    param(
+                        [long] $RecordId,
+                        [string] $Xml)
+                    $eventRecord = [pscustomobject]@{
+                        RecordId = $RecordId
+                        Xml = $Xml
+                    }
+                    $eventRecord | Add-Member `
+                        -MemberType ScriptMethod `
+                        -Name ToXml `
+                        -Value { return [string] $this.Xml }
+                    return $eventRecord
+                }
+                function Get-ApplicationEventLogChannelConfigurations {
+                    switch ($env:FAKE_APPLICATION_LOG_CHANNEL_STATE) {
+                        'disabled' {
+                            return [pscustomobject]@{
+                                IsEnabled = $false
+                                IsLogFull = $false
+                            }
+                        }
+                        'full' {
+                            return [pscustomobject]@{
+                                IsEnabled = $true
+                                IsLogFull = $true
+                            }
+                        }
+                        'unreadable' {
+                            throw 'Simulated Application channel configuration failure.'
+                        }
+                        'non-unique' {
+                            return @(
+                                [pscustomobject]@{
+                                    IsEnabled = $true
+                                    IsLogFull = $false
+                                },
+                                [pscustomobject]@{
+                                    IsEnabled = $true
+                                    IsLogFull = $false
+                                })
+                        }
+                        'unknown' {
+                            return [pscustomobject]@{ Name = 'Application' }
+                        }
+                        default {
+                            return [pscustomobject]@{
+                                IsEnabled = $true
+                                IsLogFull = $false
+                            }
+                        }
+                    }
+                }
+                function Get-LatestApplicationEventLogEvent {
+                    if ($env:FAKE_EMPTY_APPLICATION_LOG -eq '1') {
+                        return $null
+                    }
+                    if ($env:FAKE_UNREADABLE_APPLICATION_LOG -eq '1') {
+                        throw 'Simulated Application log read failure.'
+                    }
+                    return New-FakeApplicationEvent `
+                        -RecordId 100 `
+                        -Xml '<Event generation="baseline" record="100" />'
+                }
+                function Get-ApplicationEventLogEventByRecordId {
+                    param([long] $RecordId)
+
+                    $script:fakeApplicationAnchorLookupCount++
+                    if (-not [string]::IsNullOrWhiteSpace(
+                            $env:FAKE_APPLICATION_ANCHOR_LOSS_ON_LOOKUP) -and
+                        $script:fakeApplicationAnchorLookupCount -eq
+                            [int] $env:FAKE_APPLICATION_ANCHOR_LOSS_ON_LOOKUP) {
+                        return $null
+                    }
+                    if ($env:FAKE_RESET_ANCHOR_AFTER_NEXT_READ -eq '1') {
+                        $env:FAKE_RESET_ANCHOR_AFTER_NEXT_READ = ''
+                        $env:FAKE_APPLICATION_LOG_CHANGE = 'reused'
+                        return New-FakeApplicationEvent `
+                            -RecordId $RecordId `
+                            -Xml '<Event generation="baseline" record="100" />'
+                    }
+                    switch ($env:FAKE_APPLICATION_LOG_CHANGE) {
+                        'missing' { return $null }
+                        'reused' {
+                            return New-FakeApplicationEvent `
+                                -RecordId $RecordId `
+                                -Xml '<Event generation="replacement" record="100" />'
+                        }
+                        'unreadable' {
+                            throw 'Simulated Application log anchor read failure.'
+                        }
+                    }
+                    if ($RecordId -ne 100) {
+                        return $null
+                    }
+                    return New-FakeApplicationEvent `
+                        -RecordId $RecordId `
+                        -Xml '<Event generation="baseline" record="100" />'
+                }
+                $script:fakeApplicationAnchorLookupCount = 0
                 function Get-MsiInstallerTransactionEvents {
+                    if ($env:FAKE_APPLICATION_LOG_CHANGE -eq 'reused') {
+                        return @(
+                            (New-FakeMsiInstallerEvent -Id 1040 -RecordId 1),
+                            (New-FakeMsiInstallerEvent -Id 1042 -RecordId 2))
+                    }
                     if ($env:FAKE_UNMATCHED_INSTALLER -eq '1') {
                         return @(New-FakeMsiInstallerEvent -Id 1040 -RecordId 10)
                     }
@@ -826,14 +931,14 @@ public sealed class PreviousReleasePerformanceScriptTests
                         $setupTime = [DateTimeOffset]::UtcNow.AddMinutes(-2)
                         return @(
                             (New-FakeMsiInstallerEvent `
-                                -Id 1040 -RecordId 20 -TimeCreated $setupTime),
+                                -Id 1040 -RecordId 120 -TimeCreated $setupTime),
                             (New-FakeMsiInstallerEvent `
-                                -Id 1042 -RecordId 21 -TimeCreated $setupTime.AddSeconds(1)))
+                                -Id 1042 -RecordId 121 -TimeCreated $setupTime.AddSeconds(1)))
                     }
                     if ($env:FAKE_INSTALLER_ACTIVITY -eq '1') {
                         return @(
-                            (New-FakeMsiInstallerEvent -Id 1040 -RecordId 20),
-                            (New-FakeMsiInstallerEvent -Id 1042 -RecordId 21))
+                            (New-FakeMsiInstallerEvent -Id 1040 -RecordId 120),
+                            (New-FakeMsiInstallerEvent -Id 1042 -RecordId 121))
                     }
                     return @()
                 }
@@ -906,6 +1011,22 @@ public sealed class PreviousReleasePerformanceScriptTests
                 if ($QualificationPass -eq 1 -and
                     $env:FAKE_PENDING_FILE_CHANGE_AFTER_PASS_ONE -eq '1') {
                     $env:FAKE_PENDING_FILE_RENAMES = 'changed'
+                }
+                if ($QualificationPass -eq 1 -and
+                    $env:FAKE_APPLICATION_LOG_RESET_AFTER_PASS_ONE -eq '1') {
+                    $env:FAKE_RESET_ANCHOR_AFTER_NEXT_READ = '1'
+                }
+                if ($QualificationPass -eq 1 -and
+                    -not [string]::IsNullOrWhiteSpace(
+                        $env:FAKE_APPLICATION_LOG_CHANGE_AFTER_PASS_ONE)) {
+                    $env:FAKE_APPLICATION_LOG_CHANGE =
+                        $env:FAKE_APPLICATION_LOG_CHANGE_AFTER_PASS_ONE
+                }
+                if ($QualificationPass -eq 1 -and
+                    -not [string]::IsNullOrWhiteSpace(
+                        $env:FAKE_APPLICATION_LOG_CHANNEL_STATE_AFTER_PASS_ONE)) {
+                    $env:FAKE_APPLICATION_LOG_CHANNEL_STATE =
+                        $env:FAKE_APPLICATION_LOG_CHANNEL_STATE_AFTER_PASS_ONE
                 }
                 """);
             File.WriteAllText(Path.Combine(sourceRoot, "release.txt"), "previous");
@@ -1012,6 +1133,8 @@ public sealed class PreviousReleasePerformanceScriptTests
             Assert.Contains("- P99 latency: diagnostic only", successSummary);
             Assert.Contains("- Pending file operation baseline entries: 2", successSummary);
             Assert.Contains("- Pending file operation baseline fingerprint: `", successSummary);
+            Assert.Contains("- Windows Application event-log anchor record: 100", successSummary);
+            Assert.Contains("- Windows Application event-log anchor SHA-256: `", successSummary);
             Assert.Contains(
                 "GitHub release status: `csharpdb/local-durable-performance` " +
                 "in `example/csharpdb`",
@@ -1064,6 +1187,54 @@ public sealed class PreviousReleasePerformanceScriptTests
                 pendingRestart.CombinedOutput);
             Assert.False(File.Exists(pendingRestartLog));
             Assert.False(File.Exists(pendingRestartGitHubLog));
+
+            foreach ((string scenario, string variable, string value, string diagnostic) in new[]
+            {
+                (
+                    "empty-application",
+                    "FAKE_EMPTY_APPLICATION_LOG",
+                    "1",
+                    "Windows Application event log is empty"),
+                (
+                    "disabled-application",
+                    "FAKE_APPLICATION_LOG_CHANNEL_STATE",
+                    "disabled",
+                    "Windows Application event-log channel is disabled"),
+            })
+            {
+                string preflightLog = Path.Combine(temporaryRoot, $"{scenario}.log");
+                string preflightGitHubLog = Path.Combine(
+                    temporaryRoot,
+                    $"{scenario}-github.log");
+                var preflightEnvironment = new Dictionary<string, string>
+                {
+                    ["FAKE_PREVIOUS_COMMIT"] = previousCommit,
+                    ["FAKE_LOCAL_DURABLE_LOG"] = preflightLog,
+                    ["FAKE_GH_LOG"] = preflightGitHubLog,
+                    ["PATH"] = fakeGitHubRoot + Path.PathSeparator +
+                        (Environment.GetEnvironmentVariable("PATH") ?? string.Empty),
+                    [variable] = value,
+                };
+                ProcessResult preflightResult = await RunProcessWithEnvironmentAsync(
+                    "pwsh",
+                    preflightEnvironment,
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-File",
+                    Path.Combine(scriptRoot, "Test-LocalDurablePerformance.ps1"),
+                    "-CandidateRef",
+                    "HEAD",
+                    "-OutputPath",
+                    Path.Combine(temporaryRoot, $"{scenario}-evidence"),
+                    "-ConfirmDedicatedFixedSsd",
+                    "-GitHubRepository",
+                    "example/csharpdb");
+
+                Assert.NotEqual(0, preflightResult.ExitCode);
+                AssertDiagnosticContains(diagnostic, preflightResult.CombinedOutput);
+                Assert.False(File.Exists(preflightLog));
+                Assert.False(File.Exists(preflightGitHubLog));
+            }
 
             foreach ((string scenario, string value, string diagnostic) in new[]
             {
@@ -1239,6 +1410,177 @@ public sealed class PreviousReleasePerformanceScriptTests
             Assert.Equal(3, installerActivityGitHubCalls.Length);
             Assert.Contains("state=pending", installerActivityGitHubCalls[1]);
             Assert.Contains("state=failure", installerActivityGitHubCalls[2]);
+
+            string resetLog = Path.Combine(temporaryRoot, "event-log-reset.log");
+            string resetGitHubLog = Path.Combine(
+                temporaryRoot,
+                "event-log-reset-github.log");
+            string resetEvidence = Path.Combine(
+                temporaryRoot,
+                "event-log-reset-evidence");
+            ProcessResult reset = await RunProcessWithEnvironmentAsync(
+                "pwsh",
+                new Dictionary<string, string>
+                {
+                    ["FAKE_PREVIOUS_COMMIT"] = previousCommit,
+                    ["FAKE_LOCAL_DURABLE_LOG"] = resetLog,
+                    ["FAKE_GH_LOG"] = resetGitHubLog,
+                    ["FAKE_APPLICATION_LOG_RESET_AFTER_PASS_ONE"] = "1",
+                    ["PATH"] = fakeGitHubRoot + Path.PathSeparator +
+                        (Environment.GetEnvironmentVariable("PATH") ?? string.Empty),
+                },
+                "-NoLogo",
+                "-NoProfile",
+                "-File",
+                Path.Combine(scriptRoot, "Test-LocalDurablePerformance.ps1"),
+                "-CandidateRef",
+                "HEAD",
+                "-OutputPath",
+                resetEvidence,
+                "-ConfirmDedicatedFixedSsd",
+                "-GitHubRepository",
+                "example/csharpdb");
+
+            Assert.NotEqual(0, reset.ExitCode);
+            Assert.Single(File.ReadAllLines(resetLog));
+            AssertDiagnosticContains(
+                "Windows Application event-log continuity anchor record 100 changed",
+                reset.CombinedOutput);
+            AssertDiagnosticContains(
+                "remaining passes will not run",
+                reset.CombinedOutput);
+            string resetSummary = File.ReadAllText(Path.Combine(
+                resetEvidence,
+                "local-durable-performance.md"));
+            Assert.Contains("- Result: **FAIL**", resetSummary);
+            Assert.Contains(
+                "the log may have been cleared and the record ID reused",
+                resetSummary);
+            string[] resetGitHubCalls = File.ReadAllLines(resetGitHubLog);
+            Assert.Equal(3, resetGitHubCalls.Length);
+            Assert.Contains("state=pending", resetGitHubCalls[1]);
+            Assert.Contains("state=failure", resetGitHubCalls[2]);
+
+            foreach ((string scenario, string variable, string value, string diagnostic) in new[]
+            {
+                (
+                    "missing",
+                    "FAKE_APPLICATION_LOG_CHANGE_AFTER_PASS_ONE",
+                    "missing",
+                    "Windows Application event log lost continuity anchor record 100"),
+                (
+                    "unreadable",
+                    "FAKE_APPLICATION_LOG_CHANGE_AFTER_PASS_ONE",
+                    "unreadable",
+                    "Could not verify Windows Application event-log continuity anchor " +
+                    "record 100"),
+                (
+                    "disabled",
+                    "FAKE_APPLICATION_LOG_CHANNEL_STATE_AFTER_PASS_ONE",
+                    "disabled",
+                    "Windows Application event-log channel is disabled"),
+                (
+                    "full",
+                    "FAKE_APPLICATION_LOG_CHANNEL_STATE_AFTER_PASS_ONE",
+                    "full",
+                    "Windows Application event-log channel is full"),
+            })
+            {
+                string anchorLog = Path.Combine(
+                    temporaryRoot,
+                    $"event-log-anchor-{scenario}.log");
+                string anchorGitHubLog = Path.Combine(
+                    temporaryRoot,
+                    $"event-log-anchor-{scenario}-github.log");
+                string anchorEvidence = Path.Combine(
+                    temporaryRoot,
+                    $"event-log-anchor-{scenario}-evidence");
+                var anchorEnvironment = new Dictionary<string, string>
+                {
+                    ["FAKE_PREVIOUS_COMMIT"] = previousCommit,
+                    ["FAKE_LOCAL_DURABLE_LOG"] = anchorLog,
+                    ["FAKE_GH_LOG"] = anchorGitHubLog,
+                    ["PATH"] = fakeGitHubRoot + Path.PathSeparator +
+                        (Environment.GetEnvironmentVariable("PATH") ?? string.Empty),
+                    [variable] = value,
+                };
+                ProcessResult anchorResult = await RunProcessWithEnvironmentAsync(
+                    "pwsh",
+                    anchorEnvironment,
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-File",
+                    Path.Combine(scriptRoot, "Test-LocalDurablePerformance.ps1"),
+                    "-CandidateRef",
+                    "HEAD",
+                    "-OutputPath",
+                    anchorEvidence,
+                    "-ConfirmDedicatedFixedSsd",
+                    "-GitHubRepository",
+                    "example/csharpdb");
+
+                Assert.NotEqual(0, anchorResult.ExitCode);
+                Assert.Single(File.ReadAllLines(anchorLog));
+                AssertDiagnosticContains(diagnostic, anchorResult.CombinedOutput);
+                Assert.Contains(
+                    "- Result: **FAIL**",
+                    File.ReadAllText(Path.Combine(
+                        anchorEvidence,
+                        "local-durable-performance.md")));
+                string[] anchorGitHubCalls = File.ReadAllLines(anchorGitHubLog);
+                Assert.Equal(3, anchorGitHubCalls.Length);
+                Assert.Contains("state=pending", anchorGitHubCalls[1]);
+                Assert.Contains("state=failure", anchorGitHubCalls[2]);
+            }
+
+            string betweenPassesLog = Path.Combine(
+                temporaryRoot,
+                "event-log-anchor-between-passes.log");
+            string betweenPassesGitHubLog = Path.Combine(
+                temporaryRoot,
+                "event-log-anchor-between-passes-github.log");
+            string betweenPassesEvidence = Path.Combine(
+                temporaryRoot,
+                "event-log-anchor-between-passes-evidence");
+            ProcessResult betweenPasses = await RunProcessWithEnvironmentAsync(
+                "pwsh",
+                new Dictionary<string, string>
+                {
+                    ["FAKE_PREVIOUS_COMMIT"] = previousCommit,
+                    ["FAKE_LOCAL_DURABLE_LOG"] = betweenPassesLog,
+                    ["FAKE_GH_LOG"] = betweenPassesGitHubLog,
+                    ["FAKE_APPLICATION_ANCHOR_LOSS_ON_LOOKUP"] = "5",
+                    ["PATH"] = fakeGitHubRoot + Path.PathSeparator +
+                        (Environment.GetEnvironmentVariable("PATH") ?? string.Empty),
+                },
+                "-NoLogo",
+                "-NoProfile",
+                "-File",
+                Path.Combine(scriptRoot, "Test-LocalDurablePerformance.ps1"),
+                "-CandidateRef",
+                "HEAD",
+                "-OutputPath",
+                betweenPassesEvidence,
+                "-ConfirmDedicatedFixedSsd",
+                "-GitHubRepository",
+                "example/csharpdb");
+
+            Assert.NotEqual(0, betweenPasses.ExitCode);
+            Assert.Single(File.ReadAllLines(betweenPassesLog));
+            AssertDiagnosticContains(
+                "lost continuity anchor record 100 at the start of pass 2",
+                betweenPasses.CombinedOutput);
+            Assert.False(Directory.Exists(Path.Combine(betweenPassesEvidence, "pass-2")));
+            Assert.Contains(
+                "- Result: **FAIL**",
+                File.ReadAllText(Path.Combine(
+                    betweenPassesEvidence,
+                    "local-durable-performance.md")));
+            string[] betweenPassesGitHubCalls = File.ReadAllLines(
+                betweenPassesGitHubLog);
+            Assert.Equal(3, betweenPassesGitHubCalls.Length);
+            Assert.Contains("state=pending", betweenPassesGitHubCalls[1]);
+            Assert.Contains("state=failure", betweenPassesGitHubCalls[2]);
 
             string pendingStatusFailureLog = Path.Combine(
                 temporaryRoot,

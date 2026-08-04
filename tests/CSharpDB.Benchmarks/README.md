@@ -497,6 +497,12 @@ after measurements begin, or any pending-file baseline change, contaminates the
 timing evidence, prevents qualification, and stops the run before another pass
 begins. Start a new clean run instead of reusing contaminated evidence.
 
+The Windows Application event-log channel must remain readable and enabled. The
+wrapper fingerprints its newest event as a continuity anchor, verifies that
+anchor at every pass start and around each installer-event audit, and fails the
+qualification if the channel is disabled, full, cleared, overwritten, or reuses
+the anchor record ID.
+
 The local release gate runs only `master-table-durable-writes`: ten durable SQL
 and collection single/batch write rows from file-backed, hybrid incremental-
 durable, and direct-client paths. It intentionally excludes reads and in-memory
