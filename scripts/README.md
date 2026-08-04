@@ -184,10 +184,12 @@ it, or when blocking file operations remain after installers and updates have
 settled.
 
 After each pass, the wrapper audits Windows Installer transactions and compares
-the pending-file-operation state with the recorded baseline. Any MSI transaction
-during a pass or any baseline change contaminates the timing evidence, prevents
-qualification, and stops the run before another pass begins. Start a new clean
-run instead of reusing contaminated evidence.
+the pending-file-operation state with the recorded baseline. A completed
+toolchain setup transaction is allowed only when it finishes before the
+configured post-build quiet window. Any installer event in that quiet window or
+after measurements begin, or any pending-file baseline change, contaminates the
+timing evidence, prevents qualification, and stops the run before another pass
+begins. Start a new clean run instead of reusing contaminated evidence.
 
 The command is idempotent for the same version and exact commit: it safely
 reuses a valid status and an existing local or remote tag that already points to

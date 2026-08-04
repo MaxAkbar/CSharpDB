@@ -800,10 +800,14 @@ public sealed class PreviousReleasePerformanceScriptTests
                     }
                 }
                 function New-FakeMsiInstallerEvent {
-                    param([int] $Id, [long] $RecordId)
+                    param(
+                        [int] $Id,
+                        [long] $RecordId,
+                        [DateTimeOffset] $TimeCreated = [DateTimeOffset]::UtcNow)
                     return [pscustomobject]@{
                         Id = $Id
                         RecordId = $RecordId
+                        TimeCreated = $TimeCreated.LocalDateTime
                         Properties = @(
                             [pscustomobject]@{ Value = 'fake-package.msi' },
                             [pscustomobject]@{ Value = '1234' })
@@ -817,6 +821,14 @@ public sealed class PreviousReleasePerformanceScriptTests
                         return @(
                             (New-FakeMsiInstallerEvent -Id 1040 -RecordId 10),
                             (New-FakeMsiInstallerEvent -Id 1042 -RecordId 11))
+                    }
+                    if ($env:FAKE_SETUP_INSTALLER_ACTIVITY -eq '1') {
+                        $setupTime = [DateTimeOffset]::UtcNow.AddMinutes(-2)
+                        return @(
+                            (New-FakeMsiInstallerEvent `
+                                -Id 1040 -RecordId 20 -TimeCreated $setupTime),
+                            (New-FakeMsiInstallerEvent `
+                                -Id 1042 -RecordId 21 -TimeCreated $setupTime.AddSeconds(1)))
                     }
                     if ($env:FAKE_INSTALLER_ACTIVITY -eq '1') {
                         return @(
@@ -853,6 +865,14 @@ public sealed class PreviousReleasePerformanceScriptTests
 
                 $ErrorActionPreference = 'Stop'
                 New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
+                $logRoot = Join-Path $OutputPath 'logs'
+                New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
+                $measurementStartedUtc = [DateTimeOffset]::UtcNow
+                [IO.File]::WriteAllLines(
+                    (Join-Path $logRoot 'execution-order.log'),
+                    @(
+                        'TimestampUtc|Ordinal|Suite|Revision|State|Detail',
+                        "$($measurementStartedUtc.ToString('o'))|1|master-table-durable-writes|candidate|START|fake"))
                 $resolvedPrevious = if ([string]::IsNullOrWhiteSpace($PreviousRef)) {
                     $env:FAKE_PREVIOUS_COMMIT
                 }
@@ -878,6 +898,10 @@ public sealed class PreviousReleasePerformanceScriptTests
                 if ($QualificationPass -eq 1 -and
                     $env:FAKE_INSTALLER_ACTIVITY_AFTER_PASS_ONE -eq '1') {
                     $env:FAKE_INSTALLER_ACTIVITY = '1'
+                }
+                if ($QualificationPass -eq 1 -and
+                    $env:FAKE_SETUP_INSTALLER_ACTIVITY_AFTER_PASS_ONE -eq '1') {
+                    $env:FAKE_SETUP_INSTALLER_ACTIVITY = '1'
                 }
                 if ($QualificationPass -eq 1 -and
                     $env:FAKE_PENDING_FILE_CHANGE_AFTER_PASS_ONE -eq '1') {
@@ -954,7 +978,7 @@ public sealed class PreviousReleasePerformanceScriptTests
                     ["FAKE_LOCAL_DURABLE_LOG"] = successLog,
                     ["FAKE_GH_LOG"] = githubLog,
                     ["FAKE_PENDING_FILE_RENAMES"] = "stable-delete",
-                    ["FAKE_COMPLETED_INSTALLER"] = "1",
+                    ["FAKE_SETUP_INSTALLER_ACTIVITY_AFTER_PASS_ONE"] = "1",
                     ["PATH"] = fakeGitHubRoot + Path.PathSeparator +
                         (Environment.GetEnvironmentVariable("PATH") ?? string.Empty),
                     ["CSHARPDB_BENCH_DURABILITY"] = "Buffered",

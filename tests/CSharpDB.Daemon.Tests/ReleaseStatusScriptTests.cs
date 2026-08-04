@@ -190,9 +190,10 @@ public sealed class ReleaseStatusScriptTests
         Assert.Contains("Id = @(1040, 1042)", script);
         Assert.Contains("Get-ActiveInstallerTransactionReasons", script);
         Assert.Contains("Get-LatestMsiInstallerEventRecordId", script);
+        Assert.Contains("Get-PassMeasurementStartUtc", script);
+        Assert.Contains("-NotBeforeUtc $installerQuietCutoffUtc", script);
         Assert.Contains("-Stage 'preflight'", script);
         Assert.Contains("-Stage \"the start of pass $qualificationPass\"", script);
-        Assert.Contains("-InstallerEventBaselineRecordId $installerEventBaselineRecordId", script);
         Assert.Contains("Get-LocalEnvironmentIssues", script);
         Assert.Contains("environment contamination", script);
         Assert.Contains("remaining passes will not run", script);

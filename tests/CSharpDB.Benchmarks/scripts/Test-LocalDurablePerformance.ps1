@@ -351,12 +351,18 @@ function Get-LatestMsiInstallerEventRecordId {
 function Get-InstallerActivityReasons {
     param(
         [Parameter(Mandatory)]
-        [long] $AfterRecordId
+        [long] $AfterRecordId,
+
+        [Parameter(Mandatory)]
+        [DateTimeOffset] $NotBeforeUtc
     )
 
     $newEvents = @(
         Get-MsiInstallerTransactionEvents |
-            Where-Object { [long] $_.RecordId -gt $AfterRecordId }
+            Where-Object {
+                [long] $_.RecordId -gt $AfterRecordId -and
+                ([DateTimeOffset] $_.TimeCreated).ToUniversalTime() -ge $NotBeforeUtc
+            }
     )
     if ($newEvents.Count -eq 0) {
         return @()
@@ -367,15 +373,43 @@ function Get-InstallerActivityReasons {
         (($newEvents | ForEach-Object { "$($_.Id)/$($_.RecordId)" }) -join ', '))
 }
 
+function Get-PassMeasurementStartUtc {
+    param(
+        [Parameter(Mandatory)]
+        [string] $PassOutput
+    )
+
+    $executionLogPath = Join-Path $PassOutput 'logs/execution-order.log'
+    if (-not (Test-Path -LiteralPath $executionLogPath -PathType Leaf)) {
+        throw "Pass execution log was not created: $executionLogPath"
+    }
+
+    $startLine = Get-Content -LiteralPath $executionLogPath |
+        Where-Object { $_ -match '^[^|]+\|[^|]+\|[^|]+\|[^|]+\|START\|' } |
+        Select-Object -First 1
+    if ([string]::IsNullOrWhiteSpace($startLine)) {
+        throw "Pass execution log contains no measurement START event: $executionLogPath"
+    }
+
+    $timestampText = ($startLine -split '\|', 2)[0]
+    $measurementStartUtc = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse(
+        $timestampText,
+        [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::RoundtripKind,
+        [ref] $measurementStartUtc)) {
+        throw "Pass execution log contains an invalid START timestamp: $timestampText"
+    }
+
+    return $measurementStartUtc.ToUniversalTime()
+}
+
 function Get-LocalEnvironmentIssues {
     param(
         [Parameter(Mandatory)]
         [AllowEmptyCollection()]
         [AllowEmptyString()]
-        [string[]] $PendingFileRenameBaseline,
-
-        [Parameter(Mandatory)]
-        [long] $InstallerEventBaselineRecordId
+        [string[]] $PendingFileRenameBaseline
     )
 
     $currentPendingFileRenames = @(Get-PendingFileRenameOperationsSnapshot)
@@ -386,7 +420,6 @@ function Get-LocalEnvironmentIssues {
             -Baseline $PendingFileRenameBaseline `
             -Current $currentPendingFileRenames
         Get-ActiveInstallerTransactionReasons
-        Get-InstallerActivityReasons -AfterRecordId $InstallerEventBaselineRecordId
     )
 }
 
@@ -398,15 +431,11 @@ function Assert-QuiescentLocalEnvironment {
         [Parameter(Mandatory)]
         [AllowEmptyCollection()]
         [AllowEmptyString()]
-        [string[]] $PendingFileRenameBaseline,
-
-        [Parameter(Mandatory)]
-        [long] $InstallerEventBaselineRecordId
+        [string[]] $PendingFileRenameBaseline
     )
 
     $issues = @(Get-LocalEnvironmentIssues `
-        -PendingFileRenameBaseline $PendingFileRenameBaseline `
-        -InstallerEventBaselineRecordId $InstallerEventBaselineRecordId)
+        -PendingFileRenameBaseline $PendingFileRenameBaseline)
     if ($issues.Count -gt 0) {
         throw (
             "Local durable performance qualification requires a quiescent Windows " +
@@ -470,8 +499,7 @@ $pendingFileRenameFingerprint = Get-PendingFileRenameFingerprint `
 $installerEventBaselineRecordId = Get-LatestMsiInstallerEventRecordId
 Assert-QuiescentLocalEnvironment `
     -Stage 'preflight' `
-    -PendingFileRenameBaseline $pendingFileRenameBaseline `
-    -InstallerEventBaselineRecordId $installerEventBaselineRecordId
+    -PendingFileRenameBaseline $pendingFileRenameBaseline
 if ($pendingFileRenameBaseline.Count -gt 0) {
     Write-Warning (
         "Accepting $($pendingFileRenameBaseline.Count / 2) stable deletion-only pending " +
@@ -531,8 +559,7 @@ try {
     foreach ($qualificationPass in 1, 2) {
         Assert-QuiescentLocalEnvironment `
             -Stage "the start of pass $qualificationPass" `
-            -PendingFileRenameBaseline $pendingFileRenameBaseline `
-            -InstallerEventBaselineRecordId $installerEventBaselineRecordId
+            -PendingFileRenameBaseline $pendingFileRenameBaseline
         $passOutput = Join-Path $outputRoot "pass-$qualificationPass"
         $parameters = @{
             CandidateRef = $candidateCommit
@@ -566,9 +593,16 @@ try {
             }
         }
 
-        $environmentIssues = @(Get-LocalEnvironmentIssues `
-            -PendingFileRenameBaseline $pendingFileRenameBaseline `
-            -InstallerEventBaselineRecordId $installerEventBaselineRecordId)
+        $measurementStartUtc = Get-PassMeasurementStartUtc -PassOutput $passOutput
+        $installerQuietCutoffUtc = $measurementStartUtc.AddSeconds(
+            -$PostBuildQuiescenceSeconds)
+        $environmentIssues = @(
+            Get-LocalEnvironmentIssues `
+                -PendingFileRenameBaseline $pendingFileRenameBaseline
+            Get-InstallerActivityReasons `
+                -AfterRecordId $installerEventBaselineRecordId `
+                -NotBeforeUtc $installerQuietCutoffUtc
+        )
         if ($environmentIssues.Count -gt 0) {
             $passFailures.Add(
                 "Pass $qualificationPass environment contamination: " +

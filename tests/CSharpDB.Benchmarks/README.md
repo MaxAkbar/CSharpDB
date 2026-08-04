@@ -490,10 +490,12 @@ the preflight again; restart Windows when CBS or Windows Update requires it, or
 when blocking file operations remain after installers and updates have settled.
 
 After each pass, the wrapper audits Windows Installer transactions and compares
-the pending-file-operation state with the recorded baseline. Any MSI transaction
-during a pass or any baseline change contaminates the timing evidence, prevents
-qualification, and stops the run before another pass begins. Start a new clean
-run instead of reusing contaminated evidence.
+the pending-file-operation state with the recorded baseline. A completed
+toolchain setup transaction is allowed only when it finishes before the
+configured post-build quiet window. Any installer event in that quiet window or
+after measurements begin, or any pending-file baseline change, contaminates the
+timing evidence, prevents qualification, and stops the run before another pass
+begins. Start a new clean run instead of reusing contaminated evidence.
 
 The local release gate runs only `master-table-durable-writes`: ten durable SQL
 and collection single/batch write rows from file-backed, hybrid incremental-
