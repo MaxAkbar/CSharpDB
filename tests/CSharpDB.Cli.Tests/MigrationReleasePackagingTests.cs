@@ -152,7 +152,7 @@ public sealed class MigrationReleasePackagingTests
             "Publish-CSharpDbMigrationRelease.ps1");
 
         Assert.Contains(
-            "[string] $Version = '4.3.0'",
+            "[string] $Version = '4.4.0'",
             script,
             StringComparison.Ordinal);
         Assert.Contains("win-x64", script, StringComparison.Ordinal);

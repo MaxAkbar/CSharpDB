@@ -3163,6 +3163,91 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task IndexedRealEqualitySelectStar_UsesHashedIndexScanOperator()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync(
+            "CREATE TABLE batch_real_index_eq_root (" +
+            "id INTEGER PRIMARY KEY, score REAL NOT NULL, label TEXT)",
+            ct);
+        await _db.ExecuteAsync(
+            "CREATE INDEX idx_batch_real_index_eq_root_score " +
+            "ON batch_real_index_eq_root(score)",
+            ct);
+        await _db.ExecuteAsync(
+            "INSERT INTO batch_real_index_eq_root VALUES " +
+            "(1, 10.5, 'A'), (2, 20.5, 'B'), " +
+            "(3, 20.5, 'C'), (4, 30.5, 'D')",
+            ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse(
+            "SELECT * FROM batch_real_index_eq_root WHERE score = 20.5")
+            as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.True(UsesDirectBatchStorage(result));
+        Assert.IsType<IndexScanOperator>(GetRootOperator(result));
+
+        var rows = (await result.ToListAsync(ct))
+            .OrderBy(row => row[0].AsInteger)
+            .ToArray();
+        Assert.Equal(
+            [2L, 3L],
+            rows.Select(static row => row[0].AsInteger).ToArray());
+    }
+
+    [Fact]
+    public async Task IndexedRealCoveredProjection_PreservesStoredTypeTagsAndSignedZero()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync(
+            "CREATE TABLE real_index_projection_values (" +
+            "id INTEGER PRIMARY KEY, score REAL NOT NULL)",
+            ct);
+        await _db.ExecuteAsync(
+            "INSERT INTO real_index_projection_values VALUES " +
+            "(1, 1), (2, 1.0), (3, -0.0)",
+            ct);
+        await _db.ExecuteAsync(
+            "CREATE INDEX ix_real_index_projection_score " +
+            "ON real_index_projection_values(score)",
+            ct);
+
+        foreach (bool preferSyncPointLookups in new[] { false, true })
+        {
+            _db.PreferSyncPointLookups = preferSyncPointLookups;
+
+            await using (QueryResult ones = await _db.ExecuteAsync(
+                "SELECT id, score FROM real_index_projection_values " +
+                "WHERE score = 1",
+                ct))
+            {
+                DbValue[][] rows = (await ones.ToListAsync(ct))
+                    .OrderBy(static row => row[0].AsInteger)
+                    .ToArray();
+                Assert.Equal(2, rows.Length);
+                Assert.Equal(DbType.Integer, rows[0][1].Type);
+                Assert.Equal(1L, rows[0][1].AsInteger);
+                Assert.Equal(DbType.Real, rows[1][1].Type);
+                Assert.Equal(1.0, rows[1][1].AsReal);
+            }
+
+            await using QueryResult zero = await _db.ExecuteAsync(
+                "SELECT score FROM real_index_projection_values " +
+                "WHERE score = 0.0",
+                ct);
+            DbValue storedZero = Assert.Single(
+                Assert.Single(await zero.ToListAsync(ct)));
+            Assert.Equal(DbType.Real, storedZero.Type);
+            Assert.Equal(
+                BitConverter.DoubleToInt64Bits(-0.0),
+                BitConverter.DoubleToInt64Bits(storedZero.AsReal));
+        }
+    }
+
+    [Fact]
     public async Task IndexedEqualitySelectStarWithLimitAndOffset_UsesBatchLimitOverIndexScan()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -7569,12 +7654,16 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Index_OnUnsupportedColumnType_Fails()
+    public async Task Index_OnBlobColumn_Fails()
     {
-        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, score REAL)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, payload BLOB)",
+            TestContext.Current.CancellationToken);
 
         await Assert.ThrowsAsync<CSharpDbException>(async () =>
-            await _db.ExecuteAsync("CREATE INDEX idx_score ON t (score)", TestContext.Current.CancellationToken));
+            await _db.ExecuteAsync(
+                "CREATE INDEX idx_payload ON t (payload)",
+                TestContext.Current.CancellationToken));
     }
 
     [Fact]

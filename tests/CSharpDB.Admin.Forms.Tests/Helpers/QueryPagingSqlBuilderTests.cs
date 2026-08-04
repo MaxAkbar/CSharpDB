@@ -37,11 +37,73 @@ public sealed class QueryPagingSqlBuilderTests
             "SELECT \"order value\" AS \"display name\" FROM \"select table\" LIMIT 50 OFFSET 0",
             "SELECT COUNT(*) FROM \"select table\"");
 
+    [Fact]
+    public void NamedWindowAndRowsFrame_ArePreservedWhenPagingSqlIsRewritten()
+        => AssertTablelessQuerySerializes(
+            """
+            SELECT SUM(value) OVER running AS running_total
+            FROM samples
+            WINDOW running AS (
+                PARTITION BY group_id ORDER BY id
+                ROWS BETWEEN 2 PRECEDING AND CURRENT ROW
+            );
+            """,
+            new[] { "running_total" },
+            "SELECT SUM(\"value\") OVER (PARTITION BY \"group_id\" ORDER BY \"id\" ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS \"running_total\" " +
+            "FROM \"samples\" WINDOW \"running\" AS (PARTITION BY \"group_id\" ORDER BY \"id\" ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) LIMIT 50 OFFSET 0",
+            "SELECT COUNT(*) FROM \"samples\"");
+
+    [Theory]
+    [InlineData(0, "__q0")]
+    [InlineData(1, "__q1")]
+    public void WindowQueryFilter_IsAppliedOutsideTheWindowQuery(
+        int filterColumn,
+        string internalFilterColumn)
+    {
+        const string sql =
+            "SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS rn FROM scores";
+        string[] displayColumns = ["id", "rn"];
+        var filters = new Dictionary<int, string>
+        {
+            [filterColumn] = "2",
+        };
+
+        (string pageSql, string countSql) =
+            BuildPageAndCountSql(sql, displayColumns, filters);
+
+        const string windowQuery =
+            "SELECT \"id\", ROW_NUMBER() OVER (ORDER BY \"id\") AS \"rn\" FROM \"scores\"";
+        Assert.Equal(
+            $"WITH \"__admin_query_results\"(\"__q0\", \"__q1\") AS ({windowQuery}) " +
+            "SELECT * FROM \"__admin_query_results\" " +
+            $"WHERE TEXT(\"{internalFilterColumn}\") LIKE '%2%' ESCAPE '!' LIMIT 50 OFFSET 0",
+            pageSql);
+        Assert.Equal(
+            $"WITH \"__admin_query_results\"(\"__q0\", \"__q1\") AS ({windowQuery}) " +
+            "SELECT COUNT(*) FROM \"__admin_query_results\" " +
+            $"WHERE TEXT(\"{internalFilterColumn}\") LIKE '%2%' ESCAPE '!'",
+            countSql);
+    }
+
     private static void AssertTablelessQuerySerializes(
         string sql,
         string[] displayColumns,
         string expectedPageSql,
         string expectedCountSql)
+    {
+        (string pageSql, string countSql) = BuildPageAndCountSql(
+            sql,
+            displayColumns,
+            new Dictionary<int, string>());
+
+        Assert.Equal(expectedPageSql, pageSql);
+        Assert.Equal(expectedCountSql, countSql);
+    }
+
+    private static (string PageSql, string CountSql) BuildPageAndCountSql(
+        string sql,
+        string[] displayColumns,
+        IReadOnlyDictionary<int, string> filters)
     {
         Type planType = Type.GetType("CSharpDB.Admin.Helpers.QueryPagingPlan, CSharpDB.Admin", throwOnError: true)!;
         MethodInfo parse = planType.GetMethod("Parse", BindingFlags.Public | BindingFlags.Static)!;
@@ -64,7 +126,7 @@ public sealed class QueryPagingSqlBuilderTests
 
         string pageSql = (string)buildPageSql.Invoke(
             plan,
-            [new Dictionary<int, string>(), null, true, 50, 1, displayColumns])!;
+            [filters, null, true, 50, 1, displayColumns])!;
 
         MethodInfo buildCountPlan = planType.GetMethod(
             "BuildCountPlan",
@@ -73,10 +135,9 @@ public sealed class QueryPagingSqlBuilderTests
             types: [typeof(IReadOnlyDictionary<int, string>), typeof(string[])],
             modifiers: null)!;
 
-        object countPlan = buildCountPlan.Invoke(plan, [new Dictionary<int, string>(), displayColumns])!;
+        object countPlan = buildCountPlan.Invoke(plan, [filters, displayColumns])!;
         string countSql = (string)countPlan.GetType().GetProperty("Sql")!.GetValue(countPlan)!;
 
-        Assert.Equal(expectedPageSql, pageSql);
-        Assert.Equal(expectedCountSql, countSql);
+        return (pageSql, countSql);
     }
 }

@@ -53,7 +53,7 @@
                 <h2>Data Definition (DDL)</h2>
 
                 <h3>CREATE TABLE</h3>
-                <div class="code-block" data-title="SQL">
+                <div class="code-block" data-title="SQL" data-csharpdb-example="execute">
                     <pre><code><span class="kw">CREATE TABLE</span> Employees (
     Id        <span class="tp">INTEGER</span> <span class="kw">PRIMARY KEY</span>,
     Name      <span class="tp">TEXT</span> <span class="kw">NOT NULL</span>,
@@ -65,7 +65,7 @@
                 </div>
 
                 <h3>Temporary Tables</h3>
-                <div class="code-block" data-title="SQL">
+                <div class="code-block" data-title="SQL" data-csharpdb-example="execute">
                     <pre><code><span class="kw">CREATE TEMP TABLE</span> StageEmployees (
     Id   <span class="tp">INTEGER</span> <span class="kw">PRIMARY KEY IDENTITY</span>,
     Name <span class="tp">TEXT</span>
@@ -78,19 +78,19 @@
                 <p>Temporary tables are in-memory and session-scoped. They resolve before durable tables, are hidden from <code>sys.tables</code> and backups, and appear only in <code>sys.temp_tables</code>/<code>sys_temp_tables</code> and <code>sys.temp_columns</code>/<code>sys_temp_columns</code>. Stateless HTTP/gRPC SQL execution rejects temp commands; use transaction sessions for remote temp workflows.</p>
 
                 <h3>CREATE INDEX</h3>
-                <div class="code-block" data-title="SQL">
+                <div class="code-block" data-title="SQL" data-csharpdb-example="execute" data-csharpdb-fixture="employees-table">
                     <pre><code><span class="kw">CREATE INDEX</span> idx_emp_dept <span class="kw">ON</span> Employees (DeptId);
 <span class="kw">CREATE UNIQUE INDEX</span> idx_emp_name <span class="kw">ON</span> Employees (Name);</code></pre>
                 </div>
 
                 <h3>CREATE VIEW</h3>
-                <div class="code-block" data-title="SQL">
+                <div class="code-block" data-title="SQL" data-csharpdb-example="execute" data-csharpdb-fixture="employees-table">
                     <pre><code><span class="kw">CREATE VIEW</span> HighEarners <span class="kw">AS</span>
     <span class="kw">SELECT</span> Name, Salary <span class="kw">FROM</span> Employees <span class="kw">WHERE</span> Salary > <span class="num">100000</span>;</code></pre>
                 </div>
 
                 <h3>CREATE TRIGGER</h3>
-                <div class="code-block" data-title="SQL">
+                <div class="code-block" data-title="SQL" data-csharpdb-example="execute" data-csharpdb-fixture="employees-trigger">
                     <pre><code><span class="kw">CREATE TRIGGER</span> log_insert
     <span class="kw">AFTER INSERT ON</span> Employees
     <span class="kw">BEGIN</span>
@@ -99,19 +99,27 @@
                 </div>
 
                 <h3>ALTER TABLE &amp; DROP</h3>
-                <div class="code-block" data-title="SQL">
+                <div class="code-block" data-title="SQL" data-csharpdb-example="execute" data-csharpdb-fixture="employees-alter">
                     <pre><code><span class="kw">ALTER TABLE</span> Employees <span class="kw">ADD COLUMN</span> Title <span class="tp">TEXT</span>;
 <span class="kw">ALTER TABLE</span> Employees <span class="kw">DROP CONSTRAINT</span> fk_employees_deptid_a1b2c3d4;
 <span class="kw">ALTER TABLE</span> Employees <span class="kw">RENAME INDEX</span> idx_emp_dept <span class="kw">TO</span> idx_employees_department;
-<span class="kw">DROP TABLE</span> Employees;
+<span class="kw">DROP VIEW</span> HighEarners;
 <span class="kw">DROP INDEX</span> idx_employees_department;
-<span class="kw">DROP VIEW</span> HighEarners;</code></pre>
+<span class="kw">DROP TABLE</span> Employees;</code></pre>
                 </div>
 
                 <h2>Data Manipulation (DML)</h2>
 
+                <h3>EXPLAIN and profile output</h3>
+                <div class="code-block" data-title="SQL" data-csharpdb-example="execute" data-csharpdb-fixture="employees-profile">
+                    <pre><code><span class="kw">EXPLAIN SELECT</span> Name <span class="kw">FROM</span> Employees <span class="kw">WHERE</span> Id = <span class="num">1</span>;
+<span class="kw">EXPLAIN ANALYZE SELECT</span> Name <span class="kw">FROM</span> Employees <span class="kw">WHERE</span> Id = <span class="num">1</span>;
+<span class="kw">EXPLAIN ANALYZE UPDATE</span> Employees <span class="kw">SET</span> Salary = Salary + <span class="num">1000</span> <span class="kw">WHERE</span> Id = <span class="num">1</span>;</code></pre>
+                </div>
+                <p><code>EXPLAIN</code> returns the selected physical operator tree without opening it. <code>EXPLAIN ANALYZE</code> executes exactly once and reports actual rows, loops, and elapsed time; DML profile statements therefore mutate under normal transaction semantics. Estimated costs use stable relative row-work units for comparing choices, not elapsed time; row estimates remain nullable when cardinality is unavailable. Output is a bounded structural rowset available through direct, ADO.NET, HTTP, and gRPC clients; its 256 KiB limit is an inline content budget rather than an exact serialized transport size. Predicate values are redacted. Cancellation and execution errors remain failures, with a bounded, redacted partial-profile summary attached to failure diagnostics where safe. See the <a href="sql-reference.html#explain">full contract and current non-executing planning restrictions</a>.</p>
+
                 <h3>INSERT</h3>
-                <div class="code-block" data-title="SQL">
+                <div class="code-block" data-title="SQL" data-csharpdb-example="execute" data-csharpdb-fixture="employees-table">
                     <pre><code><span class="kw">INSERT INTO</span> Employees (Id, Name, DeptId, Salary)
     <span class="kw">VALUES</span> (<span class="num">1</span>, <span class="str">'Alice'</span>, <span class="num">10</span>, <span class="num">95000.0</span>);
 
@@ -120,7 +128,7 @@
                 </div>
 
                 <h3>SELECT</h3>
-                <div class="code-block" data-title="SQL">
+                <div class="code-block" data-title="SQL" data-csharpdb-example="execute" data-csharpdb-fixture="employees-query">
                     <pre><code><span class="cm">-- Basic query with filtering and ordering</span>
 <span class="kw">SELECT</span> Name, Salary <span class="kw">FROM</span> Employees
     <span class="kw">WHERE</span> Salary > <span class="num">80000</span> <span class="kw">ORDER BY</span> Salary <span class="kw">DESC</span>;
@@ -164,7 +172,7 @@
                 </div>
 
                 <h3>UPDATE &amp; DELETE</h3>
-                <div class="code-block" data-title="SQL">
+                <div class="code-block" data-title="SQL" data-csharpdb-example="execute" data-csharpdb-fixture="employees-mutations">
                     <pre><code><span class="kw">UPDATE</span> Employees <span class="kw">SET</span> Salary = Salary * <span class="num">1.1</span> <span class="kw">WHERE</span> DeptId = <span class="num">10</span>;
 <span class="kw">DELETE FROM</span> Employees <span class="kw">WHERE</span> Id = <span class="num">99</span>;</code></pre>
                 </div>
@@ -172,15 +180,15 @@
                 <h2>Data Hygiene</h2>
                 <p>Use SQL-first hygiene commands to preview duplicates, deduplicate or merge rows transactionally, store audit-only validation rules, and find orphaned child values.</p>
 
-                <div class="code-block" data-title="SQL">
+                <div class="code-block" data-title="SQL" data-csharpdb-example="execute" data-csharpdb-fixture="hygiene">
                     <pre><code><span class="cm">-- Preview duplicate groups without changing data</span>
 <span class="kw">FIND DUPLICATES IN</span> Customers <span class="kw">ON</span> Email <span class="kw">COLLATE</span> NOCASE;
 
-<span class="cm">-- Delete non-winners through normal index/FK/trigger mutation paths</span>
-<span class="kw">DEDUP</span> Customers <span class="kw">ON</span> Email <span class="kw">KEEP FIRST</span>;
-
 <span class="cm">-- Fill NULL winner fields when exactly one duplicate value is available</span>
 <span class="kw">MERGE DUPLICATES</span> Customers <span class="kw">ON</span> Email;
+
+<span class="cm">-- Delete non-winners through normal index/FK/trigger mutation paths</span>
+<span class="kw">DEDUP</span> Customers <span class="kw">ON</span> Email <span class="kw">KEEP FIRST</span>;
 
 <span class="cm">-- Store and evaluate audit-only SQL validation rules</span>
 <span class="kw">CREATE VALIDATION RULE</span> ValidEmail

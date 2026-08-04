@@ -153,16 +153,18 @@ internal sealed class QueryPagingPlan
         out Expression? directFilter)
     {
         directFilter = null;
+        bool hasActiveFilters = HasActiveFilters(filters);
         if (_baseSelect is null
             || _baseSelect.IsDistinct
             || _baseSelect.GroupBy is not null
             || _baseSelect.Having is not null
-            || SelectHasAggregateProjection(_baseSelect))
+            || SelectHasAggregateProjection(_baseSelect)
+            || (hasActiveFilters && SelectHasWindowFunctions(_baseSelect)))
         {
             return false;
         }
 
-        if (!HasActiveFilters(filters))
+        if (!hasActiveFilters)
             return true;
 
         return TryBuildDirectFilterExpression(displayColumns, filters, filterModes, out directFilter);
@@ -219,6 +221,7 @@ internal sealed class QueryPagingPlan
                 Where = CombineAnd(select.Where, filterExpression),
                 GroupBy = select.GroupBy,
                 Having = select.Having,
+                WindowDefinitions = select.WindowDefinitions,
                 OrderBy = orderBy ?? select.OrderBy,
                 Limit = ComputeEffectiveLimit(select.Limit, pageSize, offset),
                 Offset = ComputeEffectiveOffset(select.Offset, offset),
@@ -338,6 +341,7 @@ internal sealed class QueryPagingPlan
     {
         filterExpression = null;
         orderBy = null;
+        bool hasActiveFilters = HasActiveFilters(filters);
 
         if (_baseSelect is null
             || _baseSelect.IsDistinct
@@ -345,12 +349,13 @@ internal sealed class QueryPagingPlan
             || _baseSelect.Having is not null
             || _baseSelect.Limit.HasValue
             || _baseSelect.Offset.HasValue
-            || SelectHasAggregateProjection(_baseSelect))
+            || SelectHasAggregateProjection(_baseSelect)
+            || (hasActiveFilters && SelectHasWindowFunctions(_baseSelect)))
         {
-            return !HasActiveFilters(filters) && sortColumn is null;
+            return !hasActiveFilters && sortColumn is null;
         }
 
-        if (HasActiveFilters(filters)
+        if (hasActiveFilters
             && !TryBuildDirectFilterExpression(displayColumns, filters, filterModes, out filterExpression))
         {
             return false;
@@ -562,6 +567,44 @@ internal sealed class QueryPagingPlan
     private static bool SelectHasAggregateProjection(SelectStatement select)
         => select.Columns.Any(column => column.Expression is not null && ContainsAggregateFunction(column.Expression));
 
+    private static bool SelectHasWindowFunctions(SelectStatement select)
+        => select.Columns.Any(column =>
+                column.Expression is not null &&
+                ContainsWindowFunction(column.Expression))
+            || (select.OrderBy is not null &&
+                select.OrderBy.Any(orderBy =>
+                    ContainsWindowFunction(orderBy.Expression)));
+
+    private static bool ContainsWindowFunction(Expression expression)
+        => expression switch
+        {
+            WindowFunctionExpression => true,
+            FunctionCallExpression function =>
+                function.Arguments.Any(ContainsWindowFunction),
+            BinaryExpression binary =>
+                ContainsWindowFunction(binary.Left) ||
+                ContainsWindowFunction(binary.Right),
+            UnaryExpression unary => ContainsWindowFunction(unary.Operand),
+            CollateExpression collate => ContainsWindowFunction(collate.Operand),
+            LikeExpression like =>
+                ContainsWindowFunction(like.Operand) ||
+                ContainsWindowFunction(like.Pattern) ||
+                (like.EscapeChar is not null &&
+                 ContainsWindowFunction(like.EscapeChar)),
+            InExpression inExpression =>
+                ContainsWindowFunction(inExpression.Operand) ||
+                inExpression.Values.Any(ContainsWindowFunction),
+            InSubqueryExpression inSubquery =>
+                ContainsWindowFunction(inSubquery.Operand),
+            BetweenExpression between =>
+                ContainsWindowFunction(between.Operand) ||
+                ContainsWindowFunction(between.Low) ||
+                ContainsWindowFunction(between.High),
+            IsNullExpression isNull =>
+                ContainsWindowFunction(isNull.Operand),
+            _ => false,
+        };
+
     private static bool ContainsAggregateFunction(Expression expression)
         => expression switch
         {
@@ -756,6 +799,15 @@ internal static class QueryAstSqlWriter
             parts.Add(WriteExpression(statement.Having));
         }
 
+        if (statement.WindowDefinitions.Count > 0)
+        {
+            parts.Add("WINDOW");
+            parts.Add(string.Join(
+                ", ",
+                statement.WindowDefinitions.Select(definition =>
+                    $"{SqlIdentifierRules.Quote(definition.Name)} AS ({WriteWindowSpecification(definition.Specification)})")));
+        }
+
         AppendOrderingAndPagination(parts, statement.OrderBy, statement.Limit, statement.Offset);
         return string.Join(" ", parts);
     }
@@ -877,27 +929,63 @@ internal static class QueryAstSqlWriter
 
     private static string WriteWindowFunction(WindowFunctionExpression window)
     {
-        var clauses = new List<string>(2);
-        if (window.Window.PartitionBy.Count > 0)
+        string specificationSql = WriteWindowSpecification(window.Window);
+        bool isBareReference =
+            window.Window.ReferenceName != null &&
+            window.Window.PartitionBy.Count == 0 &&
+            window.Window.OrderBy.Count == 0 &&
+            window.Window.Frame == null;
+        return isBareReference
+            ? $"{WriteExpression(window.Function)} OVER {specificationSql}"
+            : $"{WriteExpression(window.Function)} OVER ({specificationSql})";
+    }
+
+    private static string WriteWindowSpecification(WindowSpecification specification)
+    {
+        var clauses = new List<string>(4);
+        if (specification.ReferenceName != null)
+            clauses.Add(SqlIdentifierRules.Quote(specification.ReferenceName));
+
+        if (specification.PartitionBy.Count > 0)
         {
             clauses.Add(
                 "PARTITION BY " +
-                string.Join(", ", window.Window.PartitionBy.Select(WriteExpression)));
+                string.Join(", ", specification.PartitionBy.Select(WriteExpression)));
         }
 
-        if (window.Window.OrderBy.Count > 0)
+        if (specification.OrderBy.Count > 0)
         {
             clauses.Add(
                 "ORDER BY " +
                 string.Join(
                     ", ",
-                    window.Window.OrderBy.Select(
+                    specification.OrderBy.Select(
                         clause => WriteExpression(clause.Expression) +
                             (clause.Descending ? " DESC" : string.Empty))));
         }
 
-        return $"{WriteExpression(window.Function)} OVER ({string.Join(" ", clauses)})";
+        if (specification.Frame != null)
+        {
+            clauses.Add(
+                $"ROWS BETWEEN {WriteWindowFrameBound(specification.Frame.Start)} " +
+                $"AND {WriteWindowFrameBound(specification.Frame.End)}");
+        }
+
+        return string.Join(" ", clauses);
     }
+
+    private static string WriteWindowFrameBound(WindowFrameBound bound)
+        => bound.Kind switch
+        {
+            WindowFrameBoundKind.UnboundedPreceding => "UNBOUNDED PRECEDING",
+            WindowFrameBoundKind.Preceding =>
+                $"{bound.Offset.GetValueOrDefault().ToString(CultureInfo.InvariantCulture)} PRECEDING",
+            WindowFrameBoundKind.CurrentRow => "CURRENT ROW",
+            WindowFrameBoundKind.Following =>
+                $"{bound.Offset.GetValueOrDefault().ToString(CultureInfo.InvariantCulture)} FOLLOWING",
+            WindowFrameBoundKind.UnboundedFollowing => "UNBOUNDED FOLLOWING",
+            _ => throw new InvalidOperationException($"Unsupported window frame bound: {bound.Kind}"),
+        };
 
     private static string WriteLiteral(LiteralExpression literal)
     {

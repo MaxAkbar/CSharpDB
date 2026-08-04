@@ -94,6 +94,7 @@ Desktop.ini
 ## CSharpDB runtime files
 *.cdb
 *.db
+!tests/CSharpDB.Tests/Fixtures/ReleasedDatabases/*.db
 *.csdbtable
 *.db.journal
 *.wal

@@ -38,6 +38,23 @@ public static class MaintenanceEndpoints
 
     private static async Task<IResult> MigrateForeignKeys(ICSharpDbClient db, ForeignKeyMigrationRequest request)
     {
+        foreach (ForeignKeyMigrationConstraintSpec constraint in request.Constraints)
+        {
+            if (!Enum.IsDefined(constraint.OnDelete))
+            {
+                throw new ArgumentException(
+                    $"Unsupported foreign key ON DELETE action '{constraint.OnDelete}'.",
+                    nameof(request));
+            }
+
+            if (!Enum.IsDefined(constraint.OnUpdate))
+            {
+                throw new ArgumentException(
+                    $"Unsupported foreign key ON UPDATE action '{constraint.OnUpdate}'.",
+                    nameof(request));
+            }
+        }
+
         var result = await db.MigrateForeignKeysAsync(request);
         return Results.Ok(result);
     }

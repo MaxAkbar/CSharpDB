@@ -44,7 +44,8 @@ Imports the auto-created local test certificate into LocalMachine\TrustedPeople
 after signing. This requires running PowerShell as Administrator.
 
 .EXAMPLE
-.\scripts\Publish-CSharpDbAdminStorePackage.ps1 -Version 3.9.0
+$Version = (Read-Host 'Release version without the v prefix').Trim()
+.\scripts\Publish-CSharpDbAdminStorePackage.ps1 -Version $Version
 #>
 [CmdletBinding()]
 param(

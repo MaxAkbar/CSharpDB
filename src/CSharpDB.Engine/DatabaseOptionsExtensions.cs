@@ -22,6 +22,7 @@ public static class DatabaseOptionsExtensions
             ImplicitInsertExecutionMode = options.ImplicitInsertExecutionMode,
             StorageEngineFactory = options.StorageEngineFactory,
             StorageEngineOptions = options.StorageEngineOptions.Configure(configure),
+            WindowExecution = options.WindowExecution,
         };
     }
 
@@ -42,6 +43,7 @@ public static class DatabaseOptionsExtensions
             ImplicitInsertExecutionMode = options.ImplicitInsertExecutionMode,
             StorageEngineFactory = options.StorageEngineFactory,
             StorageEngineOptions = options.StorageEngineOptions,
+            WindowExecution = options.WindowExecution,
         };
     }
 
@@ -64,6 +66,7 @@ public static class DatabaseOptionsExtensions
             ImplicitInsertExecutionMode = options.ImplicitInsertExecutionMode,
             StorageEngineFactory = options.StorageEngineFactory,
             StorageEngineOptions = options.StorageEngineOptions,
+            WindowExecution = options.WindowExecution,
         };
     }
 }

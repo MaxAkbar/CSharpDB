@@ -23,8 +23,8 @@ emitted tarball is reopened and checked against that contract before its
 checksum is written.
 
 .PARAMETER Version
-Release version used in archive names. Defaults to 4.3.0. A leading v is
-accepted and removed.
+Release version used in archive names. Defaults to the current release value
+configured by the script. A leading v is accepted and removed.
 
 .PARAMETER Runtime
 Runtime identifiers to package. Defaults to win-x64, linux-x64, and osx-arm64.
@@ -44,17 +44,19 @@ Allows this script to replace its own nonempty publish, stage, and archive
 directories beneath OutputRoot. It never removes OutputRoot itself.
 
 .EXAMPLE
-.\scripts\Publish-CSharpDbMigrationRelease.ps1 -Version 4.3.0
+$Version = (Read-Host 'Release version without the v prefix').Trim()
+.\scripts\Publish-CSharpDbMigrationRelease.ps1 -Version $Version
 
 .EXAMPLE
+$Version = (Read-Host 'Release version without the v prefix').Trim()
 .\scripts\Publish-CSharpDbMigrationRelease.ps1 `
-  -Version 4.3.0 `
+  -Version $Version `
   -Runtime win-x64 `
   -OutputRoot artifacts\migration-release-local
 #>
 [CmdletBinding()]
 param(
-    [string] $Version = '4.3.0',
+    [string] $Version = '4.4.0',
 
     [ValidateSet('win-x64', 'linux-x64', 'osx-arm64')]
     [string[]] $Runtime = @(
@@ -93,7 +95,7 @@ function Resolve-ReleaseVersion {
     if ($resolved -notmatch
         '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$')
     {
-        throw 'Version must be a safe semantic version such as 4.3.0.'
+        throw 'Version must be a safe semantic version in major.minor.patch form.'
     }
 
     return $resolved

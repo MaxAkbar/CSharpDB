@@ -40,22 +40,45 @@ internal static class FullTextIndexMaintenance
         IRecordSerializer serializer,
         CancellationToken ct = default)
     {
-        if (!TryResolveColumnIndices(logicalIndex, tableSchema, out int[] columnIndices))
-        {
-            throw new CSharpDbException(
-                ErrorCode.TypeMismatch,
-                $"Full-text index '{logicalIndex.IndexName}' references unsupported columns for table '{logicalIndex.TableName}'.");
-        }
+        ArgumentNullException.ThrowIfNull(catalog);
+        ArgumentNullException.ThrowIfNull(tableSchema);
+        ArgumentNullException.ThrowIfNull(logicalIndex);
+        ArgumentNullException.ThrowIfNull(serializer);
 
-        var tableTree = catalog.GetTableTree(logicalIndex.TableName);
-        var cursor = tableTree.CreateCursor();
-        var tokenizer = new FullTextTokenizer(FullTextIndexOptionsCodec.Deserialize(logicalIndex.OptionsJson));
+        int[] columnIndices = ResolveColumnIndices(logicalIndex, tableSchema);
 
-        while (await cursor.MoveNextAsync(ct))
-        {
-            DbValue[] row = serializer.Decode(cursor.CurrentValue.Span);
-            await InsertDocumentAsync(catalog, logicalIndex, tokenizer, row, cursor.CurrentKey, columnIndices, ct);
-        }
+        await BackfillAsync(
+            catalog.GetTableTree(logicalIndex.TableName),
+            logicalIndex,
+            ResolveStores(catalog, logicalIndex),
+            serializer,
+            columnIndices,
+            ct);
+    }
+
+    public static ValueTask BackfillAsync(
+        BTree tableTree,
+        TableSchema tableSchema,
+        IndexSchema logicalIndex,
+        IReadOnlyDictionary<string, IIndexStore> internalStores,
+        IRecordSerializer serializer,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(tableTree);
+        ArgumentNullException.ThrowIfNull(tableSchema);
+        ArgumentNullException.ThrowIfNull(logicalIndex);
+        ArgumentNullException.ThrowIfNull(internalStores);
+        ArgumentNullException.ThrowIfNull(serializer);
+
+        int[] columnIndices = ResolveColumnIndices(logicalIndex, tableSchema);
+
+        return BackfillAsync(
+            tableTree,
+            logicalIndex,
+            ResolveRequiredStores(internalStores, logicalIndex),
+            serializer,
+            columnIndices,
+            ct);
     }
 
     public static async ValueTask InsertAsync(
@@ -70,7 +93,8 @@ internal static class FullTextIndexMaintenance
             return;
 
         var tokenizer = new FullTextTokenizer(FullTextIndexOptionsCodec.Deserialize(logicalIndex.OptionsJson));
-        await InsertDocumentAsync(catalog, logicalIndex, tokenizer, row, rowId, columnIndices, ct);
+        FullTextIndexStores stores = ResolveStores(catalog, logicalIndex);
+        await InsertDocumentAsync(stores, tokenizer, row, rowId, columnIndices, ct);
     }
 
     public static async ValueTask DeleteAsync(
@@ -85,7 +109,8 @@ internal static class FullTextIndexMaintenance
             return;
 
         var tokenizer = new FullTextTokenizer(FullTextIndexOptionsCodec.Deserialize(logicalIndex.OptionsJson));
-        await DeleteDocumentAsync(catalog, logicalIndex, tokenizer, row, rowId, columnIndices, ct);
+        FullTextIndexStores stores = ResolveStores(catalog, logicalIndex);
+        await DeleteDocumentAsync(stores, tokenizer, row, rowId, columnIndices, ct);
     }
 
     public static async ValueTask UpdateAsync(
@@ -102,13 +127,42 @@ internal static class FullTextIndexMaintenance
             return;
 
         var tokenizer = new FullTextTokenizer(FullTextIndexOptionsCodec.Deserialize(logicalIndex.OptionsJson));
-        await DeleteDocumentAsync(catalog, logicalIndex, tokenizer, oldRow, oldRowId, columnIndices, ct);
-        await InsertDocumentAsync(catalog, logicalIndex, tokenizer, newRow, newRowId, columnIndices, ct);
+        FullTextIndexStores stores = ResolveStores(catalog, logicalIndex);
+        await DeleteDocumentAsync(stores, tokenizer, oldRow, oldRowId, columnIndices, ct);
+        await InsertDocumentAsync(stores, tokenizer, newRow, newRowId, columnIndices, ct);
+    }
+
+    private static async ValueTask BackfillAsync(
+        BTree tableTree,
+        IndexSchema logicalIndex,
+        FullTextIndexStores stores,
+        IRecordSerializer serializer,
+        int[] columnIndices,
+        CancellationToken ct)
+    {
+        var tokenizer = new FullTextTokenizer(FullTextIndexOptionsCodec.Deserialize(logicalIndex.OptionsJson));
+        await using var cursor = tableTree.CreateCursor();
+        while (await cursor.MoveNextAsync(ct))
+        {
+            DbValue[] row = serializer.Decode(cursor.CurrentValue.Span);
+            await InsertDocumentAsync(stores, tokenizer, row, cursor.CurrentKey, columnIndices, ct);
+        }
+    }
+
+    private static int[] ResolveColumnIndices(
+        IndexSchema logicalIndex,
+        TableSchema tableSchema)
+    {
+        if (TryResolveColumnIndices(logicalIndex, tableSchema, out int[] columnIndices))
+            return columnIndices;
+
+        throw new CSharpDbException(
+            ErrorCode.TypeMismatch,
+            $"Full-text index '{logicalIndex.IndexName}' references unsupported columns for table '{logicalIndex.TableName}'.");
     }
 
     private static async ValueTask InsertDocumentAsync(
-        SchemaCatalog catalog,
-        IndexSchema logicalIndex,
+        FullTextIndexStores stores,
         FullTextTokenizer tokenizer,
         DbValue[] row,
         long rowId,
@@ -119,43 +173,44 @@ internal static class FullTextIndexMaintenance
         if (termPositions.Count == 0)
             return;
 
-        IIndexStore metaStore = catalog.GetIndexStore(FullTextIndexNaming.GetMetaIndexName(logicalIndex.IndexName));
-        IIndexStore termsStore = catalog.GetIndexStore(FullTextIndexNaming.GetTermsIndexName(logicalIndex.IndexName));
-        IIndexStore postingsStore = catalog.GetIndexStore(FullTextIndexNaming.GetPostingsIndexName(logicalIndex.IndexName));
-        IIndexStore? postingChunksStore = TryGetPostingChunksStore(catalog, logicalIndex);
-        IIndexStore docStatsStore = catalog.GetIndexStore(FullTextIndexNaming.GetDocStatsIndexName(logicalIndex.IndexName));
-
-        await UpdateMetaAsync(metaStore, +1, docLength, ct);
-        await WritePayloadAsync(docStatsStore, rowId, FullTextDocStatsPayloadCodec.Encode(docLength), ct);
+        await UpdateMetaAsync(stores.Meta, +1, docLength, ct);
+        await WritePayloadAsync(stores.DocStats, rowId, FullTextDocStatsPayloadCodec.Encode(docLength), ct);
 
         foreach ((string term, int[] positions) in termPositions)
         {
             long key = FullTextTermKeyCodec.ComputeKey(term);
 
-            byte[]? termStatsPayload = await termsStore.FindAsync(key, ct);
+            byte[]? termStatsPayload = await stores.Terms.FindAsync(key, ct);
             byte[] updatedTermStats = termStatsPayload == null
                 ? FullTextTermStatsPayloadCodec.CreateSingle(term, 1)
                 : FullTextTermStatsPayloadCodec.Adjust(termStatsPayload, term, +1, out _)!;
-            await WritePayloadAsync(termsStore, key, updatedTermStats, ct);
+            await WritePayloadAsync(stores.Terms, key, updatedTermStats, ct);
 
-            byte[]? postingsPayload = await postingsStore.FindAsync(key, ct);
-            if (postingChunksStore != null)
+            byte[]? postingsPayload = await stores.Postings.FindAsync(key, ct);
+            if (stores.PostingChunks != null)
             {
-                await InsertPostingAsync(postingsStore, postingChunksStore, key, term, rowId, positions, postingsPayload, ct);
+                await InsertPostingAsync(
+                    stores.Postings,
+                    stores.PostingChunks,
+                    key,
+                    term,
+                    rowId,
+                    positions,
+                    postingsPayload,
+                    ct);
             }
             else
             {
                 byte[] updatedPostings = postingsPayload == null
                     ? FullTextPostingsPayloadCodec.CreateSingle(term, [new FullTextPosting(rowId, positions)])
                     : FullTextPostingsPayloadCodec.Insert(postingsPayload, term, rowId, positions, out _);
-                await WritePayloadAsync(postingsStore, key, updatedPostings, ct);
+                await WritePayloadAsync(stores.Postings, key, updatedPostings, ct);
             }
         }
     }
 
     private static async ValueTask DeleteDocumentAsync(
-        SchemaCatalog catalog,
-        IndexSchema logicalIndex,
+        FullTextIndexStores stores,
         FullTextTokenizer tokenizer,
         DbValue[] row,
         long rowId,
@@ -166,50 +221,115 @@ internal static class FullTextIndexMaintenance
         if (termPositions.Count == 0)
             return;
 
-        IIndexStore metaStore = catalog.GetIndexStore(FullTextIndexNaming.GetMetaIndexName(logicalIndex.IndexName));
-        IIndexStore termsStore = catalog.GetIndexStore(FullTextIndexNaming.GetTermsIndexName(logicalIndex.IndexName));
-        IIndexStore postingsStore = catalog.GetIndexStore(FullTextIndexNaming.GetPostingsIndexName(logicalIndex.IndexName));
-        IIndexStore? postingChunksStore = TryGetPostingChunksStore(catalog, logicalIndex);
-        IIndexStore docStatsStore = catalog.GetIndexStore(FullTextIndexNaming.GetDocStatsIndexName(logicalIndex.IndexName));
-
-        await UpdateMetaAsync(metaStore, -1, -docLength, ct);
-        await docStatsStore.DeleteAsync(rowId, ct);
+        await UpdateMetaAsync(stores.Meta, -1, -docLength, ct);
+        await stores.DocStats.DeleteAsync(rowId, ct);
 
         foreach ((string term, _) in termPositions)
         {
             long key = FullTextTermKeyCodec.ComputeKey(term);
 
-            byte[]? termStatsPayload = await termsStore.FindAsync(key, ct);
+            byte[]? termStatsPayload = await stores.Terms.FindAsync(key, ct);
             if (termStatsPayload != null)
             {
                 byte[]? updatedTermStats = FullTextTermStatsPayloadCodec.Adjust(termStatsPayload, term, -1, out _);
-                await WritePayloadAsync(termsStore, key, updatedTermStats, ct);
+                await WritePayloadAsync(stores.Terms, key, updatedTermStats, ct);
             }
 
-            byte[]? postingsPayload = await postingsStore.FindAsync(key, ct);
+            byte[]? postingsPayload = await stores.Postings.FindAsync(key, ct);
             if (postingsPayload != null)
             {
-                if (postingChunksStore != null)
+                if (stores.PostingChunks != null)
                 {
-                    await DeletePostingAsync(postingsStore, postingChunksStore, key, term, rowId, postingsPayload, ct);
+                    await DeletePostingAsync(
+                        stores.Postings,
+                        stores.PostingChunks,
+                        key,
+                        term,
+                        rowId,
+                        postingsPayload,
+                        ct);
                 }
                 else
                 {
                     byte[]? updatedPostings = FullTextPostingsPayloadCodec.Remove(postingsPayload, term, rowId, out bool changed);
                     if (changed)
-                        await WritePayloadAsync(postingsStore, key, updatedPostings, ct);
+                        await WritePayloadAsync(stores.Postings, key, updatedPostings, ct);
                 }
             }
         }
     }
 
-    private static IIndexStore? TryGetPostingChunksStore(SchemaCatalog catalog, IndexSchema logicalIndex)
+    private static FullTextIndexStores ResolveStores(
+        SchemaCatalog catalog,
+        IndexSchema logicalIndex)
     {
         string chunkIndexName = FullTextIndexNaming.GetPostingChunksIndexName(logicalIndex.IndexName);
-        return catalog.GetIndex(chunkIndexName) == null
-            ? null
-            : catalog.GetIndexStore(chunkIndexName);
+        return new FullTextIndexStores(
+            catalog.GetIndexStore(FullTextIndexNaming.GetMetaIndexName(logicalIndex.IndexName)),
+            catalog.GetIndexStore(FullTextIndexNaming.GetTermsIndexName(logicalIndex.IndexName)),
+            catalog.GetIndexStore(FullTextIndexNaming.GetPostingsIndexName(logicalIndex.IndexName)),
+            catalog.GetIndex(chunkIndexName) == null
+                ? null
+                : catalog.GetIndexStore(chunkIndexName),
+            catalog.GetIndexStore(FullTextIndexNaming.GetDocStatsIndexName(logicalIndex.IndexName)));
     }
+
+    private static FullTextIndexStores ResolveRequiredStores(
+        IReadOnlyDictionary<string, IIndexStore> internalStores,
+        IndexSchema logicalIndex) =>
+        new(
+            GetRequiredStore(
+                internalStores,
+                logicalIndex,
+                FullTextIndexNaming.GetMetaIndexName(logicalIndex.IndexName)),
+            GetRequiredStore(
+                internalStores,
+                logicalIndex,
+                FullTextIndexNaming.GetTermsIndexName(logicalIndex.IndexName)),
+            GetRequiredStore(
+                internalStores,
+                logicalIndex,
+                FullTextIndexNaming.GetPostingsIndexName(logicalIndex.IndexName)),
+            GetRequiredStore(
+                internalStores,
+                logicalIndex,
+                FullTextIndexNaming.GetPostingChunksIndexName(logicalIndex.IndexName)),
+            GetRequiredStore(
+                internalStores,
+                logicalIndex,
+                FullTextIndexNaming.GetDocStatsIndexName(logicalIndex.IndexName)));
+
+    private static IIndexStore GetRequiredStore(
+        IReadOnlyDictionary<string, IIndexStore> internalStores,
+        IndexSchema logicalIndex,
+        string requiredIndexName)
+    {
+        if (internalStores.TryGetValue(requiredIndexName, out IIndexStore? store) &&
+            store != null)
+        {
+            return store;
+        }
+
+        foreach ((string indexName, IIndexStore candidate) in internalStores)
+        {
+            if (candidate != null &&
+                string.Equals(indexName, requiredIndexName, StringComparison.OrdinalIgnoreCase))
+            {
+                return candidate;
+            }
+        }
+
+        throw new ArgumentException(
+            $"Full-text index '{logicalIndex.IndexName}' requires detached store '{requiredIndexName}'.",
+            nameof(internalStores));
+    }
+
+    private readonly record struct FullTextIndexStores(
+        IIndexStore Meta,
+        IIndexStore Terms,
+        IIndexStore Postings,
+        IIndexStore? PostingChunks,
+        IIndexStore DocStats);
 
     private static async ValueTask InsertPostingAsync(
         IIndexStore postingsStore,

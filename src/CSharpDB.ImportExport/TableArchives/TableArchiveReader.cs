@@ -263,7 +263,8 @@ public static class TableArchiveReader
         if (manifest.FormatVersion is not (
                 TableArchiveManifest.CurrentFormatVersion or
                 TableArchiveManifest.RowVersionFormatVersion or
-                TableArchiveManifest.SchemaFidelityFormatVersion))
+                TableArchiveManifest.SchemaFidelityFormatVersion or
+                TableArchiveManifest.ReferentialActionsFormatVersion))
             throw new InvalidDataException($"Unsupported native table archive format version {manifest.FormatVersion}.");
         if (manifest.FormatVersion != header.FormatVersion)
             throw new InvalidDataException("The table archive header and manifest format versions do not match.");
@@ -339,7 +340,7 @@ public static class TableArchiveReader
         TableArchiveManifest manifest,
         CancellationToken ct)
     {
-        ValidateSchema(schema);
+        ValidateSchema(schema, header.FormatVersion);
         if (manifest.Indexes is null)
             throw new InvalidDataException("The table archive physical index collection is null.");
 
@@ -596,13 +597,16 @@ public static class TableArchiveReader
         }
     }
 
-    private static void ValidateSchema(TableArchiveSchema schema)
+    private static void ValidateSchema(
+        TableArchiveSchema schema,
+        int formatVersion)
     {
         SqlIdentifierRules.Validate(schema.TableName, "Archived table name");
         if (schema.Columns is null || schema.Columns.Count == 0)
             throw new InvalidDataException("The table archive schema has no columns.");
 
         var columnNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var columnsByName = new Dictionary<string, TableArchiveColumn>(StringComparer.OrdinalIgnoreCase);
         foreach (TableArchiveColumn column in schema.Columns)
         {
             if (column is null)
@@ -610,6 +614,7 @@ public static class TableArchiveReader
             SqlIdentifierRules.Validate(column.Name, "Archived column name");
             if (!columnNames.Add(column.Name))
                 throw new InvalidDataException($"The table archive contains duplicate column '{column.Name}'.");
+            columnsByName[column.Name] = column;
             if (column.Type == DbType.Null)
                 throw new InvalidDataException($"Archived column '{column.Name}' has an invalid persistent type.");
             if (column.IsRowVersion && (column.Type != DbType.Blob || column.Nullable))
@@ -647,10 +652,42 @@ public static class TableArchiveReader
         {
             if (foreignKey is null)
                 throw new InvalidDataException("The table archive foreign key collection contains a null entry.");
+            if (!Enum.IsDefined(foreignKey.OnDelete))
+            {
+                throw new InvalidDataException(
+                    $"Archived foreign key '{foreignKey.ConstraintName}' has an unknown ON DELETE action.");
+            }
+            if (!Enum.IsDefined(foreignKey.OnUpdate))
+            {
+                throw new InvalidDataException(
+                    $"Archived foreign key '{foreignKey.ConstraintName}' has an unknown ON UPDATE action.");
+            }
+            if (formatVersion <
+                    TableArchiveManifest.ReferentialActionsFormatVersion &&
+                foreignKey.OnDelete is not (
+                    ForeignKeyOnDeleteAction.Restrict or
+                    ForeignKeyOnDeleteAction.Cascade))
+            {
+                throw new InvalidDataException(
+                    $"Archived foreign key '{foreignKey.ConstraintName}' requires native archive format version {TableArchiveManifest.ReferentialActionsFormatVersion} for ON DELETE action '{foreignKey.OnDelete}'.");
+            }
+            if (formatVersion <
+                    TableArchiveManifest.ReferentialActionsFormatVersion &&
+                foreignKey.OnUpdate != ForeignKeyOnDeleteAction.Restrict)
+            {
+                throw new InvalidDataException(
+                    $"Archived foreign key '{foreignKey.ConstraintName}' requires native archive format version {TableArchiveManifest.ReferentialActionsFormatVersion} for ON UPDATE action '{foreignKey.OnUpdate}'.");
+            }
             SqlIdentifierRules.Validate(foreignKey.ConstraintName, "Archived foreign key name");
             SqlIdentifierRules.Validate(foreignKey.ReferencedTableName, "Archived referenced table name");
             if (foreignKey.ColumnNames is null || foreignKey.ReferencedColumnNames is null)
                 throw new InvalidDataException($"Archived foreign key '{foreignKey.ConstraintName}' has null column metadata.");
+            if (foreignKey.ColumnSchemaIds is null ||
+                foreignKey.ReferencedColumnSchemaIds is null)
+            {
+                throw new InvalidDataException(
+                    $"Archived foreign key '{foreignKey.ConstraintName}' has null stable identity bindings.");
+            }
             IReadOnlyList<string> sourceColumns = foreignKey.ColumnNames.Count > 0
                 ? foreignKey.ColumnNames
                 : [foreignKey.ColumnName];
@@ -660,9 +697,43 @@ public static class TableArchiveReader
             ValidateColumnList(columnNames, sourceColumns, "foreign key");
             if (sourceColumns.Count != referencedColumns.Count || referencedColumns.Count == 0)
                 throw new InvalidDataException($"Archived foreign key '{foreignKey.ConstraintName}' has inconsistent column lists.");
+            if (!string.Equals(
+                    foreignKey.ColumnName,
+                    sourceColumns[0],
+                    StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(
+                    foreignKey.ReferencedColumnName,
+                    referencedColumns[0],
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException(
+                    $"Archived foreign key '{foreignKey.ConstraintName}' has scalar and ordered columns that disagree.");
+            }
+
+            var referencedColumnNames =
+                new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (string referencedColumn in referencedColumns)
+            {
                 SqlIdentifierRules.Validate(referencedColumn, "Archived referenced column name");
+                if (!referencedColumnNames.Add(referencedColumn))
+                {
+                    throw new InvalidDataException(
+                        $"Archived foreign key '{foreignKey.ConstraintName}' repeats referenced column '{referencedColumn}'.");
+                }
+            }
+            if (string.Equals(
+                    foreignKey.ReferencedTableName,
+                    schema.TableName,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                ValidateColumnList(
+                    columnNames,
+                    referencedColumns,
+                    "self-referencing foreign key");
+            }
         }
+
+        ValidateSchemaIdentities(schema, columnsByName);
 
         var indexNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (TableArchiveSecondaryIndex index in
@@ -684,6 +755,215 @@ public static class TableArchiveReader
                     SqlIdentifierRules.Validate(collation, "Archived index collation");
             }
         }
+    }
+
+    private static void ValidateSchemaIdentities(
+        TableArchiveSchema schema,
+        IReadOnlyDictionary<string, TableArchiveColumn> columnsByName)
+    {
+        bool hasAnyIdentity =
+            schema.SchemaId != Guid.Empty ||
+            schema.Columns.Any(static column => column.SchemaId != Guid.Empty) ||
+            schema.KeyConstraints.Any(static key => key.SchemaId != Guid.Empty) ||
+            schema.CheckConstraints.Any(static check => check.SchemaId != Guid.Empty) ||
+            schema.ForeignKeys.Any(foreignKey =>
+                foreignKey.SchemaId != Guid.Empty ||
+                foreignKey.ReferencedTableSchemaId != Guid.Empty ||
+                foreignKey.ReferencedKeySchemaId != Guid.Empty ||
+                foreignKey.ColumnSchemaIds is { Count: > 0 } ||
+                foreignKey.ReferencedColumnSchemaIds is { Count: > 0 });
+
+        if (!hasAnyIdentity)
+            return;
+
+        var ownedIdentities = new HashSet<Guid>();
+        AddOwnedIdentity(ownedIdentities, schema.SchemaId, "table");
+        foreach (TableArchiveColumn column in schema.Columns)
+            AddOwnedIdentity(ownedIdentities, column.SchemaId, $"column '{column.Name}'");
+        foreach (TableArchiveKeyConstraint key in schema.KeyConstraints)
+            AddOwnedIdentity(
+                ownedIdentities,
+                key.SchemaId,
+                $"key constraint '{key.ConstraintName ?? "<unnamed>"}'");
+        foreach (TableArchiveCheckConstraint check in schema.CheckConstraints)
+            AddOwnedIdentity(
+                ownedIdentities,
+                check.SchemaId,
+                $"check constraint '{check.ConstraintName ?? "<unnamed>"}'");
+        var externalIdentityRoles = new Dictionary<Guid, string>();
+        foreach (TableArchiveForeignKey foreignKey in schema.ForeignKeys)
+        {
+            AddOwnedIdentity(
+                ownedIdentities,
+                foreignKey.SchemaId,
+                $"foreign key '{foreignKey.ConstraintName}'");
+        }
+
+        foreach (TableArchiveForeignKey foreignKey in schema.ForeignKeys)
+        {
+            IReadOnlyList<string> sourceColumns = foreignKey.ColumnNames.Count > 0
+                ? foreignKey.ColumnNames
+                : [foreignKey.ColumnName];
+            IReadOnlyList<string> referencedColumns = foreignKey.ReferencedColumnNames.Count > 0
+                ? foreignKey.ReferencedColumnNames
+                : [foreignKey.ReferencedColumnName];
+            if (foreignKey.ColumnSchemaIds is null ||
+                foreignKey.ColumnSchemaIds.Count != sourceColumns.Count)
+            {
+                throw new InvalidDataException(
+                    $"Archived foreign key '{foreignKey.ConstraintName}' has inconsistent child-column identity bindings.");
+            }
+            if (foreignKey.ReferencedColumnSchemaIds is null ||
+                foreignKey.ReferencedColumnSchemaIds.Count != referencedColumns.Count)
+            {
+                throw new InvalidDataException(
+                    $"Archived foreign key '{foreignKey.ConstraintName}' has inconsistent referenced-column identity bindings.");
+            }
+            if (foreignKey.ReferencedTableSchemaId == Guid.Empty)
+            {
+                throw new InvalidDataException(
+                    $"Archived foreign key '{foreignKey.ConstraintName}' has no referenced-table identity.");
+            }
+
+            var referencedColumnIdentities = new HashSet<Guid>();
+            for (int i = 0; i < sourceColumns.Count; i++)
+            {
+                Guid childColumnId = foreignKey.ColumnSchemaIds[i];
+                Guid expectedChildColumnId = columnsByName[sourceColumns[i]].SchemaId;
+                if (childColumnId == Guid.Empty || childColumnId != expectedChildColumnId)
+                {
+                    throw new InvalidDataException(
+                        $"Archived foreign key '{foreignKey.ConstraintName}' has an invalid child-column identity binding.");
+                }
+
+                Guid referencedColumnId = foreignKey.ReferencedColumnSchemaIds[i];
+                if (referencedColumnId == Guid.Empty ||
+                    !referencedColumnIdentities.Add(referencedColumnId))
+                {
+                    throw new InvalidDataException(
+                        $"Archived foreign key '{foreignKey.ConstraintName}' has an invalid referenced-column identity binding.");
+                }
+            }
+
+            if (string.Equals(
+                    foreignKey.ReferencedTableName,
+                    schema.TableName,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                if (foreignKey.ReferencedTableSchemaId != schema.SchemaId)
+                {
+                    throw new InvalidDataException(
+                        $"Archived self-referencing foreign key '{foreignKey.ConstraintName}' has an invalid referenced-table identity.");
+                }
+
+                for (int i = 0; i < referencedColumns.Count; i++)
+                {
+                    if (!columnsByName.TryGetValue(
+                            referencedColumns[i],
+                            out TableArchiveColumn? referencedColumn) ||
+                        foreignKey.ReferencedColumnSchemaIds[i] !=
+                        referencedColumn.SchemaId)
+                    {
+                        throw new InvalidDataException(
+                            $"Archived self-referencing foreign key '{foreignKey.ConstraintName}' has an invalid referenced-column identity binding.");
+                    }
+                }
+
+                TableArchiveKeyConstraint[] matchingKeys = schema.KeyConstraints
+                    .Where(key => key.Columns.SequenceEqual(
+                        referencedColumns,
+                        StringComparer.OrdinalIgnoreCase))
+                    .ToArray();
+                if (matchingKeys.Length > 0)
+                {
+                    if (!matchingKeys.Any(key =>
+                            key.SchemaId ==
+                            foreignKey.ReferencedKeySchemaId))
+                    {
+                        throw new InvalidDataException(
+                            $"Archived self-referencing foreign key '{foreignKey.ConstraintName}' has an invalid referenced-key identity binding.");
+                    }
+                }
+                else if (foreignKey.ReferencedKeySchemaId != Guid.Empty)
+                {
+                    throw new InvalidDataException(
+                        $"Archived self-referencing foreign key '{foreignKey.ConstraintName}' has a referenced-key identity without a matching logical key.");
+                }
+            }
+            else
+            {
+                AddExternalIdentityRole(
+                    externalIdentityRoles,
+                    foreignKey.ReferencedTableSchemaId,
+                    "table",
+                    foreignKey.ConstraintName);
+                foreach (Guid referencedColumnId in
+                         foreignKey.ReferencedColumnSchemaIds)
+                {
+                    AddExternalIdentityRole(
+                        externalIdentityRoles,
+                        referencedColumnId,
+                        "column",
+                        foreignKey.ConstraintName);
+                }
+                if (foreignKey.ReferencedKeySchemaId != Guid.Empty)
+                {
+                    AddExternalIdentityRole(
+                        externalIdentityRoles,
+                        foreignKey.ReferencedKeySchemaId,
+                        "key",
+                        foreignKey.ConstraintName);
+                }
+
+                if (ownedIdentities.Contains(
+                        foreignKey.ReferencedTableSchemaId) ||
+                    foreignKey.ReferencedColumnSchemaIds.Any(
+                        ownedIdentities.Contains) ||
+                    foreignKey.ReferencedKeySchemaId != Guid.Empty &&
+                    ownedIdentities.Contains(
+                        foreignKey.ReferencedKeySchemaId))
+                {
+                    throw new InvalidDataException(
+                        $"Archived foreign key '{foreignKey.ConstraintName}' reuses an identity owned by its child table for an external reference.");
+                }
+            }
+        }
+    }
+
+    private static void AddExternalIdentityRole(
+        IDictionary<Guid, string> identityRoles,
+        Guid identity,
+        string role,
+        string constraintName)
+    {
+        if (identityRoles.TryGetValue(
+                identity,
+                out string? existingRole))
+        {
+            if (!string.Equals(
+                    existingRole,
+                    role,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidDataException(
+                    $"Archived foreign key '{constraintName}' reuses a stable identity across referenced object roles.");
+            }
+
+            return;
+        }
+
+        identityRoles.Add(identity, role);
+    }
+
+    private static void AddOwnedIdentity(
+        ISet<Guid> identities,
+        Guid identity,
+        string description)
+    {
+        if (identity == Guid.Empty)
+            throw new InvalidDataException($"The archived {description} has no stable identity.");
+        if (!identities.Add(identity))
+            throw new InvalidDataException($"The archived {description} repeats a stable identity.");
     }
 
     private static void ValidateColumnList(

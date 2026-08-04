@@ -198,6 +198,7 @@ public static class MigrationTargetThroughputBenchmark
                 {
                     Name = $"MigrationTarget_{scenario.Name}",
                     TotalOps = scenario.RowCount,
+                    LatencySamples = latency.SampleCount,
                     ElapsedMs = elapsed.Elapsed.TotalMilliseconds,
                     P50Ms = latency.Percentile(0.50),
                     P90Ms = latency.Percentile(0.90),

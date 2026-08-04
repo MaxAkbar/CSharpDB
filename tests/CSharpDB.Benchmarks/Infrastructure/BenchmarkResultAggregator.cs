@@ -36,8 +36,12 @@ public static class BenchmarkResultAggregator
             aggregated.Add(new BenchmarkResult
             {
                 Name = seed.Name,
-                TotalOps = (int)Math.Round(Median(samples.Select(static s => (double)s.TotalOps))),
-                ElapsedMs = Median(samples.Select(static s => s.ElapsedMs)),
+                // OpsPerSecond is derived from these two fields. Preserve them
+                // from the actual median-throughput run so the aggregate CSV is
+                // exactly reproducible from the retained raw evidence.
+                TotalOps = medianOpsSample.TotalOps,
+                LatencySamples = (int)Math.Round(Median(samples.Select(static s => (double)s.LatencySamples))),
+                ElapsedMs = medianOpsSample.ElapsedMs,
                 P50Ms = Median(samples.Select(static s => s.P50Ms)),
                 P90Ms = Median(samples.Select(static s => s.P90Ms)),
                 P95Ms = Median(samples.Select(static s => s.P95Ms)),

@@ -164,10 +164,23 @@ internal sealed class CSharpDbTargetCapabilityEvaluator
             return Reject(nullableRule, booleanReason!);
 
         string? defaultKind = Facet(column, "defaultKind");
-        bool hasDefaultFacts = defaultKind is not null ||
+        bool hasDefaultShape = HasFacet(column, "defaultKind") ||
+            HasFacet(column, "defaultType") ||
             HasFacet(column, "defaultValue") ||
-            HasFacet(column, "defaultExpression") ||
-            HasFacet(column, "hasDefault");
+            HasFacet(column, "defaultExpression");
+        if (!TryOptionalBoolean(
+                column,
+                "hasDefault",
+                out bool? hasDefault,
+                out booleanReason))
+        {
+            CSharpDbCapabilityRule defaultRule = Rule(
+                MigrationObjectKind.Column,
+                CSharpDbCapabilityFeature.DefaultValue);
+            return Reject(defaultRule, booleanReason!);
+        }
+
+        bool hasDefaultFacts = hasDefault is not null || hasDefaultShape;
         if (hasDefaultFacts)
         {
             CSharpDbCapabilityRule defaultRule = Rule(
@@ -176,15 +189,75 @@ internal sealed class CSharpDbTargetCapabilityEvaluator
             statusReason = UnsupportedStatus(defaultRule, "column defaults");
             if (statusReason is not null)
                 return statusReason;
-            if (string.IsNullOrWhiteSpace(defaultKind))
-                return Reject(defaultRule, $"cannot prove the default shape for '{column.ObjectId}' without a 'defaultKind' facet.");
 
-            string normalizedDefaultKind = NormalizeToken(defaultKind);
-            if (!AllowsValue(defaultRule, normalizedDefaultKind))
+            if (hasDefault == false)
             {
-                return Reject(
-                    defaultRule,
-                    $"does not allow default kind '{defaultKind}' for '{column.ObjectId}'.");
+                if (hasDefaultShape)
+                {
+                    return Reject(
+                        defaultRule,
+                        $"declares hasDefault=false with conflicting default facets for '{column.ObjectId}'.");
+                }
+            }
+            else
+            {
+                if (string.IsNullOrWhiteSpace(defaultKind))
+                {
+                    return Reject(
+                        defaultRule,
+                        $"cannot prove the default shape for '{column.ObjectId}' without a 'defaultKind' facet.");
+                }
+
+                string normalizedDefaultKind =
+                    NormalizeToken(defaultKind);
+                if (!AllowsValue(
+                        defaultRule,
+                        normalizedDefaultKind))
+                {
+                    return Reject(
+                        defaultRule,
+                        $"does not allow default kind '{defaultKind}' for '{column.ObjectId}'.");
+                }
+
+                if (normalizedDefaultKind == "null" &&
+                    (HasFacet(column, "defaultType") ||
+                     HasFacet(column, "defaultValue")))
+                {
+                    return Reject(
+                        defaultRule,
+                        $"does not allow defaultType or defaultValue on NULL default '{column.ObjectId}'.");
+                }
+                if (normalizedDefaultKind == "typed-literal" &&
+                    (!HasFacet(column, "defaultType") ||
+                     !HasFacet(column, "defaultValue")))
+                {
+                    return Reject(
+                        defaultRule,
+                        $"requires typed literal default '{column.ObjectId}' to declare defaultType and defaultValue.");
+                }
+
+                if (!CSharpDbLiteralDefaultContract.TryCreate(
+                        targetType,
+                        defaultKind,
+                        Facet(column, "defaultType"),
+                        Facet(column, "defaultValue"),
+                        out CSharpDbLiteralDefaultDescriptor descriptor,
+                        out string defaultReason))
+                {
+                    return Reject(
+                        defaultRule,
+                        $"cannot prove default '{column.ObjectId}': {defaultReason}");
+                }
+
+                if (!string.Equals(
+                        Facet(column, "defaultExpression"),
+                        descriptor.Expression,
+                        StringComparison.Ordinal))
+                {
+                    return Reject(
+                        defaultRule,
+                        $"requires defaultExpression for '{column.ObjectId}' to equal the canonical typed literal.");
+                }
             }
         }
 
@@ -385,16 +458,88 @@ internal sealed class CSharpDbTargetCapabilityEvaluator
         if (!AllowsValue(rule, matchCapability))
             return Reject(rule, $"does not allow match mode '{match}' for '{foreignKey.ObjectId}'.");
 
-        string onDelete = NormalizeToken(Facet(foreignKey, "onDelete") ?? "restrict");
+        string onDelete = NormalizeToken(
+            Facet(foreignKey, "onDelete") ?? "restrict");
         string onDeleteCapability = onDelete.StartsWith("on-delete-", StringComparison.Ordinal)
             ? onDelete
             : $"on-delete-{onDelete}";
         if (!AllowsValue(rule, onDeleteCapability))
             return Reject(rule, $"does not allow delete action '{onDelete}' for '{foreignKey.ObjectId}'.");
 
-        string? onUpdate = Facet(foreignKey, "onUpdate");
-        if (!string.IsNullOrWhiteSpace(onUpdate))
-            return Reject(rule, $"does not allow ON UPDATE behavior for '{foreignKey.ObjectId}'.");
+        string onUpdate = NormalizeToken(
+            Facet(foreignKey, "onUpdate") ?? "restrict");
+        string onUpdateCapability =
+            onUpdate.StartsWith("on-update-", StringComparison.Ordinal)
+                ? onUpdate
+                : $"on-update-{onUpdate}";
+        if (!AllowsValue(rule, onUpdateCapability))
+        {
+            return Reject(
+                rule,
+                $"does not allow update action '{onUpdate}' for '{foreignKey.ObjectId}'.");
+        }
+
+        bool requiresSetNull =
+            onDeleteCapability == "on-delete-set-null" ||
+            onUpdateCapability == "on-update-set-null";
+        if (requiresSetNull)
+        {
+            foreach (MigrationCatalogObject child in childColumns)
+            {
+                if (!TryOptionalBoolean(child, "nullable", out bool? nullable, out booleanReason))
+                    return Reject(rule, booleanReason!);
+                if (nullable is not true)
+                {
+                    return Reject(
+                        rule,
+                        $"requires every child column of SET NULL foreign key '{foreignKey.ObjectId}' to prove nullable=true; '{child.ObjectId}' does not.");
+                }
+                if (IsPrimaryKeyColumn(child, objectsById))
+                {
+                    return Reject(
+                        rule,
+                        $"does not allow SET NULL foreign key '{foreignKey.ObjectId}' because child column '{child.ObjectId}' belongs to a primary key.");
+                }
+            }
+        }
+
+        bool requiresSetDefault =
+            onDeleteCapability == "on-delete-set-default" ||
+            onUpdateCapability == "on-update-set-default";
+        if (requiresSetDefault)
+        {
+            foreach (MigrationCatalogObject child in childColumns)
+            {
+                if (!TryGetSetDefaultValueShape(
+                        child,
+                        mappingsByObjectId,
+                        out bool producesNull,
+                        out string? defaultReason))
+                {
+                    return Reject(
+                        rule,
+                        $"cannot prove SET DEFAULT child '{child.ObjectId}' for foreign key '{foreignKey.ObjectId}': {defaultReason}");
+                }
+                if (!producesNull)
+                    continue;
+
+                if (!TryOptionalBoolean(
+                        child,
+                        "nullable",
+                        out bool? nullable,
+                        out booleanReason))
+                {
+                    return Reject(rule, booleanReason!);
+                }
+                if (nullable is not true ||
+                    IsPrimaryKeyColumn(child, objectsById))
+                {
+                    return Reject(
+                        rule,
+                        $"requires SET DEFAULT child '{child.ObjectId}' to be nullable and outside the primary key when its default resolves to NULL.");
+                }
+            }
+        }
 
         return null;
     }
@@ -443,6 +588,7 @@ internal sealed class CSharpDbTargetCapabilityEvaluator
         if (columns is null || columns.Count == 0)
             return Reject(rule, $"requires index '{index.ObjectId}' to depend only on one or more columns.");
 
+        bool hasRealColumn = false;
         foreach (MigrationCatalogObject column in columns)
         {
             if (!TryGetMappedType(column, mappingsByObjectId, out DbType targetType) ||
@@ -454,10 +600,13 @@ internal sealed class CSharpDbTargetCapabilityEvaluator
             }
             if (IsTrue(column, "rowVersion"))
                 return Reject(rule, $"does not allow rowversion column '{column.ObjectId}' in an index.");
+            hasRealColumn |= targetType == DbType.Real;
         }
 
         if (!AllowsValue(rule, "column-only"))
             return Reject(rule, "does not advertise column-only index support.");
+        if (!AllowsValue(rule, "equality"))
+            return Reject(rule, "does not advertise equality index support.");
         if (columns.Count > 1 && !AllowsValue(rule, "composite"))
             return Reject(rule, "does not advertise composite index support.");
 
@@ -482,6 +631,22 @@ internal sealed class CSharpDbTargetCapabilityEvaluator
         {
             if (FacetHasUnsupportedValue(index, unsupportedFacet))
                 return Reject(rule, $"does not allow facet '{unsupportedFacet}' on index '{index.ObjectId}'.");
+        }
+
+        if (hasRealColumn)
+        {
+            foreach (string orderedFacet in new[]
+                     {
+                         "ordered", "ordering", "range", "rangeScan", "rangeScans",
+                     })
+            {
+                if (FacetHasUnsupportedValue(index, orderedFacet))
+                {
+                    return Reject(
+                        rule,
+                        $"allows REAL index column components only for equality access and does not allow facet '{orderedFacet}' on index '{index.ObjectId}'.");
+                }
+            }
         }
 
         return null;
@@ -618,7 +783,8 @@ internal sealed class CSharpDbTargetCapabilityEvaluator
             candidate.Kind == MigrationObjectKind.Key &&
             string.Equals(candidate.ParentObjectId, column.ParentObjectId, StringComparison.Ordinal) &&
             NormalizeToken(Facet(candidate, "kind")) is "primary" or "primary-key" &&
-            candidate.DependsOn.Contains(column.ObjectId, StringComparer.Ordinal));
+            ResolveDirectColumns(candidate, objectsById)?.Any(
+                member => member.ObjectId == column.ObjectId) == true);
     }
 
     private static bool DependsOn(
@@ -639,6 +805,106 @@ internal sealed class CSharpDbTargetCapabilityEvaluator
         }
 
         return false;
+    }
+
+    private static bool TryGetSetDefaultValueShape(
+        MigrationCatalogObject column,
+        IReadOnlyDictionary<string, MigrationTypeMapping>
+            mappingsByObjectId,
+        out bool producesNull,
+        out string? reason)
+    {
+        if (!TryOptionalBoolean(
+                column,
+                "hasDefault",
+                out bool? hasDefault,
+                out reason))
+        {
+            producesNull = false;
+            return false;
+        }
+
+        bool hasDefaultShape = HasFacet(column, "defaultKind") ||
+            HasFacet(column, "defaultType") ||
+            HasFacet(column, "defaultValue") ||
+            HasFacet(column, "defaultExpression");
+        if (hasDefault == false)
+        {
+            if (hasDefaultShape)
+            {
+                producesNull = false;
+                reason =
+                    "hasDefault=false conflicts with retained default facets.";
+                return false;
+            }
+
+            producesNull = true;
+            reason = null;
+            return true;
+        }
+        if (hasDefault is null && !hasDefaultShape)
+        {
+            producesNull = false;
+            reason =
+                "the catalog does not explicitly prove whether a default exists.";
+            return false;
+        }
+
+        string? defaultKind = Facet(column, "defaultKind");
+        string normalizedKind = NormalizeToken(defaultKind);
+        if (normalizedKind == "null" &&
+            (HasFacet(column, "defaultType") ||
+             HasFacet(column, "defaultValue")))
+        {
+            producesNull = false;
+            reason =
+                "NULL defaults cannot carry defaultType or defaultValue.";
+            return false;
+        }
+        if (normalizedKind == "typed-literal" &&
+            (!HasFacet(column, "defaultType") ||
+             !HasFacet(column, "defaultValue")))
+        {
+            producesNull = false;
+            reason =
+                "typed literal defaults require defaultType and defaultValue.";
+            return false;
+        }
+        if (!TryGetMappedType(
+                column,
+                mappingsByObjectId,
+                out DbType targetType))
+        {
+            producesNull = false;
+            reason = "the child column has no proven target type.";
+            return false;
+        }
+        if (!CSharpDbLiteralDefaultContract.TryCreate(
+                targetType,
+                defaultKind,
+                Facet(column, "defaultType"),
+                Facet(column, "defaultValue"),
+                out CSharpDbLiteralDefaultDescriptor descriptor,
+                out string defaultReason))
+        {
+            producesNull = false;
+            reason = defaultReason;
+            return false;
+        }
+        if (!string.Equals(
+                Facet(column, "defaultExpression"),
+                descriptor.Expression,
+                StringComparison.Ordinal))
+        {
+            producesNull = false;
+            reason =
+                "defaultExpression is not the canonical typed literal.";
+            return false;
+        }
+
+        producesNull = descriptor.ProducesNull;
+        reason = null;
+        return true;
     }
 
     private static bool TryOptionalBoolean(

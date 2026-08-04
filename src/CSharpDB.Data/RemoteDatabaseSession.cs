@@ -123,7 +123,11 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
         foreach (object?[] row in sourceRows)
             rows.Add(row.Select(ToDbValue).ToArray());
 
-        CoreColumnDefinition[] schema = BuildQuerySchema(result.ColumnNames ?? [], sourceRows);
+        CoreColumnDefinition[] schema = BuildQuerySchema(
+            result.ColumnNames ?? [],
+            result.ColumnTypes,
+            result.ColumnNullability,
+            sourceRows);
         return QueryResult.FromMaterializedRows(schema, rows);
     }
 
@@ -138,17 +142,20 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
             ? null
             : new CoreTableSchema
             {
+                SchemaId = schema.SchemaId,
                 TableName = schema.TableName,
                 Columns = schema.Columns.Select(MapColumnDefinition).ToArray(),
                 ForeignKeys = schema.ForeignKeys.Select(MapForeignKeyDefinition).ToArray(),
                 CheckConstraints = schema.CheckConstraints.Select(check => new CSharpDB.Primitives.CheckConstraintDefinition
                 {
+                    SchemaId = check.SchemaId,
                     ConstraintName = check.ConstraintName,
                     ExpressionSql = check.ExpressionSql,
                     ColumnName = check.ColumnName,
                 }).ToArray(),
                 KeyConstraints = schema.KeyConstraints.Select(key => new CSharpDB.Primitives.KeyConstraintDefinition
                 {
+                    SchemaId = key.SchemaId,
                     ConstraintName = key.ConstraintName,
                     Kind = key.Kind switch
                     {
@@ -164,6 +171,7 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
     private static CoreColumnDefinition MapColumnDefinition(CSharpDB.Client.Models.ColumnDefinition column)
         => new()
         {
+            SchemaId = column.SchemaId,
             Name = column.Name,
             Type = MapDbType(column.Type),
             Nullable = column.Nullable,
@@ -177,6 +185,11 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
     private static CoreForeignKeyDefinition MapForeignKeyDefinition(CSharpDB.Client.Models.ForeignKeyDefinition foreignKey)
         => new()
         {
+            SchemaId = foreignKey.SchemaId,
+            ColumnSchemaIds = foreignKey.ColumnSchemaIds.ToArray(),
+            ReferencedTableSchemaId = foreignKey.ReferencedTableSchemaId,
+            ReferencedColumnSchemaIds = foreignKey.ReferencedColumnSchemaIds.ToArray(),
+            ReferencedKeySchemaId = foreignKey.ReferencedKeySchemaId,
             ConstraintName = foreignKey.ConstraintName,
             ColumnName = foreignKey.ColumnName,
             ReferencedTableName = foreignKey.ReferencedTableName,
@@ -187,10 +200,27 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
             ReferencedColumnNames = foreignKey.ReferencedColumnNames.Count > 0
                 ? foreignKey.ReferencedColumnNames.ToArray()
                 : [foreignKey.ReferencedColumnName],
-            OnDelete = foreignKey.OnDelete == CSharpDB.Client.Models.ForeignKeyOnDeleteAction.Cascade
-                ? CoreForeignKeyOnDeleteAction.Cascade
-                : CoreForeignKeyOnDeleteAction.Restrict,
+            OnDelete = MapForeignKeyAction(foreignKey.OnDelete),
+            OnUpdate = MapForeignKeyAction(foreignKey.OnUpdate),
             SupportingIndexName = foreignKey.SupportingIndexName,
+        };
+
+    private static CoreForeignKeyOnDeleteAction MapForeignKeyAction(
+        CSharpDB.Client.Models.ForeignKeyOnDeleteAction action) =>
+        action switch
+        {
+            CSharpDB.Client.Models.ForeignKeyOnDeleteAction.Restrict =>
+                CoreForeignKeyOnDeleteAction.Restrict,
+            CSharpDB.Client.Models.ForeignKeyOnDeleteAction.Cascade =>
+                CoreForeignKeyOnDeleteAction.Cascade,
+            CSharpDB.Client.Models.ForeignKeyOnDeleteAction.NoAction =>
+                CoreForeignKeyOnDeleteAction.NoAction,
+            CSharpDB.Client.Models.ForeignKeyOnDeleteAction.SetNull =>
+                CoreForeignKeyOnDeleteAction.SetNull,
+            CSharpDB.Client.Models.ForeignKeyOnDeleteAction.SetDefault =>
+                CoreForeignKeyOnDeleteAction.SetDefault,
+            _ => throw new InvalidDataException(
+                $"Unsupported foreign key referential action '{action}'."),
         };
 
     private static CoreIndexSchema MapIndexSchema(CSharpDB.Client.Models.IndexSchema index)
@@ -218,7 +248,11 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
             BodySql = trigger.BodySql,
         };
 
-    private static CoreColumnDefinition[] BuildQuerySchema(IReadOnlyList<string> columnNames, IReadOnlyList<object?[]> rows)
+    private static CoreColumnDefinition[] BuildQuerySchema(
+        IReadOnlyList<string> columnNames,
+        IReadOnlyList<string>? columnTypes,
+        IReadOnlyList<bool>? columnNullability,
+        IReadOnlyList<object?[]> rows)
     {
         var schema = new CoreColumnDefinition[columnNames.Count];
         for (int i = 0; i < columnNames.Count; i++)
@@ -226,12 +260,33 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
             schema[i] = new CoreColumnDefinition
             {
                 Name = columnNames[i],
-                Type = InferColumnType(rows, i),
-                Nullable = true,
+                Type = ResolveColumnType(columnTypes, rows, i),
+                Nullable = columnNullability is not null &&
+                           i < columnNullability.Count
+                    ? columnNullability[i]
+                    : true,
             };
         }
 
         return schema;
+    }
+
+    private static CoreDbType ResolveColumnType(
+        IReadOnlyList<string>? columnTypes,
+        IReadOnlyList<object?[]> rows,
+        int ordinal)
+    {
+        if (columnTypes is not null
+            && ordinal < columnTypes.Count
+            && Enum.TryParse(
+                columnTypes[ordinal],
+                ignoreCase: true,
+                out CoreDbType declaredType))
+        {
+            return declaredType;
+        }
+
+        return InferColumnType(rows, ordinal);
     }
 
     private static CoreDbType InferColumnType(IReadOnlyList<object?[]> rows, int ordinal)

@@ -11,7 +11,7 @@ public sealed class MigrationPlannerTests
     {
         CSharpDbCapabilityCatalog capabilities = CSharpDbCapabilityCatalogLoader.LoadEmbedded();
 
-        Assert.Equal("4.3.0", capabilities.TargetCSharpDbVersion);
+        Assert.Equal("4.4.0", capabilities.TargetCSharpDbVersion);
         Assert.Equal("local-typed-engine", capabilities.Surface);
         Assert.Equal(SqlIdentifierRules.MaxLength, capabilities.MaxIdentifierLength);
         Assert.Equal(64, capabilities.Digest.Length);
@@ -26,12 +26,19 @@ public sealed class MigrationPlannerTests
         Assert.Equal(
             MigrationCompatibilityStatus.Conditional,
             capabilities.GetObjectStatus(MigrationObjectKind.Trigger));
+        CSharpDbCapabilityRule indexRule = capabilities.Rules.Single(rule =>
+            rule.ObjectKind == MigrationObjectKind.Index &&
+            rule.Feature == CSharpDbCapabilityFeature.Index);
+        Assert.Equal(
+            [DbType.Integer, DbType.Real, DbType.Text],
+            indexRule.AllowedTypes);
+        Assert.Contains("equality", indexRule.AllowedValues);
     }
 
     [Fact]
-    public void EmbeddedCapabilities_AreBoundToThe430ReleaseAssembliesAndResource()
+    public void EmbeddedCapabilities_AreBoundToThe440ReleaseAssembliesAndResource()
     {
-        const string expectedVersion = "4.3.0";
+        const string expectedVersion = "4.4.0";
         Assembly migrationAssembly = typeof(CSharpDbCapabilityCatalogLoader).Assembly;
         Assembly primitivesAssembly = typeof(DbType).Assembly;
 
@@ -41,6 +48,36 @@ public sealed class MigrationPlannerTests
         Assert.Contains(
             $"CSharpDB.Migration.Capabilities.csharpdb-{expectedVersion}.json",
             migrationAssembly.GetManifestResourceNames());
+    }
+
+    [Fact]
+    public void EmbeddedCapabilities_RetainTheImmutablePreviousReleaseContract()
+    {
+        CSharpDbCapabilityCatalog previous =
+            CSharpDbCapabilityCatalogLoader.LoadEmbedded("4.3.0");
+        CSharpDbCapabilityCatalog current =
+            CSharpDbCapabilityCatalogLoader.LoadEmbedded();
+
+        Assert.Equal(["4.3.0", "4.4.0"], CSharpDbCapabilityCatalogLoader.SupportedTargetVersions);
+        Assert.Equal("4.3.0", previous.TargetCSharpDbVersion);
+        Assert.Equal("4.4.0", current.TargetCSharpDbVersion);
+        Assert.NotEqual(previous.Digest, current.Digest);
+
+        CSharpDbCapabilityRule previousForeignKey = previous.Rules.Single(rule =>
+            rule.Feature == CSharpDbCapabilityFeature.ForeignKey);
+        Assert.DoesNotContain("on-update-cascade", previousForeignKey.AllowedValues);
+        Assert.Contains(
+            "on-update-cascade",
+            current.Rules.Single(rule =>
+                rule.Feature == CSharpDbCapabilityFeature.ForeignKey).AllowedValues);
+
+        CSharpDbCapabilityRule previousIndex = previous.Rules.Single(rule =>
+            rule.Feature == CSharpDbCapabilityFeature.Index);
+        Assert.DoesNotContain(DbType.Real, previousIndex.AllowedTypes);
+        Assert.Contains(
+            DbType.Real,
+            current.Rules.Single(rule =>
+                rule.Feature == CSharpDbCapabilityFeature.Index).AllowedTypes);
     }
 
     [Fact]

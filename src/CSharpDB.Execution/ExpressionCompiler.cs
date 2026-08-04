@@ -128,14 +128,14 @@ internal static class ExpressionCompiler
 
             return bin.Op switch
             {
-                BinaryOp.Equals => BoolToDb(CollationSupport.Compare(leftValue, rightValue, collation) == 0),
-                BinaryOp.NotEquals => BoolToDb(CollationSupport.Compare(leftValue, rightValue, collation) != 0),
-                BinaryOp.LessThan => BoolToDb(CollationSupport.Compare(leftValue, rightValue, collation) < 0),
-                BinaryOp.GreaterThan => BoolToDb(CollationSupport.Compare(leftValue, rightValue, collation) > 0),
-                BinaryOp.LessOrEqual => BoolToDb(CollationSupport.Compare(leftValue, rightValue, collation) <= 0),
-                BinaryOp.GreaterOrEqual => BoolToDb(CollationSupport.Compare(leftValue, rightValue, collation) >= 0),
-                BinaryOp.And => BoolToDb(leftValue.IsTruthy && rightValue.IsTruthy),
-                BinaryOp.Or => BoolToDb(leftValue.IsTruthy || rightValue.IsTruthy),
+                BinaryOp.Equals => CompareOrNull(leftValue, rightValue, collation, static comparison => comparison == 0),
+                BinaryOp.NotEquals => CompareOrNull(leftValue, rightValue, collation, static comparison => comparison != 0),
+                BinaryOp.LessThan => CompareOrNull(leftValue, rightValue, collation, static comparison => comparison < 0),
+                BinaryOp.GreaterThan => CompareOrNull(leftValue, rightValue, collation, static comparison => comparison > 0),
+                BinaryOp.LessOrEqual => CompareOrNull(leftValue, rightValue, collation, static comparison => comparison <= 0),
+                BinaryOp.GreaterOrEqual => CompareOrNull(leftValue, rightValue, collation, static comparison => comparison >= 0),
+                BinaryOp.And => SqlAnd(leftValue, rightValue),
+                BinaryOp.Or => SqlOr(leftValue, rightValue),
                 BinaryOp.Plus => ArithmeticOp(leftValue, rightValue, static (a, b) => a + b, static (a, b) => a + b),
                 BinaryOp.Minus => ArithmeticOp(leftValue, rightValue, static (a, b) => a - b, static (a, b) => a - b),
                 BinaryOp.Multiply => ArithmeticOp(leftValue, rightValue, static (a, b) => a * b, static (a, b) => a * b),
@@ -165,7 +165,9 @@ internal static class ExpressionCompiler
             var operandValue = operand(leftRow, rightRow);
             return un.Op switch
             {
-                TokenType.Not => BoolToDb(!operandValue.IsTruthy),
+                TokenType.Not => operandValue.IsNull
+                    ? DbValue.Null
+                    : BoolToDb(!operandValue.IsTruthy),
                 TokenType.Minus => operandValue.Type switch
                 {
                     DbType.Null => DbValue.Null,
@@ -491,6 +493,45 @@ internal static class ExpressionCompiler
     }
 
     private static DbValue BoolToDb(bool value) => DbValue.FromInteger(value ? 1 : 0);
+
+    private static DbValue CompareOrNull(
+        DbValue left,
+        DbValue right,
+        string? collation,
+        Func<int, bool> predicate)
+    {
+        if (left.IsNull || right.IsNull)
+            return DbValue.Null;
+
+        return BoolToDb(
+            predicate(CollationSupport.Compare(left, right, collation)));
+    }
+
+    private static DbValue SqlAnd(DbValue left, DbValue right)
+    {
+        if ((!left.IsNull && !left.IsTruthy) ||
+            (!right.IsNull && !right.IsTruthy))
+        {
+            return BoolToDb(false);
+        }
+
+        return left.IsNull || right.IsNull
+            ? DbValue.Null
+            : BoolToDb(true);
+    }
+
+    private static DbValue SqlOr(DbValue left, DbValue right)
+    {
+        if ((!left.IsNull && left.IsTruthy) ||
+            (!right.IsNull && right.IsTruthy))
+        {
+            return BoolToDb(true);
+        }
+
+        return left.IsNull || right.IsNull
+            ? DbValue.Null
+            : BoolToDb(false);
+    }
 
     private static DbValue ArithmeticOp(
         DbValue left,

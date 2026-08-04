@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Security.Cryptography;
 using System.Text;
 using CSharpDB.Admin.ImportExport.Contracts;
 using CSharpDB.Admin.ImportExport.Services;
@@ -11,6 +12,249 @@ namespace CSharpDB.Tests;
 
 public class TableArchiveTests
 {
+    [Fact]
+    public async Task ExactArchiveRestore_PreservesStableSchemaIdentities()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        const string TableName = " exact_identity_items ";
+        string quotedTableName = SqlIdentifierRules.Quote(TableName);
+        string databasePath = Path.Combine(
+            Path.GetTempPath(),
+            $"exact_identity_restore_{Guid.NewGuid():N}.db");
+        string archivePath = Path.Combine(
+            Path.GetTempPath(),
+            $"exact_identity_restore_{Guid.NewGuid():N}.csdbtable");
+
+        try
+        {
+            CSharpDB.Client.Models.TableSchema before;
+            await using (var client =
+                         new EngineTransportClient(databasePath))
+            {
+                CSharpDB.Client.Models.SqlExecutionResult create =
+                    await client.ExecuteSqlAsync(
+                        $"""
+                        CREATE TABLE {quotedTableName} (
+                            id INTEGER PRIMARY KEY,
+                            parent_id INTEGER,
+                            CONSTRAINT ck_exact_identity_id CHECK (id > 0),
+                            CONSTRAINT fk_exact_identity_parent
+                                FOREIGN KEY (parent_id)
+                                REFERENCES {quotedTableName} (id)
+                                ON DELETE RESTRICT
+                        );
+                        """,
+                        ct);
+                Assert.Null(create.Error);
+                Assert.Null((await client.ExecuteSqlAsync(
+                    $"INSERT INTO {quotedTableName} (id, parent_id) VALUES (1, NULL), (2, 1);",
+                    ct)).Error);
+
+                before =
+                    Assert.IsType<CSharpDB.Client.Models.TableSchema>(
+                        await client.GetTableSchemaAsync(TableName, ct));
+                var service = new TableImportExportService(
+                    client,
+                    new TableArchiveDownloadStore());
+                await service.ExportTableAsync(
+                    new TableExportRequest
+                    {
+                        TableName = TableName,
+                        Destination =
+                            TableExportDestination.ServerPath,
+                        ServerPath = archivePath,
+                    },
+                    ct: ct);
+
+                Assert.Null((await client.ExecuteSqlAsync(
+                    $"DROP TABLE {quotedTableName};",
+                    ct)).Error);
+                RestoreTableResult result =
+                    await service.RestoreTableAsync(
+                        new RestoreTableRequest
+                        {
+                            ArchivePath = archivePath,
+                            TargetTableName = TableName,
+                        },
+                        ct);
+                Assert.Equal(TableName, result.TableName);
+            }
+
+            await using var reopened =
+                new EngineTransportClient(databasePath);
+            CSharpDB.Client.Models.TableSchema after =
+                Assert.IsType<CSharpDB.Client.Models.TableSchema>(
+                    await reopened.GetTableSchemaAsync(TableName, ct));
+            Assert.Equal(before.SchemaId, after.SchemaId);
+            Assert.Equal(
+                before.Columns.Select(static column => column.SchemaId),
+                after.Columns.Select(static column => column.SchemaId));
+            Assert.Equal(
+                before.KeyConstraints.Select(static key => key.SchemaId),
+                after.KeyConstraints.Select(static key => key.SchemaId));
+            Assert.Equal(
+                before.CheckConstraints.Select(static check => check.SchemaId),
+                after.CheckConstraints.Select(static check => check.SchemaId));
+
+            CSharpDB.Client.Models.ForeignKeyDefinition beforeForeignKey =
+                Assert.Single(before.ForeignKeys);
+            CSharpDB.Client.Models.ForeignKeyDefinition afterForeignKey =
+                Assert.Single(after.ForeignKeys);
+            Assert.Equal(beforeForeignKey.SchemaId, afterForeignKey.SchemaId);
+            Assert.Equal(
+                beforeForeignKey.ColumnSchemaIds,
+                afterForeignKey.ColumnSchemaIds);
+            Assert.Equal(
+                beforeForeignKey.ReferencedTableSchemaId,
+                afterForeignKey.ReferencedTableSchemaId);
+            Assert.Equal(
+                beforeForeignKey.ReferencedColumnSchemaIds,
+                afterForeignKey.ReferencedColumnSchemaIds);
+            Assert.Equal(
+                beforeForeignKey.ReferencedKeySchemaId,
+                afterForeignKey.ReferencedKeySchemaId);
+        }
+        finally
+        {
+            if (File.Exists(archivePath))
+                File.Delete(archivePath);
+            if (File.Exists(databasePath))
+                File.Delete(databasePath);
+            if (File.Exists(databasePath + ".wal"))
+                File.Delete(databasePath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task ExactArchiveRestore_RebindsExternalForeignKeyToLiveParent()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string databasePath = Path.Combine(
+            Path.GetTempPath(),
+            $"external_identity_restore_{Guid.NewGuid():N}.db");
+        string archivePath = Path.Combine(
+            Path.GetTempPath(),
+            $"external_identity_restore_{Guid.NewGuid():N}.csdbtable");
+
+        try
+        {
+            CSharpDB.Client.Models.TableSchema childBefore;
+            CSharpDB.Client.Models.TableSchema replacementParent;
+            await using (var client =
+                         new EngineTransportClient(databasePath))
+            {
+                Assert.Null((await client.ExecuteSqlAsync(
+                    "CREATE TABLE restore_parent (id INTEGER PRIMARY KEY);",
+                    ct)).Error);
+                Assert.Null((await client.ExecuteSqlAsync(
+                    """
+                    CREATE TABLE restore_child (
+                        id INTEGER PRIMARY KEY,
+                        parent_id INTEGER,
+                        CONSTRAINT fk_restore_child_parent
+                            FOREIGN KEY (parent_id)
+                            REFERENCES restore_parent(id)
+                    );
+                    """,
+                    ct)).Error);
+                Assert.Null((await client.ExecuteSqlAsync(
+                    "INSERT INTO restore_parent VALUES (1); " +
+                    "INSERT INTO restore_child VALUES (1, 1);",
+                    ct)).Error);
+
+                CSharpDB.Client.Models.TableSchema originalParent =
+                    Assert.IsType<CSharpDB.Client.Models.TableSchema>(
+                        await client.GetTableSchemaAsync(
+                            "restore_parent",
+                            ct));
+                childBefore =
+                    Assert.IsType<CSharpDB.Client.Models.TableSchema>(
+                        await client.GetTableSchemaAsync(
+                            "restore_child",
+                            ct));
+                var service = new TableImportExportService(
+                    client,
+                    new TableArchiveDownloadStore());
+                await service.ExportTableAsync(
+                    new TableExportRequest
+                    {
+                        TableName = "restore_child",
+                        Destination =
+                            TableExportDestination.ServerPath,
+                        ServerPath = archivePath,
+                    },
+                    ct: ct);
+
+                Assert.Null((await client.ExecuteSqlAsync(
+                    "DROP TABLE restore_child; " +
+                    "DROP TABLE restore_parent; " +
+                    "CREATE TABLE restore_parent (id INTEGER PRIMARY KEY); " +
+                    "INSERT INTO restore_parent VALUES (1);",
+                    ct)).Error);
+                replacementParent =
+                    Assert.IsType<CSharpDB.Client.Models.TableSchema>(
+                        await client.GetTableSchemaAsync(
+                            "restore_parent",
+                            ct));
+                Assert.NotEqual(
+                    originalParent.SchemaId,
+                    replacementParent.SchemaId);
+
+                await service.RestoreTableAsync(
+                    new RestoreTableRequest
+                    {
+                        ArchivePath = archivePath,
+                        TargetTableName = "restore_child",
+                    },
+                    ct);
+            }
+
+            await using var reopened =
+                new EngineTransportClient(databasePath);
+            CSharpDB.Client.Models.TableSchema childAfter =
+                Assert.IsType<CSharpDB.Client.Models.TableSchema>(
+                    await reopened.GetTableSchemaAsync(
+                        "restore_child",
+                        ct));
+            Assert.Equal(childBefore.SchemaId, childAfter.SchemaId);
+            Assert.Equal(
+                childBefore.Columns.Select(column =>
+                    (column.Name, column.SchemaId)),
+                childAfter.Columns.Select(column =>
+                    (column.Name, column.SchemaId)));
+            Assert.Equal(
+                childBefore.ForeignKeys.Select(foreignKey =>
+                    foreignKey.SchemaId),
+                childAfter.ForeignKeys.Select(foreignKey =>
+                    foreignKey.SchemaId));
+
+            CSharpDB.Client.Models.ForeignKeyDefinition rebound =
+                Assert.Single(childAfter.ForeignKeys);
+            Assert.Equal(
+                replacementParent.SchemaId,
+                rebound.ReferencedTableSchemaId);
+            Assert.Equal(
+                [
+                    replacementParent.Columns.Single(column =>
+                        column.Name == "id").SchemaId,
+                ],
+                rebound.ReferencedColumnSchemaIds);
+            Assert.Equal(
+                Assert.Single(replacementParent.KeyConstraints)
+                    .SchemaId,
+                rebound.ReferencedKeySchemaId);
+        }
+        finally
+        {
+            if (File.Exists(archivePath))
+                File.Delete(archivePath);
+            if (File.Exists(databasePath))
+                File.Delete(databasePath);
+            if (File.Exists(databasePath + ".wal"))
+                File.Delete(databasePath + ".wal");
+        }
+    }
+
     [Fact]
     public async Task Archive_RoundTripsRowVersionMetadataAndValue()
     {
@@ -147,11 +391,11 @@ public class TableArchiveTests
                 ct);
 
             byte[] archive = await File.ReadAllBytesAsync(path, ct);
-            byte[] versionFive =
-                Encoding.UTF8.GetBytes("\"formatVersion\": 5");
-            int versionOffset = archive.AsSpan().IndexOf(versionFive);
+            byte[] versionSix =
+                Encoding.UTF8.GetBytes("\"formatVersion\": 6");
+            int versionOffset = archive.AsSpan().IndexOf(versionSix);
             Assert.True(versionOffset >= 0);
-            archive[versionOffset + versionFive.Length - 1] = (byte)'4';
+            archive[versionOffset + versionSix.Length - 1] = (byte)'5';
             await File.WriteAllBytesAsync(path, archive, ct);
 
             await Assert.ThrowsAsync<InvalidDataException>(
@@ -185,20 +429,35 @@ public class TableArchiveTests
     {
         var ct = TestContext.Current.CancellationToken;
         string path = Path.Combine(Path.GetTempPath(), $"customers_{Guid.NewGuid():N}.csdbtable");
+        Guid tableId = Guid.NewGuid();
+        Guid idColumnId = Guid.NewGuid();
+        Guid nameColumnId = Guid.NewGuid();
+        Guid balanceColumnId = Guid.NewGuid();
+        Guid payloadColumnId = Guid.NewGuid();
+        Guid checkId = Guid.NewGuid();
+        Guid foreignKeyId = Guid.NewGuid();
+        Guid referencedTableId = Guid.NewGuid();
+        Guid referencedColumnId = Guid.NewGuid();
+        Guid referencedNameColumnId = Guid.NewGuid();
+        Guid referencedKeyId = Guid.NewGuid();
+        Guid primaryKeyId = Guid.NewGuid();
+        Guid uniqueKeyId = Guid.NewGuid();
         var schema = new TableSchema
         {
+            SchemaId = tableId,
             TableName = "customers",
             Columns =
             [
-                new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false, IsPrimaryKey = true, IsIdentity = true },
-                new ColumnDefinition { Name = "name", Type = DbType.Text, Nullable = false, Collation = "NOCASE", DefaultSql = "'anonymous'" },
-                new ColumnDefinition { Name = "balance", Type = DbType.Real, Nullable = true },
-                new ColumnDefinition { Name = "payload", Type = DbType.Blob, Nullable = true },
+                new ColumnDefinition { SchemaId = idColumnId, Name = "id", Type = DbType.Integer, Nullable = false, IsPrimaryKey = true, IsIdentity = true },
+                new ColumnDefinition { SchemaId = nameColumnId, Name = "name", Type = DbType.Text, Nullable = false, Collation = "NOCASE", DefaultSql = "'anonymous'" },
+                new ColumnDefinition { SchemaId = balanceColumnId, Name = "balance", Type = DbType.Real, Nullable = true },
+                new ColumnDefinition { SchemaId = payloadColumnId, Name = "payload", Type = DbType.Blob, Nullable = true },
             ],
             CheckConstraints =
             [
                 new CheckConstraintDefinition
                 {
+                    SchemaId = checkId,
                     ConstraintName = "ck_customers_balance",
                     ExpressionSql = "balance >= 0",
                     ColumnName = "balance",
@@ -208,6 +467,11 @@ public class TableArchiveTests
             [
                 new ForeignKeyDefinition
                 {
+                    SchemaId = foreignKeyId,
+                    ColumnSchemaIds = [idColumnId, nameColumnId],
+                    ReferencedTableSchemaId = referencedTableId,
+                    ReferencedColumnSchemaIds = [referencedColumnId, referencedNameColumnId],
+                    ReferencedKeySchemaId = referencedKeyId,
                     ConstraintName = "fk_customers_tenant",
                     ColumnName = "id",
                     ReferencedTableName = "tenants",
@@ -215,6 +479,7 @@ public class TableArchiveTests
                     ColumnNames = ["id", "name"],
                     ReferencedColumnNames = ["tenant_id", "customer_name"],
                     OnDelete = ForeignKeyOnDeleteAction.Cascade,
+                    OnUpdate = ForeignKeyOnDeleteAction.NoAction,
                     SupportingIndexName = "__fk_customers_tenant",
                 },
             ],
@@ -222,12 +487,14 @@ public class TableArchiveTests
             [
                 new KeyConstraintDefinition
                 {
+                    SchemaId = primaryKeyId,
                     ConstraintName = "pk_customers",
                     Kind = KeyConstraintKind.PrimaryKey,
                     Columns = ["id"],
                 },
                 new KeyConstraintDefinition
                 {
+                    SchemaId = uniqueKeyId,
                     ConstraintName = "uq_customers_name",
                     Kind = KeyConstraintKind.Unique,
                     Columns = ["name"],
@@ -256,31 +523,42 @@ public class TableArchiveTests
             Assert.Equal(2, index.EntryCount);
 
             TableSchema restoredSchema = await TableArchiveReader.ReadTableSchemaAsync(path, ct: ct);
+            Assert.Equal(tableId, restoredSchema.SchemaId);
             Assert.Equal("customers", restoredSchema.TableName);
             Assert.Equal(4, restoredSchema.Columns.Count);
             Assert.True(restoredSchema.Columns[0].IsPrimaryKey);
             Assert.True(restoredSchema.Columns[0].IsIdentity);
+            Assert.Equal(idColumnId, restoredSchema.Columns[0].SchemaId);
             Assert.Equal("NOCASE", restoredSchema.Columns[1].Collation);
             Assert.Equal("'anonymous'", restoredSchema.Columns[1].DefaultSql);
             CheckConstraintDefinition check = Assert.Single(restoredSchema.CheckConstraints);
+            Assert.Equal(checkId, check.SchemaId);
             Assert.Equal("ck_customers_balance", check.ConstraintName);
             Assert.Equal("balance >= 0", check.ExpressionSql);
             Assert.Equal("balance", check.ColumnName);
             ForeignKeyDefinition foreignKey = Assert.Single(restoredSchema.ForeignKeys);
+            Assert.Equal(foreignKeyId, foreignKey.SchemaId);
+            Assert.Equal([idColumnId, nameColumnId], foreignKey.ColumnSchemaIds);
+            Assert.Equal(referencedTableId, foreignKey.ReferencedTableSchemaId);
+            Assert.Equal([referencedColumnId, referencedNameColumnId], foreignKey.ReferencedColumnSchemaIds);
+            Assert.Equal(referencedKeyId, foreignKey.ReferencedKeySchemaId);
             Assert.Equal("id", foreignKey.ColumnName);
             Assert.Equal("tenant_id", foreignKey.ReferencedColumnName);
             Assert.Equal(["id", "name"], foreignKey.ColumnNames);
             Assert.Equal(["tenant_id", "customer_name"], foreignKey.ReferencedColumnNames);
             Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
+            Assert.Equal(ForeignKeyOnDeleteAction.NoAction, foreignKey.OnUpdate);
             Assert.Collection(
                 restoredSchema.KeyConstraints,
                 primary =>
                 {
+                    Assert.Equal(primaryKeyId, primary.SchemaId);
                     Assert.Equal(KeyConstraintKind.PrimaryKey, primary.Kind);
                     Assert.Equal(["id"], primary.Columns);
                 },
                 unique =>
                 {
+                    Assert.Equal(uniqueKeyId, unique.SchemaId);
                     Assert.Equal(KeyConstraintKind.Unique, unique.Kind);
                     Assert.Equal(["name"], unique.Columns);
                     Assert.Equal("__constraint_customers_name", unique.BackingIndexName);
@@ -312,7 +590,7 @@ public class TableArchiveTests
     }
 
     [Fact]
-    public async Task Archive_V5_RestoresNamedOrderedConstraintsAndSecondaryIndexes()
+    public async Task Archive_V6_RestoresNamedOrderedConstraintsSecondaryIndexesAndPhase3Actions()
     {
         CancellationToken ct = TestContext.Current.CancellationToken;
         string archivePath = Path.Combine(Path.GetTempPath(), $"schema_fidelity_{Guid.NewGuid():N}.csdbtable");
@@ -370,7 +648,8 @@ public class TableArchiveTests
                     ReferencedColumnName = "tenant_id",
                     ColumnNames = ["parent_tenant_id", "parent_code"],
                     ReferencedColumnNames = ["tenant_id", "code"],
-                    OnDelete = ForeignKeyOnDeleteAction.Cascade,
+                    OnDelete = ForeignKeyOnDeleteAction.SetDefault,
+                    OnUpdate = ForeignKeyOnDeleteAction.Cascade,
                     SupportingIndexName = "__fk_archive_items_parent",
                 },
             ],
@@ -410,16 +689,24 @@ public class TableArchiveTests
                 TableArchiveWriter.ToAsyncRows(rows, ct),
                 ct);
 
-            Assert.Equal(TableArchiveManifest.SchemaFidelityFormatVersion, manifest.FormatVersion);
+            Assert.Equal(TableArchiveManifest.LatestFormatVersion, manifest.FormatVersion);
             byte[] archive = await File.ReadAllBytesAsync(archivePath, ct);
             Assert.Equal(
-                TableArchiveManifest.SchemaFidelityFormatVersion,
+                TableArchiveManifest.LatestFormatVersion,
                 BinaryPrimitives.ReadInt32LittleEndian(archive.AsSpan(8, sizeof(int))));
             Assert.Contains("\"secondaryIndexes\"", ReadSchemaJson(archive));
 
             (TableArchiveSchema archivedSchema, TableArchiveManifest archivedManifest) =
                 await TableArchiveReader.ReadMetadataAsync(archivePath, ct);
-            Assert.Equal(TableArchiveManifest.SchemaFidelityFormatVersion, archivedManifest.FormatVersion);
+            Assert.Equal(TableArchiveManifest.LatestFormatVersion, archivedManifest.FormatVersion);
+            TableArchiveForeignKey archivedForeignKey =
+                Assert.Single(archivedSchema.ForeignKeys);
+            Assert.Equal(
+                ForeignKeyOnDeleteAction.SetDefault,
+                archivedForeignKey.OnDelete);
+            Assert.Equal(
+                ForeignKeyOnDeleteAction.Cascade,
+                archivedForeignKey.OnUpdate);
             Assert.Collection(
                 Assert.IsAssignableFrom<IReadOnlyList<TableArchiveSecondaryIndex>>(archivedSchema.SecondaryIndexes),
                 index =>
@@ -486,7 +773,8 @@ public class TableArchiveTests
             Assert.Equal(["parent_tenant_id", "parent_code"], restoredForeignKey.ColumnNames);
             Assert.Equal("restored_items", restoredForeignKey.ReferencedTableName);
             Assert.Equal(["tenant_id", "code"], restoredForeignKey.ReferencedColumnNames);
-            Assert.Equal(CSharpDB.Client.Models.ForeignKeyOnDeleteAction.Cascade, restoredForeignKey.OnDelete);
+            Assert.Equal(CSharpDB.Client.Models.ForeignKeyOnDeleteAction.SetDefault, restoredForeignKey.OnDelete);
+            Assert.Equal(CSharpDB.Client.Models.ForeignKeyOnDeleteAction.Cascade, restoredForeignKey.OnUpdate);
 
             CSharpDB.Client.Models.IndexSchema[] restoredIndexes = (await client.GetIndexesAsync(ct))
                 .Where(index => string.Equals(index.TableName, "restored_items", StringComparison.Ordinal))
@@ -562,6 +850,614 @@ public class TableArchiveTests
     }
 
     [Fact]
+    public async Task Archive_RejectsPartialStableForeignKeyBindings()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string path = Path.Combine(Path.GetTempPath(), $"partial_bindings_{Guid.NewGuid():N}.csdbtable");
+        Guid firstColumnId = Guid.NewGuid();
+        Guid secondColumnId = Guid.NewGuid();
+        var schema = new TableSchema
+        {
+            SchemaId = Guid.NewGuid(),
+            TableName = "partial_bindings",
+            Columns =
+            [
+                new ColumnDefinition
+                {
+                    SchemaId = firstColumnId,
+                    Name = "first_id",
+                    Type = DbType.Integer,
+                    Nullable = false,
+                },
+                new ColumnDefinition
+                {
+                    SchemaId = secondColumnId,
+                    Name = "second_id",
+                    Type = DbType.Integer,
+                    Nullable = false,
+                },
+            ],
+            ForeignKeys =
+            [
+                new ForeignKeyDefinition
+                {
+                    SchemaId = Guid.NewGuid(),
+                    ColumnSchemaIds = [firstColumnId],
+                    ReferencedTableSchemaId = Guid.NewGuid(),
+                    ReferencedColumnSchemaIds = [Guid.NewGuid()],
+                    ReferencedKeySchemaId = Guid.NewGuid(),
+                    ConstraintName = "fk_partial_bindings",
+                    ColumnName = "first_id",
+                    ReferencedTableName = "parent_bindings",
+                    ReferencedColumnName = "first_id",
+                    ColumnNames = ["first_id", "second_id"],
+                    ReferencedColumnNames = ["first_id", "second_id"],
+                    SupportingIndexName = "__fk_partial_bindings",
+                },
+            ],
+        };
+
+        try
+        {
+            await TableArchiveWriter.WriteAsync(
+                path,
+                schema,
+                TableArchiveWriter.ToAsyncRows(Array.Empty<DbValue[]>(), ct),
+                ct);
+
+            await Assert.ThrowsAsync<InvalidDataException>(async () =>
+                await TableArchiveReader.ReadTableSchemaAsync(path, ct: ct));
+        }
+        finally
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task Archive_RejectsExternalBindingThatReusesLaterForeignKeyIdentity()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string path = Path.Combine(
+            Path.GetTempPath(),
+            $"later_fk_identity_{Guid.NewGuid():N}.csdbtable");
+        Guid firstColumnId = Guid.NewGuid();
+        Guid secondColumnId = Guid.NewGuid();
+        Guid firstForeignKeyId = Guid.NewGuid();
+        Guid secondForeignKeyId = Guid.NewGuid();
+        var schema = new TableSchema
+        {
+            SchemaId = Guid.NewGuid(),
+            TableName = "later_fk_identity",
+            Columns =
+            [
+                new ColumnDefinition
+                {
+                    SchemaId = firstColumnId,
+                    Name = "first_parent_id",
+                    Type = DbType.Integer,
+                },
+                new ColumnDefinition
+                {
+                    SchemaId = secondColumnId,
+                    Name = "second_parent_id",
+                    Type = DbType.Integer,
+                },
+            ],
+            ForeignKeys =
+            [
+                new ForeignKeyDefinition
+                {
+                    SchemaId = firstForeignKeyId,
+                    ColumnSchemaIds = [firstColumnId],
+                    ReferencedTableSchemaId = secondForeignKeyId,
+                    ReferencedColumnSchemaIds = [Guid.NewGuid()],
+                    ConstraintName = "fk_later_identity_first",
+                    ColumnName = "first_parent_id",
+                    ColumnNames = ["first_parent_id"],
+                    ReferencedTableName = "external_first",
+                    ReferencedColumnName = "id",
+                    ReferencedColumnNames = ["id"],
+                    SupportingIndexName = "__fk_later_identity_first",
+                },
+                new ForeignKeyDefinition
+                {
+                    SchemaId = secondForeignKeyId,
+                    ColumnSchemaIds = [secondColumnId],
+                    ReferencedTableSchemaId = Guid.NewGuid(),
+                    ReferencedColumnSchemaIds = [Guid.NewGuid()],
+                    ConstraintName = "fk_later_identity_second",
+                    ColumnName = "second_parent_id",
+                    ColumnNames = ["second_parent_id"],
+                    ReferencedTableName = "external_second",
+                    ReferencedColumnName = "id",
+                    ReferencedColumnNames = ["id"],
+                    SupportingIndexName = "__fk_later_identity_second",
+                },
+            ],
+        };
+
+        try
+        {
+            await TableArchiveWriter.WriteAsync(
+                path,
+                schema,
+                TableArchiveWriter.ToAsyncRows(
+                    Array.Empty<DbValue[]>(),
+                    ct),
+                ct);
+
+            InvalidDataException error =
+                await Assert.ThrowsAsync<InvalidDataException>(
+                    async () =>
+                        await TableArchiveReader.ReadTableSchemaAsync(
+                            path,
+                            ct: ct));
+            Assert.Contains(
+                "reuses an identity",
+                error.Message,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task Archive_RejectsExternalBindingIdentityRoleCollision()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string path = Path.Combine(
+            Path.GetTempPath(),
+            $"fk_role_collision_{Guid.NewGuid():N}.csdbtable");
+        Guid firstChildColumnId = Guid.NewGuid();
+        Guid secondChildColumnId = Guid.NewGuid();
+        Guid aliasedReferencedId = Guid.NewGuid();
+        var schema = new TableSchema
+        {
+            SchemaId = Guid.NewGuid(),
+            TableName = "fk_role_collision",
+            Columns =
+            [
+                new ColumnDefinition
+                {
+                    SchemaId = firstChildColumnId,
+                    Name = "first_parent_id",
+                    Type = DbType.Integer,
+                },
+                new ColumnDefinition
+                {
+                    SchemaId = secondChildColumnId,
+                    Name = "second_parent_id",
+                    Type = DbType.Integer,
+                },
+            ],
+            ForeignKeys =
+            [
+                new ForeignKeyDefinition
+                {
+                    SchemaId = Guid.NewGuid(),
+                    ColumnSchemaIds = [firstChildColumnId],
+                    ReferencedTableSchemaId = aliasedReferencedId,
+                    ReferencedColumnSchemaIds =
+                        [Guid.NewGuid()],
+                    ConstraintName = "fk_role_collision_first",
+                    ColumnName = "first_parent_id",
+                    ColumnNames = ["first_parent_id"],
+                    ReferencedTableName = "external_parent_first",
+                    ReferencedColumnName = "id",
+                    ReferencedColumnNames = ["id"],
+                    SupportingIndexName =
+                        "__fk_role_collision_first",
+                },
+                new ForeignKeyDefinition
+                {
+                    SchemaId = Guid.NewGuid(),
+                    ColumnSchemaIds = [secondChildColumnId],
+                    ReferencedTableSchemaId = Guid.NewGuid(),
+                    ReferencedColumnSchemaIds =
+                        [aliasedReferencedId],
+                    ConstraintName = "fk_role_collision_second",
+                    ColumnName = "second_parent_id",
+                    ColumnNames = ["second_parent_id"],
+                    ReferencedTableName = "external_parent_second",
+                    ReferencedColumnName = "id",
+                    ReferencedColumnNames = ["id"],
+                    SupportingIndexName =
+                        "__fk_role_collision_second",
+                },
+            ],
+        };
+
+        try
+        {
+            await TableArchiveWriter.WriteAsync(
+                path,
+                schema,
+                TableArchiveWriter.ToAsyncRows(
+                    Array.Empty<DbValue[]>(),
+                    ct),
+                ct);
+
+            InvalidDataException error =
+                await Assert.ThrowsAsync<InvalidDataException>(
+                    async () =>
+                        await TableArchiveReader.ReadTableSchemaAsync(
+                            path,
+                            ct: ct));
+            Assert.Contains(
+                "referenced object roles",
+                error.Message,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task Archive_RejectsScalarOrderedForeignKeyMismatch()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string path = Path.Combine(
+            Path.GetTempPath(),
+            $"fk_scalar_mismatch_{Guid.NewGuid():N}.csdbtable");
+        var schema = new TableSchema
+        {
+            TableName = "fk_scalar_mismatch",
+            Columns =
+            [
+                new ColumnDefinition
+                {
+                    Name = "first_parent_id",
+                    Type = DbType.Integer,
+                },
+                new ColumnDefinition
+                {
+                    Name = "second_parent_id",
+                    Type = DbType.Integer,
+                },
+            ],
+            ForeignKeys =
+            [
+                new ForeignKeyDefinition
+                {
+                    ConstraintName = "fk_scalar_mismatch",
+                    ColumnName = "first_parent_id",
+                    ColumnNames = ["second_parent_id"],
+                    ReferencedTableName = "external_parent",
+                    ReferencedColumnName = "id",
+                    ReferencedColumnNames = ["id"],
+                    SupportingIndexName = "__fk_scalar_mismatch",
+                },
+            ],
+        };
+
+        try
+        {
+            await TableArchiveWriter.WriteAsync(
+                path,
+                schema,
+                TableArchiveWriter.ToAsyncRows(
+                    Array.Empty<DbValue[]>(),
+                    ct),
+                ct);
+
+            InvalidDataException error =
+                await Assert.ThrowsAsync<InvalidDataException>(
+                    async () =>
+                        await TableArchiveReader.ReadTableSchemaAsync(
+                            path,
+                            ct: ct));
+            Assert.Contains(
+                "scalar and ordered columns",
+                error.Message,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task Archive_RejectsRepeatedExternalReferencedColumn()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string path = Path.Combine(
+            Path.GetTempPath(),
+            $"fk_repeated_reference_{Guid.NewGuid():N}.csdbtable");
+        var schema = new TableSchema
+        {
+            TableName = "fk_repeated_reference",
+            Columns =
+            [
+                new ColumnDefinition
+                {
+                    Name = "first_parent_id",
+                    Type = DbType.Integer,
+                },
+                new ColumnDefinition
+                {
+                    Name = "second_parent_id",
+                    Type = DbType.Integer,
+                },
+            ],
+            ForeignKeys =
+            [
+                new ForeignKeyDefinition
+                {
+                    ConstraintName = "fk_repeated_reference",
+                    ColumnName = "first_parent_id",
+                    ColumnNames =
+                        ["first_parent_id", "second_parent_id"],
+                    ReferencedTableName = "external_parent",
+                    ReferencedColumnName = "id",
+                    ReferencedColumnNames = ["id", "id"],
+                    SupportingIndexName =
+                        "__fk_repeated_reference",
+                },
+            ],
+        };
+
+        try
+        {
+            await TableArchiveWriter.WriteAsync(
+                path,
+                schema,
+                TableArchiveWriter.ToAsyncRows(
+                    Array.Empty<DbValue[]>(),
+                    ct),
+                ct);
+
+            InvalidDataException error =
+                await Assert.ThrowsAsync<InvalidDataException>(
+                    async () =>
+                        await TableArchiveReader.ReadTableSchemaAsync(
+                            path,
+                            ct: ct));
+            Assert.Contains(
+                "repeats referenced column",
+                error.Message,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Archive_RejectsMissingSelfReferencedColumn(
+        bool stableIdentities)
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string path = Path.Combine(
+            Path.GetTempPath(),
+            $"missing_self_column_{Guid.NewGuid():N}.csdbtable");
+        Guid tableId = stableIdentities ? Guid.NewGuid() : Guid.Empty;
+        Guid childColumnId =
+            stableIdentities ? Guid.NewGuid() : Guid.Empty;
+        var schema = new TableSchema
+        {
+            SchemaId = tableId,
+            TableName = "missing_self_column",
+            Columns =
+            [
+                new ColumnDefinition
+                {
+                    SchemaId = childColumnId,
+                    Name = "parent_id",
+                    Type = DbType.Integer,
+                },
+            ],
+            ForeignKeys =
+            [
+                new ForeignKeyDefinition
+                {
+                    SchemaId =
+                        stableIdentities ? Guid.NewGuid() : Guid.Empty,
+                    ColumnSchemaIds = stableIdentities
+                        ? [childColumnId]
+                        : [],
+                    ReferencedTableSchemaId = tableId,
+                    ReferencedColumnSchemaIds = stableIdentities
+                        ? [Guid.NewGuid()]
+                        : [],
+                    ConstraintName = "fk_missing_self_column",
+                    ColumnName = "parent_id",
+                    ColumnNames = ["parent_id"],
+                    ReferencedTableName = "missing_self_column",
+                    ReferencedColumnName = "missing_id",
+                    ReferencedColumnNames = ["missing_id"],
+                    SupportingIndexName =
+                        "__fk_missing_self_column",
+                },
+            ],
+        };
+
+        try
+        {
+            await TableArchiveWriter.WriteAsync(
+                path,
+                schema,
+                TableArchiveWriter.ToAsyncRows(
+                    Array.Empty<DbValue[]>(),
+                    ct),
+                ct);
+
+            InvalidDataException error =
+                await Assert.ThrowsAsync<InvalidDataException>(
+                    async () =>
+                        await TableArchiveReader.ReadTableSchemaAsync(
+                            path,
+                            ct: ct));
+            Assert.Contains(
+                "missing column",
+                error.Message,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task Archive_RejectsNullLegacyForeignKeyIdentityLists()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string path = Path.Combine(
+            Path.GetTempPath(),
+            $"null_fk_bindings_{Guid.NewGuid():N}.csdbtable");
+
+        try
+        {
+            await WriteLegacyArchiveAsync(path, ct);
+            byte[] original = await File.ReadAllBytesAsync(path, ct);
+            byte[] mutated = RewriteEmptyUnindexedArchiveJson(
+                original,
+                rewriteSchema: true,
+                json =>
+                {
+                    const string Existing =
+                        "\"supportingIndexName\": \"__fk_legacy_items_parent\"";
+                    const string Replacement =
+                        "\"supportingIndexName\": \"__fk_legacy_items_parent\",\n" +
+                        "      \"columnSchemaIds\": null,\n" +
+                        "      \"referencedColumnSchemaIds\": null";
+                    Assert.Contains(
+                        Existing,
+                        json,
+                        StringComparison.Ordinal);
+                    return json.Replace(
+                        Existing,
+                        Replacement,
+                        StringComparison.Ordinal);
+                });
+            await File.WriteAllBytesAsync(path, mutated, ct);
+
+            InvalidDataException error =
+                await Assert.ThrowsAsync<InvalidDataException>(
+                    async () =>
+                        await TableArchiveReader.ReadTableSchemaAsync(
+                            path,
+                            ct: ct));
+            Assert.Contains(
+                "null stable identity bindings",
+                error.Message,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task Archive_RejectsWrongSelfReferencedKeyIdentity()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string path = Path.Combine(
+            Path.GetTempPath(),
+            $"wrong_self_key_{Guid.NewGuid():N}.csdbtable");
+        Guid tableId = Guid.NewGuid();
+        Guid idColumnId = Guid.NewGuid();
+        Guid parentColumnId = Guid.NewGuid();
+        Guid keyId = Guid.NewGuid();
+        var schema = new TableSchema
+        {
+            SchemaId = tableId,
+            TableName = "self_key_items",
+            Columns =
+            [
+                new ColumnDefinition
+                {
+                    SchemaId = idColumnId,
+                    Name = "id",
+                    Type = DbType.Integer,
+                    Nullable = false,
+                    IsPrimaryKey = true,
+                    IsIdentity = true,
+                },
+                new ColumnDefinition
+                {
+                    SchemaId = parentColumnId,
+                    Name = "parent_id",
+                    Type = DbType.Integer,
+                    Nullable = true,
+                },
+            ],
+            KeyConstraints =
+            [
+                new KeyConstraintDefinition
+                {
+                    SchemaId = keyId,
+                    Kind = KeyConstraintKind.PrimaryKey,
+                    Columns = ["id"],
+                },
+            ],
+            ForeignKeys =
+            [
+                new ForeignKeyDefinition
+                {
+                    SchemaId = Guid.NewGuid(),
+                    ColumnSchemaIds = [parentColumnId],
+                    ReferencedTableSchemaId = tableId,
+                    ReferencedColumnSchemaIds = [idColumnId],
+                    ReferencedKeySchemaId = Guid.NewGuid(),
+                    ConstraintName = "fk_self_key_parent",
+                    ColumnName = "parent_id",
+                    ColumnNames = ["parent_id"],
+                    ReferencedTableName = "self_key_items",
+                    ReferencedColumnName = "id",
+                    ReferencedColumnNames = ["id"],
+                    SupportingIndexName =
+                        "__fk_self_key_parent",
+                },
+            ],
+        };
+
+        try
+        {
+            await TableArchiveWriter.WriteAsync(
+                path,
+                schema,
+                TableArchiveWriter.ToAsyncRows(
+                    Array.Empty<DbValue[]>(),
+                    ct),
+                ct);
+
+            InvalidDataException error =
+                await Assert.ThrowsAsync<InvalidDataException>(
+                    async () =>
+                        await TableArchiveReader.ReadTableSchemaAsync(
+                            path,
+                            ct: ct));
+            Assert.Contains(
+                "referenced-key identity",
+                error.Message,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+    }
+
+    [Fact]
     public async Task Archive_LegacySchemaWithoutAdditiveMetadata_UsesSafeDefaults()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -582,6 +1478,39 @@ public class TableArchiveTests
             ForeignKeyDefinition foreignKey = Assert.Single(restored.ForeignKeys);
             Assert.Equal(["id"], foreignKey.ColumnNames);
             Assert.Equal(["id"], foreignKey.ReferencedColumnNames);
+            Assert.Equal(ForeignKeyOnDeleteAction.Restrict, foreignKey.OnDelete);
+            Assert.Equal(ForeignKeyOnDeleteAction.Restrict, foreignKey.OnUpdate);
+        }
+        finally
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task Archive_VersionFiveForeignKeyWithoutOnUpdateDefaultsToRestrict()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string path = Path.Combine(
+            Path.GetTempPath(),
+            $"version_five_fk_{Guid.NewGuid():N}.csdbtable");
+
+        try
+        {
+            await WriteVersionFiveArchiveWithoutOnUpdateAsync(path, ct);
+
+            TableSchema restored =
+                await TableArchiveReader.ReadTableSchemaAsync(path, ct: ct);
+            ForeignKeyDefinition foreignKey =
+                Assert.Single(restored.ForeignKeys);
+
+            Assert.Equal(
+                ForeignKeyOnDeleteAction.Restrict,
+                foreignKey.OnDelete);
+            Assert.Equal(
+                ForeignKeyOnDeleteAction.Restrict,
+                foreignKey.OnUpdate);
         }
         finally
         {
@@ -1025,6 +1954,94 @@ public class TableArchiveTests
         BinaryPrimitives.WriteInt64LittleEndian(header.AsSpan(36), rowsOffset);
 
         await using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        await stream.WriteAsync(header, ct);
+        await stream.WriteAsync(schema, ct);
+        await stream.WriteAsync(manifest, ct);
+    }
+
+    private static async Task WriteVersionFiveArchiveWithoutOnUpdateAsync(
+        string path,
+        CancellationToken ct)
+    {
+        const int headerSize = 76;
+        byte[] schema = Encoding.UTF8.GetBytes(
+            """
+            {
+              "tableName": "version_five_items",
+              "columns": [
+                {
+                  "name": "id",
+                  "type": "integer",
+                  "nullable": false,
+                  "isPrimaryKey": true,
+                  "isIdentity": false,
+                  "collation": null
+                }
+              ],
+              "foreignKeys": [
+                {
+                  "constraintName": "fk_version_five_items_parent",
+                  "columnName": "id",
+                  "referencedTableName": "version_five_parents",
+                  "referencedColumnName": "id",
+                  "onDelete": "restrict",
+                  "supportingIndexName": "__fk_version_five_items_parent"
+                }
+              ],
+              "nextRowId": 2
+            }
+            """);
+        string schemaDigest = Convert.ToHexString(
+            SHA256.HashData(schema)).ToLowerInvariant();
+        string emptyDigest = Convert.ToHexString(
+            SHA256.HashData(Array.Empty<byte>())).ToLowerInvariant();
+        byte[] manifest = Encoding.UTF8.GetBytes(
+            $$"""
+            {
+              "formatVersion": 5,
+              "sourceTableName": "version_five_items",
+              "createdUtc": "2025-01-01T00:00:00+00:00",
+              "rowCount": 0,
+              "schemaEntry": "native:schema",
+              "rowsEntry": "native:rows",
+              "indexes": [],
+              "digests": {
+                "algorithm": "sha256",
+                "encoding": "lowercase-hex",
+                "schema": "{{schemaDigest}}",
+                "rows": "{{emptyDigest}}",
+                "physicalIndex": "{{emptyDigest}}"
+              }
+            }
+            """);
+
+        long schemaOffset = headerSize;
+        long rowsOffset = schemaOffset + schema.Length;
+        long manifestOffset = rowsOffset;
+        var header = new byte[headerSize];
+        "CSDBTBL3"u8.CopyTo(header);
+        BinaryPrimitives.WriteInt32LittleEndian(header.AsSpan(8), 5);
+        BinaryPrimitives.WriteInt64LittleEndian(
+            header.AsSpan(12),
+            schemaOffset);
+        BinaryPrimitives.WriteInt32LittleEndian(
+            header.AsSpan(20),
+            schema.Length);
+        BinaryPrimitives.WriteInt64LittleEndian(
+            header.AsSpan(24),
+            manifestOffset);
+        BinaryPrimitives.WriteInt32LittleEndian(
+            header.AsSpan(32),
+            manifest.Length);
+        BinaryPrimitives.WriteInt64LittleEndian(
+            header.AsSpan(36),
+            rowsOffset);
+
+        await using var stream = new FileStream(
+            path,
+            FileMode.CreateNew,
+            FileAccess.Write,
+            FileShare.None);
         await stream.WriteAsync(header, ct);
         await stream.WriteAsync(schema, ct);
         await stream.WriteAsync(manifest, ct);

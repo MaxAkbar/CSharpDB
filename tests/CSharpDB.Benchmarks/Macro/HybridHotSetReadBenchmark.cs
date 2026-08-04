@@ -9,7 +9,9 @@ public static class HybridHotSetReadBenchmark
     private const int SeedCount = 200_000;
     private const int BurstSize = 256;
     private const int WarmupIterations = 1;
-    private const int MeasuredIterations = 15;
+    private const int MinimumMeasuredIterations = 200;
+    private static readonly TimeSpan MinimumMeasuredDuration = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan MaximumMeasuredDuration = TimeSpan.FromSeconds(30);
 
     private sealed record BenchDoc(string Name, int Value, string Category);
 
@@ -38,19 +40,19 @@ public static class HybridHotSetReadBenchmark
         return results;
     }
 
-    private static Task<BenchmarkResult> RunSqlPostOpenHotBurstAsync(
+    private static async Task<BenchmarkResult> RunSqlPostOpenHotBurstAsync(
         StorageMode mode,
         string filePath,
         IReadOnlyList<int> hotIds)
     {
-        return RunBurstIterationsAsync(
+        await using var db = await OpenSqlDatabaseAsync(mode, filePath);
+        return await RunBurstIterationsAsync(
             $"{GetPrefix(mode)}_Sql_PostOpenHotBurst{hotIds.Count}_{SeedCount}",
             hotIds.Count,
             WarmupIterations,
-            MeasuredIterations,
+            MinimumMeasuredIterations,
             async ct =>
             {
-                await using var db = await OpenSqlDatabaseAsync(mode, filePath, ct);
                 var sw = Stopwatch.StartNew();
                 foreach (int id in hotIds)
                 {
@@ -64,20 +66,20 @@ public static class HybridHotSetReadBenchmark
             });
     }
 
-    private static Task<BenchmarkResult> RunCollectionPostOpenHotBurstAsync(
+    private static async Task<BenchmarkResult> RunCollectionPostOpenHotBurstAsync(
         StorageMode mode,
         string filePath,
         IReadOnlyList<int> hotIds)
     {
-        return RunBurstIterationsAsync(
+        await using var db = await OpenCollectionDatabaseAsync(mode, filePath);
+        var collection = await db.GetCollectionAsync<BenchDoc>("bench_docs");
+        return await RunBurstIterationsAsync(
             $"{GetPrefix(mode)}_Collection_PostOpenHotBurst{hotIds.Count}_{SeedCount}",
             hotIds.Count,
             WarmupIterations,
-            MeasuredIterations,
+            MinimumMeasuredIterations,
             async ct =>
             {
-                await using var db = await OpenCollectionDatabaseAsync(mode, filePath, ct);
-                var collection = await db.GetCollectionAsync<BenchDoc>("bench_docs", ct);
                 var sw = Stopwatch.StartNew();
                 foreach (int id in hotIds)
                 {
@@ -95,29 +97,53 @@ public static class HybridHotSetReadBenchmark
         string name,
         int operationsPerBurst,
         int warmupIterations,
-        int measuredIterations,
+        int minimumMeasuredIterations,
         Func<CancellationToken, Task<TimeSpan>> executeScenarioAsync,
         CancellationToken ct = default)
     {
         for (int i = 0; i < warmupIterations && !ct.IsCancellationRequested; i++)
             _ = await executeScenarioAsync(ct);
 
+        MacroBenchmarkRunner.StabilizeAfterWarmup();
+
         var histogram = new LatencyHistogram();
         double measuredElapsedMs = 0;
-        for (int i = 0; i < measuredIterations && !ct.IsCancellationRequested; i++)
+        var measurementWallClock = Stopwatch.StartNew();
+        while (!ct.IsCancellationRequested &&
+               (histogram.SampleCount < minimumMeasuredIterations ||
+                measuredElapsedMs < MinimumMeasuredDuration.TotalMilliseconds))
         {
+            if (measurementWallClock.Elapsed >= MaximumMeasuredDuration)
+            {
+                throw new InvalidOperationException(
+                    $"Hot-set scenario '{name}' retained {histogram.SampleCount} " +
+                    $"burst samples and {measuredElapsedMs:F1} ms of measured read work " +
+                    $"within {MaximumMeasuredDuration.TotalSeconds:F0} seconds; " +
+                    $"at least {minimumMeasuredIterations} samples and " +
+                    $"{MinimumMeasuredDuration.TotalSeconds:F0} seconds are required.");
+            }
+
             TimeSpan burstElapsed = await executeScenarioAsync(ct);
             measuredElapsedMs += burstElapsed.TotalMilliseconds;
             double perOperationMs = burstElapsed.TotalMilliseconds / operationsPerBurst;
-            for (int op = 0; op < operationsPerBurst; op++)
-                histogram.Record(perOperationMs);
+            histogram.Record(perOperationMs);
+
+            if (measurementWallClock.Elapsed > MaximumMeasuredDuration)
+            {
+                throw new InvalidOperationException(
+                    $"Hot-set scenario '{name}' exceeded the " +
+                    $"{MaximumMeasuredDuration.TotalSeconds:F0}-second measurement cap.");
+            }
         }
+        measurementWallClock.Stop();
+        ct.ThrowIfCancellationRequested();
 
         var baseResult = BenchmarkResult.FromHistogram(name, histogram, measuredElapsedMs);
         var result = new BenchmarkResult
         {
             Name = baseResult.Name,
-            TotalOps = baseResult.TotalOps,
+            TotalOps = checked(baseResult.TotalOps * operationsPerBurst),
+            LatencySamples = baseResult.LatencySamples,
             ElapsedMs = baseResult.ElapsedMs,
             P50Ms = baseResult.P50Ms,
             P90Ms = baseResult.P90Ms,
@@ -128,7 +154,7 @@ public static class HybridHotSetReadBenchmark
             MaxMs = baseResult.MaxMs,
             MeanMs = baseResult.MeanMs,
             StdDevMs = baseResult.StdDevMs,
-            ExtraInfo = $"BurstSize={operationsPerBurst}; Open cost excluded.",
+            ExtraInfo = $"BurstSize={operationsPerBurst}; LatencySamples={baseResult.LatencySamples}; MinimumMeasuredDurationSeconds={MinimumMeasuredDuration.TotalSeconds:F0}; Open cost excluded.",
         };
 
         Console.WriteLine($"  {name}: {result.OpsPerSecond:N0} ops/sec, P50={result.P50Ms:F3}ms, P99={result.P99Ms:F3}ms, P999={result.P999Ms:F3}ms");

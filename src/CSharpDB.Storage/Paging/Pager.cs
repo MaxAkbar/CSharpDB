@@ -199,6 +199,10 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
     internal bool IsExplicitWriteTransactionActive => GetCurrentTransaction() is not null;
 
+    internal bool IsWriteTransactionActive =>
+        GetCurrentTransaction() is not null ||
+        _transactions?.InTransaction == true;
+
     internal bool RequiresLogicalWriteConflictTracking =>
         GetCurrentTransaction() is not null ||
         _transactions?.HasActiveExplicitTransactions == true;

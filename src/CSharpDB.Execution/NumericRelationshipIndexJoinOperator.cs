@@ -20,7 +20,8 @@ internal sealed class NumericRelationshipIndexJoinOperator :
     IBatchBackedRowOperator,
     IProjectionPushdownTarget,
     IEstimatedRowCountProvider,
-    IBatchBufferReuseController
+    IBatchBufferReuseController,
+    IPhysicalOperatorMetadataProvider
 {
     private const int DefaultBatchSize = 64;
 
@@ -118,6 +119,12 @@ internal sealed class NumericRelationshipIndexJoinOperator :
     public int? EstimatedRowCount => _estimatedRowCount;
 
     IBatchOperator IBatchBackedRowOperator.BatchSource => this;
+
+    PhysicalOperatorMetadata IPhysicalOperatorMetadataProvider.GetPhysicalOperatorMetadata()
+        => new(
+            ObjectName: _rightSchema.TableName,
+            IndexName: _rightForeignKeyIndex.LogicalName,
+            JoinType: PhysicalOperatorMetadataHelper.ToStableJoinType(CSharpDB.Sql.JoinType.Inner));
 
     public async ValueTask OpenAsync(CancellationToken ct = default)
     {

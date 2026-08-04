@@ -62,6 +62,8 @@ public static class WriteAmplificationBenchmark
                     {
                         Name = $"WriteAmplification_{rowCount}rows",
                         TotalOps = rowCount,
+                        // This benchmark reports storage amplification and records no latency observations.
+                        LatencySamples = 0,
                         ElapsedMs = 0,
                         P50Ms = 0, P90Ms = 0, P95Ms = 0, P99Ms = 0, P999Ms = 0,
                         MinMs = 0, MaxMs = 0, MeanMs = 0, StdDevMs = 0,

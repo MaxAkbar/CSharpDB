@@ -224,7 +224,7 @@ internal static class WindowExpressionSupport
         {
             throw new CSharpDbException(
                 ErrorCode.SyntaxError,
-                "Window functions cannot be combined with GROUP BY or HAVING in the experimental window-function tier.");
+                "Window functions cannot be combined with GROUP BY or HAVING in the bounded window-function slice.");
         }
 
         bool hasOrdinaryAggregate = select.Columns.Any(column =>
@@ -235,27 +235,27 @@ internal static class WindowExpressionSupport
         {
             throw new CSharpDbException(
                 ErrorCode.SyntaxError,
-                "Window functions cannot be combined with ordinary aggregate expressions in the experimental window-function tier.");
+                "Window functions cannot be combined with ordinary aggregate expressions in the bounded window-function slice.");
         }
 
         if (containsSubquery)
         {
             throw new CSharpDbException(
                 ErrorCode.SyntaxError,
-                "Window functions cannot be combined with subqueries in the experimental window-function tier.");
+                "Window functions cannot be combined with subqueries in the bounded window-function slice.");
         }
 
-        string specificationKey = GetWindowSpecificationKey(windows[0].Window);
+        string specificationKey = GetWindowPartitionOrderKey(windows[0].Window);
         for (int i = 1; i < windows.Count; i++)
         {
             if (!string.Equals(
                     specificationKey,
-                    GetWindowSpecificationKey(windows[i].Window),
+                    GetWindowPartitionOrderKey(windows[i].Window),
                     StringComparison.Ordinal))
             {
                 throw new CSharpDbException(
                     ErrorCode.SyntaxError,
-                    "Multiple incompatible window specifications are not supported in the experimental window-function tier.");
+                    "Multiple incompatible window specifications are not supported in the bounded window-function slice.");
             }
         }
     }
@@ -399,7 +399,7 @@ internal static class WindowExpressionSupport
         {
             throw new CSharpDbException(
                 ErrorCode.SyntaxError,
-                $"DISTINCT is not supported for window function '{functionName}' in the experimental tier.");
+                $"DISTINCT is not supported for window function '{functionName}' in the bounded window-function slice.");
         }
 
         switch (functionName)
@@ -436,11 +436,34 @@ internal static class WindowExpressionSupport
                 }
                 break;
 
+            case "LAG":
+            case "LEAD":
+                if (function.IsStarArg ||
+                    function.Arguments.Count is < 1 or > 3)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.SyntaxError,
+                        $"{functionName} window function requires between one and three expression arguments.");
+                }
+                break;
+
+            case "FIRST_VALUE":
+            case "LAST_VALUE":
+                if (function.IsStarArg || function.Arguments.Count != 1)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.SyntaxError,
+                        $"{functionName} window function requires exactly one expression argument.");
+                }
+                break;
+
             default:
                 throw new CSharpDbException(
                     ErrorCode.SyntaxError,
-                    $"Window function '{function.FunctionName}' is not supported in the experimental window-function tier.");
+                    $"Window function '{function.FunctionName}' is not supported in the bounded window-function slice.");
         }
+
+        ValidateWindowSpecification(window.Window);
 
         if (function.Arguments.Any(ContainsOrdinaryAggregate) ||
             window.Window.PartitionBy.Any(ContainsOrdinaryAggregate) ||
@@ -448,9 +471,105 @@ internal static class WindowExpressionSupport
         {
             throw new CSharpDbException(
                 ErrorCode.SyntaxError,
-                "Ordinary aggregate expressions inside a window definition are not supported in the experimental tier.");
+                "Ordinary aggregate expressions inside a window definition are not supported in the bounded window-function slice.");
         }
     }
+
+    private static void ValidateWindowSpecification(WindowSpecification specification)
+    {
+        if (specification.ReferenceName != null)
+        {
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                $"Window definition '{specification.ReferenceName}' was not resolved.");
+        }
+
+        if (specification.Frame == null)
+            return;
+
+        WindowFrameBound start = specification.Frame.Start;
+        WindowFrameBound end = specification.Frame.End;
+        ValidateWindowFrameBound(start);
+        ValidateWindowFrameBound(end);
+
+        if (start.Kind == WindowFrameBoundKind.UnboundedFollowing)
+        {
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                "A ROWS frame cannot start with UNBOUNDED FOLLOWING.");
+        }
+
+        if (end.Kind == WindowFrameBoundKind.UnboundedPreceding)
+        {
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                "A ROWS frame cannot end with UNBOUNDED PRECEDING.");
+        }
+
+        if (CompareWindowFrameBounds(start, end) > 0)
+        {
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                "A ROWS frame start cannot be after its frame end.");
+        }
+    }
+
+    private static void ValidateWindowFrameBound(WindowFrameBound bound)
+    {
+        bool requiresOffset = bound.Kind is
+            WindowFrameBoundKind.Preceding or
+            WindowFrameBoundKind.Following;
+        if (requiresOffset)
+        {
+            if (!bound.Offset.HasValue || bound.Offset.Value < 0)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.SyntaxError,
+                    "A PRECEDING or FOLLOWING ROWS frame bound requires a nonnegative offset.");
+            }
+
+            return;
+        }
+
+        if (bound.Offset.HasValue)
+        {
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                "Only PRECEDING or FOLLOWING ROWS frame bounds may specify an offset.");
+        }
+    }
+
+    private static int CompareWindowFrameBounds(
+        WindowFrameBound left,
+        WindowFrameBound right)
+    {
+        int leftRegion = GetWindowFrameBoundRegion(left);
+        int rightRegion = GetWindowFrameBoundRegion(right);
+        if (leftRegion != rightRegion)
+            return leftRegion.CompareTo(rightRegion);
+
+        return leftRegion switch
+        {
+            1 => right.Offset!.Value.CompareTo(left.Offset!.Value),
+            3 => left.Offset!.Value.CompareTo(right.Offset!.Value),
+            _ => 0,
+        };
+    }
+
+    private static int GetWindowFrameBoundRegion(WindowFrameBound bound) =>
+        bound.Kind switch
+        {
+            WindowFrameBoundKind.UnboundedPreceding => 0,
+            WindowFrameBoundKind.Preceding when bound.Offset > 0 => 1,
+            WindowFrameBoundKind.CurrentRow => 2,
+            WindowFrameBoundKind.Preceding or WindowFrameBoundKind.Following
+                when bound.Offset == 0 => 2,
+            WindowFrameBoundKind.Following => 3,
+            WindowFrameBoundKind.UnboundedFollowing => 4,
+            _ => throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                "Invalid ROWS frame bound."),
+        };
 
     private static bool ContainsWindowFunction(Expression expression)
     {
@@ -555,9 +674,13 @@ internal static class WindowExpressionSupport
         }
     }
 
-    private static string GetWindowSpecificationKey(WindowSpecification specification)
+    private static string GetWindowPartitionOrderKey(WindowSpecification specification)
     {
-        var builder = new StringBuilder("P[");
+        var builder = new StringBuilder("R[");
+        AppendLengthPrefixed(
+            builder,
+            specification.ReferenceName?.ToUpperInvariant() ?? string.Empty);
+        builder.Append("]P[");
         foreach (Expression expression in specification.PartitionBy)
         {
             AppendExpressionKey(builder, expression);
@@ -572,6 +695,29 @@ internal static class WindowExpressionSupport
         }
 
         return builder.Append(']').ToString();
+    }
+
+    private static string GetWindowSpecificationKey(WindowSpecification specification)
+    {
+        var builder = new StringBuilder(GetWindowPartitionOrderKey(specification));
+        builder.Append("F[");
+        if (specification.Frame != null)
+        {
+            AppendWindowFrameBoundKey(builder, specification.Frame.Start);
+            builder.Append(';');
+            AppendWindowFrameBoundKey(builder, specification.Frame.End);
+        }
+
+        return builder.Append(']').ToString();
+    }
+
+    private static void AppendWindowFrameBoundKey(
+        StringBuilder builder,
+        WindowFrameBound bound)
+    {
+        builder.Append((int)bound.Kind).Append(':');
+        if (bound.Offset.HasValue)
+            builder.Append(bound.Offset.Value.ToString(CultureInfo.InvariantCulture));
     }
 
     private static void AppendExpressionKey(StringBuilder builder, Expression expression)

@@ -22,6 +22,14 @@ public sealed class ExceptionHandlingMiddleware
         {
             await _next(context);
         }
+        catch (BadHttpRequestException ex)
+        {
+            _logger.LogWarning(ex, "Invalid HTTP request");
+            await WriteErrorResponse(
+                context,
+                (HttpStatusCode)ex.StatusCode,
+                ex.Message);
+        }
         catch (ArgumentException ex)
         {
             _logger.LogWarning(ex, "Validation error");
@@ -64,6 +72,7 @@ public sealed class ExceptionHandlingMiddleware
         ErrorCode.SyntaxError => HttpStatusCode.BadRequest,
         ErrorCode.TypeMismatch => HttpStatusCode.BadRequest,
         ErrorCode.Busy => HttpStatusCode.ServiceUnavailable,
+        ErrorCode.ResourceLimitExceeded => HttpStatusCode.RequestEntityTooLarge,
         _ => HttpStatusCode.InternalServerError,
     };
 

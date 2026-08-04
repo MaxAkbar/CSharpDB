@@ -175,7 +175,8 @@ dotnet run --project src/CSharpDB.Daemon/CSharpDB.Daemon.csproj</code></pre></di
       "columnName": "customer_id",
       "referencedTableName": "customers",
       "referencedColumnName": "id",
-      "onDelete": "Restrict"
+      "onDelete": "setDefault",
+      "onUpdate": "cascade"
     }
   ]
 }</code></pre></div>
@@ -209,7 +210,8 @@ dotnet run --project src/CSharpDB.Daemon/CSharpDB.Daemon.csproj</code></pre></di
       "referencedColumnName": "id",
       "constraintName": "fk_orders_customer_id_abcd1234",
       "supportingIndexName": "__fk_orders_customer_id_abcd1234",
-      "onDelete": "Restrict"
+      "onDelete": "setDefault",
+      "onUpdate": "cascade"
     }
   ]
 }</code></pre></div>
@@ -218,6 +220,7 @@ dotnet run --project src/CSharpDB.Daemon/CSharpDB.Daemon.csproj</code></pre></di
                 <ul>
                     <li><code>validateOnly = true</code> previews the migration without mutating schema or data.</li>
                     <li><code>backupDestinationPath</code> is optional and is only used during apply mode.</li>
+                    <li><code>onDelete</code> and <code>onUpdate</code> accept the lower-camel-case values <code>restrict</code>, <code>noAction</code>, <code>cascade</code>, <code>setNull</code>, and <code>setDefault</code>.</li>
                     <li>Paths are resolved on the daemon host machine, not on the caller.</li>
                 </ul>
 

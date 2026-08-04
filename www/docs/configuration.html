@@ -55,6 +55,7 @@
                         <li><a href="#opening-a-database">Opening a Database</a></li>
                         <li><a href="#options-hierarchy">Options Hierarchy</a></li>
                         <li><a href="#databaseoptions">DatabaseOptions</a></li>
+                        <li class="toc-child"><a href="#windowexecution">WindowExecution</a></li>
                         <li><a href="#storageengineoptions">StorageEngineOptions</a></li>
                         <li class="toc-child"><a href="#durabilitymode">DurabilityMode</a></li>
                         <li class="toc-child"><a href="#durablegroupcommit">DurableGroupCommit</a></li>
@@ -117,6 +118,9 @@ await using var db = await Database.OpenHybridAsync(&quot;mydata.db&quot;,
 <pre><code>DatabaseOptions
 ├── ImplicitInsertExecutionMode
 ├── Functions
+├── WindowExecution
+│   ├── MaxPartitionRows
+│   └── MaxBufferedRows
 ├── StorageEngineOptions
 │   ├── DurabilityMode
 │   ├── DurableGroupCommit
@@ -174,6 +178,12 @@ FullTextIndexOptions (per-index, for EnsureFullTextIndexAsync)
   <td>Trusted in-process scalar functions available to SQL and embedded expression surfaces. See <a href="trusted-csharp-functions.html">Trusted C# Scalar Functions</a>.</td>
 </tr>
 <tr>
+  <td><code>WindowExecution</code></td>
+  <td><code>WindowExecutionOptions</code></td>
+  <td>default instance</td>
+  <td>Finite row limits for bounded in-memory SQL window execution</td>
+</tr>
+<tr>
   <td><code>StorageEngineOptions</code></td>
   <td><code>StorageEngineOptions</code></td>
   <td>default instance</td>
@@ -187,6 +197,42 @@ FullTextIndexOptions (per-index, for EnsureFullTextIndexAsync)
 </tr>
 </tbody>
 </table>
+<h3 id="windowexecution">WindowExecution</h3>
+<p>Window functions buffer and order rows in memory. The owning embedded or direct host sets these limits on the <code>DatabaseOptions</code> instance used to open the database; they are not per-query SQL settings and cannot be overridden by a remote client statement.</p>
+<table class="doc-table">
+<thead>
+<tr>
+  <th>Option</th>
+  <th>Type</th>
+  <th>Default</th>
+  <th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>MaxPartitionRows</code></td>
+  <td><code>int</code></td>
+  <td><code>65536</code></td>
+  <td>Maximum number of rows allowed in one logical window partition</td>
+</tr>
+<tr>
+  <td><code>MaxBufferedRows</code></td>
+  <td><code>int</code></td>
+  <td><code>262144</code></td>
+  <td>Maximum number of input rows one in-memory window stage may buffer</td>
+</tr>
+</tbody>
+</table>
+<p>Both values must be greater than zero, and <code>MaxBufferedRows</code> cannot be smaller than <code>MaxPartitionRows</code>. Exceeding either runtime limit stops the query with <code>ResourceLimitExceeded</code> rather than allowing uncontrolled memory growth.</p>
+<pre><code class="language-csharp">await using var db = await Database.OpenAsync(&quot;mydata.db&quot;, new DatabaseOptions
+{
+    WindowExecution = new WindowExecutionOptions
+    {
+        MaxPartitionRows = 20_000,
+        MaxBufferedRows = 80_000,
+    },
+});
+</code></pre>
 <hr />
 <h2 id="storageengineoptions">StorageEngineOptions</h2>
 <p>Top-level storage engine configuration.</p>

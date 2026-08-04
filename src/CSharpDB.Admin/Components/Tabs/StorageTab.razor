@@ -288,7 +288,7 @@
                               rows="12"
                               @bind="_foreignKeyMigrationSpecJson"
                               disabled="@_maintenanceBusy"
-                              placeholder='{"validateOnly":true,"violationSampleLimit":100,"constraints":[{"tableName":"orders","columnName":"customer_id","referencedTableName":"customers","referencedColumnName":"id","onDelete":"Restrict"}]}'></textarea>
+                              placeholder='{"validateOnly":true,"violationSampleLimit":100,"constraints":[{"tableName":"orders","columnName":"customer_id","referencedTableName":"customers","referencedColumnName":"id","onDelete":"Restrict","onUpdate":"Restrict"}]}'></textarea>
 
                     <div class="storage-action-row">
                         <div class="native-path-picker storage-native-path-picker">
@@ -358,6 +358,7 @@
                                             <th>Column</th>
                                             <th>References</th>
                                             <th>On Delete</th>
+                                            <th>On Update</th>
                                             <th>Constraint</th>
                                             <th>Support Index</th>
                                         </tr>
@@ -370,6 +371,7 @@
                                                 <td>@applied.ColumnName</td>
                                                 <td>@($"{applied.ReferencedTableName}({applied.ReferencedColumnName})")</td>
                                                 <td>@applied.OnDelete</td>
+                                                <td>@applied.OnUpdate</td>
                                                 <td class="mono-cell">@applied.ConstraintName</td>
                                                 <td class="mono-cell">@applied.SupportingIndexName</td>
                                             </tr>
@@ -606,7 +608,8 @@
       "columnName": "customer_id",
       "referencedTableName": "customers",
       "referencedColumnName": "id",
-      "onDelete": "Restrict"
+      "onDelete": "Restrict",
+      "onUpdate": "Restrict"
     }
   ]
 }

@@ -65,7 +65,7 @@
                 </div>
 
                 <h2>Searching</h2>
-                <p>Call <code>SearchAsync</code> with a query string. The query is tokenized with the same rules as the index, and all terms must match (AND semantics). Results are returned as a list of <code>FullTextSearchHit</code> values containing the <code>RowId</code> and a relevance <code>Score</code>.</p>
+                <p>Call <code>SearchAsync</code> with a query string. The query is tokenized with the same rules as the index, and all terms must match (AND semantics). Results are returned as a list of <code>FullTextSearchHit</code> values containing the physical <code>RowId</code> and a relevance <code>Score</code>. If a populated table later gains a single <code>INTEGER</code> primary key, complete ready full-text storage is rebuilt atomically and subsequent hits use the new primary-key row IDs.</p>
                 <div class="code-block" data-title="Running Queries">
                     <pre><code><span class="cm">// Single-term search</span>
 <span class="kw">var</span> hits = <span class="kw">await</span> db.SearchAsync(<span class="str">"fts_docs"</span>, <span class="str">"storage"</span>);

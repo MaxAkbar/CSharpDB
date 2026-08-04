@@ -30,6 +30,8 @@ public static class MacroBenchmarkRunner
             await operation();
         }
 
+        StabilizeAfterWarmup();
+
         // Measured run
         var histogram = new LatencyHistogram();
         var totalSw = Stopwatch.StartNew();
@@ -60,18 +62,20 @@ public static class MacroBenchmarkRunner
         CancellationToken ct = default)
     {
         // Warmup
-        var warmupEnd = DateTime.UtcNow + warmupDuration;
-        while (DateTime.UtcNow < warmupEnd && !ct.IsCancellationRequested)
+        var warmupSw = Stopwatch.StartNew();
+        while (warmupSw.Elapsed < warmupDuration && !ct.IsCancellationRequested)
         {
             await operation();
         }
 
+        warmupSw.Stop();
+        StabilizeAfterWarmup();
+
         // Measured run
         var histogram = new LatencyHistogram();
         var totalSw = Stopwatch.StartNew();
-        var measuredEnd = DateTime.UtcNow + measuredDuration;
 
-        while (DateTime.UtcNow < measuredEnd && !ct.IsCancellationRequested)
+        while (totalSw.Elapsed < measuredDuration && !ct.IsCancellationRequested)
         {
             var sw = Stopwatch.StartNew();
             await operation();
@@ -84,5 +88,15 @@ public static class MacroBenchmarkRunner
         var result = BenchmarkResult.FromHistogram(name, histogram, totalSw.Elapsed.TotalMilliseconds);
         Console.WriteLine($"  {name}: {result.OpsPerSecond:N0} ops/sec, P50={result.P50Ms:F3}ms, P99={result.P99Ms:F3}ms, P999={result.P999Ms:F3}ms");
         return result;
+    }
+
+    /// <summary>
+    /// Moves finalization and a full collection outside the measured interval.
+    /// </summary>
+    public static void StabilizeAfterWarmup()
+    {
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
     }
 }

@@ -48,6 +48,7 @@ public static class CheckpointUnderLoadBenchmark
             {
                 Name = $"CheckpointLoad_{walFrameTarget}frames_CheckpointTime",
                 TotalOps = 1,
+                LatencySamples = 1,
                 ElapsedMs = ckptSw.Elapsed.TotalMilliseconds,
                 P50Ms = ckptSw.Elapsed.TotalMilliseconds,
                 P90Ms = ckptSw.Elapsed.TotalMilliseconds,

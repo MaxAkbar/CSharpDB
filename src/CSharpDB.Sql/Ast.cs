@@ -37,6 +37,8 @@ public sealed class ForeignKeyClause
     public string? ReferencedColumnName { get; init; }
     public CSharpDB.Primitives.ForeignKeyOnDeleteAction OnDelete { get; init; } =
         CSharpDB.Primitives.ForeignKeyOnDeleteAction.Restrict;
+    public CSharpDB.Primitives.ForeignKeyOnDeleteAction OnUpdate { get; init; } =
+        CSharpDB.Primitives.ForeignKeyOnDeleteAction.Restrict;
 }
 
 public sealed class ForeignKeyConstraintClause
@@ -46,6 +48,8 @@ public sealed class ForeignKeyConstraintClause
     public required string ReferencedTableName { get; init; }
     public List<string>? ReferencedColumns { get; init; }
     public CSharpDB.Primitives.ForeignKeyOnDeleteAction OnDelete { get; init; } =
+        CSharpDB.Primitives.ForeignKeyOnDeleteAction.Restrict;
+    public CSharpDB.Primitives.ForeignKeyOnDeleteAction OnUpdate { get; init; } =
         CSharpDB.Primitives.ForeignKeyOnDeleteAction.Restrict;
 }
 
@@ -111,6 +115,7 @@ public sealed class SelectStatement : QueryStatement
     public Expression? Where { get; init; }
     public List<Expression>? GroupBy { get; init; }
     public Expression? Having { get; init; }
+    public List<NamedWindowDefinition> WindowDefinitions { get; init; } = [];
     public List<OrderByClause>? OrderBy { get; init; }
     public int? Limit { get; init; }
     public int? Offset { get; init; }
@@ -369,6 +374,12 @@ public sealed class ExplainEstimateStatement : Statement
     public required Statement Target { get; init; }
 }
 
+public sealed class ExplainStatement : Statement
+{
+    public required Statement Target { get; init; }
+    public bool Analyze { get; init; }
+}
+
 // ============ Data Hygiene ============
 
 public enum DuplicateKeepMode
@@ -548,11 +559,40 @@ public sealed class FunctionCallExpression : Expression
 public sealed class WindowFunctionExpression : Expression
 {
     public required FunctionCallExpression Function { get; init; }
-    public required WindowSpecification Window { get; init; }
+    public required WindowSpecification Window { get; set; }
+}
+
+public sealed class NamedWindowDefinition
+{
+    public required string Name { get; init; }
+    public required WindowSpecification Specification { get; init; }
 }
 
 public sealed class WindowSpecification
 {
+    public string? ReferenceName { get; init; }
     public List<Expression> PartitionBy { get; init; } = [];
     public List<OrderByClause> OrderBy { get; init; } = [];
+    public WindowFrame? Frame { get; init; }
+}
+
+public sealed class WindowFrame
+{
+    public required WindowFrameBound Start { get; init; }
+    public required WindowFrameBound End { get; init; }
+}
+
+public sealed class WindowFrameBound
+{
+    public required WindowFrameBoundKind Kind { get; init; }
+    public long? Offset { get; init; }
+}
+
+public enum WindowFrameBoundKind
+{
+    UnboundedPreceding,
+    Preceding,
+    CurrentRow,
+    Following,
+    UnboundedFollowing,
 }

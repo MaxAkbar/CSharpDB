@@ -89,7 +89,7 @@
                 </tr>
                 <tr>
                 <td><strong>Index range scans</strong></td>
-                <td>Use indexes for <code>&lt;</code>, <code>&gt;</code>, <code>&lt;=</code>, <code>&gt;=</code>, <code>BETWEEN</code> — not just equality</td>
+                <td>Use eligible single-column <code>INTEGER</code> and single-column ordered <code>TEXT</code> indexes for <code>&lt;</code>, <code>&gt;</code>, <code>&lt;=</code>, <code>&gt;=</code>, and <code>BETWEEN</code> predicates; <code>REAL</code> indexes remain equality-only</td>
                 <td>Done</td>
                 </tr>
                 <tr>
@@ -213,7 +213,7 @@
                 <tbody>
                 <tr>
                 <td><strong>SQL feature coverage</strong></td>
-                <td>The public <a href="docs/sql.html">SQL Reference</a> and automated regression coverage are in place. Core development slices cover quoted identifiers, SQL three-valued logic, <code>UNION ALL</code>, literal <code>DEFAULT</code>/<code>CHECK</code>, logical composite keys, standalone primary-key add/drop with bounded populated single-INTEGER rekeying, table-level/composite foreign keys, Tier-1 windows, transactional shadow-root rewrites including exact INTEGER/REAL and indexed TEXT-collation ALTER COLUMN operations, constraint metadata transport, EF-generated defaults/checks/composite keys/named relationships/column rewrites, richer ADO.NET metadata, and a central function catalog. The remaining staged work covers additional referential actions, nonnumeric and indexed-numeric rewrites, broader physical-rekey ALTER operations, deeper generated-SQL testing, normalized metadata, physical explain/profile output, and release validation.</td>
+                <td>The bounded SQL implementation and its automated functional qualification gate are complete across the public reference, regression suite, versioned migration capability catalog, replayable EF SQL corpus, historical-database reopen coverage, fault-injected recovery, and a canonical typed parity workload plus feature-specific direct/ADO.NET/HTTP/gRPC coverage where applicable. Status remains In Progress until the release commit records two clean Windows, Linux, and macOS passes, two passing GitHub-hosted comparisons of the 18 stable master-table rows, and two passing sequential local durable-write comparisons on one idle fixed-SSD Windows machine using the same hash-verified harness and valid, stable raw evidence. The local gate must publish its success status on that exact release commit. Supplemental performance suites remain report-only or manual diagnostics. Advanced SQL work is tracked in separate rows rather than keeping completed bounded implementation slices partially complete.</td>
                 <td>In Progress</td>
                 </tr>
                 <tr>
@@ -238,33 +238,68 @@
                 </tr>
                 <tr>
                 <td><strong>Window functions</strong></td>
-                <td>A bounded in-memory Tier-1 implementation covers <code>ROW_NUMBER()</code>, <code>RANK()</code>, <code>DENSE_RANK()</code>, and common aggregate windows with partitioning, ordering, peer-aware defaults, cancellation, and explicit rejection coverage. Explicit frames, advanced functions, incompatible window groups, and spill-backed large partitions remain later tiers.</td>
-                <td>In Progress</td>
+                <td>Done as a bounded in-memory slice: <code>ROW_NUMBER()</code>, <code>RANK()</code>, <code>DENSE_RANK()</code>, common aggregate windows with partitioning, <code>LAG</code>/<code>LEAD</code>/<code>FIRST_VALUE</code>/<code>LAST_VALUE</code>, explicit <code>ROWS</code> frames, case-insensitive named windows, compatible shared ordering across different frames, deterministic peer/NULL behavior, prepared execution, cancellation, and configurable limits with explicit <code>ResourceLimitExceeded</code> failures. Disk spill is deferred and is not required for completion because memory growth is bounded; incompatible partition/order specifications and later SQL window forms remain explicitly unsupported.</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>EF Core migration and provider validation</strong></td>
+                <td>Done for the bounded provider contract: a frozen, independently replayable three-version Up/Down SQL corpus covers empty and populated migrations, upgrade/downgrade paths, defaults/checks, composite keys, named relationships and immediate referential actions, primary-key changes, supported column rewrites, table/column/index rename chains, rollback, reopen, runtime CRUD, and ADO.NET schema inspection. Unsupported migration operations covered by this contract fail during SQL generation with stable <code>CDBEF2001</code> diagnostics. EF migration execution remains embedded/direct; ordinary SQL and metadata transport parity is qualified separately.</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Physical <code>EXPLAIN</code> and profile</strong></td>
+                <td>Done for the bounded physical-plan contract: structural <code>EXPLAIN</code> and executing <code>EXPLAIN ANALYZE</code> rowsets distinguish estimates from actual rows, loops, and elapsed time; expose operator, access-path, index/join, predicate, and relative-cost metadata across direct, ADO.NET, HTTP, and gRPC; preserve normal DML transaction semantics; redact literal and prepared-parameter values from predicate metadata; and attach bounded partial diagnostics on cancellation or errors where safe.</td>
+                <td>Done</td>
                 </tr>
                 <tr>
                 <td><strong><code>DEFAULT</code> column values</strong></td>
-                <td>Persisted typed-literal and NULL defaults, omitted-value application, explicit <code>DEFAULT</code> markers, <code>INSERT ... DEFAULT VALUES</code>, EF create-table generation, and direct/HTTP/gRPC/archive/DevOps metadata round trips are implemented. Statement-time functions such as <code>CURRENT_TIMESTAMP</code> remain.</td>
-                <td>Partial</td>
+                <td>Done for the bounded literal slice: persisted typed-literal and NULL defaults, omitted-value application, explicit <code>DEFAULT</code> markers, <code>INSERT ... DEFAULT VALUES</code>, EF generation, and metadata transport are qualified.</td>
+                <td>Done</td>
                 </tr>
                 <tr>
                 <td><strong><code>CHECK</code> constraints</strong></td>
-                <td>Named/unnamed column and table checks support deterministic row-local expressions, SQL three-valued semantics, persistence/reopen, rename preservation, and core catalogs. Functions, parameters, subqueries, stable-id binding, and every transport/import path remain.</td>
-                <td>Partial</td>
+                <td>Done for the bounded deterministic row-local slice: named/unnamed column and table checks have stable identities and support SQL three-valued semantics, persistence/reopen, rename preservation, catalogs, EF generation, and metadata transport.</td>
+                <td>Done</td>
                 </tr>
                 <tr>
                 <td><strong>ALTER COLUMN rewrites</strong></td>
-                <td>Dependency-free INTEGER-to-REAL and REAL-to-INTEGER changes plus SET/DROP COLLATION on TEXT use transactional shadow roots, preserve row ids, revalidate checks, persist across reopen, and are emitted by EF Core. Collation changes atomically rebuild ready ordinary/unique SQL indexes that inherit the column collation; explicit-collation and unrelated roots remain unchanged, and uniqueness collisions restore the original roots. Compound EF default/type/collation/nullability commands run in one migration transaction and roll back together on failure. Numeric conversion is exact: INTEGER values are limited to ±2<sup>53</sup>, and REAL values must be finite, integral Int64 values. TEXT/BLOB conversions, indexed numeric changes, and broader dependency rewriting remain.</td>
-                <td>Partial</td>
+                <td>Done for the bounded ALTER COLUMN slice: exact INTEGER/REAL conversion with eligible index rebuilding, strict dependency-free UTF-8 TEXT/BLOB conversion, and indexed TEXT collation changes use transactional shadow-root rewrites; literal-default and nullability changes use validated transactional catalog updates. The rewrite paths preserve row ids, revalidate CHECK expressions and rebuilt uniqueness, roll back atomically after injected WAL failures, persist across reopen, and are emitted with the catalog operations in EF Core Up/Down migrations.</td>
+                <td>Done</td>
                 </tr>
                 <tr>
                 <td><strong>Primary and unique keys</strong></td>
-                <td>Named/unnamed single and composite primary/unique keys support persistence, enforcement, ordered catalogs, and EF migrations. Standalone PRIMARY KEY add/drop covers validated logical keys, populated single INTEGER rekeying with atomic ready relational-index rebuilding, exact-name EF drops, and raw current-key drop. Full-text, collection, other, and non-ready indexes remain outside the bounded physical-rekey path.</td>
-                <td>Partial</td>
+                <td>Done for the bounded key slice: named/unnamed single and composite INTEGER/TEXT primary/unique keys support persistence, enforcement, ordered catalogs, and EF migrations. Standalone primary-key add/drop covers validated logical-key changes with engine-owned backing-index creation/removal; adding a key to a populated table additionally supports bounded single-INTEGER physical rekeying with atomic eligible relational-index and complete ready full-text-owned-store rebuilding.</td>
+                <td>Done</td>
                 </tr>
                 <tr>
                 <td><strong>Foreign key constraints</strong></td>
-                <td>Column/table scalar and composite constraints with MATCH SIMPLE, immediate RESTRICT/CASCADE, candidate-key/type/collation validation, persistence, dependency repair, ordered catalogs, ADO.NET, direct/REST/gRPC, archive, schema-tooling, and named EF create/add/drop coverage. Additional actions, deferrability, and stable ids remain.</td>
-                <td>Partial</td>
+                <td>Done for immediate MATCH SIMPLE: column/table scalar and composite constraints have stable identities, candidate-key/type/collation validation, and the full RESTRICT/NO ACTION/CASCADE/SET NULL/SET DEFAULT matrix for deletes and referenced-key updates. Nested mutations preserve normal row semantics and transactional rollback across persistence, metadata, transports, archives, and tooling. EF-generated DDL covers the bounded relationships; SET DEFAULT and mutating ON UPDATE actions require explicit migration operations rather than relationship-model scaffolding.</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Advanced default and check expressions</strong></td>
+                <td>Statement-time and computed default expressions plus broader safe check-expression forms beyond the completed deterministic row-local contract.</td>
+                <td>Planned</td>
+                </tr>
+                <tr>
+                <td><strong>Advanced rewrites and physical rekeying</strong></td>
+                <td>Indexed TEXT/BLOB conversion, broader dependency-aware rewrites, additional key shapes and index families, and ordered/range REAL access beyond the completed bounded rewrite and single-INTEGER rekey paths.</td>
+                <td>Planned</td>
+                </tr>
+                <tr>
+                <td><strong>Deferred referential semantics</strong></td>
+                <td>Deferrable constraints and MATCH FULL/PARTIAL, separate from the completed immediate MATCH SIMPLE action matrix.</td>
+                <td>Planned</td>
+                </tr>
+                <tr>
+                <td><strong>Broader ORM and metadata compatibility</strong></td>
+                <td>Additional third-party ORM suites and further normalized metadata surfaces beyond the qualified EF Core and ADO.NET contracts.</td>
+                <td>Planned</td>
+                </tr>
+                <tr>
+                <td><strong>SQL release qualification</strong></td>
+                <td>The automated GitHub gate blocks publishing on two clean full-suite passes for each supported operating system covering durable, in-memory, reopen/recovery configurations, historical-database upgrades, transport parity, the EF corpus, executable documentation, bounded property tests, and stable diagnostics for intentionally unsupported SQL. It also runs two balanced paired previous-release comparisons for the 18 persistent-read and in-memory master-table rows that are stable on hosted Windows runners. Disk-sensitive performance qualification is a required pre-tag local gate: two sequential balanced paired passes run the remaining ten durable SQL/collection single and batch write rows on one idle fixed-SSD Windows machine. With three pairs per order, each pass alternates six adjacent pairs, records six samples per revision with the same hash-recorded candidate harness for both engines, retains raw runs and recomputed aggregates, requires at least 100 latency observations per gate row, and evaluates paired effects separately in both order strata. Invalid evidence, or unstable, order-sensitive, or regressed blocking assessments, fail closed. Stable comparisons enforce a 15% throughput limit and fail P95 only when regression exceeds both 25% and 0.05 ms; P99 remains diagnostic and pass two reverses the starting order. A future blocking P99 claim requires a separately designed longer experiment with sufficient tail observations and repeatability. Only the canonical durable-v2 local policy can publish a policy-bound status on the exact candidate commit, and the release workflow requires that status from the configured attestor before publishing. Broader performance coverage remains in the existing scheduled report-only guardrails and manual supplemental suite diagnostics. This item closes when all automated functional and hosted-stable jobs and both local durable-write passes succeed for the release commit.</td>
+                <td>In Progress</td>
                 </tr>
                 <tr>
                 <td><strong>Remote host consolidation</strong></td>
@@ -333,12 +368,12 @@
                 </tr>
                 <tr>
                 <td><strong>ADO.NET <code>GetSchema</code> collections</strong></td>
-                <td>Implement <code>DbConnection.GetSchema()</code> for standard metadata collections (MetaDataCollections, Tables, Columns, Indexes, Views, ForeignKeys) to support ORMs and tooling that discover schema through ADO.NET</td>
+                <td><code>DbConnection.GetSchema()</code> exposes standard metadata collections (MetaDataCollections, Tables, Columns, Indexes, Views, ForeignKeys) for ORMs and tooling that discover schema through ADO.NET</td>
                 <td>Done</td>
                 </tr>
                 <tr>
                 <td><strong>Multilingual text support</strong></td>
-                <td><code>BINARY</code>, <code>NOCASE</code>, <code>NOCASE_AI</code>, and built-in <code>ICU:&lt;locale&gt;</code> collation now work across SQL schema/query semantics, metadata surfaces, and collection path indexes; dedicated ordered SQL text index optimization remains planned</td>
+                <td><code>BINARY</code>, <code>NOCASE</code>, <code>NOCASE_AI</code>, and built-in <code>ICU:&lt;locale&gt;</code> collation work across SQL schema/query semantics, metadata surfaces, ordered SQL text indexes, and collection path indexes</td>
                 <td>Done</td>
                 </tr>
                 </tbody>
@@ -412,7 +447,7 @@
                 </tr>
                 <tr>
                 <td><strong>Adaptive query re-optimization</strong></td>
-                <td>Done for the current phase: opt-in adaptive join execution can switch eligible index nested-loop joins to hash joins and can flip inner hash build sides at safe pre-emission boundaries when observed rows diverge materially from estimates. Broader <code>EXPLAIN ANALYZE</code>, runtime actual-row reporting, adaptive stats persistence, and arbitrary mid-plan reordering remain future work</td>
+                <td>Done for the current phase: opt-in adaptive join execution can switch eligible index nested-loop joins to hash joins and can flip inner hash build sides at safe pre-emission boundaries when observed rows diverge materially from estimates. Physical <code>EXPLAIN ANALYZE</code> now reports selected adaptive topology and runtime rows, loops, and elapsed time; adaptive stats persistence and arbitrary mid-plan reordering remain future work</td>
                 <td>Done</td>
                 </tr>
                 <tr>
@@ -478,19 +513,19 @@
                 </tr>
                 <tr>
                 <td><strong>Query</strong></td>
-                <td><code>UNION</code>, <code>UNION ALL</code>, <code>INTERSECT</code>, and <code>EXCEPT</code> are implemented in the core engine; feature-specific ADO.NET, REST, gRPC, and EF integration coverage is still being expanded, and <code>INTERSECT ALL</code>/<code>EXCEPT ALL</code> are unsupported</td>
+                <td><code>UNION</code>, <code>UNION ALL</code>, <code>INTERSECT</code>, and <code>EXCEPT</code> are implemented, with canonical direct, ADO.NET, REST, and gRPC parity coverage; <code>INTERSECT ALL</code>/<code>EXCEPT ALL</code> remain intentionally unsupported with stable diagnostics</td>
                 </tr>
                 <tr>
                 <td><strong>Query</strong></td>
-                <td>Tier-1 windows have parser, logical-phase, peer/default-frame, prepared execution, rejection, and cancellation coverage, but remain a bounded in-memory development preview. Advanced functions, explicit frames, incompatible window groups, and spill-backed large partitions are unsupported</td>
+                <td>Window functions are complete for the bounded in-memory slice, including ranking, aggregate, navigation/value functions, explicit <code>ROWS</code> frames, named windows, compatible shared ordering, peer/default-frame and NULL ordering semantics, prepared execution, cancellation, controlled resource-limit failures, and physical window explain/profile rows. <code>RANGE</code>/<code>GROUPS</code>/<code>EXCLUDE</code>, DISTINCT windows, NULL-treatment syntax, incompatible partition/order specifications, mixed grouped/subquery window queries, and disk spill remain deferred</td>
                 </tr>
                 <tr>
                 <td><strong>Schema</strong></td>
-                <td>Literal SQL <code>DEFAULT</code> values, deterministic row-local <code>CHECK</code> constraints, logical composite primary/unique keys, standalone PRIMARY KEY add/drop with bounded populated single-INTEGER rekeying, table-level/composite foreign keys with MATCH SIMPLE and immediate RESTRICT/CASCADE, additive transport/archive and ADO.NET constraint metadata, SET/DROP DEFAULT, validated SET/DROP NOT NULL and named constraint changes, plus transactional shadow-root rewrites for exact dependency-free INTEGER/REAL type changes and TEXT collation changes with inherited ordinary/unique SQL-index rebuilding are implemented. Statement-time/function defaults, arbitrary functions/subqueries in checks, stable schema ids, TEXT/BLOB type conversions, indexed numeric changes, broader dependency rewriting and physical rekey shapes/index kinds, additional referential actions, deferred constraints, and fault-injected rewrite recovery remain</td>
+                <td>Literal SQL <code>DEFAULT</code> values, deterministic row-local <code>CHECK</code> constraints, stable table, column, CHECK, key, and foreign-key identities, logical composite INTEGER/TEXT primary/unique keys, standalone PRIMARY KEY add/drop with engine-owned backing-index maintenance plus bounded populated single-INTEGER rekeying on add across ready relational and complete ready full-text index families, table-level/composite INTEGER/TEXT foreign keys with MATCH SIMPLE and the full immediate RESTRICT/NO ACTION/CASCADE/SET NULL/SET DEFAULT delete and update action matrix, additive transport/archive and ADO.NET constraint metadata, SET/DROP DEFAULT, validated SET/DROP NOT NULL and named constraint changes, plus transactional shadow-root rewrites for exact indexed INTEGER/REAL changes, strict dependency-free UTF-8 TEXT/BLOB changes, and TEXT collation changes with inherited ordinary/unique SQL-index rebuilding are implemented and covered by deterministic WAL-failure recovery tests. Statement-time/function defaults, arbitrary functions/subqueries in checks, indexed TEXT/BLOB and broader dependency rewrites, broader physical rekey shapes/index kinds, deferred constraints, and MATCH FULL/PARTIAL are separate advanced work</td>
                 </tr>
                 <tr>
                 <td><strong>Indexes</strong></td>
-                <td>Equality lookups support current <code>INTEGER</code>/<code>TEXT</code> indexes, but ordered range-scan pushdown is still limited to single-column <code>INTEGER</code> index paths</td>
+                <td>Equality lookups support <code>INTEGER</code>, <code>TEXT</code>, and hashed <code>REAL</code> SQL indexes. INTEGER-tag values on REAL-indexed columns must be exactly representable within ±2<sup>53</sup>; ordered/range REAL access remains unsupported, while ordered range-scan pushdown supports eligible single-column INTEGER and single-column ordered TEXT index paths</td>
                 </tr>
                 <tr>
                 <td><strong>RowId</strong></td>
@@ -522,7 +557,7 @@
                 </tr>
                 <tr>
                 <td><strong>Text / Multilingual</strong></td>
-                <td>Text is stored as UTF-8 and supports all Unicode languages; default semantics remain ordinal, but opt-in <code>BINARY</code>, <code>NOCASE</code>, <code>NOCASE_AI</code>, and <code>ICU:&lt;locale&gt;</code> collation are implemented for SQL and collection indexes. Dedicated ordered SQL text index optimization remains planned</td>
+                <td>Text is stored as UTF-8 and supports all Unicode languages; default semantics remain ordinal, while opt-in <code>BINARY</code>, <code>NOCASE</code>, <code>NOCASE_AI</code>, and <code>ICU:&lt;locale&gt;</code> collation work across SQL schema/query semantics, metadata, ordered SQL text indexes, and collection path indexes</td>
                 </tr>
                 <tr>
                 <td><strong>Concurrency</strong></td>
@@ -546,7 +581,7 @@
                 </tr>
                 <tr>
                 <td><strong>Query</strong></td>
-                <td>Phase-2 cost-based planning is in place: <code>ANALYZE</code>, <code>sys.table_stats</code>, <code>sys.column_stats</code>, public planner-stat diagnostics, histogram/heavy-hitter/prefix estimates, and bounded small-chain join reordering now feed join/access-path costing. Opt-in adaptive join re-optimization can react to stale-stat or parameter-sensitive join cardinality misses, while broader runtime actuals, <code>EXPLAIN ANALYZE</code>, and full mid-plan reordering remain future work</td>
+                <td>Phase-2 cost-based planning is in place: <code>ANALYZE</code>, <code>sys.table_stats</code>, <code>sys.column_stats</code>, public planner-stat diagnostics, histogram/heavy-hitter/prefix estimates, and bounded small-chain join reordering now feed join/access-path costing. Stable physical <code>EXPLAIN</code> and executing <code>EXPLAIN ANALYZE</code> rowsets expose selected operators, relative row-work costs, nullable row estimates, and separate runtime rows, loops, and elapsed time. Their 256 KiB limit is an inline content budget rather than an exact serialized transport size. Profile mode executes its target under normal transaction semantics; cancellation and execution errors remain failures, with bounded redacted partial-profile diagnostics attached where safe. Opt-in adaptive join re-optimization can react to stale-stat or parameter-sensitive join cardinality misses, while adaptive stats persistence and arbitrary mid-plan reordering remain future work</td>
                 </tr>
                 <tr>
                 <td><strong>Query</strong></td>
@@ -569,18 +604,19 @@
                 <li>Scalar subqueries, <code>IN (SELECT ...)</code>, and <code>EXISTS (SELECT ...)</code>, including correlated evaluation in filters, non-aggregate projections, and <code>UPDATE</code>/<code>DELETE</code> expressions</li>
                 <li>Scalar <code>TEXT(expr)</code> for filter-friendly text coercion</li>
                 <li>Composite (multi-column) indexes</li>
-                <li>Ordered integer index range scans (<code>&lt;</code>, <code>&lt;=</code>, <code>&gt;</code>, <code>&gt;=</code>, <code>BETWEEN</code>) in the fast lookup path</li>
+                <li>Ordered single-column INTEGER and TEXT index range scans (<code>&lt;</code>, <code>&lt;=</code>, <code>&gt;</code>, <code>&gt;=</code>, <code>BETWEEN</code>) in eligible fast lookup paths</li>
                 <li><code>ANALYZE</code>, persisted <code>sys.table_stats</code> / <code>sys.column_stats</code>, and stale-aware column-stat refresh</li>
                 <li>Phase-2 cost-based query planning: statistics-guided access-path selection, join method choice, hash build-side choice, histogram/heavy-hitter/cardinality estimation, composite-prefix correlation modeling, and bounded small-chain inner-join reordering</li>
                 <li>Public planner diagnostics through <code>EXPLAIN ESTIMATE FOR SELECT</code>, <code>WITH</code>, compound queries, and <code>sys.planner_*</code> virtual catalogs</li>
                 <li>Opt-in adaptive join re-optimization behind <code>DatabaseOptions.AdaptiveQueryReoptimization</code></li>
                 <li>SQL statement and SELECT plan caching</li>
                 <li>First-class <code>IDENTITY</code> / <code>AUTOINCREMENT</code> support for <code>INTEGER PRIMARY KEY</code> columns</li>
-                <li>Standalone <code>PRIMARY KEY</code> add/drop for validated logical keys and populated single-INTEGER rekeys with atomic relational-index rebuilding, including EF migrations, rollback, and dependency guards</li>
-                <li>Exact dependency-free INTEGER/REAL and indexed TEXT-collation ALTER COLUMN rewrites with atomic table/index roots, row-ID, check/uniqueness, rollback, reopen, and EF migration coverage</li>
+                <li>Standalone <code>PRIMARY KEY</code> add/drop with engine-owned backing-index creation/removal, plus bounded populated single-INTEGER rekeying on add with atomic ready relational-index and complete ready full-text-owned-store rebuilding, including EF migrations, rollback, reopen, and dependency guards</li>
+                <li>Initial exact dependency-free INTEGER/REAL and indexed TEXT-collation ALTER COLUMN rewrites with atomic table/index roots, row-ID, check/uniqueness, rollback, reopen, and EF migration coverage</li>
+                <li>Strict UTF-8 dependency-free TEXT/BLOB ALTER COLUMN rewrites, hashed equality REAL SQL indexes, and atomic ready-SQL-index rebuilding for exact INTEGER/REAL changes, including EF Up/Down coverage</li>
                 <li>Persisted table <code>NextRowId</code> high-water mark with compatibility fallback for legacy metadata</li>
                 <li>Views and triggers (BEFORE/AFTER on INSERT/UPDATE/DELETE)</li>
-                <li>Foreign key constraints: scalar/composite, column/table syntax, MATCH SIMPLE, immediate RESTRICT/CASCADE, ordered catalogs, and transport/archive preservation</li>
+                <li>Foreign key constraints: stable identities, scalar/composite column/table syntax, MATCH SIMPLE, the full immediate RESTRICT/NO ACTION/CASCADE/SET NULL/SET DEFAULT delete and update action matrix, ordered catalogs, and transport/archive preservation</li>
                 <li>Older-database foreign-key retrofit migration across direct, HTTP, gRPC, CLI, and Admin</li>
                 <li>ADO.NET provider (DbConnection, DbCommand, DbDataReader, DbTransaction)</li>
                 <li>ADO.NET <code>GetSchema()</code> metadata collections for core objects, restrictions, defaults, checks, ordered key columns, and ordered scalar/composite foreign-key pairs</li>

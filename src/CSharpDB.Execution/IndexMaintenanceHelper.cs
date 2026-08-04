@@ -29,7 +29,12 @@ internal static class IndexMaintenanceHelper
         IRecordSerializer readSerializer,
         CancellationToken ct = default)
     {
-        if (!TryResolveIndexColumnIndices(indexSchema, tableSchema, out var indexColumnIndices, out bool usesDirectIntegerKey))
+        if (!TryResolveIndexColumnIndices(
+                indexSchema,
+                tableSchema,
+                out var indexColumnIndices,
+                out var indexColumnTypes,
+                out bool usesDirectIntegerKey))
         {
             throw new CSharpDbException(
                 ErrorCode.TypeMismatch,
@@ -59,6 +64,7 @@ internal static class IndexMaintenanceHelper
                     if (!TryBuildIndexKey(
                             scan.Current,
                             indexColumnIndices,
+                            indexColumnTypes,
                             indexColumnCollations,
                             usesDirectIntegerKey,
                             storageMode,
@@ -92,6 +98,7 @@ internal static class IndexMaintenanceHelper
                     if (!TryBuildIndexKey(
                             scan.Current,
                             indexColumnIndices,
+                            indexColumnTypes,
                             indexColumnCollations,
                             usesDirectIntegerKey,
                             storageMode,
@@ -133,6 +140,7 @@ internal static class IndexMaintenanceHelper
                 if (!TryBuildIndexKey(
                         scan.Current,
                         indexColumnIndices,
+                        indexColumnTypes,
                         indexColumnCollations,
                         usesDirectIntegerKey,
                         storageMode,
@@ -169,6 +177,7 @@ internal static class IndexMaintenanceHelper
             if (!TryBuildIndexKey(
                     scan.Current,
                     indexColumnIndices,
+                    indexColumnTypes,
                     indexColumnCollations,
                     usesDirectIntegerKey,
                     storageMode,
@@ -434,10 +443,12 @@ internal static class IndexMaintenanceHelper
         IndexSchema index,
         TableSchema schema,
         out int[] columnIndices,
+        out DbType[] columnTypes,
         out bool usesDirectIntegerKey)
     {
         int count = index.Columns.Count;
         columnIndices = new int[count];
+        columnTypes = new DbType[count];
         usesDirectIntegerKey = false;
         if (count == 0)
             return false;
@@ -447,10 +458,12 @@ internal static class IndexMaintenanceHelper
             int colIdx = schema.GetColumnIndex(index.Columns[i]);
             if (colIdx < 0 || colIdx >= schema.Columns.Count)
                 return false;
-            if (schema.Columns[colIdx].Type is not (DbType.Integer or DbType.Text))
+            DbType columnType = schema.Columns[colIdx].Type;
+            if (columnType is not (DbType.Integer or DbType.Real or DbType.Text))
                 return false;
 
             columnIndices[i] = colIdx;
+            columnTypes[i] = columnType;
         }
 
         usesDirectIntegerKey = count == 1 && schema.Columns[columnIndices[0]].Type == DbType.Integer;
@@ -460,6 +473,7 @@ internal static class IndexMaintenanceHelper
     public static bool TryBuildIndexKey(
         DbValue[] row,
         int[] indexColumnIndices,
+        DbType[] indexColumnTypes,
         string?[] indexColumnCollations,
         bool usesDirectIntegerKey,
         SqlIndexStorageMode storageMode,
@@ -468,6 +482,7 @@ internal static class IndexMaintenanceHelper
         => TryBuildIndexKey(
             row,
             indexColumnIndices,
+            indexColumnTypes,
             indexColumnCollations,
             usesDirectIntegerKey,
             storageMode,
@@ -478,6 +493,7 @@ internal static class IndexMaintenanceHelper
     public static bool TryBuildIndexKey(
         DbValue[] row,
         int[] indexColumnIndices,
+        DbType[] indexColumnTypes,
         string?[] indexColumnCollations,
         bool usesDirectIntegerKey,
         SqlIndexStorageMode storageMode,
@@ -490,6 +506,10 @@ internal static class IndexMaintenanceHelper
 
         if (indexColumnIndices.Length == 0)
             return false;
+        if (indexColumnTypes.Length != indexColumnIndices.Length)
+            throw new ArgumentException(
+                "Index column type metadata must align with index column ordinals.",
+                nameof(indexColumnTypes));
 
         if (usesDirectIntegerKey)
         {
@@ -515,14 +535,21 @@ internal static class IndexMaintenanceHelper
             if (colIdx < 0 || colIdx >= row.Length)
                 return false;
 
-            var value = row[colIdx];
+            DbValue value = row[colIdx];
             if (value.IsNull)
                 return false;
-            if (value.Type is not (DbType.Integer or DbType.Text))
+            if (!TryNormalizeIndexComponent(
+                    value,
+                    indexColumnTypes[i],
+                    i < indexColumnCollations.Length
+                        ? indexColumnCollations[i]
+                        : null,
+                    out DbValue normalized))
+            {
                 return false;
+            }
 
-            string? collation = i < indexColumnCollations.Length ? indexColumnCollations[i] : null;
-            components[i] = CollationSupport.NormalizeIndexValue(value, collation);
+            components[i] = normalized;
         }
 
         if (storageMode == SqlIndexStorageMode.OrderedText)
@@ -772,9 +799,80 @@ internal static class IndexMaintenanceHelper
 
                 return hash;
             }
+            case DbType.Real:
+                hash ^= unchecked(
+                    (ulong)RealIndexKeyCodec.GetCanonicalBits(value.AsReal));
+                hash *= prime;
+                return hash;
             default:
                 throw new InvalidOperationException($"Cannot hash index component of type '{value.Type}'.");
         }
+    }
+
+    private static bool TryNormalizeIndexComponent(
+        DbValue value,
+        DbType columnType,
+        string? collation,
+        out DbValue normalized)
+    {
+        const long largestConsecutivelyRepresentableInteger =
+            9_007_199_254_740_992L;
+
+        if (columnType == DbType.Real)
+        {
+            if (value.Type == DbType.Real)
+            {
+                normalized = DbValue.FromReal(
+                    RealIndexKeyCodec.Normalize(value.AsReal));
+                return true;
+            }
+
+            if (value.Type == DbType.Integer)
+            {
+                long integer = value.AsInteger;
+                if (integer is <
+                        -largestConsecutivelyRepresentableInteger or
+                    > largestConsecutivelyRepresentableInteger)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.TypeMismatch,
+                        $"Cannot index INTEGER value {integer} through a REAL column without losing numeric equality precision.");
+                }
+            }
+        }
+
+        return TryNormalizeLookupComponent(
+            value,
+            columnType,
+            collation,
+            out normalized);
+    }
+
+    public static bool TryNormalizeLookupComponent(
+        DbValue value,
+        DbType columnType,
+        string? collation,
+        out DbValue normalized)
+    {
+        if (columnType == DbType.Real &&
+            value.Type is DbType.Integer or DbType.Real)
+        {
+            normalized = DbValue.FromReal(
+                RealIndexKeyCodec.Normalize(value.AsReal));
+            return true;
+        }
+
+        if (value.Type != columnType ||
+            columnType is not (DbType.Integer or DbType.Text))
+        {
+            normalized = DbValue.Null;
+            return false;
+        }
+
+        normalized = CollationSupport.NormalizeIndexValue(
+            value,
+            collation);
+        return true;
     }
 }
 

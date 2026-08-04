@@ -106,6 +106,7 @@
     <Project Path="tests/CSharpDB.CodeModules.Tests/CSharpDB.CodeModules.Tests.csproj" />
     <Project Path="tests/CSharpDB.ExtensionSandbox.Worker/CSharpDB.ExtensionSandbox.Worker.csproj" />
     <Project Path="tests/CSharpDB.Benchmarks/CSharpDB.Benchmarks.csproj" />
+    <Project Path="tests/CSharpDB.Benchmarks.Tests/CSharpDB.Benchmarks.Tests.csproj" />
     <Project Path="tests/CSharpDB.DataGen/CSharpDB.DataGen.csproj" />
   </Folder>
   <Folder Name="/tutorials/" />

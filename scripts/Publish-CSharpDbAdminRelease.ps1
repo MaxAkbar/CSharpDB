@@ -25,7 +25,11 @@ The output root. Defaults to artifacts/admin-release.
 Passes --no-restore to dotnet publish.
 
 .EXAMPLE
-.\scripts\Publish-CSharpDbAdminRelease.ps1 -Version 4.3.0
+$Version = (Read-Host 'Release version without the v prefix').Trim()
+if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') {
+    throw 'Enter a semantic release version in major.minor.patch form.'
+}
+.\scripts\Publish-CSharpDbAdminRelease.ps1 -Version $Version
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(

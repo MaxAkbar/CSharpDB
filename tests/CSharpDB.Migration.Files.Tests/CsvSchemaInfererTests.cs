@@ -704,7 +704,8 @@ public sealed class CsvSchemaInfererTests
         }
     }
 
-    private const string CurrentVersion = "4.3.0";
+    private const string CurrentVersion =
+        CSharpDbCapabilityCatalogLoader.CurrentTargetVersion;
 
     private static CsvColumnSchemaOverride Override(
         int index,

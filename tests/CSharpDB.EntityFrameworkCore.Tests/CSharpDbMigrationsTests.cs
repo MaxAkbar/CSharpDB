@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
 using Microsoft.EntityFrameworkCore.Storage;
+using EngineDatabase = CSharpDB.Engine.Database;
 
 namespace CSharpDB.EntityFrameworkCore.Tests;
 
@@ -382,6 +383,272 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
 
         await ExecuteScriptAsync(dbPath, dropSql);
         await ExecuteScriptAsync(dbPath, "INSERT INTO Posts (Id, BlogId) VALUES (2, 999);");
+    }
+
+    [Theory]
+    [InlineData(ReferentialAction.NoAction, "NO ACTION")]
+    [InlineData(ReferentialAction.Restrict, "RESTRICT")]
+    [InlineData(ReferentialAction.Cascade, "CASCADE")]
+    [InlineData(ReferentialAction.SetNull, "SET NULL")]
+    [InlineData(ReferentialAction.SetDefault, "SET DEFAULT")]
+    public void MigrationsSqlGenerator_StandaloneForeignKey_EmitsEveryImmediateAction(
+        ReferentialAction action,
+        string keyword)
+    {
+        string dbPath = Path.Combine(_workspace, "foreign-key-actions-generator.db");
+        using var db =
+            new MigrationRuntimeContext($"Data Source={dbPath}");
+        IMigrationsSqlGenerator generator =
+            db.GetService<IMigrationsSqlGenerator>();
+
+        MigrationCommand delete = Assert.Single(
+            generator.Generate(
+                [
+                    new AddForeignKeyOperation
+                    {
+                        Name = "FK_Posts_Blogs_BlogId",
+                        Table = "Posts",
+                        Columns = ["BlogId"],
+                        PrincipalTable = "Blogs",
+                        PrincipalColumns = ["Id"],
+                        OnDelete = action,
+                    },
+                ],
+                model: null));
+        Assert.Contains(
+            $"ON DELETE {keyword}",
+            delete.CommandText,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "ON UPDATE NO ACTION",
+            delete.CommandText,
+            StringComparison.Ordinal);
+
+        MigrationCommand update = Assert.Single(
+            generator.Generate(
+                [
+                    new AddForeignKeyOperation
+                    {
+                        Name = "FK_Posts_Blogs_BlogId",
+                        Table = "Posts",
+                        Columns = ["BlogId"],
+                        PrincipalTable = "Blogs",
+                        PrincipalColumns = ["Id"],
+                        OnDelete = ReferentialAction.NoAction,
+                        OnUpdate = action,
+                    },
+                ],
+                model: null));
+        Assert.Contains(
+            "ON DELETE NO ACTION",
+            update.CommandText,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            $"ON UPDATE {keyword}",
+            update.CommandText,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MigrationsSqlGenerator_CreateTable_EmitsPhase3ForeignKeyActions()
+    {
+        string dbPath = Path.Combine(
+            _workspace,
+            "foreign-key-create-actions-generator.db");
+        using var db =
+            new MigrationRuntimeContext($"Data Source={dbPath}");
+        IMigrationsSqlGenerator generator =
+            db.GetService<IMigrationsSqlGenerator>();
+        var create = new CreateTableOperation { Name = "Posts" };
+        create.Columns.Add(new AddColumnOperation
+        {
+            Name = "BlogId",
+            Table = create.Name,
+            ClrType = typeof(int),
+            ColumnType = "INTEGER",
+            IsNullable = false,
+            DefaultValue = 1,
+        });
+        create.ForeignKeys.Add(new AddForeignKeyOperation
+        {
+            Name = "FK_Posts_Blogs_BlogId",
+            Table = create.Name,
+            Columns = ["BlogId"],
+            PrincipalTable = "Blogs",
+            PrincipalColumns = ["Id"],
+            OnDelete = ReferentialAction.SetDefault,
+            OnUpdate = ReferentialAction.Cascade,
+        });
+
+        MigrationCommand command = Assert.Single(
+            generator.Generate([create], model: null));
+
+        Assert.Contains(
+            "DEFAULT 1",
+            command.CommandText,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "ON DELETE SET DEFAULT",
+            command.CommandText,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "ON UPDATE CASCADE",
+            command.CommandText,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MigrationsSqlGenerator_StandaloneForeignKey_RejectsUnknownAction()
+    {
+        string dbPath = Path.Combine(_workspace, "foreign-key-actions-invalid.db");
+        using var db =
+            new MigrationRuntimeContext($"Data Source={dbPath}");
+        IMigrationsSqlGenerator generator =
+            db.GetService<IMigrationsSqlGenerator>();
+        var invalid = new AddForeignKeyOperation
+        {
+            Name = "FK_Posts_Blogs_BlogId",
+            Table = "Posts",
+            Columns = ["BlogId"],
+            PrincipalTable = "Blogs",
+            PrincipalColumns = ["Id"],
+            OnUpdate = (ReferentialAction)999,
+        };
+        NotSupportedException error =
+            Assert.Throws<NotSupportedException>(
+                () => generator.Generate(
+                    [invalid],
+                    model: null));
+        Assert.Contains(
+            "ON UPDATE",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task MigrationsSqlGenerator_Phase3Actions_ExecuteAgainstPopulatedTables()
+    {
+        string dbPath = Path.Combine(
+            _workspace,
+            "foreign-key-phase3-actions.db");
+        await ExecuteScriptAsync(
+            dbPath,
+            """
+            CREATE TABLE DeleteParents (Id INTEGER PRIMARY KEY);
+            CREATE TABLE DeleteChildren (
+                Id INTEGER PRIMARY KEY,
+                ParentId INTEGER DEFAULT 2
+            );
+            CREATE TABLE CascadeParents (Id INTEGER PRIMARY KEY);
+            CREATE TABLE CascadeChildren (
+                Id INTEGER PRIMARY KEY,
+                ParentId INTEGER NOT NULL
+            );
+            CREATE TABLE NullParents (Id INTEGER PRIMARY KEY);
+            CREATE TABLE NullChildren (
+                Id INTEGER PRIMARY KEY,
+                ParentId INTEGER
+            );
+            CREATE TABLE DefaultParents (Id INTEGER PRIMARY KEY);
+            CREATE TABLE DefaultChildren (
+                Id INTEGER PRIMARY KEY,
+                ParentId INTEGER DEFAULT 2
+            );
+            INSERT INTO DeleteParents VALUES (1), (2);
+            INSERT INTO DeleteChildren VALUES (1, 1);
+            INSERT INTO CascadeParents VALUES (1);
+            INSERT INTO CascadeChildren VALUES (1, 1);
+            INSERT INTO NullParents VALUES (1);
+            INSERT INTO NullChildren VALUES (1, 1);
+            INSERT INTO DefaultParents VALUES (1), (2);
+            INSERT INTO DefaultChildren VALUES (1, 1);
+            """);
+
+        IReadOnlyList<MigrationCommand> commands;
+        using (var db =
+               new MigrationRuntimeContext($"Data Source={dbPath}"))
+        {
+            IMigrationsSqlGenerator generator =
+                db.GetService<IMigrationsSqlGenerator>();
+            commands = generator.Generate(
+                [
+                    ForeignKeyOperation(
+                        "FK_DeleteChildren_DeleteParents",
+                        "DeleteChildren",
+                        "DeleteParents",
+                        ReferentialAction.SetDefault,
+                        ReferentialAction.NoAction),
+                    ForeignKeyOperation(
+                        "FK_CascadeChildren_CascadeParents",
+                        "CascadeChildren",
+                        "CascadeParents",
+                        ReferentialAction.NoAction,
+                        ReferentialAction.Cascade),
+                    ForeignKeyOperation(
+                        "FK_NullChildren_NullParents",
+                        "NullChildren",
+                        "NullParents",
+                        ReferentialAction.NoAction,
+                        ReferentialAction.SetNull),
+                    ForeignKeyOperation(
+                        "FK_DefaultChildren_DefaultParents",
+                        "DefaultChildren",
+                        "DefaultParents",
+                        ReferentialAction.NoAction,
+                        ReferentialAction.SetDefault),
+                ],
+                model: null);
+        }
+
+        foreach (MigrationCommand command in commands)
+            await ExecuteScriptAsync(dbPath, command.CommandText);
+
+        await ExecuteScriptAsync(
+            dbPath,
+            """
+            DELETE FROM DeleteParents WHERE Id = 1;
+            UPDATE CascadeParents SET Id = 10 WHERE Id = 1;
+            UPDATE NullParents SET Id = 10 WHERE Id = 1;
+            UPDATE DefaultParents SET Id = 10 WHERE Id = 1;
+            """);
+
+        Assert.Equal(
+            2L,
+            Convert.ToInt64(await ExecuteScalarValueAsync(
+                dbPath,
+                "SELECT ParentId FROM DeleteChildren WHERE Id = 1")));
+        Assert.Equal(
+            10L,
+            Convert.ToInt64(await ExecuteScalarValueAsync(
+                dbPath,
+                "SELECT ParentId FROM CascadeChildren WHERE Id = 1")));
+        Assert.Equal(
+            DBNull.Value,
+            await ExecuteScalarValueAsync(
+                dbPath,
+                "SELECT ParentId FROM NullChildren WHERE Id = 1"));
+        Assert.Equal(
+            2L,
+            Convert.ToInt64(await ExecuteScalarValueAsync(
+                dbPath,
+                "SELECT ParentId FROM DefaultChildren WHERE Id = 1")));
+
+        static AddForeignKeyOperation ForeignKeyOperation(
+            string name,
+            string table,
+            string principalTable,
+            ReferentialAction onDelete,
+            ReferentialAction onUpdate) =>
+            new()
+            {
+                Name = name,
+                Table = table,
+                Columns = ["ParentId"],
+                PrincipalTable = principalTable,
+                PrincipalColumns = ["Id"],
+                OnDelete = onDelete,
+                OnUpdate = onUpdate,
+            };
     }
 
     [Fact]
@@ -961,6 +1228,157 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task MigrationsSqlGenerator_StandaloneIntegerPrimaryKey_RebuildsFullTextIndexes()
+    {
+        string dbPath = Path.Combine(
+            _workspace,
+            "integer-primary-key-fulltext-rekey.db");
+        await using (EngineDatabase database =
+            await EngineDatabase.OpenAsync(dbPath, Ct))
+        {
+            await database.ExecuteAsync(
+                """
+                CREATE TABLE Items (
+                    Id INTEGER NOT NULL,
+                    Code TEXT NOT NULL,
+                    Body TEXT NOT NULL
+                )
+                """,
+                Ct);
+            await database.ExecuteAsync(
+                "CREATE INDEX IX_Items_Code ON Items (Code)",
+                Ct);
+            await database.ExecuteAsync(
+                """
+                INSERT INTO Items (Id, Code, Body)
+                VALUES
+                    (10, 'ten', 'searchable first'),
+                    (20, 'twenty', 'searchable second')
+                """,
+                Ct);
+            await database.EnsureFullTextIndexAsync(
+                "FTS_Items_Body",
+                "Items",
+                ["Body"],
+                ct: Ct);
+
+            Assert.Equal(
+                2L,
+                Assert.Single(
+                    await database.SearchAsync(
+                        "FTS_Items_Body",
+                        "second",
+                        Ct)).RowId);
+        }
+
+        string addPrimaryKeySql;
+        using (var db =
+            new MigrationRuntimeContext($"Data Source={dbPath}"))
+        {
+            IMigrationsSqlGenerator generator =
+                db.GetService<IMigrationsSqlGenerator>();
+            addPrimaryKeySql = Assert.Single(
+                generator.Generate(
+                    [
+                        new AddPrimaryKeyOperation
+                        {
+                            Name = "PK_Items",
+                            Table = "Items",
+                            Columns = ["Id"],
+                        },
+                    ],
+                    model: null)).CommandText;
+        }
+
+        await using (var connection =
+            new CSharpDbConnection($"Data Source={dbPath}"))
+        {
+            await connection.OpenAsync(Ct);
+            await using var transaction =
+                await connection.BeginTransactionAsync(Ct);
+            foreach (string statement in
+                SqlScriptSplitter.SplitExecutableStatements(
+                    addPrimaryKeySql))
+            {
+                await using var command = connection.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText = statement;
+                await command.ExecuteNonQueryAsync(Ct);
+            }
+
+            await transaction.CommitAsync(Ct);
+        }
+
+        await CSharpDbConnection.ClearAllPoolsAsync();
+        await using (EngineDatabase database =
+            await EngineDatabase.OpenAsync(dbPath, Ct))
+        {
+            Assert.True(
+                database.GetTableSchema("Items")!.Columns[0].IsPrimaryKey);
+            Assert.Equal(
+                20L,
+                Assert.Single(
+                    await database.SearchAsync(
+                        "FTS_Items_Body",
+                        "second",
+                        Ct)).RowId);
+
+            await database.ExecuteAsync(
+                """
+                INSERT INTO Items (Code, Body)
+                VALUES ('generated', 'searchable generated')
+                """,
+                Ct);
+            Assert.Equal(
+                21L,
+                Assert.Single(
+                    await database.SearchAsync(
+                        "FTS_Items_Body",
+                        "generated",
+                        Ct)).RowId);
+
+            await database.ExecuteAsync(
+                """
+                UPDATE Items
+                SET Body = 'renamed content'
+                WHERE Id = 20
+                """,
+                Ct);
+            Assert.Empty(
+                await database.SearchAsync(
+                    "FTS_Items_Body",
+                    "second",
+                    Ct));
+            Assert.Equal(
+                20L,
+                Assert.Single(
+                    await database.SearchAsync(
+                        "FTS_Items_Body",
+                        "renamed",
+                        Ct)).RowId);
+
+            await database.ExecuteAsync(
+                "DELETE FROM Items WHERE Id = 10",
+                Ct);
+            Assert.Empty(
+                await database.SearchAsync(
+                    "FTS_Items_Body",
+                    "first",
+                    Ct));
+        }
+
+        await using EngineDatabase reopened =
+            await EngineDatabase.OpenAsync(dbPath, Ct);
+        Assert.Equal(
+            20L,
+            Assert.Single(
+                await reopened.SearchAsync(
+                    "FTS_Items_Body",
+                    "renamed",
+                    Ct)).RowId);
+    }
+
+    [Fact]
     public async Task MigrationsSqlGenerator_StandaloneIntegerPrimaryKey_RekeyRollsBackMigrationTransaction()
     {
         string dbPath = Path.Combine(_workspace, "integer-primary-key-rekey-rollback.db");
@@ -1517,7 +1935,7 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
     }
 
     [Fact]
-    public void MigrationsSqlGenerator_NonNumericAlterColumnTypeChange_RemainsExplicitlyRejected()
+    public void MigrationsSqlGenerator_UnsupportedAlterColumnTypeChange_RemainsExplicitlyRejected()
     {
         string dbPath = Path.Combine(_workspace, "alter-column-type-rejection.db");
         using var db = new MigrationRuntimeContext($"Data Source={dbPath}");
@@ -1544,6 +1962,109 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
             () => generator.Generate([operation], model: null));
         Assert.Contains("from store type 'TEXT' to 'INTEGER'", error.Message, StringComparison.Ordinal);
         Assert.Contains("INTEGER-to-REAL", error.Message, StringComparison.Ordinal);
+        Assert.Contains("TEXT-to-BLOB", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MigrationsSqlGenerator_AlterColumnTextBlob_OrdersFacetsAndHandlesCollation()
+    {
+        string dbPath = Path.Combine(_workspace, "alter-column-text-blob-generation.db");
+        using var db = new MigrationRuntimeContext($"Data Source={dbPath}");
+        IMigrationsSqlGenerator generator = db.GetService<IMigrationsSqlGenerator>();
+
+        var toBlob = new AlterColumnOperation
+        {
+            Name = "Value",
+            Table = "Items",
+            ClrType = typeof(byte[]),
+            ColumnType = "BLOB",
+            IsNullable = true,
+            DefaultValue = new byte[] { 0x00, 0xFF },
+            OldColumn = new AddColumnOperation
+            {
+                Name = "Value",
+                Table = "Items",
+                ClrType = typeof(string),
+                ColumnType = "TEXT",
+                Collation = "NOCASE",
+                IsNullable = false,
+                DefaultValue = "old",
+            },
+        };
+        string toBlobSql = string.Concat(
+            generator.Generate([toBlob], model: null)
+                .Select(command => command.CommandText));
+
+        AssertCommandsInOrder(
+            toBlobSql,
+            "ALTER TABLE \"Items\" ALTER COLUMN \"Value\" DROP DEFAULT",
+            "ALTER TABLE \"Items\" ALTER COLUMN \"Value\" TYPE BLOB",
+            "ALTER TABLE \"Items\" ALTER COLUMN \"Value\" SET DEFAULT X'00FF'",
+            "ALTER TABLE \"Items\" ALTER COLUMN \"Value\" DROP NOT NULL");
+        Assert.DoesNotContain(
+            "COLLATION",
+            toBlobSql,
+            StringComparison.OrdinalIgnoreCase);
+
+        var toText = new AlterColumnOperation
+        {
+            Name = "Value",
+            Table = "Items",
+            ClrType = typeof(string),
+            ColumnType = "TEXT",
+            Collation = "NOCASE",
+            IsNullable = false,
+            DefaultValue = "restored",
+            OldColumn = new AddColumnOperation
+            {
+                Name = "Value",
+                Table = "Items",
+                ClrType = typeof(byte[]),
+                ColumnType = "BLOB",
+                IsNullable = true,
+                DefaultValue = new byte[] { 0x00, 0xFF },
+            },
+        };
+        string toTextSql = string.Concat(
+            generator.Generate([toText], model: null)
+                .Select(command => command.CommandText));
+
+        AssertCommandsInOrder(
+            toTextSql,
+            "ALTER TABLE \"Items\" ALTER COLUMN \"Value\" DROP DEFAULT",
+            "ALTER TABLE \"Items\" ALTER COLUMN \"Value\" TYPE TEXT",
+            "ALTER TABLE \"Items\" ALTER COLUMN \"Value\" SET DEFAULT 'restored'",
+            "ALTER TABLE \"Items\" ALTER COLUMN \"Value\" SET COLLATION \"NOCASE\"",
+            "ALTER TABLE \"Items\" ALTER COLUMN \"Value\" SET NOT NULL");
+
+        var toBinaryText = new AlterColumnOperation
+        {
+            Name = "Value",
+            Table = "Items",
+            ClrType = typeof(string),
+            ColumnType = "TEXT",
+            Collation = "BINARY",
+            IsNullable = true,
+            OldColumn = new AddColumnOperation
+            {
+                Name = "Value",
+                Table = "Items",
+                ClrType = typeof(byte[]),
+                ColumnType = "BLOB",
+                IsNullable = true,
+            },
+        };
+        string toBinaryTextSql = Assert.Single(
+                generator.Generate([toBinaryText], model: null))
+            .CommandText;
+        Assert.Contains(
+            "ALTER TABLE \"Items\" ALTER COLUMN \"Value\" TYPE TEXT",
+            toBinaryTextSql,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "COLLATION",
+            toBinaryTextSql,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -1769,6 +2290,219 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
             "\"Amount\" INTEGER",
             convertedSql,
             StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task MigrationsSqlGenerator_AlterColumnTextBlob_ExecutesUpAndDownAndPersists()
+    {
+        string dbPath = Path.Combine(_workspace, "alter-column-text-blob.db");
+        await ExecuteScriptAsync(
+            dbPath,
+            """
+            CREATE TABLE Items (
+                Id INTEGER PRIMARY KEY,
+                Value TEXT COLLATE NOCASE NOT NULL DEFAULT 'old-default'
+            );
+            INSERT INTO Items (Id, Value) VALUES (1, 'Alpha');
+            INSERT INTO Items (Id, Value) VALUES (2, 'Grüße 雪');
+            """);
+
+        byte[] blobDefault =
+            System.Text.Encoding.UTF8.GetBytes("blob-default");
+        string toBlobSql;
+        string toTextSql;
+        using (var db = new MigrationRuntimeContext($"Data Source={dbPath}"))
+        {
+            IMigrationsSqlGenerator generator =
+                db.GetService<IMigrationsSqlGenerator>();
+            var toBlob = new AlterColumnOperation
+            {
+                Name = "Value",
+                Table = "Items",
+                ClrType = typeof(byte[]),
+                ColumnType = "BLOB",
+                IsNullable = true,
+                DefaultValue = blobDefault,
+                OldColumn = new AddColumnOperation
+                {
+                    Name = "Value",
+                    Table = "Items",
+                    ClrType = typeof(string),
+                    ColumnType = "TEXT",
+                    Collation = "NOCASE",
+                    IsNullable = false,
+                    DefaultValue = "old-default",
+                },
+            };
+            toBlobSql = string.Concat(
+                generator.Generate([toBlob], model: null)
+                    .Select(command => command.CommandText));
+
+            var toText = new AlterColumnOperation
+            {
+                Name = "Value",
+                Table = "Items",
+                ClrType = typeof(string),
+                ColumnType = "TEXT",
+                Collation = "NOCASE",
+                IsNullable = false,
+                DefaultValue = "text-default",
+                OldColumn = new AddColumnOperation
+                {
+                    Name = "Value",
+                    Table = "Items",
+                    ClrType = typeof(byte[]),
+                    ColumnType = "BLOB",
+                    IsNullable = true,
+                    DefaultValue = blobDefault,
+                },
+            };
+            toTextSql = string.Concat(
+                generator.Generate([toText], model: null)
+                    .Select(command => command.CommandText));
+        }
+
+        await ExecuteScriptAsync(dbPath, toBlobSql);
+        await CSharpDbConnection.ClearAllPoolsAsync();
+
+        Assert.Equal(
+            "BLOB",
+            await ExecuteScalarValueAsync(
+                dbPath,
+                "SELECT data_type FROM sys.columns " +
+                "WHERE table_name = 'Items' AND column_name = 'Value'"));
+        object? blobCollation = await ExecuteScalarValueAsync(
+            dbPath,
+            "SELECT collation FROM sys.columns " +
+            "WHERE table_name = 'Items' AND column_name = 'Value'");
+        Assert.True(blobCollation is null or DBNull);
+        Assert.Equal(
+            System.Text.Encoding.UTF8.GetBytes("Alpha"),
+            Assert.IsType<byte[]>(
+                await ExecuteScalarValueAsync(
+                    dbPath,
+                    "SELECT Value FROM Items WHERE Id = 1")));
+        Assert.Equal(
+            System.Text.Encoding.UTF8.GetBytes("Grüße 雪"),
+            Assert.IsType<byte[]>(
+                await ExecuteScalarValueAsync(
+                    dbPath,
+                    "SELECT Value FROM Items WHERE Id = 2")));
+
+        await ExecuteScriptAsync(
+            dbPath,
+            "INSERT INTO Items (Id) VALUES (3);");
+        Assert.Equal(
+            blobDefault,
+            Assert.IsType<byte[]>(
+                await ExecuteScalarValueAsync(
+                    dbPath,
+                    "SELECT Value FROM Items WHERE Id = 3")));
+
+        await ExecuteScriptAsync(dbPath, toTextSql);
+        await CSharpDbConnection.ClearAllPoolsAsync();
+
+        Assert.Equal(
+            "TEXT",
+            await ExecuteScalarValueAsync(
+                dbPath,
+                "SELECT data_type FROM sys.columns " +
+                "WHERE table_name = 'Items' AND column_name = 'Value'"));
+        Assert.Equal(
+            "NOCASE",
+            await ExecuteScalarValueAsync(
+                dbPath,
+                "SELECT collation FROM sys.columns " +
+                "WHERE table_name = 'Items' AND column_name = 'Value'"));
+        Assert.Equal(
+            "Grüße 雪",
+            await ExecuteScalarValueAsync(
+                dbPath,
+                "SELECT Value FROM Items WHERE Id = 2"));
+        Assert.Equal(
+            "blob-default",
+            await ExecuteScalarValueAsync(
+                dbPath,
+                "SELECT Value FROM Items WHERE Id = 3"));
+
+        await ExecuteScriptAsync(
+            dbPath,
+            "INSERT INTO Items (Id) VALUES (4);");
+        Assert.Equal(
+            "text-default",
+            await ExecuteScalarValueAsync(
+                dbPath,
+                "SELECT Value FROM Items WHERE Id = 4"));
+        Assert.Equal(
+            1L,
+            Convert.ToInt64(
+                await ExecuteScalarValueAsync(
+                    dbPath,
+                    "SELECT COUNT(*) FROM Items WHERE Value = 'alpha'")));
+    }
+
+    [Fact]
+    public async Task MigrationsSqlGenerator_AlterColumnBlobToText_RejectsInvalidUtf8WithoutChangingSchema()
+    {
+        string dbPath =
+            Path.Combine(
+                _workspace,
+                "alter-column-blob-text-invalid-utf8.db");
+        await ExecuteScriptAsync(
+            dbPath,
+            """
+            CREATE TABLE Items (
+                Id INTEGER PRIMARY KEY,
+                Value BLOB
+            );
+            INSERT INTO Items (Id, Value) VALUES (1, X'FFFE');
+            """);
+
+        string sql;
+        using (var db = new MigrationRuntimeContext($"Data Source={dbPath}"))
+        {
+            IMigrationsSqlGenerator generator =
+                db.GetService<IMigrationsSqlGenerator>();
+            sql = Assert.Single(
+                    generator.Generate(
+                        [
+                            new AlterColumnOperation
+                            {
+                                Name = "Value",
+                                Table = "Items",
+                                ClrType = typeof(string),
+                                ColumnType = "TEXT",
+                                IsNullable = true,
+                                OldColumn = new AddColumnOperation
+                                {
+                                    Name = "Value",
+                                    Table = "Items",
+                                    ClrType = typeof(byte[]),
+                                    ColumnType = "BLOB",
+                                    IsNullable = true,
+                                },
+                            },
+                        ],
+                        model: null))
+                .CommandText;
+        }
+
+        await Assert.ThrowsAsync<CSharpDbDataException>(
+            () => ExecuteScriptAsync(dbPath, sql));
+        await CSharpDbConnection.ClearAllPoolsAsync();
+
+        Assert.Equal(
+            "BLOB",
+            await ExecuteScalarValueAsync(
+                dbPath,
+                "SELECT data_type FROM sys.columns " +
+                "WHERE table_name = 'Items' AND column_name = 'Value'"));
+        Assert.Equal(
+            new byte[] { 0xFF, 0xFE },
+            Assert.IsType<byte[]>(
+                await ExecuteScalarValueAsync(
+                    dbPath,
+                    "SELECT Value FROM Items WHERE Id = 1")));
     }
 
     [Fact]
@@ -2250,7 +2984,7 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task MigrationsSqlGenerator_AlterColumnNumericType_RejectsDependentIndexWithoutChangingSchema()
+    public async Task MigrationsSqlGenerator_AlterColumnNumericType_RebuildsDependentIndexUpAndDown()
     {
         string dbPath = Path.Combine(_workspace, "alter-column-index-dependency.db");
         await ExecuteScriptAsync(
@@ -2261,9 +2995,11 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
                 Value INTEGER
             );
             CREATE INDEX IX_NumericItems_Value ON NumericItems (Value);
+            INSERT INTO NumericItems (Id, Value) VALUES (1, 10), (2, 25);
             """);
 
         string numericSql;
+        string reverseSql;
         using (var db = new MigrationRuntimeContext($"Data Source={dbPath}"))
         {
             IMigrationsSqlGenerator generator = db.GetService<IMigrationsSqlGenerator>();
@@ -2287,11 +3023,51 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
                     },
                 ],
                 model: null)).CommandText;
+            reverseSql = Assert.Single(generator.Generate(
+                [
+                    new AlterColumnOperation
+                    {
+                        Name = "Value",
+                        Table = "NumericItems",
+                        ClrType = typeof(long),
+                        ColumnType = "INTEGER",
+                        IsNullable = true,
+                        OldColumn = new AddColumnOperation
+                        {
+                            Name = "Value",
+                            Table = "NumericItems",
+                            ClrType = typeof(double),
+                            ColumnType = "REAL",
+                            IsNullable = true,
+                        },
+                    },
+                ],
+                model: null)).CommandText;
         }
 
-        CSharpDbDataException numericFailure = await Assert.ThrowsAsync<CSharpDbDataException>(
-            () => ExecuteScriptAsync(dbPath, numericSql));
-        Assert.Contains("IX_NumericItems_Value", numericFailure.Message, StringComparison.OrdinalIgnoreCase);
+        await ExecuteScriptAsync(dbPath, numericSql);
+        await CSharpDbConnection.ClearAllPoolsAsync();
+
+        Assert.Equal(
+            "REAL",
+            await ExecuteScalarValueAsync(
+                dbPath,
+                "SELECT data_type FROM sys.columns " +
+                "WHERE table_name = 'NumericItems' AND column_name = 'Value'"));
+        Assert.Equal(
+            1L,
+            Convert.ToInt64(await ExecuteScalarValueAsync(
+                dbPath,
+                "SELECT COUNT(*) FROM NumericItems WHERE Value = 10.0")));
+        Assert.Equal(
+            1L,
+            Convert.ToInt64(await ExecuteScalarValueAsync(
+                dbPath,
+                "SELECT COUNT(*) FROM sys.indexes " +
+                "WHERE index_name = 'IX_NumericItems_Value'")));
+
+        await ExecuteScriptAsync(dbPath, reverseSql);
+        await CSharpDbConnection.ClearAllPoolsAsync();
 
         Assert.Equal(
             "INTEGER",
@@ -2299,6 +3075,11 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
                 dbPath,
                 "SELECT data_type FROM sys.columns " +
                 "WHERE table_name = 'NumericItems' AND column_name = 'Value'"));
+        Assert.Equal(
+            1L,
+            Convert.ToInt64(await ExecuteScalarValueAsync(
+                dbPath,
+                "SELECT COUNT(*) FROM NumericItems WHERE Value = 25")));
     }
 
     [Fact]

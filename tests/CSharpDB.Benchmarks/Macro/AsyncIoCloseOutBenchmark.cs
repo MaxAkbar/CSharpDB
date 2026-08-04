@@ -340,6 +340,7 @@ public static class AsyncIoCloseOutBenchmark
         {
             Name = name,
             TotalOps = totalOps,
+            LatencySamples = 1,
             ElapsedMs = elapsedMs,
             P50Ms = elapsedMs,
             P90Ms = elapsedMs,

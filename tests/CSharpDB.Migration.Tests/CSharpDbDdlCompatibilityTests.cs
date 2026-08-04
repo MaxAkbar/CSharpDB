@@ -14,10 +14,10 @@ public sealed class CSharpDbDdlCompatibilityTests
     {
         const string script = """
             CREATE TABLE scalar_values (
-                integer_value INTEGER NOT NULL,
-                real_value REAL,
-                text_value TEXT COLLATE NOCASE,
-                blob_value BLOB
+                integer_value INTEGER NOT NULL DEFAULT -7,
+                real_value REAL DEFAULT -0.25,
+                text_value TEXT COLLATE NOCASE DEFAULT 'O''Brien',
+                blob_value BLOB DEFAULT X'00FF'
             );
             """;
 
@@ -57,6 +57,60 @@ public sealed class CSharpDbDdlCompatibilityTests
         AssertLowerSha256(report.PlanContractDigest);
         AssertLowerSha256(report.GeneratedDdlDigest);
         AssertLowerSha256(report.ExpectedSchemaDigest);
+        Assert.Equal(
+            report.ExpectedSchemaDigest,
+            report.ActualSchemaDigest);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_NonFiniteRealDefaultIsAnExplicitUnsupportedLiteral()
+    {
+        string script =
+            $"CREATE TABLE non_finite_default (value REAL DEFAULT {new string('9', 400)}.0);";
+
+        CSharpDbDdlCompatibilityReport report =
+            await AnalyzeAsync(script);
+
+        Assert.Equal(
+            MigrationCompatibilityStatus.Unsupported,
+            report.Status);
+        CSharpDbDdlCompatibilityDiagnostic diagnostic =
+            Assert.Single(report.Diagnostics);
+        Assert.Equal(
+            CSharpDbDdlCompatibilityAnalyzer.UnsupportedFeatureRuleId,
+            diagnostic.RuleId);
+        Assert.Contains(
+            "literal",
+            diagnostic.Summary,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, report.CandidateActionCount);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_RealDefaultsRoundTripAsExponentFreeLiterals()
+    {
+        const string script = """
+            CREATE TABLE real_defaults (
+                whole_value REAL DEFAULT 7.0,
+                negative_zero REAL DEFAULT -0.0,
+                small_value REAL DEFAULT 0.00001,
+                large_value REAL
+                    DEFAULT 123456789012345678901234567890.0
+            );
+            """;
+
+        CSharpDbDdlCompatibilityReport report =
+            await AnalyzeAsync(script);
+
+        Assert.Equal(
+            MigrationCompatibilityStatus.Compatible,
+            report.Status);
+        Assert.Equal(
+            MigrationEvidenceLevel.ScratchExecuted,
+            report.HighestEvidence);
+        Assert.Equal(1, report.ProvenStatementCount);
+        Assert.Empty(report.Diagnostics);
+        Assert.Empty(report.Differences);
         Assert.Equal(
             report.ExpectedSchemaDigest,
             report.ActualSchemaDigest);
@@ -151,6 +205,154 @@ public sealed class CSharpDbDdlCompatibilityTests
             report.HighestEvidence);
         Assert.Equal(3, report.ProvenStatementCount);
         Assert.Empty(report.Differences);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_AllImmediateForeignKeyActionsPassScratchProof()
+    {
+        const string script = """
+            CREATE TABLE action_parent (
+                id INTEGER PRIMARY KEY
+            );
+            CREATE TABLE action_child (
+                id INTEGER PRIMARY KEY,
+                delete_default_id INTEGER DEFAULT 1,
+                update_cascade_id INTEGER NOT NULL,
+                update_null_id INTEGER,
+                update_default_id INTEGER DEFAULT 1,
+                implicit_null_default_id INTEGER,
+                CONSTRAINT fk_delete_default
+                    FOREIGN KEY (delete_default_id)
+                    REFERENCES action_parent (id)
+                    ON DELETE SET DEFAULT,
+                CONSTRAINT fk_update_cascade
+                    FOREIGN KEY (update_cascade_id)
+                    REFERENCES action_parent (id)
+                    ON UPDATE CASCADE,
+                CONSTRAINT fk_update_null
+                    FOREIGN KEY (update_null_id)
+                    REFERENCES action_parent (id)
+                    ON UPDATE SET NULL,
+                CONSTRAINT fk_update_default
+                    FOREIGN KEY (update_default_id)
+                    REFERENCES action_parent (id)
+                    ON UPDATE SET DEFAULT,
+                CONSTRAINT fk_implicit_null_default
+                    FOREIGN KEY (implicit_null_default_id)
+                    REFERENCES action_parent (id)
+                    ON DELETE SET DEFAULT
+                    ON UPDATE NO ACTION
+            );
+            """;
+
+        CSharpDbDdlCompatibilityReport report =
+            await AnalyzeAsync(script);
+
+        Assert.Equal(
+            MigrationCompatibilityStatus.CompatibleWithRewrite,
+            report.Status);
+        Assert.Equal(
+            MigrationEvidenceLevel.ScratchExecuted,
+            report.HighestEvidence);
+        Assert.Equal(2, report.ProvenStatementCount);
+        Assert.Empty(report.Differences);
+        Assert.Equal(
+            report.ExpectedSchemaDigest,
+            report.ActualSchemaDigest);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_CompositeSetDefaultUsesOrderedTypedDefaults()
+    {
+        const string script = """
+            CREATE TABLE composite_parent (
+                tenant_id INTEGER NOT NULL,
+                code TEXT NOT NULL,
+                CONSTRAINT pk_composite_parent
+                    PRIMARY KEY (tenant_id, code)
+            );
+            CREATE TABLE composite_child (
+                id INTEGER PRIMARY KEY,
+                tenant_id INTEGER NOT NULL DEFAULT 7,
+                code TEXT NOT NULL DEFAULT 'fallback',
+                CONSTRAINT fk_composite_default
+                    FOREIGN KEY (tenant_id, code)
+                    REFERENCES composite_parent (tenant_id, code)
+                    ON DELETE SET DEFAULT
+                    ON UPDATE SET DEFAULT
+            );
+            """;
+
+        CSharpDbDdlCompatibilityReport report =
+            await AnalyzeAsync(script);
+
+        Assert.Equal(
+            MigrationCompatibilityStatus.CompatibleWithRewrite,
+            report.Status);
+        Assert.Equal(
+            MigrationEvidenceLevel.ScratchExecuted,
+            report.HighestEvidence);
+        Assert.Equal(2, report.ProvenStatementCount);
+        Assert.Empty(report.Differences);
+        Assert.Equal(
+            report.ExpectedSchemaDigest,
+            report.ActualSchemaDigest);
+    }
+
+    [Theory]
+    [InlineData(
+        """
+        CREATE TABLE action_parent (id INTEGER PRIMARY KEY);
+        CREATE TABLE action_child (
+            id INTEGER PRIMARY KEY,
+            parent_id INTEGER NOT NULL REFERENCES action_parent(id)
+                ON DELETE SET NULL
+        );
+        """)]
+    [InlineData(
+        """
+        CREATE TABLE action_parent (id INTEGER PRIMARY KEY);
+        CREATE TABLE action_child (
+            id INTEGER PRIMARY KEY,
+            parent_id INTEGER NOT NULL REFERENCES action_parent(id)
+                ON DELETE SET DEFAULT
+        );
+        """)]
+    [InlineData(
+        """
+        CREATE TABLE action_parent (id INTEGER PRIMARY KEY);
+        CREATE TABLE action_child (
+            id INTEGER PRIMARY KEY,
+            parent_id INTEGER NOT NULL DEFAULT NULL
+                REFERENCES action_parent(id)
+                ON UPDATE SET DEFAULT
+        );
+        """)]
+    [InlineData(
+        """
+        CREATE TABLE action_parent (id INTEGER PRIMARY KEY);
+        CREATE TABLE action_child (
+            id INTEGER PRIMARY KEY,
+            parent_id INTEGER NOT NULL REFERENCES action_parent(id)
+                ON UPDATE SET NULL
+        );
+        """)]
+    public async Task AnalyzeAsync_RejectsIneligibleMutatingForeignKeyActions(
+        string script)
+    {
+        CSharpDbDdlCompatibilityReport report =
+            await AnalyzeAsync(script);
+
+        Assert.Equal(
+            MigrationCompatibilityStatus.Unsupported,
+            report.Status);
+        Assert.Contains(
+            report.Diagnostics,
+            diagnostic =>
+                diagnostic.RuleId ==
+                CSharpDbDdlCompatibilityAnalyzer
+                    .UnsupportedFeatureRuleId);
+        Assert.Equal(0, report.CandidateActionCount);
     }
 
     [Fact]
@@ -274,7 +476,7 @@ public sealed class CSharpDbDdlCompatibilityTests
         "CREATE EXTERNAL TABLE external_data FROM 'private-source.csv';",
         "CREATE TEMP TABLE temp_data (id INTEGER);",
         "CREATE TABLE IF NOT EXISTS conditional_data (id INTEGER);",
-        "CREATE TABLE default_data (id INTEGER DEFAULT 7);",
+        "CREATE TABLE default_data (id INTEGER DEFAULT abs(7));",
         "CREATE TABLE identity_data (id INTEGER IDENTITY);",
         "CREATE TABLE versioned_data (revision BLOB ROWVERSION);",
         "CREATE TABLE checked_data (value INTEGER CHECK (value > 0));",
@@ -522,6 +724,36 @@ public sealed class CSharpDbDdlCompatibilityTests
             },
         };
 
+    [Fact]
+    public async Task AnalyzeAsync_RealEqualityIndexPassesScratchProof()
+    {
+        const string script = """
+            CREATE TABLE real_index (
+                scope_id INTEGER NOT NULL,
+                value REAL NOT NULL
+            );
+            CREATE UNIQUE INDEX ux_real_value
+                ON real_index (scope_id, value);
+            """;
+
+        CSharpDbDdlCompatibilityReport report =
+            await AnalyzeAsync(script);
+
+        Assert.Equal(
+            MigrationCompatibilityStatus.Compatible,
+            report.Status);
+        Assert.Equal(
+            MigrationEvidenceLevel.ScratchExecuted,
+            report.HighestEvidence);
+        Assert.Equal(2, report.StatementCount);
+        Assert.Equal(2, report.ProvenStatementCount);
+        Assert.Empty(report.Diagnostics);
+        Assert.Empty(report.Differences);
+        Assert.Equal(
+            report.ExpectedSchemaDigest,
+            report.ActualSchemaDigest);
+    }
+
     [Theory]
     [InlineData(
         "CREATE TABLE real_key (value REAL PRIMARY KEY);")]
@@ -529,15 +761,10 @@ public sealed class CSharpDbDdlCompatibilityTests
         "CREATE TABLE blob_key (value BLOB, PRIMARY KEY (value));")]
     [InlineData(
         """
-        CREATE TABLE real_index (value REAL);
-        CREATE INDEX ix_real ON real_index (value);
-        """)]
-    [InlineData(
-        """
         CREATE TABLE blob_index (value BLOB);
         CREATE INDEX ix_blob ON blob_index (value);
         """)]
-    public async Task AnalyzeAsync_RejectsRealOrBlobKeyAndIndex(
+    public async Task AnalyzeAsync_RejectsRealOrBlobKeyAndBlobIndex(
         string script)
     {
         CSharpDbDdlCompatibilityReport report =

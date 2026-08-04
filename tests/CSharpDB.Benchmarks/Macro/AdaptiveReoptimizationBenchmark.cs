@@ -103,6 +103,7 @@ public static class AdaptiveReoptimizationBenchmark
             {
                 Name = $"AdaptiveReoptimization_{scenario.Name}",
                 TotalOps = Iterations,
+                LatencySamples = histogram.SampleCount,
                 ElapsedMs = sw.Elapsed.TotalMilliseconds,
                 P50Ms = histogram.Percentile(0.50),
                 P90Ms = histogram.Percentile(0.90),
@@ -301,6 +302,7 @@ public static class AdaptiveReoptimizationBenchmark
         {
             Name = name,
             TotalOps = Iterations,
+            LatencySamples = histogram.SampleCount,
             ElapsedMs = elapsedMs,
             P50Ms = histogram.Percentile(0.50),
             P90Ms = histogram.Percentile(0.90),

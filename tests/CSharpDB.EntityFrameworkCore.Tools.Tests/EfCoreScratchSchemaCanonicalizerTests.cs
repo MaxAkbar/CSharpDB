@@ -35,13 +35,14 @@ public sealed class EfCoreScratchSchemaCanonicalizerTests
             """
             CREATE TABLE children (
                 id INTEGER PRIMARY KEY IDENTITY,
-                tenant_id INTEGER NOT NULL,
-                parent_code TEXT COLLATE NOCASE NOT NULL,
+                tenant_id INTEGER,
+                parent_code TEXT COLLATE NOCASE,
                 version BLOB ROWVERSION NOT NULL,
                 CONSTRAINT fk_children_parents
                     FOREIGN KEY (tenant_id, parent_code)
                     REFERENCES parents (tenant_id, code)
-                    ON DELETE CASCADE
+                    ON DELETE SET NULL
+                    ON UPDATE NO ACTION
             );
             """);
         await ExecuteAsync(
@@ -142,7 +143,8 @@ public sealed class EfCoreScratchSchemaCanonicalizerTests
             item =>
                 item.Kind == MigrationObjectKind.ForeignKey &&
                 item.TargetName == "FK_CHILDREN_PARENTS");
-        AssertAttribute(foreignKey, "onDelete", "cascade");
+        AssertAttribute(foreignKey, "onDelete", "set-null");
+        AssertAttribute(foreignKey, "onUpdate", "no-action");
         Assert.Equal(
             2,
             foreignKey.Members.Count(member =>

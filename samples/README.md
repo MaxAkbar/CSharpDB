@@ -311,9 +311,9 @@ dotnet run --project samples/fulfillment-hub/FulfillmentHubSample.csproj
 
 This is the broadest runnable operations sample in the repo. It rebuilds a fresh database, seeds the relational schema and snapshot data, stores procedures and saved queries, persists admin forms and reports, saves and runs pipelines, seeds collections, and creates a full-text index over operational playbooks.
 
-## v2.2.0 API Examples
+## Additional API Examples
 
-The SQL samples above cover the relational surface. The following snippets show v2.2.0 features that are accessed through the `CSharpDB.Client` and `CSharpDB.Engine` C# APIs.
+The SQL samples above cover the relational surface. The following snippets show additional features that are accessed through the `CSharpDB.Client` and `CSharpDB.Engine` C# APIs.
 
 ### Collection Path Indexing and Queries
 

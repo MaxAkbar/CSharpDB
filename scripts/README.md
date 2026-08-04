@@ -46,16 +46,81 @@ Use this path before tagging or when validating release packaging locally.
 Commit implementation, version, documentation, roadmap, and release-note
 changes together. The release tag is the immutable record of that source state.
 
-2. Build and test the release commit.
+2. Run the complete local release qualification from a clean checkout.
 
 ```powershell
-dotnet build CSharpDB.slnx -c Release
-dotnet test tests\CSharpDB.Daemon.Tests\CSharpDB.Daemon.Tests.csproj -c Release
+$QualificationOutput = Join-Path `
+  ([IO.Path]::GetTempPath()) `
+  "csharpdb-sql-release-$([Guid]::NewGuid().ToString('N'))"
+
+.\scripts\Test-SqlReleaseQualification.ps1 `
+  -OutputPath $QualificationOutput `
+  -Configuration Release
 ```
+
+The script validates documentation and package boundaries, restores and builds
+the solution, runs every test project in `CSharpDB.slnx`, runs the
+cross-platform migration-isolation checks, and adds the Windows-only Access
+isolation check on Windows. Logs, TRX results, temporary package state, and the
+Markdown result are written beneath the caller-selected output path outside
+the repository. The source tree must be clean before and after the run.
+
+The authoritative GitHub `SQL Release Qualification` workflow executes this
+same functional check in two independent clean jobs on each of Windows, Linux,
+and macOS. It can be started manually for a release candidate and is also
+required automatically by the tag release workflow before any publishing job
+starts. Before the workflow has first reached the default branch, pushing a
+non-release `qualification-*` tag runs it from that exact candidate commit
+without invoking the `v*` publishing workflow. Once registered on the default
+branch, normal manual dispatch can target any release-candidate branch. The
+workflow also keeps the 18 persistent-read and in-memory master-table rows
+blocking in two balanced paired Windows jobs. Only the ten disk-sensitive
+durable writes are excluded from hosted performance qualification.
+
+The durable-write comparison is run against the final release commit immediately
+before tagging in step 5 below.
+
+For a same-artifact exact-row A/A diagnostic, use an absent or empty output
+directory outside the checkout:
+
+```powershell
+.\tests\CSharpDB.Benchmarks\scripts\Test-PreviousReleasePerformance.ps1 `
+  -PreviousRef HEAD -CandidateRef HEAD `
+  -OutputPath (Join-Path ([IO.Path]::GetTempPath()) "csharpdb-hybrid-aa-$([Guid]::NewGuid().ToString('N'))") `
+  -QualificationPass 1 -Paired -RepeatCount 5 `
+  -AllowSameRevision -ShareSameRevisionArtifact `
+  -HybridStorageScenarioName 'Storage_HybridIncrementalDurable_Sql_SingleInsert_5s' `
+  -PostBuildQuiescenceSeconds 30
+```
+
+Five repeats mean five pairs per order, ten pairs total. The exact,
+case-sensitive scenario replaces the seven-suite plan and takes precedence over
+`-SuiteName`. Each logical invocation performs one internal two-second warmup,
+then records until it has both 30 measured seconds and 10,000 retained latency
+samples; failure to reach both by the 120-second measured-phase cap fails
+closed. All paired comparisons use exact direct DLL execution and pre/post
+verification of the complete runnable closure. `-AllowSameRevision` alone
+permits A/A but still uses two builds; `-ShareSameRevisionArtifact` additionally
+requires equal commits and maps one candidate DLL and closure to both labels.
+Both logical identities, the shared execution-time path, and all relative
+closure file hashes are recorded.
+
+These controls diagnose the harness only and cannot replace either balanced
+paired cross-version qualification pass or promote a baseline.
+`-PostBuildQuiescenceSeconds` is an opt-in build-server shutdown plus fixed wait,
+not a machine-idleness guarantee, and it can affect concurrent .NET builds.
+Preflight metadata, hash manifests, raw and aggregate CSV evidence, logs, and
+reports must remain in the runner-owned external directory. Never copy or
+commit them into source paths. Diagnostic runs do not update the curated
+`release-core-manifest.json` and do not introduce generated diagnostic JSON.
 
 3. Publish one local archive for a fast packaging check.
 
 ```powershell
+$Version = (Read-Host 'Release version without the v prefix').Trim()
+if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') {
+  throw 'Enter a semantic release version in major.minor.patch form.'
+}
 .\scripts\Publish-CSharpDbDaemonRelease.ps1 `
   -Version $Version `
   -Runtime win-x64 `
@@ -69,15 +134,24 @@ Get-ChildItem artifacts\daemon-release-local\archives
 Get-Content artifacts\daemon-release-local\archives\SHA256SUMS.txt
 ```
 
-5. After the pull request is merged, update local `main`, create the tag at the
-   merge commit, and run release validation before pushing the tag.
+5. After the pull request is merged, update local `main`, qualify the exact merge
+   commit on the dedicated fixed-SSD Windows machine, then create and push the
+   tag.
 
 ```powershell
 git switch main
 git pull --ff-only
-$Version = '4.2.0'
+$Version = (Read-Host 'Release version without the v prefix').Trim()
+if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') {
+  throw 'Enter a semantic release version in major.minor.patch form.'
+}
 $Tag = "v$Version"
 $TagCommit = (git rev-parse 'HEAD^{commit}').Trim()
+
+.\tests\CSharpDB.Benchmarks\scripts\Test-LocalDurablePerformance.ps1 `
+  -CandidateRef $TagCommit `
+  -ConfirmDedicatedFixedSsd
+
 git tag $Tag $TagCommit
 
 .\scripts\Test-ReleaseTag.ps1 `
@@ -87,10 +161,30 @@ git tag $Tag $TagCommit
 git push origin $Tag
 ```
 
-The GitHub Release workflow publishes the daemon archives for `win-x64`,
-`linux-x64`, and `osx-arm64`, smoke-starts each extracted binary, calls the
-daemon REST `/api/info` endpoint, verifies a gRPC `GetInfoAsync` client call,
-combines checksums, and attaches everything to the GitHub Release.
+The local wrapper forces durable mode and runs the ten durable SQL/collection
+single and batch write rows in two sequential balanced paired passes. On an idle
+fixed-SSD machine they normally take 75-100 minutes total. It pins the candidate
+and previous commits, retains hash-verified raw evidence and a Markdown summary
+outside the repository, creates no repository JSON, and publishes the
+`csharpdb/local-durable-performance` status only after both passes succeed. The
+release workflow requires that matching-commit status, completes both clean
+functional passes on Windows, Linux, and macOS, and runs the 18 persistent-read
+and in-memory performance rows on hosted Windows runners. It then
+publishes the daemon archives for
+`win-x64`, `linux-x64`, and `osx-arm64`, smoke-starts each extracted binary,
+calls the daemon REST `/api/info` endpoint, verifies a gRPC `GetInfoAsync`
+client call, combines checksums, and attaches everything to the GitHub Release.
+
+`-NoGitHubStatus` is available only for diagnostics and wrapper tests. A run with
+that switch does not satisfy the release workflow's matching-commit check.
+The official status is available only with automatic previous-release discovery
+and the canonical `durable-v2` repeat, quiescence, and regression settings. That
+policy blocks on throughput and P95 while retaining P99 as diagnostic evidence;
+selecting P99 or any other override requires `-NoGitHubStatus`. A truly blocking
+P99 qualification would require a separately designed longer experiment with
+enough tail observations and repeatability. The workflow accepts the status
+only from the login named by the `LOCAL_DURABLE_ATTESTOR` repository variable,
+falling back to the repository owner when the variable is unset.
 
 ## Operator Walkthrough
 
@@ -231,8 +325,12 @@ What it does:
 Examples:
 
 ```powershell
-.\scripts\Publish-CSharpDbDaemonRelease.ps1 -Version 3.4.0 -Runtime win-x64
-.\scripts\Publish-CSharpDbDaemonRelease.ps1 -Version 3.4.0 -Runtime linux-x64,osx-arm64
+$Version = (Read-Host 'Release version without the v prefix').Trim()
+if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') {
+  throw 'Enter a semantic release version in major.minor.patch form.'
+}
+.\scripts\Publish-CSharpDbDaemonRelease.ps1 -Version $Version -Runtime win-x64
+.\scripts\Publish-CSharpDbDaemonRelease.ps1 -Version $Version -Runtime linux-x64,osx-arm64
 ```
 
 Default runtimes:
@@ -246,9 +344,9 @@ provided.
 
 ### `Publish-CSharpDbMigrationRelease.ps1`
 
-Use this to create the installable combined migration CLI archives for
-v4.3.0. It composes the reviewed SQL Server and MySQL bundle publishers for
-every runtime and the reviewed Microsoft Access bundle publisher for
+Use this to create the installable combined migration CLI archives for a
+CSharpDB release. It composes the reviewed SQL Server and MySQL bundle publishers
+for every runtime and the reviewed Microsoft Access bundle publisher for
 `win-x64`, instead of rebuilding any provider layout itself.
 
 What it does:
@@ -272,8 +370,9 @@ What it does:
 The default RIDs are `win-x64`, `linux-x64`, and `osx-arm64`:
 
 ```powershell
+$Version = (Read-Host 'Release version without the v prefix').Trim()
 .\scripts\Publish-CSharpDbMigrationRelease.ps1 `
-  -Version 4.3.0
+  -Version $Version
 ```
 
 The publisher requires PowerShell 7.4 or later.
@@ -281,8 +380,9 @@ The publisher requires PowerShell 7.4 or later.
 For a single local packaging check:
 
 ```powershell
+$Version = (Read-Host 'Release version without the v prefix').Trim()
 .\scripts\Publish-CSharpDbMigrationRelease.ps1 `
-  -Version 4.3.0 `
+  -Version $Version `
   -Runtime win-x64 `
   -OutputRoot artifacts\migration-release-local
 ```
@@ -323,6 +423,34 @@ qualification matrix.
   -OutputPath artifacts\access-migration-local `
   -Configuration Release
 ```
+
+### `Test-SqlReleaseQualification.ps1`
+
+Use this from a clean checkout to run the source-level release gate. It
+requires an empty output directory outside the repository and records its
+logs, TRX files, temporary NuGet state, and Markdown summary there. It does not
+create a feature-coverage file or any other generated source artifact.
+
+The check validates public documentation, NuGet package closure, EF Core
+version consistency, the full solution restore/build/test sequence, SQL Server
+and MySQL provider isolation, the Windows-only Access isolation boundary, and
+the packaged EF migration tool. Supplying both `-ReleaseVersion` and
+`-ReleaseCommit` additionally validates an existing release tag.
+
+```powershell
+$OutputPath = Join-Path `
+  ([IO.Path]::GetTempPath()) `
+  "csharpdb-sql-release-$([Guid]::NewGuid().ToString('N'))"
+
+.\scripts\Test-SqlReleaseQualification.ps1 `
+  -OutputPath $OutputPath `
+  -Configuration Release `
+  -QualificationPass 1
+```
+
+The GitHub workflow runs qualification passes 1 and 2 in separate clean hosted
+jobs for each supported operating system. The pass number identifies evidence;
+it does not weaken or filter the checks.
 
 ### `Test-AccessMigrationIsolation.ps1`
 
@@ -448,9 +576,10 @@ selected nupkg identity and hash, installs only from that feed, and runs the
 same checks.
 
 ```powershell
+$Version = (Read-Host 'Release version without the v prefix').Trim()
 .\scripts\Test-EfCoreMigrationTool.ps1 `
   -FeedPath artifacts/nuget `
-  -Version 4.3.0
+  -Version $Version
 ```
 
 ### `Publish-CSharpDbAdminStorePackage.ps1`
@@ -473,15 +602,17 @@ What it does:
 Example:
 
 ```powershell
-.\scripts\Publish-CSharpDbAdminStorePackage.ps1 -Version 3.4.0
+$Version = (Read-Host 'Release version without the v prefix').Trim()
+.\scripts\Publish-CSharpDbAdminStorePackage.ps1 -Version $Version
 ```
 
 For local App Installer testing, import the exported test certificate from an
 elevated PowerShell session before double-clicking the `.msix`:
 
 ```powershell
+$Version = (Read-Host 'Release version without the v prefix').Trim()
 Import-Certificate `
-  -FilePath artifacts\admin-store\packages\csharpdb-studio-v3.4.0-win-x64-local-test.cer `
+  -FilePath "artifacts\admin-store\packages\csharpdb-studio-v$Version-win-x64-local-test.cer" `
   -CertStoreLocation Cert:\LocalMachine\TrustedPeople
 ```
 
@@ -508,7 +639,11 @@ The archive can be extracted anywhere and launched with
 `ADMIN-SHA256SUMS.txt`.
 
 ```powershell
-.\scripts\Publish-CSharpDbAdminRelease.ps1 -Version 4.3.0
+$Version = (Read-Host 'Release version without the v prefix').Trim()
+if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') {
+  throw 'Enter a semantic release version in major.minor.patch form.'
+}
+.\scripts\Publish-CSharpDbAdminRelease.ps1 -Version $Version
 ```
 
 ## Daemon Service Installers

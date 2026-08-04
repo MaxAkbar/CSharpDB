@@ -53,7 +53,8 @@ public sealed record ProcedureStatementResultResponse(
     string[]? ColumnNames,
     IReadOnlyList<Dictionary<string, object?>>? Rows,
     int RowsAffected,
-    double ElapsedMs);
+    double ElapsedMs,
+    string[]? ColumnTypes = null);
 
 public sealed record ProcedureExecutionResponse(
     string ProcedureName,

@@ -62,7 +62,13 @@ public sealed class DbSchemaProvider(ICSharpDbClient dbClient) : ISchemaProvider
 
     internal static string ComputeSourceSchemaSignature(TableSchema schema)
     {
-        if (!schema.Columns.Any(static column => column.IsRowVersion))
+        bool hasRowVersion =
+            schema.Columns.Any(static column => column.IsRowVersion);
+        bool hasNonDefaultUpdateAction = schema.ForeignKeys.Any(
+            static foreignKey =>
+                foreignKey.OnUpdate != ForeignKeyOnDeleteAction.Restrict);
+
+        if (!hasRowVersion && !hasNonDefaultUpdateAction)
         {
             var legacyPayload = JsonSerializer.Serialize(new
             {
@@ -99,37 +105,119 @@ public sealed class DbSchemaProvider(ICSharpDbClient dbClient) : ISchemaProvider
                         legacyPayload)));
         }
 
-        var payload = JsonSerializer.Serialize(new
+        if (!hasRowVersion)
         {
-            schema.TableName,
-            Columns = schema.Columns.Select(column => new
+            var payloadWithUpdateActions = JsonSerializer.Serialize(new
             {
-                column.Name,
-                Type = column.Type.ToString(),
-                column.Nullable,
-                column.IsPrimaryKey,
-                column.IsIdentity,
-                column.IsRowVersion,
-                column.Collation,
-            }),
-            ForeignKeys = schema.ForeignKeys.Select(foreignKey => new
-            {
-                foreignKey.ConstraintName,
-                foreignKey.ColumnName,
-                ColumnNames = foreignKey.ColumnNames.Count > 0
-                    ? foreignKey.ColumnNames
-                    : [foreignKey.ColumnName],
-                foreignKey.ReferencedTableName,
-                foreignKey.ReferencedColumnName,
-                ReferencedColumnNames = foreignKey.ReferencedColumnNames.Count > 0
-                    ? foreignKey.ReferencedColumnNames
-                    : [foreignKey.ReferencedColumnName],
-                OnDelete = foreignKey.OnDelete.ToString(),
-                foreignKey.SupportingIndexName,
-            }),
-        });
+                schema.TableName,
+                Columns = schema.Columns.Select(column => new
+                {
+                    column.Name,
+                    Type = column.Type.ToString(),
+                    column.Nullable,
+                    column.IsPrimaryKey,
+                    column.IsIdentity,
+                    column.Collation,
+                }),
+                ForeignKeys = schema.ForeignKeys.Select(foreignKey => new
+                {
+                    foreignKey.ConstraintName,
+                    foreignKey.ColumnName,
+                    ColumnNames = foreignKey.ColumnNames.Count > 0
+                        ? foreignKey.ColumnNames
+                        : [foreignKey.ColumnName],
+                    foreignKey.ReferencedTableName,
+                    foreignKey.ReferencedColumnName,
+                    ReferencedColumnNames =
+                        foreignKey.ReferencedColumnNames.Count > 0
+                            ? foreignKey.ReferencedColumnNames
+                            : [foreignKey.ReferencedColumnName],
+                    OnDelete = foreignKey.OnDelete.ToString(),
+                    OnUpdate = foreignKey.OnUpdate.ToString(),
+                    foreignKey.SupportingIndexName,
+                }),
+            });
 
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload)));
+            return Convert.ToHexString(
+                SHA256.HashData(
+                    Encoding.UTF8.GetBytes(payloadWithUpdateActions)));
+        }
+
+        if (!hasNonDefaultUpdateAction)
+        {
+            var rowVersionLegacyPayload = JsonSerializer.Serialize(new
+            {
+                schema.TableName,
+                Columns = schema.Columns.Select(column => new
+                {
+                    column.Name,
+                    Type = column.Type.ToString(),
+                    column.Nullable,
+                    column.IsPrimaryKey,
+                    column.IsIdentity,
+                    column.IsRowVersion,
+                    column.Collation,
+                }),
+                ForeignKeys = schema.ForeignKeys.Select(foreignKey => new
+                {
+                    foreignKey.ConstraintName,
+                    foreignKey.ColumnName,
+                    ColumnNames = foreignKey.ColumnNames.Count > 0
+                        ? foreignKey.ColumnNames
+                        : [foreignKey.ColumnName],
+                    foreignKey.ReferencedTableName,
+                    foreignKey.ReferencedColumnName,
+                    ReferencedColumnNames =
+                        foreignKey.ReferencedColumnNames.Count > 0
+                            ? foreignKey.ReferencedColumnNames
+                            : [foreignKey.ReferencedColumnName],
+                    OnDelete = foreignKey.OnDelete.ToString(),
+                    foreignKey.SupportingIndexName,
+                }),
+            });
+
+            return Convert.ToHexString(
+                SHA256.HashData(
+                    Encoding.UTF8.GetBytes(rowVersionLegacyPayload)));
+        }
+
+        var payloadWithRowVersionAndUpdateActions = JsonSerializer.Serialize(
+            new
+            {
+                schema.TableName,
+                Columns = schema.Columns.Select(column => new
+                {
+                    column.Name,
+                    Type = column.Type.ToString(),
+                    column.Nullable,
+                    column.IsPrimaryKey,
+                    column.IsIdentity,
+                    column.IsRowVersion,
+                    column.Collation,
+                }),
+                ForeignKeys = schema.ForeignKeys.Select(foreignKey => new
+                {
+                    foreignKey.ConstraintName,
+                    foreignKey.ColumnName,
+                    ColumnNames = foreignKey.ColumnNames.Count > 0
+                        ? foreignKey.ColumnNames
+                        : [foreignKey.ColumnName],
+                    foreignKey.ReferencedTableName,
+                    foreignKey.ReferencedColumnName,
+                    ReferencedColumnNames =
+                        foreignKey.ReferencedColumnNames.Count > 0
+                            ? foreignKey.ReferencedColumnNames
+                            : [foreignKey.ReferencedColumnName],
+                    OnDelete = foreignKey.OnDelete.ToString(),
+                    OnUpdate = foreignKey.OnUpdate.ToString(),
+                    foreignKey.SupportingIndexName,
+                }),
+            });
+
+        return Convert.ToHexString(
+            SHA256.HashData(
+                Encoding.UTF8.GetBytes(
+                    payloadWithRowVersionAndUpdateActions)));
     }
 
     internal static FormTableDefinition Map(ViewDefinition view, SqlExecutionResult preview)

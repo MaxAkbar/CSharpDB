@@ -4,6 +4,11 @@ namespace CSharpDB.ImportExport.Models;
 
 public sealed class TableArchiveForeignKey
 {
+    public Guid SchemaId { get; init; }
+    public IReadOnlyList<Guid> ColumnSchemaIds { get; init; } = Array.Empty<Guid>();
+    public Guid ReferencedTableSchemaId { get; init; }
+    public IReadOnlyList<Guid> ReferencedColumnSchemaIds { get; init; } = Array.Empty<Guid>();
+    public Guid ReferencedKeySchemaId { get; init; }
     public required string ConstraintName { get; init; }
     public required string ColumnName { get; init; }
     public required string ReferencedTableName { get; init; }
@@ -11,10 +16,16 @@ public sealed class TableArchiveForeignKey
     public IReadOnlyList<string> ColumnNames { get; init; } = Array.Empty<string>();
     public IReadOnlyList<string> ReferencedColumnNames { get; init; } = Array.Empty<string>();
     public ForeignKeyOnDeleteAction OnDelete { get; init; }
+    public ForeignKeyOnDeleteAction OnUpdate { get; init; }
     public required string SupportingIndexName { get; init; }
 
     public static TableArchiveForeignKey FromForeignKey(ForeignKeyDefinition foreignKey) => new()
     {
+        SchemaId = foreignKey.SchemaId,
+        ColumnSchemaIds = foreignKey.ColumnSchemaIds.ToArray(),
+        ReferencedTableSchemaId = foreignKey.ReferencedTableSchemaId,
+        ReferencedColumnSchemaIds = foreignKey.ReferencedColumnSchemaIds.ToArray(),
+        ReferencedKeySchemaId = foreignKey.ReferencedKeySchemaId,
         ConstraintName = foreignKey.ConstraintName,
         ColumnName = foreignKey.ColumnName,
         ReferencedTableName = foreignKey.ReferencedTableName,
@@ -22,11 +33,17 @@ public sealed class TableArchiveForeignKey
         ColumnNames = foreignKey.ColumnNames.Count > 0 ? foreignKey.ColumnNames.ToArray() : [foreignKey.ColumnName],
         ReferencedColumnNames = foreignKey.ReferencedColumnNames.Count > 0 ? foreignKey.ReferencedColumnNames.ToArray() : [foreignKey.ReferencedColumnName],
         OnDelete = foreignKey.OnDelete,
+        OnUpdate = foreignKey.OnUpdate,
         SupportingIndexName = foreignKey.SupportingIndexName,
     };
 
     public ForeignKeyDefinition ToForeignKey(string? referencedTableNameOverride = null) => new()
     {
+        SchemaId = SchemaId,
+        ColumnSchemaIds = ColumnSchemaIds.ToArray(),
+        ReferencedTableSchemaId = ReferencedTableSchemaId,
+        ReferencedColumnSchemaIds = ReferencedColumnSchemaIds.ToArray(),
+        ReferencedKeySchemaId = ReferencedKeySchemaId,
         ConstraintName = ConstraintName,
         ColumnName = ColumnName,
         ReferencedTableName = referencedTableNameOverride ?? ReferencedTableName,
@@ -34,6 +51,7 @@ public sealed class TableArchiveForeignKey
         ColumnNames = ColumnNames.Count > 0 ? ColumnNames.ToArray() : [ColumnName],
         ReferencedColumnNames = ReferencedColumnNames.Count > 0 ? ReferencedColumnNames.ToArray() : [ReferencedColumnName],
         OnDelete = OnDelete,
+        OnUpdate = OnUpdate,
         SupportingIndexName = SupportingIndexName,
     };
 }

@@ -1,6 +1,7 @@
 using System.Text;
 using CSharpDB.EntityFrameworkCore.Infrastructure.Internal;
 using CSharpDB.EntityFrameworkCore.Storage.Internal;
+using CSharpDB.Execution;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations;
@@ -18,6 +19,11 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
     protected override void Generate(CreateTableOperation operation, IModel? model, MigrationCommandListBuilder builder, bool terminate)
     {
         ValidateNoSchema(operation.Schema, operation.Name);
+        if (operation.Comment is not null)
+        {
+            throw Unsupported(
+                $"table comments on table '{operation.Name}'");
+        }
 
         CSharpDbProviderValidation.ValidateSimpleIdentifier(operation.Name, "Table name");
         int rowVersionColumnCount =
@@ -189,6 +195,18 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
         EndCommand(builder, terminate);
     }
 
+    protected override void Generate(
+        AlterDatabaseOperation operation,
+        IModel? model,
+        MigrationCommandListBuilder builder) =>
+        throw Unsupported("database-level alterations");
+
+    protected override void Generate(
+        AlterTableOperation operation,
+        IModel? model,
+        MigrationCommandListBuilder builder) =>
+        throw Unsupported("table-level alterations");
+
     protected override void Generate(EnsureSchemaOperation operation, IModel? model, MigrationCommandListBuilder builder)
         => throw Unsupported("schemas");
 
@@ -251,18 +269,34 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
         }
 
         bool typeChanged = !string.Equals(storeType, oldStoreType, StringComparison.OrdinalIgnoreCase);
-        if (typeChanged && !IsSupportedNumericTypeRewrite(oldStoreType, storeType))
+        if (typeChanged && !IsSupportedTypeRewrite(oldStoreType, storeType))
         {
             throw Unsupported(
                 $"changing column '{operation.Table}.{operation.Name}' from store type '{oldStoreType}' to '{storeType}'. " +
-                "The bounded rewrite path supports only exact INTEGER-to-REAL and REAL-to-INTEGER conversions on dependency-free columns");
+                "The bounded rewrite path supports only exact INTEGER-to-REAL, REAL-to-INTEGER, TEXT-to-BLOB, and BLOB-to-TEXT conversions; numeric rewrites can rebuild ready SQL indexes, while TEXT/BLOB rewrites require dependency-free columns");
+        }
+
+        bool oldStoreTypeIsText = IsStoreType(oldStoreType, "TEXT");
+        bool storeTypeIsText = IsStoreType(storeType, "TEXT");
+        bool enteringBlobFromText =
+            typeChanged &&
+            oldStoreTypeIsText &&
+            IsStoreType(storeType, "BLOB");
+        string? normalizedTargetCollation =
+            NormalizeBinaryCollation(operation.Collation);
+        if (normalizedTargetCollation is not null &&
+            !storeTypeIsText)
+        {
+            throw Unsupported(
+                $"collation '{normalizedTargetCollation}' on non-TEXT column '{operation.Table}.{operation.Name}'");
         }
 
         bool collationChanged = !CollationsSemanticallyEqual(
             operation.Collation,
             operation.OldColumn.Collation);
         if (collationChanged &&
-            (!IsStoreType(storeType, "TEXT") || !IsStoreType(oldStoreType, "TEXT")))
+            !enteringBlobFromText &&
+            !storeTypeIsText)
         {
             throw Unsupported(
                 $"changing the collation of non-TEXT column '{operation.Table}.{operation.Name}'");
@@ -307,18 +341,20 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
                 AppendSetDefault(builder, table, column, operation.DefaultValue);
         }
 
-        if (collationChanged)
+        // TYPE BLOB removes TEXT collation metadata as part of the same shadow
+        // rewrite. Emitting DROP COLLATION afterwards would target a non-TEXT
+        // column. BLOB-to-TEXT applies any requested collation after TYPE TEXT.
+        if (collationChanged && !enteringBlobFromText)
         {
             builder.Append("ALTER TABLE ")
                 .Append(table)
                 .Append(" ALTER COLUMN ")
                 .Append(column);
 
-            string? targetCollation = NormalizeBinaryCollation(operation.Collation);
-            if (targetCollation is null)
+            if (normalizedTargetCollation is null)
                 builder.Append(" DROP COLLATION");
             else
-                builder.Append(" SET COLLATION ").Append(QuoteIdentifier(targetCollation));
+                builder.Append(" SET COLLATION ").Append(QuoteIdentifier(normalizedTargetCollation));
 
             EndCommand(builder, terminate: true);
         }
@@ -579,8 +615,7 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
                 .Append(QuoteIdentifier(principalColumn))
                 .Append(")");
 
-            if (foreignKey.OnDelete == ReferentialAction.Cascade)
-                builder.Append(" ON DELETE CASCADE");
+            AppendReferentialActions(builder, foreignKey);
         }
 
         return builder.ToString();
@@ -643,16 +678,54 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
             .Append(string.Join(", ", operation.PrincipalColumns!.Select(QuoteIdentifier)))
             .Append(")");
 
-        if (operation.OnDelete == ReferentialAction.Cascade)
-            builder.Append(" ON DELETE CASCADE");
+        AppendReferentialActions(builder, operation);
 
         return builder.ToString();
+    }
+
+    private static void AppendReferentialActions(
+        StringBuilder builder,
+        AddForeignKeyOperation operation)
+    {
+        AppendReferentialAction(
+            builder,
+            "DELETE",
+            operation.OnDelete);
+        AppendReferentialAction(
+            builder,
+            "UPDATE",
+            operation.OnUpdate);
+    }
+
+    private static void AppendReferentialAction(
+        StringBuilder builder,
+        string operation,
+        ReferentialAction action)
+    {
+        string? sql = action switch
+        {
+            ReferentialAction.NoAction => "NO ACTION",
+            ReferentialAction.Restrict => "RESTRICT",
+            ReferentialAction.Cascade => "CASCADE",
+            ReferentialAction.SetNull => "SET NULL",
+            ReferentialAction.SetDefault => "SET DEFAULT",
+            _ => throw Unsupported(
+                $"ON {operation} action '{action}'"),
+        };
+
+        if (sql is not null)
+        {
+            builder.Append(" ON ")
+                .Append(operation)
+                .Append(' ')
+                .Append(sql);
+        }
     }
 
     private string GenerateLiteral(object value)
     {
         var mapping = Dependencies.TypeMappingSource.FindMapping(value.GetType())
-            ?? throw new NotSupportedException(
+            ?? throw MigrationUnsupportedDiagnostic(
                 $"The CSharpDB EF Core provider cannot generate a literal DEFAULT for CLR type '{value.GetType().Name}'.");
 
         return mapping.GenerateSqlLiteral(value);
@@ -686,9 +759,11 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
         EndCommand(builder, terminate: true);
     }
 
-    private static bool IsSupportedNumericTypeRewrite(string oldStoreType, string storeType) =>
+    private static bool IsSupportedTypeRewrite(string oldStoreType, string storeType) =>
         IsStoreType(oldStoreType, "INTEGER") && IsStoreType(storeType, "REAL") ||
-        IsStoreType(oldStoreType, "REAL") && IsStoreType(storeType, "INTEGER");
+        IsStoreType(oldStoreType, "REAL") && IsStoreType(storeType, "INTEGER") ||
+        IsStoreType(oldStoreType, "TEXT") && IsStoreType(storeType, "BLOB") ||
+        IsStoreType(oldStoreType, "BLOB") && IsStoreType(storeType, "TEXT");
 
     private static bool IsStoreType(string storeType, string expected) =>
         string.Equals(storeType.Trim(), expected, StringComparison.OrdinalIgnoreCase);
@@ -812,10 +887,21 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
 
     private static string? NormalizeBinaryCollation(string? collation)
     {
-        string? normalized = string.IsNullOrWhiteSpace(collation)
-            ? null
-            : collation.Trim();
-        return string.Equals(normalized, "BINARY", StringComparison.OrdinalIgnoreCase)
+        if (string.IsNullOrWhiteSpace(collation))
+            return null;
+
+        string requested = collation.Trim();
+        if (!CollationSupport.IsSupported(requested))
+        {
+            throw Unsupported(
+                $"collation '{requested}'. Supported collations are {CollationSupport.DescribeSupportedCollations()}");
+        }
+
+        string? normalized = CollationSupport.NormalizeMetadataName(requested);
+        return string.Equals(
+                normalized,
+                CollationSupport.BinaryCollation,
+                StringComparison.Ordinal)
             ? null
             : normalized;
     }
@@ -832,10 +918,12 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
 
         if (operation.Columns.Length == 0 || operation.Columns.Length != principalColumns.Length)
             throw new InvalidOperationException("Foreign keys require equal, non-empty child and principal column lists.");
-        if (operation.OnUpdate != ReferentialAction.NoAction)
-            throw Unsupported("ON UPDATE actions");
-        if (operation.OnDelete is not ReferentialAction.NoAction and not ReferentialAction.Restrict and not ReferentialAction.Cascade)
-            throw Unsupported($"ON DELETE action '{operation.OnDelete}'");
+        ValidateReferentialAction(
+            operation.OnDelete,
+            "DELETE");
+        ValidateReferentialAction(
+            operation.OnUpdate,
+            "UPDATE");
 
         CSharpDbProviderValidation.ValidateSimpleIdentifier(operation.Table, "Table name");
         CSharpDbProviderValidation.ValidateSimpleIdentifier(operation.Name, "Foreign key name");
@@ -844,6 +932,23 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
         CSharpDbProviderValidation.ValidateSimpleIdentifier(principalTable, "Table name");
         foreach (string principalColumn in principalColumns)
             CSharpDbProviderValidation.ValidateSimpleIdentifier(principalColumn, "Column name");
+    }
+
+    private static void ValidateReferentialAction(
+        ReferentialAction action,
+        string operation)
+    {
+        if (action is ReferentialAction.NoAction
+            or ReferentialAction.Restrict
+            or ReferentialAction.Cascade
+            or ReferentialAction.SetNull
+            or ReferentialAction.SetDefault)
+        {
+            return;
+        }
+
+        throw Unsupported(
+            $"ON {operation} action '{action}'");
     }
 
     private static void ValidateColumnOperation(
@@ -856,6 +961,11 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
             throw Unsupported("DefaultValueSql");
         if (operation.ComputedColumnSql is not null)
             throw Unsupported("computed columns");
+        if (operation.Comment is not null)
+        {
+            throw Unsupported(
+                $"column comments on column '{operation.Table}.{operation.Name}'");
+        }
         if (operation.IsRowVersion &&
             !allowInitialCreateTableRowVersion)
         {
@@ -937,11 +1047,18 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
     private static void ValidateNoSchema(string? schema, string objectName)
     {
         if (!string.IsNullOrWhiteSpace(schema))
-            throw new NotSupportedException($"Schemas are not supported by the CSharpDB EF Core provider. '{schema}.{objectName}' is not valid.");
+        {
+            throw MigrationUnsupportedDiagnostic(
+                $"Schemas are not supported by the CSharpDB EF Core provider. '{schema}.{objectName}' is not valid.");
+        }
     }
 
     private static NotSupportedException Unsupported(string feature)
-        => new($"The CSharpDB EF Core provider does not support {feature} in v1.");
+        => MigrationUnsupportedDiagnostic(
+            $"The CSharpDB EF Core provider does not support {feature} in v1.");
+
+    private static NotSupportedException MigrationUnsupportedDiagnostic(string message)
+        => new($"CDBEF2001: {message}");
 
     private string QuoteIdentifier(string identifier)
         => Dependencies.SqlGenerationHelper.DelimitIdentifier(identifier);

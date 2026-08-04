@@ -3,6 +3,7 @@ using CSharpDB.Client.Internal;
 using CSharpDB.Client.Models;
 using CSharpDB.Engine;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace CSharpDB.Cli.Tests;
 
@@ -227,7 +228,7 @@ public sealed class ReplTests
     }
 
     [Fact]
-    public async Task Repl_SchemaCommand_ShowsForeignKeyClause()
+    public async Task Repl_SchemaCommand_ShowsPhase3ForeignKeyClauses()
     {
         var ct = TestContext.Current.CancellationToken;
         string dbPath = NewTempFilePath(".db");
@@ -237,7 +238,7 @@ public sealed class ReplTests
             string input = string.Join(Environment.NewLine, new[]
             {
                 "CREATE TABLE parents (id INTEGER PRIMARY KEY);",
-                "CREATE TABLE children (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parents(id) ON DELETE CASCADE);",
+                "CREATE TABLE children (id INTEGER PRIMARY KEY, parent_id INTEGER DEFAULT 1 REFERENCES parents(id) ON DELETE SET DEFAULT ON UPDATE CASCADE);",
                 ".schema children",
                 ".quit",
                 "",
@@ -245,8 +246,17 @@ public sealed class ReplTests
 
             string output = await RunReplAsync(dbPath, input, ct);
             string plainOutput = System.Text.RegularExpressions.Regex.Replace(output, @"\x1B\[[0-9;]*m", string.Empty);
-            Assert.Contains("REFERENCES parents(id)", plainOutput, StringComparison.OrdinalIgnoreCase);
-            Assert.Contains("ON DELETE CASCADE", plainOutput, StringComparison.OrdinalIgnoreCase);
+            string normalizedOutput = System.Text.RegularExpressions.Regex.Replace(
+                plainOutput,
+                @"\s+",
+                " ");
+            Assert.Contains("REFERENCES parents(id)", normalizedOutput, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("ON DELETE SET DEFAULT", normalizedOutput, StringComparison.OrdinalIgnoreCase);
+            Assert.Matches(
+                new System.Text.RegularExpressions.Regex(
+                    @"ON UPDATE\W+CASCADE",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase),
+                plainOutput);
         }
         finally
         {
@@ -572,7 +582,8 @@ public sealed class ReplTests
                             ColumnName = "customer_id",
                             ReferencedTableName = "customers",
                             ReferencedColumnName = "id",
-                            OnDelete = ForeignKeyOnDeleteAction.Cascade,
+                            OnDelete = ForeignKeyOnDeleteAction.SetDefault,
+                            OnUpdate = ForeignKeyOnDeleteAction.Cascade,
                         },
                     ],
                 },
@@ -581,7 +592,7 @@ public sealed class ReplTests
             string input = string.Join(Environment.NewLine, new[]
             {
                 "CREATE TABLE customers (id INTEGER PRIMARY KEY);",
-                "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER);",
+                "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL DEFAULT 1);",
                 "INSERT INTO customers VALUES (1);",
                 "INSERT INTO orders VALUES (10, 1);",
                 $".migrate-fks \"{specPath}\"",
@@ -593,15 +604,67 @@ public sealed class ReplTests
             Assert.Contains("Foreign key migration completed.", output, StringComparison.OrdinalIgnoreCase);
 
             await using var db = await Database.OpenAsync(dbPath, ct);
-            await using var result = await db.ExecuteAsync("SELECT COUNT(*) FROM sys.foreign_keys WHERE table_name = 'orders';", ct);
+            await using var result = await db.ExecuteAsync(
+                "SELECT on_delete, on_update FROM sys.foreign_keys WHERE table_name = 'orders';",
+                ct);
             var rows = await result.ToListAsync(ct);
-            Assert.Equal(1L, Assert.Single(rows)[0].AsInteger);
+            var row = Assert.Single(rows);
+            Assert.Equal("SET DEFAULT", row[0].AsText);
+            Assert.Equal("CASCADE", row[1].AsText);
         }
         finally
         {
             DeleteIfExists(specPath);
             DeleteIfExists(dbPath);
             DeleteIfExists(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task ForeignKeyMigrationSpec_AcceptsDefinedNumericReferentialActions()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string specPath = NewTempFilePath(".json");
+
+        try
+        {
+            await File.WriteAllTextAsync(
+                specPath,
+                """
+                {
+                  "constraints": [
+                    {
+                      "tableName": "orders",
+                      "columnName": "customer_id",
+                      "referencedTableName": "customers",
+                      "referencedColumnName": "id",
+                      "onDelete": 4,
+                      "onUpdate": 2
+                    }
+                  ]
+                }
+                """,
+                ct);
+
+            ForeignKeyMigrationRequest request =
+                await MetaCommandHelpers.LoadForeignKeyMigrationRequestAsync(
+                    specPath,
+                    validateOnly: false,
+                    backupPath: null,
+                    ct);
+
+            ForeignKeyMigrationConstraintSpec constraint =
+                Assert.Single(request.Constraints);
+            Assert.Equal(
+                ForeignKeyOnDeleteAction.SetDefault,
+                constraint.OnDelete);
+            Assert.Equal(
+                ForeignKeyOnDeleteAction.NoAction,
+                constraint.OnUpdate);
+        }
+        finally
+        {
+            DeleteIfExists(specPath);
         }
     }
 
@@ -679,6 +742,7 @@ public sealed class ReplTests
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             WriteIndented = true,
         };
+        options.Converters.Add(new JsonStringEnumConverter());
         await File.WriteAllTextAsync(path, JsonSerializer.Serialize(request, options), ct);
     }
 }

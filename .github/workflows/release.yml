@@ -11,66 +11,47 @@ permissions:
   id-token: write
 
 jobs:
-  build-and-test:
-    name: Build and Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - ubuntu-latest
-          - windows-latest
-          - macos-latest
+  verify-local-durable-performance:
+    name: Verify local durable performance qualification
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: read
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v6
-        with:
-          global-json-file: global.json
-
-      - name: Use private link-free temporary directory (macOS)
-        if: runner.os == 'macOS'
+      - name: Require a successful matching-commit local performance status
         shell: bash
-        run: |
-          temp_directory="$(mktemp -d /private/tmp/csharpdb-ci.XXXXXX)"
-          chmod 700 "${temp_directory}"
-          echo "TMPDIR=${temp_directory}" >> "${GITHUB_ENV}"
-
-      - name: Guard NuGet package dependency closure
-        shell: pwsh
-        run: ./scripts/Test-NuGetPackageClosure.ps1
-
-      - name: Guard EF Core package version consistency
-        shell: pwsh
-        run: ./scripts/Test-EfCoreVersionConsistency.ps1
-
-      - name: Validate release tag
-        shell: pwsh
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
-          RELEASE_COMMIT: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+          PERFORMANCE_STATUS_CONTEXT: csharpdb/local-durable-performance
+          EXPECTED_STATUS_CREATOR: ${{ vars.LOCAL_DURABLE_ATTESTOR || github.repository_owner }}
         run: |
-          ./scripts/Test-ReleaseTag.ps1 `
-            -Version $env:RELEASE_TAG `
-            -TagCommit $env:RELEASE_COMMIT
+          set -euo pipefail
+          status_record="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/statuses?per_page=100" \
+            --jq '([.[] | select(.context == "csharpdb/local-durable-performance")][0] // {}) | [.state // "", .creator.login // "", .description // ""] | @tsv')"
+          IFS=$'\t' read -r state creator description <<< "$status_record"
+          if [[ "$state" != "success" ]]; then
+            echo "::error::Commit ${GITHUB_SHA} has no successful ${PERFORMANCE_STATUS_CONTEXT} status. Run Test-LocalDurablePerformance.ps1 successfully before creating the release tag."
+            exit 1
+          fi
+          if [[ "${creator,,}" != "${EXPECTED_STATUS_CREATOR,,}" ]]; then
+            echo "::error::The ${PERFORMANCE_STATUS_CONTEXT} status was created by ${creator}, not the configured attestor ${EXPECTED_STATUS_CREATOR}."
+            exit 1
+          fi
+          attestation_pattern='^policy=durable-v2; baseline=[0-9a-f]{40}; reports=[0-9A-F]{8}/[0-9A-F]{8}$'
+          if [[ ! "$description" =~ $attestation_pattern ]]; then
+            echo "::error::The ${PERFORMANCE_STATUS_CONTEXT} status does not contain a canonical durable-v2 attestation."
+            exit 1
+          fi
 
-      - name: Restore
-        run: dotnet restore CSharpDB.slnx
-
-      - name: Build
-        run: dotnet build CSharpDB.slnx -c Release --no-restore
-
-      - name: Test
-        run: dotnet test CSharpDB.slnx -c Release --no-build --verbosity minimal
-
-      - name: Verify EF Core migration analyzer package boundary
-        shell: pwsh
-        run: ./scripts/Test-EfCoreMigrationTool.ps1 -Configuration Release -NoRestore
+  build-and-test:
+    name: Qualify release source
+    needs: verify-local-durable-performance
+    uses: ./.github/workflows/sql-release-qualification.yml
+    with:
+      release_version: ${{ github.ref_name }}
+      release_commit: ${{ github.sha }}
 
   publish-nuget:
     name: Publish NuGet

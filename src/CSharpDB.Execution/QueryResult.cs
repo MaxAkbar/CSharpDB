@@ -37,6 +37,8 @@ public sealed class QueryResult : IAsyncDisposable
     /// </summary>
     public QueryResult(IOperator op)
     {
+        op = PhysicalPlanCapture.WrapIfActive(op);
+        PhysicalPlanCapture.MarkRootIfActive(op);
         _operator = op;
         _batchOperator = null;
         _disposeCallback = null;
@@ -49,6 +51,12 @@ public sealed class QueryResult : IAsyncDisposable
 
     private QueryResult(IBatchOperator op)
     {
+        if (op is IOperator rowOperator)
+        {
+            op = (IBatchOperator)PhysicalPlanCapture.WrapIfActive(rowOperator);
+            PhysicalPlanCapture.MarkRootIfActive((IOperator)op);
+        }
+
         _operator = null;
         _batchOperator = op;
         _disposeCallback = null;
@@ -124,6 +132,9 @@ public sealed class QueryResult : IAsyncDisposable
 
     internal static QueryResult FromBatchOperator(IBatchOperator op)
         => new(op);
+
+    internal IOperator? PhysicalRootOperator =>
+        _operator ?? _batchOperator as IOperator;
 
     internal static QueryResult FromRowsAffected(int rowsAffected)
         => rowsAffected switch

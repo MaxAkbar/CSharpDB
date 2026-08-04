@@ -8,7 +8,8 @@ require a new format or contract version rather than changing v1 in place.
 ## Install
 
 ```powershell
-dotnet add package CSharpDB.Migration --version 4.3.0
+$PackageVersion = (Read-Host 'CSharpDB package version').Trim()
+dotnet add package CSharpDB.Migration --version $PackageVersion
 ```
 
 Use this package when building a .NET tool or workflow that authors, validates,
@@ -25,8 +26,9 @@ core:
 - source-neutral catalog objects with explicit containment, set-like
   dependencies, ordered role-qualified schema members, and safe source identity;
 - stable compatibility, evidence, diagnostic, and mapping states;
-- an embedded, digested CSharpDB 4.3.0 capability catalog tied to the installed
-  Migration and Primitives binaries;
+- an embedded, digested CSharpDB 4.4.0 capability catalog tied to the installed
+  Migration and Primitives binaries, plus the immutable 4.3.0 catalog for
+  independently replaying plans created against that release;
 - target plans bound to the source-catalog digest, capability digest, naming
   algorithm, and versioned mapping policy;
 - detailed target-capability evaluation for columns, keys, foreign keys,

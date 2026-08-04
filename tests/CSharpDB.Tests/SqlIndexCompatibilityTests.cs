@@ -29,6 +29,23 @@ public sealed class SqlIndexCompatibilityTests
         }
     }
 
+    [Fact]
+    public void ComputeIndexKey_RealHashCanonicalizesSignedZeroAndNaN()
+    {
+        double alternateNaN = BitConverter.Int64BitsToDouble(
+            unchecked((long)0xfff8_0000_0000_0042UL));
+
+        Assert.Equal(
+            ComputeIndexKey([DbValue.FromReal(0d)]),
+            ComputeIndexKey([DbValue.FromReal(-0d)]));
+        Assert.Equal(
+            ComputeIndexKey([DbValue.FromReal(double.NaN)]),
+            ComputeIndexKey([DbValue.FromReal(alternateNaN)]));
+        Assert.NotEqual(
+            ComputeIndexKey([DbValue.FromReal(double.PositiveInfinity)]),
+            ComputeIndexKey([DbValue.FromReal(double.NegativeInfinity)]));
+    }
+
     private static ComputeIndexKeyDelegate CreateComputeIndexKeyDelegate()
     {
         Type helperType = typeof(QueryPlanner).Assembly.GetType(

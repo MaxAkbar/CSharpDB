@@ -4,6 +4,7 @@ namespace CSharpDB.ImportExport.Models;
 
 public sealed class TableArchiveKeyConstraint
 {
+    public Guid SchemaId { get; init; }
     public string? ConstraintName { get; init; }
     public KeyConstraintKind Kind { get; init; }
     public required IReadOnlyList<string> Columns { get; init; }
@@ -11,6 +12,7 @@ public sealed class TableArchiveKeyConstraint
 
     public static TableArchiveKeyConstraint FromKeyConstraint(KeyConstraintDefinition key) => new()
     {
+        SchemaId = key.SchemaId,
         ConstraintName = key.ConstraintName,
         Kind = key.Kind,
         Columns = key.Columns.ToArray(),
@@ -19,6 +21,7 @@ public sealed class TableArchiveKeyConstraint
 
     public KeyConstraintDefinition ToKeyConstraint() => new()
     {
+        SchemaId = SchemaId,
         ConstraintName = ConstraintName,
         Kind = Kind switch
         {

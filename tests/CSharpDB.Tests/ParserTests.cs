@@ -94,6 +94,9 @@ public class ParserTests
         Assert.Equal("customers", foreignKey.ReferencedTableName);
         Assert.Equal("id", foreignKey.ReferencedColumnName);
         Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
+        Assert.Equal(
+            ForeignKeyOnDeleteAction.Restrict,
+            foreignKey.OnUpdate);
     }
 
     [Fact]
@@ -127,6 +130,9 @@ public class ParserTests
         Assert.Equal("customers", foreignKey.ReferencedTableName);
         Assert.Equal(["tenant_id", "id"], foreignKey.ReferencedColumns);
         Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
+        Assert.Equal(
+            ForeignKeyOnDeleteAction.Restrict,
+            foreignKey.OnUpdate);
     }
 
     [Fact]
@@ -194,14 +200,127 @@ public class ParserTests
         Assert.Equal(ErrorCode.SyntaxError, error.Code);
     }
 
-    [Fact]
-    public void Parse_CreateTable_OnlyOnDeleteCascadeIsSupported()
+    [Theory]
+    [InlineData("RESTRICT", ForeignKeyOnDeleteAction.Restrict)]
+    [InlineData("NO ACTION", ForeignKeyOnDeleteAction.NoAction)]
+    [InlineData("CASCADE", ForeignKeyOnDeleteAction.Cascade)]
+    [InlineData("SET NULL", ForeignKeyOnDeleteAction.SetNull)]
+    [InlineData("SET DEFAULT", ForeignKeyOnDeleteAction.SetDefault)]
+    public void Parse_CreateTable_ColumnForeignKey_SupportsOnDeleteActions(
+        string actionSql,
+        ForeignKeyOnDeleteAction expected)
     {
-        var error = Assert.Throws<CSharpDB.Primitives.CSharpDbException>(
-            () => Parser.Parse("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER REFERENCES customers(id) ON UPDATE CASCADE)"));
+        var create = Assert.IsType<CreateTableStatement>(
+            Parser.Parse(
+                "CREATE TABLE orders (" +
+                "id INTEGER PRIMARY KEY, " +
+                "customer_id INTEGER REFERENCES customers(id) " +
+                $"ON DELETE {actionSql})"));
+        ForeignKeyClause foreignKey =
+            Assert.IsType<ForeignKeyClause>(
+                create.Columns[1].ForeignKey);
+
+        Assert.Equal(expected, foreignKey.OnDelete);
+        Assert.Equal(
+            ForeignKeyOnDeleteAction.Restrict,
+            foreignKey.OnUpdate);
+    }
+
+    [Theory]
+    [InlineData("RESTRICT", ForeignKeyOnDeleteAction.Restrict)]
+    [InlineData("NO ACTION", ForeignKeyOnDeleteAction.NoAction)]
+    [InlineData("CASCADE", ForeignKeyOnDeleteAction.Cascade)]
+    [InlineData("SET NULL", ForeignKeyOnDeleteAction.SetNull)]
+    [InlineData("SET DEFAULT", ForeignKeyOnDeleteAction.SetDefault)]
+    public void Parse_CreateTable_TableForeignKey_SupportsOnUpdateActions(
+        string actionSql,
+        ForeignKeyOnDeleteAction expected)
+    {
+        var create = Assert.IsType<CreateTableStatement>(
+            Parser.Parse(
+                "CREATE TABLE orders (" +
+                "id INTEGER PRIMARY KEY, customer_id INTEGER, " +
+                "FOREIGN KEY (customer_id) REFERENCES customers(id) " +
+                $"ON UPDATE {actionSql})"));
+        ForeignKeyConstraintClause foreignKey =
+            Assert.Single(create.ForeignKeys);
+
+        Assert.Equal(
+            ForeignKeyOnDeleteAction.Restrict,
+            foreignKey.OnDelete);
+        Assert.Equal(expected, foreignKey.OnUpdate);
+    }
+
+    [Theory]
+    [InlineData("ON DELETE SET DEFAULT ON UPDATE NO ACTION")]
+    [InlineData("ON UPDATE NO ACTION ON DELETE SET DEFAULT")]
+    public void Parse_CreateTable_ForeignKeyActions_AcceptsEitherOrder(
+        string clauses)
+    {
+        var create = Assert.IsType<CreateTableStatement>(
+            Parser.Parse(
+                "CREATE TABLE orders (" +
+                "id INTEGER PRIMARY KEY, " +
+                "customer_id INTEGER REFERENCES customers(id) " +
+                $"{clauses})"));
+        ForeignKeyClause foreignKey =
+            Assert.IsType<ForeignKeyClause>(
+                create.Columns[1].ForeignKey);
+
+        Assert.Equal(
+            ForeignKeyOnDeleteAction.SetDefault,
+            foreignKey.OnDelete);
+        Assert.Equal(
+            ForeignKeyOnDeleteAction.NoAction,
+            foreignKey.OnUpdate);
+    }
+
+    [Theory]
+    [InlineData(
+        "ON DELETE CASCADE ON DELETE RESTRICT",
+        "ON DELETE specified multiple times")]
+    [InlineData(
+        "ON UPDATE CASCADE ON UPDATE RESTRICT",
+        "ON UPDATE specified multiple times")]
+    public void Parse_CreateTable_ForeignKeyActions_RejectsDuplicates(
+        string clauses,
+        string expectedMessage)
+    {
+        CSharpDbException error = Assert.Throws<CSharpDbException>(
+            () => Parser.Parse(
+                "CREATE TABLE orders (" +
+                "id INTEGER PRIMARY KEY, " +
+                "customer_id INTEGER REFERENCES customers(id) " +
+                $"{clauses})"));
 
         Assert.Equal(ErrorCode.SyntaxError, error.Code);
-        Assert.Contains("Only ON DELETE is supported", error.Message, StringComparison.Ordinal);
+        Assert.Contains(
+            expectedMessage,
+            error.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("ON CASCADE", "Expected DELETE or UPDATE after ON")]
+    [InlineData("ON DELETE NO", "Expected ACTION")]
+    [InlineData("ON UPDATE SET", "Expected NULL or DEFAULT")]
+    [InlineData("ON DELETE UPDATE", "Expected RESTRICT")]
+    public void Parse_CreateTable_ForeignKeyActions_RejectsMalformedActions(
+        string clauses,
+        string expectedMessage)
+    {
+        CSharpDbException error = Assert.Throws<CSharpDbException>(
+            () => Parser.Parse(
+                "CREATE TABLE orders (" +
+                "id INTEGER PRIMARY KEY, " +
+                "customer_id INTEGER REFERENCES customers(id) " +
+                $"{clauses})"));
+
+        Assert.Equal(ErrorCode.SyntaxError, error.Code);
+        Assert.Contains(
+            expectedMessage,
+            error.Message,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -838,11 +957,24 @@ public class ParserTests
     }
 
     [Theory]
-    [InlineData("SELECT id FROM a INTERSECT ALL SELECT id FROM b")]
-    [InlineData("SELECT id FROM a EXCEPT ALL SELECT id FROM b")]
-    public void Parse_AllIsOnlySupportedForUnion(string sql)
+    [InlineData(
+        "SELECT id FROM a INTERSECT ALL SELECT id FROM b",
+        "INTERSECT ALL is not supported; use INTERSECT.")]
+    [InlineData(
+        "SELECT id FROM a EXCEPT ALL SELECT id FROM b",
+        "EXCEPT ALL is not supported; use EXCEPT.")]
+    public void Parse_AllIsOnlySupportedForUnion(
+        string sql,
+        string expectedMessage)
     {
-        Assert.Throws<CSharpDbException>(() => Parser.Parse(sql));
+        CSharpDbException error = Assert.Throws<CSharpDbException>(
+            () => Parser.Parse(sql));
+
+        Assert.Equal(ErrorCode.SyntaxError, error.Code);
+        Assert.Contains(
+            expectedMessage,
+            error.Message,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1049,6 +1181,9 @@ public class ParserTests
         Assert.Equal("customers", foreignKey.ReferencedTableName);
         Assert.Equal("id", foreignKey.ReferencedColumnName);
         Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
+        Assert.Equal(
+            ForeignKeyOnDeleteAction.Restrict,
+            foreignKey.OnUpdate);
     }
 
     [Fact]
@@ -1137,6 +1272,18 @@ public class ParserTests
             TokenType.Real,
             Assert.IsType<AlterColumnSetTypeAction>(setRealType.Action).TypeToken);
 
+        var setTextType = Assert.IsType<AlterTableStatement>(
+            Parser.Parse("ALTER TABLE users ALTER COLUMN payload TYPE TEXT"));
+        Assert.Equal(
+            TokenType.Text,
+            Assert.IsType<AlterColumnSetTypeAction>(setTextType.Action).TypeToken);
+
+        var setBlobType = Assert.IsType<AlterTableStatement>(
+            Parser.Parse("ALTER TABLE users ALTER COLUMN payload TYPE BLOB"));
+        Assert.Equal(
+            TokenType.Blob,
+            Assert.IsType<AlterColumnSetTypeAction>(setBlobType.Action).TypeToken);
+
         var setCollation = Assert.IsType<AlterTableStatement>(
             Parser.Parse("ALTER TABLE users ALTER COLUMN status SET COLLATION nocase"));
         var setCollationAction =
@@ -1151,14 +1298,13 @@ public class ParserTests
             Assert.IsType<AlterColumnDropCollationAction>(dropCollation.Action).ColumnName);
     }
 
-    [Theory]
-    [InlineData("ALTER TABLE users ALTER COLUMN status TYPE TEXT")]
-    [InlineData("ALTER TABLE users ALTER COLUMN status TYPE BLOB")]
-    public void Parse_AlterTable_RejectsUnsupportedTypeTargets(string sql)
+    [Fact]
+    public void Parse_AlterTable_RejectsUnsupportedTypeTarget()
     {
-        var error = Assert.Throws<CSharpDbException>(() => Parser.Parse(sql));
+        var error = Assert.Throws<CSharpDbException>(() =>
+            Parser.Parse("ALTER TABLE users ALTER COLUMN status TYPE BOOLEAN"));
 
-        Assert.Contains("INTEGER and REAL", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("INTEGER, REAL, TEXT, and BLOB", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -1377,12 +1523,17 @@ public class ParserTests
     }
 
     [Fact]
-    public void Parse_CteWithRecursiveKeyword()
+    public void Parse_CteWithRecursiveKeyword_IsRejected()
     {
-        // RECURSIVE is accepted but not functionally implemented — just ensure it parses
-        var stmt = Parser.Parse("WITH RECURSIVE cte AS (SELECT id FROM t) SELECT * FROM cte");
-        var with = Assert.IsType<WithStatement>(stmt);
-        Assert.Single(with.Ctes);
+        CSharpDbException error = Assert.Throws<CSharpDbException>(
+            () => Parser.Parse(
+                "WITH RECURSIVE cte AS (SELECT id FROM t) SELECT * FROM cte"));
+
+        Assert.Equal(ErrorCode.SyntaxError, error.Code);
+        Assert.Contains(
+            "Recursive CTE execution is not supported",
+            error.Message,
+            StringComparison.Ordinal);
     }
 
     #endregion

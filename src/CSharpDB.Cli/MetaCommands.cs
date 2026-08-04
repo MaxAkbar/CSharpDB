@@ -247,8 +247,16 @@ internal sealed class SchemaCommand : IMetaCommand
             {
                 foreignKey =
                     $" REFERENCES {columnForeignKey.ReferencedTableName}({columnForeignKey.ReferencedColumnName})";
-                if (columnForeignKey.OnDelete == ClientForeignKeyOnDeleteAction.Cascade)
-                    foreignKey += " ON DELETE CASCADE";
+                if (columnForeignKey.OnDelete != ClientForeignKeyOnDeleteAction.Restrict)
+                {
+                    foreignKey +=
+                        $" ON DELETE {FormatReferentialAction(columnForeignKey.OnDelete)}";
+                }
+                if (columnForeignKey.OnUpdate != ClientForeignKeyOnDeleteAction.Restrict)
+                {
+                    foreignKey +=
+                        $" ON UPDATE {FormatReferentialAction(columnForeignKey.OnUpdate)}";
+                }
             }
 
             sql.AppendLine($"  {col.Name} {type}{rowVersion}{pk}{identity}{nn}{foreignKey}{comma}");
@@ -257,6 +265,21 @@ internal sealed class SchemaCommand : IMetaCommand
         sql.Append(");");
         CliConsole.WriteSqlPanel(console, schema.TableName, sql.ToString());
     }
+
+    private static string FormatReferentialAction(
+        ClientForeignKeyOnDeleteAction action) =>
+        action switch
+        {
+            ClientForeignKeyOnDeleteAction.Restrict => "RESTRICT",
+            ClientForeignKeyOnDeleteAction.Cascade => "CASCADE",
+            ClientForeignKeyOnDeleteAction.NoAction => "NO ACTION",
+            ClientForeignKeyOnDeleteAction.SetNull => "SET NULL",
+            ClientForeignKeyOnDeleteAction.SetDefault => "SET DEFAULT",
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(action),
+                action,
+                "Unsupported foreign key referential action."),
+        };
 }
 
 internal sealed class IndexesCommand : IMetaCommand
@@ -1084,7 +1107,19 @@ internal static class MetaCommandHelpers
                     {
                         CSharpDB.Primitives.ForeignKeyOnDeleteAction.Restrict => ClientForeignKeyOnDeleteAction.Restrict,
                         CSharpDB.Primitives.ForeignKeyOnDeleteAction.Cascade => ClientForeignKeyOnDeleteAction.Cascade,
+                        CSharpDB.Primitives.ForeignKeyOnDeleteAction.NoAction => ClientForeignKeyOnDeleteAction.NoAction,
+                        CSharpDB.Primitives.ForeignKeyOnDeleteAction.SetNull => ClientForeignKeyOnDeleteAction.SetNull,
+                        CSharpDB.Primitives.ForeignKeyOnDeleteAction.SetDefault => ClientForeignKeyOnDeleteAction.SetDefault,
                         _ => throw new ArgumentOutOfRangeException(nameof(foreignKey.OnDelete), foreignKey.OnDelete, null),
+                    },
+                    OnUpdate = foreignKey.OnUpdate switch
+                    {
+                        CSharpDB.Primitives.ForeignKeyOnDeleteAction.Restrict => ClientForeignKeyOnDeleteAction.Restrict,
+                        CSharpDB.Primitives.ForeignKeyOnDeleteAction.Cascade => ClientForeignKeyOnDeleteAction.Cascade,
+                        CSharpDB.Primitives.ForeignKeyOnDeleteAction.NoAction => ClientForeignKeyOnDeleteAction.NoAction,
+                        CSharpDB.Primitives.ForeignKeyOnDeleteAction.SetNull => ClientForeignKeyOnDeleteAction.SetNull,
+                        CSharpDB.Primitives.ForeignKeyOnDeleteAction.SetDefault => ClientForeignKeyOnDeleteAction.SetDefault,
+                        _ => throw new ArgumentOutOfRangeException(nameof(foreignKey.OnUpdate), foreignKey.OnUpdate, null),
                     },
                     SupportingIndexName = foreignKey.SupportingIndexName,
                 })
@@ -1216,7 +1251,7 @@ internal static class MetaCommandHelpers
                 constraints.AddRow(
                     new Markup(CliConsole.Escape($"{applied.TableName}.{applied.ColumnName}")),
                     new Markup(CliConsole.Escape($"{applied.ReferencedTableName}({applied.ReferencedColumnName})")),
-                    new Markup(CliConsole.Escape($"constraint={applied.ConstraintName}, onDelete={applied.OnDelete}, supportIndex={applied.SupportingIndexName}")));
+                    new Markup(CliConsole.Escape($"constraint={applied.ConstraintName}, onDelete={applied.OnDelete}, onUpdate={applied.OnUpdate}, supportIndex={applied.SupportingIndexName}")));
             }
             console.Write(new Rule("[bold]Applied Constraints[/]").LeftJustified());
             console.Write(constraints);

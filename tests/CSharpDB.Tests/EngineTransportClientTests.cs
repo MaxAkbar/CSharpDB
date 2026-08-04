@@ -14,6 +14,53 @@ namespace CSharpDB.Tests;
 public sealed class EngineTransportClientTests
 {
     [Fact]
+    public async Task ExecuteSqlAsync_PreservesResourceLimitErrorCode()
+    {
+        string dbPath = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb_engine_transport_window_limit_{Guid.NewGuid():N}.db");
+        CancellationToken ct = TestContext.Current.CancellationToken;
+
+        try
+        {
+            await using var client = new EngineTransportClient(
+                dbPath,
+                new DatabaseOptions
+                {
+                    WindowExecution = new CSharpDB.Primitives.WindowExecutionOptions
+                    {
+                        MaxPartitionRows = 2,
+                        MaxBufferedRows = 4,
+                    },
+                });
+            SqlExecutionResult seed = await client.ExecuteSqlAsync(
+                """
+                CREATE TABLE window_limit_rows (id INTEGER PRIMARY KEY, group_id INTEGER);
+                INSERT INTO window_limit_rows VALUES (1, 1), (2, 1), (3, 1);
+                """,
+                ct);
+            Assert.Null(seed.Error);
+
+            SqlExecutionResult result = await client.ExecuteSqlAsync(
+                """
+                SELECT ROW_NUMBER() OVER (PARTITION BY group_id ORDER BY id)
+                FROM window_limit_rows;
+                """,
+                ct);
+
+            Assert.Equal(CSharpDB.Primitives.ErrorCode.ResourceLimitExceeded, result.ErrorCode);
+            Assert.Contains("partition", result.Error, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (File.Exists(dbPath))
+                File.Delete(dbPath);
+            if (File.Exists(dbPath + ".wal"))
+                File.Delete(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
     public async Task GetTableSchemaAsync_MapsRowVersionMetadata()
     {
         string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_engine_transport_rowversion_{Guid.NewGuid():N}.db");
@@ -84,6 +131,173 @@ public sealed class EngineTransportClientTests
     }
 
     [Fact]
+    public async Task DirectCrud_QuotesUnusualColumnIdentifiers()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb_engine_transport_quoted_crud_{Guid.NewGuid():N}.db");
+
+        try
+        {
+            await using var client = new EngineTransportClient(dbPath);
+            SqlExecutionResult create = await client.ExecuteSqlAsync(
+                """
+                CREATE TABLE direct_identifier_rows (
+                    "order id" INTEGER PRIMARY KEY,
+                    "select" TEXT NOT NULL,
+                    "path/value" TEXT NOT NULL,
+                    "display""name" TEXT NOT NULL
+                );
+                """,
+                ct);
+            Assert.Null(create.Error);
+
+            int inserted = await client.InsertRowAsync(
+                "direct_identifier_rows",
+                new Dictionary<string, object?>
+                {
+                    ["order id"] = 7L,
+                    ["select"] = "before",
+                    ["path/value"] = "/first",
+                    ["display\"name"] = "Ada",
+                },
+                ct);
+            Assert.Equal(1, inserted);
+
+            Dictionary<string, object?>? insertedRow =
+                await client.GetRowByPkAsync(
+                    "direct_identifier_rows",
+                    "order id",
+                    7L,
+                    ct);
+            Assert.NotNull(insertedRow);
+            Assert.Equal("before", insertedRow["select"]);
+            Assert.Equal("/first", insertedRow["path/value"]);
+            Assert.Equal("Ada", insertedRow["display\"name"]);
+
+            int updated = await client.UpdateRowAsync(
+                "direct_identifier_rows",
+                "order id",
+                7L,
+                new Dictionary<string, object?>
+                {
+                    ["select"] = "after",
+                    ["path/value"] = "/second",
+                    ["display\"name"] = "Grace",
+                },
+                ct);
+            Assert.Equal(1, updated);
+
+            Dictionary<string, object?>? updatedRow =
+                await client.GetRowByPkAsync(
+                    "direct_identifier_rows",
+                    "order id",
+                    7L,
+                    ct);
+            Assert.NotNull(updatedRow);
+            Assert.Equal("after", updatedRow["select"]);
+            Assert.Equal("/second", updatedRow["path/value"]);
+            Assert.Equal("Grace", updatedRow["display\"name"]);
+
+            Assert.Equal(
+                1,
+                await client.DeleteRowAsync(
+                    "direct_identifier_rows",
+                    "order id",
+                    7L,
+                    ct));
+            Assert.Null(
+                await client.GetRowByPkAsync(
+                    "direct_identifier_rows",
+                    "order id",
+                    7L,
+                    ct));
+        }
+        finally
+        {
+            if (File.Exists(dbPath))
+                File.Delete(dbPath);
+            if (File.Exists(dbPath + ".wal"))
+                File.Delete(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task DirectDdl_QuotesCatalogValidTableAndColumnIdentifiers()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb_engine_transport_quoted_ddl_{Guid.NewGuid():N}.db");
+
+        try
+        {
+            await using var client = new EngineTransportClient(dbPath);
+            SqlExecutionResult create = await client.ExecuteSqlAsync(
+                """
+                CREATE TABLE "http/items" (
+                    "order id" INTEGER PRIMARY KEY
+                );
+                """,
+                ct);
+            Assert.Null(create.Error);
+
+            await client.AddColumnAsync(
+                "http/items",
+                "select",
+                CSharpDB.Client.Models.DbType.Text,
+                notNull: false,
+                ct);
+            Assert.Contains(
+                (await client.GetTableSchemaAsync("http/items", ct))!.Columns,
+                column => column.Name == "select");
+
+            await client.RenameColumnAsync(
+                "http/items",
+                "select",
+                "path/value",
+                ct);
+            Assert.Contains(
+                (await client.GetTableSchemaAsync("http/items", ct))!.Columns,
+                column => column.Name == "path/value");
+
+            await client.RenameTableAsync(
+                "http/items",
+                "renamed items",
+                ct);
+            Assert.Null(
+                await client.GetTableSchemaAsync("http/items", ct));
+            Assert.NotNull(
+                await client.GetTableSchemaAsync("renamed items", ct));
+
+            await client.DropColumnAsync(
+                "renamed items",
+                "path/value",
+                ct);
+            CSharpDB.Client.Models.TableSchema renamedSchema =
+                Assert.IsType<CSharpDB.Client.Models.TableSchema>(
+                    await client.GetTableSchemaAsync(
+                        "renamed items",
+                        ct));
+            Assert.DoesNotContain(
+                renamedSchema.Columns,
+                column => column.Name == "path/value");
+
+            await client.DropTableAsync("renamed items", ct);
+            Assert.Null(
+                await client.GetTableSchemaAsync("renamed items", ct));
+        }
+        finally
+        {
+            if (File.Exists(dbPath))
+                File.Delete(dbPath);
+            if (File.Exists(dbPath + ".wal"))
+                File.Delete(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
     public async Task GetTableSchemaAsync_MapsDefaultsChecksAndLogicalKeys()
     {
         string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_engine_transport_schema_{Guid.NewGuid():N}.db");
@@ -110,13 +324,19 @@ public sealed class EngineTransportClientTests
                 TestContext.Current.CancellationToken);
 
             Assert.NotNull(schema);
-            Assert.Equal("'new'", Assert.Single(schema!.Columns, column => column.Name == "code").DefaultSql);
+            Assert.NotEqual(Guid.Empty, schema!.SchemaId);
+            Assert.All(
+                schema.Columns,
+                column => Assert.NotEqual(Guid.Empty, column.SchemaId));
+            Assert.Equal("'new'", Assert.Single(schema.Columns, column => column.Name == "code").DefaultSql);
             CheckConstraintDefinition check = Assert.Single(schema.CheckConstraints);
+            Assert.NotEqual(Guid.Empty, check.SchemaId);
             Assert.Equal("ck_transport_score", check.ConstraintName);
             Assert.Contains("score", check.ExpressionSql, StringComparison.OrdinalIgnoreCase);
             KeyConstraintDefinition unique = Assert.Single(
                 schema.KeyConstraints,
                 key => key.Kind == KeyConstraintKind.Unique);
+            Assert.NotEqual(Guid.Empty, unique.SchemaId);
             Assert.Equal("uq_transport_tenant_code", unique.ConstraintName);
             Assert.Equal(["tenant", "code"], unique.Columns);
         }
@@ -151,7 +371,8 @@ public sealed class EngineTransportClientTests
                     CONSTRAINT fk_transport_parent
                         FOREIGN KEY (tenant_id, parent_code)
                         REFERENCES transport_parents (tenant_id, code)
-                        ON DELETE CASCADE
+                        ON DELETE SET NULL
+                        ON UPDATE NO ACTION
                 );
                 """,
                 TestContext.Current.CancellationToken);
@@ -167,7 +388,73 @@ public sealed class EngineTransportClientTests
             Assert.Equal("tenant_id", foreignKey.ReferencedColumnName);
             Assert.Equal(["tenant_id", "parent_code"], foreignKey.ColumnNames);
             Assert.Equal(["tenant_id", "code"], foreignKey.ReferencedColumnNames);
-            Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
+            Assert.Equal(ForeignKeyOnDeleteAction.SetNull, foreignKey.OnDelete);
+            Assert.Equal(ForeignKeyOnDeleteAction.NoAction, foreignKey.OnUpdate);
+        }
+        finally
+        {
+            if (File.Exists(dbPath))
+                File.Delete(dbPath);
+            if (File.Exists(dbPath + ".wal"))
+                File.Delete(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task GetTableSchemaAsync_MapsFullImmediateForeignKeyActionMatrix()
+    {
+        string dbPath = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb_engine_transport_fk_actions_{Guid.NewGuid():N}.db");
+
+        try
+        {
+            await using var client = new EngineTransportClient(dbPath);
+            SqlExecutionResult create = await client.ExecuteSqlAsync(
+                """
+                CREATE TABLE transport_action_parents (id INTEGER PRIMARY KEY);
+                CREATE TABLE transport_action_children (
+                    id INTEGER PRIMARY KEY,
+                    restrict_id INTEGER REFERENCES transport_action_parents(id)
+                        ON DELETE RESTRICT ON UPDATE RESTRICT,
+                    no_action_id INTEGER REFERENCES transport_action_parents(id)
+                        ON DELETE NO ACTION ON UPDATE NO ACTION,
+                    cascade_id INTEGER REFERENCES transport_action_parents(id)
+                        ON DELETE CASCADE ON UPDATE CASCADE,
+                    set_null_id INTEGER REFERENCES transport_action_parents(id)
+                        ON DELETE SET NULL ON UPDATE SET NULL,
+                    set_default_id INTEGER DEFAULT 1
+                        REFERENCES transport_action_parents(id)
+                        ON DELETE SET DEFAULT ON UPDATE SET DEFAULT
+                );
+                """,
+                TestContext.Current.CancellationToken);
+            Assert.Null(create.Error);
+
+            CSharpDB.Client.Models.TableSchema schema =
+                Assert.IsType<CSharpDB.Client.Models.TableSchema>(
+                    await client.GetTableSchemaAsync(
+                        "transport_action_children",
+                        TestContext.Current.CancellationToken));
+            Dictionary<string, ForeignKeyDefinition> byColumn =
+                schema.ForeignKeys.ToDictionary(
+                    foreignKey => foreignKey.ColumnName,
+                    StringComparer.Ordinal);
+            Assert.Equal(5, byColumn.Count);
+
+            foreach ((string columnName, ForeignKeyOnDeleteAction action) in
+                     new[]
+                     {
+                         ("restrict_id", ForeignKeyOnDeleteAction.Restrict),
+                         ("no_action_id", ForeignKeyOnDeleteAction.NoAction),
+                         ("cascade_id", ForeignKeyOnDeleteAction.Cascade),
+                         ("set_null_id", ForeignKeyOnDeleteAction.SetNull),
+                         ("set_default_id", ForeignKeyOnDeleteAction.SetDefault),
+                     })
+            {
+                Assert.Equal(action, byColumn[columnName].OnDelete);
+                Assert.Equal(action, byColumn[columnName].OnUpdate);
+            }
         }
         finally
         {

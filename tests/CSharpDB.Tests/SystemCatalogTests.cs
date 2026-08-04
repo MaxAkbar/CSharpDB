@@ -48,6 +48,13 @@ public sealed class SystemCatalogTests : IAsyncLifetime
         Assert.Equal(3L, tableRow[1].AsInteger);
         Assert.Equal("id", tableRow[2].AsText);
 
+        await using var stableTableIdentity = await _db.ExecuteAsync(
+            "SELECT schema_id FROM sys.tables WHERE table_name = 'users'",
+            ct);
+        Assert.True(Guid.TryParse(
+            Assert.Single(await stableTableIdentity.ToListAsync(ct))[0].AsText,
+            out _));
+
         await using var columns = await _db.ExecuteAsync(
             "SELECT column_name, ordinal_position, data_type, is_nullable, is_primary_key, is_identity, collation " +
             "FROM sys.columns WHERE table_name = 'users' ORDER BY ordinal_position", ct);
@@ -65,6 +72,18 @@ public sealed class SystemCatalogTests : IAsyncLifetime
         Assert.Equal(0L, columnRows[1][4].AsInteger);
         Assert.Equal(0L, columnRows[1][5].AsInteger);
         Assert.Equal("NOCASE", columnRows[1][6].AsText);
+
+        await using var stableColumnIdentities = await _db.ExecuteAsync(
+            "SELECT table_schema_id, column_schema_id FROM sys.columns " +
+            "WHERE table_name = 'users' ORDER BY ordinal_position",
+            ct);
+        Assert.All(
+            await stableColumnIdentities.ToListAsync(ct),
+            row =>
+            {
+                Assert.True(Guid.TryParse(row[0].AsText, out _));
+                Assert.True(Guid.TryParse(row[1].AsText, out _));
+            });
 
         await using var indexes = await _db.ExecuteAsync(
             "SELECT index_name, table_name, column_name, ordinal_position, is_unique, collation " +
@@ -93,6 +112,8 @@ public sealed class SystemCatalogTests : IAsyncLifetime
         Assert.Equal("collation", allColumns.Schema[7].Name);
         Assert.Equal("column_default", allColumns.Schema[8].Name);
         Assert.Equal("is_row_version", allColumns.Schema[9].Name);
+        Assert.Equal("table_schema_id", allColumns.Schema[10].Name);
+        Assert.Equal("column_schema_id", allColumns.Schema[11].Name);
 
         await using var columns = await _db.ExecuteAsync(
             "SELECT column_name, is_row_version FROM sys.columns WHERE table_name = 'versioned_items' ORDER BY ordinal_position",
@@ -168,20 +189,57 @@ public sealed class SystemCatalogTests : IAsyncLifetime
         var ct = TestContext.Current.CancellationToken;
         await _db.ExecuteAsync("CREATE TABLE parents (id INTEGER PRIMARY KEY)", ct);
         await _db.ExecuteAsync(
-            "CREATE TABLE children (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parents(id) ON DELETE CASCADE)",
+            "CREATE TABLE children (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parents(id) ON DELETE SET NULL ON UPDATE NO ACTION)",
             ct);
 
         await using var foreignKeys = await _db.ExecuteAsync(
-            "SELECT constraint_name, table_name, column_name, referenced_table_name, referenced_column_name, on_delete, supporting_index_name FROM sys.foreign_keys",
+            "SELECT constraint_name, table_name, column_name, referenced_table_name, referenced_column_name, on_delete, on_update, supporting_index_name FROM sys.foreign_keys",
             ct);
         var foreignKeyRow = Assert.Single(await foreignKeys.ToListAsync(ct));
-        string supportingIndexName = foreignKeyRow[6].AsText;
+        string supportingIndexName = foreignKeyRow[7].AsText;
 
         Assert.Equal("children", foreignKeyRow[1].AsText);
         Assert.Equal("parent_id", foreignKeyRow[2].AsText);
         Assert.Equal("parents", foreignKeyRow[3].AsText);
         Assert.Equal("id", foreignKeyRow[4].AsText);
-        Assert.Equal("CASCADE", foreignKeyRow[5].AsText);
+        Assert.Equal("SET NULL", foreignKeyRow[5].AsText);
+        Assert.Equal("NO ACTION", foreignKeyRow[6].AsText);
+
+        await using var stableForeignKeyIdentity = await _db.ExecuteAsync(
+            """
+            SELECT table_schema_id,
+                   constraint_schema_id,
+                   column_schema_id,
+                   referenced_table_schema_id,
+                   referenced_column_schema_id,
+                   referenced_key_schema_id
+            FROM sys.foreign_keys
+            """,
+            ct);
+        DbValue[] stableForeignKeyRow =
+            Assert.Single(await stableForeignKeyIdentity.ToListAsync(ct));
+        Guid[] stableIds = stableForeignKeyRow
+            .Select(value =>
+            {
+                Assert.True(Guid.TryParse(value.AsText, out Guid parsed));
+                return parsed;
+            })
+            .ToArray();
+        TableSchema childSchema = Assert.IsType<TableSchema>(
+            _db.GetTableSchema("children"));
+        TableSchema parentSchema = Assert.IsType<TableSchema>(
+            _db.GetTableSchema("parents"));
+        ForeignKeyDefinition foreignKey = Assert.Single(childSchema.ForeignKeys);
+        Assert.Equal(childSchema.SchemaId, stableIds[0]);
+        Assert.Equal(foreignKey.SchemaId, stableIds[1]);
+        Assert.Equal(
+            childSchema.Columns.Single(column => column.Name == "parent_id").SchemaId,
+            stableIds[2]);
+        Assert.Equal(parentSchema.SchemaId, stableIds[3]);
+        Assert.Equal(
+            parentSchema.Columns.Single(column => column.Name == "id").SchemaId,
+            stableIds[4]);
+        Assert.Equal(Assert.Single(parentSchema.KeyConstraints).SchemaId, stableIds[5]);
 
         await using var systemIndexes = await _db.ExecuteAsync(
             "SELECT COUNT(*) FROM sys.indexes WHERE index_name = '" + supportingIndexName + "'",
@@ -194,6 +252,60 @@ public sealed class SystemCatalogTests : IAsyncLifetime
         var objectRow = Assert.Single(await objects.ToListAsync(ct));
         Assert.Equal(foreignKeyRow[0].AsText, objectRow[0].AsText);
         Assert.Equal("children", objectRow[2].AsText);
+    }
+
+    [Fact]
+    public async Task SystemCatalog_ExposesFullImmediateForeignKeyActionMatrix()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync(
+            "CREATE TABLE action_parents (id INTEGER PRIMARY KEY)",
+            ct);
+        await _db.ExecuteAsync(
+            """
+            CREATE TABLE action_children (
+                id INTEGER PRIMARY KEY,
+                restrict_id INTEGER REFERENCES action_parents(id)
+                    ON DELETE RESTRICT ON UPDATE RESTRICT,
+                no_action_id INTEGER REFERENCES action_parents(id)
+                    ON DELETE NO ACTION ON UPDATE NO ACTION,
+                cascade_id INTEGER REFERENCES action_parents(id)
+                    ON DELETE CASCADE ON UPDATE CASCADE,
+                set_null_id INTEGER REFERENCES action_parents(id)
+                    ON DELETE SET NULL ON UPDATE SET NULL,
+                set_default_id INTEGER DEFAULT 1
+                    REFERENCES action_parents(id)
+                    ON DELETE SET DEFAULT ON UPDATE SET DEFAULT
+            )
+            """,
+            ct);
+
+        await using var foreignKeys = await _db.ExecuteAsync(
+            """
+            SELECT column_name, on_delete, on_update
+            FROM sys.foreign_keys
+            WHERE table_name = 'action_children'
+            """,
+            ct);
+        Dictionary<string, DbValue[]> byColumn =
+            (await foreignKeys.ToListAsync(ct)).ToDictionary(
+                row => row[0].AsText,
+                StringComparer.Ordinal);
+        Assert.Equal(5, byColumn.Count);
+
+        foreach ((string columnName, string action) in
+                 new[]
+                 {
+                     ("restrict_id", "RESTRICT"),
+                     ("no_action_id", "NO ACTION"),
+                     ("cascade_id", "CASCADE"),
+                     ("set_null_id", "SET NULL"),
+                     ("set_default_id", "SET DEFAULT"),
+                 })
+        {
+            Assert.Equal(action, byColumn[columnName][1].AsText);
+            Assert.Equal(action, byColumn[columnName][2].AsText);
+        }
     }
 
     [Fact]

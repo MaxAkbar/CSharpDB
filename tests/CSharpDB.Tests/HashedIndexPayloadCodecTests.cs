@@ -58,4 +58,32 @@ public sealed class HashedIndexPayloadCodecTests
         Assert.Equal(100, RowIdPayloadCodec.ReadAt(alphaRowIds, 0));
         Assert.Equal(200, RowIdPayloadCodec.ReadAt(betaRowIds, 0));
     }
+
+    [Fact]
+    public void RealComponents_RoundTripWithCanonicalZeroAndNaNKeys()
+    {
+        byte[] zeroPayload = HashedIndexPayloadCodec.CreateSingle(
+            [DbValue.FromReal(-0d)],
+            rowId: 101);
+
+        Assert.True(
+            HashedIndexPayloadCodec.TryGetMatchingRowIds(
+                zeroPayload,
+                [DbValue.FromReal(0d)],
+                out byte[]? zeroRowIds));
+        Assert.Equal(101, RowIdPayloadCodec.ReadAt(zeroRowIds!, 0));
+
+        double alternateNaN = BitConverter.Int64BitsToDouble(
+            unchecked((long)0xfff8_0000_0000_0042UL));
+        byte[] nanPayload = HashedIndexPayloadCodec.CreateSingle(
+            [DbValue.FromReal(double.NaN)],
+            rowId: 202);
+
+        Assert.True(
+            HashedIndexPayloadCodec.TryGetMatchingRowIds(
+                nanPayload,
+                [DbValue.FromReal(alternateNaN)],
+                out byte[]? nanRowIds));
+        Assert.Equal(202, RowIdPayloadCodec.ReadAt(nanRowIds!, 0));
+    }
 }

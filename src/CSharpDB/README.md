@@ -90,17 +90,21 @@ await using var result = await db.ExecuteAsync(@"
 ```
 
 **Supported SQL Features**
+
 - Column types: `INTEGER`, `REAL`, `TEXT`, `BLOB`
-- Constraints: `PRIMARY KEY`, `IDENTITY`, `NOT NULL`, `UNIQUE`
+- Constraints: `INTEGER`/`TEXT` single or composite `PRIMARY KEY`, `UNIQUE`, and immediate `MATCH SIMPLE` foreign keys; `INTEGER IDENTITY`; plus `NOT NULL`, literal `DEFAULT`, and deterministic row-local `CHECK`
 - JOINs: `INNER`, `LEFT OUTER`, `RIGHT OUTER`, `CROSS`
 - Broad key-only `INNER JOIN`s over declared `INTEGER` primary-key/foreign-key relationships automatically reuse the maintained foreign-key support index when the planner's conservative cost and shape gates apply
-- Set operations: `UNION`, `INTERSECT`, `EXCEPT`
+- Set operations: `UNION`, `UNION ALL`, `INTERSECT`, `EXCEPT`
 - Expressions: `LIKE`, `IN`, `BETWEEN`, `IS NULL`, `EXISTS`
 - Aggregates: `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`
+- Bounded in-memory window functions: ranking, common aggregates, `LAG`, `LEAD`, `FIRST_VALUE`, `LAST_VALUE`, named windows, and explicit `ROWS` frames
 - Pagination: `LIMIT` / `OFFSET`
 - Common Table Expressions (`WITH` clause)
 - Subqueries (scalar, `IN`, `EXISTS`)
-- Views, Triggers, Stored Procedures
+- Views and bounded triggers
+- Client procedure catalog/API; SQL `CREATE PROCEDURE` and `CALL` are not supported
+- Structural `EXPLAIN` and executing `EXPLAIN ANALYZE` physical-plan rowsets
 - `ANALYZE` for statistics collection
 
 ### Collection API (NoSQL)

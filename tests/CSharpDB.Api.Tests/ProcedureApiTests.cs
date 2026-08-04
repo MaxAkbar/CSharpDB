@@ -67,6 +67,67 @@ public sealed class ProcedureApiTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ProcedureEndpoints_RejectUndefinedNumericParameterType()
+    {
+        var create = new CreateProcedureRequest(
+            Name: "InvalidTypeProc",
+            BodySql: "SELECT @value;",
+            Parameters:
+            [
+                new ProcedureParameterRequest(
+                    "value",
+                    "255",
+                    true),
+            ]);
+
+        using HttpResponseMessage response =
+            await _client.PostAsJsonAsync(
+                "/api/procedures",
+                create,
+                Ct);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("99", "Insert")]
+    [InlineData("After", "99")]
+    public async Task TriggerEndpoints_RejectUndefinedNumericEnums(
+        string timing,
+        string triggerEvent)
+    {
+        var create = new CreateTriggerRequest(
+            "invalid_trigger",
+            "items",
+            timing,
+            triggerEvent,
+            "SELECT 1");
+        using HttpResponseMessage createResponse =
+            await _client.PostAsJsonAsync(
+                "/api/triggers",
+                create,
+                Ct);
+        Assert.Equal(
+            HttpStatusCode.BadRequest,
+            createResponse.StatusCode);
+
+        var update = new UpdateTriggerRequest(
+            "invalid_trigger",
+            "items",
+            timing,
+            triggerEvent,
+            "SELECT 1");
+        using HttpResponseMessage updateResponse =
+            await _client.PutAsJsonAsync(
+                "/api/triggers/invalid_trigger",
+                update,
+                Ct);
+        Assert.Equal(
+            HttpStatusCode.BadRequest,
+            updateResponse.StatusCode);
+    }
+
+    [Fact]
     public async Task ExecuteProcedure_ValidationError_ReturnsBadRequestWithStructuredPayload()
     {
         var create = new CreateProcedureRequest(
@@ -106,6 +167,9 @@ public sealed class ProcedureApiTests : IAsyncLifetime
         Assert.NotNull(payload);
         Assert.True(payload.Succeeded);
         var statement = Assert.Single(payload.Statements);
+        Assert.Equal(
+            ["BLOB"],
+            Assert.IsType<string[]>(statement.ColumnTypes));
         var row = Assert.Single(statement.Rows!);
         Assert.Equal("AQID", Assert.Single(row.Values)?.ToString());
     }

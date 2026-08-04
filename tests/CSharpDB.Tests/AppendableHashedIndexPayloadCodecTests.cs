@@ -72,6 +72,33 @@ public sealed class AppendableHashedIndexPayloadCodecTests
     }
 
     [Fact]
+    public void RealComponents_DecodeAndCompareUsingCanonicalBits()
+    {
+        byte[] payload = AppendableHashedIndexPayloadCodec.Encode(
+            [DbValue.FromReal(-0d), DbValue.FromReal(double.NaN)],
+            firstPageId: 3,
+            lastPageId: 3,
+            rowCount: 1,
+            lastRowId: 9,
+            isSortedAscending: true);
+
+        Assert.True(
+            AppendableHashedIndexPayloadCodec.TryDecodeMetadata(
+                payload,
+                out AppendableHashedIndexPayloadMetadata metadata));
+        Assert.True(
+            AppendableHashedIndexPayloadCodec.EncodedKeyComponentsEqual(
+                payload.AsSpan(metadata.KeyComponentsOffset),
+                [DbValue.FromReal(0d), DbValue.FromReal(double.NaN)]));
+        Assert.True(
+            AppendableHashedIndexPayloadCodec.TryDecode(
+                payload,
+                out AppendableHashedIndexPayload decoded));
+        Assert.Equal(0L, BitConverter.DoubleToInt64Bits(decoded.KeyComponents[0].AsReal));
+        Assert.True(double.IsNaN(decoded.KeyComponents[1].AsReal));
+    }
+
+    [Fact]
     public void EncodeExternal_DecodesReferenceAndMarksExternalChainState()
     {
         DbValue[] keyComponents = [DbValue.FromText("shared-category"), DbValue.FromInteger(17)];

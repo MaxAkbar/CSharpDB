@@ -886,7 +886,7 @@ public sealed class MigrationCompatibilityCommandRunnerTests
         Assert.Equal(
             "csharpdb-data-type-mapping-report/v1",
             root.GetProperty("format").GetString());
-        Assert.Equal("4.3.0", root.GetProperty("targetCSharpDbVersion").GetString());
+        Assert.Equal("4.4.0", root.GetProperty("targetCSharpDbVersion").GetString());
         Assert.Equal("synthetic", root.GetProperty("sourceKind").GetString());
         Assert.Matches("^[0-9a-f]{64}$", root.GetProperty("catalogDigest").GetString());
         Assert.Equal(
@@ -902,7 +902,7 @@ public sealed class MigrationCompatibilityCommandRunnerTests
         Assert.Equal(
             "csharpdb-query-compatibility-report/v1",
             root.GetProperty("format").GetString());
-        Assert.Equal("4.3.0", root.GetProperty("targetCSharpDbVersion").GetString());
+        Assert.Equal("4.4.0", root.GetProperty("targetCSharpDbVersion").GetString());
         Assert.Matches("^[0-9a-f]{64}$", root.GetProperty("capabilityDigest").GetString());
         Assert.Equal(1, root.GetProperty("summary").GetProperty("total").GetInt32());
         Assert.Single(root.GetProperty("results").EnumerateArray());

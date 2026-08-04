@@ -19,12 +19,68 @@ internal static class RowConstraintValidator
         var namedConstraints = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         for (int i = 0; i < schema.ForeignKeys.Count; i++)
         {
-            string foreignKeyName = schema.ForeignKeys[i].ConstraintName;
+            ForeignKeyDefinition foreignKey = schema.ForeignKeys[i];
+            string foreignKeyName = foreignKey.ConstraintName;
             if (!namedConstraints.Add(foreignKeyName))
             {
                 throw new CSharpDbException(
                     ErrorCode.SyntaxError,
                     $"Constraint name '{foreignKeyName}' is specified multiple times on table '{schema.TableName}'.");
+            }
+
+            bool requiresSetNull =
+                foreignKey.OnDelete == ForeignKeyOnDeleteAction.SetNull ||
+                foreignKey.OnUpdate == ForeignKeyOnDeleteAction.SetNull;
+            bool requiresSetDefault =
+                foreignKey.OnDelete == ForeignKeyOnDeleteAction.SetDefault ||
+                foreignKey.OnUpdate == ForeignKeyOnDeleteAction.SetDefault;
+            if (!requiresSetNull && !requiresSetDefault)
+                continue;
+
+            IReadOnlyList<string> childColumnNames =
+                foreignKey.ColumnNames.Count > 0
+                    ? foreignKey.ColumnNames
+                    : [foreignKey.ColumnName];
+            foreach (string childColumnName in childColumnNames)
+            {
+                int childColumnIndex = schema.GetColumnIndex(childColumnName);
+                if (childColumnIndex < 0)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.ColumnNotFound,
+                        $"Column '{childColumnName}' referenced by foreign key '{foreignKeyName}' on table '{schema.TableName}' was not found.");
+                }
+
+                ColumnDefinition childColumn =
+                    schema.Columns[childColumnIndex];
+                bool isPrimaryKeyColumn =
+                    childColumn.IsPrimaryKey ||
+                    schema.KeyConstraints.Any(key =>
+                        key.Kind == KeyConstraintKind.PrimaryKey &&
+                        key.Columns.Any(column =>
+                            string.Equals(
+                                column,
+                                childColumn.Name,
+                                StringComparison.OrdinalIgnoreCase)));
+                if (requiresSetNull &&
+                    (!childColumn.Nullable || isPrimaryKeyColumn))
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.ConstraintViolation,
+                        $"Foreign key SET NULL action on table '{schema.TableName}' requires every child column to be nullable and outside the primary key; column '{childColumn.Name}' is not eligible.");
+                }
+
+                if (requiresSetDefault)
+                {
+                    DbValue defaultValue = EvaluateDefault(childColumn, schema);
+                    if (defaultValue.IsNull &&
+                        (!childColumn.Nullable || isPrimaryKeyColumn))
+                    {
+                        throw new CSharpDbException(
+                            ErrorCode.ConstraintViolation,
+                            $"Foreign key SET DEFAULT action on table '{schema.TableName}' requires child column '{childColumn.Name}' to have a non-NULL literal default or be nullable and outside the primary key.");
+                    }
+                }
             }
         }
 

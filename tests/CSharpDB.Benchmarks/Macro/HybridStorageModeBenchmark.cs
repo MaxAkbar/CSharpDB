@@ -15,10 +15,60 @@ public static class HybridStorageModeBenchmark
     private const int ConcurrentReaderCount = 8;
     private const int ReusedSessionBurstReads = 32;
     private const int HighThroughputLatencySampleEvery = 128;
+    internal const int MinimumReleaseCoreLatencySamples = 100;
+    private static readonly TimeSpan QualificationCancellationDrainTimeout = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan QualificationControllerPollInterval = TimeSpan.FromMilliseconds(10);
     private static readonly TimeSpan WarmupDuration = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan MeasuredDuration = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan InsertTradeoffMeasuredDuration = TimeSpan.FromSeconds(10);
+    internal static readonly TimeSpan MaximumReleaseCoreMeasuredDuration = TimeSpan.FromSeconds(90);
     private static readonly InsertTradeoffScenario[] s_insertTradeoffScenarios = CreateInsertTradeoffScenarios();
+    private static readonly ScenarioDefinition[] s_scenarios = CreateScenarioDefinitions();
+    private static readonly ScenarioDefinition[] s_masterComparisonScenarios = s_scenarios
+        .Where(static scenario => scenario.Name.StartsWith("Storage_", StringComparison.Ordinal))
+        .ToArray();
+    private static readonly IReadOnlyList<string> s_masterComparisonDurableWriteScenarioNames =
+        Array.AsReadOnly(
+        [
+            "Storage_FileBacked_Sql_SingleInsert_5s",
+            "Storage_FileBacked_Sql_Batch100_5s",
+            "Storage_HybridIncrementalDurable_Sql_SingleInsert_5s",
+            "Storage_HybridIncrementalDurable_Sql_Batch100_5s",
+            "Storage_FileBacked_Collection_Put_5s",
+            "Storage_FileBacked_Collection_Batch100_5s",
+            "Storage_HybridIncrementalDurable_Collection_Put_5s",
+            "Storage_HybridIncrementalDurable_Collection_Batch100_5s",
+        ]);
+    private static readonly IReadOnlyList<string> s_masterComparisonHostedStableScenarioNames =
+        Array.AsReadOnly(
+        [
+            "Storage_FileBacked_Sql_PointLookup_20000",
+            "Storage_FileBacked_Sql_ConcurrentReads_8readers",
+            "Storage_FileBacked_Sql_ConcurrentReadsBurst32_8readers",
+            "Storage_FileBacked_Collection_Get_20000",
+            "Storage_HybridIncrementalDurable_Sql_PointLookup_20000",
+            "Storage_HybridIncrementalDurable_Sql_ConcurrentReads_8readers",
+            "Storage_HybridIncrementalDurable_Sql_ConcurrentReadsBurst32_8readers",
+            "Storage_HybridIncrementalDurable_Collection_Get_20000",
+            "Storage_InMemory_Sql_SingleInsert_5s",
+            "Storage_InMemory_Sql_Batch100_5s",
+            "Storage_InMemory_Sql_PointLookup_20000",
+            "Storage_InMemory_Sql_ConcurrentReads_8readers",
+            "Storage_InMemory_Sql_ConcurrentReadsBurst32_8readers",
+            "Storage_InMemory_Collection_Put_5s",
+            "Storage_InMemory_Collection_Batch100_5s",
+            "Storage_InMemory_Collection_Get_20000",
+        ]);
+    private static readonly IReadOnlyList<string> s_scenarioNames = Array.AsReadOnly(
+        s_scenarios.Select(static scenario => scenario.Name).ToArray());
+    private static readonly IReadOnlyList<string> s_masterComparisonScenarioNames = Array.AsReadOnly(
+        s_masterComparisonScenarios.Select(static scenario => scenario.Name).ToArray());
+
+    internal static QualificationSettings DefaultQualificationSettings { get; } = new(
+        WarmupDuration: TimeSpan.FromSeconds(2),
+        MinimumMeasuredDuration: TimeSpan.FromSeconds(30),
+        MinimumLatencySamples: 10_000,
+        MaximumMeasuredDuration: TimeSpan.FromSeconds(120));
 
     private sealed record BenchDoc(string Name, int Value, string Category);
 
@@ -29,137 +79,228 @@ public static class HybridStorageModeBenchmark
         HybridIncrementalDurable,
     }
 
+    internal enum ConcurrentExecutionPath
+    {
+        Legacy,
+        Qualification,
+    }
+
+    /// <summary>
+    /// Exact result-row names accepted by <see cref="RunNamedScenarioAsync"/> and
+    /// <see cref="RunNamedQualificationScenarioAsync"/>.
+    /// </summary>
+    public static IReadOnlyList<string> ScenarioNames => s_scenarioNames;
+
+    internal static IReadOnlyList<string> MasterComparisonScenarioNames =>
+        s_masterComparisonScenarioNames;
+
+    internal static IReadOnlyList<string> MasterComparisonDurableWriteScenarioNames =>
+        s_masterComparisonDurableWriteScenarioNames;
+
+    internal static IReadOnlyList<string> MasterComparisonHostedStableScenarioNames =>
+        s_masterComparisonHostedStableScenarioNames;
+
     public static async Task<List<BenchmarkResult>> RunAsync()
     {
-        var results = new List<BenchmarkResult>();
-
-        foreach (StorageMode mode in Enum.GetValues<StorageMode>())
-        {
-            results.Add(await RunSqlSingleInsertAsync(mode));
-            results.Add(await RunSqlBatchInsertAsync(mode));
-            results.Add(await RunSqlPointLookupAsync(mode));
-            results.Add(await RunSqlConcurrentReadsAsync(mode, reuseSessionBurstReads: false));
-            results.Add(await RunSqlConcurrentReadsAsync(mode, reuseSessionBurstReads: true));
-            results.Add(await RunCollectionPutAsync(mode));
-            results.Add(await RunCollectionBatchInsertAsync(mode));
-            results.Add(await RunCollectionGetAsync(mode));
-        }
-
-        foreach (InsertTradeoffScenario scenario in s_insertTradeoffScenarios)
-            results.Add(await RunInsertTradeoffScenarioAsync(scenario));
+        var results = new List<BenchmarkResult>(s_scenarios.Length);
+        foreach (ScenarioDefinition scenario in s_scenarios)
+            results.Add(await scenario.RunAsync(null));
 
         return results;
     }
 
-    private static async Task<BenchmarkResult> RunSqlSingleInsertAsync(StorageMode mode)
+    internal static async Task<List<BenchmarkResult>> RunMasterComparisonSubsetAsync()
+    {
+        var results = new List<BenchmarkResult>(s_masterComparisonScenarios.Length);
+        foreach (ScenarioDefinition scenario in s_masterComparisonScenarios)
+            results.Add(await scenario.RunAsync(null));
+
+        return results;
+    }
+
+    internal static async Task<List<BenchmarkResult>> RunMasterComparisonDurableWriteSubsetAsync()
+    {
+        var results = new List<BenchmarkResult>(s_masterComparisonDurableWriteScenarioNames.Count);
+        foreach (string scenarioName in s_masterComparisonDurableWriteScenarioNames)
+            results.Add(await GetScenario(scenarioName).RunAsync(null));
+
+        return results;
+    }
+
+    internal static async Task<List<BenchmarkResult>> RunMasterComparisonHostedStableSubsetAsync()
+    {
+        var results = new List<BenchmarkResult>(s_masterComparisonHostedStableScenarioNames.Count);
+        foreach (string scenarioName in s_masterComparisonHostedStableScenarioNames)
+            results.Add(await GetScenario(scenarioName).RunAsync(null));
+
+        return results;
+    }
+
+    public static Task<BenchmarkResult> RunNamedScenarioAsync(string scenarioName)
+        => GetScenario(scenarioName).RunAsync(null);
+
+    public static Task<BenchmarkResult> RunNamedQualificationScenarioAsync(string scenarioName)
+        => RunNamedQualificationScenarioAsync(scenarioName, DefaultQualificationSettings);
+
+    internal static Task<BenchmarkResult> RunNamedQualificationScenarioAsync(
+        string scenarioName,
+        QualificationSettings qualificationSettings)
+    {
+        ArgumentNullException.ThrowIfNull(qualificationSettings);
+        qualificationSettings.Validate();
+        return GetScenario(scenarioName).RunAsync(qualificationSettings);
+    }
+
+    private static ScenarioDefinition GetScenario(string scenarioName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(scenarioName);
+
+        ScenarioDefinition? scenario = s_scenarios.FirstOrDefault(
+            scenario => string.Equals(scenario.Name, scenarioName, StringComparison.Ordinal));
+        if (scenario is null)
+        {
+            throw new ArgumentException(
+                $"Unknown hybrid storage-mode scenario '{scenarioName}'. " +
+                "Use one of the exact names returned by HybridStorageModeBenchmark.ScenarioNames.",
+                nameof(scenarioName));
+        }
+
+        return scenario;
+    }
+
+    private static async Task<BenchmarkResult> RunSqlSingleInsertAsync(
+        StorageMode mode,
+        QualificationSettings? qualificationSettings)
     {
         await using var context = await BenchmarkContext.CreateSqlWriteAsync(mode);
         var db = context.Database;
         int nextId = SeedCount + 1_000_000;
 
-        return await MacroBenchmarkRunner.RunForDurationAsync(
-            $"{GetPrefix(mode)}_Sql_SingleInsert_5s",
-            WarmupDuration,
+        string benchmarkName = GetSqlSingleInsertName(mode);
+        return await RunTimedOperationAsync(
+            benchmarkName,
             MeasuredDuration,
-            async () =>
+            qualificationSettings,
+            async ct =>
             {
                 int id = nextId++;
                 await using var result = await db.ExecuteAsync(
-                    $"INSERT INTO bench VALUES ({id}, {id * 10L}, '{GetCategory(id)}');");
+                    $"INSERT INTO bench VALUES ({id}, {id * 10L}, '{GetCategory(id)}');",
+                    ct);
                 if (result.RowsAffected != 1)
                     throw new InvalidOperationException($"Expected one inserted row for id={id}, observed {result.RowsAffected}.");
-            });
+            },
+            context.QuarantineDetachedWork);
     }
 
-    private static async Task<BenchmarkResult> RunSqlBatchInsertAsync(StorageMode mode)
+    private static async Task<BenchmarkResult> RunSqlBatchInsertAsync(
+        StorageMode mode,
+        QualificationSettings? qualificationSettings)
     {
         await using var context = await BenchmarkContext.CreateSqlWriteAsync(mode);
         var db = context.Database;
         int nextId = SeedCount + 2_000_000;
 
-        return await MacroBenchmarkRunner.RunForDurationAsync(
-            $"{GetPrefix(mode)}_Sql_Batch{BatchSize}_5s",
-            WarmupDuration,
+        string benchmarkName = GetSqlBatchInsertName(mode);
+        return await RunTimedOperationAsync(
+            benchmarkName,
             MeasuredDuration,
-            async () =>
+            qualificationSettings,
+            async ct =>
             {
-                await db.BeginTransactionAsync();
+                await db.BeginTransactionAsync(ct);
                 try
                 {
                     for (int i = 0; i < BatchSize; i++)
                     {
                         int id = nextId++;
                         await using var result = await db.ExecuteAsync(
-                            $"INSERT INTO bench VALUES ({id}, {id * 10L}, '{GetCategory(id)}');");
+                            $"INSERT INTO bench VALUES ({id}, {id * 10L}, '{GetCategory(id)}');",
+                            ct);
                         if (result.RowsAffected != 1)
                             throw new InvalidOperationException($"Expected one inserted row for id={id}, observed {result.RowsAffected}.");
                     }
 
-                    await db.CommitAsync();
+                    await db.CommitAsync(ct);
                 }
                 catch
                 {
-                    await db.RollbackAsync();
+                    await RollbackQuietlyAsync(db);
                     throw;
                 }
-            });
+            },
+            context.QuarantineDetachedWork);
     }
 
-    private static async Task<BenchmarkResult> RunSqlPointLookupAsync(StorageMode mode)
+    private static async Task<BenchmarkResult> RunSqlPointLookupAsync(
+        StorageMode mode,
+        QualificationSettings? qualificationSettings)
     {
         await using var context = await BenchmarkContext.CreateSqlReadAsync(mode);
         var db = context.Database;
         var rng = new Random(42);
 
-        await WarmSqlLookupsAsync(db, rng, 128);
-
-        rng = new Random(42);
-        return await MacroBenchmarkRunner.RunForDurationAsync(
-            $"{GetPrefix(mode)}_Sql_PointLookup_{SeedCount}",
-            WarmupDuration,
+        if (UsesLegacyReadPriming(qualificationSettings))
+        {
+            await WarmSqlLookupsAsync(db, rng, 128);
+            rng = new Random(42);
+        }
+        string benchmarkName = GetSqlPointLookupName(mode);
+        return await RunTimedOperationAsync(
+            benchmarkName,
             MeasuredDuration,
-            async () =>
+            qualificationSettings,
+            async ct =>
             {
                 int id = rng.Next(1, SeedCount + 1);
-                await using var result = await db.ExecuteAsync($"SELECT value FROM bench WHERE id = {id};");
-                if (!await result.MoveNextAsync() || result.Current[0].AsInteger != id * 10L)
+                await using var result = await db.ExecuteAsync($"SELECT value FROM bench WHERE id = {id};", ct);
+                if (!await result.MoveNextAsync(ct) || result.Current[0].AsInteger != id * 10L)
                     throw new InvalidOperationException($"Lookup for id={id} returned an unexpected result.");
-            });
+            },
+            context.QuarantineDetachedWork);
     }
 
-    private static async Task<BenchmarkResult> RunCollectionPutAsync(StorageMode mode)
+    private static async Task<BenchmarkResult> RunCollectionPutAsync(
+        StorageMode mode,
+        QualificationSettings? qualificationSettings)
     {
         await using var context = await BenchmarkContext.CreateCollectionWriteAsync(mode);
         var collection = context.Collection!;
         int nextId = SeedCount + 3_000_000;
 
-        return await MacroBenchmarkRunner.RunForDurationAsync(
-            $"{GetPrefix(mode)}_Collection_Put_5s",
-            WarmupDuration,
+        string benchmarkName = GetCollectionPutName(mode);
+        return await RunTimedOperationAsync(
+            benchmarkName,
             MeasuredDuration,
-            async () =>
+            qualificationSettings,
+            async ct =>
             {
                 int id = nextId++;
                 await collection.PutAsync(
                     $"doc:{id}",
-                    new BenchDoc($"User_{id}", id, GetCategory(id)));
-            });
+                    new BenchDoc($"User_{id}", id, GetCategory(id)),
+                    ct);
+            },
+            context.QuarantineDetachedWork);
     }
 
-    private static async Task<BenchmarkResult> RunCollectionBatchInsertAsync(StorageMode mode)
+    private static async Task<BenchmarkResult> RunCollectionBatchInsertAsync(
+        StorageMode mode,
+        QualificationSettings? qualificationSettings)
     {
         await using var context = await BenchmarkContext.CreateCollectionWriteAsync(mode);
         var db = context.Database;
         var collection = context.Collection!;
         int nextId = SeedCount + 4_000_000;
 
-        return await MacroBenchmarkRunner.RunForDurationAsync(
-            $"{GetPrefix(mode)}_Collection_Batch{BatchSize}_5s",
-            WarmupDuration,
+        string benchmarkName = GetCollectionBatchInsertName(mode);
+        return await RunTimedOperationAsync(
+            benchmarkName,
             MeasuredDuration,
-            async () =>
+            qualificationSettings,
+            async ct =>
             {
-                await db.BeginTransactionAsync();
+                await db.BeginTransactionAsync(ct);
                 try
                 {
                     for (int i = 0; i < BatchSize; i++)
@@ -167,52 +308,64 @@ public static class HybridStorageModeBenchmark
                         int id = nextId++;
                         await collection.PutAsync(
                             $"doc:{id}",
-                            new BenchDoc($"User_{id}", id, GetCategory(id)));
+                            new BenchDoc($"User_{id}", id, GetCategory(id)),
+                            ct);
                     }
 
-                    await db.CommitAsync();
+                    await db.CommitAsync(ct);
                 }
                 catch
                 {
-                    await db.RollbackAsync();
+                    await RollbackQuietlyAsync(db);
                     throw;
                 }
-            });
+            },
+            context.QuarantineDetachedWork);
     }
 
-    private static async Task<BenchmarkResult> RunCollectionGetAsync(StorageMode mode)
+    private static async Task<BenchmarkResult> RunCollectionGetAsync(
+        StorageMode mode,
+        QualificationSettings? qualificationSettings)
     {
         await using var context = await BenchmarkContext.CreateCollectionReadAsync(mode);
         var collection = context.Collection!;
         var rng = new Random(84);
 
-        await WarmCollectionGetsAsync(collection, rng, 128);
-
-        rng = new Random(84);
-        return await MacroBenchmarkRunner.RunForDurationAsync(
-            $"{GetPrefix(mode)}_Collection_Get_{SeedCount}",
-            WarmupDuration,
+        if (UsesLegacyReadPriming(qualificationSettings))
+        {
+            await WarmCollectionGetsAsync(collection, rng, 128);
+            rng = new Random(84);
+        }
+        string benchmarkName = GetCollectionGetName(mode);
+        return await RunTimedOperationAsync(
+            benchmarkName,
             MeasuredDuration,
-            async () =>
+            qualificationSettings,
+            async ct =>
             {
                 int id = rng.Next(1, SeedCount + 1);
-                BenchDoc? document = await collection.GetAsync($"doc:{id}");
+                BenchDoc? document = await collection.GetAsync($"doc:{id}", ct);
                 if (document is null || document.Value != id)
                     throw new InvalidOperationException($"Document 'doc:{id}' was not found or was invalid.");
-            });
+            },
+            context.QuarantineDetachedWork);
     }
 
-    private static async Task<BenchmarkResult> RunInsertTradeoffScenarioAsync(InsertTradeoffScenario scenario)
+    private static async Task<BenchmarkResult> RunInsertTradeoffScenarioAsync(
+        InsertTradeoffScenario scenario,
+        QualificationSettings? qualificationSettings)
     {
         await using var context = await InsertTradeoffContext.CreateAsync(scenario);
         var db = context.Database;
-        var batch = db.PrepareInsertBatch("bench", initialCapacity: InsertTradeoffRowsPerCommit);
+        InsertBatch batch = db.PrepareInsertBatch(
+            "bench",
+            initialCapacity: InsertTradeoffRowsPerCommit);
         var rowBuffer = new DbValue[4];
         DbValue textValue = DbValue.FromText("durable_batch");
         DbValue categoryValue = DbValue.FromText("Alpha");
         int nextSequence = scenario.SeedRows;
 
-        async Task OperationAsync()
+        async Task OperationAsync(CancellationToken ct)
         {
             nextSequence = await ExecuteInsertBatchCommitAsync(
                 db,
@@ -221,16 +374,23 @@ public static class HybridStorageModeBenchmark
                 nextSequence,
                 InsertTradeoffRowsPerCommit,
                 textValue,
-                categoryValue);
+                categoryValue,
+                ct);
         }
 
-        string benchmarkName =
-            $"StoragePlan2_{scenario.Name}_InsertBatch_B{InsertTradeoffRowsPerCommit}_Seed{scenario.SeedRows}_10s";
-        BenchmarkResult rawResult = await MacroBenchmarkRunner.RunForDurationAsync(
+        string benchmarkName = GetInsertTradeoffName(scenario);
+        BenchmarkResult rawResult = await RunTimedOperationAsync(
             benchmarkName,
-            WarmupDuration,
             InsertTradeoffMeasuredDuration,
-            OperationAsync);
+            qualificationSettings,
+            OperationAsync,
+            context.QuarantineDetachedWork,
+            prepareMeasuredPhase: () =>
+            {
+                batch = db.PrepareInsertBatch(
+                    "bench",
+                    initialCapacity: InsertTradeoffRowsPerCommit);
+            });
 
         double rowsPerSecond = rawResult.OpsPerSecond * InsertTradeoffRowsPerCommit;
         string? extraInfo = AppendExtraInfo(
@@ -252,53 +412,171 @@ public static class HybridStorageModeBenchmark
         return CloneResult(rawResult, extraInfo);
     }
 
-    private static async Task<BenchmarkResult> RunSqlConcurrentReadsAsync(StorageMode mode, bool reuseSessionBurstReads)
+    private static async Task<BenchmarkResult> RunSqlConcurrentReadsAsync(
+        StorageMode mode,
+        bool reuseSessionBurstReads,
+        QualificationSettings? qualificationSettings)
     {
         await using var context = await BenchmarkContext.CreateSqlReadAsync(mode);
         var db = context.Database;
-        var histograms = new LatencyHistogram[ConcurrentReaderCount];
         int latencySampleEvery = reuseSessionBurstReads ? HighThroughputLatencySampleEvery : 1;
+        string benchmarkName = GetSqlConcurrentReadsName(mode, reuseSessionBurstReads);
 
-        for (int i = 0; i < ConcurrentReaderCount; i++)
-            histograms[i] = new LatencyHistogram(latencySampleEvery);
+        QualificationSettings effectiveSettings = qualificationSettings ??
+            CreateReleaseCoreMeasurementSettings(MeasuredDuration);
 
-        using var cts = new CancellationTokenSource(MeasuredDuration);
-        var readerTasks = new Task[ConcurrentReaderCount];
-        for (int readerIndex = 0; readerIndex < ConcurrentReaderCount; readerIndex++)
-        {
-            var histogram = histograms[readerIndex];
-            readerTasks[readerIndex] = Task.Run(
-                () => reuseSessionBurstReads
-                    ? RunReusedReaderLoopAsync(db, histogram, cts.Token)
-                    : RunPerQueryReaderLoopAsync(db, histogram, cts.Token),
-                cts.Token);
-        }
-
-        await Task.WhenAll(readerTasks);
-
-        return new BenchmarkResult
-        {
-            Name = reuseSessionBurstReads
-                ? $"{GetPrefix(mode)}_Sql_ConcurrentReadsBurst{ReusedSessionBurstReads}_{ConcurrentReaderCount}readers"
-                : $"{GetPrefix(mode)}_Sql_ConcurrentReads_{ConcurrentReaderCount}readers",
-            TotalOps = histograms.Sum(static histogram => histogram.Count),
-            ElapsedMs = MeasuredDuration.TotalMilliseconds,
-            P50Ms = histograms.Average(static histogram => histogram.Percentile(0.50)),
-            P90Ms = histograms.Average(static histogram => histogram.Percentile(0.90)),
-            P95Ms = histograms.Average(static histogram => histogram.Percentile(0.95)),
-            P99Ms = histograms.Average(static histogram => histogram.Percentile(0.99)),
-            P999Ms = histograms.Average(static histogram => histogram.Percentile(0.999)),
-            MinMs = histograms.Min(static histogram => histogram.Min),
-            MaxMs = histograms.Max(static histogram => histogram.Max),
-            MeanMs = histograms.Average(static histogram => histogram.Mean),
-            StdDevMs = histograms.Average(static histogram => histogram.StdDev),
-            ExtraInfo = reuseSessionBurstReads
-                ? $"session-mode=reused reader session; burst-reads={ReusedSessionBurstReads}; readers={ConcurrentReaderCount}; latency-sampling=1/{latencySampleEvery}"
-                : $"session-mode=per-query reader session; readers={ConcurrentReaderCount}",
-        };
+        return await RunQualifiedConcurrentReadsAsync(
+            db,
+            reuseSessionBurstReads,
+            latencySampleEvery,
+            benchmarkName,
+            effectiveSettings,
+            context.QuarantineDetachedWork);
     }
 
-    private static async Task RunPerQueryReaderLoopAsync(Database db, LatencyHistogram histogram, CancellationToken ct)
+    internal static ConcurrentExecutionPath GetConcurrentExecutionPath(
+        QualificationSettings? qualificationSettings)
+        => ConcurrentExecutionPath.Qualification;
+
+    internal static bool UsesLegacyReadPriming(QualificationSettings? qualificationSettings)
+        => qualificationSettings is null;
+
+    private static async Task<BenchmarkResult> RunLegacyConcurrentReadsAsync(
+        Database db,
+        bool reuseSessionBurstReads,
+        int latencySampleEvery,
+        string benchmarkName)
+    {
+        var histograms = new LatencyHistogram[ConcurrentReaderCount];
+        for (int i = 0; i < histograms.Length; i++)
+            histograms[i] = new LatencyHistogram(latencySampleEvery);
+
+        await RunLegacyConcurrentReaderWorkersAsync(
+            ConcurrentReaderCount,
+            MeasuredDuration,
+            (readerIndex, ct) => reuseSessionBurstReads
+                ? RunReusedReaderLoopAsync(
+                    db,
+                    histograms[readerIndex],
+                    completionRecorder: null,
+                    completionElapsedProvider: null,
+                    maximumMeasuredDuration: TimeSpan.Zero,
+                    discardCompletedAfterCancellation: false,
+                    ct)
+                : RunPerQueryReaderLoopAsync(
+                    db,
+                    histograms[readerIndex],
+                    completionRecorder: null,
+                    completionElapsedProvider: null,
+                    maximumMeasuredDuration: TimeSpan.Zero,
+                    discardCompletedAfterCancellation: false,
+                    ct));
+
+        return CreateConcurrentReadResult(
+            benchmarkName,
+            histograms,
+            MeasuredDuration,
+            reuseSessionBurstReads,
+            latencySampleEvery,
+            qualificationSettings: null,
+            measurementStartedUtc: null,
+            measurementEndedUtc: null);
+    }
+
+    internal static async Task RunLegacyConcurrentReaderWorkersAsync(
+        int readerCount,
+        TimeSpan measuredDuration,
+        Func<int, CancellationToken, Task> readerLoop,
+        Func<Func<Task>, Task>? scheduleReader = null)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(readerCount, 1);
+        if (measuredDuration < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(measuredDuration));
+        ArgumentNullException.ThrowIfNull(readerLoop);
+
+        scheduleReader ??= static reader => Task.Run(reader);
+
+        using var phaseCts = new CancellationTokenSource();
+        var allReadersReady = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var measurementStart = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var readerTasks = new Task[readerCount];
+        int readyReaderCount = 0;
+
+        for (int readerIndex = 0; readerIndex < readerTasks.Length; readerIndex++)
+        {
+            int capturedReaderIndex = readerIndex;
+            readerTasks[readerIndex] = scheduleReader(
+                async () =>
+                {
+                    if (Interlocked.Increment(ref readyReaderCount) == readerCount)
+                        allReadersReady.TrySetResult();
+
+                    await measurementStart.Task.ConfigureAwait(false);
+                    await readerLoop(capturedReaderIndex, phaseCts.Token).ConfigureAwait(false);
+                });
+        }
+
+        await allReadersReady.Task.ConfigureAwait(false);
+        phaseCts.CancelAfter(measuredDuration);
+        measurementStart.TrySetResult();
+        await Task.WhenAll(readerTasks).ConfigureAwait(false);
+    }
+
+    private static async Task<BenchmarkResult> RunQualifiedConcurrentReadsAsync(
+        Database db,
+        bool reuseSessionBurstReads,
+        int latencySampleEvery,
+        string benchmarkName,
+        QualificationSettings qualificationSettings,
+        Action<Task> detachedWorkRegistrar)
+    {
+        if (qualificationSettings.WarmupDuration > TimeSpan.Zero)
+        {
+            await RunConcurrentReaderPhaseAsync(
+                db,
+                reuseSessionBurstReads,
+                latencySampleEvery,
+                minimumMeasuredDuration: qualificationSettings.WarmupDuration,
+                minimumLatencySamples: 0,
+                maximumMeasuredDuration: qualificationSettings.WarmupDuration,
+                failAtMaximum: false,
+                $"{benchmarkName} warmup",
+                detachedWorkRegistrar);
+            MacroBenchmarkRunner.StabilizeAfterWarmup();
+        }
+
+        ConcurrentReaderPhaseResult qualifiedPhase = await RunConcurrentReaderPhaseAsync(
+            db,
+            reuseSessionBurstReads,
+            latencySampleEvery,
+            qualificationSettings.MinimumMeasuredDuration,
+            qualificationSettings.MinimumLatencySamples,
+            qualificationSettings.MaximumMeasuredDuration,
+            failAtMaximum: true,
+            benchmarkName,
+            detachedWorkRegistrar);
+
+        return CreateConcurrentReadResult(
+            benchmarkName,
+            qualifiedPhase.Histograms,
+            qualifiedPhase.Elapsed,
+            reuseSessionBurstReads,
+            latencySampleEvery,
+            qualificationSettings,
+            qualifiedPhase.MeasurementStartedUtc,
+            qualifiedPhase.MeasurementEndedUtc);
+    }
+
+    private static async Task RunPerQueryReaderLoopAsync(
+        Database db,
+        LatencyHistogram histogram,
+        Func<TimeSpan, double?, bool>? completionRecorder,
+        Func<TimeSpan>? completionElapsedProvider,
+        TimeSpan maximumMeasuredDuration,
+        bool discardCompletedAfterCancellation,
+        CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
@@ -309,17 +587,43 @@ public static class HybridStorageModeBenchmark
                 await using var result = await reader.ExecuteReadAsync("SELECT COUNT(*) FROM bench;", ct);
                 _ = await result.MoveNextAsync(ct);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
                 return;
             }
 
             sw.Stop();
-            histogram.Record(sw.Elapsed.TotalMilliseconds);
+            TimeSpan completionElapsed = completionElapsedProvider?.Invoke() ?? TimeSpan.Zero;
+            if (completionRecorder is null)
+            {
+                if (discardCompletedAfterCancellation &&
+                    (ct.IsCancellationRequested || completionElapsed > maximumMeasuredDuration))
+                {
+                    return;
+                }
+
+                histogram.Record(sw.Elapsed.TotalMilliseconds);
+            }
+            else if (!completionRecorder(completionElapsed, sw.Elapsed.TotalMilliseconds))
+            {
+                return;
+            }
+
+            if (discardCompletedAfterCancellation && ct.IsCancellationRequested)
+            {
+                return;
+            }
         }
     }
 
-    private static async Task RunReusedReaderLoopAsync(Database db, LatencyHistogram histogram, CancellationToken ct)
+    private static async Task RunReusedReaderLoopAsync(
+        Database db,
+        LatencyHistogram histogram,
+        Func<TimeSpan, double?, bool>? completionRecorder,
+        Func<TimeSpan>? completionElapsedProvider,
+        TimeSpan maximumMeasuredDuration,
+        bool discardCompletedAfterCancellation,
+        CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
@@ -332,23 +636,1025 @@ public static class HybridStorageModeBenchmark
                     await using var result = await reader.ExecuteReadAsync("SELECT COUNT(*) FROM bench;", ct);
                     _ = await result.MoveNextAsync(ct);
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
                     return;
                 }
 
-                if (sw is null)
+                TimeSpan completionElapsed = completionElapsedProvider?.Invoke() ?? TimeSpan.Zero;
+                sw?.Stop();
+                if (completionRecorder is not null)
                 {
-                    histogram.RecordUnsampled();
+                    if (!completionRecorder(completionElapsed, sw?.Elapsed.TotalMilliseconds))
+                        return;
                 }
                 else
                 {
-                    sw.Stop();
-                    histogram.Record(sw.Elapsed.TotalMilliseconds);
+                    if (discardCompletedAfterCancellation &&
+                        (ct.IsCancellationRequested || completionElapsed > maximumMeasuredDuration))
+                    {
+                        return;
+                    }
+
+                    if (sw is null)
+                        histogram.RecordUnsampled();
+                    else
+                        histogram.Record(sw.Elapsed.TotalMilliseconds);
+                }
+
+                if (discardCompletedAfterCancellation && ct.IsCancellationRequested)
+                {
+                    return;
                 }
             }
         }
     }
+
+    private static async Task<ConcurrentReaderPhaseResult> RunConcurrentReaderPhaseAsync(
+        Database db,
+        bool reuseSessionBurstReads,
+        int latencySampleEvery,
+        TimeSpan minimumMeasuredDuration,
+        int minimumLatencySamples,
+        TimeSpan maximumMeasuredDuration,
+        bool failAtMaximum,
+        string? benchmarkName = null,
+        Action<Task>? detachedWorkRegistrar = null)
+    {
+        using var deadline = new StopwatchQualificationDeadline(maximumMeasuredDuration);
+        return await RunConcurrentReaderPhaseCoreAsync(
+            benchmarkName ?? "hybrid concurrent-read scenario",
+            ConcurrentReaderCount,
+            latencySampleEvery,
+            minimumMeasuredDuration,
+            minimumLatencySamples,
+            maximumMeasuredDuration,
+            failAtMaximum,
+            (_, histogram, completionRecorder, ct) => reuseSessionBurstReads
+                ? RunReusedReaderLoopAsync(
+                    db,
+                    histogram,
+                    completionRecorder,
+                    () => deadline.Elapsed,
+                    maximumMeasuredDuration,
+                    discardCompletedAfterCancellation: true,
+                    ct)
+                : RunPerQueryReaderLoopAsync(
+                    db,
+                    histogram,
+                    completionRecorder,
+                    () => deadline.Elapsed,
+                    maximumMeasuredDuration,
+                    discardCompletedAfterCancellation: true,
+                    ct),
+            deadline,
+            QualificationCancellationDrainTimeout,
+            detachedWorkRegistrar: detachedWorkRegistrar);
+    }
+
+    internal static async Task<ConcurrentReaderPhaseResult> RunConcurrentReaderPhaseCoreAsync(
+        string benchmarkName,
+        int readerCount,
+        int latencySampleEvery,
+        TimeSpan minimumMeasuredDuration,
+        int minimumLatencySamples,
+        TimeSpan maximumMeasuredDuration,
+        bool failAtMaximum,
+        Func<int, LatencyHistogram, Func<TimeSpan, double?, bool>?, CancellationToken, Task> readerLoop,
+        IQualificationDeadline deadline,
+        TimeSpan cancellationDrainTimeout,
+        Func<Func<Task>, Task>? scheduleReader = null,
+        Action<Task>? detachedWorkRegistrar = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(benchmarkName);
+        ArgumentOutOfRangeException.ThrowIfLessThan(readerCount, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(latencySampleEvery, 1);
+        ArgumentNullException.ThrowIfNull(readerLoop);
+        ArgumentNullException.ThrowIfNull(deadline);
+        if (cancellationDrainTimeout < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(cancellationDrainTimeout));
+        scheduleReader ??= static reader => Task.Run(reader);
+
+        var histograms = new LatencyHistogram[readerCount];
+        for (int i = 0; i < histograms.Length; i++)
+            histograms[i] = new LatencyHistogram(latencySampleEvery);
+
+        Task expirationTask = deadline.Expired;
+        var recordingGate = new ConcurrentRecordingGate(
+            deadline,
+            expirationTask,
+            minimumMeasuredDuration,
+            minimumLatencySamples,
+            maximumMeasuredDuration);
+        int unexpectedReaderExit = 0;
+        ConcurrentReaderExitCoordinator[] readerExitCoordinators = Enumerable
+            .Range(0, readerCount)
+            .Select(_ => new ConcurrentReaderExitCoordinator(
+                () => Interlocked.Exchange(ref unexpectedReaderExit, 1)))
+            .ToArray();
+        using var phaseCts = new CancellationTokenSource();
+        var allReadersReady = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var measurementStart = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var readerTasks = new Task[readerCount];
+        int readyReaderCount = 0;
+        for (int readerIndex = 0; readerIndex < readerTasks.Length; readerIndex++)
+        {
+            int capturedReaderIndex = readerIndex;
+            LatencyHistogram histogram = histograms[readerIndex];
+            ConcurrentReaderExitCoordinator readerExitCoordinator =
+                readerExitCoordinators[readerIndex];
+            readerTasks[readerIndex] = scheduleReader(
+                async () =>
+                {
+                    if (Interlocked.Increment(ref readyReaderCount) == readerCount)
+                        allReadersReady.TrySetResult();
+
+                    await measurementStart.Task.ConfigureAwait(false);
+                    Task readerLoopTask;
+                    try
+                    {
+                        readerLoopTask = readerLoop(
+                            capturedReaderIndex,
+                            histogram,
+                            (completionElapsed, latencyMilliseconds) =>
+                            {
+                                bool accepted = recordingGate.TryRecord(
+                                    histogram,
+                                    completionElapsed,
+                                    latencyMilliseconds);
+                                if (!accepted || recordingGate.TargetReached)
+                                    readerExitCoordinator.MarkCoordinatedExit();
+                                return accepted;
+                            },
+                            phaseCts.Token) ?? throw new InvalidOperationException(
+                                "A hybrid storage concurrent reader returned a null task.");
+                    }
+                    catch
+                    {
+                        readerExitCoordinator.MarkReaderCompleted();
+                        throw;
+                    }
+
+                    readerExitCoordinator.AttachReaderTask(readerLoopTask);
+                    _ = readerLoopTask.ContinueWith(
+                        static (_, state) =>
+                            ((ConcurrentReaderExitCoordinator)state!).MarkReaderCompleted(),
+                        readerExitCoordinator,
+                        CancellationToken.None,
+                        TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default);
+                    try
+                    {
+                        await readerLoopTask.ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        readerExitCoordinator.MarkReaderCompleted();
+                    }
+                });
+        }
+
+        Task allReaders = Task.WhenAll(readerTasks);
+        Task<Task> firstReaderCompletion = Task.WhenAny(readerTasks);
+        Task readinessTask = allReadersReady.Task;
+        Task readinessWinner = await Task.WhenAny(readinessTask, firstReaderCompletion);
+        if (readinessWinner != readinessTask && !readinessTask.IsCompleted)
+        {
+            recordingGate.Close();
+            measurementStart.TrySetResult();
+            foreach (ConcurrentReaderExitCoordinator coordinator in readerExitCoordinators)
+                coordinator.MarkCoordinatedExit();
+            phaseCts.Cancel();
+            bool preStartReadersStopped = await WaitForTaskCompletionWithinAsync(
+                allReaders,
+                cancellationDrainTimeout);
+            if (!preStartReadersStopped)
+            {
+                detachedWorkRegistrar?.Invoke(allReaders);
+                throw CreateQualificationUnresponsiveException(
+                    benchmarkName,
+                    "concurrent readers before measurement start",
+                    cancellationDrainTimeout);
+            }
+
+            await allReaders;
+            throw new InvalidOperationException(
+                $"Hybrid storage qualification scenario '{benchmarkName}' had a concurrent reader " +
+                "exit before every reader reached the measurement start gate.");
+        }
+
+        deadline.Start();
+        measurementStart.TrySetResult();
+        ConcurrentPhaseStopReason stopReason;
+        TimeSpan stoppedElapsed;
+
+        while (true)
+        {
+            if (Volatile.Read(ref unexpectedReaderExit) != 0)
+                break;
+
+            if (recordingGate.TargetReached)
+                break;
+
+            if (recordingGate.IsClosed)
+                break;
+
+            stoppedElapsed = deadline.Elapsed;
+            if (expirationTask.IsCompleted || stoppedElapsed >= maximumMeasuredDuration)
+                break;
+
+            await Task.WhenAny(
+                expirationTask,
+                firstReaderCompletion,
+                Task.Delay(QualificationControllerPollInterval));
+        }
+
+        recordingGate.Close();
+        await recordingGate.WaitForActiveRecordersAsync();
+        if (Volatile.Read(ref unexpectedReaderExit) != 0)
+        {
+            stopReason = ConcurrentPhaseStopReason.UnexpectedReaderExit;
+            stoppedElapsed = recordingGate.GetAcceptedEndElapsed(deadline.Elapsed);
+        }
+        else if (recordingGate.TargetReached)
+        {
+            stopReason = ConcurrentPhaseStopReason.TargetReached;
+            stoppedElapsed = recordingGate.GetAcceptedEndElapsed(deadline.Elapsed);
+        }
+        else
+        {
+            stopReason = ConcurrentPhaseStopReason.Deadline;
+            stoppedElapsed = recordingGate.GetDeadlineEndElapsed();
+        }
+
+        DateTimeOffset measurementEndedUtc = deadline.StartedUtc + stoppedElapsed;
+        foreach (ConcurrentReaderExitCoordinator coordinator in readerExitCoordinators)
+            coordinator.MarkCoordinatedExit();
+        if (stopReason == ConcurrentPhaseStopReason.Deadline)
+            deadline.Cancel();
+        phaseCts.Cancel();
+
+        bool readersStopped = await WaitForTaskCompletionWithinAsync(
+            allReaders,
+            cancellationDrainTimeout);
+        if (!readersStopped)
+        {
+            detachedWorkRegistrar?.Invoke(allReaders);
+            int outstandingReaders = readerTasks.Count(static task => !task.IsCompleted);
+            Exception? completedReaderFailure = GetCompletedReaderFailure(readerTasks);
+            Exception? capException = failAtMaximum && stopReason == ConcurrentPhaseStopReason.Deadline
+                ? CreateQualificationCapException(
+                    benchmarkName,
+                    maximumMeasuredDuration,
+                    stoppedElapsed,
+                    recordingGate.RetainedLatencySamples,
+                    minimumMeasuredDuration,
+                    minimumLatencySamples)
+                : null;
+            Exception? innerException = CombineQualificationFailures(
+                completedReaderFailure,
+                capException);
+            throw CreateQualificationUnresponsiveException(
+                benchmarkName,
+                $"{outstandingReaders} concurrent reader(s)",
+                cancellationDrainTimeout,
+                innerException);
+        }
+
+        await allReaders;
+        if (stopReason == ConcurrentPhaseStopReason.UnexpectedReaderExit ||
+            Volatile.Read(ref unexpectedReaderExit) != 0)
+        {
+            throw new InvalidOperationException(
+                $"Hybrid storage qualification scenario '{benchmarkName}' had a concurrent reader " +
+                "exit before coordinated cancellation; the requested reader count was not maintained.");
+        }
+        int finalLatencySamples = recordingGate.RetainedLatencySamples;
+        if (stopReason == ConcurrentPhaseStopReason.Deadline && failAtMaximum)
+        {
+            throw CreateQualificationCapException(
+                benchmarkName,
+                maximumMeasuredDuration,
+                stoppedElapsed,
+                finalLatencySamples,
+                minimumMeasuredDuration,
+                minimumLatencySamples);
+        }
+
+        return new ConcurrentReaderPhaseResult(
+            histograms,
+            stoppedElapsed,
+            deadline.StartedUtc,
+            measurementEndedUtc);
+    }
+
+    private static BenchmarkResult CreateConcurrentReadResult(
+        string benchmarkName,
+        LatencyHistogram[] histograms,
+        TimeSpan elapsed,
+        bool reuseSessionBurstReads,
+        int latencySampleEvery,
+        QualificationSettings? qualificationSettings,
+        DateTimeOffset? measurementStartedUtc,
+        DateTimeOffset? measurementEndedUtc)
+    {
+        string baseExtraInfo = reuseSessionBurstReads
+            ? $"session-mode=reused reader session; burst-reads={ReusedSessionBurstReads}; readers={ConcurrentReaderCount}; latency-sampling=1/{latencySampleEvery}"
+            : $"session-mode=per-query reader session; readers={ConcurrentReaderCount}";
+
+        return new BenchmarkResult
+        {
+            Name = benchmarkName,
+            TotalOps = histograms.Sum(static histogram => histogram.Count),
+            LatencySamples = histograms.Sum(static histogram => histogram.SampleCount),
+            ElapsedMs = elapsed.TotalMilliseconds,
+            P50Ms = histograms.Average(static histogram => histogram.Percentile(0.50)),
+            P90Ms = histograms.Average(static histogram => histogram.Percentile(0.90)),
+            P95Ms = histograms.Average(static histogram => histogram.Percentile(0.95)),
+            P99Ms = histograms.Average(static histogram => histogram.Percentile(0.99)),
+            P999Ms = histograms.Average(static histogram => histogram.Percentile(0.999)),
+            MinMs = histograms.Min(static histogram => histogram.Min),
+            MaxMs = histograms.Max(static histogram => histogram.Max),
+            MeanMs = histograms.Average(static histogram => histogram.Mean),
+            StdDevMs = histograms.Average(static histogram => histogram.StdDev),
+            ExtraInfo = AppendExtraInfo(
+                baseExtraInfo,
+                qualificationSettings is null
+                    ? null
+                    : CreateQualificationExtraInfo(
+                        qualificationSettings,
+                        measurementStartedUtc!.Value,
+                        measurementEndedUtc!.Value)),
+        };
+    }
+
+    internal static async Task<BenchmarkResult> RunTimedOperationAsync(
+        string benchmarkName,
+        TimeSpan normalMeasuredDuration,
+        QualificationSettings? qualificationSettings,
+        Func<CancellationToken, Task> operation,
+        Action<Task>? detachedWorkRegistrar,
+        Action? prepareMeasuredPhase = null)
+    {
+        QualificationSettings effectiveSettings = qualificationSettings ??
+            CreateReleaseCoreMeasurementSettings(normalMeasuredDuration);
+        effectiveSettings.Validate();
+        await RunQualificationWarmupAsync(
+            benchmarkName,
+            operation,
+            effectiveSettings.WarmupDuration,
+            detachedWorkRegistrar);
+        MacroBenchmarkRunner.StabilizeAfterWarmup();
+        prepareMeasuredPhase?.Invoke();
+
+        using var deadline = new StopwatchQualificationDeadline(
+            effectiveSettings.MaximumMeasuredDuration);
+        return await RunQualificationMeasuredOperationCoreAsync(
+            benchmarkName,
+            effectiveSettings,
+            operation,
+            deadline,
+            QualificationCancellationDrainTimeout,
+            detachedWorkRegistrar);
+    }
+
+    internal static QualificationSettings CreateReleaseCoreMeasurementSettings(
+        TimeSpan minimumMeasuredDuration)
+        => new(
+            WarmupDuration,
+            minimumMeasuredDuration,
+            MinimumReleaseCoreLatencySamples,
+            MaximumReleaseCoreMeasuredDuration);
+
+    internal static async Task<BenchmarkResult> RunQualificationMeasuredOperationCoreAsync(
+        string benchmarkName,
+        QualificationSettings qualificationSettings,
+        Func<CancellationToken, Task> operation,
+        IQualificationDeadline deadline,
+        TimeSpan cancellationDrainTimeout,
+        Action<Task>? detachedWorkRegistrar = null,
+        Func<Func<Task<BenchmarkResult>>, Task<BenchmarkResult>>? scheduleWorker = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(benchmarkName);
+        ArgumentNullException.ThrowIfNull(qualificationSettings);
+        ArgumentNullException.ThrowIfNull(operation);
+        ArgumentNullException.ThrowIfNull(deadline);
+        if (cancellationDrainTimeout < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(cancellationDrainTimeout));
+        qualificationSettings.Validate();
+
+        scheduleWorker ??= static worker => Task.Run(worker);
+        var progress = new SequentialMeasurementProgress();
+        CancellationToken operationCancellationToken = deadline.Token;
+        Task expirationTask = deadline.Expired;
+        var workerReady = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var measurementStart = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<BenchmarkResult> workerTask = scheduleWorker(
+            async () =>
+            {
+                workerReady.TrySetResult();
+                await measurementStart.Task.ConfigureAwait(false);
+                return await RunQualificationMeasuredOperationWorkerAsync(
+                benchmarkName,
+                qualificationSettings,
+                operation,
+                deadline,
+                progress,
+                operationCancellationToken,
+                expirationTask).ConfigureAwait(false);
+            });
+
+        Task readinessWinner = await Task.WhenAny(workerReady.Task, workerTask);
+        if (readinessWinner == workerTask && !workerReady.Task.IsCompleted)
+            return await workerTask;
+
+        deadline.Start();
+        measurementStart.TrySetResult();
+
+        Task completedTask = await Task.WhenAny(workerTask, expirationTask);
+        if (completedTask == workerTask || workerTask.IsCompleted)
+        {
+            try
+            {
+                return await workerTask;
+            }
+            catch (OperationCanceledException) when (operationCancellationToken.IsCancellationRequested)
+            {
+                throw await CreateQualificationCapAfterCancellationAsync(
+                    benchmarkName,
+                    qualificationSettings,
+                    deadline.Elapsed,
+                    progress.RetainedLatencySamples,
+                    inFlightTask: null,
+                    deadline,
+                    cancellationDrainTimeout,
+                    "in-flight operation");
+            }
+        }
+
+        throw await CreateQualificationCapAfterCancellationAsync(
+            benchmarkName,
+            qualificationSettings,
+            deadline.Elapsed,
+            progress.RetainedLatencySamples,
+            workerTask,
+            deadline,
+            cancellationDrainTimeout,
+            "in-flight operation",
+            detachedWorkRegistrar);
+    }
+
+    private static async Task<BenchmarkResult> RunQualificationMeasuredOperationWorkerAsync(
+        string benchmarkName,
+        QualificationSettings qualificationSettings,
+        Func<CancellationToken, Task> operation,
+        IQualificationDeadline deadline,
+        SequentialMeasurementProgress progress,
+        CancellationToken operationCancellationToken,
+        Task expirationTask)
+    {
+        var histogram = new LatencyHistogram();
+        while (true)
+        {
+            TimeSpan elapsed = deadline.Elapsed;
+            bool deadlineReached = expirationTask.IsCompleted ||
+                                   elapsed > qualificationSettings.MaximumMeasuredDuration;
+            if (!deadlineReached && HasMetQualificationTarget(
+                    elapsed,
+                    histogram.SampleCount,
+                    qualificationSettings.MinimumMeasuredDuration,
+                    qualificationSettings.MinimumLatencySamples))
+            {
+                DateTimeOffset measurementEndedUtc = deadline.StartedUtc + elapsed;
+                BenchmarkResult result = BenchmarkResult.FromHistogram(
+                    benchmarkName,
+                    histogram,
+                    elapsed.TotalMilliseconds);
+                Console.WriteLine(
+                    $"  {benchmarkName}: {result.OpsPerSecond:N0} ops/sec, " +
+                    $"P50={result.P50Ms:F3}ms, P99={result.P99Ms:F3}ms, " +
+                    $"P999={result.P999Ms:F3}ms ({result.LatencySamples:N0} retained samples)");
+
+                return CloneResult(
+                    result,
+                    CreateQualificationExtraInfo(
+                        qualificationSettings,
+                        deadline.StartedUtc,
+                        measurementEndedUtc));
+            }
+
+            if (deadlineReached || elapsed >= qualificationSettings.MaximumMeasuredDuration)
+            {
+                if (!expirationTask.IsCompleted)
+                    deadline.Cancel();
+                throw new OperationCanceledException(operationCancellationToken);
+            }
+
+            var operationStopwatch = Stopwatch.StartNew();
+            await operation(operationCancellationToken);
+            operationStopwatch.Stop();
+
+            TimeSpan completionElapsed = deadline.Elapsed;
+            if (expirationTask.IsCompleted ||
+                completionElapsed > qualificationSettings.MaximumMeasuredDuration)
+            {
+                if (!expirationTask.IsCompleted)
+                    deadline.Cancel();
+                throw new OperationCanceledException(operationCancellationToken);
+            }
+
+            histogram.Record(operationStopwatch.Elapsed.TotalMilliseconds);
+            progress.PublishRetainedLatencySamples(histogram.SampleCount);
+        }
+    }
+
+    private static async Task RunQualificationWarmupAsync(
+        string benchmarkName,
+        Func<CancellationToken, Task> operation,
+        TimeSpan warmupDuration,
+        Action<Task>? detachedWorkRegistrar)
+    {
+        if (warmupDuration == TimeSpan.Zero)
+            return;
+
+        using var deadline = new StopwatchQualificationDeadline(warmupDuration);
+        await RunQualificationWarmupCoreAsync(
+            benchmarkName,
+            operation,
+            warmupDuration,
+            deadline,
+            QualificationCancellationDrainTimeout,
+            detachedWorkRegistrar);
+    }
+
+    internal static async Task RunQualificationWarmupCoreAsync(
+        string benchmarkName,
+        Func<CancellationToken, Task> operation,
+        TimeSpan warmupDuration,
+        IQualificationDeadline deadline,
+        TimeSpan cancellationDrainTimeout,
+        Action<Task>? detachedWorkRegistrar = null,
+        Func<Func<Task>, Task>? scheduleWorker = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(benchmarkName);
+        ArgumentNullException.ThrowIfNull(operation);
+        ArgumentNullException.ThrowIfNull(deadline);
+        if (warmupDuration <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(warmupDuration));
+        if (cancellationDrainTimeout < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(cancellationDrainTimeout));
+
+        scheduleWorker ??= static worker => Task.Run(worker);
+        CancellationToken operationCancellationToken = deadline.Token;
+        Task expirationTask = deadline.Expired;
+        var workerReady = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var measurementStart = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        Task workerTask = scheduleWorker(
+            async () =>
+            {
+                workerReady.TrySetResult();
+                await measurementStart.Task.ConfigureAwait(false);
+                await RunQualificationWarmupWorkerAsync(
+                operation,
+                warmupDuration,
+                deadline,
+                operationCancellationToken,
+                expirationTask).ConfigureAwait(false);
+            });
+
+        Task readinessWinner = await Task.WhenAny(workerReady.Task, workerTask);
+        if (readinessWinner == workerTask && !workerReady.Task.IsCompleted)
+        {
+            await workerTask;
+            return;
+        }
+
+        deadline.Start();
+        measurementStart.TrySetResult();
+
+        Task completedTask = await Task.WhenAny(workerTask, expirationTask);
+        if (completedTask == workerTask || workerTask.IsCompleted)
+        {
+            try
+            {
+                await workerTask;
+            }
+            catch (OperationCanceledException) when (operationCancellationToken.IsCancellationRequested)
+            {
+                // Expiration is the normal end of a warmup phase.
+            }
+            deadline.Cancel();
+            return;
+        }
+
+        deadline.Cancel();
+        bool workerStopped = await WaitForTaskCompletionWithinAsync(
+            workerTask,
+            cancellationDrainTimeout);
+        if (!workerStopped)
+        {
+            detachedWorkRegistrar?.Invoke(workerTask);
+            throw CreateQualificationUnresponsiveException(
+                benchmarkName,
+                "warmup operation",
+                cancellationDrainTimeout);
+        }
+
+        try
+        {
+            await workerTask;
+        }
+        catch (OperationCanceledException) when (operationCancellationToken.IsCancellationRequested)
+        {
+            // Expiration is the normal end of a warmup phase.
+        }
+    }
+
+    private static async Task RunQualificationWarmupWorkerAsync(
+        Func<CancellationToken, Task> operation,
+        TimeSpan warmupDuration,
+        IQualificationDeadline deadline,
+        CancellationToken operationCancellationToken,
+        Task expirationTask)
+    {
+        while (!expirationTask.IsCompleted && deadline.Elapsed < warmupDuration)
+            await operation(operationCancellationToken);
+    }
+
+    private static async Task<InvalidOperationException> CreateQualificationCapAfterCancellationAsync(
+        string benchmarkName,
+        QualificationSettings settings,
+        TimeSpan elapsed,
+        int retainedLatencySamples,
+        Task? inFlightTask,
+        IQualificationDeadline deadline,
+        TimeSpan cancellationDrainTimeout,
+        string pendingWorkDescription,
+        Action<Task>? detachedWorkRegistrar = null)
+    {
+        deadline.Cancel();
+        InvalidOperationException capException = CreateQualificationCapException(
+            benchmarkName,
+            settings.MaximumMeasuredDuration,
+            elapsed,
+            retainedLatencySamples,
+            settings.MinimumMeasuredDuration,
+            settings.MinimumLatencySamples);
+
+        if (inFlightTask is null)
+            return capException;
+
+        bool operationStopped = await WaitForTaskCompletionWithinAsync(
+            inFlightTask,
+            cancellationDrainTimeout);
+        if (!operationStopped)
+        {
+            detachedWorkRegistrar?.Invoke(inFlightTask);
+            return CreateQualificationUnresponsiveException(
+                benchmarkName,
+                pendingWorkDescription,
+                cancellationDrainTimeout,
+                capException);
+        }
+
+        try
+        {
+            await inFlightTask;
+        }
+        catch (OperationCanceledException) when (deadline.Token.IsCancellationRequested)
+        {
+            // The cap owns this cancellation; preserve its explicit diagnostic.
+        }
+
+        return capException;
+    }
+
+    private static async Task<bool> WaitForTaskCompletionWithinAsync(
+        Task task,
+        TimeSpan timeout)
+    {
+        if (task.IsCompleted)
+            return true;
+
+        try
+        {
+            await task.WaitAsync(timeout);
+            return true;
+        }
+        catch (TimeoutException) when (!task.IsCompleted)
+        {
+            ObserveFaultEventually(task);
+            return false;
+        }
+        catch
+        {
+            return true;
+        }
+    }
+
+    private static Exception? GetCompletedReaderFailure(IEnumerable<Task> readerTasks)
+    {
+        Exception[] failures = readerTasks
+            .Where(static task => task.IsFaulted)
+            .SelectMany(static task => task.Exception?.InnerExceptions ?? [])
+            .ToArray();
+        return failures.Length switch
+        {
+            0 => null,
+            1 => failures[0],
+            _ => new AggregateException(failures),
+        };
+    }
+
+    private static Exception? CombineQualificationFailures(params Exception?[] failures)
+    {
+        Exception[] presentFailures = failures
+            .Where(static failure => failure is not null)
+            .Cast<Exception>()
+            .ToArray();
+        return presentFailures.Length switch
+        {
+            0 => null,
+            1 => presentFailures[0],
+            _ => new AggregateException(presentFailures),
+        };
+    }
+
+    private sealed class ConcurrentReaderExitCoordinator
+    {
+        private const int Running = 0;
+        private const int CoordinatedExit = 1;
+        private const int UnexpectedExit = 2;
+
+        private readonly object _gate = new();
+        private readonly Action _onUnexpectedExit;
+        private int _state = Running;
+        private Task? _readerTask;
+
+        internal ConcurrentReaderExitCoordinator(Action onUnexpectedExit)
+        {
+            ArgumentNullException.ThrowIfNull(onUnexpectedExit);
+            _onUnexpectedExit = onUnexpectedExit;
+        }
+
+        internal void AttachReaderTask(Task readerTask)
+        {
+            ArgumentNullException.ThrowIfNull(readerTask);
+            bool notifyUnexpectedExit = false;
+            lock (_gate)
+            {
+                _readerTask = readerTask;
+                if (_state == Running && readerTask.IsCompleted)
+                {
+                    _state = UnexpectedExit;
+                    notifyUnexpectedExit = true;
+                }
+            }
+
+            if (notifyUnexpectedExit)
+                _onUnexpectedExit();
+        }
+
+        internal void MarkCoordinatedExit()
+        {
+            bool notifyUnexpectedExit = false;
+            lock (_gate)
+            {
+                if (_state != Running)
+                    return;
+
+                if (_readerTask?.IsCompleted == true)
+                {
+                    _state = UnexpectedExit;
+                    notifyUnexpectedExit = true;
+                }
+                else
+                {
+                    _state = CoordinatedExit;
+                }
+            }
+
+            if (notifyUnexpectedExit)
+                _onUnexpectedExit();
+        }
+
+        internal void MarkReaderCompleted()
+        {
+            bool notifyUnexpectedExit = false;
+            lock (_gate)
+            {
+                if (_state == Running)
+                {
+                    _state = UnexpectedExit;
+                    notifyUnexpectedExit = true;
+                }
+            }
+
+            if (notifyUnexpectedExit)
+                _onUnexpectedExit();
+        }
+    }
+
+    private static void ObserveFaultEventually(Task task)
+    {
+        _ = task.ContinueWith(
+            static completedTask => _ = completedTask.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private sealed class SequentialMeasurementProgress
+    {
+        private int _retainedLatencySamples;
+
+        internal int RetainedLatencySamples => Volatile.Read(ref _retainedLatencySamples);
+
+        internal void PublishRetainedLatencySamples(int value)
+            => Volatile.Write(ref _retainedLatencySamples, value);
+    }
+
+    private sealed class ConcurrentRecordingGate
+    {
+        private readonly IQualificationDeadline _deadline;
+        private readonly Task _expirationTask;
+        private readonly TimeSpan _minimumMeasuredDuration;
+        private readonly int _minimumLatencySamples;
+        private readonly TimeSpan _maximumMeasuredDuration;
+        private int _acceptingCompletions = 1;
+        private int _activeRecorders;
+        private long _lastAcceptedTicks = -1;
+        private long _retainedLatencySamples;
+        private long _targetReachedTicks = -1;
+
+        internal ConcurrentRecordingGate(
+            IQualificationDeadline deadline,
+            Task expirationTask,
+            TimeSpan minimumMeasuredDuration,
+            int minimumLatencySamples,
+            TimeSpan maximumMeasuredDuration)
+        {
+            _deadline = deadline;
+            _expirationTask = expirationTask;
+            _minimumMeasuredDuration = minimumMeasuredDuration;
+            _minimumLatencySamples = minimumLatencySamples;
+            _maximumMeasuredDuration = maximumMeasuredDuration;
+        }
+
+        internal bool IsClosed => Volatile.Read(ref _acceptingCompletions) == 0;
+        internal bool TargetReached => Volatile.Read(ref _targetReachedTicks) >= 0;
+        internal int RetainedLatencySamples => checked((int)Math.Min(
+            Volatile.Read(ref _retainedLatencySamples),
+            int.MaxValue));
+
+        internal bool TryRecord(
+            LatencyHistogram histogram,
+            TimeSpan completionElapsed,
+            double? latencyMilliseconds)
+        {
+            Interlocked.Increment(ref _activeRecorders);
+            try
+            {
+                if (IsClosed)
+                    return false;
+
+                TimeSpan callbackElapsed = _deadline.Elapsed;
+                TimeSpan sampleElapsed = completionElapsed > callbackElapsed
+                    ? completionElapsed
+                    : callbackElapsed;
+                if (sampleElapsed < TimeSpan.Zero)
+                    return false;
+                if (_expirationTask.IsCompleted ||
+                    sampleElapsed >= _maximumMeasuredDuration)
+                {
+                    Close();
+                    return false;
+                }
+
+                if (IsClosed)
+                    return false;
+
+                int previousSampleCount = histogram.SampleCount;
+                if (latencyMilliseconds.HasValue)
+                    histogram.Record(latencyMilliseconds.Value);
+                else
+                    histogram.RecordUnsampled();
+
+                int retainedSampleDelta = histogram.SampleCount - previousSampleCount;
+                long retainedSamples = Interlocked.Add(
+                    ref _retainedLatencySamples,
+                    retainedSampleDelta);
+                SetMaximum(ref _lastAcceptedTicks, sampleElapsed.Ticks);
+                if (retainedSamples >= _minimumLatencySamples &&
+                    sampleElapsed >= _minimumMeasuredDuration &&
+                    Interlocked.CompareExchange(
+                        ref _targetReachedTicks,
+                        sampleElapsed.Ticks,
+                        comparand: -1) == -1)
+                {
+                    Close();
+                }
+
+                return true;
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _activeRecorders);
+            }
+        }
+
+        internal void Close() => Volatile.Write(ref _acceptingCompletions, 0);
+
+        internal async Task WaitForActiveRecordersAsync()
+        {
+            var spinner = new SpinWait();
+            while (Volatile.Read(ref _activeRecorders) != 0)
+            {
+                if (spinner.NextSpinWillYield)
+                    await Task.Yield();
+                else
+                    spinner.SpinOnce();
+            }
+        }
+
+        internal TimeSpan GetAcceptedEndElapsed(TimeSpan fallback)
+        {
+            long acceptedEndTicks = Math.Max(
+                Volatile.Read(ref _targetReachedTicks),
+                Volatile.Read(ref _lastAcceptedTicks));
+            return acceptedEndTicks >= 0
+                ? TimeSpan.FromTicks(acceptedEndTicks)
+                : fallback;
+        }
+
+        internal TimeSpan GetDeadlineEndElapsed()
+            => _maximumMeasuredDuration;
+
+        private static void SetMaximum(ref long location, long value)
+        {
+            long observed = Volatile.Read(ref location);
+            while (observed < value)
+            {
+                long previous = Interlocked.CompareExchange(ref location, value, observed);
+                if (previous == observed)
+                    return;
+                observed = previous;
+            }
+        }
+    }
+
+    private static InvalidOperationException CreateQualificationUnresponsiveException(
+        string benchmarkName,
+        string pendingWorkDescription,
+        TimeSpan cancellationDrainTimeout,
+        Exception? innerException = null)
+    {
+        string prefix = innerException is null ? string.Empty : innerException.Message + " ";
+        return new InvalidOperationException(
+            prefix +
+            $"Coordinated cancellation for hybrid storage qualification scenario '{benchmarkName}' " +
+            $"did not stop {pendingWorkDescription} within " +
+            $"{cancellationDrainTimeout.TotalSeconds:F3} seconds.",
+            innerException);
+    }
+
+    internal static bool HasMetQualificationTarget(
+        TimeSpan elapsed,
+        int retainedLatencySamples,
+        TimeSpan minimumMeasuredDuration,
+        int minimumLatencySamples)
+        => elapsed >= minimumMeasuredDuration && retainedLatencySamples >= minimumLatencySamples;
+
+    internal static InvalidOperationException CreateQualificationCapException(
+        string benchmarkName,
+        TimeSpan maximumMeasuredDuration,
+        TimeSpan elapsed,
+        int retainedLatencySamples,
+        TimeSpan minimumMeasuredDuration,
+        int minimumLatencySamples)
+        => new(
+            $"Hybrid storage qualification scenario '{benchmarkName}' reached its " +
+            $"{maximumMeasuredDuration.TotalSeconds:F0}-second measurement cap after " +
+            $"{elapsed.TotalSeconds:F1} seconds with {retainedLatencySamples:N0} retained latency samples. " +
+            $"Qualification requires at least {minimumMeasuredDuration.TotalSeconds:F0} measured seconds " +
+            $"and {minimumLatencySamples:N0} retained latency samples.");
+
+    internal static string CreateQualificationExtraInfo(
+        QualificationSettings settings,
+        DateTimeOffset measurementStartedUtc,
+        DateTimeOffset measurementEndedUtc)
+        => $"qualification=true; unrecorded-warmup-seconds={settings.WarmupDuration.TotalSeconds:F0}; " +
+           $"minimum-measured-seconds={settings.MinimumMeasuredDuration.TotalSeconds:F0}; " +
+           $"minimum-retained-latency-samples={settings.MinimumLatencySamples}; " +
+           $"measurement-cap-seconds={settings.MaximumMeasuredDuration.TotalSeconds:F0}; " +
+           $"measurement-begin-utc={measurementStartedUtc:O}; " +
+           $"measurement-end-utc={measurementEndedUtc:O}";
 
     private static async Task WarmSqlLookupsAsync(Database db, Random rng, int count)
     {
@@ -368,6 +1674,93 @@ public static class HybridStorageModeBenchmark
             _ = await collection.GetAsync($"doc:{id}");
         }
     }
+
+    private static ScenarioDefinition[] CreateScenarioDefinitions()
+    {
+        var scenarios = new List<ScenarioDefinition>();
+        foreach (StorageMode mode in Enum.GetValues<StorageMode>())
+        {
+            StorageMode capturedMode = mode;
+            scenarios.Add(new(
+                GetSqlSingleInsertName(capturedMode),
+                settings => RunSqlSingleInsertAsync(capturedMode, settings)));
+            scenarios.Add(new(
+                GetSqlBatchInsertName(capturedMode),
+                settings => RunSqlBatchInsertAsync(capturedMode, settings)));
+            scenarios.Add(new(
+                GetSqlPointLookupName(capturedMode),
+                settings => RunSqlPointLookupAsync(capturedMode, settings)));
+            scenarios.Add(new(
+                GetSqlConcurrentReadsName(capturedMode, reuseSessionBurstReads: false),
+                settings => RunSqlConcurrentReadsAsync(
+                    capturedMode,
+                    reuseSessionBurstReads: false,
+                    settings)));
+            scenarios.Add(new(
+                GetSqlConcurrentReadsName(capturedMode, reuseSessionBurstReads: true),
+                settings => RunSqlConcurrentReadsAsync(
+                    capturedMode,
+                    reuseSessionBurstReads: true,
+                    settings)));
+            scenarios.Add(new(
+                GetCollectionPutName(capturedMode),
+                settings => RunCollectionPutAsync(capturedMode, settings)));
+            scenarios.Add(new(
+                GetCollectionBatchInsertName(capturedMode),
+                settings => RunCollectionBatchInsertAsync(capturedMode, settings)));
+            scenarios.Add(new(
+                GetCollectionGetName(capturedMode),
+                settings => RunCollectionGetAsync(capturedMode, settings)));
+        }
+
+        foreach (InsertTradeoffScenario scenario in s_insertTradeoffScenarios)
+        {
+            InsertTradeoffScenario capturedScenario = scenario;
+            scenarios.Add(new(
+                GetInsertTradeoffName(capturedScenario),
+                settings => RunInsertTradeoffScenarioAsync(capturedScenario, settings)));
+        }
+
+        string[] duplicateNames = scenarios
+            .GroupBy(static scenario => scenario.Name, StringComparer.Ordinal)
+            .Where(static group => group.Count() > 1)
+            .Select(static group => group.Key)
+            .ToArray();
+        if (duplicateNames.Length > 0)
+        {
+            throw new InvalidOperationException(
+                "Hybrid storage-mode scenario names must be unique: " +
+                string.Join(", ", duplicateNames));
+        }
+
+        return scenarios.ToArray();
+    }
+
+    private static string GetSqlSingleInsertName(StorageMode mode)
+        => $"{GetPrefix(mode)}_Sql_SingleInsert_5s";
+
+    private static string GetSqlBatchInsertName(StorageMode mode)
+        => $"{GetPrefix(mode)}_Sql_Batch{BatchSize}_5s";
+
+    private static string GetSqlPointLookupName(StorageMode mode)
+        => $"{GetPrefix(mode)}_Sql_PointLookup_{SeedCount}";
+
+    private static string GetSqlConcurrentReadsName(StorageMode mode, bool reuseSessionBurstReads)
+        => reuseSessionBurstReads
+            ? $"{GetPrefix(mode)}_Sql_ConcurrentReadsBurst{ReusedSessionBurstReads}_{ConcurrentReaderCount}readers"
+            : $"{GetPrefix(mode)}_Sql_ConcurrentReads_{ConcurrentReaderCount}readers";
+
+    private static string GetCollectionPutName(StorageMode mode)
+        => $"{GetPrefix(mode)}_Collection_Put_5s";
+
+    private static string GetCollectionBatchInsertName(StorageMode mode)
+        => $"{GetPrefix(mode)}_Collection_Batch{BatchSize}_5s";
+
+    private static string GetCollectionGetName(StorageMode mode)
+        => $"{GetPrefix(mode)}_Collection_Get_{SeedCount}";
+
+    private static string GetInsertTradeoffName(InsertTradeoffScenario scenario)
+        => $"StoragePlan2_{scenario.Name}_InsertBatch_B{InsertTradeoffRowsPerCommit}_Seed{scenario.SeedRows}_10s";
 
     private static InsertTradeoffScenario[] CreateInsertTradeoffScenarios()
     {
@@ -454,10 +1847,11 @@ public static class HybridStorageModeBenchmark
         int nextSequence,
         int rowsToInsert,
         DbValue textValue,
-        DbValue categoryValue)
+        DbValue categoryValue,
+        CancellationToken ct = default)
     {
         batch.Clear();
-        await db.BeginTransactionAsync();
+        await db.BeginTransactionAsync(ct);
         try
         {
             for (int i = 0; i < rowsToInsert; i++)
@@ -467,14 +1861,14 @@ public static class HybridStorageModeBenchmark
                 batch.AddRow(rowBuffer);
             }
 
-            int rowsAffected = await batch.ExecuteAsync();
+            int rowsAffected = await batch.ExecuteAsync(ct);
             if (rowsAffected != rowsToInsert)
             {
                 throw new InvalidOperationException(
                     $"Expected {rowsToInsert} inserted rows, observed {rowsAffected}.");
             }
 
-            await db.CommitAsync();
+            await db.CommitAsync(ct);
             return nextSequence;
         }
         catch
@@ -531,6 +1925,7 @@ public static class HybridStorageModeBenchmark
         {
             Name = source.Name,
             TotalOps = source.TotalOps,
+            LatencySamples = source.LatencySamples,
             ElapsedMs = source.ElapsedMs,
             P50Ms = source.P50Ms,
             P90Ms = source.P90Ms,
@@ -580,7 +1975,10 @@ public static class HybridStorageModeBenchmark
 
     private sealed class BenchmarkContext : IAsyncDisposable
     {
+        private readonly object _lifetimeGate = new();
         private readonly string? _filePath;
+        private readonly List<Task> _detachedWork = [];
+        private int _resourcesDisposed;
 
         private BenchmarkContext(Database database, Collection<BenchDoc>? collection, string? filePath)
         {
@@ -591,6 +1989,14 @@ public static class HybridStorageModeBenchmark
 
         internal Database Database { get; }
         internal Collection<BenchDoc>? Collection { get; }
+
+        internal void QuarantineDetachedWork(Task task)
+        {
+            ArgumentNullException.ThrowIfNull(task);
+            ObserveFaultEventually(task);
+            lock (_lifetimeGate)
+                _detachedWork.Add(task);
+        }
 
         internal static async Task<BenchmarkContext> CreateSqlWriteAsync(StorageMode mode)
         {
@@ -659,9 +2065,44 @@ public static class HybridStorageModeBenchmark
             return new BenchmarkContext(database, collection, seededFilePath);
         }
 
-        public async ValueTask DisposeAsync()
+        public ValueTask DisposeAsync()
         {
-            await Database.DisposeAsync();
+            Task[] pendingWork;
+            lock (_lifetimeGate)
+            {
+                pendingWork = _detachedWork
+                    .Where(static task => !task.IsCompleted)
+                    .ToArray();
+            }
+
+            if (pendingWork.Length == 0)
+                return DisposeResourcesAsync();
+
+            Task deferredCleanup = DisposeAfterDetachedWorkAsync(pendingWork);
+            ObserveFaultEventually(deferredCleanup);
+            return ValueTask.CompletedTask;
+        }
+
+        private async Task DisposeAfterDetachedWorkAsync(Task[] pendingWork)
+        {
+            try
+            {
+                await Task.WhenAll(pendingWork).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Detached worker failures are already observed by the benchmark controller.
+            }
+
+            await DisposeResourcesAsync().ConfigureAwait(false);
+        }
+
+        private async ValueTask DisposeResourcesAsync()
+        {
+            if (Interlocked.Exchange(ref _resourcesDisposed, 1) != 0)
+                return;
+
+            await Database.DisposeAsync().ConfigureAwait(false);
             InMemoryBenchmarkDatabaseFactory.DeleteDatabaseFiles(_filePath);
         }
 
@@ -768,7 +2209,10 @@ public static class HybridStorageModeBenchmark
 
     private sealed class InsertTradeoffContext : IAsyncDisposable
     {
+        private readonly object _lifetimeGate = new();
         private readonly string[] _cleanupPaths;
+        private readonly List<Task> _detachedWork = [];
+        private int _resourcesDisposed;
 
         private InsertTradeoffContext(Database database, params string?[] cleanupPaths)
         {
@@ -781,6 +2225,14 @@ public static class HybridStorageModeBenchmark
         }
 
         internal Database Database { get; }
+
+        internal void QuarantineDetachedWork(Task task)
+        {
+            ArgumentNullException.ThrowIfNull(task);
+            ObserveFaultEventually(task);
+            lock (_lifetimeGate)
+                _detachedWork.Add(task);
+        }
 
         internal static async Task<InsertTradeoffContext> CreateAsync(InsertTradeoffScenario scenario)
         {
@@ -846,11 +2298,159 @@ public static class HybridStorageModeBenchmark
             }
         }
 
-        public async ValueTask DisposeAsync()
+        public ValueTask DisposeAsync()
         {
-            await Database.DisposeAsync();
+            Task[] pendingWork;
+            lock (_lifetimeGate)
+            {
+                pendingWork = _detachedWork
+                    .Where(static task => !task.IsCompleted)
+                    .ToArray();
+            }
+
+            if (pendingWork.Length == 0)
+                return DisposeResourcesAsync();
+
+            Task deferredCleanup = DisposeAfterDetachedWorkAsync(pendingWork);
+            ObserveFaultEventually(deferredCleanup);
+            return ValueTask.CompletedTask;
+        }
+
+        private async Task DisposeAfterDetachedWorkAsync(Task[] pendingWork)
+        {
+            try
+            {
+                await Task.WhenAll(pendingWork).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Detached worker failures are already observed by the benchmark controller.
+            }
+
+            await DisposeResourcesAsync().ConfigureAwait(false);
+        }
+
+        private async ValueTask DisposeResourcesAsync()
+        {
+            if (Interlocked.Exchange(ref _resourcesDisposed, 1) != 0)
+                return;
+
+            await Database.DisposeAsync().ConfigureAwait(false);
             foreach (string path in _cleanupPaths)
                 InMemoryBenchmarkDatabaseFactory.DeleteDatabaseFiles(path);
+        }
+    }
+
+    internal sealed record QualificationSettings(
+        TimeSpan WarmupDuration,
+        TimeSpan MinimumMeasuredDuration,
+        int MinimumLatencySamples,
+        TimeSpan MaximumMeasuredDuration)
+    {
+        internal void Validate()
+        {
+            if (WarmupDuration < TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(WarmupDuration),
+                    "Qualification warmup duration cannot be negative.");
+            }
+
+            if (MinimumMeasuredDuration <= TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(MinimumMeasuredDuration),
+                    "Qualification minimum measured duration must be positive.");
+            }
+
+            if (MinimumLatencySamples <= 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(MinimumLatencySamples),
+                    "Qualification minimum latency sample count must be positive.");
+            }
+
+            if (MaximumMeasuredDuration < MinimumMeasuredDuration)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(MaximumMeasuredDuration),
+                    "Qualification measurement cap must be at least the minimum measured duration.");
+            }
+        }
+    }
+
+    private sealed record ScenarioDefinition(
+        string Name,
+        Func<QualificationSettings?, Task<BenchmarkResult>> RunAsync);
+
+    internal interface IQualificationDeadline : IDisposable
+    {
+        TimeSpan Elapsed { get; }
+        DateTimeOffset StartedUtc { get; }
+        DateTimeOffset UtcNow { get; }
+        CancellationToken Token { get; }
+        Task Expired { get; }
+        void Start();
+        void Cancel();
+    }
+
+    internal sealed record ConcurrentReaderPhaseResult(
+        LatencyHistogram[] Histograms,
+        TimeSpan Elapsed,
+        DateTimeOffset MeasurementStartedUtc,
+        DateTimeOffset MeasurementEndedUtc);
+
+    private enum ConcurrentPhaseStopReason
+    {
+        TargetReached,
+        Deadline,
+        UnexpectedReaderExit,
+    }
+
+    private sealed class StopwatchQualificationDeadline : IQualificationDeadline
+    {
+        private readonly TimeSpan _maximumDuration;
+        private readonly Stopwatch _stopwatch;
+        private readonly CancellationTokenSource _operationCts = new();
+        private int _started;
+
+        internal StopwatchQualificationDeadline(TimeSpan maximumDuration)
+        {
+            if (maximumDuration <= TimeSpan.Zero)
+                throw new ArgumentOutOfRangeException(nameof(maximumDuration));
+
+            _maximumDuration = maximumDuration;
+            _stopwatch = new Stopwatch();
+            Expired = Task.Delay(Timeout.InfiniteTimeSpan, _operationCts.Token);
+        }
+
+        public TimeSpan Elapsed => _stopwatch.Elapsed;
+        public DateTimeOffset StartedUtc { get; private set; }
+        public DateTimeOffset UtcNow => DateTimeOffset.UtcNow;
+        public CancellationToken Token => _operationCts.Token;
+        public Task Expired { get; }
+
+        public void Start()
+        {
+            if (Interlocked.Exchange(ref _started, 1) != 0)
+                return;
+
+            StartedUtc = DateTimeOffset.UtcNow;
+            _stopwatch.Start();
+            _operationCts.CancelAfter(_maximumDuration);
+        }
+
+        public void Cancel()
+        {
+            if (!_operationCts.IsCancellationRequested)
+                _operationCts.Cancel();
+        }
+
+        public void Dispose()
+        {
+            _stopwatch.Stop();
+            Cancel();
+            _operationCts.Dispose();
         }
     }
 

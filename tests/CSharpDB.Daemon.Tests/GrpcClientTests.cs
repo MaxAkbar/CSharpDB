@@ -42,6 +42,77 @@ public sealed class GrpcClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ExecuteSql_ResourceLimitExceeded_ReturnsResourceExhausted()
+    {
+        string dbPath = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb_daemon_window_limit_{Guid.NewGuid():N}.db");
+        var hostClientOptions = new CSharpDbClientOptions
+        {
+            Transport = CSharpDbTransport.Direct,
+            ConnectionString = $"Data Source={dbPath}",
+            DirectDatabaseOptions = new DatabaseOptions
+            {
+                WindowExecution = new CSharpDB.Primitives.WindowExecutionOptions
+                {
+                    MaxPartitionRows = 2,
+                    MaxBufferedRows = 4,
+                },
+            },
+        };
+
+        try
+        {
+            await using var factory = new TestDaemonFactory(
+                dbPath,
+                clientOptionsOverride: hostClientOptions);
+            using HttpClient transportClient = CreateGrpcHttpClient(factory);
+            using var channel = GrpcChannel.ForAddress(
+                "http://localhost",
+                new GrpcChannelOptions
+                {
+                    HttpClient = transportClient,
+                    DisposeHttpClient = false,
+                });
+            var rpcClient = new CSharpDbRpc.CSharpDbRpcClient(channel);
+
+            SqlExecutionResultMessage seed = await rpcClient.ExecuteSqlAsync(
+                new SqlRequest
+                {
+                    Sql = """
+                        CREATE TABLE grpc_window_limit_rows (id INTEGER PRIMARY KEY, group_id INTEGER);
+                        INSERT INTO grpc_window_limit_rows VALUES (1, 1), (2, 1), (3, 1);
+                        """,
+                },
+                cancellationToken: Ct).ResponseAsync;
+            Assert.Null(seed.Error);
+
+            RpcException error = await Assert.ThrowsAsync<RpcException>(
+                () => rpcClient.ExecuteSqlAsync(
+                    new SqlRequest
+                    {
+                        Sql = """
+                            SELECT ROW_NUMBER() OVER (PARTITION BY group_id ORDER BY id)
+                            FROM grpc_window_limit_rows;
+                            """,
+                    },
+                    cancellationToken: Ct).ResponseAsync);
+
+            Assert.Equal(StatusCode.ResourceExhausted, error.StatusCode);
+            Assert.Contains(
+                error.Trailers,
+                entry =>
+                    entry.Key == GrpcMetadataNames.ErrorCode &&
+                    entry.Value == CSharpDB.Primitives.ErrorCode.ResourceLimitExceeded.ToString());
+        }
+        finally
+        {
+            TryDelete(dbPath);
+            TryDelete(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
     public void Daemon_DefaultHostDatabaseOptions_EnableHybridConcurrentInsertAndWritePreset()
     {
         DaemonHostDatabaseOptions hostOptions = GetResolvedHostDatabaseOptions(_factory);
@@ -192,6 +263,17 @@ public sealed class GrpcClientTests : IAsyncLifetime
         Assert.Equal(7L, Assert.IsType<long>(browse.Rows[0][0]));
         Assert.Equal("seven", Assert.IsType<string>(browse.Rows[0][1]));
         Assert.Equal(12.5, Assert.IsType<double>(browse.Rows[0][2]));
+
+        await client.CreateViewAsync(
+            "grpc_users_view",
+            "SELECT id, name, score FROM grpc_users",
+            Ct);
+        ViewBrowseResult view = await client.BrowseViewAsync(
+            "grpc_users_view",
+            ct: Ct);
+        Assert.Equal(
+            ["INTEGER", "TEXT", "REAL"],
+            Assert.IsType<string[]>(view.ColumnTypes));
     }
 
     [Fact]
@@ -1152,6 +1234,9 @@ public sealed class GrpcClientTests : IAsyncLifetime
 
         Assert.True(execution.Succeeded);
         Assert.NotEmpty(execution.Statements);
+        Assert.Equal(
+            ["INTEGER", "TEXT"],
+            Assert.IsType<string[]>(execution.Statements[^1].ColumnTypes));
         Assert.Equal(10L, Assert.IsType<long>(execution.Statements[^1].Rows![0][0]));
         Assert.Equal("fallback", Assert.IsType<string>(execution.Statements[^1].Rows![0][1]));
 
@@ -1273,13 +1358,19 @@ public sealed class GrpcClientTests : IAsyncLifetime
 
         TableSchema? schema = await client.GetTableSchemaAsync("grpc_schema_metadata", Ct);
         Assert.NotNull(schema);
-        Assert.Equal("'new'", Assert.Single(schema!.Columns, column => column.Name == "code").DefaultSql);
+        Assert.NotEqual(Guid.Empty, schema!.SchemaId);
+        Assert.All(
+            schema.Columns,
+            column => Assert.NotEqual(Guid.Empty, column.SchemaId));
+        Assert.Equal("'new'", Assert.Single(schema.Columns, column => column.Name == "code").DefaultSql);
         CheckConstraintDefinition check = Assert.Single(schema.CheckConstraints);
+        Assert.NotEqual(Guid.Empty, check.SchemaId);
         Assert.Equal("ck_grpc_schema_score", check.ConstraintName);
         Assert.Contains("score", check.ExpressionSql, StringComparison.OrdinalIgnoreCase);
         KeyConstraintDefinition unique = Assert.Single(
             schema.KeyConstraints,
             key => key.Kind == KeyConstraintKind.Unique);
+        Assert.NotEqual(Guid.Empty, unique.SchemaId);
         Assert.Equal(["tenant", "code"], unique.Columns);
     }
 
@@ -1294,7 +1385,9 @@ public sealed class GrpcClientTests : IAsyncLifetime
             CREATE TABLE grpc_parents (id INTEGER PRIMARY KEY);
             CREATE TABLE grpc_children (
                 id INTEGER PRIMARY KEY,
-                parent_id INTEGER REFERENCES grpc_parents(id) ON DELETE CASCADE
+                parent_id INTEGER REFERENCES grpc_parents(id)
+                    ON DELETE SET NULL
+                    ON UPDATE NO ACTION
             );
             """,
             Ct);
@@ -1306,8 +1399,63 @@ public sealed class GrpcClientTests : IAsyncLifetime
         Assert.Equal("parent_id", foreignKey.ColumnName);
         Assert.Equal("grpc_parents", foreignKey.ReferencedTableName);
         Assert.Equal("id", foreignKey.ReferencedColumnName);
-        Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
+        Assert.Equal(ForeignKeyOnDeleteAction.SetNull, foreignKey.OnDelete);
+        Assert.Equal(ForeignKeyOnDeleteAction.NoAction, foreignKey.OnUpdate);
+        Assert.Single(foreignKey.ColumnSchemaIds);
+        Assert.NotEqual(Guid.Empty, foreignKey.ReferencedTableSchemaId);
+        Assert.Single(foreignKey.ReferencedColumnSchemaIds);
+        Assert.NotEqual(Guid.Empty, foreignKey.ReferencedKeySchemaId);
         Assert.StartsWith("__fk_grpc_children_parent_id_", foreignKey.SupportingIndexName, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GrpcClient_MapsFullImmediateForeignKeyActionMatrix()
+    {
+        using var transportClient = CreateGrpcHttpClient();
+        await using var client = CreateGrpcClient(transportClient);
+
+        SqlExecutionResult createResult = await client.ExecuteSqlAsync(
+            """
+            CREATE TABLE grpc_action_parents (id INTEGER PRIMARY KEY);
+            CREATE TABLE grpc_action_children (
+                id INTEGER PRIMARY KEY,
+                restrict_id INTEGER REFERENCES grpc_action_parents(id)
+                    ON DELETE RESTRICT ON UPDATE RESTRICT,
+                no_action_id INTEGER REFERENCES grpc_action_parents(id)
+                    ON DELETE NO ACTION ON UPDATE NO ACTION,
+                cascade_id INTEGER REFERENCES grpc_action_parents(id)
+                    ON DELETE CASCADE ON UPDATE CASCADE,
+                set_null_id INTEGER REFERENCES grpc_action_parents(id)
+                    ON DELETE SET NULL ON UPDATE SET NULL,
+                set_default_id INTEGER DEFAULT 1
+                    REFERENCES grpc_action_parents(id)
+                    ON DELETE SET DEFAULT ON UPDATE SET DEFAULT
+            );
+            """,
+            Ct);
+        Assert.Null(createResult.Error);
+
+        TableSchema schema = Assert.IsType<TableSchema>(
+            await client.GetTableSchemaAsync("grpc_action_children", Ct));
+        Dictionary<string, ForeignKeyDefinition> byColumn =
+            schema.ForeignKeys.ToDictionary(
+                foreignKey => foreignKey.ColumnName,
+                StringComparer.Ordinal);
+        Assert.Equal(5, byColumn.Count);
+
+        foreach ((string columnName, ForeignKeyOnDeleteAction action) in
+                 new[]
+                 {
+                     ("restrict_id", ForeignKeyOnDeleteAction.Restrict),
+                     ("no_action_id", ForeignKeyOnDeleteAction.NoAction),
+                     ("cascade_id", ForeignKeyOnDeleteAction.Cascade),
+                     ("set_null_id", ForeignKeyOnDeleteAction.SetNull),
+                     ("set_default_id", ForeignKeyOnDeleteAction.SetDefault),
+                 })
+        {
+            Assert.Equal(action, byColumn[columnName].OnDelete);
+            Assert.Equal(action, byColumn[columnName].OnUpdate);
+        }
     }
 
     [Fact]
@@ -1366,6 +1514,400 @@ public sealed class GrpcClientTests : IAsyncLifetime
         Assert.Equal(["id"], foreignKey.ReferencedColumnNames);
         Assert.Equal("parent_id", foreignKey.ColumnName);
         Assert.Equal("id", foreignKey.ReferencedColumnName);
+        Assert.Equal(
+            ForeignKeyOnDeleteAction.Restrict,
+            foreignKey.OnUpdate);
+    }
+
+    [Fact]
+    public void GrpcModelMapper_SqlResultPreservesDeclaredColumnMetadata()
+    {
+        var result = new SqlExecutionResult
+        {
+            IsQuery = true,
+            ColumnNames = ["id", "nullable_value"],
+            ColumnTypes = ["INTEGER", "INTEGER"],
+            ColumnNullability = [false, true],
+            Rows = [[1L, null]],
+        };
+
+        SqlExecutionResultMessage message = GrpcModelMapper.ToMessage(result);
+        SqlExecutionResult roundTrip = GrpcModelMapper.ToModel(message);
+
+        Assert.Equal(["INTEGER", "INTEGER"], message.ColumnTypes.Values);
+        Assert.Equal([false, true], message.ColumnNullability.Values);
+        Assert.Equal(result.ColumnTypes, roundTrip.ColumnTypes);
+        Assert.Equal(
+            result.ColumnNullability,
+            roundTrip.ColumnNullability);
+    }
+
+    [Fact]
+    public void GrpcModelMapper_LegacyBrowseAndProcedureMessagesOmitColumnTypesSafely()
+    {
+        var viewMessage = new ViewBrowseResultMessage
+        {
+            ViewName = "legacy_view",
+            TotalRows = 0,
+            Page = 1,
+            PageSize = 50,
+        };
+        viewMessage.ColumnNames.Add("payload");
+
+        var procedureMessage = new ProcedureStatementExecutionResultMessage
+        {
+            StatementIndex = 0,
+            StatementText = "SELECT payload;",
+            IsQuery = true,
+            RowsAffected = 0,
+            Elapsed = Google.Protobuf.WellKnownTypes.Duration.FromTimeSpan(
+                TimeSpan.Zero),
+        };
+
+        Assert.Null(GrpcModelMapper.ToModel(viewMessage).ColumnTypes);
+        Assert.Null(GrpcModelMapper.ToModel(procedureMessage).ColumnTypes);
+    }
+
+    [Fact]
+    public void GrpcModelMapper_RejectsMalformedNonemptySchemaIdentity()
+    {
+        var message = new ColumnDefinitionMessage
+        {
+            Name = "id",
+            Type = DbTypeEnum.DbTypeInteger,
+            SchemaId = "not-a-guid",
+        };
+
+        CSharpDbClientException error = Assert.Throws<CSharpDbClientException>(
+            () => GrpcModelMapper.ToModel(message));
+        Assert.Contains(
+            "malformed schema identity",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GrpcModelMapper_RejectsTextualEmptySchemaIdentity()
+    {
+        var message = new ColumnDefinitionMessage
+        {
+            Name = "id",
+            Type = DbTypeEnum.DbTypeInteger,
+            SchemaId = Guid.Empty.ToString("D"),
+        };
+
+        CSharpDbClientException error =
+            Assert.Throws<CSharpDbClientException>(
+                () => GrpcModelMapper.ToModel(message));
+        Assert.Contains(
+            "malformed schema identity",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GrpcModelMapper_RejectsPartialCompositeForeignKeyIdentities()
+    {
+        var message = new ForeignKeyDefinitionMessage
+        {
+            ConstraintName = "fk_composite",
+            ColumnName = "tenant_id",
+            ReferencedTableName = "parents",
+            ReferencedColumnName = "tenant_id",
+            SupportingIndexName = "__fk_composite",
+        };
+        message.ColumnNames.Add(["tenant_id", "parent_id"]);
+        message.ReferencedColumnNames.Add(["tenant_id", "id"]);
+        message.ColumnSchemaIds.Add(Guid.NewGuid().ToString("D"));
+        message.ReferencedColumnSchemaIds.Add(
+            [
+                Guid.NewGuid().ToString("D"),
+                Guid.NewGuid().ToString("D"),
+            ]);
+
+        CSharpDbClientException error =
+            Assert.Throws<CSharpDbClientException>(
+                () => GrpcModelMapper.ToModel(message));
+        Assert.Contains(
+            "child-column identities",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GrpcModelMapper_RejectsPartialTableSchemaIdentities()
+    {
+        var message = new TableSchemaMessage
+        {
+            SchemaId = Guid.NewGuid().ToString("D"),
+            TableName = "partial_schema",
+        };
+        message.Columns.Add(
+            new ColumnDefinitionMessage
+            {
+                Name = "id",
+                Type = DbTypeEnum.DbTypeInteger,
+            });
+
+        CSharpDbClientException error =
+            Assert.Throws<CSharpDbClientException>(
+                () => GrpcModelMapper.ToModel(message));
+        Assert.Contains(
+            "no stable identity",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GrpcModelMapper_RejectsInvalidLegacyForeignKeyStructure()
+    {
+        var message = new TableSchemaMessage
+        {
+            TableName = "legacy_invalid_fk",
+        };
+        message.Columns.Add(
+            new ColumnDefinitionMessage
+            {
+                Name = "id",
+                Type = DbTypeEnum.DbTypeInteger,
+            });
+        var foreignKey = new ForeignKeyDefinitionMessage
+        {
+            ConstraintName = "fk_legacy_invalid",
+            ColumnName = "missing_id",
+            ReferencedTableName = "parents",
+            ReferencedColumnName = "id",
+            SupportingIndexName = "__fk_legacy_invalid",
+        };
+        foreignKey.ColumnNames.Add("missing_id");
+        foreignKey.ReferencedColumnNames.Add("id");
+        message.ForeignKeys.Add(foreignKey);
+
+        CSharpDbClientException error =
+            Assert.Throws<CSharpDbClientException>(
+                () => GrpcModelMapper.ToModel(message));
+        Assert.Contains(
+            "invalid child column",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GrpcModelMapper_RejectsScalarOrderedForeignKeyMismatch()
+    {
+        var message = new TableSchemaMessage
+        {
+            TableName = "legacy_scalar_mismatch",
+        };
+        message.Columns.Add(
+            [
+                new ColumnDefinitionMessage
+                {
+                    Name = "first_id",
+                    Type = DbTypeEnum.DbTypeInteger,
+                },
+                new ColumnDefinitionMessage
+                {
+                    Name = "second_id",
+                    Type = DbTypeEnum.DbTypeInteger,
+                },
+            ]);
+        var foreignKey = new ForeignKeyDefinitionMessage
+        {
+            ConstraintName = "fk_scalar_mismatch",
+            ColumnName = "first_id",
+            ReferencedTableName = "parents",
+            ReferencedColumnName = "id",
+            SupportingIndexName = "__fk_scalar_mismatch",
+        };
+        foreignKey.ColumnNames.Add("second_id");
+        foreignKey.ReferencedColumnNames.Add("id");
+        message.ForeignKeys.Add(foreignKey);
+
+        CSharpDbClientException error =
+            Assert.Throws<CSharpDbClientException>(
+                () => GrpcModelMapper.ToModel(message));
+        Assert.Contains(
+            "scalar and ordered columns",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GrpcModelMapper_RejectsWrongChildColumnIdentityBinding()
+    {
+        Guid tableId = Guid.NewGuid();
+        Guid columnId = Guid.NewGuid();
+        var message = new TableSchemaMessage
+        {
+            SchemaId = tableId.ToString("D"),
+            TableName = "wrong_child_binding",
+        };
+        message.Columns.Add(
+            new ColumnDefinitionMessage
+            {
+                SchemaId = columnId.ToString("D"),
+                Name = "parent_id",
+                Type = DbTypeEnum.DbTypeInteger,
+            });
+        var foreignKey = new ForeignKeyDefinitionMessage
+        {
+            SchemaId = Guid.NewGuid().ToString("D"),
+            ConstraintName = "fk_wrong_child_binding",
+            ColumnName = "parent_id",
+            ReferencedTableName = "parents",
+            ReferencedTableSchemaId = Guid.NewGuid().ToString("D"),
+            ReferencedColumnName = "id",
+            SupportingIndexName = "__fk_wrong_child_binding",
+        };
+        foreignKey.ColumnNames.Add("parent_id");
+        foreignKey.ReferencedColumnNames.Add("id");
+        foreignKey.ColumnSchemaIds.Add(Guid.NewGuid().ToString("D"));
+        foreignKey.ReferencedColumnSchemaIds.Add(
+            Guid.NewGuid().ToString("D"));
+        message.ForeignKeys.Add(foreignKey);
+
+        CSharpDbClientException error =
+            Assert.Throws<CSharpDbClientException>(
+                () => GrpcModelMapper.ToModel(message));
+        Assert.Contains(
+            "child-column identity binding",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GrpcModelMapper_RejectsWrongSelfReferencedTableIdentity()
+    {
+        Guid tableId = Guid.NewGuid();
+        Guid idColumnId = Guid.NewGuid();
+        Guid parentColumnId = Guid.NewGuid();
+        Guid keyId = Guid.NewGuid();
+        var message = new TableSchemaMessage
+        {
+            SchemaId = tableId.ToString("D"),
+            TableName = "wrong_self_binding",
+        };
+        message.Columns.Add(
+            [
+                new ColumnDefinitionMessage
+                {
+                    SchemaId = idColumnId.ToString("D"),
+                    Name = "id",
+                    Type = DbTypeEnum.DbTypeInteger,
+                },
+                new ColumnDefinitionMessage
+                {
+                    SchemaId = parentColumnId.ToString("D"),
+                    Name = "parent_id",
+                    Type = DbTypeEnum.DbTypeInteger,
+                },
+            ]);
+        var key = new KeyConstraintDefinitionMessage
+        {
+            SchemaId = keyId.ToString("D"),
+            Kind = KeyConstraintKindEnum.KeyConstraintKindPrimaryKey,
+        };
+        key.Columns.Add("id");
+        message.KeyConstraints.Add(key);
+        var foreignKey = new ForeignKeyDefinitionMessage
+        {
+            SchemaId = Guid.NewGuid().ToString("D"),
+            ConstraintName = "fk_wrong_self_binding",
+            ColumnName = "parent_id",
+            ReferencedTableName = message.TableName,
+            ReferencedTableSchemaId = Guid.NewGuid().ToString("D"),
+            ReferencedColumnName = "id",
+            ReferencedKeySchemaId = keyId.ToString("D"),
+            SupportingIndexName = "__fk_wrong_self_binding",
+        };
+        foreignKey.ColumnNames.Add("parent_id");
+        foreignKey.ReferencedColumnNames.Add("id");
+        foreignKey.ColumnSchemaIds.Add(parentColumnId.ToString("D"));
+        foreignKey.ReferencedColumnSchemaIds.Add(idColumnId.ToString("D"));
+        message.ForeignKeys.Add(foreignKey);
+
+        CSharpDbClientException error =
+            Assert.Throws<CSharpDbClientException>(
+                () => GrpcModelMapper.ToModel(message));
+        Assert.Contains(
+            "referenced-table identity",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GrpcModelMapper_RejectsExternalBindingIdentityRoleCollision()
+    {
+        Guid firstColumnId = Guid.NewGuid();
+        Guid secondColumnId = Guid.NewGuid();
+        Guid aliasedReferencedId = Guid.NewGuid();
+        var message = new TableSchemaMessage
+        {
+            SchemaId = Guid.NewGuid().ToString("D"),
+            TableName = "grpc_role_collision",
+        };
+        message.Columns.Add(
+            [
+                new ColumnDefinitionMessage
+                {
+                    SchemaId = firstColumnId.ToString("D"),
+                    Name = "first_parent_id",
+                    Type = DbTypeEnum.DbTypeInteger,
+                },
+                new ColumnDefinitionMessage
+                {
+                    SchemaId = secondColumnId.ToString("D"),
+                    Name = "second_parent_id",
+                    Type = DbTypeEnum.DbTypeInteger,
+                },
+            ]);
+        var firstForeignKey = new ForeignKeyDefinitionMessage
+        {
+            SchemaId = Guid.NewGuid().ToString("D"),
+            ConstraintName = "fk_grpc_role_collision_first",
+            ColumnName = "first_parent_id",
+            ReferencedTableName = "first_parents",
+            ReferencedTableSchemaId =
+                aliasedReferencedId.ToString("D"),
+            ReferencedColumnName = "id",
+            SupportingIndexName =
+                "__fk_grpc_role_collision_first",
+        };
+        firstForeignKey.ColumnNames.Add("first_parent_id");
+        firstForeignKey.ReferencedColumnNames.Add("id");
+        firstForeignKey.ColumnSchemaIds.Add(
+            firstColumnId.ToString("D"));
+        firstForeignKey.ReferencedColumnSchemaIds.Add(
+            Guid.NewGuid().ToString("D"));
+        message.ForeignKeys.Add(firstForeignKey);
+        var secondForeignKey = new ForeignKeyDefinitionMessage
+        {
+            SchemaId = Guid.NewGuid().ToString("D"),
+            ConstraintName = "fk_grpc_role_collision_second",
+            ColumnName = "second_parent_id",
+            ReferencedTableName = "second_parents",
+            ReferencedTableSchemaId =
+                Guid.NewGuid().ToString("D"),
+            ReferencedColumnName = "id",
+            SupportingIndexName =
+                "__fk_grpc_role_collision_second",
+        };
+        secondForeignKey.ColumnNames.Add("second_parent_id");
+        secondForeignKey.ReferencedColumnNames.Add("id");
+        secondForeignKey.ColumnSchemaIds.Add(
+            secondColumnId.ToString("D"));
+        secondForeignKey.ReferencedColumnSchemaIds.Add(
+            aliasedReferencedId.ToString("D"));
+        message.ForeignKeys.Add(secondForeignKey);
+
+        CSharpDbClientException error =
+            Assert.Throws<CSharpDbClientException>(
+                () => GrpcModelMapper.ToModel(message));
+        Assert.Contains(
+            "referenced object roles",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -1377,7 +1919,10 @@ public sealed class GrpcClientTests : IAsyncLifetime
         SqlExecutionResult createResult = await client.ExecuteSqlAsync(
             """
             CREATE TABLE grpc_migrate_parents (id INTEGER PRIMARY KEY);
-            CREATE TABLE grpc_migrate_children (id INTEGER PRIMARY KEY, parent_id INTEGER);
+            CREATE TABLE grpc_migrate_children (
+                id INTEGER PRIMARY KEY,
+                parent_id INTEGER NOT NULL DEFAULT 1
+            );
             INSERT INTO grpc_migrate_parents VALUES (1);
             INSERT INTO grpc_migrate_children VALUES (10, 1);
             """,
@@ -1417,7 +1962,8 @@ public sealed class GrpcClientTests : IAsyncLifetime
                         ColumnName = "parent_id",
                         ReferencedTableName = "grpc_migrate_parents",
                         ReferencedColumnName = "id",
-                        OnDelete = ForeignKeyOnDeleteAction.Cascade,
+                        OnDelete = ForeignKeyOnDeleteAction.SetDefault,
+                        OnUpdate = ForeignKeyOnDeleteAction.Cascade,
                     },
                 ],
             },
@@ -1430,7 +1976,8 @@ public sealed class GrpcClientTests : IAsyncLifetime
         TableSchema? schema = await client.GetTableSchemaAsync("grpc_migrate_children", Ct);
         Assert.NotNull(schema);
         var foreignKey = Assert.Single(schema!.ForeignKeys);
-        Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
+        Assert.Equal(ForeignKeyOnDeleteAction.SetDefault, foreignKey.OnDelete);
+        Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnUpdate);
     }
 
     [Fact]
@@ -1734,7 +2281,8 @@ public sealed class GrpcClientTests : IAsyncLifetime
 
     private sealed class TestDaemonFactory(
         string dbPath,
-        IReadOnlyDictionary<string, string?>? extraConfig = null) : WebApplicationFactory<Program>
+        IReadOnlyDictionary<string, string?>? extraConfig = null,
+        CSharpDbClientOptions? clientOptionsOverride = null) : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
@@ -1742,6 +2290,8 @@ public sealed class GrpcClientTests : IAsyncLifetime
             builder.ConfigureServices(services =>
             {
                 services.AddHostedService<TestDaemonClientShutdown>();
+                if (clientOptionsOverride is not null)
+                    services.AddSingleton(clientOptionsOverride);
             });
             builder.ConfigureAppConfiguration((_, config) =>
             {

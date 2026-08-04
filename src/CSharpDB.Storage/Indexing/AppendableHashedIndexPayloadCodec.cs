@@ -37,6 +37,7 @@ internal static class AppendableHashedIndexPayloadCodec
 {
     private const byte IntegerComponentTag = 1;
     private const byte TextComponentTag = 2;
+    private const byte RealComponentTag = 3;
     private const byte SortedAscendingFlag = 1;
 
     private static ReadOnlySpan<byte> InlineMagicBytes => "CSDBHAP1"u8;
@@ -272,6 +273,20 @@ internal static class AppendableHashedIndexPayloadCodec
                     offset += textByteLength;
                     break;
 
+                case DbType.Real when tag == RealComponentTag:
+                    if (offset + sizeof(long) > encodedKeyComponents.Length)
+                        return false;
+
+                    if (BinaryPrimitives.ReadInt64LittleEndian(
+                            encodedKeyComponents.Slice(offset, sizeof(long))) !=
+                        RealIndexKeyCodec.GetCanonicalBits(component.AsReal))
+                    {
+                        return false;
+                    }
+
+                    offset += sizeof(long);
+                    break;
+
                 default:
                     return false;
             }
@@ -321,6 +336,7 @@ internal static class AppendableHashedIndexPayloadCodec
             size += keyComponents[i].Type switch
             {
                 DbType.Integer => sizeof(long),
+                DbType.Real => sizeof(long),
                 DbType.Text => sizeof(int) + Encoding.UTF8.GetByteCount(keyComponents[i].AsText),
                 _ => throw new InvalidOperationException($"Unsupported appendable hashed key component type: {keyComponents[i].Type}."),
             };
@@ -339,6 +355,16 @@ internal static class AppendableHashedIndexPayloadCodec
             {
                 destination[offset++] = IntegerComponentTag;
                 BinaryPrimitives.WriteInt64LittleEndian(destination.Slice(offset, sizeof(long)), component.AsInteger);
+                offset += sizeof(long);
+                continue;
+            }
+
+            if (component.Type == DbType.Real)
+            {
+                destination[offset++] = RealComponentTag;
+                BinaryPrimitives.WriteInt64LittleEndian(
+                    destination.Slice(offset, sizeof(long)),
+                    RealIndexKeyCodec.GetCanonicalBits(component.AsReal));
                 offset += sizeof(long);
                 continue;
             }
@@ -404,6 +430,20 @@ internal static class AppendableHashedIndexPayloadCodec
                     components.Add(DbValue.FromText(
                         Encoding.UTF8.GetString(payload.Slice(bytesRead, textByteLength))));
                     bytesRead += textByteLength;
+                    break;
+
+                case RealComponentTag:
+                    if (bytesRead + sizeof(long) > payload.Length)
+                    {
+                        keyComponents = null;
+                        return false;
+                    }
+
+                    components.Add(DbValue.FromReal(
+                        BitConverter.Int64BitsToDouble(
+                            BinaryPrimitives.ReadInt64LittleEndian(
+                                payload.Slice(bytesRead, sizeof(long))))));
+                    bytesRead += sizeof(long);
                     break;
 
                 default:

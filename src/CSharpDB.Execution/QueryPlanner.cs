@@ -22,7 +22,7 @@ internal enum NumericRelationshipJoinMode
 /// Takes a parsed AST statement and produces an executable QueryResult.
 /// Handles DDL (CREATE/DROP TABLE/INDEX/VIEW) and DML (INSERT/UPDATE/DELETE/SELECT).
 /// </summary>
-public sealed class QueryPlanner
+public sealed partial class QueryPlanner
 {
     private const string InternalSavedQueriesTableName = "__saved_queries";
     private const string InternalExternalTablesTableName = "__external_tables";
@@ -78,6 +78,19 @@ public sealed class QueryPlanner
         string Message,
         DateTimeOffset CreatedUtc,
         bool IsEnabled);
+
+    private sealed record FullTextIndexRebuildPlan(
+        IndexSchema LogicalIndex,
+        IReadOnlyList<IndexSchema> InternalIndexes);
+
+    private sealed record TableRewriteIndexRebuildPlan(
+        IReadOnlyList<IndexSchema> RelationalIndexes,
+        IReadOnlyList<FullTextIndexRebuildPlan> FullTextIndexes)
+    {
+        public static TableRewriteIndexRebuildPlan Relational(
+            IReadOnlyList<IndexSchema> indexes) =>
+            new(indexes, Array.Empty<FullTextIndexRebuildPlan>());
+    }
 
     private readonly record struct ExplainEstimateResult(TableSchema? Schema, bool HasRows, long Rows);
 
@@ -177,9 +190,20 @@ public sealed class QueryPlanner
 
     private sealed class ForeignKeyMutationContext
     {
-        public HashSet<ForeignKeyDeleteKey> VisitedDeletes { get; } = [];
+        public HashSet<long> VisitedDeleteHandles { get; } = [];
+        public HashSet<ForeignKeyUpdateKey> VisitedUpdates { get; } = [];
+        public Dictionary<ForeignKeyDeleteKey, ForeignKeyMutationRowHandle> RowHandlesByLocation { get; } = [];
+        public long NextRowHandleId { get; set; }
         public HashSet<string> TouchedTables { get; } = new(StringComparer.OrdinalIgnoreCase);
         public HashSet<string> StaleTables { get; } = new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private sealed class ForeignKeyMutationRowHandle
+    {
+        public required long HandleId { get; init; }
+        public required string TableName { get; init; }
+        public required long CurrentRowId { get; set; }
+        public bool IsDeleted { get; set; }
     }
 
     private sealed class LogicalMutationConflictMetadata
@@ -216,11 +240,120 @@ public sealed class QueryPlanner
             HashCode.Combine(StringComparer.OrdinalIgnoreCase.GetHashCode(TableName), RowId);
     }
 
+    private static ForeignKeyMutationRowHandle CaptureForeignKeyMutationRow(
+        ForeignKeyMutationContext mutationContext,
+        string tableName,
+        long rowId)
+    {
+        var location = new ForeignKeyDeleteKey(tableName, rowId);
+        if (mutationContext.RowHandlesByLocation.TryGetValue(
+                location,
+                out ForeignKeyMutationRowHandle? existing))
+        {
+            return existing;
+        }
+
+        var created = new ForeignKeyMutationRowHandle
+        {
+            HandleId = checked(++mutationContext.NextRowHandleId),
+            TableName = tableName,
+            CurrentRowId = rowId,
+        };
+        mutationContext.RowHandlesByLocation.Add(location, created);
+        return created;
+    }
+
+    private static bool TryGetForeignKeyMutationRowId(
+        ForeignKeyMutationRowHandle rowHandle,
+        out long rowId)
+    {
+        rowId = rowHandle.CurrentRowId;
+        return !rowHandle.IsDeleted;
+    }
+
+    private static void MoveForeignKeyMutationRow(
+        ForeignKeyMutationContext mutationContext,
+        ForeignKeyMutationRowHandle rowHandle,
+        long oldRowId,
+        long newRowId)
+    {
+        if (oldRowId == newRowId)
+            return;
+
+        var oldLocation =
+            new ForeignKeyDeleteKey(rowHandle.TableName, oldRowId);
+        if (mutationContext.RowHandlesByLocation.TryGetValue(
+                oldLocation,
+                out ForeignKeyMutationRowHandle? currentAtOldLocation) &&
+            ReferenceEquals(currentAtOldLocation, rowHandle))
+        {
+            mutationContext.RowHandlesByLocation.Remove(oldLocation);
+        }
+
+        var newLocation =
+            new ForeignKeyDeleteKey(rowHandle.TableName, newRowId);
+        if (mutationContext.RowHandlesByLocation.TryGetValue(
+                newLocation,
+                out ForeignKeyMutationRowHandle? currentAtNewLocation) &&
+            !ReferenceEquals(currentAtNewLocation, rowHandle))
+        {
+            throw new CSharpDbException(
+                ErrorCode.ConstraintViolation,
+                $"Foreign key update actions attempted to reuse live row id {newRowId} on table '{rowHandle.TableName}'.");
+        }
+
+        rowHandle.CurrentRowId = newRowId;
+        mutationContext.RowHandlesByLocation[newLocation] = rowHandle;
+    }
+
+    private static void DeleteForeignKeyMutationRow(
+        ForeignKeyMutationContext mutationContext,
+        ForeignKeyMutationRowHandle rowHandle,
+        long rowId)
+    {
+        var location =
+            new ForeignKeyDeleteKey(rowHandle.TableName, rowId);
+        if (mutationContext.RowHandlesByLocation.TryGetValue(
+                location,
+                out ForeignKeyMutationRowHandle? currentAtLocation) &&
+            ReferenceEquals(currentAtLocation, rowHandle))
+        {
+            mutationContext.RowHandlesByLocation.Remove(location);
+        }
+
+        rowHandle.IsDeleted = true;
+    }
+
+    private readonly record struct ForeignKeyUpdateKey(
+        long RowHandleId,
+        string ConstraintName,
+        string ReferencedValuesKey)
+    {
+        public bool Equals(ForeignKeyUpdateKey other) =>
+            RowHandleId == other.RowHandleId &&
+            string.Equals(ConstraintName, other.ConstraintName, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(ReferencedValuesKey, other.ReferencedValuesKey, StringComparison.Ordinal);
+
+        public override int GetHashCode() =>
+            HashCode.Combine(
+                RowHandleId,
+                StringComparer.OrdinalIgnoreCase.GetHashCode(ConstraintName),
+                StringComparer.Ordinal.GetHashCode(ReferencedValuesKey));
+    }
+
+    private sealed record PendingForeignKeyUpdate(
+        TableForeignKeyReference Reference,
+        DbValue[] OldReferencedValues,
+        DbValue[] NewReferencedValues,
+        ForeignKeyOnDeleteAction Action,
+        ForeignKeyMutationRowHandle[] RowHandles);
+
     private static readonly ColumnDefinition[] SystemTablesColumns =
     [
         new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
         new ColumnDefinition { Name = "column_count", Type = DbType.Integer, Nullable = false },
         new ColumnDefinition { Name = "primary_key_column", Type = DbType.Text, Nullable = true },
+        new ColumnDefinition { Name = "schema_id", Type = DbType.Text, Nullable = true },
     ];
 
     private static readonly ColumnDefinition[] SystemColumnsColumns =
@@ -235,6 +368,8 @@ public sealed class QueryPlanner
         new ColumnDefinition { Name = "collation", Type = DbType.Text, Nullable = true },
         new ColumnDefinition { Name = "column_default", Type = DbType.Text, Nullable = true },
         new ColumnDefinition { Name = "is_row_version", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "table_schema_id", Type = DbType.Text, Nullable = true },
+        new ColumnDefinition { Name = "column_schema_id", Type = DbType.Text, Nullable = true },
     ];
 
     private static readonly ColumnDefinition[] SystemIndexesColumns =
@@ -255,8 +390,15 @@ public sealed class QueryPlanner
         new ColumnDefinition { Name = "referenced_table_name", Type = DbType.Text, Nullable = false },
         new ColumnDefinition { Name = "referenced_column_name", Type = DbType.Text, Nullable = false },
         new ColumnDefinition { Name = "on_delete", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "on_update", Type = DbType.Text, Nullable = false },
         new ColumnDefinition { Name = "supporting_index_name", Type = DbType.Text, Nullable = false },
         new ColumnDefinition { Name = "ordinal_position", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "table_schema_id", Type = DbType.Text, Nullable = true },
+        new ColumnDefinition { Name = "constraint_schema_id", Type = DbType.Text, Nullable = true },
+        new ColumnDefinition { Name = "column_schema_id", Type = DbType.Text, Nullable = true },
+        new ColumnDefinition { Name = "referenced_table_schema_id", Type = DbType.Text, Nullable = true },
+        new ColumnDefinition { Name = "referenced_column_schema_id", Type = DbType.Text, Nullable = true },
+        new ColumnDefinition { Name = "referenced_key_schema_id", Type = DbType.Text, Nullable = true },
     ];
 
     private static readonly ColumnDefinition[] SystemKeyConstraintsColumns =
@@ -267,6 +409,8 @@ public sealed class QueryPlanner
         new ColumnDefinition { Name = "column_name", Type = DbType.Text, Nullable = false },
         new ColumnDefinition { Name = "ordinal_position", Type = DbType.Integer, Nullable = false },
         new ColumnDefinition { Name = "backing_index_name", Type = DbType.Text, Nullable = true },
+        new ColumnDefinition { Name = "table_schema_id", Type = DbType.Text, Nullable = true },
+        new ColumnDefinition { Name = "constraint_schema_id", Type = DbType.Text, Nullable = true },
     ];
 
     private static readonly ColumnDefinition[] SystemCheckConstraintsColumns =
@@ -275,6 +419,8 @@ public sealed class QueryPlanner
         new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
         new ColumnDefinition { Name = "column_name", Type = DbType.Text, Nullable = true },
         new ColumnDefinition { Name = "expression_sql", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "table_schema_id", Type = DbType.Text, Nullable = true },
+        new ColumnDefinition { Name = "constraint_schema_id", Type = DbType.Text, Nullable = true },
     ];
 
     private static readonly ColumnDefinition[] SystemFunctionsColumns =
@@ -690,6 +836,7 @@ public sealed class QueryPlanner
         public required IndexSchema Index { get; init; }
         public required IIndexStore IndexStore { get; init; }
         public required int[] ColumnIndices { get; init; }
+        public required DbType[] ColumnTypes { get; init; }
         public required string?[] IndexColumnCollations { get; init; }
         public required SqlIndexStorageMode StorageMode { get; init; }
         public required bool UsesDirectIntegerKey { get; init; }
@@ -711,6 +858,8 @@ public sealed class QueryPlanner
     /// cache-only path first, bypassing the async operator pipeline. Falls back to async on cache miss.
     /// </summary>
     public bool PreferSyncPointLookups { get; set; } = true;
+    private bool CanUseSyncPointLookups =>
+        PreferSyncPointLookups && !PhysicalPlanCapture.IsActive;
 
     /// <summary>
     /// Controls the supported numeric primary-key/foreign-key INNER JOIN optimization.
@@ -721,6 +870,7 @@ public sealed class QueryPlanner
     internal NumericRelationshipJoinMode RelationshipJoinMode { get; set; } = NumericRelationshipJoinMode.Auto;
 
     public AdaptiveQueryReoptimizationOptions AdaptiveQueryReoptimization { get; }
+    public WindowExecutionOptions WindowExecution { get; }
 
     public QueryPlanner(
         Pager pager,
@@ -733,7 +883,8 @@ public sealed class QueryPlanner
         bool useTransientNextRowIdHints = false,
         DbFunctionRegistry? functions = null,
         AdaptiveQueryReoptimizationOptions? adaptiveQueryReoptimization = null,
-        string? externalTableBasePath = null)
+        string? externalTableBasePath = null,
+        WindowExecutionOptions? windowExecution = null)
         : this(
             pager,
             catalog,
@@ -746,7 +897,8 @@ public sealed class QueryPlanner
             useTransientNextRowIdHints,
             functions,
             adaptiveQueryReoptimization,
-            externalTableBasePath)
+            externalTableBasePath,
+            windowExecution: windowExecution)
     {
     }
 
@@ -763,7 +915,8 @@ public sealed class QueryPlanner
         DbFunctionRegistry? functions,
         AdaptiveQueryReoptimizationOptions? adaptiveQueryReoptimization = null,
         string? externalTableBasePath = null,
-        TemporaryTableManager? temporaryTables = null)
+        TemporaryTableManager? temporaryTables = null,
+        WindowExecutionOptions? windowExecution = null)
     {
         _pager = pager;
         _catalog = catalog;
@@ -784,6 +937,7 @@ public sealed class QueryPlanner
         _observedSchemaVersion = catalog.SchemaVersion;
         _useTransientNextRowIdHints = useTransientNextRowIdHints;
         AdaptiveQueryReoptimization = NormalizeAdaptiveQueryReoptimizationOptions(adaptiveQueryReoptimization);
+        WindowExecution = NormalizeWindowExecutionOptions(windowExecution);
         _adaptiveRuntimeDiagnostics = new AdaptiveQueryReoptimizationRuntimeDiagnostics(
             RecordAdaptiveAttempt,
             RecordAdaptiveSuccessfulSwitch,
@@ -826,6 +980,7 @@ public sealed class QueryPlanner
             InsertStatement insert when HasTemporaryTable(insert.TableName) => true,
             DeleteStatement delete when HasTemporaryTable(delete.TableName) => true,
             UpdateStatement update when HasTemporaryTable(update.TableName) => true,
+            ExplainStatement explain => ShouldExecuteInSessionTemporaryState(explain.Target),
             _ => false,
         };
 
@@ -892,6 +1047,7 @@ public sealed class QueryPlanner
                 ct),
             AnalyzeStatement analyze => await ExecuteAnalyzeAsync(analyze, ct),
             ExplainEstimateStatement explain => ExecuteExplainEstimate(explain),
+            ExplainStatement explain => await ExecutePhysicalExplainAsync(explain, ct),
             _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unknown statement type: {stmt.GetType().Name}"),
         };
     }
@@ -1059,6 +1215,41 @@ public sealed class QueryPlanner
             MinimumObservedRows = Math.Max(1, options.MinimumObservedRows),
             MaxBufferedRows = Math.Max(1, options.MaxBufferedRows),
             MaxReoptimizationsPerQuery = Math.Max(0, options.MaxReoptimizationsPerQuery),
+        };
+    }
+
+    internal static WindowExecutionOptions NormalizeWindowExecutionOptions(
+        WindowExecutionOptions? options)
+    {
+        options ??= new WindowExecutionOptions();
+        if (options.MaxPartitionRows <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(WindowExecutionOptions.MaxPartitionRows),
+                options.MaxPartitionRows,
+                "The maximum window partition row count must be greater than zero.");
+        }
+
+        if (options.MaxBufferedRows <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(WindowExecutionOptions.MaxBufferedRows),
+                options.MaxBufferedRows,
+                "The maximum buffered window row count must be greater than zero.");
+        }
+
+        if (options.MaxBufferedRows < options.MaxPartitionRows)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(WindowExecutionOptions.MaxBufferedRows),
+                options.MaxBufferedRows,
+                "The maximum buffered window row count cannot be smaller than the maximum partition row count.");
+        }
+
+        return new WindowExecutionOptions
+        {
+            MaxPartitionRows = options.MaxPartitionRows,
+            MaxBufferedRows = options.MaxBufferedRows,
         };
     }
 
@@ -1703,9 +1894,9 @@ public sealed class QueryPlanner
                 {
                     if (UsesPhysicalIntegerPrimaryKey(newSchema, addedKey))
                     {
-                        IndexSchema[] indexesToRebuild =
+                        TableRewriteIndexRebuildPlan indexRebuildPlan =
                             GetIndexesForPhysicalIntegerPrimaryKeyRekey(
-                                stmt.TableName);
+                                schema);
                         long nextRowId =
                             await ValidatePhysicalIntegerPrimaryKeyValuesAsync(
                             schema,
@@ -1734,7 +1925,7 @@ public sealed class QueryPlanner
                                 rekeyedSchema,
                                 mappings,
                                 targetRowIdSourceOrdinal: primaryKeyColumnIndex),
-                            indexesToRebuild,
+                            indexRebuildPlan,
                             ct);
                         InvalidateRowIdCache(stmt.TableName);
                         break;
@@ -2233,8 +2424,12 @@ public sealed class QueryPlanner
             }
 
             DbType columnType = column.Type;
-            if (columnType is not (DbType.Integer or DbType.Text))
-                throw new CSharpDbException(ErrorCode.TypeMismatch, "Only INTEGER and TEXT column indexes are supported.");
+            if (columnType is not (DbType.Integer or DbType.Real or DbType.Text))
+            {
+                throw new CSharpDbException(
+                    ErrorCode.TypeMismatch,
+                    "Only INTEGER, REAL, and TEXT equality indexes are supported.");
+            }
 
             string? columnCollation = i < stmt.ColumnCollations.Count
                 ? NormalizeCollationName(stmt.ColumnCollations[i])
@@ -2428,6 +2623,15 @@ public sealed class QueryPlanner
             parts.Add(ExprToSql(stmt.Having));
         }
 
+        if (stmt.WindowDefinitions.Count > 0)
+        {
+            parts.Add("WINDOW");
+            parts.Add(string.Join(
+                ", ",
+                stmt.WindowDefinitions.Select(definition =>
+                    $"{SqlIdentifierRules.Quote(definition.Name)} AS ({WindowSpecificationToSql(definition.Specification)})")));
+        }
+
         AppendOrderingAndPagination(parts, stmt.OrderBy, stmt.Limit, stmt.Offset);
 
         return string.Join(" ", parts);
@@ -2517,6 +2721,8 @@ public sealed class QueryPlanner
         LiteralExpression lit => lit.Value == null ? "NULL"
             : lit.LiteralType == TokenType.BlobLiteral ? $"X'{Convert.ToHexString((byte[])lit.Value)}'"
             : lit.LiteralType == TokenType.StringLiteral ? $"'{lit.Value.ToString()!.Replace("'", "''")}'"
+            : lit.LiteralType == TokenType.RealLiteral && lit.Value is double realValue
+                ? SqlLiteralRules.FormatReal(realValue)
             : Convert.ToString(lit.Value, CultureInfo.InvariantCulture)!,
         ParameterExpression param => $"@{param.Name}",
         ColumnRefExpression col => col.TableAlias != null
@@ -2541,27 +2747,63 @@ public sealed class QueryPlanner
 
     private static string WindowFunctionToSql(WindowFunctionExpression window)
     {
-        var clauses = new List<string>(2);
-        if (window.Window.PartitionBy.Count > 0)
+        string specificationSql = WindowSpecificationToSql(window.Window);
+        bool isBareReference =
+            window.Window.ReferenceName != null &&
+            window.Window.PartitionBy.Count == 0 &&
+            window.Window.OrderBy.Count == 0 &&
+            window.Window.Frame == null;
+        return isBareReference
+            ? $"{ExprToSql(window.Function)} OVER {specificationSql}"
+            : $"{ExprToSql(window.Function)} OVER ({specificationSql})";
+    }
+
+    private static string WindowSpecificationToSql(WindowSpecification specification)
+    {
+        var clauses = new List<string>(4);
+        if (specification.ReferenceName != null)
+            clauses.Add(SqlIdentifierRules.Quote(specification.ReferenceName));
+
+        if (specification.PartitionBy.Count > 0)
         {
             clauses.Add(
                 "PARTITION BY " +
-                string.Join(", ", window.Window.PartitionBy.Select(ExprToSql)));
+                string.Join(", ", specification.PartitionBy.Select(ExprToSql)));
         }
 
-        if (window.Window.OrderBy.Count > 0)
+        if (specification.OrderBy.Count > 0)
         {
             clauses.Add(
                 "ORDER BY " +
                 string.Join(
                     ", ",
-                    window.Window.OrderBy.Select(
+                    specification.OrderBy.Select(
                         clause => ExprToSql(clause.Expression) +
                             (clause.Descending ? " DESC" : string.Empty))));
         }
 
-        return $"{ExprToSql(window.Function)} OVER ({string.Join(" ", clauses)})";
+        if (specification.Frame != null)
+        {
+            clauses.Add(
+                $"ROWS BETWEEN {WindowFrameBoundToSql(specification.Frame.Start)} " +
+                $"AND {WindowFrameBoundToSql(specification.Frame.End)}");
+        }
+
+        return string.Join(" ", clauses);
     }
+
+    private static string WindowFrameBoundToSql(WindowFrameBound bound) =>
+        bound.Kind switch
+        {
+            WindowFrameBoundKind.UnboundedPreceding => "UNBOUNDED PRECEDING",
+            WindowFrameBoundKind.Preceding =>
+                $"{bound.Offset.GetValueOrDefault().ToString(CultureInfo.InvariantCulture)} PRECEDING",
+            WindowFrameBoundKind.CurrentRow => "CURRENT ROW",
+            WindowFrameBoundKind.Following =>
+                $"{bound.Offset.GetValueOrDefault().ToString(CultureInfo.InvariantCulture)} FOLLOWING",
+            WindowFrameBoundKind.UnboundedFollowing => "UNBOUNDED FOLLOWING",
+            _ => throw new InvalidOperationException($"Unsupported window frame bound: {bound.Kind}"),
+        };
 
     private static string BinaryOpToSql(BinaryOp op) => op switch
     {
@@ -2695,6 +2937,9 @@ public sealed class QueryPlanner
                     Where = select.Where != null ? await RewriteSubqueriesInExpressionAsync(select.Where, ct) : null,
                     GroupBy = select.GroupBy != null ? await RewriteSubqueriesInExpressionListAsync(select.GroupBy, ct) : null,
                     Having = select.Having != null ? await RewriteSubqueriesInExpressionAsync(select.Having, ct) : null,
+                    WindowDefinitions = await RewriteSubqueriesInWindowDefinitionsAsync(
+                        select.WindowDefinitions,
+                        ct),
                     OrderBy = select.OrderBy != null ? await RewriteSubqueriesInOrderByClausesAsync(select.OrderBy, ct) : null,
                     Limit = select.Limit,
                     Offset = select.Offset,
@@ -2755,6 +3000,33 @@ public sealed class QueryPlanner
             {
                 Expression = await RewriteSubqueriesInExpressionAsync(clauses[i].Expression, ct),
                 Descending = clauses[i].Descending,
+            });
+        }
+
+        return rewritten;
+    }
+
+    private async ValueTask<List<NamedWindowDefinition>> RewriteSubqueriesInWindowDefinitionsAsync(
+        IReadOnlyList<NamedWindowDefinition> definitions,
+        CancellationToken ct)
+    {
+        var rewritten = new List<NamedWindowDefinition>(definitions.Count);
+        foreach (NamedWindowDefinition definition in definitions)
+        {
+            rewritten.Add(new NamedWindowDefinition
+            {
+                Name = definition.Name,
+                Specification = new WindowSpecification
+                {
+                    ReferenceName = definition.Specification.ReferenceName,
+                    PartitionBy = await RewriteSubqueriesInExpressionListAsync(
+                        definition.Specification.PartitionBy,
+                        ct),
+                    OrderBy = await RewriteSubqueriesInOrderByClausesAsync(
+                        definition.Specification.OrderBy,
+                        ct),
+                    Frame = definition.Specification.Frame,
+                },
             });
         }
 
@@ -2913,8 +3185,10 @@ public sealed class QueryPlanner
                     Function = function,
                     Window = new WindowSpecification
                     {
+                        ReferenceName = window.Window.ReferenceName,
                         PartitionBy = partitionBy,
                         OrderBy = orderBy,
+                        Frame = window.Window.Frame,
                     },
                 };
             }
@@ -3095,6 +3369,10 @@ public sealed class QueryPlanner
                     Where = select.Where != null ? BindOuterScopesInExpression(select.Where, visibleScopes, outerScopes) : null,
                     GroupBy = select.GroupBy?.Select(expr => BindOuterScopesInExpression(expr, visibleScopes, outerScopes)).ToList(),
                     Having = select.Having != null ? BindOuterScopesInExpression(select.Having, visibleScopes, outerScopes) : null,
+                    WindowDefinitions = BindOuterScopesInWindowDefinitions(
+                        select.WindowDefinitions,
+                        visibleScopes,
+                        outerScopes),
                     OrderBy = select.OrderBy?.Select(orderBy => new OrderByClause
                     {
                         Expression = BindOuterScopesInExpression(orderBy.Expression, visibleScopes, outerScopes),
@@ -3126,6 +3404,36 @@ public sealed class QueryPlanner
             default:
                 throw new CSharpDbException(ErrorCode.Unknown, $"Unknown query type: {query.GetType().Name}");
         }
+    }
+
+    private List<NamedWindowDefinition> BindOuterScopesInWindowDefinitions(
+        IReadOnlyList<NamedWindowDefinition> definitions,
+        IReadOnlyList<TableSchema> visibleScopes,
+        IReadOnlyList<CorrelationScope> outerScopes)
+    {
+        return definitions.Select(definition => new NamedWindowDefinition
+        {
+            Name = definition.Name,
+            Specification = new WindowSpecification
+            {
+                ReferenceName = definition.Specification.ReferenceName,
+                PartitionBy = definition.Specification.PartitionBy
+                    .Select(expression => BindOuterScopesInExpression(
+                        expression,
+                        visibleScopes,
+                        outerScopes))
+                    .ToList(),
+                OrderBy = definition.Specification.OrderBy.Select(clause => new OrderByClause
+                {
+                    Expression = BindOuterScopesInExpression(
+                        clause.Expression,
+                        visibleScopes,
+                        outerScopes),
+                    Descending = clause.Descending,
+                }).ToList(),
+                Frame = definition.Specification.Frame,
+            },
+        }).ToList();
     }
 
     private TableRef BindOuterScopesInTableRef(
@@ -3249,6 +3557,7 @@ public sealed class QueryPlanner
                         outerScopes),
                     Window = new WindowSpecification
                     {
+                        ReferenceName = window.Window.ReferenceName,
                         PartitionBy = window.Window.PartitionBy
                             .Select(expression => BindOuterScopesInExpression(
                                 expression,
@@ -3263,6 +3572,7 @@ public sealed class QueryPlanner
                                 outerScopes),
                             Descending = clause.Descending,
                         }).ToList(),
+                        Frame = window.Window.Frame,
                     },
                 };
             default:
@@ -3527,6 +3837,13 @@ public sealed class QueryPlanner
 
     private async ValueTask<QueryResult> ExecuteCreateTriggerAsync(CreateTriggerStatement stmt, CancellationToken ct)
     {
+        if (stmt.WhenCondition is not null)
+        {
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                "Trigger WHEN conditions are not supported.");
+        }
+
         if (HasTemporaryTable(stmt.TableName))
             throw new CSharpDbException(ErrorCode.SyntaxError, "Temporary tables do not support triggers in V1.");
 
@@ -4947,10 +5264,6 @@ public sealed class QueryPlanner
                 _triggerBodyCache[trigger.TriggerName] = bodyStatements;
             }
 
-            // Check WHEN condition if present in the original trigger definition
-            // (For MVP, WHEN is evaluated at creation time and stored as part of the body check)
-            // We can add WHEN support later if needed
-
             // Build a composite schema that can resolve NEW.col and OLD.col
             var compositeSchema = BuildTriggerSchema(tableSchema, oldRow != null, newRow != null);
             var compositeRow = BuildTriggerRow(tableSchema, oldRow, newRow);
@@ -5176,6 +5489,7 @@ public sealed class QueryPlanner
                         compositeSchema),
                     Window = new WindowSpecification
                     {
+                        ReferenceName = window.Window.ReferenceName,
                         PartitionBy = window.Window.PartitionBy
                             .Select(expression => ResolveNewOldRefsInExpression(
                                 expression,
@@ -5190,6 +5504,7 @@ public sealed class QueryPlanner
                                 compositeSchema),
                             Descending = clause.Descending,
                         }).ToList(),
+                        Frame = window.Window.Frame,
                     },
                 };
             default:
@@ -5217,6 +5532,10 @@ public sealed class QueryPlanner
                     Where = select.Where != null ? ResolveNewOldRefsInExpression(select.Where, compositeRow, compositeSchema) : null,
                     GroupBy = select.GroupBy?.Select(expr => ResolveNewOldRefsInExpression(expr, compositeRow, compositeSchema)).ToList(),
                     Having = select.Having != null ? ResolveNewOldRefsInExpression(select.Having, compositeRow, compositeSchema) : null,
+                    WindowDefinitions = ResolveNewOldRefsInWindowDefinitions(
+                        select.WindowDefinitions,
+                        compositeRow,
+                        compositeSchema),
                     OrderBy = select.OrderBy?.Select(orderBy => new OrderByClause
                     {
                         Expression = ResolveNewOldRefsInExpression(orderBy.Expression, compositeRow, compositeSchema),
@@ -5243,6 +5562,36 @@ public sealed class QueryPlanner
             default:
                 throw new CSharpDbException(ErrorCode.Unknown, $"Unknown query type: {query.GetType().Name}");
         }
+    }
+
+    private static List<NamedWindowDefinition> ResolveNewOldRefsInWindowDefinitions(
+        IReadOnlyList<NamedWindowDefinition> definitions,
+        DbValue[] compositeRow,
+        TableSchema compositeSchema)
+    {
+        return definitions.Select(definition => new NamedWindowDefinition
+        {
+            Name = definition.Name,
+            Specification = new WindowSpecification
+            {
+                ReferenceName = definition.Specification.ReferenceName,
+                PartitionBy = definition.Specification.PartitionBy
+                    .Select(expression => ResolveNewOldRefsInExpression(
+                        expression,
+                        compositeRow,
+                        compositeSchema))
+                    .ToList(),
+                OrderBy = definition.Specification.OrderBy.Select(clause => new OrderByClause
+                {
+                    Expression = ResolveNewOldRefsInExpression(
+                        clause.Expression,
+                        compositeRow,
+                        compositeSchema),
+                    Descending = clause.Descending,
+                }).ToList(),
+                Frame = definition.Specification.Frame,
+            },
+        }).ToList();
     }
 
     private static TableRef ResolveNewOldRefsInTableRef(TableRef tableRef, DbValue[] compositeRow, TableSchema compositeSchema)
@@ -6026,7 +6375,7 @@ public sealed class QueryPlanner
 
         if (select.Where == null)
             residualPredicate = null;
-        else if (source is TableScanOperator tableScan)
+        else if (PhysicalPlanCapture.Unwrap(source) is TableScanOperator tableScan)
         {
             ApplyLogicalPredicateReadScope(simpleRef.TableName, select.Where, sourceSchema, tableScan);
             residualPredicate = select.Where;
@@ -6062,6 +6411,7 @@ public sealed class QueryPlanner
                 },
             GroupBy = select.GroupBy,
             Having = select.Having,
+            WindowDefinitions = select.WindowDefinitions,
             OrderBy = select.OrderBy,
             Limit = select.Limit,
             Offset = select.Offset,
@@ -6215,11 +6565,13 @@ public sealed class QueryPlanner
                         ct),
                     Window = new WindowSpecification
                     {
+                        ReferenceName = window.Window.ReferenceName,
                         PartitionBy = await RewriteCorrelatedExpressionListAsync(
                             window.Window.PartitionBy,
                             outerScopes,
                             ct),
                         OrderBy = orderBy,
+                        Frame = window.Window.Frame,
                     },
                 };
             }
@@ -6625,10 +6977,14 @@ public sealed class QueryPlanner
                 : null;
 
         if (remainingWhere != null && remainingWhereEvaluator == null)
-            op = new FilterOperator(
-                op,
-                GetOrCompileSpanExpression(remainingWhere, schema),
-                TryCreateCachedFilterBatchPlan(stmt, SelectBatchPlanSlot.GeneralFilterOnly, op, remainingWhere, schema));
+        {
+            op = AnnotatePhysicalPredicate(
+                new FilterOperator(
+                    op,
+                    GetOrCompileSpanExpression(remainingWhere, schema),
+                    TryCreateCachedFilterBatchPlan(stmt, SelectBatchPlanSlot.GeneralFilterOnly, op, remainingWhere, schema)),
+                remainingWhere);
+        }
 
         if (hasWindows)
         {
@@ -6697,13 +7053,18 @@ public sealed class QueryPlanner
                     // We can return the key directly once row existence is confirmed and skip row decode.
                     if (remainingWhere == null &&
                         stmt.OrderBy is not { Count: > 0 } &&
-                        op is PrimaryKeyLookupOperator pkLookup &&
+                        PhysicalPlanCapture.Unwrap(op) is PrimaryKeyLookupOperator pkLookup &&
                         IsPrimaryKeyOnlyProjection(columnIndices, schema.PrimaryKeyColumnIndex))
                     {
-                        op = new PrimaryKeyProjectionLookupOperator(pkLookup.TableTree, pkLookup.SeekKey, outputCols);
+                        op = AnnotatePhysicalPredicate(
+                            new PrimaryKeyProjectionLookupOperator(
+                                pkLookup.TableTree,
+                                pkLookup.SeekKey,
+                                outputCols),
+                            stmt.Where);
                     }
                     else if (remainingWhere == null &&
-                             op is IndexOrderedScanOperator orderedScan &&
+                             PhysicalPlanCapture.Unwrap(op) is IndexOrderedScanOperator orderedScan &&
                              TryBuildCoveredOrderedIndexProjectionOperator(
                                  orderedScan,
                                  schema,
@@ -6714,7 +7075,7 @@ public sealed class QueryPlanner
                         op = coveredOrderedProjection;
                     }
                     else if (remainingWhere == null &&
-                             op is IndexScanOperator hashedLookup &&
+                             PhysicalPlanCapture.Unwrap(op) is IndexScanOperator hashedLookup &&
                              TryBuildCoveredHashedIndexProjectionOperator(
                                  hashedLookup,
                                  schema,
@@ -6737,9 +7098,12 @@ public sealed class QueryPlanner
                             : null;
 
                         if (remainingWhereEvaluator != null)
+                        {
                             op = batchPlan != null
                                 ? new FilterProjectionOperator(op, remainingWhereEvaluator, columnIndices, outputCols, batchPlan, useSpanEvaluator: true)
                                 : new FilterOperator(op, remainingWhereEvaluator);
+                            op = AnnotatePhysicalPredicate(op, remainingWhere);
+                        }
 
                         op = batchPlan != null
                             ? op
@@ -7212,7 +7576,8 @@ public sealed class QueryPlanner
             sourceSchema,
             windowFunctions,
             augmentedColumns.ToArray(),
-            _functions);
+            _functions,
+            WindowExecution);
 
         var rewrittenColumns = new List<SelectColumn>(statement.Columns.Count);
         var aliases = new Dictionary<string, Expression>(StringComparer.OrdinalIgnoreCase);
@@ -7418,7 +7783,7 @@ public sealed class QueryPlanner
         int[] columnIndices,
         ColumnDefinition[] outputCols)
     {
-        if (op is IProjectionPushdownTarget pushdownTarget)
+        if (PhysicalPlanCapture.Unwrap(op) is IProjectionPushdownTarget pushdownTarget)
             return pushdownTarget.TrySetOutputProjection(columnIndices, outputCols);
 
         return false;
@@ -7741,8 +8106,8 @@ public sealed class QueryPlanner
         int predicateColumnIndex = schema.GetColumnIndex(lookup.PredicateColumn);
         if (predicateColumnIndex < 0 || predicateColumnIndex >= schema.Columns.Count)
             return false;
-        if (schema.Columns[predicateColumnIndex].Type != DbType.Integer &&
-            schema.Columns[predicateColumnIndex].Type != DbType.Text)
+        DbType predicateColumnType = schema.Columns[predicateColumnIndex].Type;
+        if (predicateColumnType is not (DbType.Integer or DbType.Real or DbType.Text))
         {
             return false;
         }
@@ -7786,11 +8151,16 @@ public sealed class QueryPlanner
             if (matchedIndex == null)
                 return false;
 
-            if (predicateLiteral.Type != DbType.Integer && predicateLiteral.Type != DbType.Text)
+            bool hasCompatibleLiteral =
+                predicateColumnType == DbType.Real
+                    ? predicateLiteral.Type is DbType.Integer or DbType.Real
+                    : predicateLiteral.Type == predicateColumnType;
+            if (!hasCompatibleLiteral)
                 return false;
 
             if (!predicateUsesDirectIntegerKey &&
-                !(predicateLiteral.Type == DbType.Text && schema.Columns[predicateColumnIndex].Type == DbType.Text))
+                predicateColumnType != DbType.Real &&
+                !(predicateLiteral.Type == DbType.Text && predicateColumnType == DbType.Text))
             {
                 return false;
             }
@@ -7841,7 +8211,7 @@ public sealed class QueryPlanner
                 residualLiteral = lookup.ResidualPredicateLiteral;
             }
 
-            if (lookupOp is not IPreDecodeFilterSupport preDecodeFilterTarget)
+            if (PhysicalPlanCapture.Unwrap(lookupOp) is not IPreDecodeFilterSupport preDecodeFilterTarget)
                 return false;
 
             if (!CanPushDownPredicate(schema, residualColumnIndex, residualLiteral))
@@ -7857,7 +8227,7 @@ public sealed class QueryPlanner
         {
             if (isPrimaryKeyLookup &&
                 !hasResidual &&
-                PreferSyncPointLookups &&
+                CanUseSyncPointLookups &&
                 tableTree.TryFindCachedMemory(lookupValue, out var payload))
             {
                 var row = payload is { } payloadMemory ? GetReadSerializer(schema).Decode(payloadMemory.Span) : null;
@@ -7880,7 +8250,7 @@ public sealed class QueryPlanner
 
         if (isPrimaryKeyLookup && !hasResidual && IsPrimaryKeyOnlyProjection(projectionColumnIndices, pkIdx))
         {
-            if (PreferSyncPointLookups && tableTree.TryFindCachedMemory(lookupValue, out var payload))
+            if (CanUseSyncPointLookups && tableTree.TryFindCachedMemory(lookupValue, out var payload))
             {
                 DbValue[]? row = null;
                 if (payload != null)
@@ -8283,7 +8653,13 @@ public sealed class QueryPlanner
         if (pkIdx < 0 || pkIdx >= querySchema.Columns.Count || querySchema.Columns[pkIdx].Type != DbType.Integer)
             return false;
 
-        if (!TryExtractPrimaryKeyLookupWithResidual(stmt.Where, querySchema, pkIdx, out long lookupValue, out var residualWhere))
+        if (!TryExtractPrimaryKeyLookupWithResidual(
+                stmt.Where,
+                querySchema,
+                pkIdx,
+                out long lookupValue,
+                out var lookupPredicate,
+                out var residualWhere))
             return false;
 
         bool hasIndex;
@@ -8306,18 +8682,22 @@ public sealed class QueryPlanner
         if (!hasIndex)
             return false;
 
-        IOperator op = new ExternalTablePrimaryKeyLookupOperator(
-            resolvedPath,
-            archiveSchema.Columns.ToArray(),
-            pkIdx,
-            lookupValue);
+        IOperator op = AnnotatePhysicalPredicate(
+            new ExternalTablePrimaryKeyLookupOperator(
+                resolvedPath,
+                archiveSchema.Columns.ToArray(),
+                pkIdx,
+                lookupValue),
+            lookupPredicate);
 
         if (residualWhere != null)
         {
-            op = new FilterOperator(
-                op,
-                GetOrCompileSpanExpression(residualWhere, querySchema),
-                batchPlan: null);
+            op = AnnotatePhysicalPredicate(
+                new FilterOperator(
+                    op,
+                    GetOrCompileSpanExpression(residualWhere, querySchema),
+                    batchPlan: null),
+                residualWhere);
         }
 
         if (stmt.Columns.Count == 1 && stmt.Columns[0].IsStar)
@@ -8368,14 +8748,20 @@ public sealed class QueryPlanner
         if (pkIdx < 0 || pkIdx >= schema.Columns.Count || schema.Columns[pkIdx].Type != DbType.Integer)
             return false;
 
-        if (!TryExtractPrimaryKeyLookupWithResidual(stmt.Where, schema, pkIdx, out long lookupValue, out var residualWhere))
+        if (!TryExtractPrimaryKeyLookupWithResidual(
+                stmt.Where,
+                schema,
+                pkIdx,
+                out long lookupValue,
+                out var lookupPredicate,
+                out var residualWhere))
             return false;
 
         var tableTree = _catalog.GetTableTree(simpleRef.TableName, _pager);
         bool selectStar = IsLoneStarProjection(stmt);
 
         // Sync fast path: try cache-only lookup to bypass the async operator pipeline
-        if (PreferSyncPointLookups && residualWhere == null && selectStar)
+        if (CanUseSyncPointLookups && residualWhere == null && selectStar)
         {
             if (tableTree.TryFindCachedMemory(lookupValue, out var payload))
             {
@@ -8390,14 +8776,24 @@ public sealed class QueryPlanner
         // SELECT * — just PrimaryKeyLookupOperator
         if (selectStar)
         {
-            IOperator op = new PrimaryKeyLookupOperator(tableTree, schema, lookupValue, GetReadSerializer(schema));
+            IOperator op = AnnotatePhysicalPredicate(
+                new PrimaryKeyLookupOperator(
+                    tableTree,
+                    schema,
+                    lookupValue,
+                    GetReadSerializer(schema)),
+                lookupPredicate);
             if (residualWhere != null && TryPushDownSimplePreDecodeFilter(op, residualWhere, schema, out var pushedWhere))
                 residualWhere = pushedWhere;
             if (residualWhere != null)
-                op = new FilterOperator(
-                    op,
-                    GetOrCompileSpanExpression(residualWhere, schema),
-                    TryCreateFilterBatchPlan(op, residualWhere, schema));
+            {
+                op = AnnotatePhysicalPredicate(
+                    new FilterOperator(
+                        op,
+                        GetOrCompileSpanExpression(residualWhere, schema),
+                        TryCreateFilterBatchPlan(op, residualWhere, schema)),
+                    residualWhere);
+            }
             result = CreateQueryResult(op);
             return true;
         }
@@ -8409,7 +8805,7 @@ public sealed class QueryPlanner
                 ? GetSingleColumnOutputSchema(schema, pkIdx)
                 : BuildRepeatedColumnOutputSchema(schema.Columns[pkIdx], projectedPkCount);
 
-            if (PreferSyncPointLookups && tableTree.TryFindCachedMemory(lookupValue, out var payload))
+            if (CanUseSyncPointLookups && tableTree.TryFindCachedMemory(lookupValue, out var payload))
             {
                 DbValue[]? row = null;
                 if (payload != null)
@@ -8430,7 +8826,12 @@ public sealed class QueryPlanner
                 return true;
             }
 
-            IOperator projectedOp = new PrimaryKeyProjectionLookupOperator(tableTree, lookupValue, pkOutputCols);
+            IOperator projectedOp = AnnotatePhysicalPredicate(
+                new PrimaryKeyProjectionLookupOperator(
+                    tableTree,
+                    lookupValue,
+                    pkOutputCols),
+                lookupPredicate);
             result = new QueryResult(projectedOp);
             return true;
         }
@@ -8441,7 +8842,7 @@ public sealed class QueryPlanner
             // PK-only projection with no residual filter: skip row decode entirely.
             if (residualWhere == null && IsPrimaryKeyOnlyProjection(columnIndices, pkIdx))
             {
-                if (PreferSyncPointLookups && tableTree.TryFindCachedMemory(lookupValue, out var payload))
+                if (CanUseSyncPointLookups && tableTree.TryFindCachedMemory(lookupValue, out var payload))
                 {
                     DbValue[]? row = null;
                     if (payload != null)
@@ -8456,7 +8857,12 @@ public sealed class QueryPlanner
                     return true;
                 }
 
-                IOperator op = new PrimaryKeyProjectionLookupOperator(tableTree, lookupValue, outputCols);
+                IOperator op = AnnotatePhysicalPredicate(
+                    new PrimaryKeyProjectionLookupOperator(
+                        tableTree,
+                        lookupValue,
+                        outputCols),
+                    lookupPredicate);
                 result = new QueryResult(op);
                 return true;
             }
@@ -8480,13 +8886,18 @@ public sealed class QueryPlanner
             }
             if (maxCol >= 0)
                 pkOp.SetDecodedColumnUpperBound(maxCol);
+            _ = AnnotatePhysicalPredicate(pkOp, lookupPredicate);
 
             IOperator projOp = pkOp;
             if (remainingResidual != null)
-                projOp = new FilterOperator(
-                    projOp,
-                    GetOrCompileSpanExpression(remainingResidual, schema),
-                    TryCreateFilterBatchPlan(projOp, remainingResidual, schema));
+            {
+                projOp = AnnotatePhysicalPredicate(
+                    new FilterOperator(
+                        projOp,
+                        GetOrCompileSpanExpression(remainingResidual, schema),
+                        TryCreateFilterBatchPlan(projOp, remainingResidual, schema)),
+                    remainingResidual);
+            }
 
             projOp = new ProjectionOperator(projOp, columnIndices, outputCols, schema);
             result = new QueryResult(projOp);
@@ -8502,9 +8913,11 @@ public sealed class QueryPlanner
         TableSchema schema,
         int pkIndex,
         out long lookupValue,
+        out Expression? lookupPredicate,
         out Expression? residualWhere)
     {
         lookupValue = 0;
+        lookupPredicate = null;
         residualWhere = null;
 
         if (TryExtractIntegerEqualityLookupTerm(where, schema, out int columnIndex, out long singleLookup))
@@ -8513,6 +8926,7 @@ public sealed class QueryPlanner
                 return false;
 
             lookupValue = singleLookup;
+            lookupPredicate = where;
             return true;
         }
 
@@ -8536,6 +8950,7 @@ public sealed class QueryPlanner
         if (selectedConjunctIndex < 0)
             return false;
 
+        lookupPredicate = conjuncts[selectedConjunctIndex];
         if (conjuncts.Count == 1)
             return true;
 
@@ -8601,6 +9016,9 @@ public sealed class QueryPlanner
 
         if (TryGetExternalTableRegistration(simpleRef.TableName, out var externalRegistration))
         {
+            if (PhysicalPlanCapture.IsActive)
+                return false;
+
             result = QueryResult.FromSyncScalar(DbValue.FromInteger(externalRegistration.RowCount), outputSchema);
             return true;
         }
@@ -8613,6 +9031,9 @@ public sealed class QueryPlanner
     private bool TryBuildSimpleSystemCatalogCountStarQuery(SelectStatement stmt, out QueryResult result)
     {
         result = null!;
+
+        if (PhysicalPlanCapture.IsActive)
+            return false;
 
         if (stmt.From is not SimpleTableRef simpleRef)
             return false;
@@ -9008,16 +9429,16 @@ public sealed class QueryPlanner
             {
                 var tableTree = _catalog.GetTableTree(simpleRef.TableName, _pager);
                 var serializer = GetReadSerializer(schema);
-                result = indexedLookupPlan.IsPrimaryKey
-                    ? new QueryResult(new ScalarAggregateLookupOperator(
+                IOperator aggregateLookup = indexedLookupPlan.IsPrimaryKey
+                    ? new ScalarAggregateLookupOperator(
                         tableTree,
                         indexedLookupPlan.LookupValue,
                         columnIndex,
                         func.FunctionName,
                         outputSchema,
                         isDistinct: func.IsDistinct,
-                        recordSerializer: serializer))
-                    : new QueryResult(new ScalarAggregateLookupOperator(
+                        recordSerializer: serializer)
+                    : new ScalarAggregateLookupOperator(
                         _catalog.GetIndexStore(indexedLookupPlan.Index!.IndexName, _pager),
                         tableTree,
                         indexedLookupPlan.LookupValue,
@@ -9025,7 +9446,11 @@ public sealed class QueryPlanner
                         func.FunctionName,
                         outputSchema,
                         isDistinct: func.IsDistinct,
-                        recordSerializer: serializer));
+                        recordSerializer: serializer);
+                result = new QueryResult(
+                    AnnotatePhysicalPredicate(
+                        aggregateLookup,
+                        indexedLookupPlan.Predicate));
                 return true;
             }
         }
@@ -9039,7 +9464,8 @@ public sealed class QueryPlanner
                 ?? TryBuildOrderedTextIndexRangeScan(simpleRef.TableName, stmt.Where, schema, out indexedRemainingWhere);
         }
 
-        if (indexedSource is IEncodedPayloadSource &&
+        if (indexedSource is not null &&
+            PhysicalPlanCapture.Unwrap(indexedSource) is IEncodedPayloadSource &&
             ShouldUseIndexedPayloadAggregateFastPath(simpleRef.TableName, schema, indexedSource))
         {
             TrySetDecodedColumnIndices(indexedSource, Array.Empty<int>());
@@ -9149,6 +9575,7 @@ public sealed class QueryPlanner
 
     private bool ShouldUseIndexedPayloadAggregateFastPath(string tableName, TableSchema schema, IOperator source)
     {
+        source = PhysicalPlanCapture.Unwrap(source);
         if (source is not IndexOrderedScanOperator)
             return true;
 
@@ -9336,7 +9763,8 @@ public sealed class QueryPlanner
 
     private bool TryBuildTableRowCountQuery(string tableName, ColumnDefinition[] outputSchema, out QueryResult result)
     {
-        if (TryGetExactTableRowCount(tableName, out long rowCount))
+        if (!PhysicalPlanCapture.IsActive &&
+            TryGetExactTableRowCount(tableName, out long rowCount))
         {
             result = QueryResult.FromSyncLookup([DbValue.FromInteger(rowCount)], outputSchema);
             return true;
@@ -9961,14 +10389,20 @@ public sealed class QueryPlanner
 
         int deleted = 0;
         var mutationContext = new ForeignKeyMutationContext();
-        foreach (var (rowId, _) in rowsToDelete)
+        ForeignKeyMutationRowHandle[] rowHandles = rowsToDelete
+            .Select(row => CaptureForeignKeyMutationRow(
+                mutationContext,
+                stmt.TableName,
+                row.rowId))
+            .ToArray();
+        for (int rowIndex = 0; rowIndex < rowHandles.Length; rowIndex++)
         {
             if (await DeleteRowWithForeignKeysAsync(
                     stmt.TableName,
                     schema,
                     tree,
                     indexes,
-                    rowId,
+                    rowHandles[rowIndex],
                     mutationContext,
                     depth: 0,
                     ct))
@@ -9993,13 +10427,16 @@ public sealed class QueryPlanner
         bool hasRemainingSubqueries = ContainsSubqueries(stmt);
 
         var schema = GetSchema(stmt.TableName);
-        foreach (SetClause set in stmt.SetClauses)
+        var setColumnIndices = new int[stmt.SetClauses.Count];
+        for (int setIndex = 0; setIndex < stmt.SetClauses.Count; setIndex++)
         {
+            SetClause set = stmt.SetClauses[setIndex];
             int columnIndex = schema.GetColumnIndex(set.ColumnName);
             if (columnIndex < 0)
                 throw new CSharpDbException(ErrorCode.ColumnNotFound, $"Column '{set.ColumnName}' not found.");
             if (schema.Columns[columnIndex].IsRowVersion)
                 ThrowExplicitRowVersionAssignment(schema.Columns[columnIndex]);
+            setColumnIndices[setIndex] = columnIndex;
         }
 
         var tree = _catalog.GetTableTree(stmt.TableName, _pager);
@@ -10024,12 +10461,11 @@ public sealed class QueryPlanner
         {
             var oldRow = row;
             var newRow = (DbValue[])row.Clone();
-            foreach (var set in stmt.SetClauses)
+            for (int setIndex = 0; setIndex < stmt.SetClauses.Count; setIndex++)
             {
-                int colIdx = schema.GetColumnIndex(set.ColumnName);
-                if (colIdx < 0)
-                    throw new CSharpDbException(ErrorCode.ColumnNotFound, $"Column '{set.ColumnName}' not found.");
-                newRow[colIdx] = hasRemainingSubqueries && ContainsSubqueries(set.Value)
+                SetClause set = stmt.SetClauses[setIndex];
+                int columnIndex = setColumnIndices[setIndex];
+                newRow[columnIndex] = hasRemainingSubqueries && ContainsSubqueries(set.Value)
                     ? await EvaluateExpressionWithSubqueriesAsync(
                         set.Value,
                         row,
@@ -10039,12 +10475,16 @@ public sealed class QueryPlanner
                     : ExpressionEvaluator.Evaluate(set.Value, row, schema, _functions);
             }
 
-            if (hasIntegerPrimaryKey && newRow[pkIdx].IsNull)
-                newRow[pkIdx] = DbValue.FromInteger(rowId);
-            if (hasIntegerPrimaryKey && newRow[pkIdx].Type != DbType.Integer)
-                throw new CSharpDbException(ErrorCode.TypeMismatch, "INTEGER PRIMARY KEY must remain an integer value.");
-            AdvanceRowVersion(schema, oldRow, newRow);
-            RowConstraintValidator.ValidateRow(schema, newRow);
+            if (!hasOutgoingForeignKeys && !hasIncomingForeignKeys)
+            {
+                if (hasIntegerPrimaryKey && newRow[pkIdx].IsNull)
+                    newRow[pkIdx] = DbValue.FromInteger(rowId);
+                if (hasIntegerPrimaryKey && newRow[pkIdx].Type != DbType.Integer)
+                    throw new CSharpDbException(ErrorCode.TypeMismatch, "INTEGER PRIMARY KEY must remain an integer value.");
+                AdvanceRowVersion(schema, oldRow, newRow);
+                RowConstraintValidator.ValidateRow(schema, newRow);
+            }
+
             updates.Add((rowId, oldRow, newRow));
         }
 
@@ -10105,8 +10545,43 @@ public sealed class QueryPlanner
         }
 
         var mutationContext = new ForeignKeyMutationContext();
-        foreach (var (rowId, oldRow, newRow) in updates)
+        var appliedUpdates =
+            new List<(long rowId, DbValue[] oldRow, DbValue[] newRow)>(updates.Count);
+        ForeignKeyMutationRowHandle[] rowHandles = updates
+            .Select(update => CaptureForeignKeyMutationRow(
+                mutationContext,
+                stmt.TableName,
+                update.rowId))
+            .ToArray();
+        for (int updateIndex = 0; updateIndex < updates.Count; updateIndex++)
         {
+            ForeignKeyMutationRowHandle rowHandle = rowHandles[updateIndex];
+            if (!TryGetForeignKeyMutationRowId(rowHandle, out long rowId))
+                continue;
+
+            DbValue[] plannedNewRow = updates[updateIndex].newRow;
+            DbValue[]? persistedRow =
+                await TryLoadRowAsync(stmt.TableName, schema, rowId, ct);
+            if (persistedRow is null)
+                continue;
+
+            DbValue[] oldRow = persistedRow;
+            var newRow = (DbValue[])oldRow.Clone();
+            for (int setIndex = 0; setIndex < setColumnIndices.Length; setIndex++)
+            {
+                int columnIndex = setColumnIndices[setIndex];
+                newRow[columnIndex] = plannedNewRow[columnIndex];
+            }
+
+            if (hasIntegerPrimaryKey && newRow[pkIdx].IsNull)
+                newRow[pkIdx] = DbValue.FromInteger(rowId);
+            if (hasIntegerPrimaryKey && newRow[pkIdx].Type != DbType.Integer)
+                throw new CSharpDbException(
+                    ErrorCode.TypeMismatch,
+                    "INTEGER PRIMARY KEY must remain an integer value.");
+            AdvanceRowVersion(schema, oldRow, newRow);
+            RowConstraintValidator.ValidateRow(schema, newRow);
+
             // BEFORE UPDATE triggers
             await FireTriggersAsync(stmt.TableName, TriggerTiming.Before, TriggerEvent.Update, oldRow, newRow, schema, ct);
             await RefreshRowVersionAfterBeforeTriggersAsync(
@@ -10115,6 +10590,18 @@ public sealed class QueryPlanner
                 rowId,
                 newRow,
                 ct);
+
+            List<PendingForeignKeyUpdate> pendingUpdates =
+                await PrepareIncomingForeignKeyUpdatesAsync(
+                    stmt.TableName,
+                    schema,
+                    rowHandle,
+                    oldRow,
+                    newRow,
+                    mutationContext,
+                    depth: 0,
+                    ct);
+            RowConstraintValidator.ValidateRow(schema, newRow);
 
             long newRowId = rowId;
             if (hasIntegerPrimaryKey)
@@ -10131,7 +10618,6 @@ public sealed class QueryPlanner
                 newRowId = newRow[pkIdx].AsInteger;
             }
 
-            await ValidateIncomingForeignKeyUpdatesAsync(stmt.TableName, schema, rowId, oldRow, newRow, ct);
             await ValidateOutgoingForeignKeysAsync(stmt.TableName, schema, oldRow, newRow, ct);
 
             await tree.DeleteAsync(rowId, ct);
@@ -10140,24 +10626,41 @@ public sealed class QueryPlanner
 
             // Maintain indexes: remove old entries, add new entries, and update rowid payloads.
             await UpdateAllIndexesAsync(indexes, schema, oldRow, newRow, rowId, newRowId, ct);
+            MoveForeignKeyMutationRow(
+                mutationContext,
+                rowHandle,
+                rowId,
+                newRowId);
             mutationContext.TouchedTables.Add(stmt.TableName);
             mutationContext.StaleTables.Add(stmt.TableName);
 
+            await ApplyPendingForeignKeyUpdatesAsync(
+                pendingUpdates,
+                mutationContext,
+                depth: 0,
+                ct);
+
             // AFTER UPDATE triggers
             await FireTriggersAsync(stmt.TableName, TriggerTiming.After, TriggerEvent.Update, oldRow, newRow, schema, ct);
+            appliedUpdates.Add((rowId, oldRow, newRow));
         }
 
-        await PersistForeignKeyMutationContextAsync(mutationContext, stmt.TableName, updates.Count > 0, persistRootChanges: true, ct);
+        await PersistForeignKeyMutationContextAsync(
+            mutationContext,
+            stmt.TableName,
+            appliedUpdates.Count > 0,
+            persistRootChanges: true,
+            ct);
 
         byte[]? generatedRowVersionWithForeignKeys =
             await GetSinglePersistedGeneratedRowVersionAsync(
             stmt.TableName,
             schema,
-            updates,
+            appliedUpdates,
             hasIntegerPrimaryKey,
             ct);
         return QueryResult.FromRowsAffected(
-            updates.Count,
+            appliedUpdates.Count,
             generatedRowVersionWithForeignKeys);
     }
 
@@ -10205,6 +10708,7 @@ public sealed class QueryPlanner
         if (indexedSource != null)
         {
             Interlocked.Increment(ref _indexedMutationTargetCollectionCount);
+            indexedSource = PhysicalPlanCapture.WrapRootIfActive(indexedSource);
 
             int? capacityHint = indexedSource is IEstimatedRowCountProvider estimated &&
                                 estimated.EstimatedRowCount is int estimatedRowCount
@@ -10249,8 +10753,9 @@ public sealed class QueryPlanner
         var scannedRows = scanCapacityHint.HasValue
             ? new List<(long rowId, DbValue[] row)>(scanCapacityHint.Value)
             : new List<(long rowId, DbValue[] row)>();
-        var scan = new TableScanOperator(tree, schema, GetReadSerializer(schema), scanCapacityHint);
-        ApplyLogicalPredicateReadScope(tableName, where, schema, scan);
+        var tableScan = new TableScanOperator(tree, schema, GetReadSerializer(schema), scanCapacityHint);
+        ApplyLogicalPredicateReadScope(tableName, where, schema, tableScan);
+        IOperator scan = PhysicalPlanCapture.WrapRootIfActive(tableScan);
         await scan.OpenAsync(ct);
         try
         {
@@ -10270,7 +10775,7 @@ public sealed class QueryPlanner
                         continue;
                 }
 
-                scannedRows.Add((scan.CurrentRowId, (DbValue[])scan.Current.Clone()));
+                scannedRows.Add((tableScan.CurrentRowId, (DbValue[])scan.Current.Clone()));
             }
         }
         finally
@@ -10283,6 +10788,7 @@ public sealed class QueryPlanner
 
     private static bool TryGetCurrentRowId(IOperator source, out long rowId)
     {
+        source = PhysicalPlanCapture.Unwrap(source);
         switch (source)
         {
             case TableScanOperator tableScan:
@@ -10319,7 +10825,8 @@ public sealed class QueryPlanner
         var rowsToDelete = deleteCapacityHint.HasValue
             ? new List<(long rowId, DbValue[] row)>(deleteCapacityHint.Value)
             : new List<(long rowId, DbValue[] row)>();
-        var scan = new TableScanOperator(tree, schema, GetReadSerializer(schema), deleteCapacityHint);
+        var tableScan = new TableScanOperator(tree, schema, GetReadSerializer(schema), deleteCapacityHint);
+        IOperator scan = PhysicalPlanCapture.WrapRootIfActive(tableScan);
         await scan.OpenAsync(ct);
         try
         {
@@ -10339,7 +10846,7 @@ public sealed class QueryPlanner
                         continue;
                 }
 
-                rowsToDelete.Add((scan.CurrentRowId, (DbValue[])scan.Current.Clone()));
+                rowsToDelete.Add((tableScan.CurrentRowId, (DbValue[])scan.Current.Clone()));
             }
         }
         finally
@@ -10382,7 +10889,8 @@ public sealed class QueryPlanner
         var updates = updateCapacityHint.HasValue
             ? new List<(long rowId, DbValue[] oldRow, DbValue[] newRow)>(updateCapacityHint.Value)
             : new List<(long rowId, DbValue[] oldRow, DbValue[] newRow)>();
-        var scan = new TableScanOperator(tree, schema, GetReadSerializer(schema), updateCapacityHint);
+        var tableScan = new TableScanOperator(tree, schema, GetReadSerializer(schema), updateCapacityHint);
+        IOperator scan = PhysicalPlanCapture.WrapRootIfActive(tableScan);
         await scan.OpenAsync(ct);
         try
         {
@@ -10420,11 +10928,11 @@ public sealed class QueryPlanner
                 }
 
                 if (hasIntegerPrimaryKey && newRow[pkIdx].IsNull)
-                    newRow[pkIdx] = DbValue.FromInteger(scan.CurrentRowId);
+                    newRow[pkIdx] = DbValue.FromInteger(tableScan.CurrentRowId);
                 if (hasIntegerPrimaryKey && newRow[pkIdx].Type != DbType.Integer)
                     throw new CSharpDbException(ErrorCode.TypeMismatch, "INTEGER PRIMARY KEY must remain an integer value.");
                 RowConstraintValidator.ValidateRow(schema, newRow);
-                updates.Add((scan.CurrentRowId, oldRow, newRow));
+                updates.Add((tableScan.CurrentRowId, oldRow, newRow));
             }
         }
         finally
@@ -10748,14 +11256,21 @@ public sealed class QueryPlanner
 
         int cascadingDeleted = 0;
         var mutationContext = new ForeignKeyMutationContext();
-        foreach (HygieneRow rowToDelete in rowsToDelete.OrderBy(row => row.RowId))
+        ForeignKeyMutationRowHandle[] rowHandles = rowsToDelete
+            .OrderBy(row => row.RowId)
+            .Select(row => CaptureForeignKeyMutationRow(
+                mutationContext,
+                tableName,
+                row.RowId))
+            .ToArray();
+        for (int rowIndex = 0; rowIndex < rowHandles.Length; rowIndex++)
         {
             if (await DeleteRowWithForeignKeysAsync(
                     tableName,
                     schema,
                     tree,
                     indexes,
-                    rowToDelete.RowId,
+                    rowHandles[rowIndex],
                     mutationContext,
                     depth: 0,
                     ct))
@@ -10786,10 +11301,44 @@ public sealed class QueryPlanner
         var mutationContext = hasOutgoingForeignKeys || hasIncomingForeignKeys
             ? new ForeignKeyMutationContext()
             : null;
+        ForeignKeyMutationRowHandle[]? rowHandles = mutationContext is null
+            ? null
+            : updates
+                .Select(update => CaptureForeignKeyMutationRow(
+                    mutationContext,
+                    tableName,
+                    update.rowId))
+                .ToArray();
         int updated = 0;
 
-        foreach (var (rowId, oldRow, newRow) in updates)
+        for (int updateIndex = 0; updateIndex < updates.Count; updateIndex++)
         {
+            (long plannedRowId, DbValue[] plannedOldRow, DbValue[] plannedNewRow) =
+                updates[updateIndex];
+            long rowId = plannedRowId;
+            DbValue[] oldRow = plannedOldRow;
+            DbValue[] newRow = plannedNewRow;
+            ForeignKeyMutationRowHandle? rowHandle = null;
+            if (mutationContext is not null)
+            {
+                rowHandle = rowHandles![updateIndex];
+                if (!TryGetForeignKeyMutationRowId(rowHandle, out rowId))
+                    continue;
+
+                DbValue[]? persistedRow =
+                    await TryLoadRowAsync(tableName, schema, rowId, ct);
+                if (persistedRow is null)
+                    continue;
+
+                oldRow = persistedRow;
+                newRow = (DbValue[])oldRow.Clone();
+                for (int columnIndex = 0; columnIndex < schema.Columns.Count; columnIndex++)
+                {
+                    if (plannedOldRow[columnIndex] != plannedNewRow[columnIndex])
+                        newRow[columnIndex] = plannedNewRow[columnIndex];
+                }
+            }
+
             AdvanceRowVersion(schema, oldRow, newRow);
             RowConstraintValidator.ValidateRow(schema, newRow);
             await FireTriggersAsync(tableName, TriggerTiming.Before, TriggerEvent.Update, oldRow, newRow, schema, ct);
@@ -10799,6 +11348,22 @@ public sealed class QueryPlanner
                 rowId,
                 newRow,
                 ct);
+
+            List<PendingForeignKeyUpdate>? pendingUpdates = null;
+            if (mutationContext is not null)
+            {
+                pendingUpdates =
+                    await PrepareIncomingForeignKeyUpdatesAsync(
+                        tableName,
+                        schema,
+                        rowHandle!,
+                        oldRow,
+                        newRow,
+                        mutationContext,
+                        depth: 0,
+                        ct);
+                RowConstraintValidator.ValidateRow(schema, newRow);
+            }
 
             long newRowId = rowId;
             if (hasIntegerPrimaryKey)
@@ -10814,7 +11379,6 @@ public sealed class QueryPlanner
 
             if (mutationContext is not null)
             {
-                await ValidateIncomingForeignKeyUpdatesAsync(tableName, schema, rowId, oldRow, newRow, ct);
                 await ValidateOutgoingForeignKeysAsync(tableName, schema, oldRow, newRow, ct);
             }
 
@@ -10825,8 +11389,18 @@ public sealed class QueryPlanner
 
             if (mutationContext is not null)
             {
+                MoveForeignKeyMutationRow(
+                    mutationContext,
+                    rowHandle!,
+                    rowId,
+                    newRowId);
                 mutationContext.TouchedTables.Add(tableName);
                 mutationContext.StaleTables.Add(tableName);
+                await ApplyPendingForeignKeyUpdatesAsync(
+                    pendingUpdates!,
+                    mutationContext,
+                    depth: 0,
+                    ct);
             }
 
             await FireTriggersAsync(tableName, TriggerTiming.After, TriggerEvent.Update, oldRow, newRow, schema, ct);
@@ -11375,10 +11949,12 @@ public sealed class QueryPlanner
                     TryCollectLocalJoinLeafPredicates(outerWhere, simple, qualifiedTempSchema, out var tempLocalConjuncts) &&
                     CombineConjuncts(tempLocalConjuncts) is { } tempLocalPredicate)
                 {
-                    tempOp = new FilterOperator(
-                        tempOp,
-                        GetOrCompileSpanExpression(tempLocalPredicate, qualifiedTempSchema),
-                        TryCreateFilterBatchPlan(tempOp, tempLocalPredicate, qualifiedTempSchema));
+                    tempOp = AnnotatePhysicalPredicate(
+                        new FilterOperator(
+                            tempOp,
+                            GetOrCompileSpanExpression(tempLocalPredicate, qualifiedTempSchema),
+                            TryCreateFilterBatchPlan(tempOp, tempLocalPredicate, qualifiedTempSchema)),
+                        tempLocalPredicate);
                 }
 
                 return (tempOp, qualifiedTempSchema);
@@ -11438,10 +12014,14 @@ public sealed class QueryPlanner
                     }
 
                     if (viewStmt.Where != null)
-                        viewOp = new FilterOperator(
-                            viewOp,
-                            GetOrCompileSpanExpression(viewStmt.Where, viewSchema),
-                            TryCreateFilterBatchPlan(viewOp, viewStmt.Where, viewSchema));
+                    {
+                        viewOp = AnnotatePhysicalPredicate(
+                            new FilterOperator(
+                                viewOp,
+                                GetOrCompileSpanExpression(viewStmt.Where, viewSchema),
+                                TryCreateFilterBatchPlan(viewOp, viewStmt.Where, viewSchema)),
+                            viewStmt.Where);
+                    }
 
                     if (hasAggregates)
                     {
@@ -11591,10 +12171,12 @@ public sealed class QueryPlanner
 
                 if (remainingLocalPredicate != null)
                 {
-                    op = new FilterOperator(
-                        op,
-                        GetOrCompileSpanExpression(remainingLocalPredicate, qualifiedTableSchema),
-                        TryCreateFilterBatchPlan(op, remainingLocalPredicate, qualifiedTableSchema));
+                    op = AnnotatePhysicalPredicate(
+                        new FilterOperator(
+                            op,
+                            GetOrCompileSpanExpression(remainingLocalPredicate, qualifiedTableSchema),
+                            TryCreateFilterBatchPlan(op, remainingLocalPredicate, qualifiedTableSchema)),
+                        remainingLocalPredicate);
                 }
             }
 
@@ -11709,6 +12291,10 @@ public sealed class QueryPlanner
                         _functions);
                 }
 
+                swappedJoinOp = AnnotatePhysicalPredicate(
+                    swappedJoinOp,
+                    join.Condition);
+
                 // Swapped execution produces [original right | original left];
                 // reorder to SQL-visible [original left | original right].
                 var projectionMap = BuildSwappedJoinProjectionMap(
@@ -11733,7 +12319,11 @@ public sealed class QueryPlanner
                 outerWhere,
                 out var externalIndexNestedJoinOp))
             {
-                return (externalIndexNestedJoinOp!, compositeSchema);
+                return (
+                    AnnotatePhysicalPredicate(
+                        externalIndexNestedJoinOp!,
+                        join.Condition),
+                    compositeSchema);
             }
 
             Func<NumericRelationshipIndexJoinOperator>? deferredNumericRelationshipJoinFactory = null;
@@ -11752,7 +12342,13 @@ public sealed class QueryPlanner
                 out var numericRelationshipCoveredColumns))
             {
                 if (RelationshipJoinMode == NumericRelationshipJoinMode.Force)
-                    return (numericRelationshipJoinFactory!(), compositeSchema);
+                {
+                    return (
+                        AnnotatePhysicalPredicate(
+                            numericRelationshipJoinFactory!(),
+                            join.Condition),
+                        compositeSchema);
+                }
 
                 deferredNumericRelationshipJoinFactory = numericRelationshipJoinFactory;
                 deferredNumericRelationshipCoveredColumns = numericRelationshipCoveredColumns;
@@ -11769,11 +12365,16 @@ public sealed class QueryPlanner
                 adaptiveLease,
                 out var indexNestedJoinOp))
             {
+                IOperator annotatedJoin = AnnotatePhysicalPredicate(
+                    indexNestedJoinOp!,
+                    join.Condition);
                 return (
-                    WrapProjectionGatedNumericRelationshipJoin(
-                        indexNestedJoinOp!,
-                        deferredNumericRelationshipJoinFactory,
-                        deferredNumericRelationshipCoveredColumns),
+                    AnnotatePhysicalPredicate(
+                        WrapProjectionGatedNumericRelationshipJoin(
+                            annotatedJoin,
+                            deferredNumericRelationshipJoinFactory,
+                            deferredNumericRelationshipCoveredColumns),
+                        join.Condition),
                     compositeSchema);
             }
 
@@ -11787,11 +12388,16 @@ public sealed class QueryPlanner
                 adaptiveLease,
                 out var hashJoinOp))
             {
+                IOperator annotatedJoin = AnnotatePhysicalPredicate(
+                    hashJoinOp!,
+                    join.Condition);
                 return (
-                    WrapProjectionGatedNumericRelationshipJoin(
-                        hashJoinOp!,
-                        deferredNumericRelationshipJoinFactory,
-                        deferredNumericRelationshipCoveredColumns),
+                    AnnotatePhysicalPredicate(
+                        WrapProjectionGatedNumericRelationshipJoin(
+                            annotatedJoin,
+                            deferredNumericRelationshipJoinFactory,
+                            deferredNumericRelationshipCoveredColumns),
+                        join.Condition),
                     compositeSchema);
             }
 
@@ -11801,12 +12407,17 @@ public sealed class QueryPlanner
                 leftOp, rightOp, join.JoinType, join.Condition,
                 compositeSchema, leftSchema.Columns.Count, rightSchema.Columns.Count,
                 estimatedOutputRowCount, rightRowCapacityHint, _functions);
+            IOperator annotatedNestedLoopJoin = AnnotatePhysicalPredicate(
+                joinOp,
+                join.Condition);
 
             return (
-                WrapProjectionGatedNumericRelationshipJoin(
-                    joinOp,
-                    deferredNumericRelationshipJoinFactory,
-                    deferredNumericRelationshipCoveredColumns),
+                AnnotatePhysicalPredicate(
+                    WrapProjectionGatedNumericRelationshipJoin(
+                        annotatedNestedLoopJoin,
+                        deferredNumericRelationshipJoinFactory,
+                        deferredNumericRelationshipCoveredColumns),
+                    join.Condition),
                 compositeSchema);
         }
 
@@ -14458,7 +15069,8 @@ public sealed class QueryPlanner
 
     /// <summary>
     /// Attempts to use a point/equality lookup for a WHERE clause.
-    /// Supports extracting an integer equality term from AND-conjunct predicates.
+    /// Supports extracting a compatible indexed equality term from
+    /// AND-conjunct predicates.
     /// remaining is set to residual terms that were not consumed by the lookup.
     /// </summary>
     private IOperator? TryBuildIndexScan(string tableName, Expression where, TableSchema schema, out Expression? remaining)
@@ -14523,6 +15135,11 @@ public sealed class QueryPlanner
         if (hasCompositeCandidate &&
             (!hasSelectedCandidate || (compositeIndex!.IsUnique ? 1 : 2) < selectedCandidate.Rank))
         {
+            Expression? lookupPredicate = BuildLookupKeyTerms(
+                conjuncts,
+                schema,
+                compositeColumnIndices!,
+                compositeKeyComponents!);
             remaining = BuildResidualTermsExcludingLookupKeyTerms(
                 conjuncts,
                 schema,
@@ -14534,7 +15151,8 @@ public sealed class QueryPlanner
                 LookupValue: compositeLookupKey,
                 KeyColumnIndices: compositeColumnIndices,
                 KeyComponents: compositeKeyComponents,
-                EstimatedRows: compositeIndex!.IsUnique ? 1 : null);
+                EstimatedRows: compositeIndex!.IsUnique ? 1 : null,
+                Predicate: lookupPredicate);
             return true;
         }
 
@@ -14548,7 +15166,8 @@ public sealed class QueryPlanner
             selectedCandidate.KeyComponents,
             selectedCandidate.EstimatedRows.HasValue
                 ? ToCapacityHint(selectedCandidate.EstimatedRows.Value)
-                : null);
+                : null,
+            conjuncts[selectedConjunctIndex]);
 
         if (selectedCandidate.RequiresResidualPredicate)
         {
@@ -14592,7 +15211,8 @@ public sealed class QueryPlanner
         long LookupValue,
         int[]? KeyColumnIndices,
         DbValue[]? KeyComponents,
-        int? EstimatedRows);
+        int? EstimatedRows,
+        Expression? Predicate);
 
     private bool TryPickLookupCandidate(
         string tableName,
@@ -14817,7 +15437,7 @@ public sealed class QueryPlanner
                 }
 
                 DbType colType = schema.Columns[colIndex].Type;
-                if (colType is not (DbType.Integer or DbType.Text))
+                if (colType is not (DbType.Integer or DbType.Real or DbType.Text))
                 {
                     matches = false;
                     break;
@@ -14829,7 +15449,10 @@ public sealed class QueryPlanner
                     break;
                 }
 
-                if (literal.Type != colType)
+                bool hasCompatibleLiteral = colType == DbType.Real
+                    ? literal.Type is DbType.Integer or DbType.Real
+                    : literal.Type == colType;
+                if (!hasCompatibleLiteral)
                 {
                     matches = false;
                     break;
@@ -14900,15 +15523,17 @@ public sealed class QueryPlanner
         TableSchema schema,
         LookupPlan lookupPlan)
     {
-        return BuildLookupOperator(
-            tableName,
-            schema,
-            lookupPlan.IsPrimaryKey,
-            lookupPlan.Index,
-            lookupPlan.LookupValue,
-            lookupPlan.KeyColumnIndices,
-            lookupPlan.KeyComponents,
-            lookupPlan.EstimatedRows);
+        return AnnotatePhysicalPredicate(
+            BuildLookupOperator(
+                tableName,
+                schema,
+                lookupPlan.IsPrimaryKey,
+                lookupPlan.Index,
+                lookupPlan.LookupValue,
+                lookupPlan.KeyColumnIndices,
+                lookupPlan.KeyComponents,
+                lookupPlan.EstimatedRows),
+            lookupPlan.Predicate);
     }
 
     private IOperator BuildLookupOperator(
@@ -15064,10 +15689,13 @@ public sealed class QueryPlanner
             return false;
 
         DbType columnType = schema.Columns[resolvedIndex].Type;
-        if (columnType is not (DbType.Integer or DbType.Text))
+        if (columnType is not (DbType.Integer or DbType.Real or DbType.Text))
             return false;
 
-        if (literal.Type != columnType)
+        bool hasCompatibleLiteral = columnType == DbType.Real
+            ? literal.Type is DbType.Integer or DbType.Real
+            : literal.Type == columnType;
+        if (!hasCompatibleLiteral)
             return false;
 
         columnIndex = resolvedIndex;
@@ -15118,7 +15746,18 @@ public sealed class QueryPlanner
             indexColumnPosition,
             schemaColumnIndex);
 
-        return CollationSupport.NormalizeIndexValue(literal, effectiveCollation);
+        if (IndexMaintenanceHelper.TryNormalizeLookupComponent(
+                literal,
+                schema.Columns[schemaColumnIndex].Type,
+                effectiveCollation,
+                out DbValue normalized))
+        {
+            return normalized;
+        }
+
+        throw new CSharpDbException(
+            ErrorCode.TypeMismatch,
+            $"Literal of type {literal.Type} cannot use index '{index.IndexName}' on {schema.Columns[schemaColumnIndex].Type} column '{schema.TableName}.{schema.Columns[schemaColumnIndex].Name}'.");
     }
 
     private bool TryFindDirectIntegerIndexForColumn(
@@ -15191,7 +15830,7 @@ public sealed class QueryPlanner
         if (stmt.OrderBy is not { Count: 1 })
             return false;
 
-        if (currentSource is not TableScanOperator)
+        if (PhysicalPlanCapture.Unwrap(currentSource) is not TableScanOperator)
             return false;
 
         if (_cteData != null && _cteData.ContainsKey(tableRef.TableName))
@@ -15227,7 +15866,7 @@ public sealed class QueryPlanner
         int pkIdx = schema.PrimaryKeyColumnIndex;
         if (orderColumn.Type == DbType.Integer &&
             pkIdx == orderColumnIndex &&
-            currentSource is TableScanOperator)
+            PhysicalPlanCapture.Unwrap(currentSource) is TableScanOperator)
         {
             return true;
         }
@@ -15357,13 +15996,21 @@ public sealed class QueryPlanner
         IOperator op = indexOp;
         List<PushdownPredicateSpec>? pushedPredicates = null;
         if (remainingWhere != null &&
-            TryExtractPushdownPredicates(remainingWhere, schema, out var extractedPredicates, out var residualWhere))
+            TryExtractPushdownPredicates(
+                remainingWhere,
+                schema,
+                out var extractedPredicates,
+                out var residualWhere,
+                out var pushedPredicate))
         {
             pushedPredicates = extractedPredicates;
             remainingWhere = RetainPushdownNullResidual(remainingWhere, residualWhere, schema);
 
-            if (op is IPreDecodeFilterSupport preDecodeFilterTarget)
+            if (PhysicalPlanCapture.Unwrap(op) is IPreDecodeFilterSupport preDecodeFilterTarget)
+            {
                 ApplyPushdownPredicates(preDecodeFilterTarget, pushedPredicates);
+                _ = AnnotatePhysicalPredicate(op, pushedPredicate);
+            }
         }
 
         if (IsLoneStarProjection(stmt))
@@ -15378,10 +16025,14 @@ public sealed class QueryPlanner
             }
 
             if (remainingWhere != null)
-                op = new FilterOperator(
-                    op,
-                    GetOrCompileSpanExpression(remainingWhere, schema),
-                    TryCreateCachedFilterBatchPlan(stmt, SelectBatchPlanSlot.GeneralFilterOnly, op, remainingWhere, schema));
+            {
+                op = AnnotatePhysicalPredicate(
+                    new FilterOperator(
+                        op,
+                        GetOrCompileSpanExpression(remainingWhere, schema),
+                        TryCreateCachedFilterBatchPlan(stmt, SelectBatchPlanSlot.GeneralFilterOnly, op, remainingWhere, schema)),
+                    remainingWhere);
+            }
             result = CreateQueryResult(ApplyOffsetAndLimit(op, stmt.Offset, stmt.Limit));
             return true;
         }
@@ -15398,7 +16049,7 @@ public sealed class QueryPlanner
             }
 
             if (remainingWhere == null &&
-                op is IndexOrderedScanOperator orderedScan &&
+                PhysicalPlanCapture.Unwrap(op) is IndexOrderedScanOperator orderedScan &&
                 TryBuildCoveredOrderedIndexProjectionOperator(
                     orderedScan,
                     schema,
@@ -15411,7 +16062,7 @@ public sealed class QueryPlanner
             }
 
             if (remainingWhere == null &&
-                op is IndexScanOperator hashedLookup &&
+                PhysicalPlanCapture.Unwrap(op) is IndexScanOperator hashedLookup &&
                 TryBuildCoveredHashedIndexProjectionOperator(
                     hashedLookup,
                     schema,
@@ -15423,7 +16074,7 @@ public sealed class QueryPlanner
                 return true;
             }
 
-            if (indexOp is IEncodedPayloadSource &&
+            if (PhysicalPlanCapture.Unwrap(indexOp) is IEncodedPayloadSource &&
                 TryGetProjectionDecodeColumnIndices(stmt, schema, remainingWhere, includeOrderBy: false, out var decodeColumnIndices))
             {
                 var compactSchema = CreateCompactProjectionSchema(schema, decodeColumnIndices);
@@ -15446,7 +16097,10 @@ public sealed class QueryPlanner
                         compactProjectionIndices,
                         compactOutputCols);
                     if (remainingWhere != null)
+                    {
                         compactOp.SetPredicateEvaluator(GetOrCompileExpression(remainingWhere, compactSchema));
+                        _ = AnnotatePhysicalPredicate(compactOp, remainingWhere);
+                    }
                     if (batchPlan != null)
                     {
                         compactOp.SetBatchPlan(batchPlan);
@@ -15472,17 +16126,21 @@ public sealed class QueryPlanner
                 TrySetDecodedColumnUpperBound(op, maxCol);
 
             if (remainingWhere != null)
-                op = new FilterOperator(
-                    op,
-                    GetOrCompileSpanExpression(remainingWhere, schema),
-                    TryCreateCachedFilterBatchPlan(stmt, SelectBatchPlanSlot.GeneralFilterOnly, op, remainingWhere, schema));
+            {
+                op = AnnotatePhysicalPredicate(
+                    new FilterOperator(
+                        op,
+                        GetOrCompileSpanExpression(remainingWhere, schema),
+                        TryCreateCachedFilterBatchPlan(stmt, SelectBatchPlanSlot.GeneralFilterOnly, op, remainingWhere, schema)),
+                    remainingWhere);
+            }
 
             op = new ProjectionOperator(op, columnIndices, outputCols, schema);
             result = CreateQueryResult(ApplyOffsetAndLimit(op, stmt.Offset, stmt.Limit));
             return true;
         }
 
-        if (indexOp is IEncodedPayloadSource &&
+        if (PhysicalPlanCapture.Unwrap(indexOp) is IEncodedPayloadSource &&
             TryGetProjectionDecodeColumnIndices(stmt, schema, remainingWhere, includeOrderBy: false, out var expressionDecodeColumnIndices))
         {
             var compactSchema = CreateCompactProjectionSchema(schema, expressionDecodeColumnIndices);
@@ -15498,7 +16156,10 @@ public sealed class QueryPlanner
                 expressionOutputCols,
                 GetOrCompileExpressions(expressions, compactSchema));
             if (remainingWhere != null)
+            {
                 compactExpressionOp.SetPredicateEvaluator(GetOrCompileExpression(remainingWhere, compactSchema));
+                _ = AnnotatePhysicalPredicate(compactExpressionOp, remainingWhere);
+            }
             var compactBatchPlan = TryCreateCachedCompactBatchPlan(
                 stmt,
                 SelectBatchPlanSlot.GeneralExpressionProjection,
@@ -15529,7 +16190,7 @@ public sealed class QueryPlanner
     {
         result = null!;
 
-        if (!PreferSyncPointLookups ||
+        if (!CanUseSyncPointLookups ||
             stmt.Where == null ||
             !CanUseSyncIndexedLookupShortcut(stmt))
         {
@@ -15597,7 +16258,7 @@ public sealed class QueryPlanner
     {
         result = null!;
 
-        if (!PreferSyncPointLookups)
+        if (!CanUseSyncPointLookups)
         {
             return false;
         }
@@ -15952,7 +16613,12 @@ public sealed class QueryPlanner
             if (hasRowWindow)
             {
                 if (remainingWhere != null &&
-                    TryExtractPushdownPredicates(remainingWhere, schema, out var starExtractedPredicates, out var starResidualWhere))
+                    TryExtractPushdownPredicates(
+                        remainingWhere,
+                        schema,
+                        out var starExtractedPredicates,
+                        out var starResidualWhere,
+                        out _))
                 {
                     remainingWhere = RetainPushdownNullResidual(remainingWhere, starResidualWhere, schema);
                     var compactStarOp = BuildCompactSelectStarScanOperator(
@@ -15998,10 +16664,14 @@ public sealed class QueryPlanner
             }
 
             if (remainingWhere != null)
-                op = new FilterOperator(
-                    op,
-                    GetOrCompileSpanExpression(remainingWhere, schema),
-                    TryCreateCachedFilterBatchPlan(stmt, SelectBatchPlanSlot.FastSimpleFilterOnly, op, remainingWhere, schema));
+            {
+                op = AnnotatePhysicalPredicate(
+                    new FilterOperator(
+                        op,
+                        GetOrCompileSpanExpression(remainingWhere, schema),
+                        TryCreateCachedFilterBatchPlan(stmt, SelectBatchPlanSlot.FastSimpleFilterOnly, op, remainingWhere, schema)),
+                    remainingWhere);
+            }
 
             op = ApplyOffsetAndLimit(op, stmt.Offset, stmt.Limit);
             result = CreateQueryResult(op);
@@ -16010,7 +16680,12 @@ public sealed class QueryPlanner
 
         List<PushdownPredicateSpec>? pushedPredicates = null;
         if (remainingWhere != null &&
-            TryExtractPushdownPredicates(remainingWhere, schema, out var extractedPredicates, out var residualWhere))
+            TryExtractPushdownPredicates(
+                remainingWhere,
+                schema,
+                out var extractedPredicates,
+                out var residualWhere,
+                out _))
         {
             pushedPredicates = extractedPredicates;
             remainingWhere = RetainPushdownNullResidual(remainingWhere, residualWhere, schema);
@@ -16046,12 +16721,15 @@ public sealed class QueryPlanner
                 ApplyPushdownPredicates(compactOp, pushedPredicates);
 
             if (remainingWhere != null)
+            {
                 compactOp.SetPredicateEvaluator(GetOrCompileExpression(remainingWhere, compactSchema));
+            }
             if (batchPlan != null)
             {
                 compactOp.SetBatchPlan(batchPlan);
                 ApplyBatchPlanPreDecodeFilters(compactOp, batchPlan);
             }
+            _ = AnnotatePhysicalPredicate(compactOp, stmt.Where);
 
             result = CreateQueryResult(ApplyOffsetAndLimit(compactOp, stmt.Offset, stmt.Limit));
             return true;
@@ -16075,7 +16753,9 @@ public sealed class QueryPlanner
             ApplyPushdownPredicates(compactExpressionOp, pushedPredicates);
 
         if (remainingWhere != null)
+        {
             compactExpressionOp.SetPredicateEvaluator(GetOrCompileExpression(remainingWhere, compactSchema));
+        }
         var compactBatchPlan = TryCreateCachedCompactBatchPlan(
             stmt,
             SelectBatchPlanSlot.FastSimpleExpressionProjection,
@@ -16087,6 +16767,7 @@ public sealed class QueryPlanner
             compactExpressionOp.SetBatchPlan(compactBatchPlan);
             ApplyBatchPlanPreDecodeFilters(compactExpressionOp, compactBatchPlan);
         }
+        _ = AnnotatePhysicalPredicate(compactExpressionOp, stmt.Where);
 
         result = CreateQueryResult(ApplyOffsetAndLimit(compactExpressionOp, stmt.Offset, stmt.Limit));
         return true;
@@ -16126,6 +16807,7 @@ public sealed class QueryPlanner
                 ApplyBatchPlanPreDecodeFilters(compactOp, batchPlan);
             }
         }
+        _ = AnnotatePhysicalPredicate(compactOp, logicalReadWhere);
 
         return compactOp;
     }
@@ -17190,12 +17872,18 @@ public sealed class QueryPlanner
     {
         remaining = where;
 
-        if (op is not IPreDecodeFilterSupport preDecodeFilterTarget)
+        if (PhysicalPlanCapture.Unwrap(op) is not IPreDecodeFilterSupport preDecodeFilterTarget)
             return false;
 
-        if (TryExtractPushdownPredicates(where, schema, out var predicates, out var residual))
+        if (TryExtractPushdownPredicates(
+                where,
+                schema,
+                out var predicates,
+                out var residual,
+                out var pushedPredicate))
         {
             ApplyPushdownPredicates(preDecodeFilterTarget, predicates);
+            _ = AnnotatePhysicalPredicate(op, pushedPredicate);
             remaining = residual;
             return true;
         }
@@ -17207,10 +17895,12 @@ public sealed class QueryPlanner
         Expression where,
         TableSchema schema,
         out List<PushdownPredicateSpec> predicates,
-        out Expression? remaining)
+        out Expression? remaining,
+        out Expression? pushed)
     {
         predicates = [];
         remaining = where;
+        pushed = null;
 
         if (where is IsNullExpression singleNull &&
             TryGetPushdownNullCheck(singleNull, schema, out int nullColumnIndex))
@@ -17219,6 +17909,7 @@ public sealed class QueryPlanner
                 nullColumnIndex,
                 singleNull.Negated ? PreDecodeFilterKind.IsNotNull : PreDecodeFilterKind.IsNull));
             remaining = null;
+            pushed = where;
             return true;
         }
 
@@ -17228,6 +17919,7 @@ public sealed class QueryPlanner
         {
             predicates.Add(new PushdownPredicateSpec(columnIndex, opToApply, literal));
             remaining = null;
+            pushed = where;
             return true;
         }
 
@@ -17238,6 +17930,7 @@ public sealed class QueryPlanner
         CollectAndConjuncts(where, conjuncts);
 
         var residualTerms = new List<Expression>(conjuncts.Count);
+        var pushedTerms = new List<Expression>(conjuncts.Count);
 
         for (int i = 0; i < conjuncts.Count; i++)
         {
@@ -17247,12 +17940,14 @@ public sealed class QueryPlanner
                 predicates.Add(new PushdownPredicateSpec(
                     nullCheckColumnIndex,
                     isNull.Negated ? PreDecodeFilterKind.IsNotNull : PreDecodeFilterKind.IsNull));
+                pushedTerms.Add(conjuncts[i]);
             }
             else if (conjuncts[i] is BinaryExpression bin &&
                 IsPushdownComparison(bin.Op) &&
                 TryGetPushdownOperands(bin, schema, out int candidateColumnIndex, out BinaryOp candidateOp, out DbValue candidateLiteral))
             {
                 predicates.Add(new PushdownPredicateSpec(candidateColumnIndex, candidateOp, candidateLiteral));
+                pushedTerms.Add(conjuncts[i]);
             }
             else
             {
@@ -17266,6 +17961,7 @@ public sealed class QueryPlanner
         predicates.Sort(static (left, right) =>
             GetPushdownPredicateRank(left).CompareTo(GetPushdownPredicateRank(right)));
         remaining = CombineConjuncts(residualTerms);
+        pushed = CombineConjuncts(pushedTerms);
         return true;
     }
 
@@ -17475,8 +18171,15 @@ public sealed class QueryPlanner
             if (index.Kind is not (IndexKind.Sql or IndexKind.ForeignKeyInternal or IndexKind.ConstraintInternal))
                 continue;
 
-            if (!IndexMaintenanceHelper.TryResolveIndexColumnIndices(index, schema, out int[]? columnIndices, out bool usesDirectIntegerKey))
+            if (!IndexMaintenanceHelper.TryResolveIndexColumnIndices(
+                    index,
+                    schema,
+                    out int[] columnIndices,
+                    out DbType[] columnTypes,
+                    out bool usesDirectIntegerKey))
+            {
                 continue;
+            }
 
             SqlIndexStorageMode storageMode = IndexMaintenanceHelper.ResolveSqlIndexStorageMode(index, schema);
             sqlIndexes.Add(
@@ -17485,6 +18188,7 @@ public sealed class QueryPlanner
                     Index = index,
                     IndexStore = _catalog.GetIndexStore(index.IndexName),
                     ColumnIndices = columnIndices,
+                    ColumnTypes = columnTypes,
                     IndexColumnCollations = CollationSupport.GetEffectiveIndexColumnCollations(index, schema, columnIndices),
                     StorageMode = storageMode,
                     UsesDirectIntegerKey = usesDirectIntegerKey,
@@ -17527,6 +18231,7 @@ public sealed class QueryPlanner
             if (!IndexMaintenanceHelper.TryBuildIndexKey(
                     row,
                     plan.ColumnIndices,
+                    plan.ColumnTypes,
                     plan.IndexColumnCollations,
                     plan.UsesDirectIntegerKey,
                     plan.StorageMode,
@@ -17674,13 +18379,21 @@ public sealed class QueryPlanner
             if (idx.Kind is not (IndexKind.Sql or IndexKind.ForeignKeyInternal or IndexKind.ConstraintInternal))
                 continue;
 
-            if (!IndexMaintenanceHelper.TryResolveIndexColumnIndices(idx, schema, out var columnIndices, out bool usesDirectIntegerKey))
+            if (!IndexMaintenanceHelper.TryResolveIndexColumnIndices(
+                    idx,
+                    schema,
+                    out var columnIndices,
+                    out var columnTypes,
+                    out bool usesDirectIntegerKey))
+            {
                 continue;
+            }
             string?[] indexColumnCollations = CollationSupport.GetEffectiveIndexColumnCollations(idx, schema, columnIndices);
             SqlIndexStorageMode storageMode = IndexMaintenanceHelper.ResolveSqlIndexStorageMode(idx, schema);
             if (!IndexMaintenanceHelper.TryBuildIndexKey(
                     row,
                     columnIndices,
+                    columnTypes,
                     indexColumnCollations,
                     usesDirectIntegerKey,
                     storageMode,
@@ -17720,14 +18433,22 @@ public sealed class QueryPlanner
             if (idx.Kind is not (IndexKind.Sql or IndexKind.ForeignKeyInternal or IndexKind.ConstraintInternal))
                 continue;
 
-            if (!IndexMaintenanceHelper.TryResolveIndexColumnIndices(idx, schema, out var columnIndices, out bool usesDirectIntegerKey))
+            if (!IndexMaintenanceHelper.TryResolveIndexColumnIndices(
+                    idx,
+                    schema,
+                    out var columnIndices,
+                    out var columnTypes,
+                    out bool usesDirectIntegerKey))
+            {
                 continue;
+            }
             string?[] indexColumnCollations = CollationSupport.GetEffectiveIndexColumnCollations(idx, schema, columnIndices);
             SqlIndexStorageMode storageMode = IndexMaintenanceHelper.ResolveSqlIndexStorageMode(idx, schema);
 
             bool hasOldKey = IndexMaintenanceHelper.TryBuildIndexKey(
                 oldRow,
                 columnIndices,
+                columnTypes,
                 indexColumnCollations,
                 usesDirectIntegerKey,
                 storageMode,
@@ -17736,6 +18457,7 @@ public sealed class QueryPlanner
             bool hasNewKey = IndexMaintenanceHelper.TryBuildIndexKey(
                 newRow,
                 columnIndices,
+                columnTypes,
                 indexColumnCollations,
                 usesDirectIntegerKey,
                 storageMode,
@@ -17899,6 +18621,7 @@ public sealed class QueryPlanner
 
     private static void TrySetDecodedColumnUpperBound(IOperator op, int maxColumnIndex)
     {
+        op = PhysicalPlanCapture.Unwrap(op);
         switch (op)
         {
             case TableScanOperator tableScan:
@@ -17921,6 +18644,7 @@ public sealed class QueryPlanner
 
     private static bool TrySetDecodedColumnIndices(IOperator op, int[] columnIndices)
     {
+        op = PhysicalPlanCapture.Unwrap(op);
         switch (op)
         {
             case TableScanOperator tableScan:
@@ -18604,6 +19328,41 @@ public sealed class QueryPlanner
         return true;
     }
 
+    private static Expression? BuildLookupKeyTerms(
+        IReadOnlyList<Expression> conjuncts,
+        TableSchema schema,
+        ReadOnlySpan<int> keyColumnIndices,
+        ReadOnlySpan<DbValue> keyComponents)
+    {
+        var lookupTerms = new List<Expression>(keyColumnIndices.Length);
+        for (int i = 0; i < conjuncts.Count; i++)
+        {
+            if (!TryExtractIndexEqualityLookupTerm(
+                    conjuncts[i],
+                    schema,
+                    out int columnIndex,
+                    out DbValue literal,
+                    out string? queryCollation))
+            {
+                continue;
+            }
+
+            for (int componentIndex = 0; componentIndex < keyColumnIndices.Length; componentIndex++)
+            {
+                if (keyColumnIndices[componentIndex] != columnIndex)
+                    continue;
+
+                if (CollationSupport.Compare(keyComponents[componentIndex], literal, queryCollation) == 0)
+                {
+                    lookupTerms.Add(conjuncts[i]);
+                    break;
+                }
+            }
+        }
+
+        return CombineConjuncts(lookupTerms);
+    }
+
     private static Expression? BuildResidualTermsExcludingLookupKeyTerms(
         IReadOnlyList<Expression> conjuncts,
         TableSchema schema,
@@ -18761,6 +19520,13 @@ public sealed class QueryPlanner
             {
                 if (keyColumnIndices[j] == columnIndex)
                 {
+                    if (columnIndex < 0 ||
+                        columnIndex >= schema.Columns.Count ||
+                        schema.Columns[columnIndex].Type == DbType.Real)
+                    {
+                        return false;
+                    }
+
                     matchesIndexedColumn = true;
                     break;
                 }
@@ -18938,7 +19704,7 @@ public sealed class QueryPlanner
         => BatchPlanCompiler.TryCreate(predicate, projections, schema);
 
     private static bool IsBatchPlanEligibleSource(IOperator source)
-        => source is
+        => PhysicalPlanCapture.Unwrap(source) is
             TableScanOperator or
             IndexScanOperator or
             IndexOrderedScanOperator or
@@ -18951,7 +19717,7 @@ public sealed class QueryPlanner
 
     private void ApplyBatchPlanPreDecodeFilters(IOperator source, IFilterProjectionBatchPlan? batchPlan)
     {
-        if (source is not IPreDecodeFilterSupport preDecodeFilterTarget ||
+        if (PhysicalPlanCapture.Unwrap(source) is not IPreDecodeFilterSupport preDecodeFilterTarget ||
             batchPlan?.PushdownFilters is not { Length: > 0 } pushdownFilters)
         {
             return;
@@ -19337,7 +20103,8 @@ public sealed class QueryPlanner
             new ExternalTableScanOperator(
                 resolvedPath,
                 archiveSchema.Columns.ToArray(),
-                ToCapacityHint(registration.RowCount)),
+                ToCapacityHint(registration.RowCount),
+                registration.RowCount),
             querySchema);
         return true;
     }
@@ -19757,12 +20524,18 @@ public sealed class QueryPlanner
                 DbValue.FromText(tableName),
                 DbValue.FromInteger(schema.Columns.Count),
                 pkName is null ? DbValue.Null : DbValue.FromText(pkName),
+                SchemaIdValue(schema.SchemaId),
             ]);
         }
 
         _systemTablesRowsCache = rows;
         return rows;
     }
+
+    private static DbValue SchemaIdValue(Guid value) =>
+        value == Guid.Empty
+            ? DbValue.Null
+            : DbValue.FromText(value.ToString("D"));
 
     private List<DbValue[]> BuildSystemColumnsRows()
     {
@@ -19795,6 +20568,8 @@ public sealed class QueryPlanner
                     col.Collation is null ? DbValue.Null : DbValue.FromText(col.Collation),
                     col.DefaultSql is null ? DbValue.Null : DbValue.FromText(col.DefaultSql),
                     DbValue.FromInteger(col.IsRowVersion ? 1 : 0),
+                    SchemaIdValue(schema.SchemaId),
+                    SchemaIdValue(col.SchemaId),
                 ]);
             }
         }
@@ -19824,6 +20599,7 @@ public sealed class QueryPlanner
                 DbValue.FromText(tableName),
                 DbValue.FromInteger(schema.Columns.Count),
                 pkName is null ? DbValue.Null : DbValue.FromText(pkName),
+                SchemaIdValue(schema.SchemaId),
             ]);
         }
 
@@ -19857,6 +20633,8 @@ public sealed class QueryPlanner
                     col.Collation is null ? DbValue.Null : DbValue.FromText(col.Collation),
                     col.DefaultSql is null ? DbValue.Null : DbValue.FromText(col.DefaultSql),
                     DbValue.FromInteger(0),
+                    SchemaIdValue(schema.SchemaId),
+                    SchemaIdValue(col.SchemaId),
                 ]);
             }
         }
@@ -19931,6 +20709,18 @@ public sealed class QueryPlanner
                     GetForeignKeyReferencedColumnNames(foreignKey);
                 for (int i = 0; i < columnNames.Count; i++)
                 {
+                    Guid childColumnId = foreignKey.ColumnSchemaIds.Count > i
+                        ? foreignKey.ColumnSchemaIds[i]
+                        : schema.Columns.FirstOrDefault(column =>
+                            string.Equals(
+                                column.Name,
+                                columnNames[i],
+                                StringComparison.OrdinalIgnoreCase))?.SchemaId ??
+                          Guid.Empty;
+                    Guid referencedColumnId =
+                        foreignKey.ReferencedColumnSchemaIds.Count > i
+                            ? foreignKey.ReferencedColumnSchemaIds[i]
+                            : Guid.Empty;
                     rows.Add(
                     [
                         DbValue.FromText(foreignKey.ConstraintName),
@@ -19938,9 +20728,16 @@ public sealed class QueryPlanner
                         DbValue.FromText(columnNames[i]),
                         DbValue.FromText(foreignKey.ReferencedTableName),
                         DbValue.FromText(referencedColumnNames[i]),
-                        DbValue.FromText(foreignKey.OnDelete.ToString().ToUpperInvariant()),
+                        DbValue.FromText(FormatForeignKeyReferentialAction(foreignKey.OnDelete)),
+                        DbValue.FromText(FormatForeignKeyReferentialAction(foreignKey.OnUpdate)),
                         DbValue.FromText(foreignKey.SupportingIndexName),
                         DbValue.FromInteger(i + 1),
+                        SchemaIdValue(schema.SchemaId),
+                        SchemaIdValue(foreignKey.SchemaId),
+                        SchemaIdValue(childColumnId),
+                        SchemaIdValue(foreignKey.ReferencedTableSchemaId),
+                        SchemaIdValue(referencedColumnId),
+                        SchemaIdValue(foreignKey.ReferencedKeySchemaId),
                     ]);
                 }
             }
@@ -19949,6 +20746,19 @@ public sealed class QueryPlanner
         _systemForeignKeysRowsCache = rows;
         return rows;
     }
+
+    private static string FormatForeignKeyReferentialAction(
+        ForeignKeyOnDeleteAction action) =>
+        action switch
+        {
+            ForeignKeyOnDeleteAction.Restrict => "RESTRICT",
+            ForeignKeyOnDeleteAction.Cascade => "CASCADE",
+            ForeignKeyOnDeleteAction.NoAction => "NO ACTION",
+            ForeignKeyOnDeleteAction.SetNull => "SET NULL",
+            ForeignKeyOnDeleteAction.SetDefault => "SET DEFAULT",
+            _ => throw new InvalidDataException(
+                $"Unsupported foreign key referential action '{action}'."),
+        };
 
     private List<DbValue[]> BuildSystemCheckConstraintsRows()
     {
@@ -19970,6 +20780,8 @@ public sealed class QueryPlanner
                     DbValue.FromText(tableName),
                     check.ColumnName is null ? DbValue.Null : DbValue.FromText(check.ColumnName),
                     DbValue.FromText(check.ExpressionSql),
+                    SchemaIdValue(schema.SchemaId),
+                    SchemaIdValue(check.SchemaId),
                 ]);
             }
         }
@@ -20062,6 +20874,8 @@ public sealed class QueryPlanner
                         DbValue.FromText(key.Columns[i]),
                         DbValue.FromInteger(i + 1),
                         key.BackingIndexName is null ? DbValue.Null : DbValue.FromText(key.BackingIndexName),
+                        SchemaIdValue(schema.SchemaId),
+                        SchemaIdValue(key.SchemaId),
                     ]);
                 }
             }
@@ -20858,27 +21672,121 @@ public sealed class QueryPlanner
         return columnIndex >= 0 && schema.Columns[columnIndex].Type == DbType.Integer;
     }
 
-    private IndexSchema[] GetIndexesForPhysicalIntegerPrimaryKeyRekey(
-        string tableName)
+    private TableRewriteIndexRebuildPlan GetIndexesForPhysicalIntegerPrimaryKeyRekey(
+        TableSchema tableSchema)
     {
+        string tableName = tableSchema.TableName;
         IndexSchema[] indexes = _catalog.GetIndexesForTable(tableName).ToArray();
+        var relationalIndexes = new List<IndexSchema>(indexes.Length);
+        var logicalFullTextIndexes =
+            new Dictionary<string, IndexSchema>(StringComparer.OrdinalIgnoreCase);
+        var internalFullTextIndexes =
+            new Dictionary<string, IndexSchema>(StringComparer.OrdinalIgnoreCase);
+
         for (int i = 0; i < indexes.Length; i++)
         {
             IndexSchema index = indexes[i];
-            if (index.State != IndexState.Ready ||
-                index.Kind is not (
-                    IndexKind.Sql or
-                    IndexKind.ConstraintInternal or
-                    IndexKind.ForeignKeyInternal))
+            if (index.State != IndexState.Ready)
             {
                 throw new CSharpDbException(
                     ErrorCode.ConstraintViolation,
                     $"Cannot physically rekey table '{tableName}' while index '{index.IndexName}' of kind {index.Kind} is present.");
             }
+
+            switch (index.Kind)
+            {
+                case IndexKind.Sql:
+                case IndexKind.ConstraintInternal:
+                case IndexKind.ForeignKeyInternal:
+                    relationalIndexes.Add(index);
+                    break;
+                case IndexKind.FullText:
+                    logicalFullTextIndexes.Add(index.IndexName, index);
+                    break;
+                case IndexKind.FullTextInternal:
+                    internalFullTextIndexes.Add(index.IndexName, index);
+                    break;
+                default:
+                    throw new CSharpDbException(
+                        ErrorCode.ConstraintViolation,
+                        $"Cannot physically rekey table '{tableName}' while index '{index.IndexName}' of kind {index.Kind} is present.");
+            }
         }
 
-        return indexes;
+        var fullTextRebuildPlans =
+            new List<FullTextIndexRebuildPlan>(logicalFullTextIndexes.Count);
+        var claimedInternalIndexes =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (IndexSchema logicalIndex in logicalFullTextIndexes.Values)
+        {
+            if (!FullTextIndexMaintenance.TryResolveColumnIndices(
+                    logicalIndex,
+                    tableSchema,
+                    out _))
+            {
+                throw CreateUnsupportedFullTextRekeyException(
+                    tableName,
+                    logicalIndex.IndexName,
+                    "its indexed columns are no longer valid TEXT columns");
+            }
+
+            string[] requiredInternalNames =
+                FullTextIndexNaming.GetRequiredOwnedIndexNames(
+                    logicalIndex.IndexName);
+            var ownedIndexes =
+                new IndexSchema[requiredInternalNames.Length];
+            for (int i = 0; i < requiredInternalNames.Length; i++)
+            {
+                string internalName = requiredInternalNames[i];
+                if (!internalFullTextIndexes.TryGetValue(
+                        internalName,
+                        out IndexSchema? internalIndex) ||
+                    internalIndex.State != IndexState.Ready ||
+                    !string.Equals(
+                        internalIndex.OwnerIndexName,
+                        logicalIndex.IndexName,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    throw CreateUnsupportedFullTextRekeyException(
+                        tableName,
+                        logicalIndex.IndexName,
+                        $"required owned index '{internalName}' is missing or invalid");
+                }
+
+                ownedIndexes[i] = internalIndex;
+                claimedInternalIndexes.Add(internalIndex.IndexName);
+            }
+
+            fullTextRebuildPlans.Add(
+                new FullTextIndexRebuildPlan(logicalIndex, ownedIndexes));
+        }
+
+        foreach (IndexSchema internalIndex in internalFullTextIndexes.Values)
+        {
+            if (!claimedInternalIndexes.Contains(internalIndex.IndexName))
+            {
+                string owner = string.IsNullOrWhiteSpace(
+                        internalIndex.OwnerIndexName)
+                    ? "no logical owner"
+                    : $"owner '{internalIndex.OwnerIndexName}'";
+                throw new CSharpDbException(
+                    ErrorCode.ConstraintViolation,
+                    $"Cannot physically rekey table '{tableName}' while full-text owned index '{internalIndex.IndexName}' has {owner} or is not part of a complete supported family.");
+            }
+        }
+
+        return new TableRewriteIndexRebuildPlan(
+            relationalIndexes,
+            fullTextRebuildPlans);
     }
+
+    private static CSharpDbException CreateUnsupportedFullTextRekeyException(
+        string tableName,
+        string indexName,
+        string reason) =>
+        new(
+            ErrorCode.ConstraintViolation,
+            $"Cannot physically rekey table '{tableName}' while full-text index '{indexName}' is present because {reason}.");
 
     private async ValueTask<long> ValidatePhysicalIntegerPrimaryKeyValuesAsync(
         TableSchema storageSchema,
@@ -21128,20 +22036,26 @@ public sealed class QueryPlanner
         if (targetType == current.Type)
             return;
 
-        if (current.Type is not (DbType.Integer or DbType.Real) ||
-            targetType is not (DbType.Integer or DbType.Real))
+        bool isExactNumericConversion =
+            current.Type == DbType.Integer && targetType == DbType.Real ||
+            current.Type == DbType.Real && targetType == DbType.Integer;
+        bool isExactTextBlobConversion =
+            current.Type == DbType.Text && targetType == DbType.Blob ||
+            current.Type == DbType.Blob && targetType == DbType.Text;
+        if (!isExactNumericConversion && !isExactTextBlobConversion)
         {
             throw new CSharpDbException(
                 ErrorCode.TypeMismatch,
-                $"ALTER COLUMN TYPE supports only INTEGER-to-REAL and REAL-to-INTEGER conversions; column '{tableName}.{current.Name}' uses {current.Type}.");
+                $"ALTER COLUMN TYPE supports only exact INTEGER-to-REAL, REAL-to-INTEGER, TEXT-to-BLOB, and BLOB-to-TEXT conversions; column '{tableName}.{current.Name}' cannot change from {current.Type} to {targetType}.");
         }
 
-        await EnsureAlterColumnRewriteHasNoUnsupportedDependenciesAsync(
-            tableName,
-            schema,
-            current,
-            allowReadySqlIndexes: false,
-            ct);
+        IndexSchema[] dependentIndexes =
+            await EnsureAlterColumnRewriteHasNoUnsupportedDependenciesAsync(
+                tableName,
+                schema,
+                current,
+                allowReadySqlIndexes: isExactNumericConversion,
+                ct);
 
         ColumnDefinition[] newColumns = schema.Columns.ToArray();
         newColumns[columnIndex] = CopyColumnDefinition(
@@ -21154,6 +22068,10 @@ public sealed class QueryPlanner
         try
         {
             RowConstraintValidator.ValidateSchemaDefinitions(targetSchema);
+            ValidateAlterColumnDefaultIsExactlyCompatible(
+                schema,
+                current,
+                targetType);
         }
         catch (CSharpDbException ex) when (
             current.DefaultSql is not null &&
@@ -21169,15 +22087,59 @@ public sealed class QueryPlanner
         for (int i = 0; i < mappings.Length; i++)
             mappings[i] = TableRewriteColumnMapping.FromSource(i);
 
-        TableRewriteValueConversion conversion = current.Type == DbType.Integer
-            ? TableRewriteValueConversion.IntegerToReal
-            : TableRewriteValueConversion.RealToInteger;
+        TableRewriteValueConversion conversion =
+            (current.Type, targetType) switch
+            {
+                (DbType.Integer, DbType.Real) =>
+                    TableRewriteValueConversion.IntegerToReal,
+                (DbType.Real, DbType.Integer) =>
+                    TableRewriteValueConversion.RealToInteger,
+                (DbType.Text, DbType.Blob) =>
+                    TableRewriteValueConversion.TextToBlob,
+                (DbType.Blob, DbType.Text) =>
+                    TableRewriteValueConversion.BlobToText,
+                _ => throw new InvalidOperationException(
+                    $"Unsupported validated ALTER COLUMN conversion from {current.Type} to {targetType}."),
+            };
         mappings[columnIndex] =
             TableRewriteColumnMapping.ConvertFromSource(columnIndex, conversion);
 
         await ExecuteTableRewriteAsync(
             new TableRewritePlan(schema, targetSchema, mappings),
+            isExactNumericConversion
+                ? dependentIndexes
+                : Array.Empty<IndexSchema>(),
             ct);
+    }
+
+    private static void ValidateAlterColumnDefaultIsExactlyCompatible(
+        TableSchema sourceSchema,
+        ColumnDefinition sourceColumn,
+        DbType targetType)
+    {
+        if (sourceColumn.DefaultSql is null ||
+            sourceColumn.Type != DbType.Integer ||
+            targetType != DbType.Real)
+        {
+            return;
+        }
+
+        DbValue defaultValue =
+            RowConstraintValidator.EvaluateDefault(sourceColumn, sourceSchema);
+        if (defaultValue.IsNull || defaultValue.Type != DbType.Integer)
+            return;
+
+        const long largestConsecutivelyRepresentableInteger =
+            9_007_199_254_740_992L;
+        long integer = defaultValue.AsInteger;
+        if (integer is <
+                -largestConsecutivelyRepresentableInteger or
+            > largestConsecutivelyRepresentableInteger)
+        {
+            throw new CSharpDbException(
+                ErrorCode.TypeMismatch,
+                $"DEFAULT {sourceColumn.DefaultSql} cannot be represented exactly as REAL.");
+        }
     }
 
     private async ValueTask ExecuteAlterColumnCollationRewriteAsync(
@@ -21447,12 +22409,22 @@ public sealed class QueryPlanner
         CancellationToken ct) =>
         ExecuteTableRewriteAsync(
             plan,
-            Array.Empty<IndexSchema>(),
+            TableRewriteIndexRebuildPlan.Relational(
+                Array.Empty<IndexSchema>()),
+            ct);
+
+    private ValueTask ExecuteTableRewriteAsync(
+        TableRewritePlan plan,
+        IReadOnlyList<IndexSchema> indexesToRebuild,
+        CancellationToken ct) =>
+        ExecuteTableRewriteAsync(
+            plan,
+            TableRewriteIndexRebuildPlan.Relational(indexesToRebuild),
             ct);
 
     private async ValueTask ExecuteTableRewriteAsync(
         TableRewritePlan plan,
-        IReadOnlyList<IndexSchema> indexesToRebuild,
+        TableRewriteIndexRebuildPlan indexRebuildPlan,
         CancellationToken ct)
     {
         BTree sourceTree = _catalog.GetTableTree(plan.SourceSchema.TableName, _pager);
@@ -21498,9 +22470,12 @@ public sealed class QueryPlanner
                 }
             }
 
-            for (int i = 0; i < indexesToRebuild.Count; i++)
+            for (int i = 0;
+                 i < indexRebuildPlan.RelationalIndexes.Count;
+                 i++)
             {
-                IndexSchema index = indexesToRebuild[i];
+                IndexSchema index =
+                    indexRebuildPlan.RelationalIndexes[i];
                 IIndexStore shadowIndexStore =
                     await _catalog.CreateDetachedIndexStoreAsync(index, ct);
                 shadowIndexStores.Add(index.IndexName, shadowIndexStore);
@@ -21509,6 +22484,36 @@ public sealed class QueryPlanner
                     plan.TargetSchema,
                     index,
                     shadowIndexStore,
+                    GetReadSerializer(plan.TargetSchema),
+                    ct);
+            }
+
+            for (int i = 0;
+                 i < indexRebuildPlan.FullTextIndexes.Count;
+                 i++)
+            {
+                FullTextIndexRebuildPlan fullTextPlan =
+                    indexRebuildPlan.FullTextIndexes[i];
+                for (int j = 0;
+                     j < fullTextPlan.InternalIndexes.Count;
+                     j++)
+                {
+                    IndexSchema internalIndex =
+                        fullTextPlan.InternalIndexes[j];
+                    IIndexStore shadowIndexStore =
+                        await _catalog.CreateDetachedIndexStoreAsync(
+                            internalIndex,
+                            ct);
+                    shadowIndexStores.Add(
+                        internalIndex.IndexName,
+                        shadowIndexStore);
+                }
+
+                await FullTextIndexMaintenance.BackfillAsync(
+                    shadowTree,
+                    plan.TargetSchema,
+                    fullTextPlan.LogicalIndex,
+                    shadowIndexStores,
                     GetReadSerializer(plan.TargetSchema),
                     ct);
             }
@@ -22075,6 +23080,7 @@ public sealed class QueryPlanner
                 clause.ReferencedTableName,
                 clause.ReferencedColumnName is null ? null : [clause.ReferencedColumnName],
                 clause.OnDelete,
+                clause.OnUpdate,
                 constraintName: null,
                 currentSchema,
                 ct));
@@ -22090,6 +23096,7 @@ public sealed class QueryPlanner
                 clause.ReferencedTableName,
                 clause.ReferencedColumns,
                 clause.OnDelete,
+                clause.OnUpdate,
                 clause.ConstraintName,
                 currentSchema,
                 ct));
@@ -22105,6 +23112,7 @@ public sealed class QueryPlanner
         string requestedReferencedTableName,
         IReadOnlyList<string>? requestedReferencedColumnNames,
         ForeignKeyOnDeleteAction onDelete,
+        ForeignKeyOnDeleteAction onUpdate,
         string? constraintName,
         TableSchema currentTableSchema,
         CancellationToken ct)
@@ -22141,6 +23149,80 @@ public sealed class QueryPlanner
 
             childColumnNames[i] = childColumn.Name;
             childColumnIndices[i] = childColumnIndex;
+        }
+
+        if (onDelete is not (
+                ForeignKeyOnDeleteAction.Restrict or
+                ForeignKeyOnDeleteAction.NoAction or
+                ForeignKeyOnDeleteAction.Cascade or
+                ForeignKeyOnDeleteAction.SetNull or
+                ForeignKeyOnDeleteAction.SetDefault))
+        {
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                $"Unsupported ON DELETE action '{onDelete}'.");
+        }
+        if (onUpdate is not (
+                ForeignKeyOnDeleteAction.Restrict or
+                ForeignKeyOnDeleteAction.NoAction or
+                ForeignKeyOnDeleteAction.Cascade or
+                ForeignKeyOnDeleteAction.SetNull or
+                ForeignKeyOnDeleteAction.SetDefault))
+        {
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                $"Unsupported ON UPDATE action '{onUpdate}'.");
+        }
+
+        if (onDelete == ForeignKeyOnDeleteAction.SetNull ||
+            onUpdate == ForeignKeyOnDeleteAction.SetNull)
+        {
+            for (int i = 0; i < childColumnIndices.Length; i++)
+            {
+                ColumnDefinition childColumn = columns[childColumnIndices[i]];
+                bool isPrimaryKeyColumn =
+                    childColumn.IsPrimaryKey ||
+                    currentTableSchema.KeyConstraints.Any(key =>
+                        key.Kind == KeyConstraintKind.PrimaryKey &&
+                        key.Columns.Any(column =>
+                            string.Equals(
+                                column,
+                                childColumn.Name,
+                                StringComparison.OrdinalIgnoreCase)));
+                if (!childColumn.Nullable || isPrimaryKeyColumn)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.ConstraintViolation,
+                        $"Foreign key SET NULL action on table '{tableName}' requires every child column to be nullable and outside the primary key; column '{childColumn.Name}' is not eligible.");
+                }
+            }
+        }
+
+        if (onDelete == ForeignKeyOnDeleteAction.SetDefault ||
+            onUpdate == ForeignKeyOnDeleteAction.SetDefault)
+        {
+            for (int i = 0; i < childColumnIndices.Length; i++)
+            {
+                ColumnDefinition childColumn = columns[childColumnIndices[i]];
+                bool isPrimaryKeyColumn =
+                    childColumn.IsPrimaryKey ||
+                    currentTableSchema.KeyConstraints.Any(key =>
+                        key.Kind == KeyConstraintKind.PrimaryKey &&
+                        key.Columns.Any(column =>
+                            string.Equals(
+                                column,
+                                childColumn.Name,
+                                StringComparison.OrdinalIgnoreCase)));
+                DbValue defaultValue =
+                    RowConstraintValidator.EvaluateDefault(childColumn, currentTableSchema);
+                if (defaultValue.IsNull &&
+                    (!childColumn.Nullable || isPrimaryKeyColumn))
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.ConstraintViolation,
+                        $"Foreign key SET DEFAULT action on table '{tableName}' requires child column '{childColumn.Name}' to have a non-NULL literal default or be nullable and outside the primary key.");
+                }
+            }
         }
 
         TableSchema parentSchema;
@@ -22224,6 +23306,7 @@ public sealed class QueryPlanner
             ColumnNames = childColumnNames,
             ReferencedColumnNames = parentColumnNames,
             OnDelete = onDelete,
+            OnUpdate = onUpdate,
             SupportingIndexName = GenerateForeignKeySupportIndexName(
                 constraintName,
                 tableName,
@@ -22586,6 +23669,7 @@ public sealed class QueryPlanner
                 .Select(foreignKey => string.Equals(foreignKey.ReferencedTableName, oldTableName, StringComparison.OrdinalIgnoreCase)
                     ? new ForeignKeyDefinition
                     {
+                        SchemaId = foreignKey.SchemaId,
                         ConstraintName = foreignKey.ConstraintName,
                         ColumnName = foreignKey.ColumnName,
                         ReferencedTableName = newTableName,
@@ -22593,6 +23677,7 @@ public sealed class QueryPlanner
                         ColumnNames = foreignKey.ColumnNames,
                         ReferencedColumnNames = foreignKey.ReferencedColumnNames,
                         OnDelete = foreignKey.OnDelete,
+                        OnUpdate = foreignKey.OnUpdate,
                         SupportingIndexName = foreignKey.SupportingIndexName,
                     }
                     : foreignKey)
@@ -22628,6 +23713,7 @@ public sealed class QueryPlanner
             string.Equals(column.Name, oldColumnName, StringComparison.OrdinalIgnoreCase)
                 ? new ColumnDefinition
                 {
+                    SchemaId = column.SchemaId,
                     Name = newColumnName,
                     Type = column.Type,
                     Nullable = column.Nullable,
@@ -22648,6 +23734,7 @@ public sealed class QueryPlanner
         KeyConstraintDefinition[] renamedKeyConstraints = schema.KeyConstraints
             .Select(key => new KeyConstraintDefinition
             {
+                SchemaId = key.SchemaId,
                 ConstraintName = key.ConstraintName,
                 Kind = key.Kind,
                 Columns = key.Columns
@@ -22717,6 +23804,7 @@ public sealed class QueryPlanner
                     changed = true;
                     return new ForeignKeyDefinition
                     {
+                        SchemaId = foreignKey.SchemaId,
                         ConstraintName = foreignKey.ConstraintName,
                         ColumnName = foreignKey.ColumnName,
                         ReferencedTableName = foreignKey.ReferencedTableName,
@@ -22724,6 +23812,7 @@ public sealed class QueryPlanner
                         ColumnNames = GetForeignKeyColumnNames(foreignKey).ToArray(),
                         ReferencedColumnNames = RenameForeignKeyColumnNames(foreignKey, oldColumnName, newColumnName, referenced: true),
                         OnDelete = foreignKey.OnDelete,
+                        OnUpdate = foreignKey.OnUpdate,
                         SupportingIndexName = foreignKey.SupportingIndexName,
                     };
                 })
@@ -22754,6 +23843,7 @@ public sealed class QueryPlanner
 
         return new ForeignKeyDefinition
         {
+            SchemaId = foreignKey.SchemaId,
             ConstraintName = foreignKey.ConstraintName,
             ColumnName = foreignKey.ColumnName,
             ReferencedTableName = referencedTableRenamed ? newTableName : foreignKey.ReferencedTableName,
@@ -22761,6 +23851,7 @@ public sealed class QueryPlanner
             ColumnNames = GetForeignKeyColumnNames(foreignKey).ToArray(),
             ReferencedColumnNames = GetForeignKeyReferencedColumnNames(foreignKey).ToArray(),
             OnDelete = foreignKey.OnDelete,
+            OnUpdate = foreignKey.OnUpdate,
             SupportingIndexName = childTableRenamed
                 ? GenerateForeignKeySupportIndexName(foreignKey.ConstraintName, newTableName, GetForeignKeyColumnNames(foreignKey))
                 : foreignKey.SupportingIndexName,
@@ -22784,6 +23875,7 @@ public sealed class QueryPlanner
 
         return new ForeignKeyDefinition
         {
+            SchemaId = foreignKey.SchemaId,
             ConstraintName = foreignKey.ConstraintName,
             ColumnName = childColumnNames[0],
             ReferencedTableName = foreignKey.ReferencedTableName,
@@ -22791,6 +23883,7 @@ public sealed class QueryPlanner
             ColumnNames = childColumnNames,
             ReferencedColumnNames = referencedColumnNames,
             OnDelete = foreignKey.OnDelete,
+            OnUpdate = foreignKey.OnUpdate,
             SupportingIndexName = childColumnRenamed
                 ? GenerateForeignKeySupportIndexName(foreignKey.ConstraintName, tableName, childColumnNames)
                 : foreignKey.SupportingIndexName,
@@ -22816,6 +23909,7 @@ public sealed class QueryPlanner
         Expression expression = Parser.ParseExpressionSql(check.ExpressionSql);
         return new CheckConstraintDefinition
         {
+            SchemaId = check.SchemaId,
             ConstraintName = check.ConstraintName,
             ExpressionSql = ExprToSql(RenameColumnReferences(expression, oldColumnName, newColumnName)),
             ColumnName = string.Equals(check.ColumnName, oldColumnName, StringComparison.OrdinalIgnoreCase)
@@ -23229,7 +24323,11 @@ public sealed class QueryPlanner
                 "parent");
 
             if (string.Equals(foreignKey.ReferencedTableName, tableName, StringComparison.OrdinalIgnoreCase) &&
-                ForeignKeyValuesEqual(parentSchema, parentColumnIndices, newRow, childValues))
+                ForeignKeyValuesEqual(
+                    parentSchema,
+                    parentColumnIndices,
+                    newRow,
+                    (IReadOnlyList<DbValue>)childValues))
             {
                 continue;
             }
@@ -23243,53 +24341,12 @@ public sealed class QueryPlanner
         }
     }
 
-    private async ValueTask ValidateIncomingForeignKeyUpdatesAsync(
+    private async ValueTask<List<PendingForeignKeyUpdate>> PrepareIncomingForeignKeyUpdatesAsync(
         string tableName,
         TableSchema schema,
-        long rowId,
+        ForeignKeyMutationRowHandle rowHandle,
         DbValue[] oldRow,
         DbValue[] newRow,
-        CancellationToken ct)
-    {
-        IReadOnlyList<TableForeignKeyReference> references = _catalog.GetReferencingForeignKeys(tableName);
-        if (references.Count == 0)
-            return;
-
-        for (int i = 0; i < references.Count; i++)
-        {
-            TableForeignKeyReference reference = references[i];
-            int[] parentColumnIndices = GetForeignKeyColumnIndices(
-                schema,
-                GetForeignKeyReferencedColumnNames(reference.ForeignKey),
-                reference.ForeignKey.ConstraintName,
-                "parent");
-            DbValue[] oldParentValues = GetForeignKeyValues(oldRow, parentColumnIndices);
-            if (ForeignKeyValuesContainNull(oldParentValues) ||
-                ForeignKeyValuesEqual(schema, parentColumnIndices, oldRow, newRow))
-                continue;
-
-            List<(long RowId, DbValue[] Row)> dependents = await LoadReferencingRowsAsync(reference, oldParentValues, ct);
-            if (dependents.Count == 0)
-                continue;
-
-            bool onlyCurrentRowSelfReference = dependents.Count == 1 &&
-                string.Equals(reference.TableName, tableName, StringComparison.OrdinalIgnoreCase) &&
-                dependents[0].RowId == rowId;
-            if (onlyCurrentRowSelfReference)
-                continue;
-
-            throw new CSharpDbException(
-                ErrorCode.ConstraintViolation,
-                $"Cannot update referenced key on table '{tableName}' because foreign key '{reference.ForeignKey.ConstraintName}' has dependent rows.");
-        }
-    }
-
-    private async ValueTask<bool> DeleteRowWithForeignKeysAsync(
-        string tableName,
-        TableSchema schema,
-        BTree tree,
-        IReadOnlyList<IndexSchema> indexes,
-        long rowId,
         ForeignKeyMutationContext mutationContext,
         int depth,
         CancellationToken ct)
@@ -23301,18 +24358,288 @@ public sealed class QueryPlanner
                 $"Maximum foreign key cascade depth of {MaxForeignKeyCascadeDepth} was exceeded.");
         }
 
-        if (!mutationContext.VisitedDeletes.Add(new ForeignKeyDeleteKey(tableName, rowId)))
+        IReadOnlyList<TableForeignKeyReference> references = _catalog.GetReferencingForeignKeys(tableName);
+        var pendingUpdates = new List<PendingForeignKeyUpdate>();
+        if (references.Count == 0)
+            return pendingUpdates;
+
+        int selfCascadeSteps = 0;
+        while (true)
+        {
+            bool selfRowChanged = false;
+            for (int i = 0; i < references.Count; i++)
+            {
+                TableForeignKeyReference reference = references[i];
+                if (!string.Equals(
+                        reference.TableName,
+                        tableName,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                ForeignKeyOnDeleteAction action = reference.ForeignKey.OnUpdate;
+                if (action is not (
+                        ForeignKeyOnDeleteAction.Cascade or
+                        ForeignKeyOnDeleteAction.SetNull or
+                        ForeignKeyOnDeleteAction.SetDefault))
+                {
+                    continue;
+                }
+
+                int[] parentColumnIndices = GetForeignKeyColumnIndices(
+                    schema,
+                    GetForeignKeyReferencedColumnNames(reference.ForeignKey),
+                    reference.ForeignKey.ConstraintName,
+                    "parent");
+                DbValue[] oldParentValues =
+                    GetForeignKeyValues(oldRow, parentColumnIndices);
+                DbValue[] newParentValues =
+                    GetForeignKeyValues(newRow, parentColumnIndices);
+                if (ForeignKeyValuesContainNull(oldParentValues) ||
+                    ForeignKeyValuesEqual(
+                        schema,
+                        parentColumnIndices,
+                        oldRow,
+                        newRow))
+                {
+                    continue;
+                }
+
+                List<(long RowId, DbValue[] Row)> dependents =
+                    await LoadReferencingRowsAsync(
+                        reference,
+                        oldParentValues,
+                        ct);
+                bool includesCurrentRow = dependents.Any(dependent =>
+                    ReferenceEquals(
+                        CaptureForeignKeyMutationRow(
+                            mutationContext,
+                            reference.TableName,
+                            dependent.RowId),
+                        rowHandle));
+                if (!includesCurrentRow)
+                    continue;
+
+                int[] childColumnIndices = GetForeignKeyColumnIndices(
+                    schema,
+                    GetForeignKeyColumnNames(reference.ForeignKey),
+                    reference.ForeignKey.ConstraintName,
+                    "child");
+                DbValue[] previousChildValues =
+                    GetForeignKeyValues(newRow, childColumnIndices);
+                ApplyForeignKeyUpdateValues(
+                    reference,
+                    schema,
+                    newRow,
+                    newParentValues,
+                    action);
+                if (!previousChildValues.SequenceEqual(
+                        GetForeignKeyValues(newRow, childColumnIndices)))
+                {
+                    selfRowChanged = true;
+                }
+            }
+
+            if (!selfRowChanged)
+                break;
+
+            selfCascadeSteps++;
+            if (depth + selfCascadeSteps > MaxForeignKeyCascadeDepth)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.ConstraintViolation,
+                    $"Maximum foreign key cascade depth of {MaxForeignKeyCascadeDepth} was exceeded.");
+            }
+        }
+
+        for (int i = 0; i < references.Count; i++)
+        {
+            TableForeignKeyReference reference = references[i];
+            int[] parentColumnIndices = GetForeignKeyColumnIndices(
+                schema,
+                GetForeignKeyReferencedColumnNames(reference.ForeignKey),
+                reference.ForeignKey.ConstraintName,
+                "parent");
+            DbValue[] oldParentValues = GetForeignKeyValues(oldRow, parentColumnIndices);
+            DbValue[] newParentValues = GetForeignKeyValues(newRow, parentColumnIndices);
+            if (ForeignKeyValuesContainNull(oldParentValues) ||
+                ForeignKeyValuesEqual(schema, parentColumnIndices, oldRow, newRow))
+                continue;
+
+            List<(long RowId, DbValue[] Row)> dependents = await LoadReferencingRowsAsync(reference, oldParentValues, ct);
+            if (dependents.Count == 0)
+                continue;
+
+            ForeignKeyMutationRowHandle[] dependentHandles = dependents
+                .Select(dependent => CaptureForeignKeyMutationRow(
+                    mutationContext,
+                    reference.TableName,
+                    dependent.RowId))
+                .ToArray();
+            ForeignKeyOnDeleteAction action = reference.ForeignKey.OnUpdate;
+            if (action is ForeignKeyOnDeleteAction.Restrict or ForeignKeyOnDeleteAction.NoAction)
+            {
+                bool hasBlockingDependent = false;
+                for (int dependentIndex = 0; dependentIndex < dependentHandles.Length; dependentIndex++)
+                {
+                    bool isCurrentRowSelfReference =
+                        string.Equals(reference.TableName, tableName, StringComparison.OrdinalIgnoreCase) &&
+                        ReferenceEquals(dependentHandles[dependentIndex], rowHandle);
+                    if (!isCurrentRowSelfReference)
+                    {
+                        hasBlockingDependent = true;
+                        break;
+                    }
+
+                    int[] selfChildColumnIndices = GetForeignKeyColumnIndices(
+                        schema,
+                        GetForeignKeyColumnNames(reference.ForeignKey),
+                        reference.ForeignKey.ConstraintName,
+                        "child");
+                    if (ForeignKeyValuesEqual(
+                            schema,
+                            selfChildColumnIndices,
+                            newRow,
+                            (IReadOnlyList<DbValue>)oldParentValues))
+                    {
+                        hasBlockingDependent = true;
+                        break;
+                    }
+                }
+
+                if (hasBlockingDependent)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.ConstraintViolation,
+                        $"Cannot update referenced key on table '{tableName}' because foreign key '{reference.ForeignKey.ConstraintName}' has dependent rows.");
+                }
+
+                continue;
+            }
+
+            if (action is not (
+                    ForeignKeyOnDeleteAction.Cascade or
+                    ForeignKeyOnDeleteAction.SetNull or
+                    ForeignKeyOnDeleteAction.SetDefault))
+            {
+                throw new CSharpDbException(
+                    ErrorCode.ConstraintViolation,
+                    $"Unsupported ON UPDATE action '{action}' for foreign key '{reference.ForeignKey.ConstraintName}'.");
+            }
+
+            var pendingDependentHandles =
+                new List<ForeignKeyMutationRowHandle>(dependentHandles.Length);
+            for (int dependentIndex = 0; dependentIndex < dependentHandles.Length; dependentIndex++)
+            {
+                bool isCurrentRowSelfReference =
+                    string.Equals(reference.TableName, tableName, StringComparison.OrdinalIgnoreCase) &&
+                    ReferenceEquals(dependentHandles[dependentIndex], rowHandle);
+                if (isCurrentRowSelfReference ||
+                    mutationContext.VisitedDeleteHandles.Contains(
+                        dependentHandles[dependentIndex].HandleId))
+                {
+                    continue;
+                }
+
+                pendingDependentHandles.Add(dependentHandles[dependentIndex]);
+            }
+
+            pendingUpdates.Add(
+                new PendingForeignKeyUpdate(
+                    reference,
+                    oldParentValues,
+                    newParentValues,
+                    action,
+                    pendingDependentHandles.ToArray()));
+        }
+
+        return pendingUpdates;
+    }
+
+    private async ValueTask ApplyPendingForeignKeyUpdatesAsync(
+        IReadOnlyList<PendingForeignKeyUpdate> pendingUpdates,
+        ForeignKeyMutationContext mutationContext,
+        int depth,
+        CancellationToken ct)
+    {
+        for (int updateIndex = 0; updateIndex < pendingUpdates.Count; updateIndex++)
+        {
+            PendingForeignKeyUpdate pending = pendingUpdates[updateIndex];
+            for (int rowIndex = 0; rowIndex < pending.RowHandles.Length; rowIndex++)
+            {
+                await ApplyForeignKeyUpdateActionAsync(
+                    pending.Reference,
+                    pending.OldReferencedValues,
+                    pending.NewReferencedValues,
+                    pending.Action,
+                    pending.RowHandles[rowIndex],
+                    mutationContext,
+                    depth + 1,
+                    ct);
+            }
+
+            List<(long RowId, DbValue[] Row)> remainingDependents =
+                await LoadReferencingRowsAsync(
+                    pending.Reference,
+                    pending.OldReferencedValues,
+                    ct);
+            bool hasRemainingDependent = remainingDependents.Any(dependent =>
+            {
+                ForeignKeyMutationRowHandle dependentHandle =
+                    CaptureForeignKeyMutationRow(
+                        mutationContext,
+                        pending.Reference.TableName,
+                        dependent.RowId);
+                return !mutationContext.VisitedDeleteHandles.Contains(
+                    dependentHandle.HandleId);
+            });
+            if (hasRemainingDependent)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.ConstraintViolation,
+                    $"Foreign key ON UPDATE action '{pending.Action}' for constraint '{pending.Reference.ForeignKey.ConstraintName}' left dependent rows in '{pending.Reference.TableName}'.");
+            }
+        }
+    }
+
+    private async ValueTask<bool> DeleteRowWithForeignKeysAsync(
+        string tableName,
+        TableSchema schema,
+        BTree tree,
+        IReadOnlyList<IndexSchema> indexes,
+        ForeignKeyMutationRowHandle rowHandle,
+        ForeignKeyMutationContext mutationContext,
+        int depth,
+        CancellationToken ct)
+    {
+        if (depth > MaxForeignKeyCascadeDepth)
+        {
+            throw new CSharpDbException(
+                ErrorCode.ConstraintViolation,
+                $"Maximum foreign key cascade depth of {MaxForeignKeyCascadeDepth} was exceeded.");
+        }
+
+        if (!TryGetForeignKeyMutationRowId(rowHandle, out long rowId))
+            return false;
+        if (!mutationContext.VisitedDeleteHandles.Add(rowHandle.HandleId))
             return false;
 
         DbValue[]? currentRow = await TryLoadRowAsync(tableName, schema, rowId, ct);
         if (currentRow is null)
+        {
+            DeleteForeignKeyMutationRow(mutationContext, rowHandle, rowId);
             return false;
+        }
 
         await FireTriggersAsync(tableName, TriggerTiming.Before, TriggerEvent.Delete, currentRow, null, schema, ct);
 
         currentRow = await TryLoadRowAsync(tableName, schema, rowId, ct);
         if (currentRow is null)
+        {
+            DeleteForeignKeyMutationRow(mutationContext, rowHandle, rowId);
             return false;
+        }
 
         IReadOnlyList<TableForeignKeyReference> references = _catalog.GetReferencingForeignKeys(tableName);
         for (int i = 0; i < references.Count; i++)
@@ -23330,35 +24657,107 @@ public sealed class QueryPlanner
             List<(long RowId, DbValue[] Row)> dependentRows = await LoadReferencingRowsAsync(reference, parentValues, ct);
             if (dependentRows.Count == 0)
                 continue;
+            ForeignKeyMutationRowHandle[] dependentHandles = dependentRows
+                .Select(dependent => CaptureForeignKeyMutationRow(
+                    mutationContext,
+                    reference.TableName,
+                    dependent.RowId))
+                .ToArray();
 
-            if (reference.ForeignKey.OnDelete != ForeignKeyOnDeleteAction.Cascade)
+            switch (reference.ForeignKey.OnDelete)
             {
-                throw new CSharpDbException(
-                    ErrorCode.ConstraintViolation,
-                    $"Cannot delete row from '{tableName}' because foreign key '{reference.ForeignKey.ConstraintName}' has dependent rows in '{reference.TableName}'.");
-            }
+                case ForeignKeyOnDeleteAction.Restrict:
+                case ForeignKeyOnDeleteAction.NoAction:
+                    throw new CSharpDbException(
+                        ErrorCode.ConstraintViolation,
+                        $"Cannot delete row from '{tableName}' because foreign key '{reference.ForeignKey.ConstraintName}' has dependent rows in '{reference.TableName}'.");
 
-            TableSchema childSchema = GetSchema(reference.TableName);
-            BTree childTree = _catalog.GetTableTree(reference.TableName, _pager);
-            IReadOnlyList<IndexSchema> childIndexes = _catalog.GetIndexesForTable(reference.TableName);
-            for (int dependentIndex = 0; dependentIndex < dependentRows.Count; dependentIndex++)
-            {
-                (long dependentRowId, _) = dependentRows[dependentIndex];
-                if (string.Equals(reference.TableName, tableName, StringComparison.OrdinalIgnoreCase) &&
-                    dependentRowId == rowId)
+                case ForeignKeyOnDeleteAction.Cascade:
                 {
-                    continue;
+                    TableSchema childSchema = GetSchema(reference.TableName);
+                    BTree childTree = _catalog.GetTableTree(reference.TableName, _pager);
+                    IReadOnlyList<IndexSchema> childIndexes = _catalog.GetIndexesForTable(reference.TableName);
+                    for (int dependentIndex = 0; dependentIndex < dependentHandles.Length; dependentIndex++)
+                    {
+                        if (string.Equals(reference.TableName, tableName, StringComparison.OrdinalIgnoreCase) &&
+                            ReferenceEquals(dependentHandles[dependentIndex], rowHandle))
+                        {
+                            continue;
+                        }
+
+                        await DeleteRowWithForeignKeysAsync(
+                            reference.TableName,
+                            childSchema,
+                            childTree,
+                            childIndexes,
+                            dependentHandles[dependentIndex],
+                            mutationContext,
+                            depth + 1,
+                            ct);
+                    }
+
+                    break;
                 }
 
-                await DeleteRowWithForeignKeysAsync(
-                    reference.TableName,
-                    childSchema,
-                    childTree,
-                    childIndexes,
-                    dependentRowId,
-                    mutationContext,
-                    depth + 1,
-                    ct);
+                case ForeignKeyOnDeleteAction.SetNull:
+                case ForeignKeyOnDeleteAction.SetDefault:
+                    for (int dependentIndex = 0; dependentIndex < dependentHandles.Length; dependentIndex++)
+                    {
+                        if (string.Equals(reference.TableName, tableName, StringComparison.OrdinalIgnoreCase) &&
+                            ReferenceEquals(dependentHandles[dependentIndex], rowHandle))
+                        {
+                            continue;
+                        }
+                        if (mutationContext.VisitedDeleteHandles.Contains(
+                                dependentHandles[dependentIndex].HandleId))
+                        {
+                            continue;
+                        }
+
+                        await ApplyForeignKeyUpdateActionAsync(
+                            reference,
+                            parentValues,
+                            Array.Empty<DbValue>(),
+                            reference.ForeignKey.OnDelete,
+                            dependentHandles[dependentIndex],
+                            mutationContext,
+                            depth + 1,
+                            ct);
+                    }
+
+                    break;
+
+                default:
+                    throw new CSharpDbException(
+                        ErrorCode.ConstraintViolation,
+                        $"Unsupported ON DELETE action '{reference.ForeignKey.OnDelete}'.");
+            }
+
+            if (reference.ForeignKey.OnDelete is
+                ForeignKeyOnDeleteAction.SetNull or
+                ForeignKeyOnDeleteAction.SetDefault)
+            {
+                List<(long RowId, DbValue[] Row)> remainingDependents =
+                    await LoadReferencingRowsAsync(reference, parentValues, ct);
+                bool hasRemainingDependent = remainingDependents.Any(dependent =>
+                {
+                    ForeignKeyMutationRowHandle dependentHandle =
+                        CaptureForeignKeyMutationRow(
+                            mutationContext,
+                            reference.TableName,
+                            dependent.RowId);
+                    return
+                        (!string.Equals(reference.TableName, tableName, StringComparison.OrdinalIgnoreCase) ||
+                         !ReferenceEquals(dependentHandle, rowHandle)) &&
+                        !mutationContext.VisitedDeleteHandles.Contains(
+                            dependentHandle.HandleId);
+                });
+                if (hasRemainingDependent)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.ConstraintViolation,
+                        $"Foreign key action '{reference.ForeignKey.OnDelete}' for constraint '{reference.ForeignKey.ConstraintName}' left dependent rows in '{reference.TableName}'.");
+                }
             }
         }
 
@@ -23366,11 +24765,252 @@ public sealed class QueryPlanner
         RecordLogicalMutationWrites(tableName, schema, oldRow: currentRow, newRow: null, oldRowId: rowId);
         await DeleteFromAllIndexesAsync(indexes, schema, currentRow, rowId, ct);
         await _catalog.AdjustTableRowCountAsync(tableName, -1, ct);
+        DeleteForeignKeyMutationRow(mutationContext, rowHandle, rowId);
         mutationContext.TouchedTables.Add(tableName);
         mutationContext.StaleTables.Add(tableName);
 
         await FireTriggersAsync(tableName, TriggerTiming.After, TriggerEvent.Delete, currentRow, null, schema, ct);
         return true;
+    }
+
+    private async ValueTask ApplyForeignKeyUpdateActionAsync(
+        TableForeignKeyReference reference,
+        IReadOnlyList<DbValue> oldReferencedValues,
+        IReadOnlyList<DbValue> newReferencedValues,
+        ForeignKeyOnDeleteAction action,
+        ForeignKeyMutationRowHandle rowHandle,
+        ForeignKeyMutationContext mutationContext,
+        int depth,
+        CancellationToken ct)
+    {
+        if (depth > MaxForeignKeyCascadeDepth)
+        {
+            throw new CSharpDbException(
+                ErrorCode.ConstraintViolation,
+                $"Maximum foreign key cascade depth of {MaxForeignKeyCascadeDepth} was exceeded.");
+        }
+
+        if (!TryGetForeignKeyMutationRowId(rowHandle, out long rowId))
+            return;
+        if (mutationContext.VisitedDeleteHandles.Contains(rowHandle.HandleId))
+            return;
+
+        var mutationKey = new ForeignKeyUpdateKey(
+            rowHandle.HandleId,
+            reference.ForeignKey.ConstraintName,
+            BuildForeignKeyValuesKey(oldReferencedValues));
+        TableSchema schema = GetSchema(reference.TableName);
+        BTree tree = _catalog.GetTableTree(reference.TableName, _pager);
+        IReadOnlyList<IndexSchema> indexes = _catalog.GetIndexesForTable(reference.TableName);
+        DbValue[]? oldRow = await TryLoadRowAsync(reference.TableName, schema, rowId, ct);
+        if (oldRow is null)
+            return;
+
+        int[] childColumnIndices = GetForeignKeyColumnIndices(
+            schema,
+            GetForeignKeyColumnNames(reference.ForeignKey),
+            reference.ForeignKey.ConstraintName,
+            "child");
+        if (!ForeignKeyValuesEqual(schema, childColumnIndices, oldRow, oldReferencedValues))
+            return;
+        if (!mutationContext.VisitedUpdates.Add(mutationKey))
+            return;
+
+        var newRow = (DbValue[])oldRow.Clone();
+        ApplyForeignKeyUpdateValues(
+            reference,
+            schema,
+            newRow,
+            newReferencedValues,
+            action);
+        if (ForeignKeyValuesEqual(schema, childColumnIndices, oldRow, newRow))
+            return;
+
+        AdvanceRowVersion(schema, oldRow, newRow);
+        RowConstraintValidator.ValidateRow(schema, newRow);
+
+        await FireTriggersAsync(
+            reference.TableName,
+            TriggerTiming.Before,
+            TriggerEvent.Update,
+            oldRow,
+            newRow,
+            schema,
+            ct);
+        await RefreshRowVersionAfterBeforeTriggersAsync(
+            reference.TableName,
+            schema,
+            rowId,
+            newRow,
+            ct);
+
+        List<PendingForeignKeyUpdate> pendingUpdates =
+            await PrepareIncomingForeignKeyUpdatesAsync(
+                reference.TableName,
+                schema,
+                rowHandle,
+                oldRow,
+                newRow,
+                mutationContext,
+                depth,
+                ct);
+        RowConstraintValidator.ValidateRow(schema, newRow);
+
+        int primaryKeyColumnIndex = schema.PrimaryKeyColumnIndex;
+        bool hasIntegerPrimaryKey =
+            primaryKeyColumnIndex >= 0 &&
+            schema.Columns[primaryKeyColumnIndex].Type == DbType.Integer;
+        long newRowId = rowId;
+        if (hasIntegerPrimaryKey)
+        {
+            if (newRow[primaryKeyColumnIndex].IsNull)
+                newRow[primaryKeyColumnIndex] = DbValue.FromInteger(rowId);
+            if (newRow[primaryKeyColumnIndex].Type != DbType.Integer)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.TypeMismatch,
+                    "INTEGER PRIMARY KEY must remain an integer value.");
+            }
+
+            newRowId = newRow[primaryKeyColumnIndex].AsInteger;
+        }
+
+        await ValidateOutgoingForeignKeysAsync(
+            reference.TableName,
+            schema,
+            oldRow,
+            newRow,
+            ct);
+
+        await tree.DeleteAsync(rowId, ct);
+        await tree.InsertAsync(newRowId, _recordSerializer.Encode(newRow), ct);
+        RecordLogicalMutationWrites(
+            reference.TableName,
+            schema,
+            oldRow,
+            newRow,
+            rowId,
+            newRowId);
+        await UpdateAllIndexesAsync(
+            indexes,
+            schema,
+            oldRow,
+            newRow,
+            rowId,
+            newRowId,
+            ct);
+        MoveForeignKeyMutationRow(
+            mutationContext,
+            rowHandle,
+            rowId,
+            newRowId);
+        mutationContext.TouchedTables.Add(reference.TableName);
+        mutationContext.StaleTables.Add(reference.TableName);
+
+        await ApplyPendingForeignKeyUpdatesAsync(
+            pendingUpdates,
+            mutationContext,
+            depth,
+            ct);
+
+        await FireTriggersAsync(
+            reference.TableName,
+            TriggerTiming.After,
+            TriggerEvent.Update,
+            oldRow,
+            newRow,
+            schema,
+            ct);
+    }
+
+    private static void ApplyForeignKeyUpdateValues(
+        TableForeignKeyReference reference,
+        TableSchema schema,
+        DbValue[] row,
+        IReadOnlyList<DbValue> newReferencedValues,
+        ForeignKeyOnDeleteAction action)
+    {
+        int[] childColumnIndices = GetForeignKeyColumnIndices(
+            schema,
+            GetForeignKeyColumnNames(reference.ForeignKey),
+            reference.ForeignKey.ConstraintName,
+            "child");
+        if (action == ForeignKeyOnDeleteAction.Cascade &&
+            childColumnIndices.Length != newReferencedValues.Count)
+        {
+            throw new CSharpDbException(
+                ErrorCode.CorruptDatabase,
+                $"Foreign key '{reference.ForeignKey.ConstraintName}' has mismatched child and parent key arity.");
+        }
+
+        for (int i = 0; i < childColumnIndices.Length; i++)
+        {
+            int childColumnIndex = childColumnIndices[i];
+            ColumnDefinition childColumn = schema.Columns[childColumnIndex];
+            row[childColumnIndex] = action switch
+            {
+                ForeignKeyOnDeleteAction.Cascade => newReferencedValues[i],
+                ForeignKeyOnDeleteAction.SetNull => childColumn.Nullable
+                    ? DbValue.Null
+                    : throw new CSharpDbException(
+                        ErrorCode.ConstraintViolation,
+                        $"Foreign key SET NULL action for constraint '{reference.ForeignKey.ConstraintName}' requires nullable child column '{reference.TableName}.{childColumn.Name}'."),
+                ForeignKeyOnDeleteAction.SetDefault =>
+                    RowConstraintValidator.EvaluateDefault(childColumn, schema),
+                _ => throw new CSharpDbException(
+                    ErrorCode.ConstraintViolation,
+                    $"Unsupported mutating foreign key action '{action}' for constraint '{reference.ForeignKey.ConstraintName}'."),
+            };
+        }
+    }
+
+    private static string BuildForeignKeyValuesKey(
+        IReadOnlyList<DbValue> values)
+    {
+        var builder = new StringBuilder(values.Count * 16);
+        for (int i = 0; i < values.Count; i++)
+        {
+            DbValue value = values[i];
+            if (value.IsNull)
+            {
+                builder.Append("N;");
+                continue;
+            }
+
+            switch (value.Type)
+            {
+                case DbType.Integer:
+                    builder.Append('I')
+                        .Append(value.AsInteger)
+                        .Append(';');
+                    break;
+                case DbType.Real:
+                    builder.Append('R')
+                        .Append(BitConverter.DoubleToInt64Bits(value.AsReal))
+                        .Append(';');
+                    break;
+                case DbType.Text:
+                    string text = value.AsText;
+                    builder.Append('T')
+                        .Append(text.Length)
+                        .Append(':')
+                        .Append(text)
+                        .Append(';');
+                    break;
+                case DbType.Blob:
+                    ReadOnlyMemory<byte> blob = value.AsBlob;
+                    builder.Append('B')
+                        .Append(Convert.ToBase64String(blob.Span))
+                        .Append(';');
+                    break;
+                default:
+                    throw new CSharpDbException(
+                        ErrorCode.CorruptDatabase,
+                        $"Unsupported foreign key value type '{value.Type}'.");
+            }
+        }
+
+        return builder.ToString();
     }
 
     private async ValueTask<List<(long RowId, DbValue[] Row)>> LoadReferencingRowsAsync(

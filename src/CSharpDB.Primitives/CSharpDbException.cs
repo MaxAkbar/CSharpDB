@@ -18,6 +18,7 @@ public enum ErrorCode
     WalError,
     Busy,
     TransactionConflict,
+    ResourceLimitExceeded,
 }
 
 public class CSharpDbException : Exception

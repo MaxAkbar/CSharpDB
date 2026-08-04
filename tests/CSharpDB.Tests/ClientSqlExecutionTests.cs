@@ -1,5 +1,6 @@
 using System.Globalization;
 using CSharpDB.Client;
+using CSharpDB.Client.Models;
 
 namespace CSharpDB.Tests;
 
@@ -39,6 +40,58 @@ public sealed class ClientSqlExecutionTests
             Assert.Contains("decision", explain.ColumnNames);
             Assert.NotNull(explain.Rows);
             Assert.Contains(explain.Rows, row => string.Equals(Convert.ToString(row[4], CultureInfo.InvariantCulture), "heavy-hitter", StringComparison.Ordinal));
+        }
+        finally
+        {
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task ExecuteSqlAsync_PhysicalExplainRoundTripsThroughDirectClient()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb_client_physical_explain_{Guid.NewGuid():N}.db");
+
+        try
+        {
+            await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
+            {
+                DataSource = dbPath,
+            });
+
+            Assert.Null((await client.ExecuteSqlAsync(
+                """
+                CREATE TABLE direct_plan (
+                    id INTEGER PRIMARY KEY,
+                    payload TEXT
+                );
+                INSERT INTO direct_plan VALUES (1, 'alpha'), (2, 'beta');
+                """,
+                ct)).Error);
+
+            var planned = await client.ExecuteSqlAsync(
+                "EXPLAIN SELECT payload FROM direct_plan WHERE id = 2;",
+                ct);
+            AssertPhysicalPlanContract(planned);
+
+            int actualRows = Array.IndexOf(planned.ColumnNames!, "actual_rows");
+            Assert.All(planned.Rows!, row => Assert.Null(row[actualRows]));
+
+            var analyzed = await client.ExecuteSqlAsync(
+                "EXPLAIN ANALYZE SELECT payload FROM direct_plan WHERE id = 2;",
+                ct);
+            AssertPhysicalPlanContract(analyzed);
+
+            int operatorType = Array.IndexOf(analyzed.ColumnNames!, "operator_type");
+            actualRows = Array.IndexOf(analyzed.ColumnNames!, "actual_rows");
+            object?[] lookup = Assert.Single(
+                analyzed.Rows!,
+                row => Equals(row[operatorType], "primary_key_lookup"));
+            Assert.Equal(1L, lookup[actualRows]);
         }
         finally
         {
@@ -89,7 +142,7 @@ public sealed class ClientSqlExecutionTests
     }
 
     [Fact]
-    public async Task ExecuteSqlAsync_ReturnsQueryColumnTypes()
+    public async Task ExecuteSqlAsync_ReturnsQueryColumnMetadata()
     {
         var ct = TestContext.Current.CancellationToken;
         string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_client_test_{Guid.NewGuid():N}.db");
@@ -110,8 +163,10 @@ public sealed class ClientSqlExecutionTests
             Assert.True(result.IsQuery);
             Assert.NotNull(result.ColumnNames);
             Assert.NotNull(result.ColumnTypes);
+            Assert.NotNull(result.ColumnNullability);
             Assert.Equal(["id", "code", "amount"], result.ColumnNames);
             Assert.Equal(["INTEGER", "TEXT", "REAL"], result.ColumnTypes);
+            Assert.Equal([true, true, true], result.ColumnNullability);
         }
         finally
         {
@@ -242,6 +297,21 @@ public sealed class ClientSqlExecutionTests
             DeleteIfExists(dbPath);
             DeleteIfExists(dbPath + ".wal");
         }
+    }
+
+    private static void AssertPhysicalPlanContract(SqlExecutionResult result)
+    {
+        Assert.Null(result.Error);
+        Assert.True(result.IsQuery);
+        Assert.NotNull(result.Rows);
+        Assert.NotEmpty(result.Rows);
+        Assert.Equal(15, result.ColumnNames?.Length);
+        Assert.Equal(result.ColumnNames?.Length, result.ColumnTypes?.Length);
+        Assert.Equal(result.ColumnNames?.Length, result.ColumnNullability?.Length);
+        Assert.Contains("operator_type", result.ColumnNames!);
+        Assert.Contains("estimated_rows", result.ColumnNames!);
+        Assert.Contains("actual_rows", result.ColumnNames!);
+        Assert.Contains("elapsed_microseconds", result.ColumnNames!);
     }
 
     private static void DeleteIfExists(string path)

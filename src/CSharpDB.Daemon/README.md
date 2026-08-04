@@ -471,9 +471,13 @@ dotnet publish src/CSharpDB.Daemon/CSharpDB.Daemon.csproj -c Release -r linux-x6
 Release archive publish:
 
 ```powershell
-.\scripts\Publish-CSharpDbDaemonRelease.ps1 -Version 3.4.0 -Runtime win-x64
-.\scripts\Publish-CSharpDbDaemonRelease.ps1 -Version 3.4.0 -Runtime linux-x64
-.\scripts\Publish-CSharpDbDaemonRelease.ps1 -Version 3.4.0 -Runtime osx-arm64
+$Version = (Read-Host 'Release version without the v prefix').Trim()
+if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') {
+  throw 'Enter a semantic release version in major.minor.patch form.'
+}
+.\scripts\Publish-CSharpDbDaemonRelease.ps1 -Version $Version -Runtime win-x64
+.\scripts\Publish-CSharpDbDaemonRelease.ps1 -Version $Version -Runtime linux-x64
+.\scripts\Publish-CSharpDbDaemonRelease.ps1 -Version $Version -Runtime osx-arm64
 ```
 
 ### 3. Sidecar-Style Deployment
@@ -734,7 +738,7 @@ Important files:
 
 ## Status
 
-This README documents the current daemon implementation, v3.4.0 service
-packaging, v3.4.0 REST/gRPC host consolidation, and opt-in API-key security.
+This README documents the current daemon implementation, service packaging,
+REST/gRPC host consolidation, and opt-in API-key security.
 Authorization, TLS/mTLS helpers, and marketplace distribution remain tracked in
 the [CSharpDB roadmap](https://csharpdb.com/roadmap.html).

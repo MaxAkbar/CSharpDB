@@ -133,9 +133,11 @@ public sealed class TableArchiveDataCompareTarget : IDataCompareTarget
     private static ClientTableSchema MapTableSchema(CSharpDB.Primitives.TableSchema schema)
         => new()
         {
+            SchemaId = schema.SchemaId,
             TableName = schema.TableName,
             Columns = schema.Columns.Select(column => new ClientColumnDefinition
             {
+                SchemaId = column.SchemaId,
                 Name = column.Name,
                 Type = MapDbType(column.Type),
                 Nullable = column.Nullable,
@@ -147,6 +149,11 @@ public sealed class TableArchiveDataCompareTarget : IDataCompareTarget
             }).ToArray(),
             ForeignKeys = schema.ForeignKeys.Select(foreignKey => new ClientForeignKeyDefinition
             {
+                SchemaId = foreignKey.SchemaId,
+                ColumnSchemaIds = foreignKey.ColumnSchemaIds.ToArray(),
+                ReferencedTableSchemaId = foreignKey.ReferencedTableSchemaId,
+                ReferencedColumnSchemaIds = foreignKey.ReferencedColumnSchemaIds.ToArray(),
+                ReferencedKeySchemaId = foreignKey.ReferencedKeySchemaId,
                 ConstraintName = foreignKey.ConstraintName,
                 ColumnName = foreignKey.ColumnName,
                 ReferencedTableName = foreignKey.ReferencedTableName,
@@ -161,12 +168,25 @@ public sealed class TableArchiveDataCompareTarget : IDataCompareTarget
                 {
                     PrimitiveForeignKeyOnDeleteAction.Restrict => ClientForeignKeyOnDeleteAction.Restrict,
                     PrimitiveForeignKeyOnDeleteAction.Cascade => ClientForeignKeyOnDeleteAction.Cascade,
+                    PrimitiveForeignKeyOnDeleteAction.NoAction => ClientForeignKeyOnDeleteAction.NoAction,
+                    PrimitiveForeignKeyOnDeleteAction.SetNull => ClientForeignKeyOnDeleteAction.SetNull,
+                    PrimitiveForeignKeyOnDeleteAction.SetDefault => ClientForeignKeyOnDeleteAction.SetDefault,
                     _ => throw new ArgumentOutOfRangeException(nameof(foreignKey.OnDelete), foreignKey.OnDelete, null),
+                },
+                OnUpdate = foreignKey.OnUpdate switch
+                {
+                    PrimitiveForeignKeyOnDeleteAction.Restrict => ClientForeignKeyOnDeleteAction.Restrict,
+                    PrimitiveForeignKeyOnDeleteAction.Cascade => ClientForeignKeyOnDeleteAction.Cascade,
+                    PrimitiveForeignKeyOnDeleteAction.NoAction => ClientForeignKeyOnDeleteAction.NoAction,
+                    PrimitiveForeignKeyOnDeleteAction.SetNull => ClientForeignKeyOnDeleteAction.SetNull,
+                    PrimitiveForeignKeyOnDeleteAction.SetDefault => ClientForeignKeyOnDeleteAction.SetDefault,
+                    _ => throw new ArgumentOutOfRangeException(nameof(foreignKey.OnUpdate), foreignKey.OnUpdate, null),
                 },
                 SupportingIndexName = foreignKey.SupportingIndexName,
             }).ToArray(),
             KeyConstraints = schema.KeyConstraints.Select(key => new CSharpDB.Client.Models.KeyConstraintDefinition
             {
+                SchemaId = key.SchemaId,
                 ConstraintName = key.ConstraintName,
                 Kind = key.Kind switch
                 {
@@ -179,6 +199,7 @@ public sealed class TableArchiveDataCompareTarget : IDataCompareTarget
             }).ToArray(),
             CheckConstraints = schema.CheckConstraints.Select(check => new CSharpDB.Client.Models.CheckConstraintDefinition
             {
+                SchemaId = check.SchemaId,
                 ConstraintName = check.ConstraintName,
                 ExpressionSql = check.ExpressionSql,
                 ColumnName = check.ColumnName,

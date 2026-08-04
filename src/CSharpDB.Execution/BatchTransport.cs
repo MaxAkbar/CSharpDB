@@ -2,17 +2,33 @@ using CSharpDB.Primitives;
 
 namespace CSharpDB.Execution;
 
-internal sealed class BatchToRowOperatorAdapter : IOperator, IRowBufferReuseController, IBatchBackedRowOperator
+internal sealed class BatchToRowOperatorAdapter :
+    IOperator,
+    IRowBufferReuseController,
+    IBatchBackedRowOperator,
+    IPhysicalOperatorChildren
 {
     private readonly IBatchOperator _source;
+    private readonly IOperator? _physicalSource;
     private bool _reuseCurrentRowBuffer = true;
     private DbValue[]? _rowBuffer;
     private int _batchRowIndex;
 
     public BatchToRowOperatorAdapter(IBatchOperator source)
     {
-        _source = source;
-        OutputSchema = source.OutputSchema;
+        ArgumentNullException.ThrowIfNull(source);
+
+        if (source is IOperator rowSource)
+        {
+            _physicalSource = PhysicalPlanCapture.WrapIfActive(rowSource);
+            _source = (IBatchOperator)_physicalSource;
+        }
+        else
+        {
+            _source = source;
+        }
+
+        OutputSchema = _source.OutputSchema;
         _batchRowIndex = -1;
     }
 
@@ -20,6 +36,8 @@ internal sealed class BatchToRowOperatorAdapter : IOperator, IRowBufferReuseCont
     public bool ReusesCurrentRowBuffer => _reuseCurrentRowBuffer;
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public IBatchOperator BatchSource => _source;
+    IReadOnlyList<IOperator> IPhysicalOperatorChildren.PhysicalChildren =>
+        _physicalSource is null ? Array.Empty<IOperator>() : [_physicalSource];
 
     public async ValueTask OpenAsync(CancellationToken ct = default)
     {
@@ -85,12 +103,23 @@ internal sealed class BatchToRowOperatorAdapter : IOperator, IRowBufferReuseCont
 internal static class BatchSourceHelper
 {
     public static IBatchOperator? TryGetBatchSource(IOperator source)
-        => source switch
+    {
+        if (source is PhysicalProfilingOperator profiled)
+        {
+            if (profiled is IBatchOperator profiledBatch)
+                return profiledBatch;
+            if (profiled is IBatchBackedRowOperator profiledBatchBacked)
+                return profiledBatchBacked.BatchSource;
+            return null;
+        }
+
+        return source switch
         {
             IBatchOperator batchOperator => batchOperator,
             IBatchBackedRowOperator batchBacked => batchBacked.BatchSource,
             _ => null,
         };
+    }
 }
 
 internal interface IUnaryOperatorSource

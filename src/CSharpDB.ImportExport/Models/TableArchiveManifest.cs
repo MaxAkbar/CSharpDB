@@ -5,8 +5,9 @@ public sealed class TableArchiveManifest
     public const int CurrentFormatVersion = 3;
     public const int RowVersionFormatVersion = 4;
     public const int SchemaFidelityFormatVersion = 5;
+    public const int ReferentialActionsFormatVersion = 6;
     public const int IntegrityFormatVersion = SchemaFidelityFormatVersion;
-    public const int LatestFormatVersion = IntegrityFormatVersion;
+    public const int LatestFormatVersion = ReferentialActionsFormatVersion;
 
     public int FormatVersion { get; init; } = LatestFormatVersion;
     public required string SourceTableName { get; init; }

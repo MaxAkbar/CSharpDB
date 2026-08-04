@@ -10,7 +10,8 @@ public sealed record ColumnResponse(
     bool IsIdentity,
     bool IsRowVersion,
     string? Collation,
-    string? DefaultSql);
+    string? DefaultSql,
+    Guid SchemaId = default);
 public sealed record ForeignKeyResponse(
     string ConstraintName,
     string ColumnName,
@@ -19,16 +20,24 @@ public sealed record ForeignKeyResponse(
     string OnDelete,
     string SupportingIndexName,
     IReadOnlyList<string>? ColumnNames = null,
-    IReadOnlyList<string>? ReferencedColumnNames = null);
+    IReadOnlyList<string>? ReferencedColumnNames = null,
+    Guid SchemaId = default,
+    IReadOnlyList<Guid>? ColumnSchemaIds = null,
+    Guid ReferencedTableSchemaId = default,
+    IReadOnlyList<Guid>? ReferencedColumnSchemaIds = null,
+    Guid ReferencedKeySchemaId = default,
+    string OnUpdate = "Restrict");
 public sealed record KeyConstraintResponse(
     string? ConstraintName,
     string Kind,
     IReadOnlyList<string> Columns,
-    string? BackingIndexName);
+    string? BackingIndexName,
+    Guid SchemaId = default);
 public sealed record CheckConstraintResponse(
     string? ConstraintName,
     string ExpressionSql,
-    string? ColumnName);
+    string? ColumnName,
+    Guid SchemaId = default);
 
 public sealed record TableSchemaResponse(
     string TableName,
@@ -36,7 +45,8 @@ public sealed record TableSchemaResponse(
     IReadOnlyList<ForeignKeyResponse> ForeignKeys,
     IReadOnlyList<KeyConstraintResponse> KeyConstraints,
     IReadOnlyList<CheckConstraintResponse> CheckConstraints,
-    long NextRowId);
+    long NextRowId,
+    Guid SchemaId = default);
 
 // ─── Browse ─────────────────────────────────────────────────
 
@@ -46,7 +56,8 @@ public sealed record BrowseResponse(
     int TotalRows,
     int Page,
     int PageSize,
-    int TotalPages);
+    int TotalPages,
+    string[]? ColumnTypes = null);
 
 // ─── Counts / Mutations ─────────────────────────────────────
 
@@ -75,7 +86,8 @@ public sealed record SqlResultResponse(
     IReadOnlyList<Dictionary<string, object?>>? Rows,
     int RowsAffected,
     string? Error,
-    double ElapsedMs);
+    double ElapsedMs,
+    bool[]? ColumnNullability = null);
 
 public sealed record ShardSqlExecutionResultResponse(
     string ShardId,

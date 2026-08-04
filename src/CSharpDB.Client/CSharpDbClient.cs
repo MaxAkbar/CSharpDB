@@ -5,7 +5,12 @@ using CSharpDB.Storage.Diagnostics;
 
 namespace CSharpDB.Client;
 
-public sealed class CSharpDbClient : ICSharpDbClient, IEngineBackedClient, ICSharpDbTableArchiveProgressExporter, ICSharpDbTransactionalSnapshotReader
+public sealed class CSharpDbClient :
+    ICSharpDbClient,
+    IEngineBackedClient,
+    ICSharpDbTableArchiveProgressExporter,
+    ICSharpDbTransactionalSnapshotReader,
+    ICSharpDbTransactionalSchemaIdentityWriter
 {
     private readonly ICSharpDbClient _inner;
 
@@ -51,6 +56,9 @@ public sealed class CSharpDbClient : ICSharpDbClient, IEngineBackedClient, ICSha
         => _inner is ICSharpDbTableArchiveExporter exporter && exporter.SupportsTableArchiveExport;
     public bool SupportsTransactionalSnapshotReads
         => _inner is ICSharpDbTransactionalSnapshotReader reader && reader.SupportsTransactionalSnapshotReads;
+    public bool SupportsTransactionalSchemaIdentityWrites
+        => _inner is ICSharpDbTransactionalSchemaIdentityWriter writer &&
+           writer.SupportsTransactionalSchemaIdentityWrites;
 
     public Task<DatabaseInfo> GetInfoAsync(CancellationToken ct = default) => _inner.GetInfoAsync(ct);
     public Task<IReadOnlyList<string>> GetTableNamesAsync(CancellationToken ct = default) => _inner.GetTableNamesAsync(ct);
@@ -149,6 +157,22 @@ public sealed class CSharpDbClient : ICSharpDbClient, IEngineBackedClient, ICSha
         => _inner is ICSharpDbTransactionalSnapshotReader reader && reader.SupportsTransactionalSnapshotReads
             ? reader.TryOpenForwardOnlyQueryCursorAsync(transactionId, sql, ct)
             : ValueTask.FromResult<ForwardOnlyQueryCursor?>(null);
+
+    public ValueTask ApplyTableSchemaIdentitiesAsync(
+        string transactionId,
+        string tableName,
+        TableSchema identitySource,
+        CancellationToken ct = default)
+        => _inner is ICSharpDbTransactionalSchemaIdentityWriter writer &&
+           writer.SupportsTransactionalSchemaIdentityWrites
+            ? writer.ApplyTableSchemaIdentitiesAsync(
+                transactionId,
+                tableName,
+                identitySource,
+                ct)
+            : ValueTask.FromException(
+                new CSharpDbClientException(
+                    "Transactional schema identity writes are only available for direct CSharpDB transports."));
 
     public async ValueTask<ForwardOnlyQueryCursor?> TryOpenForwardOnlyQueryCursorAsync(string sql, CancellationToken ct = default)
     {

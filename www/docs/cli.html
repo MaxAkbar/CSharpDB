@@ -287,7 +287,8 @@ csdb&gt; .quit</code></pre></div>
       "columnName": "customer_id",
       "referencedTableName": "customers",
       "referencedColumnName": "id",
-      "onDelete": "Restrict"
+      "onDelete": "SetDefault",
+      "onUpdate": "Cascade"
     }
   ]
 }</code></pre></div>
@@ -302,6 +303,7 @@ csdb&gt; .quit</code></pre></div>
                 <ul>
                     <li><code>--validate-only</code> reports sampled violations without mutating the database.</li>
                     <li><code>--backup</code> writes a committed snapshot before apply mode starts.</li>
+                    <li><code>onDelete</code> and <code>onUpdate</code> accept the enum names <code>Restrict</code>, <code>NoAction</code>, <code>Cascade</code>, <code>SetNull</code>, and <code>SetDefault</code>.</li>
                     <li>For HTTP or gRPC transports, the spec path and backup path are resolved on the connected host.</li>
                 </ul>
 

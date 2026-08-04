@@ -657,6 +657,7 @@ public static class CsvRetainedMigrationBenchmark
         {
             Name = $"CsvRetained_{phase}_{scenario.Name}",
             TotalOps = scenario.RowCount,
+            LatencySamples = 1,
             ElapsedMs = timed.ElapsedMs,
             ExtraInfo =
                 $"{phaseInfo}, allocatedBytes={timed.AllocatedBytes}, " +

@@ -123,6 +123,7 @@ public static class WriteTransactionDiagnosticsBenchmark
         {
             Name = $"WriteTransactionDiagnostics_{scenario.Name}_10s",
             TotalOps = stats.SuccessfulCommits,
+            LatencySamples = histogram.SampleCount,
             ElapsedMs = stats.ElapsedMs,
             P50Ms = histogram.Percentile(0.50),
             P90Ms = histogram.Percentile(0.90),

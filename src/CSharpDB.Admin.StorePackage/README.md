@@ -6,7 +6,8 @@ the Microsoft Store build of CSharpDB Studio.
 The maintainer path is:
 
 ```powershell
-.\scripts\Publish-CSharpDbAdminStorePackage.ps1 -Version 3.9.0
+$Version = (Read-Host 'Release version without the v prefix').Trim()
+.\scripts\Publish-CSharpDbAdminStorePackage.ps1 -Version $Version
 ```
 
 The script publishes the existing `CSharpDB.Admin` web host and the

@@ -187,6 +187,7 @@ public static class EfCoreComparisonBenchmark
         {
             Name = source.Name,
             TotalOps = totalOps ?? source.TotalOps,
+            LatencySamples = source.LatencySamples,
             ElapsedMs = source.ElapsedMs,
             P50Ms = source.P50Ms,
             P90Ms = source.P90Ms,

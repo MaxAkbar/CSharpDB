@@ -234,6 +234,7 @@ public static class DataModelGraphBuilder
                 IsRowVersion = columnMetadata.IsRowVersion,
                 Nullable = columnMetadata.Nullable,
                 Collation = columnMetadata.Collation,
+                DefaultSql = columnMetadata.DefaultSql,
                 IsForeignKey = foreignKeyColumns.Contains(columnMetadata.Name),
                 IsIndexed = indexedColumns.Contains(columnMetadata.Name),
             }).ToList(),
@@ -270,6 +271,7 @@ public static class DataModelGraphBuilder
                     IsResolved = resolved,
                     ConstraintName = foreignKey.ConstraintName,
                     OnDelete = foreignKey.OnDelete,
+                    OnUpdate = foreignKey.OnUpdate,
                     Warning = resolved
                         ? null
                         : $"Relationship target '{foreignKey.ReferencedTableName}' is not on the canvas.",
@@ -320,6 +322,7 @@ public static class DataModelGraphBuilder
             IsRowVersion = column.IsRowVersion,
             Nullable = column.Nullable,
             Collation = column.Collation,
+            DefaultSql = column.DefaultSql,
             IsForeignKey = column.IsForeignKey,
             IsIndexed = column.IsIndexed,
         }).ToList(),
@@ -336,6 +339,7 @@ public static class DataModelGraphBuilder
         IsResolved = relationship.IsResolved,
         ConstraintName = relationship.ConstraintName,
         OnDelete = relationship.OnDelete,
+        OnUpdate = relationship.OnUpdate,
         Warning = relationship.Warning,
     };
 
@@ -358,6 +362,7 @@ public static class DataModelGraphBuilder
             IsRowVersion = column.IsRowVersion,
             Nullable = column.Nullable,
             Collation = column.Collation,
+            DefaultSql = column.DefaultSql,
             IsForeignKey = column.IsForeignKey,
             IsIndexed = column.IsIndexed,
         }).ToList(),
@@ -365,6 +370,7 @@ public static class DataModelGraphBuilder
         ReferencedColumnName = operation.ReferencedColumnName,
         ConstraintName = operation.ConstraintName,
         OnDelete = operation.OnDelete,
+        OnUpdate = operation.OnUpdate,
         Description = operation.Description,
     };
 }

@@ -341,7 +341,21 @@ public sealed class CSharpDbRpcService(ICSharpDbClient client) : CSharpDbRpc.CSh
         if (TryCreateStatelessTemporaryTableSqlRejection(request.Sql, out var rejection))
             return Task.FromResult(GrpcModelMapper.ToMessage(rejection));
 
-        return ExecuteAsync(context, ct => client.ExecuteSqlAsync(request.Sql, ct), GrpcModelMapper.ToMessage);
+        return ExecuteAsync(
+            context,
+            async ct =>
+            {
+                SqlExecutionResult result = await client.ExecuteSqlAsync(request.Sql, ct).ConfigureAwait(false);
+                if (result.ErrorCode == CoreErrorCode.ResourceLimitExceeded)
+                {
+                    throw new CoreDbException(
+                        result.ErrorCode.Value,
+                        result.Error ?? "The SQL execution resource limit was exceeded.");
+                }
+
+                return result;
+            },
+            GrpcModelMapper.ToMessage);
     }
 
     public override Task<TransactionSessionInfoMessage> BeginTransaction(Empty request, ServerCallContext context)
@@ -537,6 +551,7 @@ public sealed class CSharpDbRpcService(ICSharpDbClient client) : CSharpDbRpc.CSh
             CoreErrorCode.SyntaxError or CoreErrorCode.TypeMismatch => StatusCode.InvalidArgument,
             CoreErrorCode.ConstraintViolation => StatusCode.FailedPrecondition,
             CoreErrorCode.Busy => StatusCode.Aborted,
+            CoreErrorCode.ResourceLimitExceeded => StatusCode.ResourceExhausted,
             CoreErrorCode.IoError or CoreErrorCode.JournalError or CoreErrorCode.WalError => StatusCode.Unavailable,
             CoreErrorCode.CorruptDatabase => StatusCode.DataLoss,
             _ => StatusCode.Unknown,

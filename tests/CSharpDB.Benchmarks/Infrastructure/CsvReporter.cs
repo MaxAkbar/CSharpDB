@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 
 namespace CSharpDB.Benchmarks.Infrastructure;
@@ -13,24 +14,25 @@ public static class CsvReporter
     public static void WriteResults(string outputPath, IReadOnlyList<BenchmarkResult> results)
     {
         var sb = new StringBuilder();
-        sb.AppendLine("Name,TotalOps,ElapsedMs,OpsPerSec,P50,P90,P95,P99,P999,Min,Max,Mean,StdDev,ExtraInfo");
+        sb.AppendLine("Name,TotalOps,LatencySamples,ElapsedMs,OpsPerSec,P50,P90,P95,P99,P999,Min,Max,Mean,StdDev,ExtraInfo");
 
         foreach (var r in results)
         {
             sb.AppendLine(string.Join(",",
                 Escape(r.Name),
-                r.TotalOps,
-                r.ElapsedMs.ToString("F2"),
-                r.OpsPerSecond.ToString("F1"),
-                r.P50Ms.ToString("F4"),
-                r.P90Ms.ToString("F4"),
-                r.P95Ms.ToString("F4"),
-                r.P99Ms.ToString("F4"),
-                r.P999Ms.ToString("F4"),
-                r.MinMs.ToString("F4"),
-                r.MaxMs.ToString("F4"),
-                r.MeanMs.ToString("F4"),
-                r.StdDevMs.ToString("F4"),
+                r.TotalOps.ToString(CultureInfo.InvariantCulture),
+                r.LatencySamples.ToString(CultureInfo.InvariantCulture),
+                r.ElapsedMs.ToString("F2", CultureInfo.InvariantCulture),
+                r.OpsPerSecond.ToString("F1", CultureInfo.InvariantCulture),
+                r.P50Ms.ToString("F4", CultureInfo.InvariantCulture),
+                r.P90Ms.ToString("F4", CultureInfo.InvariantCulture),
+                r.P95Ms.ToString("F4", CultureInfo.InvariantCulture),
+                r.P99Ms.ToString("F4", CultureInfo.InvariantCulture),
+                r.P999Ms.ToString("F4", CultureInfo.InvariantCulture),
+                r.MinMs.ToString("F4", CultureInfo.InvariantCulture),
+                r.MaxMs.ToString("F4", CultureInfo.InvariantCulture),
+                r.MeanMs.ToString("F4", CultureInfo.InvariantCulture),
+                r.StdDevMs.ToString("F4", CultureInfo.InvariantCulture),
                 Escape(r.ExtraInfo ?? "")));
         }
 

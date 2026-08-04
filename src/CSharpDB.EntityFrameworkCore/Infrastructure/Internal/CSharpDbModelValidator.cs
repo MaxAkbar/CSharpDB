@@ -247,6 +247,18 @@ public sealed class CSharpDbModelValidator : RelationalModelValidator
 
     private static void ValidateForeignKey(IEntityType entityType, IForeignKey foreignKey)
     {
+        if (foreignKey.DeleteBehavior == DeleteBehavior.SetNull)
+        {
+            if (foreignKey.Properties.All(static property => property.IsNullable))
+                return;
+
+            string properties = string.Join(
+                ", ",
+                foreignKey.Properties.Select(static property => property.Name));
+            throw new NotSupportedException(
+                $"Foreign key '{entityType.DisplayName()}.({properties})' uses SetNull, but every dependent property must be nullable for database-side ON DELETE SET NULL.");
+        }
+
         if (foreignKey.DeleteBehavior == DeleteBehavior.ClientSetNull)
         {
             if (!foreignKey.IsRequired &&

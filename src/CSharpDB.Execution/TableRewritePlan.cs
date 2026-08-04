@@ -1,3 +1,4 @@
+using System.Text;
 using CSharpDB.Primitives;
 
 namespace CSharpDB.Execution;
@@ -9,6 +10,9 @@ namespace CSharpDB.Execution;
 /// </summary>
 internal sealed class TableRewritePlan
 {
+    private static readonly UTF8Encoding StrictUtf8 =
+        new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+
     private readonly TableRewriteColumnMapping[] _columns;
     private readonly int? _targetRowIdSourceOrdinal;
 
@@ -54,6 +58,24 @@ internal sealed class TableRewritePlan
             {
                 throw new ArgumentException(
                     $"Target column '{targetSchema.Columns[i].Name}' has an invalid REAL-to-INTEGER rewrite mapping.",
+                    nameof(columns));
+            }
+
+            if (mapping.Conversion == TableRewriteValueConversion.TextToBlob &&
+                (sourceSchema.Columns[sourceOrdinal].Type != DbType.Text ||
+                 targetSchema.Columns[i].Type != DbType.Blob))
+            {
+                throw new ArgumentException(
+                    $"Target column '{targetSchema.Columns[i].Name}' has an invalid TEXT-to-BLOB rewrite mapping.",
+                    nameof(columns));
+            }
+
+            if (mapping.Conversion == TableRewriteValueConversion.BlobToText &&
+                (sourceSchema.Columns[sourceOrdinal].Type != DbType.Blob ||
+                 targetSchema.Columns[i].Type != DbType.Text))
+            {
+                throw new ArgumentException(
+                    $"Target column '{targetSchema.Columns[i].Name}' has an invalid BLOB-to-TEXT rewrite mapping.",
                     nameof(columns));
             }
         }
@@ -173,6 +195,50 @@ internal sealed class TableRewritePlan
 
                 return DbValue.FromInteger((long)real);
 
+            case TableRewriteValueConversion.TextToBlob:
+                if (value.Type == DbType.Blob)
+                    return value;
+                if (value.Type != DbType.Text)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.TypeMismatch,
+                        $"Cannot convert stored {value.Type} value in column '{qualifiedColumn}' to BLOB.");
+                }
+
+                try
+                {
+                    return DbValue.FromBlob(StrictUtf8.GetBytes(value.AsText));
+                }
+                catch (EncoderFallbackException ex)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.TypeMismatch,
+                        $"Cannot convert stored TEXT value in column '{qualifiedColumn}' to BLOB because it cannot be encoded as valid UTF-8.",
+                        ex);
+                }
+
+            case TableRewriteValueConversion.BlobToText:
+                if (value.Type == DbType.Text)
+                    return value;
+                if (value.Type != DbType.Blob)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.TypeMismatch,
+                        $"Cannot convert stored {value.Type} value in column '{qualifiedColumn}' to TEXT.");
+                }
+
+                try
+                {
+                    return DbValue.FromText(StrictUtf8.GetString(value.AsBlob));
+                }
+                catch (DecoderFallbackException ex)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.TypeMismatch,
+                        $"Cannot convert stored BLOB value in column '{qualifiedColumn}' to TEXT because it is not valid UTF-8.",
+                        ex);
+                }
+
             default:
                 throw new ArgumentOutOfRangeException(nameof(conversion), conversion, null);
         }
@@ -184,6 +250,8 @@ internal enum TableRewriteValueConversion
     None = 0,
     IntegerToReal = 1,
     RealToInteger = 2,
+    TextToBlob = 3,
+    BlobToText = 4,
 }
 
 internal readonly record struct TableRewriteColumnMapping(

@@ -557,6 +557,7 @@ Returns the last error code. `0` = no error, `-1` = generic error. Positive valu
 | 13 | WalError |
 | 14 | Busy |
 | 15 | TransactionConflict |
+| 16 | ResourceLimitExceeded |
 
 #### `csharpdb_clear_error`
 
@@ -1433,9 +1434,9 @@ There are two ways to use CSharpDB on Android, depending on what your app is bui
 
 If your Android app uses .NET MAUI, reference the CSharpDB NuGet package directly — the database runs in-process with no FFI or native builds required:
 
-```xml
-<!-- In your MAUI .csproj -->
-<PackageReference Include="CSharpDB" Version="1.7.0" />
+```powershell
+$PackageVersion = (Read-Host 'CSharpDB package version').Trim()
+dotnet add package CSharpDB --version $PackageVersion
 ```
 
 ```csharp

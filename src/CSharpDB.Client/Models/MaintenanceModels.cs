@@ -69,6 +69,7 @@ public sealed class ForeignKeyMigrationConstraintSpec
     public required string ReferencedTableName { get; init; }
     public string? ReferencedColumnName { get; init; }
     public ForeignKeyOnDeleteAction OnDelete { get; init; } = ForeignKeyOnDeleteAction.Restrict;
+    public ForeignKeyOnDeleteAction OnUpdate { get; init; } = ForeignKeyOnDeleteAction.Restrict;
 }
 
 public sealed class ForeignKeyMigrationResult
@@ -105,6 +106,7 @@ public sealed class ForeignKeyMigrationAppliedConstraint
     public required string ConstraintName { get; init; }
     public required string SupportingIndexName { get; init; }
     public ForeignKeyOnDeleteAction OnDelete { get; init; } = ForeignKeyOnDeleteAction.Restrict;
+    public ForeignKeyOnDeleteAction OnUpdate { get; init; } = ForeignKeyOnDeleteAction.Restrict;
 }
 
 public sealed class DatabaseMaintenanceReport

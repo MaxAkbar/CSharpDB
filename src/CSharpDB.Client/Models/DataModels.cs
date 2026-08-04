@@ -15,6 +15,7 @@ public sealed class ViewBrowseResult
 {
     public required string ViewName { get; init; }
     public required string[] ColumnNames { get; init; }
+    public string[]? ColumnTypes { get; init; }
     public required List<object?[]> Rows { get; init; }
     public required int TotalRows { get; init; }
     public required int Page { get; init; }
@@ -27,9 +28,11 @@ public sealed class SqlExecutionResult
     public bool IsQuery { get; init; }
     public string[]? ColumnNames { get; init; }
     public string[]? ColumnTypes { get; init; }
+    public bool[]? ColumnNullability { get; init; }
     public List<object?[]>? Rows { get; init; }
     public int RowsAffected { get; init; }
     public string? Error { get; init; }
+    public CSharpDB.Primitives.ErrorCode? ErrorCode { get; init; }
     public TimeSpan Elapsed { get; init; }
 }
 

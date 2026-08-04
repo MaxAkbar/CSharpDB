@@ -15,35 +15,75 @@ internal static class SqlReference
         TEXT     (aliases: VARCHAR)        — UTF-8 string (quote with single quotes, escape: '')
         BLOB                              — binary byte array
 
-        ── CONSTRAINTS (column-level only) ──
-        PRIMARY KEY   — one per table, auto-generates rowid if omitted
-        IDENTITY      — INTEGER PRIMARY KEY identity marker (explicit inserts still allowed)
-        AUTOINCREMENT — synonym for IDENTITY
-        NOT NULL      — disallow NULL values
+        ── CONSTRAINTS ──
+        PRIMARY KEY
+          — column or table syntax; table-level logical keys use INTEGER/TEXT
+          — ordered composite INTEGER/TEXT logical keys are supported
+          — a single INTEGER key retains generated row-identity behavior
+        UNIQUE (col [, ...])
+          — table constraint; ordered scalar/composite INTEGER/TEXT candidate key
+        IDENTITY | AUTOINCREMENT
+          — INTEGER PRIMARY KEY identity marker (explicit inserts remain allowed)
+        NOT NULL
+          — column constraint
+        DEFAULT literal
+          — typed INTEGER/REAL/TEXT/BLOB literal or NULL; not an expression/function
+        [CONSTRAINT name] CHECK (expression)
+          — column or table constraint; deterministic row-local expression
+          — no parameters, functions, subqueries, or qualified references
+        [CONSTRAINT name] FOREIGN KEY (child_col [, ...])
+          REFERENCES parent (parent_col [, ...]) [MATCH SIMPLE]
+          [ON DELETE action] [ON UPDATE action]
+          — immediate scalar/composite INTEGER/TEXT relationship
+          — MATCH SIMPLE is the default
+          — action: RESTRICT | NO ACTION | CASCADE | SET NULL | SET DEFAULT
 
         ── CREATE TABLE ──
         CREATE TABLE [IF NOT EXISTS] name (
-          col1 TYPE [PRIMARY KEY] [IDENTITY|AUTOINCREMENT] [NOT NULL],
-          col2 TYPE [NOT NULL],
-          ...
+          col TYPE [PRIMARY KEY] [IDENTITY|AUTOINCREMENT] [NOT NULL]
+                   [COLLATE collation] [DEFAULT literal]
+                   [[CONSTRAINT name] CHECK (expression)]
+                   [REFERENCES parent(parent_col) [MATCH SIMPLE]
+                     [ON DELETE action] [ON UPDATE action]],
+          ...,
+          [[CONSTRAINT name] CHECK (expression)],
+          [[CONSTRAINT name] PRIMARY KEY (col [, ...])],
+          [[CONSTRAINT name] UNIQUE (col [, ...])],
+          [[CONSTRAINT name] FOREIGN KEY (col [, ...])
+             REFERENCES parent (parent_col [, ...]) [MATCH SIMPLE]
+             [ON DELETE action] [ON UPDATE action]]
         )
+
+        CREATE TEMP|TEMPORARY TABLE [IF NOT EXISTS] name (...)
+          — session-scoped; use a remote transaction session for HTTP/gRPC
+        PERSIST TEMP|TEMPORARY TABLE temp_name AS durable_name
+        DROP TEMP|TEMPORARY TABLE [IF EXISTS] name
 
         ── INSERT ──
         INSERT INTO table [(col1, col2, ...)] VALUES
-          (val1, val2, ...),
-          (val1, val2, ...)
+          (value_or_DEFAULT, ...), ...
+        INSERT INTO table DEFAULT VALUES
 
         ── SELECT ──
         [WITH cte AS (SELECT ...) [, cte2 AS (SELECT ...)]]
-        SELECT [col | expr [AS alias] | * ] , ...
-        FROM table [alias]
-          [INNER JOIN | LEFT [OUTER] JOIN | RIGHT [OUTER] JOIN | CROSS JOIN] table2 ON cond
+        SELECT [DISTINCT] [col | expr [AS alias] | *], ...
+        [FROM table [alias]
+          [[INNER JOIN | LEFT [OUTER] JOIN | RIGHT [OUTER] JOIN] table2 ON cond
+           | CROSS JOIN table2]]
         [WHERE expr]
         [GROUP BY expr, ...]
         [HAVING expr]
         [ORDER BY expr [ASC|DESC], ...]
         [LIMIT n]
         [OFFSET n]
+
+        Scalar, IN/NOT IN, and EXISTS/NOT EXISTS subqueries are supported.
+        Correlated subqueries are supported in WHERE, non-aggregate projection,
+        and UPDATE/DELETE expressions, but not JOIN ON, GROUP BY, HAVING,
+        ORDER BY, or aggregate projections.
+        Set operations: UNION, UNION ALL, INTERSECT, EXCEPT.
+        Trailing ORDER BY/LIMIT/OFFSET applies to the compound result.
+        WITH supports non-recursive CTEs and optional output-column lists.
 
         ── UPDATE ──
         UPDATE table SET col1 = expr, col2 = expr, ... [WHERE expr]
@@ -55,10 +95,23 @@ internal static class SqlReference
         DROP TABLE [IF EXISTS] name
 
         ── ALTER TABLE ──
-        ALTER TABLE name ADD [COLUMN] col TYPE [NOT NULL]
+        ALTER TABLE name ADD [COLUMN] col TYPE [constraints]
+        ALTER TABLE name ADD CONSTRAINT constraint
         ALTER TABLE name DROP [COLUMN] col
+        ALTER TABLE name DROP CONSTRAINT constraint_name
+        ALTER TABLE name DROP PRIMARY KEY
+        ALTER TABLE name ALTER COLUMN col TYPE INTEGER|REAL|TEXT|BLOB
+        ALTER TABLE name ALTER COLUMN col SET DEFAULT literal
+        ALTER TABLE name ALTER COLUMN col DROP DEFAULT
+        ALTER TABLE name ALTER COLUMN col SET NOT NULL | DROP NOT NULL
+        ALTER TABLE name ALTER COLUMN col SET COLLATION collation | DROP COLLATION
         ALTER TABLE name RENAME TO new_name
         ALTER TABLE name RENAME [COLUMN] old TO new
+        ALTER TABLE name RENAME INDEX old TO new
+
+        ALTER support is dependency-checked and deliberately bounded. In particular,
+        physical rekey, type, and collation rewrites reject unsupported dependency
+        shapes before mutation; consult the public SQL reference for those limits.
 
         ── CREATE INDEX ──
         CREATE [UNIQUE] INDEX [IF NOT EXISTS] idx ON table (col [, col, ...])
@@ -75,23 +128,47 @@ internal static class SqlReference
         ── CREATE TRIGGER ──
         CREATE TRIGGER [IF NOT EXISTS] name
           BEFORE|AFTER INSERT|UPDATE|DELETE ON table
-          [FOR EACH ROW] [WHEN (condition)]
+          [FOR EACH ROW]
         BEGIN
           statement; ...
         END
 
         Use NEW.col for inserted/updated values, OLD.col for previous/deleted values.
+        Trigger WHEN conditions are not supported and are rejected before persistence.
 
         ── DROP TRIGGER ──
         DROP TRIGGER [IF EXISTS] name
 
-        ── TRANSACTIONS ──
-        BEGIN
-        COMMIT
-        ROLLBACK
+        ── OTHER STATEMENTS ──
+        ANALYZE [table]
+        FIND DUPLICATES IN table ON expr [, ...]
+        DEDUP table ON expr [, ...] KEEP FIRST|LAST
+        MERGE DUPLICATES table ON expr [, ...]
+        CREATE VALIDATION RULE name ON table[.column]
+          AS expression MESSAGE 'message'
+        VALIDATE TABLE table
+        FIND ORPHANS IN child[.column] [REFERENCES parent.column]
+
+        ── PLAN INSPECTION ──
+        EXPLAIN [FOR] SELECT|INSERT|UPDATE|DELETE ...
+          — returns the selected physical operator tree without opening it
+        EXPLAIN ANALYZE [FOR] SELECT|INSERT|UPDATE|DELETE ...
+          — executes exactly once and adds actual rows, loops, and elapsed time
+          — profiled DML mutates under normal transaction semantics
+        EXPLAIN ESTIMATE FOR SELECT ...
+          — legacy bounded cardinality-estimate diagnostic
+        estimated_rows is nullable when no planner estimate is available.
+        estimated_cost uses stable relative row-work units, not elapsed time.
+        Physical output is a stable rowset bounded to 500 rows and a 256 KiB
+        inline content budget; that budget is not exact serialized transport size.
+        Predicate literal and parameter values are redacted. Plain EXPLAIN rejects
+        WITH, subquery, view, and duplicate-eliminating compound shapes whose current
+        planning paths would perform eager work; use ANALYZE only when execution is intended.
+        Cancellation and execution errors remain failures. Where safe, ANALYZE attaches
+        a bounded, redacted partial-profile summary to the failure diagnostics.
 
         ── OPERATORS ──
-        Comparison:  =  <>  <  >  <=  >=
+        Comparison:  =  <>  !=  <  >  <=  >=
         Logical:     AND  OR  NOT
         Arithmetic:  +  -  *  /
         Pattern:     LIKE (% = any chars, _ = one char) [ESCAPE 'c']
@@ -99,7 +176,26 @@ internal static class SqlReference
         Membership:  IN (val, val, ...)    NOT IN (val, val, ...)
         Range:       BETWEEN low AND high  NOT BETWEEN low AND high
         Null check:  IS NULL               IS NOT NULL
+        Collation:   expr COLLATE BINARY|NOCASE|NOCASE_AI|ICU:<locale>
         Parameters:  @param_name
+
+        ── SCALAR FUNCTIONS ──
+        Null/choice:
+          TEXT, NZ, ISNULL, ISEMPTY, IIF, SWITCH, CHOOSE,
+          COALESCE, IFNULL, NULLIF
+        Text:
+          LEN/LENGTH, LEFT, RIGHT, MID/SUBSTR/SUBSTRING,
+          TRIM, LTRIM, RTRIM, UPPER/UCASE, LOWER/LCASE,
+          INSTR, ORDINAL_STARTS_WITH, ORDINAL_ENDS_WITH,
+          ORDINAL_CONTAINS, REPLACE, STRCOMP, VAL
+        Date/time:
+          DATE, TIME, NOW/DATETIME, YEAR, MONTH, DAY, HOUR, MINUTE, SECOND,
+          DATEADD, DATEDIFF, DATEPART, DATESERIAL, TIMESERIAL, WEEKDAY, MONTHNAME
+        Numeric/conversion:
+          ABS, ROUND, INT/FLOOR, FIX, SGN,
+          CSTR, CINT/CLNG, CDBL, CBOOL, CDATE, FORMAT
+        Query sys.functions (or sys_functions) for canonical signatures,
+        aliases, null behavior, and volatility.
 
         ── AGGREGATE FUNCTIONS ──
         COUNT(*)              — count all rows
@@ -110,12 +206,21 @@ internal static class SqlReference
         MIN(col)              — minimum value
         MAX(col)              — maximum value
 
-        ── EXPERIMENTAL WINDOW FUNCTIONS ──
+        ── WINDOW FUNCTIONS ──
         ROW_NUMBER(), RANK(), DENSE_RANK()
         COUNT, SUM, AVG, MIN, MAX with OVER (...)
-        Supports one shared PARTITION BY / ORDER BY specification per SELECT.
-        Execution is in-memory; named windows, explicit frames, DISTINCT window
-        aggregates, navigation functions, and mixed grouped aggregates are rejected.
+        LAG(value[, offset[, default]]), LEAD(value[, offset[, default]])
+        FIRST_VALUE(value), LAST_VALUE(value)
+        Explicit ROWS frames support nonnegative integer-literal offsets.
+        Named WINDOW name AS (...) definitions are reused with OVER name.
+        Windows with identical PARTITION BY / ORDER BY can use different frames.
+        Ordered defaults are peer-aware; without ORDER BY the whole partition is used.
+        ASC places NULL first; DESC places NULL last.
+        Default limits: 65,536 rows/partition and 262,144 buffered rows/stage.
+        Exceeding either limit returns ResourceLimitExceeded.
+        Execution is bounded in memory. RANGE/GROUPS/EXCLUDE, DISTINCT windows,
+        incompatible specifications, mixed grouped/subquery windows, NULL-treatment
+        syntax, and disk spill are unsupported.
 
         ── JOIN TYPES ──
         [INNER] JOIN ... ON condition
@@ -123,21 +228,19 @@ internal static class SqlReference
         RIGHT [OUTER] JOIN ... ON condition
         CROSS JOIN ...  (no ON clause, cartesian product)
 
-        ── NOT SUPPORTED ──
-        • SELECT DISTINCT
-        • Subqueries (nested SELECT in WHERE / FROM)
-        • UNION / INTERSECT / EXCEPT
-        • Advanced window functions (LAG, LEAD, named windows, explicit frames)
-        • EXISTS / NOT EXISTS
+        ── INTENTIONALLY NOT SUPPORTED ──
+        • CASE/WHEN and CAST expressions (use IIF/SWITCH and conversion functions)
+        • RETURNING on INSERT/UPDATE/DELETE
+        • UPSERT, REPLACE, INSERT OR REPLACE, and INSERT ... ON CONFLICT
+        • INTERSECT ALL and EXCEPT ALL
+        • WITH RECURSIVE
+        • Unregistered vendor functions such as STRFTIME, CEIL, and POWER
+        • Window forms beyond the bounded slice listed above
         • FULL OUTER JOIN / NATURAL JOIN
-        • DEFAULT, CHECK, FOREIGN KEY, UNIQUE column constraints
-        • String functions (SUBSTR, UPPER, LOWER, TRIM, CONCAT, etc.)
-        • Math functions (ABS, ROUND, CEIL, FLOOR, MOD, etc.)
-        • Date functions (DATE, DATETIME, STRFTIME, etc.)
-        • CAST, COALESCE, NULLIF, IIF, CASE WHEN
-        • Savepoints
-        • RETURNING clause
-        • INSERT ... ON CONFLICT / UPSERT
+        • MATCH FULL, MATCH PARTIAL, and DEFERRABLE foreign keys
+        • Trigger WHEN conditions
+        • SQL CREATE PROCEDURE and CALL (use the client procedure API)
+        • SQL transaction/savepoint statements (use client transaction sessions)
         • Multiple statements in one call (send one at a time)
         """;
 }

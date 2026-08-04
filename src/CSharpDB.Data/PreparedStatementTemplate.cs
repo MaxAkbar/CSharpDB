@@ -135,10 +135,22 @@ internal sealed class PreparedStatementTemplate
                 Expression? where = BindOptionalExpression(select.Where, parameters, out bool whereChanged);
                 var groupBy = BindOptionalExpressionList(select.GroupBy, parameters, out bool groupByChanged);
                 Expression? having = BindOptionalExpression(select.Having, parameters, out bool havingChanged);
+                var windowDefinitions = BindWindowDefinitions(
+                    select.WindowDefinitions,
+                    parameters,
+                    out bool windowDefinitionsChanged);
                 var orderBy = BindOrderByClauses(select.OrderBy, parameters, out bool orderByChanged);
 
-                if (!columnsChanged && !fromChanged && !whereChanged && !groupByChanged && !havingChanged && !orderByChanged)
+                if (!columnsChanged &&
+                    !fromChanged &&
+                    !whereChanged &&
+                    !groupByChanged &&
+                    !havingChanged &&
+                    !windowDefinitionsChanged &&
+                    !orderByChanged)
+                {
                     return select;
+                }
 
                 return new SelectStatement
                 {
@@ -148,6 +160,7 @@ internal sealed class PreparedStatementTemplate
                     Where = where,
                     GroupBy = groupBy,
                     Having = having,
+                    WindowDefinitions = windowDefinitions,
                     OrderBy = orderBy,
                     Limit = select.Limit,
                     Offset = select.Offset,
@@ -246,6 +259,19 @@ internal sealed class PreparedStatementTemplate
                     return explain;
 
                 return new ExplainEstimateStatement { Target = target };
+            }
+
+            case ExplainStatement explain:
+            {
+                Statement target = BindStatement(explain.Target, parameters);
+                if (ReferenceEquals(target, explain.Target))
+                    return explain;
+
+                return new ExplainStatement
+                {
+                    Target = target,
+                    Analyze = explain.Analyze,
+                };
             }
 
             case CreateTriggerStatement trigger:
@@ -551,8 +577,10 @@ internal sealed class PreparedStatementTemplate
                     Function = function,
                     Window = new WindowSpecification
                     {
+                        ReferenceName = window.Window.ReferenceName,
                         PartitionBy = partitionBy,
                         OrderBy = orderBy,
+                        Frame = window.Window.Frame,
                     },
                 };
             }
@@ -684,6 +712,50 @@ internal sealed class PreparedStatementTemplate
         {
             changed = false;
             return clauses;
+        }
+
+        changed = true;
+        return rewritten.ToList();
+    }
+
+    private static List<NamedWindowDefinition> BindWindowDefinitions(
+        List<NamedWindowDefinition> definitions,
+        CSharpDbParameterCollection parameters,
+        out bool changed)
+    {
+        NamedWindowDefinition[]? rewritten = null;
+        for (int i = 0; i < definitions.Count; i++)
+        {
+            NamedWindowDefinition definition = definitions[i];
+            List<Expression> partitionBy = BindExpressionList(
+                definition.Specification.PartitionBy,
+                parameters,
+                out bool partitionChanged);
+            List<OrderByClause> orderBy = BindOrderByClauses(
+                definition.Specification.OrderBy,
+                parameters,
+                out bool orderChanged)!;
+            if (!partitionChanged && !orderChanged)
+                continue;
+
+            rewritten ??= definitions.ToArray();
+            rewritten[i] = new NamedWindowDefinition
+            {
+                Name = definition.Name,
+                Specification = new WindowSpecification
+                {
+                    ReferenceName = definition.Specification.ReferenceName,
+                    PartitionBy = partitionBy,
+                    OrderBy = orderBy,
+                    Frame = definition.Specification.Frame,
+                },
+            };
+        }
+
+        if (rewritten == null)
+        {
+            changed = false;
+            return definitions;
         }
 
         changed = true;
@@ -901,6 +973,15 @@ internal sealed class PreparedStatementTemplate
                         CollectParameterNames(select.GroupBy[i], names, seen);
                 if (select.Having != null)
                     CollectParameterNames(select.Having, names, seen);
+                for (int i = 0; i < select.WindowDefinitions.Count; i++)
+                {
+                    WindowSpecification specification =
+                        select.WindowDefinitions[i].Specification;
+                    for (int j = 0; j < specification.PartitionBy.Count; j++)
+                        CollectParameterNames(specification.PartitionBy[j], names, seen);
+                    for (int j = 0; j < specification.OrderBy.Count; j++)
+                        CollectParameterNames(specification.OrderBy[j].Expression, names, seen);
+                }
                 if (select.OrderBy != null)
                     for (int i = 0; i < select.OrderBy.Count; i++)
                         CollectParameterNames(select.OrderBy[i].Expression, names, seen);
@@ -931,6 +1012,9 @@ internal sealed class PreparedStatementTemplate
                 CollectParameterNames(with.MainQuery, names, seen);
                 return;
             case ExplainEstimateStatement explain:
+                CollectParameterNames(explain.Target, names, seen);
+                return;
+            case ExplainStatement explain:
                 CollectParameterNames(explain.Target, names, seen);
                 return;
             case CreateTriggerStatement trigger:

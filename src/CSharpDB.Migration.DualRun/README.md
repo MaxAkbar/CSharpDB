@@ -7,7 +7,8 @@ substitute for row-count/checksum validation.
 ## Install
 
 ```powershell
-dotnet add package CSharpDB.Migration.DualRun --version 4.3.0
+$PackageVersion = (Read-Host 'CSharpDB package version').Trim()
+dotnet add package CSharpDB.Migration.DualRun --version $PackageVersion
 ```
 
 Install the ADO.NET provider for each external source separately. For the

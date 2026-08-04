@@ -9,6 +9,18 @@ public static class TableEndpoints
     public static RouteGroupBuilder MapTableEndpoints(this RouteGroupBuilder group)
     {
         group.MapGet("/tables", GetTableNames);
+        group.MapGet("/tables/schema", GetTableSchema);
+        group.MapGet("/table-operations/count", GetRowCount);
+        group.MapDelete("/table-operations/table", DropTable);
+        group.MapPatch("/table-operations/table/rename", RenameTable);
+        group.MapPost("/table-operations/columns", AddColumn);
+        group.MapDelete("/table-operations/columns", DropColumn);
+        group.MapPatch("/table-operations/columns/rename", RenameColumn);
+
+        // Retain the original path-based routes for existing callers. New
+        // clients use the separate query-based namespace above so quoted
+        // identifiers that contain path syntax such as '/' round-trip without
+        // route rewriting or shadowing table names.
         group.MapGet("/tables/{name}/schema", GetTableSchema);
         group.MapGet("/tables/{name}/count", GetRowCount);
         group.MapDelete("/tables/{name}", DropTable);
@@ -35,7 +47,7 @@ public static class TableEndpoints
         var response = new TableSchemaResponse(
             schema.TableName,
             schema.Columns.Select(c => new ColumnResponse(
-                c.Name, c.Type.ToString(), c.Nullable, c.IsPrimaryKey, c.IsIdentity, c.IsRowVersion, c.Collation, c.DefaultSql)).ToList(),
+                c.Name, c.Type.ToString(), c.Nullable, c.IsPrimaryKey, c.IsIdentity, c.IsRowVersion, c.Collation, c.DefaultSql, c.SchemaId)).ToList(),
             schema.ForeignKeys.Select(fk => new ForeignKeyResponse(
                 fk.ConstraintName,
                 fk.ColumnName,
@@ -44,17 +56,26 @@ public static class TableEndpoints
                 fk.OnDelete.ToString(),
                 fk.SupportingIndexName,
                 fk.ColumnNames.Count > 0 ? fk.ColumnNames : [fk.ColumnName],
-                fk.ReferencedColumnNames.Count > 0 ? fk.ReferencedColumnNames : [fk.ReferencedColumnName])).ToList(),
+                fk.ReferencedColumnNames.Count > 0 ? fk.ReferencedColumnNames : [fk.ReferencedColumnName],
+                fk.SchemaId,
+                fk.ColumnSchemaIds,
+                fk.ReferencedTableSchemaId,
+                fk.ReferencedColumnSchemaIds,
+                fk.ReferencedKeySchemaId,
+                fk.OnUpdate.ToString())).ToList(),
             schema.KeyConstraints.Select(key => new KeyConstraintResponse(
                 key.ConstraintName,
                 key.Kind.ToString(),
                 key.Columns,
-                key.BackingIndexName)).ToList(),
+                key.BackingIndexName,
+                key.SchemaId)).ToList(),
             schema.CheckConstraints.Select(check => new CheckConstraintResponse(
                 check.ConstraintName,
                 check.ExpressionSql,
-                check.ColumnName)).ToList(),
-            schema.NextRowId);
+                check.ColumnName,
+                check.SchemaId)).ToList(),
+            schema.NextRowId,
+            schema.SchemaId);
 
         return Results.Ok(response);
     }
@@ -79,7 +100,8 @@ public static class TableEndpoints
 
     private static async Task<IResult> AddColumn(string name, AddColumnRequest req, ICSharpDbClient db)
     {
-        if (!Enum.TryParse<DbType>(req.Type, ignoreCase: true, out var dbType))
+        if (!Enum.TryParse<DbType>(req.Type, ignoreCase: true, out var dbType) ||
+            !Enum.IsDefined(dbType))
             return Results.BadRequest(new { error = $"Invalid column type '{req.Type}'. Valid types: Integer, Real, Text, Blob." });
 
         await db.AddColumnAsync(name, req.ColumnName, dbType, req.NotNull, req.Collation);

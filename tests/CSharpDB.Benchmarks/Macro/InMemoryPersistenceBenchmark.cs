@@ -82,6 +82,7 @@ public static class InMemoryPersistenceBenchmark
         {
             Name = result.Name,
             TotalOps = result.TotalOps,
+            LatencySamples = result.LatencySamples,
             ElapsedMs = result.ElapsedMs,
             P50Ms = result.P50Ms,
             P90Ms = result.P90Ms,

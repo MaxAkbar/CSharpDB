@@ -331,6 +331,7 @@ public static class RetainedDatabaseSnapshot
             ImplicitInsertExecutionMode = source.ImplicitInsertExecutionMode,
             AdaptiveQueryReoptimization = source.AdaptiveQueryReoptimization,
             Functions = source.Functions,
+            WindowExecution = source.WindowExecution,
             // Private retained-snapshot copies always use the engine's bounded
             // file-backed composition root. A caller-supplied factory could
             // otherwise redirect the open or replace the bounded pager.
@@ -508,6 +509,7 @@ public sealed class RetainedDatabaseSnapshotSession : IAsyncDisposable
             ColumnNames = foreignKey.ColumnNames.ToArray(),
             ReferencedColumnNames = foreignKey.ReferencedColumnNames.ToArray(),
             OnDelete = foreignKey.OnDelete,
+            OnUpdate = foreignKey.OnUpdate,
             SupportingIndexName = foreignKey.SupportingIndexName,
         }).ToArray(),
         CheckConstraints = schema.CheckConstraints.Select(static check => new CheckConstraintDefinition

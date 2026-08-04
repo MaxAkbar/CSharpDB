@@ -4,6 +4,7 @@ namespace CSharpDB.ImportExport.Models;
 
 public sealed class TableArchiveColumn
 {
+    public Guid SchemaId { get; init; }
     public required string Name { get; init; }
     public required DbType Type { get; init; }
     public bool Nullable { get; init; }
@@ -15,6 +16,7 @@ public sealed class TableArchiveColumn
 
     public static TableArchiveColumn FromColumn(ColumnDefinition column) => new()
     {
+        SchemaId = column.SchemaId,
         Name = column.Name,
         Type = column.Type,
         Nullable = column.Nullable,
@@ -27,6 +29,7 @@ public sealed class TableArchiveColumn
 
     public ColumnDefinition ToColumn() => new()
     {
+        SchemaId = SchemaId,
         Name = Name,
         Type = Type,
         Nullable = Nullable,

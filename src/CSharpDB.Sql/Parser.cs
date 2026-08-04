@@ -142,7 +142,16 @@ public sealed class Parser
         var parser = new Parser(tokens);
         Statement statement = parser.ParseStatement();
         if (parser.Peek().Type != TokenType.Eof)
+        {
+            if (parser._pos > 0 &&
+                tokens[parser._pos - 1].Type == TokenType.Semicolon)
+            {
+                throw parser.Error(
+                    "Multiple statements in one call are not supported; tokens after statement termination must be sent as a separate call.");
+            }
+
             throw parser.Error($"Unexpected token '{parser.Peek().Value}' after statement.");
+        }
         return statement;
     }
 
@@ -156,6 +165,9 @@ public sealed class Parser
             parser.Advance();
         if (parser.Peek().Type != TokenType.Eof)
             throw parser.Error($"Unexpected token '{parser.Peek().Value}' after expression.");
+        parser.ResolveNamedWindowReferences(
+            expression,
+            new Dictionary<string, NamedWindowDefinition>(StringComparer.OrdinalIgnoreCase));
         return expression;
     }
 
@@ -195,6 +207,29 @@ public sealed class Parser
     public Statement ParseStatement()
     {
         var token = Peek();
+        if (IsContextualKeyword(token, "UPSERT") ||
+            IsContextualKeyword(token, "REPLACE"))
+        {
+            throw Error(
+                "UPSERT and REPLACE statements are not supported.");
+        }
+
+        if (IsContextualKeyword(token, "CALL"))
+        {
+            throw Error(
+                "Stored-procedure SQL statements are not supported; use the client API.");
+        }
+
+        if (token.Type == TokenType.Begin ||
+            IsContextualKeyword(token, "COMMIT") ||
+            IsContextualKeyword(token, "ROLLBACK") ||
+            IsContextualKeyword(token, "SAVEPOINT") ||
+            IsContextualKeyword(token, "RELEASE"))
+        {
+            throw Error(
+                "SQL transaction and savepoint statements are not supported; use client transaction sessions.");
+        }
+
         Statement stmt = token.Type switch
         {
             TokenType.Create => ParseCreate(),
@@ -215,6 +250,21 @@ public sealed class Parser
             TokenType.If => ParseConditional(),
             _ => throw Error($"Unexpected token '{token.Value}', expected a statement."),
         };
+
+        if (stmt is InsertStatement or UpdateStatement or DeleteStatement &&
+            IsContextualKeyword(Peek(), "RETURNING"))
+        {
+            throw Error("RETURNING clauses are not supported.");
+        }
+
+        if (stmt is InsertStatement &&
+            Peek().Type == TokenType.On &&
+            _pos + 1 < _tokens.Count &&
+            IsContextualKeyword(_tokens[_pos + 1], "CONFLICT"))
+        {
+            throw Error(
+                "INSERT ... ON CONFLICT is not supported.");
+        }
 
         // Optional trailing semicolon
         if (Peek().Type == TokenType.Semicolon)
@@ -1366,6 +1416,11 @@ public sealed class Parser
             Expect(TokenType.Rule);
             return ParseCreateValidationRuleBody();
         }
+        if (IsContextualKeyword(Peek(), "PROCEDURE"))
+        {
+            throw Error(
+                "CREATE PROCEDURE SQL statements are not supported; use the client API.");
+        }
         if (t is TokenType.Temp or TokenType.Temporary)
         {
             Advance(); // consume TEMP/TEMPORARY
@@ -1698,14 +1753,17 @@ public sealed class Parser
             Expect(TokenType.RightParen);
         }
 
-        ForeignKeyOnDeleteAction onDelete = ParseForeignKeyOnDeleteAction(
-            $"column '{columnName}'");
+        (
+            ForeignKeyOnDeleteAction onDelete,
+            ForeignKeyOnDeleteAction onUpdate) =
+            ParseForeignKeyActions($"column '{columnName}'");
 
         return new ForeignKeyClause
         {
             ReferencedTableName = referencedTableName,
             ReferencedColumnName = referencedColumnName,
             OnDelete = onDelete,
+            OnUpdate = onUpdate,
         };
     }
 
@@ -1726,10 +1784,13 @@ public sealed class Parser
             Expect(TokenType.RightParen);
         }
 
-        ForeignKeyOnDeleteAction onDelete = ParseForeignKeyOnDeleteAction(
-            constraintName is { Length: > 0 }
-                ? $"foreign key constraint '{constraintName}'"
-                : "table-level foreign key");
+        (
+            ForeignKeyOnDeleteAction onDelete,
+            ForeignKeyOnDeleteAction onUpdate) =
+            ParseForeignKeyActions(
+                constraintName is { Length: > 0 }
+                    ? $"foreign key constraint '{constraintName}'"
+                    : "table-level foreign key");
 
         return new ForeignKeyConstraintClause
         {
@@ -1738,6 +1799,7 @@ public sealed class Parser
             ReferencedTableName = referencedTableName,
             ReferencedColumns = referencedColumns,
             OnDelete = onDelete,
+            OnUpdate = onUpdate,
         };
     }
 
@@ -1749,29 +1811,120 @@ public sealed class Parser
         return identifiers;
     }
 
-    private ForeignKeyOnDeleteAction ParseForeignKeyOnDeleteAction(string context)
+    private (
+        ForeignKeyOnDeleteAction OnDelete,
+        ForeignKeyOnDeleteAction OnUpdate) ParseForeignKeyActions(
+            string context)
     {
         var onDelete = ForeignKeyOnDeleteAction.Restrict;
-        if (TryConsume(TokenType.On))
-        {
-            if (!TryConsume(TokenType.Delete))
-                throw Error($"Only ON DELETE is supported for {context}.");
+        var onUpdate = ForeignKeyOnDeleteAction.Restrict;
+        bool hasOnDelete = false;
+        bool hasOnUpdate = false;
+        bool hasMatch = false;
 
-            if (TryConsume(TokenType.Cascade))
+        while (true)
+        {
+            if (TryConsumeContextualKeyword("MATCH"))
             {
-                onDelete = ForeignKeyOnDeleteAction.Cascade;
+                if (hasMatch)
+                    throw Error($"MATCH specified multiple times for {context}.");
+
+                hasMatch = true;
+                string matchKind = Peek().Value.ToUpperInvariant();
+                if (matchKind is not ("SIMPLE" or "FULL" or "PARTIAL"))
+                {
+                    throw Error(
+                        $"Expected SIMPLE, FULL, or PARTIAL after MATCH for {context}.");
+                }
+
+                Advance();
+                if (matchKind is not "SIMPLE")
+                {
+                    throw Error(
+                        $"MATCH {matchKind} foreign-key constraints are not supported; CSharpDB uses MATCH SIMPLE semantics.");
+                }
+
+                continue;
             }
-            else if (TryConsumeContextualKeyword("RESTRICT"))
+
+            if (TryConsume(TokenType.On))
             {
-                onDelete = ForeignKeyOnDeleteAction.Restrict;
+                if (TryConsume(TokenType.Delete))
+                {
+                    if (hasOnDelete)
+                        throw Error($"ON DELETE specified multiple times for {context}.");
+
+                    hasOnDelete = true;
+                    onDelete = ParseForeignKeyAction("ON DELETE", context);
+                }
+                else if (TryConsume(TokenType.Update))
+                {
+                    if (hasOnUpdate)
+                        throw Error($"ON UPDATE specified multiple times for {context}.");
+
+                    hasOnUpdate = true;
+                    onUpdate = ParseForeignKeyAction("ON UPDATE", context);
+                }
+                else
+                {
+                    throw Error(
+                        $"Expected DELETE or UPDATE after ON for {context}.");
+                }
+
+                continue;
             }
-            else
-            {
-                throw Error($"Only ON DELETE RESTRICT and ON DELETE CASCADE are supported for {context}.");
-            }
+
+            break;
         }
 
-        return onDelete;
+        if (IsContextualKeyword(Peek(), "DEFERRABLE") ||
+            IsContextualKeyword(Peek(), "INITIALLY") ||
+            IsContextualKeyword(Peek(), "DEFERRED") ||
+            (Peek().Type == TokenType.Not &&
+             _pos + 1 < _tokens.Count &&
+             IsContextualKeyword(_tokens[_pos + 1], "DEFERRABLE")))
+        {
+            throw Error(
+                "DEFERRABLE foreign-key clauses are not supported; foreign keys are checked immediately.");
+        }
+
+        return (onDelete, onUpdate);
+    }
+
+    private ForeignKeyOnDeleteAction ParseForeignKeyAction(
+        string clause,
+        string context)
+    {
+        if (TryConsumeContextualKeyword("RESTRICT"))
+            return ForeignKeyOnDeleteAction.Restrict;
+
+        if (TryConsumeContextualKeyword("NO"))
+        {
+            if (!TryConsumeContextualKeyword("ACTION"))
+            {
+                throw Error(
+                    $"Expected ACTION after {clause} NO for {context}.");
+            }
+
+            return ForeignKeyOnDeleteAction.NoAction;
+        }
+
+        if (TryConsume(TokenType.Cascade))
+            return ForeignKeyOnDeleteAction.Cascade;
+
+        if (TryConsume(TokenType.Set))
+        {
+            if (TryConsume(TokenType.Null))
+                return ForeignKeyOnDeleteAction.SetNull;
+            if (TryConsumeContextualKeyword("DEFAULT"))
+                return ForeignKeyOnDeleteAction.SetDefault;
+
+            throw Error(
+                $"Expected NULL or DEFAULT after {clause} SET for {context}.");
+        }
+
+        throw Error(
+            $"Expected RESTRICT, NO ACTION, CASCADE, SET NULL, or SET DEFAULT after {clause} for {context}.");
     }
 
     private Statement ParseDrop()
@@ -1907,12 +2060,11 @@ public sealed class Parser
             Expect(TokenType.Row);
         }
 
-        // Optional: WHEN (condition)
+        // Optional WHEN remains in the AST so execution can reject it with a
+        // stable diagnostic before catalog persistence.
         Expression? whenCondition = null;
-        if (Peek().Type == TokenType.Where || (Peek().Type == TokenType.Identifier && Peek().Value.Equals("WHEN", StringComparison.OrdinalIgnoreCase)))
+        if (TryConsumeContextualKeyword("WHEN"))
         {
-            // WHEN is not a keyword token, handle it as identifier check
-            Advance();
             Expect(TokenType.LeftParen);
             whenCondition = ParseExpression();
             Expect(TokenType.RightParen);
@@ -2091,10 +2243,14 @@ public sealed class Parser
             else if (TryConsumeContextualKeyword("TYPE"))
             {
                 TokenType targetType = Peek().Type;
-                if (targetType is not (TokenType.Integer or TokenType.Real))
+                if (targetType is not (
+                        TokenType.Integer or
+                        TokenType.Real or
+                        TokenType.Text or
+                        TokenType.Blob))
                 {
                     throw Error(
-                        $"ALTER COLUMN TYPE supports only INTEGER and REAL in the first conversion slice; got '{Peek().Value}'.");
+                        $"ALTER COLUMN TYPE supports INTEGER, REAL, TEXT, and BLOB targets; got '{Peek().Value}'.");
                 }
 
                 Advance();
@@ -2107,7 +2263,7 @@ public sealed class Parser
             else
             {
                 throw Error(
-                    "ALTER COLUMN supports TYPE INTEGER/REAL, SET/DROP DEFAULT, SET/DROP NOT NULL, and SET/DROP COLLATION.");
+                    "ALTER COLUMN supports TYPE INTEGER/REAL/TEXT/BLOB, SET/DROP DEFAULT, SET/DROP NOT NULL, and SET/DROP COLLATION.");
             }
         }
         else if (t == TokenType.Rename)
@@ -2182,6 +2338,17 @@ public sealed class Parser
     private InsertStatement ParseInsert()
     {
         Expect(TokenType.Insert);
+        if (TryConsume(TokenType.Or))
+        {
+            if (TryConsumeContextualKeyword("REPLACE"))
+            {
+                throw Error(
+                    "INSERT OR REPLACE is not supported.");
+            }
+
+            throw Error("Expected REPLACE after INSERT OR.");
+        }
+
         Expect(TokenType.Into);
         string tableName = ExpectIdentifier();
 
@@ -2244,7 +2411,7 @@ public sealed class Parser
         int? limit = ParseOptionalLimit();
         int? offset = ParseOptionalOffset();
 
-        return query switch
+        QueryStatement completedQuery = query switch
         {
             SelectStatement select => new SelectStatement
             {
@@ -2254,6 +2421,7 @@ public sealed class Parser
                 Where = select.Where,
                 GroupBy = select.GroupBy,
                 Having = select.Having,
+                WindowDefinitions = select.WindowDefinitions,
                 OrderBy = orderBy,
                 Limit = limit,
                 Offset = offset,
@@ -2270,6 +2438,9 @@ public sealed class Parser
             },
             _ => throw new InvalidOperationException($"Unknown query statement type: {query.GetType().Name}"),
         };
+
+        ResolveNamedWindowReferences(completedQuery);
+        return completedQuery;
     }
 
     private QueryStatement ParseUnionExceptExpression()
@@ -2285,6 +2456,13 @@ public sealed class Parser
                 TokenType.Except => SetOperationKind.Except,
                 _ => throw new InvalidOperationException(),
             };
+            if (opToken == TokenType.Except &&
+                TryConsumeContextualKeyword("ALL"))
+            {
+                throw Error(
+                    "EXCEPT ALL is not supported; use EXCEPT.");
+            }
+
             var quantifier = opToken == TokenType.Union && TryConsumeContextualKeyword("ALL")
                 ? SetQuantifier.All
                 : SetQuantifier.Distinct;
@@ -2309,6 +2487,12 @@ public sealed class Parser
         while (Peek().Type == TokenType.Intersect)
         {
             Advance();
+            if (TryConsumeContextualKeyword("ALL"))
+            {
+                throw Error(
+                    "INTERSECT ALL is not supported; use INTERSECT.");
+            }
+
             var right = ParseQueryPrimary();
             left = new CompoundSelectStatement
             {
@@ -2348,13 +2532,21 @@ public sealed class Parser
             }
 
             var expr = ParseExpression();
+            if (IsContextualKeyword(Peek(), "IGNORE") ||
+                IsContextualKeyword(Peek(), "RESPECT"))
+            {
+                throw Error(
+                    "IGNORE NULLS and RESPECT NULLS window syntax is not supported.");
+            }
+
             string? alias = null;
             if (Peek().Type == TokenType.As)
             {
                 Advance();
                 alias = ExpectIdentifier();
             }
-            else if (Peek().Type == TokenType.Identifier)
+            else if (Peek().Type == TokenType.Identifier &&
+                     !IsContextualKeyword(Peek(), "WINDOW"))
             {
                 // Implicit alias: SELECT expr alias (no AS keyword)
                 alias = Peek().Value;
@@ -2393,6 +2585,8 @@ public sealed class Parser
             having = ParseExpression();
         }
 
+        List<NamedWindowDefinition> windowDefinitions = ParseOptionalWindowClause();
+
         return new SelectStatement
         {
             IsDistinct = isDistinct,
@@ -2401,10 +2595,39 @@ public sealed class Parser
             Where = where,
             GroupBy = groupBy,
             Having = having,
+            WindowDefinitions = windowDefinitions,
             OrderBy = null,
             Limit = null,
             Offset = null,
         };
+    }
+
+    private List<NamedWindowDefinition> ParseOptionalWindowClause()
+    {
+        if (!TryConsumeContextualKeyword("WINDOW"))
+            return [];
+
+        var definitions = new List<NamedWindowDefinition>();
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        do
+        {
+            string name = ExpectIdentifier();
+            if (!names.Add(name))
+                throw Error($"Duplicate window definition '{name}'.");
+
+            Expect(TokenType.As);
+            Expect(TokenType.LeftParen);
+            WindowSpecification specification = ParseWindowSpecification(
+                rejectParenthesizedReference: true);
+            Expect(TokenType.RightParen);
+            definitions.Add(new NamedWindowDefinition
+            {
+                Name = name,
+                Specification = specification,
+            });
+        } while (TryConsume(TokenType.Comma));
+
+        return definitions;
     }
 
     private List<OrderByClause>? ParseOptionalOrderBy()
@@ -2428,6 +2651,12 @@ public sealed class Parser
             else if (Peek().Type == TokenType.Asc)
             {
                 Advance();
+            }
+
+            if (IsContextualKeyword(Peek(), "NULLS"))
+            {
+                throw Error(
+                    "NULLS FIRST/LAST ordering is not supported; use the default NULL ordering.");
             }
 
             orderBy.Add(new OrderByClause { Expression = expr, Descending = desc });
@@ -2483,20 +2712,41 @@ public sealed class Parser
         return new AnalyzeStatement { TableName = tableName };
     }
 
-    private ExplainEstimateStatement ParseExplain()
+    private Statement ParseExplain()
     {
         Expect(TokenType.Explain);
-        Expect(TokenType.Estimate);
-        Expect(TokenType.For);
 
-        Statement target = Peek().Type switch
+        if (TryConsume(TokenType.Estimate))
+        {
+            Expect(TokenType.For);
+            Statement estimateTarget = ParseExplainTarget(allowMutations: false);
+            return new ExplainEstimateStatement { Target = estimateTarget };
+        }
+
+        bool analyze = TryConsume(TokenType.Analyze);
+        TryConsume(TokenType.For);
+        Statement target = ParseExplainTarget(allowMutations: true);
+        return new ExplainStatement
+        {
+            Target = target,
+            Analyze = analyze,
+        };
+    }
+
+    private Statement ParseExplainTarget(bool allowMutations)
+    {
+        return Peek().Type switch
         {
             TokenType.Select => ParseQueryExpression(),
             TokenType.With => ParseWith(),
-            _ => throw Error("EXPLAIN ESTIMATE FOR supports SELECT, WITH, and compound SELECT queries only."),
+            TokenType.Insert when allowMutations => ParseInsert(),
+            TokenType.Update when allowMutations => ParseUpdate(),
+            TokenType.Delete when allowMutations => ParseDelete(),
+            _ when allowMutations => throw Error(
+                "EXPLAIN supports SELECT, WITH, compound SELECT, INSERT, UPDATE, and DELETE statements only."),
+            _ => throw Error(
+                "EXPLAIN ESTIMATE FOR supports SELECT, WITH, and compound SELECT queries only."),
         };
-
-        return new ExplainEstimateStatement { Target = target };
     }
 
     private FindDuplicatesStatement ParseFindDuplicates()
@@ -2679,8 +2929,11 @@ public sealed class Parser
     {
         Expect(TokenType.With);
 
-        // Optional RECURSIVE keyword (parsed but not used — recursive CTEs not supported yet)
-        TryConsume(TokenType.Recursive);
+        if (TryConsume(TokenType.Recursive))
+        {
+            throw Error(
+                "Recursive CTE execution is not supported.");
+        }
 
         var ctes = new List<CteDefinition>();
         do
@@ -2729,8 +2982,12 @@ public sealed class Parser
         TableRef left = ParseSimpleTableRef();
 
         // Parse chained JOINs
-        while (IsJoinKeyword(Peek().Type))
+        while (true)
         {
+            ThrowIfUnsupportedJoin();
+            if (!IsJoinKeyword(Peek().Type))
+                break;
+
             var joinType = ParseJoinType();
             var right = ParseSimpleTableRef();
             Expression? condition = null;
@@ -2761,7 +3018,10 @@ public sealed class Parser
             Advance();
             alias = ExpectIdentifier();
         }
-        else if (Peek().Type == TokenType.Identifier && !IsClauseKeyword(Peek().Type))
+        else if (Peek().Type == TokenType.Identifier &&
+                 !IsClauseKeyword(Peek().Type) &&
+                 !IsContextualKeyword(Peek(), "WINDOW") &&
+                 !IsUnsupportedJoinStart())
         {
             // Implicit alias (no AS keyword)
             alias = Peek().Value;
@@ -2825,6 +3085,34 @@ public sealed class Parser
 
     private static bool IsJoinKeyword(TokenType type) =>
         type is TokenType.Join or TokenType.Inner or TokenType.Left or TokenType.Right or TokenType.Cross;
+
+    private void ThrowIfUnsupportedJoin()
+    {
+        if (!IsUnsupportedJoinStart())
+            return;
+
+        if (IsContextualKeyword(Peek(), "FULL"))
+        {
+            throw Error(
+                "FULL OUTER JOIN is not supported; use supported LEFT, RIGHT, INNER, or CROSS joins.");
+        }
+
+        throw Error(
+            "NATURAL JOIN is not supported; write an explicit JOIN ... ON condition.");
+    }
+
+    private bool IsUnsupportedJoinStart()
+    {
+        if (_pos + 1 >= _tokens.Count)
+            return false;
+
+        TokenType next = _tokens[_pos + 1].Type;
+        return IsContextualKeyword(Peek(), "FULL") &&
+               next is TokenType.Outer or TokenType.Join ||
+               IsContextualKeyword(Peek(), "NATURAL") &&
+               next is TokenType.Join or TokenType.Inner or TokenType.Left
+                   or TokenType.Right or TokenType.Cross;
+    }
 
     /// <summary>
     /// Returns true if the token is a SQL clause keyword that cannot be a table alias.
@@ -3038,7 +3326,42 @@ public sealed class Parser
     private WindowFunctionExpression ParseWindowFunction(FunctionCallExpression function)
     {
         if (!TryConsume(TokenType.LeftParen))
-            throw Error("Named windows are not supported; OVER requires a parenthesized window specification.");
+        {
+            if (!IsIdentifierLike(Peek().Type))
+                throw Error("OVER requires a window name or parenthesized window specification.");
+
+            return new WindowFunctionExpression
+            {
+                Function = function,
+                Window = new WindowSpecification
+                {
+                    ReferenceName = ExpectIdentifier(),
+                },
+            };
+        }
+
+        WindowSpecification specification = ParseWindowSpecification(
+            rejectParenthesizedReference: true);
+        Expect(TokenType.RightParen);
+        return new WindowFunctionExpression
+        {
+            Function = function,
+            Window = specification,
+        };
+    }
+
+    private WindowSpecification ParseWindowSpecification(bool rejectParenthesizedReference)
+    {
+        if (rejectParenthesizedReference &&
+            Peek().Type == TokenType.Identifier &&
+            !IsContextualKeyword(Peek(), "PARTITION") &&
+            !IsContextualKeyword(Peek(), "ROWS") &&
+            !IsContextualKeyword(Peek(), "RANGE") &&
+            !IsContextualKeyword(Peek(), "GROUPS"))
+        {
+            throw Error(
+                "Window inheritance and parenthesized named-window references are not supported; use OVER window_name.");
+        }
 
         var partitionBy = new List<Expression>();
         if (TryConsumeContextualKeyword("PARTITION"))
@@ -3052,27 +3375,386 @@ public sealed class Parser
 
         List<OrderByClause>? orderBy = ParseOptionalOrderBy();
 
-        if (IsContextualKeyword(Peek(), "ROWS") ||
-            IsContextualKeyword(Peek(), "RANGE") ||
+        if (IsContextualKeyword(Peek(), "RANGE") ||
             IsContextualKeyword(Peek(), "GROUPS"))
         {
-            throw Error("Explicit window frames are not supported in the experimental window-function tier.");
+            throw Error(
+                "Only explicit ROWS window frames are supported; RANGE and GROUPS frames are not supported.");
+        }
+
+        WindowFrame? frame = TryConsumeContextualKeyword("ROWS")
+            ? ParseRowsWindowFrame()
+            : null;
+
+        if (IsContextualKeyword(Peek(), "EXCLUDE"))
+            throw Error("EXCLUDE window-frame clauses are not supported.");
+
+        if (IsContextualKeyword(Peek(), "NULLS"))
+        {
+            throw Error(
+                "NULLS FIRST/LAST ordering is not supported; use the default NULL ordering.");
         }
 
         if (Peek().Type != TokenType.RightParen)
             throw Error($"Unsupported window clause '{Peek().Value}'.");
 
-        Advance();
-        return new WindowFunctionExpression
+        return new WindowSpecification
         {
-            Function = function,
-            Window = new WindowSpecification
-            {
-                PartitionBy = partitionBy,
-                OrderBy = orderBy ?? [],
-            },
+            PartitionBy = partitionBy,
+            OrderBy = orderBy ?? [],
+            Frame = frame,
         };
     }
+
+    private WindowFrame ParseRowsWindowFrame()
+    {
+        WindowFrameBound start;
+        WindowFrameBound end;
+        if (TryConsume(TokenType.Between))
+        {
+            start = ParseWindowFrameBound();
+            Expect(TokenType.And);
+            end = ParseWindowFrameBound();
+        }
+        else
+        {
+            start = ParseWindowFrameBound();
+            end = new WindowFrameBound
+            {
+                Kind = WindowFrameBoundKind.CurrentRow,
+            };
+        }
+
+        ValidateRowsWindowFrame(start, end);
+        return new WindowFrame
+        {
+            Start = start,
+            End = end,
+        };
+    }
+
+    private WindowFrameBound ParseWindowFrameBound()
+    {
+        if (TryConsumeContextualKeyword("UNBOUNDED"))
+        {
+            if (TryConsumeContextualKeyword("PRECEDING"))
+            {
+                return new WindowFrameBound
+                {
+                    Kind = WindowFrameBoundKind.UnboundedPreceding,
+                };
+            }
+
+            if (TryConsumeContextualKeyword("FOLLOWING"))
+            {
+                return new WindowFrameBound
+                {
+                    Kind = WindowFrameBoundKind.UnboundedFollowing,
+                };
+            }
+
+            throw Error("UNBOUNDED in a ROWS frame must be followed by PRECEDING or FOLLOWING.");
+        }
+
+        if (TryConsumeContextualKeyword("CURRENT"))
+        {
+            Expect(TokenType.Row);
+            return new WindowFrameBound
+            {
+                Kind = WindowFrameBoundKind.CurrentRow,
+            };
+        }
+
+        if (Peek().Type != TokenType.IntegerLiteral)
+        {
+            throw Error(
+                "A ROWS frame offset must be a nonnegative integer literal followed by PRECEDING or FOLLOWING.");
+        }
+
+        Token offsetToken = Advance();
+        if (!long.TryParse(
+                offsetToken.Value,
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out long offset))
+        {
+            throw Error("A ROWS frame offset must fit in a nonnegative 64-bit integer.");
+        }
+
+        WindowFrameBoundKind kind;
+        if (TryConsumeContextualKeyword("PRECEDING"))
+        {
+            kind = WindowFrameBoundKind.Preceding;
+        }
+        else if (TryConsumeContextualKeyword("FOLLOWING"))
+        {
+            kind = WindowFrameBoundKind.Following;
+        }
+        else
+        {
+            throw Error(
+                "A ROWS frame offset must be followed by PRECEDING or FOLLOWING.");
+        }
+
+        return new WindowFrameBound
+        {
+            Kind = kind,
+            Offset = offset,
+        };
+    }
+
+    private void ValidateRowsWindowFrame(WindowFrameBound start, WindowFrameBound end)
+    {
+        if (start.Kind == WindowFrameBoundKind.UnboundedFollowing)
+            throw Error("A ROWS frame cannot start with UNBOUNDED FOLLOWING.");
+        if (end.Kind == WindowFrameBoundKind.UnboundedPreceding)
+            throw Error("A ROWS frame cannot end with UNBOUNDED PRECEDING.");
+        if (CompareWindowFrameBounds(start, end) > 0)
+            throw Error("A ROWS frame start cannot be after its frame end.");
+    }
+
+    private static int CompareWindowFrameBounds(
+        WindowFrameBound left,
+        WindowFrameBound right)
+    {
+        int leftRegion = GetWindowFrameBoundRegion(left);
+        int rightRegion = GetWindowFrameBoundRegion(right);
+        if (leftRegion != rightRegion)
+            return leftRegion.CompareTo(rightRegion);
+
+        return leftRegion switch
+        {
+            1 => right.Offset!.Value.CompareTo(left.Offset!.Value),
+            3 => left.Offset!.Value.CompareTo(right.Offset!.Value),
+            _ => 0,
+        };
+    }
+
+    private static int GetWindowFrameBoundRegion(WindowFrameBound bound) =>
+        bound.Kind switch
+        {
+            WindowFrameBoundKind.UnboundedPreceding => 0,
+            WindowFrameBoundKind.Preceding when bound.Offset > 0 => 1,
+            WindowFrameBoundKind.CurrentRow => 2,
+            WindowFrameBoundKind.Preceding or WindowFrameBoundKind.Following
+                when bound.Offset == 0 => 2,
+            WindowFrameBoundKind.Following => 3,
+            WindowFrameBoundKind.UnboundedFollowing => 4,
+            _ => throw new InvalidOperationException("Invalid ROWS frame bound."),
+        };
+
+    private void ResolveNamedWindowReferences(QueryStatement query)
+    {
+        switch (query)
+        {
+            case SelectStatement select:
+                ResolveNamedWindowReferences(select);
+                break;
+            case CompoundSelectStatement compound:
+                ResolveNamedWindowReferences(compound.Left);
+                ResolveNamedWindowReferences(compound.Right);
+                foreach (OrderByClause clause in compound.OrderBy ?? [])
+                {
+                    ResolveNamedWindowReferences(
+                        clause.Expression,
+                        new Dictionary<string, NamedWindowDefinition>(
+                            StringComparer.OrdinalIgnoreCase));
+                }
+                break;
+        }
+    }
+
+    private void ResolveNamedWindowReferences(SelectStatement select)
+    {
+        var definitions = new Dictionary<string, NamedWindowDefinition>(
+            StringComparer.OrdinalIgnoreCase);
+        foreach (NamedWindowDefinition definition in select.WindowDefinitions)
+        {
+            if (!definitions.TryAdd(definition.Name, definition))
+                throw Error($"Duplicate window definition '{definition.Name}'.");
+        }
+
+        foreach (NamedWindowDefinition definition in select.WindowDefinitions)
+            ResolveNamedWindowReferences(definition.Specification, definitions);
+
+        foreach (SelectColumn column in select.Columns)
+        {
+            if (column.Expression != null)
+                ResolveNamedWindowReferences(column.Expression, definitions);
+        }
+
+        ResolveNamedWindowReferences(select.From, definitions);
+        if (select.Where != null)
+            ResolveNamedWindowReferences(select.Where, definitions);
+        foreach (Expression expression in select.GroupBy ?? [])
+            ResolveNamedWindowReferences(expression, definitions);
+        if (select.Having != null)
+            ResolveNamedWindowReferences(select.Having, definitions);
+        foreach (OrderByClause clause in select.OrderBy ?? [])
+            ResolveNamedWindowReferences(clause.Expression, definitions);
+    }
+
+    private void ResolveNamedWindowReferences(
+        TableRef table,
+        IReadOnlyDictionary<string, NamedWindowDefinition> definitions)
+    {
+        if (table is not JoinTableRef join)
+            return;
+
+        ResolveNamedWindowReferences(join.Left, definitions);
+        ResolveNamedWindowReferences(join.Right, definitions);
+        if (join.Condition != null)
+            ResolveNamedWindowReferences(join.Condition, definitions);
+    }
+
+    private void ResolveNamedWindowReferences(
+        WindowSpecification specification,
+        IReadOnlyDictionary<string, NamedWindowDefinition> definitions)
+    {
+        foreach (Expression expression in specification.PartitionBy)
+        {
+            ResolveNamedWindowReferences(
+                expression,
+                definitions,
+                insideWindowFunction: true);
+        }
+
+        foreach (OrderByClause clause in specification.OrderBy)
+        {
+            ResolveNamedWindowReferences(
+                clause.Expression,
+                definitions,
+                insideWindowFunction: true);
+        }
+    }
+
+    private void ResolveNamedWindowReferences(
+        Expression expression,
+        IReadOnlyDictionary<string, NamedWindowDefinition> definitions,
+        bool insideWindowFunction = false)
+    {
+        switch (expression)
+        {
+            case WindowFunctionExpression window:
+                if (insideWindowFunction)
+                    throw Error("Nested window functions are not supported.");
+
+                foreach (Expression argument in window.Function.Arguments)
+                {
+                    ResolveNamedWindowReferences(
+                        argument,
+                        definitions,
+                        insideWindowFunction: true);
+                }
+
+                if (window.Window.ReferenceName != null)
+                {
+                    if (!definitions.TryGetValue(
+                            window.Window.ReferenceName,
+                            out NamedWindowDefinition? definition))
+                    {
+                        throw Error(
+                            $"Undefined window definition '{window.Window.ReferenceName}'.");
+                    }
+
+                    window.Window = CloneWindowSpecification(definition.Specification);
+                }
+
+                ResolveNamedWindowReferences(window.Window, definitions);
+                break;
+            case BinaryExpression binary:
+                ResolveNamedWindowReferences(binary.Left, definitions, insideWindowFunction);
+                ResolveNamedWindowReferences(binary.Right, definitions, insideWindowFunction);
+                break;
+            case UnaryExpression unary:
+                ResolveNamedWindowReferences(unary.Operand, definitions, insideWindowFunction);
+                break;
+            case CollateExpression collate:
+                ResolveNamedWindowReferences(collate.Operand, definitions, insideWindowFunction);
+                break;
+            case FunctionCallExpression function:
+                foreach (Expression argument in function.Arguments)
+                {
+                    ResolveNamedWindowReferences(
+                        argument,
+                        definitions,
+                        insideWindowFunction);
+                }
+                break;
+            case LikeExpression like:
+                ResolveNamedWindowReferences(like.Operand, definitions, insideWindowFunction);
+                ResolveNamedWindowReferences(like.Pattern, definitions, insideWindowFunction);
+                if (like.EscapeChar != null)
+                {
+                    ResolveNamedWindowReferences(
+                        like.EscapeChar,
+                        definitions,
+                        insideWindowFunction);
+                }
+                break;
+            case InExpression inExpression:
+                ResolveNamedWindowReferences(
+                    inExpression.Operand,
+                    definitions,
+                    insideWindowFunction);
+                foreach (Expression value in inExpression.Values)
+                    ResolveNamedWindowReferences(value, definitions, insideWindowFunction);
+                break;
+            case InSubqueryExpression inSubquery:
+                ResolveNamedWindowReferences(
+                    inSubquery.Operand,
+                    definitions,
+                    insideWindowFunction);
+                ResolveNamedWindowReferences(inSubquery.Query);
+                break;
+            case ScalarSubqueryExpression scalarSubquery:
+                ResolveNamedWindowReferences(scalarSubquery.Query);
+                break;
+            case ExistsExpression exists:
+                ResolveNamedWindowReferences(exists.Query);
+                break;
+            case BetweenExpression between:
+                ResolveNamedWindowReferences(
+                    between.Operand,
+                    definitions,
+                    insideWindowFunction);
+                ResolveNamedWindowReferences(between.Low, definitions, insideWindowFunction);
+                ResolveNamedWindowReferences(between.High, definitions, insideWindowFunction);
+                break;
+            case IsNullExpression isNull:
+                ResolveNamedWindowReferences(
+                    isNull.Operand,
+                    definitions,
+                    insideWindowFunction);
+                break;
+        }
+    }
+
+    private static WindowSpecification CloneWindowSpecification(
+        WindowSpecification specification) =>
+        new()
+        {
+            PartitionBy = [.. specification.PartitionBy],
+            OrderBy = specification.OrderBy.Select(clause => new OrderByClause
+            {
+                Expression = clause.Expression,
+                Descending = clause.Descending,
+            }).ToList(),
+            Frame = specification.Frame == null
+                ? null
+                : new WindowFrame
+                {
+                    Start = CloneWindowFrameBound(specification.Frame.Start),
+                    End = CloneWindowFrameBound(specification.Frame.End),
+                },
+        };
+
+    private static WindowFrameBound CloneWindowFrameBound(WindowFrameBound bound) =>
+        new()
+        {
+            Kind = bound.Kind,
+            Offset = bound.Offset,
+        };
 
     private static bool IsAggregateFunctionToken(TokenType type) =>
         type is TokenType.Count or TokenType.Sum or TokenType.Avg or TokenType.Min or TokenType.Max;
@@ -3140,6 +3822,16 @@ public sealed class Parser
     private Expression ParsePrimary()
     {
         var token = Peek();
+
+        if (IsContextualKeyword(token, "CASE"))
+            throw Error("CASE expressions are not supported.");
+
+        if (IsContextualKeyword(token, "CAST") &&
+            _pos + 1 < _tokens.Count &&
+            _tokens[_pos + 1].Type == TokenType.LeftParen)
+        {
+            throw Error("CAST expressions are not supported; use supported implicit conversions.");
+        }
 
         if (IsFunctionCallStart(token))
             return ParseFunctionCall(token, allowAggregateModifiers: IsAggregateFunctionToken(token.Type));
@@ -3314,6 +4006,7 @@ public sealed class Parser
 
     private static bool IsContextualKeyword(Token token, string keyword) =>
         token.Type == TokenType.Identifier &&
+        token.Length == token.Value.Length &&
         token.Value.Equals(keyword, StringComparison.OrdinalIgnoreCase);
 
     private CSharpDbException Error(string message) =>

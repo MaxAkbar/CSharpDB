@@ -16,6 +16,13 @@ public static class GrpcModelMapper
     public static IReadOnlyList<string> ToStringList(StringList values)
         => values.Values.ToList();
 
+    public static BoolList ToBoolList(IEnumerable<bool> values)
+    {
+        var message = new BoolList();
+        message.Values.Add(values);
+        return message;
+    }
+
     public static VariantArrayList ToVariantArrayList(IEnumerable<object?[]> rows)
     {
         var message = new VariantArrayList();
@@ -51,6 +58,9 @@ public static class GrpcModelMapper
         {
             ForeignKeyOnDeleteAction.Restrict => ForeignKeyOnDeleteActionEnum.ForeignKeyOnDeleteActionRestrict,
             ForeignKeyOnDeleteAction.Cascade => ForeignKeyOnDeleteActionEnum.ForeignKeyOnDeleteActionCascade,
+            ForeignKeyOnDeleteAction.NoAction => ForeignKeyOnDeleteActionEnum.ForeignKeyOnDeleteActionNoAction,
+            ForeignKeyOnDeleteAction.SetNull => ForeignKeyOnDeleteActionEnum.ForeignKeyOnDeleteActionSetNull,
+            ForeignKeyOnDeleteAction.SetDefault => ForeignKeyOnDeleteActionEnum.ForeignKeyOnDeleteActionSetDefault,
             _ => throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported foreign key ON DELETE action."),
         };
 
@@ -59,6 +69,9 @@ public static class GrpcModelMapper
         {
             ForeignKeyOnDeleteActionEnum.ForeignKeyOnDeleteActionRestrict => ForeignKeyOnDeleteAction.Restrict,
             ForeignKeyOnDeleteActionEnum.ForeignKeyOnDeleteActionCascade => ForeignKeyOnDeleteAction.Cascade,
+            ForeignKeyOnDeleteActionEnum.ForeignKeyOnDeleteActionNoAction => ForeignKeyOnDeleteAction.NoAction,
+            ForeignKeyOnDeleteActionEnum.ForeignKeyOnDeleteActionSetNull => ForeignKeyOnDeleteAction.SetNull,
+            ForeignKeyOnDeleteActionEnum.ForeignKeyOnDeleteActionSetDefault => ForeignKeyOnDeleteAction.SetDefault,
             ForeignKeyOnDeleteActionEnum.ForeignKeyOnDeleteActionUnspecified => ForeignKeyOnDeleteAction.Restrict,
             _ => throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported foreign key ON DELETE action enum."),
         };
@@ -152,6 +165,7 @@ public static class GrpcModelMapper
     public static ColumnDefinitionMessage ToMessage(ColumnDefinition value)
         => new()
         {
+            SchemaId = FormatSchemaId(value.SchemaId),
             Name = value.Name,
             Type = ToMessage(value.Type),
             Nullable = value.Nullable,
@@ -165,6 +179,7 @@ public static class GrpcModelMapper
     public static ColumnDefinition ToModel(ColumnDefinitionMessage value)
         => new()
         {
+            SchemaId = ParseSchemaId(value.SchemaId),
             Name = value.Name,
             Type = ToModel(value.Type),
             Nullable = value.Nullable,
@@ -179,35 +194,84 @@ public static class GrpcModelMapper
     {
         var message = new ForeignKeyDefinitionMessage
         {
+            SchemaId = FormatSchemaId(value.SchemaId),
             ConstraintName = value.ConstraintName,
             ColumnName = value.ColumnName,
             ReferencedTableName = value.ReferencedTableName,
             ReferencedColumnName = value.ReferencedColumnName,
             OnDelete = ToMessage(value.OnDelete),
+            OnUpdate = ToMessage(value.OnUpdate),
             SupportingIndexName = value.SupportingIndexName,
+            ReferencedTableSchemaId = FormatSchemaId(value.ReferencedTableSchemaId),
+            ReferencedKeySchemaId = FormatSchemaId(value.ReferencedKeySchemaId),
         };
         message.ColumnNames.Add(value.ColumnNames.Count > 0 ? value.ColumnNames : [value.ColumnName]);
         message.ReferencedColumnNames.Add(value.ReferencedColumnNames.Count > 0 ? value.ReferencedColumnNames : [value.ReferencedColumnName]);
+        message.ColumnSchemaIds.Add(value.ColumnSchemaIds.Select(FormatSchemaId));
+        message.ReferencedColumnSchemaIds.Add(
+            value.ReferencedColumnSchemaIds.Select(FormatSchemaId));
         return message;
     }
 
     public static ForeignKeyDefinition ToModel(ForeignKeyDefinitionMessage value)
-        => new()
+    {
+        string[] columnNames =
+            value.ColumnNames.Count > 0
+                ? value.ColumnNames.ToArray()
+                : [value.ColumnName];
+        string[] referencedColumnNames =
+            value.ReferencedColumnNames.Count > 0
+                ? value.ReferencedColumnNames.ToArray()
+                : [value.ReferencedColumnName];
+        if (columnNames.Length != referencedColumnNames.Length)
         {
+            throw new CSharpDbClientException(
+                $"The server returned inconsistent ordered columns for foreign key '{value.ConstraintName}'.");
+        }
+
+        Guid[] columnSchemaIds = value.ColumnSchemaIds
+            .Select(ParseRequiredSchemaId)
+            .ToArray();
+        Guid[] referencedColumnSchemaIds = value.ReferencedColumnSchemaIds
+            .Select(ParseRequiredSchemaId)
+            .ToArray();
+        if (columnSchemaIds.Length != 0 &&
+            columnSchemaIds.Length != columnNames.Length)
+        {
+            throw new CSharpDbClientException(
+                $"The server returned {columnSchemaIds.Length} child-column identities for foreign key '{value.ConstraintName}', expected {columnNames.Length}.");
+        }
+        if (referencedColumnSchemaIds.Length != 0 &&
+            referencedColumnSchemaIds.Length != referencedColumnNames.Length)
+        {
+            throw new CSharpDbClientException(
+                $"The server returned {referencedColumnSchemaIds.Length} referenced-column identities for foreign key '{value.ConstraintName}', expected {referencedColumnNames.Length}.");
+        }
+
+        return new ForeignKeyDefinition
+        {
+            SchemaId = ParseSchemaId(value.SchemaId),
+            ColumnSchemaIds = columnSchemaIds,
+            ReferencedTableSchemaId = ParseSchemaId(value.ReferencedTableSchemaId),
+            ReferencedColumnSchemaIds = referencedColumnSchemaIds,
+            ReferencedKeySchemaId = ParseSchemaId(value.ReferencedKeySchemaId),
             ConstraintName = value.ConstraintName,
             ColumnName = value.ColumnName,
             ReferencedTableName = value.ReferencedTableName,
             ReferencedColumnName = value.ReferencedColumnName,
             OnDelete = ToModel(value.OnDelete),
+            OnUpdate = ToModel(value.OnUpdate),
             SupportingIndexName = value.SupportingIndexName,
-            ColumnNames = value.ColumnNames.Count > 0 ? value.ColumnNames.ToArray() : [value.ColumnName],
-            ReferencedColumnNames = value.ReferencedColumnNames.Count > 0 ? value.ReferencedColumnNames.ToArray() : [value.ReferencedColumnName],
+            ColumnNames = columnNames,
+            ReferencedColumnNames = referencedColumnNames,
         };
+    }
 
     public static TableSchemaMessage ToMessage(TableSchema value)
     {
         var message = new TableSchemaMessage
         {
+            SchemaId = FormatSchemaId(value.SchemaId),
             TableName = value.TableName,
             NextRowId = value.NextRowId,
         };
@@ -221,6 +285,7 @@ public static class GrpcModelMapper
     public static CheckConstraintDefinitionMessage ToMessage(CheckConstraintDefinition value)
         => new()
         {
+            SchemaId = FormatSchemaId(value.SchemaId),
             ConstraintName = value.ConstraintName ?? string.Empty,
             ExpressionSql = value.ExpressionSql,
             ColumnName = value.ColumnName ?? string.Empty,
@@ -229,6 +294,7 @@ public static class GrpcModelMapper
     public static CheckConstraintDefinition ToModel(CheckConstraintDefinitionMessage value)
         => new()
         {
+            SchemaId = ParseSchemaId(value.SchemaId),
             ConstraintName = string.IsNullOrEmpty(value.ConstraintName) ? null : value.ConstraintName,
             ExpressionSql = value.ExpressionSql,
             ColumnName = string.IsNullOrEmpty(value.ColumnName) ? null : value.ColumnName,
@@ -238,6 +304,7 @@ public static class GrpcModelMapper
     {
         var message = new KeyConstraintDefinitionMessage
         {
+            SchemaId = FormatSchemaId(value.SchemaId),
             ConstraintName = value.ConstraintName ?? string.Empty,
             Kind = ToMessage(value.Kind),
             BackingIndexName = value.BackingIndexName ?? string.Empty,
@@ -249,6 +316,7 @@ public static class GrpcModelMapper
     public static KeyConstraintDefinition ToModel(KeyConstraintDefinitionMessage value)
         => new()
         {
+            SchemaId = ParseSchemaId(value.SchemaId),
             ConstraintName = string.IsNullOrEmpty(value.ConstraintName) ? null : value.ConstraintName,
             Kind = ToModel(value.Kind),
             Columns = value.Columns.ToList(),
@@ -256,8 +324,10 @@ public static class GrpcModelMapper
         };
 
     public static TableSchema ToModel(TableSchemaMessage value)
-        => new()
+    {
+        var schema = new TableSchema
         {
+            SchemaId = ParseSchemaId(value.SchemaId),
             TableName = value.TableName,
             Columns = value.Columns.Select(ToModel).ToList(),
             ForeignKeys = value.ForeignKeys.Select(ToModel).ToList(),
@@ -265,6 +335,36 @@ public static class GrpcModelMapper
             CheckConstraints = value.CheckConstraints.Select(ToModel).ToList(),
             NextRowId = value.NextRowId,
         };
+        StableSchemaIdentityValidator.Validate(schema);
+        return schema;
+    }
+
+    private static string FormatSchemaId(Guid value) =>
+        value == Guid.Empty ? string.Empty : value.ToString("D");
+
+    private static Guid ParseSchemaId(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+            return Guid.Empty;
+        if (Guid.TryParse(value, out Guid parsed) &&
+            parsed != Guid.Empty)
+            return parsed;
+
+        throw new CSharpDbClientException(
+            $"The server returned malformed schema identity '{value}'.");
+    }
+
+    private static Guid ParseRequiredSchemaId(string value)
+    {
+        Guid parsed = ParseSchemaId(value);
+        if (parsed == Guid.Empty)
+        {
+            throw new CSharpDbClientException(
+                "The server returned an empty schema identity inside a stable identity list.");
+        }
+
+        return parsed;
+    }
 
     public static IndexSchemaMessage ToMessage(IndexSchema value)
     {
@@ -360,6 +460,8 @@ public static class GrpcModelMapper
             PageSize = value.PageSize,
         };
         message.ColumnNames.Add(value.ColumnNames);
+        if (value.ColumnTypes is not null)
+            message.ColumnTypes = ToStringList(value.ColumnTypes);
         message.Rows.Add(value.Rows.Select(GrpcValueMapper.ToArray));
         return message;
     }
@@ -369,6 +471,7 @@ public static class GrpcModelMapper
         {
             ViewName = value.ViewName,
             ColumnNames = value.ColumnNames.ToArray(),
+            ColumnTypes = value.ColumnTypes?.Values.ToArray(),
             Rows = value.Rows.Select(GrpcValueMapper.ToArray).ToList(),
             TotalRows = value.TotalRows,
             Page = value.Page,
@@ -380,6 +483,10 @@ public static class GrpcModelMapper
         {
             IsQuery = value.IsQuery,
             ColumnNames = value.ColumnNames is null ? null : ToStringList(value.ColumnNames),
+            ColumnTypes = value.ColumnTypes is null ? null : ToStringList(value.ColumnTypes),
+            ColumnNullability = value.ColumnNullability is null
+                ? null
+                : ToBoolList(value.ColumnNullability),
             Rows = value.Rows is null ? null : ToVariantArrayList(value.Rows),
             RowsAffected = value.RowsAffected,
             Error = value.Error,
@@ -391,6 +498,8 @@ public static class GrpcModelMapper
         {
             IsQuery = value.IsQuery,
             ColumnNames = value.ColumnNames?.Values.ToArray(),
+            ColumnTypes = value.ColumnTypes?.Values.ToArray(),
+            ColumnNullability = value.ColumnNullability?.Values.ToArray(),
             Rows = value.Rows is null ? null : ToRows(value.Rows),
             RowsAffected = value.RowsAffected,
             Error = value.Error,
@@ -1415,6 +1524,7 @@ public static class GrpcModelMapper
             StatementText = value.StatementText,
             IsQuery = value.IsQuery,
             ColumnNames = value.ColumnNames is null ? null : ToStringList(value.ColumnNames),
+            ColumnTypes = value.ColumnTypes is null ? null : ToStringList(value.ColumnTypes),
             Rows = value.Rows is null ? null : ToVariantArrayList(value.Rows),
             RowsAffected = value.RowsAffected,
             Elapsed = Duration.FromTimeSpan(value.Elapsed),
@@ -1427,6 +1537,7 @@ public static class GrpcModelMapper
             StatementText = value.StatementText,
             IsQuery = value.IsQuery,
             ColumnNames = value.ColumnNames?.Values.ToArray(),
+            ColumnTypes = value.ColumnTypes?.Values.ToArray(),
             Rows = value.Rows is null ? null : ToRows(value.Rows),
             RowsAffected = value.RowsAffected,
             Elapsed = value.Elapsed.ToTimeSpan(),
@@ -1580,6 +1691,7 @@ public static class GrpcModelMapper
             ReferencedTableName = value.ReferencedTableName,
             ReferencedColumnName = value.ReferencedColumnName ?? string.Empty,
             OnDelete = ToMessage(value.OnDelete),
+            OnUpdate = ToMessage(value.OnUpdate),
         };
 
     public static ForeignKeyMigrationConstraintSpec ToModel(ForeignKeyMigrationConstraintSpecMessage value)
@@ -1590,6 +1702,7 @@ public static class GrpcModelMapper
             ReferencedTableName = value.ReferencedTableName,
             ReferencedColumnName = string.IsNullOrWhiteSpace(value.ReferencedColumnName) ? null : value.ReferencedColumnName,
             OnDelete = ToModel(value.OnDelete),
+            OnUpdate = ToModel(value.OnUpdate),
         };
 
     public static ForeignKeyMigrationRequestMessage ToMessage(ForeignKeyMigrationRequest value)
@@ -1717,6 +1830,7 @@ public static class GrpcModelMapper
             ConstraintName = value.ConstraintName,
             SupportingIndexName = value.SupportingIndexName,
             OnDelete = ToMessage(value.OnDelete),
+            OnUpdate = ToMessage(value.OnUpdate),
         };
 
     public static ForeignKeyMigrationAppliedConstraint ToModel(ForeignKeyMigrationAppliedConstraintMessage value)
@@ -1729,6 +1843,7 @@ public static class GrpcModelMapper
             ConstraintName = value.ConstraintName,
             SupportingIndexName = value.SupportingIndexName,
             OnDelete = ToModel(value.OnDelete),
+            OnUpdate = ToModel(value.OnUpdate),
         };
 
     public static ForeignKeyMigrationResultMessage ToMessage(ForeignKeyMigrationResult value)
