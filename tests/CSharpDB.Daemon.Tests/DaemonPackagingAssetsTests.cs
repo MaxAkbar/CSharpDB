@@ -220,18 +220,17 @@ public sealed class DaemonPackagingAssetsTests
             normalized);
         Assert.DoesNotContain("previous_release_ref:", normalized);
         Assert.Contains("verify-local-durable-performance:", normalized);
-        Assert.Contains("csharpdb/local-durable-performance", normalized);
         Assert.Contains("statuses: read", normalized);
         Assert.Contains("LOCAL_DURABLE_ATTESTOR", normalized);
         Assert.Contains("github.repository_owner", normalized);
-        Assert.Contains("policy=durable-v2", normalized);
+        Assert.Contains("- name: Checkout exact release source", normalized);
+        Assert.Contains("uses: actions/checkout@v7", normalized);
         Assert.Contains(
-            "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/statuses?per_page=100",
+            "./scripts/Test-LocalDurableStatus.ps1",
             normalized);
-        Assert.Contains("[0] // {}", normalized);
-        Assert.Contains("$state\" != \"success", normalized);
-        Assert.Contains("${creator,,}", normalized);
-        Assert.Contains("attestation_pattern", normalized);
+        Assert.Contains("-Commit '${{ github.sha }}'", normalized);
+        Assert.Contains("-GitHubRepository '${{ github.repository }}'", normalized);
+        Assert.Contains("-ExpectedCreator $env:EXPECTED_STATUS_CREATOR", normalized);
         Assert.Equal(
             5,
             System.Text.RegularExpressions.Regex.Matches(

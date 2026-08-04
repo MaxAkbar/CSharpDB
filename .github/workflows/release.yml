@@ -19,31 +19,19 @@ jobs:
       statuses: read
 
     steps:
+      - name: Checkout exact release source
+        uses: actions/checkout@v7
+
       - name: Require a successful matching-commit local performance status
-        shell: bash
+        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          PERFORMANCE_STATUS_CONTEXT: csharpdb/local-durable-performance
           EXPECTED_STATUS_CREATOR: ${{ vars.LOCAL_DURABLE_ATTESTOR || github.repository_owner }}
         run: |
-          set -euo pipefail
-          status_record="$(gh api \
-            "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/statuses?per_page=100" \
-            --jq '([.[] | select(.context == "csharpdb/local-durable-performance")][0] // {}) | [.state // "", .creator.login // "", .description // ""] | @tsv')"
-          IFS=$'\t' read -r state creator description <<< "$status_record"
-          if [[ "$state" != "success" ]]; then
-            echo "::error::Commit ${GITHUB_SHA} has no successful ${PERFORMANCE_STATUS_CONTEXT} status. Run Test-LocalDurablePerformance.ps1 successfully before creating the release tag."
-            exit 1
-          fi
-          if [[ "${creator,,}" != "${EXPECTED_STATUS_CREATOR,,}" ]]; then
-            echo "::error::The ${PERFORMANCE_STATUS_CONTEXT} status was created by ${creator}, not the configured attestor ${EXPECTED_STATUS_CREATOR}."
-            exit 1
-          fi
-          attestation_pattern='^policy=durable-v2; baseline=[0-9a-f]{40}; reports=[0-9A-F]{8}/[0-9A-F]{8}$'
-          if [[ ! "$description" =~ $attestation_pattern ]]; then
-            echo "::error::The ${PERFORMANCE_STATUS_CONTEXT} status does not contain a canonical durable-v2 attestation."
-            exit 1
-          fi
+          ./scripts/Test-LocalDurableStatus.ps1 `
+            -Commit '${{ github.sha }}' `
+            -GitHubRepository '${{ github.repository }}' `
+            -ExpectedCreator $env:EXPECTED_STATUS_CREATOR
 
   build-and-test:
     name: Qualify release source
