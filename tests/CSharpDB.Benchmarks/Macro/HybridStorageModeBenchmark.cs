@@ -996,7 +996,8 @@ public static class HybridStorageModeBenchmark
         QualificationSettings? qualificationSettings,
         Func<CancellationToken, Task> operation,
         Action<Task>? detachedWorkRegistrar,
-        Action? prepareMeasuredPhase = null)
+        Action? prepareMeasuredPhase = null,
+        Func<TimeSpan, IQualificationDeadline>? qualificationDeadlineFactory = null)
     {
         QualificationSettings effectiveSettings = qualificationSettings ??
             CreateReleaseCoreMeasurementSettings(normalMeasuredDuration);
@@ -1005,12 +1006,14 @@ public static class HybridStorageModeBenchmark
             benchmarkName,
             operation,
             effectiveSettings.WarmupDuration,
-            detachedWorkRegistrar);
+            detachedWorkRegistrar,
+            qualificationDeadlineFactory);
         MacroBenchmarkRunner.StabilizeAfterWarmup();
         prepareMeasuredPhase?.Invoke();
 
-        using var deadline = new StopwatchQualificationDeadline(
-            effectiveSettings.MaximumMeasuredDuration);
+        using IQualificationDeadline deadline = CreateQualificationDeadline(
+            effectiveSettings.MaximumMeasuredDuration,
+            qualificationDeadlineFactory);
         return await RunQualificationMeasuredOperationCoreAsync(
             benchmarkName,
             effectiveSettings,
@@ -1176,12 +1179,15 @@ public static class HybridStorageModeBenchmark
         string benchmarkName,
         Func<CancellationToken, Task> operation,
         TimeSpan warmupDuration,
-        Action<Task>? detachedWorkRegistrar)
+        Action<Task>? detachedWorkRegistrar,
+        Func<TimeSpan, IQualificationDeadline>? qualificationDeadlineFactory = null)
     {
         if (warmupDuration == TimeSpan.Zero)
             return;
 
-        using var deadline = new StopwatchQualificationDeadline(warmupDuration);
+        using IQualificationDeadline deadline = CreateQualificationDeadline(
+            warmupDuration,
+            qualificationDeadlineFactory);
         await RunQualificationWarmupCoreAsync(
             benchmarkName,
             operation,
@@ -1190,6 +1196,12 @@ public static class HybridStorageModeBenchmark
             QualificationCancellationDrainTimeout,
             detachedWorkRegistrar);
     }
+
+    private static IQualificationDeadline CreateQualificationDeadline(
+        TimeSpan maximumDuration,
+        Func<TimeSpan, IQualificationDeadline>? qualificationDeadlineFactory)
+        => qualificationDeadlineFactory?.Invoke(maximumDuration) ??
+           new StopwatchQualificationDeadline(maximumDuration);
 
     internal static async Task RunQualificationWarmupCoreAsync(
         string benchmarkName,

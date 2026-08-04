@@ -110,6 +110,11 @@ public sealed class HybridStorageModeQualificationTests
             MinimumMeasuredDuration: TimeSpan.FromMilliseconds(1),
             MinimumLatencySamples: 1,
             MaximumMeasuredDuration: TimeSpan.FromSeconds(1));
+        using var warmupDeadline = new ManualQualificationDeadline();
+        using var measuredDeadline = new ManualQualificationDeadline();
+        var deadlines = new Queue<HybridStorageModeBenchmark.IQualificationDeadline>(
+            [warmupDeadline, measuredDeadline]);
+        var requestedDurations = new List<TimeSpan>();
 
         try
         {
@@ -135,11 +140,15 @@ public sealed class HybridStorageModeQualificationTests
                     int id = nextId++;
                     batch.AddRow(DbValue.FromInteger(id), DbValue.FromInteger(id * 10L));
                     if (!measuredPhasePrepared)
+                    {
+                        warmupDeadline.AdvanceTo(settings.WarmupDuration, expire: true);
                         await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+                    }
 
                     Assert.Equal(1, await batch.ExecuteAsync(ct));
                     await db.CommitAsync(ct);
                     transactionStarted = false;
+                    measuredDeadline.AdvanceTo(settings.MinimumMeasuredDuration);
                 }
                 catch
                 {
@@ -165,10 +174,21 @@ public sealed class HybridStorageModeQualificationTests
                             StringComparison.OrdinalIgnoreCase);
                         batch = db.PrepareInsertBatch("bench", initialCapacity: 1);
                         measuredPhasePrepared = true;
+                    },
+                    qualificationDeadlineFactory: duration =>
+                    {
+                        requestedDurations.Add(duration);
+                        return deadlines.Dequeue();
                     })
                 .WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
             Assert.True(measuredPhasePrepared);
+            Assert.Empty(deadlines);
+            Assert.Equal(
+                [settings.WarmupDuration, settings.MaximumMeasuredDuration],
+                requestedDurations);
+            Assert.Equal(1, warmupDeadline.StartCount);
+            Assert.Equal(1, measuredDeadline.StartCount);
             Assert.True(result.ElapsedMs >= settings.MinimumMeasuredDuration.TotalMilliseconds);
             Assert.True(result.LatencySamples >= settings.MinimumLatencySamples);
         }
