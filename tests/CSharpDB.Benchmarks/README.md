@@ -479,14 +479,21 @@ from that candidate during pass 1 and pins it for pass 2. The previous revision
 must be an ancestor of the candidate, and generated evidence is written to a
 unique temporary directory outside the repository.
 
-The Windows quiescence preflight refuses to start while `msiexec` is active or
-Windows reports a pending restart, including pending file-renames. The wrapper
-also audits Windows Installer transactions after each pass. New installer
-activity or a pending-restart condition detected afterward contaminates that
-timing evidence and prevents qualification. Contamination after pass 1 stops the
-run before pass 2. Finish application or .NET workload installers, restart
-Windows when requested, and begin a new clean run instead of reusing
-contaminated evidence.
+The Windows quiescence preflight refuses to start while a Windows Installer
+transaction is active or Component-Based Servicing (CBS) or Windows Update
+reports that a restart is required. It classifies
+`PendingFileRenameOperations` separately: a stable, well-formed deletion-only
+set may be fingerprinted and accepted as the run
+baseline, while malformed entries and replacement or rename operations block
+qualification. An active installer normally means wait for it to finish and run
+the preflight again; restart Windows when CBS or Windows Update requires it, or
+when blocking file operations remain after installers and updates have settled.
+
+After each pass, the wrapper audits Windows Installer transactions and compares
+the pending-file-operation state with the recorded baseline. Any MSI transaction
+during a pass or any baseline change contaminates the timing evidence, prevents
+qualification, and stops the run before another pass begins. Start a new clean
+run instead of reusing contaminated evidence.
 
 The local release gate runs only `master-table-durable-writes`: ten durable SQL
 and collection single/batch write rows from file-backed, hybrid incremental-

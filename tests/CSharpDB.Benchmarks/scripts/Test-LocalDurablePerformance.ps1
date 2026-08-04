@@ -152,98 +152,266 @@ function Get-PendingRestartReasons {
         $reasons.Add('Windows Update reports a pending restart')
     }
 
+    return @($reasons)
+}
+
+function Get-PendingFileRenameOperationsSnapshot {
     try {
-        $pendingFileRenames = @(
-            (Get-ItemProperty `
-                -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' `
-                -Name PendingFileRenameOperations `
-                -ErrorAction SilentlyContinue).PendingFileRenameOperations
-        )
-        if ($pendingFileRenames.Count -gt 0) {
-            $reasons.Add(
-                "Windows has $($pendingFileRenames.Count) pending file rename operation(s)")
-        }
+        $sessionManager = Get-Item `
+            -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' `
+            -ErrorAction Stop
+        $value = $sessionManager.GetValue(
+            'PendingFileRenameOperations',
+            $null,
+            [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
     }
     catch {
+        throw "Could not inspect pending file rename operations. $($_.Exception.Message)"
+    }
+
+    if ($null -eq $value) {
+        return @()
+    }
+    if ($value -isnot [string] -and $value -isnot [string[]]) {
+        throw (
+            'PendingFileRenameOperations has an unsupported registry value type: ' +
+            $value.GetType().FullName)
+    }
+
+    return @([string[]] $value)
+}
+
+function Get-PendingFileRenamePolicyReasons {
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [AllowEmptyString()]
+        [string[]] $Snapshot
+    )
+
+    $reasons = [Collections.Generic.List[string]]::new()
+    if (($Snapshot.Count % 2) -ne 0) {
         $reasons.Add(
-            "Could not inspect pending file rename operations: $($_.Exception.Message)")
+            "PendingFileRenameOperations is malformed: expected source/destination pairs, " +
+            "but found $($Snapshot.Count) entries")
+        return @($reasons)
+    }
+
+    for ($index = 0; $index -lt $Snapshot.Count; $index += 2) {
+        $source = $Snapshot[$index]
+        $destination = $Snapshot[$index + 1]
+        $operationNumber = ($index / 2) + 1
+        if ([string]::IsNullOrWhiteSpace($source)) {
+            $reasons.Add(
+                "Pending file operation $operationNumber is malformed because its source is empty")
+        }
+        if (-not [string]::IsNullOrEmpty($destination)) {
+            $reasons.Add(
+                "Pending file operation $operationNumber is a rename or replacement, not " +
+                'a deletion-only cleanup')
+        }
     }
 
     return @($reasons)
 }
 
-function Get-ActiveInstallerReasons {
-    $installerProcesses = @(
-        Get-Process -Name msiexec -ErrorAction SilentlyContinue |
-            Sort-Object Id
-    )
-    if ($installerProcesses.Count -eq 0) {
-        return @()
-    }
-
-    $processIds = ($installerProcesses | ForEach-Object { $_.Id }) -join ', '
-    return @("Windows Installer is active (msiexec process id(s): $processIds)")
-}
-
-function Get-InstallerActivityReasons {
+function Get-PendingFileRenameChangeReasons {
     param(
         [Parameter(Mandatory)]
-        [DateTimeOffset] $SinceUtc
+        [AllowEmptyCollection()]
+        [AllowEmptyString()]
+        [string[]] $Baseline,
+
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [AllowEmptyString()]
+        [string[]] $Current
     )
 
+    if ($Baseline.Count -ne $Current.Count) {
+        return @(
+            "Pending file operations changed from $($Baseline.Count) to $($Current.Count) entries")
+    }
+
+    for ($index = 0; $index -lt $Baseline.Count; $index++) {
+        if (-not $Baseline[$index].Equals(
+            $Current[$index],
+            [StringComparison]::Ordinal)) {
+            return @("Pending file operations changed at entry $($index + 1)")
+        }
+    }
+
+    return @()
+}
+
+function Get-PendingFileRenameFingerprint {
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [AllowEmptyString()]
+        [string[]] $Snapshot
+    )
+
+    $serializedEntries = @(
+        $Snapshot | ForEach-Object { "$($_.Length):$_" }
+    )
+    $serialized = [string]::Join("`0", $serializedEntries)
+    $bytes = [Text.Encoding]::UTF8.GetBytes($serialized)
+    return [Convert]::ToHexString(
+        [Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+}
+
+function Get-MsiInstallerTransactionEvents {
     try {
-        $transactions = @(
+        $bootUtc = [DateTimeOffset]::UtcNow.Subtract(
+            [TimeSpan]::FromMilliseconds([Environment]::TickCount64)).AddSeconds(-5)
+        return @(
             Get-WinEvent `
                 -FilterHashtable @{
                     LogName = 'Application'
                     ProviderName = 'MsiInstaller'
-                    Id = 1040
-                    StartTime = $SinceUtc.LocalDateTime
+                    Id = @(1040, 1042)
+                    StartTime = $bootUtc.LocalDateTime
                 } `
-                -ErrorAction Stop
+                -ErrorAction Stop |
+                Sort-Object RecordId
         )
     }
     catch {
         if ($_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*') {
             return @()
         }
-        return @(
-            "Could not inspect Windows Installer activity: $($_.Exception.Message)")
+        throw "Could not inspect Windows Installer transactions. $($_.Exception.Message)"
+    }
+}
+
+function Get-MsiInstallerTransactionKey {
+    param(
+        [Parameter(Mandatory)]
+        $Event
+    )
+
+    if ($Event.Id -notin 1040, 1042 -or
+        $Event.Properties.Count -lt 2 -or
+        [string]::IsNullOrWhiteSpace([string] $Event.Properties[0].Value) -or
+        [string]::IsNullOrWhiteSpace([string] $Event.Properties[1].Value)) {
+        throw "MsiInstaller event record $($Event.RecordId) is incomplete or malformed."
     }
 
-    if ($transactions.Count -eq 0) {
+    return (
+        ([string] $Event.Properties[0].Value).ToUpperInvariant() + "`0" +
+        [string] $Event.Properties[1].Value)
+}
+
+function Get-ActiveInstallerTransactionReasons {
+    $openTransactions = @{}
+    foreach ($eventRecord in @(Get-MsiInstallerTransactionEvents)) {
+        $transactionKey = Get-MsiInstallerTransactionKey -Event $eventRecord
+        if ($eventRecord.Id -eq 1040) {
+            if (-not $openTransactions.ContainsKey($transactionKey)) {
+                $openTransactions[$transactionKey] = [Collections.Generic.Queue[long]]::new()
+            }
+            $openTransactions[$transactionKey].Enqueue([long] $eventRecord.RecordId)
+            continue
+        }
+
+        if (-not $openTransactions.ContainsKey($transactionKey) -or
+            $openTransactions[$transactionKey].Count -eq 0) {
+            throw (
+                "MsiInstaller end event $($eventRecord.RecordId) has no matching begin event " +
+                'since Windows started.')
+        }
+        [void] $openTransactions[$transactionKey].Dequeue()
+    }
+
+    $openRecordIds = @(
+        foreach ($transactionQueue in $openTransactions.Values) {
+            foreach ($recordId in $transactionQueue) {
+                $recordId
+            }
+        }
+    )
+    if ($openRecordIds.Count -eq 0) {
         return @()
     }
 
-    $transactionDetails = @(
-        $transactions |
-            Sort-Object TimeCreated |
-            ForEach-Object {
-                $message = ($_.Message -replace '\r?\n', ' ' -replace '\s+', ' ').Trim()
-                "$($_.TimeCreated.ToUniversalTime().ToString('O')): $message"
-            }
-    )
     return @(
-        "Windows Installer transaction(s) started during qualification: " +
-        ($transactionDetails -join ' | ')
+        'Windows Installer has unmatched begin event record(s): ' +
+        (($openRecordIds | Sort-Object) -join ', '))
+}
+
+function Get-LatestMsiInstallerEventRecordId {
+    $events = @(Get-MsiInstallerTransactionEvents)
+    if ($events.Count -eq 0) {
+        return [long] 0
+    }
+    return [long] (($events | Measure-Object RecordId -Maximum).Maximum)
+}
+
+function Get-InstallerActivityReasons {
+    param(
+        [Parameter(Mandatory)]
+        [long] $AfterRecordId
+    )
+
+    $newEvents = @(
+        Get-MsiInstallerTransactionEvents |
+            Where-Object { [long] $_.RecordId -gt $AfterRecordId }
+    )
+    if ($newEvents.Count -eq 0) {
+        return @()
+    }
+
+    return @(
+        'Windows Installer event(s) occurred during qualification: ' +
+        (($newEvents | ForEach-Object { "$($_.Id)/$($_.RecordId)" }) -join ', '))
+}
+
+function Get-LocalEnvironmentIssues {
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [AllowEmptyString()]
+        [string[]] $PendingFileRenameBaseline,
+
+        [Parameter(Mandatory)]
+        [long] $InstallerEventBaselineRecordId
+    )
+
+    $currentPendingFileRenames = @(Get-PendingFileRenameOperationsSnapshot)
+    return @(
+        Get-PendingRestartReasons
+        Get-PendingFileRenamePolicyReasons -Snapshot $currentPendingFileRenames
+        Get-PendingFileRenameChangeReasons `
+            -Baseline $PendingFileRenameBaseline `
+            -Current $currentPendingFileRenames
+        Get-ActiveInstallerTransactionReasons
+        Get-InstallerActivityReasons -AfterRecordId $InstallerEventBaselineRecordId
     )
 }
 
 function Assert-QuiescentLocalEnvironment {
     param(
         [Parameter(Mandatory)]
-        [string] $Stage
+        [string] $Stage,
+
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [AllowEmptyString()]
+        [string[]] $PendingFileRenameBaseline,
+
+        [Parameter(Mandatory)]
+        [long] $InstallerEventBaselineRecordId
     )
 
-    $issues = @(
-        Get-PendingRestartReasons
-        Get-ActiveInstallerReasons
-    )
+    $issues = @(Get-LocalEnvironmentIssues `
+        -PendingFileRenameBaseline $PendingFileRenameBaseline `
+        -InstallerEventBaselineRecordId $InstallerEventBaselineRecordId)
     if ($issues.Count -gt 0) {
         throw (
             "Local durable performance qualification requires a quiescent Windows " +
-            "environment at $Stage. $($issues -join '; '). Restart the machine, " +
-            'allow installers and updates to finish, then retry.')
+            "environment at $Stage. $($issues -join '; '). Allow installers and updates " +
+            'to finish; restart only when Windows reports that one is required, then retry.')
     }
 }
 
@@ -296,7 +464,20 @@ else {
 }
 
 $statusContext = 'csharpdb/local-durable-performance'
-Assert-QuiescentLocalEnvironment -Stage 'preflight'
+$pendingFileRenameBaseline = @(Get-PendingFileRenameOperationsSnapshot)
+$pendingFileRenameFingerprint = Get-PendingFileRenameFingerprint `
+    -Snapshot $pendingFileRenameBaseline
+$installerEventBaselineRecordId = Get-LatestMsiInstallerEventRecordId
+Assert-QuiescentLocalEnvironment `
+    -Stage 'preflight' `
+    -PendingFileRenameBaseline $pendingFileRenameBaseline `
+    -InstallerEventBaselineRecordId $installerEventBaselineRecordId
+if ($pendingFileRenameBaseline.Count -gt 0) {
+    Write-Warning (
+        "Accepting $($pendingFileRenameBaseline.Count / 2) stable deletion-only pending " +
+        "file operation(s) as baseline $pendingFileRenameFingerprint. Any change fails " +
+        'qualification.')
+}
 if (-not $NoGitHubStatus) {
     $authOutput = @(& gh auth status 2>&1)
     if ($LASTEXITCODE -ne 0) {
@@ -348,8 +529,10 @@ try {
     Write-Host "Evidence root: $outputRoot"
 
     foreach ($qualificationPass in 1, 2) {
-        Assert-QuiescentLocalEnvironment -Stage "the start of pass $qualificationPass"
-        $passEnvironmentStartedUtc = [DateTimeOffset]::UtcNow
+        Assert-QuiescentLocalEnvironment `
+            -Stage "the start of pass $qualificationPass" `
+            -PendingFileRenameBaseline $pendingFileRenameBaseline `
+            -InstallerEventBaselineRecordId $installerEventBaselineRecordId
         $passOutput = Join-Path $outputRoot "pass-$qualificationPass"
         $parameters = @{
             CandidateRef = $candidateCommit
@@ -383,17 +566,15 @@ try {
             }
         }
 
-        $environmentIssues = @(
-            Get-InstallerActivityReasons -SinceUtc $passEnvironmentStartedUtc
-            Get-PendingRestartReasons
-            Get-ActiveInstallerReasons
-        )
+        $environmentIssues = @(Get-LocalEnvironmentIssues `
+            -PendingFileRenameBaseline $pendingFileRenameBaseline `
+            -InstallerEventBaselineRecordId $installerEventBaselineRecordId)
         if ($environmentIssues.Count -gt 0) {
             $passFailures.Add(
                 "Pass $qualificationPass environment contamination: " +
                 ($environmentIssues -join '; '))
             Write-Warning (
-                "Pass $qualificationPass detected installer or pending-restart activity; " +
+                "Pass $qualificationPass detected installer or system-state activity; " +
                 'remaining passes will not run.')
             break
         }
@@ -460,6 +641,9 @@ function Write-LocalSummary {
             '- P99 latency: diagnostic only'
         }),
         '- Dedicated fixed SSD: confirmed by the release operator',
+        "- Pending file operation baseline entries: $($pendingFileRenameBaseline.Count)",
+        "- Pending file operation baseline fingerprint: ``$pendingFileRenameFingerprint``",
+        "- Windows Installer event baseline record: $installerEventBaselineRecordId",
         "- Machine: ``$env:COMPUTERNAME``",
         "- Benchmark temporary root: ``$benchmarkTemporaryRoot``",
         "- Evidence root: ``$outputRoot``",

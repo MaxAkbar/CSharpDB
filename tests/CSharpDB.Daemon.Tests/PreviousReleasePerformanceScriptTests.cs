@@ -790,11 +790,38 @@ public sealed class PreviousReleasePerformanceScriptTests
                     }
                     return @()
                 }
-                function Get-ActiveInstallerReasons { return @() }
-                function Get-InstallerActivityReasons {
-                    param([DateTimeOffset] $SinceUtc)
+                function Get-PendingFileRenameOperationsSnapshot {
+                    switch ($env:FAKE_PENDING_FILE_RENAMES) {
+                        'stable-delete' { return @('fake-delete.tmp', '') }
+                        'replacement' { return @('fake-source.tmp', 'fake-destination.dll') }
+                        'malformed' { return @('fake-source.tmp') }
+                        'changed' { return @('changed-delete.tmp', '') }
+                        default { return @() }
+                    }
+                }
+                function New-FakeMsiInstallerEvent {
+                    param([int] $Id, [long] $RecordId)
+                    return [pscustomobject]@{
+                        Id = $Id
+                        RecordId = $RecordId
+                        Properties = @(
+                            [pscustomobject]@{ Value = 'fake-package.msi' },
+                            [pscustomobject]@{ Value = '1234' })
+                    }
+                }
+                function Get-MsiInstallerTransactionEvents {
+                    if ($env:FAKE_UNMATCHED_INSTALLER -eq '1') {
+                        return @(New-FakeMsiInstallerEvent -Id 1040 -RecordId 10)
+                    }
+                    if ($env:FAKE_COMPLETED_INSTALLER -eq '1') {
+                        return @(
+                            (New-FakeMsiInstallerEvent -Id 1040 -RecordId 10),
+                            (New-FakeMsiInstallerEvent -Id 1042 -RecordId 11))
+                    }
                     if ($env:FAKE_INSTALLER_ACTIVITY -eq '1') {
-                        return @('Simulated MsiInstaller event 1040')
+                        return @(
+                            (New-FakeMsiInstallerEvent -Id 1040 -RecordId 20),
+                            (New-FakeMsiInstallerEvent -Id 1042 -RecordId 21))
                     }
                     return @()
                 }
@@ -847,6 +874,14 @@ public sealed class PreviousReleasePerformanceScriptTests
                     "$BlockingLatencyPercentile")
                 if ($QualificationPass -eq 1 -and $env:FAKE_FAIL_PASS_ONE -eq '1') {
                     throw 'Simulated pass-one failure.'
+                }
+                if ($QualificationPass -eq 1 -and
+                    $env:FAKE_INSTALLER_ACTIVITY_AFTER_PASS_ONE -eq '1') {
+                    $env:FAKE_INSTALLER_ACTIVITY = '1'
+                }
+                if ($QualificationPass -eq 1 -and
+                    $env:FAKE_PENDING_FILE_CHANGE_AFTER_PASS_ONE -eq '1') {
+                    $env:FAKE_PENDING_FILE_RENAMES = 'changed'
                 }
                 """);
             File.WriteAllText(Path.Combine(sourceRoot, "release.txt"), "previous");
@@ -918,6 +953,8 @@ public sealed class PreviousReleasePerformanceScriptTests
                     ["FAKE_PREVIOUS_COMMIT"] = previousCommit,
                     ["FAKE_LOCAL_DURABLE_LOG"] = successLog,
                     ["FAKE_GH_LOG"] = githubLog,
+                    ["FAKE_PENDING_FILE_RENAMES"] = "stable-delete",
+                    ["FAKE_COMPLETED_INSTALLER"] = "1",
                     ["PATH"] = fakeGitHubRoot + Path.PathSeparator +
                         (Environment.GetEnvironmentVariable("PATH") ?? string.Empty),
                     ["CSHARPDB_BENCH_DURABILITY"] = "Buffered",
@@ -949,6 +986,8 @@ public sealed class PreviousReleasePerformanceScriptTests
             Assert.Contains("- Result: **PASS**", successSummary);
             Assert.Contains("- Blocking latency percentile: `P95`", successSummary);
             Assert.Contains("- P99 latency: diagnostic only", successSummary);
+            Assert.Contains("- Pending file operation baseline entries: 2", successSummary);
+            Assert.Contains("- Pending file operation baseline fingerprint: `", successSummary);
             Assert.Contains(
                 "GitHub release status: `csharpdb/local-durable-performance` " +
                 "in `example/csharpdb`",
@@ -997,10 +1036,137 @@ public sealed class PreviousReleasePerformanceScriptTests
             Assert.NotEqual(0, pendingRestart.ExitCode);
             AssertDiagnosticContains("Simulated pending restart", pendingRestart.CombinedOutput);
             AssertDiagnosticContains(
-                "Restart the machine, allow installers and updates to finish, then retry",
+                "restart only when Windows reports that one is required, then retry",
                 pendingRestart.CombinedOutput);
             Assert.False(File.Exists(pendingRestartLog));
             Assert.False(File.Exists(pendingRestartGitHubLog));
+
+            foreach ((string scenario, string value, string diagnostic) in new[]
+            {
+                (
+                    "replacement",
+                    "replacement",
+                    "is a rename or replacement, not a deletion-only cleanup"),
+                (
+                    "malformed",
+                    "malformed",
+                    "PendingFileRenameOperations is malformed"),
+            })
+            {
+                string scenarioLog = Path.Combine(temporaryRoot, $"{scenario}.log");
+                string scenarioGitHubLog = Path.Combine(
+                    temporaryRoot,
+                    $"{scenario}-github.log");
+                ProcessResult scenarioResult = await RunProcessWithEnvironmentAsync(
+                    "pwsh",
+                    new Dictionary<string, string>
+                    {
+                        ["FAKE_PREVIOUS_COMMIT"] = previousCommit,
+                        ["FAKE_LOCAL_DURABLE_LOG"] = scenarioLog,
+                        ["FAKE_GH_LOG"] = scenarioGitHubLog,
+                        ["FAKE_PENDING_FILE_RENAMES"] = value,
+                        ["PATH"] = fakeGitHubRoot + Path.PathSeparator +
+                            (Environment.GetEnvironmentVariable("PATH") ?? string.Empty),
+                    },
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-File",
+                    Path.Combine(scriptRoot, "Test-LocalDurablePerformance.ps1"),
+                    "-CandidateRef",
+                    "HEAD",
+                    "-OutputPath",
+                    Path.Combine(temporaryRoot, $"{scenario}-evidence"),
+                    "-ConfirmDedicatedFixedSsd",
+                    "-GitHubRepository",
+                    "example/csharpdb");
+
+                Assert.NotEqual(0, scenarioResult.ExitCode);
+                AssertDiagnosticContains(diagnostic, scenarioResult.CombinedOutput);
+                Assert.False(File.Exists(scenarioLog));
+                Assert.False(File.Exists(scenarioGitHubLog));
+            }
+
+            string unmatchedInstallerLog = Path.Combine(
+                temporaryRoot,
+                "unmatched-installer.log");
+            string unmatchedInstallerGitHubLog = Path.Combine(
+                temporaryRoot,
+                "unmatched-installer-github.log");
+            ProcessResult unmatchedInstaller = await RunProcessWithEnvironmentAsync(
+                "pwsh",
+                new Dictionary<string, string>
+                {
+                    ["FAKE_PREVIOUS_COMMIT"] = previousCommit,
+                    ["FAKE_LOCAL_DURABLE_LOG"] = unmatchedInstallerLog,
+                    ["FAKE_GH_LOG"] = unmatchedInstallerGitHubLog,
+                    ["FAKE_UNMATCHED_INSTALLER"] = "1",
+                    ["PATH"] = fakeGitHubRoot + Path.PathSeparator +
+                        (Environment.GetEnvironmentVariable("PATH") ?? string.Empty),
+                },
+                "-NoLogo",
+                "-NoProfile",
+                "-File",
+                Path.Combine(scriptRoot, "Test-LocalDurablePerformance.ps1"),
+                "-CandidateRef",
+                "HEAD",
+                "-OutputPath",
+                Path.Combine(temporaryRoot, "unmatched-installer-evidence"),
+                "-ConfirmDedicatedFixedSsd",
+                "-GitHubRepository",
+                "example/csharpdb");
+
+            Assert.NotEqual(0, unmatchedInstaller.ExitCode);
+            AssertDiagnosticContains(
+                "Windows Installer has unmatched begin event record(s): 10",
+                unmatchedInstaller.CombinedOutput);
+            Assert.False(File.Exists(unmatchedInstallerLog));
+            Assert.False(File.Exists(unmatchedInstallerGitHubLog));
+
+            string pendingChangeLog = Path.Combine(temporaryRoot, "pending-change.log");
+            string pendingChangeGitHubLog = Path.Combine(
+                temporaryRoot,
+                "pending-change-github.log");
+            string pendingChangeEvidence = Path.Combine(
+                temporaryRoot,
+                "pending-change-evidence");
+            ProcessResult pendingChange = await RunProcessWithEnvironmentAsync(
+                "pwsh",
+                new Dictionary<string, string>
+                {
+                    ["FAKE_PREVIOUS_COMMIT"] = previousCommit,
+                    ["FAKE_LOCAL_DURABLE_LOG"] = pendingChangeLog,
+                    ["FAKE_GH_LOG"] = pendingChangeGitHubLog,
+                    ["FAKE_PENDING_FILE_RENAMES"] = "stable-delete",
+                    ["FAKE_PENDING_FILE_CHANGE_AFTER_PASS_ONE"] = "1",
+                    ["PATH"] = fakeGitHubRoot + Path.PathSeparator +
+                        (Environment.GetEnvironmentVariable("PATH") ?? string.Empty),
+                },
+                "-NoLogo",
+                "-NoProfile",
+                "-File",
+                Path.Combine(scriptRoot, "Test-LocalDurablePerformance.ps1"),
+                "-CandidateRef",
+                "HEAD",
+                "-OutputPath",
+                pendingChangeEvidence,
+                "-ConfirmDedicatedFixedSsd",
+                "-GitHubRepository",
+                "example/csharpdb");
+
+            Assert.NotEqual(0, pendingChange.ExitCode);
+            Assert.Single(File.ReadAllLines(pendingChangeLog));
+            AssertDiagnosticContains(
+                "Pending file operations changed at entry 1",
+                pendingChange.CombinedOutput);
+            Assert.Contains(
+                "- Result: **FAIL**",
+                File.ReadAllText(Path.Combine(
+                    pendingChangeEvidence,
+                    "local-durable-performance.md")));
+            string[] pendingChangeGitHubCalls = File.ReadAllLines(pendingChangeGitHubLog);
+            Assert.Equal(3, pendingChangeGitHubCalls.Length);
+            Assert.Contains("state=pending", pendingChangeGitHubCalls[1]);
+            Assert.Contains("state=failure", pendingChangeGitHubCalls[2]);
 
             string installerActivityLog = Path.Combine(
                 temporaryRoot,
@@ -1018,7 +1184,7 @@ public sealed class PreviousReleasePerformanceScriptTests
                     ["FAKE_PREVIOUS_COMMIT"] = previousCommit,
                     ["FAKE_LOCAL_DURABLE_LOG"] = installerActivityLog,
                     ["FAKE_GH_LOG"] = installerActivityGitHubLog,
-                    ["FAKE_INSTALLER_ACTIVITY"] = "1",
+                    ["FAKE_INSTALLER_ACTIVITY_AFTER_PASS_ONE"] = "1",
                     ["PATH"] = fakeGitHubRoot + Path.PathSeparator +
                         (Environment.GetEnvironmentVariable("PATH") ?? string.Empty),
                 },
@@ -1037,13 +1203,13 @@ public sealed class PreviousReleasePerformanceScriptTests
             Assert.NotEqual(0, installerActivity.ExitCode);
             Assert.Single(File.ReadAllLines(installerActivityLog));
             AssertDiagnosticContains(
-                "Pass 1 detected installer or pending-restart activity; remaining passes will not run",
+                "Pass 1 detected installer or system-state activity; remaining passes will not run",
                 installerActivity.CombinedOutput);
             string installerActivitySummary = File.ReadAllText(Path.Combine(
                 installerActivityEvidence,
                 "local-durable-performance.md"));
             Assert.Contains("- Result: **FAIL**", installerActivitySummary);
-            Assert.Contains("Simulated MsiInstaller event 1040", installerActivitySummary);
+            Assert.Contains("Windows Installer event(s) occurred during qualification", installerActivitySummary);
             string[] installerActivityGitHubCalls = File.ReadAllLines(
                 installerActivityGitHubLog);
             Assert.Equal(3, installerActivityGitHubCalls.Length);

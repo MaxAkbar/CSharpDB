@@ -182,16 +182,18 @@ public sealed class ReleaseStatusScriptTests
         Assert.Contains("Component Based Servicing", script);
         Assert.Contains("WindowsUpdate\\Auto Update\\RebootRequired", script);
         Assert.Contains("PendingFileRenameOperations", script);
-        Assert.Contains("Get-Process -Name msiexec", script);
+        Assert.Contains("Get-PendingFileRenameOperationsSnapshot", script);
+        Assert.Contains("Get-PendingFileRenamePolicyReasons", script);
+        Assert.Contains("Get-PendingFileRenameChangeReasons", script);
+        Assert.DoesNotContain("Get-Process -Name msiexec", script);
         Assert.Contains("ProviderName = 'MsiInstaller'", script);
-        Assert.Contains("Id = 1040", script);
-        Assert.Contains("Assert-QuiescentLocalEnvironment -Stage 'preflight'", script);
-        Assert.Contains(
-            "Assert-QuiescentLocalEnvironment -Stage \"the start of pass $qualificationPass\"",
-            script);
-        Assert.Contains(
-            "Get-InstallerActivityReasons -SinceUtc $passEnvironmentStartedUtc",
-            script);
+        Assert.Contains("Id = @(1040, 1042)", script);
+        Assert.Contains("Get-ActiveInstallerTransactionReasons", script);
+        Assert.Contains("Get-LatestMsiInstallerEventRecordId", script);
+        Assert.Contains("-Stage 'preflight'", script);
+        Assert.Contains("-Stage \"the start of pass $qualificationPass\"", script);
+        Assert.Contains("-InstallerEventBaselineRecordId $installerEventBaselineRecordId", script);
+        Assert.Contains("Get-LocalEnvironmentIssues", script);
         Assert.Contains("environment contamination", script);
         Assert.Contains("remaining passes will not run", script);
 
@@ -199,12 +201,12 @@ public sealed class ReleaseStatusScriptTests
             "foreach ($qualificationPass in 1, 2)",
             StringComparison.Ordinal);
         int passStartGuard = script.IndexOf(
-            "Assert-QuiescentLocalEnvironment -Stage \"the start of pass $qualificationPass\"",
+            "-Stage \"the start of pass $qualificationPass\"",
             loop,
             StringComparison.Ordinal);
         int comparison = script.IndexOf("& $comparisonScript @parameters", loop, StringComparison.Ordinal);
         int installerAudit = script.IndexOf(
-            "Get-InstallerActivityReasons -SinceUtc $passEnvironmentStartedUtc",
+            "Get-LocalEnvironmentIssues",
             comparison,
             StringComparison.Ordinal);
         int stopRemainingPasses = script.IndexOf("break", installerAudit, StringComparison.Ordinal);
