@@ -172,14 +172,24 @@ creates no repository JSON, and publishes the status only after both passes
 succeed. Without a reusable status or the confirmation switch, the publisher
 stops before creating a tag and explains how to run the required qualification.
 
-The wrapper's Windows quiescence preflight refuses to start while `msiexec` is
-active or Windows reports a pending restart, including pending file-renames. It
-also audits Windows Installer transactions after each pass. Installer activity
-during either pass, or a pending-restart condition detected afterward,
-contaminates the evidence and prevents qualification. Contamination after pass 1
-stops the run before pass 2. Finish application or .NET workload installers,
-restart Windows when requested, and begin a new clean run rather than reusing
-contaminated evidence.
+The wrapper's Windows quiescence preflight refuses to start while a Windows
+Installer transaction is active or Component-Based Servicing (CBS) or Windows
+Update reports that a restart is required. It classifies
+`PendingFileRenameOperations` separately: a stable, well-formed deletion-only
+set may be fingerprinted and accepted as the
+run baseline, while malformed entries and replacement or rename operations
+block qualification. An active installer normally means wait for it to finish
+and run the preflight again; restart Windows when CBS or Windows Update requires
+it, or when blocking file operations remain after installers and updates have
+settled.
+
+After each pass, the wrapper audits Windows Installer transactions and compares
+the pending-file-operation state with the recorded baseline. A completed
+toolchain setup transaction is allowed only when it finishes before the
+configured post-build quiet window. Any installer event in that quiet window or
+after measurements begin, or any pending-file baseline change, contaminates the
+timing evidence, prevents qualification, and stops the run before another pass
+begins. Start a new clean run instead of reusing contaminated evidence.
 
 The command is idempotent for the same version and exact commit: it safely
 reuses a valid status and an existing local or remote tag that already points to
@@ -191,9 +201,10 @@ explicitly.
 The Release workflow remains a fail-closed backstop. It independently requires
 the matching-commit status, completes both clean functional passes on Windows,
 Linux, and macOS, and runs the 18 persistent-read and in-memory performance rows
-on hosted Windows runners before publishing. It then publishes the daemon
-archives for `win-x64`, `linux-x64`, and `osx-arm64`, smoke-starts each extracted
-binary,
+on hosted Windows runners before publishing. Those hosted comparisons block on
+throughput and P95 while retaining P99 as required diagnostic evidence. It then
+publishes the daemon archives for `win-x64`, `linux-x64`, and `osx-arm64`,
+smoke-starts each extracted binary,
 calls the daemon REST `/api/info` endpoint, verifies a gRPC `GetInfoAsync`
 client call, combines checksums, and attaches everything to the GitHub Release.
 

@@ -73,7 +73,7 @@ public sealed class HybridStorageModeQualificationTests
         BenchmarkResult result = await HybridStorageModeBenchmark.RunNamedQualificationScenarioAsync(
                 InMemorySqlSingleInsert,
                 settings)
-            .WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+            .WaitAsync(BenchmarkTestWatchdog.SchedulingTimeout, TestContext.Current.CancellationToken);
 
         Assert.Equal(InMemorySqlSingleInsert, result.Name);
         Assert.True(result.ElapsedMs >= settings.MinimumMeasuredDuration.TotalMilliseconds);
@@ -94,7 +94,7 @@ public sealed class HybridStorageModeQualificationTests
             () => HybridStorageModeBenchmark.RunNamedQualificationScenarioAsync(
                     InMemorySqlBatch,
                     settings)
-                .WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+                .WaitAsync(BenchmarkTestWatchdog.SchedulingTimeout, TestContext.Current.CancellationToken));
 
         Assert.Contains("measurement cap", exception.Message);
         Assert.DoesNotContain("Rollback", exception.Message, StringComparison.OrdinalIgnoreCase);
@@ -110,6 +110,11 @@ public sealed class HybridStorageModeQualificationTests
             MinimumMeasuredDuration: TimeSpan.FromMilliseconds(1),
             MinimumLatencySamples: 1,
             MaximumMeasuredDuration: TimeSpan.FromSeconds(1));
+        using var warmupDeadline = new ManualQualificationDeadline();
+        using var measuredDeadline = new ManualQualificationDeadline();
+        var deadlines = new Queue<HybridStorageModeBenchmark.IQualificationDeadline>(
+            [warmupDeadline, measuredDeadline]);
+        var requestedDurations = new List<TimeSpan>();
 
         try
         {
@@ -135,11 +140,15 @@ public sealed class HybridStorageModeQualificationTests
                     int id = nextId++;
                     batch.AddRow(DbValue.FromInteger(id), DbValue.FromInteger(id * 10L));
                     if (!measuredPhasePrepared)
+                    {
+                        warmupDeadline.AdvanceTo(settings.WarmupDuration, expire: true);
                         await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+                    }
 
                     Assert.Equal(1, await batch.ExecuteAsync(ct));
                     await db.CommitAsync(ct);
                     transactionStarted = false;
+                    measuredDeadline.AdvanceTo(settings.MinimumMeasuredDuration);
                 }
                 catch
                 {
@@ -165,10 +174,21 @@ public sealed class HybridStorageModeQualificationTests
                             StringComparison.OrdinalIgnoreCase);
                         batch = db.PrepareInsertBatch("bench", initialCapacity: 1);
                         measuredPhasePrepared = true;
+                    },
+                    qualificationDeadlineFactory: duration =>
+                    {
+                        requestedDurations.Add(duration);
+                        return deadlines.Dequeue();
                     })
-                .WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+                .WaitAsync(BenchmarkTestWatchdog.SchedulingTimeout, TestContext.Current.CancellationToken);
 
             Assert.True(measuredPhasePrepared);
+            Assert.Empty(deadlines);
+            Assert.Equal(
+                [settings.WarmupDuration, settings.MaximumMeasuredDuration],
+                requestedDurations);
+            Assert.Equal(1, warmupDeadline.StartCount);
+            Assert.Equal(1, measuredDeadline.StartCount);
             Assert.True(result.ElapsedMs >= settings.MinimumMeasuredDuration.TotalMilliseconds);
             Assert.True(result.LatencySamples >= settings.MinimumLatencySamples);
         }
@@ -356,14 +376,14 @@ public sealed class HybridStorageModeQualificationTests
                 task => detachedWorker = task);
 
         await operationStarted.Task.WaitAsync(
-            TimeSpan.FromSeconds(1),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
         deadline.AdvanceTo(settings.MaximumMeasuredDuration, expire: true);
         try
         {
             InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => runTask.WaitAsync(
-                    TimeSpan.FromSeconds(1),
+                    BenchmarkTestWatchdog.SchedulingTimeout,
                     TestContext.Current.CancellationToken));
 
             Assert.Contains("measurement cap", exception.Message);
@@ -409,14 +429,14 @@ public sealed class HybridStorageModeQualificationTests
                 task => detachedWorker = task));
 
         await operationStarted.Task.WaitAsync(
-            TimeSpan.FromSeconds(1),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
         deadline.AdvanceTo(settings.MaximumMeasuredDuration, expire: true);
         try
         {
             InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => runTask.WaitAsync(
-                    TimeSpan.FromSeconds(1),
+                    BenchmarkTestWatchdog.SchedulingTimeout,
                     TestContext.Current.CancellationToken));
 
             Assert.Contains("measurement cap", exception.Message);
@@ -427,7 +447,7 @@ public sealed class HybridStorageModeQualificationTests
         {
             releaseOperation.Set();
             await operationExited.Task.WaitAsync(
-                TimeSpan.FromSeconds(1),
+                BenchmarkTestWatchdog.SchedulingTimeout,
                 TestContext.Current.CancellationToken);
             if (detachedWorker is not null)
             {
@@ -464,14 +484,14 @@ public sealed class HybridStorageModeQualificationTests
             TestContext.Current.CancellationToken);
 
         await operationStarted.Task.WaitAsync(
-            TimeSpan.FromSeconds(1),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
         deadline.AdvanceTo(TimeSpan.FromSeconds(2), expire: true);
         try
         {
             InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => runTask.WaitAsync(
-                    TimeSpan.FromSeconds(1),
+                    BenchmarkTestWatchdog.SchedulingTimeout,
                     TestContext.Current.CancellationToken));
 
             Assert.Contains("warmup operation", exception.Message);
@@ -482,7 +502,7 @@ public sealed class HybridStorageModeQualificationTests
         {
             releaseOperation.Set();
             await operationExited.Task.WaitAsync(
-                TimeSpan.FromSeconds(1),
+                BenchmarkTestWatchdog.SchedulingTimeout,
                 TestContext.Current.CancellationToken);
             if (detachedWorker is not null)
             {
@@ -533,7 +553,7 @@ public sealed class HybridStorageModeQualificationTests
             scheduledCompletion,
             TestContext.Current.CancellationToken);
         BenchmarkResult result = await runTask.WaitAsync(
-            TimeSpan.FromSeconds(1),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
         await scheduledExecution;
 
@@ -591,7 +611,7 @@ public sealed class HybridStorageModeQualificationTests
             },
             TestContext.Current.CancellationToken);
         await runTask.WaitAsync(
-            TimeSpan.FromSeconds(1),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
         await scheduledExecution;
 
@@ -701,17 +721,17 @@ public sealed class HybridStorageModeQualificationTests
                 TimeSpan.FromMilliseconds(25));
 
         await readerStarted.Task.WaitAsync(
-            TimeSpan.FromSeconds(1),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
         releaseReader.TrySetResult();
         await sampleAttempted.Task.WaitAsync(
-            TimeSpan.FromSeconds(1),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
         deadline.AdvanceTo(TimeSpan.FromSeconds(2.1), expire: true);
 
         InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
             () => runTask.WaitAsync(
-                TimeSpan.FromSeconds(1),
+                BenchmarkTestWatchdog.SchedulingTimeout,
                 TestContext.Current.CancellationToken));
         Assert.Contains("measurement cap", exception.Message);
         Assert.Contains("0 retained latency samples", exception.Message);
@@ -762,7 +782,7 @@ public sealed class HybridStorageModeQualificationTests
                 TimeSpan.FromMilliseconds(25));
 
         await secondRecordAttempted.Task.WaitAsync(
-            TimeSpan.FromSeconds(1),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
         Assert.False(secondRecordAccepted);
         Assert.Equal(1, result.Histograms.Sum(static histogram => histogram.Count));
@@ -854,13 +874,13 @@ public sealed class HybridStorageModeQualificationTests
                 TimeSpan.FromMilliseconds(25));
 
         await readerStarted.Task.WaitAsync(
-            TimeSpan.FromSeconds(1),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
         deadline.AdvanceTo(phaseDuration, expire: true);
 
         HybridStorageModeBenchmark.ConcurrentReaderPhaseResult result =
             await phaseTask.WaitAsync(
-                TimeSpan.FromSeconds(1),
+                BenchmarkTestWatchdog.SchedulingTimeout,
                 TestContext.Current.CancellationToken);
 
         Assert.Equal(phaseDuration, result.Elapsed);
@@ -895,7 +915,7 @@ public sealed class HybridStorageModeQualificationTests
                 TimeSpan.FromMilliseconds(25));
 
         await readerStarted.Task.WaitAsync(
-            TimeSpan.FromSeconds(1),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
         deadline.AdvanceTo(TimeSpan.FromSeconds(1));
         releaseReader.TrySetResult();
@@ -903,7 +923,7 @@ public sealed class HybridStorageModeQualificationTests
 
         InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
             () => phaseTask.WaitAsync(
-                TimeSpan.FromSeconds(1),
+                BenchmarkTestWatchdog.SchedulingTimeout,
                 TestContext.Current.CancellationToken));
 
         Assert.Contains("exit before coordinated cancellation", exception.Message);
@@ -961,14 +981,14 @@ public sealed class HybridStorageModeQualificationTests
                 detachedWorkRegistrar: task => detachedReaders = task);
 
         await readersStarted.Task.WaitAsync(
-            TimeSpan.FromSeconds(1),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
         deadline.AdvanceTo(TimeSpan.FromSeconds(2), expire: true);
         try
         {
             InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => runTask.WaitAsync(
-                    TimeSpan.FromSeconds(1),
+                    BenchmarkTestWatchdog.SchedulingTimeout,
                     TestContext.Current.CancellationToken));
 
             Assert.Contains("measurement cap", exception.Message);
@@ -1015,7 +1035,7 @@ public sealed class HybridStorageModeQualificationTests
                 detachedWorkRegistrar: task => detachedReaders = task);
 
         await readersStarted.Task.WaitAsync(
-            TimeSpan.FromSeconds(1),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
         deadline.AdvanceTo(TimeSpan.FromSeconds(2), expire: true);
         failReader.TrySetException(new ApplicationException("hybrid reader sentinel"));
@@ -1023,7 +1043,7 @@ public sealed class HybridStorageModeQualificationTests
         {
             InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => runTask.WaitAsync(
-                    TimeSpan.FromSeconds(1),
+                    BenchmarkTestWatchdog.SchedulingTimeout,
                     TestContext.Current.CancellationToken));
 
             Assert.Contains("did not stop 1 concurrent reader(s)", exception.Message);
@@ -1080,7 +1100,7 @@ public sealed class HybridStorageModeQualificationTests
         {
             InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => runTask.WaitAsync(
-                    TimeSpan.FromSeconds(1),
+                    BenchmarkTestWatchdog.SchedulingTimeout,
                     TestContext.Current.CancellationToken));
 
             Assert.Contains("before measurement start", exception.Message);
@@ -1157,7 +1177,7 @@ public sealed class HybridStorageModeQualificationTests
             scheduledReaders[0],
             TestContext.Current.CancellationToken);
         await scheduledReady[0].Task.WaitAsync(
-            TimeSpan.FromSeconds(1),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
         Assert.Equal(0, deadline.StartCount);
         Assert.False(phaseTask.IsCompleted);
@@ -1166,11 +1186,11 @@ public sealed class HybridStorageModeQualificationTests
             scheduledReaders[1],
             TestContext.Current.CancellationToken);
         await scheduledReady[1].Task.WaitAsync(
-            TimeSpan.FromSeconds(1),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
         HybridStorageModeBenchmark.ConcurrentReaderPhaseResult result =
             await phaseTask.WaitAsync(
-                TimeSpan.FromSeconds(1),
+                BenchmarkTestWatchdog.SchedulingTimeout,
                 TestContext.Current.CancellationToken);
         await Task.WhenAll(firstReader, secondReader);
 
@@ -1234,7 +1254,7 @@ public sealed class HybridStorageModeQualificationTests
             .Select(static reader => Task.Run(reader))
             .ToArray();
         await phaseTask.WaitAsync(
-            TimeSpan.FromSeconds(2),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
         await Task.WhenAll(startedReaders);
 
@@ -1385,7 +1405,7 @@ public sealed class HybridStorageModeQualificationTests
         try
         {
             await worker.WaitAsync(
-                TimeSpan.FromSeconds(1),
+                BenchmarkTestWatchdog.SchedulingTimeout,
                 TestContext.Current.CancellationToken);
         }
         catch (OperationCanceledException)

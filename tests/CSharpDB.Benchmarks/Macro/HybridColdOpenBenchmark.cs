@@ -9,7 +9,7 @@ public static class HybridColdOpenBenchmark
     private const int SeedCount = 200_000;
     private const int SqlLookupId = 175_321;
     private const int CollectionLookupId = 175_321;
-    private static readonly TimeSpan CancellationDrainTimeout = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan FailureCleanupDrainTimeout = TimeSpan.FromSeconds(1);
 
     internal static MeasurementPolicy DefaultMeasurementPolicy { get; } = new(
         MinimumMeasuredDuration: TimeSpan.FromSeconds(15),
@@ -164,7 +164,7 @@ public static class HybridColdOpenBenchmark
             operation,
             DefaultMeasurementPolicy,
             deadline,
-            CancellationDrainTimeout,
+            FailureCleanupDrainTimeout,
             detachedWorkRegistrar);
     }
 

@@ -139,7 +139,7 @@ public sealed class SqliteComparisonBenchmarkTests
             policy,
             deadline,
             TimeSpan.FromMilliseconds(25)).WaitAsync(
-                TimeSpan.FromSeconds(1),
+                BenchmarkTestWatchdog.SchedulingTimeout,
                 TestContext.Current.CancellationToken);
 
         Assert.Equal(policy.MinimumLatencySamples, operationCount);
@@ -185,14 +185,14 @@ public sealed class SqliteComparisonBenchmarkTests
         try
         {
             Assert.True(firstRowStarted.Wait(
-                TimeSpan.FromSeconds(1),
+                BenchmarkTestWatchdog.SchedulingTimeout,
                 TestContext.Current.CancellationToken));
             deadline.AdvanceTo(policy.MaximumMeasuredDuration, expire: true);
             releaseFirstRow.Set();
 
             InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => runTask.WaitAsync(
-                    TimeSpan.FromSeconds(1),
+                    BenchmarkTestWatchdog.SchedulingTimeout,
                     TestContext.Current.CancellationToken));
 
             Assert.Contains("90-second measurement cap", exception.Message);
@@ -231,14 +231,14 @@ public sealed class SqliteComparisonBenchmarkTests
             detachedWorkRegistrar: task => detachedTask = task);
 
         await operationStarted.Task.WaitAsync(
-            TimeSpan.FromSeconds(1),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
         deadline.AdvanceTo(policy.MaximumMeasuredDuration, expire: true);
         try
         {
             InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => runTask.WaitAsync(
-                    TimeSpan.FromSeconds(1),
+                    BenchmarkTestWatchdog.SchedulingTimeout,
                     TestContext.Current.CancellationToken));
 
             Assert.Contains("90-second measurement cap", exception.Message);
@@ -251,7 +251,7 @@ public sealed class SqliteComparisonBenchmarkTests
             if (detachedTask is not null)
             {
                 await detachedTask.WaitAsync(
-                    TimeSpan.FromSeconds(1),
+                    BenchmarkTestWatchdog.SchedulingTimeout,
                     TestContext.Current.CancellationToken);
             }
         }
@@ -280,14 +280,14 @@ public sealed class SqliteComparisonBenchmarkTests
             task => quarantinedTask = task);
 
         Assert.True(operationStarted.Wait(
-            TimeSpan.FromSeconds(1),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken));
         deadline.AdvanceTo(policy.MaximumMeasuredDuration, expire: true);
         try
         {
             InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => runTask.WaitAsync(
-                    TimeSpan.FromSeconds(1),
+                    BenchmarkTestWatchdog.SchedulingTimeout,
                     TestContext.Current.CancellationToken));
 
             Assert.Contains("did not stop scenario worker", exception.Message);
@@ -300,7 +300,7 @@ public sealed class SqliteComparisonBenchmarkTests
             if (quarantinedTask is not null)
             {
                 await quarantinedTask.WaitAsync(
-                    TimeSpan.FromSeconds(1),
+                    BenchmarkTestWatchdog.SchedulingTimeout,
                     TestContext.Current.CancellationToken);
             }
         }
@@ -328,14 +328,14 @@ public sealed class SqliteComparisonBenchmarkTests
             detachedWorkRegistrar: task => detachedTask = task);
 
         Assert.True(operationStarted.Wait(
-            TimeSpan.FromSeconds(1),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken));
         deadline.AdvanceTo(TimeSpan.FromSeconds(2), expire: true);
         try
         {
             InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => warmupTask.WaitAsync(
-                    TimeSpan.FromSeconds(1),
+                    BenchmarkTestWatchdog.SchedulingTimeout,
                     TestContext.Current.CancellationToken));
 
             Assert.Contains("did not stop warmup worker", exception.Message);
@@ -346,7 +346,7 @@ public sealed class SqliteComparisonBenchmarkTests
             if (detachedTask is not null)
             {
                 await detachedTask.WaitAsync(
-                    TimeSpan.FromSeconds(1),
+                    BenchmarkTestWatchdog.SchedulingTimeout,
                     TestContext.Current.CancellationToken);
             }
         }
@@ -370,7 +370,7 @@ public sealed class SqliteComparisonBenchmarkTests
             warmupDuration,
             deadline,
             TimeSpan.FromMilliseconds(25)).WaitAsync(
-                TimeSpan.FromSeconds(1),
+                BenchmarkTestWatchdog.SchedulingTimeout,
                 TestContext.Current.CancellationToken);
 
         Assert.Equal(1, operationCount);
@@ -457,7 +457,7 @@ public sealed class SqliteComparisonBenchmarkTests
             scheduledReaders[0],
             TestContext.Current.CancellationToken);
         await scheduledReady[0].Task.WaitAsync(
-            TimeSpan.FromSeconds(1),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
         Assert.Equal(0, deadline.StartCount);
         Assert.False(phaseTask.IsCompleted);
@@ -466,10 +466,10 @@ public sealed class SqliteComparisonBenchmarkTests
             scheduledReaders[1],
             TestContext.Current.CancellationToken);
         await scheduledReady[1].Task.WaitAsync(
-            TimeSpan.FromSeconds(1),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
         SqliteComparisonBenchmark.ConcurrentReaderPhaseResult result = await phaseTask.WaitAsync(
-            TimeSpan.FromSeconds(2),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
         await Task.WhenAll(firstReader, secondReader);
 
@@ -519,13 +519,13 @@ public sealed class SqliteComparisonBenchmarkTests
                 TimeSpan.FromMilliseconds(25));
 
         await firstTwoSamplesRetained.Task.WaitAsync(
-            TimeSpan.FromSeconds(1),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
         Assert.False(phaseTask.IsCompleted);
 
         retainFinalSample.TrySetResult();
         SqliteComparisonBenchmark.ConcurrentReaderPhaseResult result = await phaseTask.WaitAsync(
-            TimeSpan.FromSeconds(1),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
 
         Assert.Equal(3, result.RetainedLatencySamples);
@@ -558,7 +558,7 @@ public sealed class SqliteComparisonBenchmarkTests
                 },
                 deadline,
                 TimeSpan.FromMilliseconds(25)).WaitAsync(
-                    TimeSpan.FromSeconds(1),
+                    BenchmarkTestWatchdog.SchedulingTimeout,
                     TestContext.Current.CancellationToken);
 
         Assert.Equal(1, recordAttempts);
@@ -590,7 +590,7 @@ public sealed class SqliteComparisonBenchmarkTests
                 },
                 deadline,
                 TimeSpan.FromMilliseconds(25)).WaitAsync(
-                    TimeSpan.FromSeconds(1),
+                    BenchmarkTestWatchdog.SchedulingTimeout,
                     TestContext.Current.CancellationToken));
 
         Assert.Contains("90-second measurement cap", exception.Message);
@@ -623,7 +623,7 @@ public sealed class SqliteComparisonBenchmarkTests
                 },
                 deadline,
                 TimeSpan.FromMilliseconds(25)).WaitAsync(
-                    TimeSpan.FromSeconds(1),
+                    BenchmarkTestWatchdog.SchedulingTimeout,
                     TestContext.Current.CancellationToken);
 
         Assert.Equal(policy.MinimumMeasuredDuration, result.Elapsed);
@@ -660,10 +660,10 @@ public sealed class SqliteComparisonBenchmarkTests
                 TimeSpan.FromMilliseconds(25));
 
         SqliteComparisonBenchmark.ConcurrentReaderPhaseResult result = await phaseTask.WaitAsync(
-            TimeSpan.FromSeconds(1),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
         bool postCancellationRecordAccepted = await postCancellationAttempt.Task.WaitAsync(
-            TimeSpan.FromSeconds(1),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
 
         Assert.False(postCancellationRecordAccepted);
@@ -701,7 +701,7 @@ public sealed class SqliteComparisonBenchmarkTests
         {
             InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => phaseTask.WaitAsync(
-                    TimeSpan.FromSeconds(1),
+                    BenchmarkTestWatchdog.SchedulingTimeout,
                     TestContext.Current.CancellationToken));
 
             Assert.Contains("sqlite-unresponsive-reader", exception.Message);
@@ -715,7 +715,7 @@ public sealed class SqliteComparisonBenchmarkTests
             if (detachedTask is not null)
             {
                 await detachedTask.WaitAsync(
-                    TimeSpan.FromSeconds(1),
+                    BenchmarkTestWatchdog.SchedulingTimeout,
                     TestContext.Current.CancellationToken);
             }
         }
@@ -754,7 +754,7 @@ public sealed class SqliteComparisonBenchmarkTests
         {
             InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => phaseTask.WaitAsync(
-                    TimeSpan.FromSeconds(1),
+                    BenchmarkTestWatchdog.SchedulingTimeout,
                     TestContext.Current.CancellationToken));
 
             Assert.Contains("did not stop 1 reader worker", exception.Message);
@@ -769,7 +769,7 @@ public sealed class SqliteComparisonBenchmarkTests
                 try
                 {
                     await detachedTask.WaitAsync(
-                        TimeSpan.FromSeconds(1),
+                        BenchmarkTestWatchdog.SchedulingTimeout,
                         TestContext.Current.CancellationToken);
                 }
                 catch (ApplicationException exception)

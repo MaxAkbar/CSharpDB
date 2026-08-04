@@ -16,7 +16,6 @@ public static class SqliteComparisonBenchmark
     private const int ConcurrentReaderCount = 8;
     private const int ReusedSessionBurstReads = 32;
     private const int HighThroughputLatencySampleEvery = 128;
-    private static readonly TimeSpan CancellationDrainTimeout = TimeSpan.FromSeconds(1);
     internal static MeasurementPolicy DefaultMeasurementPolicy { get; } = new(
         WarmupDuration: TimeSpan.FromSeconds(2),
         MinimumMeasuredDuration: TimeSpan.FromSeconds(5),
@@ -285,7 +284,7 @@ public static class SqliteComparisonBenchmark
                 ? RunReusedReaderLoopAsync(context, histograms[readerIndex], sampleRetained, ct)
                 : RunPerQueryReaderLoopAsync(context, histograms[readerIndex], sampleRetained, ct),
             deadline,
-            CancellationDrainTimeout,
+            ReleaseWorkerCancellationPolicy.CoordinatedDrainTimeout,
             detachedWorkRegistrar: context.QuarantineDetachedWork);
 
         int retainedLatencySamples = histograms.Sum(static histogram => histogram.SampleCount);
@@ -330,7 +329,7 @@ public static class SqliteComparisonBenchmark
             name,
             operation,
             DefaultMeasurementPolicy.WarmupDuration,
-            CancellationDrainTimeout,
+            ReleaseWorkerCancellationPolicy.CoordinatedDrainTimeout,
             detachedWorkRegistrar);
         MacroBenchmarkRunner.StabilizeAfterWarmup();
 
@@ -341,7 +340,7 @@ public static class SqliteComparisonBenchmark
             operation,
             DefaultMeasurementPolicy,
             deadline,
-            CancellationDrainTimeout,
+            ReleaseWorkerCancellationPolicy.CoordinatedDrainTimeout,
             detachedWorkRegistrar);
         return CloneResult(
             result,

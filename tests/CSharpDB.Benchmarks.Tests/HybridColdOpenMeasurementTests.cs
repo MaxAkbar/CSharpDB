@@ -64,13 +64,13 @@ public sealed class HybridColdOpenMeasurementTests
             TimeSpan.FromMilliseconds(25));
 
         await operationStarted.Task.WaitAsync(
-            TimeSpan.FromSeconds(1),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
         deadline.AdvanceTo(policy.MaximumMeasuredDuration, expire: true);
 
         InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
             () => runTask.WaitAsync(
-                TimeSpan.FromSeconds(1),
+                BenchmarkTestWatchdog.SchedulingTimeout,
                 TestContext.Current.CancellationToken));
 
         Assert.Contains("cold-open-cancelled", exception.Message);
@@ -104,14 +104,14 @@ public sealed class HybridColdOpenMeasurementTests
             task => detachedWorker = task);
 
         await operationStarted.Task.WaitAsync(
-            TimeSpan.FromSeconds(1),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
         deadline.AdvanceTo(policy.MaximumMeasuredDuration, expire: true);
         try
         {
             InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => runTask.WaitAsync(
-                    TimeSpan.FromSeconds(1),
+                    BenchmarkTestWatchdog.SchedulingTimeout,
                     TestContext.Current.CancellationToken));
 
             Assert.Contains("cold-open-unresponsive", exception.Message);
@@ -157,14 +157,14 @@ public sealed class HybridColdOpenMeasurementTests
                 task => detachedWorker = task));
 
         await operationStarted.Task.WaitAsync(
-            TimeSpan.FromSeconds(1),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
         deadline.AdvanceTo(policy.MaximumMeasuredDuration, expire: true);
         try
         {
             InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => runTask.WaitAsync(
-                    TimeSpan.FromSeconds(1),
+                    BenchmarkTestWatchdog.SchedulingTimeout,
                     TestContext.Current.CancellationToken));
 
             Assert.Contains("cold-open-synchronously-blocked", exception.Message);
@@ -176,7 +176,7 @@ public sealed class HybridColdOpenMeasurementTests
         {
             releaseOperation.Set();
             await operationExited.Task.WaitAsync(
-                TimeSpan.FromSeconds(1),
+                BenchmarkTestWatchdog.SchedulingTimeout,
                 TestContext.Current.CancellationToken);
             if (detachedWorker is not null)
             {
@@ -234,7 +234,7 @@ public sealed class HybridColdOpenMeasurementTests
             },
             TestContext.Current.CancellationToken);
         BenchmarkResult result = await runTask.WaitAsync(
-            TimeSpan.FromSeconds(1),
+            BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
         await scheduledExecution;
 
@@ -271,7 +271,7 @@ public sealed class HybridColdOpenMeasurementTests
         try
         {
             await worker.WaitAsync(
-                TimeSpan.FromSeconds(1),
+                BenchmarkTestWatchdog.SchedulingTimeout,
                 TestContext.Current.CancellationToken);
         }
         catch (OperationCanceledException)

@@ -21,7 +21,7 @@ public static class DirectFileCacheTransportBenchmark
     private static readonly TimeSpan MeasuredDuration = TimeSpan.FromSeconds(10);
     internal static readonly TimeSpan MaximumReleaseCoreMeasuredDuration = TimeSpan.FromSeconds(90);
     private static readonly TimeSpan WarmupCompletionTimeout = TimeSpan.FromSeconds(30);
-    private static readonly TimeSpan CancellationDrainTimeout = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan FailureCleanupDrainTimeout = TimeSpan.FromSeconds(1);
     private static readonly IReadOnlyList<MasterComparisonScenario> s_masterComparisonDurableWriteScenarios =
         Array.AsReadOnly(
         [
@@ -460,7 +460,7 @@ public static class DirectFileCacheTransportBenchmark
             workerTask,
             deadlineTask,
             phaseCts,
-            CancellationDrainTimeout,
+            FailureCleanupDrainTimeout,
             $"direct benchmark row '{benchmarkName}' measured worker",
             () => CreateReleaseCoreMeasurementCapException(
                 benchmarkName,
@@ -612,10 +612,28 @@ public static class DirectFileCacheTransportBenchmark
         string benchmarkName,
         Exception? deadlineFailure = null,
         Action<Task>? detachedWorkRegistrar = null)
+        => await WaitForConcurrentWorkerDrainAsync(
+            allWorkers,
+            benchmarkName,
+            ReleaseWorkerCancellationPolicy.CoordinatedDrainTimeout,
+            deadlineFailure,
+            detachedWorkRegistrar);
+
+    internal static async Task WaitForConcurrentWorkerDrainAsync(
+        Task allWorkers,
+        string benchmarkName,
+        TimeSpan cancellationDrainTimeout,
+        Exception? deadlineFailure = null,
+        Action<Task>? detachedWorkRegistrar = null)
     {
+        ArgumentNullException.ThrowIfNull(allWorkers);
+        ArgumentException.ThrowIfNullOrWhiteSpace(benchmarkName);
+        if (cancellationDrainTimeout < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(cancellationDrainTimeout));
+
         try
         {
-            await allWorkers.WaitAsync(CancellationDrainTimeout);
+            await allWorkers.WaitAsync(cancellationDrainTimeout);
         }
         catch (TimeoutException)
         {
@@ -623,7 +641,7 @@ public static class DirectFileCacheTransportBenchmark
             detachedWorkRegistrar?.Invoke(allWorkers);
             throw new InvalidOperationException(
                 $"Coordinated cancellation for {benchmarkName} did not stop all workers within " +
-                $"{CancellationDrainTimeout.TotalSeconds:F0} second.",
+                $"{cancellationDrainTimeout.TotalSeconds:F3} seconds.",
                 deadlineFailure);
         }
     }

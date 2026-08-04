@@ -182,35 +182,79 @@ public sealed class ReleaseStatusScriptTests
         Assert.Contains("Component Based Servicing", script);
         Assert.Contains("WindowsUpdate\\Auto Update\\RebootRequired", script);
         Assert.Contains("PendingFileRenameOperations", script);
-        Assert.Contains("Get-Process -Name msiexec", script);
+        Assert.Contains("Get-PendingFileRenameOperationsSnapshot", script);
+        Assert.Contains("Get-PendingFileRenamePolicyReasons", script);
+        Assert.Contains("Get-PendingFileRenameChangeReasons", script);
+        Assert.DoesNotContain("Get-Process -Name msiexec", script);
         Assert.Contains("ProviderName = 'MsiInstaller'", script);
-        Assert.Contains("Id = 1040", script);
-        Assert.Contains("Assert-QuiescentLocalEnvironment -Stage 'preflight'", script);
-        Assert.Contains(
-            "Assert-QuiescentLocalEnvironment -Stage \"the start of pass $qualificationPass\"",
-            script);
-        Assert.Contains(
-            "Get-InstallerActivityReasons -SinceUtc $passEnvironmentStartedUtc",
-            script);
+        Assert.Contains("Id = @(1040, 1042)", script);
+        Assert.Contains("Get-ActiveInstallerTransactionReasons", script);
+        Assert.Contains("Get-ApplicationEventLogAnchor", script);
+        Assert.Contains("Get-ApplicationEventXmlFingerprint", script);
+        Assert.Contains("$Event.ToXml()", script);
+        Assert.Contains("-ListLog 'Application'", script);
+        Assert.Contains("IsEnabled", script);
+        Assert.Contains("IsLogFull", script);
+        Assert.Contains("before reading Windows Installer events", script);
+        Assert.Contains("after reading Windows Installer events", script);
+        Assert.Contains("record ID reused", script);
+        Assert.Contains("Get-PassMeasurementStartUtc", script);
+        Assert.Contains("-NotBeforeUtc $installerQuietCutoffUtc", script);
+        Assert.Contains("-Stage 'preflight'", script);
+        Assert.Contains("-Stage \"the start of pass $qualificationPass\"", script);
+        Assert.Contains("Get-LocalEnvironmentIssues", script);
         Assert.Contains("environment contamination", script);
         Assert.Contains("remaining passes will not run", script);
+
+        int installerActivityFunction = script.IndexOf(
+            "function Get-InstallerActivityReasons",
+            StringComparison.Ordinal);
+        int anchorCheckBeforeRead = script.IndexOf(
+            "-Stage 'before reading Windows Installer events'",
+            installerActivityFunction,
+            StringComparison.Ordinal);
+        int installerEventRead = script.IndexOf(
+            "$events = @(Get-MsiInstallerTransactionEvents)",
+            anchorCheckBeforeRead,
+            StringComparison.Ordinal);
+        int anchorCheckAfterRead = script.IndexOf(
+            "-Stage 'after reading Windows Installer events'",
+            installerEventRead,
+            StringComparison.Ordinal);
+        int installerEventFilter = script.IndexOf(
+            "$newEvents = @(",
+            anchorCheckAfterRead,
+            StringComparison.Ordinal);
+
+        Assert.True(installerActivityFunction >= 0);
+        Assert.True(anchorCheckBeforeRead > installerActivityFunction);
+        Assert.True(installerEventRead > anchorCheckBeforeRead);
+        Assert.True(anchorCheckAfterRead > installerEventRead);
+        Assert.True(
+            installerEventFilter > anchorCheckAfterRead,
+            "The Application-log anchor must be revalidated before installer IDs are filtered.");
 
         int loop = script.IndexOf(
             "foreach ($qualificationPass in 1, 2)",
             StringComparison.Ordinal);
         int passStartGuard = script.IndexOf(
-            "Assert-QuiescentLocalEnvironment -Stage \"the start of pass $qualificationPass\"",
+            "-Stage \"the start of pass $qualificationPass\"",
             loop,
+            StringComparison.Ordinal);
+        int passStartAnchorGuard = script.IndexOf(
+            "-ApplicationEventLogAnchor $applicationEventLogAnchor",
+            passStartGuard,
             StringComparison.Ordinal);
         int comparison = script.IndexOf("& $comparisonScript @parameters", loop, StringComparison.Ordinal);
         int installerAudit = script.IndexOf(
-            "Get-InstallerActivityReasons -SinceUtc $passEnvironmentStartedUtc",
+            "Get-LocalEnvironmentIssues",
             comparison,
             StringComparison.Ordinal);
         int stopRemainingPasses = script.IndexOf("break", installerAudit, StringComparison.Ordinal);
 
         Assert.True(loop >= 0);
         Assert.True(passStartGuard > loop && passStartGuard < comparison);
+        Assert.True(passStartAnchorGuard > passStartGuard && passStartAnchorGuard < comparison);
         Assert.True(installerAudit > comparison);
         Assert.True(
             stopRemainingPasses > installerAudit,
