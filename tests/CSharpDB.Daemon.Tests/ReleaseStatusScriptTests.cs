@@ -23,7 +23,7 @@ public sealed class ReleaseStatusScriptTests
 
             Assert.True(result.ExitCode == 0, result.CombinedOutput);
             AssertDiagnosticContains(
-                $"Verified canonical durable-v2 status for exact commit {CandidateCommit}",
+                $"Verified canonical durable-v3 status for exact commit {CandidateCommit}",
                 result.CombinedOutput);
             Assert.Equal(
                 [
@@ -53,7 +53,13 @@ public sealed class ReleaseStatusScriptTests
         "was created by 'UnexpectedAttestor', not expected creator 'MaxAkbar'")]
     [InlineData(
         "malformed",
-        "does not contain a canonical durable-v2 attestation")]
+        "does not contain a canonical durable-v3 attestation")]
+    [InlineData(
+        "legacy-v2",
+        "does not contain a canonical durable-v3 attestation")]
+    [InlineData(
+        "lowercase-design",
+        "does not contain a canonical durable-v3 attestation")]
     public async Task Verifier_RejectsMissingOrInvalidLatestExactCommitStatus(
         string scenario,
         string expectedDiagnostic)
@@ -147,6 +153,12 @@ public sealed class ReleaseStatusScriptTests
         Assert.DoesNotContain("merge-base", publisher, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("merge-base", verifier, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("parents", verifier, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(
+            "^policy=durable-v3; baseline=[0-9a-f]{40}; design=[0-9A-F]{8}; " +
+            "reports=[0-9A-F]{8}/[0-9A-F]{8}$",
+            verifier);
+        Assert.DoesNotContain("policy=durable-v2", verifier, StringComparison.Ordinal);
+        Assert.DoesNotContain("durable-v2", publisher, StringComparison.Ordinal);
 
         int initialVerifier = publisher.IndexOf(
             "Invoke-StatusVerifier",
@@ -311,7 +323,8 @@ public sealed class ReleaseStatusScriptTests
 
             $context = 'csharpdb/local-durable-performance'
             $canonical =
-                'policy=durable-v2; baseline=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; ' +
+                'policy=durable-v3; baseline=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; ' +
+                'design=89ABCDEF; ' +
                 'reports=1234ABCD/5678EFAB'
             function New-FakeStatus {
                 param(
@@ -393,7 +406,33 @@ public sealed class ReleaseStatusScriptTests
                             -Id 200 `
                             -CreatedAt '2026-08-02T00:00:00Z' `
                             -State success `
-                            -Description 'policy=durable-v2; baseline=not-a-sha; reports=bad')
+                            -Description 'policy=durable-v3; baseline=not-a-sha; design=bad; reports=bad')
+                    )
+                }
+                'legacy-v2' {
+                    @(
+                        $olderSuccess,
+                        (New-FakeStatus `
+                            -Id 200 `
+                            -CreatedAt '2026-08-02T00:00:00Z' `
+                            -State success `
+                            -Description (
+                                'policy=durable-v2; ' +
+                                'baseline=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; ' +
+                                'reports=1234ABCD/5678EFAB'))
+                    )
+                }
+                'lowercase-design' {
+                    @(
+                        (New-FakeStatus `
+                            -Id 200 `
+                            -CreatedAt '2026-08-02T00:00:00Z' `
+                            -State success `
+                            -Description (
+                                'policy=durable-v3; ' +
+                                'baseline=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; ' +
+                                'design=89abcdef; ' +
+                                'reports=1234ABCD/5678EFAB'))
                     )
                 }
                 default {

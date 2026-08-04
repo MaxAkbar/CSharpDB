@@ -124,9 +124,14 @@ public sealed class DaemonPackagingAssetsTests
         Assert.Contains("CandidateRef = $candidateCommit", wrapper);
         Assert.Contains("PreviousRef = $previousCommit", wrapper);
         Assert.Contains("Paired = $true", wrapper);
-        Assert.Contains("SuiteName = @('master-table-durable-writes')", wrapper);
+        Assert.Contains("SuiteName = @('master-table-durable-write-scenarios')", wrapper);
         Assert.Contains("RepeatCount = $RepeatCount", wrapper);
         Assert.Contains("PostBuildQuiescenceSeconds = $PostBuildQuiescenceSeconds", wrapper);
+        Assert.Contains("InterSampleQuiescenceSeconds = $InterSampleQuiescenceSeconds", wrapper);
+        Assert.Contains("$parameters.MonitorLocalEnvironment = $true", wrapper);
+        Assert.Contains("Watch-LocalPerformanceEnvironment.ps1", wrapper);
+        Assert.Contains("minimum-measured-seconds=30", comparison);
+        Assert.Contains("minimum-retained-latency-samples=10000", comparison);
         Assert.Contains("MaxThroughputRegressionPercent = $MaxThroughputRegressionPercent", wrapper);
         Assert.Contains("MaxP99RegressionPercent = $MaxP99RegressionPercent", wrapper);
         Assert.Contains("MaxP99RegressionMilliseconds = $MaxP99RegressionMilliseconds", wrapper);
@@ -135,7 +140,8 @@ public sealed class DaemonPackagingAssetsTests
         Assert.Contains("'Durable'", wrapper);
         Assert.Contains("ConfirmDedicatedFixedSsd", wrapper);
         Assert.Contains("csharpdb/local-durable-performance", wrapper);
-        Assert.Contains("durable-v2", wrapper);
+        Assert.Contains("durable-v3", wrapper);
+        Assert.DoesNotContain("durable-v2", wrapper, StringComparison.Ordinal);
         Assert.Contains("[string] $BlockingLatencyPercentile = 'P95'", wrapper);
         Assert.Contains("P99 latency: diagnostic only", wrapper);
         Assert.Contains("Use -NoGitHubStatus for diagnostic overrides", wrapper);

@@ -64,10 +64,10 @@ public static class HybridStorageModeBenchmark
         s_masterComparisonScenarios.Select(static scenario => scenario.Name).ToArray());
 
     internal static QualificationSettings DefaultQualificationSettings { get; } = new(
-        WarmupDuration: TimeSpan.FromSeconds(2),
-        MinimumMeasuredDuration: TimeSpan.FromSeconds(30),
-        MinimumLatencySamples: 10_000,
-        MaximumMeasuredDuration: TimeSpan.FromSeconds(120));
+        WarmupDuration: ReleaseQualificationSettings.DurableWrite.WarmupDuration,
+        MinimumMeasuredDuration: ReleaseQualificationSettings.DurableWrite.MinimumMeasuredDuration,
+        MinimumLatencySamples: ReleaseQualificationSettings.DurableWrite.MinimumLatencySamples,
+        MaximumMeasuredDuration: ReleaseQualificationSettings.DurableWrite.MaximumMeasuredDuration);
 
     private sealed record BenchDoc(string Name, int Value, string Category);
 

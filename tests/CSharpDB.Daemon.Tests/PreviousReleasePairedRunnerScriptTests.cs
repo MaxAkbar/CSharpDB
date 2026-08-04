@@ -6,6 +6,20 @@ namespace CSharpDB.Daemon.Tests;
 
 public sealed class PreviousReleasePairedRunnerScriptTests
 {
+    private static readonly string[] ExactMasterDurableRows =
+    [
+        "MasterComparison_Sql_FileBacked_SingleInsert",
+        "MasterComparison_Sql_FileBacked_BatchInsertRows",
+        "MasterComparison_Sql_HybridIncrementalDurable_SingleInsert",
+        "MasterComparison_Sql_HybridIncrementalDurable_BatchInsertRows",
+        "MasterComparison_Sql_DirectClientLocalProcess_SingleInsert",
+        "MasterComparison_Sql_DirectClientLocalProcess_BatchInsertRows",
+        "MasterComparison_Collection_FileBacked_SinglePut",
+        "MasterComparison_Collection_FileBacked_BatchPutDocs",
+        "MasterComparison_Collection_HybridIncrementalDurable_SinglePut",
+        "MasterComparison_Collection_HybridIncrementalDurable_BatchPutDocs",
+    ];
+
     [Fact]
     public void DiagnosticNormalization_RejoinsPowerShellConciseViewContinuationLines()
     {
@@ -91,6 +105,146 @@ public sealed class PreviousReleasePairedRunnerScriptTests
                 Assert.Equal(
                     $"master-table/{pairId}/{expectedSecond}",
                     scheduledEntries[(pairIndex * 2) + 1]);
+            }
+        }
+        finally
+        {
+            DeleteTemporaryRoot(temporaryRoot);
+        }
+    }
+
+    [Theory]
+    [InlineData(1, "previous", "candidate", "artifact-slot-a", "artifact-slot-b")]
+    [InlineData(2, "candidate", "previous", "artifact-slot-a", "artifact-slot-b")]
+    public async Task ExactMasterDurablePreflight_PersistsRotatedAdjacentSchedule(
+        int qualificationPass,
+        string firstRevision,
+        string secondRevision,
+        string firstSlot,
+        string secondSlot)
+    {
+        string temporaryRoot = CreateTemporaryRoot();
+        try
+        {
+            TestRepository repository = await CreateTestRepositoryAsync(temporaryRoot);
+            string evidence = Path.Combine(
+                temporaryRoot,
+                $"exact-master-preflight-pass-{qualificationPass}");
+
+            ProcessResult result = await RunProcessAsync(
+                "pwsh",
+                "-NoLogo",
+                "-NoProfile",
+                "-File",
+                repository.RunnerScript,
+                "-PreviousRef",
+                "v4.3.0",
+                "-CandidateRef",
+                "HEAD",
+                "-OutputPath",
+                evidence,
+                "-QualificationPass",
+                qualificationPass.ToString(),
+                "-RepeatCount",
+                "3",
+                "-Paired",
+                "-SuiteName",
+                "master-table-durable-write-scenarios",
+                "-InterSampleQuiescenceSeconds",
+                "10",
+                "-PreflightOnly");
+
+            Assert.True(result.ExitCode == 0, result.CombinedOutput);
+            string preflight = File.ReadAllText(Path.Combine(
+                evidence,
+                "previous-release-performance-preflight.md"));
+            Assert.Contains(
+                "- Execution strategy: durable-v3-exact-master-row-adjacent",
+                preflight);
+            Assert.Contains(
+                "- Canonical exact-master durable mode: `master-table-durable-write-scenarios`",
+                preflight);
+            Assert.Contains(
+                "- Inter-sample quiescence before every recorded logical side: 10 second(s)",
+                preflight);
+            Assert.Contains("- Recorded evidence policy: no discard, no replacement", preflight);
+            string fingerprintLine = Assert.Single(
+                File.ReadLines(Path.Combine(
+                    evidence,
+                    "previous-release-performance-preflight.md")),
+                line => line.StartsWith(
+                    "- Durable-v3 design fingerprint: `",
+                    StringComparison.Ordinal));
+            string fingerprint = fingerprintLine.Split('`')[1];
+            Assert.Matches("^[0-9a-f]{64}$", fingerprint);
+
+            string schedulePath = Path.Combine(
+                evidence,
+                "logs",
+                "durable-v3-exact-master-schedule.csv");
+            string[] schedule = File.ReadAllLines(schedulePath);
+            Assert.Equal(121, schedule.Length);
+            Assert.Equal(
+                "Ordinal,QualificationPass,PairRound,RowTimePosition,RotationOffset," +
+                "Suite,ExpectedRowName,PairId,PairOrder,PairPosition,Revision," +
+                "ArtifactSlot,Arguments,InterSampleQuiescenceSeconds,Recorded",
+                schedule[0]);
+            string[][] entries = schedule.Skip(1)
+                .Select(line => line.Split(','))
+                .ToArray();
+            Assert.All(entries, fields => Assert.Equal(15, fields.Length));
+            Assert.Equal(
+                12,
+                entries.Count(fields =>
+                    fields[5].Equals(ExactMasterDurableRows[0], StringComparison.Ordinal)));
+
+            int[] expectedOffsets = qualificationPass == 1
+                ? [0, 3, 6, 9, 2, 5]
+                : [8, 1, 4, 7, 0, 3];
+            for (int pairRound = 1; pairRound <= 6; pairRound++)
+            {
+                string roundFirstRevision = pairRound % 2 == 1
+                    ? firstRevision
+                    : secondRevision;
+                string roundSecondRevision = pairRound % 2 == 1
+                    ? secondRevision
+                    : firstRevision;
+                string roundFirstSlot = pairRound % 2 == 1
+                    ? firstSlot
+                    : secondSlot;
+                string roundSecondSlot = pairRound % 2 == 1
+                    ? secondSlot
+                    : firstSlot;
+                string[][] roundEntries = entries
+                    .Where(fields => fields[2] == pairRound.ToString())
+                    .ToArray();
+                Assert.Equal(20, roundEntries.Length);
+                Assert.All(
+                    roundEntries,
+                    fields => Assert.Equal(expectedOffsets[pairRound - 1].ToString(), fields[4]));
+                for (int rowPosition = 1; rowPosition <= 10; rowPosition++)
+                {
+                    string[][] adjacent = roundEntries
+                        .Where(fields => fields[3] == rowPosition.ToString())
+                        .ToArray();
+                    Assert.Equal(2, adjacent.Length);
+                    Assert.Equal(adjacent[0][5], adjacent[1][5]);
+                    Assert.Equal(adjacent[0][7], adjacent[1][7]);
+                    Assert.Equal("1", adjacent[0][9]);
+                    Assert.Equal("2", adjacent[1][9]);
+                    Assert.Equal(roundFirstRevision, adjacent[0][10]);
+                    Assert.Equal(roundSecondRevision, adjacent[1][10]);
+                    Assert.Equal(roundFirstSlot, adjacent[0][11]);
+                    Assert.Equal(roundSecondSlot, adjacent[1][11]);
+                    Assert.Equal("10", adjacent[0][13]);
+                    Assert.Equal("true", adjacent[0][14]);
+                    int expectedRowIndex =
+                        (rowPosition - 1 + expectedOffsets[pairRound - 1]) % 10;
+                    Assert.Equal(ExactMasterDurableRows[expectedRowIndex], adjacent[0][5]);
+                    Assert.Equal(
+                        $"--master-table-durable-write-scenario {adjacent[0][5]}",
+                        adjacent[0][12]);
+                }
             }
         }
         finally
@@ -827,6 +981,271 @@ public sealed class PreviousReleasePairedRunnerScriptTests
             Assert.Contains("artifact closeout: **PASS**", File.ReadAllText(Path.Combine(
                 evidence,
                 "previous-release-performance-preflight.md")));
+            Assert.False(Directory.Exists(Path.Combine(evidence, "baseline-source")));
+            Assert.False(Directory.Exists(Path.Combine(evidence, "candidate-source")));
+        }
+        finally
+        {
+            DeleteTemporaryRoot(temporaryRoot);
+        }
+    }
+
+    [Fact]
+    public async Task ExactMasterDurableRunner_StagesConditionsAndRetainsEveryScheduledRawRow()
+    {
+        string temporaryRoot = CreateTemporaryRoot();
+        try
+        {
+            TestRepository repository = await CreateTestRepositoryAsync(temporaryRoot);
+            string fakeToolRoot = Path.Combine(temporaryRoot, "fake-tools");
+            CreatePairedFakeDotnetTool(fakeToolRoot);
+            string invocationLog = Path.Combine(temporaryRoot, "fake-dotnet.log");
+            Dictionary<string, string> environment = new()
+            {
+                ["PATH"] = fakeToolRoot + Path.PathSeparator +
+                    (Environment.GetEnvironmentVariable("PATH") ?? string.Empty),
+                ["FAKE_DOTNET_LOG"] = invocationLog,
+            };
+            string evidence = Path.Combine(temporaryRoot, "exact-master-durable-evidence");
+
+            ProcessResult result = await RunProcessWithEnvironmentAsync(
+                "pwsh",
+                environment,
+                "-NoLogo",
+                "-NoProfile",
+                "-File",
+                repository.RunnerScript,
+                "-PreviousRef",
+                "v4.3.0",
+                "-CandidateRef",
+                "HEAD",
+                "-OutputPath",
+                evidence,
+                "-QualificationPass",
+                "1",
+                "-RepeatCount",
+                "3",
+                "-Paired",
+                "-SuiteName",
+                "master-table-durable-write-scenarios",
+                "-PostBuildQuiescenceSeconds",
+                "1");
+
+            Assert.True(result.ExitCode == 0, result.CombinedOutput);
+            string[] invocations = File.ReadAllLines(invocationLog);
+            string[] runs = invocations
+                .Where(line => line.Contains("|run|", StringComparison.Ordinal))
+                .ToArray();
+            Assert.Equal(122, runs.Length);
+            string[] conditioningRuns = runs[..2];
+            string[] recordedRuns = runs[2..];
+            Assert.Contains("baseline-source|run|", conditioningRuns[0]);
+            Assert.Contains("candidate-source|run|", conditioningRuns[1]);
+            Assert.All(
+                conditioningRuns,
+                run => Assert.Contains(
+                    $"|master-table-durable-write-scenario|scenario={ExactMasterDurableRows[0]}|",
+                    run));
+
+            string previousArtifact = Path.GetFullPath(Path.Combine(
+                evidence,
+                "benchmark-artifact-slots",
+                "artifact-slot-a",
+                "CSharpDB.Benchmarks.dll"));
+            string candidateArtifact = Path.GetFullPath(Path.Combine(
+                evidence,
+                "benchmark-artifact-slots",
+                "artifact-slot-b",
+                "CSharpDB.Benchmarks.dll"));
+            Assert.Equal(previousArtifact.Length, candidateArtifact.Length);
+            Assert.EndsWith("|artifact=" + previousArtifact, conditioningRuns[0]);
+            Assert.EndsWith("|artifact=" + candidateArtifact, conditioningRuns[1]);
+            int shutdownIndex = Array.FindIndex(
+                invocations,
+                line => line.EndsWith("|build-server|shutdown", StringComparison.Ordinal));
+            int[] runIndices = invocations
+                .Select((line, index) => (line, index))
+                .Where(entry => entry.line.Contains("|run|", StringComparison.Ordinal))
+                .Select(entry => entry.index)
+                .ToArray();
+            int firstRecordedIndex = runIndices[2];
+            Assert.True(shutdownIndex > runIndices[1]);
+            Assert.True(shutdownIndex < firstRecordedIndex);
+
+            string schedulePath = Path.Combine(
+                evidence,
+                "logs",
+                "durable-v3-exact-master-schedule.csv");
+            string[][] schedule = File.ReadAllLines(schedulePath)
+                .Skip(1)
+                .Select(line => line.Split(','))
+                .ToArray();
+            Assert.Equal(120, schedule.Length);
+            for (int index = 0; index < schedule.Length; index++)
+            {
+                string[] fields = schedule[index];
+                Assert.Contains(
+                    $"|scenario={fields[6]}|",
+                    recordedRuns[index]);
+                string expectedArtifact = fields[10] == "previous"
+                    ? previousArtifact
+                    : candidateArtifact;
+                Assert.EndsWith("|artifact=" + expectedArtifact, recordedRuns[index]);
+            }
+
+            string artifactManifestPath = Path.Combine(
+                evidence,
+                "logs",
+                "paired-benchmark-artifacts.sha256");
+            Assert.Equal(
+                "csharpdb-paired-benchmark-artifacts/v3",
+                ReadManifestValue(artifactManifestPath, "FormatVersion"));
+            Assert.Equal("true", ReadManifestValue(
+                artifactManifestPath,
+                "SymmetricStaging"));
+            Assert.Equal("artifact-slot-a", ReadManifestValue(
+                artifactManifestPath,
+                "PreviousStagingSlot"));
+            Assert.Equal("artifact-slot-b", ReadManifestValue(
+                artifactManifestPath,
+                "CandidateStagingSlot"));
+            Assert.Equal("7", ReadManifestValue(
+                artifactManifestPath,
+                "PreviousStagedReadFileCount"));
+            Assert.Equal("7", ReadManifestValue(
+                artifactManifestPath,
+                "CandidateStagedReadFileCount"));
+            Assert.Equal(previousArtifact, ReadManifestValue(
+                artifactManifestPath,
+                "PreviousArtifactPath"));
+            Assert.Equal(candidateArtifact, ReadManifestValue(
+                artifactManifestPath,
+                "CandidateArtifactPath"));
+            Assert.Matches(
+                "^[0-9a-f]{64}$",
+                ReadManifestValue(artifactManifestPath, "DesignSha256"));
+            Assert.Matches(
+                "^[0-9a-f]{64}$",
+                ReadManifestValue(artifactManifestPath, "ScheduleSha256"));
+
+            string conditioningManifestPath = Path.Combine(
+                evidence,
+                "logs",
+                "durable-v3-conditioning.csv");
+            string[] conditioningManifest = File.ReadAllLines(conditioningManifestPath);
+            Assert.Equal(3, conditioningManifest.Length);
+            Assert.All(
+                conditioningManifest.Skip(1),
+                line => Assert.EndsWith(",false", line));
+            Assert.Equal(
+                2,
+                Directory.GetFiles(
+                    Path.Combine(evidence, "logs", "conditioning"),
+                    "*.csv",
+                    SearchOption.TopDirectoryOnly).Length);
+
+            string pairManifestPath = Path.Combine(
+                evidence,
+                "logs",
+                "paired-execution.csv");
+            Assert.Equal(61, File.ReadAllLines(pairManifestPath).Length);
+            AssertRawDigestManifest(evidence, expectedFileCount: 120);
+            foreach (string revisionRoot in new[] { "baseline-results", "candidate-results" })
+            {
+                string resultRoot = Path.Combine(evidence, revisionRoot);
+                Assert.Equal(
+                    10,
+                    Directory.GetFiles(resultRoot, "*.csv", SearchOption.TopDirectoryOnly).Length);
+                string[] rawFiles = Directory.GetFiles(
+                    Path.Combine(resultRoot, "raw"),
+                    "*.csv",
+                    SearchOption.AllDirectories);
+                Assert.Equal(60, rawFiles.Length);
+                foreach (string rawFile in rawFiles)
+                {
+                    string raw = File.ReadAllText(rawFile);
+                    Assert.Contains("minimum-measured-seconds=30", raw);
+                    Assert.Contains("minimum-retained-latency-samples=10000", raw);
+                    Assert.Contains("measurement-begin-utc=", raw);
+                    Assert.Contains("measurement-end-utc=", raw);
+                }
+            }
+
+            Assert.True(Directory.Exists(Path.GetDirectoryName(previousArtifact)));
+            Assert.True(Directory.Exists(Path.GetDirectoryName(candidateArtifact)));
+            Assert.False(Directory.Exists(Path.Combine(evidence, "baseline-source")));
+            Assert.False(Directory.Exists(Path.Combine(evidence, "candidate-source")));
+            AssertCloseoutResult(evidence, "PASS");
+            string report = File.ReadAllText(Path.Combine(
+                evidence,
+                "previous-release-performance.md"));
+            Assert.Contains("- Durable-v3 design fingerprint: `", report);
+            Assert.Contains("equal-length sibling staging slots", report);
+            Assert.Contains("120 files verified", report);
+        }
+        finally
+        {
+            DeleteTemporaryRoot(temporaryRoot);
+        }
+    }
+
+    [Fact]
+    public async Task ExactMasterDurableRunner_RejectsInvalidRawRowWithoutReplacement()
+    {
+        string temporaryRoot = CreateTemporaryRoot();
+        try
+        {
+            TestRepository repository = await CreateTestRepositoryAsync(temporaryRoot);
+            string fakeToolRoot = Path.Combine(temporaryRoot, "fake-tools");
+            CreatePairedFakeDotnetTool(fakeToolRoot);
+            string invocationLog = Path.Combine(temporaryRoot, "fake-dotnet.log");
+            Dictionary<string, string> environment = new()
+            {
+                ["PATH"] = fakeToolRoot + Path.PathSeparator +
+                    (Environment.GetEnvironmentVariable("PATH") ?? string.Empty),
+                ["FAKE_DOTNET_LOG"] = invocationLog,
+                ["FAKE_DOTNET_BAD_METADATA_ON_RUN"] = "3",
+            };
+            string evidence = Path.Combine(temporaryRoot, "invalid-exact-master-evidence");
+
+            ProcessResult result = await RunProcessWithEnvironmentAsync(
+                "pwsh",
+                environment,
+                "-NoLogo",
+                "-NoProfile",
+                "-File",
+                repository.RunnerScript,
+                "-PreviousRef",
+                "v4.3.0",
+                "-CandidateRef",
+                "HEAD",
+                "-OutputPath",
+                evidence,
+                "-QualificationPass",
+                "1",
+                "-RepeatCount",
+                "3",
+                "-Paired",
+                "-SuiteName",
+                "master-table-durable-write-scenarios");
+
+            Assert.NotEqual(0, result.ExitCode);
+            AssertDiagnosticContains(
+                "must retain at least 10000 latency samples; received '9999'",
+                result.CombinedOutput);
+            Assert.Equal(
+                3,
+                File.ReadAllLines(invocationLog)
+                    .Count(line => line.Contains("|run|", StringComparison.Ordinal)));
+            Assert.Single(File.ReadAllLines(Path.Combine(
+                evidence,
+                "logs",
+                "paired-execution.csv")));
+            Assert.Empty(File.ReadAllLines(Path.Combine(
+                evidence,
+                "logs",
+                "paired-raw-evidence.sha256")));
+            AssertCloseoutResult(evidence, "PASS");
             Assert.False(Directory.Exists(Path.Combine(evidence, "baseline-source")));
             Assert.False(Directory.Exists(Path.Combine(evidence, "candidate-source")));
         }
@@ -1645,8 +2064,22 @@ public sealed class PreviousReleasePairedRunnerScriptTests
             )
             $scenarioIndex =
                 [Array]::IndexOf[string]($CommandArgs, '--hybrid-storage-mode-scenario')
+            $exactMasterScenarioIndex =
+                [Array]::IndexOf[string](
+                    $CommandArgs,
+                    '--master-table-durable-write-scenario')
             $scenarioName = ''
-            if ($scenarioIndex -ge 0) {
+            if ($exactMasterScenarioIndex -ge 0) {
+                if ($suiteArguments.Count -ne 0 -or
+                    $scenarioIndex -ge 0 -or
+                    $exactMasterScenarioIndex + 1 -ge $CommandArgs.Count) {
+                    Write-Error 'Expected one exact master durable scenario argument and value.'
+                    exit 1
+                }
+                $suiteName = 'master-table-durable-write-scenario'
+                $scenarioName = $CommandArgs[$exactMasterScenarioIndex + 1]
+            }
+            elseif ($scenarioIndex -ge 0) {
                 if ($suiteArguments.Count -ne 0 -or
                     $scenarioIndex + 1 -ge $CommandArgs.Count) {
                     Write-Error 'Expected one hybrid storage scenario argument and value.'
@@ -1712,9 +2145,14 @@ public sealed class PreviousReleasePairedRunnerScriptTests
                 exit 1
             }
 
-            $resultRoot = Join-Path `
-                (Get-Location).Path `
-                'tests/CSharpDB.Benchmarks/bin/Release/net10.0/results'
+            $resultRoot = if ($isDirectArtifact) {
+                Join-Path (Split-Path -Parent $executionTarget) 'results'
+            }
+            else {
+                Join-Path `
+                    (Get-Location).Path `
+                    'tests/CSharpDB.Benchmarks/bin/Release/net10.0/results'
+            }
             New-Item -ItemType Directory -Path $resultRoot -Force | Out-Null
             $resultPath = Join-Path `
                 $resultRoot `
@@ -1729,7 +2167,17 @@ public sealed class PreviousReleasePairedRunnerScriptTests
                     'measurement-cap-seconds=120; ' +
                     'measurement-begin-utc=2026-07-31T12:00:00.0000000+00:00; ' +
                     'measurement-end-utc=2026-07-31T12:00:30.0000000+00:00'
-                $outputRows += "$scenarioName,10000,10000,30000,333.3333,1,1,1,1,1,1,1,1,1,$qualificationInfo"
+                $retainedLatencySamples = 10000
+                [int] $badMetadataOnRun = 0
+                if (-not [string]::IsNullOrWhiteSpace(
+                        $env:FAKE_DOTNET_BAD_METADATA_ON_RUN) -and
+                    [int]::TryParse(
+                        $env:FAKE_DOTNET_BAD_METADATA_ON_RUN,
+                        [ref] $badMetadataOnRun) -and
+                    $currentRunNumber -eq $badMetadataOnRun) {
+                    $retainedLatencySamples = 9999
+                }
+                $outputRows += "$scenarioName,10000,$retainedLatencySamples,30000,333.3333,1,1,1,1,1,1,1,1,1,$qualificationInfo"
             }
             else {
                 $outputRows += "$suiteName-row-a,1000,1000,10000,100,1,1,1,1,1,1,1,1,1,Sample=$sourceName"

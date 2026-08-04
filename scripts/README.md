@@ -164,13 +164,37 @@ on that exact SHA before it creates or pushes the tag.
 When that exact commit already has a valid status, the publisher reuses it and
 does not rerun the benchmarks. Otherwise `-ConfirmDedicatedFixedSsd` authorizes
 the publisher to run the local durable wrapper. That wrapper forces durable mode
-and runs the ten durable SQL/collection single and batch write rows in two
-sequential balanced paired passes. On an idle fixed-SSD machine this normally
-takes 75–100 minutes total. It pins the candidate and previous commits, retains
+and qualifies each of the ten durable SQL/collection single and batch write rows
+independently in two sequential balanced paired passes. Every row uses adjacent
+previous/candidate measurements, pass two reverses the starting order, and each
+individual measurement must retain at least 30 seconds and 10,000 latency
+samples. On an idle fixed-SSD machine this normally takes 3.5–4.5 hours total.
+It pins the candidate and previous commits, uses symmetrically conditioned
+artifacts with the same hash-recorded candidate benchmark harness, retains
 hash-verified raw evidence and a Markdown summary outside the repository,
 creates no repository JSON, and publishes the status only after both passes
 succeed. Without a reusable status or the confirmation switch, the publisher
 stops before creating a tag and explains how to run the required qualification.
+
+Every logical side has one predeclared attempt; a failed or contaminated sample
+is not discarded, replaced, or silently retried. After conditioning,
+build-server shutdown, and the post-build quiet window, the canonical Windows
+monitor takes one-second samples until after the final declared measurement.
+It excludes the qualification runner and its descendants. Five consecutive
+samples above either 8% observable external process CPU, 0.5 CPU-core
+equivalent, or 4,194,304 observable external process read-plus-write bytes per
+second make contamination sticky. The canonical prohibited external process
+names are `devenv`, `msbuild`, `vbcscompiler`, `testhost`, `vstest.console`,
+`msiexec`, `trustedinstaller`, `tiworker`, `mousocoreworker`, `usoclient`,
+`winget`, and `nuget`; observing any outside the runner tree contaminates
+immediately. External process I/O is process-transfer telemetry rather than
+whole-disk telemetry. Unavailable external process counters are retained as
+diagnostics, while inability to observe allowed runner-tree CPU contaminates
+immediately. The monitor must be ready before the first measurement, its
+ready-to-first and inter-sample gaps may not exceed five seconds, and its final
+sample must cover the final declared measurement end. Missing, stale,
+discontinuous, or early-exit monitor evidence fails closed. The official status
+cannot disable or alter the monitor; overrides are diagnostic only.
 
 The wrapper's Windows quiescence preflight refuses to start while a Windows
 Installer transaction is active or Component-Based Servicing (CBS) or Windows
@@ -183,13 +207,16 @@ and run the preflight again; restart Windows when CBS or Windows Update requires
 it, or when blocking file operations remain after installers and updates have
 settled.
 
-After each pass, the wrapper audits Windows Installer transactions and compares
-the pending-file-operation state with the recorded baseline. A completed
-toolchain setup transaction is allowed only when it finishes before the
-configured post-build quiet window. Any installer event in that quiet window or
-after measurements begin, or any pending-file baseline change, contaminates the
-timing evidence, prevents qualification, and stops the run before another pass
-begins. Start a new clean run instead of reusing contaminated evidence.
+Before, during, and after each pass, the wrapper records and audits Windows
+Installer transactions, Application event-log continuity, and the fingerprinted
+pending-file-operation baseline. A completed toolchain setup transaction is
+allowed only when it finishes before the configured post-build quiet window.
+Missing or unverifiable interference evidence, any installer event in that quiet
+window or after measurements begin, any pending-file baseline change, or any
+external-monitor contamination fails closed, prevents qualification, and stops
+the affected pass without replacing evidence. The wrapper may still collect the
+next predeclared pass after its normal system-state preflight.
+Start a new clean run instead of reusing contaminated evidence.
 
 The command is idempotent for the same version and exact commit: it safely
 reuses a valid status and an existing local or remote tag that already points to
@@ -211,13 +238,19 @@ client call, combines checksums, and attaches everything to the GitHub Release.
 `-NoGitHubStatus` is available only for diagnostics and wrapper tests. A run with
 that switch does not satisfy the release workflow's matching-commit check.
 The official status is available only with automatic previous-release discovery
-and the canonical `durable-v2` repeat, quiescence, and regression settings. That
-policy blocks on throughput and P95 while retaining P99 as diagnostic evidence;
-selecting P99 or any other override requires `-NoGitHubStatus`. A truly blocking
-P99 qualification would require a separately designed longer experiment with
-enough tail observations and repeatability. The workflow accepts the status
-only from the login named by the `LOCAL_DURABLE_ATTESTOR` repository variable,
-falling back to the repository owner when the variable is unset.
+and the canonical `durable-v3` exact-row, duration/sample-floor, quiescence, and
+regression settings. The blocking limits remain 15% for throughput; P95 fails
+only when it exceeds both 25% relative regression and 0.05 ms absolute
+regression. P99 is retained as diagnostic evidence and is not release-blocking.
+Selecting P99 or any other override requires `-NoGitHubStatus`.
+
+Canonical success has exactly this description:
+`policy=durable-v3; baseline=<40 lowercase hex>; design=<8 uppercase hex>; reports=<8 uppercase>/<8 uppercase>`.
+The design and report digests bind the policy design and both pass reports to the
+exact candidate status. Older policy descriptions are rejected. The workflow
+accepts the status only from the login named by the `LOCAL_DURABLE_ATTESTOR`
+repository variable, falling back to the repository owner when the variable is
+unset.
 
 ## Operator Walkthrough
 
