@@ -135,125 +135,42 @@ public sealed class LocalPerformanceEnvironmentMonitorTests
     }
 
     [Fact]
-    public async Task WindowsMonitor_CoreEquivalentGateDetectsSustainedExternalCpu()
+    public async Task MonitorGatePolicy_UsesExactThresholdsAndStickyContamination()
     {
-        if (!OperatingSystem.IsWindows())
-            return;
-
         string temporaryRoot = CreateTemporaryRoot();
-        Process? allowedRoot = null;
-        Process? cpuWorkload = null;
-        Process? monitor = null;
         try
         {
-            allowedRoot = StartSleepingPwsh();
-            string outputPath = Path.Combine(temporaryRoot, "monitor.csv");
-            string readyPath = Path.Combine(temporaryRoot, "ready.signal");
-            string stopPath = Path.Combine(temporaryRoot, "stop.signal");
-            monitor = StartMonitor(
-                allowedRoot,
-                outputPath,
-                readyPath,
-                stopPath,
-                prohibitedExternalProcessNames: "process-name-that-does-not-exist",
-                maxExternalCpuPercent: 100,
-                maxExternalCpuCoreEquivalent: 0.05,
-                maxExternalIoBytesPerSecond: long.MaxValue,
-                requiredConsecutiveBusySamples: 2);
+            string harnessPath = Path.Combine(temporaryRoot, "monitor-gate-harness.ps1");
+            File.WriteAllText(harnessPath, MonitorGateHarness);
+            ProcessStartInfo startInfo = CreatePwshStartInfo();
+            foreach (string argument in new[]
+            {
+                "-File",
+                harnessPath,
+                "-MonitorPath",
+                Path.Combine(
+                    FindRepoRoot(),
+                    "tests",
+                    "CSharpDB.Benchmarks",
+                    "scripts",
+                    "Watch-LocalPerformanceEnvironment.ps1"),
+            })
+            {
+                startInfo.ArgumentList.Add(argument);
+            }
 
-            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(30));
-            await WaitForReadyAsync(monitor, readyPath, timeout.Token);
-            cpuWorkload = StartCpuBurnPwsh();
-            MonitorSample[] samples = await WaitForMonitorSamplesAsync(
-                outputPath,
-                static rows => rows.Any(row =>
-                    row.Contaminated &&
-                    row.BusyReason.Split(';').Contains("external-cpu", StringComparer.Ordinal)),
-                timeout.Token);
+            using Process process = Process.Start(startInfo) ??
+                throw new InvalidOperationException("Could not start monitor gate harness.");
+            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(15));
+            await process.WaitForExitAsync(timeout.Token);
+            string stdout = await process.StandardOutput.ReadToEndAsync(timeout.Token);
+            string stderr = await process.StandardError.ReadToEndAsync(timeout.Token);
 
-            await StopMonitorAsync(monitor, stopPath, timeout.Token);
-            string stderr = await monitor.StandardError.ReadToEndAsync(timeout.Token);
-            Assert.True(monitor.ExitCode == 0, stderr);
-            MonitorSample trigger = samples.First(row =>
-                row.Contaminated &&
-                row.BusyReason.Split(';').Contains("external-cpu", StringComparer.Ordinal));
-            Assert.InRange(trigger.ExternalCpuPercent, 0, 100);
-            Assert.True(
-                trigger.ExternalCpuCoreEquivalent > 0.05,
-                $"Expected the core-equivalent gate to cross 0.05, but observed " +
-                $"{trigger.ExternalCpuCoreEquivalent}.");
-            Assert.True(trigger.ConsecutiveBusySamples >= 2);
-            Assert.True(ParseMonitorSample(File.ReadAllLines(outputPath)[^1]).Contaminated);
+            Assert.True(process.ExitCode == 0, stdout + Environment.NewLine + stderr);
+            Assert.Contains("Monitor gate policy: PASS", stdout, StringComparison.Ordinal);
         }
         finally
         {
-            KillIfRunning(cpuWorkload);
-            KillIfRunning(monitor);
-            KillIfRunning(allowedRoot);
-            cpuWorkload?.Dispose();
-            monitor?.Dispose();
-            allowedRoot?.Dispose();
-            DeleteTemporaryRoot(temporaryRoot);
-        }
-    }
-
-    [Fact]
-    public async Task WindowsMonitor_IoGateDetectsSustainedExternalProcessWrites()
-    {
-        if (!OperatingSystem.IsWindows())
-            return;
-
-        string temporaryRoot = CreateTemporaryRoot();
-        Process? allowedRoot = null;
-        Process? ioWorkload = null;
-        Process? monitor = null;
-        try
-        {
-            allowedRoot = StartSleepingPwsh();
-            string outputPath = Path.Combine(temporaryRoot, "monitor.csv");
-            string readyPath = Path.Combine(temporaryRoot, "ready.signal");
-            string stopPath = Path.Combine(temporaryRoot, "stop.signal");
-            monitor = StartMonitor(
-                allowedRoot,
-                outputPath,
-                readyPath,
-                stopPath,
-                prohibitedExternalProcessNames: "process-name-that-does-not-exist",
-                maxExternalCpuPercent: 100,
-                maxExternalCpuCoreEquivalent: 64,
-                maxExternalIoBytesPerSecond: 512,
-                requiredConsecutiveBusySamples: 2);
-
-            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(30));
-            await WaitForReadyAsync(monitor, readyPath, timeout.Token);
-            ioWorkload = StartIoWriterPwsh(Path.Combine(temporaryRoot, "io-workload.bin"));
-            MonitorSample[] samples = await WaitForMonitorSamplesAsync(
-                outputPath,
-                static rows => rows.Any(row =>
-                    row.Contaminated &&
-                    row.BusyReason.Split(';').Contains("external-io", StringComparer.Ordinal)),
-                timeout.Token);
-
-            await StopMonitorAsync(monitor, stopPath, timeout.Token);
-            string stderr = await monitor.StandardError.ReadToEndAsync(timeout.Token);
-            Assert.True(monitor.ExitCode == 0, stderr);
-            MonitorSample trigger = samples.First(row =>
-                row.Contaminated &&
-                row.BusyReason.Split(';').Contains("external-io", StringComparer.Ordinal));
-            Assert.True(
-                trigger.ExternalReadBytesPerSecond + trigger.ExternalWriteBytesPerSecond > 512,
-                "Expected observable external process I/O to cross the configured gate.");
-            Assert.True(trigger.ConsecutiveBusySamples >= 2);
-            Assert.True(ParseMonitorSample(File.ReadAllLines(outputPath)[^1]).Contaminated);
-        }
-        finally
-        {
-            KillIfRunning(ioWorkload);
-            KillIfRunning(monitor);
-            KillIfRunning(allowedRoot);
-            ioWorkload?.Dispose();
-            monitor?.Dispose();
-            allowedRoot?.Dispose();
             DeleteTemporaryRoot(temporaryRoot);
         }
     }
@@ -438,36 +355,6 @@ public sealed class LocalPerformanceEnvironmentMonitorTests
             throw new InvalidOperationException("Could not start monitor helper process.");
     }
 
-    private static Process StartCpuBurnPwsh()
-    {
-        ProcessStartInfo startInfo = CreatePwshStartInfo();
-        startInfo.ArgumentList.Add("-Command");
-        startInfo.ArgumentList.Add(
-            "$until = [DateTime]::UtcNow.AddSeconds(20); " +
-            "while ([DateTime]::UtcNow -lt $until) { " +
-            "[void][Math]::Sqrt(123456.789) }");
-        return Process.Start(startInfo) ??
-            throw new InvalidOperationException("Could not start external CPU workload.");
-    }
-
-    private static Process StartIoWriterPwsh(string outputPath)
-    {
-        ProcessStartInfo startInfo = CreatePwshStartInfo();
-        string escapedOutputPath = outputPath.Replace("'", "''", StringComparison.Ordinal);
-        startInfo.ArgumentList.Add("-Command");
-        startInfo.ArgumentList.Add(
-            "$buffer = [byte[]]::new(4096); " +
-            $"$stream = [IO.File]::Open('{escapedOutputPath}', " +
-            "[IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::Read); " +
-            "$until = [DateTime]::UtcNow.AddSeconds(20); " +
-            "try { while ([DateTime]::UtcNow -lt $until) { " +
-            "$stream.Write($buffer, 0, $buffer.Length); $stream.Flush(); " +
-            "if ($stream.Position -ge 1048576) { $stream.Position = 0 }; " +
-            "Start-Sleep -Milliseconds 20 } } finally { $stream.Dispose() }");
-        return Process.Start(startInfo) ??
-            throw new InvalidOperationException("Could not start external I/O workload.");
-    }
-
     private static ProcessStartInfo CreatePwshStartInfo()
     {
         ProcessStartInfo startInfo = new()
@@ -547,51 +434,6 @@ public sealed class LocalPerformanceEnvironmentMonitorTests
 
         return Process.Start(startInfo) ??
             throw new InvalidOperationException("Could not start local environment monitor.");
-    }
-
-    private static async Task<MonitorSample[]> WaitForMonitorSamplesAsync(
-        string outputPath,
-        Func<MonitorSample[], bool> predicate,
-        CancellationToken cancellationToken)
-    {
-        while (true)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            try
-            {
-                if (File.Exists(outputPath))
-                {
-                    string[] lines = await File.ReadAllLinesAsync(outputPath, cancellationToken);
-                    MonitorSample[] samples = lines
-                        .Skip(1)
-                        .Where(static line =>
-                            line.StartsWith('"') &&
-                            line.EndsWith('"'))
-                        .Select(ParseMonitorSample)
-                        .ToArray();
-                    if (predicate(samples))
-                        return samples;
-                }
-            }
-            catch (IOException)
-            {
-                // The monitor may be between append and close; retry the bounded read.
-            }
-
-            await Task.Delay(50, cancellationToken);
-        }
-    }
-
-    private static async Task StopMonitorAsync(
-        Process monitor,
-        string stopPath,
-        CancellationToken cancellationToken)
-    {
-        await File.WriteAllTextAsync(
-            stopPath,
-            DateTimeOffset.UtcNow.ToString("O"),
-            cancellationToken);
-        await monitor.WaitForExitAsync(cancellationToken);
     }
 
     private static MonitorSample ParseMonitorSample(string line)
@@ -690,6 +532,142 @@ public sealed class LocalPerformanceEnvironmentMonitorTests
         string BusyReason,
         int ConsecutiveBusySamples,
         bool Contaminated);
+
+    private const string MonitorGateHarness = """
+        param([Parameter(Mandatory)][string] $MonitorPath)
+
+        $ErrorActionPreference = 'Stop'
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            $MonitorPath,
+            [ref] $tokens,
+            [ref] $parseErrors)
+        if ($parseErrors.Count -ne 0) {
+            throw "Monitor parse failed: $($parseErrors -join '; ')"
+        }
+        $functionAst = $ast.Find(
+            {
+                param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                    $node.Name -ceq 'Get-EnvironmentMonitorGateState'
+            },
+            $true)
+        if ($null -eq $functionAst) {
+            throw 'Monitor gate-state function was not found.'
+        }
+        Invoke-Expression $functionAst.Extent.Text
+
+        function Invoke-Gate {
+            param(
+                [double] $ExternalCpuPercent = 0,
+                [double] $ExternalCpuCoreEquivalent = 0,
+                [double] $ExternalReadBytesPerSecond = 0,
+                [double] $ExternalWriteBytesPerSecond = 0,
+                [switch] $HasProhibitedExternalProcess,
+                [int] $UnobservableAllowedCpuProcessCount = 0,
+                [int] $PreviousConsecutiveBusySamples = 0,
+                [switch] $PreviouslyContaminated)
+
+            return Get-EnvironmentMonitorGateState `
+                -ExternalCpuPercent $ExternalCpuPercent `
+                -ExternalCpuCoreEquivalent $ExternalCpuCoreEquivalent `
+                -ExternalReadBytesPerSecond $ExternalReadBytesPerSecond `
+                -ExternalWriteBytesPerSecond $ExternalWriteBytesPerSecond `
+                -HasProhibitedExternalProcess $HasProhibitedExternalProcess.IsPresent `
+                -UnobservableAllowedCpuProcessCount $UnobservableAllowedCpuProcessCount `
+                -PreviousConsecutiveBusySamples $PreviousConsecutiveBusySamples `
+                -PreviouslyContaminated $PreviouslyContaminated.IsPresent `
+                -MaximumExternalCpuPercent 8 `
+                -MaximumExternalCpuCoreEquivalent 0.5 `
+                -MaximumExternalIoBytesPerSecond 4194304 `
+                -ConsecutiveBusySamplesRequired 2
+        }
+
+        function Assert-State {
+            param(
+                [string] $Name,
+                $State,
+                [string] $ExpectedBusyReason,
+                [int] $ExpectedConsecutiveBusySamples,
+                [bool] $ExpectedContaminated)
+
+            if ([string] $State.BusyReason -cne $ExpectedBusyReason -or
+                [int] $State.ConsecutiveBusySamples -ne
+                    $ExpectedConsecutiveBusySamples -or
+                [bool] $State.Contaminated -ne $ExpectedContaminated) {
+                throw (
+                    "$Name produced reason='$($State.BusyReason)', " +
+                    "consecutive=$($State.ConsecutiveBusySamples), " +
+                    "contaminated=$($State.Contaminated).")
+            }
+        }
+
+        Assert-State `
+            -Name 'exact boundaries' `
+            -State (Invoke-Gate `
+                -ExternalCpuPercent 8 `
+                -ExternalCpuCoreEquivalent 0.5 `
+                -ExternalReadBytesPerSecond 2097152 `
+                -ExternalWriteBytesPerSecond 2097152) `
+            -ExpectedBusyReason '' `
+            -ExpectedConsecutiveBusySamples 0 `
+            -ExpectedContaminated $false
+        Assert-State `
+            -Name 'CPU percent' `
+            -State (Invoke-Gate -ExternalCpuPercent 8.0001) `
+            -ExpectedBusyReason 'external-cpu' `
+            -ExpectedConsecutiveBusySamples 1 `
+            -ExpectedContaminated $false
+        Assert-State `
+            -Name 'CPU core first sample' `
+            -State (Invoke-Gate -ExternalCpuCoreEquivalent 0.5001) `
+            -ExpectedBusyReason 'external-cpu' `
+            -ExpectedConsecutiveBusySamples 1 `
+            -ExpectedContaminated $false
+        Assert-State `
+            -Name 'CPU core sustained' `
+            -State (Invoke-Gate `
+                -ExternalCpuCoreEquivalent 0.5001 `
+                -PreviousConsecutiveBusySamples 1) `
+            -ExpectedBusyReason 'external-cpu' `
+            -ExpectedConsecutiveBusySamples 2 `
+            -ExpectedContaminated $true
+        Assert-State `
+            -Name 'clean reset' `
+            -State (Invoke-Gate -PreviousConsecutiveBusySamples 1) `
+            -ExpectedBusyReason '' `
+            -ExpectedConsecutiveBusySamples 0 `
+            -ExpectedContaminated $false
+        Assert-State `
+            -Name 'sticky contamination' `
+            -State (Invoke-Gate `
+                -PreviousConsecutiveBusySamples 2 `
+                -PreviouslyContaminated) `
+            -ExpectedBusyReason '' `
+            -ExpectedConsecutiveBusySamples 0 `
+            -ExpectedContaminated $true
+        Assert-State `
+            -Name 'process I/O' `
+            -State (Invoke-Gate -ExternalWriteBytesPerSecond 4194305) `
+            -ExpectedBusyReason 'external-io' `
+            -ExpectedConsecutiveBusySamples 1 `
+            -ExpectedContaminated $false
+        Assert-State `
+            -Name 'prohibited process' `
+            -State (Invoke-Gate -HasProhibitedExternalProcess) `
+            -ExpectedBusyReason 'prohibited-process' `
+            -ExpectedConsecutiveBusySamples 1 `
+            -ExpectedContaminated $true
+        Assert-State `
+            -Name 'unobservable allowed CPU' `
+            -State (Invoke-Gate -UnobservableAllowedCpuProcessCount 1) `
+            -ExpectedBusyReason 'unobservable-allowed-cpu' `
+            -ExpectedConsecutiveBusySamples 1 `
+            -ExpectedContaminated $true
+
+        Write-Output 'Monitor gate policy: PASS'
+        """;
 
     private const string MonitorAuditHarness = """
         param(

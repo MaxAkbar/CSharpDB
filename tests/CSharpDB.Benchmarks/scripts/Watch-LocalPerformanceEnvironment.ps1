@@ -309,6 +309,80 @@ function Get-ProcessSnapshot {
     return $snapshot
 }
 
+function Get-EnvironmentMonitorGateState {
+    param(
+        [Parameter(Mandatory)]
+        [double] $ExternalCpuPercent,
+
+        [Parameter(Mandatory)]
+        [double] $ExternalCpuCoreEquivalent,
+
+        [Parameter(Mandatory)]
+        [double] $ExternalReadBytesPerSecond,
+
+        [Parameter(Mandatory)]
+        [double] $ExternalWriteBytesPerSecond,
+
+        [Parameter(Mandatory)]
+        [bool] $HasProhibitedExternalProcess,
+
+        [Parameter(Mandatory)]
+        [int] $UnobservableAllowedCpuProcessCount,
+
+        [Parameter(Mandatory)]
+        [int] $PreviousConsecutiveBusySamples,
+
+        [Parameter(Mandatory)]
+        [bool] $PreviouslyContaminated,
+
+        [Parameter(Mandatory)]
+        [double] $MaximumExternalCpuPercent,
+
+        [Parameter(Mandatory)]
+        [double] $MaximumExternalCpuCoreEquivalent,
+
+        [Parameter(Mandatory)]
+        [long] $MaximumExternalIoBytesPerSecond,
+
+        [Parameter(Mandatory)]
+        [int] $ConsecutiveBusySamplesRequired
+    )
+
+    $busyReasons = [Collections.Generic.List[string]]::new()
+    if ($ExternalCpuPercent -gt $MaximumExternalCpuPercent -or
+        $ExternalCpuCoreEquivalent -gt $MaximumExternalCpuCoreEquivalent) {
+        $busyReasons.Add('external-cpu')
+    }
+    if (($ExternalReadBytesPerSecond + $ExternalWriteBytesPerSecond) -gt
+        $MaximumExternalIoBytesPerSecond) {
+        $busyReasons.Add('external-io')
+    }
+    if ($HasProhibitedExternalProcess) {
+        $busyReasons.Add('prohibited-process')
+    }
+    if ($UnobservableAllowedCpuProcessCount -gt 0) {
+        $busyReasons.Add('unobservable-allowed-cpu')
+    }
+
+    $consecutiveBusySamples = if ($busyReasons.Count -gt 0) {
+        $PreviousConsecutiveBusySamples + 1
+    }
+    else {
+        0
+    }
+    $contaminated =
+        $PreviouslyContaminated -or
+        $HasProhibitedExternalProcess -or
+        $UnobservableAllowedCpuProcessCount -gt 0 -or
+        $consecutiveBusySamples -ge $ConsecutiveBusySamplesRequired
+
+    return [pscustomobject]@{
+        BusyReason = $busyReasons -join ';'
+        ConsecutiveBusySamples = $consecutiveBusySamples
+        Contaminated = $contaminated
+    }
+}
+
 function Test-AllowedRootProcessAlive {
     param([Parameter(Mandatory)][DateTimeOffset] $ExpectedStartUtc)
 
@@ -488,33 +562,21 @@ while ($true) {
         $externalCpuCoreEquivalent / $logicalProcessorCount * 100.0
     $externalReadBytesPerSecond = $externalReadBytes / $intervalSeconds
     $externalWriteBytesPerSecond = $externalWriteBytes / $intervalSeconds
-    $busyReasons = [Collections.Generic.List[string]]::new()
-    if ($externalCpuPercent -gt $MaxExternalCpuPercent -or
-        $externalCpuCoreEquivalent -gt $MaxExternalCpuCoreEquivalent) {
-        $busyReasons.Add('external-cpu')
-    }
-    if (($externalReadBytesPerSecond + $externalWriteBytesPerSecond) -gt
-        $MaxExternalIoBytesPerSecond) {
-        $busyReasons.Add('external-io')
-    }
-    if ($prohibited.Count -gt 0) {
-        $busyReasons.Add('prohibited-process')
-    }
-    if ($unobservableAllowedCpuProcessCount -gt 0) {
-        $busyReasons.Add('unobservable-allowed-cpu')
-    }
-
-    if ($busyReasons.Count -gt 0) {
-        $consecutiveBusySamples++
-    }
-    else {
-        $consecutiveBusySamples = 0
-    }
-    if ($prohibited.Count -gt 0 -or
-        $unobservableAllowedCpuProcessCount -gt 0 -or
-        $consecutiveBusySamples -ge $RequiredConsecutiveBusySamples) {
-        $contaminated = $true
-    }
+    $gateState = Get-EnvironmentMonitorGateState `
+        -ExternalCpuPercent $externalCpuPercent `
+        -ExternalCpuCoreEquivalent $externalCpuCoreEquivalent `
+        -ExternalReadBytesPerSecond $externalReadBytesPerSecond `
+        -ExternalWriteBytesPerSecond $externalWriteBytesPerSecond `
+        -HasProhibitedExternalProcess ($prohibited.Count -gt 0) `
+        -UnobservableAllowedCpuProcessCount $unobservableAllowedCpuProcessCount `
+        -PreviousConsecutiveBusySamples $consecutiveBusySamples `
+        -PreviouslyContaminated $contaminated `
+        -MaximumExternalCpuPercent $MaxExternalCpuPercent `
+        -MaximumExternalCpuCoreEquivalent $MaxExternalCpuCoreEquivalent `
+        -MaximumExternalIoBytesPerSecond $MaxExternalIoBytesPerSecond `
+        -ConsecutiveBusySamplesRequired $RequiredConsecutiveBusySamples
+    $consecutiveBusySamples = $gateState.ConsecutiveBusySamples
+    $contaminated = $gateState.Contaminated
 
     $row = @(
         $timestamp.ToString('O'),
@@ -536,7 +598,7 @@ while ($true) {
         $unobservableExternalCpuProcessCount,
         $unobservableExternalIoProcessCount,
         ($prohibited -join ';'),
-        ($busyReasons -join ';'),
+        $gateState.BusyReason,
         $consecutiveBusySamples,
         $contaminated) |
         ForEach-Object { Convert-ToCsvCell $_ }
