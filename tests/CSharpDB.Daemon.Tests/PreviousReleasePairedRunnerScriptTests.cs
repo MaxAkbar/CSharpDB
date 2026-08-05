@@ -1007,10 +1007,14 @@ public sealed class PreviousReleasePairedRunnerScriptTests
                 ["FAKE_DOTNET_LOG"] = invocationLog,
             };
             string evidence = Path.Combine(temporaryRoot, "exact-master-durable-evidence");
+            // This exact suite intentionally cold-starts PowerShell for 122 run invocations
+            // plus setup commands; hosted macOS can legitimately exceed the shared budget.
+            TimeSpan processTimeout = TimeSpan.FromMinutes(5);
 
             ProcessResult result = await RunProcessWithEnvironmentAsync(
                 "pwsh",
                 environment,
+                processTimeout,
                 "-NoLogo",
                 "-NoProfile",
                 "-File",
@@ -2320,6 +2324,19 @@ public sealed class PreviousReleasePairedRunnerScriptTests
             fileName,
             environment,
             TimeSpan.FromSeconds(180),
+            arguments);
+    }
+
+    private static Task<ProcessResult> RunProcessWithEnvironmentAsync(
+        string fileName,
+        IReadOnlyDictionary<string, string> environment,
+        TimeSpan timeoutDuration,
+        params string[] arguments)
+    {
+        return RunProcessCoreAsync(
+            fileName,
+            environment,
+            timeoutDuration,
             arguments);
     }
 
