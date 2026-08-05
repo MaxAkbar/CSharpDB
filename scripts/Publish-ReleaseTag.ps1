@@ -8,6 +8,8 @@ param(
 
     [switch] $ConfirmDedicatedFixedSsd,
 
+    [switch] $ApproveDurableV2CarryForward,
+
     [ValidatePattern('^$|^[^/\s]+/[^/\s]+$')]
     [string] $GitHubRepository = '',
 
@@ -19,6 +21,8 @@ $ErrorActionPreference = 'Stop'
 
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $statusVerifier = Join-Path $PSScriptRoot 'Test-LocalDurableStatus.ps1'
+$carryForwardPublisher =
+    Join-Path $PSScriptRoot 'Publish-DurableCarryForwardStatus.ps1'
 $localQualification = Join-Path `
     $repositoryRoot `
     'tests/CSharpDB.Benchmarks/scripts/Test-LocalDurablePerformance.ps1'
@@ -26,7 +30,19 @@ $tagValidator = Join-Path $PSScriptRoot 'Test-ReleaseTag.ps1'
 $releaseVersion = $Version.TrimStart('v')
 $releaseTag = "v$releaseVersion"
 
-foreach ($requiredScript in $statusVerifier, $localQualification, $tagValidator) {
+if ($ConfirmDedicatedFixedSsd -and $ApproveDurableV2CarryForward) {
+    throw (
+        '-ConfirmDedicatedFixedSsd and -ApproveDurableV2CarryForward are mutually exclusive.')
+}
+if ($ApproveDurableV2CarryForward -and $releaseVersion -cne '4.4.0') {
+    throw '-ApproveDurableV2CarryForward is available only for release 4.4.0.'
+}
+
+foreach ($requiredScript in
+    $statusVerifier,
+    $carryForwardPublisher,
+    $localQualification,
+    $tagValidator) {
     if (-not (Test-Path -LiteralPath $requiredScript -PathType Leaf)) {
         throw "Required release script was not found: $requiredScript"
     }
@@ -124,7 +140,8 @@ function Invoke-StatusVerifier {
     & $statusVerifier `
         -Commit $headCommit `
         -GitHubRepository $GitHubRepository `
-        -ExpectedCreator $ExpectedStatusCreator
+        -ExpectedCreator $ExpectedStatusCreator `
+        -ReleaseVersion $releaseVersion
 }
 
 function Get-ExactCurrentMainCommit {
@@ -231,25 +248,42 @@ $hasReusableStatus = $false
 try {
     Invoke-StatusVerifier
     $hasReusableStatus = $true
-    Write-Host "Reusing the existing canonical durable-v3 status for exact commit $headCommit."
+    Write-Host "Reusing the existing canonical release status for exact commit $headCommit."
 }
 catch {
-    Write-Host "Exact commit $headCommit has no reusable durable-v3 status: $($_.Exception.Message)"
+    Write-Host "Exact commit $headCommit has no reusable canonical release status: $($_.Exception.Message)"
 }
 
 if (-not $hasReusableStatus) {
-    if (-not $ConfirmDedicatedFixedSsd) {
-        throw (
-            "Commit $headCommit does not have a reusable canonical durable-v3 status. " +
-            'Rerun with -ConfirmDedicatedFixedSsd on the idle dedicated fixed-SSD Windows machine.')
+    if ($ApproveDurableV2CarryForward) {
+        & $carryForwardPublisher `
+            -Version $releaseVersion `
+            -GitHubRepository $GitHubRepository `
+            -ExpectedStatusCreator $ExpectedStatusCreator
+
+        Invoke-StatusVerifier
     }
+    elseif ($ConfirmDedicatedFixedSsd) {
+        & $localQualification `
+            -CandidateRef $headCommit `
+            -ConfirmDedicatedFixedSsd `
+            -GitHubRepository $GitHubRepository
 
-    & $localQualification `
-        -CandidateRef $headCommit `
-        -ConfirmDedicatedFixedSsd `
-        -GitHubRepository $GitHubRepository
-
-    Invoke-StatusVerifier
+        Invoke-StatusVerifier
+    }
+    else {
+        $carryForwardGuidance = if ($releaseVersion -ceq '4.4.0') {
+            ' For the approved one-time v4.4.0 exception, rerun with ' +
+            '-ApproveDurableV2CarryForward.'
+        }
+        else {
+            ''
+        }
+        throw (
+            "Commit $headCommit does not have a reusable canonical release status. " +
+            'Rerun with -ConfirmDedicatedFixedSsd on the idle dedicated fixed-SSD ' +
+            "Windows machine.$carryForwardGuidance")
+    }
 }
 
 $currentMainCommit = Get-ExactCurrentMainCommit
