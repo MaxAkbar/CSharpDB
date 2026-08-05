@@ -38,6 +38,59 @@ public sealed class LocalPerformanceEnvironmentMonitorTests
     }
 
     [Fact]
+    public async Task DurableRunner_StartMonitorRetainsStateAcrossFunctionScope()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        string temporaryRoot = CreateTemporaryRoot();
+        try
+        {
+            string harnessPath = Path.Combine(temporaryRoot, "monitor-start-scope-harness.ps1");
+            File.WriteAllText(harnessPath, MonitorStartScopeHarness);
+            ProcessStartInfo startInfo = CreatePwshStartInfo();
+            foreach (string argument in new[]
+            {
+                "-File",
+                harnessPath,
+                "-RunnerPath",
+                Path.Combine(
+                    FindRepoRoot(),
+                    "tests",
+                    "CSharpDB.Benchmarks",
+                    "scripts",
+                    "Test-PreviousReleasePerformance.ps1"),
+                "-MonitorPath",
+                Path.Combine(
+                    FindRepoRoot(),
+                    "tests",
+                    "CSharpDB.Benchmarks",
+                    "scripts",
+                    "Watch-LocalPerformanceEnvironment.ps1"),
+                "-EvidenceRoot",
+                Path.Combine(temporaryRoot, "evidence"),
+            })
+            {
+                startInfo.ArgumentList.Add(argument);
+            }
+
+            using Process process = Process.Start(startInfo) ??
+                throw new InvalidOperationException("Could not start monitor scope harness.");
+            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(45));
+            await process.WaitForExitAsync(timeout.Token);
+            string stdout = await process.StandardOutput.ReadToEndAsync(timeout.Token);
+            string stderr = await process.StandardError.ReadToEndAsync(timeout.Token);
+
+            Assert.True(process.ExitCode == 0, stdout + Environment.NewLine + stderr);
+            Assert.Contains("Monitor start scope: PASS", stdout, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DeleteTemporaryRoot(temporaryRoot);
+        }
+    }
+
+    [Fact]
     public async Task WindowsMonitor_ProducesTimestampedCsvAndStopsBySignal()
     {
         if (!OperatingSystem.IsWindows())
@@ -176,10 +229,11 @@ public sealed class LocalPerformanceEnvironmentMonitorTests
     }
 
     [Theory]
+    [InlineData("success", "Monitor audit scope: PASS")]
     [InlineData("stale", "The latest environment monitor sample is stale")]
     [InlineData("discontinuous", "Environment monitor coverage is discontinuous")]
     [InlineData("final-coverage", "Environment monitor stopped before the final recorded measurement ended")]
-    public async Task DurableRunner_MonitorAuditRejectsInvalidCoverage(
+    public async Task DurableRunner_MonitorAuditValidatesCoverageAndState(
         string scenario,
         string expectedDiagnostic)
     {
@@ -533,6 +587,89 @@ public sealed class LocalPerformanceEnvironmentMonitorTests
         int ConsecutiveBusySamples,
         bool Contaminated);
 
+    private const string MonitorStartScopeHarness = """
+        param(
+            [Parameter(Mandatory)][string] $RunnerPath,
+            [Parameter(Mandatory)][string] $MonitorPath,
+            [Parameter(Mandatory)][string] $EvidenceRoot)
+
+        $ErrorActionPreference = 'Stop'
+        New-Item -ItemType Directory -Path $EvidenceRoot -Force | Out-Null
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            $RunnerPath,
+            [ref] $tokens,
+            [ref] $parseErrors)
+        if ($parseErrors.Count -ne 0) {
+            throw "Runner parse failed: $($parseErrors -join '; ')"
+        }
+        $functionAst = $ast.Find(
+            {
+                param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                    $node.Name -ceq 'Start-LocalEnvironmentMonitor'
+            },
+            $true)
+        if ($null -eq $functionAst) {
+            throw 'Runner function not found: Start-LocalEnvironmentMonitor'
+        }
+        Invoke-Expression $functionAst.Extent.Text
+
+        $MonitorLocalEnvironment = $true
+        $EnvironmentMonitorScript = $MonitorPath
+        $MonitorSampleIntervalMilliseconds = 250
+        $MaxExternalCpuPercent = 100
+        $MaxExternalCpuCoreEquivalent = 64
+        $MaxExternalIoBytesPerSecond = [long]::MaxValue
+        $RequiredConsecutiveBusySamples = 60
+        $ProhibitedExternalProcessNames = 'process-name-that-does-not-exist'
+        $environmentMonitorProcess = $null
+        $environmentMonitorReadyUtc = [DateTimeOffset]::MinValue
+        $environmentMonitorCsvPath = Join-Path $EvidenceRoot 'monitor.csv'
+        $environmentMonitorReadyPath = Join-Path $EvidenceRoot 'monitor.ready'
+        $environmentMonitorStopPath = Join-Path $EvidenceRoot 'monitor.stop'
+        $environmentMonitorStdoutPath = Join-Path $EvidenceRoot 'monitor.stdout.log'
+        $environmentMonitorStderrPath = Join-Path $EvidenceRoot 'monitor.stderr.log'
+        $environmentMonitorSummaryPath = Join-Path $EvidenceRoot 'monitor-summary.txt'
+
+        try {
+            Start-LocalEnvironmentMonitor
+            if ($null -eq $environmentMonitorProcess) {
+                throw 'Monitor process state did not escape the start function scope.'
+            }
+            if ($environmentMonitorReadyUtc -eq [DateTimeOffset]::MinValue) {
+                throw 'Monitor ready time did not escape the start function scope.'
+            }
+            if ($environmentMonitorProcess.HasExited) {
+                $stderr = $environmentMonitorProcess.StandardError.ReadToEnd()
+                throw "Monitor exited immediately after startup. $stderr"
+            }
+
+            [IO.File]::WriteAllText(
+                $environmentMonitorStopPath,
+                [DateTimeOffset]::UtcNow.ToString('O'))
+            if (-not $environmentMonitorProcess.WaitForExit(30000)) {
+                throw 'Monitor did not stop within 30 seconds.'
+            }
+            $stdout = $environmentMonitorProcess.StandardOutput.ReadToEnd()
+            $stderr = $environmentMonitorProcess.StandardError.ReadToEnd()
+            if ($environmentMonitorProcess.ExitCode -ne 0) {
+                throw "Monitor exited with code $($environmentMonitorProcess.ExitCode). $stderr"
+            }
+            Write-Output 'Monitor start scope: PASS'
+        }
+        finally {
+            if ($null -ne $environmentMonitorProcess) {
+                if (-not $environmentMonitorProcess.HasExited) {
+                    $environmentMonitorProcess.Kill($true)
+                    $environmentMonitorProcess.WaitForExit()
+                }
+                $environmentMonitorProcess.Dispose()
+            }
+        }
+        """;
+
     private const string MonitorGateHarness = """
         param([Parameter(Mandatory)][string] $MonitorPath)
 
@@ -763,7 +900,17 @@ public sealed class LocalPerformanceEnvironmentMonitorTests
         }
 
         $environmentMonitorReadyUtc = [DateTimeOffset]::UtcNow.AddSeconds(-20)
+        $expectSuccess = $false
         switch ($Scenario) {
+            'success' {
+                [IO.File]::WriteAllLines(
+                    $environmentMonitorCsvPath,
+                    @(
+                        $header,
+                        (New-MonitorRow $environmentMonitorReadyUtc.AddSeconds(1)),
+                        (New-MonitorRow $environmentMonitorReadyUtc.AddSeconds(2))))
+                $expectSuccess = $true
+            }
             'stale' {
                 [IO.File]::WriteAllLines(
                     $environmentMonitorCsvPath,
@@ -808,6 +955,21 @@ public sealed class LocalPerformanceEnvironmentMonitorTests
                 $expected = 'Environment monitor stopped before the final recorded measurement ended'
             }
             default { throw "Unknown scenario: $Scenario" }
+        }
+
+        if ($expectSuccess) {
+            Stop-AndAuditLocalEnvironmentMonitor
+            if (-not $environmentMonitorStopped) {
+                throw 'Monitor stopped state did not escape the audit function scope.'
+            }
+            if ($environmentMonitorSampleCount -ne 2) {
+                throw 'Monitor sample count did not escape the audit function scope.'
+            }
+            if ([string]::IsNullOrWhiteSpace($environmentMonitorSha256)) {
+                throw 'Monitor digest did not escape the audit function scope.'
+            }
+            Write-Output 'Monitor audit scope: PASS'
+            exit 0
         }
 
         try {
