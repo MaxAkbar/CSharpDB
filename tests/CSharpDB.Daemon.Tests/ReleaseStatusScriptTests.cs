@@ -19,7 +19,8 @@ public sealed class ReleaseStatusScriptTests
             ProcessResult result = await RunVerifierAsync(
                 fakeGhRoot,
                 ghLog,
-                scenario: "success");
+                scenario: "success",
+                releaseVersion: "v4.5.0-rc.1+build.1");
 
             Assert.True(result.ExitCode == 0, result.CombinedOutput);
             AssertDiagnosticContains(
