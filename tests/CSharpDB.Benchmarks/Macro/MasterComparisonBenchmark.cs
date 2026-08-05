@@ -73,6 +73,64 @@ public static class MasterComparisonBenchmark
         return results;
     }
 
+    internal static async Task<BenchmarkResult> RunDurableWriteQualificationAsync(
+        string masterRowName)
+    {
+        string sourceScenarioName = GetDurableWriteQualificationSourceName(masterRowName);
+        BenchmarkResult sourceResult = sourceScenarioName.StartsWith(
+            "Storage_",
+            StringComparison.Ordinal)
+            ? await HybridStorageModeBenchmark.RunNamedQualificationScenarioAsync(sourceScenarioName)
+            : await DirectFileCacheTransportBenchmark.RunNamedDurableWriteQualificationScenarioAsync(
+                sourceScenarioName);
+        MasterComparisonMapping mapping = sourceScenarioName.StartsWith(
+            "Storage_",
+            StringComparison.Ordinal)
+            ? MapHybridStorageResult(sourceResult.Name)
+            : MapDirectClientResult(sourceResult.Name);
+        BenchmarkResult result = CloneForMasterComparison(sourceResult, mapping);
+        if (!string.Equals(result.Name, masterRowName, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Durable-write qualification scenario '{sourceScenarioName}' mapped to " +
+                $"'{result.Name}' instead of requested row '{masterRowName}'.");
+        }
+
+        return result;
+    }
+
+    internal static string GetDurableWriteQualificationSourceName(string masterRowName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(masterRowName);
+        return masterRowName switch
+        {
+            "MasterComparison_Sql_FileBacked_SingleInsert" =>
+                "Storage_FileBacked_Sql_SingleInsert_5s",
+            "MasterComparison_Sql_FileBacked_BatchInsertRows" =>
+                "Storage_FileBacked_Sql_Batch100_5s",
+            "MasterComparison_Sql_HybridIncrementalDurable_SingleInsert" =>
+                "Storage_HybridIncrementalDurable_Sql_SingleInsert_5s",
+            "MasterComparison_Sql_HybridIncrementalDurable_BatchInsertRows" =>
+                "Storage_HybridIncrementalDurable_Sql_Batch100_5s",
+            "MasterComparison_Sql_DirectClientLocalProcess_SingleInsert" =>
+                "Direct_DirectLookupPreset_Sql_SingleInsert_10s",
+            "MasterComparison_Sql_DirectClientLocalProcess_BatchInsertRows" =>
+                "Direct_DirectLookupPreset_Sql_Batch100_10s",
+            "MasterComparison_Collection_FileBacked_SinglePut" =>
+                "Storage_FileBacked_Collection_Put_5s",
+            "MasterComparison_Collection_FileBacked_BatchPutDocs" =>
+                "Storage_FileBacked_Collection_Batch100_5s",
+            "MasterComparison_Collection_HybridIncrementalDurable_SinglePut" =>
+                "Storage_HybridIncrementalDurable_Collection_Put_5s",
+            "MasterComparison_Collection_HybridIncrementalDurable_BatchPutDocs" =>
+                "Storage_HybridIncrementalDurable_Collection_Batch100_5s",
+            _ => throw new ArgumentException(
+                $"Unknown master durable-write qualification row '{masterRowName}'. " +
+                $"Use one of: {string.Join(", ", s_durableWriteRowNames)}.",
+                nameof(masterRowName)),
+        };
+    }
+
     internal static async Task<List<BenchmarkResult>> RunHostedStableRowsAsync()
     {
         var results = new List<BenchmarkResult>(s_hostedStableRowNames.Count);

@@ -14,6 +14,9 @@ param(
     [ValidateRange(0, 3600)]
     [int] $PostBuildQuiescenceSeconds = 30,
 
+    [ValidateRange(0, 300)]
+    [int] $InterSampleQuiescenceSeconds = 10,
+
     [ValidateRange(0, 100)]
     [double] $MaxThroughputRegressionPercent = 15,
 
@@ -26,6 +29,28 @@ param(
     [ValidateSet('P95', 'P99')]
     [string] $BlockingLatencyPercentile = 'P95',
 
+    [ValidateRange(250, 10000)]
+    [int] $MonitorSampleIntervalMilliseconds = 1000,
+
+    [ValidateRange(0, 100)]
+    [double] $MaxExternalCpuPercent = 8,
+
+    [ValidateRange(0, 64)]
+    [double] $MaxExternalCpuCoreEquivalent = 0.5,
+
+    [ValidateRange(0, [long]::MaxValue)]
+    [long] $MaxExternalIoBytesPerSecond = 4194304,
+
+    [ValidateRange(1, 60)]
+    [int] $RequiredConsecutiveBusySamples = 5,
+
+    [ValidateNotNullOrEmpty()]
+    [string] $ProhibitedExternalProcessNames =
+        'devenv;msbuild;vbcscompiler;testhost;vstest.console;msiexec;' +
+        'trustedinstaller;tiworker;mousocoreworker;usoclient;winget;nuget',
+
+    [switch] $DisableEnvironmentMonitor,
+
     [switch] $ConfirmDedicatedFixedSsd,
 
     [string] $GitHubRepository = '',
@@ -35,13 +60,22 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$statusPolicy = 'durable-v2'
+$statusPolicy = 'durable-v3'
 $canonicalRepeatCount = 3
 $canonicalPostBuildQuiescenceSeconds = 30
+$canonicalInterSampleQuiescenceSeconds = 10
 $canonicalMaxThroughputRegressionPercent = 15.0
 $canonicalMaxP99RegressionPercent = 25.0
 $canonicalMaxP99RegressionMilliseconds = 0.05
 $canonicalBlockingLatencyPercentile = 'P95'
+$canonicalMonitorSampleIntervalMilliseconds = 1000
+$canonicalMaxExternalCpuPercent = 8.0
+$canonicalMaxExternalCpuCoreEquivalent = 0.5
+$canonicalMaxExternalIoBytesPerSecond = 4194304L
+$canonicalRequiredConsecutiveBusySamples = 5
+$canonicalProhibitedExternalProcessNames =
+    'devenv;msbuild;vbcscompiler;testhost;vstest.console;msiexec;' +
+    'trustedinstaller;tiworker;mousocoreworker;usoclient;winget;nuget'
 
 if (-not $IsWindows) {
     throw 'Local durable performance qualification requires a dedicated Windows machine with a fixed SSD.'
@@ -63,6 +97,10 @@ if (-not $NoGitHubStatus) {
         $nonCanonicalSettings.Add(
             "PostBuildQuiescenceSeconds must be $canonicalPostBuildQuiescenceSeconds")
     }
+    if ($InterSampleQuiescenceSeconds -ne $canonicalInterSampleQuiescenceSeconds) {
+        $nonCanonicalSettings.Add(
+            "InterSampleQuiescenceSeconds must be $canonicalInterSampleQuiescenceSeconds")
+    }
     if ($MaxThroughputRegressionPercent -ne $canonicalMaxThroughputRegressionPercent) {
         $nonCanonicalSettings.Add(
             "MaxThroughputRegressionPercent must be $canonicalMaxThroughputRegressionPercent")
@@ -79,6 +117,41 @@ if (-not $NoGitHubStatus) {
         $nonCanonicalSettings.Add(
             "BlockingLatencyPercentile must be $canonicalBlockingLatencyPercentile")
     }
+    if ($MonitorSampleIntervalMilliseconds -ne
+        $canonicalMonitorSampleIntervalMilliseconds) {
+        $nonCanonicalSettings.Add(
+            'MonitorSampleIntervalMilliseconds must be ' +
+            $canonicalMonitorSampleIntervalMilliseconds)
+    }
+    if ($MaxExternalCpuPercent -ne $canonicalMaxExternalCpuPercent) {
+        $nonCanonicalSettings.Add(
+            "MaxExternalCpuPercent must be $canonicalMaxExternalCpuPercent")
+    }
+    if ($MaxExternalCpuCoreEquivalent -ne $canonicalMaxExternalCpuCoreEquivalent) {
+        $nonCanonicalSettings.Add(
+            'MaxExternalCpuCoreEquivalent must be ' +
+            $canonicalMaxExternalCpuCoreEquivalent)
+    }
+    if ($MaxExternalIoBytesPerSecond -ne
+        $canonicalMaxExternalIoBytesPerSecond) {
+        $nonCanonicalSettings.Add(
+            'MaxExternalIoBytesPerSecond must be ' +
+            $canonicalMaxExternalIoBytesPerSecond)
+    }
+    if ($RequiredConsecutiveBusySamples -ne
+        $canonicalRequiredConsecutiveBusySamples) {
+        $nonCanonicalSettings.Add(
+            'RequiredConsecutiveBusySamples must be ' +
+            $canonicalRequiredConsecutiveBusySamples)
+    }
+    if ($ProhibitedExternalProcessNames -cne
+        $canonicalProhibitedExternalProcessNames) {
+        $nonCanonicalSettings.Add(
+            'ProhibitedExternalProcessNames must match the canonical list')
+    }
+    if ($DisableEnvironmentMonitor) {
+        $nonCanonicalSettings.Add('DisableEnvironmentMonitor cannot be used')
+    }
     if ($nonCanonicalSettings.Count -gt 0) {
         throw (
             "The official local durable status requires canonical policy '$statusPolicy': " +
@@ -92,6 +165,23 @@ $repositoryRoot = [IO.Path]::GetFullPath(
 $comparisonScript = Join-Path $scriptDirectory 'Test-PreviousReleasePerformance.ps1'
 if (-not (Test-Path -LiteralPath $comparisonScript -PathType Leaf)) {
     throw "Previous-release performance script not found: $comparisonScript"
+}
+$environmentMonitorScript = Join-Path `
+    $scriptDirectory `
+    'Watch-LocalPerformanceEnvironment.ps1'
+if (-not $DisableEnvironmentMonitor -and
+    -not (Test-Path -LiteralPath $environmentMonitorScript -PathType Leaf)) {
+    throw "Local performance environment monitor not found: $environmentMonitorScript"
+}
+
+function Get-Sha256Text {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Text
+    )
+
+    $bytes = [Text.Encoding]::UTF8.GetBytes($Text)
+    return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes))
 }
 
 function Invoke-Git {
@@ -574,11 +664,16 @@ function Get-InstallerActivityReasons {
 function Get-PassMeasurementStartUtc {
     param(
         [Parameter(Mandatory)]
-        [string] $PassOutput
+        [string] $PassOutput,
+
+        [switch] $AllowMissing
     )
 
     $executionLogPath = Join-Path $PassOutput 'logs/execution-order.log'
     if (-not (Test-Path -LiteralPath $executionLogPath -PathType Leaf)) {
+        if ($AllowMissing) {
+            return $null
+        }
         throw "Pass execution log was not created: $executionLogPath"
     }
 
@@ -586,6 +681,9 @@ function Get-PassMeasurementStartUtc {
         Where-Object { $_ -match '^[^|]+\|[^|]+\|[^|]+\|[^|]+\|START\|' } |
         Select-Object -First 1
     if ([string]::IsNullOrWhiteSpace($startLine)) {
+        if ($AllowMissing) {
+            return $null
+        }
         throw "Pass execution log contains no measurement START event: $executionLogPath"
     }
 
@@ -700,6 +798,55 @@ else {
     New-Item -ItemType Directory -Path $outputRoot | Out-Null
 }
 
+$comparerScript = Join-Path $scriptDirectory 'Compare-ReleaseCore.ps1'
+if (-not (Test-Path -LiteralPath $comparerScript -PathType Leaf)) {
+    throw "Release-core comparison script not found: $comparerScript"
+}
+$designManifestPath = Join-Path $outputRoot 'durable-experiment-design.txt'
+$designManifestLines = @(
+    'Schema=csharpdb-local-durable-design/v3',
+    "Policy=$statusPolicy",
+    'ExecutionUnit=exact-master-durable-row',
+    'RowSchedule=pair-major-rotate-3-pass-offset',
+    "RepeatCountPerOrder=$RepeatCount",
+    "PostBuildQuiescenceSeconds=$PostBuildQuiescenceSeconds",
+    "InterSampleQuiescenceSeconds=$InterSampleQuiescenceSeconds",
+    'MinimumMeasuredSeconds=30',
+    'MinimumRetainedLatencySamples=10000',
+    'MeasurementCapSeconds=120',
+    'RecordedAttemptPolicy=one-predeclared-attempt-per-logical-side;no-discard;no-replacement;no-silent-retry',
+    "MaxThroughputRegressionPercent=$MaxThroughputRegressionPercent",
+    "BlockingLatencyPercentile=$BlockingLatencyPercentile",
+    "MaxBlockingLatencyRegressionPercent=$MaxP99RegressionPercent",
+    "MaxBlockingLatencyRegressionMilliseconds=$MaxP99RegressionMilliseconds",
+    'P99Role=diagnostic',
+    "EnvironmentMonitorEnabled=$(-not $DisableEnvironmentMonitor)",
+    "MonitorSampleIntervalMilliseconds=$MonitorSampleIntervalMilliseconds",
+    "MaxExternalCpuPercent=$MaxExternalCpuPercent",
+    "MaxExternalCpuCoreEquivalent=$MaxExternalCpuCoreEquivalent",
+    'ExternalCpuSignal=observable external process CPU; system busy CPU minus observable allowed runner-tree CPU is diagnostic; unobservable allowed CPU contaminates immediately',
+    "MaxExternalIoBytesPerSecond=$MaxExternalIoBytesPerSecond",
+    "RequiredConsecutiveBusySamples=$RequiredConsecutiveBusySamples",
+    "ProhibitedExternalProcessNames=$ProhibitedExternalProcessNames",
+    'MonitorContaminationPolicy=prohibited-process-immediate;cpu-or-io-busy-five-consecutive-samples;sticky',
+    'MonitorCoveragePolicy=ready-before-first-measurement;ready-to-first-and-inter-sample-gaps-at-most-5000ms;last-sample-at-or-after-last-measurement-end',
+    "LocalWrapperSha256=$((Get-FileHash -LiteralPath $MyInvocation.MyCommand.Path -Algorithm SHA256).Hash)",
+    "PairedRunnerSha256=$((Get-FileHash -LiteralPath $comparisonScript -Algorithm SHA256).Hash)",
+    "ComparerSha256=$((Get-FileHash -LiteralPath $comparerScript -Algorithm SHA256).Hash)",
+    $(if ($DisableEnvironmentMonitor) {
+        'EnvironmentMonitorSha256=disabled'
+    }
+    else {
+        "EnvironmentMonitorSha256=$((Get-FileHash -LiteralPath $environmentMonitorScript -Algorithm SHA256).Hash)"
+    })
+)
+$designManifestText = $designManifestLines -join [Environment]::NewLine
+$designSha256 = Get-Sha256Text -Text $designManifestText
+$designToken = $designSha256.Substring(0, 8)
+[IO.File]::WriteAllText(
+    $designManifestPath,
+    $designManifestText + [Environment]::NewLine)
+
 $statusContext = 'csharpdb/local-durable-performance'
 $pendingFileRenameBaseline = @(Get-PendingFileRenameOperationsSnapshot)
 $pendingFileRenameFingerprint = Get-PendingFileRenameFingerprint `
@@ -745,7 +892,9 @@ if (-not $NoGitHubStatus) {
     }
     Invoke-GitHubStatus `
         -State pending `
-        -Description "policy=$statusPolicy; local durable qualification running"
+        -Description (
+            "policy=$statusPolicy; design=$designToken; " +
+            'local durable qualification running')
 }
 
 $startedUtc = [DateTimeOffset]::UtcNow
@@ -763,7 +912,7 @@ $priorDurability = [Environment]::GetEnvironmentVariable(
 
 try {
     Write-Host 'Running two sequential local durable performance passes.'
-    Write-Host 'Expected duration on an idle fixed-SSD machine: approximately 75-100 minutes.'
+    Write-Host 'Expected duration on an idle fixed-SSD machine: approximately 3.5-4.5 hours.'
     Write-Host "Evidence root: $outputRoot"
 
     foreach ($qualificationPass in 1, 2) {
@@ -777,19 +926,36 @@ try {
             OutputPath = $passOutput
             QualificationPass = $qualificationPass
             Paired = $true
-            SuiteName = @('master-table-durable-writes')
+            SuiteName = @('master-table-durable-write-scenarios')
             RepeatCount = $RepeatCount
             PostBuildQuiescenceSeconds = $PostBuildQuiescenceSeconds
+            InterSampleQuiescenceSeconds = $InterSampleQuiescenceSeconds
             MaxThroughputRegressionPercent = $MaxThroughputRegressionPercent
             MaxP99RegressionPercent = $MaxP99RegressionPercent
             MaxP99RegressionMilliseconds = $MaxP99RegressionMilliseconds
             BlockingLatencyPercentile = $BlockingLatencyPercentile
+        }
+        if (-not $DisableEnvironmentMonitor) {
+            $parameters.MonitorLocalEnvironment = $true
+            $parameters.EnvironmentMonitorScript = $environmentMonitorScript
+            $parameters.MonitorSampleIntervalMilliseconds =
+                $MonitorSampleIntervalMilliseconds
+            $parameters.MaxExternalCpuPercent = $MaxExternalCpuPercent
+            $parameters.MaxExternalCpuCoreEquivalent =
+                $MaxExternalCpuCoreEquivalent
+            $parameters.MaxExternalIoBytesPerSecond =
+                $MaxExternalIoBytesPerSecond
+            $parameters.RequiredConsecutiveBusySamples =
+                $RequiredConsecutiveBusySamples
+            $parameters.ProhibitedExternalProcessNames =
+                $ProhibitedExternalProcessNames
         }
         if (-not [string]::IsNullOrWhiteSpace($previousCommit)) {
             $parameters.PreviousRef = $previousCommit
         }
 
         Write-Host "Starting local durable performance pass $qualificationPass of 2."
+        $passInvocationStartUtc = [DateTimeOffset]::UtcNow
         try {
             & $comparisonScript @parameters
         }
@@ -804,9 +970,15 @@ try {
             }
         }
 
-        $measurementStartUtc = Get-PassMeasurementStartUtc -PassOutput $passOutput
-        $installerQuietCutoffUtc = $measurementStartUtc.AddSeconds(
-            -$PostBuildQuiescenceSeconds)
+        $measurementStartUtc = Get-PassMeasurementStartUtc `
+            -PassOutput $passOutput `
+            -AllowMissing
+        $installerQuietCutoffUtc = if ($null -eq $measurementStartUtc) {
+            $passInvocationStartUtc
+        }
+        else {
+            $measurementStartUtc.AddSeconds(-$PostBuildQuiescenceSeconds)
+        }
         $environmentIssues = @(
             Get-LocalEnvironmentIssues `
                 -PendingFileRenameBaseline $pendingFileRenameBaseline
@@ -866,8 +1038,8 @@ function Write-LocalSummary {
         '# Local durable performance qualification',
         '',
         "- Result: **$result**",
-        '- Execution: two sequential balanced paired passes on one Windows machine',
-        '- Suite: `master-table-durable-writes` (10 durable write rows)',
+        '- Execution: two sequential exact-row balanced paired passes on one Windows machine',
+        '- Suite: `master-table-durable-write-scenarios` (10 durable write rows)',
         "- Candidate commit: ``$candidateCommit``",
         $(if ([string]::IsNullOrWhiteSpace($previousCommit)) {
             '- Previous release commit: unresolved'
@@ -876,8 +1048,15 @@ function Write-LocalSummary {
             "- Previous release commit: ``$previousCommit``"
         }),
         "- Repeat count per order: $RepeatCount",
+        '- Measurement floor per logical side: 30 seconds and 10,000 retained latency samples',
+        '- Measurement cap per logical side: 120 seconds',
+        '- Recorded attempts: one predeclared attempt per side; no discard, replacement, or silent retry',
+        "- Inter-sample quiescence: $InterSampleQuiescenceSeconds seconds",
         '- Durability mode: `Durable`',
         "- Status policy: ``$statusPolicy``",
+        "- Experiment design SHA-256: ``$designSha256``",
+        "- Experiment design token: ``$designToken``",
+        '- Experiment design manifest: `durable-experiment-design.txt`',
         "- Blocking latency percentile: ``$BlockingLatencyPercentile``",
         $(if ($BlockingLatencyPercentile -ceq 'P99') {
             '- P99 latency: blocking for this diagnostic run'
@@ -886,6 +1065,17 @@ function Write-LocalSummary {
             '- P99 latency: diagnostic only'
         }),
         '- Dedicated fixed SSD: confirmed by the release operator',
+        $(if ($DisableEnvironmentMonitor) {
+            '- External environment monitor: disabled (diagnostic run only)'
+        }
+        else {
+            ("- External environment monitor: enabled; interval=" +
+                "$MonitorSampleIntervalMilliseconds ms, external CPU limit=" +
+                "$MaxExternalCpuPercent% or $MaxExternalCpuCoreEquivalent CPU-core equivalent, external observable-process I/O limit=" +
+                "$MaxExternalIoBytesPerSecond bytes/sec, sustained samples=" +
+                "$RequiredConsecutiveBusySamples; prohibited processes contaminate immediately: " +
+                $ProhibitedExternalProcessNames)
+        }),
         "- Pending file operation baseline entries: $($pendingFileRenameBaseline.Count)",
         "- Pending file operation baseline fingerprint: ``$pendingFileRenameFingerprint``",
         "- Windows Application event-log anchor record: $applicationEventLogAnchorRecordId",
@@ -906,6 +1096,17 @@ function Write-LocalSummary {
         '- Pass 1 report: `pass-1/previous-release-performance.md`',
         '- Pass 2 report: `pass-2/previous-release-performance.md`'
     )
+    if (-not $DisableEnvironmentMonitor) {
+        foreach ($passNumber in 1..2) {
+            $monitorSummaryRelativePath =
+                "pass-$passNumber/logs/durable-v3-environment-monitor-summary.txt"
+            $monitorSummaryFullPath = Join-Path $outputRoot $monitorSummaryRelativePath
+            if (Test-Path -LiteralPath $monitorSummaryFullPath -PathType Leaf) {
+                $summaryLines +=
+                    "- Pass $passNumber monitor closeout: ``$monitorSummaryRelativePath``"
+            }
+        }
+    }
     if (-not [string]::IsNullOrWhiteSpace($failureMessage)) {
         $summaryLines += "- Failure: $failureMessage"
     }
@@ -929,12 +1130,14 @@ if (-not $NoGitHubStatus) {
                 -State success `
                 -Description (
                     "policy=$statusPolicy; baseline=$previousCommit; " +
-                    "reports=$($reportHashes -join '/')")
+                    "design=$designToken; reports=$($reportHashes -join '/')")
         }
         else {
             Invoke-GitHubStatus `
                 -State failure `
-                -Description "policy=$statusPolicy; local durable qualification failed"
+                -Description (
+                    "policy=$statusPolicy; design=$designToken; " +
+                    'local durable qualification failed')
         }
     }
     catch {

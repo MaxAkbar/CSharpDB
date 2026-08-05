@@ -134,6 +134,46 @@ public sealed class MasterComparisonDurableWriteTests
     }
 
     [Fact]
+    public void DurableWriteQualificationRows_MapExactlyToTheirTenSourceScenarios()
+    {
+        string[] expectedSources =
+        [
+            "Storage_FileBacked_Sql_SingleInsert_5s",
+            "Storage_FileBacked_Sql_Batch100_5s",
+            "Storage_HybridIncrementalDurable_Sql_SingleInsert_5s",
+            "Storage_HybridIncrementalDurable_Sql_Batch100_5s",
+            "Direct_DirectLookupPreset_Sql_SingleInsert_10s",
+            "Direct_DirectLookupPreset_Sql_Batch100_10s",
+            "Storage_FileBacked_Collection_Put_5s",
+            "Storage_FileBacked_Collection_Batch100_5s",
+            "Storage_HybridIncrementalDurable_Collection_Put_5s",
+            "Storage_HybridIncrementalDurable_Collection_Batch100_5s",
+        ];
+
+        string[] actualSources = MasterComparisonBenchmark.DurableWriteRowNames
+            .Select(MasterComparisonBenchmark.GetDurableWriteQualificationSourceName)
+            .ToArray();
+
+        Assert.Equal(expectedSources, actualSources);
+        Assert.Equal(
+            expectedSources.Where(static source => source.StartsWith("Direct_", StringComparison.Ordinal)),
+            DirectFileCacheTransportBenchmark.MasterComparisonDurableWriteScenarioNames);
+    }
+
+    [Theory]
+    [InlineData("MasterComparison_Sql_FileBacked_singleInsert")]
+    [InlineData("MasterComparison_Sql_FileBacked_PointLookup")]
+    [InlineData("Storage_FileBacked_Sql_SingleInsert_5s")]
+    public void DurableWriteQualificationRow_RejectsAnythingOutsideTheExactContract(
+        string rowName)
+    {
+        ArgumentException exception = Assert.Throws<ArgumentException>(
+            () => MasterComparisonBenchmark.GetDurableWriteQualificationSourceName(rowName));
+
+        Assert.Contains("Unknown master durable-write qualification row", exception.Message);
+    }
+
+    [Fact]
     public void HostedStableRows_AreTheOtherEighteenMasterComparisonRows()
     {
         string[] expected =

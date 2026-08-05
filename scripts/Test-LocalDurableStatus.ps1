@@ -20,7 +20,7 @@ $ErrorActionPreference = 'Stop'
 
 $statusContext = 'csharpdb/local-durable-performance'
 $canonicalAttestationPattern =
-    '^policy=durable-v2; baseline=[0-9a-f]{40}; reports=[0-9A-F]{8}/[0-9A-F]{8}$'
+    '^policy=durable-v3; baseline=[0-9a-f]{40}; design=[0-9A-F]{8}; reports=[0-9A-F]{8}/[0-9A-F]{8}$'
 $commitSha = $Commit.ToLowerInvariant()
 $expectedCreatorLogin = $ExpectedCreator.Trim()
 
@@ -75,9 +75,9 @@ $description = [string] $latestStatus.description
 if ($description -cnotmatch $canonicalAttestationPattern) {
     throw (
         "Latest $statusContext status for commit $commitSha does not contain a canonical " +
-        'durable-v2 attestation.')
+        'durable-v3 attestation.')
 }
 
 Write-Host (
-    "Verified canonical durable-v2 status for exact commit $commitSha " +
+    "Verified canonical durable-v3 status for exact commit $commitSha " +
     "from $creator.")

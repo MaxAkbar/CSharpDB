@@ -466,7 +466,7 @@ on that exact SHA.
 If that exact commit already has a valid status, the publisher reuses it without
 rerunning the benchmarks. If it does not, the confirmation switch permits the
 publisher to run `Test-LocalDurablePerformance.ps1`; this normally takes about
-75–100 minutes on an idle fixed-SSD machine. Without a reusable status or
+3.5–4.5 hours on an idle fixed-SSD machine. Without a reusable status or
 `-ConfirmDedicatedFixedSsd`, it stops before creating a tag and tells the
 operator how to qualify the commit. The publisher is idempotent for the same
 version and exact commit: an existing local or remote tag at that commit is
@@ -489,13 +489,36 @@ qualification. An active installer normally means wait for it to finish and run
 the preflight again; restart Windows when CBS or Windows Update requires it, or
 when blocking file operations remain after installers and updates have settled.
 
-After each pass, the wrapper audits Windows Installer transactions and compares
-the pending-file-operation state with the recorded baseline. A completed
+Before and after each pass, the wrapper audits Windows Installer transactions
+and compares the pending-file-operation state with the recorded baseline. The
+paired runner also records a one-second external process CPU/I/O timeline after
+post-build quiescence, before the first recorded side, through the final
+declared measurement. A completed
 toolchain setup transaction is allowed only when it finishes before the
 configured post-build quiet window. Any installer event in that quiet window or
-after measurements begin, or any pending-file baseline change, contaminates the
-timing evidence, prevents qualification, and stops the run before another pass
-begins. Start a new clean run instead of reusing contaminated evidence.
+after measurements begin, any pending-file baseline change, a prohibited build
+or update workload, sustained observable external load, missing monitor
+evidence, unavailable allowed runner-tree CPU, or a telemetry gap contaminates
+the timing evidence and prevents qualification. The affected
+pass stops without replacement; the wrapper may still collect the next
+predeclared pass after its normal system-state preflight. Start a new clean run
+instead of reusing contaminated evidence.
+
+The canonical prohibited external names are `devenv`, `msbuild`,
+`vbcscompiler`, `testhost`, `vstest.console`, `msiexec`, `trustedinstaller`,
+`tiworker`, `mousocoreworker`, `usoclient`, `winget`, and `nuget`; observing any
+of them outside the runner process tree contaminates immediately. Runner
+descendants and system PIDs 0–4 are excluded from external per-process CPU and
+I/O accounting; CPU from PIDs 0–4 may still contribute to the diagnostic
+system-residual signal. The blocking CPU signal uses observable external
+process CPU; inability to observe allowed runner-tree CPU contaminates
+immediately. System busy time minus observable runner-tree CPU is retained as a
+diagnostic. External process I/O is process-transfer telemetry, not whole-disk
+telemetry. Unavailable-counter counts cover processes that were successfully
+enumerated; processes that disappear or deny access before a snapshot record is
+formed cannot be represented. The monitor must be ready before the first
+measurement, ready-to-first and inter-sample gaps may not exceed five seconds,
+and the final sample must be at or after the final declared measurement end.
 
 The Windows Application event-log channel must remain readable and enabled. The
 wrapper fingerprints its newest event as a continuity anchor, verifies that
@@ -503,41 +526,54 @@ anchor at every pass start and around each installer-event audit, and fails the
 qualification if the channel is disabled, full, cleared, overwritten, or reuses
 the anchor record ID.
 
-The local release gate runs only `master-table-durable-writes`: ten durable SQL
-and collection single/batch write rows from file-backed, hybrid incremental-
-durable, and direct-client paths. It intentionally excludes reads and in-memory
-rows. The other 18 master-table rows remain a blocking two-pass comparison on
-GitHub-hosted Windows runners. Pass 1 starts with the previous revision; pass 2
-starts with the candidate. Both local passes run sequentially so they never
-contend for the same disk. The wrapper forces
+The local release gate runs `master-table-durable-write-scenarios`: ten exact
+durable SQL and collection single/batch write rows from file-backed, hybrid
+incremental-durable, and direct-client paths. Each previous/candidate row pair
+runs adjacently; the deterministic row order rotates across pair rounds so no
+row owns one time position, and pass 2 reverses the starting revision. It
+intentionally excludes reads and in-memory rows. The other 18 master-table rows
+remain a blocking two-pass comparison on GitHub-hosted Windows runners. Both
+local passes run sequentially so they never contend for the same disk. The
+wrapper forces
 `CSHARPDB_BENCH_DURABILITY=Durable` for its children and restores the caller's
 prior process value afterward.
 
 Only the canonical release policy may publish the official status: automatic
-previous-release discovery, three repeats per order, a 30-second post-build
-wait, a 15% throughput limit, and the combined 25% plus 0.05 ms P95 rule. P99
-remains required and validated; valid P99 measurements are reported
-diagnostically but do not affect stability, order-sensitivity, or regression
-status. To change any of those settings, select another blocking percentile,
-or supply `-PreviousRef`, also supply
+previous-release discovery, exact-row execution, three repeats per order, a
+30-second post-build wait, a 10-second boundary before every recorded side, at
+least 30 measured seconds and 10,000 retained latency samples per side, the
+canonical external-load monitor, a 15% throughput limit, and the combined 25% plus
+0.05 ms P95 rule. P99 remains required and validated; valid P99 measurements
+are reported diagnostically but do not affect stability, order-sensitivity, or
+regression status. To change any of those settings, disable the monitor, select
+another blocking percentile, or supply `-PreviousRef`, also supply
 `-NoGitHubStatus`; that run is diagnostic and cannot authorize a release.
 
 The candidate benchmark source is hash-verified and synchronized into the
 previous-release worktree so both engines run the same harness. Candidate and
 previous root build inputs are hashed and reported separately because they
-remain revision-specific, and both revisions are built once per pass.
+remain revision-specific, and both revisions are built once per pass. Their
+verified runnable closures are copied into equal-length sibling slots, with the
+revision-to-slot assignment swapped in pass 2. Every staged file is hash-read,
+and each artifact receives one non-recorded exact-row conditioning invocation
+before build-server shutdown and the post-build quiet window.
 
-With the canonical repeat count of three, each pass runs three pairs in each
-order: six adjacent pairs and twelve logical invocations. Every logical
-invocation performs one unrecorded warmup followed by one recorded sample. Each
-pass retains all six raw
-CSVs and the recomputed aggregate for each revision, the pair manifest, and the
-paired comparison report. Copied evidence is hash-checked before the source
-result is removed.
+With the canonical repeat count of three, each pass runs six pair rounds. Every
+round visits all ten exact rows, keeping both revisions of a row adjacent, for
+120 predeclared logical sides per pass. Each side owns a two-second unrecorded
+internal warmup and then measures until both the 30-second and 10,000-sample
+floors are met, with a 120-second cap. No sample is discarded, replaced, or
+silently retried. Each pass retains six raw CSVs per revision for every row,
+the recomputed aggregates, schedule and pair manifests, symmetric-artifact and
+conditioning evidence, external-load telemetry, and the paired comparison
+report. Copied evidence is hash-checked before the source result is removed.
 
 The comparer requires exact schema and row-name parity across raw and aggregate
 evidence, positive gate metrics, at least 100 retained latency observations per
-row, and exact recomputation of throughput and P95 comparisons. Each revision
+row, and exact recomputation of throughput and P95 comparisons. The canonical
+durable path strengthens that minimum to 10,000 samples, requires at least 30
+measured seconds, and verifies the declared measurement begin/end UTC metadata.
+Each revision
 order stratum must provide a strict stable majority of paired effects for
 throughput and blocking P95 latency. `INVALID` evidence, and `UNSTABLE` or
 `ORDER-SENSITIVE` blocking assessments, fail qualification. For stable
@@ -572,8 +608,13 @@ with permission to create commit statuses is therefore required. The
 cannot qualify a release. The release workflow accepts the status only from the
 login configured in the `LOCAL_DURABLE_ATTESTOR` repository variable, or from
 the repository owner when that variable is unset, and requires a canonical
-`durable-v2` policy attestation. This check remains a fail-closed backstop; it
+`durable-v3` policy attestation containing the previous-release SHA, the frozen
+experiment-design digest, and both pass-report digests. Older policy
+attestations are rejected. This check remains a fail-closed backstop; it
 does not replace the preflight performed by `Publish-ReleaseTag.ps1`.
+
+The canonical description is exactly
+`policy=durable-v3; baseline=<40 lowercase hex>; design=<8 uppercase hex>; reports=<8 uppercase>/<8 uppercase>`.
 
 The existing scheduled perf-guardrail workflow remains report-only and includes
 the durable SQL batching baseline plus its configured micro and diagnostic
@@ -584,7 +625,12 @@ run again as part of SQL release qualification and do not block publishing.
 Evidence includes an up-front preflight record, benchmark-source hash manifest,
 separate revision build-input manifests, raw and aggregate CSV files, revision
 logs with suite boundaries, commit identities, the planned order, a chronological
-start/pass/fail execution log, and a Markdown report. Before forced worktree
+start/pass/fail execution log, an external CPU/I/O and prohibited-workload
+timeline, and a Markdown report. Missing monitor coverage, a prohibited build or
+installer workload, or five consecutive samples above 8% observable external
+process CPU, 0.5 CPU-core equivalent, or 4,194,304 observable external process
+read-plus-write bytes per second marks the pass contaminated and stops without
+replacing its sample. Before forced worktree
 removal, the runner performs a non-following link audit and leaves any unsafe
 worktree registered for explicit cleanup. All generated evidence stays in the
 caller-selected directory outside the checkout; it never updates the curated
@@ -674,12 +720,13 @@ Promotion checklist:
 - Both balanced paired local durable-write comparisons passed with the
   same hash-verified candidate harness and retained raw evidence, and the exact
   candidate commit has a successful `csharpdb/local-durable-performance`
-  `durable-v2` status. Blocking P95 and throughput evidence passed; diagnostic
+  `durable-v3` status. Blocking P95 and throughput evidence passed; diagnostic
   P99 was retained but did not determine the result.
 - No comparison row is `INVALID`, `UNSTABLE`, `ORDER-SENSITIVE`, or
-  `REGRESSION`, and every gate row has at least 100 retained latency
-  observations. Exact hybrid diagnostic rows use the stronger 10,000-sample
-  floor described above.
+  `REGRESSION`, and every local durable side has at least 30 measured seconds
+  and 10,000 retained latency observations. The observable-process monitor
+  timeline is clean and covers every declared measurement interval; unavailable
+  external-process counter counts are retained as diagnostics.
 - The release guardrail result is clean.
 - The manifest points only to the approved median artifacts.
 - The generated README diff only changes benchmark numbers, source artifacts, or snapshot metadata.
@@ -696,4 +743,5 @@ Related files:
 - `scripts/Compare-ReleaseCore.ps1`: strict same-runner release comparison.
 - `scripts/Test-LocalDurablePerformance.ps1`: sequential two-pass local release gate.
 - `scripts/Test-PreviousReleasePerformance.ps1`: clean two-revision benchmark runner.
+- `scripts/Watch-LocalPerformanceEnvironment.ps1`: fail-closed observable external-load evidence monitor.
 - `scripts/Update-BenchmarkReadme.ps1`: generated-results updater.

@@ -39,6 +39,33 @@ param(
     [ValidateRange(0, 3600)]
     [int] $PostBuildQuiescenceSeconds = 0,
 
+    [ValidateRange(0, 300)]
+    [int] $InterSampleQuiescenceSeconds = 0,
+
+    [switch] $MonitorLocalEnvironment,
+
+    [string] $EnvironmentMonitorScript = '',
+
+    [ValidateRange(250, 10000)]
+    [int] $MonitorSampleIntervalMilliseconds = 1000,
+
+    [ValidateRange(0, 100)]
+    [double] $MaxExternalCpuPercent = 8,
+
+    [ValidateRange(0, 64)]
+    [double] $MaxExternalCpuCoreEquivalent = 0.5,
+
+    [ValidateRange(0, [long]::MaxValue)]
+    [long] $MaxExternalIoBytesPerSecond = 4194304,
+
+    [ValidateRange(1, 60)]
+    [int] $RequiredConsecutiveBusySamples = 5,
+
+    [ValidateNotNullOrEmpty()]
+    [string] $ProhibitedExternalProcessNames =
+        'devenv;msbuild;vbcscompiler;testhost;vstest.console;msiexec;' +
+        'trustedinstaller;tiworker;mousocoreworker;usoclient;winget;nuget',
+
     [switch] $PreflightOnly
 )
 
@@ -129,6 +156,67 @@ if (Test-Path -LiteralPath $outputRoot) {
     if ($null -ne (Get-ChildItem -LiteralPath $outputRoot -Force | Select-Object -First 1)) {
         throw "Performance qualification output must be absent or empty: $outputRoot"
     }
+}
+
+function Write-LinesAtomically {
+    param(
+        [Parameter(Mandatory)][string] $Path,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]] $Lines
+    )
+
+    $temporaryPath = "$Path.$([Guid]::NewGuid().ToString('N')).tmp"
+    try {
+        [IO.File]::WriteAllLines($temporaryPath, $Lines)
+        [IO.File]::Move($temporaryPath, $Path, $true)
+    }
+    finally {
+        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+            Remove-Item -LiteralPath $temporaryPath -Force
+        }
+    }
+}
+
+function Assert-PersistedLines {
+    param(
+        [Parameter(Mandatory)][string] $Path,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]] $ExpectedLines,
+        [Parameter(Mandatory)][string] $Description
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "$Description is missing after persistence: $Path"
+    }
+    [string[]] $actualLines = [IO.File]::ReadAllLines($Path)
+    if ($actualLines.Count -ne $ExpectedLines.Count) {
+        throw (
+            "$Description persistence verification failed. " +
+            "Expected $($ExpectedLines.Count) lines; found $($actualLines.Count).")
+    }
+    for ($lineIndex = 0; $lineIndex -lt $ExpectedLines.Count; $lineIndex++) {
+        if ($actualLines[$lineIndex] -cne $ExpectedLines[$lineIndex]) {
+            throw "$Description persistence verification failed at line $($lineIndex + 1)."
+        }
+    }
+}
+
+function Get-DeterministicLinesSha256 {
+    param([Parameter(Mandatory)][AllowEmptyCollection()][string[]] $Lines)
+
+    $payload = ($Lines -join "`n") + "`n"
+    $bytes = [Text.Encoding]::UTF8.GetBytes($payload)
+    return [Convert]::ToHexString(
+        [Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+}
+
+function Convert-ToCsvCell {
+    param([AllowNull()][object] $Value)
+
+    $text = if ($null -eq $Value) { '' } else { [string] $Value }
+    if ($text.Contains(',') -or $text.Contains('"') -or
+        $text.Contains("`r") -or $text.Contains("`n")) {
+        return '"' + $text.Replace('"', '""') + '"'
+    }
+    return $text
 }
 
 function Invoke-Git {
@@ -260,6 +348,20 @@ $revisionOrder = if ($QualificationPass -eq 1) {
 else {
     @('candidate', 'previous')
 }
+[string[]] $exactMasterDurableRowNames = @(
+    'MasterComparison_Sql_FileBacked_SingleInsert'
+    'MasterComparison_Sql_FileBacked_BatchInsertRows'
+    'MasterComparison_Sql_HybridIncrementalDurable_SingleInsert'
+    'MasterComparison_Sql_HybridIncrementalDurable_BatchInsertRows'
+    'MasterComparison_Sql_DirectClientLocalProcess_SingleInsert'
+    'MasterComparison_Sql_DirectClientLocalProcess_BatchInsertRows'
+    'MasterComparison_Collection_FileBacked_SinglePut'
+    'MasterComparison_Collection_FileBacked_BatchPutDocs'
+    'MasterComparison_Collection_HybridIncrementalDurable_SinglePut'
+    'MasterComparison_Collection_HybridIncrementalDurable_BatchPutDocs'
+)
+$exactMasterDurableSelector = 'master-table-durable-write-scenarios'
+$exactMasterDurableResultPrefix = 'master-table-durable-write-scenario'
 $defaultSuiteDefinitions = @(
     [pscustomobject]@{ Name = 'master-table'; Arguments = @('--master-table'); ExpectedRowName = $null }
     [pscustomobject]@{ Name = 'durable-sql-batching'; Arguments = @('--durable-sql-batching'); ExpectedRowName = $null }
@@ -281,8 +383,14 @@ $selectableSuiteDefinitions = @(
         Arguments = @('--master-table-hosted-stable')
         ExpectedRowName = $null
     }
+    [pscustomobject]@{
+        Name = $exactMasterDurableSelector
+        Arguments = @()
+        ExpectedRowName = $null
+    }
 )
 $suiteDefinitions = @($defaultSuiteDefinitions)
+$isExactMasterDurableMode = $false
 if ($hasHybridStorageScenario) {
     $suiteDefinitions = @(
         [pscustomobject]@{
@@ -309,12 +417,63 @@ elseif ($SuiteName.Count -gt 0) {
             "Unknown release-core suite name(s): $($unknownSuites -join ', '). " +
             "Supported suites: $($selectableSuiteDefinitions.Name -join ', ').")
     }
-    $suiteDefinitions = @(
-        $selectableSuiteDefinitions | Where-Object { $_.Name -cin $requestedSuites }
-    )
+    $isExactMasterDurableMode = $requestedSuites -ccontains $exactMasterDurableSelector
+    if ($isExactMasterDurableMode) {
+        if ($requestedSuites.Count -ne 1) {
+            throw (
+                "Suite '$exactMasterDurableSelector' is a complete canonical " +
+                'qualification mode and cannot be combined with other suites.')
+        }
+        if (-not $Paired) {
+            throw "Suite '$exactMasterDurableSelector' requires -Paired."
+        }
+        $suiteDefinitions = @(
+            foreach ($rowName in $exactMasterDurableRowNames) {
+                [pscustomobject]@{
+                    Name = $rowName
+                    Arguments = @(
+                        '--master-table-durable-write-scenario',
+                        $rowName)
+                    ExpectedRowName = $rowName
+                    ResultPrefix = $exactMasterDurableResultPrefix
+                }
+            }
+        )
+    }
+    else {
+        $suiteDefinitions = @(
+            $selectableSuiteDefinitions | Where-Object { $_.Name -cin $requestedSuites }
+        )
+    }
 }
 if ($suiteDefinitions.Count -eq 0) {
     throw 'At least one release-core suite must be selected.'
+}
+if ($InterSampleQuiescenceSeconds -gt 0 -and -not $isExactMasterDurableMode) {
+    throw (
+        'InterSampleQuiescenceSeconds is valid only with the canonical ' +
+        "'$exactMasterDurableSelector' suite.")
+}
+if ($MonitorLocalEnvironment -and -not $isExactMasterDurableMode) {
+    throw (
+        'MonitorLocalEnvironment is valid only with the canonical ' +
+        "'$exactMasterDurableSelector' suite.")
+}
+if ($MonitorLocalEnvironment -and -not $IsWindows) {
+    throw 'MonitorLocalEnvironment requires Windows.'
+}
+if ($MonitorLocalEnvironment) {
+    if ([string]::IsNullOrWhiteSpace($EnvironmentMonitorScript)) {
+        throw 'MonitorLocalEnvironment requires EnvironmentMonitorScript.'
+    }
+    $EnvironmentMonitorScript = [IO.Path]::GetFullPath($EnvironmentMonitorScript)
+    if (-not (Test-Path -LiteralPath $EnvironmentMonitorScript -PathType Leaf)) {
+        throw "Local performance environment monitor not found: $EnvironmentMonitorScript"
+    }
+}
+elseif ($PSBoundParameters.ContainsKey('EnvironmentMonitorScript') -and
+    -not [string]::IsNullOrWhiteSpace($EnvironmentMonitorScript)) {
+    throw 'EnvironmentMonitorScript requires -MonitorLocalEnvironment.'
 }
 
 $pairDefinitions = @()
@@ -340,38 +499,93 @@ if ($Paired) {
     )
 }
 
-$executionPlan = @(
-    foreach ($suite in $suiteDefinitions) {
-        if ($Paired) {
-            foreach ($pair in $pairDefinitions) {
-                foreach ($position in 0, 1) {
-                    [pscustomobject]@{
-                        Suite = $suite
-                        Revision = if ($position -eq 0) {
-                            $pair.FirstRevision
-                        }
-                        else {
-                            $pair.SecondRevision
-                        }
-                        Pair = $pair
-                        Position = $position + 1
-                    }
+$exactMasterDurablePairSchedule = @()
+if ($isExactMasterDurableMode) {
+    $rotationStep = 3
+    $passRoundOffset = ($QualificationPass - 1) * $pairDefinitions.Count
+    $exactMasterDurablePairSchedule = @(
+        for ($pairOffset = 0; $pairOffset -lt $pairDefinitions.Count; $pairOffset++) {
+            $pair = $pairDefinitions[$pairOffset]
+            $rotationOffset = (
+                ($passRoundOffset + $pairOffset) * $rotationStep) %
+                $suiteDefinitions.Count
+            for ($rowTimePosition = 0;
+                $rowTimePosition -lt $suiteDefinitions.Count;
+                $rowTimePosition++) {
+                $suiteIndex = (
+                    $rowTimePosition + $rotationOffset) %
+                    $suiteDefinitions.Count
+                [pscustomobject]@{
+                    Suite = $suiteDefinitions[$suiteIndex]
+                    Pair = $pair
+                    PairRound = $pairOffset + 1
+                    RowTimePosition = $rowTimePosition + 1
+                    RotationOffset = $rotationOffset
                 }
             }
         }
-        else {
-            foreach ($revision in $revisionOrder) {
+    )
+}
+
+$executionPlan = @(
+    if ($isExactMasterDurableMode) {
+        foreach ($scheduledPair in $exactMasterDurablePairSchedule) {
+            foreach ($position in 0, 1) {
                 [pscustomobject]@{
-                    Suite = $suite
-                    Revision = $revision
-                    Pair = $null
-                    Position = 0
+                    Suite = $scheduledPair.Suite
+                    Revision = if ($position -eq 0) {
+                        $scheduledPair.Pair.FirstRevision
+                    }
+                    else {
+                        $scheduledPair.Pair.SecondRevision
+                    }
+                    Pair = $scheduledPair.Pair
+                    Position = $position + 1
+                    PairRound = $scheduledPair.PairRound
+                    RowTimePosition = $scheduledPair.RowTimePosition
+                    RotationOffset = $scheduledPair.RotationOffset
+                }
+            }
+        }
+    }
+    else {
+        foreach ($suite in $suiteDefinitions) {
+            if ($Paired) {
+                foreach ($pair in $pairDefinitions) {
+                    foreach ($position in 0, 1) {
+                        [pscustomobject]@{
+                            Suite = $suite
+                            Revision = if ($position -eq 0) {
+                                $pair.FirstRevision
+                            }
+                            else {
+                                $pair.SecondRevision
+                            }
+                            Pair = $pair
+                            Position = $position + 1
+                        }
+                    }
+                }
+            }
+            else {
+                foreach ($revision in $revisionOrder) {
+                    [pscustomobject]@{
+                        Suite = $suite
+                        Revision = $revision
+                        Pair = $null
+                        Position = 0
+                    }
                 }
             }
         }
     }
 )
-$suiteOrder = ($suiteDefinitions.Name -join ', ')
+$suiteOrder = if ($isExactMasterDurableMode) {
+    $exactMasterDurableSelector
+}
+else {
+    $suiteDefinitions.Name -join ', '
+}
 $executionOrder = (
     $executionPlan |
         ForEach-Object {
@@ -401,10 +615,28 @@ $pairManifestPath = Join-Path $logRoot 'paired-execution.csv'
 $pairedRawDigestManifestPath = Join-Path $logRoot 'paired-raw-evidence.sha256'
 $pairedArtifactManifestPath = Join-Path $logRoot 'paired-benchmark-artifacts.sha256'
 $pairedArtifactCloseoutPath = Join-Path $logRoot 'paired-benchmark-artifact-closeout.log'
+$exactMasterDurableSchedulePath = Join-Path $logRoot 'durable-v3-exact-master-schedule.csv'
+$exactMasterDurableDesignPath = Join-Path $logRoot 'durable-v3-exact-master-design.txt'
+$exactMasterDurableConditioningPath = Join-Path $logRoot 'durable-v3-conditioning.csv'
+$environmentMonitorCsvPath = Join-Path $logRoot 'durable-v3-environment-monitor.csv'
+$environmentMonitorReadyPath = Join-Path $logRoot 'durable-v3-environment-monitor.ready'
+$environmentMonitorStopPath = Join-Path $logRoot 'durable-v3-environment-monitor.stop'
+$environmentMonitorStdoutPath = Join-Path $logRoot 'durable-v3-environment-monitor.stdout.log'
+$environmentMonitorStderrPath = Join-Path $logRoot 'durable-v3-environment-monitor.stderr.log'
+$environmentMonitorSummaryPath = Join-Path $logRoot 'durable-v3-environment-monitor-summary.txt'
+$artifactStageParent = Join-Path $outputRoot 'benchmark-artifact-slots'
+$artifactSlotNames = @('artifact-slot-a', 'artifact-slot-b')
+$revisionArtifactSlots = @{
+    $revisionOrder[0] = $artifactSlotNames[0]
+    $revisionOrder[1] = $artifactSlotNames[1]
+}
 $harnessManifestPath = Join-Path $logRoot 'candidate-benchmark-harness.sha256'
 $candidateBuildInputsManifestPath = Join-Path $logRoot 'candidate-effective-build-inputs.sha256'
 $previousBuildInputsManifestPath = Join-Path $logRoot 'previous-effective-build-inputs.sha256'
-$executionStrategy = if ($Paired) {
+$executionStrategy = if ($isExactMasterDurableMode) {
+    'durable-v3-exact-master-row-adjacent'
+}
+elseif ($Paired) {
     'balanced-paired-raw-repeats'
 }
 else {
@@ -439,6 +671,76 @@ else {
     '- Post-build quiescence: disabled'
 }
 
+$exactMasterDurableDesignFingerprint = ''
+$exactMasterDurableScheduleSha256 = ''
+if ($isExactMasterDurableMode) {
+    New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
+    [string[]] $designLines = @(
+        'FormatVersion=csharpdb-durable-v3-exact-master-design/v1'
+        "Selector=$exactMasterDurableSelector"
+        'CliMode=--master-table-durable-write-scenario <exact-master-row-name>'
+        'Schedule=pair-rounds; row-adjacent revisions; ten-position rotation step 3 continued across qualification passes'
+        "PairRepeatsPerOrder=$RepeatCount"
+        "InterSampleQuiescenceSeconds=$InterSampleQuiescenceSeconds"
+        'RecordedAttemptPolicy=no-discard; no-replacement; one scheduled attempt per raw row side'
+        'ArtifactStaging=equal-length sibling slots; pass-starting revision in artifact-slot-a; every staged closure file hash-read verified'
+        'Conditioning=one non-recorded exact-row invocation per staged artifact before post-build quiescence'
+        "EnvironmentMonitorEnabled=$MonitorLocalEnvironment"
+        "MonitorSampleIntervalMilliseconds=$MonitorSampleIntervalMilliseconds"
+        "MaxExternalCpuPercent=$MaxExternalCpuPercent"
+        "MaxExternalCpuCoreEquivalent=$MaxExternalCpuCoreEquivalent"
+        'ExternalCpuSignal=observable external process CPU; system busy CPU minus observable allowed runner-tree CPU is retained as a diagnostic; unobservable allowed CPU contaminates immediately'
+        "MaxExternalIoBytesPerSecond=$MaxExternalIoBytesPerSecond"
+        "RequiredConsecutiveBusySamples=$RequiredConsecutiveBusySamples"
+        "ProhibitedExternalProcessNames=$ProhibitedExternalProcessNames"
+        'MonitorCoveragePolicy=ready-to-first and inter-sample gaps at most max(5000ms,3x sample interval); final sample at or after final declared measurement end'
+        'MinimumMeasuredSeconds=30'
+        'MinimumRetainedLatencySamples=10000'
+        'RequiredPolicyMetadata=qualification=true;unrecorded-warmup-seconds=2;minimum-measured-seconds=30;minimum-retained-latency-samples=10000;measurement-cap-seconds=120;measurement-begin-utc;measurement-end-utc'
+        foreach ($rowName in $exactMasterDurableRowNames) {
+            "ExactRow=$rowName"
+        }
+    )
+    $exactMasterDurableDesignFingerprint = Get-DeterministicLinesSha256 -Lines $designLines
+    Write-LinesAtomically -Path $exactMasterDurableDesignPath -Lines $designLines
+    Assert-PersistedLines `
+        -Path $exactMasterDurableDesignPath `
+        -ExpectedLines $designLines `
+        -Description 'Durable-v3 design manifest'
+
+    [string[]] $scheduleLines = @(
+        'Ordinal,QualificationPass,PairRound,RowTimePosition,RotationOffset,Suite,ExpectedRowName,PairId,PairOrder,PairPosition,Revision,ArtifactSlot,Arguments,InterSampleQuiescenceSeconds,Recorded'
+        for ($entryIndex = 0; $entryIndex -lt $executionPlan.Count; $entryIndex++) {
+            $entry = $executionPlan[$entryIndex]
+            $scheduleValues = @(
+                $entryIndex + 1
+                $QualificationPass
+                $entry.PairRound
+                $entry.RowTimePosition
+                $entry.RotationOffset
+                $entry.Suite.Name
+                $entry.Suite.ExpectedRowName
+                $entry.Pair.Id
+                $entry.Pair.Order
+                $entry.Position
+                $entry.Revision
+                $revisionArtifactSlots[$entry.Revision]
+                ($entry.Suite.Arguments -join ' ')
+                $InterSampleQuiescenceSeconds
+                'true')
+            @($scheduleValues | ForEach-Object { Convert-ToCsvCell $_ }) -join ','
+        }
+    )
+    Write-LinesAtomically -Path $exactMasterDurableSchedulePath -Lines $scheduleLines
+    Assert-PersistedLines `
+        -Path $exactMasterDurableSchedulePath `
+        -ExpectedLines $scheduleLines `
+        -Description 'Durable-v3 execution schedule'
+    $exactMasterDurableScheduleSha256 = (
+        Get-FileHash -LiteralPath $exactMasterDurableSchedulePath -Algorithm SHA256
+    ).Hash.ToLowerInvariant()
+}
+
 $preflightPath = Join-Path $outputRoot 'previous-release-performance-preflight.md'
 $preflight = @(
     '# Previous-release performance preflight',
@@ -450,6 +752,40 @@ $preflight = @(
     "- Suite order: $suiteOrder",
     $(if ($hasHybridStorageScenario) {
             "- Hybrid storage scenario: ``$HybridStorageScenarioName``"
+        }),
+    $(if ($isExactMasterDurableMode) {
+            "- Canonical exact-master durable mode: ``$exactMasterDurableSelector`` (10 exact one-row suites)"
+        }),
+    $(if ($isExactMasterDurableMode) {
+            '- Recorded evidence policy: no discard, no replacement, and one predeclared attempt per logical side'
+        }),
+    $(if ($isExactMasterDurableMode) {
+            "- Inter-sample quiescence before every recorded logical side: $InterSampleQuiescenceSeconds second(s)"
+        }),
+    $(if ($isExactMasterDurableMode) {
+            if ($MonitorLocalEnvironment) {
+                ("- Durable-v3 external environment monitor: enabled; interval=" +
+                    "$MonitorSampleIntervalMilliseconds ms; external CPU limit=" +
+                    "$MaxExternalCpuPercent% or $MaxExternalCpuCoreEquivalent CPU-core equivalent; external observable-process I/O limit=" +
+                    "$MaxExternalIoBytesPerSecond bytes/sec; sustained samples=" +
+                    "$RequiredConsecutiveBusySamples; prohibited external processes contaminate immediately: " +
+                    $ProhibitedExternalProcessNames)
+            }
+            else {
+                '- Durable-v3 external environment monitor: disabled'
+            }
+        }),
+    $(if ($isExactMasterDurableMode) {
+            "- Durable-v3 design fingerprint: ``$exactMasterDurableDesignFingerprint``"
+        }),
+    $(if ($isExactMasterDurableMode) {
+            "- Durable-v3 design manifest: ``$exactMasterDurableDesignPath``"
+        }),
+    $(if ($isExactMasterDurableMode) {
+            "- Predeclared durable-v3 schedule: ``$exactMasterDurableSchedulePath``; SHA-256 ``$exactMasterDurableScheduleSha256``"
+        }),
+    $(if ($isExactMasterDurableMode) {
+            "- Symmetric artifact slot assignment: previous=``$($revisionArtifactSlots['previous'])``; candidate=``$($revisionArtifactSlots['candidate'])``"
         }),
     "- Execution order: $executionOrder",
     $repeatDescription,
@@ -506,6 +842,11 @@ $pairedArtifactManifestPersisted = $false
 $pairedRawDigestCount = 0
 $primaryFailure = $null
 $cleanupFailures = [Collections.Generic.List[string]]::new()
+$environmentMonitorProcess = $null
+$environmentMonitorReadyUtc = [DateTimeOffset]::MinValue
+$environmentMonitorStopped = $false
+$environmentMonitorSha256 = ''
+$environmentMonitorSampleCount = 0
 $originalNuGetPackages = $env:NUGET_PACKAGES
 $originalDotnetCliHome = $env:DOTNET_CLI_HOME
 
@@ -1223,6 +1564,113 @@ function Get-BenchmarkArtifactIdentity {
     }
 }
 
+function Copy-BenchmarkArtifactToSymmetricStage {
+    param(
+        [Parameter(Mandatory)]
+        [object] $Artifact,
+
+        [Parameter(Mandatory)]
+        [string] $StageRoot,
+
+        [Parameter(Mandatory)]
+        [string] $SlotName
+    )
+
+    $resolvedStageRoot = [IO.Path]::GetFullPath($StageRoot)
+    if (Test-Path -LiteralPath $resolvedStageRoot) {
+        throw "Benchmark artifact staging slot already exists: $resolvedStageRoot"
+    }
+    Assert-BenchmarkArtifactHash `
+        -ArtifactPath $Artifact.Path `
+        -ExpectedSha256 $Artifact.Sha256 `
+        -Context "before staging into $SlotName"
+    Assert-BenchmarkArtifactClosure `
+        -Artifact $Artifact `
+        -Context "before staging into $SlotName"
+
+    New-Item -ItemType Directory -Path $resolvedStageRoot -Force | Out-Null
+    $readFileCount = 0
+    foreach ($record in $Artifact.ClosureRecords) {
+        $sourcePath = [IO.Path]::GetFullPath([string] $record.FullName)
+        $sourceHash = (Get-FileHash `
+                -LiteralPath $sourcePath `
+                -Algorithm SHA256).
+            Hash.
+            ToLowerInvariant()
+        if ($sourceHash -cne [string] $record.Sha256) {
+            throw (
+                "Benchmark artifact source closure changed while staging ${SlotName}: " +
+                "$($record.RelativePath)")
+        }
+
+        $destinationPath = [IO.Path]::GetFullPath([IO.Path]::Combine(
+                $resolvedStageRoot,
+                ([string] $record.RelativePath).Replace(
+                    '/',
+                    [IO.Path]::DirectorySeparatorChar)))
+        if (-not (Test-PathStrictlyWithinRoot `
+                -Path $destinationPath `
+                -Root $resolvedStageRoot)) {
+            throw (
+                "Benchmark artifact staged closure path escapes its slot: " +
+                "$($record.RelativePath)")
+        }
+        $destinationDirectory = Split-Path -Parent $destinationPath
+        New-Item -ItemType Directory -Path $destinationDirectory -Force | Out-Null
+        Copy-Item -LiteralPath $sourcePath -Destination $destinationPath
+
+        $destinationHash = (Get-FileHash `
+                -LiteralPath $destinationPath `
+                -Algorithm SHA256).
+            Hash.
+            ToLowerInvariant()
+        if ($destinationHash -cne [string] $record.Sha256) {
+            throw (
+                "Benchmark artifact staged closure verification failed in ${SlotName}: " +
+                "$($record.RelativePath)")
+        }
+
+        $readStream = [IO.File]::OpenRead($destinationPath)
+        try {
+            $readStream.CopyTo([IO.Stream]::Null)
+        }
+        finally {
+            $readStream.Dispose()
+        }
+        $readFileCount++
+    }
+    if ($readFileCount -ne $Artifact.ClosureFileCount) {
+        throw (
+            "Benchmark artifact staging slot $SlotName read $readFileCount closure " +
+            "files; expected $($Artifact.ClosureFileCount).")
+    }
+
+    $entryRelativePath = [IO.Path]::GetRelativePath(
+        [string] $Artifact.ClosureRoot,
+        [string] $Artifact.Path)
+    $stagedArtifactPath = [IO.Path]::GetFullPath(
+        [IO.Path]::Combine($resolvedStageRoot, $entryRelativePath))
+    $stagedClosure = Get-BenchmarkArtifactClosure -ArtifactPath $stagedArtifactPath
+    if ($stagedClosure.FileCount -ne $Artifact.ClosureFileCount -or
+        $stagedClosure.Sha256 -cne $Artifact.ClosureSha256 -or
+        $stagedClosure.EntrySha256 -cne $Artifact.Sha256) {
+        throw "Benchmark artifact staged closure identity differs in $SlotName."
+    }
+
+    return [pscustomobject]@{
+        SourceRoot = [string] $Artifact.SourceRoot
+        SourceArtifactPath = [string] $Artifact.Path
+        Path = $stagedArtifactPath
+        Sha256 = $stagedClosure.EntrySha256
+        ClosureRoot = $stagedClosure.Root
+        ClosureFileCount = $stagedClosure.FileCount
+        ClosureSha256 = $stagedClosure.Sha256
+        ClosureRecords = [object[]] $stagedClosure.Records
+        StagingSlot = $SlotName
+        StagedReadFileCount = $readFileCount
+    }
+}
+
 function Assert-BenchmarkArtifactHash {
     param(
         [Parameter(Mandatory)]
@@ -1323,6 +1771,438 @@ function Invoke-PostBuildQuiescence {
         "Waiting $PostBuildQuiescenceSeconds second(s) after shutting down " +
         'dotnet build servers.')
     Start-Sleep -Seconds $PostBuildQuiescenceSeconds
+}
+
+function Start-LocalEnvironmentMonitor {
+    if (-not $MonitorLocalEnvironment) {
+        return
+    }
+    if ($null -ne $environmentMonitorProcess) {
+        throw 'The local performance environment monitor has already started.'
+    }
+
+    foreach ($reservedPath in @(
+            $environmentMonitorCsvPath,
+            $environmentMonitorReadyPath,
+            $environmentMonitorStopPath,
+            $environmentMonitorStdoutPath,
+            $environmentMonitorStderrPath,
+            $environmentMonitorSummaryPath)) {
+        if (Test-Path -LiteralPath $reservedPath) {
+            throw "Environment monitor evidence path already exists: $reservedPath"
+        }
+    }
+
+    $pwshCommand = Get-Command pwsh -ErrorAction Stop
+    $runnerProcess = [Diagnostics.Process]::GetCurrentProcess()
+    try {
+        $runnerStartedUtc = [DateTimeOffset] $runnerProcess.StartTime.ToUniversalTime()
+    }
+    finally {
+        $runnerProcess.Dispose()
+    }
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $pwshCommand.Source
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    foreach ($argument in @(
+            '-NoLogo',
+            '-NoProfile',
+            '-File',
+            $EnvironmentMonitorScript,
+            '-OutputPath',
+            $environmentMonitorCsvPath,
+            '-StopSignalPath',
+            $environmentMonitorStopPath,
+            '-ReadySignalPath',
+            $environmentMonitorReadyPath,
+            '-AllowedRootProcessId',
+            $PID.ToString([Globalization.CultureInfo]::InvariantCulture),
+            '-AllowedRootStartTimeUtc',
+            $runnerStartedUtc.ToString('O', [Globalization.CultureInfo]::InvariantCulture),
+            '-SampleIntervalMilliseconds',
+            $MonitorSampleIntervalMilliseconds.ToString(
+                [Globalization.CultureInfo]::InvariantCulture),
+            '-MaxExternalCpuPercent',
+            $MaxExternalCpuPercent.ToString(
+                [Globalization.CultureInfo]::InvariantCulture),
+            '-MaxExternalCpuCoreEquivalent',
+            $MaxExternalCpuCoreEquivalent.ToString(
+                [Globalization.CultureInfo]::InvariantCulture),
+            '-MaxExternalIoBytesPerSecond',
+            $MaxExternalIoBytesPerSecond.ToString(
+                [Globalization.CultureInfo]::InvariantCulture),
+            '-RequiredConsecutiveBusySamples',
+            $RequiredConsecutiveBusySamples.ToString(
+                [Globalization.CultureInfo]::InvariantCulture),
+            '-ProhibitedExternalProcessNames',
+            $ProhibitedExternalProcessNames)) {
+        [void] $startInfo.ArgumentList.Add([string] $argument)
+    }
+
+    $environmentMonitorProcess = [Diagnostics.Process]::new()
+    $environmentMonitorProcess.StartInfo = $startInfo
+    if (-not $environmentMonitorProcess.Start()) {
+        throw 'Could not start the local performance environment monitor.'
+    }
+
+    $readyDeadline = [DateTimeOffset]::UtcNow.AddSeconds(30)
+    while (-not (Test-Path -LiteralPath $environmentMonitorReadyPath -PathType Leaf) -and
+        -not $environmentMonitorProcess.HasExited -and
+        [DateTimeOffset]::UtcNow -lt $readyDeadline) {
+        Start-Sleep -Milliseconds 100
+    }
+    if (-not (Test-Path -LiteralPath $environmentMonitorReadyPath -PathType Leaf)) {
+        if (-not $environmentMonitorProcess.HasExited) {
+            $environmentMonitorProcess.Kill($true)
+            $environmentMonitorProcess.WaitForExit()
+        }
+        $stderr = $environmentMonitorProcess.StandardError.ReadToEnd()
+        throw "Local performance environment monitor did not become ready. $stderr"
+    }
+
+    $readyText = [IO.File]::ReadAllText($environmentMonitorReadyPath).Trim()
+    if (-not [DateTimeOffset]::TryParse(
+        $readyText,
+        [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::RoundtripKind,
+        [ref] $environmentMonitorReadyUtc)) {
+        throw "Environment monitor ready signal contains an invalid UTC timestamp: $readyText"
+    }
+    $environmentMonitorReadyUtc = $environmentMonitorReadyUtc.ToUniversalTime()
+    Write-Host (
+        'Durable-v3 external environment monitor ready at ' +
+        $environmentMonitorReadyUtc.ToString('O'))
+}
+
+function Get-MaxEnvironmentMonitorGapMilliseconds {
+    return [Math]::Max(
+        5000.0,
+        $MonitorSampleIntervalMilliseconds * 3.0)
+}
+
+function Get-LatestEnvironmentMonitorRow {
+    if (-not $MonitorLocalEnvironment) {
+        return $null
+    }
+    if ($null -eq $environmentMonitorProcess -or
+        $environmentMonitorProcess.HasExited) {
+        throw 'The local performance environment monitor exited before closeout.'
+    }
+
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        if (Test-Path -LiteralPath $environmentMonitorCsvPath -PathType Leaf) {
+            [string[]] $lines = [IO.File]::ReadAllLines($environmentMonitorCsvPath)
+            if ($lines.Count -ge 2) {
+                try {
+                    $latest = @(($lines[0], $lines[-1]) | ConvertFrom-Csv)[0]
+                    if ([string] $latest.Contaminated -cnotin @('True', 'False')) {
+                        throw 'The latest environment monitor sample is incomplete.'
+                    }
+                    $latestTimestamp = [DateTimeOffset]::MinValue
+                    if (-not [DateTimeOffset]::TryParse(
+                            [string] $latest.TimestampUtc,
+                            [Globalization.CultureInfo]::InvariantCulture,
+                            [Globalization.DateTimeStyles]::RoundtripKind,
+                            [ref] $latestTimestamp)) {
+                        throw 'The latest environment monitor sample has an invalid timestamp.'
+                    }
+                    $latestTimestamp = $latestTimestamp.ToUniversalTime()
+                    $sampleAgeMilliseconds =
+                        ([DateTimeOffset]::UtcNow - $latestTimestamp).TotalMilliseconds
+                    if ($sampleAgeMilliseconds -lt 0 -or
+                        $sampleAgeMilliseconds -gt (Get-MaxEnvironmentMonitorGapMilliseconds)) {
+                        throw (
+                            'The latest environment monitor sample is stale: ' +
+                            "$sampleAgeMilliseconds ms old.")
+                    }
+                    return $latest
+                }
+                catch {
+                    if ($attempt -eq 5) {
+                        throw
+                    }
+                }
+            }
+        }
+        Start-Sleep -Milliseconds 200
+    }
+
+    throw 'The local performance environment monitor produced no complete sample.'
+}
+
+function Assert-LocalEnvironmentMonitorClean {
+    param([Parameter(Mandatory)][string] $Stage)
+
+    if (-not $MonitorLocalEnvironment) {
+        return
+    }
+    $latest = Get-LatestEnvironmentMonitorRow
+    if ([string] $latest.Contaminated -ceq 'True') {
+        throw (
+            "Local performance environment contamination detected $Stage. " +
+            "Timestamp=$($latest.TimestampUtc); reason=$($latest.BusyReason); " +
+            "prohibited=$($latest.ProhibitedExternalProcesses); " +
+            "externalCpu=$($latest.ExternalCpuPercent)%/" +
+            "$($latest.ExternalCpuCoreEquivalent) core-equivalent; " +
+            "systemResidualCpu=" +
+            "$($latest.SystemResidualCpuCoreEquivalent) core-equivalent; " +
+            "externalRead=$($latest.ExternalReadBytesPerSecond) bytes/sec; " +
+            "externalWrite=$($latest.ExternalWriteBytesPerSecond) bytes/sec; " +
+            "unobservableCpuProcesses=$($latest.UnobservableExternalCpuProcessCount); " +
+            "unobservableIoProcesses=$($latest.UnobservableExternalIoProcessCount); " +
+            "unobservableAllowedCpuProcesses=" +
+            "$($latest.UnobservableAllowedCpuProcessCount).")
+    }
+}
+
+function Stop-AndAuditLocalEnvironmentMonitor {
+    if (-not $MonitorLocalEnvironment -or $environmentMonitorStopped) {
+        return
+    }
+    $auditFailure = $null
+    $summaryLines = [Collections.Generic.List[string]]::new()
+    $summaryLines.Add('Schema=csharpdb-local-performance-environment-summary/v1')
+    $summaryLines.Add("ReadyUtc=$($environmentMonitorReadyUtc.ToString('O'))")
+    $summaryLines.Add("MaximumCoverageGapMilliseconds=$(Get-MaxEnvironmentMonitorGapMilliseconds)")
+    $summaryLines.Add("MaxExternalCpuPercent=$MaxExternalCpuPercent")
+    $summaryLines.Add("MaxExternalCpuCoreEquivalent=$MaxExternalCpuCoreEquivalent")
+    $summaryLines.Add("MaxObservableExternalProcessIoBytesPerSecond=$MaxExternalIoBytesPerSecond")
+    $summaryLines.Add("RequiredConsecutiveBusySamples=$RequiredConsecutiveBusySamples")
+    $summaryLines.Add("ProhibitedExternalProcessNames=$ProhibitedExternalProcessNames")
+
+    try {
+        [IO.File]::WriteAllText(
+            $environmentMonitorStopPath,
+            [DateTimeOffset]::UtcNow.ToString('O'))
+        if (-not $environmentMonitorProcess.WaitForExit(30000)) {
+            $environmentMonitorProcess.Kill($true)
+            $environmentMonitorProcess.WaitForExit()
+            throw 'Local performance environment monitor did not stop within 30 seconds.'
+        }
+        $stdout = $environmentMonitorProcess.StandardOutput.ReadToEnd()
+        $stderr = $environmentMonitorProcess.StandardError.ReadToEnd()
+        [IO.File]::WriteAllText($environmentMonitorStdoutPath, $stdout)
+        [IO.File]::WriteAllText($environmentMonitorStderrPath, $stderr)
+        if ($environmentMonitorProcess.ExitCode -ne 0) {
+            throw (
+                "Local performance environment monitor exited with code " +
+                "$($environmentMonitorProcess.ExitCode). $stderr")
+        }
+        if (-not (Test-Path -LiteralPath $environmentMonitorCsvPath -PathType Leaf)) {
+            throw 'Local performance environment monitor CSV is missing.'
+        }
+
+        $expectedMonitorHeader =
+            'TimestampUtc,IntervalMilliseconds,ExternalCpuPercent,' +
+            'ExternalCpuCoreEquivalent,SystemResidualCpuCoreEquivalent,' +
+            'ExternalReadBytesPerSecond,' +
+            'ExternalWriteBytesPerSecond,ExternalProcessCount,AllowedProcessCount,' +
+            'UnobservableAllowedCpuProcessCount,UnobservableExternalCpuProcessCount,' +
+            'UnobservableExternalIoProcessCount,' +
+            'ProhibitedExternalProcesses,BusyReason,ConsecutiveBusySamples,Contaminated'
+        $actualMonitorHeader = Get-Content `
+            -LiteralPath $environmentMonitorCsvPath `
+            -TotalCount 1
+        if ($actualMonitorHeader -cne $expectedMonitorHeader) {
+            throw 'Local performance environment monitor CSV has an unexpected schema.'
+        }
+
+        $rows = @(Import-Csv -LiteralPath $environmentMonitorCsvPath)
+        if ($rows.Count -eq 0) {
+            throw 'Local performance environment monitor CSV contains no samples.'
+        }
+        $timestamps = [Collections.Generic.List[DateTimeOffset]]::new()
+        $previousTimestamp = [DateTimeOffset]::MinValue
+        $maximumGapMilliseconds = Get-MaxEnvironmentMonitorGapMilliseconds
+        foreach ($row in $rows) {
+            if ([string] $row.Contaminated -cnotin @('True', 'False')) {
+                throw (
+                    'Environment monitor contains an invalid contamination flag: ' +
+                    "'$($row.Contaminated)'.")
+            }
+            $timestamp = [DateTimeOffset]::MinValue
+            if (-not [DateTimeOffset]::TryParse(
+                [string] $row.TimestampUtc,
+                [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::RoundtripKind,
+                [ref] $timestamp)) {
+                throw "Environment monitor contains an invalid timestamp: $($row.TimestampUtc)"
+            }
+            $timestamp = $timestamp.ToUniversalTime()
+            if ($previousTimestamp -ne [DateTimeOffset]::MinValue) {
+                $gapMilliseconds = ($timestamp - $previousTimestamp).TotalMilliseconds
+                if ($gapMilliseconds -le 0 -or
+                    $gapMilliseconds -gt $maximumGapMilliseconds) {
+                    throw (
+                        'Environment monitor coverage is discontinuous: ' +
+                        "$gapMilliseconds ms between $($previousTimestamp.ToString('O')) " +
+                        "and $($timestamp.ToString('O')).")
+                }
+            }
+            $timestamps.Add($timestamp)
+            $previousTimestamp = $timestamp
+        }
+        $readyToFirstSampleGapMilliseconds =
+            ($timestamps[0] - $environmentMonitorReadyUtc).TotalMilliseconds
+        if ($readyToFirstSampleGapMilliseconds -le 0 -or
+            $readyToFirstSampleGapMilliseconds -gt $maximumGapMilliseconds) {
+            throw (
+                'Environment monitor coverage is discontinuous between its ' +
+                'ready signal and first sample: ' +
+                "$readyToFirstSampleGapMilliseconds ms.")
+        }
+        $contaminatedRows = @($rows | Where-Object { [string] $_.Contaminated -ceq 'True' })
+        if ($contaminatedRows.Count -gt 0) {
+            $first = $contaminatedRows[0]
+            throw (
+                'Local performance environment evidence is contaminated: ' +
+                "timestamp=$($first.TimestampUtc); reason=$($first.BusyReason); " +
+                "prohibited=$($first.ProhibitedExternalProcesses); " +
+                "externalCpu=$($first.ExternalCpuPercent)%/" +
+                "$($first.ExternalCpuCoreEquivalent) core-equivalent; " +
+                "systemResidualCpu=" +
+                "$($first.SystemResidualCpuCoreEquivalent) core-equivalent; " +
+                "externalRead=$($first.ExternalReadBytesPerSecond) bytes/sec; " +
+                "externalWrite=$($first.ExternalWriteBytesPerSecond) bytes/sec; " +
+                "unobservableCpuProcesses=$($first.UnobservableExternalCpuProcessCount); " +
+                "unobservableIoProcesses=$($first.UnobservableExternalIoProcessCount); " +
+                "unobservableAllowedCpuProcesses=" +
+                "$($first.UnobservableAllowedCpuProcessCount).")
+        }
+
+        $measurementBegins = [Collections.Generic.List[DateTimeOffset]]::new()
+        $measurementEnds = [Collections.Generic.List[DateTimeOffset]]::new()
+        foreach ($rawRoot in $baselineRawResults, $candidateRawResults) {
+            if (-not (Test-Path -LiteralPath $rawRoot -PathType Container)) {
+                continue
+            }
+            foreach ($rawPath in Get-ChildItem -LiteralPath $rawRoot -File -Recurse -Filter '*.csv') {
+                $rawRows = @(Import-Csv -LiteralPath $rawPath.FullName)
+                if ($rawRows.Count -ne 1) {
+                    continue
+                }
+                $extraInfo = [string] $rawRows[0].ExtraInfo
+                $beginMatch = [regex]::Match(
+                    $extraInfo,
+                    '(?:^|;\s*)measurement-begin-utc=(?<value>[^;]+)')
+                $endMatch = [regex]::Match(
+                    $extraInfo,
+                    '(?:^|;\s*)measurement-end-utc=(?<value>[^;]+)')
+                if (-not $beginMatch.Success -or -not $endMatch.Success) {
+                    continue
+                }
+                $begin = [DateTimeOffset]::Parse(
+                    $beginMatch.Groups['value'].Value,
+                    [Globalization.CultureInfo]::InvariantCulture,
+                    [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+                $end = [DateTimeOffset]::Parse(
+                    $endMatch.Groups['value'].Value,
+                    [Globalization.CultureInfo]::InvariantCulture,
+                    [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+                $measurementBegins.Add($begin)
+                $measurementEnds.Add($end)
+            }
+        }
+        if ($isExactMasterDurableMode -and
+            $null -eq $primaryFailure -and
+            $measurementBegins.Count -ne $executionPlan.Count) {
+            throw (
+                'Environment monitor closeout found ' +
+                "$($measurementBegins.Count) declared measurement intervals; " +
+                "$($executionPlan.Count) were predeclared.")
+        }
+        if ($measurementBegins.Count -gt 0) {
+            $firstMeasurementBegin = @($measurementBegins | Sort-Object)[0]
+            $lastMeasurementEnd = @($measurementEnds | Sort-Object)[-1]
+            if ($environmentMonitorReadyUtc -gt $firstMeasurementBegin) {
+                throw 'Environment monitor started after the first recorded measurement began.'
+            }
+            if ($timestamps[-1] -lt $lastMeasurementEnd) {
+                throw 'Environment monitor stopped before the final recorded measurement ended.'
+            }
+            $summaryLines.Add("FirstMeasurementBeginUtc=$($firstMeasurementBegin.ToString('O'))")
+            $summaryLines.Add("LastMeasurementEndUtc=$($lastMeasurementEnd.ToString('O'))")
+            $summaryLines.Add("CoveredMeasurementIntervals=$($measurementBegins.Count)")
+        }
+
+        $environmentMonitorSampleCount = $rows.Count
+        $environmentMonitorSha256 = (Get-FileHash `
+                -LiteralPath $environmentMonitorCsvPath `
+                -Algorithm SHA256).Hash.ToLowerInvariant()
+        $summaryLines.Add('Result=PASS')
+        $summaryLines.Add("SampleCount=$environmentMonitorSampleCount")
+        $summaryLines.Add("FirstSampleUtc=$($timestamps[0].ToString('O'))")
+        $summaryLines.Add("LastSampleUtc=$($timestamps[-1].ToString('O'))")
+        $summaryLines.Add("TelemetrySha256=$environmentMonitorSha256")
+    }
+    catch {
+        $auditFailure = $_
+        $summaryLines.Add('Result=FAIL')
+        $summaryLines.Add("Failure=$($_.Exception.Message -replace '\r?\n', ' ')")
+    }
+    finally {
+        try {
+            if ($null -ne $environmentMonitorProcess -and
+                -not $environmentMonitorProcess.HasExited) {
+                $environmentMonitorProcess.Kill($true)
+                $environmentMonitorProcess.WaitForExit()
+            }
+            $environmentMonitorStopped =
+                $null -ne $environmentMonitorProcess -and
+                $environmentMonitorProcess.HasExited
+        }
+        catch {
+            $environmentMonitorStopped = $false
+            if ($null -eq $auditFailure) {
+                $auditFailure = $_
+                $summaryLines.Add('Result=FAIL')
+            }
+            $summaryLines.Add(
+                "MonitorStopFailure=$($_.Exception.Message -replace '\r?\n', ' ')")
+        }
+        Write-LinesAtomically `
+            -Path $environmentMonitorSummaryPath `
+            -Lines $summaryLines.ToArray()
+    }
+
+    if (Test-Path -LiteralPath $reportPath -PathType Leaf) {
+        Add-Content `
+            -LiteralPath $reportPath `
+            -Value @(
+                '',
+                '## External environment monitor closeout',
+                '',
+                $(if ($null -eq $auditFailure) {
+                    '- Result: **PASS**'
+                }
+                else {
+                    '- Result: **FAIL**'
+                }),
+                "- Evidence: ``$environmentMonitorCsvPath``",
+                "- Summary: ``$environmentMonitorSummaryPath``",
+                ("- Coverage: monitor ready before the first declared measurement; " +
+                    "ready-to-first and inter-sample gaps no greater than " +
+                    "$(Get-MaxEnvironmentMonitorGapMilliseconds) ms; final sample at or after the final declared measurement end"),
+                ("- Busy limits: external CPU above $MaxExternalCpuPercent% or " +
+                    "$MaxExternalCpuCoreEquivalent CPU-core equivalent, or observable " +
+                    "external process I/O above $MaxExternalIoBytesPerSecond bytes/sec " +
+                    "for $RequiredConsecutiveBusySamples consecutive samples"),
+                "- Immediate prohibited-process contamination: ``$ProhibitedExternalProcessNames``",
+                $(if (-not [string]::IsNullOrWhiteSpace($environmentMonitorSha256)) {
+                    "- Evidence SHA-256: ``$environmentMonitorSha256``"
+                }),
+                $(if ($environmentMonitorSampleCount -gt 0) {
+                    "- Samples: $environmentMonitorSampleCount"
+                })
+            )
+    }
+
+    if ($null -ne $auditFailure) {
+        throw $auditFailure
+    }
 }
 
 function Invoke-ReleaseCoreSuite {
@@ -1541,17 +2421,6 @@ function Invoke-ReleaseCoreSuite {
         )
 }
 
-function Convert-ToCsvCell {
-    param([AllowNull()][object] $Value)
-
-    $text = if ($null -eq $Value) { '' } else { [string] $Value }
-    if ($text.Contains(',') -or $text.Contains('"') -or
-        $text.Contains("`r") -or $text.Contains("`n")) {
-        return '"' + $text.Replace('"', '""') + '"'
-    }
-    return $text
-}
-
 function Get-PairedRawEvidenceRecord {
     param([Parameter(Mandatory)][string] $RawPath)
 
@@ -1585,24 +2454,6 @@ function Get-PairedRawEvidenceRecord {
     }
 }
 
-function Write-LinesAtomically {
-    param(
-        [Parameter(Mandatory)][string] $Path,
-        [Parameter(Mandatory)][AllowEmptyCollection()][string[]] $Lines
-    )
-
-    $temporaryPath = "$Path.$([Guid]::NewGuid().ToString('N')).tmp"
-    try {
-        [IO.File]::WriteAllLines($temporaryPath, $Lines)
-        [IO.File]::Move($temporaryPath, $Path, $true)
-    }
-    finally {
-        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
-            Remove-Item -LiteralPath $temporaryPath -Force
-        }
-    }
-}
-
 function Write-PairedBenchmarkArtifactManifest {
     param(
         [Parameter(Mandatory)]
@@ -1617,7 +2468,9 @@ function Write-PairedBenchmarkArtifactManifest {
         [Parameter(Mandatory)]
         [string] $ManifestPath,
 
-        [switch] $SharedSameRevisionArtifact
+        [switch] $SharedSameRevisionArtifact,
+
+        [switch] $SymmetricStaging
     )
 
     if ($Artifacts.Count -ne 2 -or
@@ -1641,13 +2494,35 @@ function Write-PairedBenchmarkArtifactManifest {
     }
 
     $sharingValue = if ($SharedSameRevisionArtifact) { 'true' } else { 'false' }
+    $manifestFormatVersion = if ($SymmetricStaging) {
+        'csharpdb-paired-benchmark-artifacts/v3'
+    }
+    else {
+        'csharpdb-paired-benchmark-artifacts/v2'
+    }
     [string[]] $manifestLines = @(
-        'FormatVersion=csharpdb-paired-benchmark-artifacts/v2'
+        "FormatVersion=$manifestFormatVersion"
         "SharedSameRevisionArtifact=$sharingValue"
+        "SymmetricStaging=$(if ($SymmetricStaging) { 'true' } else { 'false' })"
+        $(if ($SymmetricStaging) {
+                "DesignSha256=$exactMasterDurableDesignFingerprint"
+            })
+        $(if ($SymmetricStaging) {
+                "ScheduleSha256=$exactMasterDurableScheduleSha256"
+            })
         'ClosureDefinition=all files recursively under the entry DLL directory, sorted by normalized relative path'
         'ClosureExclusion=top-level directory segment results'
         'ClosureExclusion=top-level directory segment CSharpDB.Benchmarks-Job-*'
         "PreviousCommit=$PreviousCommit"
+        $(if ($SymmetricStaging) {
+                "PreviousSourceArtifactPath=$($previousArtifact.SourceArtifactPath)"
+            })
+        $(if ($SymmetricStaging) {
+                "PreviousStagingSlot=$($previousArtifact.StagingSlot)"
+            })
+        $(if ($SymmetricStaging) {
+                "PreviousStagedReadFileCount=$($previousArtifact.StagedReadFileCount)"
+            })
         "PreviousArtifactPath=$($previousArtifact.Path)"
         "PreviousArtifactSha256=$($previousArtifact.Sha256)"
         "PreviousClosureRoot=$($previousArtifact.ClosureRoot)"
@@ -1657,6 +2532,15 @@ function Write-PairedBenchmarkArtifactManifest {
             "PreviousClosureFile=$($record.Sha256) *$($record.RelativePath)"
         }
         "CandidateCommit=$CandidateCommit"
+        $(if ($SymmetricStaging) {
+                "CandidateSourceArtifactPath=$($candidateArtifact.SourceArtifactPath)"
+            })
+        $(if ($SymmetricStaging) {
+                "CandidateStagingSlot=$($candidateArtifact.StagingSlot)"
+            })
+        $(if ($SymmetricStaging) {
+                "CandidateStagedReadFileCount=$($candidateArtifact.StagedReadFileCount)"
+            })
         "CandidateArtifactPath=$($candidateArtifact.Path)"
         "CandidateArtifactSha256=$($candidateArtifact.Sha256)"
         "CandidateClosureRoot=$($candidateArtifact.ClosureRoot)"
@@ -2055,6 +2939,303 @@ function Write-AggregatedBenchmarkCsv {
     [IO.File]::WriteAllLines($DestinationPath, $lines)
 }
 
+function Get-SuiteResultPrefix {
+    param([Parameter(Mandatory)][object] $Suite)
+
+    if ($Suite.PSObject.Properties.Name -contains 'ResultPrefix' -and
+        -not [string]::IsNullOrWhiteSpace([string] $Suite.ResultPrefix)) {
+        return [string] $Suite.ResultPrefix
+    }
+    return [string] $Suite.Name
+}
+
+function Assert-DurableV3RawRow {
+    param(
+        [Parameter(Mandatory)][string] $Path,
+        [Parameter(Mandatory)][string] $ExpectedRowName
+    )
+
+    $expectedHeader =
+        'Name,TotalOps,LatencySamples,ElapsedMs,OpsPerSec,P50,P90,P95,P99,P999,Min,Max,Mean,StdDev,ExtraInfo'
+    $header = Get-Content -LiteralPath $Path -TotalCount 1
+    if ($header -cne $expectedHeader) {
+        throw "Durable-v3 raw evidence has an unexpected CSV schema: $Path"
+    }
+    $rows = @(Import-Csv -LiteralPath $Path)
+    if ($rows.Count -ne 1) {
+        throw (
+            "Durable-v3 exact row '$ExpectedRowName' produced $($rows.Count) " +
+            'CSV rows; expected exactly one.')
+    }
+    $row = $rows[0]
+    if (-not [string]::Equals(
+            [string] $row.Name,
+            $ExpectedRowName,
+            [StringComparison]::Ordinal)) {
+        throw (
+            "Durable-v3 expected row '$ExpectedRowName' but received " +
+            "'$($row.Name)'.")
+    }
+
+    [decimal] $elapsedMilliseconds = 0
+    if (-not [decimal]::TryParse(
+            [string] $row.ElapsedMs,
+            [Globalization.NumberStyles]::Float,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [ref] $elapsedMilliseconds) -or
+        $elapsedMilliseconds -lt 30000 -or
+        $elapsedMilliseconds -gt 120000) {
+        throw (
+            "Durable-v3 raw row '$ExpectedRowName' must declare between " +
+            "30000 and 120000 elapsed milliseconds; received '$($row.ElapsedMs)'.")
+    }
+    [long] $latencySamples = 0
+    if (-not [long]::TryParse(
+            [string] $row.LatencySamples,
+            [Globalization.NumberStyles]::Integer,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [ref] $latencySamples) -or
+        $latencySamples -lt 10000) {
+        throw (
+            "Durable-v3 raw row '$ExpectedRowName' must retain at least " +
+            "10000 latency samples; received '$($row.LatencySamples)'.")
+    }
+
+    $metadata = [Collections.Generic.Dictionary[string, string]]::new(
+        [StringComparer]::Ordinal)
+    foreach ($tokenText in ([string] $row.ExtraInfo).Split(';')) {
+        $token = $tokenText.Trim()
+        if ([string]::IsNullOrWhiteSpace($token)) {
+            continue
+        }
+        $equalsIndex = $token.IndexOf('=')
+        if ($equalsIndex -le 0) {
+            continue
+        }
+        $name = $token.Substring(0, $equalsIndex).Trim()
+        $value = $token.Substring($equalsIndex + 1).Trim()
+        if ($metadata.ContainsKey($name)) {
+            throw (
+                "Durable-v3 raw row '$ExpectedRowName' contains duplicate " +
+                "policy metadata '$name'.")
+        }
+        $metadata.Add($name, $value)
+    }
+    $requiredValues = [ordered]@{
+        'qualification' = 'true'
+        'unrecorded-warmup-seconds' = '2'
+        'minimum-measured-seconds' = '30'
+        'minimum-retained-latency-samples' = '10000'
+        'measurement-cap-seconds' = '120'
+    }
+    foreach ($requiredName in $requiredValues.Keys) {
+        if (-not $metadata.ContainsKey($requiredName) -or
+            $metadata[$requiredName] -cne $requiredValues[$requiredName]) {
+            throw (
+                "Durable-v3 raw row '$ExpectedRowName' must declare " +
+                "'$requiredName=$($requiredValues[$requiredName])'.")
+        }
+    }
+
+    foreach ($timestampName in @('measurement-begin-utc', 'measurement-end-utc')) {
+        if (-not $metadata.ContainsKey($timestampName) -or
+            [string]::IsNullOrWhiteSpace($metadata[$timestampName])) {
+            throw (
+                "Durable-v3 raw row '$ExpectedRowName' must declare " +
+                "'$timestampName'.")
+        }
+    }
+    [DateTimeOffset] $measurementBegin = [DateTimeOffset]::MinValue
+    [DateTimeOffset] $measurementEnd = [DateTimeOffset]::MinValue
+    $dateStyles = [Globalization.DateTimeStyles]::RoundtripKind
+    if (-not [DateTimeOffset]::TryParseExact(
+            $metadata['measurement-begin-utc'],
+            'O',
+            [Globalization.CultureInfo]::InvariantCulture,
+            $dateStyles,
+            [ref] $measurementBegin) -or
+        $measurementBegin.Offset -ne [TimeSpan]::Zero) {
+        throw (
+            "Durable-v3 raw row '$ExpectedRowName' has an invalid UTC " +
+            "measurement-begin-utc value '$($metadata['measurement-begin-utc'])'.")
+    }
+    if (-not [DateTimeOffset]::TryParseExact(
+            $metadata['measurement-end-utc'],
+            'O',
+            [Globalization.CultureInfo]::InvariantCulture,
+            $dateStyles,
+            [ref] $measurementEnd) -or
+        $measurementEnd.Offset -ne [TimeSpan]::Zero) {
+        throw (
+            "Durable-v3 raw row '$ExpectedRowName' has an invalid UTC " +
+            "measurement-end-utc value '$($metadata['measurement-end-utc'])'.")
+    }
+    $declaredMeasurementMilliseconds =
+        ($measurementEnd - $measurementBegin).TotalMilliseconds
+    if ($declaredMeasurementMilliseconds -lt 30000 -or
+        $declaredMeasurementMilliseconds -gt 120000) {
+        throw (
+            "Durable-v3 raw row '$ExpectedRowName' declares a measurement " +
+            'interval outside the 30-to-120-second policy bounds.')
+    }
+    if ([Math]::Abs(
+            [double] $declaredMeasurementMilliseconds -
+            [double] $elapsedMilliseconds) -gt 1.0) {
+        throw (
+            "Durable-v3 raw row '$ExpectedRowName' elapsed time does not " +
+            'match its declared UTC measurement interval.')
+    }
+
+    return [pscustomobject]@{
+        Row = $row
+        ElapsedMilliseconds = $elapsedMilliseconds
+        LatencySamples = $latencySamples
+        MeasurementBeginUtc = $measurementBegin.ToString(
+            'O',
+            [Globalization.CultureInfo]::InvariantCulture)
+        MeasurementEndUtc = $measurementEnd.ToString(
+            'O',
+            [Globalization.CultureInfo]::InvariantCulture)
+    }
+}
+
+function Invoke-InterSampleQuiescence {
+    param(
+        [Parameter(Mandatory)][int] $Ordinal,
+        [Parameter(Mandatory)][string] $Suite,
+        [Parameter(Mandatory)][string] $Revision
+    )
+
+    if ($InterSampleQuiescenceSeconds -gt 0) {
+        $timestamp = [DateTimeOffset]::UtcNow.ToString(
+            'O',
+            [Globalization.CultureInfo]::InvariantCulture)
+        Add-Content `
+            -LiteralPath (Join-Path $logRoot 'durable-v3-inter-sample-quiescence.log') `
+            -Value (
+                "$timestamp|$Ordinal|$Suite|$Revision|" +
+                "$InterSampleQuiescenceSeconds")
+        Start-Sleep -Seconds $InterSampleQuiescenceSeconds
+    }
+    Assert-LocalEnvironmentMonitorClean `
+        -Stage "before logical side $Ordinal ($Suite/$Revision)"
+}
+
+function Invoke-DurableV3ArtifactConditioning {
+    param(
+        [Parameter(Mandatory)][string] $Revision,
+        [Parameter(Mandatory)][object] $ArtifactIdentity,
+        [Parameter(Mandatory)][object] $Suite
+    )
+
+    $resolvedArtifactPath = [IO.Path]::GetFullPath([string] $ArtifactIdentity.Path)
+    $resultRoot = [IO.Path]::GetFullPath([string] $ArtifactIdentity.ClosureRoot)
+    $resultPrefix = Get-SuiteResultPrefix -Suite $Suite
+    $resultPattern = "$resultPrefix-*.csv"
+    $existingResults = @(
+        Get-ChildItem `
+            -LiteralPath $resultRoot `
+            -File `
+            -Recurse `
+            -Filter $resultPattern
+    )
+    if ($existingResults.Count -ne 0) {
+        throw (
+            "Durable-v3 conditioning for '$Revision' found " +
+            "$($existingResults.Count) pre-existing output file(s).")
+    }
+
+    $logPath = Join-Path $logRoot "durable-v3-conditioning-$Revision.log"
+    Add-Content -LiteralPath $logPath -Value @(
+        "=== NON-RECORDED ARTIFACT CONDITIONING / $Revision ==="
+        "Artifact: $resolvedArtifactPath"
+        "Slot: $($ArtifactIdentity.StagingSlot)"
+        "Arguments: $($Suite.Arguments -join ' ')"
+        'RecordedQualificationEvidence: false'
+        '')
+    Push-Location ([string] $ArtifactIdentity.SourceRoot)
+    try {
+        Assert-BenchmarkArtifactHash `
+            -ArtifactPath $resolvedArtifactPath `
+            -ExpectedSha256 $ArtifactIdentity.Sha256 `
+            -Context 'before non-recorded conditioning'
+        Assert-BenchmarkArtifactClosure `
+            -Artifact $ArtifactIdentity `
+            -Context 'before non-recorded conditioning'
+        try {
+            & dotnet $resolvedArtifactPath `
+                @($Suite.Arguments) `
+                --repeat 1 `
+                --warmup-single-sample `
+                --repro 2>&1 |
+                    Tee-Object -FilePath $logPath -Append |
+                    Write-Host
+            $conditioningExitCode = $LASTEXITCODE
+        }
+        finally {
+            Assert-BenchmarkArtifactHash `
+                -ArtifactPath $resolvedArtifactPath `
+                -ExpectedSha256 $ArtifactIdentity.Sha256 `
+                -Context 'after non-recorded conditioning'
+            Assert-BenchmarkArtifactClosure `
+                -Artifact $ArtifactIdentity `
+                -Context 'after non-recorded conditioning'
+        }
+    }
+    finally {
+        Pop-Location
+    }
+    if ($conditioningExitCode -ne 0) {
+        throw "Durable-v3 non-recorded conditioning failed for '$Revision'."
+    }
+
+    $results = @(
+        Get-ChildItem `
+            -LiteralPath $resultRoot `
+            -File `
+            -Recurse `
+            -Filter $resultPattern
+    )
+    if ($results.Count -ne 1) {
+        throw (
+            "Durable-v3 conditioning for '$Revision' produced " +
+            "$($results.Count) output files; expected exactly one.")
+    }
+    $measurement = Assert-DurableV3RawRow `
+        -Path $results[0].FullName `
+        -ExpectedRowName $Suite.ExpectedRowName
+    $conditioningDirectory = Join-Path $logRoot 'conditioning'
+    New-Item -ItemType Directory -Path $conditioningDirectory -Force | Out-Null
+    $destinationPath = Join-Path $conditioningDirectory "$Revision.csv"
+    if (Test-Path -LiteralPath $destinationPath) {
+        throw "Durable-v3 conditioning evidence already exists: $destinationPath"
+    }
+    Copy-Item -LiteralPath $results[0].FullName -Destination $destinationPath
+    $sourceHash = (Get-FileHash `
+            -LiteralPath $results[0].FullName `
+            -Algorithm SHA256).Hash.ToLowerInvariant()
+    $destinationHash = (Get-FileHash `
+            -LiteralPath $destinationPath `
+            -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($destinationHash -cne $sourceHash) {
+        throw "Durable-v3 conditioning evidence copy verification failed: $destinationPath"
+    }
+    Remove-Item -LiteralPath $results[0].FullName -Force
+    Add-Content `
+        -LiteralPath $exactMasterDurableConditioningPath `
+        -Value ((@(
+                    $Revision
+                    $ArtifactIdentity.StagingSlot
+                    $resolvedArtifactPath
+                    $Suite.ExpectedRowName
+                    $destinationPath
+                    $destinationHash
+                    $measurement.MeasurementBeginUtc
+                    $measurement.MeasurementEndUtc
+                    'false') |
+                ForEach-Object { Convert-ToCsvCell $_ }) -join ',')
+}
+
 function Invoke-ReleaseCoreSample {
     param(
         [Parameter(Mandatory)]
@@ -2098,13 +3279,9 @@ function Invoke-ReleaseCoreSample {
     }
     $nativeArguments = [string[]] @($Suite.Arguments)
     $logPath = Join-Path $logRoot "$RunName.log"
-    $resultRoot = [IO.Path]::Combine(
-        $SourceRoot,
-        'tests',
-        'CSharpDB.Benchmarks',
-        'bin',
-        'Release')
-    $resultPattern = "$($Suite.Name)-*.csv"
+    $resultRoot = [IO.Path]::GetFullPath([string] $ArtifactIdentity.ClosureRoot)
+    $resultPrefix = Get-SuiteResultPrefix -Suite $Suite
+    $resultPattern = "$resultPrefix-*.csv"
     $existingResults = @(
         if (Test-Path -LiteralPath $resultRoot -PathType Container) {
             Get-ChildItem -LiteralPath $resultRoot -File -Recurse -Filter $resultPattern
@@ -2197,6 +3374,12 @@ function Invoke-ReleaseCoreSample {
                 "Paired release-core scenario expected row '$($Suite.ExpectedRowName)' " +
                 "but received '$($scenarioRows[0].Name)'.")
         }
+    }
+    if ($isExactMasterDurableMode) {
+        Assert-DurableV3RawRow `
+            -Path $results[0].FullName `
+            -ExpectedRowName $Suite.ExpectedRowName |
+            Out-Null
     }
 
     Copy-Item -LiteralPath $results[0].FullName -Destination $destinationPath
@@ -2328,13 +3511,43 @@ try {
             -not $pairedArtifacts.ContainsKey('candidate')) {
             throw 'Paired benchmark builds did not produce both revision artifacts.'
         }
+        if ($isExactMasterDurableMode) {
+            $builtArtifacts = $pairedArtifacts
+            $stagedArtifacts = @{}
+            New-Item `
+                -ItemType Directory `
+                -Path $artifactStageParent `
+                -Force |
+                Out-Null
+            foreach ($revision in @('previous', 'candidate')) {
+                $slotName = [string] $revisionArtifactSlots[$revision]
+                $slotRoot = Join-Path $artifactStageParent $slotName
+                $stagedArtifacts[$revision] =
+                    Copy-BenchmarkArtifactToSymmetricStage `
+                        -Artifact $builtArtifacts[$revision] `
+                        -StageRoot $slotRoot `
+                        -SlotName $slotName
+            }
+            $previousStagedArtifact = $stagedArtifacts['previous']
+            $candidateStagedArtifact = $stagedArtifacts['candidate']
+            if ($previousStagedArtifact.Path.Length -ne
+                    $candidateStagedArtifact.Path.Length -or
+                $previousStagedArtifact.ClosureRoot.Length -ne
+                    $candidateStagedArtifact.ClosureRoot.Length) {
+                throw (
+                    'Durable-v3 symmetric staging produced unequal execution ' +
+                    'path lengths for previous and candidate artifacts.')
+            }
+            $pairedArtifacts = $stagedArtifacts
+        }
         $pairedArtifactManifestLines = [string[]] @(
             Write-PairedBenchmarkArtifactManifest `
                 -Artifacts $pairedArtifacts `
                 -PreviousCommit $previousCommit `
                 -CandidateCommit $candidateCommit `
                 -ManifestPath $pairedArtifactManifestPath `
-                -SharedSameRevisionArtifact:$ShareSameRevisionArtifact
+                -SharedSameRevisionArtifact:$ShareSameRevisionArtifact `
+                -SymmetricStaging:$isExactMasterDurableMode
         )
         $pairedArtifactManifestPersisted = $true
         $previousArtifact = $pairedArtifacts['previous']
@@ -2349,14 +3562,191 @@ try {
                 "- Candidate benchmark artifact SHA-256: ``$($candidateArtifact.Sha256)``",
                 "- Candidate runnable closure: $($candidateArtifact.ClosureFileCount) files; SHA-256 ``$($candidateArtifact.ClosureSha256)``",
                 "- Paired benchmark artifact manifest: ``$pairedArtifactManifestPath``",
-                '- Benchmark artifact paths identify detached execution worktrees and may not exist after cleanup.'
+                $(if ($isExactMasterDurableMode) {
+                        '- Benchmark artifacts execute from equal-length sibling staging slots retained with the evidence.'
+                    }
+                    else {
+                        '- Benchmark artifact paths identify detached execution worktrees and may not exist after cleanup.'
+                    })
             )
         Write-Host "Paired benchmark artifact identities persisted: $pairedArtifactManifestPath"
     }
+    if ($isExactMasterDurableMode) {
+        [string[]] $conditioningHeader = @(
+            'Revision,ArtifactSlot,ArtifactPath,Scenario,ConditioningOutput,Sha256,MeasurementBeginUtc,MeasurementEndUtc,Recorded')
+        Write-LinesAtomically `
+            -Path $exactMasterDurableConditioningPath `
+            -Lines $conditioningHeader
+        Assert-PersistedLines `
+            -Path $exactMasterDurableConditioningPath `
+            -ExpectedLines $conditioningHeader `
+            -Description 'Durable-v3 conditioning manifest header'
+        foreach ($revision in $revisionOrder) {
+            Invoke-DurableV3ArtifactConditioning `
+                -Revision $revision `
+                -ArtifactIdentity $pairedArtifacts[$revision] `
+                -Suite $suiteDefinitions[0]
+        }
+        if ([IO.File]::ReadAllLines($exactMasterDurableConditioningPath).Count -ne 3) {
+            throw 'Durable-v3 must retain exactly one conditioning record per artifact.'
+        }
+        if ($InterSampleQuiescenceSeconds -gt 0) {
+            [IO.File]::WriteAllLines(
+                (Join-Path $logRoot 'durable-v3-inter-sample-quiescence.log'),
+                @('TimestampUtc|Ordinal|Suite|Revision|WaitSeconds'))
+        }
+    }
     Invoke-PostBuildQuiescence
+    Start-LocalEnvironmentMonitor
 
     $executionOrdinal = 0
-    if ($Paired) {
+    if ($Paired -and $isExactMasterDurableMode) {
+        $suiteEvidence = @{}
+        foreach ($suite in $suiteDefinitions) {
+            $baselineAggregatePath = Join-Path $baselineResults "$($suite.Name).csv"
+            $candidateAggregatePath = Join-Path $candidateResults "$($suite.Name).csv"
+            $baselineSuiteRawDirectory = Join-Path $baselineRawResults $suite.Name
+            $candidateSuiteRawDirectory = Join-Path $candidateRawResults $suite.Name
+            foreach ($reservedPath in @(
+                    $baselineAggregatePath,
+                    $candidateAggregatePath,
+                    $baselineSuiteRawDirectory,
+                    $candidateSuiteRawDirectory)) {
+                if (Test-Path -LiteralPath $reservedPath) {
+                    throw "Paired release-core destination already exists: $reservedPath"
+                }
+            }
+            $suiteEvidence[$suite.Name] = [pscustomobject]@{
+                Suite = $suite
+                BaselineAggregatePath = $baselineAggregatePath
+                CandidateAggregatePath = $candidateAggregatePath
+                BaselineRawPaths = [Collections.Generic.List[string]]::new()
+                CandidateRawPaths = [Collections.Generic.List[string]]::new()
+            }
+        }
+
+        foreach ($scheduledPair in $exactMasterDurablePairSchedule) {
+            $suite = $scheduledPair.Suite
+            $pair = $scheduledPair.Pair
+            $pairRawPaths = @{}
+            $pairRevisionOrder = @($pair.FirstRevision, $pair.SecondRevision)
+            for ($position = 0; $position -lt $pairRevisionOrder.Count; $position++) {
+                $revision = $pairRevisionOrder[$position]
+                $nextExecutionOrdinal = $executionOrdinal + 1
+                Invoke-InterSampleQuiescence `
+                    -Ordinal $nextExecutionOrdinal `
+                    -Suite $suite.Name `
+                    -Revision $revision
+                $executionOrdinal = $nextExecutionOrdinal
+                $artifactIdentity = $pairedArtifacts[$revision]
+                $sourceRoot = [string] $artifactIdentity.SourceRoot
+                $eventDetail = (
+                    "PairId=$($pair.Id);Order=$($pair.Order);" +
+                    "PairRound=$($scheduledPair.PairRound);" +
+                    "RowTimePosition=$($scheduledPair.RowTimePosition);" +
+                    "RotationOffset=$($scheduledPair.RotationOffset);" +
+                    "Position=$($position + 1);" +
+                    "InterSampleQuiescenceSeconds=$InterSampleQuiescenceSeconds;" +
+                    "ArtifactSlot=$($artifactIdentity.StagingSlot);" +
+                    "SourceRoot=$sourceRoot;" +
+                    "ArtifactPath=$($artifactIdentity.Path);" +
+                    "ArtifactSha256=$($artifactIdentity.Sha256);" +
+                    "ClosureFileCount=$($artifactIdentity.ClosureFileCount);" +
+                    "ClosureSha256=$($artifactIdentity.ClosureSha256)")
+                Write-ExecutionEvent `
+                    -Ordinal $executionOrdinal `
+                    -Suite $suite.Name `
+                    -Revision $revision `
+                    -State 'START' `
+                    -Detail $eventDetail
+                try {
+                    $destination = if ($revision -eq 'previous') {
+                        $baselineResults
+                    }
+                    else {
+                        $candidateResults
+                    }
+                    $runName = if ($revision -eq 'previous') {
+                        'previous-release'
+                    }
+                    else {
+                        'candidate'
+                    }
+                    $sampleParameters = @{
+                        SourceRoot = $sourceRoot
+                        Destination = $destination
+                        RunName = $runName
+                        Suite = $suite
+                        PairId = $pair.Id
+                        ArtifactIdentity = $artifactIdentity
+                        ArtifactPath = [string] $artifactIdentity.Path
+                        ExpectedArtifactSha256 = [string] $artifactIdentity.Sha256
+                    }
+                    $samplePath = Invoke-ReleaseCoreSample @sampleParameters
+                    $pairRawPaths[$revision] = $samplePath
+                }
+                catch {
+                    Write-ExecutionEvent `
+                        -Ordinal $executionOrdinal `
+                        -Suite $suite.Name `
+                        -Revision $revision `
+                        -State 'FAIL' `
+                        -Detail "$eventDetail;$($_.Exception.Message)"
+                    throw
+                }
+                Write-ExecutionEvent `
+                    -Ordinal $executionOrdinal `
+                    -Suite $suite.Name `
+                    -Revision $revision `
+                    -State 'PASS' `
+                    -Detail $eventDetail
+            }
+
+            if (-not $pairRawPaths.ContainsKey('previous') -or
+                -not $pairRawPaths.ContainsKey('candidate')) {
+                throw (
+                    "Durable-v3 exact row '$($suite.Name)' pair " +
+                    "'$($pair.Id)' is incomplete; recorded evidence is never replaced.")
+            }
+            $baselineRawPath = [IO.Path]::GetFullPath(
+                [string] $pairRawPaths['previous'])
+            $candidateRawPath = [IO.Path]::GetFullPath(
+                [string] $pairRawPaths['candidate'])
+            $suiteEvidence[$suite.Name].BaselineRawPaths.Add($baselineRawPath)
+            $suiteEvidence[$suite.Name].CandidateRawPaths.Add($candidateRawPath)
+            $manifestValues = @(
+                $suite.Name,
+                $pair.Id,
+                $pair.Order,
+                $pair.FirstRevision,
+                $pair.SecondRevision,
+                $baselineRawPath,
+                $candidateRawPath)
+            Add-Content `
+                -LiteralPath $pairManifestPath `
+                -Value (@(
+                        $manifestValues |
+                            ForEach-Object { Convert-ToCsvCell $_ }
+                    ) -join ',')
+        }
+
+        foreach ($suite in $suiteDefinitions) {
+            $evidence = $suiteEvidence[$suite.Name]
+            if ($evidence.BaselineRawPaths.Count -ne $pairDefinitions.Count -or
+                $evidence.CandidateRawPaths.Count -ne $pairDefinitions.Count) {
+                throw (
+                    "Durable-v3 exact row '$($suite.Name)' retained an " +
+                    'unexpected number of raw samples; no discard or replacement is allowed.')
+            }
+            Write-AggregatedBenchmarkCsv `
+                -RawPaths $evidence.BaselineRawPaths.ToArray() `
+                -DestinationPath $evidence.BaselineAggregatePath
+            Write-AggregatedBenchmarkCsv `
+                -RawPaths $evidence.CandidateRawPaths.ToArray() `
+                -DestinationPath $evidence.CandidateAggregatePath
+        }
+    }
+    elseif ($Paired) {
         foreach ($suite in $suiteDefinitions) {
             $baselineAggregatePath = Join-Path $baselineResults "$($suite.Name).csv"
             $candidateAggregatePath = Join-Path $candidateResults "$($suite.Name).csv"
@@ -2562,6 +3952,38 @@ try {
                 $(if ($hasHybridStorageScenario) {
                         "- Hybrid storage scenario: ``$HybridStorageScenarioName``"
                     }),
+                $(if ($isExactMasterDurableMode) {
+                        "- Canonical exact-master durable mode: ``$exactMasterDurableSelector`` (10 exact one-row suites)"
+                    }),
+                $(if ($isExactMasterDurableMode) {
+                        '- Recorded evidence policy: no discard, no replacement, and one predeclared attempt per logical side'
+                    }),
+                $(if ($isExactMasterDurableMode) {
+                        "- Inter-sample quiescence before every recorded logical side: $InterSampleQuiescenceSeconds second(s)"
+                    }),
+                $(if ($isExactMasterDurableMode) {
+                        if ($MonitorLocalEnvironment) {
+                            "- External environment monitor evidence: ``$environmentMonitorCsvPath``; closeout ``$environmentMonitorSummaryPath``"
+                        }
+                        else {
+                            '- External environment monitor: disabled'
+                        }
+                    }),
+                $(if ($isExactMasterDurableMode) {
+                        "- Durable-v3 design fingerprint: ``$exactMasterDurableDesignFingerprint``"
+                    }),
+                $(if ($isExactMasterDurableMode) {
+                        "- Durable-v3 design manifest: ``$exactMasterDurableDesignPath``"
+                    }),
+                $(if ($isExactMasterDurableMode) {
+                        "- Predeclared durable-v3 schedule: ``$exactMasterDurableSchedulePath``; SHA-256 ``$exactMasterDurableScheduleSha256``"
+                    }),
+                $(if ($isExactMasterDurableMode) {
+                        "- Symmetric artifact slot assignment: previous=``$($revisionArtifactSlots['previous'])``; candidate=``$($revisionArtifactSlots['candidate'])``"
+                    }),
+                $(if ($isExactMasterDurableMode) {
+                        "- Durable-v3 conditioning manifest: ``$exactMasterDurableConditioningPath``"
+                    }),
                 "- Execution order: $executionOrder",
                 "- Execution log: ``$executionLogPath``",
                 $repeatDescription,
@@ -2601,7 +4023,10 @@ try {
                 $(if ($Paired) {
                         "- Paired benchmark artifact manifest: ``$pairedArtifactManifestPath``"
                     }),
-                $(if ($Paired) {
+                $(if ($Paired -and $isExactMasterDurableMode) {
+                        '- Benchmark artifacts execute from equal-length sibling staging slots retained with the evidence.'
+                    }
+                    elseif ($Paired) {
                         '- Benchmark artifact paths identify detached execution worktrees and may not exist after cleanup.'
                     }),
                 $quiescenceDescription,
@@ -2633,17 +4058,57 @@ catch {
     $primaryFailure = $_
 }
 finally {
+    if ($MonitorLocalEnvironment -and
+        $null -ne $environmentMonitorProcess -and
+        -not $environmentMonitorStopped) {
+        try {
+            Stop-AndAuditLocalEnvironmentMonitor
+        }
+        catch {
+            if ($null -eq $primaryFailure) {
+                $primaryFailure = $_
+            }
+            else {
+                $cleanupFailures.Add(
+                    'Local performance environment monitor also failed: ' +
+                    $_.Exception.Message)
+            }
+        }
+    }
     if ($Paired -and $pairedArtifactManifestPersisted) {
         $artifactCloseoutFailure = $null
         $artifactCloseoutDetail = ''
         try {
+            if ($isExactMasterDurableMode) {
+                Assert-PersistedLines `
+                    -Path $exactMasterDurableDesignPath `
+                    -ExpectedLines $designLines `
+                    -Description 'Durable-v3 design manifest at closeout'
+                Assert-PersistedLines `
+                    -Path $exactMasterDurableSchedulePath `
+                    -ExpectedLines $scheduleLines `
+                    -Description 'Durable-v3 execution schedule at closeout'
+                $closeoutScheduleSha256 = (
+                    Get-FileHash `
+                        -LiteralPath $exactMasterDurableSchedulePath `
+                        -Algorithm SHA256
+                ).Hash.ToLowerInvariant()
+                if ($closeoutScheduleSha256 -cne $exactMasterDurableScheduleSha256) {
+                    throw 'Durable-v3 schedule SHA-256 changed before closeout.'
+                }
+            }
             Assert-PairedBenchmarkArtifactCloseout `
                 -Artifacts $pairedArtifacts `
                 -ManifestPath $pairedArtifactManifestPath `
                 -ExpectedManifestLines $pairedArtifactManifestLines
-            $artifactCloseoutDetail = (
+            $artifactCloseoutDetail = if ($isExactMasterDurableMode) {
+                'Persisted design, schedule, artifact manifest, and both runnable ' +
+                'closures match their predeclared identities.'
+            }
+            else {
                 'Persisted manifest and both runnable closures match their ' +
-                'post-build identities.')
+                'post-build identities.'
+            }
         }
         catch {
             $artifactCloseoutFailure = $_

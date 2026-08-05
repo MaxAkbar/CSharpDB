@@ -40,6 +40,71 @@ public sealed class ReleaseCoreMeasurementFloorTests
     }
 
     [Fact]
+    public void DurableWriteQualification_UsesThirtySecondsAndTenThousandSamplesForDirectRows()
+    {
+        ReleaseQualificationSettings settings = ReleaseQualificationSettings.DurableWrite;
+
+        Assert.Equal(TimeSpan.FromSeconds(2), settings.WarmupDuration);
+        Assert.Equal(TimeSpan.FromSeconds(30), settings.MinimumMeasuredDuration);
+        Assert.Equal(10_000, settings.MinimumLatencySamples);
+        Assert.Equal(TimeSpan.FromSeconds(120), settings.MaximumMeasuredDuration);
+        Assert.False(DirectFileCacheTransportBenchmark.HasMetDurableWriteQualificationTarget(
+            TimeSpan.FromSeconds(29.999),
+            retainedLatencySamples: 10_000));
+        Assert.False(DirectFileCacheTransportBenchmark.HasMetDurableWriteQualificationTarget(
+            TimeSpan.FromSeconds(30),
+            retainedLatencySamples: 9_999));
+        Assert.True(DirectFileCacheTransportBenchmark.HasMetDurableWriteQualificationTarget(
+            TimeSpan.FromSeconds(30),
+            retainedLatencySamples: 10_000));
+    }
+
+    [Fact]
+    public void DurableWriteQualification_DirectResultCannotEscapeCancellationOrCapBoundary()
+    {
+        Assert.True(DirectFileCacheTransportBenchmark.CanAcceptDurableWriteQualificationResult(
+            TimeSpan.FromSeconds(120),
+            retainedLatencySamples: 10_000,
+            cancellationRequested: false));
+        Assert.False(DirectFileCacheTransportBenchmark.CanAcceptDurableWriteQualificationResult(
+            TimeSpan.FromSeconds(120).Add(TimeSpan.FromTicks(1)),
+            retainedLatencySamples: 10_000,
+            cancellationRequested: false));
+        Assert.False(DirectFileCacheTransportBenchmark.CanAcceptDurableWriteQualificationResult(
+            TimeSpan.FromSeconds(30),
+            retainedLatencySamples: 10_000,
+            cancellationRequested: true));
+    }
+
+    [Fact]
+    public void DurableWriteQualification_CapAndMetadataDescribeTheExactPolicy()
+    {
+        InvalidOperationException exception =
+            DirectFileCacheTransportBenchmark.CreateDurableWriteQualificationCapException(
+                "direct-durable-row",
+                TimeSpan.FromSeconds(120.25),
+                retainedLatencySamples: 8_500);
+        DateTimeOffset measurementStartedUtc =
+            new(2026, 8, 4, 20, 0, 0, TimeSpan.Zero);
+        DateTimeOffset measurementEndedUtc = measurementStartedUtc.AddSeconds(40);
+
+        string extraInfo = ReleaseQualificationSettings.DurableWrite.CreateExtraInfo(
+            measurementStartedUtc,
+            measurementEndedUtc);
+
+        Assert.Contains("120-second measurement cap", exception.Message);
+        Assert.Contains("8,500 retained latency samples", exception.Message);
+        Assert.Contains("10,000 retained latency samples", exception.Message);
+        Assert.Contains("qualification=true", extraInfo);
+        Assert.Contains("unrecorded-warmup-seconds=2", extraInfo);
+        Assert.Contains("minimum-measured-seconds=30", extraInfo);
+        Assert.Contains("minimum-retained-latency-samples=10000", extraInfo);
+        Assert.Contains("measurement-cap-seconds=120", extraInfo);
+        Assert.Contains($"measurement-begin-utc={measurementStartedUtc:O}", extraInfo);
+        Assert.Contains($"measurement-end-utc={measurementEndedUtc:O}", extraInfo);
+    }
+
+    [Fact]
     public async Task DirectController_SynchronousBlockingWorkerHasBoundedDrainAndObservedLifetime()
     {
         using var phaseCts = new CancellationTokenSource();

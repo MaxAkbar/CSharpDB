@@ -720,10 +720,16 @@ public sealed class PreviousReleasePerformanceScriptTests
     [InlineData("-PreviousRef", "v4.3.0")]
     [InlineData("-RepeatCount", "5")]
     [InlineData("-PostBuildQuiescenceSeconds", "0")]
+    [InlineData("-InterSampleQuiescenceSeconds", "0")]
     [InlineData("-MaxThroughputRegressionPercent", "100")]
     [InlineData("-MaxP99RegressionPercent", "500")]
     [InlineData("-MaxP99RegressionMilliseconds", "1000")]
     [InlineData("-BlockingLatencyPercentile", "P99")]
+    [InlineData("-MonitorSampleIntervalMilliseconds", "2000")]
+    [InlineData("-MaxExternalCpuPercent", "9")]
+    [InlineData("-MaxExternalCpuCoreEquivalent", "0.75")]
+    [InlineData("-MaxExternalIoBytesPerSecond", "8388608")]
+    [InlineData("-RequiredConsecutiveBusySamples", "6")]
     public async Task LocalDurableWrapper_NonCanonicalSettingsCannotPublishOfficialStatus(
         string settingName,
         string settingValue)
@@ -750,7 +756,7 @@ public sealed class PreviousReleasePerformanceScriptTests
             settingValue);
 
         Assert.NotEqual(0, result.ExitCode);
-        AssertDiagnosticContains("requires canonical policy 'durable-v2'", result.CombinedOutput);
+        AssertDiagnosticContains("requires canonical policy 'durable-v3'", result.CombinedOutput);
         AssertDiagnosticContains("Use -NoGitHubStatus for diagnostic overrides", result.CombinedOutput);
     }
 
@@ -963,21 +969,33 @@ public sealed class PreviousReleasePerformanceScriptTests
                     [string[]] $SuiteName = @(),
                     [int] $RepeatCount = 3,
                     [int] $PostBuildQuiescenceSeconds = 0,
+                    [int] $InterSampleQuiescenceSeconds = 0,
                     [double] $MaxThroughputRegressionPercent = 15,
                     [double] $MaxP99RegressionPercent = 25,
                     [double] $MaxP99RegressionMilliseconds = 0.05,
-                    [string] $BlockingLatencyPercentile = 'P99')
+                    [string] $BlockingLatencyPercentile = 'P99',
+                    [switch] $MonitorLocalEnvironment,
+                    [string] $EnvironmentMonitorScript = '',
+                    [int] $MonitorSampleIntervalMilliseconds = 1000,
+                    [double] $MaxExternalCpuPercent = 8,
+                    [double] $MaxExternalCpuCoreEquivalent = 0.5,
+                    [long] $MaxExternalIoBytesPerSecond = 4194304,
+                    [int] $RequiredConsecutiveBusySamples = 5,
+                    [string] $ProhibitedExternalProcessNames = '')
 
                 $ErrorActionPreference = 'Stop'
                 New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
                 $logRoot = Join-Path $OutputPath 'logs'
                 New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
                 $measurementStartedUtc = [DateTimeOffset]::UtcNow
-                [IO.File]::WriteAllLines(
-                    (Join-Path $logRoot 'execution-order.log'),
-                    @(
-                        'TimestampUtc|Ordinal|Suite|Revision|State|Detail',
-                        "$($measurementStartedUtc.ToString('o'))|1|master-table-durable-writes|candidate|START|fake"))
+                if (-not ($QualificationPass -eq 1 -and
+                    $env:FAKE_NO_START_PASS_ONE -eq '1')) {
+                    [IO.File]::WriteAllLines(
+                        (Join-Path $logRoot 'execution-order.log'),
+                        @(
+                            'TimestampUtc|Ordinal|Suite|Revision|State|Detail',
+                            "$($measurementStartedUtc.ToString('o'))|1|master-table-durable-writes|candidate|START|fake"))
+                }
                 $resolvedPrevious = if ([string]::IsNullOrWhiteSpace($PreviousRef)) {
                     $env:FAKE_PREVIOUS_COMMIT
                 }
@@ -1029,6 +1047,12 @@ public sealed class PreviousReleasePerformanceScriptTests
                         $env:FAKE_APPLICATION_LOG_CHANNEL_STATE_AFTER_PASS_ONE
                 }
                 """);
+            File.WriteAllText(
+                Path.Combine(scriptRoot, "Compare-ReleaseCore.ps1"),
+                "# Fake comparer used only for design-identity hashing.");
+            File.WriteAllText(
+                Path.Combine(scriptRoot, "Watch-LocalPerformanceEnvironment.ps1"),
+                "# Fake monitor accepted by the fake paired runner.");
             File.WriteAllText(Path.Combine(sourceRoot, "release.txt"), "previous");
 
             await AssertProcessSucceeded("git", "-C", sourceRoot, "init");
@@ -1120,10 +1144,10 @@ public sealed class PreviousReleasePerformanceScriptTests
             string[] successLines = File.ReadAllLines(successLog);
             Assert.Equal(2, successLines.Length);
             Assert.Equal(
-                $"1||{candidateCommit}|Durable|master-table-durable-writes|P95",
+                $"1||{candidateCommit}|Durable|master-table-durable-write-scenarios|P95",
                 successLines[0]);
             Assert.Equal(
-                $"2|{previousCommit}|{candidateCommit}|Durable|master-table-durable-writes|P95",
+                $"2|{previousCommit}|{candidateCommit}|Durable|master-table-durable-write-scenarios|P95",
                 successLines[1]);
             string successSummary = File.ReadAllText(Path.Combine(
                 successEvidence,
@@ -1148,8 +1172,9 @@ public sealed class PreviousReleasePerformanceScriptTests
             Assert.Contains($"repos/example/csharpdb/statuses/{candidateCommit}", githubCalls[2]);
             Assert.Contains("state=success", githubCalls[2]);
             Assert.Contains("context=csharpdb/local-durable-performance", githubCalls[2]);
-            Assert.Contains("description=policy=durable-v2", githubCalls[2]);
+            Assert.Contains("description=policy=durable-v3", githubCalls[2]);
             Assert.Contains($"baseline={previousCommit}", githubCalls[2]);
+            Assert.Matches("design=[0-9A-F]{8}", githubCalls[2]);
 
             string pendingRestartLog = Path.Combine(
                 temporaryRoot,
@@ -1706,7 +1731,71 @@ public sealed class PreviousReleasePerformanceScriptTests
             Assert.Contains("state=pending", failureGitHubCalls[1]);
             Assert.Contains("state=failure", failureGitHubCalls[2]);
             Assert.Contains("context=csharpdb/local-durable-performance", failureGitHubCalls[2]);
-            Assert.Contains("description=policy=durable-v2", failureGitHubCalls[2]);
+            Assert.Contains("description=policy=durable-v3", failureGitHubCalls[2]);
+
+            string noStartFailureLog = Path.Combine(
+                temporaryRoot,
+                "no-start-failure.log");
+            string noStartFailureGitHubLog = Path.Combine(
+                temporaryRoot,
+                "no-start-failure-github.log");
+            string noStartFailureEvidence = Path.Combine(
+                temporaryRoot,
+                "no-start-failure-evidence");
+            ProcessResult noStartFailure = await RunProcessWithEnvironmentAsync(
+                "pwsh",
+                new Dictionary<string, string>
+                {
+                    ["FAKE_PREVIOUS_COMMIT"] = previousCommit,
+                    ["FAKE_LOCAL_DURABLE_LOG"] = noStartFailureLog,
+                    ["FAKE_GH_LOG"] = noStartFailureGitHubLog,
+                    ["PATH"] = fakeGitHubRoot + Path.PathSeparator +
+                        (Environment.GetEnvironmentVariable("PATH") ?? string.Empty),
+                    ["FAKE_FAIL_PASS_ONE"] = "1",
+                    ["FAKE_NO_START_PASS_ONE"] = "1",
+                },
+                "-NoLogo",
+                "-NoProfile",
+                "-File",
+                Path.Combine(scriptRoot, "Test-LocalDurablePerformance.ps1"),
+                "-CandidateRef",
+                "HEAD",
+                "-OutputPath",
+                noStartFailureEvidence,
+                "-ConfirmDedicatedFixedSsd",
+                "-GitHubRepository",
+                "example/csharpdb");
+
+            Assert.NotEqual(0, noStartFailure.ExitCode);
+            Assert.Equal(2, File.ReadAllLines(noStartFailureLog).Length);
+            Assert.False(File.Exists(Path.Combine(
+                noStartFailureEvidence,
+                "pass-1",
+                "logs",
+                "execution-order.log")));
+            Assert.True(File.Exists(Path.Combine(
+                noStartFailureEvidence,
+                "pass-2",
+                "logs",
+                "execution-order.log")));
+            AssertDiagnosticContains(
+                "Simulated pass-one failure",
+                noStartFailure.CombinedOutput);
+            Assert.DoesNotContain(
+                "Pass execution log was not created",
+                NormalizeDiagnostic(noStartFailure.CombinedOutput),
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "Simulated pass-one failure",
+                File.ReadAllText(Path.Combine(
+                    noStartFailureEvidence,
+                    "local-durable-performance.md")),
+                StringComparison.Ordinal);
+            string[] noStartFailureGitHubCalls = File.ReadAllLines(
+                noStartFailureGitHubLog);
+            Assert.Equal(3, noStartFailureGitHubCalls.Length);
+            Assert.Contains("state=pending", noStartFailureGitHubCalls[1]);
+            Assert.Contains("state=failure", noStartFailureGitHubCalls[2]);
         }
         finally
         {

@@ -34,6 +34,12 @@ public static class DirectFileCacheTransportBenchmark
             MasterComparisonScenario.SqlPointLookup,
             MasterComparisonScenario.SqlConcurrentReads,
         ]);
+    private static readonly IReadOnlyList<string> s_masterComparisonDurableWriteScenarioNames =
+        Array.AsReadOnly(
+        [
+            "Direct_DirectLookupPreset_Sql_SingleInsert_10s",
+            "Direct_DirectLookupPreset_Sql_Batch100_10s",
+        ]);
 
     internal enum MasterComparisonScenario
     {
@@ -48,6 +54,9 @@ public static class DirectFileCacheTransportBenchmark
 
     internal static IReadOnlyList<MasterComparisonScenario> MasterComparisonHostedStableScenarios =>
         s_masterComparisonHostedStableScenarios;
+
+    internal static IReadOnlyList<string> MasterComparisonDurableWriteScenarioNames =>
+        s_masterComparisonDurableWriteScenarioNames;
 
     public static async Task<List<BenchmarkResult>> RunAsync()
     {
@@ -84,6 +93,28 @@ public static class DirectFileCacheTransportBenchmark
         return await RunMasterComparisonScenariosAsync(s_masterComparisonHostedStableScenarios);
     }
 
+    internal static Task<BenchmarkResult> RunNamedDurableWriteQualificationScenarioAsync(
+        string scenarioName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(scenarioName);
+        ReleaseQualificationSettings settings = ReleaseQualificationSettings.DurableWrite;
+        return scenarioName switch
+        {
+            "Direct_DirectLookupPreset_Sql_SingleInsert_10s" =>
+                RunSqlSingleInsertAsync(
+                    tunedFileCache: true,
+                    qualificationSettings: settings),
+            "Direct_DirectLookupPreset_Sql_Batch100_10s" =>
+                RunSqlBatchInsertAsync(
+                    tunedFileCache: true,
+                    qualificationSettings: settings),
+            _ => throw new ArgumentException(
+                $"Unknown direct durable-write qualification scenario '{scenarioName}'. " +
+                $"Use one of: {string.Join(", ", s_masterComparisonDurableWriteScenarioNames)}.",
+                nameof(scenarioName)),
+        };
+    }
+
     private static async Task<List<BenchmarkResult>> RunMasterComparisonScenariosAsync(
         IReadOnlyList<MasterComparisonScenario> scenarios)
     {
@@ -107,7 +138,9 @@ public static class DirectFileCacheTransportBenchmark
         return results;
     }
 
-    private static async Task<BenchmarkResult> RunSqlSingleInsertAsync(bool tunedFileCache)
+    private static async Task<BenchmarkResult> RunSqlSingleInsertAsync(
+        bool tunedFileCache,
+        ReleaseQualificationSettings? qualificationSettings = null)
     {
         await using var context = await DirectBenchmarkContext.CreateAsync();
         CSharpDbClient client = context.CreateClient(tunedFileCache);
@@ -122,10 +155,13 @@ public static class DirectFileCacheTransportBenchmark
                 SqlExecutionResult result = await client.ExecuteSqlAsync(sql, ct);
                 EnsureWriteSucceeded(result, 1, sql);
             },
-            context.QuarantineDetachedWork);
+            context.QuarantineDetachedWork,
+            qualificationSettings);
     }
 
-    private static async Task<BenchmarkResult> RunSqlBatchInsertAsync(bool tunedFileCache)
+    private static async Task<BenchmarkResult> RunSqlBatchInsertAsync(
+        bool tunedFileCache,
+        ReleaseQualificationSettings? qualificationSettings = null)
     {
         await using var context = await DirectBenchmarkContext.CreateAsync();
         CSharpDbClient client = context.CreateClient(tunedFileCache);
@@ -165,7 +201,8 @@ public static class DirectFileCacheTransportBenchmark
                     throw;
                 }
             },
-            context.QuarantineDetachedWork);
+            context.QuarantineDetachedWork,
+            qualificationSettings);
     }
 
     private static async Task<BenchmarkResult> RunSqlPointLookupAsync(bool tunedFileCache)
@@ -408,10 +445,15 @@ public static class DirectFileCacheTransportBenchmark
     private static async Task<BenchmarkResult> RunReleaseCoreSequentialAsync(
         string benchmarkName,
         Func<CancellationToken, Task> operation,
-        Action<Task> detachedWorkRegistrar)
+        Action<Task> detachedWorkRegistrar,
+        ReleaseQualificationSettings? qualificationSettings = null)
     {
         ArgumentNullException.ThrowIfNull(detachedWorkRegistrar);
-        await RunWarmupAsync(operation, detachedWorkRegistrar);
+        qualificationSettings?.Validate();
+        TimeSpan warmupDuration = qualificationSettings?.WarmupDuration ?? WarmupDuration;
+        TimeSpan measurementCap = qualificationSettings?.MaximumMeasuredDuration ??
+            MaximumReleaseCoreMeasuredDuration;
+        await RunWarmupAsync(operation, warmupDuration, detachedWorkRegistrar);
         MacroBenchmarkRunner.StabilizeAfterWarmup();
 
         var histogram = new LatencyHistogram();
@@ -421,6 +463,7 @@ public static class DirectFileCacheTransportBenchmark
         var measurementStart = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var measured = new Stopwatch();
+        DateTimeOffset measurementStartedUtc = default;
         int retainedLatencySamples = 0;
         BenchmarkResult? result = null;
         Task workerTask = StartControllerVisibleWorkerAsync(
@@ -429,9 +472,10 @@ public static class DirectFileCacheTransportBenchmark
                 workerReady.TrySetResult();
                 await measurementStart.Task.ConfigureAwait(false);
 
-                while (!HasMetReleaseCoreMeasurementTarget(
+                while (!HasMetMeasurementTarget(
                            measured.Elapsed,
-                           histogram.SampleCount))
+                           histogram.SampleCount,
+                           qualificationSettings))
                 {
                     ct.ThrowIfCancellationRequested();
                     var operationStopwatch = Stopwatch.StartNew();
@@ -443,16 +487,37 @@ public static class DirectFileCacheTransportBenchmark
                     Volatile.Write(ref retainedLatencySamples, histogram.SampleCount);
                 }
 
-                result = BenchmarkResult.FromHistogram(
+                TimeSpan completedElapsed = measured.Elapsed;
+                if (!CanAcceptMeasurementResult(
+                        completedElapsed,
+                        histogram.SampleCount,
+                        ct.IsCancellationRequested,
+                        qualificationSettings))
+                {
+                    throw CreateReleaseCoreMeasurementCapException(
+                        benchmarkName,
+                        completedElapsed,
+                        histogram.SampleCount,
+                        qualificationSettings);
+                }
+                BenchmarkResult rawResult = BenchmarkResult.FromHistogram(
                     benchmarkName,
                     histogram,
-                    measured.Elapsed.TotalMilliseconds);
+                    completedElapsed.TotalMilliseconds);
+                result = qualificationSettings is null
+                    ? rawResult
+                    : CloneWithExtraInfo(
+                        rawResult,
+                        qualificationSettings.CreateExtraInfo(
+                            measurementStartedUtc,
+                            measurementStartedUtc + completedElapsed));
             },
             phaseCts.Token);
 
         await workerReady.Task.ConfigureAwait(false);
+        measurementStartedUtc = DateTimeOffset.UtcNow;
         measured.Start();
-        phaseCts.CancelAfter(MaximumReleaseCoreMeasuredDuration);
+        phaseCts.CancelAfter(measurementCap);
         Task deadlineTask = Task.Delay(Timeout.InfiniteTimeSpan, phaseCts.Token);
         measurementStart.TrySetResult();
 
@@ -465,14 +530,16 @@ public static class DirectFileCacheTransportBenchmark
             () => CreateReleaseCoreMeasurementCapException(
                 benchmarkName,
                 measured.Elapsed,
-                Volatile.Read(ref retainedLatencySamples)),
+                Volatile.Read(ref retainedLatencySamples),
+                qualificationSettings),
             detachedWorkRegistrar);
         if (!workerCompleted)
         {
             throw CreateReleaseCoreMeasurementCapException(
                 benchmarkName,
                 measured.Elapsed,
-                Volatile.Read(ref retainedLatencySamples));
+                Volatile.Read(ref retainedLatencySamples),
+                qualificationSettings);
         }
 
         BenchmarkResult completedResult = result ?? throw new InvalidOperationException(
@@ -487,13 +554,14 @@ public static class DirectFileCacheTransportBenchmark
 
     private static async Task RunWarmupAsync(
         Func<CancellationToken, Task> operation,
+        TimeSpan warmupDuration,
         Action<Task> detachedWorkRegistrar)
     {
         using var warmupStopCts = new CancellationTokenSource();
         await RunWarmupCoreAsync(
             operation,
             warmupStopCts,
-            WarmupDuration,
+            warmupDuration,
             WarmupCompletionTimeout,
             detachedWorkRegistrar);
     }
@@ -661,16 +729,103 @@ public static class DirectFileCacheTransportBenchmark
         => elapsed >= MeasuredDuration &&
            retainedLatencySamples >= MinimumReleaseCoreLatencySamples;
 
+    internal static bool HasMetDurableWriteQualificationTarget(
+        TimeSpan elapsed,
+        int retainedLatencySamples)
+        => ReleaseQualificationSettings.DurableWrite.HasMetMeasurementTarget(
+            elapsed,
+            retainedLatencySamples);
+
+    internal static bool CanAcceptDurableWriteQualificationResult(
+        TimeSpan elapsed,
+        int retainedLatencySamples,
+        bool cancellationRequested)
+        => CanAcceptMeasurementResult(
+            elapsed,
+            retainedLatencySamples,
+            cancellationRequested,
+            ReleaseQualificationSettings.DurableWrite);
+
+    private static bool CanAcceptMeasurementResult(
+        TimeSpan elapsed,
+        int retainedLatencySamples,
+        bool cancellationRequested,
+        ReleaseQualificationSettings? qualificationSettings)
+    {
+        TimeSpan measurementCap = qualificationSettings?.MaximumMeasuredDuration ??
+            MaximumReleaseCoreMeasuredDuration;
+        return !cancellationRequested &&
+               elapsed <= measurementCap &&
+               HasMetMeasurementTarget(elapsed, retainedLatencySamples, qualificationSettings);
+    }
+
+    private static bool HasMetMeasurementTarget(
+        TimeSpan elapsed,
+        int retainedLatencySamples,
+        ReleaseQualificationSettings? qualificationSettings)
+        => qualificationSettings?.HasMetMeasurementTarget(elapsed, retainedLatencySamples) ??
+           HasMetReleaseCoreMeasurementTarget(elapsed, retainedLatencySamples);
+
     internal static InvalidOperationException CreateReleaseCoreMeasurementCapException(
         string benchmarkName,
         TimeSpan elapsed,
         int retainedLatencySamples)
-        => new(
+        => CreateReleaseCoreMeasurementCapException(
+            benchmarkName,
+            elapsed,
+            retainedLatencySamples,
+            qualificationSettings: null);
+
+    private static InvalidOperationException CreateReleaseCoreMeasurementCapException(
+        string benchmarkName,
+        TimeSpan elapsed,
+        int retainedLatencySamples,
+        ReleaseQualificationSettings? qualificationSettings)
+    {
+        TimeSpan measurementCap = qualificationSettings?.MaximumMeasuredDuration ??
+            MaximumReleaseCoreMeasuredDuration;
+        TimeSpan minimumMeasuredDuration = qualificationSettings?.MinimumMeasuredDuration ??
+            MeasuredDuration;
+        int minimumLatencySamples = qualificationSettings?.MinimumLatencySamples ??
+            MinimumReleaseCoreLatencySamples;
+        return new InvalidOperationException(
             $"Direct benchmark row '{benchmarkName}' reached its " +
-            $"{MaximumReleaseCoreMeasuredDuration.TotalSeconds:F0}-second measurement cap after " +
+            $"{measurementCap.TotalSeconds:F0}-second measurement cap after " +
             $"{elapsed.TotalSeconds:F1} seconds with {retainedLatencySamples:N0} retained latency samples. " +
-            $"Release qualification requires at least {MeasuredDuration.TotalSeconds:F0} measured seconds " +
-            $"and {MinimumReleaseCoreLatencySamples:N0} retained latency samples.");
+            $"Release qualification requires at least {minimumMeasuredDuration.TotalSeconds:F0} measured seconds " +
+            $"and {minimumLatencySamples:N0} retained latency samples.");
+    }
+
+    internal static InvalidOperationException CreateDurableWriteQualificationCapException(
+        string benchmarkName,
+        TimeSpan elapsed,
+        int retainedLatencySamples)
+        => CreateReleaseCoreMeasurementCapException(
+            benchmarkName,
+            elapsed,
+            retainedLatencySamples,
+            ReleaseQualificationSettings.DurableWrite);
+
+    private static BenchmarkResult CloneWithExtraInfo(
+        BenchmarkResult source,
+        string extraInfo)
+        => new()
+        {
+            Name = source.Name,
+            TotalOps = source.TotalOps,
+            LatencySamples = source.LatencySamples,
+            ElapsedMs = source.ElapsedMs,
+            P50Ms = source.P50Ms,
+            P90Ms = source.P90Ms,
+            P95Ms = source.P95Ms,
+            P99Ms = source.P99Ms,
+            P999Ms = source.P999Ms,
+            MinMs = source.MinMs,
+            MaxMs = source.MaxMs,
+            MeanMs = source.MeanMs,
+            StdDevMs = source.StdDevMs,
+            ExtraInfo = extraInfo,
+        };
 
     private static async Task<BenchmarkResult> RunCollectionGetAsync(bool tunedFileCache)
     {

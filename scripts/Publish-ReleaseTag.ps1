@@ -231,16 +231,16 @@ $hasReusableStatus = $false
 try {
     Invoke-StatusVerifier
     $hasReusableStatus = $true
-    Write-Host "Reusing the existing canonical durable-v2 status for exact commit $headCommit."
+    Write-Host "Reusing the existing canonical durable-v3 status for exact commit $headCommit."
 }
 catch {
-    Write-Host "Exact commit $headCommit has no reusable durable-v2 status: $($_.Exception.Message)"
+    Write-Host "Exact commit $headCommit has no reusable durable-v3 status: $($_.Exception.Message)"
 }
 
 if (-not $hasReusableStatus) {
     if (-not $ConfirmDedicatedFixedSsd) {
         throw (
-            "Commit $headCommit does not have a reusable canonical durable-v2 status. " +
+            "Commit $headCommit does not have a reusable canonical durable-v3 status. " +
             'Rerun with -ConfirmDedicatedFixedSsd on the idle dedicated fixed-SSD Windows machine.')
     }
 

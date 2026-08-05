@@ -16,6 +16,8 @@ public static class Program
 {
     internal const int MinimumReleaseCoreLatencySamples = 100;
     internal const string DurableMasterWriteSuiteKey = "master-table-durable-writes";
+    internal const string DurableMasterWriteScenarioSuiteKey =
+        "master-table-durable-write-scenario";
     internal const string HostedStableMasterSuiteKey = "master-table-hosted-stable";
 
     private static readonly string[] s_releaseCoreSuiteKeys =
@@ -32,6 +34,7 @@ public static class Program
     [
         .. s_releaseCoreSuiteKeys,
         DurableMasterWriteSuiteKey,
+        DurableMasterWriteScenarioSuiteKey,
         HostedStableMasterSuiteKey,
     ];
 
@@ -289,6 +292,14 @@ public static class Program
                 await RunSuiteWithRepeatsAsync(
                     DurableMasterWriteSuiteKey,
                     RunMasterComparisonDurableWritesOnceAsync,
+                    repeatCount,
+                    warmupSingleSample);
+                return;
+
+            case "--master-table-durable-write-scenario":
+                EnsureReproConfigured();
+                await RunMasterComparisonDurableWriteScenarioWithRepeatsAsync(
+                    GetRequiredOptionValue(args, "--master-table-durable-write-scenario"),
                     repeatCount,
                     warmupSingleSample);
                 return;
@@ -1047,6 +1058,36 @@ public static class Program
         return await MasterComparisonBenchmark.RunDurableWritesAsync();
     }
 
+    internal static Task RunMasterComparisonDurableWriteScenarioWithRepeatsAsync(
+        string masterRowName,
+        int repeatCount,
+        bool warmupSingleSample,
+        string? outputDirectory = null,
+        Func<string, Task<BenchmarkResult>>? runScenarioAsync = null)
+    {
+        _ = MasterComparisonBenchmark.GetDurableWriteQualificationSourceName(masterRowName);
+        runScenarioAsync ??= MasterComparisonBenchmark.RunDurableWriteQualificationAsync;
+
+        return RunSuiteWithRepeatsAsync(
+            DurableMasterWriteScenarioSuiteKey,
+            async () =>
+            {
+                BenchmarkResult result = await runScenarioAsync(masterRowName);
+                if (!string.Equals(result.Name, masterRowName, StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(
+                        $"Durable-write qualification requested row '{masterRowName}' " +
+                        $"but received '{result.Name}'.");
+                }
+
+                return [result];
+            },
+            repeatCount,
+            warmupSingleSample,
+            outputDirectory,
+            scenarioProvidesWarmup: true);
+    }
+
     private static async Task<List<BenchmarkResult>> RunMasterComparisonHostedStableOnceAsync()
     {
         Console.WriteLine("--- Hosted-Stable Master Comparison Rows ---");
@@ -1306,6 +1347,14 @@ public static class Program
                 "a release qualification CSV cannot be emitted without measurement evidence.");
         }
 
+        if (string.Equals(
+                suiteName,
+                DurableMasterWriteScenarioSuiteKey,
+                StringComparison.Ordinal))
+        {
+            ValidateDurableWriteScenarioResults(results);
+        }
+
         foreach (BenchmarkResult result in results)
         {
             if (result.LatencySamples >= MinimumReleaseCoreLatencySamples)
@@ -1341,6 +1390,56 @@ public static class Program
                 $"Release-core suite '{suiteName}' row '{result.Name}' produced " +
                 $"{result.LatencySamples:N0} retained latency samples; at least " +
                 $"{MinimumReleaseCoreLatencySamples:N0} are required before CSV emission.");
+        }
+    }
+
+    private static void ValidateDurableWriteScenarioResults(
+        IReadOnlyList<BenchmarkResult> results)
+    {
+        if (results.Count != 1)
+        {
+            throw new InvalidOperationException(
+                $"Release-core suite '{DurableMasterWriteScenarioSuiteKey}' produced " +
+                $"{results.Count} rows; exactly one durable master write row is required.");
+        }
+
+        BenchmarkResult result = results[0];
+        if (!MasterComparisonBenchmark.DurableWriteRowNames.Contains(
+                result.Name,
+                StringComparer.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Release-core suite '{DurableMasterWriteScenarioSuiteKey}' produced " +
+                $"unknown row '{result.Name}'.");
+        }
+
+        ReleaseQualificationSettings settings = ReleaseQualificationSettings.DurableWrite;
+        if (result.LatencySamples < settings.MinimumLatencySamples)
+        {
+            throw new InvalidOperationException(
+                $"Release-core suite '{DurableMasterWriteScenarioSuiteKey}' row " +
+                $"'{result.Name}' produced {result.LatencySamples:N0} retained latency samples; " +
+                $"at least {settings.MinimumLatencySamples:N0} are required before CSV emission.");
+        }
+        if (!double.IsFinite(result.ElapsedMs) ||
+            result.ElapsedMs < settings.MinimumMeasuredDuration.TotalMilliseconds ||
+            result.ElapsedMs > settings.MaximumMeasuredDuration.TotalMilliseconds)
+        {
+            throw new InvalidOperationException(
+                $"Release-core suite '{DurableMasterWriteScenarioSuiteKey}' row " +
+                $"'{result.Name}' produced elapsed time {result.ElapsedMs:F3} ms; expected " +
+                $"between {settings.MinimumMeasuredDuration.TotalMilliseconds:F0} and " +
+                $"{settings.MaximumMeasuredDuration.TotalMilliseconds:F0} ms.");
+        }
+
+        (DateTimeOffset beginUtc, DateTimeOffset endUtc) =
+            settings.ParseAndValidateExtraInfo(result.ExtraInfo);
+        double declaredElapsedMilliseconds = (endUtc - beginUtc).TotalMilliseconds;
+        if (Math.Abs(declaredElapsedMilliseconds - result.ElapsedMs) > 1.0)
+        {
+            throw new InvalidOperationException(
+                $"Release-core suite '{DurableMasterWriteScenarioSuiteKey}' row " +
+                $"'{result.Name}' elapsed time does not match its UTC measurement interval.");
         }
     }
 
@@ -1658,6 +1757,7 @@ public static class Program
         Console.WriteLine("  dotnet run -- --hybrid-storage-mode-scenario <exact-row-name>  Run one storage-mode row with qualification timing and sample floors");
         Console.WriteLine("  dotnet run -- --master-table  Run only the CSharpDB rows used by the README master comparison table");
         Console.WriteLine("  dotnet run -- --master-table-durable-writes  Run the ten durable write rows used by local release qualification");
+        Console.WriteLine("  dotnet run -- --master-table-durable-write-scenario <exact-master-row-name>  Run one durable master-table write row with qualification timing and sample floors");
         Console.WriteLine("  dotnet run -- --master-table-hosted-stable  Run the eighteen read/in-memory rows used by hosted release qualification");
         Console.WriteLine("  dotnet run -- --sqlite-compare  Run local SQLite WAL+FULL apples-to-apples SQL comparison rows");
         Console.WriteLine("  dotnet run -- --strict-insert-compare  Run strict ADO.NET raw-vs-prepared insert comparison for CSharpDB and SQLite");

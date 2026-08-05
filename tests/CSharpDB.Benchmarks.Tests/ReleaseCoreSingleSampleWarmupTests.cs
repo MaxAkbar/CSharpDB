@@ -10,6 +10,7 @@ public sealed class ReleaseCoreSingleSampleWarmupTests
     [Theory]
     [InlineData("--master-table")]
     [InlineData("--master-table-durable-writes")]
+    [InlineData("--master-table-durable-write-scenario")]
     [InlineData("--master-table-hosted-stable")]
     [InlineData("--durable-sql-batching")]
     [InlineData("--concurrent-write-diagnostics")]
@@ -101,6 +102,124 @@ public sealed class ReleaseCoreSingleSampleWarmupTests
         finally
         {
             Directory.Delete(temporaryRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task DurableWriteScenarioCliPath_UsesInternalWarmupAndWritesOneMasterNamedRow()
+    {
+        const string rowName = "MasterComparison_Sql_FileBacked_SingleInsert";
+        string temporaryRoot = CreateTemporaryDirectory();
+        int invocationCount = 0;
+        try
+        {
+            await BenchmarkProgram.RunMasterComparisonDurableWriteScenarioWithRepeatsAsync(
+                rowName,
+                repeatCount: 1,
+                warmupSingleSample: true,
+                outputDirectory: temporaryRoot,
+                runScenarioAsync: requestedRowName =>
+                {
+                    invocationCount++;
+                    return Task.FromResult(new BenchmarkResult
+                    {
+                        Name = requestedRowName,
+                        TotalOps = 10_000,
+                        LatencySamples = 10_000,
+                        ElapsedMs = 30_000,
+                        P99Ms = 5,
+                        ExtraInfo = CreateDurableQualificationExtraInfo(
+                            TimeSpan.FromSeconds(30)),
+                    });
+                });
+
+            Assert.Equal(1, invocationCount);
+            string csvPath = Assert.Single(Directory.GetFiles(temporaryRoot, "*.csv"));
+            Assert.StartsWith(
+                BenchmarkProgram.DurableMasterWriteScenarioSuiteKey + "-",
+                Path.GetFileName(csvPath),
+                StringComparison.Ordinal);
+            string[] lines = File.ReadAllLines(csvPath);
+            Assert.Equal(2, lines.Length);
+            Assert.StartsWith(rowName + ",", lines[1], StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(temporaryRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task DurableWriteScenarioCliPath_RejectsUnknownRowBeforeInvocation()
+    {
+        int invocationCount = 0;
+
+        ArgumentException exception = await Assert.ThrowsAsync<ArgumentException>(
+            () => BenchmarkProgram.RunMasterComparisonDurableWriteScenarioWithRepeatsAsync(
+                "MasterComparison_Sql_FileBacked_PointLookup",
+                repeatCount: 1,
+                warmupSingleSample: true,
+                runScenarioAsync: _ =>
+                {
+                    invocationCount++;
+                    return Task.FromResult(new BenchmarkResult
+                    {
+                        Name = "not-invoked",
+                        LatencySamples = 0,
+                    });
+                }));
+
+        Assert.Equal(0, invocationCount);
+        Assert.Contains("Unknown master durable-write qualification row", exception.Message);
+    }
+
+    [Fact]
+    public async Task DurableWriteScenarioCliPath_RejectsMismatchedReturnedRow()
+    {
+        const string requestedRow = "MasterComparison_Sql_FileBacked_SingleInsert";
+
+        InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => BenchmarkProgram.RunMasterComparisonDurableWriteScenarioWithRepeatsAsync(
+                requestedRow,
+                repeatCount: 1,
+                warmupSingleSample: false,
+                runScenarioAsync: _ => Task.FromResult(CreateDurableQualificationResult(
+                    "MasterComparison_Sql_FileBacked_BatchInsertRows"))));
+
+        Assert.Contains(requestedRow, exception.Message);
+        Assert.Contains("MasterComparison_Sql_FileBacked_BatchInsertRows", exception.Message);
+    }
+
+    [Fact]
+    public void DurableWriteScenarioWriter_RejectsMalformedQualificationEvidence()
+    {
+        const string validRow = "MasterComparison_Sql_FileBacked_SingleInsert";
+        BenchmarkResult valid = CreateDurableQualificationResult(validRow);
+        var invalidCases = new Dictionary<string, IReadOnlyList<BenchmarkResult>>
+        {
+            ["multiple rows"] = [valid, CreateDurableQualificationResult(validRow)],
+            ["unknown row"] = [CreateDurableQualificationResult("unknown-row")],
+            ["sample floor"] = [CreateDurableQualificationResult(validRow, latencySamples: 9_999)],
+            ["duration floor"] = [CreateDurableQualificationResult(
+                validRow,
+                elapsed: TimeSpan.FromSeconds(29.999))],
+            ["duration cap"] = [CreateDurableQualificationResult(
+                validRow,
+                elapsed: TimeSpan.FromSeconds(120.001))],
+            ["missing metadata"] = [CreateDurableQualificationResult(validRow, extraInfo: string.Empty)],
+            ["mismatched interval"] = [CreateDurableQualificationResult(
+                validRow,
+                elapsed: TimeSpan.FromSeconds(30),
+                extraInfo: CreateDurableQualificationExtraInfo(TimeSpan.FromSeconds(31)))],
+        };
+
+        foreach ((string description, IReadOnlyList<BenchmarkResult> rows) in invalidCases)
+        {
+            InvalidOperationException exception = Assert.Throws<InvalidOperationException>(
+                () => BenchmarkProgram.ValidateReleaseCoreResults(
+                    BenchmarkProgram.DurableMasterWriteScenarioSuiteKey,
+                    rows));
+            Assert.False(string.IsNullOrWhiteSpace(exception.Message), description);
         }
     }
 
@@ -341,6 +460,32 @@ public sealed class ReleaseCoreSingleSampleWarmupTests
             ElapsedMs = 1_000,
             P99Ms = invocation,
         };
+    }
+
+    private static BenchmarkResult CreateDurableQualificationResult(
+        string rowName,
+        int latencySamples = 10_000,
+        TimeSpan? elapsed = null,
+        string? extraInfo = null)
+    {
+        TimeSpan measured = elapsed ?? TimeSpan.FromSeconds(30);
+        return new BenchmarkResult
+        {
+            Name = rowName,
+            TotalOps = latencySamples,
+            LatencySamples = latencySamples,
+            ElapsedMs = measured.TotalMilliseconds,
+            P99Ms = 5,
+            ExtraInfo = extraInfo ?? CreateDurableQualificationExtraInfo(measured),
+        };
+    }
+
+    private static string CreateDurableQualificationExtraInfo(TimeSpan measured)
+    {
+        DateTimeOffset beginUtc = new(2026, 8, 4, 20, 0, 0, TimeSpan.Zero);
+        return ReleaseQualificationSettings.DurableWrite.CreateExtraInfo(
+            beginUtc,
+            beginUtc + measured);
     }
 
     private static string CreateTemporaryDirectory()
