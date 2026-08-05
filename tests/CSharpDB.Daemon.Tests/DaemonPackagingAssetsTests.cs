@@ -59,6 +59,35 @@ public sealed class DaemonPackagingAssetsTests
     }
 
     [Fact]
+    public void ReleaseTrigger_UsesFreshRegistrationAndTrustedPublishingImplementation()
+    {
+        string repoRoot = FindRepoRoot();
+        string trigger = File.ReadAllText(Path.Combine(
+            repoRoot,
+            ".github",
+            "workflows",
+            "publish-release.yml")).ReplaceLineEndings("\n");
+        string implementation = File.ReadAllText(Path.Combine(
+            repoRoot,
+            ".github",
+            "workflows",
+            "release.yml")).ReplaceLineEndings("\n");
+
+        Assert.Contains("name: Release\n", trigger);
+        Assert.Contains("      - \"v*\"", trigger);
+        Assert.Contains("uses: ./.github/workflows/release.yml", trigger);
+        Assert.Contains("secrets: inherit", trigger);
+        Assert.Contains("contents: write", trigger);
+        Assert.Contains("statuses: read", trigger);
+        Assert.Contains("id-token: write", trigger);
+        Assert.Contains("cancel-in-progress: false", trigger);
+
+        Assert.Contains("workflow_call:", implementation);
+        Assert.DoesNotContain("tags:", implementation);
+        Assert.Contains("uses: NuGet/login@v1", implementation);
+    }
+
+    [Fact]
     public void SqlReleaseQualificationWorkflow_RunsFunctionalAndHostedStablePerformancePasses()
     {
         string repoRoot = FindRepoRoot();

@@ -19,7 +19,8 @@ public sealed class ReleaseStatusScriptTests
             ProcessResult result = await RunVerifierAsync(
                 fakeGhRoot,
                 ghLog,
-                scenario: "success");
+                scenario: "success",
+                releaseVersion: "v4.5.0-rc.1+build.1");
 
             Assert.True(result.ExitCode == 0, result.CombinedOutput);
             AssertDiagnosticContains(
@@ -31,6 +32,108 @@ public sealed class ReleaseStatusScriptTests
                     $"{CandidateCommit}/statuses?per_page=100",
                 ],
                 File.ReadAllLines(ghLog));
+        }
+        finally
+        {
+            DeleteTemporaryRoot(temporaryRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Verifier_AcceptsPinnedOneTimeCarryForwardWithoutRelabelingV3()
+    {
+        string temporaryRoot = CreateTemporaryRoot();
+        try
+        {
+            string ghLog = Path.Combine(temporaryRoot, "gh.log");
+            string fakeGhRoot = CreateFakeGitHubCli(temporaryRoot);
+
+            ProcessResult result = await RunVerifierAsync(
+                fakeGhRoot,
+                ghLog,
+                scenario: "carry-forward",
+                releaseVersion: "v4.4.0");
+
+            Assert.True(result.ExitCode == 0, result.CombinedOutput);
+            AssertDiagnosticContains(
+                "Verified the explicit one-time durable-v2 carry-forward for release " +
+                $"4.4.0 at exact commit {CandidateCommit}",
+                result.CombinedOutput);
+            AssertDiagnosticContains(
+                "durable-v3 failure 51664261883 remains preserved",
+                result.CombinedOutput);
+            Assert.Equal(
+                [
+                    "api|repos/example/csharpdb/commits/" +
+                    $"{CandidateCommit}/statuses?per_page=100",
+                    "api|repos/example/csharpdb/commits/" +
+                    "61e4d025087f4fae7208381288fba6115f0d1e30/statuses?per_page=100",
+                    "api|repos/example/csharpdb/commits/" +
+                    "ee1ea0e996fc22e093e950ec32e14543cd5caeca/statuses?per_page=100",
+                ],
+                File.ReadAllLines(ghLog));
+        }
+        finally
+        {
+            DeleteTemporaryRoot(temporaryRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Verifier_RejectsCarryForwardForAnyOtherRelease()
+    {
+        string temporaryRoot = CreateTemporaryRoot();
+        try
+        {
+            string ghLog = Path.Combine(temporaryRoot, "gh.log");
+            string fakeGhRoot = CreateFakeGitHubCli(temporaryRoot);
+
+            ProcessResult result = await RunVerifierAsync(
+                fakeGhRoot,
+                ghLog,
+                scenario: "carry-forward",
+                releaseVersion: "4.4.1");
+
+            Assert.NotEqual(0, result.ExitCode);
+            AssertDiagnosticContains(
+                $"Commit {CandidateCommit} has no csharpdb/local-durable-performance status",
+                result.CombinedOutput);
+            Assert.Single(File.ReadAllLines(ghLog));
+        }
+        finally
+        {
+            DeleteTemporaryRoot(temporaryRoot);
+        }
+    }
+
+    [Theory]
+    [InlineData(
+        "carry-forward-source-mismatch",
+        "durable-v2 source evidence no longer matches the exact approved GitHub status record")]
+    [InlineData(
+        "carry-forward-wrong-tree",
+        "Approved product source tree is bee4859c14381fc2dbe209e2e0c84909dc98adc9")]
+    [InlineData(
+        "carry-forward-stale",
+        "status at or after the approved carry-forward requires fresh release qualification")]
+    public async Task Verifier_RejectsTamperedOrStaleCarryForward(
+        string scenario,
+        string expectedDiagnostic)
+    {
+        string temporaryRoot = CreateTemporaryRoot();
+        try
+        {
+            string ghLog = Path.Combine(temporaryRoot, "gh.log");
+            string fakeGhRoot = CreateFakeGitHubCli(temporaryRoot);
+
+            ProcessResult result = await RunVerifierAsync(
+                fakeGhRoot,
+                ghLog,
+                scenario,
+                releaseVersion: "4.4.0");
+
+            Assert.NotEqual(0, result.ExitCode);
+            AssertDiagnosticContains(expectedDiagnostic, result.CombinedOutput);
         }
         finally
         {
@@ -134,6 +237,10 @@ public sealed class ReleaseStatusScriptTests
             repoRoot,
             "scripts",
             "Test-LocalDurableStatus.ps1"));
+        string carryForwardPublisher = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "scripts",
+            "Publish-DurableCarryForwardStatus.ps1"));
 
         Assert.Contains(
             "status', '--porcelain=v1', '--untracked-files=all",
@@ -150,15 +257,53 @@ public sealed class ReleaseStatusScriptTests
         Assert.Contains("-CandidateRef $headCommit", publisher);
         Assert.Contains("refs/tags/$releaseTag`:refs/tags/$releaseTag", publisher);
         Assert.DoesNotContain("--force", publisher, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("merge-base", publisher, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("merge-base", verifier, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("parents", verifier, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("exit 0", verifier, StringComparison.OrdinalIgnoreCase);
         Assert.Contains(
             "^policy=durable-v3; baseline=[0-9a-f]{40}; design=[0-9A-F]{8}; " +
             "reports=[0-9A-F]{8}/[0-9A-F]{8}$",
             verifier);
-        Assert.DoesNotContain("policy=durable-v2", verifier, StringComparison.Ordinal);
-        Assert.DoesNotContain("durable-v2", publisher, StringComparison.Ordinal);
+        Assert.Contains(
+            "csharpdb/local-durable-performance-carry-forward-v4.4.0",
+            verifier);
+        Assert.Contains(
+            "61e4d025087f4fae7208381288fba6115f0d1e30",
+            verifier);
+        Assert.Contains("51598901859", verifier);
+        Assert.Contains(
+            "policy=durable-v2; baseline=7880dad112f3fdf011c134db2f8a08ec646ee326;",
+            verifier);
+        Assert.Contains("ee1ea0e996fc22e093e950ec32e14543cd5caeca", verifier);
+        Assert.Contains("51664261883", verifier);
+        Assert.Contains("local durable qualification failed", verifier);
+        Assert.Contains(
+            "src/CSharpDB.Migration/MigrationRejectArtifactPublication.cs",
+            verifier);
+        Assert.Contains("'merge-base', '--is-ancestor'", verifier);
+        Assert.Contains("'--name-status'", verifier);
+        Assert.Contains("'--no-renames'", verifier);
+        Assert.Contains("8e43642cfcd3e523046302b99253673ceb5a33ce", verifier);
+        Assert.Contains("bee4859c14381fc2dbe209e2e0c84909dc98adc9", verifier);
+
+        Assert.Contains("Authenticated GitHub user", carryForwardPublisher);
+        Assert.Contains("statuses/$headCommit", carryForwardPublisher);
+        Assert.Contains("Invoke-StatusVerifier -EligibilityOnly", carryForwardPublisher);
+        Assert.Contains("Publish-DurableCarryForwardStatus.ps1", publisher);
+        Assert.Contains("-ApproveDurableV2CarryForward", publisher);
+        Assert.Contains("mutually exclusive", publisher);
+        Assert.Contains("-ReleaseVersion $releaseVersion", publisher);
+        Assert.DoesNotContain("refs/tags/", carryForwardPublisher, StringComparison.Ordinal);
+
+        int sourceEvidence = carryForwardPublisher.IndexOf(
+            "Invoke-StatusVerifier -EligibilityOnly",
+            StringComparison.Ordinal);
+        int publishStatus = carryForwardPublisher.IndexOf(
+            "--method POST",
+            StringComparison.Ordinal);
+        Assert.True(sourceEvidence >= 0);
+        Assert.True(
+            publishStatus > sourceEvidence,
+            "The source evidence must be verified before a carry-forward status is published.");
 
         int initialVerifier = publisher.IndexOf(
             "Invoke-StatusVerifier",
@@ -276,7 +421,8 @@ public sealed class ReleaseStatusScriptTests
     private static Task<ProcessResult> RunVerifierAsync(
         string fakeGhRoot,
         string ghLog,
-        string scenario)
+        string scenario,
+        string? releaseVersion = null)
     {
         Dictionary<string, string> environment = new()
         {
@@ -285,9 +431,8 @@ public sealed class ReleaseStatusScriptTests
             ["PATH"] = fakeGhRoot + Path.PathSeparator +
                 (Environment.GetEnvironmentVariable("PATH") ?? string.Empty),
         };
-        return RunProcessAsync(
-            "pwsh",
-            environment,
+        List<string> arguments =
+        [
             "-NoLogo",
             "-NoProfile",
             "-File",
@@ -297,7 +442,14 @@ public sealed class ReleaseStatusScriptTests
             "-GitHubRepository",
             "example/csharpdb",
             "-ExpectedCreator",
-            "MaxAkbar");
+            "MaxAkbar",
+        ];
+        if (releaseVersion is not null)
+        {
+            arguments.Add("-ReleaseVersion");
+            arguments.Add(releaseVersion);
+        }
+        return RunProcessAsync("pwsh", environment, [.. arguments]);
     }
 
     private static string CreateFakeGitHubCli(string temporaryRoot)
@@ -322,6 +474,8 @@ public sealed class ReleaseStatusScriptTests
             }
 
             $context = 'csharpdb/local-durable-performance'
+            $carryForwardContext =
+                'csharpdb/local-durable-performance-carry-forward-v4.4.0'
             $canonical =
                 'policy=durable-v3; baseline=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; ' +
                 'design=89ABCDEF; ' +
@@ -333,16 +487,56 @@ public sealed class ReleaseStatusScriptTests
                     [string] $State,
                     [string] $Context = $context,
                     [string] $Creator = 'maxakbar',
+                    [long] $CreatorId = 13856299,
                     [string] $Description = $canonical)
 
                 [pscustomobject]@{
                     id = $Id
                     created_at = $CreatedAt
+                    updated_at = $CreatedAt
                     state = $State
                     context = $Context
-                    creator = [pscustomobject]@{ login = $Creator }
+                    creator = [pscustomobject]@{
+                        login = $Creator
+                        id = $CreatorId
+                    }
                     description = $Description
                 }
+            }
+
+            $apiPath = $CliArguments[1]
+            if ($apiPath -match '61e4d025087f4fae7208381288fba6115f0d1e30') {
+                $sourceId = if ($env:FAKE_GH_SCENARIO -ceq 'carry-forward-source-mismatch') {
+                    51598901860
+                }
+                else {
+                    51598901859
+                }
+                $statuses = @(
+                    (New-FakeStatus `
+                        -Id $sourceId `
+                        -CreatedAt '2026-08-04T07:38:51Z' `
+                        -State success `
+                        -Description (
+                            'policy=durable-v2; ' +
+                            'baseline=7880dad112f3fdf011c134db2f8a08ec646ee326; ' +
+                            'reports=BFF306E7/B9C20AD6'))
+                )
+                ConvertTo-Json -InputObject @($statuses) -Depth 10 -Compress
+                exit 0
+            }
+            if ($apiPath -match 'ee1ea0e996fc22e093e950ec32e14543cd5caeca') {
+                $statuses = @(
+                    (New-FakeStatus `
+                        -Id 51664261883 `
+                        -CreatedAt '2026-08-05T02:52:58Z' `
+                        -State failure `
+                        -Description (
+                            'policy=durable-v3; design=6B500421; ' +
+                            'local durable qualification failed'))
+                )
+                ConvertTo-Json -InputObject @($statuses) -Depth 10 -Compress
+                exit 0
             }
 
             $olderSuccess = New-FakeStatus `
@@ -435,6 +629,42 @@ public sealed class ReleaseStatusScriptTests
                                 'reports=1234ABCD/5678EFAB'))
                     )
                 }
+                { $_ -in @(
+                    'carry-forward',
+                    'carry-forward-source-mismatch',
+                    'carry-forward-wrong-tree') } {
+                    @(
+                        (New-FakeStatus `
+                            -Id 51665000000 `
+                            -CreatedAt '2026-08-05T03:00:00Z' `
+                            -State success `
+                            -Context $carryForwardContext `
+                            -Description (
+                                'policy=durable-v2-carry-forward-v4.4.0; source=61e4d025; ' +
+                                'success=51598901859; failed-v3=51664261883; ' +
+                                'tree=bee4859c'))
+                    )
+                }
+                'carry-forward-stale' {
+                    @(
+                        (New-FakeStatus `
+                            -Id 51665000000 `
+                            -CreatedAt '2026-08-05T03:00:00Z' `
+                            -State success `
+                            -Context $carryForwardContext `
+                            -Description (
+                                'policy=durable-v2-carry-forward-v4.4.0; source=61e4d025; ' +
+                                'success=51598901859; failed-v3=51664261883; ' +
+                                'tree=bee4859c')),
+                        (New-FakeStatus `
+                            -Id 51666000000 `
+                            -CreatedAt '2026-08-05T04:00:00Z' `
+                            -State failure `
+                            -Description (
+                                'policy=durable-v3; design=12345678; ' +
+                                'local durable qualification failed'))
+                    )
+                }
                 default {
                     Write-Error "Unknown fake gh scenario: $env:FAKE_GH_SCENARIO"
                     exit 1
@@ -443,7 +673,6 @@ public sealed class ReleaseStatusScriptTests
 
             ConvertTo-Json -InputObject @($statuses) -Depth 10 -Compress
             """);
-
         if (OperatingSystem.IsWindows())
         {
             File.WriteAllText(
@@ -452,6 +681,32 @@ public sealed class ReleaseStatusScriptTests
                 @echo off
                 pwsh -NoLogo -NoProfile -File "%~dp0fake-gh.ps1" %*
                 exit /b %ERRORLEVEL%
+                """);
+            File.WriteAllText(
+                Path.Combine(toolRoot, "git.cmd"),
+                """
+                @echo off
+                if /I "%~3"=="merge-base" exit /b 0
+                if /I "%~3"=="diff" (
+                    echo M	src/CSharpDB.Migration/MigrationRejectArtifactPublication.cs
+                    exit /b 0
+                )
+                if /I "%~3"=="rev-parse" (
+                    if /I "%~5"=="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:src/CSharpDB.Migration/MigrationRejectArtifactPublication.cs" (
+                        echo 8e43642cfcd3e523046302b99253673ceb5a33ce
+                        exit /b 0
+                    )
+                    if /I "%~5"=="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:src" (
+                        if /I "%FAKE_GH_SCENARIO%"=="carry-forward-wrong-tree" (
+                            echo 1111111111111111111111111111111111111111
+                        ) else (
+                            echo bee4859c14381fc2dbe209e2e0c84909dc98adc9
+                        )
+                        exit /b 0
+                    )
+                )
+                echo Unexpected fake git invocation: %* 1>&2
+                exit /b 1
                 """);
         }
         else
@@ -466,6 +721,55 @@ public sealed class ReleaseStatusScriptTests
                 """);
             File.SetUnixFileMode(
                 launcher,
+                UnixFileMode.UserRead |
+                UnixFileMode.UserWrite |
+                UnixFileMode.UserExecute |
+                UnixFileMode.GroupRead |
+                UnixFileMode.GroupExecute |
+                UnixFileMode.OtherRead |
+                UnixFileMode.OtherExecute);
+            string gitLauncher = Path.Combine(toolRoot, "git");
+            File.WriteAllText(
+                gitLauncher,
+                """
+                #!/usr/bin/env sh
+                if [ "$#" -lt 3 ] || [ "$1" != "-C" ]; then
+                  printf '%s\n' "Unexpected fake git invocation: $*" >&2
+                  exit 1
+                fi
+                command_name="$3"
+                case "$command_name" in
+                  merge-base)
+                    exit 0
+                    ;;
+                  diff)
+                    printf 'M\tsrc/CSharpDB.Migration/MigrationRejectArtifactPublication.cs\n'
+                    exit 0
+                    ;;
+                  rev-parse)
+                    object_name=''
+                    for argument in "$@"; do object_name="$argument"; done
+                    case "$object_name" in
+                      aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:src/CSharpDB.Migration/MigrationRejectArtifactPublication.cs)
+                        printf '%s\n' '8e43642cfcd3e523046302b99253673ceb5a33ce'
+                        exit 0
+                        ;;
+                      aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:src)
+                        if [ "$FAKE_GH_SCENARIO" = 'carry-forward-wrong-tree' ]; then
+                          printf '%s\n' '1111111111111111111111111111111111111111'
+                        else
+                          printf '%s\n' 'bee4859c14381fc2dbe209e2e0c84909dc98adc9'
+                        fi
+                        exit 0
+                        ;;
+                    esac
+                    ;;
+                esac
+                printf '%s\n' "Unexpected fake git invocation: $*" >&2
+                exit 1
+                """);
+            File.SetUnixFileMode(
+                gitLauncher,
                 UnixFileMode.UserRead |
                 UnixFileMode.UserWrite |
                 UnixFileMode.UserExecute |

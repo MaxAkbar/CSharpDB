@@ -1,13 +1,10 @@
-name: Release
+name: Release implementation
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_call:
 
 permissions:
   contents: read
-  pages: write
   id-token: write
 
 jobs:
@@ -21,6 +18,8 @@ jobs:
     steps:
       - name: Checkout exact release source
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Require a successful matching-commit local performance status
         shell: pwsh
@@ -31,7 +30,8 @@ jobs:
           ./scripts/Test-LocalDurableStatus.ps1 `
             -Commit '${{ github.sha }}' `
             -GitHubRepository '${{ github.repository }}' `
-            -ExpectedCreator $env:EXPECTED_STATUS_CREATOR
+            -ExpectedCreator $env:EXPECTED_STATUS_CREATOR `
+            -ReleaseVersion '${{ github.ref_name }}'
 
   build-and-test:
     name: Qualify release source
