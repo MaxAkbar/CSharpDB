@@ -1265,11 +1265,13 @@ public sealed class PreviousReleasePairedRunnerScriptTests
             string fakeToolRoot = Path.Combine(temporaryRoot, "fake-tools");
             CreatePairedFakeDotnetTool(fakeToolRoot);
             string invocationLog = Path.Combine(temporaryRoot, "fake-dotnet.log");
+            string environmentLog = Path.Combine(temporaryRoot, "fake-dotnet-environment.log");
             Dictionary<string, string> environment = new()
             {
                 ["PATH"] = fakeToolRoot + Path.PathSeparator +
                     (Environment.GetEnvironmentVariable("PATH") ?? string.Empty),
                 ["FAKE_DOTNET_LOG"] = invocationLog,
+                ["FAKE_DOTNET_ENV_LOG"] = environmentLog,
                 ["FAKE_DOTNET_FAIL_ON_RUN"] = "4",
             };
             string evidence = Path.Combine(temporaryRoot, "failed-paired-evidence");
@@ -1283,6 +1285,12 @@ public sealed class PreviousReleasePairedRunnerScriptTests
 
                 $env:NUGET_PACKAGES = 'sentinel-nuget-packages'
                 $env:DOTNET_CLI_HOME = 'sentinel-dotnet-home'
+                $env:DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE = 'sentinel-workload-update'
+                $env:DOTNET_SKIP_WORKLOAD_INTEGRITY_CHECK = 'sentinel-workload-integrity'
+                $env:DOTNET_GENERATE_ASPNET_CERTIFICATE = 'sentinel-certificate'
+                $env:DOTNET_ADD_GLOBAL_TOOLS_TO_PATH = 'sentinel-tools-path'
+                $env:DOTNET_NOLOGO = 'sentinel-logo'
+                $env:DOTNET_CLI_TELEMETRY_OPTOUT = 'sentinel-telemetry'
                 try {
                     & $RunnerScript `
                         -PreviousRef v4.3.0 `
@@ -1297,6 +1305,14 @@ public sealed class PreviousReleasePairedRunnerScriptTests
                     Write-Output "RUNNER_ERROR=$($_.Exception.Message)"
                     Write-Output "NUGET_PACKAGES_AFTER=$env:NUGET_PACKAGES"
                     Write-Output "DOTNET_CLI_HOME_AFTER=$env:DOTNET_CLI_HOME"
+                    Write-Output (
+                        'DOTNET_FIRST_USE_AFTER=' +
+                        "$env:DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE|" +
+                        "$env:DOTNET_SKIP_WORKLOAD_INTEGRITY_CHECK|" +
+                        "$env:DOTNET_GENERATE_ASPNET_CERTIFICATE|" +
+                        "$env:DOTNET_ADD_GLOBAL_TOOLS_TO_PATH|" +
+                        "$env:DOTNET_NOLOGO|" +
+                        "$env:DOTNET_CLI_TELEMETRY_OPTOUT")
                     exit 17
                 }
 
@@ -1323,6 +1339,16 @@ public sealed class PreviousReleasePairedRunnerScriptTests
             Assert.Contains(
                 "DOTNET_CLI_HOME_AFTER=sentinel-dotnet-home",
                 result.CombinedOutput);
+            Assert.Contains(
+                "DOTNET_FIRST_USE_AFTER=" +
+                "sentinel-workload-update|sentinel-workload-integrity|" +
+                "sentinel-certificate|sentinel-tools-path|sentinel-logo|sentinel-telemetry",
+                result.CombinedOutput);
+            string[] dotnetEnvironments = File.ReadAllLines(environmentLog);
+            Assert.NotEmpty(dotnetEnvironments);
+            Assert.All(
+                dotnetEnvironments,
+                value => Assert.Equal("true|true|false|false|true|true", value));
             string[] runs = File.ReadLines(invocationLog)
                 .Where(line => line.Contains("|run|", StringComparison.Ordinal))
                 .ToArray();
@@ -1944,6 +1970,17 @@ public sealed class PreviousReleasePairedRunnerScriptTests
             """
             $ErrorActionPreference = 'Stop'
             $CommandArgs = @($args)
+            if (-not [string]::IsNullOrWhiteSpace($env:FAKE_DOTNET_ENV_LOG)) {
+                Add-Content `
+                    -LiteralPath $env:FAKE_DOTNET_ENV_LOG `
+                    -Value (
+                        "$env:DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE|" +
+                        "$env:DOTNET_SKIP_WORKLOAD_INTEGRITY_CHECK|" +
+                        "$env:DOTNET_GENERATE_ASPNET_CERTIFICATE|" +
+                        "$env:DOTNET_ADD_GLOBAL_TOOLS_TO_PATH|" +
+                        "$env:DOTNET_NOLOGO|" +
+                        "$env:DOTNET_CLI_TELEMETRY_OPTOUT")
+            }
             if ($CommandArgs.Count -eq 1 -and $CommandArgs[0] -eq '--version') {
                 Write-Output '10.0.203'
                 exit 0

@@ -8,6 +8,7 @@ using System.Security.Principal;
 using System.Text;
 using CSharpDB.Migration.Validation;
 using CSharpDB.Primitives;
+using Microsoft.Win32.SafeHandles;
 
 namespace CSharpDB.Migration.Tests;
 
@@ -141,6 +142,72 @@ public sealed class MigrationRejectArtifactWriterTests
         }
         finally
         {
+            DeleteRoot(root);
+        }
+    }
+
+    [Fact]
+    public async Task DisposeAsync_ReleasesUnixClaimLockBeforeClosingHandle()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        string root = CreateRoot();
+        MigrationRejectArtifactPublication? publication = null;
+        SafeFileHandle? retainedHandle = null;
+        SafeFileHandle? competingHandle = null;
+        bool competingLockHeld = false;
+        try
+        {
+            string outputPath = Path.Combine(root, "rejects.jsonl");
+            byte[] expected = "released-lock\n"u8.ToArray();
+            publication = await MigrationRejectArtifactPublication.OpenAsync(
+                outputPath,
+                "sha256:" + new string('a', 64),
+                maximumBytes: 1_024,
+                TestContext.Current.CancellationToken);
+            await publication.Stream.WriteAsync(
+                expected,
+                TestContext.Current.CancellationToken);
+            await publication.FlushAsync(TestContext.Current.CancellationToken);
+            Assert.False(await publication.PublishOrReuseAsync(
+                TestContext.Current.CancellationToken));
+
+            int duplicateDescriptor = UnixDuplicate(checked(
+                (int)publication.Stream.SafeFileHandle.DangerousGetHandle()));
+            Assert.True(
+                duplicateDescriptor >= 0,
+                $"dup failed with errno {Marshal.GetLastPInvokeError()}.");
+            retainedHandle = new SafeFileHandle(
+                new IntPtr(duplicateDescriptor),
+                ownsHandle: true);
+
+            await publication.DisposeAsync();
+            publication = null;
+
+            Assert.False(retainedHandle.IsClosed);
+            competingHandle = File.OpenHandle(
+                outputPath,
+                FileMode.Open,
+                FileAccess.ReadWrite,
+                FileShare.ReadWrite | FileShare.Delete);
+            int lockResult = UnixFlock(
+                competingHandle,
+                LockExclusive | LockNonBlocking);
+            Assert.True(
+                lockResult == 0,
+                $"A separately opened descriptor could not claim the released lock; " +
+                $"errno {Marshal.GetLastPInvokeError()}.");
+            competingLockHeld = true;
+        }
+        finally
+        {
+            if (publication is not null)
+                await publication.DisposeAsync();
+            if (competingLockHeld && competingHandle is not null)
+                _ = UnixFlock(competingHandle, LockUnlock);
+            competingHandle?.Dispose();
+            retainedHandle?.Dispose();
             DeleteRoot(root);
         }
     }
@@ -1465,6 +1532,16 @@ public sealed class MigrationRejectArtifactWriterTests
     private static extern int UnixCreateHardLink(
         [MarshalAs(UnmanagedType.LPUTF8Str)] string existingPath,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string linkPath);
+
+    [DllImport("libc", EntryPoint = "dup", SetLastError = true)]
+    private static extern int UnixDuplicate(int descriptor);
+
+    [DllImport("libc", EntryPoint = "flock", SetLastError = true)]
+    private static extern int UnixFlock(SafeFileHandle handle, int operation);
+
+    private const int LockExclusive = 2;
+    private const int LockNonBlocking = 4;
+    private const int LockUnlock = 8;
 
     private sealed record OutcomeSpec(
         int AcceptedRows,

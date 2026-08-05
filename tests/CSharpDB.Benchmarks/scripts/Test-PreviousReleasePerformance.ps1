@@ -849,6 +849,16 @@ $environmentMonitorSha256 = ''
 $environmentMonitorSampleCount = 0
 $originalNuGetPackages = $env:NUGET_PACKAGES
 $originalDotnetCliHome = $env:DOTNET_CLI_HOME
+$originalDotnetCliWorkloadUpdateNotifyDisable =
+    $env:DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE
+$originalDotnetSkipWorkloadIntegrityCheck =
+    $env:DOTNET_SKIP_WORKLOAD_INTEGRITY_CHECK
+$originalDotnetGenerateAspNetCertificate =
+    $env:DOTNET_GENERATE_ASPNET_CERTIFICATE
+$originalDotnetAddGlobalToolsToPath =
+    $env:DOTNET_ADD_GLOBAL_TOOLS_TO_PATH
+$originalDotnetNoLogo = $env:DOTNET_NOLOGO
+$originalDotnetCliTelemetryOptOut = $env:DOTNET_CLI_TELEMETRY_OPTOUT
 
 function Write-ExecutionEvent {
     param(
@@ -1842,9 +1852,9 @@ function Start-LocalEnvironmentMonitor {
         [void] $startInfo.ArgumentList.Add([string] $argument)
     }
 
-    $environmentMonitorProcess = [Diagnostics.Process]::new()
-    $environmentMonitorProcess.StartInfo = $startInfo
-    if (-not $environmentMonitorProcess.Start()) {
+    $script:environmentMonitorProcess = [Diagnostics.Process]::new()
+    $script:environmentMonitorProcess.StartInfo = $startInfo
+    if (-not $script:environmentMonitorProcess.Start()) {
         throw 'Could not start the local performance environment monitor.'
     }
 
@@ -1864,14 +1874,15 @@ function Start-LocalEnvironmentMonitor {
     }
 
     $readyText = [IO.File]::ReadAllText($environmentMonitorReadyPath).Trim()
+    $parsedReadyUtc = [DateTimeOffset]::MinValue
     if (-not [DateTimeOffset]::TryParse(
         $readyText,
         [Globalization.CultureInfo]::InvariantCulture,
         [Globalization.DateTimeStyles]::RoundtripKind,
-        [ref] $environmentMonitorReadyUtc)) {
+        [ref] $parsedReadyUtc)) {
         throw "Environment monitor ready signal contains an invalid UTC timestamp: $readyText"
     }
-    $environmentMonitorReadyUtc = $environmentMonitorReadyUtc.ToUniversalTime()
+    $script:environmentMonitorReadyUtc = $parsedReadyUtc.ToUniversalTime()
     Write-Host (
         'Durable-v3 external environment monitor ready at ' +
         $environmentMonitorReadyUtc.ToString('O'))
@@ -2128,8 +2139,8 @@ function Stop-AndAuditLocalEnvironmentMonitor {
             $summaryLines.Add("CoveredMeasurementIntervals=$($measurementBegins.Count)")
         }
 
-        $environmentMonitorSampleCount = $rows.Count
-        $environmentMonitorSha256 = (Get-FileHash `
+        $script:environmentMonitorSampleCount = $rows.Count
+        $script:environmentMonitorSha256 = (Get-FileHash `
                 -LiteralPath $environmentMonitorCsvPath `
                 -Algorithm SHA256).Hash.ToLowerInvariant()
         $summaryLines.Add('Result=PASS')
@@ -2150,12 +2161,12 @@ function Stop-AndAuditLocalEnvironmentMonitor {
                 $environmentMonitorProcess.Kill($true)
                 $environmentMonitorProcess.WaitForExit()
             }
-            $environmentMonitorStopped =
+            $script:environmentMonitorStopped =
                 $null -ne $environmentMonitorProcess -and
                 $environmentMonitorProcess.HasExited
         }
         catch {
-            $environmentMonitorStopped = $false
+            $script:environmentMonitorStopped = $false
             if ($null -eq $auditFailure) {
                 $auditFailure = $_
                 $summaryLines.Add('Result=FAIL')
@@ -3396,6 +3407,13 @@ function Invoke-ReleaseCoreSample {
 try {
     $env:NUGET_PACKAGES = Join-Path $outputRoot '.nuget-packages'
     $env:DOTNET_CLI_HOME = Join-Path $outputRoot '.dotnet-home'
+    # A fresh CLI home must not initiate workload maintenance or mutate user state.
+    $env:DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE = 'true'
+    $env:DOTNET_SKIP_WORKLOAD_INTEGRITY_CHECK = 'true'
+    $env:DOTNET_GENERATE_ASPNET_CERTIFICATE = 'false'
+    $env:DOTNET_ADD_GLOBAL_TOOLS_TO_PATH = 'false'
+    $env:DOTNET_NOLOGO = 'true'
+    $env:DOTNET_CLI_TELEMETRY_OPTOUT = 'true'
     New-Item -ItemType Directory -Path $env:NUGET_PACKAGES -Force | Out-Null
     New-Item -ItemType Directory -Path $env:DOTNET_CLI_HOME -Force | Out-Null
     New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
@@ -4237,6 +4255,54 @@ finally {
     }
     else {
         $env:DOTNET_CLI_HOME = $originalDotnetCliHome
+    }
+    if ($null -eq $originalDotnetCliWorkloadUpdateNotifyDisable) {
+        Remove-Item `
+            Env:DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE `
+            -ErrorAction SilentlyContinue
+    }
+    else {
+        $env:DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE =
+            $originalDotnetCliWorkloadUpdateNotifyDisable
+    }
+    if ($null -eq $originalDotnetSkipWorkloadIntegrityCheck) {
+        Remove-Item `
+            Env:DOTNET_SKIP_WORKLOAD_INTEGRITY_CHECK `
+            -ErrorAction SilentlyContinue
+    }
+    else {
+        $env:DOTNET_SKIP_WORKLOAD_INTEGRITY_CHECK =
+            $originalDotnetSkipWorkloadIntegrityCheck
+    }
+    if ($null -eq $originalDotnetGenerateAspNetCertificate) {
+        Remove-Item `
+            Env:DOTNET_GENERATE_ASPNET_CERTIFICATE `
+            -ErrorAction SilentlyContinue
+    }
+    else {
+        $env:DOTNET_GENERATE_ASPNET_CERTIFICATE =
+            $originalDotnetGenerateAspNetCertificate
+    }
+    if ($null -eq $originalDotnetAddGlobalToolsToPath) {
+        Remove-Item `
+            Env:DOTNET_ADD_GLOBAL_TOOLS_TO_PATH `
+            -ErrorAction SilentlyContinue
+    }
+    else {
+        $env:DOTNET_ADD_GLOBAL_TOOLS_TO_PATH =
+            $originalDotnetAddGlobalToolsToPath
+    }
+    if ($null -eq $originalDotnetNoLogo) {
+        Remove-Item Env:DOTNET_NOLOGO -ErrorAction SilentlyContinue
+    }
+    else {
+        $env:DOTNET_NOLOGO = $originalDotnetNoLogo
+    }
+    if ($null -eq $originalDotnetCliTelemetryOptOut) {
+        Remove-Item Env:DOTNET_CLI_TELEMETRY_OPTOUT -ErrorAction SilentlyContinue
+    }
+    else {
+        $env:DOTNET_CLI_TELEMETRY_OPTOUT = $originalDotnetCliTelemetryOptOut
     }
 }
 
