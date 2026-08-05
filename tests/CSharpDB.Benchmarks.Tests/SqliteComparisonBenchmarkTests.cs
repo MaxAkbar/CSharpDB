@@ -152,6 +152,10 @@ public sealed class SqliteComparisonBenchmarkTests
     public async Task PreparedBulkTransaction_CancelledWorkerRollsBackWithinDrain()
     {
         SqliteComparisonBenchmark.MeasurementPolicy policy = CreateFastPolicy();
+        TimeSpan cancellationDrainTimeout =
+            ReleaseWorkerCancellationPolicy.CoordinatedDrainTimeout;
+        TimeSpan testTimeout =
+            cancellationDrainTimeout + BenchmarkTestWatchdog.SchedulingTimeout;
         using var deadline = new ManualMeasurementDeadline();
         using var firstRowStarted = new ManualResetEventSlim();
         using var releaseFirstRow = new ManualResetEventSlim();
@@ -180,7 +184,7 @@ public sealed class SqliteComparisonBenchmarkTests
             },
             policy,
             deadline,
-            TimeSpan.FromMilliseconds(100));
+            cancellationDrainTimeout);
 
         try
         {
@@ -192,7 +196,7 @@ public sealed class SqliteComparisonBenchmarkTests
 
             InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => runTask.WaitAsync(
-                    BenchmarkTestWatchdog.SchedulingTimeout,
+                    testTimeout,
                     TestContext.Current.CancellationToken));
 
             Assert.Contains("90-second measurement cap", exception.Message);
