@@ -23,6 +23,7 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
     private const int UnixWouldBlockDarwin = 35;
     private const int LockExclusive = 2;
     private const int LockNonBlocking = 4;
+    private const int LockUnlock = 8;
     private const uint RenameNoReplace = 1;
     private const uint DarwinRenameExclusiveFlag = 4;
 
@@ -43,7 +44,7 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
     private readonly SafeFileHandle? _unixParent;
     private bool _published;
     private bool _temporaryRemoved;
-    private bool _disposed;
+    private int _disposeStarted;
 
     private MigrationRejectArtifactPublication(
         string destinationPath,
@@ -121,6 +122,8 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
             }
             catch
             {
+                if (unixParent is not null)
+                    ReleaseUnixClaimLock(stream.SafeFileHandle);
                 stream.Dispose();
                 throw;
             }
@@ -204,7 +207,7 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
 
     public ValueTask DisposeAsync()
     {
-        if (_disposed)
+        if (Interlocked.Exchange(ref _disposeStarted, 1) != 0)
             return ValueTask.CompletedTask;
 
         try
@@ -214,9 +217,12 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
         }
         finally
         {
-            _disposed = true;
             try
             {
+                // The claim flock was acquired outside SafeFileHandle, so the
+                // runtime cannot proactively unlock it if close is interrupted.
+                if (_unixParent is not null)
+                    ReleaseUnixClaimLock(Stream.SafeFileHandle);
                 Stream.Dispose();
             }
             finally
@@ -1000,11 +1006,12 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
         }
 
         SafeFileHandle handle = WrapUnixDescriptor(descriptor);
+        bool claimLocked = false;
         try
         {
             RequireUnixTemporaryIdentity(parent, temporaryLeaf, handle);
             int lockResult = UnixFlock(
-                Descriptor(handle),
+                handle,
                 LockExclusive | LockNonBlocking);
             if (lockResult != 0)
             {
@@ -1014,6 +1021,7 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
                     : "The reject-artifact temporary claim could not be locked.";
                 throw new IOException(message, new Win32Exception(lockError));
             }
+            claimLocked = true;
 
             ValidateUnixRegularPrivateFile(handle, validateExtendedAcl: false);
             RemoveUnixExtendedAcl(handle);
@@ -1037,6 +1045,8 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
         }
         finally
         {
+            if (claimLocked && handle is not null)
+                ReleaseUnixClaimLock(handle);
             handle?.Dispose();
         }
     }
@@ -1465,6 +1475,12 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
     private static int Descriptor(SafeFileHandle handle) =>
         checked((int)handle.DangerousGetHandle());
 
+    private static void ReleaseUnixClaimLock(SafeFileHandle handle)
+    {
+        if (!handle.IsClosed && !handle.IsInvalid)
+            _ = UnixFlock(handle, LockUnlock);
+    }
+
     private static bool TryGetAttributes(string path, out FileAttributes attributes)
     {
         try
@@ -1484,7 +1500,8 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
         }
     }
 
-    private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
+    private void ThrowIfDisposed() =>
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeStarted) != 0, this);
 
     private enum PublishStatus
     {
@@ -1665,7 +1682,7 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
         uint mode);
 
     [DllImport("libc", EntryPoint = "flock", SetLastError = true)]
-    private static extern int UnixFlock(int descriptor, int operation);
+    private static extern int UnixFlock(SafeFileHandle handle, int operation);
 
     [DllImport("libc", EntryPoint = "fchmod", SetLastError = true)]
     private static extern int UnixChangeMode(int descriptor, uint mode);
