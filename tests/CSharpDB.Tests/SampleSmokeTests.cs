@@ -208,7 +208,7 @@ public sealed class SampleSmokeTests : IAsyncLifetime
                              Ct))
             {
                 var rows = await budgetQuery.ToListAsync(Ct);
-                Assert.Equal(125050L, rows[0][0].AsInteger);
+                Assert.Equal(1250.50m, rows[0][0].AsDecimal);
             }
 
             await using (var rowVersionQuery = await db.ExecuteAsync(

@@ -281,7 +281,7 @@ internal static class CSharpDbMigrationSql
                 }
                 definitions[columnOrdinal] = (
                     Quote(planned.TargetName!),
-                    TypeName(targetType),
+                    TypeName(targetType, column),
                     collation,
                     IsNullable(column),
                     defaultExpression);
@@ -656,14 +656,30 @@ internal static class CSharpDbMigrationSql
             $"Catalog object '{item.ObjectId}' requires explicit ordered members for role '{role}'.");
     }
 
-    private static string TypeName(DbType type) => type switch
+    private static string TypeName(
+        DbType type,
+        MigrationCatalogObject? source = null)
     {
-        DbType.Integer => "INTEGER",
-        DbType.Real => "REAL",
-        DbType.Text => "TEXT",
-        DbType.Blob => "BLOB",
-        _ => throw new InvalidDataException($"Unsupported persistent target type '{type}'."),
-    };
+        if (source is not null &&
+            CSharpDbDeclaredTypeContract.TryRead(
+                source,
+                out SqlTypeDescriptor declaredType) &&
+            declaredType.StorageType == type)
+        {
+            return declaredType.ToSql();
+        }
+
+        return type switch
+        {
+            DbType.Integer => "INTEGER",
+            DbType.Real => "REAL",
+            DbType.Text => "TEXT",
+            DbType.Blob => "BLOB",
+            DbType.Decimal => "DECIMAL",
+            _ => throw new InvalidDataException(
+                $"Unsupported persistent target type '{type}'."),
+        };
+    }
 
     private static string? ReadLiteralDefault(
         MigrationCatalogObject column,

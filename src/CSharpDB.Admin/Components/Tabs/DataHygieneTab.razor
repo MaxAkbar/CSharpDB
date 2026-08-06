@@ -986,7 +986,7 @@
     private static string GetColumnIconClass(ColumnDefinition column)
         => column.IsPrimaryKey ? "bi-key" : column.Type switch
         {
-            DbType.Integer or DbType.Real => "bi-123",
+            DbType.Integer or DbType.Real or DbType.Decimal => "bi-123",
             DbType.Blob => "bi-file-binary",
             _ => "bi-fonts",
         };

@@ -156,9 +156,10 @@ public sealed class CSharpDbQueryableMethodTranslatingExpressionVisitor
                 nameof(Queryable.Average));
         }
 
-        if (IsDecimalType(resultType))
+        if (IsDecimalType(resultType) &&
+            UsesConvertedDecimalMapping(selector))
         {
-            return UnsupportedDecimalAggregate(
+            return UnsupportedConvertedDecimalAggregate(
                 nameof(Queryable.Average));
         }
 
@@ -239,9 +240,10 @@ public sealed class CSharpDbQueryableMethodTranslatingExpressionVisitor
                 nameof(Queryable.Max));
         }
 
-        if (IsDecimalType(resultType))
+        if (IsDecimalType(resultType) &&
+            UsesConvertedDecimalMapping(selector))
         {
-            return UnsupportedDecimalAggregate(
+            return UnsupportedConvertedDecimalAggregate(
                 nameof(Queryable.Max));
         }
 
@@ -275,9 +277,10 @@ public sealed class CSharpDbQueryableMethodTranslatingExpressionVisitor
                 nameof(Queryable.Min));
         }
 
-        if (IsDecimalType(resultType))
+        if (IsDecimalType(resultType) &&
+            UsesConvertedDecimalMapping(selector))
         {
-            return UnsupportedDecimalAggregate(
+            return UnsupportedConvertedDecimalAggregate(
                 nameof(Queryable.Min));
         }
 
@@ -311,9 +314,10 @@ public sealed class CSharpDbQueryableMethodTranslatingExpressionVisitor
                 nameof(Queryable.Sum));
         }
 
-        if (IsDecimalType(resultType))
+        if (IsDecimalType(resultType) &&
+            UsesConvertedDecimalMapping(selector))
         {
-            return UnsupportedDecimalAggregate(
+            return UnsupportedConvertedDecimalAggregate(
                 nameof(Queryable.Sum));
         }
 
@@ -683,14 +687,60 @@ public sealed class CSharpDbQueryableMethodTranslatingExpressionVisitor
         return null;
     }
 
-    private ShapedQueryExpression? UnsupportedDecimalAggregate(
+    private ShapedQueryExpression? UnsupportedConvertedDecimalAggregate(
         string aggregateName)
     {
         AddTranslationErrorDetails(
             CSharpDbQueryTranslationDiagnostics.ForDecimal(
-                $"Decimal aggregate '{aggregateName}' is deferred until scaled accumulation, overflow, and result-scale semantics are qualified."));
+                $"Decimal aggregate '{aggregateName}' cannot operate on a scaled-integer or application-converted decimal mapping without changing its algebra."));
         return null;
     }
+
+    private bool UsesConvertedDecimalMapping(LambdaExpression? selector)
+    {
+        if (selector is null)
+        {
+            return _model.GetEntityTypes()
+                .SelectMany(static entityType => entityType.GetProperties())
+                .Any(static property =>
+                    (Nullable.GetUnderlyingType(property.ClrType) ?? property.ClrType) ==
+                        typeof(decimal) &&
+                    property.GetRelationalTypeMapping().Converter is not null);
+        }
+
+        Expression expression = selector.Body;
+        while (expression is UnaryExpression
+               {
+                   NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked,
+               } conversion)
+        {
+            expression = conversion.Operand;
+        }
+
+        if (expression is MemberExpression
+            {
+                Member.Name: nameof(Nullable<int>.Value),
+                Expression: MemberExpression nullableMember,
+            })
+        {
+            expression = nullableMember;
+        }
+
+        if (expression is not MemberExpression member)
+            return false;
+
+        Type? entityType = member.Expression?.Type;
+        IProperty? property = _model.GetEntityTypes()
+            .Where(mappedType =>
+                mappedType.ClrType == entityType ||
+                mappedType.ClrType == member.Member.DeclaringType)
+            .Select(mappedType => mappedType.FindProperty(member.Member.Name))
+            .FirstOrDefault(static candidate => candidate is not null);
+        return property?.GetRelationalTypeMapping().Converter is not null;
+    }
+
+    private static bool IsDecimalType(Type type) =>
+        (Nullable.GetUnderlyingType(type) ?? type) == typeof(decimal);
 
     private ShapedQueryExpression UnsupportedSetOperation(
         string operatorName,
@@ -809,7 +859,7 @@ public sealed class CSharpDbQueryableMethodTranslatingExpressionVisitor
         if (shapedClrType != clrType)
         {
             reason =
-                $"The {sourceName} branch applies a CLR conversion to the projected column. Explicit boxing, numeric casts, and nullable lifts are outside the direct-column surface.";
+                $"The {sourceName} branch applies a CLR conversion to the projected column. Explicit boxing, numeric casts, nullable lifts, and configured value converters are outside the direct-column surface; a qualified column must use a converter-free INTEGER mapping or converter-free BIGINT mapping.";
             return false;
         }
 
@@ -830,14 +880,11 @@ public sealed class CSharpDbQueryableMethodTranslatingExpressionVisitor
 
         if (column.TypeMapping is not
                 RelationalTypeMapping typeMapping ||
-            !string.Equals(
-                typeMapping.StoreType,
-                "INTEGER",
-                StringComparison.OrdinalIgnoreCase) ||
+            !IsDirectIntegralStoreType(typeMapping.StoreType) ||
             typeMapping.Converter is not null)
         {
             reason =
-                $"The {sourceName} branch column must use a converter-free INTEGER mapping.";
+                $"The {sourceName} branch column must use a converter-free INTEGER mapping or converter-free BIGINT mapping.";
             return false;
         }
 
@@ -938,10 +985,6 @@ public sealed class CSharpDbQueryableMethodTranslatingExpressionVisitor
         Nullable.GetUnderlyingType(type) is null
             ? typeof(Nullable<>).MakeGenericType(type)
             : type;
-
-    private static bool IsDecimalType(Type type) =>
-        (Nullable.GetUnderlyingType(type) ?? type) ==
-        typeof(decimal);
 
     private bool TryValidateGroupingKey(
         Expression expression,
@@ -1219,14 +1262,10 @@ public sealed class CSharpDbQueryableMethodTranslatingExpressionVisitor
         CoreTypeMapping typeMapping =
             property.GetTypeMapping();
         if (typeMapping is not
-                RelationalTypeMapping relationalTypeMapping ||
-            !string.Equals(
-                relationalTypeMapping.StoreType,
-                "INTEGER",
-                StringComparison.OrdinalIgnoreCase))
+                RelationalTypeMapping relationalTypeMapping)
         {
             reason =
-                $"The {selectorName} key property '{property.Name}' does not use the required direct INTEGER store mapping.";
+                $"The {selectorName} key property '{property.Name}' does not use a relational integral store mapping.";
             return false;
         }
 
@@ -1240,6 +1279,14 @@ public sealed class CSharpDbQueryableMethodTranslatingExpressionVisitor
         {
             reason =
                 $"The {selectorName} key property '{property.Name}' uses a configured value converter, which is outside the qualified equality surface.";
+            return false;
+        }
+
+        if (!IsDirectIntegralStoreType(
+                relationalTypeMapping.StoreType))
+        {
+            reason =
+                $"The {selectorName} key property '{property.Name}' does not use the required direct INTEGER or BIGINT store mapping.";
             return false;
         }
 
@@ -1265,6 +1312,16 @@ public sealed class CSharpDbQueryableMethodTranslatingExpressionVisitor
         reason = string.Empty;
         return true;
     }
+
+    private static bool IsDirectIntegralStoreType(string storeType) =>
+        string.Equals(
+            storeType.Trim(),
+            "INTEGER",
+            StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(
+            storeType.Trim(),
+            "BIGINT",
+            StringComparison.OrdinalIgnoreCase);
 
     private bool TryValidateRequiredNavigationJoinKeys(
         LambdaExpression outerKeySelector,

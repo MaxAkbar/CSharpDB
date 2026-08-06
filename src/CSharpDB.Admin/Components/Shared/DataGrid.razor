@@ -1427,20 +1427,60 @@
             return true;
         }
 
+        if (IsDecimalColumnType(columnType))
+        {
+            if (decimal.TryParse(
+                    filterValue,
+                    System.Globalization.NumberStyles.Number,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out decimal value))
+            {
+                clause = $"{columnName} = {value.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+            }
+            else
+            {
+                clause = "0 = 1";
+            }
+
+            return true;
+        }
+
         return false;
     }
 
     private static bool IsTextColumnType(string columnType)
-        => columnType.Equals("TEXT", StringComparison.OrdinalIgnoreCase)
-            || columnType.Equals("VARCHAR", StringComparison.OrdinalIgnoreCase)
-            || columnType.Equals("CHAR", StringComparison.OrdinalIgnoreCase);
+    {
+        string type = columnType.Trim().ToUpperInvariant();
+        return type.StartsWith("TEXT", StringComparison.Ordinal) ||
+               type.StartsWith("VARCHAR", StringComparison.Ordinal) ||
+               type.StartsWith("CHAR", StringComparison.Ordinal) ||
+               type.StartsWith("UUID", StringComparison.Ordinal) ||
+               type.StartsWith("DATE", StringComparison.Ordinal) ||
+               type.StartsWith("TIME", StringComparison.Ordinal) ||
+               type.StartsWith("TIMESTAMP", StringComparison.Ordinal) ||
+               type.StartsWith("INTERVAL", StringComparison.Ordinal) ||
+               type.StartsWith("JSON", StringComparison.Ordinal) ||
+               type.StartsWith("XML", StringComparison.Ordinal);
+    }
 
     private static bool IsIntegerColumnType(string columnType)
-        => columnType.Equals("INTEGER", StringComparison.OrdinalIgnoreCase)
-            || columnType.Equals("INT", StringComparison.OrdinalIgnoreCase);
+    {
+        string type = columnType.Trim().ToUpperInvariant();
+        return type is "BOOLEAN" or "TINYINT" or "SMALLINT" or "INTEGER" or "INT" or "BIGINT";
+    }
 
     private static bool IsRealColumnType(string columnType)
-        => columnType.Equals("REAL", StringComparison.OrdinalIgnoreCase);
+    {
+        string type = columnType.Trim().ToUpperInvariant();
+        return type is "REAL" or "DOUBLE" or "DOUBLE PRECISION" or "FLOAT";
+    }
+
+    private static bool IsDecimalColumnType(string columnType)
+    {
+        string type = columnType.Trim().ToUpperInvariant();
+        return type.StartsWith("DECIMAL", StringComparison.Ordinal) ||
+               type.StartsWith("NUMERIC", StringComparison.Ordinal);
+    }
 
     private string BuildOrderByClause()
     {
@@ -1510,7 +1550,7 @@
     private void ApplyTableSchema(TableSchema schema)
     {
         Columns = schema.Columns.Select(c => c.Name).ToArray();
-        ColumnTypes = schema.Columns.Select(c => c.Type.ToString().ToUpperInvariant()).ToArray();
+        ColumnTypes = schema.Columns.Select(c => c.EffectiveType.ToSql()).ToArray();
         PrimaryKeyColumn = schema.Columns.FirstOrDefault(c => c.IsPrimaryKey)?.Name;
         _rowVersionColumns.Clear();
         _rowVersionColumns.UnionWith(schema.Columns.Where(static column => column.IsRowVersion).Select(static column => column.Name));
@@ -1622,14 +1662,23 @@
         _ => ""
     };
 
-    private static string GetTypeBadgeClass(string type) => type.ToUpperInvariant() switch
+    private static string GetTypeBadgeClass(string type)
     {
-        "INTEGER" or "INT" => "type-integer",
-        "TEXT" or "VARCHAR" or "CHAR" => "type-text",
-        "REAL" => "type-real",
-        "BLOB" => "type-blob",
-        _ => "type-other"
-    };
+        if (IsIntegerColumnType(type))
+            return "type-integer";
+        if (IsRealColumnType(type) || IsDecimalColumnType(type))
+            return "type-real";
+        if (IsTextColumnType(type))
+            return "type-text";
+
+        string normalized = type.Trim().ToUpperInvariant();
+        return normalized.StartsWith("BLOB", StringComparison.Ordinal) ||
+               normalized.StartsWith("BINARY", StringComparison.Ordinal) ||
+               normalized.StartsWith("VARBINARY", StringComparison.Ordinal) ||
+               normalized.StartsWith("BIT", StringComparison.Ordinal)
+            ? "type-blob"
+            : "type-other";
+    }
 
     private string GetColumnHeaderIconClass(int colIdx, bool isPrimaryKeyColumn)
     {
@@ -1644,14 +1693,18 @@
             return "bi-calendar3 col-icon date";
         }
 
-        return (GetColumnType(colIdx)?.ToUpperInvariant()) switch
-        {
-            "INTEGER" or "INT" => "bi-hash col-icon int",
-            "REAL" => "bi-123 col-icon int",
-            "TEXT" or "VARCHAR" or "CHAR" => "bi-fonts col-icon text",
-            "BLOB" => "bi-file-binary col-icon blob",
-            _ => "bi-circle col-icon",
-        };
+        string? type = GetColumnType(colIdx);
+        if (type is null)
+            return "bi-circle col-icon";
+        if (IsIntegerColumnType(type))
+            return "bi-hash col-icon int";
+        if (IsRealColumnType(type) || IsDecimalColumnType(type))
+            return "bi-123 col-icon int";
+        if (IsTextColumnType(type))
+            return "bi-fonts col-icon text";
+        return GetTypeBadgeClass(type) == "type-blob"
+            ? "bi-file-binary col-icon blob"
+            : "bi-circle col-icon";
     }
 
     private string GetCellClass(int colIdx, object? cellValue, bool isPrimaryKey, bool isModified)
@@ -1665,7 +1718,7 @@
             classes.Add("data-null-cell");
 
         string? type = GetColumnType(colIdx);
-        if (type is not null && (IsIntegerColumnType(type) || IsRealColumnType(type)))
+        if (type is not null && (IsIntegerColumnType(type) || IsRealColumnType(type) || IsDecimalColumnType(type)))
             classes.Add("data-number-cell");
         else if (Columns is not null
                  && colIdx >= 0

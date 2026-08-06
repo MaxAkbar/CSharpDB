@@ -72,6 +72,16 @@ public sealed class CSharpDbStagedMigrationTargetTests
                 row => row.Values[payloadIndex].Type == DbType.Blob &&
                     row.Values[payloadIndex].AsBlob.AsSpan().SequenceEqual(
                         new byte[] { 0x43, 0x53, 0x44, 0x42, 0x01 }));
+
+            List<MigrationValidationRow> orders = await CollectAsync(
+                snapshot.ReadRowsAsync("syn:table:orders", Ct));
+            int taxIndex = IncludedColumnIds(catalog, plan, "syn:table:orders")
+                .ToList()
+                .IndexOf("syn:column:orders:tax");
+            Assert.True(taxIndex >= 0);
+            Assert.All(orders, row => Assert.Equal(DbType.Decimal, row.Values[taxIndex].Type));
+            Assert.Equal(7.25m, orders[0].Values[taxIndex].AsDecimal);
+            Assert.Equal(84.25m, orders[^1].Values[taxIndex].AsDecimal);
         }
 
         Assert.True(File.Exists(files.TargetPath));

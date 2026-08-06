@@ -142,7 +142,7 @@ public static partial class SchemaScriptRenderer
         var sql = new StringBuilder();
         sql.Append(Identifier(column.Name))
             .Append(' ')
-            .Append(column.Type.ToString().ToUpperInvariant());
+            .Append(column.DeclaredType?.ToSql() ?? column.Type.ToString().ToUpperInvariant());
 
         if (column.IsRowVersion)
             sql.Append(" ROWVERSION");

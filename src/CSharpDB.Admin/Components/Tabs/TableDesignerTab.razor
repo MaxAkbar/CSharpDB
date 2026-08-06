@@ -64,9 +64,30 @@
                                         @onchange="e => col.DataType = e.Value?.ToString() ?? string.Empty"
                                         @onfocus="() => _selectedIndex = idx">
                                     <option value="INTEGER">INTEGER</option>
+                                    <option value="BOOLEAN">BOOLEAN</option>
+                                    <option value="TINYINT">TINYINT</option>
+                                    <option value="SMALLINT">SMALLINT</option>
+                                    <option value="BIGINT">BIGINT</option>
                                     <option value="REAL">REAL</option>
+                                    <option value="DOUBLE PRECISION">DOUBLE PRECISION</option>
+                                    <option value="DECIMAL">DECIMAL</option>
+                                    <option value="CHAR">CHAR</option>
+                                    <option value="VARCHAR">VARCHAR</option>
                                     <option value="TEXT">TEXT</option>
+                                    <option value="BINARY">BINARY</option>
+                                    <option value="VARBINARY">VARBINARY</option>
                                     <option value="BLOB">BLOB</option>
+                                    <option value="UUID">UUID</option>
+                                    <option value="DATE">DATE</option>
+                                    <option value="TIME">TIME</option>
+                                    <option value="TIMESTAMP">TIMESTAMP</option>
+                                    <option value="TIMESTAMP WITH TIME ZONE">TIMESTAMP WITH TIME ZONE</option>
+                                    <option value="INTERVAL YEAR TO MONTH">INTERVAL YEAR TO MONTH</option>
+                                    <option value="INTERVAL DAY TO SECOND">INTERVAL DAY TO SECOND</option>
+                                    <option value="JSON">JSON</option>
+                                    <option value="XML">XML</option>
+                                    <option value="BIT">BIT</option>
+                                    <option value="BIT VARYING">BIT VARYING</option>
                                 </select>
                             </td>
                             <td class="center-cell">
@@ -193,7 +214,9 @@
             var parts = new List<string> { $"    {col.Name}", col.DataType };
             if (col.IsPrimaryKey)
                 parts.Add("PRIMARY KEY");
-            if (col.IsIdentity && col.IsPrimaryKey && col.DataType == "INTEGER")
+            if (col.IsIdentity &&
+                col.IsPrimaryKey &&
+                col.DataType is "INTEGER" or "BIGINT")
                 parts.Add("IDENTITY");
             if (!col.AllowNulls && !col.IsPrimaryKey)
                 parts.Add("NOT NULL");

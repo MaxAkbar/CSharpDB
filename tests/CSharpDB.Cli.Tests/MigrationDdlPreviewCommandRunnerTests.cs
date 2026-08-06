@@ -41,7 +41,7 @@ public sealed class MigrationDdlPreviewCommandRunnerTests
             string jsonDigest = Sha256(first);
             Assert.True(
                 string.Equals(
-                    "c5076ffa7a6b35bf04e17be9ece68d93c7c319a15963dd001b3f250c4bc7d94c",
+                    "4bda01ed3989003d79322254dd79362eab11ccb06139e6b7a365a10c566a3c3d",
                     jsonDigest,
                     StringComparison.Ordinal),
                 $"JSON preview digest: {jsonDigest}");
@@ -92,7 +92,7 @@ public sealed class MigrationDdlPreviewCommandRunnerTests
             string textDigest = Sha256(text);
             Assert.True(
                 string.Equals(
-                    "0a5c6952d88688e4057a44af806664e39f6c5b8613fec23f61fbadf60f389dbc",
+                    "f4ecf78066f3b31fea9f11ce2659ca73803ed112ab4cb7ab24c433c08a2b727b",
                     textDigest,
                     StringComparison.Ordinal),
                 $"Text preview digest: {textDigest}");

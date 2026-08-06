@@ -33,4 +33,10 @@ public readonly struct RecordColumnAccessor
         out double realValue,
         out bool isReal)
         => RecordEncoder.TryDecodeNumericColumn(buffer, ColumnIndex, out intValue, out realValue, out isReal);
+
+    /// <summary>
+    /// Decodes INTEGER, REAL, or DECIMAL without converting an exact DECIMAL to double.
+    /// </summary>
+    public bool TryDecodeNumericValue(ReadOnlySpan<byte> buffer, out DbValue value)
+        => RecordEncoder.TryDecodeNumericValueColumn(buffer, ColumnIndex, out value);
 }

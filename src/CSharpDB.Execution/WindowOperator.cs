@@ -38,6 +38,7 @@ internal sealed class WindowOperator :
         public SpanExpressionEvaluator? OffsetEvaluator { get; init; }
         public SpanExpressionEvaluator? DefaultEvaluator { get; init; }
         public string? ArgumentCollation { get; init; }
+        public SqlTypeDescriptor? ArgumentType { get; init; }
         public bool IsCountStar { get; init; }
         public WindowFrame? Frame { get; init; }
     }
@@ -60,6 +61,8 @@ internal sealed class WindowOperator :
         private readonly WindowFunctionKind _kind;
         private long _count;
         private Int128 _integerSum;
+        private decimal _decimalSum;
+        private long _decimalCount;
         private double _realSum;
         private double _realCompensation;
         private long _realCount;
@@ -94,6 +97,10 @@ internal sealed class WindowOperator :
                     {
                         AddReal(value.AsReal);
                     }
+                    else if (value.Type == DbType.Decimal)
+                    {
+                        AddDecimal(value.AsDecimal);
+                    }
                     else
                     {
                         _integerSum += value.AsInteger;
@@ -123,6 +130,10 @@ internal sealed class WindowOperator :
             {
                 RemoveReal(value.AsReal);
             }
+            else if (value.Type == DbType.Decimal)
+            {
+                RemoveDecimal(value.AsDecimal);
+            }
             else
             {
                 _integerSum -= value.AsInteger;
@@ -138,13 +149,50 @@ internal sealed class WindowOperator :
                 WindowFunctionKind.Count => DbValue.FromInteger(_count),
                 WindowFunctionKind.Sum when _count == 0 => DbValue.Null,
                 WindowFunctionKind.Sum when _realCount > 0 =>
-                    DbValue.FromReal((double)_integerSum + GetRealSum()),
-                WindowFunctionKind.Sum => DbValue.FromInteger(GetIntegerSum()),
+                    DbValue.FromReal((double)_integerSum + (double)_decimalSum + GetRealSum()),
+                WindowFunctionKind.Sum => GetExactSum(),
                 WindowFunctionKind.Avg when _count == 0 => DbValue.Null,
-                WindowFunctionKind.Avg => DbValue.FromReal(
-                    ((double)_integerSum + GetRealSum()) / _count),
+                WindowFunctionKind.Avg when _realCount > 0 => DbValue.FromReal(
+                    ((double)_integerSum + (double)_decimalSum + GetRealSum()) / _count),
+                WindowFunctionKind.Avg when _decimalCount > 0 =>
+                    DecimalAggregateSemantics.DivideForAverage(GetExactSum(), _count),
+                WindowFunctionKind.Avg => DbValue.FromReal((double)_integerSum / _count),
                 _ => throw new InvalidOperationException($"{_kind} does not use a numeric sliding state."),
             };
+        }
+
+        private void AddDecimal(decimal value)
+        {
+            try
+            {
+                _decimalSum = checked(_decimalSum + value);
+                _decimalCount++;
+            }
+            catch (OverflowException ex)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.TypeMismatch,
+                    "Decimal SUM window overflowed the supported decimal range.",
+                    ex);
+            }
+        }
+
+        private void RemoveDecimal(decimal value)
+        {
+            try
+            {
+                _decimalSum = checked(_decimalSum - value);
+                _decimalCount--;
+                if (_decimalCount == 0)
+                    _decimalSum = 0m;
+            }
+            catch (OverflowException ex)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.TypeMismatch,
+                    "Decimal SUM window overflowed the supported decimal range.",
+                    ex);
+            }
         }
 
         private void AddReal(double value)
@@ -242,7 +290,7 @@ internal sealed class WindowOperator :
 
         private static void EnsureNumeric(DbValue value)
         {
-            if (value.Type is DbType.Integer or DbType.Real)
+            if (value.Type is DbType.Integer or DbType.Real or DbType.Decimal)
                 return;
 
             throw new CSharpDbException(
@@ -262,6 +310,33 @@ internal sealed class WindowOperator :
 
             return (long)_integerSum;
         }
+
+        private DbValue GetExactSum()
+        {
+            long integerSum = GetIntegerSum();
+            if (_decimalCount == 0)
+                return DbValue.FromInteger(integerSum);
+
+            DbValue decimalSum;
+            try
+            {
+                decimalSum = DbValue.FromDecimal(_decimalSum);
+            }
+            catch (OverflowException ex)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.TypeMismatch,
+                    "Decimal SUM window exceeded the supported precision.",
+                    ex);
+            }
+
+            return integerSum == 0
+                ? decimalSum
+                : ExpressionEvaluator.EvaluateArithmetic(
+                    BinaryOp.Plus,
+                    decimalSum,
+                    DbValue.FromInteger(integerSum));
+        }
     }
 
     private readonly IOperator _source;
@@ -270,6 +345,8 @@ internal sealed class WindowOperator :
     private readonly SpanExpressionEvaluator[] _orderEvaluators;
     private readonly string?[] _partitionCollations;
     private readonly string?[] _orderCollations;
+    private readonly SqlTypeDescriptor?[] _partitionTypes;
+    private readonly SqlTypeDescriptor?[] _orderTypes;
     private readonly int[] _orderDirections;
     private readonly RuntimeFunction[] _functions;
     private readonly WindowExecutionOptions _options;
@@ -336,6 +413,12 @@ internal sealed class WindowOperator :
             .ToArray();
         _orderCollations = specification.OrderBy
             .Select(clause => CollationSupport.ResolveExpressionCollation(clause.Expression, inputSchema))
+            .ToArray();
+        _partitionTypes = specification.PartitionBy
+            .Select(expression => ExpressionEvaluator.ResolveDeclaredType(expression, inputSchema))
+            .ToArray();
+        _orderTypes = specification.OrderBy
+            .Select(clause => ExpressionEvaluator.ResolveDeclaredType(clause.Expression, inputSchema))
             .ToArray();
         _orderDirections = specification.OrderBy
             .Select(clause => clause.Descending ? -1 : 1)
@@ -499,7 +582,8 @@ internal sealed class WindowOperator :
                KeysEqual(
                    rows[partitionStart].PartitionKeys,
                    rows[partitionEnd].PartitionKeys,
-                   _partitionCollations))
+                   _partitionCollations,
+                   _partitionTypes))
         {
             ThrowIfCancellationRequestedPeriodically(partitionEnd - partitionStart, ct);
             partitionEnd++;
@@ -646,7 +730,8 @@ internal sealed class WindowOperator :
                    KeysEqual(
                        rows[partitionStart + peerStart].OrderKeys,
                        rows[partitionStart + peerEnd].OrderKeys,
-                       _orderCollations))
+                       _orderCollations,
+                       _orderTypes))
             {
                 ThrowIfCancellationRequestedPeriodically(peerEnd - peerStart, ct);
                 peerEnd++;
@@ -951,9 +1036,10 @@ internal sealed class WindowOperator :
                 {
                     while (tail > head)
                     {
-                        int comparison = CollationSupport.Compare(
+                        int comparison = SqlTypeCoercion.Compare(
                             values[deque[tail - 1]],
                             values[currentEnd],
+                            function.ArgumentType,
                             function.ArgumentCollation);
                         if (isMin ? comparison <= 0 : comparison >= 0)
                             break;
@@ -1079,9 +1165,10 @@ internal sealed class WindowOperator :
 
         for (int i = 0; i < left.PartitionKeys.Length; i++)
         {
-            int comparison = CollationSupport.Compare(
+            int comparison = SqlTypeCoercion.Compare(
                 left.PartitionKeys[i],
                 right.PartitionKeys[i],
+                _partitionTypes[i],
                 _partitionCollations[i]);
             if (comparison != 0)
                 return comparison;
@@ -1089,9 +1176,10 @@ internal sealed class WindowOperator :
 
         for (int i = 0; i < left.OrderKeys.Length; i++)
         {
-            int comparison = CollationSupport.Compare(
+            int comparison = SqlTypeCoercion.Compare(
                 left.OrderKeys[i],
                 right.OrderKeys[i],
+                _orderTypes[i],
                 _orderCollations[i]);
             if (comparison != 0)
                 return comparison * _orderDirections[i];
@@ -1100,11 +1188,19 @@ internal sealed class WindowOperator :
         return left.OriginalIndex.CompareTo(right.OriginalIndex);
     }
 
-    private static bool KeysEqual(DbValue[] left, DbValue[] right, string?[] collations)
+    private static bool KeysEqual(
+        DbValue[] left,
+        DbValue[] right,
+        string?[] collations,
+        SqlTypeDescriptor?[] declaredTypes)
     {
         for (int i = 0; i < left.Length; i++)
         {
-            if (CollationSupport.Compare(left[i], right[i], collations[i]) != 0)
+            if (SqlTypeCoercion.Compare(
+                    left[i],
+                    right[i],
+                    declaredTypes[i],
+                    collations[i]) != 0)
                 return false;
         }
 
@@ -1179,6 +1275,9 @@ internal sealed class WindowOperator :
             ArgumentCollation = valueArgument == null
                 ? null
                 : CollationSupport.ResolveExpressionCollation(valueArgument, schema),
+            ArgumentType = valueArgument == null
+                ? null
+                : ExpressionEvaluator.ResolveDeclaredType(valueArgument, schema),
             Frame = expression.Window.Frame,
         };
     }

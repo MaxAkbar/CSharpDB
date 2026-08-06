@@ -845,7 +845,7 @@
                     continue;
 
                 columnsBySource[tableName] = schema.Columns
-                    .Select(column => new SqlCompletionColumn(column.Name, column.Type.ToString().ToUpperInvariant(), tableName))
+                    .Select(column => new SqlCompletionColumn(column.Name, column.EffectiveType.ToSql(), tableName))
                     .ToArray();
             }
 

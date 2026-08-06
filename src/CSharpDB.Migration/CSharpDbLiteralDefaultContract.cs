@@ -134,6 +134,34 @@ internal static class CSharpDbLiteralDefaultContract
                 expression = string.Concat("X'", canonicalValue, "'");
                 break;
 
+            case "decimal":
+                if (!decimal.TryParse(
+                        value,
+                        NumberStyles.AllowLeadingSign |
+                        NumberStyles.AllowDecimalPoint,
+                        CultureInfo.InvariantCulture,
+                        out decimal decimalValue))
+                {
+                    descriptor = default;
+                    reason = "DECIMAL defaultValue is not an exact invariant decimal.";
+                    return false;
+                }
+                try
+                {
+                    DbValue normalized = DbValue.FromDecimal(decimalValue);
+                    valueType = DbType.Decimal;
+                    canonicalValue = normalized.AsDecimal.ToString(
+                        CultureInfo.InvariantCulture);
+                    expression = canonicalValue;
+                }
+                catch (OverflowException)
+                {
+                    descriptor = default;
+                    reason = "DECIMAL defaultValue exceeds 18 digits of precision.";
+                    return false;
+                }
+                break;
+
             default:
                 descriptor = default;
                 reason = $"Default type '{literalType}' is not supported.";

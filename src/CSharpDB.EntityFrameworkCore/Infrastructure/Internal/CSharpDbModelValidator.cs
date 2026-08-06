@@ -23,20 +23,6 @@ public sealed class CSharpDbModelValidator : RelationalModelValidator
         if (model.GetSequences().Any())
             throw new NotSupportedException("Sequences and HiLo are not supported by the CSharpDB EF Core provider.");
 
-        foreach (IDbFunction dbFunction in
-                 model.GetDbFunctions())
-        {
-            if (IsDecimalType(
-                    dbFunction.ReturnType) ||
-                dbFunction.Parameters.Any(parameter =>
-                    IsDecimalType(
-                        parameter.ClrType)))
-            {
-                throw new NotSupportedException(
-                    $"DbFunction '{dbFunction.ModelName}' uses decimal parameters or return values, which are outside CSharpDB's exact scaled-integer foundation.");
-            }
-        }
-
         foreach (var entityType in model.GetEntityTypes())
         {
             ValidateEntityType(entityType);
@@ -131,35 +117,43 @@ public sealed class CSharpDbModelValidator : RelationalModelValidator
                 property.FindAnnotation(
                         RelationalAnnotationNames.ColumnType)?
                     .Value as string;
+            bool usesLegacyScaledInteger =
+                property.GetRelationalTypeMapping().Converter is
+                    CSharpDbDecimalToInt64Converter;
             if (configuredStoreType is not null &&
-                !string.Equals(
-                    configuredStoreType.Trim(),
-                    "INTEGER",
-                    StringComparison.OrdinalIgnoreCase))
+                !IsSupportedDecimalStoreType(
+                    configuredStoreType,
+                    usesLegacyScaledInteger))
             {
                 throw new NotSupportedException(
-                    $"Property '{entityType.DisplayName()}.{property.Name}' configures store type '{configuredStoreType}', but CSharpDB decimal({precision}, {scale}) uses provider-owned scaled INTEGER storage. Configure precision and scale with HasPrecision instead of HasColumnType.");
+                    $"Property '{entityType.DisplayName()}.{property.Name}' configures store type '{configuredStoreType}', but CSharpDB decimal({precision}, {scale}) requires DECIMAL/NUMERIC storage. Explicit INTEGER remains available only for legacy scaled-integer models.");
             }
 
-            if (entityType.GetKeys().Any(key =>
+            if (usesLegacyScaledInteger &&
+                entityType.GetKeys().Any(key =>
                     key.Properties.Contains(property)))
             {
                 throw new NotSupportedException(
                     $"Property '{entityType.DisplayName()}.{property.Name}' uses CSharpDB decimal({precision}, {scale}) as a key. Provider-owned decimal key mappings are not supported in this bounded release.");
             }
 
-            if (property.FindAnnotation(
+            if (usesLegacyScaledInteger &&
+                (property.FindAnnotation(
                     RelationalAnnotationNames.DefaultValue) is not null ||
-                property.GetDefaultValueSql() is not null)
+                 property.GetDefaultValueSql() is not null))
             {
                 throw new NotSupportedException(
                     $"Property '{entityType.DisplayName()}.{property.Name}' configures a database default for CSharpDB decimal({precision}, {scale}). Decimal defaults are not supported until scaled-literal migration semantics are implemented.");
             }
 
-            if (property.ValueGenerated != ValueGenerated.Never)
+            bool hasDatabaseDefault = property.FindAnnotation(
+                    RelationalAnnotationNames.DefaultValue) is not null ||
+                property.GetDefaultValueSql() is not null;
+            if (property.ValueGenerated != ValueGenerated.Never &&
+                !hasDatabaseDefault)
             {
                 throw new NotSupportedException(
-                    $"Property '{entityType.DisplayName()}.{property.Name}' uses generated-value semantics with CSharpDB decimal({precision}, {scale}), which are not supported in this bounded release.");
+                    $"Property '{entityType.DisplayName()}.{property.Name}' uses generated-value semantics with CSharpDB decimal({precision}, {scale}), but DECIMAL columns are not identity or rowversion storage.");
             }
         }
 
@@ -282,7 +276,20 @@ public sealed class CSharpDbModelValidator : RelationalModelValidator
         }
     }
 
-    private static bool IsDecimalType(Type type) =>
-        (Nullable.GetUnderlyingType(type) ?? type) ==
-        typeof(decimal);
+    private static bool IsSupportedDecimalStoreType(
+        string configuredStoreType,
+        bool usesLegacyScaledInteger)
+    {
+        string normalized = configuredStoreType.Trim();
+        int facetStart = normalized.IndexOf('(');
+        string baseName = (facetStart < 0
+                ? normalized
+                : normalized[..facetStart])
+            .Trim();
+        return string.Equals(baseName, "DECIMAL", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(baseName, "DEC", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(baseName, "NUMERIC", StringComparison.OrdinalIgnoreCase) ||
+            usesLegacyScaledInteger &&
+            string.Equals(baseName, "INTEGER", StringComparison.OrdinalIgnoreCase);
+    }
 }

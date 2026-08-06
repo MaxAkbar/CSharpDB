@@ -35,7 +35,11 @@ public sealed class StandardDataTypeMappingProvider : IDataTypeMappingProvider
 
         string logicalType = GetFacet(request.SourceObject, "logicalType") ??
             request.SourceObject.NativeType!;
-        MappingShape shape = request.Profile switch
+        MappingShape shape = CSharpDbDeclaredTypeContract.TryRead(
+            request.SourceObject,
+            out SqlTypeDescriptor declaredType)
+            ? MapDeclaredType(request, declaredType, logicalType)
+            : request.Profile switch
         {
             MigrationMappingProfile.Preserve => Preserve(logicalType, request.SourceObject),
             MigrationMappingProfile.Queryable => Queryable(logicalType, request.SourceObject),
@@ -120,6 +124,29 @@ public sealed class StandardDataTypeMappingProvider : IDataTypeMappingProvider
             _ => Unsupported(),
         };
 
+    private static MappingShape MapDeclaredType(
+        MigrationTypeMappingRequest request,
+        SqlTypeDescriptor declaredType,
+        string logicalType)
+    {
+        DbType storageType = declaredType.StorageType;
+        return request.Profile switch
+        {
+            MigrationMappingProfile.Preserve or
+            MigrationMappingProfile.Queryable => Exact(storageType),
+            MigrationMappingProfile.Custom
+                when request.CustomTargetType is null ||
+                     request.CustomTargetType == storageType =>
+                Exact(storageType),
+            MigrationMappingProfile.Custom
+                when request.CustomTargetType is DbType requested =>
+                Custom(logicalType, requested, request.SourceObject),
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(request),
+                "Unknown mapping profile."),
+        };
+    }
+
     private static MappingShape Queryable(string logicalType, MigrationCatalogObject source) =>
         logicalType.ToUpperInvariant() switch
         {
@@ -160,6 +187,7 @@ public sealed class StandardDataTypeMappingProvider : IDataTypeMappingProvider
             DbType.Text when logical is not ("BINARY" or "GEOGRAPHY") =>
                 Reencoded(DbType.Text, "canonical-text", Facet("logicalType", logicalType)),
             DbType.Blob when logical == "BINARY" => Exact(DbType.Blob),
+            DbType.Decimal when logical == "DECIMAL" => PreserveDecimal(source),
             _ => Unsupported(),
         };
     }
@@ -245,8 +273,8 @@ public sealed class StandardDataTypeMappingProvider : IDataTypeMappingProvider
         if (TryGetScaledDecimalFacets(source, out int precision, out int scale))
         {
             return Reencoded(
-                DbType.Integer,
-                "decimal-scaled-int64",
+                DbType.Decimal,
+                "decimal-native",
                 ScaledDecimalParameters(precision, scale));
         }
 
@@ -266,8 +294,8 @@ public sealed class StandardDataTypeMappingProvider : IDataTypeMappingProvider
         if (TryGetScaledDecimalFacets(source, out int precision, out int scale))
         {
             return Reencoded(
-                DbType.Integer,
-                "decimal-scaled-int64",
+                DbType.Decimal,
+                "decimal-native",
                 ScaledDecimalParameters(precision, scale));
         }
 

@@ -10,6 +10,52 @@ public sealed class CSharpDbDdlCompatibilityTests
         TestContext.Current.CancellationToken;
 
     [Fact]
+    public async Task AnalyzeAsync_AllLogicalSqlTypesRetainTheirDeclaredFacets()
+    {
+        const string script = """
+            CREATE TABLE logical_values (
+                boolean_value BOOLEAN,
+                tiny_value TINYINT,
+                small_value SMALLINT,
+                integer_value INTEGER,
+                big_value BIGINT,
+                real_value REAL,
+                double_value DOUBLE PRECISION,
+                decimal_value DECIMAL(18,4) DEFAULT 12.3400,
+                char_value CHAR(8),
+                varchar_value VARCHAR(32),
+                text_value TEXT,
+                binary_value BINARY(4),
+                varbinary_value VARBINARY(64),
+                blob_value BLOB,
+                uuid_value UUID,
+                date_value DATE,
+                time_value TIME(3),
+                timestamp_value TIMESTAMP(6),
+                timestamp_tz_value TIMESTAMP(6) WITH TIME ZONE,
+                interval_ym_value INTERVAL YEAR TO MONTH,
+                interval_ds_value INTERVAL DAY TO SECOND(3),
+                json_value JSON,
+                xml_value XML,
+                bit_value BIT(8),
+                varbit_value BIT VARYING(16)
+            );
+            """;
+
+        CSharpDbDdlCompatibilityReport report = await AnalyzeAsync(script);
+
+        Assert.Equal(
+            MigrationCompatibilityStatus.Compatible,
+            report.Status);
+        Assert.Equal(
+            MigrationEvidenceLevel.ScratchExecuted,
+            report.HighestEvidence);
+        Assert.Empty(report.Diagnostics);
+        Assert.Empty(report.Differences);
+        Assert.Equal(report.ExpectedSchemaDigest, report.ActualSchemaDigest);
+    }
+
+    [Fact]
     public async Task AnalyzeAsync_AllPersistentScalarTypesPassScratchProof()
     {
         const string script = """

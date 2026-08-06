@@ -131,7 +131,14 @@ internal sealed class TableRewritePlan
                 : mapping.SourceOrdinal < sourceRow.Length
                     ? sourceRow[mapping.SourceOrdinal]
                     : DbValue.Null;
-            targetRow[i] = ConvertValue(sourceValue, mapping.Conversion, TargetSchema.Columns[i]);
+            SqlTypeDescriptor? sourceType = mapping.SourceOrdinal == TableRewriteColumnMapping.ConstantOrdinal
+                ? null
+                : SourceSchema.Columns[mapping.SourceOrdinal].DeclaredType;
+            targetRow[i] = ConvertValue(
+                sourceValue,
+                mapping.Conversion,
+                TargetSchema.Columns[i],
+                sourceType);
         }
 
         return targetRow;
@@ -140,7 +147,8 @@ internal sealed class TableRewritePlan
     private DbValue ConvertValue(
         DbValue value,
         TableRewriteValueConversion conversion,
-        ColumnDefinition targetColumn)
+        ColumnDefinition targetColumn,
+        SqlTypeDescriptor? sourceType)
     {
         if (value.IsNull || conversion == TableRewriteValueConversion.None)
             return value;
@@ -236,8 +244,11 @@ internal sealed class TableRewritePlan
                     throw new CSharpDbException(
                         ErrorCode.TypeMismatch,
                         $"Cannot convert stored BLOB value in column '{qualifiedColumn}' to TEXT because it is not valid UTF-8.",
-                        ex);
+                    ex);
                 }
+
+            case TableRewriteValueConversion.SqlCast:
+                return SqlTypeCoercion.Cast(value, targetColumn.EffectiveType, sourceType);
 
             default:
                 throw new ArgumentOutOfRangeException(nameof(conversion), conversion, null);
@@ -252,6 +263,7 @@ internal enum TableRewriteValueConversion
     RealToInteger = 2,
     TextToBlob = 3,
     BlobToText = 4,
+    SqlCast = 5,
 }
 
 internal readonly record struct TableRewriteColumnMapping(

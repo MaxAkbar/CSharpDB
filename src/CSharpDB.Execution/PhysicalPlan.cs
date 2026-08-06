@@ -448,6 +448,7 @@ internal static class PhysicalPlanResultFormatter
                 DbType.Text => Encoding.UTF8.GetByteCount(row[i].AsText),
                 DbType.Blob => row[i].AsBlob.Length,
                 DbType.Integer or DbType.Real => sizeof(long),
+                DbType.Decimal => sizeof(long) + sizeof(byte),
                 _ => 1,
             };
         }

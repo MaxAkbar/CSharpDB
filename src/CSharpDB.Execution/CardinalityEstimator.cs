@@ -708,7 +708,8 @@ internal static class CardinalityEstimator
         {
             DbType.Integer when bucket.UpperBound.Type == DbType.Integer
                 => TryEstimateIntegerHistogramBucketOverlap(bucket, constraint, out overlapFraction),
-            DbType.Integer or DbType.Real when bucket.UpperBound.Type is DbType.Integer or DbType.Real
+            DbType.Integer or DbType.Real or DbType.Decimal
+                when bucket.UpperBound.Type is DbType.Integer or DbType.Real or DbType.Decimal
                 => TryEstimateRealHistogramBucketOverlap(bucket, constraint, out overlapFraction),
             _ => false,
         };
@@ -779,7 +780,7 @@ internal static class CardinalityEstimator
 
         if (constraint.LowerBound is DbValue lower)
         {
-            if (lower.Type is not (DbType.Integer or DbType.Real))
+            if (lower.Type is not (DbType.Integer or DbType.Real or DbType.Decimal))
                 return false;
 
             effectiveLower = Math.Max(effectiveLower, lower.AsReal);
@@ -787,7 +788,7 @@ internal static class CardinalityEstimator
 
         if (constraint.UpperBound is DbValue upper)
         {
-            if (upper.Type is not (DbType.Integer or DbType.Real))
+            if (upper.Type is not (DbType.Integer or DbType.Real or DbType.Decimal))
                 return false;
 
             effectiveUpper = Math.Min(effectiveUpper, upper.AsReal);
@@ -1308,7 +1309,9 @@ internal static class CardinalityEstimator
         return stats.MinValue.Type switch
         {
             DbType.Integer when stats.MaxValue.Type == DbType.Integer => TryEstimateIntegerAlternativeRangeUnionSelectivity(stats, alternatives, out selectivity),
-            DbType.Real or DbType.Integer when stats.MaxValue.Type is DbType.Real or DbType.Integer => TryEstimateRealAlternativeRangeUnionSelectivity(stats, alternatives, out selectivity),
+            DbType.Real or DbType.Integer or DbType.Decimal
+                when stats.MaxValue.Type is DbType.Real or DbType.Integer or DbType.Decimal
+                => TryEstimateRealAlternativeRangeUnionSelectivity(stats, alternatives, out selectivity),
             _ => false,
         };
     }
@@ -1381,7 +1384,9 @@ internal static class CardinalityEstimator
         return stats.MinValue.Type switch
         {
             DbType.Integer when stats.MaxValue.Type == DbType.Integer => TryEstimateIntegerRangeSelectivity(stats, constraint, out selectivity),
-            DbType.Real or DbType.Integer when stats.MaxValue.Type is DbType.Real or DbType.Integer => TryEstimateRealRangeSelectivity(stats, constraint, out selectivity),
+            DbType.Real or DbType.Integer or DbType.Decimal
+                when stats.MaxValue.Type is DbType.Real or DbType.Integer or DbType.Decimal
+                => TryEstimateRealRangeSelectivity(stats, constraint, out selectivity),
             _ => false,
         };
     }
@@ -1458,7 +1463,7 @@ internal static class CardinalityEstimator
                 return false;
 
             DbValue onlyValue = allowedValues.First();
-            if (onlyValue.Type is not (DbType.Integer or DbType.Real))
+            if (onlyValue.Type is not (DbType.Integer or DbType.Real or DbType.Decimal))
                 return false;
 
             double point = Math.Clamp(onlyValue.AsReal, min, max);
@@ -1471,7 +1476,7 @@ internal static class CardinalityEstimator
 
         if (constraint.LowerBound is DbValue lowerBound)
         {
-            if (lowerBound.Type is not (DbType.Integer or DbType.Real))
+            if (lowerBound.Type is not (DbType.Integer or DbType.Real or DbType.Decimal))
                 return false;
 
             lower = Math.Max(lower, lowerBound.AsReal);
@@ -1479,7 +1484,7 @@ internal static class CardinalityEstimator
 
         if (constraint.UpperBound is DbValue upperBound)
         {
-            if (upperBound.Type is not (DbType.Integer or DbType.Real))
+            if (upperBound.Type is not (DbType.Integer or DbType.Real or DbType.Decimal))
                 return false;
 
             upper = Math.Min(upper, upperBound.AsReal);

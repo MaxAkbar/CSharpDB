@@ -72,7 +72,10 @@ public sealed class CSharpDbCommand : DbCommand
             result.Schema.Length > 0 &&
             await result.MoveNextAsync(cancellationToken))
         {
-            return TypeMapper.GetClrValue(result.Current[0]);
+            var column = result.Schema[0];
+            return column.DeclaredType is null
+                ? TypeMapper.GetClrValue(result.Current[0])
+                : TypeMapper.GetClrValue(result.Current[0], column.EffectiveType);
         }
 
         return null;

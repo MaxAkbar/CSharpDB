@@ -354,6 +354,7 @@ public sealed class SchemaSerializerCompatibilityTests
     [InlineData(7UL)]
     [InlineData(8UL)]
     [InlineData(9UL)]
+    [InlineData(10UL)]
     public void Deserialize_PreviousVersionedTableMetadata_DefaultsNewConstraintFields(
         ulong metadataVersion)
     {
@@ -363,6 +364,7 @@ public sealed class SchemaSerializerCompatibilityTests
 
         Assert.Equal(42L, decoded.NextRowId);
         Assert.All(decoded.Columns, column => Assert.Null(column.DefaultSql));
+        Assert.All(decoded.Columns, column => Assert.Null(column.DeclaredType));
         Assert.Empty(decoded.CheckConstraints);
     }
 
@@ -376,6 +378,7 @@ public sealed class SchemaSerializerCompatibilityTests
     [InlineData(7UL)]
     [InlineData(8UL)]
     [InlineData(9UL)]
+    [InlineData(10UL)]
     public void Deserialize_DeclaredMetadataVersion_RequiresCompletePayload(
         ulong metadataVersion)
     {
@@ -400,6 +403,7 @@ public sealed class SchemaSerializerCompatibilityTests
     [InlineData(7UL)]
     [InlineData(8UL)]
     [InlineData(9UL)]
+    [InlineData(10UL)]
     public void Deserialize_VersionedMetadata_RejectsTrailingBytes(
         ulong metadataVersion)
     {
@@ -413,14 +417,14 @@ public sealed class SchemaSerializerCompatibilityTests
     }
 
     [Fact]
-    public void Deserialize_ExplicitlyRejectsUnknownVersionAfterVersionNine()
+    public void Deserialize_ExplicitlyRejectsUnknownVersionAfterVersionTen()
     {
-        byte[] payload = BuildVersionedTableSchemaPayload(10);
+        byte[] payload = BuildVersionedTableSchemaPayload(11);
 
         InvalidDataException error = Assert.Throws<InvalidDataException>(
             () => SchemaSerializer.Deserialize(payload));
 
-        Assert.Contains("version '10'", error.Message, StringComparison.Ordinal);
+        Assert.Contains("version '11'", error.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -779,7 +783,7 @@ public sealed class SchemaSerializerCompatibilityTests
                 childBindingIds: [Guid.NewGuid(), Guid.NewGuid()]));
         byte[] corrupt = ReplaceSingleByte(
             payload,
-            payload.Length - 1,
+            payload.Length - 4,
             EncodeVarint(rawValue));
 
         InvalidDataException error = Assert.Throws<InvalidDataException>(
@@ -1127,6 +1131,12 @@ public sealed class SchemaSerializerCompatibilityTests
             WriteVarint(ms, 0); // stable foreign-key binding count
         if (metadataVersion >= 9)
             WriteVarint(ms, 0); // foreign-key ON UPDATE action count
+        if (metadataVersion >= 10)
+        {
+            WriteVarint(ms, (ulong)columns.Length); // declared SQL type column count
+            for (int i = 0; i < columns.Length; i++)
+                ms.WriteByte(0); // absent declared type (legacy fallback)
+        }
         return ms.ToArray();
     }
 
@@ -1246,6 +1256,7 @@ public sealed class SchemaSerializerCompatibilityTests
         const int OneByteCountLength = 1;
         const int CompositeArity = 2;
         const int ForeignKeyUpdateActionSectionLength = 2;
+        const int DeclaredTypeSectionLength = 3;
         int bindingSectionLength =
             OneByteCountLength +
             GuidLength +
@@ -1256,6 +1267,7 @@ public sealed class SchemaSerializerCompatibilityTests
             GuidLength;
         int bindingSectionOffset =
             payload.Length -
+            DeclaredTypeSectionLength -
             ForeignKeyUpdateActionSectionLength -
             bindingSectionLength;
         return bindingSectionOffset + OneByteCountLength + GuidLength;

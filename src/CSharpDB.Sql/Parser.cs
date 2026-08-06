@@ -112,6 +112,12 @@ public readonly record struct SimpleInsertSql
             DbType.Null => new LiteralExpression { LiteralType = TokenType.Null, Value = null },
             DbType.Integer => new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = value.AsInteger },
             DbType.Real => new LiteralExpression { LiteralType = TokenType.RealLiteral, Value = value.AsReal },
+            DbType.Decimal => new LiteralExpression
+            {
+                LiteralType = TokenType.RealLiteral,
+                Value = (double)value.AsDecimal,
+                RawText = value.AsDecimal.ToString(CultureInfo.InvariantCulture),
+            },
             DbType.Text => new LiteralExpression { LiteralType = TokenType.StringLiteral, Value = value.AsText },
             DbType.Blob => new LiteralExpression { LiteralType = TokenType.BlobLiteral, Value = value.AsBlob },
             _ => throw new CSharpDbException(ErrorCode.SyntaxError, $"Unsupported fast INSERT literal type: {value.Type}."),
@@ -588,6 +594,7 @@ public sealed class Parser
                 {
                     LiteralType = TokenType.RealLiteral,
                     Value = realValue,
+                    RawText = literalText.ToString(),
                 };
                 return true;
             }
@@ -599,6 +606,7 @@ public sealed class Parser
             {
                 LiteralType = TokenType.IntegerLiteral,
                 Value = intValue,
+                RawText = literalText.ToString(),
             };
             return true;
         }
@@ -1273,11 +1281,34 @@ public sealed class Parser
             var literalText = _text.Slice(start, _pos - start);
             if (hasDot)
             {
-                if (!double.TryParse(literalText, NumberStyles.Float, CultureInfo.InvariantCulture, out double realValue))
+                if (!decimal.TryParse(
+                        literalText,
+                        NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint,
+                        CultureInfo.InvariantCulture,
+                        out decimal decimalValue))
+                {
                     return false;
+                }
 
-                literal = DbValue.FromReal(realValue);
-                return true;
+                try
+                {
+                    if (decimalValue == 0m && literalText[0] == '-')
+                    {
+                        literal = DbValue.FromReal(-0.0d);
+                        return true;
+                    }
+
+                    literal = DbValue.FromDecimal(decimalValue);
+                    return true;
+                }
+                catch (OverflowException)
+                {
+                    // Let the full parser preserve the original spelling for
+                    // target-aware conversion when the fast exact-decimal
+                    // representation cannot hold the literal.
+                    _pos = start;
+                    return false;
+                }
             }
 
             if (!long.TryParse(literalText, NumberStyles.Integer, CultureInfo.InvariantCulture, out long intValue))
@@ -1585,11 +1616,7 @@ public sealed class Parser
     private ColumnDef ParseColumnDef()
     {
         string name = ExpectIdentifier();
-        var typeToken = Peek().Type;
-
-        if (typeToken is not (TokenType.Integer or TokenType.Real or TokenType.Text or TokenType.Blob))
-            throw Error($"Expected type name, got '{Peek().Value}'.");
-        Advance();
+        SqlTypeDescriptor declaredType = ParseSqlTypeDescriptor();
 
         bool isPK = false;
         bool isIdentity = false;
@@ -1664,8 +1691,8 @@ public sealed class Parser
 
         if (isIdentity)
         {
-            if (typeToken != TokenType.Integer)
-                throw Error($"IDENTITY/AUTOINCREMENT requires INTEGER type for column '{name}'.");
+            if (declaredType.Kind is not (SqlTypeKind.Integer or SqlTypeKind.BigInt))
+                throw Error($"IDENTITY/AUTOINCREMENT requires INTEGER or BIGINT type for column '{name}'.");
 
             // Identity always implies PK semantics in CSharpDB.
             isPK = true;
@@ -1675,7 +1702,7 @@ public sealed class Parser
         return new ColumnDef
         {
             Name = name,
-            TypeToken = typeToken,
+            DeclaredType = declaredType,
             IsPrimaryKey = isPK,
             IsIdentity = isIdentity,
             IsRowVersion = isRowVersion,
@@ -1686,6 +1713,260 @@ public sealed class Parser
             CheckConstraints = checkConstraints,
         };
     }
+
+    /// <summary>
+    /// Parses a logical SQL type without reserving every type name globally in
+    /// the tokenizer. Type names are contextual, so they remain usable as
+    /// ordinary identifiers everywhere else in the grammar.
+    /// </summary>
+    private SqlTypeDescriptor ParseSqlTypeDescriptor()
+    {
+        Token nameToken = Peek();
+        if (!IsUnquotedWord(nameToken))
+            throw Error($"Expected type name, got '{nameToken.Value}'.");
+
+        Advance();
+        string name = nameToken.Value.ToUpperInvariant();
+        SqlTypeKind kind;
+        int? length = null;
+        int? precision = null;
+        int? scale = null;
+        int? fractionalSecondsPrecision = null;
+
+        switch (name)
+        {
+            case "BOOLEAN":
+            case "BOOL":
+                kind = SqlTypeKind.Boolean;
+                break;
+            case "TINYINT":
+                kind = SqlTypeKind.TinyInt;
+                break;
+            case "SMALLINT":
+                kind = SqlTypeKind.SmallInt;
+                break;
+            case "INT":
+            case "INTEGER":
+                kind = SqlTypeKind.Integer;
+                break;
+            case "BIGINT":
+                kind = SqlTypeKind.BigInt;
+                break;
+            case "REAL":
+                kind = SqlTypeKind.Real;
+                break;
+            case "FLOAT":
+                kind = SqlTypeKind.Double;
+                break;
+            case "DOUBLE":
+                TryConsumeTypeWord("PRECISION");
+                kind = SqlTypeKind.Double;
+                break;
+            case "DECIMAL":
+            case "NUMERIC":
+                kind = SqlTypeKind.Decimal;
+                ParseOptionalPrecisionAndScale(out precision, out scale);
+                break;
+            case "CHAR":
+                kind = SqlTypeKind.Char;
+                length = ParseOptionalLengthFacet();
+                break;
+            case "CHARACTER":
+                if (TryConsumeTypeWord("VARYING"))
+                {
+                    kind = SqlTypeKind.VarChar;
+                }
+                else
+                {
+                    kind = SqlTypeKind.Char;
+                }
+                length = ParseOptionalLengthFacet();
+                break;
+            case "VARCHAR":
+            case "NVARCHAR":
+                kind = SqlTypeKind.VarChar;
+                length = ParseOptionalLengthFacet();
+                break;
+            case "NCHAR":
+                kind = SqlTypeKind.Char;
+                length = ParseOptionalLengthFacet();
+                break;
+            case "TEXT":
+            case "CLOB":
+                kind = SqlTypeKind.Text;
+                break;
+            case "BINARY":
+                kind = SqlTypeKind.Binary;
+                length = ParseOptionalLengthFacet();
+                break;
+            case "VARBINARY":
+                kind = SqlTypeKind.VarBinary;
+                length = ParseOptionalLengthFacet();
+                break;
+            case "BLOB":
+                kind = SqlTypeKind.Blob;
+                break;
+            case "UUID":
+            case "GUID":
+            case "UNIQUEIDENTIFIER":
+                kind = SqlTypeKind.Uuid;
+                break;
+            case "DATE":
+                kind = SqlTypeKind.Date;
+                break;
+            case "TIME":
+                kind = SqlTypeKind.Time;
+                fractionalSecondsPrecision = ParseOptionalFractionalSecondsPrecision();
+                break;
+            case "TIMESTAMP":
+                fractionalSecondsPrecision = ParseOptionalFractionalSecondsPrecision();
+                if (TryConsume(TokenType.With))
+                {
+                    ExpectTypeWord("TIME");
+                    ExpectTypeWord("ZONE");
+                    kind = SqlTypeKind.TimestampWithTimeZone;
+                }
+                else
+                {
+                    kind = SqlTypeKind.Timestamp;
+                }
+                break;
+            case "DATETIME":
+                kind = SqlTypeKind.Timestamp;
+                fractionalSecondsPrecision = ParseOptionalFractionalSecondsPrecision();
+                break;
+            case "DATETIMEOFFSET":
+                kind = SqlTypeKind.TimestampWithTimeZone;
+                fractionalSecondsPrecision = ParseOptionalFractionalSecondsPrecision();
+                break;
+            case "INTERVAL":
+                if (TryConsumeTypeWord("YEAR"))
+                {
+                    Expect(TokenType.To);
+                    ExpectTypeWord("MONTH");
+                    kind = SqlTypeKind.IntervalYearToMonth;
+                }
+                else if (TryConsumeTypeWord("DAY"))
+                {
+                    Expect(TokenType.To);
+                    ExpectTypeWord("SECOND");
+                    kind = SqlTypeKind.IntervalDayToSecond;
+                    fractionalSecondsPrecision = ParseOptionalFractionalSecondsPrecision();
+                }
+                else
+                {
+                    throw Error("INTERVAL requires YEAR TO MONTH or DAY TO SECOND.");
+                }
+                break;
+            case "JSON":
+                kind = SqlTypeKind.Json;
+                break;
+            case "XML":
+                kind = SqlTypeKind.Xml;
+                break;
+            case "BIT":
+                kind = TryConsumeTypeWord("VARYING")
+                    ? SqlTypeKind.VarBit
+                    : SqlTypeKind.Bit;
+                length = ParseOptionalLengthFacet();
+                break;
+            case "VARBIT":
+                kind = SqlTypeKind.VarBit;
+                length = ParseOptionalLengthFacet();
+                break;
+            default:
+                throw Error($"Unknown SQL type name '{nameToken.Value}'.");
+        }
+
+        if (Peek().Type == TokenType.LeftParen)
+            throw Error($"SQL type {name} does not accept the supplied facet.");
+
+        try
+        {
+            return SqlTypeDescriptor.Create(
+                kind,
+                length,
+                precision,
+                scale,
+                fractionalSecondsPrecision);
+        }
+        catch (ArgumentException ex)
+        {
+            throw Error($"Invalid {name} type declaration: {ex.Message}");
+        }
+    }
+
+    private int? ParseOptionalLengthFacet()
+    {
+        if (!TryConsume(TokenType.LeftParen))
+            return null;
+
+        int length = ParseTypeFacetInteger("length");
+        Expect(TokenType.RightParen);
+        return length;
+    }
+
+    private int? ParseOptionalFractionalSecondsPrecision()
+    {
+        if (!TryConsume(TokenType.LeftParen))
+            return null;
+
+        int precision = ParseTypeFacetInteger("fractional-seconds precision");
+        Expect(TokenType.RightParen);
+        return precision;
+    }
+
+    private void ParseOptionalPrecisionAndScale(out int? precision, out int? scale)
+    {
+        precision = null;
+        scale = null;
+        if (!TryConsume(TokenType.LeftParen))
+            return;
+
+        precision = ParseTypeFacetInteger("precision");
+        if (TryConsume(TokenType.Comma))
+            scale = ParseTypeFacetInteger("scale");
+        Expect(TokenType.RightParen);
+    }
+
+    private int ParseTypeFacetInteger(string facetName)
+    {
+        Token token = Peek();
+        if (token.Type != TokenType.IntegerLiteral ||
+            !int.TryParse(token.Value, NumberStyles.None, CultureInfo.InvariantCulture, out int value))
+        {
+            throw Error($"SQL type {facetName} must be a nonnegative 32-bit integer literal.");
+        }
+
+        Advance();
+        return value;
+    }
+
+    private bool TryConsumeTypeWord(string word)
+    {
+        if (!IsUnquotedWord(Peek(), word))
+            return false;
+
+        Advance();
+        return true;
+    }
+
+    private void ExpectTypeWord(string word)
+    {
+        if (!TryConsumeTypeWord(word))
+            throw Error($"Expected {word} in SQL type declaration, got '{Peek().Value}'.");
+    }
+
+    private static bool IsUnquotedWord(Token token, string? expected = null) =>
+        token.Length == token.Value.Length &&
+        token.Type is not (
+            TokenType.Eof or
+            TokenType.IntegerLiteral or
+            TokenType.RealLiteral or
+            TokenType.StringLiteral or
+            TokenType.BlobLiteral or
+            TokenType.Parameter) &&
+        (expected == null || token.Value.Equals(expected, StringComparison.OrdinalIgnoreCase));
 
     private CheckConstraintClause ParseCheckConstraintClause(
         string? constraintName = null,
@@ -2242,28 +2523,16 @@ public sealed class Parser
             }
             else if (TryConsumeContextualKeyword("TYPE"))
             {
-                TokenType targetType = Peek().Type;
-                if (targetType is not (
-                        TokenType.Integer or
-                        TokenType.Real or
-                        TokenType.Text or
-                        TokenType.Blob))
-                {
-                    throw Error(
-                        $"ALTER COLUMN TYPE supports INTEGER, REAL, TEXT, and BLOB targets; got '{Peek().Value}'.");
-                }
-
-                Advance();
                 action = new AlterColumnSetTypeAction
                 {
                     ColumnName = columnName,
-                    TypeToken = targetType,
+                    DeclaredType = ParseSqlTypeDescriptor(),
                 };
             }
             else
             {
                 throw Error(
-                    "ALTER COLUMN supports TYPE INTEGER/REAL/TEXT/BLOB, SET/DROP DEFAULT, SET/DROP NOT NULL, and SET/DROP COLLATION.");
+                    "ALTER COLUMN supports TYPE <sql-type>, SET/DROP DEFAULT, SET/DROP NOT NULL, and SET/DROP COLLATION.");
             }
         }
         else if (t == TokenType.Rename)
@@ -3293,6 +3562,28 @@ public sealed class Parser
         if (Peek().Type == TokenType.Minus)
         {
             Advance();
+
+            // The positive magnitude of Int64.MinValue is one greater than
+            // Int64.MaxValue, so it cannot first be materialized as a signed
+            // literal and negated later. Treat this one valid spelling as the
+            // signed literal it represents.
+            if (Peek() is { Type: TokenType.IntegerLiteral } minimumToken &&
+                ulong.TryParse(
+                    minimumToken.Value,
+                    NumberStyles.None,
+                    CultureInfo.InvariantCulture,
+                    out ulong magnitude) &&
+                magnitude == 1UL << 63)
+            {
+                Advance();
+                return new LiteralExpression
+                {
+                    Value = long.MinValue,
+                    LiteralType = TokenType.IntegerLiteral,
+                    RawText = $"-{minimumToken.Value}",
+                };
+            }
+
             var operand = ParseUnary();
             return new UnaryExpression { Op = TokenType.Minus, Operand = operand };
         }
@@ -3672,6 +3963,9 @@ public sealed class Parser
             case CollateExpression collate:
                 ResolveNamedWindowReferences(collate.Operand, definitions, insideWindowFunction);
                 break;
+            case CastExpression cast:
+                ResolveNamedWindowReferences(cast.Operand, definitions, insideWindowFunction);
+                break;
             case FunctionCallExpression function:
                 foreach (Expression argument in function.Arguments)
                 {
@@ -3766,7 +4060,11 @@ public sealed class Parser
         type == TokenType.Select;
 
     private bool IsFunctionCallStart(Token token) =>
-        (IsAggregateFunctionToken(token.Type) || IsScalarFunctionToken(token.Type) || token.Type == TokenType.Identifier)
+        (IsAggregateFunctionToken(token.Type) ||
+         IsScalarFunctionToken(token.Type) ||
+         token.Type == TokenType.Identifier ||
+         (token.Type == TokenType.Integer &&
+          token.Value.Equals("INT", StringComparison.OrdinalIgnoreCase)))
         && _pos + 1 < _tokens.Count
         && _tokens[_pos + 1].Type == TokenType.LeftParen;
 
@@ -3826,11 +4124,28 @@ public sealed class Parser
         if (IsContextualKeyword(token, "CASE"))
             throw Error("CASE expressions are not supported.");
 
+        if (IsContextualKeyword(token, "TRY_CAST") &&
+            _pos + 1 < _tokens.Count &&
+            _tokens[_pos + 1].Type == TokenType.LeftParen)
+        {
+            throw Error("TRY_CAST expressions are not supported; use CAST for strict conversion.");
+        }
+
         if (IsContextualKeyword(token, "CAST") &&
             _pos + 1 < _tokens.Count &&
             _tokens[_pos + 1].Type == TokenType.LeftParen)
         {
-            throw Error("CAST expressions are not supported; use supported implicit conversions.");
+            Advance();
+            Expect(TokenType.LeftParen);
+            Expression operand = ParseExpression();
+            Expect(TokenType.As);
+            SqlTypeDescriptor targetType = ParseSqlTypeDescriptor();
+            Expect(TokenType.RightParen);
+            return new CastExpression
+            {
+                Operand = operand,
+                TargetType = targetType,
+            };
         }
 
         if (IsFunctionCallStart(token))
@@ -3844,6 +4159,7 @@ public sealed class Parser
                 {
                     Value = long.Parse(token.Value, CultureInfo.InvariantCulture),
                     LiteralType = TokenType.IntegerLiteral,
+                    RawText = token.Value,
                 };
             case TokenType.RealLiteral:
                 Advance();
@@ -3851,6 +4167,7 @@ public sealed class Parser
                 {
                     Value = double.Parse(token.Value, CultureInfo.InvariantCulture),
                     LiteralType = TokenType.RealLiteral,
+                    RawText = token.Value,
                 };
             case TokenType.StringLiteral:
                 Advance();

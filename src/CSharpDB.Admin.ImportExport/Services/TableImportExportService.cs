@@ -19,6 +19,9 @@ using ClientForeignKeyOnDeleteAction = CSharpDB.Client.Models.ForeignKeyOnDelete
 using ClientIndexSchema = CSharpDB.Client.Models.IndexSchema;
 using ClientKeyConstraintDefinition = CSharpDB.Client.Models.KeyConstraintDefinition;
 using ClientKeyConstraintKind = CSharpDB.Client.Models.KeyConstraintKind;
+using ClientSqlTypeDescriptor = CSharpDB.Client.Models.SqlTypeDescriptor;
+using ClientSqlBitString = CSharpDB.Client.Models.SqlBitString;
+using ClientSqlTypeKind = CSharpDB.Client.Models.SqlTypeKind;
 using ClientTableSchema = CSharpDB.Client.Models.TableSchema;
 using PrimitiveCheckConstraintDefinition = CSharpDB.Primitives.CheckConstraintDefinition;
 using PrimitiveColumnDefinition = CSharpDB.Primitives.ColumnDefinition;
@@ -29,6 +32,8 @@ using PrimitiveForeignKeyOnDeleteAction = CSharpDB.Primitives.ForeignKeyOnDelete
 using PrimitiveIndexSchema = CSharpDB.Primitives.IndexSchema;
 using PrimitiveKeyConstraintDefinition = CSharpDB.Primitives.KeyConstraintDefinition;
 using PrimitiveKeyConstraintKind = CSharpDB.Primitives.KeyConstraintKind;
+using PrimitiveSqlTypeDescriptor = CSharpDB.Primitives.SqlTypeDescriptor;
+using PrimitiveSqlTypeKind = CSharpDB.Primitives.SqlTypeKind;
 using SchemaIdentity = CSharpDB.Primitives.SchemaIdentity;
 using PrimitiveTableSchema = CSharpDB.Primitives.TableSchema;
 using SqlIdentifierRules = CSharpDB.Primitives.SqlIdentifierRules;
@@ -597,7 +602,7 @@ public sealed class TableImportExportService(
 
                 int columnIndex = insertColumnIndexes[insertIndex];
                 PrimitiveDbValue value = rows[rowIndex][columnIndex];
-                sql.Append(FormatLiteral(value, columns[columnIndex].Type));
+                sql.Append(FormatLiteral(value, columns[columnIndex]));
             }
 
             sql.Append(')');
@@ -665,11 +670,13 @@ public sealed class TableImportExportService(
             {
                 PrimitiveDbType.Integer => ClientDbType.Integer,
                 PrimitiveDbType.Real => ClientDbType.Real,
+                PrimitiveDbType.Decimal => ClientDbType.Decimal,
                 PrimitiveDbType.Text => ClientDbType.Text,
                 PrimitiveDbType.Blob => ClientDbType.Blob,
                 _ => throw new InvalidDataException(
                     $"Unsupported archived column type '{column.Type}'."),
             },
+            DeclaredType = MapDeclaredType(column.DeclaredType),
             Nullable = column.Nullable,
             IsPrimaryKey = column.IsPrimaryKey,
             IsIdentity = column.IsIdentity,
@@ -736,10 +743,12 @@ public sealed class TableImportExportService(
         {
             ClientDbType.Integer => PrimitiveDbType.Integer,
             ClientDbType.Real => PrimitiveDbType.Real,
+            ClientDbType.Decimal => PrimitiveDbType.Decimal,
             ClientDbType.Text => PrimitiveDbType.Text,
             ClientDbType.Blob => PrimitiveDbType.Blob,
             _ => throw new InvalidOperationException($"Unsupported column type '{column.Type}'."),
         },
+        DeclaredType = MapDeclaredType(column.DeclaredType),
         Nullable = column.Nullable,
         IsPrimaryKey = column.IsPrimaryKey,
         IsIdentity = column.IsIdentity,
@@ -747,6 +756,50 @@ public sealed class TableImportExportService(
         Collation = column.Collation,
         DefaultSql = column.DefaultSql,
     };
+
+    private static ClientSqlTypeDescriptor? MapDeclaredType(
+        PrimitiveSqlTypeDescriptor? declaredType)
+    {
+        if (declaredType is null)
+            return null;
+
+        if (!Enum.TryParse(declaredType.Kind.ToString(), out ClientSqlTypeKind kind) ||
+            !Enum.IsDefined(kind))
+        {
+            throw new InvalidDataException(
+                $"Unsupported archived declared type kind '{declaredType.Kind}'.");
+        }
+
+        return new ClientSqlTypeDescriptor
+        {
+            Kind = kind,
+            Length = declaredType.Length,
+            Precision = declaredType.Precision,
+            Scale = declaredType.Scale,
+            FractionalSecondsPrecision = declaredType.FractionalSecondsPrecision,
+        };
+    }
+
+    private static PrimitiveSqlTypeDescriptor? MapDeclaredType(
+        ClientSqlTypeDescriptor? declaredType)
+    {
+        if (declaredType is null)
+            return null;
+
+        if (!Enum.TryParse(declaredType.Kind.ToString(), out PrimitiveSqlTypeKind kind) ||
+            !Enum.IsDefined(kind))
+        {
+            throw new InvalidOperationException(
+                $"Unsupported declared type kind '{declaredType.Kind}'.");
+        }
+
+        return PrimitiveSqlTypeDescriptor.Create(
+            kind,
+            declaredType.Length,
+            declaredType.Precision,
+            declaredType.Scale,
+            declaredType.FractionalSecondsPrecision);
+    }
 
     private static PrimitiveIndexSchema MapIndex(ClientIndexSchema index) => new()
     {
@@ -870,6 +923,7 @@ public sealed class TableImportExportService(
         {
             ClientDbType.Integer => PrimitiveDbType.Integer,
             ClientDbType.Real => PrimitiveDbType.Real,
+            ClientDbType.Decimal => PrimitiveDbType.Decimal,
             ClientDbType.Text => PrimitiveDbType.Text,
             ClientDbType.Blob => PrimitiveDbType.Blob,
             _ => throw new InvalidOperationException($"Unsupported column type '{columnType}'."),
@@ -881,11 +935,18 @@ public sealed class TableImportExportService(
     {
         if (value is null)
             return PrimitiveDbValue.Null;
+        if (value is ClientSqlBitString bits)
+        {
+            return PrimitiveDbValue.FromBitString(
+                bits.PackedBytes.ToArray(),
+                bits.BitLength);
+        }
 
         return columnType switch
         {
             PrimitiveDbType.Integer => PrimitiveDbValue.FromInteger(Convert.ToInt64(value, CultureInfo.InvariantCulture)),
             PrimitiveDbType.Real => PrimitiveDbValue.FromReal(Convert.ToDouble(value, CultureInfo.InvariantCulture)),
+            PrimitiveDbType.Decimal => PrimitiveDbValue.FromDecimal(Convert.ToDecimal(value, CultureInfo.InvariantCulture)),
             PrimitiveDbType.Text => PrimitiveDbValue.FromText(Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty),
             PrimitiveDbType.Blob => PrimitiveDbValue.FromBlob(ConvertToBytes(value)),
             _ => throw new InvalidOperationException($"Unsupported column type '{columnType}'."),
@@ -1009,14 +1070,14 @@ public sealed class TableImportExportService(
 
         ClientTableSchema schema = await client.GetTableSchemaAsync(RestoreJournalTableName, ct)
             ?? throw new InvalidDataException("Archive restore journal was not created.");
-        string[] expectedColumns =
+        RestoreContractColumn[] expectedColumns =
         [
-            ColumnSignature("target_key", "Text", false, true, false, false, null, null),
-            ColumnSignature("staging_name", "Text", false, false, false, false, null, null),
-            ColumnSignature("target_name", "Text", false, false, false, false, null, null),
-            ColumnSignature("archive_token", "Text", false, false, false, false, null, null),
-            ColumnSignature("owner_token", "Text", false, false, false, false, null, null),
-            ColumnSignature("heartbeat_unix_ms", "Integer", false, false, false, false, null, null),
+            new("target_key", ClientSqlTypeKind.Text, false, true),
+            new("staging_name", ClientSqlTypeKind.Text, false, false),
+            new("target_name", ClientSqlTypeKind.Text, false, false),
+            new("archive_token", ClientSqlTypeKind.Text, false, false),
+            new("owner_token", ClientSqlTypeKind.Text, false, false),
+            new("heartbeat_unix_ms", ClientSqlTypeKind.Integer, false, false),
         ];
         string[] actualColumns = schema.Columns.Select(ActualColumnSignature).ToArray();
         string expectedContractMarker = CheckSignature(
@@ -1032,7 +1093,7 @@ public sealed class TableImportExportService(
         ClientIndexSchema[] journalIndexes = (await client.GetIndexesAsync(ct))
             .Where(index => string.Equals(index.TableName, RestoreJournalTableName, StringComparison.OrdinalIgnoreCase))
             .ToArray();
-        if (!expectedColumns.SequenceEqual(actualColumns, StringComparer.Ordinal) ||
+        if (!RestoreContractColumnsMatch(expectedColumns, schema.Columns) ||
             actualChecks.Length != 1 ||
             !string.Equals(actualChecks[0], expectedContractMarker, StringComparison.Ordinal) ||
             actualKeys.Length != 1 ||
@@ -1066,13 +1127,13 @@ public sealed class TableImportExportService(
 
         ClientTableSchema schema = await client.GetTableSchemaAsync(RestoreReceiptTableName, ct)
             ?? throw new InvalidDataException("Archive restore receipt table was not created.");
-        string[] expectedColumns =
+        RestoreContractColumn[] expectedColumns =
         [
-            ColumnSignature("target_key", "Text", false, true, false, false, null, null),
-            ColumnSignature("target_name", "Text", false, false, false, false, null, null),
-            ColumnSignature("archive_token", "Text", false, false, false, false, null, null),
-            ColumnSignature("receipt_token", "Text", false, false, false, false, null, null),
-            ColumnSignature("completed_unix_ms", "Integer", false, false, false, false, null, null),
+            new("target_key", ClientSqlTypeKind.Text, false, true),
+            new("target_name", ClientSqlTypeKind.Text, false, false),
+            new("archive_token", ClientSqlTypeKind.Text, false, false),
+            new("receipt_token", ClientSqlTypeKind.Text, false, false),
+            new("completed_unix_ms", ClientSqlTypeKind.Integer, false, false),
         ];
         string[] actualColumns = schema.Columns.Select(ActualColumnSignature).ToArray();
         string expectedContractMarker = CheckSignature(
@@ -1088,7 +1149,7 @@ public sealed class TableImportExportService(
         ClientIndexSchema[] receiptIndexes = (await client.GetIndexesAsync(ct))
             .Where(index => string.Equals(index.TableName, RestoreReceiptTableName, StringComparison.OrdinalIgnoreCase))
             .ToArray();
-        if (!expectedColumns.SequenceEqual(actualColumns, StringComparer.Ordinal) ||
+        if (!RestoreContractColumnsMatch(expectedColumns, schema.Columns) ||
             actualChecks.Length != 1 ||
             !string.Equals(actualChecks[0], expectedContractMarker, StringComparison.Ordinal) ||
             actualKeys.Length != 1 ||
@@ -1812,11 +1873,13 @@ public sealed class TableImportExportService(
         bool hasExplicitPrimaryKey) =>
         ColumnSignature(
             column.Name,
-            column.Type.ToString(),
+            RestoreTypeSql(column),
             column.Nullable,
             column.IsPrimaryKey,
             column.IsIdentity ||
-                (!hasExplicitPrimaryKey && column.IsPrimaryKey && column.Type == PrimitiveDbType.Integer),
+                (!hasExplicitPrimaryKey &&
+                 column.IsPrimaryKey &&
+                 IsRestoredIntegerType(column)),
             column.IsRowVersion,
             column.Collation,
             column.DefaultSql);
@@ -1824,13 +1887,102 @@ public sealed class TableImportExportService(
     private static string ActualColumnSignature(ClientColumnDefinition column) =>
         ColumnSignature(
             column.Name,
-            column.Type.ToString(),
+            RestoreTypeSql(column),
             column.Nullable,
             column.IsPrimaryKey,
             column.IsIdentity,
             column.IsRowVersion,
             column.Collation,
             column.DefaultSql);
+
+    private static string RestoreTypeSql(PrimitiveColumnDefinition column) =>
+        column.DeclaredType?.ToSql() ?? LegacyStorageTypeSql(column.Type);
+
+    private static bool IsRestoredIntegerType(PrimitiveColumnDefinition column) =>
+        column.DeclaredType is { Kind: PrimitiveSqlTypeKind.Integer or PrimitiveSqlTypeKind.BigInt } ||
+        column.DeclaredType is null && column.Type == PrimitiveDbType.Integer;
+
+    private static string RestoreTypeSql(ClientColumnDefinition column) =>
+        column.DeclaredType?.ToSql() ?? LegacyStorageTypeSql(column.Type);
+
+    private static string LegacyStorageTypeSql(PrimitiveDbType type) => type switch
+    {
+        PrimitiveDbType.Integer => "INTEGER",
+        PrimitiveDbType.Real => "REAL",
+        PrimitiveDbType.Text => "TEXT",
+        PrimitiveDbType.Blob => "BLOB",
+        PrimitiveDbType.Decimal => "DECIMAL",
+        _ => throw new InvalidDataException(
+            $"Unsupported archived physical column type '{type}'."),
+    };
+
+    private static string LegacyStorageTypeSql(ClientDbType type) => type switch
+    {
+        ClientDbType.Integer => "INTEGER",
+        ClientDbType.Real => "REAL",
+        ClientDbType.Text => "TEXT",
+        ClientDbType.Blob => "BLOB",
+        ClientDbType.Decimal => "DECIMAL",
+        _ => throw new InvalidOperationException(
+            $"Unsupported physical column type '{type}'."),
+    };
+
+    private static bool RestoreContractColumnsMatch(
+        IReadOnlyList<RestoreContractColumn> expectedColumns,
+        IReadOnlyList<ClientColumnDefinition> actualColumns)
+    {
+        if (expectedColumns.Count != actualColumns.Count)
+            return false;
+
+        for (int i = 0; i < expectedColumns.Count; i++)
+        {
+            RestoreContractColumn expected = expectedColumns[i];
+            ClientColumnDefinition actual = actualColumns[i];
+            if (!string.Equals(expected.Name, actual.Name, StringComparison.OrdinalIgnoreCase) ||
+                expected.Nullable != actual.Nullable ||
+                expected.PrimaryKey != actual.IsPrimaryKey ||
+                actual.IsIdentity ||
+                actual.IsRowVersion ||
+                actual.Collation is not null ||
+                actual.DefaultSql is not null ||
+                !RestoreContractTypeMatches(expected.Type, actual))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool RestoreContractTypeMatches(
+        ClientSqlTypeKind expectedType,
+        ClientColumnDefinition actualColumn)
+    {
+        if (actualColumn.DeclaredType is not { } actualType)
+        {
+            // Metadata written before declared SQL types were persisted exposes
+            // only the physical representation. The restore contract uses these
+            // two physical types with their un-faceted canonical declarations.
+            return (actualColumn.Type, expectedType) is
+                (ClientDbType.Text, ClientSqlTypeKind.Text) or
+                (ClientDbType.Integer, ClientSqlTypeKind.Integer);
+        }
+
+        ClientDbType expectedStorageType = expectedType switch
+        {
+            ClientSqlTypeKind.Text => ClientDbType.Text,
+            ClientSqlTypeKind.Integer => ClientDbType.Integer,
+            _ => throw new InvalidOperationException(
+                $"Unsupported archive restore contract type '{expectedType}'."),
+        };
+
+        return actualColumn.Type == expectedStorageType &&
+            actualType.Kind == expectedType &&
+            actualType.Length is null &&
+            actualType.Precision is null &&
+            actualType.Scale is null &&
+            actualType.FractionalSecondsPrecision is null;
+    }
 
     private static string ColumnSignature(
         string name,
@@ -1843,6 +1995,12 @@ public sealed class TableImportExportService(
         string? defaultSql) =>
         $"{NormalizeIdentifier(name)}|{type}|{nullable}|{primaryKey}|{identity}|{rowVersion}|" +
         $"{NormalizeIdentifier(collation)}|{NormalizeSql(defaultSql)}";
+
+    private readonly record struct RestoreContractColumn(
+        string Name,
+        ClientSqlTypeKind Type,
+        bool Nullable,
+        bool PrimaryKey);
 
     private static string ExpectedCheckSignature(PrimitiveCheckConstraintDefinition check) =>
         CheckSignature(check.ConstraintName, check.ExpressionSql, check.ColumnName);
@@ -2174,10 +2332,16 @@ public sealed class TableImportExportService(
 
         foreach (PrimitiveColumnDefinition column in schema.Columns)
         {
+            if (column.IsIdentity && !IsRestoredIntegerType(column))
+            {
+                throw new InvalidDataException(
+                    $"Archived identity column '{column.Name}' must be declared INTEGER or BIGINT.");
+            }
+
             var definition = new StringBuilder();
             definition.Append(QuoteIdentifier(column.Name))
                 .Append(' ')
-                .Append(column.Type.ToString().ToUpperInvariant());
+                .Append(RestoreTypeSql(column));
 
             if (column.IsRowVersion)
                 definition.Append(" ROWVERSION");
@@ -2200,7 +2364,7 @@ public sealed class TableImportExportService(
                          column.Type != PrimitiveDbType.Integer)
                 {
                     throw new InvalidDataException(
-                        $"Archived identity column '{column.Name}' does not match its INTEGER primary key.");
+                        $"Archived identity column '{column.Name}' does not match its INTEGER/BIGINT primary key.");
                 }
                 // A table-level single INTEGER primary key restores the engine's
                 // identity semantics without adding a duplicate inline key.
@@ -2358,15 +2522,25 @@ public sealed class TableImportExportService(
             $"ON {QuoteIdentifier(index.TableName)} ({string.Join(", ", columns)});";
     }
 
-    private static string FormatLiteral(PrimitiveDbValue value, PrimitiveDbType columnType)
+    private static string FormatLiteral(
+        PrimitiveDbValue value,
+        PrimitiveColumnDefinition column)
     {
         if (value.IsNull)
             return "NULL";
 
-        return columnType switch
+        if (value.IsBitString &&
+            column.DeclaredType?.Kind is
+                PrimitiveSqlTypeKind.Bit or PrimitiveSqlTypeKind.VarBit)
+        {
+            return FormatStringLiteral(value.AsBitString);
+        }
+
+        return column.Type switch
         {
             PrimitiveDbType.Integer => value.AsInteger.ToString(CultureInfo.InvariantCulture),
             PrimitiveDbType.Real => value.AsReal.ToString("R", CultureInfo.InvariantCulture),
+            PrimitiveDbType.Decimal => value.AsDecimal.ToString(CultureInfo.InvariantCulture),
             PrimitiveDbType.Blob => "X'" + Convert.ToHexString(value.AsBlob) + "'",
             _ => FormatStringLiteral(value.Type == PrimitiveDbType.Text ? value.AsText : value.ToString()),
         };

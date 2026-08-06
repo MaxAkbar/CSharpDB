@@ -413,6 +413,44 @@ public sealed class LogicalKeyConstraintTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task LogicalIntegerFamilies_DoNotAccidentallyInheritRowIdIdentity()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _database.ExecuteAsync(
+            "CREATE TABLE boolean_keys (id BOOLEAN PRIMARY KEY, value TEXT)",
+            ct);
+        await _database.ExecuteAsync(
+            "CREATE TABLE tiny_keys (id TINYINT PRIMARY KEY, value TEXT)",
+            ct);
+        await _database.ExecuteAsync(
+            "CREATE TABLE small_keys (id SMALLINT PRIMARY KEY, value TEXT)",
+            ct);
+        await _database.ExecuteAsync(
+            "CREATE TABLE big_keys (id BIGINT PRIMARY KEY, value TEXT)",
+            ct);
+
+        foreach (string tableName in new[] { "boolean_keys", "tiny_keys", "small_keys" })
+        {
+            TableSchema schema = _database.GetTableSchema(tableName)!;
+            Assert.False(schema.Columns[0].IsIdentity);
+            Assert.NotNull(Assert.Single(schema.KeyConstraints).BackingIndexName);
+            CSharpDbException missingKey = await Assert.ThrowsAsync<CSharpDbException>(
+                async () => await _database.ExecuteAsync(
+                    $"INSERT INTO {tableName} (value) VALUES ('missing')",
+                    ct));
+            Assert.Equal(ErrorCode.SyntaxError, missingKey.Code);
+        }
+
+        TableSchema bigSchema = _database.GetTableSchema("big_keys")!;
+        Assert.True(bigSchema.Columns[0].IsIdentity);
+        Assert.Null(Assert.Single(bigSchema.KeyConstraints).BackingIndexName);
+        await _database.ExecuteAsync(
+            "INSERT INTO big_keys (value) VALUES ('generated')",
+            ct);
+        Assert.Equal(1L, await ScalarIntAsync("SELECT id FROM big_keys", ct));
+    }
+
+    [Fact]
     public async Task InlineRealPrimaryKey_PreservesLegacyScalarMetadata()
     {
         var ct = TestContext.Current.CancellationToken;

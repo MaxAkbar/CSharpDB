@@ -24,6 +24,7 @@ public static class CsvExportContracts
 
     public const string IntegerValueEncoding = "int64-invariant-decimal/v1";
     public const string RealValueEncoding = "finite-binary64-roundtrip/v1";
+    public const string DecimalValueEncoding = "normalized-decimal-invariant/v1";
     public const string TextValueEncoding = "strict-utf8-text/v1";
     public const string BlobValueEncoding = "rfc4648-base64-padded/v1";
 
@@ -59,6 +60,7 @@ public enum CsvExportDatabaseType
     Real,
     Text,
     Blob,
+    Decimal,
 }
 
 /// <summary>

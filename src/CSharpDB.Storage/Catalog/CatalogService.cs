@@ -2972,6 +2972,7 @@ internal sealed class CatalogService
                     : current.SchemaId,
                 Name = current.Name,
                 Type = current.Type,
+                DeclaredType = current.DeclaredType,
                 Nullable = current.Nullable,
                 IsPrimaryKey = current.IsPrimaryKey,
                 IsIdentity = current.IsIdentity,
@@ -3366,6 +3367,7 @@ internal sealed class CatalogService
                     SchemaId = id,
                     Name = column.Name,
                     Type = column.Type,
+                    DeclaredType = column.DeclaredType,
                     Nullable = column.Nullable,
                     IsPrimaryKey = column.IsPrimaryKey,
                     IsIdentity = column.IsIdentity,
@@ -4471,12 +4473,17 @@ internal sealed class CatalogService
 
     private static byte[] SerializeStatisticsValue(DbValue value)
     {
+        const DbType bitStringStatisticsType = (DbType)0x80;
         return value.Type switch
         {
             DbType.Null => [(byte)DbType.Null],
             DbType.Integer => SerializeStatisticsFixedValue(value.Type, value.AsInteger),
             DbType.Real => SerializeStatisticsFixedValue(value.Type, BitConverter.DoubleToInt64Bits(value.AsReal)),
+            DbType.Decimal => SerializeStatisticsDecimalValue(value),
             DbType.Text => SerializeStatisticsVariableValue(value.Type, Encoding.UTF8.GetBytes(value.AsText)),
+            DbType.Blob when value.IsBitString => SerializeStatisticsVariableValue(
+                bitStringStatisticsType,
+                SerializeStatisticsBitString(value)),
             DbType.Blob => SerializeStatisticsVariableValue(value.Type, value.AsBlob),
             _ => throw new InvalidOperationException($"Unsupported statistics value type '{value.Type}'."),
         };
@@ -4499,18 +4506,59 @@ internal sealed class CatalogService
         return payload;
     }
 
+    private static byte[] SerializeStatisticsDecimalValue(DbValue value)
+    {
+        byte[] payload = new byte[1 + sizeof(long) + sizeof(byte)];
+        payload[0] = (byte)DbType.Decimal;
+        BinaryPrimitives.WriteInt64LittleEndian(
+            payload.AsSpan(1, sizeof(long)),
+            value.DecimalCoefficient);
+        payload[^1] = checked((byte)value.DecimalScale);
+        return payload;
+    }
+
+    private static byte[] SerializeStatisticsBitString(DbValue value)
+    {
+        byte[] packedBytes = value.AsBlob;
+        byte[] payload = new byte[sizeof(int) + packedBytes.Length];
+        BinaryPrimitives.WriteInt32LittleEndian(payload, value.BitLength);
+        packedBytes.CopyTo(payload.AsSpan(sizeof(int)));
+        return payload;
+    }
+
     private static DbValue DeserializeStatisticsValue(ReadOnlySpan<byte> payload)
     {
+        const DbType bitStringStatisticsType = (DbType)0x80;
         DbType type = (DbType)payload[0];
         return type switch
         {
             DbType.Null => DbValue.Null,
             DbType.Integer => DbValue.FromInteger(BinaryPrimitives.ReadInt64LittleEndian(payload.Slice(1, 8))),
             DbType.Real => DbValue.FromReal(BitConverter.Int64BitsToDouble(BinaryPrimitives.ReadInt64LittleEndian(payload.Slice(1, 8)))),
+            DbType.Decimal => DbValue.FromDecimalParts(
+                BinaryPrimitives.ReadInt64LittleEndian(payload.Slice(1, sizeof(long))),
+                payload[1 + sizeof(long)]),
             DbType.Text => DbValue.FromText(ReadStatisticsString(payload)),
             DbType.Blob => DbValue.FromBlob(ReadStatisticsBytes(payload)),
+            bitStringStatisticsType => DeserializeStatisticsBitString(ReadStatisticsBytes(payload)),
             _ => throw new InvalidOperationException($"Unsupported statistics value type '{type}'."),
         };
+    }
+
+    private static DbValue DeserializeStatisticsBitString(byte[] payload)
+    {
+        if (payload.Length < sizeof(int))
+            throw new InvalidDataException("Malformed bit-string statistics payload.");
+
+        int bitLength = BinaryPrimitives.ReadInt32LittleEndian(payload);
+        try
+        {
+            return DbValue.FromBitString(payload.AsSpan(sizeof(int)).ToArray(), bitLength);
+        }
+        catch (ArgumentException ex)
+        {
+            throw new InvalidDataException("Malformed bit-string statistics payload.", ex);
+        }
     }
 
     private static string ReadStatisticsString(ReadOnlySpan<byte> payload)

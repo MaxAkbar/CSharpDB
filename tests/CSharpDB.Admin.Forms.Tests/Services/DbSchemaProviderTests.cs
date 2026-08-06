@@ -29,6 +29,26 @@ public class DbSchemaProviderTests
     }
 
     [Fact]
+    public async Task GetTableDefinitionAsync_MapsLogicalFieldKindsAndFacets()
+    {
+        await using var db = await TestDatabaseScope.CreateAsync();
+        await db.ExecuteAsync(
+            "CREATE TABLE TypedItems (Amount DECIMAL(18,4), Token UUID, Active BOOLEAN, Created DATE);");
+        var provider = new DbSchemaProvider(db.Client);
+
+        FormTableDefinition table = Assert.IsType<FormTableDefinition>(
+            await provider.GetTableDefinitionAsync("TypedItems"));
+
+        Assert.Equal(FieldDataType.Decimal, Assert.Single(table.Fields, field => field.Name == "Amount").DataType);
+        Assert.Equal(FieldDataType.Guid, Assert.Single(table.Fields, field => field.Name == "Token").DataType);
+        Assert.Equal(FieldDataType.Boolean, Assert.Single(table.Fields, field => field.Name == "Active").DataType);
+        Assert.Equal(FieldDataType.Date, Assert.Single(table.Fields, field => field.Name == "Created").DataType);
+        Assert.Equal(
+            "DECIMAL(18,4)",
+            Assert.Single(table.Fields, field => field.Name == "Amount").Metadata!["dbType"]);
+    }
+
+    [Fact]
     public async Task GetTableDefinitionAsync_MapsFieldsPrimaryKeyAndForeignKeys()
     {
         await using var db = await TestDatabaseScope.CreateAsync();

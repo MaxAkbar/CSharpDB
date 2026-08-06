@@ -99,6 +99,39 @@ public sealed class AppendableHashedIndexPayloadCodecTests
     }
 
     [Fact]
+    public void DecimalAndBlobComponents_DecodeAndCompareExactly()
+    {
+        DbValue[] key =
+        [
+            DbValue.FromDecimalParts(-98765, 3),
+            DbValue.FromBlob([0x10, 0x20, 0x30]),
+        ];
+        byte[] payload = AppendableHashedIndexPayloadCodec.Encode(
+            key,
+            firstPageId: 7,
+            lastPageId: 7,
+            rowCount: 1,
+            lastRowId: 11,
+            isSortedAscending: true);
+
+        Assert.True(
+            AppendableHashedIndexPayloadCodec.TryDecodeMetadata(
+                payload,
+                out AppendableHashedIndexPayloadMetadata metadata));
+        Assert.True(
+            AppendableHashedIndexPayloadCodec.EncodedKeyComponentsEqual(
+                payload.AsSpan(metadata.KeyComponentsOffset),
+                key));
+        Assert.True(AppendableHashedIndexPayloadCodec.TryDecode(payload, out var decoded));
+        Assert.Equal(key, decoded.KeyComponents);
+
+        Assert.False(
+            AppendableHashedIndexPayloadCodec.EncodedKeyComponentsEqual(
+                payload.AsSpan(metadata.KeyComponentsOffset),
+                [DbValue.FromDecimalParts(-98765, 3), DbValue.FromBlob([0x10, 0x20, 0x31])]));
+    }
+
+    [Fact]
     public void EncodeExternal_DecodesReferenceAndMarksExternalChainState()
     {
         DbValue[] keyComponents = [DbValue.FromText("shared-category"), DbValue.FromInteger(17)];

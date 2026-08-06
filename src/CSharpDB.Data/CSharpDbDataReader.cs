@@ -4,6 +4,7 @@ using System.Data.Common;
 using System.Globalization;
 using CSharpDB.Primitives;
 using CSharpDB.Execution;
+using SqlBitString = CSharpDB.Client.Models.SqlBitString;
 using CoreDbType = CSharpDB.Primitives.DbType;
 
 namespace CSharpDB.Data;
@@ -111,14 +112,31 @@ public sealed class CSharpDbDataReader : DbDataReader
     }
 
     public override string GetDataTypeName(int ordinal)
-        => TypeMapper.ToDataTypeName(_schema[ordinal].Type);
+    {
+        ColumnDefinition column = _schema[ordinal];
+        return column.DeclaredType is null
+            ? TypeMapper.ToDataTypeName(column.Type)
+            : TypeMapper.ToDataTypeName(column.EffectiveType);
+    }
 
     public override Type GetFieldType(int ordinal)
-        => TypeMapper.ToClrType(_schema[ordinal].Type);
+    {
+        ColumnDefinition column = _schema[ordinal];
+        return column.DeclaredType is null
+            ? TypeMapper.ToClrType(column.Type)
+            : TypeMapper.ToClrType(column.EffectiveType);
+    }
 
     // ─── Value accessors ─────────────────────────────────────────────
 
-    public override object GetValue(int ordinal) => TypeMapper.GetClrValue(CurrentRow[ordinal]);
+    public override object GetValue(int ordinal)
+    {
+        ColumnDefinition column = _schema[ordinal];
+        DbValue value = CurrentRow[ordinal];
+        return column.DeclaredType is null
+            ? TypeMapper.GetClrValue(value)
+            : TypeMapper.GetClrValue(value, column.EffectiveType);
+    }
 
     public override int GetValues(object[] values)
     {
@@ -149,6 +167,48 @@ public sealed class CSharpDbDataReader : DbDataReader
         return available;
     }
 
+    /// <summary>
+    /// Returns the exact logical bit count of a BIT or VARBIT value. This is
+    /// intentionally separate from <see cref="GetBytes"/>, whose count is the
+    /// packed byte count and remains compatible with ordinary binary callers.
+    /// </summary>
+    public int GetBitLength(int ordinal)
+    {
+        DbValue value = CurrentRow[ordinal];
+        if (!value.IsBitString)
+        {
+            throw new InvalidCastException(
+                $"Column {ordinal} does not contain a SQL BIT or VARBIT value.");
+        }
+
+        return value.BitLength;
+    }
+
+    /// <summary>Returns a BIT or VARBIT value with its exact logical length.</summary>
+    public SqlBitString GetBitString(int ordinal)
+        => TypeMapper.GetBitString(CurrentRow[ordinal]);
+
+    /// <summary>
+    /// Keeps explicit byte-array reads compatible for BIT and VARBIT while
+    /// <see cref="GetValue"/> exposes their provider-specific logical value.
+    /// </summary>
+    public override T GetFieldValue<T>(int ordinal)
+    {
+        DbValue value = CurrentRow[ordinal];
+        if (typeof(T) == typeof(byte[]) && value.Type == CoreDbType.Blob)
+            return (T)(object)value.AsBlob;
+
+        return (T)GetValue(ordinal);
+    }
+
+    public override Task<T> GetFieldValueAsync<T>(
+        int ordinal,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(GetFieldValue<T>(ordinal));
+    }
+
     public override char GetChar(int ordinal) => CurrentRow[ordinal].AsText[0];
 
     public override long GetChars(int ordinal, long dataOffset, char[]? buffer, int bufferOffset, int length)
@@ -162,16 +222,24 @@ public sealed class CSharpDbDataReader : DbDataReader
     }
 
     public override DateTime GetDateTime(int ordinal)
-        => DateTime.Parse(CurrentRow[ordinal].AsText, CultureInfo.InvariantCulture,
-            DateTimeStyles.RoundtripKind);
+        => _schema[ordinal].DeclaredType?.Kind == SqlTypeKind.Timestamp
+            ? CSharpDbTextCodec.ParseDateTime(CurrentRow[ordinal].AsText)
+            : DateTime.Parse(CurrentRow[ordinal].AsText, CultureInfo.InvariantCulture,
+                DateTimeStyles.RoundtripKind);
 
-    public override decimal GetDecimal(int ordinal) => (decimal)CurrentRow[ordinal].AsReal;
+    public override decimal GetDecimal(int ordinal) => TypeMapper.GetDecimal(CurrentRow[ordinal]);
 
-    public override double GetDouble(int ordinal) => CurrentRow[ordinal].AsReal;
+    public override double GetDouble(int ordinal)
+        => CurrentRow[ordinal].Type == CoreDbType.Decimal
+            ? (double)CurrentRow[ordinal].AsDecimal
+            : CurrentRow[ordinal].AsReal;
 
-    public override float GetFloat(int ordinal) => (float)CurrentRow[ordinal].AsReal;
+    public override float GetFloat(int ordinal)
+        => CurrentRow[ordinal].Type == CoreDbType.Decimal
+            ? (float)CurrentRow[ordinal].AsDecimal
+            : (float)CurrentRow[ordinal].AsReal;
 
-    public override Guid GetGuid(int ordinal) => Guid.Parse(CurrentRow[ordinal].AsText);
+    public override Guid GetGuid(int ordinal) => TypeMapper.GetGuid(CurrentRow[ordinal]);
 
     public override short GetInt16(int ordinal) => checked((short)CurrentRow[ordinal].AsInteger);
 
@@ -180,6 +248,15 @@ public sealed class CSharpDbDataReader : DbDataReader
     public override long GetInt64(int ordinal) => CurrentRow[ordinal].AsInteger;
 
     public override string GetString(int ordinal) => CurrentRow[ordinal].AsText;
+
+    public DateOnly GetDateOnly(int ordinal)
+        => CSharpDbTextCodec.ParseDate(CurrentRow[ordinal].AsText);
+
+    public TimeOnly GetTimeOnly(int ordinal)
+        => CSharpDbTextCodec.ParseTime(CurrentRow[ordinal].AsText);
+
+    public DateTimeOffset GetDateTimeOffset(int ordinal)
+        => CSharpDbTextCodec.ParseDateTimeOffset(CurrentRow[ordinal].AsText);
 
     public override IEnumerator GetEnumerator() => new DbEnumerator(this);
 
@@ -209,12 +286,16 @@ public sealed class CSharpDbDataReader : DbDataReader
             table.Rows.Add(
                 column.Name,
                 i,
-                GetColumnSize(column.Type),
-                GetNumericPrecision(column.Type),
-                GetNumericScale(column.Type),
-                TypeMapper.ToClrType(column.Type),
+                GetColumnSize(column),
+                GetNumericPrecision(column),
+                GetNumericScale(column),
+                column.DeclaredType is null
+                    ? TypeMapper.ToClrType(column.Type)
+                    : TypeMapper.ToClrType(column.EffectiveType),
                 (int)column.Type,
-                TypeMapper.ToDataTypeName(column.Type),
+                column.DeclaredType is null
+                    ? TypeMapper.ToDataTypeName(column.Type)
+                    : TypeMapper.ToDataTypeName(column.EffectiveType),
                 column.Nullable,
                 column.IsPrimaryKey,
                 column.IsIdentity,
@@ -226,23 +307,103 @@ public sealed class CSharpDbDataReader : DbDataReader
         return table;
     }
 
-    private static object GetColumnSize(CoreDbType type)
-        => type switch
+    private static object GetColumnSize(ColumnDefinition column)
+    {
+        if (column.DeclaredType is null)
         {
-            CoreDbType.Integer or CoreDbType.Real => 8,
+            return column.Type switch
+            {
+                CoreDbType.Integer or CoreDbType.Real => 8,
+                CoreDbType.Decimal => 16,
+                _ => DBNull.Value,
+            };
+        }
+
+        SqlTypeDescriptor type = column.EffectiveType;
+        return type.Kind switch
+        {
+            SqlTypeKind.Boolean or SqlTypeKind.TinyInt => 1,
+            SqlTypeKind.SmallInt => 2,
+            SqlTypeKind.Integer or
+            SqlTypeKind.BigInt or
+            SqlTypeKind.Real or
+            SqlTypeKind.Double => 8,
+            SqlTypeKind.Decimal => 16,
+            SqlTypeKind.Char or
+            SqlTypeKind.VarChar or
+            SqlTypeKind.Binary or
+            SqlTypeKind.VarBinary or
+            SqlTypeKind.Bit or
+            SqlTypeKind.VarBit when type.Length.HasValue => type.Length.Value,
+            SqlTypeKind.Uuid => 16,
             _ => DBNull.Value,
         };
+    }
 
-    private static object GetNumericPrecision(CoreDbType type)
-        => type switch
+    private static object GetNumericPrecision(ColumnDefinition column)
+    {
+        if (column.DeclaredType is null)
         {
-            CoreDbType.Integer => (short)19,
-            CoreDbType.Real => (short)15,
+            return column.Type switch
+            {
+                CoreDbType.Integer => (short)19,
+                CoreDbType.Real => (short)15,
+                CoreDbType.Decimal => (short)CSharpDbDecimalCodec.DefaultPrecision,
+                _ => DBNull.Value,
+            };
+        }
+
+        SqlTypeDescriptor type = column.EffectiveType;
+        return type.Kind switch
+        {
+            SqlTypeKind.Boolean => (short)1,
+            SqlTypeKind.TinyInt => (short)3,
+            SqlTypeKind.SmallInt => (short)5,
+            SqlTypeKind.Integer => (short)19,
+            SqlTypeKind.BigInt => (short)19,
+            SqlTypeKind.Real => (short)15,
+            SqlTypeKind.Double => (short)15,
+            SqlTypeKind.Decimal => GetResolvedDecimalPrecision(type),
             _ => DBNull.Value,
         };
+    }
 
-    private static object GetNumericScale(CoreDbType type)
-        => type == CoreDbType.Integer ? (short)0 : DBNull.Value;
+    private static object GetNumericScale(ColumnDefinition column)
+    {
+        if (column.DeclaredType is null)
+        {
+            return column.Type switch
+            {
+                CoreDbType.Integer => (short)0,
+                CoreDbType.Decimal => (short)CSharpDbDecimalCodec.DefaultScale,
+                _ => DBNull.Value,
+            };
+        }
+
+        SqlTypeDescriptor type = column.EffectiveType;
+        return type.Kind switch
+        {
+            SqlTypeKind.Boolean or
+            SqlTypeKind.TinyInt or
+            SqlTypeKind.SmallInt or
+            SqlTypeKind.Integer or
+            SqlTypeKind.BigInt => (short)0,
+            SqlTypeKind.Decimal => GetResolvedDecimalScale(type),
+            _ => DBNull.Value,
+        };
+    }
+
+    private static short GetResolvedDecimalPrecision(SqlTypeDescriptor type)
+    {
+        var facets = CSharpDbDecimalCodec.ResolveFacets(type.Precision, type.Scale);
+        return checked((short)facets.Precision);
+    }
+
+    private static short GetResolvedDecimalScale(SqlTypeDescriptor type)
+    {
+        var facets = CSharpDbDecimalCodec.ResolveFacets(type.Precision, type.Scale);
+        return checked((short)facets.Scale);
+    }
 
     // ─── Lifecycle ───────────────────────────────────────────────────
 

@@ -50,4 +50,10 @@ public sealed class DefaultRecordSerializer : IRecordSerializer
         out double realValue,
         out bool isReal) =>
         RecordEncoder.TryDecodeNumericColumn(buffer, columnIndex, out intValue, out realValue, out isReal);
+
+    public bool TryDecodeNumericValueColumn(
+        ReadOnlySpan<byte> buffer,
+        int columnIndex,
+        out DbValue value) =>
+        RecordEncoder.TryDecodeNumericValueColumn(buffer, columnIndex, out value);
 }

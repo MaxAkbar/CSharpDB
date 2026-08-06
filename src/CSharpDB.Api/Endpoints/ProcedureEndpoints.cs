@@ -98,7 +98,7 @@ public static class ProcedureEndpoints
                     Name = p.Name,
                     Type = type,
                     Required = p.Required,
-                    Default = p.Default,
+                    Default = JsonHelper.CoerceJsonElement(p.Default),
                     Description = p.Description,
                 });
             }
@@ -130,7 +130,7 @@ public static class ProcedureEndpoints
             p.Name,
             p.Type.ToString().ToUpperInvariant(),
             p.Required,
-            p.Default,
+            JsonHelper.EncodeValue(p.Default),
             p.Description)).ToList(),
         procedure.Description,
         procedure.IsEnabled,

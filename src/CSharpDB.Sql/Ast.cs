@@ -56,7 +56,25 @@ public sealed class ForeignKeyConstraintClause
 public sealed class ColumnDef
 {
     public required string Name { get; init; }
-    public required TokenType TypeToken { get; init; } // Integer, Real, Text, Blob
+    /// <summary>
+    /// The logical SQL type as declared by the user, including any length,
+    /// precision, scale, or fractional-seconds facet.
+    /// </summary>
+    public required CSharpDB.Primitives.SqlTypeDescriptor DeclaredType { get; init; }
+
+    /// <summary>
+    /// Legacy physical-type projection retained while callers migrate to
+    /// <see cref="DeclaredType"/>.
+    /// </summary>
+    public TokenType TypeToken => DeclaredType.StorageType switch
+    {
+        CSharpDB.Primitives.DbType.Integer => TokenType.Integer,
+        CSharpDB.Primitives.DbType.Real => TokenType.Real,
+        CSharpDB.Primitives.DbType.Text => TokenType.Text,
+        CSharpDB.Primitives.DbType.Blob => TokenType.Blob,
+        _ => throw new InvalidOperationException(
+            $"SQL type '{DeclaredType.ToSql()}' has no legacy type-token projection."),
+    };
     public bool IsPrimaryKey { get; init; }
     public bool IsIdentity { get; init; }
     public bool IsRowVersion { get; init; }
@@ -298,7 +316,21 @@ public sealed class AlterColumnDropNotNullAction : AlterAction
 public sealed class AlterColumnSetTypeAction : AlterAction
 {
     public required string ColumnName { get; init; }
-    public required TokenType TypeToken { get; init; }
+    public required CSharpDB.Primitives.SqlTypeDescriptor DeclaredType { get; init; }
+
+    /// <summary>
+    /// Legacy physical-type projection retained while callers migrate to
+    /// <see cref="DeclaredType"/>.
+    /// </summary>
+    public TokenType TypeToken => DeclaredType.StorageType switch
+    {
+        CSharpDB.Primitives.DbType.Integer => TokenType.Integer,
+        CSharpDB.Primitives.DbType.Real => TokenType.Real,
+        CSharpDB.Primitives.DbType.Text => TokenType.Text,
+        CSharpDB.Primitives.DbType.Blob => TokenType.Blob,
+        _ => throw new InvalidOperationException(
+            $"SQL type '{DeclaredType.ToSql()}' has no legacy type-token projection."),
+    };
 }
 
 public sealed class AlterColumnSetCollationAction : AlterAction
@@ -458,6 +490,19 @@ public sealed class LiteralExpression : Expression
 {
     public required object? Value { get; init; } // long, double, string, null, or byte[]
     public required TokenType LiteralType { get; init; }
+
+    /// <summary>
+    /// Original numeric spelling, when the expression came from SQL text.
+    /// This lets exact-numeric binding avoid a lossy round-trip through
+    /// <see cref="double"/> while preserving the existing literal value API.
+    /// </summary>
+    public string? RawText { get; init; }
+}
+
+public sealed class CastExpression : Expression
+{
+    public required Expression Operand { get; init; }
+    public required CSharpDB.Primitives.SqlTypeDescriptor TargetType { get; init; }
 }
 
 public sealed class ParameterExpression : Expression

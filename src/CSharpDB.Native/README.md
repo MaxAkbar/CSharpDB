@@ -224,7 +224,8 @@ Prepared statements expose the same parameter binding model as the managed ADO.N
 
 - parameters are named (`@id`, `@name`, etc.)
 - parameter names may be supplied with or without the leading `@`
-- supported bound value types are `int64`, `double`, UTF-8 text, and `NULL`
+- supported bound value types are `int64`, `double`, exact decimal, UTF-8 text,
+  ordinary binary, exact-length bit strings, and `NULL`
 - unsupported prepared templates automatically fall back to SQL-text parameter binding, so `csharpdb_prepare` remains usable for valid SQL shapes that cannot yet use the template fast path
 
 #### `csharpdb_prepare`
@@ -251,6 +252,14 @@ int csharpdb_stmt_bind_double(csharpdb_stmt_t stmt, const char* name, double val
 
 Bind a double parameter by name. Returns `0` on success, `-1` on error.
 
+#### `csharpdb_stmt_bind_decimal`
+
+```c
+int csharpdb_stmt_bind_decimal(csharpdb_stmt_t stmt, const char* name, int64_t coefficient, int scale);
+```
+
+Bind an exact decimal as `coefficient * 10^(-scale)`. The coefficient supports up to 18 digits. Returns `0` on success, `-1` on error.
+
 #### `csharpdb_stmt_bind_text`
 
 ```c
@@ -258,6 +267,24 @@ int csharpdb_stmt_bind_text(csharpdb_stmt_t stmt, const char* name, const char* 
 ```
 
 Bind a UTF-8 text parameter by name. Pass `NULL` for `value` to bind SQL `NULL`. Returns `0` on success, `-1` on error.
+
+#### `csharpdb_stmt_bind_blob`
+
+```c
+int csharpdb_stmt_bind_blob(csharpdb_stmt_t stmt, const char* name, const void* value, int byte_count);
+```
+
+Bind an ordinary BLOB. A zero `byte_count` binds an empty BLOB; use
+`csharpdb_stmt_bind_null` for SQL `NULL`.
+
+#### `csharpdb_stmt_bind_bit_string`
+
+```c
+int csharpdb_stmt_bind_bit_string(csharpdb_stmt_t stmt, const char* name, const void* value, int byte_count, int bit_length);
+```
+
+Bind packed BIT or VARBIT data together with its exact logical bit count.
+Unused trailing bits in the final byte must be zero.
 
 #### `csharpdb_stmt_bind_null`
 
@@ -327,6 +354,14 @@ const char* csharpdb_result_column_name(csharpdb_result_t result, int column_ind
 
 Returns the name of a column (UTF-8). The pointer is valid until `csharpdb_result_free`.
 
+#### `csharpdb_result_column_declared_type`
+
+```c
+const char* csharpdb_result_column_declared_type(csharpdb_result_t result, int column_index);
+```
+
+Returns the canonical declared SQL type, including facets such as `DECIMAL(18,4)`. The pointer is valid until `csharpdb_result_free`.
+
 #### `csharpdb_result_next`
 
 ```c
@@ -377,6 +412,15 @@ double csharpdb_result_get_double(csharpdb_result_t result, int column_index);
 
 Read a double-precision float from the current row.
 
+#### `csharpdb_result_get_decimal_coefficient` / `csharpdb_result_get_decimal_scale`
+
+```c
+int64_t csharpdb_result_get_decimal_coefficient(csharpdb_result_t result, int column_index);
+int csharpdb_result_get_decimal_scale(csharpdb_result_t result, int column_index);
+```
+
+Read an exact decimal as its normalized coefficient and scale.
+
 #### `csharpdb_result_get_text`
 
 ```c
@@ -392,6 +436,17 @@ const void* csharpdb_result_get_blob(csharpdb_result_t result, int column_index,
 ```
 
 Read a blob. `out_size` receives the byte count (may be `NULL`). The pointer is valid until the next `csharpdb_result_next` or `csharpdb_result_free`.
+
+#### `csharpdb_result_get_bit_length`
+
+```c
+int csharpdb_result_get_bit_length(csharpdb_result_t result, int column_index);
+```
+
+Return the exact logical bit count for BIT or VARBIT. The function returns
+`-1` for an ordinary BLOB or on error; inspect `csharpdb_last_error` when the
+distinction matters. `csharpdb_result_get_blob` continues to return the packed
+bytes for both ordinary binary and bit-string values.
 
 #### `csharpdb_result_free`
 
@@ -578,6 +633,7 @@ Clear the error state for the current thread.
 | 2 | `CSHARPDB_REAL` | 64-bit IEEE 754 double |
 | 3 | `CSHARPDB_TEXT` | UTF-8 text string |
 | 4 | `CSHARPDB_BLOB` | Binary data |
+| 5 | `CSHARPDB_DECIMAL` | Exact decimal (coefficient and scale) |
 
 ---
 

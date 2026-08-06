@@ -22,6 +22,40 @@ namespace CSharpDB.DevOps.Tests;
 public sealed class SchemaComparisonServiceTests
 {
     [Fact]
+    public void Compare_DetectsLogicalTypeFacetChangesAndRendersDeclaredType()
+    {
+        var sourceType = new CSharpDB.Client.Models.SqlTypeDescriptor
+        {
+            Kind = CSharpDB.Client.Models.SqlTypeKind.Decimal,
+            Precision = 18,
+            Scale = 4,
+        };
+        var targetType = new CSharpDB.Client.Models.SqlTypeDescriptor
+        {
+            Kind = CSharpDB.Client.Models.SqlTypeKind.Decimal,
+            Precision = 18,
+            Scale = 2,
+        };
+        var source = new SchemaSnapshot
+        {
+            Target = Target("source"),
+            Tables = [Table("prices", Column("amount", ClientDbType.Decimal, declaredType: sourceType))],
+        };
+        var target = new SchemaSnapshot
+        {
+            Target = Target("target"),
+            Tables = [Table("prices", Column("amount", ClientDbType.Decimal, declaredType: targetType))],
+        };
+
+        SchemaDiffChange change = Assert.Single(new SchemaComparisonService().Compare(source, target).Changes);
+
+        Assert.True(change.IsDestructive);
+        Assert.Equal("DECIMAL(18,2) -> DECIMAL(18,4)", change.Details["type"]);
+        Assert.Contains("amount DECIMAL(18,4)", change.SourceDefinition, StringComparison.Ordinal);
+        Assert.Contains("amount DECIMAL(18,2)", change.TargetDefinition, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Compare_ReportsTableColumnIndexAndViewDifferences()
     {
         var source = new SchemaSnapshot
@@ -105,6 +139,9 @@ public sealed class SchemaComparisonServiceTests
                     {
                         Name = "name",
                         Type = PrimitiveDbType.Text,
+                        DeclaredType = new CSharpDB.Primitives.SqlTypeDescriptor(
+                            CSharpDB.Primitives.SqlTypeKind.VarChar,
+                            length: 64),
                         Nullable = false,
                         Collation = "NOCASE",
                         DefaultSql = "'anonymous'",
@@ -167,6 +204,7 @@ public sealed class SchemaComparisonServiceTests
             ClientTableSchema table = Assert.Single(snapshot.Tables);
             Assert.Equal("archive_customers", table.TableName);
             Assert.Equal("NOCASE", table.Columns[1].Collation);
+            Assert.Equal("VARCHAR(64)", table.Columns[1].EffectiveType.ToSql());
             Assert.Equal("'anonymous'", table.Columns[1].DefaultSql);
             Assert.True(table.Columns[2].IsRowVersion);
             Assert.Equal("ck_archive_customers_name", Assert.Single(table.CheckConstraints).ConstraintName);
@@ -184,7 +222,8 @@ public sealed class SchemaComparisonServiceTests
             var dataTarget = new TableArchiveDataCompareTarget(path);
             ClientTableSchema? dataSchema = await dataTarget.GetTableSchemaAsync("archive_customers", ct);
             Assert.NotNull(dataSchema);
-            Assert.Equal("'anonymous'", dataSchema!.Columns[1].DefaultSql);
+            Assert.Equal("VARCHAR(64)", dataSchema!.Columns[1].EffectiveType.ToSql());
+            Assert.Equal("'anonymous'", dataSchema.Columns[1].DefaultSql);
             Assert.True(dataSchema.Columns[2].IsRowVersion);
             Assert.Single(dataSchema.CheckConstraints);
             Assert.Equal(2, dataSchema.KeyConstraints.Count);
@@ -985,11 +1024,13 @@ public sealed class SchemaComparisonServiceTests
         bool isIdentity = false,
         bool isRowVersion = false,
         string? collation = null,
-        string? defaultSql = null)
+        string? defaultSql = null,
+        CSharpDB.Client.Models.SqlTypeDescriptor? declaredType = null)
         => new()
         {
             Name = name,
             Type = type,
+            DeclaredType = declaredType,
             Nullable = nullable,
             IsPrimaryKey = isPrimaryKey,
             IsIdentity = isIdentity,

@@ -96,6 +96,7 @@
                                     <select class="schema-input" @bind="p.Type">
                                         <option value="@DbType.Integer.ToString().ToUpperInvariant()">INTEGER</option>
                                         <option value="@DbType.Real.ToString().ToUpperInvariant()">REAL</option>
+                                        <option value="@DbType.Decimal.ToString().ToUpperInvariant()">DECIMAL</option>
                                         <option value="@DbType.Text.ToString().ToUpperInvariant()">TEXT</option>
                                         <option value="@DbType.Blob.ToString().ToUpperInvariant()">BLOB</option>
                                     </select>
@@ -485,6 +486,7 @@
         {
             DbType.Integer => long.Parse(trimmed, System.Globalization.CultureInfo.InvariantCulture),
             DbType.Real => double.Parse(trimmed, System.Globalization.CultureInfo.InvariantCulture),
+            DbType.Decimal => decimal.Parse(trimmed, System.Globalization.CultureInfo.InvariantCulture),
             DbType.Text => trimmed,
             DbType.Blob => trimmed,
             _ => trimmed,
@@ -500,6 +502,7 @@
         {
             DbType.Integer => Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty,
             DbType.Real => Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty,
+            DbType.Decimal => Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty,
             DbType.Text => value.ToString() ?? string.Empty,
             DbType.Blob => value is byte[] bytes ? Convert.ToBase64String(bytes) : value.ToString() ?? string.Empty,
             _ => value.ToString() ?? string.Empty,

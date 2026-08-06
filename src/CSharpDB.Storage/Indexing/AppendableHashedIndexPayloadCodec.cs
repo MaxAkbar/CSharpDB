@@ -38,6 +38,9 @@ internal static class AppendableHashedIndexPayloadCodec
     private const byte IntegerComponentTag = 1;
     private const byte TextComponentTag = 2;
     private const byte RealComponentTag = 3;
+    private const byte DecimalComponentTag = 4;
+    private const byte BlobComponentTag = 5;
+    private const byte BitStringComponentTag = 6;
     private const byte SortedAscendingFlag = 1;
 
     private static ReadOnlySpan<byte> InlineMagicBytes => "CSDBHAP1"u8;
@@ -287,6 +290,54 @@ internal static class AppendableHashedIndexPayloadCodec
                     offset += sizeof(long);
                     break;
 
+                case DbType.Decimal when tag == DecimalComponentTag:
+                    if (offset + sizeof(long) + sizeof(byte) > encodedKeyComponents.Length)
+                        return false;
+
+                    if (BinaryPrimitives.ReadInt64LittleEndian(
+                            encodedKeyComponents.Slice(offset, sizeof(long))) != component.DecimalCoefficient)
+                    {
+                        return false;
+                    }
+
+                    offset += sizeof(long);
+                    if (encodedKeyComponents[offset++] != component.DecimalScale)
+                        return false;
+                    break;
+
+                case DbType.Blob when tag == BlobComponentTag && !component.IsBitString:
+                    if (offset + sizeof(int) > encodedKeyComponents.Length)
+                        return false;
+                    int blobLength = BinaryPrimitives.ReadInt32LittleEndian(
+                        encodedKeyComponents.Slice(offset, sizeof(int)));
+                    offset += sizeof(int);
+                    if (blobLength < 0 || offset + blobLength > encodedKeyComponents.Length ||
+                        !encodedKeyComponents.Slice(offset, blobLength).SequenceEqual(component.AsBlob))
+                    {
+                        return false;
+                    }
+                    offset += blobLength;
+                    break;
+
+                case DbType.Blob when tag == BitStringComponentTag && component.IsBitString:
+                    if (offset + (sizeof(int) * 2) > encodedKeyComponents.Length)
+                        return false;
+                    int bitLength = BinaryPrimitives.ReadInt32LittleEndian(
+                        encodedKeyComponents.Slice(offset, sizeof(int)));
+                    offset += sizeof(int);
+                    int packedLength = BinaryPrimitives.ReadInt32LittleEndian(
+                        encodedKeyComponents.Slice(offset, sizeof(int)));
+                    offset += sizeof(int);
+                    if (bitLength != component.BitLength ||
+                        packedLength < 0 ||
+                        offset + packedLength > encodedKeyComponents.Length ||
+                        !encodedKeyComponents.Slice(offset, packedLength).SequenceEqual(component.AsBlob))
+                    {
+                        return false;
+                    }
+                    offset += packedLength;
+                    break;
+
                 default:
                     return false;
             }
@@ -337,7 +388,12 @@ internal static class AppendableHashedIndexPayloadCodec
             {
                 DbType.Integer => sizeof(long),
                 DbType.Real => sizeof(long),
+                DbType.Decimal => sizeof(long) + sizeof(byte),
                 DbType.Text => sizeof(int) + Encoding.UTF8.GetByteCount(keyComponents[i].AsText),
+                DbType.Blob =>
+                    sizeof(int) +
+                    keyComponents[i].AsBlob.Length +
+                    (keyComponents[i].IsBitString ? sizeof(int) : 0),
                 _ => throw new InvalidOperationException($"Unsupported appendable hashed key component type: {keyComponents[i].Type}."),
             };
         }
@@ -366,6 +422,39 @@ internal static class AppendableHashedIndexPayloadCodec
                     destination.Slice(offset, sizeof(long)),
                     RealIndexKeyCodec.GetCanonicalBits(component.AsReal));
                 offset += sizeof(long);
+                continue;
+            }
+
+            if (component.Type == DbType.Decimal)
+            {
+                destination[offset++] = DecimalComponentTag;
+                BinaryPrimitives.WriteInt64LittleEndian(
+                    destination.Slice(offset, sizeof(long)),
+                    component.DecimalCoefficient);
+                offset += sizeof(long);
+                destination[offset++] = checked((byte)component.DecimalScale);
+                continue;
+            }
+
+            if (component.Type == DbType.Blob)
+            {
+                destination[offset++] = component.IsBitString
+                    ? BitStringComponentTag
+                    : BlobComponentTag;
+                if (component.IsBitString)
+                {
+                    BinaryPrimitives.WriteInt32LittleEndian(
+                        destination.Slice(offset, sizeof(int)),
+                        component.BitLength);
+                    offset += sizeof(int);
+                }
+                byte[] blob = component.AsBlob;
+                BinaryPrimitives.WriteInt32LittleEndian(
+                    destination.Slice(offset, sizeof(int)),
+                    blob.Length);
+                offset += sizeof(int);
+                blob.CopyTo(destination.Slice(offset));
+                offset += blob.Length;
                 continue;
             }
 
@@ -444,6 +533,84 @@ internal static class AppendableHashedIndexPayloadCodec
                             BinaryPrimitives.ReadInt64LittleEndian(
                                 payload.Slice(bytesRead, sizeof(long))))));
                     bytesRead += sizeof(long);
+                    break;
+
+                case DecimalComponentTag:
+                    if (bytesRead + sizeof(long) + sizeof(byte) > payload.Length)
+                    {
+                        keyComponents = null;
+                        return false;
+                    }
+
+                    long coefficient = BinaryPrimitives.ReadInt64LittleEndian(
+                        payload.Slice(bytesRead, sizeof(long)));
+                    bytesRead += sizeof(long);
+                    int scale = payload[bytesRead++];
+                    try
+                    {
+                        components.Add(DbValue.FromDecimalParts(coefficient, scale));
+                    }
+                    catch (ArgumentException)
+                    {
+                        keyComponents = null;
+                        return false;
+                    }
+                    catch (OverflowException)
+                    {
+                        keyComponents = null;
+                        return false;
+                    }
+                    break;
+
+                case BlobComponentTag:
+                    if (bytesRead + sizeof(int) > payload.Length)
+                    {
+                        keyComponents = null;
+                        return false;
+                    }
+                    int blobLength = BinaryPrimitives.ReadInt32LittleEndian(
+                        payload.Slice(bytesRead, sizeof(int)));
+                    bytesRead += sizeof(int);
+                    if (blobLength < 0 || bytesRead + blobLength > payload.Length)
+                    {
+                        keyComponents = null;
+                        return false;
+                    }
+                    components.Add(DbValue.FromBlob(payload.Slice(bytesRead, blobLength).ToArray()));
+                    bytesRead += blobLength;
+                    break;
+
+                case BitStringComponentTag:
+                    if (bytesRead + (sizeof(int) * 2) > payload.Length)
+                    {
+                        keyComponents = null;
+                        return false;
+                    }
+                    int bitLength = BinaryPrimitives.ReadInt32LittleEndian(
+                        payload.Slice(bytesRead, sizeof(int)));
+                    bytesRead += sizeof(int);
+                    int packedLength = BinaryPrimitives.ReadInt32LittleEndian(
+                        payload.Slice(bytesRead, sizeof(int)));
+                    bytesRead += sizeof(int);
+                    if (bitLength <= 0 ||
+                        packedLength != (bitLength / 8) + (bitLength % 8 == 0 ? 0 : 1) ||
+                        bytesRead + packedLength > payload.Length)
+                    {
+                        keyComponents = null;
+                        return false;
+                    }
+                    try
+                    {
+                        components.Add(DbValue.FromBitString(
+                            payload.Slice(bytesRead, packedLength).ToArray(),
+                            bitLength));
+                    }
+                    catch (ArgumentException)
+                    {
+                        keyComponents = null;
+                        return false;
+                    }
+                    bytesRead += packedLength;
                     break;
 
                 default:

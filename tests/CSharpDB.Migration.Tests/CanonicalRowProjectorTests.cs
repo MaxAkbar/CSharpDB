@@ -51,6 +51,36 @@ public sealed class CanonicalRowProjectorTests
     }
 
     [Fact]
+    public void DeclaredRealUsesThePersistedBinary64PayloadWithoutNarrowing()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "real_values",
+            Columns =
+            [
+                new ColumnDefinition
+                {
+                    Name = "value",
+                    Type = DbType.Real,
+                    DeclaredType = SqlTypeDescriptor.Create(SqlTypeKind.Real),
+                    Nullable = false,
+                },
+            ],
+        };
+
+        CanonicalRowContract contract = CanonicalRowProjector.CreateCSharpDbTableContract(schema);
+        CanonicalValue[] projected = CanonicalRowProjector.ProjectRow(
+            contract,
+            [DbValue.FromReal(0.1d)]);
+
+        Assert.Equal(CanonicalType.Binary64, contract.Fields[0].CanonicalType);
+        Assert.Equal(CanonicalType.Binary64, projected[0].Type);
+        Assert.Equal(
+            CanonicalRowCodec.ComputeRowHash([CanonicalValue.Binary64(0.1d)]),
+            CanonicalRowCodec.ComputeRowHash(projected));
+    }
+
+    [Fact]
     public void CSharpDbTableContractDigestIgnoresTableIdentityButBindsRowLayout()
     {
         CanonicalRowContract archived = CanonicalRowProjector.CreateCSharpDbTableContract(

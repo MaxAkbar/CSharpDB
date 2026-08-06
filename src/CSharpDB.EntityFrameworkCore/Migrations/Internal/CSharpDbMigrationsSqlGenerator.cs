@@ -273,11 +273,11 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
         {
             throw Unsupported(
                 $"changing column '{operation.Table}.{operation.Name}' from store type '{oldStoreType}' to '{storeType}'. " +
-                "The bounded rewrite path supports only exact INTEGER-to-REAL, REAL-to-INTEGER, TEXT-to-BLOB, and BLOB-to-TEXT conversions; numeric rewrites can rebuild ready SQL indexes, while TEXT/BLOB rewrites require dependency-free columns");
+                "Both source and target must be supported CSharpDB logical SQL types; the engine validates every converted value and may reject dependent indexes that cannot be rebuilt safely");
         }
 
-        bool oldStoreTypeIsText = IsStoreType(oldStoreType, "TEXT");
-        bool storeTypeIsText = IsStoreType(storeType, "TEXT");
+        bool oldStoreTypeIsText = IsCharacterStoreType(oldStoreType);
+        bool storeTypeIsText = IsCharacterStoreType(storeType);
         bool enteringBlobFromText =
             typeChanged &&
             oldStoreTypeIsText &&
@@ -581,7 +581,7 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
         string? collation = NormalizeBinaryCollation(operation.Collation);
         if (collation is not null)
         {
-            if (!IsStoreType(storeType, "TEXT"))
+            if (!IsCharacterStoreType(storeType))
             {
                 throw Unsupported(
                     $"collation '{collation}' on non-TEXT column '{operation.Table}.{operation.Name}'");
@@ -760,13 +760,45 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
     }
 
     private static bool IsSupportedTypeRewrite(string oldStoreType, string storeType) =>
-        IsStoreType(oldStoreType, "INTEGER") && IsStoreType(storeType, "REAL") ||
-        IsStoreType(oldStoreType, "REAL") && IsStoreType(storeType, "INTEGER") ||
-        IsStoreType(oldStoreType, "TEXT") && IsStoreType(storeType, "BLOB") ||
-        IsStoreType(oldStoreType, "BLOB") && IsStoreType(storeType, "TEXT");
+        IsSupportedLogicalStoreType(oldStoreType) &&
+        IsSupportedLogicalStoreType(storeType);
 
     private static bool IsStoreType(string storeType, string expected) =>
-        string.Equals(storeType.Trim(), expected, StringComparison.OrdinalIgnoreCase);
+        string.Equals(
+            GetStoreTypeBase(storeType),
+            expected,
+            StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsCharacterStoreType(string storeType) =>
+        GetStoreTypeBase(storeType) is "TEXT" or "CHAR" or "CHARACTER" or
+            "VARCHAR" or "CHARACTER VARYING";
+
+    private static bool IsSupportedLogicalStoreType(string storeType) =>
+        GetStoreTypeBase(storeType) is
+            "BOOLEAN" or "BOOL" or
+            "TINYINT" or "SMALLINT" or "INTEGER" or "INT" or "BIGINT" or
+            "REAL" or "FLOAT" or "DOUBLE" or "DOUBLE PRECISION" or
+            "DECIMAL" or "DEC" or "NUMERIC" or
+            "CHAR" or "CHARACTER" or "VARCHAR" or "CHARACTER VARYING" or "TEXT" or
+            "BINARY" or "VARBINARY" or "BINARY VARYING" or "BLOB" or
+            "UUID" or "DATE" or "TIME" or "TIMESTAMP" or "TIMESTAMP WITH TIME ZONE" or
+            "INTERVAL YEAR TO MONTH" or "INTERVAL DAY TO SECOND" or
+            "JSON" or "XML" or "BIT" or "BIT VARYING" or "VARBIT";
+
+    private static string GetStoreTypeBase(string storeType)
+    {
+        string normalized = string.Join(
+            ' ',
+            storeType.Trim().Split(
+                (char[]?)null,
+                StringSplitOptions.RemoveEmptyEntries));
+        int facetStart = normalized.IndexOf('(');
+        return (facetStart < 0
+                ? normalized
+                : normalized[..facetStart])
+            .Trim()
+            .ToUpperInvariant();
+    }
 
     private static bool TryGetProviderOwnedDecimalFacets(
         ColumnOperation operation,

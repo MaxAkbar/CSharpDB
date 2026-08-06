@@ -13,6 +13,9 @@ internal static class StringCache
     // Column name pointers: keyed by (resultHandle, columnIndex)
     private static readonly ConcurrentDictionary<(IntPtr, int), IntPtr> s_columnNames = new();
 
+    // Declared SQL type pointers: keyed independently from column names.
+    private static readonly ConcurrentDictionary<(IntPtr, int), IntPtr> s_columnTypes = new();
+
     // Current-row text pointers: keyed by (resultHandle, columnIndex)
     private static readonly ConcurrentDictionary<(IntPtr, int), IntPtr> s_rowTexts = new();
 
@@ -23,6 +26,16 @@ internal static class StringCache
     {
         var key = (resultHandle, columnIndex);
         return s_columnNames.GetOrAdd(key, _ => Utf8StringMemory.Allocate(value));
+    }
+
+    /// <summary>
+    /// Get or allocate a UTF-8 pointer for a declared column SQL type. Lives
+    /// until Remove() is called.
+    /// </summary>
+    public static IntPtr GetOrAddColumnType(IntPtr resultHandle, int columnIndex, string value)
+    {
+        var key = (resultHandle, columnIndex);
+        return s_columnTypes.GetOrAdd(key, _ => Utf8StringMemory.Allocate(value));
     }
 
     /// <summary>
@@ -55,6 +68,13 @@ internal static class StringCache
         foreach (var key in s_columnNames.Keys)
         {
             if (key.Item1 == resultHandle && s_columnNames.TryRemove(key, out var ptr))
+                Marshal.FreeHGlobal(ptr);
+        }
+
+
+        foreach (var key in s_columnTypes.Keys)
+        {
+            if (key.Item1 == resultHandle && s_columnTypes.TryRemove(key, out var ptr))
                 Marshal.FreeHGlobal(ptr);
         }
 

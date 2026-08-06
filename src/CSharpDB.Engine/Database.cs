@@ -961,7 +961,9 @@ public sealed class Database : IAsyncDisposable
         {
             DbType.Integer => value.AsInteger.ToString(CultureInfo.InvariantCulture),
             DbType.Real => value.AsReal.ToString(CultureInfo.InvariantCulture),
+            DbType.Decimal => value.AsDecimal.ToString(CultureInfo.InvariantCulture),
             DbType.Text => $"'{value.AsText.Replace("'", "''", StringComparison.Ordinal)}'",
+            DbType.Blob => $"X'{Convert.ToHexString(value.AsBlob)}'",
             _ => "NULL",
         };
     }
@@ -2941,10 +2943,12 @@ public sealed class Database : IAsyncDisposable
                     {
                         Name = column.Alias,
                         Type = sourceColumn.Type,
+                        DeclaredType = sourceColumn.DeclaredType,
                         Nullable = sourceColumn.Nullable,
                         IsPrimaryKey = sourceColumn.IsPrimaryKey,
                         IsIdentity = sourceColumn.IsIdentity,
                         IsRowVersion = sourceColumn.IsRowVersion,
+                        Collation = sourceColumn.Collation,
                     }
                     : sourceColumn;
             }

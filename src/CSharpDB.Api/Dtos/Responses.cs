@@ -11,7 +11,15 @@ public sealed record ColumnResponse(
     bool IsRowVersion,
     string? Collation,
     string? DefaultSql,
-    Guid SchemaId = default);
+    Guid SchemaId = default,
+    SqlTypeDescriptorResponse? DeclaredType = null);
+
+public sealed record SqlTypeDescriptorResponse(
+    string Kind,
+    int? Length = null,
+    int? Precision = null,
+    int? Scale = null,
+    int? FractionalSecondsPrecision = null);
 public sealed record ForeignKeyResponse(
     string ConstraintName,
     string ColumnName,

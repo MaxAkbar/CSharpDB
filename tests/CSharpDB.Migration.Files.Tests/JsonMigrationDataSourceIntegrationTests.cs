@@ -291,11 +291,11 @@ public sealed class JsonMigrationDataSourceIntegrationTests
         Assert.All(
             rows,
             row => Assert.Equal(
-                DbType.Integer,
+                DbType.Decimal,
                 row.Values[2].Type));
         Assert.Equal(
-            [125L, 250L, 375L],
-            rows.Select(row => row.Values[2].AsInteger));
+            [1.25m, 2.50m, 3.75m],
+            rows.Select(row => row.Values[2].AsDecimal));
     }
 
     private static MigrationPlan ReadyPlan(

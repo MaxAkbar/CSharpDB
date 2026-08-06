@@ -9,6 +9,17 @@ public sealed class ColumnDefinition
     public Guid SchemaId { get; init; }
     public required string Name { get; init; }
     public required DbType Type { get; init; }
+    /// <summary>
+    /// The declared logical SQL type and facets. Null identifies metadata
+    /// written before logical SQL type descriptors were persisted.
+    /// </summary>
+    public SqlTypeDescriptor? DeclaredType { get; init; }
+    /// <summary>
+    /// The declared type, or a compatibility descriptor synthesized from the
+    /// legacy physical type when no declaration was persisted.
+    /// </summary>
+    public SqlTypeDescriptor EffectiveType =>
+        DeclaredType ?? SqlTypeDescriptor.FromLegacy(Type);
     public bool Nullable { get; init; } = true;
     public bool IsPrimaryKey { get; init; }
     public bool IsIdentity { get; init; }

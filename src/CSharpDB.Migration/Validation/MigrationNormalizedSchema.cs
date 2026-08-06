@@ -307,6 +307,13 @@ public static class MigrationNormalizedSchemaContract
             case MigrationObjectKind.Column:
                 MigrationTypeMapping mapping = planned.TypeMappings.Single();
                 Add("targetType", mapping.TargetType?.ToString() ?? "none");
+                if (CSharpDbDeclaredTypeContract.TryRead(
+                        item,
+                        out SqlTypeDescriptor declaredType) &&
+                    declaredType.StorageType == mapping.TargetType)
+                {
+                    Add("declaredType", declaredType.ToSql());
+                }
                 Add("nullable", Facet(item, "nullable") is string nullable
                     ? bool.Parse(nullable).ToString().ToLowerInvariant()
                     : "true");

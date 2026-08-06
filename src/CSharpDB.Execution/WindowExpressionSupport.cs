@@ -103,6 +103,11 @@ internal static class WindowExpressionSupport
                 Operand = RewriteWindowFunctions(collate.Operand, slotNames),
                 Collation = collate.Collation,
             },
+            CastExpression cast => new CastExpression
+            {
+                Operand = RewriteWindowFunctions(cast.Operand, slotNames),
+                TargetType = cast.TargetType,
+            },
             FunctionCallExpression function => new FunctionCallExpression
             {
                 FunctionName = function.FunctionName,
@@ -352,6 +357,9 @@ internal static class WindowExpressionSupport
             case CollateExpression collate:
                 ValidateExpression(collate.Operand, allowWindow, insideWindow, windows, ref containsSubquery);
                 break;
+            case CastExpression cast:
+                ValidateExpression(cast.Operand, allowWindow, insideWindow, windows, ref containsSubquery);
+                break;
             case FunctionCallExpression function:
                 foreach (Expression argument in function.Arguments)
                     ValidateExpression(argument, allowWindow, insideWindow, windows, ref containsSubquery);
@@ -580,6 +588,7 @@ internal static class WindowExpressionSupport
                 ContainsWindowFunction(binary.Right),
             UnaryExpression unary => ContainsWindowFunction(unary.Operand),
             CollateExpression collate => ContainsWindowFunction(collate.Operand),
+            CastExpression cast => ContainsWindowFunction(cast.Operand),
             FunctionCallExpression function => function.Arguments.Any(ContainsWindowFunction),
             LikeExpression like => ContainsWindowFunction(like.Operand) ||
                 ContainsWindowFunction(like.Pattern) ||
@@ -607,6 +616,7 @@ internal static class WindowExpressionSupport
                 ContainsOrdinaryAggregate(binary.Right),
             UnaryExpression unary => ContainsOrdinaryAggregate(unary.Operand),
             CollateExpression collate => ContainsOrdinaryAggregate(collate.Operand),
+            CastExpression cast => ContainsOrdinaryAggregate(cast.Operand),
             LikeExpression like => ContainsOrdinaryAggregate(like.Operand) ||
                 ContainsOrdinaryAggregate(like.Pattern) ||
                 (like.EscapeChar != null && ContainsOrdinaryAggregate(like.EscapeChar)),
@@ -644,6 +654,9 @@ internal static class WindowExpressionSupport
                 break;
             case CollateExpression collate:
                 CollectWindowFunctions(collate.Operand, collected, seen);
+                break;
+            case CastExpression cast:
+                CollectWindowFunctions(cast.Operand, collected, seen);
                 break;
             case FunctionCallExpression function:
                 foreach (Expression argument in function.Arguments)
@@ -762,6 +775,13 @@ internal static class WindowExpressionSupport
                 AppendLengthPrefixed(builder, collate.Collation.ToUpperInvariant());
                 builder.Append('(');
                 AppendExpressionKey(builder, collate.Operand);
+                builder.Append(')');
+                break;
+            case CastExpression cast:
+                builder.Append("cast:");
+                AppendLengthPrefixed(builder, cast.TargetType.ToSql());
+                builder.Append('(');
+                AppendExpressionKey(builder, cast.Operand);
                 builder.Append(')');
                 break;
             case FunctionCallExpression function:

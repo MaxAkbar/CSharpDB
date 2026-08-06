@@ -21,7 +21,8 @@ public sealed class BuiltInFunctionCatalogTests
 
         Assert.True(DbBuiltInFunctionRegistry.TryGet("floor", out var floor));
         Assert.Equal("INT", floor.Name);
-        Assert.Equal(DbType.Real, floor.ReturnType);
+        Assert.Null(floor.ReturnType);
+        Assert.Equal("input numeric type", floor.ReturnTypeRule);
 
         Assert.True(DbBuiltInFunctionRegistry.TryGet("count", out var count));
         Assert.Equal(DbBuiltInFunctionKind.Aggregate, count.Kind);
@@ -150,6 +151,34 @@ public sealed class BuiltInFunctionCatalogTests
         DbValue[] row = Assert.Single(await result.ToListAsync(Ct));
         Assert.Equal(-13, row[0].AsReal);
         Assert.True(row[1].IsNull);
+    }
+
+    [Fact]
+    public async Task IntegerNumericFunctions_PreserveExactBigIntValuesAndMetadata()
+    {
+        await using var db = await Database.OpenInMemoryAsync(Ct);
+        await using var result = await db.ExecuteAsync(
+            "SELECT ABS(9007199254740993), ROUND(9007199254740993), " +
+            "INT(9007199254740993), FLOOR(9007199254740993), FIX(9007199254740993)",
+            Ct);
+
+        DbValue[] row = Assert.Single(await result.ToListAsync(Ct));
+        Assert.All(row, static value =>
+        {
+            Assert.Equal(DbType.Integer, value.Type);
+            Assert.Equal(9007199254740993L, value.AsInteger);
+        });
+        Assert.All(result.Schema, static column =>
+        {
+            Assert.Equal(DbType.Integer, column.Type);
+            Assert.Equal(SqlTypeKind.BigInt, column.EffectiveType.Kind);
+        });
+
+        Assert.Throws<OverflowException>(() =>
+            DbBuiltInScalarFunctions.TryEvaluate(
+                "ABS",
+                [DbValue.FromInteger(long.MinValue)],
+                out _));
     }
 
     [Fact]

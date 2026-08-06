@@ -246,6 +246,7 @@ public sealed class ClientSchemaCompareTarget : ISchemaCompareTarget
                 SchemaId = column.SchemaId,
                 Name = column.Name,
                 Type = MapDbType(column.Type),
+                DeclaredType = PrimitiveSchemaTypeMapper.Map(column.DeclaredType),
                 Nullable = column.Nullable,
                 IsPrimaryKey = column.IsPrimaryKey,
                 IsIdentity = column.IsIdentity,
@@ -316,6 +317,7 @@ public sealed class ClientSchemaCompareTarget : ISchemaCompareTarget
     {
         PrimitiveDbType.Integer => ClientDbType.Integer,
         PrimitiveDbType.Real => ClientDbType.Real,
+        PrimitiveDbType.Decimal => ClientDbType.Decimal,
         PrimitiveDbType.Text => ClientDbType.Text,
         PrimitiveDbType.Blob => ClientDbType.Blob,
         _ => throw new ArgumentOutOfRangeException(nameof(type), type, null),
@@ -404,6 +406,7 @@ public sealed class TableArchiveSchemaCompareTarget : ISchemaCompareTarget
                 SchemaId = column.SchemaId,
                 Name = column.Name,
                 Type = MapDbType(column.Type),
+                DeclaredType = PrimitiveSchemaTypeMapper.Map(column.DeclaredType),
                 Nullable = column.Nullable,
                 IsPrimaryKey = column.IsPrimaryKey,
                 IsIdentity = column.IsIdentity,
@@ -474,6 +477,7 @@ public sealed class TableArchiveSchemaCompareTarget : ISchemaCompareTarget
     {
         PrimitiveDbType.Integer => ClientDbType.Integer,
         PrimitiveDbType.Real => ClientDbType.Real,
+        PrimitiveDbType.Decimal => ClientDbType.Decimal,
         PrimitiveDbType.Text => ClientDbType.Text,
         PrimitiveDbType.Blob => ClientDbType.Blob,
         _ => throw new ArgumentOutOfRangeException(nameof(type), type, null),

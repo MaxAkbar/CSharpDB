@@ -45,4 +45,18 @@ public interface IRecordSerializer
         out long intValue,
         out double realValue,
         out bool isReal);
+
+    /// <summary>
+    /// Decodes a numeric column in its native representation. The default
+    /// implementation preserves compatibility for existing serializers while
+    /// ensuring DECIMAL values are not routed through binary floating point.
+    /// </summary>
+    bool TryDecodeNumericValueColumn(
+        ReadOnlySpan<byte> buffer,
+        int columnIndex,
+        out DbValue value)
+    {
+        value = DecodeColumn(buffer, columnIndex);
+        return !value.IsNull && value.Type is DbType.Integer or DbType.Real or DbType.Decimal;
+    }
 }

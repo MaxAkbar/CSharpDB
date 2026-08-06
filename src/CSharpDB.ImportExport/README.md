@@ -23,6 +23,10 @@ complete, and external-table point lookups use the streaming scan fallback.
 Format v5 archives carry required SHA-256 digests for their schema, rows, and
 optional physical index. Every reader path verifies those section digests
 before exposing archive data; v3 and v4 remain readable for compatibility.
+Format v7 additionally preserves each column's logical SQL type descriptor,
+including length, precision, scale, and fractional-seconds precision. Archives
+created from legacy schemas may omit the descriptor and retain their physical
+type compatibility view.
 
 The Admin restore workflow adds an independent post-load check before a staged
 table becomes visible. It compares archive rows with the loaded table using
@@ -65,15 +69,26 @@ TableSchema schema = new()
     TableName = "customers",
     Columns =
     [
-        new ColumnDefinition { Name = "id", Type = DbType.Integer, IsPrimaryKey = true },
-        new ColumnDefinition { Name = "name", Type = DbType.Text },
+        new ColumnDefinition
+        {
+            Name = "id",
+            Type = DbType.Integer,
+            DeclaredType = SqlTypeDescriptor.Create(SqlTypeKind.Integer),
+            IsPrimaryKey = true,
+        },
+        new ColumnDefinition
+        {
+            Name = "name",
+            Type = DbType.Text,
+            DeclaredType = SqlTypeDescriptor.Create(SqlTypeKind.VarChar, length: 100),
+        },
     ],
 };
 
 DbValue[][] rows =
 [
-    [DbValue.Integer(1), DbValue.Text("Ada")],
-    [DbValue.Integer(2), DbValue.Text("Grace")],
+    [DbValue.FromInteger(1), DbValue.FromText("Ada")],
+    [DbValue.FromInteger(2), DbValue.FromText("Grace")],
 ];
 
 await TableArchiveWriter.WriteAsync(

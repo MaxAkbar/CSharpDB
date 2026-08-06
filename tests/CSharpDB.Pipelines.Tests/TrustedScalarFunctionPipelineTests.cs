@@ -7,6 +7,43 @@ namespace CSharpDB.Pipelines.Tests;
 public sealed class TrustedScalarFunctionPipelineTests
 {
     [Fact]
+    public async Task DeriveTransform_PreservesExactDecimalFunctionArgumentsAndResults()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        var registry = DbFunctionRegistry.Create(functions =>
+            functions.AddScalar(
+                "EchoDecimal",
+                1,
+                new DbScalarFunctionOptions(DbType.Decimal, IsDeterministic: true, NullPropagating: true),
+                static (_, args) => args[0]));
+        var transform = new DerivePipelineTransform(new PipelineTransformDefinition
+        {
+            Kind = PipelineTransformKind.Derive,
+            DerivedColumns =
+            [
+                new PipelineDerivedColumn { Name = "copy", Expression = "EchoDecimal(amount)" },
+            ],
+        }, registry);
+        const decimal exact = 9007199254740993.01m;
+        var batch = new PipelineRowBatch
+        {
+            BatchNumber = 1,
+            StartingRowNumber = 1,
+            Rows =
+            [
+                new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["amount"] = exact,
+                },
+            ],
+        };
+
+        PipelineRowBatch result = await transform.TransformAsync(batch, CreateContext(), ct);
+
+        Assert.Equal(exact, Assert.IsType<decimal>(Assert.Single(result.Rows)["copy"]));
+    }
+
+    [Fact]
     public async Task FilterAndDeriveTransforms_InvokeRegisteredFunctions()
     {
         CancellationToken ct = TestContext.Current.CancellationToken;

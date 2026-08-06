@@ -1,4 +1,6 @@
 using System.Linq.Expressions;
+using CSharpDB.EntityFrameworkCore.Storage.Internal;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Query;
 
@@ -154,6 +156,27 @@ public sealed class CSharpDbQueryTranslationPreprocessor
     private void ValidateDecimalSafety(
         Expression query)
     {
+        string? unsafeMixedDecimalMapping =
+            CSharpDbQueryTranslationDiagnostics
+                .FindUnsafeMixedDecimalMapping(query, _model);
+        if (unsafeMixedDecimalMapping is not null)
+        {
+            throw new InvalidOperationException(
+                unsafeMixedDecimalMapping);
+        }
+
+        // The legacy INTEGER converter compares scaled coefficients rather
+        // than SQL decimal values and therefore retains the original guarded
+        // query surface. Native DECIMAL mappings use exact engine semantics.
+        bool hasLegacyScaledDecimal = _model
+            .GetEntityTypes()
+            .SelectMany(static entity => entity.GetProperties())
+            .Any(static property =>
+                property.GetRelationalTypeMapping().Converter is
+                    CSharpDbDecimalToInt64Converter);
+        if (!hasLegacyScaledDecimal)
+            return;
+
         string? unsafeDecimalExpression =
             CSharpDbQueryTranslationDiagnostics
                 .FindUnsafeDecimalExpression(query);

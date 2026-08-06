@@ -71,6 +71,7 @@ public static class MigrationValueConverter
     {
         DbType.Null => 1,
         DbType.Integer or DbType.Real => 9,
+        DbType.Decimal => 10,
         DbType.Text => checked(5 + Encoding.UTF8.GetByteCount(value.AsText)),
         DbType.Blob => checked(5 + value.AsBlob.Length),
         _ => throw new InvalidDataException($"Unsupported target value tag '{value.Type}'."),
@@ -90,6 +91,8 @@ public static class MigrationValueConverter
             DbValue.FromText(Text(source, column, rowOrdinal)),
         DbType.Blob when source.Kind == MigrationSourceValueKind.Binary =>
             DbValue.FromBlob(source.BinaryValue.ToArray()),
+        DbType.Decimal when source.Kind == MigrationSourceValueKind.Decimal =>
+            ParseDbDecimal(Text(source, column, rowOrdinal), column, rowOrdinal),
         _ => throw Error(
             "MIG-APPLY-KIND-001",
             column,
@@ -129,6 +132,7 @@ public static class MigrationValueConverter
             "datetimeoffset-text" => RequireKind(source, MigrationSourceValueKind.DateTimeOffset, column, rowOrdinal,
                 value => DbValue.FromText(CSharpDbTextCodec.FormatDateTimeOffset(CSharpDbTextCodec.ParseDateTimeOffset(value)))),
             "decimal-scaled-int64" => ConvertScaledDecimal(source, text, conversion, column, rowOrdinal),
+            "decimal-native" => ConvertNativeDecimal(source, text, conversion, column, rowOrdinal),
             "decimal-text" => ConvertDecimalText(source, text, conversion, column, rowOrdinal),
             "json-typed-decimal-text" =>
                 ConvertTypedJsonDecimalText(
@@ -191,6 +195,70 @@ public static class MigrationValueConverter
                 column,
                 rowOrdinal,
                 "DECIMAL precision or scale exceeds the planned exact target representation.");
+        }
+    }
+
+    private static DbValue ConvertNativeDecimal(
+        MigrationSourceValue source,
+        string text,
+        MigrationConversionDescriptor conversion,
+        MigrationCatalogObject column,
+        long rowOrdinal)
+    {
+        RequireSourceKind(source, MigrationSourceValueKind.Decimal, column, rowOrdinal);
+        int precision = ParameterInt(conversion, "precision", column, rowOrdinal);
+        int scale = ParameterInt(conversion, "scale", column, rowOrdinal);
+        DbValue parsed = ParseDbDecimal(text, column, rowOrdinal);
+        try
+        {
+            long coefficient = CSharpDbDecimalCodec.ToScaledInt64(
+                parsed.AsDecimal,
+                precision,
+                scale);
+            return DbValue.FromDecimalParts(coefficient, scale);
+        }
+        catch (Exception error) when (error is
+            OverflowException or
+            InvalidOperationException or
+            NotSupportedException)
+        {
+            throw Error(
+                "MIG-APPLY-DECIMAL-002",
+                column,
+                rowOrdinal,
+                "DECIMAL precision or scale exceeds the planned exact target representation.");
+        }
+    }
+
+    private static DbValue ParseDbDecimal(
+        string text,
+        MigrationCatalogObject column,
+        long rowOrdinal)
+    {
+        if (!decimal.TryParse(
+                text,
+                NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint,
+                CultureInfo.InvariantCulture,
+                out decimal parsed))
+        {
+            throw Error(
+                "MIG-APPLY-DECIMAL-001",
+                column,
+                rowOrdinal,
+                "DECIMAL text is not a supported invariant value.");
+        }
+
+        try
+        {
+            return DbValue.FromDecimal(parsed);
+        }
+        catch (OverflowException)
+        {
+            throw Error(
+                "MIG-APPLY-DECIMAL-002",
+                column,
+                rowOrdinal,
+                "DECIMAL value exceeds the target's 18-digit exact representation.");
         }
     }
 

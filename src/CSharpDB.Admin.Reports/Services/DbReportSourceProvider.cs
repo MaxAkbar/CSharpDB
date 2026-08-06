@@ -125,6 +125,8 @@ public sealed class DbReportSourceProvider(ICSharpDbClient dbClient) : IReportSo
             ToDisplayName(column.Name),
             new Dictionary<string, object?>
             {
+                ["dbType"] = column.EffectiveType.ToSql(),
+                ["storageType"] = column.Type.ToString(),
                 ["isPrimaryKey"] = column.IsPrimaryKey,
                 ["isIdentity"] = column.IsIdentity,
                 ["isRowVersion"] = column.IsRowVersion,
@@ -174,7 +176,8 @@ public sealed class DbReportSourceProvider(ICSharpDbClient dbClient) : IReportSo
         {
             byte[] => DbType.Blob,
             long or int or short or byte or sbyte or uint or ulong or ushort => DbType.Integer,
-            double or float or decimal => DbType.Real,
+            decimal => DbType.Decimal,
+            double or float => DbType.Real,
             _ => DbType.Text,
         };
     }
@@ -190,7 +193,7 @@ public sealed class DbReportSourceProvider(ICSharpDbClient dbClient) : IReportSo
                 Columns = schema.Columns.Select(column => new
                 {
                     column.Name,
-                    Type = column.Type.ToString(),
+                    Type = GetSchemaTypeIdentity(column),
                     column.Nullable,
                     column.IsPrimaryKey,
                     column.IsIdentity,
@@ -206,7 +209,7 @@ public sealed class DbReportSourceProvider(ICSharpDbClient dbClient) : IReportSo
             Columns = schema.Columns.Select(column => new
             {
                 column.Name,
-                Type = column.Type.ToString(),
+                Type = GetSchemaTypeIdentity(column),
                 column.Nullable,
                 column.IsPrimaryKey,
                 column.IsIdentity,
@@ -215,6 +218,15 @@ public sealed class DbReportSourceProvider(ICSharpDbClient dbClient) : IReportSo
             }),
         });
     }
+
+    private static string GetSchemaTypeIdentity(ColumnDefinition column) =>
+        column.DeclaredType?.Kind is
+            SqlTypeKind.Integer or
+            SqlTypeKind.Real or
+            SqlTypeKind.Text or
+            SqlTypeKind.Blob
+                ? column.Type.ToString()
+                : column.DeclaredType?.ToSql() ?? column.Type.ToString();
 
     private static string ComputeViewSignature(ViewDefinition view, IReadOnlyList<ReportFieldDefinition> fields)
         => ReportSql.ComputeSignature(new

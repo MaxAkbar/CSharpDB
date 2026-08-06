@@ -494,6 +494,15 @@ internal sealed class CSharpDbActualSchemaReader
             Attribute("identity", BooleanToken(column.IsIdentity)),
             Attribute("rowVersion", BooleanToken(column.IsRowVersion)),
         };
+        if (CSharpDbDeclaredTypeContract.TryRead(
+                item,
+                out SqlTypeDescriptor declaredType) &&
+            declaredType.StorageType == column.Type)
+        {
+            attributes.Add(Attribute(
+                "declaredType",
+                column.EffectiveType.ToSql()));
+        }
         if (column.Collation is not null)
             attributes.Add(Attribute("collation", column.Collation));
         if (column.DefaultSql is not null)

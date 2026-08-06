@@ -15,7 +15,7 @@ public static class SchemaSerializer
     private const byte PrimaryKeyFlag = 0x02;
     private const byte IdentityFlag = 0x04;
     private const byte RowVersionFlag = 0x08;
-    private const ulong TableMetadataVersion = 9;
+    private const ulong TableMetadataVersion = 10;
     private const ulong TableMetadataVersionWithCollations = 1;
     private const ulong TableMetadataVersionWithForeignKeys = 2;
     private const ulong TableMetadataVersionWithDefaultsAndChecks = 3;
@@ -25,6 +25,7 @@ public static class SchemaSerializer
     private const ulong TableMetadataVersionWithStableIdentities = 7;
     private const ulong TableMetadataVersionWithStableForeignKeyBindings = 8;
     private const ulong TableMetadataVersionWithForeignKeyUpdateActions = 9;
+    private const ulong TableMetadataVersionWithDeclaredTypes = 10;
     private const ulong IndexMetadataVersion = 1;
     private const int MaximumSchemaCollectionCount = 65_536;
     private const int MaximumSchemaPayloadBytes = 64 * 1024 * 1024;
@@ -171,6 +172,9 @@ public static class SchemaSerializer
         WriteVarint(ms, (ulong)schema.ForeignKeys.Count);
         foreach (ForeignKeyDefinition foreignKey in schema.ForeignKeys)
             WriteVarint(ms, (ulong)foreignKey.OnUpdate);
+        WriteVarint(ms, (ulong)schema.Columns.Count);
+        foreach (ColumnDefinition column in schema.Columns)
+            WriteDeclaredType(ms, column.DeclaredType);
 
         return ms.ToArray();
     }
@@ -231,6 +235,7 @@ public static class SchemaSerializer
         long nextRowId = 0;
         var columnCollations = new string?[colCount];
         var columnDefaults = new string?[colCount];
+        var columnDeclaredTypes = new SqlTypeDescriptor?[colCount];
         ForeignKeyDefinition[] foreignKeys = Array.Empty<ForeignKeyDefinition>();
         CheckConstraintDefinition[] checkConstraints = Array.Empty<CheckConstraintDefinition>();
         KeyConstraintDefinition[] keyConstraints = Array.Empty<KeyConstraintDefinition>();
@@ -266,7 +271,8 @@ public static class SchemaSerializer
                     TableMetadataVersionWithRowVersion or
                     TableMetadataVersionWithStableIdentities or
                     TableMetadataVersionWithStableForeignKeyBindings or
-                    TableMetadataVersionWithForeignKeyUpdateActions))
+                    TableMetadataVersionWithForeignKeyUpdateActions or
+                    TableMetadataVersionWithDeclaredTypes))
                 throw new InvalidDataException($"Unsupported table schema metadata version '{metadataVersion}'.");
 
             int metadataColumnCount = ReadCount(data, ref pos, "table metadata column");
@@ -590,6 +596,31 @@ public static class SchemaSerializer
                 }
             }
 
+            if (metadataVersion >= TableMetadataVersionWithDeclaredTypes)
+            {
+                int declaredTypeColumnCount = ReadCount(
+                    data,
+                    ref pos,
+                    "declared SQL type column");
+                if (declaredTypeColumnCount != colCount)
+                {
+                    throw new InvalidDataException(
+                        $"Declared SQL type metadata column count '{declaredTypeColumnCount}' does not match schema column count '{colCount}'.");
+                }
+
+                for (int i = 0; i < declaredTypeColumnCount; i++)
+                {
+                    SqlTypeDescriptor? declaredType = ReadDeclaredType(data, ref pos);
+                    if (declaredType is not null &&
+                        declaredType.StorageType != columnTypes[i])
+                    {
+                        throw new InvalidDataException(
+                            $"Declared SQL type '{declaredType.ToSql()}' uses physical type '{declaredType.StorageType}', not persisted column type '{columnTypes[i]}'.");
+                    }
+                    columnDeclaredTypes[i] = declaredType;
+                }
+            }
+
             if (pos != data.Length)
             {
                 throw new InvalidDataException(
@@ -656,6 +687,7 @@ public static class SchemaSerializer
                 SchemaId = columnIds[i],
                 Name = columnNames[i],
                 Type = type,
+                DeclaredType = columnDeclaredTypes[i],
                 Nullable = (flags & NullableFlag) != 0,
                 IsPrimaryKey = isPrimaryKey,
                 // Backward compatibility: historical INTEGER PRIMARY KEY behavior auto-generated rowid.
@@ -717,6 +749,12 @@ public static class SchemaSerializer
             {
                 throw new InvalidDataException(
                     $"Unsupported column type '{(byte)column.Type}'.");
+            }
+            if (column.DeclaredType is not null &&
+                column.DeclaredType.StorageType != column.Type)
+            {
+                throw new InvalidDataException(
+                    $"Declared SQL type '{column.DeclaredType.ToSql()}' uses physical type '{column.DeclaredType.StorageType}', not column type '{column.Type}'.");
             }
         }
 
@@ -1295,6 +1333,96 @@ public static class SchemaSerializer
             Event = evt,
             BodySql = bodySql,
         };
+    }
+
+    private static void WriteDeclaredType(
+        MemoryStream stream,
+        SqlTypeDescriptor? descriptor)
+    {
+        if (descriptor is null)
+        {
+            stream.WriteByte(0);
+            return;
+        }
+
+        stream.WriteByte(1);
+        WriteVarint(stream, (ulong)descriptor.Kind);
+        WriteOptionalFacet(stream, descriptor.Length);
+        WriteOptionalFacet(stream, descriptor.Precision);
+        WriteOptionalFacet(stream, descriptor.Scale);
+        WriteOptionalFacet(stream, descriptor.FractionalSecondsPrecision);
+    }
+
+    private static SqlTypeDescriptor? ReadDeclaredType(
+        ReadOnlySpan<byte> data,
+        ref int pos)
+    {
+        if ((uint)pos >= (uint)data.Length)
+            throw new InvalidDataException("Truncated declared SQL type presence marker.");
+
+        byte presence = data[pos++];
+        if (presence == 0)
+            return null;
+        if (presence != 1)
+        {
+            throw new InvalidDataException(
+                $"Unsupported declared SQL type presence marker '{presence}'.");
+        }
+
+        ulong rawKind = ReadVarint(data, ref pos, "declared SQL type kind");
+        if (rawKind > byte.MaxValue ||
+            !Enum.IsDefined((SqlTypeKind)(byte)rawKind))
+        {
+            throw new InvalidDataException(
+                $"Unsupported declared SQL type kind '{rawKind}'.");
+        }
+
+        int? length = ReadOptionalFacet(data, ref pos, "declared SQL type length");
+        int? precision = ReadOptionalFacet(data, ref pos, "declared SQL type precision");
+        int? scale = ReadOptionalFacet(data, ref pos, "declared SQL type scale");
+        int? fractionalSecondsPrecision = ReadOptionalFacet(
+            data,
+            ref pos,
+            "declared SQL type fractional-seconds precision");
+
+        try
+        {
+            return SqlTypeDescriptor.Create(
+                (SqlTypeKind)(byte)rawKind,
+                length,
+                precision,
+                scale,
+                fractionalSecondsPrecision);
+        }
+        catch (ArgumentException ex)
+        {
+            throw new InvalidDataException(
+                "Persisted declared SQL type facets are invalid.",
+                ex);
+        }
+    }
+
+    private static void WriteOptionalFacet(MemoryStream stream, int? value)
+    {
+        WriteVarint(
+            stream,
+            value.HasValue ? checked((ulong)value.Value + 1UL) : 0UL);
+    }
+
+    private static int? ReadOptionalFacet(
+        ReadOnlySpan<byte> data,
+        ref int pos,
+        string valueKind)
+    {
+        ulong encoded = ReadVarint(data, ref pos, valueKind);
+        if (encoded == 0)
+            return null;
+        if (encoded - 1 > int.MaxValue)
+        {
+            throw new InvalidDataException(
+                $"{valueKind} '{encoded - 1}' exceeds the supported maximum.");
+        }
+        return (int)(encoded - 1);
     }
 
     private static void WriteVarint(MemoryStream ms, ulong value)

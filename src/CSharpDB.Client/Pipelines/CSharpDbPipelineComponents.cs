@@ -312,8 +312,9 @@ internal sealed class CSharpDbTablePipelineDestination : IPipelineDestination
     {
         DbType.Integer => value is sbyte or byte or short or ushort or int or uint or long or ulong,
         DbType.Real => value is sbyte or byte or short or ushort or int or uint or long or ulong or float or double or decimal,
+        DbType.Decimal => value is sbyte or byte or short or ushort or int or uint or long or ulong or decimal,
         DbType.Text => value is string or char,
-        DbType.Blob => value is byte[],
+        DbType.Blob => value is byte[] or SqlBitString,
         _ => true,
     };
 
@@ -321,10 +322,12 @@ internal sealed class CSharpDbTablePipelineDestination : IPipelineDestination
         value switch
         {
             byte[] => "Blob",
+            SqlBitString => "BitString",
             string => "Text",
             char => "Text",
             sbyte or byte or short or ushort or int or uint or long or ulong => "Integer",
-            float or double or decimal => "Real",
+            decimal => "Decimal",
+            float or double => "Real",
             _ => value.GetType().Name,
         };
 
@@ -371,6 +374,11 @@ internal sealed class CSharpDbTablePipelineDestination : IPipelineDestination
                 string textValue => double.Parse(textValue, CultureInfo.InvariantCulture),
                 _ => Convert.ToDouble(value, CultureInfo.InvariantCulture),
             },
+            DbType.Decimal => value switch
+            {
+                decimal decimalValue => decimalValue,
+                _ => Convert.ToDecimal(value, CultureInfo.InvariantCulture),
+            },
             DbType.Text => value switch
             {
                 string textValue => textValue,
@@ -380,6 +388,7 @@ internal sealed class CSharpDbTablePipelineDestination : IPipelineDestination
             DbType.Blob => value switch
             {
                 byte[] bytes => bytes,
+                SqlBitString bits => bits,
                 string textValue => Convert.FromBase64String(textValue),
                 _ => value,
             },
@@ -405,9 +414,11 @@ internal sealed class CSharpDbTablePipelineDestination : IPipelineDestination
         {
             null => "NULL",
             long integer => integer.ToString(CultureInfo.InvariantCulture),
+            decimal exact => exact.ToString(CultureInfo.InvariantCulture),
             double real => real.ToString(CultureInfo.InvariantCulture),
             string text => $"'{text.Replace("'", "''", StringComparison.Ordinal)}'",
-            byte[] => throw new InvalidOperationException("Blob values are not supported by the pipeline table destination."),
+            SqlBitString bits => $"'{bits.ToBitString()}'",
+            byte[] blob => $"X'{Convert.ToHexString(blob)}'",
             _ => $"'{Convert.ToString(normalized, CultureInfo.InvariantCulture)?.Replace("'", "''", StringComparison.Ordinal) ?? string.Empty}'",
         };
     }
@@ -417,8 +428,10 @@ internal sealed class CSharpDbTablePipelineDestination : IPipelineDestination
         null => null,
         bool boolean => boolean ? 1L : 0L,
         byte or sbyte or short or ushort or int or uint or long => Convert.ToInt64(value, CultureInfo.InvariantCulture),
-        float or double or decimal => Convert.ToDouble(value, CultureInfo.InvariantCulture),
+        decimal exact => exact,
+        float or double => Convert.ToDouble(value, CultureInfo.InvariantCulture),
         string text => text,
+        SqlBitString bits => bits,
         byte[] blob => blob,
         _ => Convert.ToString(value, CultureInfo.InvariantCulture),
     };

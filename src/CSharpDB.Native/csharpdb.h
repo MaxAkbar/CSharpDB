@@ -59,6 +59,7 @@ typedef void* csharpdb_stmt_t;
 #define CSHARPDB_REAL    2
 #define CSHARPDB_TEXT    3
 #define CSHARPDB_BLOB    4
+#define CSHARPDB_DECIMAL 5
 
 /* ------------------------------------------------------------------ */
 /*  Database lifecycle                                                 */
@@ -112,12 +113,38 @@ int csharpdb_stmt_bind_int64(csharpdb_stmt_t stmt, const char* name, int64_t val
 int csharpdb_stmt_bind_double(csharpdb_stmt_t stmt, const char* name, double value);
 
 /**
+ * Bind an exact decimal as coefficient * 10^(-scale).
+ * The coefficient supports up to 18 decimal digits.
+ * @return 0 on success, -1 on error.
+ */
+int csharpdb_stmt_bind_decimal(csharpdb_stmt_t stmt, const char* name, int64_t coefficient, int scale);
+
+/**
  * Bind a UTF-8 text parameter by name.
  * Parameter names may be passed with or without the leading '@'.
  * Pass NULL for value to bind SQL NULL.
  * @return 0 on success, -1 on error.
  */
 int csharpdb_stmt_bind_text(csharpdb_stmt_t stmt, const char* name, const char* value);
+
+/**
+ * Bind an ordinary binary parameter by name.
+ * A zero byte_count binds an empty BLOB; use csharpdb_stmt_bind_null for NULL.
+ * @return 0 on success, -1 on error.
+ */
+int csharpdb_stmt_bind_blob(csharpdb_stmt_t stmt, const char* name, const void* value, int byte_count);
+
+/**
+ * Bind a packed BIT or VARBIT parameter with its exact logical bit length.
+ * Unused trailing bits in the final byte must be zero.
+ * @return 0 on success, -1 on error.
+ */
+int csharpdb_stmt_bind_bit_string(
+    csharpdb_stmt_t stmt,
+    const char* name,
+    const void* value,
+    int byte_count,
+    int bit_length);
 
 /**
  * Bind SQL NULL by parameter name.
@@ -169,6 +196,13 @@ int csharpdb_result_column_count(csharpdb_result_t result);
  */
 const char* csharpdb_result_column_name(csharpdb_result_t result, int column_index);
 
+/**
+ * Returns the canonical declared SQL type of a result column (UTF-8), such as
+ * DECIMAL(18,4) or TIMESTAMP WITH TIME ZONE. The pointer remains valid until
+ * csharpdb_result_free().
+ */
+const char* csharpdb_result_column_declared_type(csharpdb_result_t result, int column_index);
+
 /* ------------------------------------------------------------------ */
 /*  Row iteration                                                      */
 /* ------------------------------------------------------------------ */
@@ -200,6 +234,12 @@ int64_t csharpdb_result_get_int64(csharpdb_result_t result, int column_index);
  */
 double csharpdb_result_get_double(csharpdb_result_t result, int column_index);
 
+/** Read the normalized coefficient of an exact decimal value. */
+int64_t csharpdb_result_get_decimal_coefficient(csharpdb_result_t result, int column_index);
+
+/** Read the normalized scale of an exact decimal value. Returns -1 on error. */
+int csharpdb_result_get_decimal_scale(csharpdb_result_t result, int column_index);
+
 /**
  * Read a UTF-8 text value from the current row.
  * The pointer is valid until the next csharpdb_result_next() or csharpdb_result_free().
@@ -212,6 +252,12 @@ const char* csharpdb_result_get_text(csharpdb_result_t result, int column_index)
  * @return Pointer to blob data, valid until next row or result free.
  */
 const void* csharpdb_result_get_blob(csharpdb_result_t result, int column_index, int* out_size);
+
+/**
+ * Return the exact logical bit length of a BIT or VARBIT value.
+ * Returns -1 for an ordinary BLOB value or on error.
+ */
+int csharpdb_result_get_bit_length(csharpdb_result_t result, int column_index);
 
 /**
  * Free a result handle and all associated resources.

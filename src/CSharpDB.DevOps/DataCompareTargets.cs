@@ -124,6 +124,7 @@ public sealed class TableArchiveDataCompareTarget : IDataCompareTarget
         {
             CSharpDB.Primitives.DbType.Integer => value.AsInteger,
             CSharpDB.Primitives.DbType.Real => value.AsReal,
+            CSharpDB.Primitives.DbType.Decimal => value.AsDecimal,
             CSharpDB.Primitives.DbType.Text => value.AsText,
             CSharpDB.Primitives.DbType.Blob => value.AsBlob,
             _ => Convert.ToString(value, CultureInfo.InvariantCulture),
@@ -140,6 +141,7 @@ public sealed class TableArchiveDataCompareTarget : IDataCompareTarget
                 SchemaId = column.SchemaId,
                 Name = column.Name,
                 Type = MapDbType(column.Type),
+                DeclaredType = PrimitiveSchemaTypeMapper.Map(column.DeclaredType),
                 Nullable = column.Nullable,
                 IsPrimaryKey = column.IsPrimaryKey,
                 IsIdentity = column.IsIdentity,
@@ -210,6 +212,7 @@ public sealed class TableArchiveDataCompareTarget : IDataCompareTarget
     {
         PrimitiveDbType.Integer => ClientDbType.Integer,
         PrimitiveDbType.Real => ClientDbType.Real,
+        PrimitiveDbType.Decimal => ClientDbType.Decimal,
         PrimitiveDbType.Text => ClientDbType.Text,
         PrimitiveDbType.Blob => ClientDbType.Blob,
         _ => throw new ArgumentOutOfRangeException(nameof(type), type, null),

@@ -451,9 +451,9 @@ public sealed class JsonTypedSnapshotPackageTests
                     item => item.Second,
                     StringComparer.Ordinal);
         Assert.Equal(
-            12_345,
+            123.45m,
             values[JsonMigrationObjectIds.Column(0)]
-                .AsInteger);
+                .AsDecimal);
         Assert.Equal(
             "00112233-4455-6677-8899-aabbccddeeff",
             values[JsonMigrationObjectIds.Column(1)]

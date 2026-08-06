@@ -327,6 +327,7 @@ public static class CsvExportManifestSerializer
             {
                 CsvExportDatabaseType.Integer => CsvExportContracts.IntegerValueEncoding,
                 CsvExportDatabaseType.Real => CsvExportContracts.RealValueEncoding,
+                CsvExportDatabaseType.Decimal => CsvExportContracts.DecimalValueEncoding,
                 CsvExportDatabaseType.Text => CsvExportContracts.TextValueEncoding,
                 CsvExportDatabaseType.Blob => CsvExportContracts.BlobValueEncoding,
                 _ => throw Invalid("CSV export column database type is unsupported."),

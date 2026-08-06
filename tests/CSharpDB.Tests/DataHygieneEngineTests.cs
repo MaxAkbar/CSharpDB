@@ -82,6 +82,30 @@ public sealed class DataHygieneEngineTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task FindDuplicates_UsesExactDecimalIdentityForGrouping()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync(
+            "CREATE TABLE decimal_groups (" +
+            "id INTEGER PRIMARY KEY, amount DECIMAL(18,2))",
+            ct);
+        await _db.ExecuteAsync(
+            "INSERT INTO decimal_groups VALUES " +
+            "(1, 1234567890123456.78), " +
+            "(2, 2.00), " +
+            "(3, 1234567890123456.78)",
+            ct);
+
+        await using var duplicates = await _db.ExecuteAsync(
+            "FIND DUPLICATES IN decimal_groups ON amount",
+            ct);
+        DbValue[] group = Assert.Single(await duplicates.ToListAsync(ct));
+        Assert.Equal(2L, group[1].AsInteger);
+        Assert.Equal(1L, group[2].AsInteger);
+        Assert.Equal("3", group[4].AsText);
+    }
+
+    [Fact]
     public async Task ValidationRules_AreHiddenFromTables_ExposedInCatalog_AndValidateRows()
     {
         var ct = TestContext.Current.CancellationToken;

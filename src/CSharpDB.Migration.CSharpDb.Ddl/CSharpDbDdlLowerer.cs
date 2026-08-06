@@ -242,7 +242,7 @@ internal static class DdlLowerer
             }
 
             if (!TryMapType(
-                    column.TypeToken,
+                    column.DeclaredType,
                     out string nativeType,
                     out string logicalType,
                     out DbType targetType))
@@ -251,8 +251,8 @@ internal static class DdlLowerer
                     statement,
                     CSharpDbDdlCompatibilityAnalyzer
                         .UnsupportedFeatureRuleId,
-                    "The column type is outside the initial CSharpDB DDL proof subset.",
-                    "Use INTEGER, REAL, TEXT, or BLOB.",
+                    "The column type cannot be represented by the target CSharpDB type model.",
+                    "Use a supported logical SQL type and valid type facets.",
                     diagnostics,
                     invalidStatements);
                 valid = false;
@@ -262,7 +262,7 @@ internal static class DdlLowerer
             if (column.DefaultExpression is not null &&
                 !TryLowerLiteralDefault(
                     column.DefaultExpression,
-                    targetType,
+                    column.DeclaredType,
                     out literalDefault,
                     out string defaultReason))
             {
@@ -366,6 +366,9 @@ internal static class DdlLowerer
                         .ToString()
                         .ToLowerInvariant()),
             };
+            CSharpDbDeclaredTypeContract.AddFacets(
+                facets,
+                column.Column.DeclaredType);
             if (column.Collation is not null)
             {
                 facets.Add(
@@ -1038,29 +1041,48 @@ internal static class DdlLowerer
     }
 
     private static bool TryMapType(
-        TokenType token,
+        SqlTypeDescriptor descriptor,
         out string nativeType,
         out string logicalType,
         out DbType targetType)
     {
-        (nativeType, logicalType, targetType) = token switch
+        ArgumentNullException.ThrowIfNull(descriptor);
+        nativeType = descriptor.ToSql();
+        logicalType = descriptor.Kind switch
         {
-            TokenType.Integer =>
-                ("INTEGER", "signedInteger", DbType.Integer),
-            TokenType.Real =>
-                ("REAL", "floatingPoint", DbType.Real),
-            TokenType.Text =>
-                ("TEXT", "text", DbType.Text),
-            TokenType.Blob =>
-                ("BLOB", "binary", DbType.Blob),
-            _ => (string.Empty, string.Empty, DbType.Null),
+            SqlTypeKind.Boolean => "boolean",
+            SqlTypeKind.TinyInt or
+            SqlTypeKind.SmallInt or
+            SqlTypeKind.Integer or
+            SqlTypeKind.BigInt => "signedInteger",
+            SqlTypeKind.Real or
+            SqlTypeKind.Double => "floatingPoint",
+            SqlTypeKind.Decimal => "decimal",
+            SqlTypeKind.Char or
+            SqlTypeKind.VarChar or
+            SqlTypeKind.Text => "text",
+            SqlTypeKind.Binary or
+            SqlTypeKind.VarBinary or
+            SqlTypeKind.Blob => "binary",
+            SqlTypeKind.Uuid => "uuid",
+            SqlTypeKind.Date => "date",
+            SqlTypeKind.Time => "time",
+            SqlTypeKind.Timestamp => "datetime",
+            SqlTypeKind.TimestampWithTimeZone => "datetimeOffset",
+            SqlTypeKind.IntervalYearToMonth => "intervalYearToMonth",
+            SqlTypeKind.IntervalDayToSecond => "intervalDayToSecond",
+            SqlTypeKind.Json => "json",
+            SqlTypeKind.Xml => "xml",
+            SqlTypeKind.Bit or SqlTypeKind.VarBit => "bitString",
+            _ => string.Empty,
         };
-        return targetType != DbType.Null;
+        targetType = descriptor.StorageType;
+        return logicalType.Length != 0;
     }
 
     private static bool TryLowerLiteralDefault(
         Expression expression,
-        DbType columnType,
+        SqlTypeDescriptor columnType,
         out CSharpDbLiteralDefaultDescriptor? descriptor,
         out string reason)
     {
@@ -1092,6 +1114,28 @@ internal static class DdlLowerer
                 kind = "null";
                 literalType = null;
                 value = null;
+                break;
+
+            case (TokenType.IntegerLiteral, long integer)
+                when columnType.Kind == SqlTypeKind.Decimal &&
+                     (!negative || integer >= 0):
+                kind = "typed-literal";
+                literalType = "decimal";
+                value = string.Concat(
+                    negative ? "-" : string.Empty,
+                    literal.RawText ??
+                    integer.ToString(CultureInfo.InvariantCulture));
+                break;
+
+            case (TokenType.RealLiteral, double real)
+                when columnType.Kind == SqlTypeKind.Decimal &&
+                     (!negative || real >= 0) &&
+                     double.IsFinite(real):
+                kind = "typed-literal";
+                literalType = "decimal";
+                value = string.Concat(
+                    negative ? "-" : string.Empty,
+                    literal.RawText ?? SqlLiteralRules.FormatReal(real));
                 break;
 
             case (TokenType.IntegerLiteral, long integer)
@@ -1135,7 +1179,7 @@ internal static class DdlLowerer
         }
 
         if (!CSharpDbLiteralDefaultContract.TryCreate(
-                columnType,
+                columnType.StorageType,
                 kind,
                 literalType,
                 value,
@@ -1144,6 +1188,38 @@ internal static class DdlLowerer
         {
             descriptor = null;
             return false;
+        }
+
+        if (columnType.Kind == SqlTypeKind.Decimal &&
+            lowered.Value is string decimalText)
+        {
+            try
+            {
+                decimal decimalValue = decimal.Parse(
+                    decimalText,
+                    NumberStyles.AllowLeadingSign |
+                    NumberStyles.AllowDecimalPoint,
+                    CultureInfo.InvariantCulture);
+                (int precision, int scale) =
+                    CSharpDbDecimalCodec.ResolveFacets(
+                        columnType.Precision,
+                        columnType.Scale);
+                _ = CSharpDbDecimalCodec.ToScaledInt64(
+                    decimalValue,
+                    precision,
+                    scale);
+            }
+            catch (Exception error) when (error is
+                FormatException or
+                OverflowException or
+                InvalidOperationException or
+                NotSupportedException)
+            {
+                descriptor = null;
+                reason =
+                    $"the DECIMAL literal is outside {columnType.ToSql()}.";
+                return false;
+            }
         }
 
         descriptor = lowered;

@@ -459,7 +459,7 @@ internal static class IndexMaintenanceHelper
             if (colIdx < 0 || colIdx >= schema.Columns.Count)
                 return false;
             DbType columnType = schema.Columns[colIdx].Type;
-            if (columnType is not (DbType.Integer or DbType.Real or DbType.Text))
+            if (columnType is not (DbType.Integer or DbType.Real or DbType.Decimal or DbType.Text or DbType.Blob))
                 return false;
 
             columnIndices[i] = colIdx;
@@ -804,6 +804,33 @@ internal static class IndexMaintenanceHelper
                     (ulong)RealIndexKeyCodec.GetCanonicalBits(value.AsReal));
                 hash *= prime;
                 return hash;
+            case DbType.Decimal:
+                hash ^= unchecked((ulong)value.DecimalCoefficient);
+                hash *= prime;
+                hash ^= checked((byte)value.DecimalScale);
+                hash *= prime;
+                return hash;
+            case DbType.Blob:
+            {
+                if (value.IsBitString)
+                {
+                    // Logical bit strings share the BLOB physical tag, so add
+                    // an internal discriminator and their exact length before
+                    // hashing the packed bytes.
+                    hash ^= 0x80;
+                    hash *= prime;
+                    hash ^= checked((ulong)value.BitLength);
+                    hash *= prime;
+                }
+
+                byte[] blob = value.AsBlob;
+                for (int i = 0; i < blob.Length; i++)
+                {
+                    hash ^= blob[i];
+                    hash *= prime;
+                }
+                return hash;
+            }
             default:
                 throw new InvalidOperationException($"Cannot hash index component of type '{value.Type}'.");
         }
@@ -862,8 +889,26 @@ internal static class IndexMaintenanceHelper
             return true;
         }
 
+        if (columnType == DbType.Decimal)
+        {
+            if (value.Type == DbType.Decimal)
+            {
+                normalized = value;
+                return true;
+            }
+
+            if (value.Type == DbType.Integer)
+            {
+                normalized = DbValue.FromDecimal(value.AsInteger);
+                return true;
+            }
+
+            normalized = DbValue.Null;
+            return false;
+        }
+
         if (value.Type != columnType ||
-            columnType is not (DbType.Integer or DbType.Text))
+            columnType is not (DbType.Integer or DbType.Text or DbType.Blob))
         {
             normalized = DbValue.Null;
             return false;

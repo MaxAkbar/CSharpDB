@@ -269,7 +269,7 @@
                                                 </div>
                                             }
                                         </td>
-                                        <td><span class="col-type-badge @GetTypeBadgeClass(col.Type.ToString())">@col.Type.ToString().ToUpperInvariant()</span></td>
+                                        <td><span class="col-type-badge @GetTypeBadgeClass(col.EffectiveType.ToSql())">@col.EffectiveType.ToSql()</span></td>
                                         <td class="mono-cell">@GetColumnCollationLabel(col)</td>
                                         <td>@(col.IsPrimaryKey ? "Yes" : "")</td>
                                         <td>@(col.IsIdentity ? "Yes" : "No")</td>
@@ -322,6 +322,7 @@
                                             <select class="schema-input" value="@_addColType" @onchange="OnAddColumnTypeChanged">
                                                 <option value="@DbType.Integer">INTEGER</option>
                                                 <option value="@DbType.Real">REAL</option>
+                                                <option value="@DbType.Decimal">DECIMAL</option>
                                                 <option value="@DbType.Text">TEXT</option>
                                                 <option value="@DbType.Blob">BLOB</option>
                                             </select>
@@ -1618,6 +1619,7 @@
         {
             DbType.Integer => "Integer value",
             DbType.Real => "Decimal value",
+            DbType.Decimal => "Exact decimal value",
             DbType.Blob => "Blob value",
             _ => "Text value",
         };
@@ -1978,14 +1980,33 @@
     }
 
     // ─── Helpers ─────────────────────────
-    private static string GetTypeBadgeClass(string type) => type.ToUpperInvariant() switch
+    private static string GetTypeBadgeClass(string type)
     {
-        "INTEGER" or "INT" => "type-integer",
-        "TEXT" or "VARCHAR" or "CHAR" => "type-text",
-        "REAL" => "type-real",
-        "BLOB" => "type-blob",
-        _ => "type-other"
-    };
+        string normalized = type.Trim().ToUpperInvariant();
+        if (normalized is "BOOLEAN" or "TINYINT" or "SMALLINT" or "INTEGER" or "INT" or "BIGINT")
+            return "type-integer";
+        if (normalized.StartsWith("DECIMAL", StringComparison.Ordinal) ||
+            normalized.StartsWith("NUMERIC", StringComparison.Ordinal) ||
+            normalized is "REAL" or "DOUBLE" or "DOUBLE PRECISION" or "FLOAT")
+        {
+            return "type-real";
+        }
+        if (normalized.StartsWith("BLOB", StringComparison.Ordinal) ||
+            normalized.StartsWith("BINARY", StringComparison.Ordinal) ||
+            normalized.StartsWith("VARBINARY", StringComparison.Ordinal) ||
+            normalized.StartsWith("UUID", StringComparison.Ordinal) ||
+            normalized.StartsWith("BIT", StringComparison.Ordinal))
+        {
+            return "type-blob";
+        }
+        if (normalized.StartsWith("TEXT", StringComparison.Ordinal) ||
+            normalized.StartsWith("VARCHAR", StringComparison.Ordinal) ||
+            normalized.StartsWith("CHAR", StringComparison.Ordinal))
+        {
+            return "type-text";
+        }
+        return "type-other";
+    }
 
     private bool SelectedIndexColumnSupportsCollation => GetColumn(_idxColumn)?.Type == DbType.Text;
 

@@ -747,6 +747,7 @@ public static class DatabaseMaintenanceCoordinator
                 SchemaId = column.SchemaId,
                 Name = column.Name,
                 Type = column.Type,
+                DeclaredType = column.DeclaredType,
                 Nullable = column.Nullable,
                 IsPrimaryKey = column.IsPrimaryKey,
                 IsIdentity = column.IsIdentity,

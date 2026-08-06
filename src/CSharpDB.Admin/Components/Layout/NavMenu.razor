@@ -1082,6 +1082,7 @@
         {
             DbType.Integer => "bi-123 icon-column-number",
             DbType.Real => "bi-123 icon-column-number",
+            DbType.Decimal => "bi-123 icon-column-number",
             DbType.Text => "bi-fonts icon-column-text",
             DbType.Blob => "bi-file-binary icon-column-blob",
             _ => "bi-circle icon-column-generic",
@@ -1089,14 +1090,12 @@
     }
 
     private static string GetColumnTypeLabel(ColumnDefinition column)
-        => column.Type switch
-        {
-            DbType.Integer => column.IsPrimaryKey ? "int pk" : "int",
-            DbType.Real => "real",
-            DbType.Text => "text",
-            DbType.Blob => column.IsRowVersion ? "blob rv" : "blob",
-            _ => column.Type.ToString().ToLowerInvariant(),
-        };
+    {
+        string type = column.EffectiveType.ToSql().ToLowerInvariant();
+        if (column.IsPrimaryKey)
+            return $"{type} pk";
+        return column.IsRowVersion ? $"{type} rv" : type;
+    }
 
     private static string GetIndexTypeLabel(IndexSchema index)
         => index.IsUnique

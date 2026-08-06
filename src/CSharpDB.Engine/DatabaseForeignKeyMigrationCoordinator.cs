@@ -580,11 +580,16 @@ internal static class DatabaseForeignKeyMigrationCoordinator
             throw new CSharpDbException(ErrorCode.ColumnNotFound, $"Column '{columnName}' not found in table '{tableName}'.");
 
         ColumnDefinition childColumn = currentTableSchema.Columns[childColumnIndex];
-        if (childColumn.Type is not (DbType.Integer or DbType.Text))
+        if (childColumn.Type is not (
+                DbType.Integer or
+                DbType.Real or
+                DbType.Decimal or
+                DbType.Text or
+                DbType.Blob))
         {
             throw new CSharpDbException(
                 ErrorCode.TypeMismatch,
-                $"Foreign key column '{columnName}' must use INTEGER or TEXT.");
+                $"Foreign key column '{columnName}' must use an equality-indexable SQL type.");
         }
         if (onDelete is not (
                 ForeignKeyOnDeleteAction.Restrict or
@@ -635,11 +640,14 @@ internal static class DatabaseForeignKeyMigrationCoordinator
         }
 
         ColumnDefinition parentColumn = parentSchema.Columns[parentColumnIndex];
-        if (parentColumn.Type != childColumn.Type)
+        if (parentColumn.Type != childColumn.Type ||
+            parentColumn.DeclaredType is not null &&
+            childColumn.DeclaredType is not null &&
+            parentColumn.EffectiveType != childColumn.EffectiveType)
         {
             throw new CSharpDbException(
                 ErrorCode.TypeMismatch,
-                $"Foreign key column '{columnName}' type '{childColumn.Type}' does not match referenced column '{parentSchema.TableName}.{resolvedReferencedColumn}' type '{parentColumn.Type}'.");
+                $"Foreign key column '{columnName}' type '{childColumn.EffectiveType.ToSql()}' does not match referenced column '{parentSchema.TableName}.{resolvedReferencedColumn}' type '{parentColumn.EffectiveType.ToSql()}'.");
         }
 
         string? childCollation = childColumn.Type == DbType.Text
@@ -806,12 +814,12 @@ internal static class DatabaseForeignKeyMigrationCoordinator
             return true;
         }
 
-        if (value.Type is not (DbType.Integer or DbType.Text))
+        if (!IndexMaintenanceHelper.TryNormalizeLookupComponent(
+                value,
+                schema.Columns[columnIndex].Type,
+                indexColumnCollations.Length > 0 ? indexColumnCollations[0] : null,
+                out DbValue normalizedValue))
             return false;
-
-        DbValue normalizedValue = CollationSupport.NormalizeIndexValue(
-            value,
-            indexColumnCollations.Length > 0 ? indexColumnCollations[0] : null);
         keyComponents = [normalizedValue];
         lookupKey = storageMode == SqlIndexStorageMode.OrderedText
             ? OrderedTextIndexKeyCodec.ComputeKey(normalizedValue.AsText)
@@ -903,6 +911,7 @@ internal static class DatabaseForeignKeyMigrationCoordinator
             SchemaId = preserveIdentities ? column.SchemaId : Guid.Empty,
             Name = column.Name,
             Type = column.Type,
+            DeclaredType = column.DeclaredType,
             Nullable = column.Nullable,
             IsPrimaryKey = column.IsPrimaryKey,
             IsIdentity = column.IsIdentity,

@@ -1,6 +1,7 @@
 using CSharpDB.Execution;
 using CSharpDB.Primitives;
 using System.Runtime.ExceptionServices;
+using SqlBitString = CSharpDB.Client.Models.SqlBitString;
 
 namespace CSharpDB.Client;
 
@@ -82,7 +83,10 @@ public sealed class ForwardOnlyQueryCursor : IAsyncDisposable
         DbType.Null => null,
         DbType.Integer => value.AsInteger,
         DbType.Real => value.AsReal,
+        DbType.Decimal => value.AsDecimal,
         DbType.Text => value.AsText,
+        DbType.Blob when value.IsBitString =>
+            new SqlBitString(value.AsBlob, value.BitLength),
         DbType.Blob => value.AsBlob,
         _ => throw new CSharpDbClientException($"Unsupported DbValue type '{value.Type}'."),
     };

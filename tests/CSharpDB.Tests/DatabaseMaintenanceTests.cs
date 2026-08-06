@@ -222,6 +222,48 @@ public sealed class DatabaseMaintenanceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task MigrateForeignKeysAsync_ValidateOnly_SupportsExactDecimalKeys()
+    {
+        await _client.ExecuteSqlAsync(
+            "CREATE TABLE decimal_parents (amount DECIMAL(18,2) PRIMARY KEY);",
+            Ct);
+        await _client.ExecuteSqlAsync(
+            "CREATE TABLE decimal_children (id INTEGER PRIMARY KEY, parent_amount DECIMAL(18,2));",
+            Ct);
+        await _client.ExecuteSqlAsync(
+            "INSERT INTO decimal_parents VALUES (9007199254740993.01);",
+            Ct);
+        await _client.ExecuteSqlAsync(
+            "INSERT INTO decimal_children VALUES (1, 9007199254740993.01);",
+            Ct);
+
+        await _client.DisposeAsync();
+        await RewriteTableSchemaAsLegacyAsync(_dbPath, "decimal_children", Ct);
+        _client = CreateClient();
+
+        var result = await _client.MigrateForeignKeysAsync(
+            new ClientModels.ForeignKeyMigrationRequest
+            {
+                ValidateOnly = true,
+                Constraints =
+                [
+                    new ClientModels.ForeignKeyMigrationConstraintSpec
+                    {
+                        TableName = "decimal_children",
+                        ColumnName = "parent_amount",
+                        ReferencedTableName = "decimal_parents",
+                        ReferencedColumnName = "amount",
+                    },
+                ],
+            },
+            Ct);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(0, result.ViolationCount);
+        Assert.Equal(1, result.AppliedForeignKeys);
+    }
+
+    [Fact]
     public async Task MigrateForeignKeysAsync_ValidatesPhase3ReferentialActions()
     {
         await _client.ExecuteSqlAsync(

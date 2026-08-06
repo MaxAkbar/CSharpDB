@@ -132,6 +132,36 @@ public sealed class DataModelDiagramServiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ApplyPendingOperations_AddColumnPreservesLogicalTypeFacets()
+    {
+        DataModelState state = await _service.BuildModelAsync(
+            "orders",
+            ct: TestContext.Current.CancellationToken);
+        state.PendingOperations.Add(new DataModelPendingOperation
+        {
+            Kind = DataModelPendingOperationKind.AddColumn,
+            TableName = "orders",
+            ColumnName = "amount",
+            ColumnType = "decimal(18,4)",
+        });
+
+        DataModelApplyResult result = await _service.ApplyPendingOperationsAsync(
+            state,
+            TestContext.Current.CancellationToken);
+
+        Assert.True(result.Succeeded);
+        TableSchema schema = Assert.IsType<TableSchema>(
+            await _client.GetTableSchemaAsync(
+                "orders",
+                TestContext.Current.CancellationToken));
+        Assert.Equal(
+            "DECIMAL(18,4)",
+            Assert.Single(schema.Columns, column => column.Name == "amount")
+                .EffectiveType
+                .ToSql());
+    }
+
+    [Fact]
     public async Task ApplyPendingOperations_RemovesDroppedTableFromSavedDiagram()
     {
         Assert.Null((await _client.ExecuteSqlAsync("CREATE TABLE diagram_drop (id INTEGER PRIMARY KEY);", TestContext.Current.CancellationToken)).Error);

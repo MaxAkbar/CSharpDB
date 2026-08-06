@@ -18,6 +18,147 @@ public class ParserTests
     }
 
     [Theory]
+    [InlineData("BOOLEAN", SqlTypeKind.Boolean)]
+    [InlineData("BOOL", SqlTypeKind.Boolean)]
+    [InlineData("TINYINT", SqlTypeKind.TinyInt)]
+    [InlineData("SMALLINT", SqlTypeKind.SmallInt)]
+    [InlineData("INT", SqlTypeKind.Integer)]
+    [InlineData("INTEGER", SqlTypeKind.Integer)]
+    [InlineData("BIGINT", SqlTypeKind.BigInt)]
+    [InlineData("REAL", SqlTypeKind.Real)]
+    [InlineData("FLOAT", SqlTypeKind.Double)]
+    [InlineData("DOUBLE", SqlTypeKind.Double)]
+    [InlineData("DOUBLE PRECISION", SqlTypeKind.Double)]
+    [InlineData("DECIMAL", SqlTypeKind.Decimal)]
+    [InlineData("NUMERIC", SqlTypeKind.Decimal)]
+    [InlineData("CHAR", SqlTypeKind.Char)]
+    [InlineData("CHARACTER", SqlTypeKind.Char)]
+    [InlineData("VARCHAR", SqlTypeKind.VarChar)]
+    [InlineData("CHARACTER VARYING", SqlTypeKind.VarChar)]
+    [InlineData("NCHAR", SqlTypeKind.Char)]
+    [InlineData("NVARCHAR", SqlTypeKind.VarChar)]
+    [InlineData("TEXT", SqlTypeKind.Text)]
+    [InlineData("CLOB", SqlTypeKind.Text)]
+    [InlineData("BINARY", SqlTypeKind.Binary)]
+    [InlineData("VARBINARY", SqlTypeKind.VarBinary)]
+    [InlineData("BLOB", SqlTypeKind.Blob)]
+    [InlineData("UUID", SqlTypeKind.Uuid)]
+    [InlineData("GUID", SqlTypeKind.Uuid)]
+    [InlineData("UNIQUEIDENTIFIER", SqlTypeKind.Uuid)]
+    [InlineData("DATE", SqlTypeKind.Date)]
+    [InlineData("TIME", SqlTypeKind.Time)]
+    [InlineData("TIMESTAMP", SqlTypeKind.Timestamp)]
+    [InlineData("TIMESTAMP WITH TIME ZONE", SqlTypeKind.TimestampWithTimeZone)]
+    [InlineData("DATETIME", SqlTypeKind.Timestamp)]
+    [InlineData("DATETIMEOFFSET", SqlTypeKind.TimestampWithTimeZone)]
+    [InlineData("INTERVAL YEAR TO MONTH", SqlTypeKind.IntervalYearToMonth)]
+    [InlineData("INTERVAL DAY TO SECOND", SqlTypeKind.IntervalDayToSecond)]
+    [InlineData("JSON", SqlTypeKind.Json)]
+    [InlineData("XML", SqlTypeKind.Xml)]
+    [InlineData("BIT", SqlTypeKind.Bit)]
+    [InlineData("VARBIT", SqlTypeKind.VarBit)]
+    [InlineData("BIT VARYING", SqlTypeKind.VarBit)]
+    public void Parse_CreateTable_LogicalTypeNamesAndAliases(
+        string typeSql,
+        SqlTypeKind expectedKind)
+    {
+        var create = Assert.IsType<CreateTableStatement>(
+            Parser.Parse($"CREATE TABLE typed_values (value {typeSql})"));
+
+        Assert.Equal(expectedKind, Assert.Single(create.Columns).DeclaredType.Kind);
+    }
+
+    [Theory]
+    [InlineData("DECIMAL(18, 4)", SqlTypeKind.Decimal, null, 18, 4, null)]
+    [InlineData("NUMERIC(9)", SqlTypeKind.Decimal, null, 9, null, null)]
+    [InlineData("CHAR(12)", SqlTypeKind.Char, 12, null, null, null)]
+    [InlineData("CHARACTER VARYING(200)", SqlTypeKind.VarChar, 200, null, null, null)]
+    [InlineData("NVARCHAR(64)", SqlTypeKind.VarChar, 64, null, null, null)]
+    [InlineData("BINARY(16)", SqlTypeKind.Binary, 16, null, null, null)]
+    [InlineData("VARBINARY(4096)", SqlTypeKind.VarBinary, 4096, null, null, null)]
+    [InlineData("TIME(3)", SqlTypeKind.Time, null, null, null, 3)]
+    [InlineData("TIMESTAMP(6)", SqlTypeKind.Timestamp, null, null, null, 6)]
+    [InlineData("TIMESTAMP(7) WITH TIME ZONE", SqlTypeKind.TimestampWithTimeZone, null, null, null, 7)]
+    [InlineData("INTERVAL DAY TO SECOND(6)", SqlTypeKind.IntervalDayToSecond, null, null, null, 6)]
+    [InlineData("BIT(8)", SqlTypeKind.Bit, 8, null, null, null)]
+    [InlineData("VARBIT(128)", SqlTypeKind.VarBit, 128, null, null, null)]
+    public void Parse_CreateTable_TypeFacets(
+        string typeSql,
+        SqlTypeKind expectedKind,
+        int? expectedLength,
+        int? expectedPrecision,
+        int? expectedScale,
+        int? expectedFractionalSecondsPrecision)
+    {
+        var create = Assert.IsType<CreateTableStatement>(
+            Parser.Parse($"CREATE TABLE typed_values (value {typeSql})"));
+        SqlTypeDescriptor type = Assert.Single(create.Columns).DeclaredType;
+
+        Assert.Equal(expectedKind, type.Kind);
+        Assert.Equal(expectedLength, type.Length);
+        Assert.Equal(expectedPrecision, type.Precision);
+        Assert.Equal(expectedScale, type.Scale);
+        Assert.Equal(expectedFractionalSecondsPrecision, type.FractionalSecondsPrecision);
+    }
+
+    [Theory]
+    [InlineData("VARCHAR(0)")]
+    [InlineData("DECIMAL(0, 0)")]
+    [InlineData("DECIMAL(10, 11)")]
+    [InlineData("DECIMAL(18,)")]
+    [InlineData("TIME(-1)")]
+    [InlineData("TIME(8)")]
+    [InlineData("TIME(9)")]
+    [InlineData("TIMESTAMP(8)")]
+    [InlineData("TIMESTAMP(9)")]
+    [InlineData("TIMESTAMP(8) WITH TIME ZONE")]
+    [InlineData("TIMESTAMP(9) WITH TIME ZONE")]
+    [InlineData("INTERVAL DAY TO SECOND(8)")]
+    [InlineData("INTERVAL DAY TO SECOND(9)")]
+    [InlineData("INTEGER(4)")]
+    [InlineData("INTERVAL YEAR")]
+    [InlineData("TIMESTAMP WITH ZONE")]
+    public void Parse_CreateTable_InvalidTypeFacetsOrModifiers_Throws(string typeSql)
+    {
+        Assert.Throws<CSharpDbException>(() =>
+            Parser.Parse($"CREATE TABLE invalid_type (value {typeSql})"));
+    }
+
+    [Fact]
+    public void Parse_Cast_PreservesExactNumericTextAndTargetFacets()
+    {
+        var cast = Assert.IsType<CastExpression>(
+            Parser.ParseExpressionSql("CAST(0.10000000000000001 AS DECIMAL(18, 17))"));
+        var literal = Assert.IsType<LiteralExpression>(cast.Operand);
+
+        Assert.Equal("0.10000000000000001", literal.RawText);
+        Assert.Equal(SqlTypeKind.Decimal, cast.TargetType.Kind);
+        Assert.Equal(18, cast.TargetType.Precision);
+        Assert.Equal(17, cast.TargetType.Scale);
+    }
+
+    [Fact]
+    public void Parse_MinimumBigIntLiteral_PreservesTheSignedBoundary()
+    {
+        var literal = Assert.IsType<LiteralExpression>(
+            Parser.ParseExpressionSql("-9223372036854775808"));
+
+        Assert.Equal(long.MinValue, literal.Value);
+        Assert.Equal("-9223372036854775808", literal.RawText);
+    }
+
+    [Fact]
+    public void Parse_Cast_AcceptsMultiwordTargetType()
+    {
+        var cast = Assert.IsType<CastExpression>(
+            Parser.ParseExpressionSql("CAST(created_at AS TIMESTAMP(6) WITH TIME ZONE)"));
+
+        Assert.IsType<ColumnRefExpression>(cast.Operand);
+        Assert.Equal(SqlTypeKind.TimestampWithTimeZone, cast.TargetType.Kind);
+        Assert.Equal(6, cast.TargetType.FractionalSecondsPrecision);
+    }
+
+    [Theory]
     [InlineData("CREATE TEMP TABLE scratch (id INTEGER PRIMARY KEY)", true)]
     [InlineData("CREATE TEMPORARY TABLE IF NOT EXISTS scratch (id INTEGER PRIMARY KEY)", true)]
     [InlineData("CREATE TABLE scratch (id INTEGER PRIMARY KEY)", false)]
@@ -35,6 +176,7 @@ public class ParserTests
     [InlineData("CREATE TABLE users (id INTEGER PRIMARY KEY IDENTITY, name TEXT)")]
     [InlineData("CREATE TABLE users (id INTEGER AUTOINCREMENT PRIMARY KEY, name TEXT)")]
     [InlineData("CREATE TABLE users (id INTEGER IDENTITY PRIMARY KEY, name TEXT)")]
+    [InlineData("CREATE TABLE users (id BIGINT IDENTITY PRIMARY KEY, name TEXT)")]
     public void Parse_CreateTable_IdentityModifiers(string sql)
     {
         var stmt = Parser.Parse(sql);
@@ -528,7 +670,19 @@ public class ParserTests
         Assert.Equal(1, insert.Values[0].AsInteger);
         Assert.Equal("O'Reilly", insert.Values[1].AsText);
         Assert.True(insert.Values[2].IsNull);
+        Assert.Equal(DbType.Decimal, insert.Values[3].Type);
+        Assert.Equal(-2.5m, insert.Values[3].AsDecimal);
         Assert.Equal(-2.5, insert.Values[3].AsReal);
+    }
+
+    [Fact]
+    public void Parse_SimpleInsert_PreservesExactDecimalText()
+    {
+        var insert = Assert.IsType<InsertStatement>(
+            Parser.Parse("INSERT INTO amounts VALUES (0.10000000000000001)"));
+        var literal = Assert.IsType<LiteralExpression>(Assert.Single(Assert.Single(insert.ValueRows)));
+
+        Assert.Equal("0.10000000000000001", literal.RawText);
     }
 
     [Fact]
@@ -1298,13 +1452,33 @@ public class ParserTests
             Assert.IsType<AlterColumnDropCollationAction>(dropCollation.Action).ColumnName);
     }
 
+    [Theory]
+    [InlineData("BOOLEAN", SqlTypeKind.Boolean, null, null)]
+    [InlineData("DECIMAL(18, 2)", SqlTypeKind.Decimal, 18, 2)]
+    [InlineData("VARCHAR(255)", SqlTypeKind.VarChar, null, null)]
+    [InlineData("TIMESTAMP(6) WITH TIME ZONE", SqlTypeKind.TimestampWithTimeZone, null, null)]
+    public void Parse_AlterTable_LogicalTypeTarget(
+        string typeSql,
+        SqlTypeKind expectedKind,
+        int? expectedPrecision,
+        int? expectedScale)
+    {
+        var alter = Assert.IsType<AlterTableStatement>(
+            Parser.Parse($"ALTER TABLE users ALTER COLUMN status TYPE {typeSql}"));
+        var action = Assert.IsType<AlterColumnSetTypeAction>(alter.Action);
+
+        Assert.Equal(expectedKind, action.DeclaredType.Kind);
+        Assert.Equal(expectedPrecision, action.DeclaredType.Precision);
+        Assert.Equal(expectedScale, action.DeclaredType.Scale);
+    }
+
     [Fact]
-    public void Parse_AlterTable_RejectsUnsupportedTypeTarget()
+    public void Parse_AlterTable_RejectsUnknownTypeTarget()
     {
         var error = Assert.Throws<CSharpDbException>(() =>
-            Parser.Parse("ALTER TABLE users ALTER COLUMN status TYPE BOOLEAN"));
+            Parser.Parse("ALTER TABLE users ALTER COLUMN status TYPE GEOGRAPHY"));
 
-        Assert.Contains("INTEGER, REAL, TEXT, and BLOB", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Unknown SQL type name", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

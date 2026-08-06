@@ -17,7 +17,6 @@ public sealed class MigrationArtifactSerializerTests
 
         string first = MigrationArtifactSerializer.SerializeCatalog(catalog);
         string second = MigrationArtifactSerializer.SerializeCatalog(catalog);
-
         Assert.Equal(first, second);
         Assert.Equal(ReadGolden("catalog-v1.golden.json"), NormalizeLineEndings(first));
 

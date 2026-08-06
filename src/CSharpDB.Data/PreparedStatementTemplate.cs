@@ -1,6 +1,7 @@
 using System.Globalization;
 using CSharpDB.Primitives;
 using CSharpDB.Sql;
+using SqlBitString = CSharpDB.Client.Models.SqlBitString;
 
 namespace CSharpDB.Data;
 
@@ -409,6 +410,22 @@ internal sealed class PreparedStatementTemplate
                 {
                     Operand = operand,
                     Collation = collate.Collation,
+                };
+            }
+            case CastExpression cast:
+            {
+                var operand = BindExpression(cast.Operand, parameters, out bool operandChanged);
+                if (!operandChanged)
+                {
+                    changed = false;
+                    return cast;
+                }
+
+                changed = true;
+                return new CastExpression
+                {
+                    Operand = operand,
+                    TargetType = cast.TargetType,
                 };
             }
             case LikeExpression like:
@@ -906,6 +923,14 @@ internal sealed class PreparedStatementTemplate
             DbType.Null => new LiteralExpression { Value = null, LiteralType = TokenType.Null },
             DbType.Integer => new LiteralExpression { Value = dbValue.AsInteger, LiteralType = TokenType.IntegerLiteral },
             DbType.Real => new LiteralExpression { Value = dbValue.AsReal, LiteralType = TokenType.RealLiteral },
+            // RealLiteral remains the AST compatibility carrier. RawText is the
+            // authoritative exact value consumed when the target is DECIMAL.
+            DbType.Decimal => new LiteralExpression
+            {
+                Value = (double)dbValue.AsDecimal,
+                LiteralType = TokenType.RealLiteral,
+                RawText = dbValue.AsDecimal.ToString(CultureInfo.InvariantCulture),
+            },
             DbType.Text => new LiteralExpression { Value = dbValue.AsText, LiteralType = TokenType.StringLiteral },
             DbType.Blob => new LiteralExpression { Value = dbValue.AsBlob, LiteralType = TokenType.BlobLiteral },
             _ => throw new NotSupportedException($"Unsupported parameter type '{dbValue.Type}'."),
@@ -930,10 +955,18 @@ internal sealed class PreparedStatementTemplate
             bool bv => DbValue.FromInteger(bv ? 1 : 0),
             double d => DbValue.FromReal(d),
             float f => DbValue.FromReal(f),
-            decimal m => DbValue.FromReal((double)m),
+            decimal m => DbValue.FromDecimal(m),
             string sv => DbValue.FromText(sv),
-            DateTime dt => DbValue.FromText(dt.ToString("O", CultureInfo.InvariantCulture)),
-            Guid g => DbValue.FromText(g.ToString()),
+            char character => DbValue.FromText(character.ToString()),
+            Guid g => DbValue.FromText(CSharpDbTextCodec.FormatGuid(g)),
+            DateOnly date => DbValue.FromText(CSharpDbTextCodec.FormatDate(date)),
+            TimeOnly time => DbValue.FromText(CSharpDbTextCodec.FormatTime(time)),
+            DateTime dt => DbValue.FromText(CSharpDbTextCodec.FormatDateTime(dt)),
+            DateTimeOffset dateTimeOffset => DbValue.FromText(
+                CSharpDbTextCodec.FormatDateTimeOffset(dateTimeOffset)),
+            SqlBitString bits => DbValue.FromBitString(
+                bits.PackedBytes.ToArray(),
+                bits.BitLength),
             byte[] blob => DbValue.FromBlob(blob),
             ReadOnlyMemory<byte> blob => DbValue.FromBlob(blob.ToArray()),
             _ => DbValue.FromText(value.ToString()!),
@@ -1054,6 +1087,9 @@ internal sealed class PreparedStatementTemplate
                 return;
             case CollateExpression collate:
                 CollectParameterNames(collate.Operand, names, seen);
+                return;
+            case CastExpression cast:
+                CollectParameterNames(cast.Operand, names, seen);
                 return;
             case LikeExpression like:
                 CollectParameterNames(like.Operand, names, seen);

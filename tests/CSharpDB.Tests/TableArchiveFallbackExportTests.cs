@@ -7,6 +7,8 @@ using CSharpDB.ImportExport.TableArchives;
 using ClientColumnDefinition = CSharpDB.Client.Models.ColumnDefinition;
 using ClientDbType = CSharpDB.Client.Models.DbType;
 using ClientIndexSchema = CSharpDB.Client.Models.IndexSchema;
+using ClientSqlTypeDescriptor = CSharpDB.Client.Models.SqlTypeDescriptor;
+using ClientSqlTypeKind = CSharpDB.Client.Models.SqlTypeKind;
 using ClientTableBrowseResult = CSharpDB.Client.Models.TableBrowseResult;
 using ClientTableSchema = CSharpDB.Client.Models.TableSchema;
 
@@ -55,6 +57,16 @@ public sealed class TableArchiveFallbackExportTests
             Assert.Equal(1, result.RowCount);
             TableArchiveSchema archiveSchema = await TableArchiveReader.ReadArchiveSchemaAsync(path, ct);
             Assert.Equal(41, archiveSchema.NextRowId);
+            Assert.Equal(
+                "DECIMAL(18,4)",
+                Assert.Single(archiveSchema.Columns, column => column.Name == "amount")
+                    .DeclaredType!
+                    .ToSql());
+            Assert.Equal(
+                "UUID",
+                Assert.Single(archiveSchema.Columns, column => column.Name == "token")
+                    .DeclaredType!
+                    .ToSql());
             TableArchiveSecondaryIndex index = Assert.Single(archiveSchema.SecondaryIndexes!);
             Assert.Equal("ux_items_code_region", index.Name);
             Assert.Equal(["code", "region"], index.Columns);
@@ -96,6 +108,28 @@ public sealed class TableArchiveFallbackExportTests
                 Type = ClientDbType.Text,
                 Nullable = false,
             },
+            new ClientColumnDefinition
+            {
+                Name = "amount",
+                Type = ClientDbType.Decimal,
+                DeclaredType = new ClientSqlTypeDescriptor
+                {
+                    Kind = ClientSqlTypeKind.Decimal,
+                    Precision = 18,
+                    Scale = 4,
+                },
+                Nullable = false,
+            },
+            new ClientColumnDefinition
+            {
+                Name = "token",
+                Type = ClientDbType.Blob,
+                DeclaredType = new ClientSqlTypeDescriptor
+                {
+                    Kind = ClientSqlTypeKind.Uuid,
+                },
+                Nullable = false,
+            },
         ],
         NextRowId = 41,
     };
@@ -125,7 +159,7 @@ public sealed class TableArchiveFallbackExportTests
             {
                 TableName = Schema.TableName,
                 Schema = Schema,
-                Rows = [[1L, "A", "West"]],
+                Rows = [[1L, "A", "West", 12345678901234.5678m, Convert.FromHexString("00112233445566778899AABBCCDDEEFF")]],
                 TotalRows = 1,
                 Page = (int)args![1]!,
                 PageSize = (int)args[2]!,

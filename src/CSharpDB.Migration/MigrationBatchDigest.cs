@@ -196,6 +196,10 @@ public static class MigrationBatchDigest
             case DbType.Blob:
                 AppendBytes(hash, value.AsBlob);
                 return;
+            case DbType.Decimal:
+                AppendInt64(hash, value.DecimalCoefficient);
+                AppendInt32(hash, value.DecimalScale);
+                return;
             default:
                 throw new InvalidDataException($"Unsupported target value tag '{value.Type}'.");
         }
@@ -219,6 +223,10 @@ public static class MigrationBatchDigest
                 return;
             case DbType.Blob:
                 AppendBytes(hash, value.AsBlob);
+                return;
+            case DbType.Decimal:
+                AppendInt64(hash, value.DecimalCoefficient);
+                AppendInt32(hash, value.DecimalScale);
                 return;
             default:
                 throw new InvalidDataException($"Unsupported target value tag '{value.Type}'.");

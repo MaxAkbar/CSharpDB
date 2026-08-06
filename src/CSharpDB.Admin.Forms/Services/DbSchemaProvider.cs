@@ -76,7 +76,7 @@ public sealed class DbSchemaProvider(ICSharpDbClient dbClient) : ISchemaProvider
                 Columns = schema.Columns.Select(column => new
                 {
                     column.Name,
-                    Type = column.Type.ToString(),
+                    Type = GetSchemaTypeIdentity(column),
                     column.Nullable,
                     column.IsPrimaryKey,
                     column.IsIdentity,
@@ -113,7 +113,7 @@ public sealed class DbSchemaProvider(ICSharpDbClient dbClient) : ISchemaProvider
                 Columns = schema.Columns.Select(column => new
                 {
                     column.Name,
-                    Type = column.Type.ToString(),
+                    Type = GetSchemaTypeIdentity(column),
                     column.Nullable,
                     column.IsPrimaryKey,
                     column.IsIdentity,
@@ -151,7 +151,7 @@ public sealed class DbSchemaProvider(ICSharpDbClient dbClient) : ISchemaProvider
                 Columns = schema.Columns.Select(column => new
                 {
                     column.Name,
-                    Type = column.Type.ToString(),
+                    Type = GetSchemaTypeIdentity(column),
                     column.Nullable,
                     column.IsPrimaryKey,
                     column.IsIdentity,
@@ -188,7 +188,7 @@ public sealed class DbSchemaProvider(ICSharpDbClient dbClient) : ISchemaProvider
                 Columns = schema.Columns.Select(column => new
                 {
                     column.Name,
-                    Type = column.Type.ToString(),
+                    Type = GetSchemaTypeIdentity(column),
                     column.Nullable,
                     column.IsPrimaryKey,
                     column.IsIdentity,
@@ -254,13 +254,14 @@ public sealed class DbSchemaProvider(ICSharpDbClient dbClient) : ISchemaProvider
     {
         return new FormFieldDefinition(
             column.Name,
-            MapFieldType(column.Type),
+            MapFieldType(column.EffectiveType.Kind),
             column.Nullable,
             column.IsIdentity || column.IsRowVersion,
             ToDisplayName(column.Name),
             Metadata: new Dictionary<string, object?>
             {
-                ["dbType"] = column.Type.ToString(),
+                ["dbType"] = column.EffectiveType.ToSql(),
+                ["storageType"] = column.Type.ToString(),
                 ["isPrimaryKey"] = column.IsPrimaryKey,
                 ["isIdentity"] = column.IsIdentity,
                 ["isRowVersion"] = column.IsRowVersion,
@@ -317,12 +318,26 @@ public sealed class DbSchemaProvider(ICSharpDbClient dbClient) : ISchemaProvider
             });
     }
 
-    private static FieldDataType MapFieldType(CSharpDB.Client.Models.DbType type) => type switch
+    private static FieldDataType MapFieldType(CSharpDB.Client.Models.SqlTypeKind type) => type switch
     {
-        CSharpDB.Client.Models.DbType.Integer => FieldDataType.Int64,
-        CSharpDB.Client.Models.DbType.Real => FieldDataType.Double,
-        CSharpDB.Client.Models.DbType.Text => FieldDataType.String,
-        CSharpDB.Client.Models.DbType.Blob => FieldDataType.Blob,
+        CSharpDB.Client.Models.SqlTypeKind.Boolean => FieldDataType.Boolean,
+        CSharpDB.Client.Models.SqlTypeKind.TinyInt or
+        CSharpDB.Client.Models.SqlTypeKind.SmallInt => FieldDataType.Int32,
+        CSharpDB.Client.Models.SqlTypeKind.Integer or
+        CSharpDB.Client.Models.SqlTypeKind.BigInt => FieldDataType.Int64,
+        CSharpDB.Client.Models.SqlTypeKind.Decimal => FieldDataType.Decimal,
+        CSharpDB.Client.Models.SqlTypeKind.Real or
+        CSharpDB.Client.Models.SqlTypeKind.Double => FieldDataType.Double,
+        CSharpDB.Client.Models.SqlTypeKind.Uuid => FieldDataType.Guid,
+        CSharpDB.Client.Models.SqlTypeKind.Date => FieldDataType.Date,
+        CSharpDB.Client.Models.SqlTypeKind.Timestamp or
+        CSharpDB.Client.Models.SqlTypeKind.TimestampWithTimeZone => FieldDataType.DateTime,
+        CSharpDB.Client.Models.SqlTypeKind.Json => FieldDataType.Json,
+        CSharpDB.Client.Models.SqlTypeKind.Binary or
+        CSharpDB.Client.Models.SqlTypeKind.VarBinary or
+        CSharpDB.Client.Models.SqlTypeKind.Blob or
+        CSharpDB.Client.Models.SqlTypeKind.Bit or
+        CSharpDB.Client.Models.SqlTypeKind.VarBit => FieldDataType.Blob,
         _ => FieldDataType.String,
     };
 
@@ -330,9 +345,19 @@ public sealed class DbSchemaProvider(ICSharpDbClient dbClient) : ISchemaProvider
     {
         byte[] => FieldDataType.Blob,
         long or int or short or sbyte or uint or ushort or ulong or byte => FieldDataType.Int64,
-        double or float or decimal => FieldDataType.Double,
+        decimal => FieldDataType.Decimal,
+        double or float => FieldDataType.Double,
         _ => FieldDataType.String,
     };
+
+    private static string GetSchemaTypeIdentity(ColumnDefinition column) =>
+        column.DeclaredType?.Kind is
+            CSharpDB.Client.Models.SqlTypeKind.Integer or
+            CSharpDB.Client.Models.SqlTypeKind.Real or
+            CSharpDB.Client.Models.SqlTypeKind.Text or
+            CSharpDB.Client.Models.SqlTypeKind.Blob
+                ? column.Type.ToString()
+                : column.DeclaredType?.ToSql() ?? column.Type.ToString();
 
     private static string ToDisplayName(string value)
     {

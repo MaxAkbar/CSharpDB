@@ -78,15 +78,7 @@ public static class CanonicalRowProjector
             if (!columnOrdinals.TryAdd(column.Name, ordinal))
                 throw new InvalidDataException($"The native CSharpDB schema repeats column '{column.Name}'.");
 
-            CanonicalType canonicalType = column.Type switch
-            {
-                DbType.Integer => CanonicalType.Int64,
-                DbType.Real => CanonicalType.Binary64,
-                DbType.Text => CanonicalType.Text,
-                DbType.Blob => CanonicalType.Blob,
-                _ => throw new InvalidDataException(
-                    $"Native CSharpDB column '{column.Name}' has no persistent canonical type."),
-            };
+            CanonicalType canonicalType = ResolveNativeCanonicalType(column);
             if (column.IsRowVersion)
             {
                 if (column.Type != DbType.Blob)
@@ -288,7 +280,10 @@ public static class CanonicalRowProjector
                     : double.Parse(value.AsText, NumberStyles.Float, CultureInfo.InvariantCulture)),
                 CanonicalType.Text => CanonicalValue.Text(value.AsText),
                 CanonicalType.Blob => CanonicalValue.Blob(value.AsBlob),
-                CanonicalType.Guid => CanonicalValue.Guid(Guid.ParseExact(value.AsText, "D")),
+                CanonicalType.Guid => CanonicalValue.Guid(
+                    value.Type == DbType.Blob
+                        ? new Guid(value.AsBlob, bigEndian: true)
+                        : Guid.ParseExact(value.AsText, "D")),
                 CanonicalType.Date => CanonicalValue.Date(CSharpDbTextCodec.ParseDate(value.AsText)),
                 CanonicalType.Time => CanonicalValue.Time(CSharpDbTextCodec.ParseTime(value.AsText)),
                 CanonicalType.WallDateTime => CanonicalValue.WallDateTime(DateTime.SpecifyKind(
@@ -341,6 +336,13 @@ public static class CanonicalRowProjector
         MigrationCatalogObject column,
         MigrationTypeMapping mapping)
     {
+        if (CSharpDbDeclaredTypeContract.TryRead(
+                column,
+                out SqlTypeDescriptor declaredType))
+        {
+            return ResolveDeclaredCanonicalType(declaredType);
+        }
+
         string logicalType = (Facet(column, "logicalType") ?? string.Empty)
             .Replace("_", string.Empty, StringComparison.Ordinal)
             .Replace("-", string.Empty, StringComparison.Ordinal)
@@ -374,6 +376,12 @@ public static class CanonicalRowProjector
 
     private static CanonicalValue ProjectDecimal(CanonicalFieldContract contract, DbValue value)
     {
+        if (value.Type == DbType.Decimal)
+        {
+            return CanonicalValue.Decimal(
+                new BigInteger(value.DecimalCoefficient),
+                checked((uint)value.DecimalScale));
+        }
         if (value.Type == DbType.Integer)
         {
             uint scale = checked((uint)ParameterInt(contract, "scale"));
@@ -386,6 +394,59 @@ public static class CanonicalRowProjector
         }
         throw new InvalidDataException("Exact canonical DECIMAL values require scaled INTEGER or canonical TEXT storage.");
     }
+
+    private static CanonicalType ResolveNativeCanonicalType(
+        ColumnDefinition column)
+    {
+        if (column.DeclaredType is SqlTypeDescriptor declaredType)
+            return ResolveDeclaredCanonicalType(declaredType);
+
+        return column.Type switch
+        {
+            DbType.Integer => CanonicalType.Int64,
+            DbType.Real => CanonicalType.Binary64,
+            DbType.Text => CanonicalType.Text,
+            DbType.Blob => CanonicalType.Blob,
+            DbType.Decimal => CanonicalType.Decimal,
+            _ => throw new InvalidDataException(
+                $"Native CSharpDB column '{column.Name}' has no persistent canonical type."),
+        };
+    }
+
+    private static CanonicalType ResolveDeclaredCanonicalType(
+        SqlTypeDescriptor descriptor) => descriptor.Kind switch
+    {
+        SqlTypeKind.Boolean => CanonicalType.Boolean,
+        SqlTypeKind.TinyInt or
+        SqlTypeKind.SmallInt or
+        SqlTypeKind.Integer or
+        SqlTypeKind.BigInt => CanonicalType.Int64,
+        // REAL and DOUBLE PRECISION both use the stable binary64 payload in
+        // CSharpDB. Canonicalization must describe the persisted value rather
+        // than narrow it to the SQL spelling's traditional binary32 domain.
+        SqlTypeKind.Real => CanonicalType.Binary64,
+        SqlTypeKind.Double => CanonicalType.Binary64,
+        SqlTypeKind.Decimal => CanonicalType.Decimal,
+        SqlTypeKind.Char or
+        SqlTypeKind.VarChar or
+        SqlTypeKind.Text or
+        SqlTypeKind.IntervalYearToMonth or
+        SqlTypeKind.IntervalDayToSecond or
+        SqlTypeKind.Json or
+        SqlTypeKind.Xml => CanonicalType.Text,
+        SqlTypeKind.Binary or
+        SqlTypeKind.VarBinary or
+        SqlTypeKind.Blob or
+        SqlTypeKind.Bit or
+        SqlTypeKind.VarBit => CanonicalType.Blob,
+        SqlTypeKind.Uuid => CanonicalType.Guid,
+        SqlTypeKind.Date => CanonicalType.Date,
+        SqlTypeKind.Time => CanonicalType.Time,
+        SqlTypeKind.Timestamp => CanonicalType.WallDateTime,
+        SqlTypeKind.TimestampWithTimeZone => CanonicalType.OffsetDateTime,
+        _ => throw new InvalidDataException(
+            $"Declared SQL type '{descriptor.ToSql()}' has no canonical migration type."),
+    };
 
     private static CanonicalValue ProjectBinary32(double value)
     {

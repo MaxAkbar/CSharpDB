@@ -220,6 +220,32 @@ public class RecordEncoderTests
     }
 
     [Fact]
+    public void TryDecodeNumericValueColumn_PreservesExactDecimalCoefficientAndScale()
+    {
+        DbValue expected = DbValue.FromDecimal(9_999_999_999_999_999.99m);
+        var encoded = RecordEncoder.Encode(new DbValue[]
+        {
+            DbValue.FromInteger(42),
+            DbValue.FromReal(3.5),
+            expected,
+        });
+
+        Assert.True(RecordEncoder.TryDecodeNumericValueColumn(encoded, 0, out DbValue integer));
+        Assert.Equal(DbType.Integer, integer.Type);
+        Assert.Equal(42, integer.AsInteger);
+
+        Assert.True(RecordEncoder.TryDecodeNumericValueColumn(encoded, 1, out DbValue real));
+        Assert.Equal(DbType.Real, real.Type);
+        Assert.Equal(3.5, real.AsReal);
+
+        Assert.True(RecordEncoder.TryDecodeNumericValueColumn(encoded, 2, out DbValue actual));
+        Assert.Equal(DbType.Decimal, actual.Type);
+        Assert.Equal(expected.DecimalCoefficient, actual.DecimalCoefficient);
+        Assert.Equal(expected.DecimalScale, actual.DecimalScale);
+        Assert.Equal(expected.AsDecimal, actual.AsDecimal);
+    }
+
+    [Fact]
     public void TryDecodeNumericColumn_NullOrMissing_ReturnsFalse()
     {
         var encoded = RecordEncoder.Encode(new DbValue[]

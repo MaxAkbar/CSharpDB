@@ -131,6 +131,53 @@ public sealed class WindowOperatorPhase5Tests
     }
 
     [Fact]
+    public async Task DecimalSlidingFrame_PreservesExactSumAndAverage()
+    {
+        ColumnDefinition[] inputColumns =
+        [
+            new() { Name = "value", Type = DbType.Decimal, Nullable = false },
+        ];
+        var source = new FixedRowsOperator(
+            inputColumns,
+            [
+                [DbValue.FromDecimal(1.1m)],
+                [DbValue.FromDecimal(2.2m)],
+                [DbValue.FromDecimal(3.3m)],
+            ]);
+        WindowFrame frame = CreateFrame(
+            WindowFrameBoundKind.Preceding,
+            WindowFrameBoundKind.CurrentRow,
+            startOffset: 1);
+        WindowFunctionExpression[] functions =
+        [
+            CreateAggregate("SUM", frame),
+            CreateAggregate("AVG", frame),
+        ];
+        var window = CreateWindowOperator(
+            source,
+            inputColumns,
+            functions,
+            DbType.Decimal,
+            DbType.Decimal);
+
+        try
+        {
+            List<DbValue[]> rows = await ReadAllAsync(window);
+
+            Assert.Equal(1.1m, rows[0][1].AsDecimal);
+            Assert.Equal(1.1m, rows[0][2].AsDecimal);
+            Assert.Equal(3.3m, rows[1][1].AsDecimal);
+            Assert.Equal(1.65m, rows[1][2].AsDecimal);
+            Assert.Equal(5.5m, rows[2][1].AsDecimal);
+            Assert.Equal(2.75m, rows[2][2].AsDecimal);
+        }
+        finally
+        {
+            await window.DisposeAsync();
+        }
+    }
+
+    [Fact]
     public async Task RealTwoRowFrame_PreservesSmallValuesAfterLargeValueLeaves()
     {
         ColumnDefinition[] inputColumns =

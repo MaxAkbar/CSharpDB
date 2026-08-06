@@ -264,7 +264,8 @@ public static class TableArchiveReader
                 TableArchiveManifest.CurrentFormatVersion or
                 TableArchiveManifest.RowVersionFormatVersion or
                 TableArchiveManifest.SchemaFidelityFormatVersion or
-                TableArchiveManifest.ReferentialActionsFormatVersion))
+                TableArchiveManifest.ReferentialActionsFormatVersion or
+                TableArchiveManifest.LogicalTypesFormatVersion))
             throw new InvalidDataException($"Unsupported native table archive format version {manifest.FormatVersion}.");
         if (manifest.FormatVersion != header.FormatVersion)
             throw new InvalidDataException("The table archive header and manifest format versions do not match.");
@@ -617,8 +618,33 @@ public static class TableArchiveReader
             columnsByName[column.Name] = column;
             if (column.Type == DbType.Null)
                 throw new InvalidDataException($"Archived column '{column.Name}' has an invalid persistent type.");
+            if (column.DeclaredType is not null &&
+                formatVersion < TableArchiveManifest.LogicalTypesFormatVersion)
+            {
+                throw new InvalidDataException(
+                    $"Archived column '{column.Name}' declares a logical SQL type, which requires native archive format version {TableArchiveManifest.LogicalTypesFormatVersion}.");
+            }
+            if (column.DeclaredType is { } declaredType &&
+                declaredType.StorageType != column.Type)
+            {
+                throw new InvalidDataException(
+                    $"Archived column '{column.Name}' declares {declaredType.ToSql()} but stores values as {column.Type}.");
+            }
+            if (column.IsIdentity &&
+                (column.Type != DbType.Integer ||
+                 column.DeclaredType is { Kind: not (SqlTypeKind.Integer or SqlTypeKind.BigInt) }))
+            {
+                throw new InvalidDataException(
+                    $"Archived identity column '{column.Name}' must be declared INTEGER or BIGINT.");
+            }
             if (column.IsRowVersion && (column.Type != DbType.Blob || column.Nullable))
                 throw new InvalidDataException($"Archived ROWVERSION column '{column.Name}' is invalid.");
+            if (column.IsRowVersion &&
+                column.DeclaredType is { Kind: not SqlTypeKind.Blob })
+            {
+                throw new InvalidDataException(
+                    $"Archived ROWVERSION column '{column.Name}' must be declared BLOB.");
+            }
         }
 
         if (schema.KeyConstraints is null)

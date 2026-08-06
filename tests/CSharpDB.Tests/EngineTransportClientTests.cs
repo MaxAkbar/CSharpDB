@@ -14,6 +14,83 @@ namespace CSharpDB.Tests;
 public sealed class EngineTransportClientTests
 {
     [Fact]
+    public async Task ExecuteSqlAsync_PreservesBitLengthsAndKeepsBlobAsBytes()
+    {
+        string dbPath = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb_engine_transport_bits_{Guid.NewGuid():N}.db");
+        CancellationToken ct = TestContext.Current.CancellationToken;
+
+        try
+        {
+            await using var client = new EngineTransportClient(dbPath);
+            Assert.Null((await client.ExecuteSqlAsync(
+                "CREATE TABLE transport_bits (" +
+                "id INTEGER PRIMARY KEY, fixed_bits BIT(3), " +
+                "varying_bits VARBIT(8), payload BLOB); " +
+                "INSERT INTO transport_bits VALUES (1, '1', '1', X'80');",
+                ct)).Error);
+
+            SqlExecutionResult query = await client.ExecuteSqlAsync(
+                "SELECT fixed_bits, varying_bits, payload FROM transport_bits WHERE id = 1;",
+                ct);
+            Assert.Null(query.Error);
+            object?[] row = Assert.Single(query.Rows!);
+            SqlBitString fixedBits = Assert.IsType<SqlBitString>(row[0]);
+            SqlBitString varyingBits = Assert.IsType<SqlBitString>(row[1]);
+            Assert.Equal(3, fixedBits.BitLength);
+            Assert.Equal("100", fixedBits.ToBitString());
+            Assert.Equal(1, varyingBits.BitLength);
+            Assert.Equal("1", varyingBits.ToBitString());
+            Assert.Equal(new byte[] { 0x80 }, fixedBits.PackedBytes.ToArray());
+            Assert.Equal(new byte[] { 0x80 }, varyingBits.PackedBytes.ToArray());
+            Assert.Equal(new byte[] { 0x80 }, Assert.IsType<byte[]>(row[2]));
+
+            TransactionSessionInfo transaction = await client.BeginTransactionAsync(ct);
+            var reader = Assert.IsAssignableFrom<ICSharpDbTransactionalSnapshotReader>(client);
+            await using (ForwardOnlyQueryCursor cursor = Assert.IsType<ForwardOnlyQueryCursor>(
+                await reader.TryOpenForwardOnlyQueryCursorAsync(
+                    transaction.TransactionId,
+                    "SELECT fixed_bits, varying_bits, payload FROM transport_bits WHERE id = 1;",
+                    ct)))
+            {
+                object?[] cursorRow = Assert.Single(await cursor.ReadNextAsync(1, ct));
+                Assert.Equal(fixedBits, Assert.IsType<SqlBitString>(cursorRow[0]));
+                Assert.Equal(varyingBits, Assert.IsType<SqlBitString>(cursorRow[1]));
+                Assert.IsType<byte[]>(cursorRow[2]);
+            }
+            await client.RollbackTransactionAsync(transaction.TransactionId, ct);
+
+            Assert.Equal(1, await client.InsertRowAsync(
+                "transport_bits",
+                new Dictionary<string, object?>
+                {
+                    ["id"] = 2,
+                    ["fixed_bits"] = fixedBits,
+                    ["varying_bits"] = varyingBits,
+                    ["payload"] = row[2],
+                },
+                ct));
+
+            SqlExecutionResult copied = await client.ExecuteSqlAsync(
+                "SELECT CAST(fixed_bits AS TEXT), CAST(varying_bits AS TEXT), payload " +
+                "FROM transport_bits WHERE id = 2;",
+                ct);
+            object?[] copiedRow = Assert.Single(copied.Rows!);
+            Assert.Equal("100", copiedRow[0]);
+            Assert.Equal("1", copiedRow[1]);
+            Assert.IsType<byte[]>(copiedRow[2]);
+        }
+        finally
+        {
+            if (File.Exists(dbPath))
+                File.Delete(dbPath);
+            if (File.Exists(dbPath + ".wal"))
+                File.Delete(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
     public async Task ExecuteSqlAsync_PreservesResourceLimitErrorCode()
     {
         string dbPath = Path.Combine(
@@ -220,6 +297,258 @@ public sealed class EngineTransportClientTests
                 File.Delete(dbPath);
             if (File.Exists(dbPath + ".wal"))
                 File.Delete(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task DirectCrud_UsesCanonicalClrTemporalAndUuidValues()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb_engine_transport_logical_crud_{Guid.NewGuid():N}.db");
+        DateOnly dateKey = new(2026, 8, 5);
+        TimeOnly initialTime = new TimeOnly(14, 30, 15, 123, 456)
+            .Add(TimeSpan.FromTicks(7));
+        DateTime initialTimestamp = new DateTime(
+                2026, 8, 5, 14, 30, 15, 123, DateTimeKind.Unspecified)
+            .AddTicks(4567);
+        DateTimeOffset initialZoned = new(initialTimestamp, TimeSpan.FromHours(-7));
+        Guid initialUuid = Guid.Parse("01234567-89ab-cdef-0123-456789abcdef");
+
+        try
+        {
+            await using var client = new EngineTransportClient(dbPath);
+            SqlExecutionResult create = await client.ExecuteSqlAsync(
+                """
+                CREATE TABLE direct_temporal_rows (
+                    business_date DATE PRIMARY KEY,
+                    clock TIME(7) NOT NULL,
+                    wall_time TIMESTAMP(7) NOT NULL,
+                    zoned_time TIMESTAMP(7) WITH TIME ZONE NOT NULL,
+                    correlation_id UUID NOT NULL
+                );
+                CREATE TABLE direct_uuid_rows (
+                    id UUID PRIMARY KEY,
+                    effective_date DATE NOT NULL
+                );
+                """,
+                ct);
+            Assert.Null(create.Error);
+
+            Assert.Equal(
+                1,
+                await client.InsertRowAsync(
+                    "direct_temporal_rows",
+                    new Dictionary<string, object?>
+                    {
+                        ["business_date"] = dateKey,
+                        ["clock"] = initialTime,
+                        ["wall_time"] = initialTimestamp,
+                        ["zoned_time"] = initialZoned,
+                        ["correlation_id"] = initialUuid,
+                    },
+                    ct));
+
+            Dictionary<string, object?> initialRow = Assert.IsType<Dictionary<string, object?>>(
+                await client.GetRowByPkAsync(
+                    "direct_temporal_rows",
+                    "business_date",
+                    dateKey,
+                    ct));
+            Assert.Equal("2026-08-05", initialRow["business_date"]);
+            Assert.Equal("14:30:15.1234567", initialRow["clock"]);
+            Assert.Equal("2026-08-05 14:30:15.1234567", initialRow["wall_time"]);
+            Assert.Equal("2026-08-05 21:30:15.1234567+00:00", initialRow["zoned_time"]);
+            Assert.Equal(
+                initialUuid.ToByteArray(bigEndian: true),
+                Assert.IsType<byte[]>(initialRow["correlation_id"]));
+
+            TimeOnly updatedTime = new(9, 8, 7, 654, 321);
+            DateTime updatedTimestamp = new DateTime(
+                    2027, 1, 2, 9, 8, 7, 654, DateTimeKind.Unspecified)
+                .AddTicks(3210);
+            DateTimeOffset updatedZoned = new(updatedTimestamp, TimeSpan.FromHours(5.5));
+            Guid updatedUuid = Guid.Parse("fedcba98-7654-3210-fedc-ba9876543210");
+            Assert.Equal(
+                1,
+                await client.UpdateRowAsync(
+                    "direct_temporal_rows",
+                    "business_date",
+                    dateKey,
+                    new Dictionary<string, object?>
+                    {
+                        ["clock"] = updatedTime,
+                        ["wall_time"] = updatedTimestamp,
+                        ["zoned_time"] = updatedZoned,
+                        ["correlation_id"] = updatedUuid,
+                    },
+                    ct));
+
+            Dictionary<string, object?> updatedRow = Assert.IsType<Dictionary<string, object?>>(
+                await client.GetRowByPkAsync(
+                    "direct_temporal_rows",
+                    "business_date",
+                    dateKey,
+                    ct));
+            Assert.Equal("09:08:07.654321", updatedRow["clock"]);
+            Assert.Equal("2027-01-02 09:08:07.654321", updatedRow["wall_time"]);
+            Assert.Equal("2027-01-02 03:38:07.654321+00:00", updatedRow["zoned_time"]);
+            Assert.Equal(
+                updatedUuid.ToByteArray(bigEndian: true),
+                Assert.IsType<byte[]>(updatedRow["correlation_id"]));
+
+            Assert.Equal(
+                1,
+                await client.DeleteRowAsync(
+                    "direct_temporal_rows",
+                    "business_date",
+                    dateKey,
+                    ct));
+            Assert.Null(
+                await client.GetRowByPkAsync(
+                    "direct_temporal_rows",
+                    "business_date",
+                    dateKey,
+                    ct));
+
+            Guid uuidKey = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+            Assert.Equal(
+                1,
+                await client.InsertRowAsync(
+                    "direct_uuid_rows",
+                    new Dictionary<string, object?>
+                    {
+                        ["id"] = uuidKey,
+                        ["effective_date"] = dateKey,
+                    },
+                    ct));
+            Assert.NotNull(
+                await client.GetRowByPkAsync(
+                    "direct_uuid_rows",
+                    "id",
+                    uuidKey,
+                    ct));
+            Assert.Equal(
+                1,
+                await client.UpdateRowAsync(
+                    "direct_uuid_rows",
+                    "id",
+                    uuidKey,
+                    new Dictionary<string, object?>
+                    {
+                        ["effective_date"] = dateKey.AddDays(1),
+                    },
+                    ct));
+            Assert.Equal(
+                "2026-08-06",
+                (await client.GetRowByPkAsync(
+                    "direct_uuid_rows",
+                    "id",
+                    uuidKey,
+                    ct))!["effective_date"]);
+            Assert.Equal(
+                1,
+                await client.DeleteRowAsync(
+                    "direct_uuid_rows",
+                    "id",
+                    uuidKey,
+                    ct));
+            Assert.Null(
+                await client.GetRowByPkAsync(
+                    "direct_uuid_rows",
+                    "id",
+                    uuidKey,
+                    ct));
+        }
+        finally
+        {
+            await DeleteDatabaseFilesAsync(dbPath);
+        }
+    }
+
+    [Fact]
+    public async Task DirectProcedureParameters_UseCanonicalClrTemporalAndUuidValues()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb_engine_transport_logical_parameters_{Guid.NewGuid():N}.db");
+        DateOnly date = new(2026, 8, 5);
+        TimeOnly time = new TimeOnly(14, 30, 15, 123, 456)
+            .Add(TimeSpan.FromTicks(7));
+        DateTime timestamp = new DateTime(
+                2026, 8, 5, 14, 30, 15, 123, DateTimeKind.Unspecified)
+            .AddTicks(4567);
+        DateTimeOffset zoned = new(timestamp, TimeSpan.FromHours(-7));
+        Guid uuid = Guid.Parse("01234567-89ab-cdef-0123-456789abcdef");
+
+        try
+        {
+            await using var client = new EngineTransportClient(dbPath);
+            SqlExecutionResult create = await client.ExecuteSqlAsync(
+                """
+                CREATE TABLE direct_parameter_rows (
+                    business_date DATE PRIMARY KEY,
+                    clock TIME(7) NOT NULL,
+                    wall_time TIMESTAMP(7) NOT NULL,
+                    zoned_time TIMESTAMP(7) WITH TIME ZONE NOT NULL,
+                    correlation_id UUID NOT NULL
+                );
+                """,
+                ct);
+            Assert.Null(create.Error);
+            await client.CreateProcedureAsync(
+                new ProcedureDefinition
+                {
+                    Name = "InsertLogicalParameters",
+                    BodySql = """
+                        INSERT INTO direct_parameter_rows
+                            (business_date, clock, wall_time, zoned_time, correlation_id)
+                        VALUES (@date, @time, @timestamp, @zoned, @uuid);
+                        SELECT business_date, clock, wall_time, zoned_time, correlation_id
+                        FROM direct_parameter_rows
+                        WHERE business_date = @date;
+                        """,
+                    Parameters =
+                    [
+                        new ProcedureParameterDefinition { Name = "date", Type = CSharpDB.Client.Models.DbType.Text, Required = true },
+                        new ProcedureParameterDefinition { Name = "time", Type = CSharpDB.Client.Models.DbType.Text, Required = true },
+                        new ProcedureParameterDefinition { Name = "timestamp", Type = CSharpDB.Client.Models.DbType.Text, Required = true },
+                        new ProcedureParameterDefinition { Name = "zoned", Type = CSharpDB.Client.Models.DbType.Text, Required = true },
+                        new ProcedureParameterDefinition { Name = "uuid", Type = CSharpDB.Client.Models.DbType.Text, Required = true },
+                    ],
+                    IsEnabled = true,
+                    CreatedUtc = DateTime.UtcNow,
+                    UpdatedUtc = DateTime.UtcNow,
+                },
+                ct);
+
+            ProcedureExecutionResult result = await client.ExecuteProcedureAsync(
+                "InsertLogicalParameters",
+                new Dictionary<string, object?>
+                {
+                    ["date"] = date,
+                    ["time"] = time,
+                    ["timestamp"] = timestamp,
+                    ["zoned"] = zoned,
+                    ["uuid"] = uuid,
+                },
+                ct);
+
+            Assert.True(result.Succeeded, result.Error);
+            object?[] row = Assert.Single(result.Statements[1].Rows!);
+            Assert.Equal("2026-08-05", row[0]);
+            Assert.Equal("14:30:15.1234567", row[1]);
+            Assert.Equal("2026-08-05 14:30:15.1234567", row[2]);
+            Assert.Equal("2026-08-05 21:30:15.1234567+00:00", row[3]);
+            Assert.Equal(
+                uuid.ToByteArray(bigEndian: true),
+                Assert.IsType<byte[]>(row[4]));
+        }
+        finally
+        {
+            await DeleteDatabaseFilesAsync(dbPath);
         }
     }
 

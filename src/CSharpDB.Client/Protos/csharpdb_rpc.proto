@@ -114,6 +114,36 @@ enum DbTypeEnum {
   DB_TYPE_REAL = 2;
   DB_TYPE_TEXT = 3;
   DB_TYPE_BLOB = 4;
+  DB_TYPE_DECIMAL = 5;
+}
+
+enum SqlTypeKindEnum {
+  SQL_TYPE_KIND_ENUM_UNSPECIFIED = 0;
+  SQL_TYPE_KIND_BOOLEAN = 1;
+  SQL_TYPE_KIND_TINY_INT = 2;
+  SQL_TYPE_KIND_SMALL_INT = 3;
+  SQL_TYPE_KIND_INTEGER = 4;
+  SQL_TYPE_KIND_BIG_INT = 5;
+  SQL_TYPE_KIND_REAL = 6;
+  SQL_TYPE_KIND_DOUBLE = 7;
+  SQL_TYPE_KIND_DECIMAL = 8;
+  SQL_TYPE_KIND_CHAR = 9;
+  SQL_TYPE_KIND_VAR_CHAR = 10;
+  SQL_TYPE_KIND_TEXT = 11;
+  SQL_TYPE_KIND_BINARY = 12;
+  SQL_TYPE_KIND_VAR_BINARY = 13;
+  SQL_TYPE_KIND_BLOB = 14;
+  SQL_TYPE_KIND_UUID = 15;
+  SQL_TYPE_KIND_DATE = 16;
+  SQL_TYPE_KIND_TIME = 17;
+  SQL_TYPE_KIND_TIMESTAMP = 18;
+  SQL_TYPE_KIND_TIMESTAMP_WITH_TIME_ZONE = 19;
+  SQL_TYPE_KIND_INTERVAL_YEAR_TO_MONTH = 20;
+  SQL_TYPE_KIND_INTERVAL_DAY_TO_SECOND = 21;
+  SQL_TYPE_KIND_JSON = 22;
+  SQL_TYPE_KIND_XML = 23;
+  SQL_TYPE_KIND_BIT = 24;
+  SQL_TYPE_KIND_VAR_BIT = 25;
 }
 
 enum TriggerTimingEnum {
@@ -153,7 +183,13 @@ message VariantValue {
     bytes bytes_value = 6;
     VariantObject object_value = 7;
     VariantArray array_value = 8;
+    string decimal_value = 9;
   }
+
+  // Present only when bytes_value carries a logical SQL BIT/VARBIT value.
+  // Keeping bytes_value as the payload lets older clients continue to read
+  // the packed bytes while newer clients retain a non-byte-aligned length.
+  int32 bit_length = 10;
 }
 
 message VariantObject {
@@ -798,6 +834,14 @@ message ForeignKeyMigrationRequestMessage {
   repeated ForeignKeyMigrationConstraintSpecMessage constraints = 4;
 }
 
+message SqlTypeDescriptorMessage {
+  SqlTypeKindEnum kind = 1;
+  google.protobuf.Int32Value length = 2;
+  google.protobuf.Int32Value precision = 3;
+  google.protobuf.Int32Value scale = 4;
+  google.protobuf.Int32Value fractional_seconds_precision = 5;
+}
+
 message ColumnDefinitionMessage {
   string name = 1;
   DbTypeEnum type = 2;
@@ -808,6 +852,7 @@ message ColumnDefinitionMessage {
   string default_sql = 7;
   bool is_row_version = 8;
   string schema_id = 9;
+  SqlTypeDescriptorMessage declared_type = 10;
 }
 
 enum ForeignKeyOnDeleteActionEnum {

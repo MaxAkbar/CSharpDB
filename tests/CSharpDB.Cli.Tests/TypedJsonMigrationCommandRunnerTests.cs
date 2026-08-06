@@ -1733,8 +1733,8 @@ public sealed class TypedJsonMigrationCommandRunnerTests
         Assert.Equal(
             "12345678901234567890.123456789012345678",
             row[1].AsText);
-        Assert.Equal(PrimitiveDbType.Integer, row[2].Type);
-        Assert.Equal(12_345, row[2].AsInteger);
+        Assert.Equal(PrimitiveDbType.Decimal, row[2].Type);
+        Assert.Equal(123.45m, row[2].AsDecimal);
         Assert.Equal(
             "00112233-4455-6677-8899-aabbccddeeff",
             row[3].AsText);

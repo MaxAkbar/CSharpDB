@@ -199,6 +199,18 @@ public sealed class CollectionAwareRecordSerializer : IRecordSerializer
         return false;
     }
 
+    public bool TryDecodeNumericValueColumn(
+        ReadOnlySpan<byte> buffer,
+        int columnIndex,
+        out DbValue value)
+    {
+        if (!_supportsDirectCollectionPayloads || !CollectionPayloadCodec.TryReadValidatedHeader(buffer, out _))
+            return _inner.TryDecodeNumericValueColumn(buffer, columnIndex, out value);
+
+        value = DbValue.Null;
+        return false;
+    }
+
     private static string DecodeJson(ReadOnlySpan<byte> buffer, CollectionPayloadCodec.Header header)
     {
         ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetDocumentPayload(buffer, header);

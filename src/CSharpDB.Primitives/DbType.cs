@@ -7,4 +7,5 @@ public enum DbType : byte
     Real = 2,
     Text = 3,
     Blob = 4,
+    Decimal = 5,
 }

@@ -62,18 +62,32 @@ public sealed class CSharpDbParameterCollection : DbParameterCollection
 
     internal bool TryGetValue(ReadOnlySpan<char> parameterName, out object? value)
     {
+        if (TryGetParameter(parameterName, out CSharpDbParameter? parameter))
+        {
+            value = parameter.Value;
+            return true;
+        }
+
+        value = null;
+        return false;
+    }
+
+    internal bool TryGetParameter(
+        ReadOnlySpan<char> parameterName,
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out CSharpDbParameter? parameter)
+    {
         ReadOnlySpan<char> normalized = NormalizeName(parameterName);
         for (int i = 0; i < _parameters.Count; i++)
         {
             if (NormalizeName(_parameters[i].ParameterName.AsSpan())
                 .Equals(normalized, StringComparison.OrdinalIgnoreCase))
             {
-                value = _parameters[i].Value;
+                parameter = _parameters[i];
                 return true;
             }
         }
 
-        value = null;
+        parameter = null;
         return false;
     }
 

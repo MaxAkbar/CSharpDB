@@ -352,9 +352,9 @@ public sealed class JsonTypedTableSchemaIntegrationTests
         Assert.Equal(
             "json-typed-decimal-text",
             Mapping(plan, 1).Conversion?.ConversionId);
-        Assert.Equal(DbType.Integer, Mapping(plan, 2).TargetType);
+        Assert.Equal(DbType.Decimal, Mapping(plan, 2).TargetType);
         Assert.Equal(
-            "decimal-scaled-int64",
+            "decimal-native",
             Mapping(plan, 2).Conversion?.ConversionId);
         Assert.Equal(DbType.Text, Mapping(plan, 3).TargetType);
         Assert.Equal(DbType.Integer, Mapping(plan, 8).TargetType);
