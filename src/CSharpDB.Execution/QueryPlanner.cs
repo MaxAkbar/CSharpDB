@@ -19586,6 +19586,13 @@ public sealed partial class QueryPlanner
                 ? InferColumnDef(func.Arguments[0], null, schema, index)
                 : null;
 
+            if (functionName is "XML_EXISTS" or "XMLEXISTS")
+            {
+                bool nullable = func.Arguments.Any(expression =>
+                    InferColumnDef(expression, null, schema, index).Nullable);
+                return BooleanExpressionColumn(alias ?? name, nullable);
+            }
+
             if (argument is not null &&
                 functionName is "MIN" or "MAX")
             {

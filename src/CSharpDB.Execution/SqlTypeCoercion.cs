@@ -2,7 +2,6 @@ using System.Buffers;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
-using System.Xml.Linq;
 using CSharpDB.Primitives;
 
 namespace CSharpDB.Execution;
@@ -723,7 +722,7 @@ internal static class SqlTypeCoercion
     }
 
     private static string CanonicalizeXml(string text) =>
-        XDocument.Parse(text, LoadOptions.None).ToString(SaveOptions.DisableFormatting);
+        CSharpDbXmlCodec.Canonicalize(text);
 
     private static string RequireText(DbValue value, string sqlType)
     {

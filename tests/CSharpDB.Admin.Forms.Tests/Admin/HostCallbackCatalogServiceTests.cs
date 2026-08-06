@@ -421,6 +421,37 @@ public class HostCallbackCatalogServiceTests
         Assert.DoesNotContain(entries, entry => entry.Name == "VALUES");
     }
 
+    [Fact]
+    public async Task GetEntriesAsync_DoesNotTreatXmlBuiltInsAsHostCallbacks()
+    {
+        using ServiceProvider provider = new ServiceCollection()
+            .AddSingleton(DbFunctionRegistry.Empty)
+            .AddSingleton(DbCommandRegistry.Empty)
+            .AddSingleton<ICSharpDbClient>(new StubDbClient(
+                savedQueries:
+                [
+                    new CSharpDB.Client.Models.SavedQueryDefinition
+                    {
+                        Id = 13,
+                        Name = "XML Query",
+                        SqlText = """
+                            SELECT XML_EXISTS(Payload, '/root'),
+                                   XMLEXISTS(Payload, '/root/item'),
+                                   XML_VALUE(Payload, '/root/item')
+                            FROM Documents;
+                            """,
+                    },
+                ]))
+            .AddScoped<HostCallbackCatalogService>()
+            .BuildServiceProvider();
+
+        HostCallbackCatalogService catalog = provider.GetRequiredService<HostCallbackCatalogService>();
+
+        IReadOnlyList<HostCallbackCatalogEntry> entries = await catalog.GetEntriesAsync();
+
+        Assert.Empty(entries);
+    }
+
     private static FormDefinition CreateForm(string formId, string tableName)
         => new(
             formId,

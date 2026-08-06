@@ -188,6 +188,9 @@ internal static class SqlReference
           TRIM, LTRIM, RTRIM, UPPER/UCASE, LOWER/LCASE,
           INSTR, ORDINAL_STARTS_WITH, ORDINAL_ENDS_WITH,
           ORDINAL_CONTAINS, REPLACE, STRCOMP, VAL
+        XML (XPath 1.0):
+          XML_EXISTS/XMLEXISTS(xml, xpath[, namespace_json])
+          XML_VALUE(xml, xpath[, namespace_json])
         Date/time:
           DATE, TIME, NOW/DATETIME, YEAR, MONTH, DAY, HOUR, MINUTE, SECOND,
           DATEADD, DATEDIFF, DATEPART, DATESERIAL, TIMESERIAL, WEEKDAY, MONTHNAME

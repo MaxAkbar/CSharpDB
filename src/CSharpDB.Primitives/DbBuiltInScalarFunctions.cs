@@ -170,6 +170,15 @@ public static class DbBuiltInScalarFunctions
                 RequireArgumentCount(name, args, 1);
                 value = DbValue.FromReal(ParseLeadingNumber(ToScalarString(args[0])));
                 return true;
+            case "XML_EXISTS":
+            case "XMLEXISTS":
+                RequireArgumentCount(name, args, 2, 3);
+                value = EvaluateXmlExists(name, args);
+                return true;
+            case "XML_VALUE":
+                RequireArgumentCount(name, args, 2, 3);
+                value = EvaluateXmlValue(name, args);
+                return true;
             case "DATE":
                 RequireArgumentCount(name, args, 0);
                 value = DbValue.FromText(DateTime.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
@@ -386,6 +395,52 @@ public static class DbBuiltInScalarFunctions
 
         int result = string.Compare(ToScalarString(args[0]), ToScalarString(args[1]), comparison);
         return DbValue.FromInteger(result < 0 ? -1 : result > 0 ? 1 : 0);
+    }
+
+    private static DbValue EvaluateXmlExists(
+        string functionName,
+        IReadOnlyList<DbValue> args)
+    {
+        if (args.Any(static argument => argument.IsNull))
+            return DbValue.Null;
+
+        string xml = RequireXmlFunctionText(args[0], functionName, "XML input");
+        string xpath = RequireXmlFunctionText(args[1], functionName, "XPath expression");
+        string? namespaceMap = args.Count == 3
+            ? RequireXmlFunctionText(args[2], functionName, "namespace map")
+            : null;
+        return FromBoolean(CSharpDbXmlCodec.Exists(xml, xpath, namespaceMap));
+    }
+
+    private static DbValue EvaluateXmlValue(
+        string functionName,
+        IReadOnlyList<DbValue> args)
+    {
+        if (args.Any(static argument => argument.IsNull))
+            return DbValue.Null;
+
+        string xml = RequireXmlFunctionText(args[0], functionName, "XML input");
+        string xpath = RequireXmlFunctionText(args[1], functionName, "XPath expression");
+        string? namespaceMap = args.Count == 3
+            ? RequireXmlFunctionText(args[2], functionName, "namespace map")
+            : null;
+        string? extracted = CSharpDbXmlCodec.Value(xml, xpath, namespaceMap);
+        return extracted is null ? DbValue.Null : DbValue.FromText(extracted);
+    }
+
+    private static string RequireXmlFunctionText(
+        DbValue value,
+        string functionName,
+        string argumentName)
+    {
+        if (value.Type != DbType.Text)
+        {
+            throw new CSharpDbException(
+                ErrorCode.TypeMismatch,
+                $"{functionName} {argumentName} must be XML or text.");
+        }
+
+        return value.AsText;
     }
 
     private static DbValue EvaluateDateAdd(IReadOnlyList<DbValue> args)

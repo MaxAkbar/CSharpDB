@@ -820,9 +820,24 @@
                 <td>INTEGER or NULL</td>
                 <td>Case-sensitive ordinal substring test; pattern characters are literal</td>
                 </tr>
+                <tr>
+                <td><code>XML_EXISTS(xml, xpath [, namespace_json])</code><br/><code>XMLEXISTS(...)</code></td>
+                <td>2 or 3</td>
+                <td>BOOLEAN (1 or 0) or NULL</td>
+                <td>Returns the XPath 1.0 effective boolean value; <code>XMLEXISTS</code> is an alias</td>
+                </tr>
+                <tr>
+                <td><code>XML_VALUE(xml, xpath [, namespace_json])</code></td>
+                <td>2 or 3</td>
+                <td>TEXT or NULL</td>
+                <td>Returns one XPath value as text; an empty node-set returns NULL</td>
+                </tr>
                 </tbody>
                 </table>
                 <p>The three ordinal search functions return <code>1</code> for true, <code>0</code> for false, and <code>NULL</code> when either argument is <code>NULL</code>. They use .NET ordinal UTF-16 code-unit semantics and do not apply collation, wildcard, or escape rules.</p>
+                <p><code>XML_EXISTS</code> and <code>XML_VALUE</code> accept an XML or text document and an XPath 1.0 expression. Their optional third argument is a JSON object mapping XPath prefixes to namespace URIs, for example <code>XML_VALUE(payload, '/o:order/@id', '{&quot;o&quot;:&quot;urn:orders&quot;}')</code>. Every supplied argument is NULL-propagating.</p>
+                <p>When <code>XML_VALUE</code> evaluates to a node-set, no matching nodes returns NULL, exactly one node returns its XPath string value, and more than one matching node reports a type mismatch. XPath scalar results use XPath string conversion. Use an explicitly singular expression such as <code>(/root/item)[1]</code> when appropriate.</p>
+                <p>XML documents are parsed with bounded, secure settings; DTD declarations and external entities are prohibited. The supported syntax is the function-style API above. Standard SQL <code>XMLEXISTS(... PASSING ...)</code>, <code>XML_TABLE</code>, and XML path indexes are not currently supported.</p>
                 <h3 id="window-functions">Window Functions</h3>
                 <p>Window functions are a completed, bounded in-memory SQL slice. Supported ranking functions are <code>ROW_NUMBER()</code>, <code>RANK()</code>, and <code>DENSE_RANK()</code>. Supported aggregate windows are non-distinct <code>COUNT</code>, <code>SUM</code>, <code>AVG</code>, <code>MIN</code>, and <code>MAX</code>. Navigation and value functions include <code>LAG(value[, offset[, default]])</code>, <code>LEAD(value[, offset[, default]])</code>, <code>FIRST_VALUE(value)</code>, and <code>LAST_VALUE(value)</code>.</p>
                 <p>An explicit <code>ROWS</code> frame may use either <code>ROWS frame_bound</code> (ending at <code>CURRENT ROW</code>) or <code>ROWS BETWEEN frame_bound AND frame_bound</code>. A bound may be <code>UNBOUNDED PRECEDING</code>, <code>n PRECEDING</code>, <code>CURRENT ROW</code>, <code>n FOLLOWING</code>, or <code>UNBOUNDED FOLLOWING</code>; offset <code>n</code> must be a nonnegative integer literal, and invalid start/end combinations are rejected. Ranking functions and <code>LAG</code>/<code>LEAD</code> ignore the frame; aggregate windows and <code>FIRST_VALUE</code>/<code>LAST_VALUE</code> evaluate against it. Without an explicit frame, an ordered window uses the peer-aware default through the current peer group, while a window without <code>ORDER BY</code> uses the whole partition.</p>

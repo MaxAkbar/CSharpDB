@@ -89,6 +89,9 @@ public static class DbBuiltInFunctionRegistry
         Scalar("STRCOMP", [], 2, 3, "text, text[, mode]", DbType.Integer, "integer", DbFunctionNullBehavior.Propagates, "Access-like comparison"),
         Scalar("VAL", [], 1, 1, "any", DbType.Real, "real", DbFunctionNullBehavior.HandlesNull, "Access-like leading-number conversion"),
 
+        Scalar("XML_EXISTS", ["XMLEXISTS"], 2, 3, "xml/text, xpath[, namespace JSON]", DbType.Integer, "boolean integer", DbFunctionNullBehavior.Propagates, "XPath 1.0 effective boolean value"),
+        Scalar("XML_VALUE", [], 2, 3, "xml/text, xpath[, namespace JSON]", DbType.Text, "text", DbFunctionNullBehavior.Propagates, "XPath 1.0 scalar string value; node sets must contain at most one node"),
+
         Scalar("DATE", [], 0, 0, "none", DbType.Text, "ISO date text", DbFunctionNullBehavior.NotApplicable, "current local date", DbFunctionVolatility.StatementStable, defaults: false, checks: false),
         Scalar("TIME", [], 0, 0, "none", DbType.Text, "ISO time text", DbFunctionNullBehavior.NotApplicable, "current local time", DbFunctionVolatility.StatementStable, defaults: false, checks: false),
         Scalar("NOW", ["DATETIME"], 0, 0, "none", DbType.Text, "ISO datetime text", DbFunctionNullBehavior.NotApplicable, "current local time", DbFunctionVolatility.StatementStable, defaults: false, checks: false),

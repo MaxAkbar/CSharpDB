@@ -245,6 +245,25 @@ public class DataReaderTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task XmlFunctionMetadataReportsBooleanAndTextTypes()
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText =
+            "SELECT XML_EXISTS('<root><item>A</item></root>', '/root/item') AS has_item, " +
+            "XML_VALUE('<root><item>A</item></root>', '/root/item') AS item_value;";
+        await using var reader = await cmd.ExecuteReaderAsync(Ct);
+
+        Assert.Equal(typeof(bool), reader.GetFieldType(0));
+        Assert.Equal(typeof(string), reader.GetFieldType(1));
+        Assert.Equal("BOOLEAN", reader.GetDataTypeName(0));
+        Assert.Equal("TEXT", reader.GetDataTypeName(1));
+
+        Assert.True(await reader.ReadAsync(Ct));
+        Assert.Equal(true, reader.GetValue(0));
+        Assert.Equal("A", reader.GetValue(1));
+    }
+
+    [Fact]
     public async Task GetSchemaTable_ReturnsColumnMetadata()
     {
         using var cmd = _conn.CreateCommand();
