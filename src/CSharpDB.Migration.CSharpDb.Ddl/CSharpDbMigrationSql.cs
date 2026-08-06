@@ -79,14 +79,14 @@ internal static class CSharpDbMigrationSql
         $"{Quote("source_fingerprint")} TEXT NOT NULL, " +
         $"{Quote("source_snapshot_identity")} TEXT NOT NULL, " +
         $"{Quote("source_object_id")} TEXT NOT NULL, " +
-        $"{Quote("batch_ordinal")} INTEGER NOT NULL, " +
+        $"{Quote("batch_ordinal")} BIGINT NOT NULL, " +
         $"{Quote("start_cursor")} TEXT, " +
         $"{Quote("next_cursor")} TEXT, " +
         $"{Quote("batch_digest")} TEXT NOT NULL, " +
         $"{Quote("reject_contract_version")} TEXT NOT NULL, " +
         $"{Quote("reject_digest")} TEXT NOT NULL, " +
-        $"{Quote("row_count")} INTEGER NOT NULL, " +
-        $"{Quote("rejected_row_count")} INTEGER NOT NULL, " +
+        $"{Quote("row_count")} BIGINT NOT NULL, " +
+        $"{Quote("rejected_row_count")} BIGINT NOT NULL, " +
         $"CONSTRAINT {Quote("__csharpdb_migration_receipts_pk")} " +
         $"PRIMARY KEY ({Quote("plan_digest")}, {Quote("source_object_id")}, {Quote("batch_ordinal")}))",
 
@@ -94,8 +94,8 @@ internal static class CSharpDbMigrationSql
         $"{Quote("reject_tag")} TEXT NOT NULL, " +
         $"{Quote("plan_digest")} TEXT NOT NULL, " +
         $"{Quote("source_object_id")} TEXT NOT NULL, " +
-        $"{Quote("batch_ordinal")} INTEGER NOT NULL, " +
-        $"{Quote("source_row_ordinal")} INTEGER NOT NULL, " +
+        $"{Quote("batch_ordinal")} BIGINT NOT NULL, " +
+        $"{Quote("source_row_ordinal")} BIGINT NOT NULL, " +
         $"{Quote("rule_id")} TEXT NOT NULL, " +
         $"{Quote("column_object_id")} TEXT, " +
         $"{Quote("evidence_json")} TEXT NOT NULL, " +
@@ -264,14 +264,24 @@ internal static class CSharpDbMigrationSql
                 MigrationTypeMapping mapping = planned.TypeMappings.Single();
                 if (mapping.TargetType is not DbType targetType || targetType == DbType.Null)
                     throw new InvalidDataException($"Included column '{column.ObjectId}' has no persistent target type.");
-                if (IsTrue(column, "identity") ||
-                    IsTrue(column, "rowVersion"))
+                if (IsTrue(column, "identity"))
                 {
                     throw new NotSupportedException(
-                        $"Included column '{column.ObjectId}' requires identity or rowversion lowering outside the staged slice.");
+                        $"Included column '{column.ObjectId}' requires identity lowering outside the staged slice.");
+                }
+                bool rowVersion = IsTrue(column, "rowVersion");
+                if (rowVersion &&
+                    (targetType != DbType.Blob ||
+                     !string.Equals(
+                         mapping.TargetSqlType,
+                         "ROWVERSION",
+                         StringComparison.OrdinalIgnoreCase)))
+                {
+                    throw new InvalidDataException(
+                        $"Included rowversion column '{column.ObjectId}' must map to the ROWVERSION logical target type.");
                 }
                 string? defaultExpression =
-                    ReadLiteralDefault(column, targetType);
+                    rowVersion ? null : ReadLiteralDefault(column, targetType);
 
                 string? collation = Facet(column, "collation");
                 if (!string.IsNullOrWhiteSpace(collation))
@@ -281,9 +291,9 @@ internal static class CSharpDbMigrationSql
                 }
                 definitions[columnOrdinal] = (
                     Quote(planned.TargetName!),
-                    TypeName(targetType, column),
+                    mapping.TargetSqlType ?? TypeName(targetType, column),
                     collation,
-                    IsNullable(column),
+                    rowVersion ? false : IsNullable(column),
                     defaultExpression);
             }
 

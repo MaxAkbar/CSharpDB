@@ -7,7 +7,7 @@ namespace CSharpDB.Migration;
 public sealed class StandardDataTypeMappingProvider : IDataTypeMappingProvider
 {
     public const string StandardPolicyId = "csharpdb-standard-mapping";
-    public const int StandardPolicyVersion = 1;
+    public const int StandardPolicyVersion = 2;
 
     private const string JsonTypedSchemaContract =
         "csharpdb-json-typed-table-schema-v1";
@@ -63,6 +63,10 @@ public sealed class StandardDataTypeMappingProvider : IDataTypeMappingProvider
             SourceObjectId = request.SourceObject.ObjectId,
             SourceNativeType = request.SourceObject.NativeType!,
             TargetType = shape.TargetType,
+            TargetSqlType = ResolveTargetSqlType(
+                request.SourceObject,
+                shape.TargetType,
+                logicalType),
             RequestedTargetType = request.CustomTargetType,
             Classification = shape.Classification,
             Profile = request.Profile,
@@ -108,6 +112,7 @@ public sealed class StandardDataTypeMappingProvider : IDataTypeMappingProvider
             "SIGNEDINTEGER" => Exact(DbType.Integer),
             "TEXT" => Exact(DbType.Text),
             "BINARY" => Exact(DbType.Blob),
+            "ROWVERSION" => Exact(DbType.Blob),
             "FLOATINGPOINT" => Exact(DbType.Real),
             "JSON" when IsOrderedJsonDocument(source) => Reencoded(
                 DbType.Text,
@@ -444,6 +449,66 @@ public sealed class StandardDataTypeMappingProvider : IDataTypeMappingProvider
 
     private static string? GetFacet(MigrationCatalogObject source, string name) =>
         source.Facets.FirstOrDefault(facet => string.Equals(facet.Name, name, StringComparison.Ordinal))?.Value;
+
+    private static string? ResolveTargetSqlType(
+        MigrationCatalogObject source,
+        DbType? targetType,
+        string logicalType)
+    {
+        if (targetType is null or DbType.Null)
+            return null;
+
+        if (CSharpDbDeclaredTypeContract.TryRead(source, out SqlTypeDescriptor declaredType) &&
+            declaredType.StorageType == targetType)
+        {
+            return declaredType.ToSql();
+        }
+
+        string? sqlServerType = GetFacet(source, "sqlServerSystemTypeName")?.ToLowerInvariant();
+        string? providerSpecificType = (sqlServerType, targetType) switch
+        {
+            ("tinyint", DbType.Integer) => "TINYINT",
+            ("smallint", DbType.Integer) => "SMALLINT",
+            ("int", DbType.Integer) => "INTEGER",
+            ("bigint", DbType.Integer) => "BIGINT",
+            ("bit", DbType.Integer) => "BOOLEAN",
+            ("timestamp" or "rowversion", DbType.Blob) => "ROWVERSION",
+            ("datetime" or "smalldatetime", DbType.Text) => "DATETIME2",
+            ("datetime2", DbType.Text) => TemporalType("DATETIME2", source),
+            ("datetimeoffset", DbType.Text) => TemporalType("DATETIMEOFFSET", source),
+            _ => null,
+        };
+        if (providerSpecificType is not null)
+            return providerSpecificType;
+
+        // Provider-neutral sources often expose only a logical family. Preserve
+        // that family in target DDL instead of collapsing every shared physical
+        // carrier to INTEGER/TEXT/BLOB. An unbounded signed source defaults to
+        // BIGINT so migration cannot silently narrow a valid 64-bit value.
+        return (logicalType.ToUpperInvariant(), targetType) switch
+        {
+            ("SIGNEDINTEGER", DbType.Integer) => "BIGINT",
+            ("BOOLEAN", DbType.Integer) => "BOOLEAN",
+            ("ROWVERSION", DbType.Blob) => "ROWVERSION",
+            ("DATE", DbType.Text) => "DATE",
+            ("TIME", DbType.Text) => "TIME",
+            ("DATETIME", DbType.Text) => "DATETIME2",
+            ("DATETIMEOFFSET", DbType.Text) => "DATETIMEOFFSET",
+            _ => null,
+        };
+    }
+
+    private static string TemporalType(string name, MigrationCatalogObject source)
+    {
+        string? scale = GetFacet(source, "sqlServerScale");
+        return byte.TryParse(
+            scale,
+            System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out byte precision) && precision <= 7
+                ? $"{name}({precision})"
+                : name;
+    }
 
     private sealed record MappingShape(
         DbType? TargetType,

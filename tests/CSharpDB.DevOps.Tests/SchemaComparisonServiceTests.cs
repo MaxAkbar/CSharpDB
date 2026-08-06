@@ -239,7 +239,7 @@ public sealed class SchemaComparisonServiceTests
             Assert.Equal(SchemaChangeKind.Added, change.ChangeKind);
             Assert.Equal("archive_customers", change.Name);
             Assert.Contains("DEFAULT 'anonymous'", change.SourceDefinition, StringComparison.Ordinal);
-            Assert.Contains("version BLOB ROWVERSION NOT NULL", change.SourceDefinition, StringComparison.Ordinal);
+            Assert.Contains("version ROWVERSION NOT NULL", change.SourceDefinition, StringComparison.Ordinal);
             Assert.Contains("CONSTRAINT ck_archive_customers_name CHECK (name <> '')", change.SourceDefinition, StringComparison.Ordinal);
             Assert.Contains("CONSTRAINT uq_archive_customers_name UNIQUE (name)", change.SourceDefinition, StringComparison.Ordinal);
             Assert.Contains(
@@ -285,9 +285,9 @@ public sealed class SchemaComparisonServiceTests
         SchemaDiffChange change = Assert.Single(report.Changes);
         Assert.True(change.IsDestructive);
         Assert.Equal("False -> True", change.Details["rowVersion"]);
-        Assert.Contains("version BLOB ROWVERSION NOT NULL", change.SourceDefinition, StringComparison.Ordinal);
+        Assert.Contains("version ROWVERSION NOT NULL", change.SourceDefinition, StringComparison.Ordinal);
         Assert.Contains(
-            "version BLOB ROWVERSION NOT NULL",
+            "version ROWVERSION NOT NULL",
             SchemaScriptRenderer.RenderCreateTable(source.Tables[0]),
             StringComparison.Ordinal);
 
@@ -423,8 +423,8 @@ public sealed class SchemaComparisonServiceTests
         SchemaDiffChange constraintChange = Assert.Single(
             report.Changes,
             change => change.ObjectKind == SchemaObjectKind.Table && change.Name == "orders");
-        Assert.Contains("id INTEGER NOT NULL", constraintChange.SourceDefinition, StringComparison.Ordinal);
-        Assert.DoesNotContain("id INTEGER IDENTITY", constraintChange.SourceDefinition, StringComparison.Ordinal);
+        Assert.Contains("id BIGINT NOT NULL", constraintChange.SourceDefinition, StringComparison.Ordinal);
+        Assert.DoesNotContain("id BIGINT IDENTITY", constraintChange.SourceDefinition, StringComparison.Ordinal);
         Assert.Contains("code TEXT DEFAULT 'new'", constraintChange.SourceDefinition, StringComparison.Ordinal);
         Assert.Contains("CONSTRAINT pk_orders PRIMARY KEY (id)", constraintChange.SourceDefinition, StringComparison.Ordinal);
         Assert.Contains("CONSTRAINT uq_orders_tenant_code UNIQUE (tenant, code)", constraintChange.SourceDefinition, StringComparison.Ordinal);

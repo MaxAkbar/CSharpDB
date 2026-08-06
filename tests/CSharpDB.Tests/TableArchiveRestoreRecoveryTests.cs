@@ -53,13 +53,13 @@ public sealed class TableArchiveRestoreRecoveryTests
                         target_name TEXT NOT NULL,
                         archive_token TEXT NOT NULL,
                         owner_token TEXT NOT NULL,
-                        heartbeat_unix_ms INTEGER NOT NULL,
+                        heartbeat_unix_ms BIGINT NOT NULL,
                         CONSTRAINT {JournalConstraintName} CHECK ((1 = 1))
                     );
                     INSERT INTO {JournalTableName} VALUES (
                         '{targetKey}', '{stageName}', '{targetName}', '{archiveToken}', '{ownerToken}', {staleHeartbeat});
                     CREATE TABLE "{stageName}" (
-                        id INTEGER PRIMARY KEY,
+                        id BIGINT PRIMARY KEY,
                         name TEXT NOT NULL,
                         CONSTRAINT "{ownerConstraint}" CHECK ((1 = 1))
                     );

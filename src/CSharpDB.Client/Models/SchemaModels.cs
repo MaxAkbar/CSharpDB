@@ -104,9 +104,8 @@ public sealed class SqlTypeDescriptor
         SqlTypeKind.Uuid => "UUID",
         SqlTypeKind.Date => "DATE",
         SqlTypeKind.Time => FormatFractionalSeconds("TIME"),
-        SqlTypeKind.Timestamp => FormatFractionalSeconds("TIMESTAMP"),
-        SqlTypeKind.TimestampWithTimeZone =>
-            $"{FormatFractionalSeconds("TIMESTAMP")} WITH TIME ZONE",
+        SqlTypeKind.Timestamp => FormatFractionalSeconds("DATETIME2"),
+        SqlTypeKind.TimestampWithTimeZone => FormatFractionalSeconds("DATETIMEOFFSET"),
         SqlTypeKind.IntervalYearToMonth => "INTERVAL YEAR TO MONTH",
         SqlTypeKind.IntervalDayToSecond =>
             FractionalSecondsPrecision is int fractionalSecondsPrecision

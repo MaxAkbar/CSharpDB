@@ -229,6 +229,81 @@ public class BatchEvaluationContractTests
     }
 
     [Fact]
+    public void BatchPlanCompiler_IntegerArithmeticProjection_PreservesCheckedRange()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench",
+            Columns =
+            [
+                new ColumnDefinition
+                {
+                    Name = "value",
+                    Type = DbType.Integer,
+                    DeclaredType = SqlTypeDescriptor.Create(SqlTypeKind.Integer),
+                    Nullable = false,
+                },
+            ],
+        };
+        Expression[] projections =
+        [
+            new BinaryExpression
+            {
+                Op = BinaryOp.Plus,
+                Left = new ColumnRefExpression { ColumnName = "value" },
+                Right = new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 1L },
+            },
+        ];
+
+        var plan = BatchPlanCompiler.TryCreate(predicate: null, projections, schema);
+
+        Assert.IsType<SpecializedFilterProjectionBatchPlan>(plan);
+        var source = new RowBatch(columnCount: 1, capacity: 1);
+        source.CopyRowFrom(0, [DbValue.FromInteger(int.MaxValue)]);
+        var selection = new RowSelection();
+        var destination = new RowBatch(columnCount: 1, capacity: 1);
+        Assert.Throws<OverflowException>(() => plan!.Execute(source, selection, destination));
+    }
+
+    [Fact]
+    public void BatchPlanCompiler_BigIntArithmeticProjection_RemainsWide()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "bench",
+            Columns =
+            [
+                new ColumnDefinition
+                {
+                    Name = "value",
+                    Type = DbType.Integer,
+                    DeclaredType = SqlTypeDescriptor.Create(SqlTypeKind.BigInt),
+                    Nullable = false,
+                },
+            ],
+        };
+        Expression[] projections =
+        [
+            new BinaryExpression
+            {
+                Op = BinaryOp.Plus,
+                Left = new ColumnRefExpression { ColumnName = "value" },
+                Right = new LiteralExpression { LiteralType = TokenType.IntegerLiteral, Value = 1L },
+            },
+        ];
+
+        var plan = BatchPlanCompiler.TryCreate(predicate: null, projections, schema);
+
+        Assert.IsType<SpecializedFilterProjectionBatchPlan>(plan);
+        var source = new RowBatch(columnCount: 1, capacity: 1);
+        source.CopyRowFrom(0, [DbValue.FromInteger(int.MaxValue)]);
+        var selection = new RowSelection();
+        var destination = new RowBatch(columnCount: 1, capacity: 1);
+        Assert.Equal(1, plan!.Execute(source, selection, destination));
+        Assert.Equal(2_147_483_648L, destination.GetRowSpan(0)[0].AsInteger);
+    }
+
+    [Fact]
     public void BatchPlanCompiler_ReturnsNull_ForUnsupportedProjectionShape()
     {
         var schema = new TableSchema

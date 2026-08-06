@@ -158,7 +158,9 @@ internal static partial class SqlServerCatalogBuilder
                 "sys",
                 StringComparison.Ordinal);
             bool rowVersion = IsRowVersion(column.SystemTypeName);
-            string logicalType = userDefinedType || rowVersion
+            string logicalType = rowVersion
+                ? "rowVersion"
+                : userDefinedType
                 ? "native"
                 : LogicalType(column.SystemTypeName);
             var facets = new List<MigrationCatalogFacet>
@@ -198,6 +200,7 @@ internal static partial class SqlServerCatalogBuilder
             });
 
             if (logicalType == "native" ||
+                rowVersion ||
                 column.IsHidden ||
                 column.IsMasked ||
                 column.EncryptionType is not null ||

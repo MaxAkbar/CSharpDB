@@ -189,6 +189,8 @@ internal static class CSharpDbSchemaProvider
         table.Columns.Add("IS_IDENTITY", typeof(bool));
         table.Columns.Add("COLLATION_NAME", typeof(string));
         table.Columns.Add("IS_ROW_VERSION", typeof(bool));
+        table.Columns.Add("IS_GENERATED", typeof(bool));
+        table.Columns.Add("IS_READ_ONLY", typeof(bool));
         table.Columns.Add("TABLE_SCHEMA_ID", typeof(Guid));
         table.Columns.Add("COLUMN_SCHEMA_ID", typeof(Guid));
 
@@ -227,8 +229,8 @@ internal static class CSharpDbSchemaProvider
                     i + 1,
                     column.DefaultSql is null ? DBNull.Value : column.DefaultSql,
                     column.Nullable ? "YES" : "NO",
-                    column.DeclaredType is null
-                        ? TypeMapper.ToDataTypeName(column.Type)
+                    column.IsRowVersion
+                        ? "ROWVERSION"
                         : TypeMapper.ToDataTypeName(column.EffectiveType),
                     GetCharacterMaximumLength(column),
                     DBNull.Value,
@@ -239,6 +241,8 @@ internal static class CSharpDbSchemaProvider
                     column.IsPrimaryKey,
                     column.IsIdentity,
                     column.Collation is null ? DBNull.Value : column.Collation,
+                    column.IsRowVersion,
+                    column.IsRowVersion,
                     column.IsRowVersion,
                     ToDataValue(schema.SchemaId),
                     ToDataValue(column.SchemaId));
@@ -747,7 +751,7 @@ internal static class CSharpDbSchemaProvider
             SqlTypeKind.Boolean => (byte)1,
             SqlTypeKind.TinyInt => (byte)3,
             SqlTypeKind.SmallInt => (byte)5,
-            SqlTypeKind.Integer => (byte)19,
+            SqlTypeKind.Integer => (byte)10,
             SqlTypeKind.BigInt => (byte)19,
             SqlTypeKind.Real => (byte)15,
             SqlTypeKind.Double => (byte)15,

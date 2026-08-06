@@ -17,7 +17,7 @@
       "type": "integer",
       "isRuntimeValue": true,
       "isColumnType": true,
-      "representation": "Signed 64-bit integer."
+      "representation": "Shared signed 64-bit physical carrier. Logical INTEGER is signed 32-bit, BIGINT is signed 64-bit, and BOOLEAN is canonical 0/1."
     },
     {
       "type": "real",
@@ -200,7 +200,7 @@
       "allowedTypes": ["integer"],
       "maxCount": 1,
       "evidenceId": "EVID-COLUMN",
-      "notes": "IDENTITY is limited to INTEGER and implies a primary key."
+      "notes": "IDENTITY is limited to logical INTEGER or BIGINT and implies a primary key. INTEGER generation stops at 2147483647; BIGINT generation stops at 9223372036854775807."
     },
     {
       "ruleId": "CSDB-COLUMN-ROWVERSION-001",
@@ -210,7 +210,7 @@
       "allowedTypes": ["blob"],
       "maxCount": 1,
       "evidenceId": "EVID-ROWVERSION",
-      "notes": "At most one BLOB NOT NULL rowversion column is permitted and it cannot participate in keys, foreign keys, or indexes."
+      "notes": "At most one generated ROWVERSION column is permitted per table. Tokens come from a durable database-wide counter and the column cannot participate in keys, foreign keys, or indexes."
     },
     {
       "ruleId": "CSDB-KEY-PRIMARY-001",
@@ -335,7 +335,7 @@
     {
       "evidenceId": "EVID-COLUMN",
       "source": "CSharpDB.Primitives.DbType, CSharpDB.Sql.Parser, and CSharpDB.Storage.Serialization.RecordEncoder",
-      "assertion": "Runtime tags include Null, Integer, Real, Text, Blob, and exact Decimal; persistent columns retain validated logical SQL type descriptors, with Null excluded from declarations."
+      "assertion": "Runtime tags include Null, Integer, Real, Text, Blob, and exact Decimal; persistent columns retain validated logical SQL type descriptors, including signed 32-bit INTEGER, BIGINT, BOOLEAN, temporal, and bit-string distinctions."
     },
     {
       "evidenceId": "EVID-FOREIGN-KEYS",
@@ -365,7 +365,7 @@
     {
       "evidenceId": "EVID-ROWVERSION",
       "source": "CSharpDB.Engine.RowConstraintValidator, QueryPlanner, and RowVersionIntegrationTests",
-      "assertion": "A table may contain one BLOB NOT NULL rowversion excluded from keys, foreign keys, and indexes."
+      "assertion": "A table may contain one generated ROWVERSION excluded from keys, foreign keys, and indexes; inserts and updates allocate durable database-wide tokens."
     },
     {
       "evidenceId": "EVID-VIEWS-TRIGGERS",

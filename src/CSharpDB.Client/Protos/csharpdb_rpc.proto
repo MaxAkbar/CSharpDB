@@ -989,6 +989,7 @@ message SqlExecutionResultMessage {
   google.protobuf.Duration elapsed = 6;
   StringList column_types = 7;
   BoolList column_nullability = 8;
+  repeated ColumnDefinitionMessage columns = 9;
 }
 
 message DatabaseInfoMessage {

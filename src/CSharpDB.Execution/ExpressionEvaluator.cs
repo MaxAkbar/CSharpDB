@@ -75,6 +75,14 @@ public static class ExpressionEvaluator
 
     private static DbValue EvalBinary(BinaryExpression bin, ReadOnlySpan<DbValue> row, TableSchema schema, DbFunctionRegistry? functions)
     {
+        if (bin.Op is BinaryOp.Plus or BinaryOp.Minus or BinaryOp.Multiply or BinaryOp.Divide)
+            ValidateArithmeticOperands(bin.Left, bin.Right, schema);
+
+        SqlTypeDescriptor? arithmeticType =
+            bin.Op is BinaryOp.Plus or BinaryOp.Minus or BinaryOp.Multiply or BinaryOp.Divide
+                ? ResolveArithmeticDeclaredType(bin.Left, bin.Right, schema)
+                : null;
+
         var left = Evaluate(bin.Left, row, schema, functions);
         var right = Evaluate(bin.Right, row, schema, functions);
         string? collation = CollationSupport.ResolveComparisonCollation(bin.Left, bin.Right, schema);
@@ -99,7 +107,7 @@ public static class ExpressionEvaluator
             BinaryOp.And => SqlAnd(left, right),
             BinaryOp.Or => SqlOr(left, right),
             BinaryOp.Plus or BinaryOp.Minus or BinaryOp.Multiply or BinaryOp.Divide =>
-                EvaluateArithmetic(bin.Op, left, right),
+                EvaluateArithmetic(bin.Op, left, right, arithmeticType),
             _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unknown binary op: {bin.Op}"),
         };
     }
@@ -137,11 +145,30 @@ public static class ExpressionEvaluator
         while (expression is CollateExpression collate)
             expression = collate.Operand;
 
+        if (expression is LiteralExpression
+            {
+                LiteralType: TokenType.IntegerLiteral,
+                Value: long integerValue,
+            })
+        {
+            return IntegerTypeForValue(integerValue);
+        }
+
         if (expression is CastExpression cast)
             return cast.TargetType;
 
         if (expression is UnaryExpression unary)
-            return ResolveDeclaredType(unary.Operand, schema);
+        {
+            return unary.Op == TokenType.Minus
+                ? ResolveNegatedDeclaredType(unary.Operand, schema)
+                : ResolveDeclaredType(unary.Operand, schema);
+        }
+
+        if (expression is BinaryExpression binary &&
+            binary.Op is BinaryOp.Plus or BinaryOp.Minus or BinaryOp.Multiply or BinaryOp.Divide)
+        {
+            return ResolveArithmeticDeclaredType(binary.Left, binary.Right, schema);
+        }
 
         if (expression is FunctionCallExpression
             {
@@ -150,13 +177,132 @@ public static class ExpressionEvaluator
             } function &&
             functionName.ToUpperInvariant() is "MIN" or "MAX" or "SUM" or "AVG")
         {
-            return ResolveDeclaredType(function.Arguments[0], schema);
+            SqlTypeDescriptor? argumentType = ResolveDeclaredType(function.Arguments[0], schema);
+            return functionName.Equals("SUM", StringComparison.OrdinalIgnoreCase) &&
+                argumentType is not null &&
+                IsIntegralType(argumentType.Kind)
+                    ? SqlTypeDescriptor.Create(SqlTypeKind.BigInt)
+                    : argumentType;
+        }
+
+        if (expression is FunctionCallExpression
+            {
+                Arguments.Count: >= 1,
+                FunctionName: var preservingFunctionName,
+            } preservingFunction &&
+            preservingFunctionName.ToUpperInvariant() is "ABS" or "ROUND" or "INT" or "FLOOR" or "FIX")
+        {
+            SqlTypeDescriptor? argumentType = ResolveDeclaredType(
+                preservingFunction.Arguments[0],
+                schema);
+            return argumentType?.Kind switch
+            {
+                SqlTypeKind.Integer => SqlTypeDescriptor.Create(SqlTypeKind.Integer),
+                SqlTypeKind.BigInt => SqlTypeDescriptor.Create(SqlTypeKind.BigInt),
+                SqlTypeKind.TinyInt or SqlTypeKind.SmallInt =>
+                    SqlTypeDescriptor.Create(SqlTypeKind.BigInt),
+                _ => argumentType,
+            };
+        }
+
+        if (expression is FunctionCallExpression scalarFunction &&
+            DbBuiltInFunctionRegistry.TryGet(
+                scalarFunction.FunctionName,
+                out DbBuiltInFunctionDescriptor descriptor) &&
+            descriptor.DeclaredReturnType is not null)
+        {
+            return descriptor.DeclaredReturnType;
+        }
+
+        if (expression is WindowFunctionExpression window)
+        {
+            string windowFunctionName = window.Function.FunctionName.ToUpperInvariant();
+            if (windowFunctionName is "ROW_NUMBER" or "RANK" or "DENSE_RANK" or "COUNT")
+                return SqlTypeDescriptor.Create(SqlTypeKind.BigInt);
+
+            if (window.Function.Arguments.Count > 0)
+                return ResolveDeclaredType(window.Function.Arguments[0], schema);
         }
 
         return TryResolveDeclaredColumn(expression, schema, out ColumnDefinition? column)
-            ? column!.DeclaredType
+            ? column!.EffectiveType
             : null;
     }
+
+    internal static SqlTypeDescriptor? ResolveArithmeticDeclaredType(
+        Expression leftExpression,
+        Expression rightExpression,
+        TableSchema schema)
+    {
+        SqlTypeDescriptor? left = ResolveDeclaredType(leftExpression, schema);
+        SqlTypeDescriptor? right = ResolveDeclaredType(rightExpression, schema);
+
+        if (left is null || right is null)
+        {
+            SqlTypeDescriptor? known = left ?? right;
+            return known is not null && IsIntegralType(known.Kind)
+                ? known
+                : null;
+        }
+
+        if (!IsIntegralType(left.Kind) || !IsIntegralType(right.Kind))
+            return null;
+
+        if (left.Kind == SqlTypeKind.BigInt || right.Kind == SqlTypeKind.BigInt)
+            return SqlTypeDescriptor.Create(SqlTypeKind.BigInt);
+
+        if (left.Kind == SqlTypeKind.Integer && right.Kind == SqlTypeKind.Integer)
+            return SqlTypeDescriptor.Create(SqlTypeKind.Integer);
+
+        // Preserve the existing widening behavior for the narrower integer
+        // families. The SQL 4.5 semantic change specifically narrows INTEGER
+        // arithmetic; legacy descriptor-less integers resolve as BIGINT above.
+        return SqlTypeDescriptor.Create(SqlTypeKind.BigInt);
+    }
+
+    internal static SqlTypeDescriptor? ResolveNegatedDeclaredType(
+        Expression operand,
+        TableSchema schema)
+    {
+        while (operand is CollateExpression collate)
+            operand = collate.Operand;
+
+        if (operand is LiteralExpression
+            {
+                LiteralType: TokenType.IntegerLiteral,
+                Value: long value,
+            })
+        {
+            // 2147483648 is BIGINT as a positive literal, but its directly
+            // negated spelling is the representable INTEGER minimum.
+            if (value is >= 0 and <= 2_147_483_648L)
+                return SqlTypeDescriptor.Create(SqlTypeKind.Integer);
+
+            return SqlTypeDescriptor.Create(SqlTypeKind.BigInt);
+        }
+
+        SqlTypeDescriptor? type = ResolveDeclaredType(operand, schema);
+        return type?.Kind switch
+        {
+            SqlTypeKind.Integer => SqlTypeDescriptor.Create(SqlTypeKind.Integer),
+            SqlTypeKind.BigInt => SqlTypeDescriptor.Create(SqlTypeKind.BigInt),
+            SqlTypeKind.TinyInt or SqlTypeKind.SmallInt =>
+                SqlTypeDescriptor.Create(SqlTypeKind.BigInt),
+            _ => type,
+        };
+    }
+
+    internal static SqlTypeDescriptor IntegerTypeForValue(long value) =>
+        SqlTypeDescriptor.Create(
+            value is >= int.MinValue and <= int.MaxValue
+                ? SqlTypeKind.Integer
+                : SqlTypeKind.BigInt);
+
+    private static bool IsIntegralType(SqlTypeKind kind) =>
+        kind is SqlTypeKind.TinyInt or
+            SqlTypeKind.SmallInt or
+            SqlTypeKind.Integer or
+            SqlTypeKind.BigInt;
 
     internal static SqlTypeDescriptor? ResolveComparisonDeclaredType(
         Expression leftExpression,
@@ -270,18 +416,27 @@ public static class ExpressionEvaluator
 
     private static DbValue EvalUnary(UnaryExpression un, ReadOnlySpan<DbValue> row, TableSchema schema, DbFunctionRegistry? functions)
     {
+        if (un.Op == TokenType.Minus)
+            ValidateNumericNegationOperand(un.Operand, schema);
+
+        SqlTypeDescriptor? resultType = un.Op == TokenType.Minus
+            ? ResolveNegatedDeclaredType(un.Operand, schema)
+            : null;
+
         var operand = Evaluate(un.Operand, row, schema, functions);
         return un.Op switch
         {
             TokenType.Not => operand.IsNull ? DbValue.Null : BoolToDb(!operand.IsTruthy),
-            TokenType.Minus => NegateNumeric(operand),
+            TokenType.Minus => NegateNumeric(operand, resultType),
             _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unknown unary op: {un.Op}"),
         };
     }
 
-    internal static DbValue NegateNumeric(DbValue operand)
+    internal static DbValue NegateNumeric(
+        DbValue operand,
+        SqlTypeDescriptor? resultType = null)
     {
-        return operand.Type switch
+        DbValue result = operand.Type switch
         {
             DbType.Null => DbValue.Null,
             DbType.Integer => DbValue.FromInteger(checked(-operand.AsInteger)),
@@ -289,6 +444,72 @@ public static class ExpressionEvaluator
             DbType.Decimal => DbValue.FromDecimal(checked(-operand.AsDecimal)),
             _ => throw new CSharpDbException(ErrorCode.TypeMismatch, "Cannot negate non-numeric value."),
         };
+        return EnforceDeclaredIntegerRange(result, resultType);
+    }
+
+    internal static void ValidateArithmeticOperands(
+        Expression left,
+        Expression right,
+        TableSchema schema)
+    {
+        if (IsBooleanExpression(left, schema) || IsBooleanExpression(right, schema))
+        {
+            throw new CSharpDbException(
+                ErrorCode.TypeMismatch,
+                "BOOLEAN values do not participate in numeric arithmetic; CAST explicitly to an integer type first.");
+        }
+    }
+
+    internal static void ValidateNumericNegationOperand(Expression operand, TableSchema schema)
+    {
+        if (IsBooleanExpression(operand, schema))
+        {
+            throw new CSharpDbException(
+                ErrorCode.TypeMismatch,
+                "BOOLEAN values cannot be numerically negated; CAST explicitly to an integer type first.");
+        }
+    }
+
+    private static bool IsBooleanExpression(Expression expression, TableSchema schema)
+    {
+        while (expression is CollateExpression collate)
+            expression = collate.Operand;
+
+        if (expression is CastExpression cast)
+            return cast.TargetType.Kind == SqlTypeKind.Boolean;
+
+        if (expression is ColumnRefExpression)
+        {
+            return TryResolveDeclaredColumn(expression, schema, out ColumnDefinition? column) &&
+                column!.EffectiveType.Kind == SqlTypeKind.Boolean;
+        }
+
+        if (expression is UnaryExpression { Op: TokenType.Not })
+            return true;
+
+        if (expression is BinaryExpression binary)
+        {
+            return binary.Op is BinaryOp.Equals or
+                BinaryOp.NotEquals or
+                BinaryOp.LessThan or
+                BinaryOp.GreaterThan or
+                BinaryOp.LessOrEqual or
+                BinaryOp.GreaterOrEqual or
+                BinaryOp.And or
+                BinaryOp.Or;
+        }
+
+        if (expression is LikeExpression or
+            InExpression or
+            InSubqueryExpression or
+            ExistsExpression or
+            BetweenExpression or
+            IsNullExpression)
+        {
+            return true;
+        }
+
+        return ResolveDeclaredType(expression, schema)?.Kind == SqlTypeKind.Boolean;
     }
 
     private static DbValue EvalFunction(FunctionCallExpression func, ReadOnlySpan<DbValue> row, TableSchema schema, DbFunctionRegistry? functions)
@@ -298,10 +519,11 @@ public static class ExpressionEvaluator
             throw new CSharpDbException(ErrorCode.Unknown, $"Aggregate function '{func.FunctionName}' requires aggregate context.");
 
         var materializedRow = row.ToArray();
-        return ScalarFunctionEvaluator.Evaluate(
+        DbValue result = ScalarFunctionEvaluator.Evaluate(
             func,
             arg => Evaluate(arg, materializedRow, schema, functions),
             functions);
+        return EnforceDeclaredIntegerRange(result, ResolveDeclaredType(func, schema));
     }
 
     private static DbValue EvalCast(
@@ -361,7 +583,11 @@ public static class ExpressionEvaluator
         return BoolToDb(false);
     }
 
-    internal static DbValue EvaluateArithmetic(BinaryOp op, DbValue left, DbValue right)
+    internal static DbValue EvaluateArithmetic(
+        BinaryOp op,
+        DbValue left,
+        DbValue right,
+        SqlTypeDescriptor? resultType = null)
     {
         if (left.IsNull || right.IsNull) return DbValue.Null;
 
@@ -398,7 +624,7 @@ public static class ExpressionEvaluator
         {
             long leftValue = left.AsInteger;
             long rightValue = right.AsInteger;
-            return DbValue.FromInteger(op switch
+            DbValue result = DbValue.FromInteger(op switch
             {
                 BinaryOp.Plus => checked(leftValue + rightValue),
                 BinaryOp.Minus => checked(leftValue - rightValue),
@@ -406,9 +632,26 @@ public static class ExpressionEvaluator
                 BinaryOp.Divide => rightValue != 0 ? checked(leftValue / rightValue) : throw DivZero(),
                 _ => throw new ArgumentOutOfRangeException(nameof(op), op, null),
             });
+            return EnforceDeclaredIntegerRange(result, resultType);
         }
 
         throw new CSharpDbException(ErrorCode.TypeMismatch, "Cannot perform arithmetic on non-numeric values.");
+    }
+
+    internal static DbValue EnforceDeclaredIntegerRange(
+        DbValue value,
+        SqlTypeDescriptor? resultType)
+    {
+        if (value.Type == DbType.Integer &&
+            resultType?.Kind == SqlTypeKind.Integer &&
+            value.AsInteger is < int.MinValue or > int.MaxValue)
+        {
+            throw new OverflowException(
+                $"INTEGER result {value.AsInteger} is outside the range " +
+                $"{int.MinValue} through {int.MaxValue}.");
+        }
+
+        return value;
     }
 
     private static DbValue CreateDecimalResult(decimal value)

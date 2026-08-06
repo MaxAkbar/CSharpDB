@@ -48,7 +48,19 @@ public class SqlParameterBinderTests
         var parameters = new CSharpDbParameterCollection();
         parameters.AddWithValue("@flag", true);
         string result = SqlParameterBinder.Bind("SELECT * FROM t WHERE flag = @flag", parameters);
-        Assert.Equal("SELECT * FROM t WHERE flag = 1", result);
+        Assert.Equal("SELECT * FROM t WHERE flag = CAST(1 AS BOOLEAN)", result);
+    }
+
+    [Fact]
+    public void Bind_DbTypeBooleanNumericParameter_UsesSqlBooleanConversion()
+    {
+        var parameters = new CSharpDbParameterCollection();
+        CSharpDbParameter parameter = parameters.AddWithValue("@flag", -2);
+        parameter.DbType = SysDbType.Boolean;
+
+        string result = SqlParameterBinder.Bind("SELECT @flag", parameters);
+
+        Assert.Equal("SELECT CAST(1 AS BOOLEAN)", result);
     }
 
     [Fact]
@@ -114,8 +126,8 @@ public class SqlParameterBinderTests
             "CAST('abcdefab-1234-5678-9abc-def012345678' AS UUID), " +
             "CAST('2026-08-05' AS DATE), " +
             "CAST('14:30:15.1250000' AS TIME), " +
-            "CAST('2026-08-05 14:30:15' AS TIMESTAMP), " +
-            "CAST('2026-08-05 14:30:15-07:00' AS TIMESTAMP WITH TIME ZONE)",
+            "CAST('2026-08-05 14:30:15' AS DATETIME2), " +
+            "CAST('2026-08-05 14:30:15-07:00' AS DATETIMEOFFSET)",
             result);
     }
 

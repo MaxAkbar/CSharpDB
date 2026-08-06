@@ -219,14 +219,19 @@ public sealed class DbReportSourceProvider(ICSharpDbClient dbClient) : IReportSo
         });
     }
 
-    private static string GetSchemaTypeIdentity(ColumnDefinition column) =>
-        column.DeclaredType?.Kind is
+    private static string GetSchemaTypeIdentity(ColumnDefinition column)
+    {
+        if (column.IsRowVersion)
+            return "ROWVERSION";
+
+        return column.DeclaredType?.Kind is
             SqlTypeKind.Integer or
             SqlTypeKind.Real or
             SqlTypeKind.Text or
             SqlTypeKind.Blob
                 ? column.Type.ToString()
                 : column.DeclaredType?.ToSql() ?? column.Type.ToString();
+    }
 
     private static string ComputeViewSignature(ViewDefinition view, IReadOnlyList<ReportFieldDefinition> fields)
         => ReportSql.ComputeSignature(new

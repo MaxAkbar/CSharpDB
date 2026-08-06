@@ -29,6 +29,7 @@ internal static class TableArchiveNativeFormat
     public const int SchemaFidelityFormatVersion = 5;
     public const int ReferentialActionsFormatVersion = 6;
     public const int LogicalTypesFormatVersion = 7;
+    public const int SqlTypeSemanticsFormatVersion = 8;
     public const int HeaderSize = 76;
 
     public const int PrimaryKeyIndexVersion = 1;
@@ -116,7 +117,8 @@ internal static class TableArchiveNativeFormat
             RowVersionFormatVersion or
             SchemaFidelityFormatVersion or
             ReferentialActionsFormatVersion or
-            LogicalTypesFormatVersion;
+            LogicalTypesFormatVersion or
+            SqlTypeSemanticsFormatVersion;
 
     public static void WriteIndexHeader(
         Span<byte> destination,

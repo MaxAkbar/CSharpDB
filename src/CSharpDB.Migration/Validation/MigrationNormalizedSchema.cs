@@ -307,6 +307,7 @@ public static class MigrationNormalizedSchemaContract
             case MigrationObjectKind.Column:
                 MigrationTypeMapping mapping = planned.TypeMappings.Single();
                 Add("targetType", mapping.TargetType?.ToString() ?? "none");
+                Add("targetSqlType", mapping.TargetSqlType);
                 if (CSharpDbDeclaredTypeContract.TryRead(
                         item,
                         out SqlTypeDescriptor declaredType) &&

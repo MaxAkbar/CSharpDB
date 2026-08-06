@@ -335,10 +335,10 @@ remains.
 
 `AlterColumn` also has a bounded shadow-rewrite path:
 
-- `INTEGER` to `REAL` is accepted when every integer is within the exactly
-  representable `±2^53` range
-- `REAL` to `INTEGER` is accepted when every value is finite, integral, and in
-  the signed 64-bit range
+- `INTEGER` to `REAL` is exact across the full signed 32-bit range; `BIGINT` to
+  `REAL` is accepted only within the exactly representable `±2^53` range
+- `REAL` to `INTEGER` or `BIGINT` is accepted when every value is finite,
+  integral, and in the target's signed 32- or 64-bit range
 - ready ordinary and unique SQL indexes that reference the changed numeric
   column are rebuilt atomically with the table; composite indexes are included,
   while unrelated index roots remain unchanged
@@ -415,18 +415,18 @@ public sealed class Document
 }
 ```
 
-The provider creates the column as `BLOB ROWVERSION`. The engine initializes
-an opaque eight-byte token at revision 1, advances it on every successful
-`UPDATE`, and returns the generated value to EF after inserts and updates.
+The provider creates the column as `ROWVERSION` (the legacy
+`BLOB ROWVERSION NOT NULL` spelling remains accepted). The engine allocates
+an opaque eight-byte token from a persisted database-wide counter and returns
+the generated value to EF after inserts and updates.
 That includes updates issued through raw SQL, triggers, and assignments that
 leave the other column values unchanged. EF uses the original token in update
 and delete predicates, so stale tracked writes throw
 `DbUpdateConcurrencyException`.
 
-Tokens are big-endian per-row revisions. Treat them as opaque equality tokens:
-unlike SQL Server `rowversion`, they are not a database-wide monotonically
-increasing counter. Explicit insert or update assignments to the rowversion
-column are rejected so every writer observes the same engine-owned lifecycle.
+Tokens are big-endian database-wide revisions and must still be treated as
+opaque equality tokens. Explicit insert or update assignments to the
+rowversion column are rejected so every writer observes the same engine-owned lifecycle.
 Rowversion properties cannot participate in keys, foreign keys, or indexes,
 and cannot define a value converter, default, or computed SQL.
 

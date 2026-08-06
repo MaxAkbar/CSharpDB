@@ -126,7 +126,7 @@ public sealed class CSharpDbModificationCommandBatch : ModificationCommandBatch
             byte[] generatedRowVersion =
                 executionResult.GeneratedRowVersion ??
                 throw new DbUpdateException(
-                    $"The database did not return a generated rowversion for table '{command.TableName}'. Verify that the column was created as BLOB ROWVERSION NOT NULL.",
+                    $"The database did not return a generated rowversion for table '{command.TableName}'. Verify that the column was created as ROWVERSION.",
                     command.Entries);
 
             if (generatedRowVersion.Length != sizeof(long))

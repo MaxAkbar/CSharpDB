@@ -16,6 +16,7 @@ public sealed class WriteTransaction : IAsyncDisposable
     private readonly SchemaCatalog _catalog;
     private readonly QueryPlanner _planner;
     private readonly long _initialSchemaVersion;
+    private readonly ulong _initialRowVersionHighWater;
     private bool _completed;
     private bool _writeFailed;
 
@@ -24,13 +25,15 @@ public sealed class WriteTransaction : IAsyncDisposable
         PagerWriteTransaction storageTransaction,
         SchemaCatalog catalog,
         QueryPlanner planner,
-        long initialSchemaVersion)
+        long initialSchemaVersion,
+        ulong initialRowVersionHighWater)
     {
         _database = database ?? throw new ArgumentNullException(nameof(database));
         _storageTransaction = storageTransaction ?? throw new ArgumentNullException(nameof(storageTransaction));
         _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
         _planner = planner ?? throw new ArgumentNullException(nameof(planner));
         _initialSchemaVersion = initialSchemaVersion;
+        _initialRowVersionHighWater = initialRowVersionHighWater;
     }
 
     /// <summary>
@@ -127,6 +130,7 @@ public sealed class WriteTransaction : IAsyncDisposable
         bool schemaChanged;
         bool rootPagesChanged;
         bool advisoryCatalogContentChanged;
+        bool rowVersionHighWaterChanged;
         try
         {
             using var binding = _storageTransaction.Bind();
@@ -146,6 +150,8 @@ public sealed class WriteTransaction : IAsyncDisposable
                 await _catalog.PersistDirtyTableStatisticsAsync(ct);
             }
             schemaChanged = _catalog.SchemaVersion != _initialSchemaVersion;
+            rowVersionHighWaterChanged =
+                _catalog.RowVersionHighWater != _initialRowVersionHighWater;
             commit = await _storageTransaction.BeginCommitAsync(ct);
         }
         catch
@@ -166,7 +172,11 @@ public sealed class WriteTransaction : IAsyncDisposable
         }
 
         await _database.OnExternalWriteTransactionCommittedAsync(
-            reloadSharedCatalog: rootPagesChanged || schemaChanged || advisoryCatalogContentChanged,
+            reloadSharedCatalog:
+                rootPagesChanged ||
+                schemaChanged ||
+                advisoryCatalogContentChanged ||
+                rowVersionHighWaterChanged,
             schemaChanged,
             committedNextRowIds,
             committedTableRowCountDeltas,

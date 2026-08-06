@@ -629,7 +629,7 @@ Clear the error state for the current thread.
 | Code | Constant | Description |
 |------|----------|-------------|
 | 0 | `CSHARPDB_NULL` | SQL NULL |
-| 1 | `CSHARPDB_INTEGER` | 64-bit signed integer |
+| 1 | `CSHARPDB_INTEGER` | Shared 64-bit physical carrier for `BOOLEAN`, 32-bit SQL `INTEGER`, and `BIGINT`; inspect `csharpdb_result_column_declared_type` for logical semantics |
 | 2 | `CSHARPDB_REAL` | 64-bit IEEE 754 double |
 | 3 | `CSHARPDB_TEXT` | UTF-8 text string |
 | 4 | `CSHARPDB_BLOB` | Binary data |

@@ -305,7 +305,7 @@ internal sealed class WindowOperator :
             {
                 throw new CSharpDbException(
                     ErrorCode.TypeMismatch,
-                    "Integer SUM window overflowed the supported 64-bit range.");
+                    "BIGINT SUM window overflowed the supported 64-bit range.");
             }
 
             return (long)_integerSum;

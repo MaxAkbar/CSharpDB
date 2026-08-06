@@ -4469,7 +4469,12 @@ public sealed class HashAggregateOperator :
         {
             FunctionCallExpression func => ScalarFunctionEvaluator.IsAggregateFunction(func.FunctionName)
                 ? EvaluateAggregate(func, group)
-                : ScalarFunctionEvaluator.Evaluate(func, arg => EvalWithAggregates(arg, group), _functions),
+                : ExpressionEvaluator.EnforceDeclaredIntegerRange(
+                    ScalarFunctionEvaluator.Evaluate(
+                        func,
+                        arg => EvalWithAggregates(arg, group),
+                        _functions),
+                    ExpressionEvaluator.ResolveDeclaredType(func, _inputSchema)),
             BinaryExpression bin => EvalBinaryWithAgg(bin, group),
             UnaryExpression un => EvalUnaryWithAgg(un, group),
             CollateExpression collate => EvalWithAggregates(collate.Operand, group),
@@ -4494,6 +4499,9 @@ public sealed class HashAggregateOperator :
 
     private DbValue EvalBinaryWithAgg(BinaryExpression bin, GroupState group)
     {
+        if (bin.Op is BinaryOp.Plus or BinaryOp.Minus or BinaryOp.Multiply or BinaryOp.Divide)
+            ExpressionEvaluator.ValidateArithmeticOperands(bin.Left, bin.Right, _inputSchema);
+
         var left = EvalWithAggregates(bin.Left, group);
         var right = EvalWithAggregates(bin.Right, group);
         SqlTypeDescriptor? comparisonType = ExpressionEvaluator.ResolveComparisonDeclaredType(
@@ -4513,7 +4521,14 @@ public sealed class HashAggregateOperator :
             BinaryOp.And => SqlAnd(left, right),
             BinaryOp.Or => SqlOr(left, right),
             BinaryOp.Plus or BinaryOp.Minus or BinaryOp.Multiply or BinaryOp.Divide =>
-                ExpressionEvaluator.EvaluateArithmetic(bin.Op, left, right),
+                ExpressionEvaluator.EvaluateArithmetic(
+                    bin.Op,
+                    left,
+                    right,
+                    ExpressionEvaluator.ResolveArithmeticDeclaredType(
+                        bin.Left,
+                        bin.Right,
+                        _inputSchema)),
             _ => DbValue.Null,
         };
     }
@@ -4561,12 +4576,17 @@ public sealed class HashAggregateOperator :
 
     private DbValue EvalUnaryWithAgg(UnaryExpression un, GroupState group)
     {
+        if (un.Op == TokenType.Minus)
+            ExpressionEvaluator.ValidateNumericNegationOperand(un.Operand, _inputSchema);
+
         var operand = EvalWithAggregates(un.Operand, group);
         return un.Op switch
         {
             TokenType.Not => operand.IsNull ? DbValue.Null : BoolToDb(!operand.IsTruthy),
             TokenType.Minus when operand.Type is DbType.Integer or DbType.Real or DbType.Decimal =>
-                ExpressionEvaluator.NegateNumeric(operand),
+                ExpressionEvaluator.NegateNumeric(
+                    operand,
+                    ExpressionEvaluator.ResolveNegatedDeclaredType(un.Operand, _inputSchema)),
             _ => DbValue.Null,
         };
     }
@@ -5193,7 +5213,12 @@ public sealed class ScalarAggregateOperator :
         {
             FunctionCallExpression func => ScalarFunctionEvaluator.IsAggregateFunction(func.FunctionName)
                 ? EvaluateAggregate(func)
-                : ScalarFunctionEvaluator.Evaluate(func, arg => EvalWithAggregates(arg, firstRow), _functions),
+                : ExpressionEvaluator.EnforceDeclaredIntegerRange(
+                    ScalarFunctionEvaluator.Evaluate(
+                        func,
+                        arg => EvalWithAggregates(arg, firstRow),
+                        _functions),
+                    ExpressionEvaluator.ResolveDeclaredType(func, _inputSchema)),
             BinaryExpression bin => EvalBinaryWithAgg(bin, firstRow),
             UnaryExpression un => EvalUnaryWithAgg(un, firstRow),
             CollateExpression collate => EvalWithAggregates(collate.Operand, firstRow),
@@ -5218,6 +5243,9 @@ public sealed class ScalarAggregateOperator :
 
     private DbValue EvalBinaryWithAgg(BinaryExpression bin, DbValue[]? firstRow)
     {
+        if (bin.Op is BinaryOp.Plus or BinaryOp.Minus or BinaryOp.Multiply or BinaryOp.Divide)
+            ExpressionEvaluator.ValidateArithmeticOperands(bin.Left, bin.Right, _inputSchema);
+
         var left = EvalWithAggregates(bin.Left, firstRow);
         var right = EvalWithAggregates(bin.Right, firstRow);
         SqlTypeDescriptor? comparisonType = ExpressionEvaluator.ResolveComparisonDeclaredType(
@@ -5237,7 +5265,14 @@ public sealed class ScalarAggregateOperator :
             BinaryOp.And => SqlAnd(left, right),
             BinaryOp.Or => SqlOr(left, right),
             BinaryOp.Plus or BinaryOp.Minus or BinaryOp.Multiply or BinaryOp.Divide =>
-                ExpressionEvaluator.EvaluateArithmetic(bin.Op, left, right),
+                ExpressionEvaluator.EvaluateArithmetic(
+                    bin.Op,
+                    left,
+                    right,
+                    ExpressionEvaluator.ResolveArithmeticDeclaredType(
+                        bin.Left,
+                        bin.Right,
+                        _inputSchema)),
             _ => DbValue.Null,
         };
     }
@@ -5285,12 +5320,17 @@ public sealed class ScalarAggregateOperator :
 
     private DbValue EvalUnaryWithAgg(UnaryExpression un, DbValue[]? firstRow)
     {
+        if (un.Op == TokenType.Minus)
+            ExpressionEvaluator.ValidateNumericNegationOperand(un.Operand, _inputSchema);
+
         var operand = EvalWithAggregates(un.Operand, firstRow);
         return un.Op switch
         {
             TokenType.Not => operand.IsNull ? DbValue.Null : BoolToDb(!operand.IsTruthy),
             TokenType.Minus when operand.Type is DbType.Integer or DbType.Real or DbType.Decimal =>
-                ExpressionEvaluator.NegateNumeric(operand),
+                ExpressionEvaluator.NegateNumeric(
+                    operand,
+                    ExpressionEvaluator.ResolveNegatedDeclaredType(un.Operand, _inputSchema)),
             _ => DbValue.Null,
         };
     }

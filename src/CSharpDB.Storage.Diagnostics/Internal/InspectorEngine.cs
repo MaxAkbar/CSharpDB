@@ -9,6 +9,9 @@ internal static class InspectorEngine
     internal const long TriggerCatalogSentinel = long.MaxValue - 2;
     internal const long TableStatsCatalogSentinel = long.MaxValue - 3;
     internal const long ColumnStatsCatalogSentinel = long.MaxValue - 4;
+    internal const long ColumnDistributionStatsCatalogSentinel = long.MaxValue - 5;
+    internal const long IndexPrefixStatsCatalogSentinel = long.MaxValue - 6;
+    internal const long RowVersionHighWaterCatalogSentinel = long.MaxValue - 7;
     private const int BTreeOverflowReferenceLength = 16;
     private static ReadOnlySpan<byte> BTreeOverflowReferenceMagic => "CSDBBOV1"u8;
 

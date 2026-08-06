@@ -6,7 +6,7 @@ namespace CSharpDB.Migration.SqlServer.Tests;
 public sealed partial class SqlServerCatalogBuilderTests
 {
     private const string GoldenCatalogDigest =
-        "dcb97f317215662a127ac7e3b82c9859ab6780d6e3b278c5371e5b1e9420d305";
+        "fd2ba8bac9b29c7abc530cbbf1d143117915e0b353ee36462c31c6bdbd2f01fc";
     private const string GoldenSourceFingerprint =
         "sha256:9ca68e4d38d4caa4d6feeb034355a7ad75da5af6c7456d9bdefa7270f9a92c21";
 
@@ -108,7 +108,7 @@ public sealed partial class SqlServerCatalogBuilderTests
         Assert.Null(Facet(customer, "collation"));
 
         Assert.Equal("native", Facet(FindColumn(first, "ComputedAmount"), "logicalType"));
-        Assert.Equal("native", Facet(FindColumn(first, "Version"), "logicalType"));
+        Assert.Equal("rowVersion", Facet(FindColumn(first, "Version"), "logicalType"));
         MigrationCatalogObject aliasCode = FindColumn(first, "AliasCode");
         Assert.Equal("native", Facet(aliasCode, "logicalType"));
         Assert.Equal("dbo.CustomerCode", aliasCode.NativeType);

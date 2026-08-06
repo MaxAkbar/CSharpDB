@@ -48,4 +48,18 @@ public sealed class TableArchiveColumn
         Collation = Collation,
         DefaultSql = DefaultSql,
     };
+
+    internal TableArchiveColumn WithDeclaredType(SqlTypeDescriptor declaredType) => new()
+    {
+        SchemaId = SchemaId,
+        Name = Name,
+        Type = Type,
+        DeclaredType = declaredType,
+        Nullable = Nullable,
+        IsPrimaryKey = IsPrimaryKey,
+        IsIdentity = IsIdentity,
+        IsRowVersion = IsRowVersion,
+        Collation = Collation,
+        DefaultSql = DefaultSql,
+    };
 }

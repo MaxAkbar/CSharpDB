@@ -67,6 +67,28 @@ public sealed class CSharpDbDdlPreviewTests
     }
 
     [Fact]
+    public void Build_UsesCanonicalLogicalSqlTypesSelectedByTheMappingPlan()
+    {
+        MigrationCatalog catalog = SqlServerLogicalTypeCatalog();
+        MigrationPlan plan = ReadyPlan(catalog);
+
+        string createTable = Assert.Single(RenderStageActions(
+            plan,
+            catalog,
+            MigrationSchemaStage.LoadEssential));
+
+        Assert.Contains("\"tiny_value\" TINYINT NOT NULL", createTable, StringComparison.Ordinal);
+        Assert.Contains("\"small_value\" SMALLINT NOT NULL", createTable, StringComparison.Ordinal);
+        Assert.Contains("\"int_value\" INTEGER NOT NULL", createTable, StringComparison.Ordinal);
+        Assert.Contains("\"big_value\" BIGINT NOT NULL", createTable, StringComparison.Ordinal);
+        Assert.Contains("\"flag_value\" BOOLEAN NOT NULL", createTable, StringComparison.Ordinal);
+        Assert.Contains("\"legacy_time\" DATETIME2 NOT NULL", createTable, StringComparison.Ordinal);
+        Assert.Contains("\"time_value\" DATETIME2(7) NOT NULL", createTable, StringComparison.Ordinal);
+        Assert.Contains("\"offset_value\" DATETIMEOFFSET(7) NOT NULL", createTable, StringComparison.Ordinal);
+        Assert.Contains("\"row_version\" ROWVERSION NOT NULL", createTable, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Build_IsDeterministicForRepeatedAndReorderedInputs()
     {
         MigrationCatalog catalog = await InspectSyntheticAsync();
@@ -745,6 +767,87 @@ public sealed class CSharpDbDdlPreviewTests
                 $"{stage.Ordinal}:{(int)stage.Stage}:{action.Ordinal}:{(int)action.Kind}:" +
                 (action.Sql ?? action.TargetName)))
             .ToArray();
+
+    private static MigrationCatalog SqlServerLogicalTypeCatalog() => new()
+    {
+        TargetCSharpDbVersion =
+            CSharpDbCapabilityCatalogLoader.CurrentTargetVersion,
+        Source = new MigrationSourceIdentity
+        {
+            Kind = MigrationSourceKind.SqlServer,
+            Identity = "sqlserver:ddl-preview-logical-types",
+            Fingerprint =
+                "80b145ff08b29c5ba98b82eea920f331c65ce07caaf55f819140a299436348dd",
+            ProviderVersion = "fixture-v1",
+            SourceVersion = "fixture-v1",
+            Consistency = new MigrationConsistencyStrategy
+            {
+                Kind = MigrationConsistencyKind.Immutable,
+                Description = "Immutable SQL Server logical-type fixture.",
+            },
+        },
+        Objects =
+        [
+            new MigrationCatalogObject
+            {
+                ObjectId = "sqlserver:table:logical_values",
+                Kind = MigrationObjectKind.Table,
+                SourceName = "logical_values",
+            },
+            SqlServerColumn("tiny_value", "tinyint", "signedInteger"),
+            SqlServerColumn("small_value", "smallint", "signedInteger"),
+            SqlServerColumn("int_value", "int", "signedInteger"),
+            SqlServerColumn("big_value", "bigint", "signedInteger"),
+            SqlServerColumn("flag_value", "bit", "boolean"),
+            SqlServerColumn("legacy_time", "datetime", "dateTime"),
+            SqlServerColumn("time_value", "datetime2", "dateTime", "7"),
+            SqlServerColumn("offset_value", "datetimeoffset", "dateTimeOffset", "7"),
+            SqlServerRowVersionColumn(),
+        ],
+    };
+
+    private static MigrationCatalogObject SqlServerRowVersionColumn() => new()
+    {
+        ObjectId = "sqlserver:column:row_version",
+        Kind = MigrationObjectKind.Column,
+        ParentObjectId = "sqlserver:table:logical_values",
+        SourceName = "row_version",
+        NativeType = "sys.rowversion",
+        Facets =
+        [
+            Facet("logicalType", "rowVersion"),
+            Facet("nullable", "false"),
+            Facet("rowVersion", "true"),
+            Facet("sqlServerSystemTypeName", "rowversion"),
+        ],
+    };
+
+    private static MigrationCatalogObject SqlServerColumn(
+        string name,
+        string systemTypeName,
+        string logicalType,
+        string? scale = null) => new()
+        {
+            ObjectId = $"sqlserver:column:{name}",
+            Kind = MigrationObjectKind.Column,
+            ParentObjectId = "sqlserver:table:logical_values",
+            SourceName = name,
+            NativeType = $"sys.{systemTypeName}",
+            Facets = scale is null
+                ?
+                [
+                    Facet("logicalType", logicalType),
+                    Facet("nullable", "false"),
+                    Facet("sqlServerSystemTypeName", systemTypeName),
+                ]
+                :
+                [
+                    Facet("logicalType", logicalType),
+                    Facet("nullable", "false"),
+                    Facet("sqlServerSystemTypeName", systemTypeName),
+                    Facet("sqlServerScale", scale),
+                ],
+        };
 
     private static MigrationCatalog TargetSqlCheckCatalog(string targetSql) => new()
     {

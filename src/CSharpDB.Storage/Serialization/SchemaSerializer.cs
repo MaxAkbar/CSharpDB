@@ -15,7 +15,7 @@ public static class SchemaSerializer
     private const byte PrimaryKeyFlag = 0x02;
     private const byte IdentityFlag = 0x04;
     private const byte RowVersionFlag = 0x08;
-    private const ulong TableMetadataVersion = 10;
+    private const ulong TableMetadataVersion = 11;
     private const ulong TableMetadataVersionWithCollations = 1;
     private const ulong TableMetadataVersionWithForeignKeys = 2;
     private const ulong TableMetadataVersionWithDefaultsAndChecks = 3;
@@ -26,6 +26,7 @@ public static class SchemaSerializer
     private const ulong TableMetadataVersionWithStableForeignKeyBindings = 8;
     private const ulong TableMetadataVersionWithForeignKeyUpdateActions = 9;
     private const ulong TableMetadataVersionWithDeclaredTypes = 10;
+    private const ulong TableMetadataVersionWithSqlTypeSemantics = 11;
     private const ulong IndexMetadataVersion = 1;
     private const int MaximumSchemaCollectionCount = 65_536;
     private const int MaximumSchemaPayloadBytes = 64 * 1024 * 1024;
@@ -272,7 +273,8 @@ public static class SchemaSerializer
                     TableMetadataVersionWithStableIdentities or
                     TableMetadataVersionWithStableForeignKeyBindings or
                     TableMetadataVersionWithForeignKeyUpdateActions or
-                    TableMetadataVersionWithDeclaredTypes))
+                    TableMetadataVersionWithDeclaredTypes or
+                    TableMetadataVersionWithSqlTypeSemantics))
                 throw new InvalidDataException($"Unsupported table schema metadata version '{metadataVersion}'.");
 
             int metadataColumnCount = ReadCount(data, ref pos, "table metadata column");
@@ -617,7 +619,16 @@ public static class SchemaSerializer
                         throw new InvalidDataException(
                             $"Declared SQL type '{declaredType.ToSql()}' uses physical type '{declaredType.StorageType}', not persisted column type '{columnTypes[i]}'.");
                     }
-                    columnDeclaredTypes[i] = declaredType;
+                    // Metadata version 10 was the preview declared-type format,
+                    // where INTEGER still had the historical signed 64-bit
+                    // semantics. Preserve those databases without narrowing
+                    // existing values when version 11 makes INTEGER logically
+                    // signed 32-bit.
+                    columnDeclaredTypes[i] =
+                        metadataVersion < TableMetadataVersionWithSqlTypeSemantics &&
+                        declaredType?.Kind == SqlTypeKind.Integer
+                            ? SqlTypeDescriptor.Create(SqlTypeKind.BigInt)
+                            : declaredType;
                 }
             }
 

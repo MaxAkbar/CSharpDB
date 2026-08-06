@@ -22,8 +22,8 @@ public sealed class TemporalFractionalPrecisionTests
                     "CREATE TABLE temporal_precision (" +
                     "id INTEGER PRIMARY KEY, " +
                     "clock_value TIME(7), " +
-                    "stamp_value TIMESTAMP(7), " +
-                    "zoned_value TIMESTAMP(7) WITH TIME ZONE, " +
+                    "stamp_value DATETIME2(7), " +
+                    "zoned_value DATETIMEOFFSET(7), " +
                     "duration_value INTERVAL DAY TO SECOND(7))",
                     ct);
                 await database.ExecuteAsync(
@@ -76,8 +76,8 @@ public sealed class TemporalFractionalPrecisionTests
             await using (QueryResult casts = await reopened.ExecuteAsync(
                              "SELECT " +
                              "CAST('12:00:00.0000001' AS TIME(7)), " +
-                             "CAST('2026-08-05 12:00:00.0000001' AS TIMESTAMP(7)), " +
-                             "CAST('2026-08-05 12:00:00.0000001-07:00' AS TIMESTAMP(7) WITH TIME ZONE), " +
+                             "CAST('2026-08-05 12:00:00.0000001' AS DATETIME2(7)), " +
+                             "CAST('2026-08-05 12:00:00.0000001-07:00' AS DATETIMEOFFSET(7)), " +
                              "CAST('-00:00:00.0000001' AS INTERVAL DAY TO SECOND(7))",
                              ct))
             {

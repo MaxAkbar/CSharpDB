@@ -65,6 +65,13 @@ public sealed class SchemaCatalog
 
     public long SchemaVersion => _service.SchemaVersion;
 
+    public ulong RowVersionHighWater => _service.RowVersionHighWater;
+
+    public ValueTask PersistRowVersionHighWaterAsync(
+        ulong rowVersionHighWater,
+        CancellationToken ct = default) =>
+        _service.PersistRowVersionHighWaterAsync(rowVersionHighWater, ct);
+
     internal void MarkLogicalSchemaChanged() => _service.MarkLogicalSchemaChanged();
 
     public TableSchema? GetTable(string tableName) => _service.GetTable(tableName);

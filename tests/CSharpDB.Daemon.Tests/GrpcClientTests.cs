@@ -1576,6 +1576,21 @@ public sealed class GrpcClientTests : IAsyncLifetime
             ColumnNames = ["id", "nullable_value"],
             ColumnTypes = ["INTEGER", "INTEGER"],
             ColumnNullability = [false, true],
+            Columns =
+            [
+                new ColumnDefinition
+                {
+                    Name = "id",
+                    Type = CSharpDB.Client.Models.DbType.Integer,
+                    DeclaredType = new SqlTypeDescriptor { Kind = SqlTypeKind.Integer },
+                    Nullable = false,
+                },
+                new ColumnDefinition
+                {
+                    Name = "nullable_value",
+                    Type = CSharpDB.Client.Models.DbType.Integer,
+                },
+            ],
             Rows = [[1L, null]],
         };
 
@@ -1588,6 +1603,11 @@ public sealed class GrpcClientTests : IAsyncLifetime
         Assert.Equal(
             result.ColumnNullability,
             roundTrip.ColumnNullability);
+        Assert.Equal(2, message.Columns.Count);
+        Assert.Equal(SqlTypeKindEnum.SqlTypeKindInteger, message.Columns[0].DeclaredType.Kind);
+        Assert.Null(message.Columns[1].DeclaredType);
+        Assert.Equal(SqlTypeKind.Integer, roundTrip.Columns![0].DeclaredType!.Kind);
+        Assert.Null(roundTrip.Columns[1].DeclaredType);
     }
 
     [Fact]

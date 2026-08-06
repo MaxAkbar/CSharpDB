@@ -255,6 +255,9 @@ public sealed class MigrationOutcomeBatchReplayerTests
                 },
                 cancellationToken);
 
+            Assert.True(
+                validated.Report.Outcome == MigrationValidationStatus.Passed,
+                MigrationValidationTextFormatter.Format(validated.Report));
             receipt = await target.ReadActivationReceiptAsync(cancellationToken) ??
                 throw new Xunit.Sdk.XunitException("Expected a persisted activation receipt.");
         }

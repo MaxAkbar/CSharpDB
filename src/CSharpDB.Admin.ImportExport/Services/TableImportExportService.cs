@@ -1061,7 +1061,7 @@ public sealed class TableImportExportService(
                 "target_name" TEXT NOT NULL,
                 "archive_token" TEXT NOT NULL,
                 "owner_token" TEXT NOT NULL,
-                "heartbeat_unix_ms" INTEGER NOT NULL,
+                "heartbeat_unix_ms" BIGINT NOT NULL,
                 CONSTRAINT {QuoteIdentifier(RestoreJournalContractConstraintName)}
                     CHECK ({RestoreContractCheckExpression})
             );
@@ -1077,7 +1077,7 @@ public sealed class TableImportExportService(
             new("target_name", ClientSqlTypeKind.Text, false, false),
             new("archive_token", ClientSqlTypeKind.Text, false, false),
             new("owner_token", ClientSqlTypeKind.Text, false, false),
-            new("heartbeat_unix_ms", ClientSqlTypeKind.Integer, false, false),
+            new("heartbeat_unix_ms", ClientSqlTypeKind.BigInt, false, false),
         ];
         string[] actualColumns = schema.Columns.Select(ActualColumnSignature).ToArray();
         string expectedContractMarker = CheckSignature(
@@ -1118,7 +1118,7 @@ public sealed class TableImportExportService(
                 "target_name" TEXT NOT NULL,
                 "archive_token" TEXT NOT NULL,
                 "receipt_token" TEXT NOT NULL,
-                "completed_unix_ms" INTEGER NOT NULL,
+                "completed_unix_ms" BIGINT NOT NULL,
                 CONSTRAINT {QuoteIdentifier(RestoreReceiptContractConstraintName)}
                     CHECK ({RestoreContractCheckExpression})
             );
@@ -1133,7 +1133,7 @@ public sealed class TableImportExportService(
             new("target_name", ClientSqlTypeKind.Text, false, false),
             new("archive_token", ClientSqlTypeKind.Text, false, false),
             new("receipt_token", ClientSqlTypeKind.Text, false, false),
-            new("completed_unix_ms", ClientSqlTypeKind.Integer, false, false),
+            new("completed_unix_ms", ClientSqlTypeKind.BigInt, false, false),
         ];
         string[] actualColumns = schema.Columns.Select(ActualColumnSignature).ToArray();
         string expectedContractMarker = CheckSignature(
@@ -1907,7 +1907,7 @@ public sealed class TableImportExportService(
 
     private static string LegacyStorageTypeSql(PrimitiveDbType type) => type switch
     {
-        PrimitiveDbType.Integer => "INTEGER",
+        PrimitiveDbType.Integer => "BIGINT",
         PrimitiveDbType.Real => "REAL",
         PrimitiveDbType.Text => "TEXT",
         PrimitiveDbType.Blob => "BLOB",
@@ -1918,7 +1918,7 @@ public sealed class TableImportExportService(
 
     private static string LegacyStorageTypeSql(ClientDbType type) => type switch
     {
-        ClientDbType.Integer => "INTEGER",
+        ClientDbType.Integer => "BIGINT",
         ClientDbType.Real => "REAL",
         ClientDbType.Text => "TEXT",
         ClientDbType.Blob => "BLOB",
@@ -1965,13 +1965,15 @@ public sealed class TableImportExportService(
             // two physical types with their un-faceted canonical declarations.
             return (actualColumn.Type, expectedType) is
                 (ClientDbType.Text, ClientSqlTypeKind.Text) or
-                (ClientDbType.Integer, ClientSqlTypeKind.Integer);
+                (ClientDbType.Integer, ClientSqlTypeKind.Integer) or
+                (ClientDbType.Integer, ClientSqlTypeKind.BigInt);
         }
 
         ClientDbType expectedStorageType = expectedType switch
         {
             ClientSqlTypeKind.Text => ClientDbType.Text,
             ClientSqlTypeKind.Integer => ClientDbType.Integer,
+            ClientSqlTypeKind.BigInt => ClientDbType.Integer,
             _ => throw new InvalidOperationException(
                 $"Unsupported archive restore contract type '{expectedType}'."),
         };

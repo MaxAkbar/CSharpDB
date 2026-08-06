@@ -194,7 +194,7 @@ public class CommandTests : IAsyncLifetime
 
         cmd.Parameters.Clear();
         cmd.CommandText = "SELECT age FROM t WHERE id = 2;";
-        Assert.Equal(31L, await cmd.ExecuteScalarAsync(Ct));
+        Assert.Equal(31, await cmd.ExecuteScalarAsync(Ct));
     }
 
     [Fact]
@@ -272,7 +272,7 @@ public class CommandTests : IAsyncLifetime
 
         cmd.Parameters.Clear();
         cmd.CommandText = "SELECT val FROM t WHERE id = 1;";
-        Assert.Equal(10L, await cmd.ExecuteScalarAsync(Ct));
+        Assert.Equal(10, await cmd.ExecuteScalarAsync(Ct));
     }
 
     [Fact]
@@ -429,7 +429,7 @@ public class CommandTests : IAsyncLifetime
         cmd.Parameters.AddWithValue("@lim", 1);
 
         cmd.Prepare(); // unsupported LIMIT parameterized template should gracefully fallback
-        Assert.Equal(1L, await cmd.ExecuteScalarAsync(Ct));
+        Assert.Equal(1, await cmd.ExecuteScalarAsync(Ct));
     }
 
     [Fact]

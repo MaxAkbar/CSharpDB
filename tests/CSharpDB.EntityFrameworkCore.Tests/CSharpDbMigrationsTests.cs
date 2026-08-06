@@ -199,7 +199,7 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
                 Name = "Version",
                 Table = createTable.Name,
                 ClrType = typeof(byte[]),
-                ColumnType = "BLOB",
+                ColumnType = "ROWVERSION",
                 IsNullable = false,
                 IsRowVersion = true,
             });
@@ -219,7 +219,7 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
                 .CommandText;
 
         Assert.Contains(
-            "\"Version\" BLOB ROWVERSION NOT NULL",
+            "\"Version\" ROWVERSION NOT NULL",
             createSql,
             StringComparison.Ordinal);
 

@@ -1616,11 +1616,13 @@ public sealed class Parser
     private ColumnDef ParseColumnDef()
     {
         string name = ExpectIdentifier();
-        SqlTypeDescriptor declaredType = ParseSqlTypeDescriptor();
+        SqlTypeDescriptor declaredType = ParseSqlTypeDescriptor(
+            allowRowVersionDeclaration: true,
+            out bool isRowVersionTypeDeclaration);
 
         bool isPK = false;
         bool isIdentity = false;
-        bool isRowVersion = false;
+        bool isRowVersion = isRowVersionTypeDeclaration;
         bool isNullable = true;
         string? collation = null;
         ForeignKeyClause? foreignKey = null;
@@ -1660,6 +1662,12 @@ public sealed class Parser
                 if (!isNullable)
                     throw Error($"NOT NULL specified multiple times for column '{name}'.");
                 isNullable = false;
+            }
+            else if (Peek().Type == TokenType.Null && isRowVersionTypeDeclaration)
+            {
+                Advance();
+                throw Error(
+                    $"ROWVERSION column '{name}' is generated and cannot be declared NULL.");
             }
             else if (Peek().Type == TokenType.Collate)
             {
@@ -1706,7 +1714,10 @@ public sealed class Parser
             IsPrimaryKey = isPK,
             IsIdentity = isIdentity,
             IsRowVersion = isRowVersion,
-            IsNullable = isNullable,
+            // ROWVERSION/TIMESTAMP declarations are generated and non-nullable
+            // even when NOT NULL is omitted. The legacy BLOB ROWVERSION form
+            // continues to require its explicit NOT NULL modifier.
+            IsNullable = isRowVersionTypeDeclaration ? false : isNullable,
             Collation = collation,
             ForeignKey = foreignKey,
             DefaultExpression = defaultExpression,
@@ -1719,8 +1730,14 @@ public sealed class Parser
     /// the tokenizer. Type names are contextual, so they remain usable as
     /// ordinary identifiers everywhere else in the grammar.
     /// </summary>
-    private SqlTypeDescriptor ParseSqlTypeDescriptor()
+    private SqlTypeDescriptor ParseSqlTypeDescriptor() =>
+        ParseSqlTypeDescriptor(allowRowVersionDeclaration: false, out _);
+
+    private SqlTypeDescriptor ParseSqlTypeDescriptor(
+        bool allowRowVersionDeclaration,
+        out bool isRowVersionDeclaration)
     {
+        isRowVersionDeclaration = false;
         Token nameToken = Peek();
         if (!IsUnquotedWord(nameToken))
             throw Error($"Expected type name, got '{nameToken.Value}'.");
@@ -1828,16 +1845,45 @@ public sealed class Parser
                 }
                 else
                 {
-                    kind = SqlTypeKind.Timestamp;
+                    if (fractionalSecondsPrecision.HasValue)
+                    {
+                        throw Error(
+                            "TIMESTAMP(p) is a rowversion spelling and cannot specify temporal precision; " +
+                            "use DATETIME2(p) for date-and-time values.");
+                    }
+
+                    if (!allowRowVersionDeclaration)
+                    {
+                        throw Error(
+                            "TIMESTAMP and ROWVERSION are generated column types and cannot be used here; " +
+                            "use DATETIME2 for date-and-time values.");
+                    }
+
+                    kind = SqlTypeKind.Blob;
+                    isRowVersionDeclaration = true;
                 }
                 break;
             case "DATETIME":
+                kind = SqlTypeKind.Timestamp;
+                break;
+            case "DATETIME2":
                 kind = SqlTypeKind.Timestamp;
                 fractionalSecondsPrecision = ParseOptionalFractionalSecondsPrecision();
                 break;
             case "DATETIMEOFFSET":
                 kind = SqlTypeKind.TimestampWithTimeZone;
                 fractionalSecondsPrecision = ParseOptionalFractionalSecondsPrecision();
+                break;
+            case "ROWVERSION":
+                if (!allowRowVersionDeclaration)
+                {
+                    throw Error(
+                        "TIMESTAMP and ROWVERSION are generated column types and cannot be used here; " +
+                        "use DATETIME2 for date-and-time values.");
+                }
+
+                kind = SqlTypeKind.Blob;
+                isRowVersionDeclaration = true;
                 break;
             case "INTERVAL":
                 if (TryConsumeTypeWord("YEAR"))
@@ -1865,10 +1911,22 @@ public sealed class Parser
                 kind = SqlTypeKind.Xml;
                 break;
             case "BIT":
-                kind = TryConsumeTypeWord("VARYING")
-                    ? SqlTypeKind.VarBit
-                    : SqlTypeKind.Bit;
-                length = ParseOptionalLengthFacet();
+                if (TryConsumeTypeWord("VARYING"))
+                {
+                    kind = SqlTypeKind.VarBit;
+                    length = ParseOptionalLengthFacet();
+                }
+                else if (Peek().Type == TokenType.LeftParen)
+                {
+                    kind = SqlTypeKind.Bit;
+                    length = ParseOptionalLengthFacet();
+                }
+                else
+                {
+                    // SQL Server-style bare BIT is a logical Boolean. A fixed
+                    // bit string always carries an explicit BIT(n) facet.
+                    kind = SqlTypeKind.Boolean;
+                }
                 break;
             case "VARBIT":
                 kind = SqlTypeKind.VarBit;

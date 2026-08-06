@@ -24,6 +24,7 @@ internal static class SqlServerTypeSemantics
             "time" => "time",
             "datetime" or "datetime2" or "smalldatetime" => "dateTime",
             "datetimeoffset" => "dateTimeOffset",
+            "timestamp" or "rowversion" => "rowVersion",
             "json" => "json",
             _ => "native",
         };

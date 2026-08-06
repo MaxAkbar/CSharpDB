@@ -260,7 +260,9 @@ public sealed class DbSchemaProvider(ICSharpDbClient dbClient) : ISchemaProvider
             ToDisplayName(column.Name),
             Metadata: new Dictionary<string, object?>
             {
-                ["dbType"] = column.EffectiveType.ToSql(),
+                ["dbType"] = column.IsRowVersion
+                    ? "ROWVERSION"
+                    : column.EffectiveType.ToSql(),
                 ["storageType"] = column.Type.ToString(),
                 ["isPrimaryKey"] = column.IsPrimaryKey,
                 ["isIdentity"] = column.IsIdentity,
@@ -350,14 +352,23 @@ public sealed class DbSchemaProvider(ICSharpDbClient dbClient) : ISchemaProvider
         _ => FieldDataType.String,
     };
 
-    private static string GetSchemaTypeIdentity(ColumnDefinition column) =>
-        column.DeclaredType?.Kind is
+    private static string GetSchemaTypeIdentity(ColumnDefinition column)
+    {
+        if (column.IsRowVersion)
+            return "ROWVERSION";
+
+        // Keep the pre-descriptor identity for the original primitive SQL
+        // spellings so saved form definitions do not drift merely because
+        // richer type metadata is now available. New logical kinds such as
+        // BIGINT and BOOLEAN retain their distinct canonical identities.
+        return column.DeclaredType?.Kind is
             CSharpDB.Client.Models.SqlTypeKind.Integer or
             CSharpDB.Client.Models.SqlTypeKind.Real or
             CSharpDB.Client.Models.SqlTypeKind.Text or
             CSharpDB.Client.Models.SqlTypeKind.Blob
                 ? column.Type.ToString()
                 : column.DeclaredType?.ToSql() ?? column.Type.ToString();
+    }
 
     private static string ToDisplayName(string value)
     {

@@ -42,12 +42,12 @@
                 <p class="lead">The foundational types that power CSharpDB's type system and schema definitions.</p>
 
                 <h2>DbType</h2>
-                <p>CSharpDB supports five fundamental data types, inspired by SQLite's type affinity system:</p>
+                <p>CSharpDB uses compact physical value carriers beneath its richer declared SQL types:</p>
                 <table class="doc-table">
                     <thead><tr><th>Type</th><th>C# Mapping</th><th>Description</th></tr></thead>
                     <tbody>
                         <tr><td><code>Null</code></td><td><code>null</code></td><td>Absence of value</td></tr>
-                        <tr><td><code>Integer</code></td><td><code>long</code></td><td>64-bit signed integer</td></tr>
+                        <tr><td><code>Integer</code></td><td><code>long</code></td><td>Shared 64-bit carrier for logical <code>BOOLEAN</code>, 32-bit <code>INTEGER</code>, and <code>BIGINT</code></td></tr>
                         <tr><td><code>Real</code></td><td><code>double</code></td><td>64-bit IEEE floating point</td></tr>
                         <tr><td><code>Text</code></td><td><code>string</code></td><td>UTF-8 encoded text</td></tr>
                         <tr><td><code>Blob</code></td><td><code>byte[]</code></td><td>Raw binary data</td></tr>

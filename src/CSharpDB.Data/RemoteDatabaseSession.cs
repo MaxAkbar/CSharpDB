@@ -10,6 +10,8 @@ using CoreDbType = CSharpDB.Primitives.DbType;
 using CoreForeignKeyDefinition = CSharpDB.Primitives.ForeignKeyDefinition;
 using CoreForeignKeyOnDeleteAction = CSharpDB.Primitives.ForeignKeyOnDeleteAction;
 using CoreIndexSchema = CSharpDB.Primitives.IndexSchema;
+using CoreSqlTypeDescriptor = CSharpDB.Primitives.SqlTypeDescriptor;
+using CoreSqlTypeKind = CSharpDB.Primitives.SqlTypeKind;
 using CoreTableSchema = CSharpDB.Primitives.TableSchema;
 using CoreTriggerEvent = CSharpDB.Primitives.TriggerEvent;
 using CoreTriggerSchema = CSharpDB.Primitives.TriggerSchema;
@@ -127,7 +129,8 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
             result.ColumnNames ?? [],
             result.ColumnTypes,
             result.ColumnNullability,
-            sourceRows);
+            sourceRows,
+            result.Columns);
         return QueryResult.FromMaterializedRows(schema, rows);
     }
 
@@ -292,19 +295,37 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
         IReadOnlyList<string> columnNames,
         IReadOnlyList<string>? columnTypes,
         IReadOnlyList<bool>? columnNullability,
-        IReadOnlyList<object?[]> rows)
+        IReadOnlyList<object?[]> rows,
+        IReadOnlyList<CSharpDB.Client.Models.ColumnDefinition>? columns)
     {
+        if (columns is not null && columns.Count == columnNames.Count)
+            return columns.Select(MapColumnDefinition).ToArray();
+
         var schema = new CoreColumnDefinition[columnNames.Count];
         for (int i = 0; i < columnNames.Count; i++)
         {
+            CoreDbType storageType = ResolveColumnType(columnTypes, rows, i);
+            CoreSqlTypeDescriptor? declaredType = null;
+            bool isRowVersion = false;
+            if (columnTypes is not null && i < columnTypes.Count)
+            {
+                TryResolveLogicalColumnType(
+                    columnTypes[i],
+                    ref storageType,
+                    out declaredType,
+                    out isRowVersion);
+            }
+
             schema[i] = new CoreColumnDefinition
             {
                 Name = columnNames[i],
-                Type = ResolveColumnType(columnTypes, rows, i),
+                Type = storageType,
+                DeclaredType = declaredType,
                 Nullable = columnNullability is not null &&
                            i < columnNullability.Count
                     ? columnNullability[i]
                     : true,
+                IsRowVersion = isRowVersion,
             };
         }
 
@@ -327,6 +348,48 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
         }
 
         return InferColumnType(rows, ordinal);
+    }
+
+    private static void TryResolveLogicalColumnType(
+        string reportedType,
+        ref CoreDbType storageType,
+        out CoreSqlTypeDescriptor? declaredType,
+        out bool isRowVersion)
+    {
+        declaredType = null;
+        isRowVersion = false;
+
+        if (string.Equals(reportedType, "NULL", StringComparison.OrdinalIgnoreCase))
+        {
+            storageType = CoreDbType.Null;
+            return;
+        }
+
+        if (string.Equals(reportedType, "ROWVERSION", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(reportedType, "TIMESTAMP", StringComparison.OrdinalIgnoreCase))
+        {
+            storageType = CoreDbType.Blob;
+            declaredType = CoreSqlTypeDescriptor.Create(CoreSqlTypeKind.Blob);
+            isRowVersion = true;
+            return;
+        }
+
+        try
+        {
+            if (Parser.Parse($"SELECT CAST(NULL AS {reportedType})") is SelectStatement
+                {
+                    Columns: [{ Expression: CastExpression cast }],
+                })
+            {
+                declaredType = cast.TargetType;
+                storageType = declaredType.StorageType;
+            }
+        }
+        catch (CSharpDbException)
+        {
+            // Older servers can return provider-specific labels. Retain the
+            // physical/inferred fallback when a label is not valid CSharpDB SQL.
+        }
     }
 
     private static CoreDbType InferColumnType(IReadOnlyList<object?[]> rows, int ordinal)

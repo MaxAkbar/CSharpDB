@@ -26,8 +26,8 @@ public sealed class SqlDataTypeIntegrationTests
                     "single_value REAL, double_value DOUBLE PRECISION, " +
                     "amount DECIMAL(18,4), fixed_text CHAR(4), varying_text VARCHAR(5), note TEXT, " +
                     "fixed_bytes BINARY(4), varying_bytes VARBINARY(4), raw_bytes BLOB, uid UUID, " +
-                    "day_value DATE, clock_value TIME(3), stamp_value TIMESTAMP(3), " +
-                    "zoned_value TIMESTAMP(3) WITH TIME ZONE, " +
+                    "day_value DATE, clock_value TIME(3), stamp_value DATETIME2(3), " +
+                    "zoned_value DATETIMEOFFSET(3), " +
                     "year_month INTERVAL YEAR TO MONTH, day_second INTERVAL DAY TO SECOND, " +
                     "document JSON, markup XML, fixed_bits BIT(4), varying_bits BIT VARYING(8))",
                     ct);
@@ -83,7 +83,7 @@ public sealed class SqlDataTypeIntegrationTests
             Assert.Equal(new byte[] { 0xA0 }, row[24].AsBlob);
 
             await using QueryResult zonedCast = await reopened.ExecuteAsync(
-                "SELECT CAST('2026-08-05 12:34:56.123-07:00' AS TIMESTAMP(3) WITH TIME ZONE)",
+                "SELECT CAST('2026-08-05 12:34:56.123-07:00' AS DATETIMEOFFSET(3))",
                 ct);
             Assert.Equal(
                 row[18].AsText,
@@ -116,7 +116,7 @@ public sealed class SqlDataTypeIntegrationTests
                 .Select(static value => value[0].AsText)
                 .ToArray();
             Assert.Contains("DECIMAL(18,4)", declaredTypes);
-            Assert.Contains("TIMESTAMP(3) WITH TIME ZONE", declaredTypes);
+            Assert.Contains("DATETIMEOFFSET(3)", declaredTypes);
             Assert.Contains("BIT VARYING(8)", declaredTypes);
         }
         finally
@@ -181,7 +181,7 @@ public sealed class SqlDataTypeIntegrationTests
         await database.ExecuteAsync(
             "CREATE TABLE cast_sources (" +
             "flag BOOLEAN, uid UUID, day_value DATE, " +
-            "stamp_value TIMESTAMP(7), zoned_value TIMESTAMP(7) WITH TIME ZONE)",
+            "stamp_value DATETIME2(7), zoned_value DATETIMEOFFSET(7))",
             ct);
         await database.ExecuteAsync(
             "INSERT INTO cast_sources VALUES (" +
@@ -192,10 +192,10 @@ public sealed class SqlDataTypeIntegrationTests
 
         await using QueryResult result = await database.ExecuteAsync(
             "SELECT CAST(flag AS TEXT), CAST(uid AS TEXT), " +
-            "CAST(day_value AS TIMESTAMP(7)), " +
+            "CAST(day_value AS DATETIME2(7)), " +
             "CAST(stamp_value AS DATE), CAST(stamp_value AS TIME(7)), " +
-            "CAST(stamp_value AS TIMESTAMP(7) WITH TIME ZONE), " +
-            "CAST(zoned_value AS TIMESTAMP(7)), " +
+            "CAST(stamp_value AS DATETIMEOFFSET(7)), " +
+            "CAST(zoned_value AS DATETIME2(7)), " +
             "CAST(zoned_value AS DATE), CAST(zoned_value AS TIME(7)) " +
             "FROM cast_sources",
             ct);
@@ -307,7 +307,7 @@ public sealed class SqlDataTypeIntegrationTests
         await database.ExecuteAsync(
             "CREATE TABLE cte_types (" +
             "id INTEGER PRIMARY KEY, amount DECIMAL(18,4), uid UUID, " +
-            "zoned TIMESTAMP(3) WITH TIME ZONE)",
+            "zoned DATETIMEOFFSET(3))",
             ct);
         await database.ExecuteAsync(
             "INSERT INTO cte_types VALUES (" +

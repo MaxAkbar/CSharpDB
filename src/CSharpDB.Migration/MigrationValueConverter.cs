@@ -51,6 +51,7 @@ public static class MigrationValueConverter
         DbValue result = mapping.Conversion is null
             ? ConvertExact(source, targetType, column, rowOrdinal)
             : ConvertVersioned(source, mapping.Conversion, column, rowOrdinal);
+        result = ApplyTargetSqlTypeSemantics(result, mapping, column, rowOrdinal);
 
         if (result.Type != targetType)
         {
@@ -65,6 +66,46 @@ public static class MigrationValueConverter
 
         ValidateTargetFacets(result, column, rowOrdinal);
         return result;
+    }
+
+    private static DbValue ApplyTargetSqlTypeSemantics(
+        DbValue value,
+        MigrationTypeMapping mapping,
+        MigrationCatalogObject column,
+        long rowOrdinal)
+    {
+        if (value.Type != DbType.Text ||
+            !IsTargetSqlType(mapping.TargetSqlType, "DATETIMEOFFSET"))
+        {
+            return value;
+        }
+
+        try
+        {
+            DateTimeOffset instant = CSharpDbTextCodec
+                .ParseDateTimeOffset(value.AsText)
+                .ToUniversalTime();
+            return DbValue.FromText(CSharpDbTextCodec.FormatDateTimeOffset(instant));
+        }
+        catch (Exception error) when (error is FormatException or ArgumentException)
+        {
+            throw Error(
+                "MIG-APPLY-TEXT-CODEC-001",
+                column,
+                rowOrdinal,
+                "Logical text does not match the planned DATETIMEOFFSET target type.");
+        }
+    }
+
+    private static bool IsTargetSqlType(string? value, string typeName)
+    {
+        if (value is null)
+            return false;
+        string normalized = value.Trim();
+        return string.Equals(normalized, typeName, StringComparison.OrdinalIgnoreCase) ||
+            (normalized.StartsWith(typeName, StringComparison.OrdinalIgnoreCase) &&
+             normalized.Length > typeName.Length &&
+             normalized[typeName.Length] == '(');
     }
 
     public static int GetCanonicalByteCount(DbValue value) => value.Type switch

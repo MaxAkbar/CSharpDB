@@ -114,7 +114,10 @@ public sealed class CSharpDbDataReader : DbDataReader
     public override string GetDataTypeName(int ordinal)
     {
         ColumnDefinition column = _schema[ordinal];
-        return column.DeclaredType is null
+        if (column.IsRowVersion)
+            return "ROWVERSION";
+
+        return column.Type == CoreDbType.Null && column.DeclaredType is null
             ? TypeMapper.ToDataTypeName(column.Type)
             : TypeMapper.ToDataTypeName(column.EffectiveType);
     }
@@ -277,29 +280,37 @@ public sealed class CSharpDbDataReader : DbDataReader
         table.Columns.Add("IsKey", typeof(bool));
         table.Columns.Add("IsIdentity", typeof(bool));
         table.Columns.Add("IsAutoIncrement", typeof(bool));
+        table.Columns.Add("IsReadOnly", typeof(bool));
         table.Columns.Add("CollationName", typeof(string));
         table.Columns.Add("IsRowVersion", typeof(bool));
 
         for (int i = 0; i < _schema.Length; i++)
         {
             ColumnDefinition column = _schema[i];
+            bool hasEffectiveType =
+                column.DeclaredType is not null || column.Type != CoreDbType.Null;
             table.Rows.Add(
                 column.Name,
                 i,
                 GetColumnSize(column),
                 GetNumericPrecision(column),
                 GetNumericScale(column),
-                column.DeclaredType is null
-                    ? TypeMapper.ToClrType(column.Type)
-                    : TypeMapper.ToClrType(column.EffectiveType),
-                (int)column.Type,
-                column.DeclaredType is null
-                    ? TypeMapper.ToDataTypeName(column.Type)
-                    : TypeMapper.ToDataTypeName(column.EffectiveType),
+                hasEffectiveType
+                    ? TypeMapper.ToClrType(column.EffectiveType)
+                    : TypeMapper.ToClrType(column.Type),
+                hasEffectiveType
+                    ? (int)TypeMapper.ToSystemDbType(column.EffectiveType)
+                    : (int)TypeMapper.ToSystemDbType(column.Type),
+                column.IsRowVersion
+                    ? "ROWVERSION"
+                    : hasEffectiveType
+                        ? TypeMapper.ToDataTypeName(column.EffectiveType)
+                        : TypeMapper.ToDataTypeName(column.Type),
                 column.Nullable,
                 column.IsPrimaryKey,
                 column.IsIdentity,
                 column.IsIdentity,
+                column.IsRowVersion,
                 column.Collation is null ? DBNull.Value : column.Collation,
                 column.IsRowVersion);
         }
@@ -309,6 +320,9 @@ public sealed class CSharpDbDataReader : DbDataReader
 
     private static object GetColumnSize(ColumnDefinition column)
     {
+        if (column.IsRowVersion)
+            return sizeof(ulong);
+
         if (column.DeclaredType is null)
         {
             return column.Type switch
@@ -324,7 +338,7 @@ public sealed class CSharpDbDataReader : DbDataReader
         {
             SqlTypeKind.Boolean or SqlTypeKind.TinyInt => 1,
             SqlTypeKind.SmallInt => 2,
-            SqlTypeKind.Integer or
+            SqlTypeKind.Integer => 4,
             SqlTypeKind.BigInt or
             SqlTypeKind.Real or
             SqlTypeKind.Double => 8,
@@ -359,7 +373,7 @@ public sealed class CSharpDbDataReader : DbDataReader
             SqlTypeKind.Boolean => (short)1,
             SqlTypeKind.TinyInt => (short)3,
             SqlTypeKind.SmallInt => (short)5,
-            SqlTypeKind.Integer => (short)19,
+            SqlTypeKind.Integer => (short)10,
             SqlTypeKind.BigInt => (short)19,
             SqlTypeKind.Real => (short)15,
             SqlTypeKind.Double => (short)15,

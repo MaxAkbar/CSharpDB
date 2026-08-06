@@ -118,10 +118,17 @@ internal static class ExpressionCompiler
         bool singleRowOnly,
         DbFunctionRegistry? functions)
     {
+        if (bin.Op is BinaryOp.Plus or BinaryOp.Minus or BinaryOp.Multiply or BinaryOp.Divide)
+            ExpressionEvaluator.ValidateArithmeticOperands(bin.Left, bin.Right, schema);
+
         var left = CompileMappedCore(bin.Left, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions);
         var right = CompileMappedCore(bin.Right, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions);
         string? collation = CollationSupport.ResolveComparisonCollation(bin.Left, bin.Right, schema);
         SqlTypeDescriptor? comparisonType = ExpressionEvaluator.ResolveComparisonDeclaredType(bin.Left, bin.Right, schema);
+        SqlTypeDescriptor? arithmeticType =
+            bin.Op is BinaryOp.Plus or BinaryOp.Minus or BinaryOp.Multiply or BinaryOp.Divide
+                ? ExpressionEvaluator.ResolveArithmeticDeclaredType(bin.Left, bin.Right, schema)
+                : null;
 
         return (leftRow, rightRow) =>
         {
@@ -151,7 +158,7 @@ internal static class ExpressionCompiler
                 BinaryOp.And => SqlAnd(leftValue, rightValue),
                 BinaryOp.Or => SqlOr(leftValue, rightValue),
                 BinaryOp.Plus or BinaryOp.Minus or BinaryOp.Multiply or BinaryOp.Divide =>
-                    ExpressionEvaluator.EvaluateArithmetic(bin.Op, leftValue, rightValue),
+                    ExpressionEvaluator.EvaluateArithmetic(bin.Op, leftValue, rightValue, arithmeticType),
                 _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unknown binary op: {bin.Op}"),
             };
         };
@@ -166,7 +173,13 @@ internal static class ExpressionCompiler
         bool singleRowOnly,
         DbFunctionRegistry? functions)
     {
+        if (un.Op == TokenType.Minus)
+            ExpressionEvaluator.ValidateNumericNegationOperand(un.Operand, schema);
+
         var operand = CompileMappedCore(un.Operand, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions);
+        SqlTypeDescriptor? resultType = un.Op == TokenType.Minus
+            ? ExpressionEvaluator.ResolveNegatedDeclaredType(un.Operand, schema)
+            : null;
 
         return (leftRow, rightRow) =>
         {
@@ -176,7 +189,7 @@ internal static class ExpressionCompiler
                 TokenType.Not => operandValue.IsNull
                     ? DbValue.Null
                     : BoolToDb(!operandValue.IsTruthy),
-                TokenType.Minus => ExpressionEvaluator.NegateNumeric(operandValue),
+                TokenType.Minus => ExpressionEvaluator.NegateNumeric(operandValue, resultType),
                 _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unknown unary op: {un.Op}"),
             };
         };
@@ -272,6 +285,7 @@ internal static class ExpressionCompiler
         var argumentEvaluators = new JoinSpanExpressionEvaluator[func.Arguments.Count];
         for (int i = 0; i < argumentEvaluators.Length; i++)
             argumentEvaluators[i] = CompileMappedCore(func.Arguments[i], schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions);
+        SqlTypeDescriptor? resultType = ExpressionEvaluator.ResolveDeclaredType(func, schema);
 
         return (leftRow, rightRow) =>
         {
@@ -279,7 +293,9 @@ internal static class ExpressionCompiler
             for (int i = 0; i < argumentEvaluators.Length; i++)
                 arguments[i] = argumentEvaluators[i](leftRow, rightRow);
 
-            return ScalarFunctionEvaluator.Evaluate(func, arguments, functions);
+            return ExpressionEvaluator.EnforceDeclaredIntegerRange(
+                ScalarFunctionEvaluator.Evaluate(func, arguments, functions),
+                resultType);
         };
     }
 

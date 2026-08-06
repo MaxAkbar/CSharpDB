@@ -324,8 +324,8 @@ public sealed class EngineTransportClientTests
                 CREATE TABLE direct_temporal_rows (
                     business_date DATE PRIMARY KEY,
                     clock TIME(7) NOT NULL,
-                    wall_time TIMESTAMP(7) NOT NULL,
-                    zoned_time TIMESTAMP(7) WITH TIME ZONE NOT NULL,
+                    wall_time DATETIME2(7) NOT NULL,
+                    zoned_time DATETIMEOFFSET(7) NOT NULL,
                     correlation_id UUID NOT NULL
                 );
                 CREATE TABLE direct_uuid_rows (
@@ -491,8 +491,8 @@ public sealed class EngineTransportClientTests
                 CREATE TABLE direct_parameter_rows (
                     business_date DATE PRIMARY KEY,
                     clock TIME(7) NOT NULL,
-                    wall_time TIMESTAMP(7) NOT NULL,
-                    zoned_time TIMESTAMP(7) WITH TIME ZONE NOT NULL,
+                    wall_time DATETIME2(7) NOT NULL,
+                    zoned_time DATETIMEOFFSET(7) NOT NULL,
                     correlation_id UUID NOT NULL
                 );
                 """,

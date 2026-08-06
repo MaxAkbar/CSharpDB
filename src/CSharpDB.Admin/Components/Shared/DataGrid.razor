@@ -660,9 +660,31 @@
 
         if (ColumnTypes is not null && colIdx < ColumnTypes.Length)
         {
-            var type = ColumnTypes[colIdx];
-            if (type == "INTEGER" && long.TryParse(text, out var l)) return l;
-            if (type == "REAL" && double.TryParse(text, out var d)) return d;
+            string type = ColumnTypes[colIdx];
+            if (IsBooleanColumnType(type) &&
+                TryParseBooleanValue(text, out bool booleanValue))
+            {
+                return booleanValue;
+            }
+            if (IsIntegralColumnType(type) &&
+                long.TryParse(
+                    text,
+                    System.Globalization.NumberStyles.Integer,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out long integerValue))
+            {
+                return integerValue;
+            }
+            if (IsRealColumnType(type) &&
+                double.TryParse(
+                    text,
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out double realValue) &&
+                double.IsFinite(realValue))
+            {
+                return realValue;
+            }
         }
         return text;
     }
@@ -1388,7 +1410,15 @@
             return true;
         }
 
-        if (IsIntegerColumnType(columnType))
+        if (IsBooleanColumnType(columnType))
+        {
+            clause = TryParseBooleanValue(filterValue, out bool value)
+                ? $"{columnName} = {(value ? "1" : "0")}"
+                : "0 = 1";
+            return true;
+        }
+
+        if (IsIntegralColumnType(columnType))
         {
             if (long.TryParse(
                     filterValue,
@@ -1465,8 +1495,40 @@
 
     private static bool IsIntegerColumnType(string columnType)
     {
+        return IsBooleanColumnType(columnType) ||
+               IsIntegralColumnType(columnType);
+    }
+
+    private static bool IsBooleanColumnType(string columnType)
+    {
         string type = columnType.Trim().ToUpperInvariant();
-        return type is "BOOLEAN" or "TINYINT" or "SMALLINT" or "INTEGER" or "INT" or "BIGINT";
+        return type is "BOOLEAN" or "BOOL" or "BIT";
+    }
+
+    private static bool IsIntegralColumnType(string columnType)
+    {
+        string type = columnType.Trim().ToUpperInvariant();
+        return type is "TINYINT" or "SMALLINT" or "INTEGER" or "INT" or "BIGINT";
+    }
+
+    private static bool TryParseBooleanValue(string text, out bool value)
+    {
+        if (bool.TryParse(text, out value))
+            return true;
+
+        if (double.TryParse(
+                text,
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out double numericValue) &&
+            double.IsFinite(numericValue))
+        {
+            value = numericValue != 0d;
+            return true;
+        }
+
+        value = false;
+        return false;
     }
 
     private static bool IsRealColumnType(string columnType)

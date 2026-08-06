@@ -256,6 +256,9 @@
                             <tbody>
                                 @foreach (var col in _schema.Columns)
                                 {
+                                    string typeLabel = col.IsRowVersion
+                                        ? "ROWVERSION"
+                                        : col.EffectiveType.ToSql();
                                     <tr>
                                         <td class="@(col.IsPrimaryKey ? "pk-val" : "")">
                                             <span>@col.Name</span>
@@ -269,7 +272,7 @@
                                                 </div>
                                             }
                                         </td>
-                                        <td><span class="col-type-badge @GetTypeBadgeClass(col.EffectiveType.ToSql())">@col.EffectiveType.ToSql()</span></td>
+                                        <td><span class="col-type-badge @GetTypeBadgeClass(typeLabel)">@typeLabel</span></td>
                                         <td class="mono-cell">@GetColumnCollationLabel(col)</td>
                                         <td>@(col.IsPrimaryKey ? "Yes" : "")</td>
                                         <td>@(col.IsIdentity ? "Yes" : "No")</td>
@@ -320,18 +323,30 @@
                                         <div class="schema-field">
                                             <label>Type</label>
                                             <select class="schema-input" value="@_addColType" @onchange="OnAddColumnTypeChanged">
-                                                <option value="@DbType.Integer">INTEGER</option>
-                                                <option value="@DbType.Real">REAL</option>
-                                                <option value="@DbType.Decimal">DECIMAL</option>
-                                                <option value="@DbType.Text">TEXT</option>
-                                                <option value="@DbType.Blob">BLOB</option>
+                                                <option>BOOLEAN</option>
+                                                <option>TINYINT</option>
+                                                <option>SMALLINT</option>
+                                                <option>INTEGER</option>
+                                                <option>BIGINT</option>
+                                                <option>REAL</option>
+                                                <option>DOUBLE PRECISION</option>
+                                                <option>DECIMAL</option>
+                                                <option>TEXT</option>
+                                                <option>BLOB</option>
+                                                <option>UUID</option>
+                                                <option>DATE</option>
+                                                <option>TIME</option>
+                                                <option>DATETIME2</option>
+                                                <option>DATETIMEOFFSET</option>
+                                                <option>JSON</option>
+                                                <option>XML</option>
                                             </select>
                                         </div>
                                         <div class="schema-field">
                                             <label>Collation</label>
-                                            <select class="schema-input mono" @bind="_addColCollation" disabled="@(_addColType != DbType.Text)">
-                                                <option value="">@(_addColType == DbType.Text ? "Default (BINARY)" : "Not applicable")</option>
-                                                @if (_addColType == DbType.Text)
+                                            <select class="schema-input mono" @bind="_addColCollation" disabled="@(_addColType != "TEXT")">
+                                                <option value="">@(_addColType == "TEXT" ? "Default (BINARY)" : "Not applicable")</option>
+                                                @if (_addColType == "TEXT")
                                                 {
                                                     <option value="BINARY">BINARY</option>
                                                     <option value="NOCASE">NOCASE</option>
@@ -856,7 +871,7 @@
     private bool _submitting;
     private TableOp _tableOperation = TableOp.AddColumn;
     private string _addColName = string.Empty;
-    private DbType _addColType = DbType.Text;
+    private string _addColType = "TEXT";
     private string _addColCollation = string.Empty;
     private bool _addColNotNull;
     private string _dropColName = string.Empty;
@@ -1730,11 +1745,8 @@
 
     private void OnAddColumnTypeChanged(ChangeEventArgs e)
     {
-        if (!Enum.TryParse<DbType>(e.Value?.ToString(), out var type))
-            return;
-
-        _addColType = type;
-        if (_addColType != DbType.Text)
+        _addColType = e.Value?.ToString() ?? "TEXT";
+        if (_addColType != "TEXT")
             _addColCollation = string.Empty;
     }
 
@@ -1770,11 +1782,23 @@
             switch (_tableOperation)
             {
                 case TableOp.AddColumn:
-                    await ActiveClient.AddColumnAsync(ObjectName, _addColName, _addColType, _addColNotNull, NormalizeCollation(_addColCollation));
+                {
+                    string collation = _addColType == "TEXT" &&
+                        NormalizeCollation(_addColCollation) is { } normalizedCollation
+                            ? $" COLLATE {normalizedCollation}"
+                            : string.Empty;
+                    string notNull = _addColNotNull ? " NOT NULL" : string.Empty;
+                    var addResult = await ActiveClient.ExecuteSqlAsync(
+                        $"ALTER TABLE {CSharpDB.Primitives.SqlIdentifierRules.Quote(ObjectName)} " +
+                        $"ADD COLUMN {CSharpDB.Primitives.SqlIdentifierRules.Quote(_addColName)} " +
+                        $"{_addColType}{collation}{notNull}");
+                    if (!string.IsNullOrWhiteSpace(addResult.Error))
+                        throw new InvalidOperationException(addResult.Error);
                     Toast.Success($"Added column '{_addColName}'.");
                     _addColName = string.Empty;
                     _addColCollation = string.Empty;
                     break;
+                }
                 case TableOp.DropColumn:
                     await ActiveClient.DropColumnAsync(ObjectName, _dropColName);
                     Toast.Success($"Dropped column '{_dropColName}'.");

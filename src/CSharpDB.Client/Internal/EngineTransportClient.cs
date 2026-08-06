@@ -1534,13 +1534,21 @@ internal sealed partial class EngineTransportClient :
         {
             IsQuery = result.IsQuery,
             ColumnNames = result.IsQuery ? result.Schema.Select(column => column.Name).ToArray() : null,
+            Columns = result.IsQuery && result.Schema.All(column => column.Type is not CoreDbType.Null)
+                ? result.Schema.Select(MapColumnDefinition).ToArray()
+                : null,
             ColumnTypes = result.IsQuery
                 ? result.Schema.Select(column =>
-                    column.DeclaredType?.ToSql() ??
-                    column.Type.ToString().ToUpperInvariant()).ToArray()
+                    column.IsRowVersion
+                        ? "ROWVERSION"
+                        : column.Type is CoreDbType.Null && column.DeclaredType is null
+                            ? "NULL"
+                            : column.EffectiveType.ToSql()).ToArray()
                 : null,
             ColumnNullability = result.IsQuery ? result.Schema.Select(column => column.Nullable).ToArray() : null,
-            Rows = result.IsQuery ? rows.Select(ToObjects).ToList() : null,
+            Rows = result.IsQuery
+                ? rows.Select(row => ToObjects(result.Schema, row)).ToList()
+                : null,
             RowsAffected = result.IsQuery ? rows.Count : result.RowsAffected,
         };
     }
@@ -1627,24 +1635,27 @@ internal sealed partial class EngineTransportClient :
     {
         var values = new Dictionary<string, object?>(schema.Length, StringComparer.OrdinalIgnoreCase);
         for (int i = 0; i < schema.Length && i < row.Length; i++)
-            values[schema[i].Name] = ToObject(row[i]);
+            values[schema[i].Name] = ToObject(row[i], schema[i]);
         return values;
     }
 
-    private static List<object?[]> ToObjects(List<CSharpDB.Primitives.DbValue[]> rows)
-        => rows.Select(ToObjects).ToList();
-
-    private static object?[] ToObjects(CSharpDB.Primitives.DbValue[] row)
+    private static object?[] ToObjects(
+        CoreColumnDefinition[] schema,
+        CSharpDB.Primitives.DbValue[] row)
     {
         var values = new object?[row.Length];
         for (int i = 0; i < row.Length; i++)
-            values[i] = ToObject(row[i]);
+            values[i] = ToObject(row[i], i < schema.Length ? schema[i] : null);
         return values;
     }
 
-    private static object? ToObject(CSharpDB.Primitives.DbValue value) => value.Type switch
+    private static object? ToObject(
+        CSharpDB.Primitives.DbValue value,
+        CoreColumnDefinition? column = null) => value.Type switch
     {
         CoreDbType.Null => null,
+        CoreDbType.Integer when column?.DeclaredType?.Kind == CoreSqlTypeKind.Boolean =>
+            value.AsInteger != 0,
         CoreDbType.Integer => value.AsInteger,
         CoreDbType.Real => value.AsReal,
         CoreDbType.Decimal => value.AsDecimal,

@@ -142,10 +142,9 @@ public static partial class SchemaScriptRenderer
         var sql = new StringBuilder();
         sql.Append(Identifier(column.Name))
             .Append(' ')
-            .Append(column.DeclaredType?.ToSql() ?? column.Type.ToString().ToUpperInvariant());
-
-        if (column.IsRowVersion)
-            sql.Append(" ROWVERSION");
+            .Append(column.IsRowVersion
+                ? "ROWVERSION"
+                : column.EffectiveType.ToSql());
         if (includeInlinePrimaryKey && column.IsPrimaryKey)
             sql.Append(" PRIMARY KEY");
         if (includeIdentity && column.IsIdentity)

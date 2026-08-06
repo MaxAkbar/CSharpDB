@@ -1136,7 +1136,10 @@ internal static class BatchPlanCompiler
         if (expression is UnaryExpression { Op: TokenType.Minus } unaryMinus &&
             TryBindNumericExpression(unaryMinus.Operand, schema, out var unaryOperand))
         {
-            term = BatchProjectionTerm.CreateNumericExpression(BatchNumericExpression.CreateNegated(unaryOperand));
+            term = BatchProjectionTerm.CreateNumericExpression(
+                BatchNumericExpression.CreateNegated(
+                    unaryOperand,
+                    ExpressionEvaluator.ResolveNegatedDeclaredType(unaryMinus.Operand, schema)));
             return true;
         }
 
@@ -1146,7 +1149,14 @@ internal static class BatchPlanCompiler
             TryBindNumericExpression(arithmetic.Right, schema, out var rightOperand))
         {
             term = BatchProjectionTerm.CreateNumericExpression(
-                BatchNumericExpression.CreateArithmetic(arithmetic.Op, leftOperand, rightOperand));
+                BatchNumericExpression.CreateArithmetic(
+                    arithmetic.Op,
+                    leftOperand,
+                    rightOperand,
+                    ExpressionEvaluator.ResolveArithmeticDeclaredType(
+                        arithmetic.Left,
+                        arithmetic.Right,
+                        schema)));
             return true;
         }
 
@@ -1196,7 +1206,8 @@ internal static class BatchPlanCompiler
 
         if (TryResolveColumnIndex(expression, schema, out int columnIndex))
         {
-            if (!IsNumericType(schema.Columns[columnIndex].Type))
+            if (!IsNumericType(schema.Columns[columnIndex].Type) ||
+                schema.Columns[columnIndex].EffectiveType.Kind == SqlTypeKind.Boolean)
                 return false;
 
             operand = BatchNumericExpression.CreateColumn(columnIndex);
@@ -1214,7 +1225,9 @@ internal static class BatchPlanCompiler
         if (expression is UnaryExpression { Op: TokenType.Minus } unaryMinus &&
             TryBindNumericExpression(unaryMinus.Operand, schema, out var innerOperand))
         {
-            operand = BatchNumericExpression.CreateNegated(innerOperand);
+            operand = BatchNumericExpression.CreateNegated(
+                innerOperand,
+                ExpressionEvaluator.ResolveNegatedDeclaredType(unaryMinus.Operand, schema));
             return true;
         }
 
@@ -1223,7 +1236,14 @@ internal static class BatchPlanCompiler
             TryBindNumericExpression(arithmetic.Left, schema, out var leftOperand) &&
             TryBindNumericExpression(arithmetic.Right, schema, out var rightOperand))
         {
-            operand = BatchNumericExpression.CreateArithmetic(arithmetic.Op, leftOperand, rightOperand);
+            operand = BatchNumericExpression.CreateArithmetic(
+                arithmetic.Op,
+                leftOperand,
+                rightOperand,
+                ExpressionEvaluator.ResolveArithmeticDeclaredType(
+                    arithmetic.Left,
+                    arithmetic.Right,
+                    schema));
             return true;
         }
 
@@ -2528,6 +2548,7 @@ internal sealed class BatchNumericExpression
     private readonly BinaryOp _op;
     private readonly BatchNumericExpression? _left;
     private readonly BatchNumericExpression? _right;
+    private readonly SqlTypeDescriptor? _resultType;
     private readonly BatchNumericExpressionKind _kind;
 
     private BatchNumericExpression(
@@ -2536,6 +2557,7 @@ internal sealed class BatchNumericExpression
         BinaryOp op,
         BatchNumericExpression? left,
         BatchNumericExpression? right,
+        SqlTypeDescriptor? resultType,
         BatchNumericExpressionKind kind)
     {
         _columnIndex = columnIndex;
@@ -2543,31 +2565,45 @@ internal sealed class BatchNumericExpression
         _op = op;
         _left = left;
         _right = right;
+        _resultType = resultType;
         _kind = kind;
     }
 
     public static BatchNumericExpression CreateColumn(int columnIndex)
-        => new(columnIndex, DbValue.Null, BinaryOp.Equals, null, null, BatchNumericExpressionKind.Column);
+        => new(columnIndex, DbValue.Null, BinaryOp.Equals, null, null, null, BatchNumericExpressionKind.Column);
 
     public static BatchNumericExpression CreateConstant(DbValue constant)
-        => new(0, constant, BinaryOp.Equals, null, null, BatchNumericExpressionKind.Constant);
+        => new(0, constant, BinaryOp.Equals, null, null, null, BatchNumericExpressionKind.Constant);
 
-    public static BatchNumericExpression CreateNegated(BatchNumericExpression operand)
+    public static BatchNumericExpression CreateNegated(
+        BatchNumericExpression operand,
+        SqlTypeDescriptor? resultType)
     {
         ArgumentNullException.ThrowIfNull(operand);
 
         if (operand._kind == BatchNumericExpressionKind.Constant)
-            return CreateConstant(Negate(operand._constant));
+            return CreateConstant(Negate(operand._constant, resultType));
 
-        return new(0, DbValue.Null, BinaryOp.Minus, CreateConstant(DbValue.FromInteger(0)), operand, BatchNumericExpressionKind.Arithmetic);
+        return new(
+            0,
+            DbValue.Null,
+            BinaryOp.Minus,
+            CreateConstant(DbValue.FromInteger(0)),
+            operand,
+            resultType,
+            BatchNumericExpressionKind.Arithmetic);
     }
 
-    public static BatchNumericExpression CreateArithmetic(BinaryOp op, BatchNumericExpression left, BatchNumericExpression right)
+    public static BatchNumericExpression CreateArithmetic(
+        BinaryOp op,
+        BatchNumericExpression left,
+        BatchNumericExpression right,
+        SqlTypeDescriptor? resultType)
     {
         ArgumentNullException.ThrowIfNull(left);
         ArgumentNullException.ThrowIfNull(right);
 
-        return new(0, DbValue.Null, op, left, right, BatchNumericExpressionKind.Arithmetic);
+        return new(0, DbValue.Null, op, left, right, resultType, BatchNumericExpressionKind.Arithmetic);
     }
 
     public bool TryGetValue(ReadOnlySpan<DbValue> row, out DbValue value)
@@ -2597,20 +2633,24 @@ internal sealed class BatchNumericExpression
                     return false;
                 }
 
-                value = EvaluateArithmetic(_op, left, right);
+                value = EvaluateArithmetic(_op, left, right, _resultType);
                 return true;
             default:
                 return false;
         }
     }
 
-    private static DbValue EvaluateArithmetic(BinaryOp op, DbValue left, DbValue right)
-        => ExpressionEvaluator.EvaluateArithmetic(op, left, right);
+    private static DbValue EvaluateArithmetic(
+        BinaryOp op,
+        DbValue left,
+        DbValue right,
+        SqlTypeDescriptor? resultType)
+        => ExpressionEvaluator.EvaluateArithmetic(op, left, right, resultType);
 
-    private static DbValue Negate(DbValue value)
+    private static DbValue Negate(DbValue value, SqlTypeDescriptor? resultType)
     {
         return value.Type is DbType.Integer or DbType.Real
-            ? ExpressionEvaluator.NegateNumeric(value)
+            ? ExpressionEvaluator.NegateNumeric(value, resultType)
             : DbValue.Null;
     }
 }

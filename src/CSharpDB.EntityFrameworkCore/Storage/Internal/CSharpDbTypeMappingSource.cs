@@ -9,6 +9,7 @@ namespace CSharpDB.EntityFrameworkCore.Storage.Internal;
 public sealed class CSharpDbTypeMappingSource : RelationalTypeMappingSource
 {
     private static readonly BoolTypeMapping BoolMapping = new("BOOLEAN", DbType.Boolean);
+    private static readonly BoolTypeMapping BitBoolMapping = new("BIT", DbType.Boolean);
     private static readonly ByteTypeMapping ByteMapping = new("TINYINT", DbType.Byte);
     private static readonly ShortTypeMapping ShortMapping = new("SMALLINT", DbType.Int16);
     private static readonly IntTypeMapping IntMapping = new("INTEGER", DbType.Int32);
@@ -19,12 +20,14 @@ public sealed class CSharpDbTypeMappingSource : RelationalTypeMappingSource
     private static readonly StringTypeMapping JsonMapping = new("JSON", DbType.String);
     private static readonly StringTypeMapping XmlMapping = new("XML", DbType.Xml);
     private static readonly ByteArrayTypeMapping BlobMapping = new("BLOB", DbType.Binary);
+    private static readonly ByteArrayTypeMapping RowVersionMapping =
+        new("ROWVERSION", DbType.Binary, sizeof(long));
     private static readonly GuidTypeMapping GuidMapping = new("UUID", DbType.Guid);
     private static readonly DateOnlyTypeMapping DateOnlyMapping = new("DATE", DbType.Date);
     private static readonly TimeOnlyTypeMapping TimeOnlyMapping = new("TIME", DbType.Time);
-    private static readonly DateTimeTypeMapping DateTimeMapping = new("TIMESTAMP", DbType.DateTime2);
+    private static readonly DateTimeTypeMapping DateTimeMapping = new("DATETIME2", DbType.DateTime2);
     private static readonly DateTimeOffsetTypeMapping DateTimeOffsetMapping =
-        new("TIMESTAMP WITH TIME ZONE", DbType.DateTimeOffset);
+        new("DATETIMEOFFSET", DbType.DateTimeOffset);
     private static readonly ValueConverter<TimeSpan, string> IntervalDayToSecondConverter =
         new(
             value => value.ToString("c", CultureInfo.InvariantCulture),
@@ -34,7 +37,6 @@ public sealed class CSharpDbTypeMappingSource : RelationalTypeMappingSource
         new("INTERVAL YEAR TO MONTH", DbType.String, unicode: true, size: 32);
     private static readonly RelationalTypeMapping IntervalDayToSecondMapping =
         CreateIntervalDayToSecondMapping("INTERVAL DAY TO SECOND");
-    private static readonly ByteArrayTypeMapping BitMapping = new("BIT", DbType.Binary);
     private static readonly ByteArrayTypeMapping BitVaryingMapping =
         new("BIT VARYING", DbType.Binary);
 
@@ -95,13 +97,17 @@ public sealed class CSharpDbTypeMappingSource : RelationalTypeMappingSource
         ["JSON"] = JsonMapping,
         ["XML"] = XmlMapping,
         ["BLOB"] = BlobMapping,
+        ["ROWVERSION"] = RowVersionMapping,
         ["UUID"] = GuidMapping,
         ["DATE"] = DateOnlyMapping,
         ["TIME"] = TimeOnlyMapping,
-        ["TIMESTAMP"] = DateTimeMapping,
+        ["DATETIME"] = DateTimeMapping,
+        ["DATETIME2"] = DateTimeMapping,
+        ["DATETIMEOFFSET"] = DateTimeOffsetMapping,
+        ["TIMESTAMP WITH TIME ZONE"] = DateTimeOffsetMapping,
         ["INTERVAL YEAR TO MONTH"] = IntervalYearToMonthMapping,
         ["INTERVAL DAY TO SECOND"] = IntervalDayToSecondMapping,
-        ["BIT"] = BitMapping,
+        ["BIT"] = BitBoolMapping,
         ["BIT VARYING"] = BitVaryingMapping,
         ["VARBIT"] = BitVaryingMapping,
     };
@@ -119,6 +125,29 @@ public sealed class CSharpDbTypeMappingSource : RelationalTypeMappingSource
         Type? unwrappedClrType = clrType is null
             ? null
             : Nullable.GetUnderlyingType(clrType) ?? clrType;
+
+        if (mappingInfo.IsRowVersion == true)
+        {
+            if (unwrappedClrType != typeof(byte[]))
+                return null;
+
+            if (string.IsNullOrWhiteSpace(mappingInfo.StoreTypeNameBase) ||
+                IsStoreType(mappingInfo.StoreTypeNameBase, "ROWVERSION"))
+            {
+                return RowVersionMapping;
+            }
+
+            if (IsStoreType(mappingInfo.StoreTypeNameBase, "BLOB"))
+                return BlobMapping;
+        }
+
+        if (IsStoreType(mappingInfo.StoreTypeNameBase, "BIT") &&
+            !mappingInfo.Size.HasValue)
+        {
+            return unwrappedClrType is null || unwrappedClrType == typeof(bool)
+                ? BitBoolMapping
+                : null;
+        }
 
         if (unwrappedClrType == typeof(decimal))
         {
@@ -206,13 +235,13 @@ public sealed class CSharpDbTypeMappingSource : RelationalTypeMappingSource
             if (unwrappedClrType == typeof(DateTime))
             {
                 return new DateTimeTypeMapping(
-                    $"TIMESTAMP({fractionalSecondsPrecision})",
+                    $"DATETIME2({fractionalSecondsPrecision})",
                     DbType.DateTime2);
             }
             if (unwrappedClrType == typeof(DateTimeOffset))
             {
                 return new DateTimeOffsetTypeMapping(
-                    $"TIMESTAMP({fractionalSecondsPrecision}) WITH TIME ZONE",
+                    $"DATETIMEOFFSET({fractionalSecondsPrecision})",
                     DbType.DateTimeOffset);
             }
             if (unwrappedClrType == typeof(TimeSpan))
@@ -355,17 +384,29 @@ public sealed class CSharpDbTypeMappingSource : RelationalTypeMappingSource
                     storeType,
                     DbType.Time);
                 return true;
+            case "DATETIME":
+            case "DATETIME2":
+                mapping = new DateTimeTypeMapping(
+                    storeType,
+                    DbType.DateTime2);
+                return true;
+            case "DATETIMEOFFSET":
+                mapping = new DateTimeOffsetTypeMapping(
+                    storeType,
+                    DbType.DateTimeOffset);
+                return true;
             case "TIMESTAMP":
             case "TIMESTAMP WITH TIME ZONE":
-                mapping = storeType.Contains(
+                if (!storeType.Contains(
                     "WITH TIME ZONE",
-                    StringComparison.OrdinalIgnoreCase)
-                    ? new DateTimeOffsetTypeMapping(
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+
+                mapping = new DateTimeOffsetTypeMapping(
                         storeType,
-                        DbType.DateTimeOffset)
-                    : new DateTimeTypeMapping(
-                        storeType,
-                        DbType.DateTime2);
+                        DbType.DateTimeOffset);
                 return true;
             case "INTERVAL YEAR TO MONTH":
                 mapping = new StringTypeMapping(

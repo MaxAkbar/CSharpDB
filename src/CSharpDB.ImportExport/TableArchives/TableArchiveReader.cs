@@ -242,6 +242,33 @@ public static class TableArchiveReader
             ?? throw new InvalidDataException("The table archive schema is empty.");
         if (schema.Columns is null)
             throw new InvalidDataException("The table archive schema columns collection is null.");
+        if (schema.Columns.Any(static column => column is null))
+            throw new InvalidDataException("The table archive schema columns collection contains a null entry.");
+
+        // Native archive v7 shipped while INTEGER still meant the physical
+        // signed 64-bit value carrier. Preserve that meaning when those
+        // preview archives are opened; v8 is the first archive version where
+        // a declared INTEGER is the SQL signed 32-bit type.
+        if (header.FormatVersion < TableArchiveManifest.SqlTypeSemanticsFormatVersion &&
+            schema.Columns.Any(static column =>
+                column?.DeclaredType is { Kind: SqlTypeKind.Integer }))
+        {
+            schema = new TableArchiveSchema
+            {
+                SchemaId = schema.SchemaId,
+                TableName = schema.TableName,
+                Columns = schema.Columns.Select(static column =>
+                    column.DeclaredType is { Kind: SqlTypeKind.Integer }
+                        ? column.WithDeclaredType(SqlTypeDescriptor.Create(SqlTypeKind.BigInt))
+                        : column).ToArray(),
+                ForeignKeys = schema.ForeignKeys,
+                CheckConstraints = schema.CheckConstraints,
+                KeyConstraints = schema.KeyConstraints,
+                SecondaryIndexes = schema.SecondaryIndexes,
+                NextRowId = schema.NextRowId,
+            };
+        }
+
         if (schema.Columns.Any(static column => column is not null && column.IsRowVersion) &&
             header.FormatVersion < TableArchiveManifest.RowVersionFormatVersion)
         {
@@ -265,7 +292,8 @@ public static class TableArchiveReader
                 TableArchiveManifest.RowVersionFormatVersion or
                 TableArchiveManifest.SchemaFidelityFormatVersion or
                 TableArchiveManifest.ReferentialActionsFormatVersion or
-                TableArchiveManifest.LogicalTypesFormatVersion))
+                TableArchiveManifest.LogicalTypesFormatVersion or
+                TableArchiveManifest.SqlTypeSemanticsFormatVersion))
             throw new InvalidDataException($"Unsupported native table archive format version {manifest.FormatVersion}.");
         if (manifest.FormatVersion != header.FormatVersion)
             throw new InvalidDataException("The table archive header and manifest format versions do not match.");

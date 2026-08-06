@@ -25,8 +25,8 @@ public sealed class LogicalTypeMappingTests
         AssertColumn(entity, nameof(LogicalTypeEntity.Identifier), "UUID");
         AssertColumn(entity, nameof(LogicalTypeEntity.Date), "DATE");
         AssertColumn(entity, nameof(LogicalTypeEntity.Time), "TIME(3)");
-        AssertColumn(entity, nameof(LogicalTypeEntity.Timestamp), "TIMESTAMP(3)");
-        AssertColumn(entity, nameof(LogicalTypeEntity.TimestampWithZone), "TIMESTAMP(3) WITH TIME ZONE");
+        AssertColumn(entity, nameof(LogicalTypeEntity.Timestamp), "DATETIME2(3)");
+        AssertColumn(entity, nameof(LogicalTypeEntity.TimestampWithZone), "DATETIMEOFFSET(3)");
         AssertColumn(entity, nameof(LogicalTypeEntity.Duration), "INTERVAL DAY TO SECOND");
         AssertColumn(entity, nameof(LogicalTypeEntity.PreciseDuration), "INTERVAL DAY TO SECOND(3)");
         AssertColumn(entity, nameof(LogicalTypeEntity.Payload), "VARBINARY(16)");
@@ -65,11 +65,11 @@ public sealed class LogicalTypeMappingTests
         AssertColumn(entity, nameof(ExplicitLogicalTypeEntity.Xml), "XML");
         AssertColumn(entity, nameof(ExplicitLogicalTypeEntity.FixedPayload), "BINARY(8)");
         AssertColumn(entity, nameof(ExplicitLogicalTypeEntity.Time), "TIME(6)");
-        AssertColumn(entity, nameof(ExplicitLogicalTypeEntity.Timestamp), "TIMESTAMP(6)");
+        AssertColumn(entity, nameof(ExplicitLogicalTypeEntity.Timestamp), "DATETIME2(6)");
         AssertColumn(
             entity,
             nameof(ExplicitLogicalTypeEntity.TimestampWithZone),
-            "TIMESTAMP(6) WITH TIME ZONE");
+            "DATETIMEOFFSET(6)");
         AssertColumn(entity, nameof(ExplicitLogicalTypeEntity.YearMonth), "INTERVAL YEAR TO MONTH");
         AssertColumn(entity, nameof(ExplicitLogicalTypeEntity.Duration), "INTERVAL DAY TO SECOND");
         AssertColumn(
@@ -108,7 +108,7 @@ public sealed class LogicalTypeMappingTests
             YearMonth = "2-03",
             Duration = expectedDuration,
             PreciseDuration = expectedPreciseDuration,
-            Bits = [0b1010_0101],
+            Bits = true,
             FixedBits = [0b0101_1010],
             VariableBits = [0x12, 0x34],
             VarBitAlias = [0x12, 0x34, 0x56],
@@ -125,7 +125,7 @@ public sealed class LogicalTypeMappingTests
         Assert.Equal("2-03", loaded.YearMonth);
         Assert.Equal(expectedDuration, loaded.Duration);
         Assert.Equal(expectedPreciseDuration, loaded.PreciseDuration);
-        Assert.Equal(entity.Bits, loaded.Bits);
+        Assert.True(loaded.Bits);
         Assert.Equal(entity.FixedBits, loaded.FixedBits);
         Assert.Equal(entity.VariableBits, loaded.VariableBits);
         Assert.Equal(entity.VarBitAlias, loaded.VarBitAlias);
@@ -234,10 +234,10 @@ public sealed class LogicalTypeMappingTests
                 .HasColumnType("TIME(6)");
             modelBuilder.Entity<ExplicitLogicalTypeEntity>()
                 .Property(entity => entity.Timestamp)
-                .HasColumnType("TIMESTAMP(6)");
+                .HasColumnType("DATETIME2(6)");
             modelBuilder.Entity<ExplicitLogicalTypeEntity>()
                 .Property(entity => entity.TimestampWithZone)
-                .HasColumnType("TIMESTAMP(6) WITH TIME ZONE");
+                .HasColumnType("DATETIMEOFFSET(6)");
             modelBuilder.Entity<ExplicitLogicalTypeEntity>()
                 .Property(entity => entity.YearMonth)
                 .HasColumnType("INTERVAL YEAR TO MONTH");
@@ -303,7 +303,7 @@ public sealed class LogicalTypeMappingTests
         public string YearMonth { get; set; } = string.Empty;
         public TimeSpan Duration { get; set; }
         public TimeSpan PreciseDuration { get; set; }
-        public byte[] Bits { get; set; } = [];
+        public bool Bits { get; set; }
         public byte[] FixedBits { get; set; } = [];
         public byte[] VariableBits { get; set; } = [];
         public byte[] VarBitAlias { get; set; } = [];

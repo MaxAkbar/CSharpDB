@@ -6,7 +6,7 @@ namespace CSharpDB.Tests;
 public sealed class DeclaredTypeSchemaSerializationTests
 {
     [Fact]
-    public void VersionTen_RoundTripsLogicalDescriptorsAndFacets()
+    public void VersionEleven_RoundTripsLogicalDescriptorsAndFacets()
     {
         SqlTypeDescriptor amountType = SqlTypeDescriptor.Create(
             SqlTypeKind.Decimal,

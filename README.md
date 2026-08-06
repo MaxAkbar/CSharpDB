@@ -180,7 +180,10 @@ CSharpDB is more than an embedded SQL engine. The same database can be used thro
 
 ## EF Core 10 Provider
 
-CSharpDB includes a first-party embedded EF Core 10 provider for file-backed and private in-memory databases. It supports application-managed concurrency tokens plus one engine-generated nonnullable `byte[]` `[Timestamp]`/`IsRowVersion()` property per table. The opaque eight-byte token is a per-row revision that advances for every successful update, including raw SQL and trigger-issued updates; it is not SQL Server's database-wide counter, and standalone add/alter rowversion migrations remain unsupported. Conventional optional scalar and composite relationships support EF Core's default `ClientSetNull`: EF clears nullable FK components for tracked dependents, while a restrictive database constraint protects unloaded dependents. Database-side `DeleteBehavior.SetNull` remains unsupported.
+CSharpDB includes a first-party embedded EF Core 10 provider for file-backed and private in-memory databases. It maps `int` to `INTEGER`, `long` to `BIGINT`, `bool` to `BOOLEAN`, `DateTime` to `DATETIME2`, `DateTimeOffset` to `DATETIMEOFFSET`, and one engine-generated nonnullable `byte[]` `[Timestamp]`/`IsRowVersion()` property per table to `ROWVERSION`. Rowversion tokens come from a persisted database-wide counter and advance for inserts and every successful update, including raw SQL, no-op, and trigger-issued updates. Standalone add/alter rowversion migrations remain unsupported. Conventional optional scalar and composite relationships support EF Core's default `ClientSetNull`: EF clears nullable FK components for tracked dependents, while a restrictive database constraint protects unloaded dependents. Database-side `DeleteBehavior.SetNull` remains unsupported.
+
+The complete 4.5 logical type contract and compatibility rules are documented
+in [SQL type semantics in 4.5](docs/sql-type-semantics-4.5.md).
 
 Bounded `AlterColumn` migrations support exact `INTEGER`/`REAL` changes with
 atomic rebuilding of affected ready SQL indexes, plus dependency-free

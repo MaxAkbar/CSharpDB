@@ -14,10 +14,15 @@ public sealed class SqlTypeDescriptorTests
             "VARCHAR(200)",
             SqlTypeDescriptor.Create(SqlTypeKind.VarChar, length: 200).ToSql());
         Assert.Equal(
-            "TIMESTAMP(6) WITH TIME ZONE",
+            "DATETIMEOFFSET(6)",
             SqlTypeDescriptor.Create(
                 SqlTypeKind.TimestampWithTimeZone,
                 fractionalSecondsPrecision: 6).ToSql());
+        Assert.Equal(
+            "DATETIME2(7)",
+            SqlTypeDescriptor.Create(
+                SqlTypeKind.Timestamp,
+                fractionalSecondsPrecision: 7).ToSql());
         Assert.Equal(
             "INTERVAL YEAR TO MONTH",
             SqlTypeDescriptor.Create(SqlTypeKind.IntervalYearToMonth).ToSql());

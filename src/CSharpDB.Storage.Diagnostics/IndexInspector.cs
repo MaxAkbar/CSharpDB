@@ -75,6 +75,9 @@ public static class IndexInspector
                         continue;
                     }
 
+                    if (cell.Key.Value == InspectorEngine.RowVersionHighWaterCatalogSentinel)
+                        continue;
+
                     uint rootPage = BinaryPrimitives.ReadUInt32LittleEndian(cell.Payload.AsSpan(0, 4));
 
                     if (cell.Key.Value == InspectorEngine.IndexCatalogSentinel)
@@ -90,7 +93,9 @@ public static class IndexInspector
                     }
 
                     if (cell.Key.Value == InspectorEngine.TableStatsCatalogSentinel ||
-                        cell.Key.Value == InspectorEngine.ColumnStatsCatalogSentinel)
+                        cell.Key.Value == InspectorEngine.ColumnStatsCatalogSentinel ||
+                        cell.Key.Value == InspectorEngine.ColumnDistributionStatsCatalogSentinel ||
+                        cell.Key.Value == InspectorEngine.IndexPrefixStatsCatalogSentinel)
                     {
                         continue;
                     }

@@ -4269,6 +4269,11 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
     {
         await using var db = new RowVersionModelContext(
             $"Data Source={GetDbPath("rowversion-insert")}");
+        Assert.Equal(
+            "ROWVERSION",
+            db.Model.FindEntityType(typeof(RowVersionEntity))!
+                .FindProperty(nameof(RowVersionEntity.Version))!
+                .GetColumnType());
         await db.Database.EnsureCreatedAsync(Ct);
 
         var entity = new RowVersionEntity
@@ -4476,7 +4481,7 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
         AssertRowVersionModelRejected<ConvertedRowVersionContext>(
             "value converter");
         AssertRowVersionModelRejected<WrongStoreTypeRowVersionContext>(
-            "requires BLOB");
+            "requires ROWVERSION");
         AssertRowVersionModelRejected<DefaultedRowVersionContext>(
             "database default");
         AssertRowVersionModelRejected<SqlDefaultedRowVersionContext>(

@@ -86,7 +86,7 @@ internal static class CSharpDbLiteralDefaultContract
                         out long integer))
                 {
                     descriptor = default;
-                    reason = "INTEGER defaultValue is not a signed 64-bit integer.";
+                    reason = "Integer-carrier defaultValue is not a signed 64-bit integer.";
                     return false;
                 }
                 valueType = DbType.Integer;

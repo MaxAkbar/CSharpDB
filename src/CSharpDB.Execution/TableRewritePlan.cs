@@ -191,14 +191,19 @@ internal sealed class TableRewritePlan
                 }
 
                 double real = value.AsReal;
+                bool targetsInteger =
+                    targetColumn.EffectiveType.Kind == SqlTypeKind.Integer;
+                bool outsideTargetRange = targetsInteger
+                    ? real < int.MinValue || real > int.MaxValue
+                    : real < minimumInt64Inclusive || real >= maximumInt64Exclusive;
                 if (!double.IsFinite(real) ||
                     Math.Truncate(real) != real ||
-                    real < minimumInt64Inclusive ||
-                    real >= maximumInt64Exclusive)
+                    outsideTargetRange)
                 {
                     throw new CSharpDbException(
                         ErrorCode.TypeMismatch,
-                        $"Cannot convert value {real:R} in column '{qualifiedColumn}' to an exact 64-bit INTEGER.");
+                        $"Cannot convert value {real:R} in column '{qualifiedColumn}' to an exact " +
+                        $"{(targetsInteger ? "32-bit INTEGER" : "64-bit BIGINT")}.");
                 }
 
                 return DbValue.FromInteger((long)real);

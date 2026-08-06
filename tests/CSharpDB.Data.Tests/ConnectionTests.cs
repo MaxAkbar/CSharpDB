@@ -244,6 +244,9 @@ public class ConnectionTests : IDisposable
         Assert.Equal("id", rows[0]["COLUMN_NAME"]);
         Assert.Equal(1, rows[0]["ORDINAL_POSITION"]);
         Assert.Equal("INTEGER", rows[0]["DATA_TYPE"]);
+        Assert.Equal((byte)10, rows[0]["NUMERIC_PRECISION"]);
+        Assert.Equal((short)10, rows[0]["NUMERIC_PRECISION_RADIX"]);
+        Assert.Equal(0, rows[0]["NUMERIC_SCALE"]);
         Assert.Equal("NO", rows[0]["IS_NULLABLE"]);
         Assert.True((bool)rows[0]["IS_PRIMARY_KEY"]);
         Assert.True((bool)rows[0]["IS_IDENTITY"]);
@@ -251,8 +254,10 @@ public class ConnectionTests : IDisposable
         Assert.Equal(DBNull.Value, rows[0]["COLLATION_NAME"]);
         Assert.Equal("NOCASE", rows[1]["COLLATION_NAME"]);
         Assert.Equal("version", rows[3]["COLUMN_NAME"]);
-        Assert.Equal("BLOB", rows[3]["DATA_TYPE"]);
+        Assert.Equal("ROWVERSION", rows[3]["DATA_TYPE"]);
         Assert.True((bool)rows[3]["IS_ROW_VERSION"]);
+        Assert.True((bool)rows[3]["IS_GENERATED"]);
+        Assert.True((bool)rows[3]["IS_READ_ONLY"]);
         Assert.All(rows, row => Assert.IsType<Guid>(row["TABLE_SCHEMA_ID"]));
         Assert.All(rows, row => Assert.IsType<Guid>(row["COLUMN_SCHEMA_ID"]));
 

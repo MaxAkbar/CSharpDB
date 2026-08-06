@@ -162,6 +162,34 @@ internal static class SqlParameterBinder
         object value,
         out string? literal)
     {
+        if (parameter.DbType == SysDbType.Boolean || value is bool)
+        {
+            bool boolean;
+            try
+            {
+                boolean = value switch
+                {
+                    bool exact => exact,
+                    double number when double.IsFinite(number) => number != 0d,
+                    float number when float.IsFinite(number) => number != 0f,
+                    double or float => throw new InvalidCastException(
+                        "BOOLEAN parameters require a finite numeric value."),
+                    sbyte or byte or short or ushort or int or uint or long or ulong or decimal =>
+                        Convert.ToDecimal(value, CultureInfo.InvariantCulture) != decimal.Zero,
+                    _ => Convert.ToBoolean(value, CultureInfo.InvariantCulture),
+                };
+            }
+            catch (Exception ex) when (ex is FormatException or InvalidCastException or OverflowException)
+            {
+                throw new InvalidOperationException(
+                    $"Parameter '{parameter.ParameterName}' cannot be represented as BOOLEAN.",
+                    ex);
+            }
+
+            literal = $"CAST({(boolean ? 1 : 0)} AS BOOLEAN)";
+            return true;
+        }
+
         if (parameter.DbType == SysDbType.Guid || value is Guid)
         {
             Guid guid = value is Guid exact
@@ -206,7 +234,7 @@ internal static class SqlParameterBinder
                 : DateTimeOffset.Parse(
                     Convert.ToString(value, CultureInfo.InvariantCulture)!,
                     CultureInfo.InvariantCulture);
-            literal = $"CAST({QuoteText(CSharpDbTextCodec.FormatDateTimeOffset(timestamp))} AS TIMESTAMP WITH TIME ZONE)";
+            literal = $"CAST({QuoteText(CSharpDbTextCodec.FormatDateTimeOffset(timestamp))} AS DATETIMEOFFSET)";
             return true;
         }
 
@@ -217,7 +245,7 @@ internal static class SqlParameterBinder
                 : DateTime.Parse(
                     Convert.ToString(value, CultureInfo.InvariantCulture)!,
                     CultureInfo.InvariantCulture);
-            literal = $"CAST({QuoteText(CSharpDbTextCodec.FormatDateTime(timestamp))} AS TIMESTAMP)";
+            literal = $"CAST({QuoteText(CSharpDbTextCodec.FormatDateTime(timestamp))} AS DATETIME2)";
             return true;
         }
 

@@ -24,7 +24,7 @@ public sealed class IntegerAggregateFastPathExactnessTests : IAsyncLifetime
     {
         CancellationToken ct = TestContext.Current.CancellationToken;
         await _database.ExecuteAsync(
-            "CREATE TABLE exact_pk_sum (id INTEGER PRIMARY KEY, payload TEXT)",
+            "CREATE TABLE exact_pk_sum (id BIGINT PRIMARY KEY, payload TEXT)",
             ct);
         await _database.ExecuteAsync(
             "INSERT INTO exact_pk_sum VALUES (1, 'one'), (9007199254740992, 'large')",
@@ -45,7 +45,7 @@ public sealed class IntegerAggregateFastPathExactnessTests : IAsyncLifetime
     {
         CancellationToken ct = TestContext.Current.CancellationToken;
         await _database.ExecuteAsync(
-            "CREATE TABLE exact_index_sum (id INTEGER PRIMARY KEY, score INTEGER)",
+            "CREATE TABLE exact_index_sum (id INTEGER PRIMARY KEY, score BIGINT)",
             ct);
         await _database.ExecuteAsync(
             "INSERT INTO exact_index_sum VALUES (1, 2), (2, 9007199254740993)",
@@ -78,7 +78,7 @@ public sealed class IntegerAggregateFastPathExactnessTests : IAsyncLifetime
     {
         CancellationToken ct = TestContext.Current.CancellationToken;
         await _database.ExecuteAsync(
-            "CREATE TABLE exact_grouped_sum (id INTEGER PRIMARY KEY, score INTEGER NOT NULL)",
+            "CREATE TABLE exact_grouped_sum (id INTEGER PRIMARY KEY, score BIGINT NOT NULL)",
             ct);
         await _database.ExecuteAsync(
             "INSERT INTO exact_grouped_sum VALUES " +
@@ -105,7 +105,7 @@ public sealed class IntegerAggregateFastPathExactnessTests : IAsyncLifetime
     {
         CancellationToken ct = TestContext.Current.CancellationToken;
         await _database.ExecuteAsync(
-            "CREATE TABLE overflowing_index_sum (id INTEGER PRIMARY KEY, score INTEGER)",
+            "CREATE TABLE overflowing_index_sum (id INTEGER PRIMARY KEY, score BIGINT)",
             ct);
         await _database.ExecuteAsync(
             "INSERT INTO overflowing_index_sum VALUES (1, 1), (2, 9223372036854775807)",

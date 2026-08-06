@@ -51,7 +51,9 @@ typedef void* csharpdb_result_t;
 typedef void* csharpdb_stmt_t;
 
 /* ------------------------------------------------------------------ */
-/*  Column / value type codes (matches CSharpDB.Primitives.DbType)           */
+/*  Physical value type codes (matches CSharpDB.Primitives.DbType).          */
+/*  CSHARPDB_INTEGER is the shared 64-bit carrier for BOOLEAN, INTEGER,      */
+/*  and BIGINT; inspect csharpdb_result_column_declared_type for SQL type.   */
 /* ------------------------------------------------------------------ */
 
 #define CSHARPDB_NULL    0
@@ -198,7 +200,7 @@ const char* csharpdb_result_column_name(csharpdb_result_t result, int column_ind
 
 /**
  * Returns the canonical declared SQL type of a result column (UTF-8), such as
- * DECIMAL(18,4) or TIMESTAMP WITH TIME ZONE. The pointer remains valid until
+ * DECIMAL(18,4), DATETIME2(7), DATETIMEOFFSET(7), or ROWVERSION. The pointer remains valid until
  * csharpdb_result_free().
  */
 const char* csharpdb_result_column_declared_type(csharpdb_result_t result, int column_index);

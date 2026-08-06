@@ -47,15 +47,15 @@ public class ParserTests
     [InlineData("UNIQUEIDENTIFIER", SqlTypeKind.Uuid)]
     [InlineData("DATE", SqlTypeKind.Date)]
     [InlineData("TIME", SqlTypeKind.Time)]
-    [InlineData("TIMESTAMP", SqlTypeKind.Timestamp)]
     [InlineData("TIMESTAMP WITH TIME ZONE", SqlTypeKind.TimestampWithTimeZone)]
     [InlineData("DATETIME", SqlTypeKind.Timestamp)]
+    [InlineData("DATETIME2", SqlTypeKind.Timestamp)]
     [InlineData("DATETIMEOFFSET", SqlTypeKind.TimestampWithTimeZone)]
     [InlineData("INTERVAL YEAR TO MONTH", SqlTypeKind.IntervalYearToMonth)]
     [InlineData("INTERVAL DAY TO SECOND", SqlTypeKind.IntervalDayToSecond)]
     [InlineData("JSON", SqlTypeKind.Json)]
     [InlineData("XML", SqlTypeKind.Xml)]
-    [InlineData("BIT", SqlTypeKind.Bit)]
+    [InlineData("BIT", SqlTypeKind.Boolean)]
     [InlineData("VARBIT", SqlTypeKind.VarBit)]
     [InlineData("BIT VARYING", SqlTypeKind.VarBit)]
     public void Parse_CreateTable_LogicalTypeNamesAndAliases(
@@ -77,7 +77,7 @@ public class ParserTests
     [InlineData("BINARY(16)", SqlTypeKind.Binary, 16, null, null, null)]
     [InlineData("VARBINARY(4096)", SqlTypeKind.VarBinary, 4096, null, null, null)]
     [InlineData("TIME(3)", SqlTypeKind.Time, null, null, null, 3)]
-    [InlineData("TIMESTAMP(6)", SqlTypeKind.Timestamp, null, null, null, 6)]
+    [InlineData("DATETIME2(6)", SqlTypeKind.Timestamp, null, null, null, 6)]
     [InlineData("TIMESTAMP(7) WITH TIME ZONE", SqlTypeKind.TimestampWithTimeZone, null, null, null, 7)]
     [InlineData("INTERVAL DAY TO SECOND(6)", SqlTypeKind.IntervalDayToSecond, null, null, null, 6)]
     [InlineData("BIT(8)", SqlTypeKind.Bit, 8, null, null, null)]
@@ -109,8 +109,10 @@ public class ParserTests
     [InlineData("TIME(-1)")]
     [InlineData("TIME(8)")]
     [InlineData("TIME(9)")]
+    [InlineData("DATETIME(3)")]
     [InlineData("TIMESTAMP(8)")]
     [InlineData("TIMESTAMP(9)")]
+    [InlineData("TIMESTAMP(6)")]
     [InlineData("TIMESTAMP(8) WITH TIME ZONE")]
     [InlineData("TIMESTAMP(9) WITH TIME ZONE")]
     [InlineData("INTERVAL DAY TO SECOND(8)")]
@@ -122,6 +124,56 @@ public class ParserTests
     {
         Assert.Throws<CSharpDbException>(() =>
             Parser.Parse($"CREATE TABLE invalid_type (value {typeSql})"));
+    }
+
+    [Theory]
+    [InlineData("ROWVERSION")]
+    [InlineData("TIMESTAMP")]
+    public void Parse_CreateTable_RowVersionTypeAliasesLowerToGeneratedBlob(string typeSql)
+    {
+        var create = Assert.IsType<CreateTableStatement>(
+            Parser.Parse($"CREATE TABLE versioned (id INTEGER PRIMARY KEY, version {typeSql})"));
+        ColumnDef version = create.Columns[1];
+
+        Assert.Equal(SqlTypeKind.Blob, version.DeclaredType.Kind);
+        Assert.True(version.IsRowVersion);
+        Assert.False(version.IsNullable);
+    }
+
+    [Theory]
+    [InlineData("ROWVERSION")]
+    [InlineData("TIMESTAMP")]
+    public void Parse_CreateTable_RowVersionTypeAliasesRejectExplicitNull(string typeSql)
+    {
+        CSharpDbException error = Assert.Throws<CSharpDbException>(() =>
+            Parser.Parse($"CREATE TABLE versioned (version {typeSql} NULL)"));
+
+        Assert.Contains("cannot be declared NULL", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("ROWVERSION")]
+    [InlineData("TIMESTAMP")]
+    public void Parse_CreateTable_RowVersionTypeAliasesAcceptExplicitNotNull(string typeSql)
+    {
+        var create = Assert.IsType<CreateTableStatement>(
+            Parser.Parse($"CREATE TABLE versioned (version {typeSql} NOT NULL)"));
+
+        ColumnDef version = Assert.Single(create.Columns);
+        Assert.True(version.IsRowVersion);
+        Assert.False(version.IsNullable);
+    }
+
+    [Theory]
+    [InlineData("ROWVERSION")]
+    [InlineData("TIMESTAMP")]
+    [InlineData("TIMESTAMP(6)")]
+    public void Parse_Cast_RejectsGeneratedRowVersionTargets(string targetType)
+    {
+        CSharpDbException error = Assert.Throws<CSharpDbException>(() =>
+            Parser.ParseExpressionSql($"CAST(1 AS {targetType})"));
+
+        Assert.Contains("DATETIME2", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -1456,7 +1508,7 @@ public class ParserTests
     [InlineData("BOOLEAN", SqlTypeKind.Boolean, null, null)]
     [InlineData("DECIMAL(18, 2)", SqlTypeKind.Decimal, 18, 2)]
     [InlineData("VARCHAR(255)", SqlTypeKind.VarChar, null, null)]
-    [InlineData("TIMESTAMP(6) WITH TIME ZONE", SqlTypeKind.TimestampWithTimeZone, null, null)]
+    [InlineData("DATETIMEOFFSET(6)", SqlTypeKind.TimestampWithTimeZone, null, null)]
     public void Parse_AlterTable_LogicalTypeTarget(
         string typeSql,
         SqlTypeKind expectedKind,

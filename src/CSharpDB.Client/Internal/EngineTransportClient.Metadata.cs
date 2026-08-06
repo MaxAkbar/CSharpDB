@@ -93,7 +93,7 @@ internal sealed partial class EngineTransportClient
     {
         await ExecuteStatementAsync(db, $"""
             CREATE TABLE IF NOT EXISTS {SavedQueryTableName} (
-                id INTEGER PRIMARY KEY IDENTITY,
+                id BIGINT PRIMARY KEY IDENTITY,
                 name TEXT NOT NULL,
                 sql_text TEXT NOT NULL,
                 created_utc TEXT NOT NULL,

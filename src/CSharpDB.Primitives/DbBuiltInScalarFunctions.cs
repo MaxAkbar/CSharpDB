@@ -295,9 +295,17 @@ public static class DbBuiltInScalarFunctions
                 value = DbValue.FromText(ToScalarString(args[0]));
                 return true;
             case "CINT":
+                RequireArgumentCount(name, args, 1);
+                value = TryConvertLong(args[0], out long integerValue) &&
+                    integerValue is >= int.MinValue and <= int.MaxValue
+                        ? DbValue.FromInteger(integerValue)
+                        : DbValue.Null;
+                return true;
             case "CLNG":
                 RequireArgumentCount(name, args, 1);
-                value = TryConvertLong(args[0], out long integerValue) ? DbValue.FromInteger(integerValue) : DbValue.Null;
+                value = TryConvertLong(args[0], out long longValue)
+                    ? DbValue.FromInteger(longValue)
+                    : DbValue.Null;
                 return true;
             case "CDBL":
                 RequireArgumentCount(name, args, 1);
@@ -802,7 +810,10 @@ public static class DbBuiltInScalarFunctions
                 result = value.AsInteger != 0;
                 return true;
             case DbType.Real:
-                result = Math.Abs(value.AsReal) > double.Epsilon;
+                if (!double.IsFinite(value.AsReal))
+                    break;
+
+                result = value.AsReal != 0d;
                 return true;
             case DbType.Decimal:
                 result = value.AsDecimal != 0m;
@@ -823,9 +834,10 @@ public static class DbBuiltInScalarFunctions
                     result = false;
                     return true;
                 }
-                if (TryConvertDouble(value, out double numericText))
+                if (TryConvertDouble(value, out double numericText) &&
+                    double.IsFinite(numericText))
                 {
-                    result = Math.Abs(numericText) > double.Epsilon;
+                    result = numericText != 0d;
                     return true;
                 }
                 break;

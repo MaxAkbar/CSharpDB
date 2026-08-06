@@ -171,7 +171,7 @@ public class DataReaderTests : IAsyncLifetime
         await using var reader = await cmd.ExecuteReaderAsync(Ct);
 
         Assert.True(await reader.ReadAsync(Ct));
-        Assert.IsType<long>(reader.GetValue(0));
+        Assert.IsType<int>(reader.GetValue(0));
         Assert.IsType<string>(reader.GetValue(1));
         Assert.IsType<double>(reader.GetValue(2));
     }
@@ -204,7 +204,7 @@ public class DataReaderTests : IAsyncLifetime
         cmd.CommandText = "SELECT * FROM t;";
         await using var reader = await cmd.ExecuteReaderAsync(Ct);
 
-        Assert.Equal(typeof(long), reader.GetFieldType(0));
+        Assert.Equal(typeof(int), reader.GetFieldType(0));
         Assert.Equal(typeof(string), reader.GetFieldType(1));
         Assert.Equal(typeof(double), reader.GetFieldType(2));
     }
@@ -219,6 +219,36 @@ public class DataReaderTests : IAsyncLifetime
         Assert.Equal("INTEGER", reader.GetDataTypeName(0));
         Assert.Equal("TEXT", reader.GetDataTypeName(1));
         Assert.Equal("REAL", reader.GetDataTypeName(2));
+    }
+
+    [Fact]
+    public async Task IntegerAndBigIntResults_ExposeDistinctAdoTypesAndValues()
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText =
+            "SELECT 1 AS small_value, 2147483648 AS large_value, COUNT(*) AS row_count FROM t;";
+        await using var reader = await cmd.ExecuteReaderAsync(Ct);
+
+        Assert.Equal(typeof(int), reader.GetFieldType(0));
+        Assert.Equal(typeof(long), reader.GetFieldType(1));
+        Assert.Equal(typeof(long), reader.GetFieldType(2));
+        Assert.Equal("INTEGER", reader.GetDataTypeName(0));
+        Assert.Equal("BIGINT", reader.GetDataTypeName(1));
+        Assert.Equal("BIGINT", reader.GetDataTypeName(2));
+
+        Assert.True(await reader.ReadAsync(Ct));
+        Assert.Equal(1, Assert.IsType<int>(reader.GetValue(0)));
+        Assert.Equal(2_147_483_648L, Assert.IsType<long>(reader.GetValue(1)));
+        Assert.Equal(2L, Assert.IsType<long>(reader.GetValue(2)));
+
+        DataTable schema = Assert.IsType<DataTable>(reader.GetSchemaTable());
+        Assert.Equal(4, schema.Rows[0]["ColumnSize"]);
+        Assert.Equal((short)10, schema.Rows[0]["NumericPrecision"]);
+        Assert.Equal((int)System.Data.DbType.Int32, schema.Rows[0]["ProviderType"]);
+        Assert.Equal(8, schema.Rows[1]["ColumnSize"]);
+        Assert.Equal((short)19, schema.Rows[1]["NumericPrecision"]);
+        Assert.Equal((int)System.Data.DbType.Int64, schema.Rows[1]["ProviderType"]);
+        Assert.Equal((int)System.Data.DbType.Int64, schema.Rows[2]["ProviderType"]);
     }
 
     [Fact]
@@ -242,6 +272,47 @@ public class DataReaderTests : IAsyncLifetime
         Assert.Equal(-1.20m, reader.GetValue(0));
         Assert.Equal(3.20m, reader.GetValue(1));
         Assert.Equal(true, reader.GetValue(2));
+    }
+
+    [Fact]
+    public async Task BooleanParameterPreservesLogicalMetadataAndCannotEnterArithmetic()
+    {
+        using var command = _conn.CreateCommand();
+        command.CommandText = "SELECT @flag AS flag;";
+        command.Parameters.AddWithValue("@flag", true);
+
+        await using (var reader = await command.ExecuteReaderAsync(Ct))
+        {
+            Assert.Equal(typeof(bool), reader.GetFieldType(0));
+            Assert.Equal("BOOLEAN", reader.GetDataTypeName(0));
+            Assert.True(await reader.ReadAsync(Ct));
+            Assert.True(Assert.IsType<bool>(reader.GetValue(0)));
+        }
+
+        command.CommandText = "SELECT @flag + 1;";
+        await Assert.ThrowsAsync<CSharpDbDataException>(
+            async () => await command.ExecuteScalarAsync(Ct));
+    }
+
+    [Fact]
+    public async Task PreparedParameterCacheIncludesLogicalDbType()
+    {
+        using var command = _conn.CreateCommand();
+        command.CommandText = "SELECT @value AS value;";
+        CSharpDbParameter parameter = command.Parameters.AddWithValue("@value", 1);
+
+        await using (var integerReader = await command.ExecuteReaderAsync(Ct))
+        {
+            Assert.Equal("INTEGER", integerReader.GetDataTypeName(0));
+            Assert.True(await integerReader.ReadAsync(Ct));
+            Assert.Equal(1, Assert.IsType<int>(integerReader.GetValue(0)));
+        }
+
+        parameter.DbType = System.Data.DbType.Boolean;
+        await using var booleanReader = await command.ExecuteReaderAsync(Ct);
+        Assert.Equal("BOOLEAN", booleanReader.GetDataTypeName(0));
+        Assert.True(await booleanReader.ReadAsync(Ct));
+        Assert.True(Assert.IsType<bool>(booleanReader.GetValue(0)));
     }
 
     [Fact]
@@ -275,10 +346,10 @@ public class DataReaderTests : IAsyncLifetime
         Assert.Equal(4, schemaTable.Rows.Count);
         Assert.Equal("id", schemaTable.Rows[0]["ColumnName"]);
         Assert.Equal(0, schemaTable.Rows[0]["ColumnOrdinal"]);
-        Assert.Equal(8, schemaTable.Rows[0]["ColumnSize"]);
-        Assert.Equal((short)19, schemaTable.Rows[0]["NumericPrecision"]);
+        Assert.Equal(4, schemaTable.Rows[0]["ColumnSize"]);
+        Assert.Equal((short)10, schemaTable.Rows[0]["NumericPrecision"]);
         Assert.Equal((short)0, schemaTable.Rows[0]["NumericScale"]);
-        Assert.Equal((int)CSharpDB.Primitives.DbType.Integer, schemaTable.Rows[0]["ProviderType"]);
+        Assert.Equal((int)System.Data.DbType.Int32, schemaTable.Rows[0]["ProviderType"]);
         Assert.Equal("INTEGER", schemaTable.Rows[0]["DataTypeName"]);
         Assert.False((bool)schemaTable.Rows[0]["AllowDBNull"]);
         Assert.True((bool)schemaTable.Rows[0]["IsKey"]);
@@ -310,7 +381,11 @@ public class DataReaderTests : IAsyncLifetime
             schemaTable.Columns["IsRowVersion"]!.Ordinal >
             schemaTable.Columns["CollationName"]!.Ordinal);
         Assert.Equal("version", row["ColumnName"]);
+        Assert.Equal("ROWVERSION", row["DataTypeName"]);
+        Assert.Equal(typeof(byte[]), row["DataType"]);
+        Assert.Equal(sizeof(ulong), row["ColumnSize"]);
         Assert.True((bool)row["IsRowVersion"]);
+        Assert.True((bool)row["IsReadOnly"]);
         Assert.False((bool)row["AllowDBNull"]);
     }
 
@@ -383,7 +458,7 @@ public class DataReaderTests : IAsyncLifetime
         var values = new object[4];
         int count = reader.GetValues(values);
         Assert.Equal(4, count);
-        Assert.Equal(1L, values[0]);
+        Assert.Equal(1, values[0]);
         Assert.Equal("Alice", values[1]);
     }
 
@@ -445,7 +520,7 @@ public class DataReaderTests : IAsyncLifetime
         Assert.Equal(typeof(bool), reader.GetFieldType(0));
         Assert.Equal(typeof(byte), reader.GetFieldType(1));
         Assert.Equal(typeof(short), reader.GetFieldType(2));
-        Assert.Equal(typeof(long), reader.GetFieldType(3));
+        Assert.Equal(typeof(int), reader.GetFieldType(3));
         Assert.Equal(typeof(long), reader.GetFieldType(4));
         Assert.Equal(typeof(double), reader.GetFieldType(5));
         Assert.Equal(typeof(double), reader.GetFieldType(6));

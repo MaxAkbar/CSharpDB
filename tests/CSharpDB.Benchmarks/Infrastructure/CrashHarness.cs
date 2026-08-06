@@ -23,6 +23,10 @@ internal static class CrashHarness
                 await CrashImmediatelyAfterCommitReturnsAsync(dbPath, markerPath);
                 return;
 
+            case "rowversion-commit-after-return":
+                await CrashImmediatelyAfterRowVersionCommitReturnsAsync(dbPath, markerPath);
+                return;
+
             case "checkpoint-start":
                 await CrashDuringCheckpointStartAsync(dbPath, markerPath);
                 return;
@@ -53,6 +57,16 @@ internal static class CrashHarness
         await using var db = await Database.OpenAsync(dbPath);
         await db.ExecuteAsync("INSERT INTO t VALUES (1, 101)");
         File.WriteAllText(markerPath, "commit-returned");
+        TerminateProcessNow();
+    }
+
+    private static async Task CrashImmediatelyAfterRowVersionCommitReturnsAsync(
+        string dbPath,
+        string markerPath)
+    {
+        await using var db = await Database.OpenAsync(dbPath);
+        await db.ExecuteAsync("INSERT INTO versions (id) VALUES (1)");
+        File.WriteAllText(markerPath, "rowversion-commit-returned");
         TerminateProcessNow();
     }
 

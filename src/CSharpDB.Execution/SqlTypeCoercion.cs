@@ -204,9 +204,8 @@ internal static class SqlTypeCoercion
             RequireRange(GetExactInteger(value, explicitCast), byte.MinValue, byte.MaxValue, targetType)),
         SqlTypeKind.SmallInt => DbValue.FromInteger(
             RequireRange(GetExactInteger(value, explicitCast), short.MinValue, short.MaxValue, targetType)),
-        // CSharpDB INTEGER is an established signed 64-bit type. BIGINT is a
-        // portable SQL spelling over the same physical range.
-        SqlTypeKind.Integer => DbValue.FromInteger(GetExactInteger(value, explicitCast)),
+        SqlTypeKind.Integer => DbValue.FromInteger(
+            RequireRange(GetExactInteger(value, explicitCast), int.MinValue, int.MaxValue, targetType)),
         SqlTypeKind.BigInt => DbValue.FromInteger(GetExactInteger(value, explicitCast)),
         SqlTypeKind.Real => CoerceReal(value, singlePrecision: true, explicitCast),
         SqlTypeKind.Double => CoerceReal(value, singlePrecision: false, explicitCast),
@@ -233,12 +232,17 @@ internal static class SqlTypeCoercion
 
     private static DbValue CoerceBoolean(DbValue value, bool explicitCast)
     {
-        if (value.Type == DbType.Integer && value.AsInteger is 0 or 1)
-            return value;
-        if (value.Type == DbType.Decimal && value.AsDecimal is 0m or 1m)
-            return DbValue.FromInteger(decimal.ToInt64(value.AsDecimal));
-        if (value.Type == DbType.Real && value.AsReal is 0d or 1d)
-            return DbValue.FromInteger((long)value.AsReal);
+        if (value.Type == DbType.Integer)
+            return DbValue.FromInteger(value.AsInteger == 0 ? 0 : 1);
+        if (value.Type == DbType.Decimal)
+            return DbValue.FromInteger(value.AsDecimal == 0m ? 0 : 1);
+        if (value.Type == DbType.Real)
+        {
+            if (!double.IsFinite(value.AsReal))
+                throw new OverflowException("Non-finite floating-point values cannot be converted to BOOLEAN.");
+
+            return DbValue.FromInteger(value.AsReal == 0d ? 0 : 1);
+        }
         if (value.Type == DbType.Text)
         {
             string text = value.AsText.Trim();
@@ -250,8 +254,8 @@ internal static class SqlTypeCoercion
 
         throw new InvalidOperationException(
             explicitCast
-                ? "BOOLEAN accepts TRUE, FALSE, 1, or 0."
-                : "BOOLEAN assignments must resolve to TRUE/FALSE or 1/0.");
+                ? "BOOLEAN accepts TRUE, FALSE, or a finite numeric value."
+                : "BOOLEAN assignments must resolve to TRUE/FALSE or a finite numeric value.");
     }
 
     private static long GetExactInteger(DbValue value, bool explicitCast)
@@ -457,7 +461,7 @@ internal static class SqlTypeCoercion
 
     private static DbValue CoerceTimestamp(DbValue value, SqlTypeDescriptor targetType)
     {
-        string text = RequireText(value, "TIMESTAMP");
+        string text = RequireText(value, "DATETIME2");
         SplitTimestamp(text, out DateOnly date, out string timeText);
         string time = NormalizeTime(timeText, targetType.FractionalSecondsPrecision, out _);
         return DbValue.FromText($"{CSharpDbTextCodec.FormatDate(date)} {time}");
@@ -467,7 +471,7 @@ internal static class SqlTypeCoercion
         DbValue value,
         SqlTypeDescriptor targetType)
     {
-        string text = RequireText(value, "TIMESTAMP WITH TIME ZONE").Trim();
+        string text = RequireText(value, "DATETIMEOFFSET").Trim();
         TimeSpan offset;
         string localTimestamp;
         if (text.EndsWith('Z') || text.EndsWith('z'))

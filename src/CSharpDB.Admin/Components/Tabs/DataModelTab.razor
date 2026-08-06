@@ -263,8 +263,8 @@
                                     <option>UUID</option>
                                     <option>DATE</option>
                                     <option>TIME</option>
-                                    <option>TIMESTAMP</option>
-                                    <option>TIMESTAMP WITH TIME ZONE</option>
+                                    <option>DATETIME2</option>
+                                    <option>DATETIMEOFFSET</option>
                                     <option>INTERVAL YEAR TO MONTH</option>
                                     <option>INTERVAL DAY TO SECOND</option>
                                     <option>JSON</option>
@@ -1088,7 +1088,9 @@
                 Name = pkName,
                 TypeLabel = _newTablePrimaryKeyType,
                 IsPrimaryKey = true,
-                IsIdentity = string.Equals(_newTablePrimaryKeyType, "INTEGER", StringComparison.OrdinalIgnoreCase),
+                IsIdentity =
+                    string.Equals(_newTablePrimaryKeyType, "INTEGER", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(_newTablePrimaryKeyType, "BIGINT", StringComparison.OrdinalIgnoreCase),
                 Nullable = false,
             },
         };

@@ -223,6 +223,97 @@ public sealed class MigrationPlannerTests
             mapping.Conversion?.ConversionId);
     }
 
+    [Theory]
+    [InlineData("tinyint", "signedInteger", DbType.Integer, "TINYINT")]
+    [InlineData("smallint", "signedInteger", DbType.Integer, "SMALLINT")]
+    [InlineData("int", "signedInteger", DbType.Integer, "INTEGER")]
+    [InlineData("bigint", "signedInteger", DbType.Integer, "BIGINT")]
+    [InlineData("bit", "boolean", DbType.Integer, "BOOLEAN")]
+    [InlineData("timestamp", "rowVersion", DbType.Blob, "ROWVERSION")]
+    [InlineData("rowversion", "rowVersion", DbType.Blob, "ROWVERSION")]
+    [InlineData("datetime", "dateTime", DbType.Text, "DATETIME2")]
+    [InlineData("smalldatetime", "dateTime", DbType.Text, "DATETIME2")]
+    [InlineData("datetime2", "dateTime", DbType.Text, "DATETIME2(7)")]
+    [InlineData("datetimeoffset", "dateTimeOffset", DbType.Text, "DATETIMEOFFSET(7)")]
+    public void SqlServerMappings_RetainCanonicalLogicalTargetType(
+        string sourceType,
+        string logicalType,
+        DbType targetType,
+        string targetSqlType)
+    {
+        var source = new MigrationCatalogObject
+        {
+            ObjectId = $"sqlserver:column:{sourceType}",
+            Kind = MigrationObjectKind.Column,
+            SourceName = sourceType,
+            NativeType = $"sys.{sourceType}",
+            Facets =
+            [
+                new MigrationCatalogFacet { Name = "logicalType", Value = logicalType },
+                new MigrationCatalogFacet { Name = "sqlServerSystemTypeName", Value = sourceType },
+                new MigrationCatalogFacet { Name = "sqlServerScale", Value = "7" },
+            ],
+        };
+
+        MigrationTypeMapping mapping = new StandardDataTypeMappingProvider().Map(
+            new MigrationTypeMappingRequest
+            {
+                SourceObject = source,
+                Profile = MigrationMappingProfile.Preserve,
+                Coverage = new MigrationProfileCoverage
+                {
+                    Kind = MigrationCoverageKind.Full,
+                    ValuesExamined = 0,
+                    TotalValues = 0,
+                },
+            }).Mapping;
+
+        Assert.Equal(targetType, mapping.TargetType);
+        Assert.Equal(targetSqlType, mapping.TargetSqlType);
+    }
+
+    [Theory]
+    [InlineData("signedInteger", DbType.Integer, "BIGINT")]
+    [InlineData("boolean", DbType.Integer, "BOOLEAN")]
+    [InlineData("rowVersion", DbType.Blob, "ROWVERSION")]
+    [InlineData("date", DbType.Text, "DATE")]
+    [InlineData("time", DbType.Text, "TIME")]
+    [InlineData("dateTime", DbType.Text, "DATETIME2")]
+    [InlineData("dateTimeOffset", DbType.Text, "DATETIMEOFFSET")]
+    public void ProviderNeutralMappings_RetainSafeLogicalTargetType(
+        string logicalType,
+        DbType targetType,
+        string targetSqlType)
+    {
+        var source = new MigrationCatalogObject
+        {
+            ObjectId = $"generic:column:{logicalType}",
+            Kind = MigrationObjectKind.Column,
+            SourceName = logicalType,
+            NativeType = logicalType,
+            Facets =
+            [
+                new MigrationCatalogFacet { Name = "logicalType", Value = logicalType },
+            ],
+        };
+
+        MigrationTypeMapping mapping = new StandardDataTypeMappingProvider().Map(
+            new MigrationTypeMappingRequest
+            {
+                SourceObject = source,
+                Profile = MigrationMappingProfile.Preserve,
+                Coverage = new MigrationProfileCoverage
+                {
+                    Kind = MigrationCoverageKind.Full,
+                    ValuesExamined = 0,
+                    TotalValues = 0,
+                },
+            }).Mapping;
+
+        Assert.Equal(targetType, mapping.TargetType);
+        Assert.Equal(targetSqlType, mapping.TargetSqlType);
+    }
+
     [Fact]
     public async Task DefaultLoadPolicy_PreservesCanonicalPlanJsonAndDigest()
     {

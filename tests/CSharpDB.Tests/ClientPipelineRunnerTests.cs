@@ -209,7 +209,7 @@ public sealed class ClientPipelineRunnerTests
             object?[] destinationRow = Assert.Single(destinationQuery.Rows!);
             Assert.Equal(new byte[] { 0, 0, 0, 0, 0, 0, 0, 2 }, Assert.IsType<byte[]>(sourceRow[0]));
             Assert.Equal("alpha", destinationRow[0]);
-            Assert.Equal(new byte[] { 0, 0, 0, 0, 0, 0, 0, 1 }, Assert.IsType<byte[]>(destinationRow[1]));
+            Assert.Equal(new byte[] { 0, 0, 0, 0, 0, 0, 0, 3 }, Assert.IsType<byte[]>(destinationRow[1]));
         }
         finally
         {
@@ -272,7 +272,7 @@ public sealed class ClientPipelineRunnerTests
                 "SELECT version FROM versions_dest",
                 ct);
             object?[] row = Assert.Single(query.Rows!);
-            Assert.Equal(new byte[] { 0, 0, 0, 0, 0, 0, 0, 1 }, Assert.IsType<byte[]>(row[0]));
+            Assert.Equal(new byte[] { 0, 0, 0, 0, 0, 0, 0, 2 }, Assert.IsType<byte[]>(row[0]));
         }
         finally
         {
@@ -467,6 +467,27 @@ public sealed class ClientPipelineRunnerTests
             var checkpoint = Assert.Single(checkpointRow.Rows);
             Assert.Equal(2L, Convert.ToInt64(checkpoint[0]));
             Assert.Equal("destination-write", checkpoint[1]);
+
+            var runSchema = await client.GetTableSchemaAsync("_etl_runs", ct);
+            Assert.NotNull(runSchema);
+            foreach (string columnName in new[] { "rows_read", "rows_written", "rows_rejected" })
+            {
+                Assert.Equal(
+                    CSharpDB.Client.Models.SqlTypeKind.BigInt,
+                    Assert.Single(runSchema.Columns, column => column.Name == columnName).DeclaredType?.Kind);
+            }
+
+            var checkpointSchema = await client.GetTableSchemaAsync("_etl_checkpoints", ct);
+            Assert.NotNull(checkpointSchema);
+            Assert.Equal(
+                CSharpDB.Client.Models.SqlTypeKind.BigInt,
+                Assert.Single(checkpointSchema.Columns, column => column.Name == "batch_number").DeclaredType?.Kind);
+
+            var rejectSchema = await client.GetTableSchemaAsync("_etl_rejects", ct);
+            Assert.NotNull(rejectSchema);
+            Assert.Equal(
+                CSharpDB.Client.Models.SqlTypeKind.BigInt,
+                Assert.Single(rejectSchema.Columns, column => column.Name == "row_number").DeclaredType?.Kind);
         }
         finally
         {

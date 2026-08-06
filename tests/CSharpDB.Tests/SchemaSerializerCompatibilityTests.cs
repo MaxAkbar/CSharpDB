@@ -355,6 +355,7 @@ public sealed class SchemaSerializerCompatibilityTests
     [InlineData(8UL)]
     [InlineData(9UL)]
     [InlineData(10UL)]
+    [InlineData(11UL)]
     public void Deserialize_PreviousVersionedTableMetadata_DefaultsNewConstraintFields(
         ulong metadataVersion)
     {
@@ -379,6 +380,7 @@ public sealed class SchemaSerializerCompatibilityTests
     [InlineData(8UL)]
     [InlineData(9UL)]
     [InlineData(10UL)]
+    [InlineData(11UL)]
     public void Deserialize_DeclaredMetadataVersion_RequiresCompletePayload(
         ulong metadataVersion)
     {
@@ -404,6 +406,7 @@ public sealed class SchemaSerializerCompatibilityTests
     [InlineData(8UL)]
     [InlineData(9UL)]
     [InlineData(10UL)]
+    [InlineData(11UL)]
     public void Deserialize_VersionedMetadata_RejectsTrailingBytes(
         ulong metadataVersion)
     {
@@ -417,14 +420,38 @@ public sealed class SchemaSerializerCompatibilityTests
     }
 
     [Fact]
-    public void Deserialize_ExplicitlyRejectsUnknownVersionAfterVersionTen()
+    public void Deserialize_ExplicitlyRejectsUnknownVersionAfterVersionEleven()
     {
-        byte[] payload = BuildVersionedTableSchemaPayload(11);
+        byte[] payload = BuildVersionedTableSchemaPayload(12);
 
         InvalidDataException error = Assert.Throws<InvalidDataException>(
             () => SchemaSerializer.Deserialize(payload));
 
-        Assert.Contains("version '11'", error.Message, StringComparison.Ordinal);
+        Assert.Contains("version '12'", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Deserialize_VersionTenIntegerDescriptor_UpgradesToBigInt()
+    {
+        byte[] payload = BuildVersionedTableSchemaPayload(
+            10,
+            firstColumnDeclaredKind: SqlTypeKind.Integer);
+
+        TableSchema decoded = SchemaSerializer.Deserialize(payload);
+
+        Assert.Equal(SqlTypeKind.BigInt, decoded.Columns[0].DeclaredType?.Kind);
+    }
+
+    [Fact]
+    public void Deserialize_VersionElevenIntegerDescriptor_RemainsInteger()
+    {
+        byte[] payload = BuildVersionedTableSchemaPayload(
+            11,
+            firstColumnDeclaredKind: SqlTypeKind.Integer);
+
+        TableSchema decoded = SchemaSerializer.Deserialize(payload);
+
+        Assert.Equal(SqlTypeKind.Integer, decoded.Columns[0].DeclaredType?.Kind);
     }
 
     [Fact]
@@ -1090,7 +1117,9 @@ public sealed class SchemaSerializerCompatibilityTests
         return ms.ToArray();
     }
 
-    private static byte[] BuildVersionedTableSchemaPayload(ulong metadataVersion)
+    private static byte[] BuildVersionedTableSchemaPayload(
+        ulong metadataVersion,
+        SqlTypeKind? firstColumnDeclaredKind = null)
     {
         ColumnDefinition[] columns =
         [
@@ -1135,7 +1164,21 @@ public sealed class SchemaSerializerCompatibilityTests
         {
             WriteVarint(ms, (ulong)columns.Length); // declared SQL type column count
             for (int i = 0; i < columns.Length; i++)
-                ms.WriteByte(0); // absent declared type (legacy fallback)
+            {
+                if (i == 0 && firstColumnDeclaredKind is SqlTypeKind kind)
+                {
+                    ms.WriteByte(1); // present declared type
+                    WriteVarint(ms, (ulong)kind);
+                    WriteVarint(ms, 0); // absent length
+                    WriteVarint(ms, 0); // absent precision
+                    WriteVarint(ms, 0); // absent scale
+                    WriteVarint(ms, 0); // absent fractional-seconds precision
+                }
+                else
+                {
+                    ms.WriteByte(0); // absent declared type (legacy fallback)
+                }
+            }
         }
         return ms.ToArray();
     }

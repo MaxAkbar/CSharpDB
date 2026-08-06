@@ -193,13 +193,11 @@ public sealed class CSharpDbModelValidator : RelationalModelValidator
 
         string storeType =
             property.GetRelationalTypeMapping().StoreType;
-        if (!string.Equals(
-                storeType.Trim(),
-                "BLOB",
-                StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(storeType.Trim(), "ROWVERSION", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(storeType.Trim(), "BLOB", StringComparison.OrdinalIgnoreCase))
         {
             throw new NotSupportedException(
-                $"Property '{displayName}' uses rowversion store type '{storeType}', but the CSharpDB EF Core provider requires BLOB.");
+                $"Property '{displayName}' uses rowversion store type '{storeType}', but the CSharpDB EF Core provider requires ROWVERSION (or legacy BLOB storage).");
         }
 
         if (property.FindAnnotation(

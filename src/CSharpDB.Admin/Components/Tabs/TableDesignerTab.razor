@@ -61,7 +61,7 @@
                             <td>
                                 <select class="designer-cell-select"
                                         value="@col.DataType"
-                                        @onchange="e => col.DataType = e.Value?.ToString() ?? string.Empty"
+                                        @onchange="e => OnDataTypeChanged(idx, e.Value?.ToString() ?? string.Empty)"
                                         @onfocus="() => _selectedIndex = idx">
                                     <option value="INTEGER">INTEGER</option>
                                     <option value="BOOLEAN">BOOLEAN</option>
@@ -80,8 +80,9 @@
                                     <option value="UUID">UUID</option>
                                     <option value="DATE">DATE</option>
                                     <option value="TIME">TIME</option>
-                                    <option value="TIMESTAMP">TIMESTAMP</option>
-                                    <option value="TIMESTAMP WITH TIME ZONE">TIMESTAMP WITH TIME ZONE</option>
+                                    <option value="DATETIME2">DATETIME2</option>
+                                    <option value="DATETIMEOFFSET">DATETIMEOFFSET</option>
+                                    <option value="ROWVERSION">ROWVERSION</option>
                                     <option value="INTERVAL YEAR TO MONTH">INTERVAL YEAR TO MONTH</option>
                                     <option value="INTERVAL DAY TO SECOND">INTERVAL DAY TO SECOND</option>
                                     <option value="JSON">JSON</option>
@@ -92,16 +93,17 @@
                             </td>
                             <td class="center-cell">
                                 <input type="checkbox" checked="@col.IsPrimaryKey"
+                                       disabled="@(col.DataType == "ROWVERSION")"
                                        @onchange="e => OnPrimaryKeyChanged(idx, (bool)(e.Value ?? false))" />
                             </td>
                             <td class="center-cell">
                                 <input type="checkbox" checked="@col.IsIdentity"
-                                       disabled="@(!col.IsPrimaryKey || col.DataType != "INTEGER")"
+                                       disabled="@(!CanUseIdentity(col))"
                                        @onchange="e => col.IsIdentity = (bool)(e.Value ?? false)" />
                             </td>
                             <td class="center-cell">
                                 <input type="checkbox" checked="@col.AllowNulls"
-                                       disabled="@col.IsPrimaryKey"
+                                       disabled="@(col.IsPrimaryKey || col.DataType == "ROWVERSION")"
                                        @onchange="e => col.AllowNulls = (bool)(e.Value ?? false)" />
                             </td>
                             <td class="center-cell">
@@ -192,12 +194,34 @@
     private void OnPrimaryKeyChanged(int index, bool isPk)
     {
         var col = _columns[index];
+        if (col.DataType == "ROWVERSION")
+            return;
+
         col.IsPrimaryKey = isPk;
         if (isPk)
             col.AllowNulls = false;
         else
             col.IsIdentity = false;
     }
+
+    private void OnDataTypeChanged(int index, string dataType)
+    {
+        DesignerColumn column = _columns[index];
+        column.DataType = dataType;
+        if (dataType == "ROWVERSION")
+        {
+            column.IsPrimaryKey = false;
+            column.IsIdentity = false;
+            column.AllowNulls = false;
+        }
+        else if (!CanUseIdentity(column))
+        {
+            column.IsIdentity = false;
+        }
+    }
+
+    private static bool CanUseIdentity(DesignerColumn column) =>
+        column.IsPrimaryKey && column.DataType is "INTEGER" or "BIGINT";
 
     private string? BuildCreateTableSql()
     {

@@ -1,7 +1,6 @@
 using System.Data;
 using System.Data.Common;
 using CSharpDB.Data;
-using PrimitiveDbType = CSharpDB.Primitives.DbType;
 
 namespace CSharpDB.Data.Tests;
 
@@ -94,7 +93,7 @@ public sealed class PhysicalExplainCommandTests : IAsyncLifetime
         foreach (string columnName in nullableIntegerColumns)
         {
             int ordinal = reader.GetOrdinal(columnName);
-            Assert.Equal("INTEGER", reader.GetDataTypeName(ordinal));
+            Assert.Equal("BIGINT", reader.GetDataTypeName(ordinal));
             Assert.Equal(typeof(long), reader.GetFieldType(ordinal));
 
             DataRow schemaRow = Assert.Single(
@@ -104,9 +103,9 @@ public sealed class PhysicalExplainCommandTests : IAsyncLifetime
                     columnName,
                     StringComparison.Ordinal));
             Assert.Equal(
-                (int)PrimitiveDbType.Integer,
+                (int)System.Data.DbType.Int64,
                 schemaRow.Field<int>("ProviderType"));
-            Assert.Equal("INTEGER", schemaRow.Field<string>("DataTypeName"));
+            Assert.Equal("BIGINT", schemaRow.Field<string>("DataTypeName"));
             Assert.True(schemaRow.Field<bool>("AllowDBNull"));
         }
 

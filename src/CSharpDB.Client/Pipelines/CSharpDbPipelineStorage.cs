@@ -37,9 +37,9 @@ internal sealed class CSharpDbPipelineCatalog
                     started_utc TEXT NOT NULL,
                     completed_utc TEXT,
                     package_json TEXT,
-                    rows_read INTEGER NOT NULL,
-                    rows_written INTEGER NOT NULL,
-                    rows_rejected INTEGER NOT NULL,
+                    rows_read BIGINT NOT NULL,
+                    rows_written BIGINT NOT NULL,
+                    rows_rejected BIGINT NOT NULL,
                     batches_completed INTEGER NOT NULL,
                     error_summary TEXT
                 );
@@ -49,7 +49,7 @@ internal sealed class CSharpDbPipelineCatalog
                 CREATE TABLE IF NOT EXISTS _etl_checkpoints (
                     run_id TEXT PRIMARY KEY,
                     step_name TEXT,
-                    batch_number INTEGER NOT NULL,
+                    batch_number BIGINT NOT NULL,
                     offset_token TEXT,
                     updated_utc TEXT NOT NULL
                 );
@@ -58,7 +58,7 @@ internal sealed class CSharpDbPipelineCatalog
             await ExecuteNonQueryAsync("""
                 CREATE TABLE IF NOT EXISTS _etl_rejects (
                     run_id TEXT NOT NULL,
-                    row_number INTEGER NOT NULL,
+                    row_number BIGINT NOT NULL,
                     reason TEXT NOT NULL,
                     payload_json TEXT
                 );

@@ -95,7 +95,8 @@ public sealed record SqlResultResponse(
     int RowsAffected,
     string? Error,
     double ElapsedMs,
-    bool[]? ColumnNullability = null);
+    bool[]? ColumnNullability = null,
+    IReadOnlyList<ColumnResponse>? Columns = null);
 
 public sealed record ShardSqlExecutionResultResponse(
     string ShardId,

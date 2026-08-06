@@ -934,7 +934,7 @@ public sealed class MigrationCompatibilityCommandRunnerTests
         Assert.Equal(
             "csharpdb-standard-mapping",
             root.GetProperty("mappingPolicyId").GetString());
-        Assert.Equal(1, root.GetProperty("mappingPolicyVersion").GetInt32());
+        Assert.Equal(2, root.GetProperty("mappingPolicyVersion").GetInt32());
         Assert.Equal(1, root.GetProperty("summary").GetProperty("total").GetInt32());
         Assert.Single(root.GetProperty("entries").EnumerateArray());
     }

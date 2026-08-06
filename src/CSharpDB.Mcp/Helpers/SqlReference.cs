@@ -10,20 +10,25 @@ internal static class SqlReference
         ═══ CSharpDB SQL Reference ═══
 
         ── DATA TYPES ──
-        INTEGER  (aliases: INT)           — 64-bit signed integer
+        INTEGER  (alias: INT)             — signed 32-bit integer
+        BIGINT                            — signed 64-bit integer
+        BOOLEAN  (aliases: BOOL, bare BIT)— logical Boolean
+        BIT(n) / VARBIT(n)                — fixed/variable-length bit strings
         REAL     (aliases: FLOAT, DOUBLE) — 64-bit IEEE 754 float
-        TEXT     (aliases: VARCHAR)        — UTF-8 string (quote with single quotes, escape: '')
+        TEXT     (aliases: VARCHAR)       — UTF-8 string (quote with single quotes, escape: '')
         BLOB                              — binary byte array
+        DATETIME2 / DATETIMEOFFSET        — temporal timestamp / timestamp with offset
+        ROWVERSION (alias: bare TIMESTAMP)— generated eight-byte concurrency token
 
         ── CONSTRAINTS ──
         PRIMARY KEY
           — column or table syntax; table-level logical keys use INTEGER/TEXT
           — ordered composite INTEGER/TEXT logical keys are supported
-          — a single INTEGER key retains generated row-identity behavior
+          — a single INTEGER or BIGINT key retains generated row-identity behavior
         UNIQUE (col [, ...])
           — table constraint; ordered scalar/composite INTEGER/TEXT candidate key
         IDENTITY | AUTOINCREMENT
-          — INTEGER PRIMARY KEY identity marker (explicit inserts remain allowed)
+          — INTEGER/BIGINT PRIMARY KEY identity marker (explicit inserts remain allowed)
         NOT NULL
           — column constraint
         DEFAULT literal

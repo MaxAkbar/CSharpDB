@@ -1034,9 +1034,9 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
             CREATE TABLE http_double_key (key_value DOUBLE PRECISION PRIMARY KEY, note TEXT);
             CREATE TABLE http_date_key (key_value DATE PRIMARY KEY, note TEXT);
             CREATE TABLE http_time_key (key_value TIME(7) PRIMARY KEY, note TEXT);
-            CREATE TABLE http_timestamp_key (key_value TIMESTAMP(7) PRIMARY KEY, note TEXT);
+            CREATE TABLE http_timestamp_key (key_value DATETIME2(7) PRIMARY KEY, note TEXT);
             CREATE TABLE http_zoned_key (
-                key_value TIMESTAMP(7) WITH TIME ZONE PRIMARY KEY,
+                key_value DATETIMEOFFSET(7) PRIMARY KEY,
                 note TEXT
             );
             CREATE TABLE http_interval_key (

@@ -1091,10 +1091,12 @@
 
     private static string GetColumnTypeLabel(ColumnDefinition column)
     {
-        string type = column.EffectiveType.ToSql().ToLowerInvariant();
+        string type = column.IsRowVersion
+            ? "rowversion"
+            : column.EffectiveType.ToSql().ToLowerInvariant();
         if (column.IsPrimaryKey)
             return $"{type} pk";
-        return column.IsRowVersion ? $"{type} rv" : type;
+        return type;
     }
 
     private static string GetIndexTypeLabel(IndexSchema index)

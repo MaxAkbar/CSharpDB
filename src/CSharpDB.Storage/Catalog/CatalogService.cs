@@ -19,6 +19,7 @@ internal sealed class CatalogService
     private const long ColumnStatsCatalogSentinel = long.MaxValue - 4;
     private const long ColumnDistributionStatsCatalogSentinel = long.MaxValue - 5;
     private const long IndexPrefixStatsCatalogSentinel = long.MaxValue - 6;
+    private const long RowVersionHighWaterCatalogSentinel = long.MaxValue - 7;
 
     private readonly Pager _pager;
     private readonly ISchemaSerializer _schemaSerializer;
@@ -28,6 +29,7 @@ internal sealed class CatalogService
     private readonly CatalogCache _cacheState = new();
     private BTree? _catalogTree;
     private long _schemaVersion;
+    private ulong _rowVersionHighWater;
     private IndexSchema[] _indexesSnapshot = Array.Empty<IndexSchema>();
     private string[] _viewNamesSnapshot = Array.Empty<string>();
     private TriggerSchema[] _triggersSnapshot = Array.Empty<TriggerSchema>();
@@ -168,6 +170,7 @@ internal sealed class CatalogService
     }
 
     public long SchemaVersion => Volatile.Read(ref _schemaVersion);
+    public ulong RowVersionHighWater => _rowVersionHighWater;
     public bool HasAdvisoryCatalogContentChanges => _advisoryCatalogContentChanged;
 
     public async ValueTask ReloadAsync(CancellationToken ct = default)
@@ -192,6 +195,7 @@ internal sealed class CatalogService
         _tableRootPages.Clear();
         _tableTrees.Clear();
         _persistedTableNextRowIds.Clear();
+        _rowVersionHighWater = 0;
         _foreignKeysByTable.Clear();
         _referencingForeignKeysByParentTable.Clear();
         _referencingForeignKeysByParentTableId.Clear();
@@ -420,6 +424,19 @@ internal sealed class CatalogService
                 continue;
             }
 
+            if (cursor.CurrentKey == RowVersionHighWaterCatalogSentinel)
+            {
+                if (cursor.CurrentValue.Length != sizeof(ulong))
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.CorruptDatabase,
+                        "The database-wide ROWVERSION allocator metadata is invalid.");
+                }
+
+                _rowVersionHighWater = BinaryPrimitives.ReadUInt64LittleEndian(cursor.CurrentValue.Span);
+                continue;
+            }
+
             var data = cursor.CurrentValue;
             // Data format: [4 bytes root page ID] [schema bytes]
             uint rootPage = _catalogStore.ReadRootPage(data.Span);
@@ -514,6 +531,26 @@ internal sealed class CatalogService
         ReconcileLoadedStatisticsFreshness();
         if (_advisoryStatisticsPersistenceMode == AdvisoryStatisticsPersistenceMode.Immediate)
             await PopulateImmediateTableStatisticsAsync(ct);
+    }
+
+    public async ValueTask PersistRowVersionHighWaterAsync(
+        ulong rowVersionHighWater,
+        CancellationToken ct = default)
+    {
+        if (rowVersionHighWater <= _rowVersionHighWater)
+            return;
+
+        await EnsureCatalogTreeAsync(ct);
+        var payload = new byte[sizeof(ulong)];
+        BinaryPrimitives.WriteUInt64LittleEndian(payload, rowVersionHighWater);
+        // Replace defensively instead of trusting the catalog cache. An
+        // isolated write transaction can commit allocator metadata before a
+        // shared catalog instance reloads, and the durable sentinel must still
+        // be updated rather than treated as a duplicate key.
+        await _catalogTree!.DeleteAsync(RowVersionHighWaterCatalogSentinel, ct);
+        await _catalogTree!.InsertAsync(RowVersionHighWaterCatalogSentinel, payload, ct);
+        _rowVersionHighWater = rowVersionHighWater;
+        _pager.SchemaRootPage = _catalogTree.RootPageId;
     }
 
     // ============ TABLE operations ============

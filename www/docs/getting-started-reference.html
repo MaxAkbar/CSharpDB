@@ -129,10 +129,14 @@
                 </code></pre></div>
                 <p>Supported column types:</p>
                 <ul>
-                <li><code>INTEGER</code> — 64-bit signed integer (<code>long</code>)</li>
+                <li><code>INTEGER</code> — 32-bit signed integer (<code>int</code>)</li>
+                <li><code>BIGINT</code> — 64-bit signed integer (<code>long</code>)</li>
+                <li><code>BOOLEAN</code> / <code>BOOL</code> / bare <code>BIT</code> — logical Boolean</li>
                 <li><code>REAL</code> — 64-bit floating point (<code>double</code>)</li>
                 <li><code>TEXT</code> — UTF-8 string</li>
                 <li><code>BLOB</code> — raw byte array</li>
+                <li><code>DATETIME2</code> / <code>DATETIMEOFFSET</code> — temporal values</li>
+                <li><code>ROWVERSION</code> / bare <code>TIMESTAMP</code> — generated eight-byte concurrency token</li>
                 </ul>
                 <p>Column constraints:</p>
                 <ul>

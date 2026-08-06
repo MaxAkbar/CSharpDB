@@ -118,9 +118,11 @@ public sealed record SqlTypeDescriptor
         SqlTypeKind.Uuid => "UUID",
         SqlTypeKind.Date => "DATE",
         SqlTypeKind.Time => FormatFractionalSeconds("TIME"),
-        SqlTypeKind.Timestamp => FormatFractionalSeconds("TIMESTAMP"),
-        SqlTypeKind.TimestampWithTimeZone =>
-            $"{FormatFractionalSeconds("TIMESTAMP")} WITH TIME ZONE",
+        // Timestamp remains the persisted enum name for compatibility. Its
+        // canonical SQL spelling is DATETIME2 now that bare TIMESTAMP denotes
+        // a generated rowversion column.
+        SqlTypeKind.Timestamp => FormatFractionalSeconds("DATETIME2"),
+        SqlTypeKind.TimestampWithTimeZone => FormatFractionalSeconds("DATETIMEOFFSET"),
         SqlTypeKind.IntervalYearToMonth => "INTERVAL YEAR TO MONTH",
         SqlTypeKind.IntervalDayToSecond =>
             FractionalSecondsPrecision is int fractionalSecondsPrecision

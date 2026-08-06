@@ -430,8 +430,11 @@ public static class NativeExports
                 return IntPtr.Zero;
 
             ColumnDefinition column = result.Schema[columnIndex];
-            string type = column.DeclaredType?.ToSql() ??
-                column.Type.ToString().ToUpperInvariant();
+            string type = column.IsRowVersion
+                ? "ROWVERSION"
+                : column.Type == DbType.Null && column.DeclaredType is null
+                    ? "NULL"
+                    : column.EffectiveType.ToSql();
             return StringCache.GetOrAddColumnType(resultHandle, columnIndex, type);
         }
         catch (Exception ex)

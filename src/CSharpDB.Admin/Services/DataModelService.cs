@@ -234,10 +234,7 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
                 sb.Append("    ")
                     .Append(FormatIdentifier(column.Name))
                     .Append(' ')
-                    .Append(column.TypeLabel);
-
-                if (column.IsRowVersion)
-                    sb.Append(" ROWVERSION");
+                    .Append(column.IsRowVersion ? "ROWVERSION" : column.TypeLabel);
                 if (column.IsPrimaryKey)
                     sb.Append(" PRIMARY KEY");
                 if (column.IsIdentity)
@@ -366,11 +363,17 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
                 DataModelNode? addNode = FindStateNode(state, operation.TableName);
                 if (addNode is not null && !addNode.Columns.Any(column => string.Equals(column.Name, operation.ColumnName, StringComparison.OrdinalIgnoreCase)))
                 {
+                    string normalizedColumnType = NormalizeTypeLabel(operation.ColumnType);
+                    bool isRowVersion = string.Equals(
+                        normalizedColumnType,
+                        "ROWVERSION",
+                        StringComparison.Ordinal);
                     addNode.Columns.Add(new DataModelColumn
                     {
                         Name = RequireValue(operation.ColumnName, "column name"),
-                        TypeLabel = NormalizeTypeLabel(operation.ColumnType),
-                        Nullable = !operation.NotNull,
+                        TypeLabel = normalizedColumnType,
+                        IsRowVersion = isRowVersion,
+                        Nullable = !operation.NotNull && !isRowVersion,
                     });
                 }
                 break;
@@ -521,9 +524,9 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
             sb.Append("    ")
                 .Append(FormatIdentifier(column.Name))
                 .Append(' ')
-                .Append(NormalizeTypeLabel(column.TypeLabel));
-            if (column.IsRowVersion)
-                sb.Append(" ROWVERSION");
+                .Append(column.IsRowVersion
+                    ? "ROWVERSION"
+                    : NormalizeTypeLabel(column.TypeLabel));
             if (column.IsPrimaryKey)
                 sb.Append(" PRIMARY KEY");
             if (column.IsIdentity)
@@ -684,7 +687,7 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
     private static DataModelColumnMetadata MapColumn(ColumnDefinition column) => new()
     {
         Name = column.Name,
-        TypeLabel = column.EffectiveType.ToSql(),
+        TypeLabel = column.IsRowVersion ? "ROWVERSION" : column.EffectiveType.ToSql(),
         IsPrimaryKey = column.IsPrimaryKey,
         IsIdentity = column.IsIdentity,
         IsRowVersion = column.IsRowVersion,
@@ -696,8 +699,10 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
     private static DataModelColumnMetadata MapArchiveColumn(ArchiveColumn column) => new()
     {
         Name = column.Name,
-        TypeLabel = (column.DeclaredType ??
-            CSharpDB.Primitives.SqlTypeDescriptor.FromLegacy(column.Type)).ToSql(),
+        TypeLabel = column.IsRowVersion
+            ? "ROWVERSION"
+            : (column.DeclaredType ??
+                CSharpDB.Primitives.SqlTypeDescriptor.FromLegacy(column.Type)).ToSql(),
         IsPrimaryKey = column.IsPrimaryKey,
         IsIdentity = column.IsIdentity,
         IsRowVersion = column.IsRowVersion,
@@ -769,7 +774,7 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
         ThrowIfSqlError(await client.ExecuteSqlAsync(
             $"""
             CREATE TABLE IF NOT EXISTS {DiagramTableName} (
-                id INTEGER PRIMARY KEY IDENTITY,
+                id BIGINT PRIMARY KEY IDENTITY,
                 name TEXT NOT NULL,
                 diagram_json TEXT NOT NULL,
                 created_utc TEXT NOT NULL,
@@ -835,6 +840,17 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
             }
 
             ColumnDef column = create.Columns[0];
+            if (column.IsRowVersion &&
+                !column.IsPrimaryKey &&
+                !column.IsIdentity &&
+                column.Collation is null &&
+                column.ForeignKey is null &&
+                column.DefaultExpression is null &&
+                column.CheckConstraints.Count == 0)
+            {
+                return "ROWVERSION";
+            }
+
             if (column.IsPrimaryKey || column.IsIdentity || column.IsRowVersion ||
                 !column.IsNullable || column.Collation is not null ||
                 column.ForeignKey is not null || column.DefaultExpression is not null ||

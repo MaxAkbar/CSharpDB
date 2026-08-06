@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+using System.Text;
 using CSharpDB.ImportExport.Models;
 using CSharpDB.ImportExport.TableArchives;
 using CSharpDB.Primitives;
@@ -136,12 +138,12 @@ public sealed class DeclaredTypeTableArchiveTests
             TableArchiveWriter.ToAsyncRows(rows, ct),
             ct);
 
-        Assert.Equal(TableArchiveManifest.LogicalTypesFormatVersion, written.FormatVersion);
+        Assert.Equal(TableArchiveManifest.SqlTypeSemanticsFormatVersion, written.FormatVersion);
 
         archive.Position = 0;
         (var archivedSchema, var manifest) =
             await TableArchiveReader.ReadMetadataAsync(archive, ct);
-        Assert.Equal(TableArchiveManifest.LogicalTypesFormatVersion, manifest.FormatVersion);
+        Assert.Equal(TableArchiveManifest.SqlTypeSemanticsFormatVersion, manifest.FormatVersion);
         Assert.Equal(decimalType, archivedSchema.Columns[1].DeclaredType);
         Assert.Equal(varcharType, archivedSchema.Columns[2].DeclaredType);
 
@@ -194,5 +196,60 @@ public sealed class DeclaredTypeTableArchiveTests
         TableArchiveColumn column = Assert.Single(restored.Columns);
         Assert.Equal(SqlTypeKind.BigInt, column.DeclaredType!.Kind);
         Assert.True(column.IsIdentity);
+    }
+
+    [Fact]
+    public async Task NativeArchive_VersionSevenIntegerDescriptorOpensAsBigInt()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        var schema = new TableSchema
+        {
+            TableName = "preview_integer_archive",
+            Columns =
+            [
+                new ColumnDefinition
+                {
+                    Name = "value",
+                    Type = DbType.Integer,
+                    DeclaredType = SqlTypeDescriptor.Create(SqlTypeKind.Integer),
+                    Nullable = false,
+                },
+            ],
+        };
+
+        await using var currentArchive = new MemoryStream();
+        await TableArchiveWriter.WriteAsync(
+            currentArchive,
+            schema,
+            TableArchiveWriter.ToAsyncRows(
+                [new[] { DbValue.FromInteger(1) }],
+                ct),
+            ct);
+
+        byte[] bytes = currentArchive.ToArray();
+        BinaryPrimitives.WriteInt32LittleEndian(
+            bytes.AsSpan(8),
+            TableArchiveManifest.LogicalTypesFormatVersion);
+        long manifestOffset = BinaryPrimitives.ReadInt64LittleEndian(bytes.AsSpan(24));
+        int manifestLength = BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(32));
+        string manifestJson = Encoding.UTF8.GetString(
+            bytes,
+            checked((int)manifestOffset),
+            manifestLength);
+        string legacyManifestJson = manifestJson.Replace(
+            $"\"formatVersion\": {TableArchiveManifest.SqlTypeSemanticsFormatVersion}",
+            $"\"formatVersion\": {TableArchiveManifest.LogicalTypesFormatVersion}",
+            StringComparison.Ordinal);
+        Assert.NotEqual(manifestJson, legacyManifestJson);
+        Assert.Equal(manifestJson.Length, legacyManifestJson.Length);
+        Encoding.UTF8.GetBytes(legacyManifestJson).CopyTo(
+            bytes.AsSpan(checked((int)manifestOffset), manifestLength));
+
+        await using var legacyArchive = new MemoryStream(bytes);
+        (TableArchiveSchema restored, TableArchiveManifest manifest) =
+            await TableArchiveReader.ReadMetadataAsync(legacyArchive, ct);
+
+        Assert.Equal(TableArchiveManifest.LogicalTypesFormatVersion, manifest.FormatVersion);
+        Assert.Equal(SqlTypeKind.BigInt, Assert.Single(restored.Columns).DeclaredType!.Kind);
     }
 }

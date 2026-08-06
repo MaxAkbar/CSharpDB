@@ -41,6 +41,10 @@ public sealed class Database : IAsyncDisposable
 {
     private const int DefaultStatementCacheCapacity = 512;
     private const int DefaultImplicitConflictRetries = 10;
+    // ROWVERSION values are handed out from a WAL-backed high/low lease.  A
+    // deliberately generous range keeps lease-renewal commits off concurrent
+    // write paths while still failing closed if one transaction exhausts it.
+    private const ulong RowVersionReservationSize = 1UL << 20;
     private static readonly WriteTransactionOptions ImplicitAutoCommitWriteTransactionOptions = new()
     {
         MaxRetries = DefaultImplicitConflictRetries,
@@ -66,10 +70,15 @@ public sealed class Database : IAsyncDisposable
     private readonly Dictionary<string, PendingCollectionCatalogMutation> _pendingCollectionCatalogMutations = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, long> _sharedNextRowIdHints = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _sharedNextRowIdGate = new();
+    private readonly object _sharedRowVersionGate = new();
+    private readonly SemaphoreSlim _sharedRowVersionReservationGate = new(1, 1);
     private readonly SemaphoreSlim _writeOperationGate = new(1, 1);
     private readonly SemaphoreSlim _sharedStateGate = new(1, 1);
     private long _rowIdReservationCount;
     private long _rowIdReservedRowCount;
+    private ulong _sharedRowVersionHighWater;
+    private ulong _sharedRowVersionReservationHighWater;
+    private bool _requireDurableRowVersionReservation;
     private long _transactionIndexedMutationTargetCollectionCount;
     private long _transactionScannedMutationTargetCollectionCount;
     private long _observedSchemaVersion;
@@ -206,7 +215,8 @@ public sealed class Database : IAsyncDisposable
             adaptiveQueryReoptimization: adaptiveQueryReoptimization,
             externalTableBasePath: GetExternalTableBasePath(_databasePath),
             temporaryTables: _temporaryTables,
-            windowExecution: windowExecution);
+            windowExecution: windowExecution,
+            rowVersionAllocator: ReserveSharedRowVersion);
         _statementCache = new StatementCache(DefaultStatementCacheCapacity);
         _observedSchemaVersion = catalog.SchemaVersion;
         RefreshSharedNextRowIdHintsFromCatalog();
@@ -220,6 +230,7 @@ public sealed class Database : IAsyncDisposable
         if (_inTransaction)
             throw new InvalidOperationException("Cannot start a multi-writer transaction while a legacy explicit transaction is active.");
 
+        await EnsureSharedRowVersionReservationAsync(ct);
         PagerWriteTransaction storageTransaction = await _pager.BeginWriteTransactionAsync(ct);
         try
         {
@@ -245,7 +256,8 @@ public sealed class Database : IAsyncDisposable
                 adaptiveQueryReoptimization: _planner.AdaptiveQueryReoptimization,
                 externalTableBasePath: GetExternalTableBasePath(_databasePath),
                 temporaryTables: _temporaryTables,
-                windowExecution: _planner.WindowExecution)
+                windowExecution: _planner.WindowExecution,
+                rowVersionAllocator: ReserveSharedRowVersion)
             {
                 PreferSyncPointLookups = PreferSyncPointLookups,
             };
@@ -255,7 +267,8 @@ public sealed class Database : IAsyncDisposable
                 storageTransaction,
                 transactionCatalog,
                 transactionPlanner,
-                transactionCatalog.SchemaVersion);
+                transactionCatalog.SchemaVersion,
+                transactionCatalog.RowVersionHighWater);
         }
         catch
         {
@@ -335,6 +348,124 @@ public sealed class Database : IAsyncDisposable
     private long ReserveSharedNextRowId(string tableName, long minimumNextRowId)
     {
         return ReserveSharedNextRowIdRange(tableName, minimumNextRowId, 1).Start;
+    }
+
+    private ulong ReserveSharedRowVersion(ulong minimumHighWater)
+    {
+        lock (_sharedRowVersionGate)
+        {
+            ulong highWater = _requireDurableRowVersionReservation
+                ? _sharedRowVersionHighWater
+                : Math.Max(_sharedRowVersionHighWater, minimumHighWater);
+            if (highWater == ulong.MaxValue)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.ConstraintViolation,
+                    "The database-wide ROWVERSION allocator has reached its maximum value.");
+            }
+
+            if (_requireDurableRowVersionReservation &&
+                highWater >= _sharedRowVersionReservationHighWater)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.ConstraintViolation,
+                    "The current transaction exhausted its durable ROWVERSION reservation; retry it in a new transaction.");
+            }
+
+            _sharedRowVersionHighWater = highWater + 1;
+            return _sharedRowVersionHighWater;
+        }
+    }
+
+    private async ValueTask InitializeSharedRowVersionHighWaterAsync(CancellationToken ct)
+    {
+        ulong storedHighWater = await _planner.GetDatabaseRowVersionHighWaterAsync(ct);
+        lock (_sharedRowVersionGate)
+        {
+            _sharedRowVersionHighWater = Math.Max(_sharedRowVersionHighWater, storedHighWater);
+            _sharedRowVersionReservationHighWater = Math.Max(
+                _sharedRowVersionReservationHighWater,
+                storedHighWater);
+            _requireDurableRowVersionReservation = true;
+        }
+    }
+
+    private async ValueTask EnsureSharedRowVersionReservationAsync(CancellationToken ct)
+    {
+        lock (_sharedRowVersionGate)
+        {
+            if (!_requireDurableRowVersionReservation ||
+                _sharedRowVersionHighWater < _sharedRowVersionReservationHighWater)
+            {
+                return;
+            }
+        }
+
+        await _sharedRowVersionReservationGate.WaitAsync(ct);
+        try
+        {
+            ulong currentHighWater;
+            ulong currentReservationHighWater;
+            lock (_sharedRowVersionGate)
+            {
+                if (!_requireDurableRowVersionReservation ||
+                    _sharedRowVersionHighWater < _sharedRowVersionReservationHighWater)
+                {
+                    return;
+                }
+
+                currentHighWater = _sharedRowVersionHighWater;
+                currentReservationHighWater = Math.Max(
+                    _sharedRowVersionReservationHighWater,
+                    _catalog.RowVersionHighWater);
+            }
+
+            ulong reservationBase = Math.Max(currentHighWater, currentReservationHighWater);
+            if (reservationBase > ulong.MaxValue - RowVersionReservationSize)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.ConstraintViolation,
+                    "The database-wide ROWVERSION allocator cannot reserve another durable range.");
+            }
+
+            ulong reservedHighWater = reservationBase + RowVersionReservationSize;
+            await _writeOperationGate.WaitAsync(ct);
+            bool transactionStarted = false;
+            try
+            {
+                await _pager.BeginTransactionAsync(ct);
+                transactionStarted = true;
+                await _catalog.PersistRowVersionHighWaterAsync(reservedHighWater, ct);
+                PagerCommitResult commit = await BeginCommitWithCatalogSyncAsync(ct);
+                transactionStarted = false;
+                await WaitForCommitOrRecoverAsync(commit);
+            }
+            catch
+            {
+                if (transactionStarted)
+                {
+                    try { await _pager.RollbackAsync(CancellationToken.None); } catch { }
+                    try { await _catalog.ReloadAsync(CancellationToken.None); } catch { }
+                }
+
+                throw;
+            }
+            finally
+            {
+                _writeOperationGate.Release();
+            }
+
+            lock (_sharedRowVersionGate)
+            {
+                _sharedRowVersionReservationHighWater = Math.Max(
+                    _sharedRowVersionReservationHighWater,
+                    reservedHighWater);
+            }
+        }
+        finally
+        {
+            _sharedRowVersionReservationGate.Release();
+        }
     }
 
     private (long Start, long EndExclusive) ReserveSharedNextRowIdRange(
@@ -699,6 +830,8 @@ public sealed class Database : IAsyncDisposable
             windowExecution: options.WindowExecution);
         try
         {
+            await database.UpgradeLegacyRowVersionAllocatorAsync(ct);
+            await database.InitializeSharedRowVersionHighWaterAsync(ct);
             await database.EnsureFullTextInternalStoresOnOpenAsync(ct);
             await database.WarmHybridHotSetAsync(hybridOptions, ct);
             return database;
@@ -890,6 +1023,8 @@ public sealed class Database : IAsyncDisposable
     {
         try
         {
+            await database.UpgradeLegacyRowVersionAllocatorAsync(ct);
+            await database.InitializeSharedRowVersionHighWaterAsync(ct);
             await database.EnsureFullTextInternalStoresOnOpenAsync(ct);
             return database;
         }
@@ -897,6 +1032,54 @@ public sealed class Database : IAsyncDisposable
         {
             await database.DisposeAsync();
             throw;
+        }
+    }
+
+    private async ValueTask UpgradeLegacyRowVersionAllocatorAsync(CancellationToken ct)
+    {
+        if (_catalog.RowVersionHighWater != 0)
+            return;
+
+        // Regenerated values must differ from every preview-era per-row token so
+        // outstanding concurrency values are invalidated by the semantics upgrade.
+        ulong legacyHighWater = await _planner.GetDatabaseRowVersionHighWaterAsync(ct);
+        lock (_sharedRowVersionGate)
+            _sharedRowVersionHighWater = Math.Max(_sharedRowVersionHighWater, legacyHighWater);
+
+        await _writeOperationGate.WaitAsync(ct);
+        bool transactionStarted = false;
+        try
+        {
+            await _pager.BeginTransactionAsync(ct);
+            transactionStarted = true;
+            bool regenerated = await _planner.RegenerateLegacyRowVersionTokensAsync(ct);
+            if (!regenerated)
+            {
+                await _pager.RollbackAsync(ct);
+                transactionStarted = false;
+                return;
+            }
+
+            ulong regeneratedHighWater;
+            lock (_sharedRowVersionGate)
+                regeneratedHighWater = _sharedRowVersionHighWater;
+            await _catalog.PersistRowVersionHighWaterAsync(regeneratedHighWater, ct);
+
+            PagerCommitResult commit = await BeginCommitWithCatalogSyncAsync(ct);
+            transactionStarted = false;
+            await WaitForCommitOrRecoverAsync(commit);
+        }
+        catch
+        {
+            if (transactionStarted)
+            {
+                try { await _pager.RollbackAsync(CancellationToken.None); } catch { }
+            }
+            throw;
+        }
+        finally
+        {
+            _writeOperationGate.Release();
         }
     }
 
@@ -1099,6 +1282,7 @@ public sealed class Database : IAsyncDisposable
         IDisposable? writeScope = null;
         try
         {
+            await EnsureSharedRowVersionReservationAsync(ct);
             writeScope = await AcquireWriteOperationScopeAsync(ct);
             await _pager.BeginTransactionAsync(ct);
             result = await _planner.ExecuteInsertAsync(
@@ -1173,6 +1357,7 @@ public sealed class Database : IAsyncDisposable
         IDisposable? writeScope = null;
         try
         {
+            await EnsureSharedRowVersionReservationAsync(ct);
             writeScope = await AcquireWriteOperationScopeAsync(ct);
             await _pager.BeginTransactionAsync(ct);
 
@@ -1221,6 +1406,7 @@ public sealed class Database : IAsyncDisposable
             throw new CSharpDbException(ErrorCode.Unknown, "Transaction already active.");
 
         await FlushPendingAdvisoryStatisticsAsync(ct);
+        await EnsureSharedRowVersionReservationAsync(ct);
         await _writeOperationGate.WaitAsync(ct);
         try
         {
@@ -2326,6 +2512,7 @@ public sealed class Database : IAsyncDisposable
             await _temporaryTables.DisposeAsync();
             await _pager.DisposeAsync();
             _hybridPersistenceCoordinator?.Dispose();
+            _sharedRowVersionReservationGate.Dispose();
             _writeOperationGate.Dispose();
             _sharedStateGate.Dispose();
         }

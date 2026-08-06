@@ -18,6 +18,7 @@ public sealed class XmlQueryFunctionTests
         Assert.Equal(3, exists.MaximumArity);
         Assert.Equal(DbType.Integer, exists.ReturnType);
         Assert.Equal("boolean integer", exists.ReturnTypeRule);
+        Assert.Equal(SqlTypeKind.Boolean, exists.DeclaredReturnType?.Kind);
         Assert.Equal(DbFunctionNullBehavior.Propagates, exists.NullBehavior);
         Assert.True(exists.IsDeterministic);
 
@@ -135,7 +136,7 @@ public sealed class XmlQueryFunctionTests
         Assert.Equal("XML_EXISTS", rows["XML_EXISTS"][1].AsText);
         Assert.Equal("XML_EXISTS", rows["XMLEXISTS"][1].AsText);
         Assert.Equal("XML_EXISTS(2..3)", rows["XMLEXISTS"][2].AsText);
-        Assert.Equal("INTEGER", rows["XML_EXISTS"][3].AsText);
+        Assert.Equal("BOOLEAN", rows["XML_EXISTS"][3].AsText);
         Assert.Equal("XML_VALUE", rows["XML_VALUE"][1].AsText);
         Assert.Equal("TEXT", rows["XML_VALUE"][3].AsText);
         Assert.All(rows.Values, static row =>

@@ -1744,7 +1744,7 @@ public sealed class TypedJsonMigrationCommandRunnerTests
             "2026-07-23 08:09:10.1234567",
             row[6].AsText);
         Assert.Equal(
-            "2026-07-23 08:09:10.1234567-07:00",
+            "2026-07-23 15:09:10.1234567+00:00",
             row[7].AsText);
         Assert.Equal(PrimitiveDbType.Integer, row[8].Type);
         Assert.Equal(long.MinValue, row[8].AsInteger);

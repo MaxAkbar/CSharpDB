@@ -571,7 +571,8 @@ public static class GrpcModelMapper
         };
 
     public static SqlExecutionResultMessage ToMessage(SqlExecutionResult value)
-        => new()
+    {
+        var message = new SqlExecutionResultMessage
         {
             IsQuery = value.IsQuery,
             ColumnNames = value.ColumnNames is null ? null : ToStringList(value.ColumnNames),
@@ -584,6 +585,10 @@ public static class GrpcModelMapper
             Error = value.Error,
             Elapsed = Duration.FromTimeSpan(value.Elapsed),
         };
+        if (value.Columns is not null)
+            message.Columns.Add(value.Columns.Select(ToMessage));
+        return message;
+    }
 
     public static SqlExecutionResult ToModel(SqlExecutionResultMessage value)
         => new()
@@ -592,6 +597,9 @@ public static class GrpcModelMapper
             ColumnNames = value.ColumnNames?.Values.ToArray(),
             ColumnTypes = value.ColumnTypes?.Values.ToArray(),
             ColumnNullability = value.ColumnNullability?.Values.ToArray(),
+            Columns = value.Columns.Count == 0
+                ? null
+                : value.Columns.Select(ToModel).ToArray(),
             Rows = value.Rows is null ? null : ToRows(value.Rows),
             RowsAffected = value.RowsAffected,
             Error = value.Error,

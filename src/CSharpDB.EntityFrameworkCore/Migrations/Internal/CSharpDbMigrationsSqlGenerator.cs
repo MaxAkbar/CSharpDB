@@ -575,7 +575,7 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
             .Append(' ')
             .Append(storeType);
 
-        if (operation.IsRowVersion)
+        if (operation.IsRowVersion && !IsStoreType(storeType, "ROWVERSION"))
             builder.Append(" ROWVERSION");
 
         string? collation = NormalizeBinaryCollation(operation.Collation);
@@ -780,8 +780,9 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
             "REAL" or "FLOAT" or "DOUBLE" or "DOUBLE PRECISION" or
             "DECIMAL" or "DEC" or "NUMERIC" or
             "CHAR" or "CHARACTER" or "VARCHAR" or "CHARACTER VARYING" or "TEXT" or
-            "BINARY" or "VARBINARY" or "BINARY VARYING" or "BLOB" or
-            "UUID" or "DATE" or "TIME" or "TIMESTAMP" or "TIMESTAMP WITH TIME ZONE" or
+            "BINARY" or "VARBINARY" or "BINARY VARYING" or "BLOB" or "ROWVERSION" or
+            "UUID" or "DATE" or "TIME" or "DATETIME" or "DATETIME2" or "DATETIMEOFFSET" or
+            "TIMESTAMP WITH TIME ZONE" or
             "INTERVAL YEAR TO MONTH" or "INTERVAL DAY TO SECOND" or
             "JSON" or "XML" or "BIT" or "BIT VARYING" or "VARBIT";
 
@@ -1016,12 +1017,11 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
     {
         if (operation.ClrType != typeof(byte[]) ||
             operation.IsNullable ||
-            !IsStoreType(
-                storeType,
-                "BLOB"))
+            (!IsStoreType(storeType, "ROWVERSION") &&
+             !IsStoreType(storeType, "BLOB")))
         {
             throw Unsupported(
-                $"rowversion column '{operation.Table}.{operation.Name}' outside the required non-nullable byte[]/BLOB shape");
+                $"rowversion column '{operation.Table}.{operation.Name}' outside the required non-nullable byte[]/ROWVERSION shape");
         }
 
         if (operation.DefaultValue is not null ||

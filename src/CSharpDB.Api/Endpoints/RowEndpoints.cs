@@ -47,8 +47,9 @@ public static class RowEndpoints
             result.PageSize,
             result.TotalPages,
             result.Schema.Columns.Select(column =>
-                column.DeclaredType?.ToSql() ??
-                column.Type.ToString().ToUpperInvariant()).ToArray()));
+                column.IsRowVersion
+                    ? "ROWVERSION"
+                    : column.EffectiveType.ToSql()).ToArray()));
     }
 
     private static async Task<IResult> GetRowByPk(
