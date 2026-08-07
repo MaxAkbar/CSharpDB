@@ -180,19 +180,30 @@ public sealed class MigrationWebsiteDocumentationTests
                 StringComparison.Ordinal);
         }
 
-        string releaseNotes = File.ReadAllText(
-            Path.Combine(repoRoot, "RELEASE_NOTES.md"));
+        string migrationCliReadme = File.ReadAllText(
+            Path.Combine(
+                repoRoot,
+                "src",
+                "CSharpDB.Cli",
+                "README.md"));
         Assert.Contains(
             "`apply --resume`",
-            releaseNotes,
+            migrationCliReadme,
             StringComparison.Ordinal);
         Assert.DoesNotContain(
             "`apply`, `resume`",
-            releaseNotes,
+            migrationCliReadme,
             StringComparison.Ordinal);
+
+        string migrationReleaseNotes = File.ReadAllText(
+            Path.Combine(
+                repoRoot,
+                "docs",
+                "releases",
+                "v4.3.0-pr-notes.md"));
         Assert.Contains(
             "`MIGRATION-SHA256SUMS.txt`",
-            releaseNotes,
+            migrationReleaseNotes,
             StringComparison.Ordinal);
 
         string downloads = File.ReadAllText(

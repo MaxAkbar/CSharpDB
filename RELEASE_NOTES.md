@@ -1,29 +1,113 @@
 # What's New
 
-## Current Release
+## CSharpDB 4.5.0
 
-The current release completes the bounded SQL implementation and makes its release claims reproducible. The public reference, provider behavior, migration capability contracts, recovery tests, and release workflow now describe the same supported surface; publishing remains gated on the recorded qualification passes described below.
+CSharpDB 4.5.0 adds a persisted logical SQL type system across the engine,
+providers, transports, migration tooling, archives, and public metadata. It
+also adds bounded XPath 1.0 querying for XML values. Declared types, coercion,
+materialization, and schema rendering now follow one contract end to end.
 
-### SQL and Schema Coverage
+### Complete SQL Type System
 
-- Completed the bounded window-function slice with explicit `ROWS` frames, named windows, compatible shared ordering, navigation/value functions, cancellation, prepared execution, and explicit in-memory resource limits.
-- Added the full immediate foreign-key action matrix for deletes and referenced-key updates, including composite relationships and transactional nested cascades.
-- Added transactional shadow-root `ALTER COLUMN` rewrites for the supported numeric, UTF-8 text/BLOB, and collation shapes, including atomic rebuilding of eligible indexes, plus validated transactional catalog updates for literal-default and nullability changes.
-- Added logical composite `INTEGER`/`TEXT` keys and bounded populated single-`INTEGER` primary-key rekeying with relational and complete ready full-text-owned storage rebuilding.
-- Added stable physical `EXPLAIN` and `EXPLAIN ANALYZE` rowsets with estimated and actual values, operator/access-path metadata, redacted predicates, partial safe diagnostics, and direct/ADO.NET/HTTP/gRPC access.
-- Unsupported SQL forms now fail with stable diagnostics instead of being silently accepted; documentation tests execute every concrete public SQL example from its published source, parser-check the parameterized example, and classify schematic grammar templates separately.
+- Added 25 logical SQL type kinds plus the special generated `ROWVERSION`
+  declaration: `BOOLEAN`; `TINYINT`, `SMALLINT`, `INTEGER`, and `BIGINT`;
+  `REAL`, `DOUBLE PRECISION`, and `DECIMAL`; `CHAR`, `VARCHAR`, and `TEXT`;
+  `BINARY`, `VARBINARY`, and `BLOB`; `UUID`; `DATE`, `TIME`, `DATETIME2`, and
+  `DATETIMEOFFSET`; both `INTERVAL` families; `JSON`; `XML`; `BIT(n)`; and
+  `BIT VARYING`.
+- Persisted canonical declarations and facets independently from CSharpDB's
+  compact physical carriers. Catalogs, typed result metadata, schema scripts,
+  migration plans, and archives now retain the declared SQL type instead of
+  reducing every value to its storage carrier.
+- Enforced declared ranges, lengths, precision and scale, fractional-seconds
+  precision, UUID/document validation, exact bit lengths, assignment and cast
+  rules, comparisons, aggregates, set operations, defaults, indexes, and table
+  rewrites.
+- Added a dedicated exact `DECIMAL` carrier with deterministic arithmetic,
+  comparison, ordering, aggregation, precision/scale propagation, streaming,
+  and overflow behavior. `DECIMAL` defaults to `(18,2)`, while `DECIMAL(p)`
+  uses scale zero; assignment rejects excess fractional digits rather than
+  rounding them.
 
-### Provider and Compatibility Qualification
+The complete aliases, facets, CLR mappings, and physical carriers are listed
+in the [SQL datatype reference](https://csharpdb.com/docs/sql-reference.html#data-types).
+`NULL` remains a value and runtime tag, not a declarable column type.
 
-- Added a replayable EF Core generated-SQL corpus covering defaults, checks, composite and named relationships, referential actions, key changes, column rewrites, table/column/index rename chains, stable diagnostics for unsupported database sequence operations, rollback, reopen, upgrade/downgrade, runtime CRUD, and ADO.NET schema inspection.
-- Added immutable database fixtures produced by supported historical releases, with recorded commits and checksums, then qualified current write, checkpoint, recovery, and reopen behavior against each fixture.
-- Added one canonical typed workload across the direct engine, embedded ADO.NET, HTTP, and gRPC paths. This qualification found and fixed HTTP BLOB results being returned as base64 text rather than bytes.
-- Added deterministic bounded property coverage for parser expressions, constraint graphs, and type conversions, plus fault-injected WAL commit recovery for schema rewrites and multi-level cascades.
+### Integer, Boolean, Temporal, and Rowversion Semantics
 
-### Release Gate
+- `INT`/`INTEGER` are now signed 32-bit values and `BIGINT` remains signed
+  64-bit. `TINYINT` is unsigned 8-bit and `SMALLINT` is signed 16-bit. Literal
+  inference, assignments, casts, defaults, updates, identities, arithmetic,
+  aggregates, and rewrites enforce the declared range with checked overflow
+  behavior. Potentially large counts, ranks, lengths, and identifiers remain
+  64-bit.
+- `BOOLEAN`, `BOOL`, and bare `BIT` are logical Booleans and materialize as
+  `bool`. Numeric zero converts to false and any finite nonzero value converts
+  to true. `BIT(n)` and `BIT VARYING`/`VARBIT` remain distinct packed
+  bit-string types whose exact bit length survives storage and transport.
+- Character and binary facets now apply Unicode-scalar or byte limits with
+  fixed-width padding where required. UUID, temporal, interval, JSON, and XML
+  values are validated and rendered canonically; temporal precision ranges
+  from zero through seven fractional digits.
+- Bare `TIMESTAMP` now aliases the generated eight-byte `ROWVERSION`
+  concurrency token. Offset-free temporal values use `DATETIME2`/`DATETIME`;
+  offset-aware values use `DATETIMEOFFSET` or `TIMESTAMP ... WITH TIME ZONE`.
+- Rowversion allocation is database-wide and durable. Every inserted row and
+  every successful update of a row containing a rowversion receives a new
+  token, including no-op, raw-SQL, and trigger-issued updates. Allocation is
+  covered by rollback, WAL recovery, checkpoint, reopen, and concurrent-write
+  behavior.
 
-- Added a reusable release qualification workflow that runs the full solution and provider/tooling checks twice from clean environments on Windows, Linux, and macOS before publishing can begin. It supports manual dispatch after registration on the default branch and non-release `qualification-*` tags for qualifying an exact pre-merge candidate commit.
-- Added a sequential local durable-write release gate for an idle fixed-SSD Windows machine after repeated GitHub-hosted runs demonstrated non-qualifying transient disk variance. Two balanced paired passes qualify each of the ten file-backed, hybrid durable, and direct-client SQL/collection single and batch write rows independently with adjacent previous/candidate measurements, a reversed starting order in pass two, and per-measurement floors of 30 seconds and 10,000 retained latency samples. Each logical side has one predeclared attempt; evidence is never discarded, replaced, or silently retried. The expected runtime is 3.5–4.5 hours. The canonical `durable-v3` policy pins both engine commits, uses symmetrically conditioned artifacts with the same hash-recorded candidate benchmark harness, and retains hash-verified raw evidence outside the repository. After post-build quiescence, a required one-second Windows monitor records observable external process CPU and I/O while retaining system CPU outside the observable runner tree as diagnostic evidence through the final measurement. Five consecutive samples above either 8% observable external process CPU, 0.5 CPU-core equivalent, or 4,194,304 observable process I/O bytes per second contaminate the pass; named build, test, installer, and update processes contaminate immediately. Missing monitor evidence, unavailable allowed runner-tree CPU, a coverage gap above five seconds, benchmark-evidence failures, or invalid installer, event-log, or pending-file evidence fails closed; unavailable external-process counters remain explicit diagnostics. The gate blocks at 15% throughput regression and blocks P95 only when regression exceeds both 25% and 0.05 ms; P99 remains diagnostic. A successful exact-commit status has the policy-bound description `policy=durable-v3; baseline=<40 lowercase hex>; design=<8 uppercase hex>; reports=<8 uppercase>/<8 uppercase>` and must be created by the configured attestor; older policy descriptions are rejected. GitHub continues to run two clean functional qualification passes on Windows, Linux, and macOS plus paired comparisons for the other 18 stable master-table rows using the same blocking throughput/P95 policy and diagnostic P99; broader performance suites remain manual or report-only diagnostics.
-- Hardened benchmark phase shutdown so normal coordinated worker cancellation has bounded scheduling grace on busy runners, while already-failed cleanup remains prompt and genuinely unresponsive work still produces an explicit diagnostic.
-- Added diagnostic-only exact hybrid-row controls with five pairs per order, an optional directly executed same-revision DLL whose hash is verified around every sample, separate revision build-input identities, build-server shutdown plus a fixed wait, and a fail-closed 30-second plus 10,000-retained-sample floor with a 120-second measurement cap. These controls diagnose benchmark stability and do not satisfy the two-revision release gate.
-- Preserved the immutable prior-release migration capability catalog and added a separately digested current-release catalog so older migration plans remain independently replayable.
+### XML Query Support
+
+- Added `XML_EXISTS`/`XMLEXISTS` and `XML_VALUE` with XPath 1.0 evaluation,
+  NULL propagation, optional JSON namespace-prefix maps, XPath scalar
+  conversion, and explicit diagnostics when `XML_VALUE` selects multiple
+  nodes.
+- XML parsing is bounded and secure. DTD declarations and external entities
+  are rejected, and document depth and XPath length are limited.
+- The supported surface is the documented function-style API. Standard
+  `XMLEXISTS(... PASSING ...)`, `XML_TABLE`, and XML path indexes are not part
+  of 4.5.0.
+
+### Providers, Migration, and Interchange
+
+- Updated ADO.NET and EF Core mappings plus HTTP, gRPC, native, Node, Admin,
+  CLI, MCP, schema comparison, and import/export paths to preserve canonical
+  logical metadata and typed values. This includes CLR Booleans and integer
+  widths, exact decimals, temporal values, UUIDs, bit strings, and generated
+  rowversion tokens.
+- Added explicit SQL Server migration mappings for integer widths, `bit`,
+  temporal types, and `timestamp`/`rowversion`. Migration plans now preserve
+  the logical target SQL declaration separately from its physical carrier.
+- Added a separately digested 4.5.0 migration capability catalog while
+  retaining the immutable 4.4.0 and 4.3.0 catalogs for deterministic replay.
+- Native table archive format v8 records the final 4.5 integer semantics and
+  preserves every logical facet. CSV/JSON migration manifests and streaming
+  exports retain exact decimals and logical target declarations.
+- Expanded the public reference across all supported surfaces and added a
+  regression guard that requires every logical type, accepted alias, and the
+  special `ROWVERSION` declaration to remain documented.
+
+### Upgrade and Compatibility Notes
+
+- Applications that relied on `INTEGER` as a 64-bit declaration must use
+  `BIGINT`. Descriptor-less integer columns from older databases remain
+  `BIGINT`; preview metadata-version-10 and archive-v7 `INTEGER` declarations
+  are also exposed as `BIGINT` so existing values are never silently narrowed.
+- Bare `BIT` is Boolean. Use `BIT(n)` or `VARBIT(n)` for bit strings.
+- Bare `TIMESTAMP` is rowversion. Use `DATETIME2` for offset-free date/time or
+  `DATETIMEOFFSET` for offset-aware values. `ROWVERSION` and bare `TIMESTAMP`
+  are generated column declarations, not cast or `ALTER COLUMN TYPE` targets.
+- A table may contain one generated, nonnullable rowversion column. It cannot
+  be assigned, defaulted, collated, used as an identity, or included in a key,
+  foreign key, or index. The legacy `BLOB ROWVERSION NOT NULL` declaration
+  remains accepted.
+- On first 4.5 upgrade, legacy per-row rowversion values are regenerated and
+  outstanding concurrency tokens are intentionally invalidated; rowversion
+  values are opaque equality tokens. Keep the normal database backup before
+  upgrading.
+- Metadata version 11 records the final logical semantics without redesigning
+  existing database pages. Existing physical values remain readable; 4.5 adds
+  the declared-type metadata and exact-decimal representation needed for the
+  new contract.
