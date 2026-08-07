@@ -222,7 +222,7 @@
                 <tbody>
                 <tr>
                 <td><code>DbType.cs</code></td>
-                <td>Enum: <code>Null</code>, <code>Integer</code>, <code>Real</code>, <code>Text</code>, <code>Blob</code></td>
+                <td>Enum: <code>Null</code>, <code>Integer</code>, <code>Real</code>, <code>Text</code>, <code>Blob</code>, <code>Decimal</code></td>
                 </tr>
                 <tr>
                 <td><code>DbValue.cs</code></td>
@@ -239,10 +239,10 @@
                 </tbody>
                 </table>
                 <h3 id="dbvalue">DbValue</h3>
-                <p><code>DbValue</code> is a <code>readonly struct</code> that can hold any of the five database types. It uses a compact internal layout — a <code>long</code> for integers, a <code>double</code> for reals, and an <code>object?</code> reference for strings and byte arrays. The <code>Type</code> property indicates which field is active.</p>
+                <p><code>DbValue</code> is a <code>readonly struct</code> that can hold any of the six physical runtime types. It uses a compact internal layout—a <code>long</code> for integers and decimal coefficients, a scale for decimals, a <code>double</code> for reals, and an <code>object?</code> reference for strings and byte arrays. The <code>Type</code> property indicates which field is active. Declared logical SQL types remain separate; see the <a href="docs/sql-reference.html#data-types">complete datatype matrix</a>.</p>
                 <p>Key behaviors:</p>
                 <ul>
-                <li><strong>Comparison</strong>: NULLs sort first. Integer and Real are cross-comparable via promotion to double. Text uses ordinal string comparison. Blob uses byte-by-byte comparison.</li>
+                <li><strong>Comparison</strong>: NULLs sort first. Integer, Real, and Decimal use numeric comparison semantics. Text uses ordinal string comparison. Blob uses byte-by-byte comparison.</li>
                 <li><strong>Truthiness</strong>: NULL and zero are falsy. Non-zero numbers, all strings, and all blobs are truthy. Used by WHERE clause evaluation.</li>
                 </ul>
                 <hr/>
@@ -487,8 +487,10 @@
                 <li><strong>Null</strong>: nothing (0 bytes)</li>
                 <li><strong>Integer</strong>: varint-encoded <code>long</code></li>
                 <li><strong>Real</strong>: 8 bytes (IEEE 754 double)</li>
+                <li><strong>Decimal</strong>: 8-byte coefficient plus 1-byte scale</li>
                 <li><strong>Text</strong>: [length:varint] [UTF-8 bytes]</li>
                 <li><strong>Blob</strong>: [length:varint] [raw bytes]</li>
+                <li><strong>Bit string</strong>: [bitLength:varint] [packed bytes]</li>
                 </ul>
                 <h3 id="schema-catalog">Schema Catalog</h3>
                 <table class="doc-table">

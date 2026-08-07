@@ -182,16 +182,16 @@ csdb&gt; .quit</code></pre></div>
                 <p>Query results are rendered as Unicode box-drawing tables with ANSI colour coding:</p>
                 <table>
                     <thead>
-                        <tr><th>Type</th><th>Colour</th><th>Example</th></tr>
+                        <tr><th>Physical value carrier</th><th>Colour</th><th>Example</th></tr>
                     </thead>
                     <tbody>
-                        <tr><td><code>INTEGER</code> / <code>REAL</code></td><td>Yellow</td><td><code>42</code>, <code>3.14</code></td></tr>
+                        <tr><td><code>INTEGER</code> / <code>REAL</code> / <code>DECIMAL</code></td><td>Yellow</td><td><code>42</code>, <code>3.14</code>, <code>19.9900</code></td></tr>
                         <tr><td><code>TEXT</code></td><td>Green</td><td><code>Alice</code></td></tr>
                         <tr><td><code>BLOB</code></td><td>Magenta</td><td><code>BLOB(128 bytes)</code></td></tr>
                         <tr><td><code>NULL</code></td><td>Dim italic</td><td><code>NULL</code></td></tr>
                     </tbody>
                 </table>
-                <p>Column widths are capped at 40 characters; longer values are truncated with <code>&hellip;</code>. Numeric columns are right-aligned; text columns are left-aligned.</p>
+                <p>Colouring follows the compact runtime carrier, not the declared SQL type. For example, Boolean and all integer widths use the integer carrier, temporal values use text, and UUID, bit-string, and rowversion values use blob storage. <code>.schema</code> renders canonical logical declarations; see the <a href="sql-reference.html#data-types">complete SQL data type reference</a>. Column widths are capped at 60 characters; longer values are truncated with <code>&hellip;</code>. Numeric columns are right-aligned; text columns are left-aligned.</p>
 
                 <!-- ───────── Meta-Commands ───────── -->
                 <h2 id="meta-commands">Meta-Commands</h2>

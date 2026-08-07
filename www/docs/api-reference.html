@@ -168,13 +168,14 @@
                             <span class="api-badge">enum</span>
                             <h3>DbType</h3>
                         </div>
-                        <p>The five fundamental data types supported by the database.</p>
+                        <p>The six compact physical value carriers supported by the database. Logical SQL declarations such as <code>BOOLEAN</code>, <code>INTEGER</code>, <code>BIGINT</code>, temporal types, and bit strings retain separate declared-type metadata over these carriers; see the <a href="sql-reference.html#data-types">SQL data type reference</a>.</p>
                         <div class="api-members">
                             <div class="api-member"><code>Null</code> <span class="api-sep">&mdash;</span> Absence of value</div>
                             <div class="api-member"><code>Integer</code> <span class="api-sep">&mdash;</span> Shared 64-bit physical carrier; declared <code>INTEGER</code> is signed 32-bit</div>
                             <div class="api-member"><code>Real</code> <span class="api-sep">&mdash;</span> 64-bit floating point</div>
                             <div class="api-member"><code>Text</code> <span class="api-sep">&mdash;</span> UTF-8 string</div>
                             <div class="api-member"><code>Blob</code> <span class="api-sep">&mdash;</span> Raw byte array</div>
+                            <div class="api-member"><code>Decimal</code> <span class="api-sep">&mdash;</span> Exact base-10 decimal with up to 18 digits of precision</div>
                         </div>
                     </div>
 
@@ -183,17 +184,22 @@
                             <span class="api-badge api-badge-struct">struct</span>
                             <h3>DbValue</h3>
                         </div>
-                        <p>A dynamically-typed database value wrapping one of the five core types.</p>
+                        <p>A dynamically-typed database value wrapping one of the six physical carriers.</p>
                         <div class="api-members">
                             <h4>Static Factory Methods</h4>
                             <div class="api-member"><code>FromInteger(long value)</code> <span class="api-return">&rarr; DbValue</span></div>
                             <div class="api-member"><code>FromReal(double value)</code> <span class="api-return">&rarr; DbValue</span></div>
+                            <div class="api-member"><code>FromDecimal(decimal value)</code> <span class="api-return">&rarr; DbValue</span></div>
+                            <div class="api-member"><code>FromDecimalParts(long coefficient, int scale)</code> <span class="api-return">&rarr; DbValue</span></div>
                             <div class="api-member"><code>FromText(string value)</code> <span class="api-return">&rarr; DbValue</span></div>
                             <div class="api-member"><code>FromBlob(byte[] value)</code> <span class="api-return">&rarr; DbValue</span></div>
                             <h4>Properties</h4>
                             <div class="api-member"><code>Type</code> <span class="api-return">&rarr; DbType</span></div>
                             <div class="api-member"><code>AsInteger</code> <span class="api-return">&rarr; long</span></div>
                             <div class="api-member"><code>AsReal</code> <span class="api-return">&rarr; double</span></div>
+                            <div class="api-member"><code>AsDecimal</code> <span class="api-return">&rarr; decimal</span></div>
+                            <div class="api-member"><code>DecimalCoefficient</code> <span class="api-return">&rarr; long</span></div>
+                            <div class="api-member"><code>DecimalScale</code> <span class="api-return">&rarr; int</span></div>
                             <div class="api-member"><code>AsText</code> <span class="api-return">&rarr; string</span></div>
                             <div class="api-member"><code>AsBlob</code> <span class="api-return">&rarr; byte[]</span></div>
                             <div class="api-member"><code>IsNull</code> <span class="api-return">&rarr; bool</span></div>

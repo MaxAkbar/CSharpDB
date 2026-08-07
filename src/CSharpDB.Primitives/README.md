@@ -21,7 +21,7 @@ dotnet add package CSharpDB
 
 | Type | Description |
 |------|-------------|
-| `DbType` | Enum of supported database types: `Null`, `Integer`, `Real`, `Text`, `Blob` |
+| `DbType` | Six compact physical value carriers: `Null`, `Integer`, `Real`, `Text`, `Blob`, `Decimal` |
 | `DbValue` | Discriminated-union struct representing a single database value with comparison, equality, and truthiness semantics |
 | `TableSchema` | Table structure definition including columns, primary key, and qualified mappings for JOINs |
 | `ColumnDefinition` | Column metadata: name, type, nullability, primary key flag, and identity flag |
@@ -32,6 +32,12 @@ dotnet add package CSharpDB
 | `DbCommandOptions` | Command description plus optional timeout and long-running metadata |
 | `CSharpDbException` | Typed exception with `ErrorCode` covering 15+ error conditions |
 
+Logical SQL declarations retain a separate `SqlTypeDescriptor` over these six
+physical carriers. For example, `BOOLEAN`, `INTEGER`, and `BIGINT` share the
+`Integer` carrier while preserving distinct coercion and materialization rules.
+See the [SQL data type reference](https://csharpdb.com/docs/sql-reference.html#data-types)
+for the complete declaration matrix.
+
 ## Usage
 
 ```csharp
@@ -40,11 +46,11 @@ using CSharpDB.Primitives;
 // Create typed values
 var id = DbValue.FromInteger(42);
 var name = DbValue.FromText("Alice");
-var balance = DbValue.FromReal(100.50);
+var balance = DbValue.FromDecimal(100.50m);
 var empty = DbValue.Null;
 
 // Compare values
-bool isPositive = DbValue.Compare(balance, DbValue.FromReal(0)) > 0;
+bool isPositive = DbValue.Compare(balance, DbValue.FromDecimal(0m)) > 0;
 
 // Define a schema
 var schema = new TableSchema

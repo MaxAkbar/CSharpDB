@@ -226,6 +226,8 @@ Prepared statements expose the same parameter binding model as the managed ADO.N
 - parameter names may be supplied with or without the leading `@`
 - supported bound value types are `int64`, `double`, exact decimal, UTF-8 text,
   ordinary binary, exact-length bit strings, and `NULL`
+- these are transport value shapes, not SQL declarations; the target column's
+  declared logical type still performs range checking, coercion, and validation
 - unsupported prepared templates automatically fall back to SQL-text parameter binding, so `csharpdb_prepare` remains usable for valid SQL shapes that cannot yet use the template fast path
 
 #### `csharpdb_prepare`
@@ -360,7 +362,11 @@ Returns the name of a column (UTF-8). The pointer is valid until `csharpdb_resul
 const char* csharpdb_result_column_declared_type(csharpdb_result_t result, int column_index);
 ```
 
-Returns the canonical declared SQL type, including facets such as `DECIMAL(18,4)`. The pointer is valid until `csharpdb_result_free`.
+Returns the canonical declared SQL type, including facets such as
+`DECIMAL(18,4)`. For rowversion results it returns `ROWVERSION`. The pointer is
+valid until `csharpdb_result_free`. See the
+[complete SQL data type reference](https://csharpdb.com/docs/sql-reference.html#data-types)
+for declarations, aliases, facets, and their physical carriers.
 
 #### `csharpdb_result_next`
 
@@ -386,7 +392,8 @@ All value-access functions operate on the **current row** (the last row returned
 int csharpdb_result_column_type(csharpdb_result_t result, int column_index);
 ```
 
-Returns the [type code](#type-codes) of the value at the given column.
+Returns the physical [type code](#type-codes) of the value at the given column.
+Use `csharpdb_result_column_declared_type` when logical SQL semantics matter.
 
 #### `csharpdb_result_is_null`
 
@@ -626,6 +633,15 @@ Clear the error state for the current thread.
 
 ## Type Codes
 
+These codes describe compact runtime values, not the full SQL type system.
+Several declarations intentionally share a code: all Boolean and integer
+widths use `CSHARPDB_INTEGER`; character, temporal, interval, JSON, and XML
+values use `CSHARPDB_TEXT`; UUID, binary, bit-string, and rowversion values use
+`CSHARPDB_BLOB`. Use `csharpdb_result_column_declared_type` to distinguish them,
+and `csharpdb_result_get_bit_length` to distinguish exact-length SQL bit strings
+from ordinary binary. `CSHARPDB_NULL` is a runtime value only and cannot be
+declared as a persistent column type.
+
 | Code | Constant | Description |
 |------|----------|-------------|
 | 0 | `CSHARPDB_NULL` | SQL NULL |
@@ -724,7 +740,7 @@ class CSharpDB:
     """Thin Python wrapper around the CSharpDB NativeAOT shared library."""
 
     # Map CSharpDB type codes to names
-    NULL, INTEGER, REAL, TEXT, BLOB = 0, 1, 2, 3, 4
+    NULL, INTEGER, REAL, TEXT, BLOB, DECIMAL = 0, 1, 2, 3, 4, 5
 
     def __init__(self, lib_path=None):
         if lib_path is None:
@@ -838,7 +854,7 @@ class CSharpDB:
                         val = self._lib.csharpdb_result_get_text(r, i)
                         row[col] = val.decode() if val else ""
                     else:
-                        row[col] = None  # BLOB / unknown
+                        row[col] = None  # BLOB / DECIMAL / unknown are not decoded by this sample
             rows.append(row)
 
         self._lib.csharpdb_result_free(r)
@@ -1252,7 +1268,7 @@ const koffi = require("koffi");
 const path = require("path");
 
 // Type codes matching CSharpDB.Primitives.DbType
-const DbType = { NULL: 0, INTEGER: 1, REAL: 2, TEXT: 3, BLOB: 4 };
+const DbType = { NULL: 0, INTEGER: 1, REAL: 2, TEXT: 3, BLOB: 4, DECIMAL: 5 };
 
 function loadLibrary(libPath) {
   if (!libPath) {

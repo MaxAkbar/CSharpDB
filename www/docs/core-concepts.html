@@ -42,7 +42,7 @@
                 <p class="lead">The foundational types that power CSharpDB's type system and schema definitions.</p>
 
                 <h2>DbType</h2>
-                <p>CSharpDB uses compact physical value carriers beneath its richer declared SQL types:</p>
+                <p>CSharpDB uses six compact physical value carriers beneath its richer declared SQL types. Multiple logical declarations can share a carrier without sharing range, coercion, or materialization rules; see the <a href="sql-reference.html#data-types">SQL data type reference</a>.</p>
                 <table class="doc-table">
                     <thead><tr><th>Type</th><th>C# Mapping</th><th>Description</th></tr></thead>
                     <tbody>
@@ -51,20 +51,23 @@
                         <tr><td><code>Real</code></td><td><code>double</code></td><td>64-bit IEEE floating point</td></tr>
                         <tr><td><code>Text</code></td><td><code>string</code></td><td>UTF-8 encoded text</td></tr>
                         <tr><td><code>Blob</code></td><td><code>byte[]</code></td><td>Raw binary data</td></tr>
+                        <tr><td><code>Decimal</code></td><td><code>decimal</code></td><td>Exact base-10 decimal with up to 18 digits of precision</td></tr>
                     </tbody>
                 </table>
 
                 <h2>DbValue</h2>
-                <p><code>DbValue</code> is a lightweight struct that represents a dynamically-typed database value. It wraps the five core types and provides type-safe access, comparison, and truthiness evaluation.</p>
+                <p><code>DbValue</code> is a lightweight struct that represents a dynamically-typed database value. It wraps the six physical carriers and provides type-safe access, comparison, and truthiness evaluation.</p>
                 <div class="code-block" data-title="DbValue Usage">
-                    <pre><code><span class="kw">var</span> id    = <span class="tp">DbValue</span>.FromInteger(<span class="num">42</span>);
-<span class="kw">var</span> name  = <span class="tp">DbValue</span>.FromText(<span class="str">"Alice"</span>);
-<span class="kw">var</span> score = <span class="tp">DbValue</span>.FromReal(<span class="num">98.5</span>);
-<span class="kw">var</span> empty = <span class="tp">DbValue</span>.Null;
+                    <pre><code><span class="kw">var</span> id      = <span class="tp">DbValue</span>.FromInteger(<span class="num">42</span>);
+<span class="kw">var</span> name    = <span class="tp">DbValue</span>.FromText(<span class="str">"Alice"</span>);
+<span class="kw">var</span> score   = <span class="tp">DbValue</span>.FromReal(<span class="num">98.5</span>);
+<span class="kw">var</span> balance = <span class="tp">DbValue</span>.FromDecimal(<span class="num">100.50m</span>);
+<span class="kw">var</span> empty   = <span class="tp">DbValue</span>.Null;
 
 <span class="cm">// Type-safe access</span>
 <span class="kw">long</span> idVal     = id.AsInteger;    <span class="cm">// 42</span>
 <span class="kw">string</span> nameVal = name.AsText;     <span class="cm">// "Alice"</span>
+<span class="kw">decimal</span> amount = balance.AsDecimal; <span class="cm">// 100.5m</span>
 <span class="kw">bool</span> isNull    = empty.IsNull;    <span class="cm">// true</span>
 
 <span class="cm">// Comparison</span>

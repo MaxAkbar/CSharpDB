@@ -10,15 +10,35 @@ internal static class SqlReference
         ═══ CSharpDB SQL Reference ═══
 
         ── DATA TYPES ──
-        INTEGER  (alias: INT)             — signed 32-bit integer
-        BIGINT                            — signed 64-bit integer
-        BOOLEAN  (aliases: BOOL, bare BIT)— logical Boolean
-        BIT(n) / VARBIT(n)                — fixed/variable-length bit strings
-        REAL     (aliases: FLOAT, DOUBLE) — 64-bit IEEE 754 float
-        TEXT     (aliases: VARCHAR)       — UTF-8 string (quote with single quotes, escape: '')
-        BLOB                              — binary byte array
-        DATETIME2 / DATETIMEOFFSET        — temporal timestamp / timestamp with offset
-        ROWVERSION (alias: bare TIMESTAMP)— generated eight-byte concurrency token
+        BOOLEAN (BOOL, bare BIT)           — logical Boolean; zero=false, finite nonzero=true
+        TINYINT                            — unsigned 8-bit integer (0..255)
+        SMALLINT                           — signed 16-bit integer
+        INTEGER (INT)                      — signed 32-bit integer
+        BIGINT                             — signed 64-bit integer
+        REAL                               — binary64 floating point; distinct logical name from DOUBLE
+        DOUBLE PRECISION (DOUBLE, FLOAT)   — binary64 floating point
+        DECIMAL[(p[,s])] (NUMERIC)         — exact; p=1..18, s=0..p; defaults 18,2 / p,0
+        CHAR[(n)] (CHARACTER, NCHAR)       — fixed Unicode text; positive n pads with spaces
+        VARCHAR[(n)] (CHARACTER VARYING,
+          NVARCHAR)                        — variable Unicode text; positive n is a maximum
+        TEXT (CLOB)                        — unbounded Unicode text (quote with ', escape as '')
+        BINARY[(n)]                        — fixed bytes; positive n pads with zero bytes
+        VARBINARY[(n)]                     — variable bytes; positive n is a maximum
+        BLOB                               — binary byte array
+        UUID (GUID, UNIQUEIDENTIFIER)      — 16-byte identifier
+        DATE                               — calendar date
+        TIME[(p)]                          — time of day; p=0..7 fractional digits
+        DATETIME2[(p)] (DATETIME, no p)    — wall-clock date/time; p=0..7
+        DATETIMEOFFSET[(p)]
+          (TIMESTAMP[(p)] WITH TIME ZONE)  — offset date/time normalized to UTC; p=0..7
+        INTERVAL YEAR TO MONTH             — year/month interval
+        INTERVAL DAY TO SECOND[(p)]        — day/time interval; p=0..7
+        JSON                               — validated canonical JSON text
+        XML                                — validated compact XML text
+        BIT(n)                             — fixed bit string; positive n is required
+        BIT VARYING[(n)] (VARBIT[(n)])     — variable bit string; positive n is a maximum
+        ROWVERSION (bare TIMESTAMP)        — special generated/read-only 8-byte token; not a CAST target
+        NULL is a value marker, not a declared SQL type.
 
         ── CONSTRAINTS ──
         PRIMARY KEY

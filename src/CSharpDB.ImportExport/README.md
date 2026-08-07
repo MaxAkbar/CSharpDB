@@ -24,9 +24,15 @@ Format v5 archives carry required SHA-256 digests for their schema, rows, and
 optional physical index. Every reader path verifies those section digests
 before exposing archive data; v3 and v4 remain readable for compatibility.
 Format v7 additionally preserves each column's logical SQL type descriptor,
-including length, precision, scale, and fractional-seconds precision. Archives
-created from legacy schemas may omit the descriptor and retain their physical
-type compatibility view.
+including length, precision, scale, and fractional-seconds precision. Format v8
+is the first archive format with the final 4.5 SQL integer semantics: a declared
+`INTEGER` is signed 32-bit and `BIGINT` is signed 64-bit. Version 7 was a preview
+in which declared `INTEGER` still meant the 64-bit physical carrier, so current
+readers expose those v7 columns as `BIGINT` rather than silently narrowing old
+values. Archives created from descriptor-less legacy schemas retain their
+physical compatibility view. See the
+[complete SQL data type reference](https://csharpdb.com/docs/sql-reference.html#data-types)
+for the logical declarations stored by v8.
 
 The Admin restore workflow adds an independent post-load check before a staged
 table becomes visible. It compares archive rows with the loaded table using

@@ -102,78 +102,187 @@
                 <p class="lead">Complete reference for the SQL dialect supported by CSharpDB.</p>
                 <hr/>
                 <h2 id="data-types">Data Types</h2>
+                <p>CSharpDB supports 25 declared logical type kinds plus the generated <code>ROWVERSION</code> column declaration. Canonical declarations are returned by typed schema metadata; aliases parse to the same logical descriptor.</p>
                 <table class="doc-table">
                 <thead>
                 <tr>
-                <th>Type</th>
-                <th>Aliases</th>
-                <th>Description</th>
+                <th>Canonical declaration</th>
+                <th>Accepted aliases</th>
+                <th>Semantics</th>
+                <th>ADO.NET value</th>
                 </tr>
                 </thead>
                 <tbody>
-                <tr>
+                <tr data-sql-type-kind="Boolean" data-sql-type-names="BOOLEAN, BOOL, BIT">
+                <td><code>BOOLEAN</code></td>
+                <td><code>BOOL</code>, bare <code>BIT</code></td>
+                <td>Logical Boolean; stored canonically as 0 or 1</td>
+                <td><code>bool</code></td>
+                </tr>
+                <tr data-sql-type-kind="TinyInt" data-sql-type-names="TINYINT">
+                <td><code>TINYINT</code></td>
+                <td>—</td>
+                <td>Unsigned 8-bit integer, 0 through 255</td>
+                <td><code>byte</code></td>
+                </tr>
+                <tr data-sql-type-kind="SmallInt" data-sql-type-names="SMALLINT">
+                <td><code>SMALLINT</code></td>
+                <td>—</td>
+                <td>Signed 16-bit integer</td>
+                <td><code>short</code></td>
+                </tr>
+                <tr data-sql-type-kind="Integer" data-sql-type-names="INTEGER, INT">
                 <td><code>INTEGER</code></td>
                 <td><code>INT</code></td>
                 <td>32-bit signed integer; checked range -2,147,483,648 through 2,147,483,647</td>
+                <td><code>int</code></td>
                 </tr>
-                <tr>
+                <tr data-sql-type-kind="BigInt" data-sql-type-names="BIGINT">
                 <td><code>BIGINT</code></td>
                 <td>—</td>
                 <td>64-bit signed integer</td>
+                <td><code>long</code></td>
                 </tr>
-                <tr>
-                <td><code>BOOLEAN</code></td>
-                <td><code>BOOL</code>, bare <code>BIT</code></td>
-                <td>Logical Boolean; stored canonically as 0 or 1 and exposed as a Boolean by typed APIs</td>
+                <tr data-sql-type-kind="Real" data-sql-type-names="REAL">
+                <td><code>REAL</code></td>
+                <td>—</td>
+                <td>Finite floating point using the stable binary64 engine carrier; EF Core maps <code>float</code> here</td>
+                <td><code>double</code></td>
                 </tr>
-                <tr>
+                <tr data-sql-type-kind="Double" data-sql-type-names="DOUBLE PRECISION, DOUBLE, FLOAT">
+                <td><code>DOUBLE PRECISION</code></td>
+                <td><code>DOUBLE</code>, <code>FLOAT</code></td>
+                <td>Finite IEEE 754 binary64 floating point</td>
+                <td><code>double</code></td>
+                </tr>
+                <tr data-sql-type-kind="Decimal" data-sql-type-names="DECIMAL, NUMERIC">
+                <td><code>DECIMAL</code>, <code>DECIMAL(p)</code>, <code>DECIMAL(p,s)</code></td>
+                <td>Corresponding <code>NUMERIC</code> forms</td>
+                <td>Exact fixed-scale decimal; precision 1–18 and scale 0–precision</td>
+                <td><code>decimal</code></td>
+                </tr>
+                <tr data-sql-type-kind="Char" data-sql-type-names="CHAR, CHARACTER, NCHAR">
+                <td><code>CHAR</code>, <code>CHAR(n)</code></td>
+                <td><code>CHARACTER</code>, <code>NCHAR</code></td>
+                <td>Unicode text; the faceted form is fixed length and space-padded</td>
+                <td><code>string</code></td>
+                </tr>
+                <tr data-sql-type-kind="VarChar" data-sql-type-names="VARCHAR, CHARACTER VARYING, NVARCHAR">
+                <td><code>VARCHAR</code>, <code>VARCHAR(n)</code></td>
+                <td><code>CHARACTER VARYING</code>, <code>NVARCHAR</code></td>
+                <td>Unicode text with an optional maximum character count</td>
+                <td><code>string</code></td>
+                </tr>
+                <tr data-sql-type-kind="Text" data-sql-type-names="TEXT, CLOB">
+                <td><code>TEXT</code></td>
+                <td><code>CLOB</code></td>
+                <td>Unfaceted Unicode text</td>
+                <td><code>string</code></td>
+                </tr>
+                <tr data-sql-type-kind="Binary" data-sql-type-names="BINARY">
+                <td><code>BINARY</code>, <code>BINARY(n)</code></td>
+                <td>—</td>
+                <td>Bytes; the faceted form is fixed length and zero-padded</td>
+                <td><code>byte[]</code></td>
+                </tr>
+                <tr data-sql-type-kind="VarBinary" data-sql-type-names="VARBINARY">
+                <td><code>VARBINARY</code>, <code>VARBINARY(n)</code></td>
+                <td>—</td>
+                <td>Bytes with an optional maximum length</td>
+                <td><code>byte[]</code></td>
+                </tr>
+                <tr data-sql-type-kind="Blob" data-sql-type-names="BLOB">
+                <td><code>BLOB</code></td>
+                <td>—</td>
+                <td>Unfaceted binary data</td>
+                <td><code>byte[]</code></td>
+                </tr>
+                <tr data-sql-type-kind="Uuid" data-sql-type-names="UUID, GUID, UNIQUEIDENTIFIER">
+                <td><code>UUID</code></td>
+                <td><code>GUID</code>, <code>UNIQUEIDENTIFIER</code></td>
+                <td>Canonical UUID stored as exactly 16 bytes</td>
+                <td><code>Guid</code></td>
+                </tr>
+                <tr data-sql-type-kind="Date" data-sql-type-names="DATE">
+                <td><code>DATE</code></td>
+                <td>—</td>
+                <td>Calendar date in canonical <code>yyyy-MM-dd</code> form</td>
+                <td><code>DateOnly</code></td>
+                </tr>
+                <tr data-sql-type-kind="Time" data-sql-type-names="TIME">
+                <td><code>TIME</code>, <code>TIME(p)</code></td>
+                <td>—</td>
+                <td>Time of day with optional fractional-seconds precision</td>
+                <td><code>TimeOnly</code></td>
+                </tr>
+                <tr data-sql-type-kind="Timestamp" data-sql-type-names="DATETIME2, DATETIME">
+                <td><code>DATETIME2</code>, <code>DATETIME2(p)</code></td>
+                <td><code>DATETIME</code> (without a facet)</td>
+                <td>Date and time without an offset</td>
+                <td><code>DateTime</code></td>
+                </tr>
+                <tr data-sql-type-kind="TimestampWithTimeZone" data-sql-type-names="DATETIMEOFFSET, TIMESTAMP WITH TIME ZONE">
+                <td><code>DATETIMEOFFSET</code>, <code>DATETIMEOFFSET(p)</code></td>
+                <td><code>TIMESTAMP WITH TIME ZONE</code>, <code>TIMESTAMP(p) WITH TIME ZONE</code></td>
+                <td>Date, time, and offset; values are normalized to UTC</td>
+                <td><code>DateTimeOffset</code></td>
+                </tr>
+                <tr data-sql-type-kind="IntervalYearToMonth" data-sql-type-names="INTERVAL YEAR TO MONTH">
+                <td><code>INTERVAL YEAR TO MONTH</code></td>
+                <td>—</td>
+                <td>Calendar interval rendered canonically as signed years and months</td>
+                <td><code>string</code></td>
+                </tr>
+                <tr data-sql-type-kind="IntervalDayToSecond" data-sql-type-names="INTERVAL DAY TO SECOND">
+                <td><code>INTERVAL DAY TO SECOND</code>, <code>INTERVAL DAY TO SECOND(p)</code></td>
+                <td>—</td>
+                <td>Duration with optional fractional-seconds precision</td>
+                <td><code>TimeSpan</code></td>
+                </tr>
+                <tr data-sql-type-kind="Json" data-sql-type-names="JSON">
+                <td><code>JSON</code></td>
+                <td>—</td>
+                <td>Validated, compact canonical JSON text</td>
+                <td><code>string</code></td>
+                </tr>
+                <tr data-sql-type-kind="Xml" data-sql-type-names="XML">
+                <td><code>XML</code></td>
+                <td>—</td>
+                <td>Validated, canonical XML text</td>
+                <td><code>string</code></td>
+                </tr>
+                <tr data-sql-type-kind="Bit" data-sql-type-names="BIT">
                 <td><code>BIT(n)</code></td>
                 <td>—</td>
-                <td>Fixed-length bit string; distinct from bare Boolean <code>BIT</code></td>
+                <td>Fixed-length bit string; <code>n</code> is required and bare <code>BIT</code> means Boolean</td>
+                <td><code>SqlBitString</code></td>
                 </tr>
-                <tr>
-                <td><code>VARBIT(n)</code></td>
-                <td><code>BIT VARYING(n)</code></td>
-                <td>Variable-length bit string</td>
+                <tr data-sql-type-kind="VarBit" data-sql-type-names="BIT VARYING, VARBIT">
+                <td><code>BIT VARYING</code>, <code>BIT VARYING(n)</code></td>
+                <td><code>VARBIT</code>, <code>VARBIT(n)</code></td>
+                <td>Variable-length bit string with an optional maximum length</td>
+                <td><code>SqlBitString</code></td>
                 </tr>
-                <tr>
-                <td><code>DATETIME2(p)</code></td>
-                <td><code>DATETIME</code></td>
-                <td>Date and time with optional fractional-second precision</td>
-                </tr>
-                <tr>
-                <td><code>DATETIMEOFFSET(p)</code></td>
-                <td><code>TIMESTAMP ... WITH TIME ZONE</code></td>
-                <td>Date, time, and offset with optional fractional-second precision</td>
-                </tr>
-                <tr>
+                <tr data-sql-type-special="RowVersion" data-sql-type-names="ROWVERSION, TIMESTAMP">
                 <td><code>ROWVERSION</code></td>
                 <td>bare <code>TIMESTAMP</code></td>
                 <td>Generated, non-nullable eight-byte token from the database-wide rowversion counter</td>
-                </tr>
-                <tr>
-                <td><code>REAL</code></td>
-                <td><code>FLOAT</code>, <code>DOUBLE</code></td>
-                <td>64-bit IEEE 754 floating point</td>
-                </tr>
-                <tr>
-                <td><code>TEXT</code></td>
-                <td><code>VARCHAR</code></td>
-                <td>UTF-8 Unicode string</td>
-                </tr>
-                <tr>
-                <td><code>BLOB</code></td>
-                <td>—</td>
-                <td>Raw binary data</td>
-                </tr>
-                <tr>
-                <td><code>NULL</code></td>
-                <td>—</td>
-                <td>Explicit NULL value (any column unless constrained <code>NOT NULL</code>)</td>
+                <td><code>byte[]</code></td>
                 </tr>
                 </tbody>
                 </table>
-                <p>Declared SQL types share compact physical carriers without sharing their logical rules. <code>INTEGER</code> arithmetic is checked and remains <code>INTEGER</code>; an operation involving <code>BIGINT</code> produces <code>BIGINT</code>. Small integer literals infer as <code>INTEGER</code> and larger literals as <code>BIGINT</code>. Boolean values are not ordinary numeric operands. Bare <code>TIMESTAMP</code> is a rowversion declaration; use <code>DATETIME2</code> for temporal timestamps.</p>
+                <p><code>NULL</code> is a value and runtime tag, not a declarable SQL column type. Ordinary types may be nullable unless constrained with <code>NOT NULL</code>; rowversion is always generated and non-nullable.</p>
+                <h3>Facet rules</h3>
+                <ul>
+                <li>Length <code>n</code> must be positive. Character lengths count Unicode scalar values, binary lengths count bytes, and bit-string lengths count bits.</li>
+                <li><code>DECIMAL</code> defaults to <code>DECIMAL(18,2)</code>; <code>DECIMAL(p)</code> means <code>DECIMAL(p,0)</code>. Assignment is exact and does not round excess fractional digits.</li>
+                <li>Fractional-seconds precision <code>p</code> ranges from 0 through 7 for <code>TIME</code>, <code>DATETIME2</code>, <code>DATETIMEOFFSET</code>, and <code>INTERVAL DAY TO SECOND</code>. <code>DATETIME(p)</code> is rejected; use <code>DATETIME2(p)</code>.</li>
+                <li><code>TIMESTAMP(p) WITH TIME ZONE</code> is temporal. Bare <code>TIMESTAMP</code> is a rowversion; <code>TIMESTAMP(p)</code> without <code>WITH TIME ZONE</code> is rejected.</li>
+                </ul>
+                <h3>Logical and physical types</h3>
+                <p>Declared SQL types share six compact runtime tags—<code>Null</code>, <code>Integer</code>, <code>Real</code>, <code>Decimal</code>, <code>Text</code>, and <code>Blob</code>—without sharing logical rules. Boolean and integer widths use the Integer carrier; REAL and DOUBLE PRECISION use Real; character, temporal, interval, JSON, and XML use Text; binary, UUID, bit strings, and rowversion use Blob; exact decimal uses Decimal. Typed metadata and APIs preserve the logical descriptor.</p>
+                <p><code>INTEGER</code> arithmetic is checked and remains <code>INTEGER</code>; an operation involving <code>BIGINT</code> produces <code>BIGINT</code>, while <code>TINYINT</code> and <code>SMALLINT</code> arithmetic widens to <code>BIGINT</code>. Small integer literals infer as <code>INTEGER</code> and larger literals as <code>BIGINT</code>. Boolean values are not ordinary numeric operands.</p>
+                <p><code>ROWVERSION</code> and bare <code>TIMESTAMP</code> are generated column declarations, not cast or <code>ALTER COLUMN TYPE</code> targets. A table may contain one rowversion. It cannot be assigned, nullable, defaulted, collated, used as an identity, or included in a key, foreign key, or index. The legacy <code>BLOB ROWVERSION NOT NULL</code> declaration remains accepted.</p>
                 <hr/>
                 <h2 id="identifiers">Identifiers</h2>
                 <p>SQL identifiers are limited to 128 UTF-16 code units and cannot contain NUL.</p>

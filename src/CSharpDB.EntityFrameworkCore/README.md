@@ -105,6 +105,40 @@ var blogs = await db.Blogs
     .ToListAsync();
 ```
 
+## CLR Type Mappings
+
+Convention-based properties use the following canonical SQL declarations:
+
+| CLR property type | Canonical SQL type | Notes |
+|---|---|---|
+| `bool` | `BOOLEAN` | Bare SQL `BIT` is also Boolean |
+| `byte` | `TINYINT` | Unsigned 8-bit range |
+| `sbyte` | `INTEGER` | Checked conversion through the signed 32-bit declaration |
+| `short` | `SMALLINT` | Signed 16-bit range |
+| `ushort` | `INTEGER` | Checked conversion through the signed 32-bit declaration |
+| `int` | `INTEGER` | Signed 32-bit range |
+| `uint` | `BIGINT` | Checked conversion through the signed 64-bit declaration |
+| `long` | `BIGINT` | Signed 64-bit range |
+| `ulong` | `BIGINT` | Values must fit the signed 64-bit range |
+| enum | Underlying integral mapping | Uses the corresponding mapping above |
+| `float` | `REAL` | Floating-point value |
+| `double` | `DOUBLE PRECISION` | Floating-point value |
+| `decimal` | `DECIMAL(18,2)` | `HasPrecision` changes precision and scale |
+| `string` | `TEXT` | Length/fixed-length facets select `VARCHAR(n)` or `CHAR(n)` |
+| `Guid` | `UUID` | Native logical UUID declaration |
+| `DateOnly` | `DATE` | Date without time |
+| `TimeOnly` | `TIME` | Optional precision selects `TIME(p)` |
+| `DateTime` | `DATETIME2` | Optional precision selects `DATETIME2(p)` |
+| `DateTimeOffset` | `DATETIMEOFFSET` | Optional precision selects `DATETIMEOFFSET(p)` |
+| `TimeSpan` | `INTERVAL DAY TO SECOND` | Optional precision selects `INTERVAL DAY TO SECOND(p)` |
+| `byte[]` | `BLOB` | Length/fixed-length facets select `VARBINARY(n)` or `BINARY(n)` |
+| rowversion `byte[]` | `ROWVERSION` | Configure with `[Timestamp]` or `IsRowVersion()` |
+
+Nullable CLR properties use the same declaration with nullable column metadata.
+Explicit `HasColumnType(...)` can select another compatible CSharpDB declaration;
+see the [complete SQL data type reference](https://csharpdb.com/docs/sql-reference.html#data-types)
+for aliases, facets, and logical semantics.
+
 ## Using an Existing Connection
 
 For a private in-memory database, open and keep the `CSharpDbConnection` alive
@@ -609,7 +643,7 @@ an entire table.
 | Exact decimal mapping | Yes (bounded) | Native `DECIMAL(p,s)` / `DbValue.Decimal` for precision 1–18, including exact parameters, arithmetic, comparisons, ordering, aggregates, defaults, keys, and validated facet rewrites; explicit `INTEGER` keeps legacy compatibility |
 | Bounded LINQ/query subset | Partial | Basic operators plus bounded direct inner and left joins, terminal direct-integer set operations, and the string, `EF.Functions.Like`, temporal, finite-double math, scalar numeric aggregate, direct-column integer-distinct aggregate, and direct single-table grouped aggregate translations listed above; unsupported methods, members, operators, set-operation shapes, aggregate shapes, and join shapes receive provider diagnostics |
 | ASP.NET Core Identity | Partial | Identity schema v1 with `IdentityUser<int>` and `IdentityRole<int>` for the documented workflows |
-| Supported CLR types | Yes | `bool`, integral types, enums, bounded exact `decimal`, `double`, `float`, `string`, `Guid`, `DateTime`, `DateTimeOffset`, `DateOnly`, `TimeOnly`, `byte[]` |
+| Supported CLR types | Yes | `bool`, integral types, enums, bounded exact `decimal`, `double`, `float`, `string`, `Guid`, `DateTime`, `DateTimeOffset`, `DateOnly`, `TimeOnly`, `TimeSpan`, `byte[]` |
 
 ## Current Limitations
 

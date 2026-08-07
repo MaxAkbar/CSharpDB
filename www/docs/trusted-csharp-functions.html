@@ -165,6 +165,11 @@ the runnable sample.</p>
   <td><code>DbValue.FromReal(...)</code></td>
 </tr>
 <tr>
+  <td><code>DbType.Decimal</code></td>
+  <td><code>value.AsDecimal</code></td>
+  <td><code>DbValue.FromDecimal(...)</code></td>
+</tr>
+<tr>
   <td><code>DbType.Text</code></td>
   <td><code>value.AsText</code></td>
   <td><code>DbValue.FromText(...)</code></td>
@@ -181,6 +186,7 @@ the runnable sample.</p>
 </tr>
 </tbody>
 </table>
+<p>These are physical <code>DbValue</code> carriers. Logical SQL declarations retain separate metadata and coercion rules; see the <a href="sql-reference.html#data-types">SQL data type reference</a>.</p>
 <p>Functions are registered with:</p>
 <pre><code class="language-csharp">using CSharpDB.Engine;
 using CSharpDB.Primitives;

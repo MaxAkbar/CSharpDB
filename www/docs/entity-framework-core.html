@@ -49,6 +49,7 @@
                     <ul>
                         <li><a href="#install">Install</a></li>
                         <li><a href="#basic-usage">Basic Usage</a></li>
+                        <li><a href="#type-mappings">Type Mappings</a></li>
                         <li><a href="#connections">Connections</a></li>
                         <li><a href="#transactions">Transactions</a></li>
                         <li><a href="#aspnet-identity">ASP.NET Core Identity</a></li>
@@ -141,6 +142,37 @@ var blogs = await db.Blogs
     .OrderBy(blog =&gt; blog.Name)
     .ToListAsync();</code></pre>
                 </div>
+
+                <h2 id="type-mappings">CLR Type Mappings</h2>
+                <p>Convention-based properties use the following canonical SQL declarations:</p>
+                <table class="doc-table">
+                    <thead><tr><th>CLR property type</th><th>Canonical SQL type</th><th>Notes</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>bool</code></td><td><code>BOOLEAN</code></td><td>Bare SQL <code>BIT</code> is also Boolean</td></tr>
+                        <tr><td><code>byte</code></td><td><code>TINYINT</code></td><td>Unsigned 8-bit range</td></tr>
+                        <tr><td><code>sbyte</code></td><td><code>INTEGER</code></td><td>Checked conversion through the signed 32-bit declaration</td></tr>
+                        <tr><td><code>short</code></td><td><code>SMALLINT</code></td><td>Signed 16-bit range</td></tr>
+                        <tr><td><code>ushort</code></td><td><code>INTEGER</code></td><td>Checked conversion through the signed 32-bit declaration</td></tr>
+                        <tr><td><code>int</code></td><td><code>INTEGER</code></td><td>Signed 32-bit range</td></tr>
+                        <tr><td><code>uint</code></td><td><code>BIGINT</code></td><td>Checked conversion through the signed 64-bit declaration</td></tr>
+                        <tr><td><code>long</code></td><td><code>BIGINT</code></td><td>Signed 64-bit range</td></tr>
+                        <tr><td><code>ulong</code></td><td><code>BIGINT</code></td><td>Values must fit the signed 64-bit range</td></tr>
+                        <tr><td>enum</td><td>Underlying integral mapping</td><td>Uses the corresponding mapping above</td></tr>
+                        <tr><td><code>float</code></td><td><code>REAL</code></td><td>Floating-point value</td></tr>
+                        <tr><td><code>double</code></td><td><code>DOUBLE PRECISION</code></td><td>Floating-point value</td></tr>
+                        <tr><td><code>decimal</code></td><td><code>DECIMAL(18,2)</code></td><td><code>HasPrecision</code> changes precision and scale</td></tr>
+                        <tr><td><code>string</code></td><td><code>TEXT</code></td><td>Length/fixed-length facets select <code>VARCHAR(n)</code> or <code>CHAR(n)</code></td></tr>
+                        <tr><td><code>Guid</code></td><td><code>UUID</code></td><td>Native logical UUID declaration</td></tr>
+                        <tr><td><code>DateOnly</code></td><td><code>DATE</code></td><td>Date without time</td></tr>
+                        <tr><td><code>TimeOnly</code></td><td><code>TIME</code></td><td>Optional precision selects <code>TIME(p)</code></td></tr>
+                        <tr><td><code>DateTime</code></td><td><code>DATETIME2</code></td><td>Optional precision selects <code>DATETIME2(p)</code></td></tr>
+                        <tr><td><code>DateTimeOffset</code></td><td><code>DATETIMEOFFSET</code></td><td>Optional precision selects <code>DATETIMEOFFSET(p)</code></td></tr>
+                        <tr><td><code>TimeSpan</code></td><td><code>INTERVAL DAY TO SECOND</code></td><td>Optional precision selects <code>INTERVAL DAY TO SECOND(p)</code></td></tr>
+                        <tr><td><code>byte[]</code></td><td><code>BLOB</code></td><td>Length/fixed-length facets select <code>VARBINARY(n)</code> or <code>BINARY(n)</code></td></tr>
+                        <tr><td>rowversion <code>byte[]</code></td><td><code>ROWVERSION</code></td><td>Configure with <code>[Timestamp]</code> or <code>IsRowVersion()</code></td></tr>
+                    </tbody>
+                </table>
+                <p>Nullable CLR properties use the same declaration with nullable column metadata. Explicit <code>HasColumnType(...)</code> can select another compatible CSharpDB declaration; see the <a href="sql-reference.html#data-types">complete SQL data type reference</a> for aliases, facets, and logical semantics.</p>
 
                 <h2 id="connections">Existing Connections and In-Memory Databases</h2>
                 <p>You can pass an existing <code>CSharpDbConnection</code>. This is required for a private <code>:memory:</code> database because the database lives as long as the connection stays open.</p>
@@ -266,15 +298,14 @@ dotnet ef migrations script --idempotent</code></pre>
                 <div class="callout callout-warning"><strong>Bounded column rewrites:</strong> <code>INTEGER</code> to <code>REAL</code> is exact across the full signed 32-bit range; <code>BIGINT</code> to <code>REAL</code> accepts only the exactly representable ±2<sup>53</sup> range. The reverse accepts finite integral values in the target's signed 32- or 64-bit range. Affected ready ordinary and unique SQL indexes are rebuilt atomically, including composite indexes. Dependency-free <code>TEXT</code> to <code>BLOB</code> encodes UTF-8, while <code>BLOB</code> to <code>TEXT</code> requires valid UTF-8. TYPE BLOB clears the old TEXT collation; BLOB-to-TEXT starts at default <code>BINARY</code> and then applies any requested target collation. TEXT columns can also change among supported collations, rebuilding inherited ready SQL indexes while explicit-collation and unrelated indexes retain their roots. Row IDs are preserved, and checks plus affected uniqueness are revalidated. Key constraints, foreign keys, indexed TEXT/BLOB columns, full-text/collection or non-ready dependencies, views on the table, table-owned triggers, cross-table triggers that reference the column, and applicable validation rules remain blocked. Generated Up and Down commands order default, type, collation, and nullability changes; keep each compound sequence in one migration transaction so a later failure restores the original table and index roots.</div>
 
                 <h2 id="decimal-mapping">Exact Decimal Foundation</h2>
-                <p><code>decimal</code> and nullable <code>decimal</code> properties use provider-owned scaled <code>INTEGER</code> storage without an application value converter. The default is <code>decimal(18, 2)</code>; precision must be from 1 through 18, and scale must be from 0 through precision. Configure other supported facets with <code>HasPrecision(precision, scale)</code>.</p>
+                <p><code>decimal</code> and nullable <code>decimal</code> properties no longer require an application value converter. The provider declares <code>DECIMAL(precision,scale)</code> and sends CLR <code>decimal</code> values through the exact <code>DbValue.Decimal</code> representation. Round trips, parameters, arithmetic, equality/range comparisons, ordering, aggregates, defaults, keys, and ordinary indexes therefore do not pass through binary floating point or a scaled surrogate integer.</p>
                 <div class="code-block" data-title="OnModelCreating">
                     <pre><code>modelBuilder.Entity&lt;Invoice&gt;()
     .Property(invoice =&gt; invoice.Amount)
     .HasPrecision(18, 4);</code></pre>
                 </div>
-                <p>Round trips, nullable values, parameters used with one facet mapping, equality/range comparisons, ordering, and ordinary indexes remain exact. Values with excess fractional digits are rejected instead of rounded, and values outside the configured precision fail as overflow. Raw SQL sees the scaled representation: <code>12.3400</code> at scale 4 is stored as <code>123400</code>.</p>
-                <div class="callout callout-warning"><strong>Bounded decimal surface:</strong> decimal keys, database defaults, generated values, precision/scale-changing migrations, and computed decimal expressions—including arithmetic, numeric casts, conditionals/coalescing, and <code>Sum</code>/<code>Average</code>/<code>Min</code>/<code>Max</code>—are not yet supported. Decimal collection/subquery <code>Contains</code>, cross-facet parameter reuse, comparisons with application-converter decimal mappings, and model-mapped functions with decimal parameters or returns are also rejected. Unsafe query expressions fail before command dispatch with <code>CDBEF1006</code>. Use <code>HasPrecision(precision, scale)</code>, not a custom decimal store type, for the provider-owned mapping.</div>
-                <p>When calling <code>IMigrationsSqlGenerator</code> directly with a hand-authored <code>AddPrimaryKeyOperation</code>, pass the target model. A low-level call with <code>model: null</code> does not carry enough column metadata to identify a decimal mapping.</p>
+                <p>The default is <code>decimal(18, 2)</code>. Precision must be from 1 through 18, and scale must be from 0 through precision. Values with excess fractional digits are rejected instead of rounded, and values outside the configured precision fail as overflow. Raw SQL sees the same exact decimal value. Precision/scale changes use the engine's validated transactional table rewrite and fail without publishing partial data if an existing value cannot fit the target declaration.</p>
+                <div class="callout callout-info"><strong>Legacy compatibility:</strong> for databases created by earlier provider releases, an explicit <code>.HasColumnType("INTEGER")</code> on a decimal property retains the legacy scaled-integer converter and its guarded query surface without reinterpreting existing coefficients. New and convention-based models should use <code>HasPrecision(precision, scale)</code>, <code>DECIMAL</code>, or <code>NUMERIC</code> to select native exact decimal storage.</div>
 
                 <h2 id="rowversion-concurrency">Database-Generated RowVersion</h2>
                 <p>CSharpDB supports one nonnullable <code>byte[]</code> property per table configured with the standard <code>[Timestamp]</code> attribute or fluent <code>IsRowVersion()</code> API.</p>
@@ -357,7 +388,7 @@ public sealed class Document
                         <tr><td><code>CDBEF1003</code></td><td>Recognized unsupported query operator, including <code>TakeWhile</code>, <code>SkipWhile</code>, set-operation comparer overloads, <code>Join(comparer)</code>, <code>LeftJoin(comparer)</code>, <code>GroupJoin</code>, <code>SelectMany</code>, <code>DefaultIfEmpty</code>, <code>RightJoin</code>, or <code>ExecuteUpdate</code></td></tr>
                         <tr><td><code>CDBEF1004</code></td><td>Unsupported distinct aggregate shape</td></tr>
                         <tr><td><code>CDBEF1005</code></td><td>Unsupported grouped aggregate shape</td></tr>
-                        <tr><td><code>CDBEF1006</code></td><td>Unsupported decimal operation outside the exact scaled-integer foundation</td></tr>
+                        <tr><td><code>CDBEF1006</code></td><td>Unsafe operation involving a legacy scaled-integer or incompatible application-converter decimal mapping</td></tr>
                         <tr><td><code>CDBEF1007</code></td><td>Unsupported inner-join shape outside the bounded direct-join surface</td></tr>
                         <tr><td><code>CDBEF1008</code></td><td>Unsupported left-join shape outside the bounded direct-join surface</td></tr>
                         <tr><td><code>CDBEF1009</code></td><td>Unsupported set-operation shape outside the bounded terminal direct-integer surface</td></tr>
@@ -386,19 +417,19 @@ public sealed class Document
                         <tr><td>Standalone primary-key migrations</td><td>Yes (bounded)</td><td>Named logical keys add/drop; physical <code>INTEGER</code> adds can rekey validated populated rows, supported relational indexes, and complete ready full-text-owned storage atomically; EF drops match the exact constraint name</td></tr>
                         <tr><td>Alternate keys and unique constraints</td><td>Yes</td><td>Named create-table constraints plus standalone add/drop migrations</td></tr>
                         <tr><td>Foreign keys</td><td>Yes (bounded)</td><td>Named scalar/composite create/add/drop, primary or alternate-key targets, model-level restrictive/cascade/<code>SetNull</code> behavior, and the full immediate delete/update action matrix through explicit migration operations</td></tr>
-                        <tr><td>Literal column defaults</td><td>Yes (bounded)</td><td><code>HasDefaultValue(...)</code> values that map to INTEGER, REAL, TEXT, BLOB, or NULL; computed/default SQL expressions are intentionally unsupported</td></tr>
+                        <tr><td>Literal column defaults</td><td>Yes (bounded)</td><td><code>HasDefaultValue(...)</code> values that map to a supported logical type, including exact <code>DECIMAL</code>; computed/default SQL expressions are intentionally unsupported</td></tr>
                         <tr><td>Check constraints</td><td>Yes (bounded)</td><td>Create-table and standalone add/drop migrations for deterministic row-local expressions accepted by the engine</td></tr>
-                        <tr><td><code>AlterColumn</code></td><td>Yes (bounded)</td><td>Literal default/nullability changes, exact <code>INTEGER</code>/<code>REAL</code> rewrites with ready ordinary/unique SQL-index rebuilding, strict dependency-free UTF-8 <code>TEXT</code>/<code>BLOB</code> rewrites, and <code>TEXT</code> collation changes with inherited SQL-index rebuilding</td></tr>
-                        <tr><td>Exact decimal mapping</td><td>Partial</td><td>Provider-owned scaled <code>INTEGER</code> storage for precision 1–18; exact round trips, parameters, comparisons, and ordering</td></tr>
+                        <tr><td><code>AlterColumn</code></td><td>Yes (bounded)</td><td>Literal default/nullability changes and validated conversions among supported logical SQL declarations; dependent structures are rebuilt only when the engine can do so safely</td></tr>
+                        <tr><td>Exact decimal mapping</td><td>Yes (bounded)</td><td>Native <code>DECIMAL(p,s)</code> / <code>DbValue.Decimal</code> for precision 1–18, including exact parameters, arithmetic, comparisons, ordering, aggregates, defaults, keys, and validated facet rewrites; explicit <code>INTEGER</code> keeps legacy compatibility</td></tr>
                         <tr><td>Bounded LINQ/query subset</td><td>Partial</td><td>Basic operators plus bounded direct inner and left joins, terminal direct-integer set operations, and the string, <code>EF.Functions.Like</code>, temporal, finite-double math, scalar numeric aggregate, direct-column integer-distinct aggregate, and direct single-table grouped aggregate translations listed above; unsupported methods, members, operators, set-operation shapes, aggregate shapes, and join shapes receive provider diagnostics</td></tr>
                         <tr><td>ASP.NET Core Identity</td><td>Partial</td><td>Identity schema v1 with <code>IdentityUser&lt;int&gt;</code> and <code>IdentityRole&lt;int&gt;</code> for the documented workflows</td></tr>
-                        <tr><td>Supported CLR types</td><td>Yes</td><td><code>bool</code>, integral types, enums, bounded exact <code>decimal</code>, <code>double</code>, <code>float</code>, <code>string</code>, <code>Guid</code>, <code>DateTime</code>, <code>DateTimeOffset</code>, <code>DateOnly</code>, <code>TimeOnly</code>, <code>byte[]</code></td></tr>
+                        <tr><td>Supported CLR types</td><td>Yes</td><td><code>bool</code>, integral types, enums, bounded exact <code>decimal</code>, <code>double</code>, <code>float</code>, <code>string</code>, <code>Guid</code>, <code>DateTime</code>, <code>DateTimeOffset</code>, <code>DateOnly</code>, <code>TimeOnly</code>, <code>TimeSpan</code>, <code>byte[]</code></td></tr>
                     </tbody>
                 </table>
 
                 <h2 id="limitations">Current Limitations</h2>
                 <ul>
-                    <li>Provider-owned decimal mapping does not yet support keys, defaults, generated values, computed decimal expressions, or precision/scale-changing migrations.</li>
+                    <li><code>DECIMAL</code> columns are not identity or rowversion storage; application-converter and explicit legacy scaled-<code>INTEGER</code> decimal mappings retain a narrower query surface than native <code>DECIMAL</code>.</li>
                     <li>Complex properties are rejected until their flattened column mappings are supported.</li>
                     <li><code>ExecuteUpdate</code> is rejected until assignment conversions and decimal facets are supported.</li>
                     <li>Direct <code>Join</code> and no-comparer <code>LeftJoin</code> are limited to one nonnullable <code>int</code>, <code>long</code>, or <code>int</code>/<code>long</code>-backed enum key; filtered inner sources, derived/composite/chained joins, comparer overloads, classic <code>GroupJoin</code>/<code>SelectMany</code>/<code>DefaultIfEmpty</code> left joins, <code>RightJoin</code>, and cross joins remain unsupported.</li>
@@ -408,7 +439,7 @@ public sealed class Document
                     <li>Computed columns and <code>DefaultValueSql</code> are unsupported.</li>
                     <li>Rowversion is limited to one nonnullable <code>byte[]</code> property created with its table; standalone add/alter rowversion migrations are unsupported.</li>
                     <li>All other string-search overloads—including default <code>StartsWith(string)</code>/<code>EndsWith(string)</code>, the Boolean/<code>CultureInfo</code> forms, non-ordinal or captured <code>StringComparison</code> modes, and character overloads—plus transformed/configured-converter <code>LIKE</code> matches, row-derived <code>LIKE</code> patterns, captured or invalid <code>LIKE</code> escapes, and <code>DateTimeOffset</code> component translation are unsupported.</li>
-                    <li>Integral, decimal, <code>MathF</code>, precision-argument, midpoint-mode, and transcendental math overloads are outside the supported translation surface.</li>
+                    <li>Integral, <code>MathF</code>, precision-argument, midpoint-mode, and transcendental math overloads are outside the supported translation surface.</li>
                     <li>Long- and float-valued <code>Sum</code>/<code>Average</code>/<code>Min</code>/<code>Max</code> variants, integer <code>Average</code>, text <code>Min</code>/<code>Max</code>, and broader distinct/grouped aggregate types and shapes remain outside the supported surface.</li>
                     <li>Physical <code>INTEGER</code> primary-key rekeying supports ready ordinary/unique SQL, constraint-owned, foreign-key-support, and complete ready full-text index families; collection, incomplete full-text, and non-ready indexes are rejected.</li>
                     <li>Named shared-memory databases (<code>:memory:&lt;name&gt;</code>) are rejected.</li>

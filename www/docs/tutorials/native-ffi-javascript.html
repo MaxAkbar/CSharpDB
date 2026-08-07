@@ -159,22 +159,27 @@ db.close();</code></pre></div>
                     </tbody>
                 </table>
 
-                <h2 id="value-types">Value Types</h2>
+                <h2 id="value-types">Native Value Types</h2>
+
+                <p>The sample wrapper switches on the NativeAOT ABI's physical value code. These carriers are not the full SQL declaration set: several logical types share each carrier. See the <a href="../sql-reference.html#data-types">complete SQL data type reference</a>.</p>
 
                 <table>
                     <thead>
                         <tr>
-                            <th>CSharpDB Type</th>
-                            <th>JavaScript Type</th>
+                            <th>Physical carrier</th>
+                            <th>Value returned by this sample</th>
                         </tr>
                     </thead>
                     <tbody>
-                        <tr><td>INTEGER</td><td><code>Number</code> (auto-converted from BigInt if safe)</td></tr>
-                        <tr><td>REAL</td><td><code>Number</code></td></tr>
-                        <tr><td>TEXT</td><td><code>String</code></td></tr>
-                        <tr><td>NULL</td><td><code>null</code></td></tr>
+                        <tr><td><code>INTEGER</code></td><td><code>Number</code> when safe, otherwise <code>BigInt</code></td></tr>
+                        <tr><td><code>REAL</code></td><td><code>Number</code></td></tr>
+                        <tr><td><code>TEXT</code></td><td><code>String</code></td></tr>
+                        <tr><td><code>BLOB</code></td><td>Not decoded by this sample; returned as <code>null</code></td></tr>
+                        <tr><td><code>DECIMAL</code></td><td>Not decoded by this sample; returned as <code>null</code></td></tr>
+                        <tr><td><code>NULL</code></td><td><code>null</code></td></tr>
                     </tbody>
                 </table>
+                <p>For example, Boolean and all integer widths use the physical <code>INTEGER</code> code, temporal values use <code>TEXT</code>, and UUID, bit-string, and rowversion values use <code>BLOB</code>. This sample does not bind the native declared-type or bit-length APIs and therefore does not perform higher-level Boolean, temporal, UUID, or bit-string conversion.</p>
             </div>
         </div>
     </main>

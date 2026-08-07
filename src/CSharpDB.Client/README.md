@@ -10,6 +10,32 @@ It owns the public client contract used to talk to a database, while transport a
 - `Direct`, `Http`, and `Grpc` are implemented transports today.
 - `NamedPipes` remains the only future transport target.
 
+## Logical Types, Carriers, and Row Values
+
+Public schema metadata deliberately exposes two type layers.
+`ColumnDefinition.Type` is the compact physical carrier (`Integer`, `Real`,
+`Decimal`, `Text`, or `Blob`). `DeclaredType` is the logical
+`SqlTypeDescriptor`, including length, precision, scale, and fractional-second
+facets; `EffectiveType` supplies the safe legacy compatibility view when that
+descriptor is absent. Use `EffectiveType.ToSql()` (or a SQL result's
+`ColumnTypes`) for the canonical declaration. A rowversion uses `Blob` storage
+and is additionally marked by `IsRowVersion`.
+
+Client row values remain transport-oriented: Boolean columns materialize as
+`bool`, other integer declarations as `long`, real declarations as `double`,
+exact decimal as `decimal`, text-backed declarations as `string`, ordinary
+blob-backed declarations as `byte[]`, and SQL bit strings as
+`CSharpDB.Client.Models.SqlBitString`. In particular, this layer does not turn
+text-backed temporal values into CLR temporal structs or UUID bytes into
+`Guid`; consumers that need those CLR conversions can use `CSharpDB.Data`.
+HTTP and gRPC carry the same logical descriptor alongside compatible wire
+values so the physical payload is not mistaken for the SQL declaration.
+
+The legacy `AddColumnAsync(..., DbType, ...)` convenience API accepts physical
+carriers only. Use `ExecuteSqlAsync` or a migration/provider surface for a
+logical or faceted declaration. See the
+[complete SQL data type reference](https://csharpdb.com/docs/sql-reference.html#data-types).
+
 ## Current Transport Model
 
 Create the client with `CSharpDbClientOptions`:

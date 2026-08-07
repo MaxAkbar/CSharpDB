@@ -642,10 +642,13 @@ sp.Defragment(); <span class="cm">// rewrites cells contiguously at end of page<
 Type Tags:
   Null    (<span class="num">0x00</span>) -&gt; no data
   Integer (<span class="num">0x01</span>) -&gt; 8 bytes, little-endian long
-  Text    (<span class="num">0x02</span>) -&gt; [length: varint] [UTF-8 bytes]
-  Real    (<span class="num">0x03</span>) -&gt; 8 bytes, little-endian double (IEEE 754)
-  Blob    (<span class="num">0x04</span>) -&gt; [length: varint] [raw bytes]</code></pre>
+  Real    (<span class="num">0x02</span>) -&gt; 8 bytes, little-endian double (IEEE 754)
+  Text    (<span class="num">0x03</span>) -&gt; [length: varint] [UTF-8 bytes]
+  Blob    (<span class="num">0x04</span>) -&gt; [length: varint] [raw bytes]
+  Decimal (<span class="num">0x05</span>) -&gt; 8-byte coefficient + 1-byte scale
+  Bit string (<span class="num">0x80</span>) -&gt; [bitLength: varint] [packed bytes]</code></pre>
                 </div>
+                <p>These are physical record tags. Declared logical types and aliases are documented in the <a href="../sql-reference.html#data-types">complete datatype matrix</a>.</p>
 
                 <h3>R1. Encode and Decode a Row</h3>
                 <div class="code-block" data-title="Encode / Decode">

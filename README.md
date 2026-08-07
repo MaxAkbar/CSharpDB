@@ -351,7 +351,7 @@ The native library exports 20 C functions. See the [Native Library Reference](ht
 | [Database Migration Guide](https://csharpdb.com/docs/database-migration.html) | Move data from file and database sources, export CSV/JSON, and review mapping, query, and cutover evidence |
 | [VS Code Extension](vscode-extension/README.md) | Local NativeAOT-backed extension |
 | [Benchmark Suite](tests/CSharpDB.Benchmarks/README.md) | Full results and comparisons |
-| [SQL Reference](https://csharpdb.com/docs/sql.html) | Supported SQL syntax |
+| [SQL Reference](https://csharpdb.com/docs/sql.html) | Supported SQL syntax and complete datatype matrix |
 | [Internals & Contributing](https://csharpdb.com/docs/internals.html) | Project structure and concurrency model |
 | [FAQ](https://csharpdb.com/docs/faq.html) | Common questions |
 | [Roadmap](https://csharpdb.com/roadmap.html) | Project goals |
