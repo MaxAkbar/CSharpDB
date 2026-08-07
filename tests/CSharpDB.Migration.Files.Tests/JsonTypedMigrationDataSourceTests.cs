@@ -85,7 +85,7 @@ public sealed class JsonTypedMigrationDataSourceTests
             "2026-07-23 08:09:10.1234567",
             values[JsonMigrationObjectIds.Column(6)].AsText);
         Assert.Equal(
-            "2026-07-23 08:09:10.1234567-07:00",
+            "2026-07-23 15:09:10.1234567+00:00",
             values[JsonMigrationObjectIds.Column(7)].AsText);
         Assert.Equal(
             long.MinValue,

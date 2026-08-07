@@ -471,7 +471,7 @@ public sealed class JsonTypedSnapshotPackageTests
             values[JsonMigrationObjectIds.Column(4)]
                 .AsText);
         Assert.Equal(
-            "2026-07-23 08:09:10.1234567-07:00",
+            "2026-07-23 15:09:10.1234567+00:00",
             values[JsonMigrationObjectIds.Column(5)]
                 .AsText);
         Assert.Equal(
