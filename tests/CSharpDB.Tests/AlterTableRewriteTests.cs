@@ -626,7 +626,7 @@ public sealed class AlterTableRewriteTests : IAsyncLifetime
     }
 
     [Theory]
-    [InlineData("INTEGER", "9007199254740993", "REAL", DbType.Integer)]
+    [InlineData("BIGINT", "9007199254740993", "REAL", DbType.Integer)]
     [InlineData("REAL", "1.5", "INTEGER", DbType.Real)]
     public async Task AlterColumnNumericType_RejectsInexactValuesWithoutChangingStorage(
         string sourceType,
@@ -694,12 +694,12 @@ public sealed class AlterTableRewriteTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task AlterColumnIntegerToReal_WithInexactDefault_RejectsBeforeIndexedRewrite()
+    public async Task AlterColumnBigIntToReal_WithInexactDefault_RejectsBeforeIndexedRewrite()
     {
         CancellationToken ct = TestContext.Current.CancellationToken;
         await _database.ExecuteAsync(
             "CREATE TABLE inexact_default_numeric_rewrite (" +
-            "id INTEGER PRIMARY KEY, amount INTEGER DEFAULT 9007199254740993)",
+            "id INTEGER PRIMARY KEY, amount BIGINT DEFAULT 9007199254740993)",
             ct);
         await _database.ExecuteAsync(
             "CREATE INDEX ix_inexact_default_amount " +

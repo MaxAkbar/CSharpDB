@@ -164,6 +164,64 @@ public sealed class RealSqlIndexTests : IAsyncLifetime
             "failed_real_index");
     }
 
+    [Theory]
+    [InlineData("REAL")]
+    [InlineData("DOUBLE PRECISION")]
+    public async Task FloatingColumns_PreserveExactLargeIntegerScanSemantics(string sqlType)
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        await _database.ExecuteAsync(
+            $"CREATE TABLE exact_float_scan (id INTEGER PRIMARY KEY, score {sqlType})",
+            ct);
+        await _database.ExecuteAsync(
+            "INSERT INTO exact_float_scan VALUES " +
+            "(1, 9007199254740993), " +
+            "(2, 9007199254740992), " +
+            "(3, 9007199254740994)",
+            ct);
+
+        await AssertIdsAsync(
+            "score = 9007199254740993",
+            [1L],
+            ct,
+            "exact_float_scan");
+        await AssertIdsAsync(
+            "score IN (9007199254740993)",
+            [1L],
+            ct,
+            "exact_float_scan");
+        await AssertIdsAsync(
+            "score BETWEEN 9007199254740993 AND 9007199254740993",
+            [1L],
+            ct,
+            "exact_float_scan");
+        await AssertIdsAsync(
+            "score + 0 = 9007199254740993",
+            [1L],
+            ct,
+            "exact_float_scan");
+
+        await using QueryResult ordered = await _database.ExecuteAsync(
+            "SELECT id FROM exact_float_scan ORDER BY score",
+            ct);
+        long[] orderedIds = (await ordered.ToListAsync(ct))
+            .Select(row => row[0].AsInteger)
+            .ToArray();
+        Assert.Equal(
+            new long[] { 2L, 1L, 3L },
+            orderedIds);
+
+        await using QueryResult topTwo = await _database.ExecuteAsync(
+            "SELECT id FROM exact_float_scan ORDER BY score LIMIT 2",
+            ct);
+        long[] topTwoIds = (await topTwo.ToListAsync(ct))
+            .Select(row => row[0].AsInteger)
+            .ToArray();
+        Assert.Equal(
+            new long[] { 2L, 1L },
+            topTwoIds);
+    }
+
     private async Task AssertIdsAsync(
         string predicate,
         long[] expectedIds,

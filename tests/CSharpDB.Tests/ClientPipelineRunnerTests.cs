@@ -8,6 +8,62 @@ namespace CSharpDB.Tests;
 public sealed class ClientPipelineRunnerTests
 {
     [Fact]
+    public async Task RunPackageAsync_CopiesDecimalAndBlobValuesWithoutLoss()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_pipeline_test_{Guid.NewGuid():N}.db");
+
+        try
+        {
+            await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
+            {
+                DataSource = dbPath,
+            });
+            await client.ExecuteSqlAsync(
+                """
+                CREATE TABLE typed_src (id INTEGER PRIMARY KEY, amount DECIMAL(18,2), payload BLOB);
+                CREATE TABLE typed_dest (id INTEGER PRIMARY KEY, amount DECIMAL(18,2), payload BLOB);
+                INSERT INTO typed_src VALUES (1, 9007199254740993.01, X'0011A5FF');
+                """,
+                ct);
+
+            var result = await new CSharpDbPipelineRunner(client).RunPackageAsync(
+                new PipelinePackageDefinition
+                {
+                    Name = "copy-exact-types",
+                    Version = "1.0.0",
+                    Source = new PipelineSourceDefinition
+                    {
+                        Kind = PipelineSourceKind.CSharpDbTable,
+                        TableName = "typed_src",
+                    },
+                    Destination = new PipelineDestinationDefinition
+                    {
+                        Kind = PipelineDestinationKind.CSharpDbTable,
+                        TableName = "typed_dest",
+                    },
+                    Options = new PipelineExecutionOptions
+                    {
+                        BatchSize = 10,
+                        ErrorMode = PipelineErrorMode.FailFast,
+                    },
+                },
+                ct: ct);
+
+            Assert.Equal(PipelineRunStatus.Succeeded, result.Status);
+            var query = await client.ExecuteSqlAsync("SELECT amount, payload FROM typed_dest", ct);
+            object?[] row = Assert.Single(query.Rows!);
+            Assert.Equal(9007199254740993.01m, Assert.IsType<decimal>(row[0]));
+            Assert.Equal(new byte[] { 0x00, 0x11, 0xA5, 0xFF }, Assert.IsType<byte[]>(row[1]));
+        }
+        finally
+        {
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
     public async Task RunPackageAsync_CopiesRows_FromTableToTable()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -153,7 +209,7 @@ public sealed class ClientPipelineRunnerTests
             object?[] destinationRow = Assert.Single(destinationQuery.Rows!);
             Assert.Equal(new byte[] { 0, 0, 0, 0, 0, 0, 0, 2 }, Assert.IsType<byte[]>(sourceRow[0]));
             Assert.Equal("alpha", destinationRow[0]);
-            Assert.Equal(new byte[] { 0, 0, 0, 0, 0, 0, 0, 1 }, Assert.IsType<byte[]>(destinationRow[1]));
+            Assert.Equal(new byte[] { 0, 0, 0, 0, 0, 0, 0, 3 }, Assert.IsType<byte[]>(destinationRow[1]));
         }
         finally
         {
@@ -216,7 +272,7 @@ public sealed class ClientPipelineRunnerTests
                 "SELECT version FROM versions_dest",
                 ct);
             object?[] row = Assert.Single(query.Rows!);
-            Assert.Equal(new byte[] { 0, 0, 0, 0, 0, 0, 0, 1 }, Assert.IsType<byte[]>(row[0]));
+            Assert.Equal(new byte[] { 0, 0, 0, 0, 0, 0, 0, 2 }, Assert.IsType<byte[]>(row[0]));
         }
         finally
         {
@@ -411,6 +467,27 @@ public sealed class ClientPipelineRunnerTests
             var checkpoint = Assert.Single(checkpointRow.Rows);
             Assert.Equal(2L, Convert.ToInt64(checkpoint[0]));
             Assert.Equal("destination-write", checkpoint[1]);
+
+            var runSchema = await client.GetTableSchemaAsync("_etl_runs", ct);
+            Assert.NotNull(runSchema);
+            foreach (string columnName in new[] { "rows_read", "rows_written", "rows_rejected" })
+            {
+                Assert.Equal(
+                    CSharpDB.Client.Models.SqlTypeKind.BigInt,
+                    Assert.Single(runSchema.Columns, column => column.Name == columnName).DeclaredType?.Kind);
+            }
+
+            var checkpointSchema = await client.GetTableSchemaAsync("_etl_checkpoints", ct);
+            Assert.NotNull(checkpointSchema);
+            Assert.Equal(
+                CSharpDB.Client.Models.SqlTypeKind.BigInt,
+                Assert.Single(checkpointSchema.Columns, column => column.Name == "batch_number").DeclaredType?.Kind);
+
+            var rejectSchema = await client.GetTableSchemaAsync("_etl_rejects", ct);
+            Assert.NotNull(rejectSchema);
+            Assert.Equal(
+                CSharpDB.Client.Models.SqlTypeKind.BigInt,
+                Assert.Single(rejectSchema.Columns, column => column.Name == "row_number").DeclaredType?.Kind);
         }
         finally
         {

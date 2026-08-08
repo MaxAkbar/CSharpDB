@@ -257,8 +257,8 @@ public sealed class CsvMigrationDataSourceIntegrationTests
         Assert.Equal("Alice", rows[0].Values[1].AsText);
         Assert.Equal("Bob\r\nB", rows[1].Values[1].AsText);
         Assert.Equal(string.Empty, rows[2].Values[1].AsText);
-        Assert.All(rows, row => Assert.Equal(DbType.Integer, row.Values[2].Type));
-        Assert.Equal([125L, 250L, 375L], rows.Select(row => row.Values[2].AsInteger));
+        Assert.All(rows, row => Assert.Equal(DbType.Decimal, row.Values[2].Type));
+        Assert.Equal([1.25m, 2.50m, 3.75m], rows.Select(row => row.Values[2].AsDecimal));
     }
 
     private static MigrationPlan ReadyPlan(MigrationCatalog catalog, int batchSize)

@@ -11,11 +11,14 @@ namespace CSharpDB.Storage.Serialization;
 ///   - Null: no data
 ///   - Integer: 8 bytes (long, little-endian)
 ///   - Real: 8 bytes (double, little-endian)
+///   - Decimal: 8-byte coefficient (long, little-endian) + 1-byte scale
 ///   - Text: [length:varint] [utf8 bytes]
 ///   - Blob: [length:varint] [raw bytes]
+///   - Bit string: [bitLength:varint] [packed bytes]
 /// </summary>
 public static class RecordEncoder
 {
+    private const DbType BitStringRecordType = (DbType)0x80;
     private static readonly Encoding Utf8 = Encoding.UTF8;
     private const int TextCacheCapacity = 64;
     private const int MaxCachedTextByteLength = 16;
@@ -59,7 +62,9 @@ public static class RecordEncoder
 
         foreach (DbValue v in values)
         {
-            destination[pos++] = (byte)v.Type;
+            destination[pos++] = v.IsBitString
+                ? (byte)BitStringRecordType
+                : (byte)v.Type;
             switch (v.Type)
             {
                 case DbType.Null:
@@ -73,6 +78,13 @@ public static class RecordEncoder
                         destination[pos..],
                         BitConverter.DoubleToInt64Bits(v.AsReal));
                     pos += 8;
+                    break;
+                case DbType.Decimal:
+                    BinaryPrimitives.WriteInt64LittleEndian(
+                        destination[pos..],
+                        v.DecimalCoefficient);
+                    destination[pos + 8] = checked((byte)v.DecimalScale);
+                    pos += 9;
                     break;
                 case DbType.Text:
                 {
@@ -94,11 +106,15 @@ public static class RecordEncoder
                 case DbType.Blob:
                 {
                     var blob = v.AsBlob;
-                    pos += Varint.Write(destination[pos..], (ulong)blob.Length);
+                    pos += Varint.Write(
+                        destination[pos..],
+                        v.IsBitString ? checked((ulong)v.BitLength) : checked((ulong)blob.Length));
                     blob.CopyTo(destination[pos..]);
                     pos += blob.Length;
                     break;
                 }
+                default:
+                    throw UnsupportedType(v.Type);
             }
         }
 
@@ -129,6 +145,9 @@ public static class RecordEncoder
                         BinaryPrimitives.ReadInt64LittleEndian(buffer.Slice(pos, 8))));
                     pos += 8;
                     break;
+                case DbType.Decimal:
+                    values[i] = ReadDecimal(buffer, ref pos);
+                    break;
                 case DbType.Text:
                 {
                     int len = (int)Varint.Read(buffer[pos..], out int lb);
@@ -149,6 +168,11 @@ public static class RecordEncoder
                     pos += len;
                     break;
                 }
+                case BitStringRecordType:
+                    values[i] = ReadBitString(buffer, ref pos);
+                    break;
+                default:
+                    throw UnsupportedType(type);
             }
         }
 
@@ -196,6 +220,9 @@ public static class RecordEncoder
                         BinaryPrimitives.ReadInt64LittleEndian(buffer.Slice(pos, 8))));
                     pos += 8;
                     break;
+                case DbType.Decimal:
+                    destination[i] = ReadDecimal(buffer, ref pos);
+                    break;
                 case DbType.Text:
                 {
                     int len = (int)Varint.Read(buffer[pos..], out int lb);
@@ -214,6 +241,11 @@ public static class RecordEncoder
                     pos += len;
                     break;
                 }
+                case BitStringRecordType:
+                    destination[i] = ReadBitString(buffer, ref pos);
+                    break;
+                default:
+                    throw UnsupportedType(type);
             }
         }
 
@@ -270,6 +302,13 @@ public static class RecordEncoder
                     pos += 8;
                     break;
                 }
+                case DbType.Decimal:
+                {
+                    DbValue value = ReadDecimal(buffer, ref pos);
+                    if (canWrite)
+                        destination[columnIndex] = value;
+                    break;
+                }
                 case DbType.Text:
                 {
                     int len = (int)Varint.Read(buffer[pos..], out int lb);
@@ -292,9 +331,15 @@ public static class RecordEncoder
                     pos += len;
                     break;
                 }
-                default:
-                    SkipValue(type, buffer, ref pos);
+                case BitStringRecordType:
+                {
+                    DbValue value = ReadBitString(buffer, ref pos);
+                    if (canWrite)
+                        destination[columnIndex] = value;
                     break;
+                }
+                default:
+                    throw UnsupportedType(type);
             }
 
             selectedCursor++;
@@ -353,6 +398,13 @@ public static class RecordEncoder
                     pos += 8;
                     break;
                 }
+                case DbType.Decimal:
+                {
+                    DbValue value = ReadDecimal(buffer, ref pos);
+                    if (canWrite)
+                        destination[selectedCursor] = value;
+                    break;
+                }
                 case DbType.Text:
                 {
                     int len = (int)Varint.Read(buffer[pos..], out int lb);
@@ -375,11 +427,15 @@ public static class RecordEncoder
                     pos += len;
                     break;
                 }
-                default:
-                    SkipValue(type, buffer, ref pos);
+                case BitStringRecordType:
+                {
+                    DbValue value = ReadBitString(buffer, ref pos);
                     if (canWrite)
-                        destination[selectedCursor] = DbValue.Null;
+                        destination[selectedCursor] = value;
                     break;
+                }
+                default:
+                    throw UnsupportedType(type);
             }
 
             selectedCursor++;
@@ -423,6 +479,9 @@ public static class RecordEncoder
                         BinaryPrimitives.ReadInt64LittleEndian(buffer.Slice(pos, 8))));
                     pos += 8;
                     break;
+                case DbType.Decimal:
+                    values[i] = ReadDecimal(buffer, ref pos);
+                    break;
                 case DbType.Text:
                 {
                     int len = (int)Varint.Read(buffer[pos..], out int lb);
@@ -441,6 +500,11 @@ public static class RecordEncoder
                     pos += len;
                     break;
                 }
+                case BitStringRecordType:
+                    values[i] = ReadBitString(buffer, ref pos);
+                    break;
+                default:
+                    throw UnsupportedType(type);
             }
         }
 
@@ -483,6 +547,8 @@ public static class RecordEncoder
                 long bits = BinaryPrimitives.ReadInt64LittleEndian(buffer.Slice(pos, 8));
                 return DbValue.FromReal(BitConverter.Int64BitsToDouble(bits));
             }
+            case DbType.Decimal:
+                return ReadDecimal(buffer, ref pos);
             case DbType.Text:
             {
                 int len = (int)Varint.Read(buffer[pos..], out int lb);
@@ -499,8 +565,10 @@ public static class RecordEncoder
                     : buffer.Slice(pos, len).ToArray();
                 return DbValue.FromBlob(blob);
             }
+            case BitStringRecordType:
+                return ReadBitString(buffer, ref pos);
             default:
-                return DbValue.Null;
+                throw UnsupportedType(targetType);
         }
     }
 
@@ -534,7 +602,10 @@ public static class RecordEncoder
 
         var targetType = (DbType)buffer[pos++];
         if (targetType != DbType.Text)
+        {
+            EnsureKnownType(targetType);
             return false;
+        }
 
         int len = (int)Varint.Read(buffer[pos..], out int lb);
         pos += lb;
@@ -566,7 +637,9 @@ public static class RecordEncoder
             SkipValue(type, buffer, ref pos);
         }
 
-        return (DbType)buffer[pos] == DbType.Null;
+        var targetType = (DbType)buffer[pos];
+        EnsureKnownType(targetType);
+        return targetType == DbType.Null;
     }
 
     /// <summary>
@@ -614,8 +687,64 @@ public static class RecordEncoder
                 realValue = BitConverter.Int64BitsToDouble(
                     BinaryPrimitives.ReadInt64LittleEndian(buffer.Slice(pos, 8)));
                 return true;
+            case DbType.Decimal:
+                isReal = true;
+                realValue = (double)ReadDecimal(buffer, ref pos).AsDecimal;
+                return true;
             default:
+                EnsureKnownType(targetType);
                 throw new InvalidOperationException($"Cannot read {targetType} as Integer.");
+        }
+    }
+
+    /// <summary>
+    /// Decode a numeric column into its native <see cref="DbValue"/> representation.
+    /// Unlike the legacy primitive-output fast path, this method preserves DECIMAL
+    /// coefficient and scale exactly. Returns false when the column is missing or NULL.
+    /// Throws when the target column contains a non-numeric value.
+    /// </summary>
+    public static bool TryDecodeNumericValueColumn(
+        ReadOnlySpan<byte> buffer,
+        int columnIndex,
+        out DbValue value)
+    {
+        value = DbValue.Null;
+
+        if (columnIndex < 0)
+            return false;
+
+        int pos = 0;
+        int count = (int)Varint.Read(buffer, out int bytesRead);
+        pos += bytesRead;
+
+        if (columnIndex >= count)
+            return false;
+
+        for (int i = 0; i < columnIndex; i++)
+        {
+            var type = (DbType)buffer[pos++];
+            SkipValue(type, buffer, ref pos);
+        }
+
+        var targetType = (DbType)buffer[pos++];
+        switch (targetType)
+        {
+            case DbType.Null:
+                return false;
+            case DbType.Integer:
+                value = DbValue.FromInteger(
+                    BinaryPrimitives.ReadInt64LittleEndian(buffer.Slice(pos, 8)));
+                return true;
+            case DbType.Real:
+                value = DbValue.FromReal(BitConverter.Int64BitsToDouble(
+                    BinaryPrimitives.ReadInt64LittleEndian(buffer.Slice(pos, 8))));
+                return true;
+            case DbType.Decimal:
+                value = ReadDecimal(buffer, ref pos);
+                return true;
+            default:
+                EnsureKnownType(targetType);
+                throw new InvalidOperationException($"Cannot read {targetType} as a numeric value.");
         }
     }
 
@@ -629,6 +758,9 @@ public static class RecordEncoder
             case DbType.Real:
                 pos += 8;
                 return;
+            case DbType.Decimal:
+                pos += 9;
+                return;
             case DbType.Text:
             case DbType.Blob:
             {
@@ -636,8 +768,74 @@ public static class RecordEncoder
                 pos += lb + len;
                 return;
             }
+            case BitStringRecordType:
+            {
+                int bitLength = ReadBitLength(buffer, ref pos);
+                pos += PackedBitByteLength(bitLength);
+                return;
+            }
+            default:
+                throw UnsupportedType(type);
         }
     }
+
+    private static DbValue ReadDecimal(ReadOnlySpan<byte> buffer, ref int pos)
+    {
+        if (buffer.Length - pos < 9)
+            throw new InvalidDataException("Truncated Decimal value payload.");
+
+        long coefficient = BinaryPrimitives.ReadInt64LittleEndian(buffer.Slice(pos, 8));
+        int scale = buffer[pos + 8];
+        pos += 9;
+        try
+        {
+            return DbValue.FromDecimalParts(coefficient, scale);
+        }
+        catch (Exception ex) when (ex is ArgumentException or OverflowException)
+        {
+            throw new InvalidDataException("Malformed Decimal value payload.", ex);
+        }
+    }
+
+    private static DbValue ReadBitString(ReadOnlySpan<byte> buffer, ref int pos)
+    {
+        int bitLength = ReadBitLength(buffer, ref pos);
+        int byteLength = PackedBitByteLength(bitLength);
+        if (buffer.Length - pos < byteLength)
+            throw new InvalidDataException("Truncated bit-string value payload.");
+
+        byte[] packedBytes = buffer.Slice(pos, byteLength).ToArray();
+        pos += byteLength;
+        try
+        {
+            return DbValue.FromBitString(packedBytes, bitLength);
+        }
+        catch (ArgumentException ex)
+        {
+            throw new InvalidDataException("Malformed bit-string value payload.", ex);
+        }
+    }
+
+    private static int ReadBitLength(ReadOnlySpan<byte> buffer, ref int pos)
+    {
+        ulong bitLength = Varint.Read(buffer[pos..], out int lengthBytes);
+        pos += lengthBytes;
+        if (bitLength is 0 or > int.MaxValue)
+            throw new InvalidDataException("Bit-string length is outside the supported range.");
+        return (int)bitLength;
+    }
+
+    private static int PackedBitByteLength(int bitLength) =>
+        checked((bitLength / 8) + (bitLength % 8 == 0 ? 0 : 1));
+
+    private static void EnsureKnownType(DbType type)
+    {
+        if (type != BitStringRecordType && !Enum.IsDefined(type))
+            throw UnsupportedType(type);
+    }
+
+    private static InvalidDataException UnsupportedType(DbType type) =>
+        new($"Unsupported record value type tag '{(byte)type}'.");
 
     private static string DecodeText(ReadOnlySpan<byte> utf8)
     {
@@ -746,6 +944,8 @@ public static class RecordEncoder
             case DbType.Integer:
             case DbType.Real:
                 return 8;
+            case DbType.Decimal:
+                return 9;
             case DbType.Text:
             {
                 int byteCount = TryGetEncodedTextBytes(v.AsText, out byte[]? encodedTextBytes)
@@ -756,10 +956,11 @@ public static class RecordEncoder
             case DbType.Blob:
             {
                 int len = v.AsBlob.Length;
-                return Varint.SizeOf((ulong)len) + len;
+                int encodedLength = v.IsBitString ? v.BitLength : len;
+                return Varint.SizeOf((ulong)encodedLength) + len;
             }
             default:
-                return 0;
+                throw UnsupportedType(v.Type);
         }
     }
 

@@ -105,6 +105,40 @@ var blogs = await db.Blogs
     .ToListAsync();
 ```
 
+## CLR Type Mappings
+
+Convention-based properties use the following canonical SQL declarations:
+
+| CLR property type | Canonical SQL type | Notes |
+|---|---|---|
+| `bool` | `BOOLEAN` | Bare SQL `BIT` is also Boolean |
+| `byte` | `TINYINT` | Unsigned 8-bit range |
+| `sbyte` | `INTEGER` | Checked conversion through the signed 32-bit declaration |
+| `short` | `SMALLINT` | Signed 16-bit range |
+| `ushort` | `INTEGER` | Checked conversion through the signed 32-bit declaration |
+| `int` | `INTEGER` | Signed 32-bit range |
+| `uint` | `BIGINT` | Checked conversion through the signed 64-bit declaration |
+| `long` | `BIGINT` | Signed 64-bit range |
+| `ulong` | `BIGINT` | Values must fit the signed 64-bit range |
+| enum | Underlying integral mapping | Uses the corresponding mapping above |
+| `float` | `REAL` | Floating-point value |
+| `double` | `DOUBLE PRECISION` | Floating-point value |
+| `decimal` | `DECIMAL(18,2)` | `HasPrecision` changes precision and scale |
+| `string` | `TEXT` | Length/fixed-length facets select `VARCHAR(n)` or `CHAR(n)` |
+| `Guid` | `UUID` | Native logical UUID declaration |
+| `DateOnly` | `DATE` | Date without time |
+| `TimeOnly` | `TIME` | Optional precision selects `TIME(p)` |
+| `DateTime` | `DATETIME2` | Optional precision selects `DATETIME2(p)` |
+| `DateTimeOffset` | `DATETIMEOFFSET` | Optional precision selects `DATETIMEOFFSET(p)` |
+| `TimeSpan` | `INTERVAL DAY TO SECOND` | Optional precision selects `INTERVAL DAY TO SECOND(p)` |
+| `byte[]` | `BLOB` | Length/fixed-length facets select `VARBINARY(n)` or `BINARY(n)` |
+| rowversion `byte[]` | `ROWVERSION` | Configure with `[Timestamp]` or `IsRowVersion()` |
+
+Nullable CLR properties use the same declaration with nullable column metadata.
+Explicit `HasColumnType(...)` can select another compatible CSharpDB declaration;
+see the [complete SQL data type reference](https://csharpdb.com/docs/sql-reference.html#data-types)
+for aliases, facets, and logical semantics.
+
 ## Using an Existing Connection
 
 For a private in-memory database, open and keep the `CSharpDbConnection` alive
@@ -335,10 +369,10 @@ remains.
 
 `AlterColumn` also has a bounded shadow-rewrite path:
 
-- `INTEGER` to `REAL` is accepted when every integer is within the exactly
-  representable `±2^53` range
-- `REAL` to `INTEGER` is accepted when every value is finite, integral, and in
-  the signed 64-bit range
+- `INTEGER` to `REAL` is exact across the full signed 32-bit range; `BIGINT` to
+  `REAL` is accepted only within the exactly representable `±2^53` range
+- `REAL` to `INTEGER` or `BIGINT` is accepted when every value is finite,
+  integral, and in the target's signed 32- or 64-bit range
 - ready ordinary and unique SQL indexes that reference the changed numeric
   column are rebuilt atomically with the table; composite indexes are included,
   while unrelated index roots remain unchanged
@@ -370,10 +404,11 @@ roots.
 ## Exact Decimal Foundation
 
 `decimal` and nullable `decimal` properties no longer require an application
-value converter for the bounded exact mapping. The provider stores values as
-signed scaled `INTEGER`s, so round trips, parameters used with one facet
-mapping, equality/range comparisons, ordering, and ordinary indexes remain
-exact:
+value converter. The provider declares `DECIMAL(precision,scale)` and sends
+CLR `decimal` values through the exact `DbValue.Decimal` representation, so
+round trips, parameters, arithmetic, equality/range comparisons, ordering,
+aggregates, defaults, and ordinary indexes do not pass through binary floating
+point or a scaled surrogate integer:
 
 ```csharp
 modelBuilder.Entity<Invoice>()
@@ -384,24 +419,17 @@ modelBuilder.Entity<Invoice>()
 The default is `decimal(18, 2)`. Precision must be between 1 and 18, and scale
 must be between 0 and precision. A write with more fractional digits than the
 configured scale is rejected instead of rounded, and a value outside the
-configured precision is rejected as overflow. Raw SQL sees the scaled
-`INTEGER` representation; for example, `12.3400` at scale 4 is stored as
-`123400`.
+configured precision is rejected as overflow. Raw SQL sees the same exact
+decimal value. Precision/scale changes use the engine's validated transactional
+table rewrite and fail without publishing partial data if an existing value
+cannot fit the target declaration.
 
-This first slice deliberately rejects decimal keys, database defaults,
-generated values, precision/scale-changing migrations, and computed decimal
-expressions including arithmetic, numeric casts, conditionals/coalescing, and
-`Sum`/`Average`/`Min`/`Max`. Decimal collection or subquery `Contains` and
-reusing one captured parameter across different decimal facets are also
-rejected, as are comparisons with application-converter decimal mappings and
-model-mapped functions with decimal parameters or returns. Unsafe query
-expressions fail before command dispatch with
-`CDBEF1006`. Configure precision and scale with
-`HasPrecision(precision, scale)`; custom decimal store-type declarations are
-not accepted for the provider-owned mapping. Applications that call
-`IMigrationsSqlGenerator` directly with a hand-authored `AddPrimaryKeyOperation`
-must pass the target model; with `model: null`, that low-level operation does
-not carry enough column metadata to identify a decimal mapping.
+For databases created by earlier provider releases, an explicit
+`.HasColumnType("INTEGER")` on a decimal property retains the legacy scaled
+integer converter and its guarded query surface. This compatibility mode does
+not silently reinterpret existing coefficients. New and convention-based
+models should use `HasPrecision(precision, scale)` (or an explicit
+`DECIMAL`/`NUMERIC` declaration) to select native exact decimal storage.
 
 ## Database-Generated RowVersion
 
@@ -421,18 +449,18 @@ public sealed class Document
 }
 ```
 
-The provider creates the column as `BLOB ROWVERSION`. The engine initializes
-an opaque eight-byte token at revision 1, advances it on every successful
-`UPDATE`, and returns the generated value to EF after inserts and updates.
+The provider creates the column as `ROWVERSION` (the legacy
+`BLOB ROWVERSION NOT NULL` spelling remains accepted). The engine allocates
+an opaque eight-byte token from a persisted database-wide counter and returns
+the generated value to EF after inserts and updates.
 That includes updates issued through raw SQL, triggers, and assignments that
 leave the other column values unchanged. EF uses the original token in update
 and delete predicates, so stale tracked writes throw
 `DbUpdateConcurrencyException`.
 
-Tokens are big-endian per-row revisions. Treat them as opaque equality tokens:
-unlike SQL Server `rowversion`, they are not a database-wide monotonically
-increasing counter. Explicit insert or update assignments to the rowversion
-column are rejected so every writer observes the same engine-owned lifecycle.
+Tokens are big-endian database-wide revisions and must still be treated as
+opaque equality tokens. Explicit insert or update assignments to the
+rowversion column are rejected so every writer observes the same engine-owned lifecycle.
 Rowversion properties cannot participate in keys, foreign keys, or indexes,
 and cannot define a value converter, default, or computed SQL.
 
@@ -578,7 +606,7 @@ provider guidance:
 | `CDBEF1003` | Recognized unsupported query operator, including `TakeWhile`, `SkipWhile`, set-operation comparer overloads, `Join(comparer)`, `LeftJoin(comparer)`, `GroupJoin`, `SelectMany`, `DefaultIfEmpty`, `RightJoin`, or `ExecuteUpdate` |
 | `CDBEF1004` | Unsupported distinct aggregate shape |
 | `CDBEF1005` | Unsupported grouped aggregate shape |
-| `CDBEF1006` | Unsupported decimal operation outside the exact scaled-integer foundation |
+| `CDBEF1006` | Unsafe operation involving a legacy scaled-integer or incompatible application-converter decimal mapping |
 | `CDBEF1007` | Unsupported inner-join shape outside the bounded direct-join surface |
 | `CDBEF1008` | Unsupported left-join shape outside the bounded direct-join surface |
 | `CDBEF1009` | Unsupported set-operation shape outside the bounded terminal direct-integer surface |
@@ -609,18 +637,19 @@ an entire table.
 | Alternate keys and unique constraints | Yes | Named create-table constraints plus standalone add/drop migrations |
 | Standalone primary-key migrations | Yes (bounded) | Named logical keys add/drop; physical `INTEGER` adds can rekey validated populated rows, supported relational indexes, and complete ready full-text-owned storage atomically; EF drops match the exact constraint name |
 | Foreign keys | Yes (bounded) | Named scalar/composite create/add/drop, primary or alternate-key targets, model-level restrictive/cascade/`SetNull` behavior, and the full immediate delete/update action matrix through explicit migration operations |
-| Literal column defaults | Yes (bounded) | `HasDefaultValue(...)` values that map to INTEGER, REAL, TEXT, BLOB, or NULL; computed/default SQL expressions are intentionally unsupported |
+| Literal column defaults | Yes (bounded) | `HasDefaultValue(...)` values that map to a supported logical type, including exact DECIMAL; computed/default SQL expressions are intentionally unsupported |
 | Check constraints | Yes (bounded) | Create-table and standalone add/drop migrations for deterministic row-local expressions accepted by the engine |
-| `AlterColumn` | Yes (bounded) | Literal default/nullability changes, exact `INTEGER`/`REAL` rewrites with ready ordinary/unique SQL-index rebuilding, strict dependency-free UTF-8 `TEXT`/`BLOB` rewrites, and `TEXT` collation changes with inherited SQL-index rebuilding |
-| Exact decimal mapping | Partial | Provider-owned scaled `INTEGER` storage for precision 1–18; exact round trips, parameters, comparisons, and ordering |
+| `AlterColumn` | Yes (bounded) | Literal default/nullability changes and validated conversions among supported logical SQL declarations; dependent structures are rebuilt only when the engine can do so safely |
+| Exact decimal mapping | Yes (bounded) | Native `DECIMAL(p,s)` / `DbValue.Decimal` for precision 1–18, including exact parameters, arithmetic, comparisons, ordering, aggregates, defaults, keys, and validated facet rewrites; explicit `INTEGER` keeps legacy compatibility |
 | Bounded LINQ/query subset | Partial | Basic operators plus bounded direct inner and left joins, terminal direct-integer set operations, and the string, `EF.Functions.Like`, temporal, finite-double math, scalar numeric aggregate, direct-column integer-distinct aggregate, and direct single-table grouped aggregate translations listed above; unsupported methods, members, operators, set-operation shapes, aggregate shapes, and join shapes receive provider diagnostics |
 | ASP.NET Core Identity | Partial | Identity schema v1 with `IdentityUser<int>` and `IdentityRole<int>` for the documented workflows |
-| Supported CLR types | Yes | `bool`, integral types, enums, bounded exact `decimal`, `double`, `float`, `string`, `Guid`, `DateTime`, `DateTimeOffset`, `DateOnly`, `TimeOnly`, `byte[]` |
+| Supported CLR types | Yes | `bool`, integral types, enums, bounded exact `decimal`, `double`, `float`, `string`, `Guid`, `DateTime`, `DateTimeOffset`, `DateOnly`, `TimeOnly`, `TimeSpan`, `byte[]` |
 
 ## Current Limitations
 
-- provider-owned decimal mapping does not yet support keys, defaults, generated
-  values, computed decimal expressions, or precision/scale-changing migrations
+- DECIMAL columns are not identity or rowversion storage; application-converter
+  and explicit legacy scaled-`INTEGER` decimal mappings retain a narrower query
+  surface than native DECIMAL
 - complex properties are rejected until their flattened column mappings are
   supported
 - `ExecuteUpdate` is rejected until assignment conversions and decimal facets
@@ -650,7 +679,7 @@ an entire table.
   plus transformed/configured-converter `LIKE` matches, row-derived `LIKE`
   patterns, captured or invalid `LIKE` escapes, and `DateTimeOffset` component
   translation are unsupported
-- integral, decimal, `MathF`, precision-argument, midpoint-mode, and
+- integral, `MathF`, precision-argument, midpoint-mode, and
   transcendental math overloads are outside the supported translation surface
 - long- and float-valued `Sum`/`Average`/`Min`/`Max` variants, integer
   non-distinct `Average`, text `Min`/`Max`, distinct `Average`, non-`int`
@@ -670,9 +699,9 @@ an entire table.
 - ASP.NET Core Identity is supported only for schema v1 with integer user and
   role keys; default string keys, schema versions 2 and 3, passkeys, and
   unlisted store APIs remain unsupported
-- indexed `TEXT`/`BLOB` changes, lossy or other type conversions, ordered/range
-  REAL index access, and rewrites involving key, foreign-key, full-text,
-  collection, or non-ready dependencies still require broader support
+- lossy conversions, ordered/range REAL index access, and rewrites involving
+  unsupported key, foreign-key, full-text, collection, or non-ready dependencies
+  still require an explicit migration strategy
 
 ## Production Readiness Checklist
 
@@ -704,10 +733,10 @@ Before deployment:
 - Provider versions before 4.2.0 could leave create-time foreign keys with
   engine-generated names. Query `sys.foreign_keys` and use the stored name in a
   one-time drop migration; new schemas preserve EF constraint names.
-- The exact decimal mapping stores scaled integers. Do not assume an existing
-  `REAL`, `TEXT`, converted, or differently scaled column will be rewritten
-  automatically. Inspect existing data and use an explicit, validated data
-  migration before switching that property to the provider-owned mapping.
+- Native decimal mapping uses `DECIMAL(p,s)`. Existing explicit `INTEGER`
+  decimal mappings remain in legacy scaled-integer mode; migrate those columns
+  explicitly after validating that every coefficient can be reconstructed at
+  its original scale.
 - Database-generated rowversion can be introduced when its table is created.
   Standalone add/alter rowversion migrations remain unsupported.
 - The provider is tested against EF Core 10.0.10. Treat a later EF Core patch

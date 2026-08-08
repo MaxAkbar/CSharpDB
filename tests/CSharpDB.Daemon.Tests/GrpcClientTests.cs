@@ -277,6 +277,54 @@ public sealed class GrpcClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GrpcClient_BitStringsPreserveLengthAndBlobCompatibility()
+    {
+        using var transportClient = CreateGrpcHttpClient();
+        await using var client = CreateGrpcClient(transportClient);
+
+        Assert.Null((await client.ExecuteSqlAsync(
+            "CREATE TABLE grpc_bits (" +
+            "id INTEGER PRIMARY KEY, fixed_bits BIT(3), " +
+            "varying_bits VARBIT(8), payload BLOB); " +
+            "INSERT INTO grpc_bits VALUES (1, '1', '1', X'80');",
+            Ct)).Error);
+
+        SqlExecutionResult query = await client.ExecuteSqlAsync(
+            "SELECT fixed_bits, varying_bits, payload FROM grpc_bits WHERE id = 1;",
+            Ct);
+        Assert.Null(query.Error);
+        object?[] row = Assert.Single(query.Rows!);
+        SqlBitString fixedBits = Assert.IsType<SqlBitString>(row[0]);
+        SqlBitString varyingBits = Assert.IsType<SqlBitString>(row[1]);
+        Assert.Equal(3, fixedBits.BitLength);
+        Assert.Equal("100", fixedBits.ToBitString());
+        Assert.Equal(1, varyingBits.BitLength);
+        Assert.Equal("1", varyingBits.ToBitString());
+        Assert.Equal(new byte[] { 0x80 }, fixedBits.PackedBytes.ToArray());
+        Assert.Equal(new byte[] { 0x80 }, varyingBits.PackedBytes.ToArray());
+        Assert.Equal(new byte[] { 0x80 }, Assert.IsType<byte[]>(row[2]));
+
+        Assert.Equal(1, await client.InsertRowAsync(
+            "grpc_bits",
+            new Dictionary<string, object?>
+            {
+                ["id"] = 2,
+                ["fixed_bits"] = fixedBits,
+                ["varying_bits"] = varyingBits,
+                ["payload"] = row[2],
+            },
+            Ct));
+
+        SqlExecutionResult copied = await client.ExecuteSqlAsync(
+            "SELECT fixed_bits, varying_bits, payload FROM grpc_bits WHERE id = 2;",
+            Ct);
+        object?[] copiedRow = Assert.Single(copied.Rows!);
+        Assert.Equal(fixedBits, Assert.IsType<SqlBitString>(copiedRow[0]));
+        Assert.Equal(varyingBits, Assert.IsType<SqlBitString>(copiedRow[1]));
+        Assert.IsType<byte[]>(copiedRow[2]);
+    }
+
+    [Fact]
     public async Task Daemon_RestApi_IsServedByDefault()
     {
         using var transportClient = CreateHttpTransportClient();
@@ -1528,6 +1576,21 @@ public sealed class GrpcClientTests : IAsyncLifetime
             ColumnNames = ["id", "nullable_value"],
             ColumnTypes = ["INTEGER", "INTEGER"],
             ColumnNullability = [false, true],
+            Columns =
+            [
+                new ColumnDefinition
+                {
+                    Name = "id",
+                    Type = CSharpDB.Client.Models.DbType.Integer,
+                    DeclaredType = new SqlTypeDescriptor { Kind = SqlTypeKind.Integer },
+                    Nullable = false,
+                },
+                new ColumnDefinition
+                {
+                    Name = "nullable_value",
+                    Type = CSharpDB.Client.Models.DbType.Integer,
+                },
+            ],
             Rows = [[1L, null]],
         };
 
@@ -1540,6 +1603,11 @@ public sealed class GrpcClientTests : IAsyncLifetime
         Assert.Equal(
             result.ColumnNullability,
             roundTrip.ColumnNullability);
+        Assert.Equal(2, message.Columns.Count);
+        Assert.Equal(SqlTypeKindEnum.SqlTypeKindInteger, message.Columns[0].DeclaredType.Kind);
+        Assert.Null(message.Columns[1].DeclaredType);
+        Assert.Equal(SqlTypeKind.Integer, roundTrip.Columns![0].DeclaredType!.Kind);
+        Assert.Null(roundTrip.Columns[1].DeclaredType);
     }
 
     [Fact]

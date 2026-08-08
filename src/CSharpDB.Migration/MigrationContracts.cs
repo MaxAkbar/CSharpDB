@@ -267,6 +267,13 @@ public sealed record MigrationTypeMapping
     public DbType? TargetType { get; init; }
 
     /// <summary>
+    /// Canonical logical SQL declaration selected for the target. This keeps
+    /// distinctions such as INTEGER/BIGINT, BOOLEAN, and ROWVERSION even when
+    /// multiple declarations share one physical <see cref="TargetType"/>.
+    /// </summary>
+    public string? TargetSqlType { get; init; }
+
+    /// <summary>
     /// The explicit target requested by a custom profile. This remains present
     /// even when that request is rejected and <see cref="TargetType"/> is null.
     /// </summary>

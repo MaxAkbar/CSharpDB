@@ -12,8 +12,8 @@ public sealed class UnsupportedSqlFeatureDiagnosticTests
         "SELECT CASE WHEN 1 = 1 THEN 1 ELSE 0 END",
         "CASE expressions are not supported")]
     [InlineData(
-        "SELECT CAST(1 AS TEXT)",
-        "CAST expressions are not supported")]
+        "SELECT TRY_CAST(1 AS TEXT)",
+        "TRY_CAST expressions are not supported")]
     [InlineData(
         "INSERT INTO items VALUES (1) RETURNING id",
         "RETURNING clauses are not supported")]

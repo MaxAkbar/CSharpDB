@@ -11,15 +11,28 @@ public sealed class MigrationPlannerTests
     {
         CSharpDbCapabilityCatalog capabilities = CSharpDbCapabilityCatalogLoader.LoadEmbedded();
 
-        Assert.Equal("4.4.0", capabilities.TargetCSharpDbVersion);
+        Assert.Equal("4.5.0", capabilities.TargetCSharpDbVersion);
         Assert.Equal("local-typed-engine", capabilities.Surface);
         Assert.Equal(SqlIdentifierRules.MaxLength, capabilities.MaxIdentifierLength);
         Assert.Equal(64, capabilities.Digest.Length);
         Assert.Equal(Enum.GetValues<DbType>(), capabilities.ValueTypes.Select(item => item.Type));
         Assert.False(capabilities.IsColumnType(DbType.Null));
         Assert.All(
-            new[] { DbType.Integer, DbType.Real, DbType.Text, DbType.Blob },
+            new[]
+            {
+                DbType.Integer,
+                DbType.Real,
+                DbType.Text,
+                DbType.Blob,
+                DbType.Decimal,
+            },
             type => Assert.True(capabilities.IsColumnType(type)));
+        Assert.True(capabilities.EngineEnforcesMappedColumnType);
+        Assert.Equal(
+            MigrationCompatibilityStatus.Compatible,
+            capabilities.Rules.Single(rule =>
+                rule.Feature ==
+                    CSharpDbCapabilityFeature.TargetTypeEnforcement).Status);
         Assert.Equal(
             MigrationCompatibilityStatus.Unsupported,
             capabilities.GetObjectStatus(MigrationObjectKind.Sequence));
@@ -36,9 +49,9 @@ public sealed class MigrationPlannerTests
     }
 
     [Fact]
-    public void EmbeddedCapabilities_AreBoundToThe440ReleaseAssembliesAndResource()
+    public void EmbeddedCapabilities_AreBoundToThe450ReleaseAssembliesAndResource()
     {
-        const string expectedVersion = "4.4.0";
+        const string expectedVersion = "4.5.0";
         Assembly migrationAssembly = typeof(CSharpDbCapabilityCatalogLoader).Assembly;
         Assembly primitivesAssembly = typeof(DbType).Assembly;
 
@@ -53,17 +66,28 @@ public sealed class MigrationPlannerTests
     [Fact]
     public void EmbeddedCapabilities_RetainTheImmutablePreviousReleaseContract()
     {
-        CSharpDbCapabilityCatalog previous =
+        CSharpDbCapabilityCatalog oldest =
             CSharpDbCapabilityCatalogLoader.LoadEmbedded("4.3.0");
+        CSharpDbCapabilityCatalog previous =
+            CSharpDbCapabilityCatalogLoader.LoadEmbedded("4.4.0");
         CSharpDbCapabilityCatalog current =
             CSharpDbCapabilityCatalogLoader.LoadEmbedded();
 
-        Assert.Equal(["4.3.0", "4.4.0"], CSharpDbCapabilityCatalogLoader.SupportedTargetVersions);
-        Assert.Equal("4.3.0", previous.TargetCSharpDbVersion);
-        Assert.Equal("4.4.0", current.TargetCSharpDbVersion);
+        Assert.Equal(
+            ["4.3.0", "4.4.0", "4.5.0"],
+            CSharpDbCapabilityCatalogLoader.SupportedTargetVersions);
+        Assert.Equal("4.3.0", oldest.TargetCSharpDbVersion);
+        Assert.Equal("4.4.0", previous.TargetCSharpDbVersion);
+        Assert.Equal("4.5.0", current.TargetCSharpDbVersion);
+        Assert.False(oldest.IsColumnType(DbType.Decimal));
+        Assert.False(previous.IsColumnType(DbType.Decimal));
+        Assert.True(current.IsColumnType(DbType.Decimal));
+        Assert.False(oldest.EngineEnforcesMappedColumnType);
+        Assert.False(previous.EngineEnforcesMappedColumnType);
+        Assert.True(current.EngineEnforcesMappedColumnType);
         Assert.NotEqual(previous.Digest, current.Digest);
 
-        CSharpDbCapabilityRule previousForeignKey = previous.Rules.Single(rule =>
+        CSharpDbCapabilityRule previousForeignKey = oldest.Rules.Single(rule =>
             rule.Feature == CSharpDbCapabilityFeature.ForeignKey);
         Assert.DoesNotContain("on-update-cascade", previousForeignKey.AllowedValues);
         Assert.Contains(
@@ -71,7 +95,7 @@ public sealed class MigrationPlannerTests
             current.Rules.Single(rule =>
                 rule.Feature == CSharpDbCapabilityFeature.ForeignKey).AllowedValues);
 
-        CSharpDbCapabilityRule previousIndex = previous.Rules.Single(rule =>
+        CSharpDbCapabilityRule previousIndex = oldest.Rules.Single(rule =>
             rule.Feature == CSharpDbCapabilityFeature.Index);
         Assert.DoesNotContain(DbType.Real, previousIndex.AllowedTypes);
         Assert.Contains(
@@ -128,8 +152,8 @@ public sealed class MigrationPlannerTests
         Assert.Equal(MigrationMappingClassification.LosslessReencoded, decimalMapping.Classification);
 
         MigrationTypeMapping scaledDecimal = Mapping(plan, "syn:column:orders:tax");
-        Assert.Equal(DbType.Integer, scaledDecimal.TargetType);
-        Assert.Equal("decimal-scaled-int64", scaledDecimal.Conversion!.ConversionId);
+        Assert.Equal(DbType.Decimal, scaledDecimal.TargetType);
+        Assert.Equal("decimal-native", scaledDecimal.Conversion!.ConversionId);
 
         MigrationPlanObject spatial = Object(plan, "syn:table:spatial");
         MigrationPlanObject geography = Object(plan, "syn:column:spatial:shape");
@@ -197,6 +221,97 @@ public sealed class MigrationPlannerTests
         Assert.Equal(
             "decimal-text",
             mapping.Conversion?.ConversionId);
+    }
+
+    [Theory]
+    [InlineData("tinyint", "signedInteger", DbType.Integer, "TINYINT")]
+    [InlineData("smallint", "signedInteger", DbType.Integer, "SMALLINT")]
+    [InlineData("int", "signedInteger", DbType.Integer, "INTEGER")]
+    [InlineData("bigint", "signedInteger", DbType.Integer, "BIGINT")]
+    [InlineData("bit", "boolean", DbType.Integer, "BOOLEAN")]
+    [InlineData("timestamp", "rowVersion", DbType.Blob, "ROWVERSION")]
+    [InlineData("rowversion", "rowVersion", DbType.Blob, "ROWVERSION")]
+    [InlineData("datetime", "dateTime", DbType.Text, "DATETIME2")]
+    [InlineData("smalldatetime", "dateTime", DbType.Text, "DATETIME2")]
+    [InlineData("datetime2", "dateTime", DbType.Text, "DATETIME2(7)")]
+    [InlineData("datetimeoffset", "dateTimeOffset", DbType.Text, "DATETIMEOFFSET(7)")]
+    public void SqlServerMappings_RetainCanonicalLogicalTargetType(
+        string sourceType,
+        string logicalType,
+        DbType targetType,
+        string targetSqlType)
+    {
+        var source = new MigrationCatalogObject
+        {
+            ObjectId = $"sqlserver:column:{sourceType}",
+            Kind = MigrationObjectKind.Column,
+            SourceName = sourceType,
+            NativeType = $"sys.{sourceType}",
+            Facets =
+            [
+                new MigrationCatalogFacet { Name = "logicalType", Value = logicalType },
+                new MigrationCatalogFacet { Name = "sqlServerSystemTypeName", Value = sourceType },
+                new MigrationCatalogFacet { Name = "sqlServerScale", Value = "7" },
+            ],
+        };
+
+        MigrationTypeMapping mapping = new StandardDataTypeMappingProvider().Map(
+            new MigrationTypeMappingRequest
+            {
+                SourceObject = source,
+                Profile = MigrationMappingProfile.Preserve,
+                Coverage = new MigrationProfileCoverage
+                {
+                    Kind = MigrationCoverageKind.Full,
+                    ValuesExamined = 0,
+                    TotalValues = 0,
+                },
+            }).Mapping;
+
+        Assert.Equal(targetType, mapping.TargetType);
+        Assert.Equal(targetSqlType, mapping.TargetSqlType);
+    }
+
+    [Theory]
+    [InlineData("signedInteger", DbType.Integer, "BIGINT")]
+    [InlineData("boolean", DbType.Integer, "BOOLEAN")]
+    [InlineData("rowVersion", DbType.Blob, "ROWVERSION")]
+    [InlineData("date", DbType.Text, "DATE")]
+    [InlineData("time", DbType.Text, "TIME")]
+    [InlineData("dateTime", DbType.Text, "DATETIME2")]
+    [InlineData("dateTimeOffset", DbType.Text, "DATETIMEOFFSET")]
+    public void ProviderNeutralMappings_RetainSafeLogicalTargetType(
+        string logicalType,
+        DbType targetType,
+        string targetSqlType)
+    {
+        var source = new MigrationCatalogObject
+        {
+            ObjectId = $"generic:column:{logicalType}",
+            Kind = MigrationObjectKind.Column,
+            SourceName = logicalType,
+            NativeType = logicalType,
+            Facets =
+            [
+                new MigrationCatalogFacet { Name = "logicalType", Value = logicalType },
+            ],
+        };
+
+        MigrationTypeMapping mapping = new StandardDataTypeMappingProvider().Map(
+            new MigrationTypeMappingRequest
+            {
+                SourceObject = source,
+                Profile = MigrationMappingProfile.Preserve,
+                Coverage = new MigrationProfileCoverage
+                {
+                    Kind = MigrationCoverageKind.Full,
+                    ValuesExamined = 0,
+                    TotalValues = 0,
+                },
+            }).Mapping;
+
+        Assert.Equal(targetType, mapping.TargetType);
+        Assert.Equal(targetSqlType, mapping.TargetSqlType);
     }
 
     [Fact]

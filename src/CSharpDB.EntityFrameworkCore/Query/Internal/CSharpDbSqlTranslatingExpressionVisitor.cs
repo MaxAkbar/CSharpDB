@@ -191,17 +191,6 @@ public sealed class CSharpDbSqlTranslatingExpressionVisitor
     protected override Expression VisitBinary(
         BinaryExpression binaryExpression)
     {
-        if (IsUnsupportedDecimalArithmetic(
-                binaryExpression))
-        {
-            AddTranslationErrorDetails(
-                CSharpDbQueryTranslationDiagnostics
-                    .ForDecimal(
-                        $"Decimal operator '{binaryExpression.NodeType}' is outside the exact scaled-integer foundation."));
-            return QueryCompilationContext
-                .NotTranslatedExpression;
-        }
-
         Expression translated =
             base.VisitBinary(binaryExpression);
         if (translated is SqlBinaryExpression sqlBinary &&
@@ -250,38 +239,11 @@ public sealed class CSharpDbSqlTranslatingExpressionVisitor
 
     protected override Expression VisitConditional(
         ConditionalExpression conditionalExpression)
-    {
-        if (IsDecimalType(
-                conditionalExpression.Type))
-        {
-            AddTranslationErrorDetails(
-                CSharpDbQueryTranslationDiagnostics
-                    .ForDecimal(
-                        "Conditional decimal projections are outside the exact scaled-integer foundation."));
-            return QueryCompilationContext
-                .NotTranslatedExpression;
-        }
-
-        return base.VisitConditional(
-            conditionalExpression);
-    }
+        => base.VisitConditional(conditionalExpression);
 
     protected override Expression VisitUnary(
         UnaryExpression unaryExpression)
-    {
-        if (IsUnsupportedDecimalUnary(
-                unaryExpression))
-        {
-            AddTranslationErrorDetails(
-                CSharpDbQueryTranslationDiagnostics
-                    .ForDecimal(
-                        $"Decimal unary operator or cast '{unaryExpression.NodeType}' is outside the exact scaled-integer foundation."));
-            return QueryCompilationContext
-                .NotTranslatedExpression;
-        }
-
-        return base.VisitUnary(unaryExpression);
-    }
+        => base.VisitUnary(unaryExpression);
 
     protected override Expression VisitMember(MemberExpression memberExpression)
     {
@@ -311,43 +273,6 @@ public sealed class CSharpDbSqlTranslatingExpressionVisitor
             currentDetails.Length > previousLength &&
             currentDetails.AsSpan(previousLength)
                 .Contains("CDBEF", StringComparison.Ordinal);
-    }
-
-    private static bool IsUnsupportedDecimalArithmetic(
-        BinaryExpression expression) =>
-        (expression.NodeType is
-            ExpressionType.Add or
-            ExpressionType.AddChecked or
-            ExpressionType.Subtract or
-            ExpressionType.SubtractChecked or
-            ExpressionType.Multiply or
-            ExpressionType.MultiplyChecked or
-            ExpressionType.Divide or
-            ExpressionType.Modulo or
-            ExpressionType.Power or
-            ExpressionType.Coalesce) &&
-        (IsDecimalType(expression.Left.Type) ||
-         IsDecimalType(expression.Right.Type) ||
-         IsDecimalType(expression.Type));
-
-    private static bool IsUnsupportedDecimalUnary(
-        UnaryExpression expression)
-    {
-        bool operandIsDecimal =
-            IsDecimalType(expression.Operand.Type);
-        bool resultIsDecimal =
-            IsDecimalType(expression.Type);
-        return (expression.NodeType is
-                ExpressionType.Negate or
-                ExpressionType.NegateChecked or
-                ExpressionType.UnaryPlus or
-                ExpressionType.Increment or
-                ExpressionType.Decrement) &&
-            (operandIsDecimal || resultIsDecimal) ||
-            (expression.NodeType is
-                ExpressionType.Convert or
-                ExpressionType.ConvertChecked) &&
-            operandIsDecimal != resultIsDecimal;
     }
 
     private static bool IsDecimalType(Type type) =>
@@ -634,6 +559,16 @@ internal static class CSharpDbQueryTranslationDiagnostics
         var visitor =
             new UnsafeDecimalParameterReuseFindingVisitor(
                 model);
+        visitor.Visit(expression);
+        return visitor.Diagnostic;
+    }
+
+    public static string? FindUnsafeMixedDecimalMapping(
+        Expression expression,
+        IModel model)
+    {
+        var visitor =
+            new UnsafeMixedDecimalMappingFindingVisitor(model);
         visitor.Visit(expression);
         return visitor.Diagnostic;
     }
@@ -1039,6 +974,101 @@ internal static class CSharpDbQueryTranslationDiagnostics
         private static bool IsDecimalType(Type type) =>
             (Nullable.GetUnderlyingType(type) ?? type) ==
             typeof(decimal);
+    }
+
+    private sealed class
+        UnsafeMixedDecimalMappingFindingVisitor
+        : ExpressionVisitor
+    {
+        private readonly IModel _model;
+
+        public UnsafeMixedDecimalMappingFindingVisitor(IModel model)
+        {
+            _model = model;
+        }
+
+        public string? Diagnostic { get; private set; }
+
+        protected override Expression VisitBinary(BinaryExpression node)
+        {
+            bool hasLeftMapping =
+                TryGetDecimalPropertyConverter(node.Left, out bool leftConverted);
+            bool hasRightMapping =
+                TryGetDecimalPropertyConverter(node.Right, out bool rightConverted);
+            if (Diagnostic is null &&
+                IsDecimalComparison(node.NodeType) &&
+                hasLeftMapping &&
+                hasRightMapping &&
+                leftConverted != rightConverted)
+            {
+                Diagnostic = ForDecimal(
+                    "Comparing a native DECIMAL property with a decimal application-converter mapping would compare incompatible provider values.");
+            }
+
+            return Diagnostic is null
+                ? base.VisitBinary(node)
+                : node;
+        }
+
+        private bool TryGetDecimalPropertyConverter(
+            Expression expression,
+            out bool converted)
+        {
+            converted = false;
+            expression = UnwrapConvert(expression);
+            if (expression is MemberExpression
+                {
+                    Member.Name: nameof(Nullable<int>.Value),
+                    Expression: MemberExpression nullableMember,
+                } &&
+                Nullable.GetUnderlyingType(nullableMember.Type) == typeof(decimal))
+            {
+                expression = nullableMember;
+            }
+
+            if (expression is not MemberExpression member)
+                return false;
+
+            Type? entityClrType = member.Expression?.Type;
+            IProperty? property = _model.GetEntityTypes()
+                .Where(entityType =>
+                    entityType.ClrType == entityClrType ||
+                    entityType.ClrType == member.Member.DeclaringType)
+                .Select(entityType =>
+                    entityType.FindProperty(member.Member.Name))
+                .FirstOrDefault(static candidate => candidate is not null);
+            if (property is null ||
+                (Nullable.GetUnderlyingType(property.ClrType) ?? property.ClrType) !=
+                    typeof(decimal))
+            {
+                return false;
+            }
+
+            converted = property.GetRelationalTypeMapping().Converter is not null;
+            return true;
+        }
+
+        private static Expression UnwrapConvert(Expression expression)
+        {
+            while (expression is UnaryExpression
+                   {
+                       NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked,
+                   } conversion)
+            {
+                expression = conversion.Operand;
+            }
+
+            return expression;
+        }
+
+        private static bool IsDecimalComparison(ExpressionType expressionType) =>
+            expressionType is
+                ExpressionType.Equal or
+                ExpressionType.NotEqual or
+                ExpressionType.LessThan or
+                ExpressionType.LessThanOrEqual or
+                ExpressionType.GreaterThan or
+                ExpressionType.GreaterThanOrEqual;
     }
 
     private sealed class

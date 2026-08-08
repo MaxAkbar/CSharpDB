@@ -169,8 +169,14 @@
                    placeholder="PK column" />
             <select class="schema-input" style="width:110px" @bind="_newTablePrimaryKeyType">
                 <option>INTEGER</option>
+                <option>BIGINT</option>
+                <option>SMALLINT</option>
+                <option>TINYINT</option>
+                <option>UUID</option>
                 <option>TEXT</option>
                 <option>REAL</option>
+                <option>DOUBLE PRECISION</option>
+                <option>DECIMAL</option>
                 <option>BLOB</option>
             </select>
             <button class="toolbar-btn primary"
@@ -241,9 +247,30 @@
                                        placeholder="Column name" />
                                 <select class="schema-input" @bind="_newColumnType">
                                     <option>TEXT</option>
+                                    <option>BOOLEAN</option>
+                                    <option>TINYINT</option>
+                                    <option>SMALLINT</option>
                                     <option>INTEGER</option>
+                                    <option>BIGINT</option>
                                     <option>REAL</option>
+                                    <option>DOUBLE PRECISION</option>
+                                    <option>DECIMAL</option>
+                                    <option>CHAR</option>
+                                    <option>VARCHAR</option>
+                                    <option>BINARY</option>
+                                    <option>VARBINARY</option>
                                     <option>BLOB</option>
+                                    <option>UUID</option>
+                                    <option>DATE</option>
+                                    <option>TIME</option>
+                                    <option>DATETIME2</option>
+                                    <option>DATETIMEOFFSET</option>
+                                    <option>INTERVAL YEAR TO MONTH</option>
+                                    <option>INTERVAL DAY TO SECOND</option>
+                                    <option>JSON</option>
+                                    <option>XML</option>
+                                    <option>BIT</option>
+                                    <option>BIT VARYING</option>
                                 </select>
                                 <label class="schema-check">
                                     <input type="checkbox" @bind="_newColumnNotNull" />
@@ -1061,7 +1088,9 @@
                 Name = pkName,
                 TypeLabel = _newTablePrimaryKeyType,
                 IsPrimaryKey = true,
-                IsIdentity = string.Equals(_newTablePrimaryKeyType, "INTEGER", StringComparison.OrdinalIgnoreCase),
+                IsIdentity =
+                    string.Equals(_newTablePrimaryKeyType, "INTEGER", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(_newTablePrimaryKeyType, "BIGINT", StringComparison.OrdinalIgnoreCase),
                 Nullable = false,
             },
         };

@@ -43,6 +43,9 @@ public static class JsonExportContracts
     public const string RealValueEncoding =
         "finite-binary64-json-number-roundtrip/v1";
 
+    public const string DecimalValueEncoding =
+        "normalized-decimal-json-number/v1";
+
     public const string TextValueEncoding =
         "strict-json-string/v1";
 
@@ -90,6 +93,7 @@ public enum JsonExportDatabaseType
     Real,
     Text,
     Blob,
+    Decimal,
 }
 
 /// <summary>

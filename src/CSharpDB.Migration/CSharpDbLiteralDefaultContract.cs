@@ -86,7 +86,7 @@ internal static class CSharpDbLiteralDefaultContract
                         out long integer))
                 {
                     descriptor = default;
-                    reason = "INTEGER defaultValue is not a signed 64-bit integer.";
+                    reason = "Integer-carrier defaultValue is not a signed 64-bit integer.";
                     return false;
                 }
                 valueType = DbType.Integer;
@@ -132,6 +132,34 @@ internal static class CSharpDbLiteralDefaultContract
                 valueType = DbType.Blob;
                 canonicalValue = value.ToUpperInvariant();
                 expression = string.Concat("X'", canonicalValue, "'");
+                break;
+
+            case "decimal":
+                if (!decimal.TryParse(
+                        value,
+                        NumberStyles.AllowLeadingSign |
+                        NumberStyles.AllowDecimalPoint,
+                        CultureInfo.InvariantCulture,
+                        out decimal decimalValue))
+                {
+                    descriptor = default;
+                    reason = "DECIMAL defaultValue is not an exact invariant decimal.";
+                    return false;
+                }
+                try
+                {
+                    DbValue normalized = DbValue.FromDecimal(decimalValue);
+                    valueType = DbType.Decimal;
+                    canonicalValue = normalized.AsDecimal.ToString(
+                        CultureInfo.InvariantCulture);
+                    expression = canonicalValue;
+                }
+                catch (OverflowException)
+                {
+                    descriptor = default;
+                    reason = "DECIMAL defaultValue exceeds 18 digits of precision.";
+                    return false;
+                }
                 break;
 
             default:

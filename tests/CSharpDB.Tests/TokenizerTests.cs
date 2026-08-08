@@ -44,6 +44,29 @@ public class TokenizerTests
         Assert.Equal("3.14", tokens[1].Value);
     }
 
+    [Theory]
+    [InlineData("BOOLEAN")]
+    [InlineData("TINYINT")]
+    [InlineData("DECIMAL")]
+    [InlineData("CHARACTER")]
+    [InlineData("BINARY")]
+    [InlineData("UUID")]
+    [InlineData("DATE")]
+    [InlineData("TIMESTAMP")]
+    [InlineData("INTERVAL")]
+    [InlineData("JSON")]
+    [InlineData("XML")]
+    [InlineData("BIT")]
+    public void Tokenize_LogicalTypeNamesRemainContextualIdentifiers(string typeName)
+    {
+        Token token = Assert.Single(
+            new Tokenizer(typeName).Tokenize(),
+            static token => token.Type != TokenType.Eof);
+
+        Assert.Equal(TokenType.Identifier, token.Type);
+        Assert.Equal(typeName, token.Value);
+    }
+
     [Fact]
     public void Tokenize_Parameter()
     {

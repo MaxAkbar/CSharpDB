@@ -529,7 +529,7 @@
                 Columns = schema.Columns.Select(c => new DesignerColumn
                 {
                     Name = c.Name,
-                    TypeLabel = TypeLabel(c.Type),
+                    TypeLabel = c.EffectiveType.ToSql(),
                     IsPrimaryKey = c.IsPrimaryKey,
                     IsSelected = true
                 }).ToList()
@@ -853,14 +853,6 @@
         DesignerJoinType.Left  => "LEFT",
         DesignerJoinType.Right => "RIGHT",
         _                      => "INNER"
-    };
-
-    private static string TypeLabel(CSharpDB.Client.Models.DbType type) => type switch
-    {
-        CSharpDB.Client.Models.DbType.Integer => "INT",
-        CSharpDB.Client.Models.DbType.Real    => "REAL",
-        CSharpDB.Client.Models.DbType.Blob    => "BLOB",
-        _                                      => "TEXT"
     };
 
     private IEnumerable<string> ColumnsFor(string tableName)

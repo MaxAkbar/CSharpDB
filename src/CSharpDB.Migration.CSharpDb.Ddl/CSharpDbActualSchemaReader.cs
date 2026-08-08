@@ -494,6 +494,24 @@ internal sealed class CSharpDbActualSchemaReader
             Attribute("identity", BooleanToken(column.IsIdentity)),
             Attribute("rowVersion", BooleanToken(column.IsRowVersion)),
         };
+        MigrationTypeMapping? mapping = _planObjects[item.ObjectId]
+            .TypeMappings
+            .SingleOrDefault();
+        if (mapping?.TargetSqlType is not null)
+        {
+            attributes.Add(Attribute(
+                "targetSqlType",
+                column.IsRowVersion ? "ROWVERSION" : column.EffectiveType.ToSql()));
+        }
+        if (CSharpDbDeclaredTypeContract.TryRead(
+                item,
+                out SqlTypeDescriptor declaredType) &&
+            declaredType.StorageType == column.Type)
+        {
+            attributes.Add(Attribute(
+                "declaredType",
+                column.EffectiveType.ToSql()));
+        }
         if (column.Collation is not null)
             attributes.Add(Attribute("collation", column.Collation));
         if (column.DefaultSql is not null)

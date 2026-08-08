@@ -187,7 +187,7 @@ args = ["run", "--project", "/path/to/src/CSharpDB.Mcp", "--", "--database", "/p
                     <tbody>
                         <tr><td><code>GetDatabaseInfo</code></td><td>Get the database file path</td><td>—</td></tr>
                         <tr><td><code>ListTables</code></td><td>List all table names</td><td>—</td></tr>
-                        <tr><td><code>DescribeTable</code></td><td>Get column names, types, and constraints</td><td><code>tableName</code></td></tr>
+                        <tr><td><code>DescribeTable</code></td><td>Get column names, canonical declared types, physical storage types, and constraints</td><td><code>tableName</code></td></tr>
                         <tr><td><code>ListIndexes</code></td><td>List all indexes with table, columns, uniqueness</td><td>—</td></tr>
                         <tr><td><code>ListViews</code></td><td>List all views with their SQL definitions</td><td>—</td></tr>
                         <tr><td><code>ListTriggers</code></td><td>List all triggers with timing, event, and body</td><td>—</td></tr>
@@ -200,7 +200,7 @@ args = ["run", "--project", "/path/to/src/CSharpDB.Mcp", "--", "--database", "/p
                         <tr><th>Tool</th><th>Description</th><th>Parameters</th></tr>
                     </thead>
                     <tbody>
-                        <tr><td><code>BrowseTable</code></td><td>Paginated row browsing with schema</td><td><code>tableName</code>, <code>page?</code> (default 1), <code>pageSize?</code> (default 50)</td></tr>
+                        <tr><td><code>BrowseTable</code></td><td>Paginated row browsing with declared and physical type metadata</td><td><code>tableName</code>, <code>page?</code> (default 1), <code>pageSize?</code> (default 50)</td></tr>
                         <tr><td><code>BrowseView</code></td><td>Paginated view result browsing</td><td><code>viewName</code>, <code>page?</code> (default 1), <code>pageSize?</code> (default 50)</td></tr>
                         <tr><td><code>GetRowByPk</code></td><td>Fetch a single row by primary key</td><td><code>tableName</code>, <code>pkColumn</code>, <code>pkValue</code></td></tr>
                         <tr><td><code>GetRowCount</code></td><td>Get total row count for a table</td><td><code>tableName</code></td></tr>
@@ -220,8 +220,8 @@ args = ["run", "--project", "/path/to/src/CSharpDB.Mcp", "--", "--database", "/p
                 </table>
                 <p>The <code>valuesJson</code> parameter accepts a JSON object string with column names as keys:</p>
                 <div class="code-block" data-title="JSON"><pre><code>{"name": "Alice", "age": 30, "email": "alice@example.com"}</code></pre></div>
-                <p>Values are automatically coerced to CSharpDB types: integers become <code>INTEGER</code>, decimals become <code>REAL</code>, strings become <code>TEXT</code>, null stays <code>NULL</code>.</p>
-                <p><code>DescribeTable</code> and <code>BrowseTable</code> include <code>isIdentity</code> metadata for identity columns.</p>
+                <p>The generic mutation tools use a deliberately small JSON value surface: integral numbers become signed 64-bit values, other numbers become binary64, Booleans become integer <code>0</code>/<code>1</code>, strings remain strings, and <code>null</code> remains SQL <code>NULL</code>. Arrays and objects are passed as JSON text. The target column then enforces its declared SQL type. Use <code>ExecuteSql</code> or a typed client API when exact decimal, ordinary binary, exact-length bit-string, or another type-specific input must be preserved.</p>
+                <p><code>DescribeTable</code> and <code>BrowseTable</code> include <code>type</code>, <code>storageType</code>, <code>isIdentity</code>, and <code>isRowVersion</code>. <code>type</code> is the canonical declared SQL spelling; <code>storageType</code> is one of the compact physical carriers. For example, <code>BOOLEAN</code>, <code>INTEGER</code>, and <code>BIGINT</code> all use <code>Integer</code> storage while retaining different logical semantics. See the <a href="sql-reference.html#data-types">complete SQL data type reference</a>.</p>
 
                 <h3>SQL Tool</h3>
                 <table>

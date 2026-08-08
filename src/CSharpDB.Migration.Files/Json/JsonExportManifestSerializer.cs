@@ -540,6 +540,9 @@ public static class JsonExportManifestSerializer
                     JsonExportDatabaseType.Real =>
                         JsonExportContracts
                             .RealValueEncoding,
+                    JsonExportDatabaseType.Decimal =>
+                        JsonExportContracts
+                            .DecimalValueEncoding,
                     JsonExportDatabaseType.Text =>
                         JsonExportContracts
                             .TextValueEncoding,
@@ -950,6 +953,7 @@ public static class JsonExportManifestSerializer
         {
             JsonExportDatabaseType.Integer => 1,
             JsonExportDatabaseType.Real => 1,
+            JsonExportDatabaseType.Decimal => 1,
             JsonExportDatabaseType.Text => 2,
             JsonExportDatabaseType.Blob => 2,
             _ => throw Invalid(

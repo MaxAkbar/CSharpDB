@@ -54,7 +54,7 @@ public static class SchemaInferredSpecBuilder
 
         foreach (ColumnDefinition col in schema.Columns)
         {
-            string typeName = MapDbType(col.Type);
+            string typeName = col.EffectiveType.ToSql();
             JsonElement generator = InferGenerator(col, schema);
 
             columns.Add(new SqlColumnSpec
@@ -246,6 +246,7 @@ public static class SchemaInferredSpecBuilder
     {
         Primitives.DbType.Integer => "INTEGER",
         Primitives.DbType.Real => "REAL",
+        Primitives.DbType.Decimal => "DECIMAL",
         Primitives.DbType.Text => "TEXT",
         Primitives.DbType.Blob => "BLOB",
         _ => "TEXT",

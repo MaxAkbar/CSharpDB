@@ -324,6 +324,8 @@ internal static class BatchPlanCompiler
             return null;
 
         SpanExpressionEvaluator? aggregateArgumentEvaluator = null;
+        SqlTypeDescriptor? aggregateArgumentType = null;
+        string? aggregateArgumentCollation = null;
         if (!isCountStar)
         {
             if ((uint)columnIndex >= (uint)schema.Columns.Count)
@@ -353,6 +355,19 @@ internal static class BatchPlanCompiler
             {
                 return null;
             }
+
+            if (aggregateExpression != null)
+            {
+                aggregateArgumentType = ExpressionEvaluator.ResolveDeclaredType(aggregateExpression, schema);
+                aggregateArgumentCollation = CollationSupport.ResolveExpressionCollation(aggregateExpression, schema);
+            }
+            else if ((uint)columnIndex < (uint)schema.Columns.Count)
+            {
+                aggregateArgumentType = schema.Columns[columnIndex].EffectiveType;
+                aggregateArgumentCollation = schema.Columns[columnIndex].Type == DbType.Text
+                    ? CollationSupport.NormalizeMetadataName(schema.Columns[columnIndex].Collation)
+                    : null;
+            }
         }
 
         return new SpecializedScalarAggregateBatchPlan(
@@ -362,7 +377,9 @@ internal static class BatchPlanCompiler
             columnIndex,
             isCountStar,
             isDistinct,
-            aggregateArgumentEvaluator);
+            aggregateArgumentEvaluator,
+            aggregateArgumentType,
+            aggregateArgumentCollation);
     }
 
     private static bool CanUseNumericScalarAggregateExpression(Expression expression, TableSchema schema)
@@ -533,6 +550,12 @@ internal static class BatchPlanCompiler
                     continue;
                 }
 
+                value = ExpressionEvaluator.CoerceValueForTypedExpression(
+                    inExpression.Operand,
+                    inExpression.Values[i],
+                    value,
+                    schema);
+
                 if (value.Type != DbType.Text)
                 {
                     predicateTerm = default;
@@ -593,7 +616,7 @@ internal static class BatchPlanCompiler
 
         if (TryBindNumericProjection(inExpression.Operand, schema, out var numericProjection))
         {
-            var values = new List<double>(inExpression.Values.Count);
+            var values = new List<DbValue>(inExpression.Values.Count);
             bool hasNull = false;
             for (int i = 0; i < inExpression.Values.Count; i++)
             {
@@ -615,7 +638,7 @@ internal static class BatchPlanCompiler
                     return false;
                 }
 
-                values.Add(value.AsReal);
+                values.Add(value);
             }
 
             predicateTerm = BatchPredicateTerm.CreateNumericExpressionIn(
@@ -633,6 +656,17 @@ internal static class BatchPlanCompiler
         }
 
         DbType columnType = schema.Columns[columnIndex].Type;
+        if (SqlTypeCoercion.IsInterval(schema.Columns[columnIndex].DeclaredType))
+        {
+            predicateTerm = default;
+            return false;
+        }
+        if (columnType is DbType.Decimal or DbType.Blob)
+        {
+            predicateTerm = default;
+            return false;
+        }
+
         if (columnType == DbType.Integer)
         {
             var values = new List<long>(inExpression.Values.Count);
@@ -651,6 +685,12 @@ internal static class BatchPlanCompiler
                     continue;
                 }
 
+                value = ExpressionEvaluator.CoerceValueForTypedExpression(
+                    inExpression.Operand,
+                    inExpression.Values[i],
+                    value,
+                    schema);
+
                 if (value.Type != DbType.Integer)
                 {
                     predicateTerm = default;
@@ -666,6 +706,10 @@ internal static class BatchPlanCompiler
 
         if (IsNumericType(columnType))
         {
+            bool useExactComparison = !CanUseDoubleNumericFastPath(schema, columnIndex);
+            var exactValues = useExactComparison
+                ? new List<DbValue>(inExpression.Values.Count)
+                : null;
             var values = new List<double>(inExpression.Values.Count);
             bool hasNull = false;
             for (int i = 0; i < inExpression.Values.Count; i++)
@@ -682,16 +726,35 @@ internal static class BatchPlanCompiler
                     continue;
                 }
 
+                value = ExpressionEvaluator.CoerceValueForTypedExpression(
+                    inExpression.Operand,
+                    inExpression.Values[i],
+                    value,
+                    schema);
+
                 if (!IsNumericType(value.Type))
                 {
                     predicateTerm = default;
                     return false;
                 }
 
-                values.Add(value.AsReal);
+                if (useExactComparison)
+                    exactValues!.Add(value);
+                else
+                    values.Add(value.AsReal);
             }
 
-            predicateTerm = BatchPredicateTerm.CreateNumericIn(columnIndex, values.ToArray(), inExpression.Negated, hasNull);
+            predicateTerm = useExactComparison
+                ? BatchPredicateTerm.CreateNumericExpressionIn(
+                    BatchProjectionTerm.CreateColumn(columnIndex),
+                    exactValues!.ToArray(),
+                    inExpression.Negated,
+                    hasNull)
+                : BatchPredicateTerm.CreateNumericIn(
+                    columnIndex,
+                    values.ToArray(),
+                    inExpression.Negated,
+                    hasNull);
             return true;
         }
 
@@ -716,6 +779,12 @@ internal static class BatchPlanCompiler
                     hasNull = true;
                     continue;
                 }
+
+                value = ExpressionEvaluator.CoerceValueForTypedExpression(
+                    inExpression.Operand,
+                    inExpression.Values[i],
+                    value,
+                    schema);
 
                 if (value.Type != DbType.Text)
                 {
@@ -790,8 +859,8 @@ internal static class BatchPlanCompiler
         {
             predicateTerm = BatchPredicateTerm.CreateNumericExpressionRange(
                 numericProjection,
-                lowValue.AsReal,
-                highValue.AsReal,
+                lowValue,
+                highValue,
                 between.Negated);
             return true;
         }
@@ -803,6 +872,27 @@ internal static class BatchPlanCompiler
         }
 
         DbType columnType = schema.Columns[columnIndex].Type;
+        if (SqlTypeCoercion.IsInterval(schema.Columns[columnIndex].DeclaredType))
+        {
+            predicateTerm = default;
+            return false;
+        }
+        lowValue = ExpressionEvaluator.CoerceValueForTypedExpression(
+            between.Operand,
+            between.Low,
+            lowValue,
+            schema);
+        highValue = ExpressionEvaluator.CoerceValueForTypedExpression(
+            between.Operand,
+            between.High,
+            highValue,
+            schema);
+
+        if (columnType is DbType.Decimal or DbType.Blob)
+        {
+            predicateTerm = default;
+            return false;
+        }
         if (columnType == DbType.Integer &&
             lowValue.Type == DbType.Integer &&
             highValue.Type == DbType.Integer)
@@ -819,11 +909,17 @@ internal static class BatchPlanCompiler
             IsNumericType(lowValue.Type) &&
             IsNumericType(highValue.Type))
         {
-            predicateTerm = BatchPredicateTerm.CreateNumericRange(
-                columnIndex,
-                lowValue.AsReal,
-                highValue.AsReal,
-                between.Negated);
+            predicateTerm = CanUseDoubleNumericFastPath(schema, columnIndex)
+                ? BatchPredicateTerm.CreateNumericRange(
+                    columnIndex,
+                    lowValue.AsReal,
+                    highValue.AsReal,
+                    between.Negated)
+                : BatchPredicateTerm.CreateNumericExpressionRange(
+                    BatchProjectionTerm.CreateColumn(columnIndex),
+                    lowValue,
+                    highValue,
+                    between.Negated);
             return true;
         }
 
@@ -899,6 +995,15 @@ internal static class BatchPlanCompiler
             return false;
 
         var columnType = schema.Columns[columnIndex].Type;
+        if (SqlTypeCoercion.IsInterval(schema.Columns[columnIndex].DeclaredType))
+            return false;
+        literalValue = ExpressionEvaluator.CoerceValueForTypedExpression(
+            left,
+            right,
+            literalValue,
+            schema);
+        if (columnType is DbType.Decimal or DbType.Blob)
+            return false;
         if (columnType == DbType.Integer && literalValue.Type == DbType.Integer)
         {
             predicate = BatchPredicateTerm.CreateIntegerCompare(columnIndex, op, literalValue.AsInteger);
@@ -907,7 +1012,12 @@ internal static class BatchPlanCompiler
 
         if (IsNumericType(columnType) && IsNumericType(literalValue.Type))
         {
-            predicate = BatchPredicateTerm.CreateNumericCompare(columnIndex, op, literalValue.AsReal);
+            predicate = CanUseDoubleNumericFastPath(schema, columnIndex)
+                ? BatchPredicateTerm.CreateNumericCompare(columnIndex, op, literalValue.AsReal)
+                : BatchPredicateTerm.CreateNumericExpressionCompare(
+                    BatchProjectionTerm.CreateColumn(columnIndex),
+                    op,
+                    literalValue);
             return true;
         }
 
@@ -1026,7 +1136,10 @@ internal static class BatchPlanCompiler
         if (expression is UnaryExpression { Op: TokenType.Minus } unaryMinus &&
             TryBindNumericExpression(unaryMinus.Operand, schema, out var unaryOperand))
         {
-            term = BatchProjectionTerm.CreateNumericExpression(BatchNumericExpression.CreateNegated(unaryOperand));
+            term = BatchProjectionTerm.CreateNumericExpression(
+                BatchNumericExpression.CreateNegated(
+                    unaryOperand,
+                    ExpressionEvaluator.ResolveNegatedDeclaredType(unaryMinus.Operand, schema)));
             return true;
         }
 
@@ -1036,7 +1149,14 @@ internal static class BatchPlanCompiler
             TryBindNumericExpression(arithmetic.Right, schema, out var rightOperand))
         {
             term = BatchProjectionTerm.CreateNumericExpression(
-                BatchNumericExpression.CreateArithmetic(arithmetic.Op, leftOperand, rightOperand));
+                BatchNumericExpression.CreateArithmetic(
+                    arithmetic.Op,
+                    leftOperand,
+                    rightOperand,
+                    ExpressionEvaluator.ResolveArithmeticDeclaredType(
+                        arithmetic.Left,
+                        arithmetic.Right,
+                        schema)));
             return true;
         }
 
@@ -1086,7 +1206,8 @@ internal static class BatchPlanCompiler
 
         if (TryResolveColumnIndex(expression, schema, out int columnIndex))
         {
-            if (!IsNumericType(schema.Columns[columnIndex].Type))
+            if (!IsNumericType(schema.Columns[columnIndex].Type) ||
+                schema.Columns[columnIndex].EffectiveType.Kind == SqlTypeKind.Boolean)
                 return false;
 
             operand = BatchNumericExpression.CreateColumn(columnIndex);
@@ -1104,7 +1225,9 @@ internal static class BatchPlanCompiler
         if (expression is UnaryExpression { Op: TokenType.Minus } unaryMinus &&
             TryBindNumericExpression(unaryMinus.Operand, schema, out var innerOperand))
         {
-            operand = BatchNumericExpression.CreateNegated(innerOperand);
+            operand = BatchNumericExpression.CreateNegated(
+                innerOperand,
+                ExpressionEvaluator.ResolveNegatedDeclaredType(unaryMinus.Operand, schema));
             return true;
         }
 
@@ -1113,11 +1236,24 @@ internal static class BatchPlanCompiler
             TryBindNumericExpression(arithmetic.Left, schema, out var leftOperand) &&
             TryBindNumericExpression(arithmetic.Right, schema, out var rightOperand))
         {
-            operand = BatchNumericExpression.CreateArithmetic(arithmetic.Op, leftOperand, rightOperand);
+            operand = BatchNumericExpression.CreateArithmetic(
+                arithmetic.Op,
+                leftOperand,
+                rightOperand,
+                ExpressionEvaluator.ResolveArithmeticDeclaredType(
+                    arithmetic.Left,
+                    arithmetic.Right,
+                    schema));
             return true;
         }
 
         return false;
+    }
+
+    private static bool CanUseDoubleNumericFastPath(TableSchema schema, int columnIndex)
+    {
+        SqlTypeKind? logicalKind = schema.Columns[columnIndex].DeclaredType?.Kind;
+        return logicalKind is not SqlTypeKind.Real and not SqlTypeKind.Double;
     }
 
     private static bool TryResolveColumnIndex(Expression expression, TableSchema schema, out int columnIndex)
@@ -1464,6 +1600,8 @@ internal readonly struct BatchPredicateTerm
     private readonly string? _textCollation;
     private readonly BatchProjectionTerm _projectionTerm;
     private readonly DbValue _comparisonLiteral;
+    private readonly DbValue _comparisonUpperLiteral;
+    private readonly DbValue[]? _comparisonSet;
     private readonly BatchPredicateKind _kind;
     private readonly bool _negated;
 
@@ -1503,6 +1641,8 @@ internal readonly struct BatchPredicateTerm
         _textCollation = CollationSupport.NormalizeMetadataName(textCollation);
         _projectionTerm = default;
         _comparisonLiteral = DbValue.Null;
+        _comparisonUpperLiteral = DbValue.Null;
+        _comparisonSet = null;
         _kind = kind;
         _negated = negated;
     }
@@ -1530,15 +1670,17 @@ internal readonly struct BatchPredicateTerm
         _textCollation = null;
         _projectionTerm = projectionTerm;
         _comparisonLiteral = comparisonLiteral;
+        _comparisonUpperLiteral = DbValue.Null;
+        _comparisonSet = null;
         _kind = kind;
         _negated = false;
     }
 
     private BatchPredicateTerm(
         BatchProjectionTerm projectionTerm,
-        double numericLiteral,
-        double numericUpperLiteral,
-        double[]? numericSet,
+        DbValue comparisonLiteral,
+        DbValue comparisonUpperLiteral,
+        DbValue[]? comparisonSet,
         BatchPredicateKind kind,
         bool negated,
         bool hasNullSetValue = false)
@@ -1547,19 +1689,21 @@ internal readonly struct BatchPredicateTerm
         _op = BinaryOp.Equals;
         _integerLiteral = 0;
         _integerUpperLiteral = 0;
-        _numericLiteral = numericLiteral;
-        _numericUpperLiteral = numericUpperLiteral;
+        _numericLiteral = 0;
+        _numericUpperLiteral = 0;
         _textLiteral = null;
         _textUpperLiteral = null;
         _integerSet = null;
-        _numericSet = numericSet;
+        _numericSet = null;
         _textSet = null;
         _escapeChar = '\0';
         _hasEscapeChar = false;
         _hasNullSetValue = hasNullSetValue;
         _textCollation = null;
         _projectionTerm = projectionTerm;
-        _comparisonLiteral = DbValue.Null;
+        _comparisonLiteral = comparisonLiteral;
+        _comparisonUpperLiteral = comparisonUpperLiteral;
+        _comparisonSet = comparisonSet;
         _kind = kind;
         _negated = negated;
     }
@@ -1588,6 +1732,8 @@ internal readonly struct BatchPredicateTerm
         _textCollation = CollationSupport.NormalizeMetadataName(textCollation);
         _projectionTerm = projectionTerm;
         _comparisonLiteral = DbValue.Null;
+        _comparisonUpperLiteral = DbValue.Null;
+        _comparisonSet = null;
         _kind = kind;
         _negated = false;
     }
@@ -1621,6 +1767,8 @@ internal readonly struct BatchPredicateTerm
         _textCollation = CollationSupport.NormalizeMetadataName(textCollation);
         _projectionTerm = projectionTerm;
         _comparisonLiteral = DbValue.Null;
+        _comparisonUpperLiteral = DbValue.Null;
+        _comparisonSet = null;
         _kind = kind;
         _negated = negated;
     }
@@ -1643,8 +1791,8 @@ internal readonly struct BatchPredicateTerm
     public static BatchPredicateTerm CreateNumericExpressionCompare(BatchProjectionTerm projectionTerm, BinaryOp op, DbValue comparisonLiteral)
         => new(projectionTerm, op, comparisonLiteral, BatchPredicateKind.NumericExpressionCompare);
 
-    public static BatchPredicateTerm CreateNumericExpressionIn(BatchProjectionTerm projectionTerm, double[] values, bool negated, bool hasNullSetValue)
-        => new(projectionTerm, 0, 0, values, BatchPredicateKind.NumericExpressionIn, negated, hasNullSetValue);
+    public static BatchPredicateTerm CreateNumericExpressionIn(BatchProjectionTerm projectionTerm, DbValue[] values, bool negated, bool hasNullSetValue)
+        => new(projectionTerm, DbValue.Null, DbValue.Null, values, BatchPredicateKind.NumericExpressionIn, negated, hasNullSetValue);
 
     public static BatchPredicateTerm CreateTextExpressionIn(BatchProjectionTerm projectionTerm, string[] values, bool negated, bool hasNullSetValue, string? textCollation)
         => new(projectionTerm, null, null, values, '\0', false, hasNullSetValue, textCollation, BatchPredicateKind.TextExpressionIn, negated);
@@ -1667,7 +1815,7 @@ internal readonly struct BatchPredicateTerm
     public static BatchPredicateTerm CreateNumericRange(int columnIndex, double lowerInclusive, double upperInclusive, bool negated)
         => new(columnIndex, BinaryOp.Equals, 0, 0, lowerInclusive, upperInclusive, null, null, null, null, null, '\0', false, false, null, BatchPredicateKind.NumericRange, negated);
 
-    public static BatchPredicateTerm CreateNumericExpressionRange(BatchProjectionTerm projectionTerm, double lowerInclusive, double upperInclusive, bool negated)
+    public static BatchPredicateTerm CreateNumericExpressionRange(BatchProjectionTerm projectionTerm, DbValue lowerInclusive, DbValue upperInclusive, bool negated)
         => new(projectionTerm, lowerInclusive, upperInclusive, null, BatchPredicateKind.NumericExpressionRange, negated);
 
     public static BatchPredicateTerm CreateTextRange(int columnIndex, string lowerInclusive, string upperInclusive, bool negated, string? textCollation)
@@ -1956,17 +2104,16 @@ internal readonly struct BatchPredicateTerm
 
     private bool EvaluateNumericExpressionIn(ReadOnlySpan<DbValue> row)
     {
-        if (_numericSet == null)
+        if (_comparisonSet == null)
             return false;
 
         DbValue actualValue = _projectionTerm.Evaluate(row);
         if (actualValue.IsNull || !IsNumericComparable(actualValue))
             return false;
 
-        double actual = actualValue.AsReal;
-        for (int i = 0; i < _numericSet.Length; i++)
+        for (int i = 0; i < _comparisonSet.Length; i++)
         {
-            if (actual == _numericSet[i])
+            if (DbValue.Compare(actualValue, _comparisonSet[i]) == 0)
                 return !_negated;
         }
 
@@ -2040,11 +2187,15 @@ internal readonly struct BatchPredicateTerm
     private bool EvaluateNumericExpressionRange(ReadOnlySpan<DbValue> row)
     {
         DbValue actualValue = _projectionTerm.Evaluate(row);
-        if (actualValue.IsNull || !IsNumericComparable(actualValue))
+        if (actualValue.IsNull ||
+            !IsNumericComparable(actualValue) ||
+            _comparisonLiteral.IsNull ||
+            _comparisonUpperLiteral.IsNull)
             return false;
 
-        double actual = actualValue.AsReal;
-        bool inRange = actual >= _numericLiteral && actual <= _numericUpperLiteral;
+        bool inRange =
+            DbValue.Compare(actualValue, _comparisonLiteral) >= 0 &&
+            DbValue.Compare(actualValue, _comparisonUpperLiteral) <= 0;
         return _negated ? !inRange : inRange;
     }
 
@@ -2129,11 +2280,11 @@ internal sealed class SpecializedScalarAggregateBatchPlan : IScalarAggregateBatc
     private readonly bool _isCountStar;
     private readonly bool _isDistinct;
     private readonly SpanExpressionEvaluator? _aggregateArgumentEvaluator;
+    private readonly SqlTypeDescriptor? _aggregateArgumentType;
+    private readonly string? _aggregateArgumentCollation;
 
     private long _count;
-    private double _sum;
-    private bool _hasReal;
-    private bool _hasAny;
+    private NumericAggregateAccumulator _numericAggregate;
     private DbValue? _best;
     private AggregateDistinctValueSet? _distinctValues;
 
@@ -2144,7 +2295,9 @@ internal sealed class SpecializedScalarAggregateBatchPlan : IScalarAggregateBatc
         int columnIndex,
         bool isCountStar,
         bool isDistinct,
-        SpanExpressionEvaluator? aggregateArgumentEvaluator = null)
+        SpanExpressionEvaluator? aggregateArgumentEvaluator = null,
+        SqlTypeDescriptor? aggregateArgumentType = null,
+        string? aggregateArgumentCollation = null)
     {
         _predicate = predicate;
         _pushdownFilters = pushdownFilters ?? Array.Empty<BatchPushdownFilter>();
@@ -2153,6 +2306,8 @@ internal sealed class SpecializedScalarAggregateBatchPlan : IScalarAggregateBatc
         _isCountStar = isCountStar;
         _isDistinct = isDistinct;
         _aggregateArgumentEvaluator = aggregateArgumentEvaluator;
+        _aggregateArgumentType = aggregateArgumentType;
+        _aggregateArgumentCollation = CollationSupport.NormalizeMetadataName(aggregateArgumentCollation);
     }
 
     public BatchPushdownFilter[] PushdownFilters => _pushdownFilters;
@@ -2160,11 +2315,9 @@ internal sealed class SpecializedScalarAggregateBatchPlan : IScalarAggregateBatc
     public void Reset()
     {
         _count = 0;
-        _sum = 0;
-        _hasReal = false;
-        _hasAny = false;
+        _numericAggregate.Reset();
         _best = null;
-        _distinctValues = _isDistinct ? new AggregateDistinctValueSet() : null;
+        _distinctValues = _isDistinct ? new AggregateDistinctValueSet(_aggregateArgumentCollation) : null;
     }
 
     public void Accumulate(RowBatch sourceBatch)
@@ -2197,9 +2350,8 @@ internal sealed class SpecializedScalarAggregateBatchPlan : IScalarAggregateBatc
         => _kind switch
         {
             BatchScalarAggregateKind.Count => DbValue.FromInteger(_count),
-            BatchScalarAggregateKind.Sum => !_hasAny ? DbValue.FromInteger(0)
-                : _hasReal ? DbValue.FromReal(_sum) : DbValue.FromInteger((long)_sum),
-            BatchScalarAggregateKind.Avg => !_hasAny ? DbValue.Null : DbValue.FromReal(_sum / _count),
+            BatchScalarAggregateKind.Sum => _numericAggregate.GetSumOrZero(),
+            BatchScalarAggregateKind.Avg => _numericAggregate.GetAverageOrNull(),
             BatchScalarAggregateKind.Min => _best ?? DbValue.Null,
             BatchScalarAggregateKind.Max => _best ?? DbValue.Null,
             _ => DbValue.Null,
@@ -2242,17 +2394,7 @@ internal sealed class SpecializedScalarAggregateBatchPlan : IScalarAggregateBatc
             if (!IsDistinctValue(value))
                 continue;
 
-            _hasAny = true;
-            if (value.Type == DbType.Real)
-            {
-                _hasReal = true;
-                _sum += value.AsReal;
-            }
-            else
-            {
-                _sum += value.AsInteger;
-            }
-
+            _numericAggregate.Add(value);
             _count++;
         }
     }
@@ -2271,7 +2413,11 @@ internal sealed class SpecializedScalarAggregateBatchPlan : IScalarAggregateBatc
             if (!IsDistinctValue(value))
                 continue;
 
-            if (_best == null || DbValue.Compare(value, _best.Value) < 0)
+            if (_best == null || SqlTypeCoercion.Compare(
+                    value,
+                    _best.Value,
+                    _aggregateArgumentType,
+                    _aggregateArgumentCollation) < 0)
                 _best = value;
         }
     }
@@ -2290,7 +2436,11 @@ internal sealed class SpecializedScalarAggregateBatchPlan : IScalarAggregateBatc
             if (!IsDistinctValue(value))
                 continue;
 
-            if (_best == null || DbValue.Compare(value, _best.Value) > 0)
+            if (_best == null || SqlTypeCoercion.Compare(
+                    value,
+                    _best.Value,
+                    _aggregateArgumentType,
+                    _aggregateArgumentCollation) > 0)
                 _best = value;
         }
     }
@@ -2398,6 +2548,7 @@ internal sealed class BatchNumericExpression
     private readonly BinaryOp _op;
     private readonly BatchNumericExpression? _left;
     private readonly BatchNumericExpression? _right;
+    private readonly SqlTypeDescriptor? _resultType;
     private readonly BatchNumericExpressionKind _kind;
 
     private BatchNumericExpression(
@@ -2406,6 +2557,7 @@ internal sealed class BatchNumericExpression
         BinaryOp op,
         BatchNumericExpression? left,
         BatchNumericExpression? right,
+        SqlTypeDescriptor? resultType,
         BatchNumericExpressionKind kind)
     {
         _columnIndex = columnIndex;
@@ -2413,31 +2565,45 @@ internal sealed class BatchNumericExpression
         _op = op;
         _left = left;
         _right = right;
+        _resultType = resultType;
         _kind = kind;
     }
 
     public static BatchNumericExpression CreateColumn(int columnIndex)
-        => new(columnIndex, DbValue.Null, BinaryOp.Equals, null, null, BatchNumericExpressionKind.Column);
+        => new(columnIndex, DbValue.Null, BinaryOp.Equals, null, null, null, BatchNumericExpressionKind.Column);
 
     public static BatchNumericExpression CreateConstant(DbValue constant)
-        => new(0, constant, BinaryOp.Equals, null, null, BatchNumericExpressionKind.Constant);
+        => new(0, constant, BinaryOp.Equals, null, null, null, BatchNumericExpressionKind.Constant);
 
-    public static BatchNumericExpression CreateNegated(BatchNumericExpression operand)
+    public static BatchNumericExpression CreateNegated(
+        BatchNumericExpression operand,
+        SqlTypeDescriptor? resultType)
     {
         ArgumentNullException.ThrowIfNull(operand);
 
         if (operand._kind == BatchNumericExpressionKind.Constant)
-            return CreateConstant(Negate(operand._constant));
+            return CreateConstant(Negate(operand._constant, resultType));
 
-        return new(0, DbValue.Null, BinaryOp.Minus, CreateConstant(DbValue.FromInteger(0)), operand, BatchNumericExpressionKind.Arithmetic);
+        return new(
+            0,
+            DbValue.Null,
+            BinaryOp.Minus,
+            CreateConstant(DbValue.FromInteger(0)),
+            operand,
+            resultType,
+            BatchNumericExpressionKind.Arithmetic);
     }
 
-    public static BatchNumericExpression CreateArithmetic(BinaryOp op, BatchNumericExpression left, BatchNumericExpression right)
+    public static BatchNumericExpression CreateArithmetic(
+        BinaryOp op,
+        BatchNumericExpression left,
+        BatchNumericExpression right,
+        SqlTypeDescriptor? resultType)
     {
         ArgumentNullException.ThrowIfNull(left);
         ArgumentNullException.ThrowIfNull(right);
 
-        return new(0, DbValue.Null, op, left, right, BatchNumericExpressionKind.Arithmetic);
+        return new(0, DbValue.Null, op, left, right, resultType, BatchNumericExpressionKind.Arithmetic);
     }
 
     public bool TryGetValue(ReadOnlySpan<DbValue> row, out DbValue value)
@@ -2467,53 +2633,25 @@ internal sealed class BatchNumericExpression
                     return false;
                 }
 
-                value = EvaluateArithmetic(_op, left, right);
+                value = EvaluateArithmetic(_op, left, right, _resultType);
                 return true;
             default:
                 return false;
         }
     }
 
-    private static DbValue EvaluateArithmetic(BinaryOp op, DbValue left, DbValue right)
-    {
-        if (left.Type == DbType.Real || right.Type == DbType.Real)
-        {
-            double leftReal = left.AsReal;
-            double rightReal = right.AsReal;
-            return op switch
-            {
-                BinaryOp.Plus => DbValue.FromReal(leftReal + rightReal),
-                BinaryOp.Minus => DbValue.FromReal(leftReal - rightReal),
-                BinaryOp.Multiply => DbValue.FromReal(leftReal * rightReal),
-                BinaryOp.Divide => rightReal != 0
-                    ? DbValue.FromReal(leftReal / rightReal)
-                    : throw new CSharpDbException(ErrorCode.Unknown, "Division by zero."),
-                _ => DbValue.Null,
-            };
-        }
+    private static DbValue EvaluateArithmetic(
+        BinaryOp op,
+        DbValue left,
+        DbValue right,
+        SqlTypeDescriptor? resultType)
+        => ExpressionEvaluator.EvaluateArithmetic(op, left, right, resultType);
 
-        long leftInteger = left.AsInteger;
-        long rightInteger = right.AsInteger;
-        return op switch
-        {
-            BinaryOp.Plus => DbValue.FromInteger(leftInteger + rightInteger),
-            BinaryOp.Minus => DbValue.FromInteger(leftInteger - rightInteger),
-            BinaryOp.Multiply => DbValue.FromInteger(leftInteger * rightInteger),
-            BinaryOp.Divide => rightInteger != 0
-                ? DbValue.FromInteger(leftInteger / rightInteger)
-                : throw new CSharpDbException(ErrorCode.Unknown, "Division by zero."),
-            _ => DbValue.Null,
-        };
-    }
-
-    private static DbValue Negate(DbValue value)
+    private static DbValue Negate(DbValue value, SqlTypeDescriptor? resultType)
     {
-        return value.Type switch
-        {
-            DbType.Integer => DbValue.FromInteger(-value.AsInteger),
-            DbType.Real => DbValue.FromReal(-value.AsReal),
-            _ => DbValue.Null,
-        };
+        return value.Type is DbType.Integer or DbType.Real
+            ? ExpressionEvaluator.NegateNumeric(value, resultType)
+            : DbValue.Null;
     }
 }
 

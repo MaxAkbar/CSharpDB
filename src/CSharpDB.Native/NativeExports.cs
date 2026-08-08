@@ -158,6 +158,31 @@ public static class NativeExports
     }
 
     /// <summary>
+    /// Bind an exact decimal as coefficient × 10^(-scale). Returns 0 on
+    /// success, -1 on error. The coefficient supports up to 18 digits.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "csharpdb_stmt_bind_decimal")]
+    public static int StatementBindDecimal(
+        IntPtr statementHandle,
+        IntPtr namePtr,
+        long coefficient,
+        int scale)
+    {
+        try
+        {
+            var statement = HandleTable.Get<NativePreparedStatement>(statementHandle);
+            string name = ReadRequiredUtf8String(namePtr, nameof(namePtr));
+            statement.BindDecimal(name, coefficient, scale);
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            ErrorState.Set(ex);
+            return -1;
+        }
+    }
+
+    /// <summary>
     /// Bind a UTF-8 text parameter by name. Passing IntPtr.Zero for the text binds NULL.
     /// Returns 0 on success, -1 on error.
     /// </summary>
@@ -170,6 +195,60 @@ public static class NativeExports
             string name = ReadRequiredUtf8String(namePtr, nameof(namePtr));
             string? value = ReadNullableUtf8String(valuePtr, nameof(valuePtr));
             statement.BindText(name, value);
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            ErrorState.Set(ex);
+            return -1;
+        }
+    }
+
+    /// <summary>
+    /// Bind an ordinary binary parameter by name. A zero byte count binds an
+    /// empty BLOB; it does not bind NULL. Returns 0 on success, -1 on error.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "csharpdb_stmt_bind_blob")]
+    public static int StatementBindBlob(
+        IntPtr statementHandle,
+        IntPtr namePtr,
+        IntPtr valuePtr,
+        int byteCount)
+    {
+        try
+        {
+            var statement = HandleTable.Get<NativePreparedStatement>(statementHandle);
+            string name = ReadRequiredUtf8String(namePtr, nameof(namePtr));
+            statement.BindBlob(name, ReadBytes(valuePtr, byteCount, nameof(valuePtr)));
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            ErrorState.Set(ex);
+            return -1;
+        }
+    }
+
+    /// <summary>
+    /// Bind a packed BIT or VARBIT parameter with its exact logical bit count.
+    /// Returns 0 on success, -1 on invalid padding, length, or pointer data.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "csharpdb_stmt_bind_bit_string")]
+    public static int StatementBindBitString(
+        IntPtr statementHandle,
+        IntPtr namePtr,
+        IntPtr valuePtr,
+        int byteCount,
+        int bitLength)
+    {
+        try
+        {
+            var statement = HandleTable.Get<NativePreparedStatement>(statementHandle);
+            string name = ReadRequiredUtf8String(namePtr, nameof(namePtr));
+            statement.BindBitString(
+                name,
+                ReadBytes(valuePtr, byteCount, nameof(valuePtr)),
+                bitLength);
             return 0;
         }
         catch (Exception ex)
@@ -338,6 +417,34 @@ public static class NativeExports
     }
 
     /// <summary>
+    /// Returns the canonical declared SQL type (for example DECIMAL(18,4)) of
+    /// a result column. The pointer is valid until the result is freed.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "csharpdb_result_column_declared_type")]
+    public static IntPtr ResultColumnDeclaredType(IntPtr resultHandle, int columnIndex)
+    {
+        try
+        {
+            var result = HandleTable.Get<QueryResult>(resultHandle);
+            if (columnIndex < 0 || columnIndex >= result.Schema.Length)
+                return IntPtr.Zero;
+
+            ColumnDefinition column = result.Schema[columnIndex];
+            string type = column.IsRowVersion
+                ? "ROWVERSION"
+                : column.Type == DbType.Null && column.DeclaredType is null
+                    ? "NULL"
+                    : column.EffectiveType.ToSql();
+            return StringCache.GetOrAddColumnType(resultHandle, columnIndex, type);
+        }
+        catch (Exception ex)
+        {
+            ErrorState.Set(ex);
+            return IntPtr.Zero;
+        }
+    }
+
+    /// <summary>
     /// Advance to the next row. Returns 1 if a row is available, 0 at end, -1 on error.
     /// </summary>
     [UnmanagedCallersOnly(EntryPoint = "csharpdb_result_next")]
@@ -358,7 +465,7 @@ public static class NativeExports
 
     /// <summary>
     /// Returns the DbType of the value at the given column in the current row.
-    /// 0=Null, 1=Integer, 2=Real, 3=Text, 4=Blob. Returns -1 on error.
+    /// 0=Null, 1=Integer, 2=Real, 3=Text, 4=Blob, 5=Decimal. Returns -1 on error.
     /// </summary>
     [UnmanagedCallersOnly(EntryPoint = "csharpdb_result_column_type")]
     public static int ResultColumnType(IntPtr resultHandle, int columnIndex)
@@ -435,6 +542,38 @@ public static class NativeExports
         }
     }
 
+    /// <summary>Read the normalized coefficient of an exact decimal value.</summary>
+    [UnmanagedCallersOnly(EntryPoint = "csharpdb_result_get_decimal_coefficient")]
+    public static long ResultGetDecimalCoefficient(IntPtr resultHandle, int columnIndex)
+    {
+        try
+        {
+            var result = HandleTable.Get<QueryResult>(resultHandle);
+            return result.Current[columnIndex].DecimalCoefficient;
+        }
+        catch (Exception ex)
+        {
+            ErrorState.Set(ex);
+            return 0;
+        }
+    }
+
+    /// <summary>Read the normalized scale of an exact decimal value.</summary>
+    [UnmanagedCallersOnly(EntryPoint = "csharpdb_result_get_decimal_scale")]
+    public static int ResultGetDecimalScale(IntPtr resultHandle, int columnIndex)
+    {
+        try
+        {
+            var result = HandleTable.Get<QueryResult>(resultHandle);
+            return result.Current[columnIndex].DecimalScale;
+        }
+        catch (Exception ex)
+        {
+            ErrorState.Set(ex);
+            return -1;
+        }
+    }
+
     /// <summary>
     /// Read a text value from the current row. Returns a UTF-8 string pointer.
     /// The pointer is valid until the next call to csharpdb_result_next or csharpdb_result_free.
@@ -478,6 +617,29 @@ public static class NativeExports
             return IntPtr.Zero;
         }
     }
+
+    /// <summary>
+    /// Return the exact logical bit count for a BIT or VARBIT value. Returns
+    /// -1 for ordinary BLOB values and on error; use csharpdb_last_error to
+    /// distinguish an error from the ordinary-BLOB sentinel when needed.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "csharpdb_result_get_bit_length")]
+    public static int ResultGetBitLength(IntPtr resultHandle, int columnIndex)
+    {
+        try
+        {
+            var result = HandleTable.Get<QueryResult>(resultHandle);
+            return GetBitLength(result.Current[columnIndex]);
+        }
+        catch (Exception ex)
+        {
+            ErrorState.Set(ex);
+            return -1;
+        }
+    }
+
+    internal static int GetBitLength(DbValue value) =>
+        value.IsBitString ? value.BitLength : -1;
 
     /// <summary>
     /// Free a result handle. Safe to call with IntPtr.Zero.
@@ -807,6 +969,19 @@ public static class NativeExports
 
         return Marshal.PtrToStringUTF8(valuePtr)
             ?? throw new ArgumentException("Expected a UTF-8 string pointer.", paramName);
+    }
+
+    private static byte[] ReadBytes(IntPtr valuePtr, int byteCount, string paramName)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(byteCount);
+        if (byteCount == 0)
+            return [];
+        if (valuePtr == IntPtr.Zero)
+            throw new ArgumentNullException(paramName);
+
+        var value = new byte[byteCount];
+        Marshal.Copy(valuePtr, value, 0, byteCount);
+        return value;
     }
 
     private static IntPtr SerializeJson<TValue>(TValue value, JsonTypeInfo<TValue> typeInfo)

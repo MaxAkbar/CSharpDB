@@ -47,7 +47,7 @@
                 <h1>SQL Reference</h1>
                 <p class="lead">CSharpDB implements its own documented SQL dialect with a tokenizer, parser, query planner, and expression evaluator.</p>
                 <div class="callout callout-info">
-                    <strong>SQL documentation.</strong> This page summarizes supported SQL syntax. For the full grammar, current limitations, and examples, see the <a href="sql-reference.html">SQL Source Reference</a>.
+                    <strong>SQL documentation.</strong> This page summarizes supported SQL syntax. For the complete datatype matrix, full grammar, current limitations, and examples, see the <a href="sql-reference.html#data-types">SQL Source Reference</a>.
                 </div>
 
                 <h2>Data Definition (DDL)</h2>
@@ -224,6 +224,18 @@
                     </tbody>
                 </table>
                 <p>The ordinal search functions use .NET ordinal UTF-16 code-unit semantics and do not apply SQL collation, wildcard, or escape rules. In particular, <code>%</code>, <code>_</code>, and backslash are ordinary characters.</p>
+
+                <h3>XML Functions (XPath 1.0)</h3>
+                <table class="doc-table">
+                    <thead><tr><th>Function</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>XML_EXISTS(xml, xpath [, namespace_json])</code></td><td>Evaluate the XPath effective boolean value; returns 1, 0, or NULL. <code>XMLEXISTS</code> is an alias.</td></tr>
+                        <tr><td><code>XML_VALUE(xml, xpath [, namespace_json])</code></td><td>Return one XPath value as text, or NULL when a node-set is empty.</td></tr>
+                    </tbody>
+                </table>
+                <p>Both functions accept an XML or text document and an XPath 1.0 expression. The optional third argument is a JSON object that maps XPath prefixes to namespace URIs, for example <code>XML_VALUE(payload, '/o:order/@id', '{&quot;o&quot;:&quot;urn:orders&quot;}')</code>. If any supplied argument is NULL, the result is NULL.</p>
+                <p>For a node-set, <code>XML_VALUE</code> returns the XPath string value of its single node, returns NULL for no nodes, and reports a type mismatch when more than one node matches. XPath scalar results are converted using XPath string semantics; select one node explicitly, such as <code>(/root/item)[1]</code>, when multiple matches are possible.</p>
+                <p>XML parsing is bounded and secure: DTD declarations and external entities are prohibited. This release supports the function-style APIs shown above; standard SQL <code>XMLEXISTS(... PASSING ...)</code> syntax, <code>XML_TABLE</code>, and XML path indexes are not yet supported.</p>
 
                 <h3>Math Functions</h3>
                 <table class="doc-table">

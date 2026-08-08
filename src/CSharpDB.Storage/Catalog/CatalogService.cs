@@ -19,6 +19,7 @@ internal sealed class CatalogService
     private const long ColumnStatsCatalogSentinel = long.MaxValue - 4;
     private const long ColumnDistributionStatsCatalogSentinel = long.MaxValue - 5;
     private const long IndexPrefixStatsCatalogSentinel = long.MaxValue - 6;
+    private const long RowVersionHighWaterCatalogSentinel = long.MaxValue - 7;
 
     private readonly Pager _pager;
     private readonly ISchemaSerializer _schemaSerializer;
@@ -28,6 +29,7 @@ internal sealed class CatalogService
     private readonly CatalogCache _cacheState = new();
     private BTree? _catalogTree;
     private long _schemaVersion;
+    private ulong _rowVersionHighWater;
     private IndexSchema[] _indexesSnapshot = Array.Empty<IndexSchema>();
     private string[] _viewNamesSnapshot = Array.Empty<string>();
     private TriggerSchema[] _triggersSnapshot = Array.Empty<TriggerSchema>();
@@ -168,6 +170,7 @@ internal sealed class CatalogService
     }
 
     public long SchemaVersion => Volatile.Read(ref _schemaVersion);
+    public ulong RowVersionHighWater => _rowVersionHighWater;
     public bool HasAdvisoryCatalogContentChanges => _advisoryCatalogContentChanged;
 
     public async ValueTask ReloadAsync(CancellationToken ct = default)
@@ -192,6 +195,7 @@ internal sealed class CatalogService
         _tableRootPages.Clear();
         _tableTrees.Clear();
         _persistedTableNextRowIds.Clear();
+        _rowVersionHighWater = 0;
         _foreignKeysByTable.Clear();
         _referencingForeignKeysByParentTable.Clear();
         _referencingForeignKeysByParentTableId.Clear();
@@ -420,6 +424,19 @@ internal sealed class CatalogService
                 continue;
             }
 
+            if (cursor.CurrentKey == RowVersionHighWaterCatalogSentinel)
+            {
+                if (cursor.CurrentValue.Length != sizeof(ulong))
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.CorruptDatabase,
+                        "The database-wide ROWVERSION allocator metadata is invalid.");
+                }
+
+                _rowVersionHighWater = BinaryPrimitives.ReadUInt64LittleEndian(cursor.CurrentValue.Span);
+                continue;
+            }
+
             var data = cursor.CurrentValue;
             // Data format: [4 bytes root page ID] [schema bytes]
             uint rootPage = _catalogStore.ReadRootPage(data.Span);
@@ -514,6 +531,26 @@ internal sealed class CatalogService
         ReconcileLoadedStatisticsFreshness();
         if (_advisoryStatisticsPersistenceMode == AdvisoryStatisticsPersistenceMode.Immediate)
             await PopulateImmediateTableStatisticsAsync(ct);
+    }
+
+    public async ValueTask PersistRowVersionHighWaterAsync(
+        ulong rowVersionHighWater,
+        CancellationToken ct = default)
+    {
+        if (rowVersionHighWater <= _rowVersionHighWater)
+            return;
+
+        await EnsureCatalogTreeAsync(ct);
+        var payload = new byte[sizeof(ulong)];
+        BinaryPrimitives.WriteUInt64LittleEndian(payload, rowVersionHighWater);
+        // Replace defensively instead of trusting the catalog cache. An
+        // isolated write transaction can commit allocator metadata before a
+        // shared catalog instance reloads, and the durable sentinel must still
+        // be updated rather than treated as a duplicate key.
+        await _catalogTree!.DeleteAsync(RowVersionHighWaterCatalogSentinel, ct);
+        await _catalogTree!.InsertAsync(RowVersionHighWaterCatalogSentinel, payload, ct);
+        _rowVersionHighWater = rowVersionHighWater;
+        _pager.SchemaRootPage = _catalogTree.RootPageId;
     }
 
     // ============ TABLE operations ============
@@ -2972,6 +3009,7 @@ internal sealed class CatalogService
                     : current.SchemaId,
                 Name = current.Name,
                 Type = current.Type,
+                DeclaredType = current.DeclaredType,
                 Nullable = current.Nullable,
                 IsPrimaryKey = current.IsPrimaryKey,
                 IsIdentity = current.IsIdentity,
@@ -3366,6 +3404,7 @@ internal sealed class CatalogService
                     SchemaId = id,
                     Name = column.Name,
                     Type = column.Type,
+                    DeclaredType = column.DeclaredType,
                     Nullable = column.Nullable,
                     IsPrimaryKey = column.IsPrimaryKey,
                     IsIdentity = column.IsIdentity,
@@ -4471,12 +4510,17 @@ internal sealed class CatalogService
 
     private static byte[] SerializeStatisticsValue(DbValue value)
     {
+        const DbType bitStringStatisticsType = (DbType)0x80;
         return value.Type switch
         {
             DbType.Null => [(byte)DbType.Null],
             DbType.Integer => SerializeStatisticsFixedValue(value.Type, value.AsInteger),
             DbType.Real => SerializeStatisticsFixedValue(value.Type, BitConverter.DoubleToInt64Bits(value.AsReal)),
+            DbType.Decimal => SerializeStatisticsDecimalValue(value),
             DbType.Text => SerializeStatisticsVariableValue(value.Type, Encoding.UTF8.GetBytes(value.AsText)),
+            DbType.Blob when value.IsBitString => SerializeStatisticsVariableValue(
+                bitStringStatisticsType,
+                SerializeStatisticsBitString(value)),
             DbType.Blob => SerializeStatisticsVariableValue(value.Type, value.AsBlob),
             _ => throw new InvalidOperationException($"Unsupported statistics value type '{value.Type}'."),
         };
@@ -4499,18 +4543,59 @@ internal sealed class CatalogService
         return payload;
     }
 
+    private static byte[] SerializeStatisticsDecimalValue(DbValue value)
+    {
+        byte[] payload = new byte[1 + sizeof(long) + sizeof(byte)];
+        payload[0] = (byte)DbType.Decimal;
+        BinaryPrimitives.WriteInt64LittleEndian(
+            payload.AsSpan(1, sizeof(long)),
+            value.DecimalCoefficient);
+        payload[^1] = checked((byte)value.DecimalScale);
+        return payload;
+    }
+
+    private static byte[] SerializeStatisticsBitString(DbValue value)
+    {
+        byte[] packedBytes = value.AsBlob;
+        byte[] payload = new byte[sizeof(int) + packedBytes.Length];
+        BinaryPrimitives.WriteInt32LittleEndian(payload, value.BitLength);
+        packedBytes.CopyTo(payload.AsSpan(sizeof(int)));
+        return payload;
+    }
+
     private static DbValue DeserializeStatisticsValue(ReadOnlySpan<byte> payload)
     {
+        const DbType bitStringStatisticsType = (DbType)0x80;
         DbType type = (DbType)payload[0];
         return type switch
         {
             DbType.Null => DbValue.Null,
             DbType.Integer => DbValue.FromInteger(BinaryPrimitives.ReadInt64LittleEndian(payload.Slice(1, 8))),
             DbType.Real => DbValue.FromReal(BitConverter.Int64BitsToDouble(BinaryPrimitives.ReadInt64LittleEndian(payload.Slice(1, 8)))),
+            DbType.Decimal => DbValue.FromDecimalParts(
+                BinaryPrimitives.ReadInt64LittleEndian(payload.Slice(1, sizeof(long))),
+                payload[1 + sizeof(long)]),
             DbType.Text => DbValue.FromText(ReadStatisticsString(payload)),
             DbType.Blob => DbValue.FromBlob(ReadStatisticsBytes(payload)),
+            bitStringStatisticsType => DeserializeStatisticsBitString(ReadStatisticsBytes(payload)),
             _ => throw new InvalidOperationException($"Unsupported statistics value type '{type}'."),
         };
+    }
+
+    private static DbValue DeserializeStatisticsBitString(byte[] payload)
+    {
+        if (payload.Length < sizeof(int))
+            throw new InvalidDataException("Malformed bit-string statistics payload.");
+
+        int bitLength = BinaryPrimitives.ReadInt32LittleEndian(payload);
+        try
+        {
+            return DbValue.FromBitString(payload.AsSpan(sizeof(int)).ToArray(), bitLength);
+        }
+        catch (ArgumentException ex)
+        {
+            throw new InvalidDataException("Malformed bit-string statistics payload.", ex);
+        }
     }
 
     private static string ReadStatisticsString(ReadOnlySpan<byte> payload)

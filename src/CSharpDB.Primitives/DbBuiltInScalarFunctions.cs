@@ -170,6 +170,15 @@ public static class DbBuiltInScalarFunctions
                 RequireArgumentCount(name, args, 1);
                 value = DbValue.FromReal(ParseLeadingNumber(ToScalarString(args[0])));
                 return true;
+            case "XML_EXISTS":
+            case "XMLEXISTS":
+                RequireArgumentCount(name, args, 2, 3);
+                value = EvaluateXmlExists(name, args);
+                return true;
+            case "XML_VALUE":
+                RequireArgumentCount(name, args, 2, 3);
+                value = EvaluateXmlValue(name, args);
+                return true;
             case "DATE":
                 RequireArgumentCount(name, args, 0);
                 value = DbValue.FromText(DateTime.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
@@ -239,7 +248,14 @@ public static class DbBuiltInScalarFunctions
                 return true;
             case "ABS":
                 RequireArgumentCount(name, args, 1);
-                value = TryConvertDouble(args[0], out double absValue) ? FromReal(Math.Abs(absValue)) : DbValue.Null;
+                value = args[0].Type switch
+                {
+                    DbType.Integer => DbValue.FromInteger(Math.Abs(args[0].AsInteger)),
+                    DbType.Decimal => DbValue.FromDecimal(decimal.Abs(args[0].AsDecimal)),
+                    _ => TryConvertDouble(args[0], out double absValue)
+                        ? FromReal(Math.Abs(absValue))
+                        : DbValue.Null,
+                };
                 return true;
             case "ROUND":
                 RequireArgumentCount(name, args, 1, 2);
@@ -248,24 +264,48 @@ public static class DbBuiltInScalarFunctions
             case "INT":
             case "FLOOR":
                 RequireArgumentCount(name, args, 1);
-                value = TryConvertDouble(args[0], out double intValue) ? FromReal(Math.Floor(intValue)) : DbValue.Null;
+                value = args[0].Type switch
+                {
+                    DbType.Integer => args[0],
+                    DbType.Decimal => DbValue.FromDecimal(decimal.Floor(args[0].AsDecimal)),
+                    _ => TryConvertDouble(args[0], out double intValue)
+                        ? FromReal(Math.Floor(intValue))
+                        : DbValue.Null,
+                };
                 return true;
             case "FIX":
                 RequireArgumentCount(name, args, 1);
-                value = TryConvertDouble(args[0], out double fixValue) ? FromReal(Math.Truncate(fixValue)) : DbValue.Null;
+                value = args[0].Type switch
+                {
+                    DbType.Integer => args[0],
+                    DbType.Decimal => DbValue.FromDecimal(decimal.Truncate(args[0].AsDecimal)),
+                    _ => TryConvertDouble(args[0], out double fixValue)
+                        ? FromReal(Math.Truncate(fixValue))
+                        : DbValue.Null,
+                };
                 return true;
             case "SGN":
                 RequireArgumentCount(name, args, 1);
-                value = TryConvertDouble(args[0], out double sgnValue) ? DbValue.FromInteger(Math.Sign(sgnValue)) : DbValue.Null;
+                value = args[0].Type == DbType.Decimal
+                    ? DbValue.FromInteger(decimal.Sign(args[0].AsDecimal))
+                    : TryConvertDouble(args[0], out double sgnValue) ? DbValue.FromInteger(Math.Sign(sgnValue)) : DbValue.Null;
                 return true;
             case "CSTR":
                 RequireArgumentCount(name, args, 1);
                 value = DbValue.FromText(ToScalarString(args[0]));
                 return true;
             case "CINT":
+                RequireArgumentCount(name, args, 1);
+                value = TryConvertLong(args[0], out long integerValue) &&
+                    integerValue is >= int.MinValue and <= int.MaxValue
+                        ? DbValue.FromInteger(integerValue)
+                        : DbValue.Null;
+                return true;
             case "CLNG":
                 RequireArgumentCount(name, args, 1);
-                value = TryConvertLong(args[0], out long integerValue) ? DbValue.FromInteger(integerValue) : DbValue.Null;
+                value = TryConvertLong(args[0], out long longValue)
+                    ? DbValue.FromInteger(longValue)
+                    : DbValue.Null;
                 return true;
             case "CDBL":
                 RequireArgumentCount(name, args, 1);
@@ -295,6 +335,7 @@ public static class DbBuiltInScalarFunctions
         DbType.Null => "NULL",
         DbType.Integer => value.AsInteger.ToString(CultureInfo.InvariantCulture),
         DbType.Real => value.AsReal.ToString(CultureInfo.InvariantCulture),
+        DbType.Decimal => value.AsDecimal.ToString(CultureInfo.InvariantCulture),
         DbType.Text => value.AsText,
         DbType.Blob => $"[{value.AsBlob.Length} bytes]",
         _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unsupported DbValue type '{value.Type}'."),
@@ -362,6 +403,52 @@ public static class DbBuiltInScalarFunctions
 
         int result = string.Compare(ToScalarString(args[0]), ToScalarString(args[1]), comparison);
         return DbValue.FromInteger(result < 0 ? -1 : result > 0 ? 1 : 0);
+    }
+
+    private static DbValue EvaluateXmlExists(
+        string functionName,
+        IReadOnlyList<DbValue> args)
+    {
+        if (args.Any(static argument => argument.IsNull))
+            return DbValue.Null;
+
+        string xml = RequireXmlFunctionText(args[0], functionName, "XML input");
+        string xpath = RequireXmlFunctionText(args[1], functionName, "XPath expression");
+        string? namespaceMap = args.Count == 3
+            ? RequireXmlFunctionText(args[2], functionName, "namespace map")
+            : null;
+        return FromBoolean(CSharpDbXmlCodec.Exists(xml, xpath, namespaceMap));
+    }
+
+    private static DbValue EvaluateXmlValue(
+        string functionName,
+        IReadOnlyList<DbValue> args)
+    {
+        if (args.Any(static argument => argument.IsNull))
+            return DbValue.Null;
+
+        string xml = RequireXmlFunctionText(args[0], functionName, "XML input");
+        string xpath = RequireXmlFunctionText(args[1], functionName, "XPath expression");
+        string? namespaceMap = args.Count == 3
+            ? RequireXmlFunctionText(args[2], functionName, "namespace map")
+            : null;
+        string? extracted = CSharpDbXmlCodec.Value(xml, xpath, namespaceMap);
+        return extracted is null ? DbValue.Null : DbValue.FromText(extracted);
+    }
+
+    private static string RequireXmlFunctionText(
+        DbValue value,
+        string functionName,
+        string argumentName)
+    {
+        if (value.Type != DbType.Text)
+        {
+            throw new CSharpDbException(
+                ErrorCode.TypeMismatch,
+                $"{functionName} {argumentName} must be XML or text.");
+        }
+
+        return value.AsText;
     }
 
     private static DbValue EvaluateDateAdd(IReadOnlyList<DbValue> args)
@@ -452,6 +539,36 @@ public static class DbBuiltInScalarFunctions
 
     private static DbValue EvaluateRound(IReadOnlyList<DbValue> args)
     {
+        if (args[0].Type == DbType.Integer)
+        {
+            if (args.Count == 2 &&
+                (!TryConvertLong(args[1], out long integerDigits) || integerDigits is < 0 or > 15))
+            {
+                return DbValue.Null;
+            }
+
+            return args[0];
+        }
+
+        if (args[0].Type == DbType.Decimal)
+        {
+            int decimalDigits = 0;
+            long requestedDigits = 0;
+            if (args.Count == 2 &&
+                (!TryConvertLong(args[1], out requestedDigits) ||
+                 requestedDigits is < 0 or > SqlTypeDescriptor.MaximumDecimalPrecision))
+            {
+                return DbValue.Null;
+            }
+            else if (args.Count == 2)
+            {
+                decimalDigits = (int)requestedDigits;
+            }
+
+            return DbValue.FromDecimal(
+                decimal.Round(args[0].AsDecimal, decimalDigits, MidpointRounding.ToEven));
+        }
+
         if (!TryConvertDouble(args[0], out double value))
             return DbValue.Null;
 
@@ -474,6 +591,8 @@ public static class DbBuiltInScalarFunctions
 
         try
         {
+            if (value.Type == DbType.Decimal)
+                return DbValue.FromText(value.AsDecimal.ToString(format, CultureInfo.InvariantCulture));
             if (TryConvertDouble(value, out double number))
                 return DbValue.FromText(number.ToString(format, CultureInfo.InvariantCulture));
         }
@@ -618,6 +737,9 @@ public static class DbBuiltInScalarFunctions
             case DbType.Real:
                 result = value.AsReal;
                 return true;
+            case DbType.Decimal:
+                result = (double)value.AsDecimal;
+                return true;
             case DbType.Text:
                 return double.TryParse(
                     value.AsText,
@@ -639,6 +761,17 @@ public static class DbBuiltInScalarFunctions
                 return true;
             case DbType.Real:
                 return TryRoundToLong(value.AsReal, out result);
+            case DbType.Decimal:
+            {
+                decimal rounded = decimal.Round(value.AsDecimal, 0, MidpointRounding.ToEven);
+                if (rounded < long.MinValue || rounded > long.MaxValue)
+                {
+                    result = 0;
+                    return false;
+                }
+                result = decimal.ToInt64(rounded);
+                return true;
+            }
             case DbType.Text when long.TryParse(value.AsText, NumberStyles.Integer, CultureInfo.InvariantCulture, out long integer):
                 result = integer;
                 return true;
@@ -677,7 +810,13 @@ public static class DbBuiltInScalarFunctions
                 result = value.AsInteger != 0;
                 return true;
             case DbType.Real:
-                result = Math.Abs(value.AsReal) > double.Epsilon;
+                if (!double.IsFinite(value.AsReal))
+                    break;
+
+                result = value.AsReal != 0d;
+                return true;
+            case DbType.Decimal:
+                result = value.AsDecimal != 0m;
                 return true;
             case DbType.Text:
                 string text = value.AsText;
@@ -695,9 +834,10 @@ public static class DbBuiltInScalarFunctions
                     result = false;
                     return true;
                 }
-                if (TryConvertDouble(value, out double numericText))
+                if (TryConvertDouble(value, out double numericText) &&
+                    double.IsFinite(numericText))
                 {
-                    result = Math.Abs(numericText) > double.Epsilon;
+                    result = numericText != 0d;
                     return true;
                 }
                 break;
@@ -720,6 +860,7 @@ public static class DbBuiltInScalarFunctions
                 break;
             case DbType.Integer:
             case DbType.Real:
+            case DbType.Decimal:
                 if (TryConvertDouble(value, out double numeric))
                 {
                     try
@@ -762,6 +903,7 @@ public static class DbBuiltInScalarFunctions
         DbType.Null => string.Empty,
         DbType.Integer => value.AsInteger.ToString(CultureInfo.InvariantCulture),
         DbType.Real => value.AsReal.ToString(CultureInfo.InvariantCulture),
+        DbType.Decimal => value.AsDecimal.ToString(CultureInfo.InvariantCulture),
         DbType.Text => value.AsText,
         DbType.Blob => Convert.ToBase64String(value.AsBlob),
         _ => string.Empty,

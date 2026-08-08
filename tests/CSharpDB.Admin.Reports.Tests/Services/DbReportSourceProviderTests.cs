@@ -28,6 +28,22 @@ public class DbReportSourceProviderTests
     }
 
     [Fact]
+    public async Task GetSourceDefinitionAsync_Table_PreservesDecimalMetadata()
+    {
+        await using var db = await TestDatabaseScope.CreateAsync();
+        await db.ExecuteAsync("CREATE TABLE TypedReports (Amount DECIMAL(18,4));");
+        var provider = new DbReportSourceProvider(db.Client);
+
+        ReportSourceDefinition source = Assert.IsType<ReportSourceDefinition>(
+            await provider.GetSourceDefinitionAsync(
+                new ReportSourceReference(ReportSourceKind.Table, "TypedReports")));
+        ReportFieldDefinition amount = Assert.Single(source.Fields);
+
+        Assert.Equal(DbType.Decimal, amount.DataType);
+        Assert.Equal("DECIMAL(18,4)", amount.Metadata!["dbType"]);
+    }
+
+    [Fact]
     public async Task GetSourceDefinitionAsync_Table_MapsFieldsAndSignatureChangesWhenSchemaChanges()
     {
         await using var db = await TestDatabaseScope.CreateAsync();

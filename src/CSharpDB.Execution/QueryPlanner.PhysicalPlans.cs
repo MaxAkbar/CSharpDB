@@ -631,6 +631,8 @@ public sealed partial class QueryPlanner
                 : $"-{RedactExpression(unary.Operand)}",
             CollateExpression collate =>
                 $"{RedactExpression(collate.Operand)} COLLATE {SqlIdentifierRules.Quote(collate.Collation)}",
+            CastExpression cast =>
+                $"CAST({RedactExpression(cast.Operand)} AS {cast.TargetType.ToSql()})",
             FunctionCallExpression function =>
                 $"{function.FunctionName.ToUpperInvariant()}(" +
                 (function.IsStarArg

@@ -280,6 +280,23 @@ public static class DatabaseInspector
                     continue;
                 }
 
+                if (cell.Key.Value == InspectorEngine.RowVersionHighWaterCatalogSentinel)
+                {
+                    if (cell.Payload.Length != sizeof(ulong))
+                    {
+                        issues.Add(new IntegrityIssue
+                        {
+                            Code = "CATALOG_ROWVERSION_HIGH_WATER_INVALID",
+                            Severity = InspectSeverity.Error,
+                            Message = "The database-wide ROWVERSION allocator metadata is invalid.",
+                            PageId = pageId,
+                            Offset = cell.CellOffset,
+                        });
+                    }
+
+                    continue;
+                }
+
                 uint rootPage = BinaryPrimitives.ReadUInt32LittleEndian(cell.Payload.AsSpan(0, 4));
 
                 if (cell.Key.Value == InspectorEngine.IndexCatalogSentinel)
@@ -309,6 +326,12 @@ public static class DatabaseInspector
                 if (cell.Key.Value == InspectorEngine.ColumnStatsCatalogSentinel)
                 {
                     columnStatsCatalogRoot = rootPage;
+                    continue;
+                }
+
+                if (cell.Key.Value == InspectorEngine.ColumnDistributionStatsCatalogSentinel ||
+                    cell.Key.Value == InspectorEngine.IndexPrefixStatsCatalogSentinel)
+                {
                     continue;
                 }
 

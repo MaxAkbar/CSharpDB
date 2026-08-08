@@ -18,7 +18,7 @@ public sealed class AlterColumnConversionPropertyTests
         await using Database database = await Database.OpenInMemoryAsync(ct);
         await database.ExecuteAsync(
             "CREATE TABLE exact_numeric_values " +
-            "(id INTEGER PRIMARY KEY, value INTEGER NOT NULL)",
+            "(id INTEGER PRIMARY KEY, value BIGINT NOT NULL)",
             ct);
 
         var values = new List<long>
@@ -66,7 +66,7 @@ public sealed class AlterColumnConversionPropertyTests
         }
 
         await database.ExecuteAsync(
-            "ALTER TABLE exact_numeric_values ALTER COLUMN value TYPE INTEGER",
+            "ALTER TABLE exact_numeric_values ALTER COLUMN value TYPE BIGINT",
             ct);
         await using QueryResult integerResult = await database.ExecuteAsync(
             "SELECT value FROM exact_numeric_values ORDER BY id",

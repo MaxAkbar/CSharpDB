@@ -714,10 +714,10 @@ public static class MigrationContractValidator
 
         if (mapping.Classification == MigrationMappingClassification.Unsupported)
         {
-            if (mapping.TargetType is not null)
+            if (mapping.TargetType is not null || mapping.TargetSqlType is not null)
             {
                 throw Invalid(
-                    $"Unsupported mapping '{mapping.SourceObjectId}' cannot select a target type.");
+                    $"Unsupported mapping '{mapping.SourceObjectId}' cannot select a target type or logical SQL declaration.");
             }
 
             if (planObject.Included)
@@ -811,6 +811,7 @@ public static class MigrationContractValidator
         string.Equals(left.SourceObjectId, right.SourceObjectId, StringComparison.Ordinal) &&
         string.Equals(left.SourceNativeType, right.SourceNativeType, StringComparison.Ordinal) &&
         left.TargetType == right.TargetType &&
+        string.Equals(left.TargetSqlType, right.TargetSqlType, StringComparison.Ordinal) &&
         left.RequestedTargetType == right.RequestedTargetType &&
         left.Classification == right.Classification &&
         left.Profile == right.Profile &&

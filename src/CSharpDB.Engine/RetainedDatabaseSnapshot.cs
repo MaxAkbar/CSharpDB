@@ -491,8 +491,10 @@ public sealed class RetainedDatabaseSnapshotSession : IAsyncDisposable
         TableName = schema.TableName,
         Columns = schema.Columns.Select(static column => new ColumnDefinition
         {
+            SchemaId = column.SchemaId,
             Name = column.Name,
             Type = column.Type,
+            DeclaredType = column.DeclaredType,
             Nullable = column.Nullable,
             IsPrimaryKey = column.IsPrimaryKey,
             IsIdentity = column.IsIdentity,

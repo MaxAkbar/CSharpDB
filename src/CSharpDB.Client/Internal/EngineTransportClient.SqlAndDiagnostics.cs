@@ -221,6 +221,7 @@ internal sealed partial class EngineTransportClient
                 {
                     IsQuery = true,
                     ColumnNames = lastResult.ColumnNames,
+                    Columns = lastResult.Columns,
                     ColumnTypes = lastResult.ColumnTypes,
                     ColumnNullability = lastResult.ColumnNullability,
                     Rows = lastResult.Rows,

@@ -21,7 +21,8 @@ public static class DataTools
         var columns = result.Schema.Columns.Select(c => new
         {
             name = c.Name,
-            type = c.Type.ToString(),
+            type = c.IsRowVersion ? "ROWVERSION" : c.EffectiveType.ToSql(),
+            storageType = c.Type.ToString(),
             nullable = c.Nullable,
             isPrimaryKey = c.IsPrimaryKey,
             isIdentity = c.IsIdentity,

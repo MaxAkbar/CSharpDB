@@ -162,8 +162,18 @@ internal sealed partial class EngineTransportClient
             Name = parameter.Name,
             Type = parameter.Type.ToString().ToUpperInvariant(),
             Required = parameter.Required,
-            Default = parameter.Type == DbType.Blob && parameter.Default is byte[] bytes
-                ? Convert.ToBase64String(bytes)
+            Default = parameter.Type == DbType.Blob
+                ? parameter.Default switch
+                {
+                    byte[] bytes => Convert.ToBase64String(bytes),
+                    SqlBitString bits => new Dictionary<string, object?>
+                    {
+                        ["$csharpdb"] = "bit-string-v1",
+                        ["base64"] = Convert.ToBase64String(bits.PackedBytes.Span),
+                        ["bitLength"] = bits.BitLength,
+                    },
+                    _ => parameter.Default,
+                }
                 : parameter.Default,
             Description = parameter.Description,
         });
@@ -198,7 +208,11 @@ internal sealed partial class EngineTransportClient
                     ? parsedType
                     : throw new ArgumentException($"Unsupported parameter type '{item.Type}' in params_json."),
                 Required = item.Required,
-                Default = item.Default is JsonElement element ? ConvertJsonElement(element) : item.Default,
+                Default = DeserializeProcedureDefault(
+                    Enum.TryParse<DbType>(item.Type, ignoreCase: true, out var defaultType)
+                        ? defaultType
+                        : throw new ArgumentException($"Unsupported parameter type '{item.Type}' in params_json."),
+                    item.Default),
                 Description = string.IsNullOrWhiteSpace(item.Description) ? null : item.Description.Trim(),
             })
             .ToList());
@@ -268,18 +282,63 @@ internal sealed partial class EngineTransportClient
             : fallback;
     }
 
-    private static object? NormalizeParameterValue(object? value)
-        => value is JsonElement element ? ConvertJsonElement(element) : value;
+    private static object? NormalizeParameterValue(object? value) => value switch
+    {
+        JsonElement element => ConvertJsonElement(element),
+        Guid or DateOnly or TimeOnly or DateTime or DateTimeOffset => NormalizeValue(value),
+        _ => value,
+    };
 
     private static object? ConvertJsonElement(JsonElement element) => element.ValueKind switch
     {
         JsonValueKind.Null => null,
         JsonValueKind.String => element.GetString(),
-        JsonValueKind.Number => element.TryGetInt64(out long integer) ? integer : element.GetDouble(),
+        JsonValueKind.Number => element.TryGetInt64(out long integer)
+            ? integer
+            : element.TryGetDecimal(out decimal number)
+                ? number
+                : element.GetDouble(),
         JsonValueKind.True => true,
         JsonValueKind.False => false,
         _ => element.ToString(),
     };
+
+    private static object? DeserializeProcedureDefault(DbType type, object? value)
+    {
+        if (value is not JsonElement element)
+            return value;
+
+        if (type == DbType.Blob &&
+            element.ValueKind == JsonValueKind.Object &&
+            element.TryGetProperty("$csharpdb", out JsonElement marker) &&
+            marker.ValueKind == JsonValueKind.String &&
+            string.Equals(marker.GetString(), "bit-string-v1", StringComparison.Ordinal))
+        {
+            if (!element.TryGetProperty("base64", out JsonElement payload) ||
+                payload.ValueKind != JsonValueKind.String ||
+                !element.TryGetProperty("bitLength", out JsonElement length) ||
+                !length.TryGetInt32(out int bitLength))
+            {
+                throw new ArgumentException(
+                    "Invalid SQL bit-string procedure default in params_json.");
+            }
+
+            try
+            {
+                return new SqlBitString(
+                    Convert.FromBase64String(payload.GetString() ?? string.Empty),
+                    bitLength);
+            }
+            catch (Exception error) when (error is FormatException or ArgumentException or OverflowException)
+            {
+                throw new ArgumentException(
+                    "Invalid SQL bit-string procedure default in params_json.",
+                    error);
+            }
+        }
+
+        return ConvertJsonElement(element);
+    }
 
     private static object? CoerceProcedureParameterValue(string name, DbType type, object? value)
     {
@@ -291,11 +350,14 @@ internal sealed partial class EngineTransportClient
         {
             DbType.Integer when TryCoerceInteger(normalized, out long integerValue) => integerValue,
             DbType.Real when TryCoerceReal(normalized, out double realValue) => realValue,
+            DbType.Decimal when TryCoerceDecimal(normalized, out decimal decimalValue) => decimalValue,
             DbType.Text when normalized is string textValue => textValue,
+            DbType.Blob when normalized is SqlBitString bits => bits,
             DbType.Blob when normalized is byte[] blob => blob,
             DbType.Blob when normalized is string base64 => Convert.FromBase64String(base64),
             DbType.Integer => throw new ArgumentException($"Parameter '{name}' expects INTEGER."),
             DbType.Real => throw new ArgumentException($"Parameter '{name}' expects REAL."),
+            DbType.Decimal => throw new ArgumentException($"Parameter '{name}' expects DECIMAL."),
             DbType.Text => throw new ArgumentException($"Parameter '{name}' expects TEXT."),
             DbType.Blob => throw new ArgumentException($"Parameter '{name}' expects BLOB."),
             _ => throw new ArgumentException($"Unsupported parameter type '{type}' for '{name}'."),
@@ -337,6 +399,28 @@ internal sealed partial class EngineTransportClient
             case ulong ul: result = ul; return true;
             case string text when double.TryParse(text, NumberStyles.Float | NumberStyles.AllowThousands, CultureInfo.InvariantCulture, out double parsed): result = parsed; return true;
             default: result = 0; return false;
+        }
+    }
+
+    private static bool TryCoerceDecimal(object? value, out decimal result)
+    {
+        switch (value)
+        {
+            case decimal number: result = number; return true;
+            case long integer: result = integer; return true;
+            case int integer: result = integer; return true;
+            case double real when double.IsFinite(real): result = checked((decimal)real); return true;
+            case float real when float.IsFinite(real): result = checked((decimal)real); return true;
+            case string text when decimal.TryParse(
+                text,
+                NumberStyles.Number,
+                CultureInfo.InvariantCulture,
+                out decimal parsed):
+                result = parsed;
+                return true;
+            default:
+                result = 0m;
+                return false;
         }
     }
 

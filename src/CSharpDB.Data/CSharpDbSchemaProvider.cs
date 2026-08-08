@@ -189,6 +189,8 @@ internal static class CSharpDbSchemaProvider
         table.Columns.Add("IS_IDENTITY", typeof(bool));
         table.Columns.Add("COLLATION_NAME", typeof(string));
         table.Columns.Add("IS_ROW_VERSION", typeof(bool));
+        table.Columns.Add("IS_GENERATED", typeof(bool));
+        table.Columns.Add("IS_READ_ONLY", typeof(bool));
         table.Columns.Add("TABLE_SCHEMA_ID", typeof(Guid));
         table.Columns.Add("COLUMN_SCHEMA_ID", typeof(Guid));
 
@@ -227,16 +229,20 @@ internal static class CSharpDbSchemaProvider
                     i + 1,
                     column.DefaultSql is null ? DBNull.Value : column.DefaultSql,
                     column.Nullable ? "YES" : "NO",
-                    TypeMapper.ToDataTypeName(column.Type),
+                    column.IsRowVersion
+                        ? "ROWVERSION"
+                        : TypeMapper.ToDataTypeName(column.EffectiveType),
+                    GetCharacterMaximumLength(column),
                     DBNull.Value,
-                    DBNull.Value,
-                    GetNumericPrecision(column.Type),
-                    GetNumericPrecisionRadix(column.Type),
-                    GetNumericScale(column.Type),
-                    DBNull.Value,
+                    GetNumericPrecision(column),
+                    GetNumericPrecisionRadix(column),
+                    GetNumericScale(column),
+                    GetDateTimePrecision(column),
                     column.IsPrimaryKey,
                     column.IsIdentity,
                     column.Collation is null ? DBNull.Value : column.Collation,
+                    column.IsRowVersion,
+                    column.IsRowVersion,
                     column.IsRowVersion,
                     ToDataValue(schema.SchemaId),
                     ToDataValue(column.SchemaId));
@@ -716,30 +722,100 @@ internal static class CSharpDbSchemaProvider
         => IsUserVisibleTableName(index.TableName) &&
            index.Kind is IndexKind.Sql or IndexKind.FullText;
 
-    private static object GetNumericPrecision(CoreDbType type)
+    private static object GetCharacterMaximumLength(ColumnDefinition column)
     {
-        return type switch
+        if (column.DeclaredType is null)
+            return DBNull.Value;
+
+        SqlTypeDescriptor type = column.EffectiveType;
+        return (type.Kind is SqlTypeKind.Char or SqlTypeKind.VarChar) && type.Length is int length
+            ? length
+            : DBNull.Value;
+    }
+
+    private static object GetNumericPrecision(ColumnDefinition column)
+    {
+        if (column.DeclaredType is null)
         {
-            CoreDbType.Integer => (byte)19,
+            return column.Type switch
+            {
+                CoreDbType.Integer => (byte)19,
+                CoreDbType.Decimal => (byte)CSharpDbDecimalCodec.DefaultPrecision,
+                _ => DBNull.Value,
+            };
+        }
+
+        SqlTypeDescriptor type = column.EffectiveType;
+        return type.Kind switch
+        {
+            SqlTypeKind.Boolean => (byte)1,
+            SqlTypeKind.TinyInt => (byte)3,
+            SqlTypeKind.SmallInt => (byte)5,
+            SqlTypeKind.Integer => (byte)10,
+            SqlTypeKind.BigInt => (byte)19,
+            SqlTypeKind.Real => (byte)15,
+            SqlTypeKind.Double => (byte)15,
+            SqlTypeKind.Decimal => checked((byte)ResolveDecimalFacets(type).Precision),
             _ => DBNull.Value,
         };
     }
 
-    private static object GetNumericPrecisionRadix(CoreDbType type)
+    private static object GetNumericPrecisionRadix(ColumnDefinition column)
     {
-        return type switch
+        if (column.DeclaredType is null)
         {
-            CoreDbType.Integer => (short)10,
+            return column.Type is CoreDbType.Integer or CoreDbType.Decimal
+                ? (short)10
+                : DBNull.Value;
+        }
+
+        return column.EffectiveType.Kind switch
+        {
+            SqlTypeKind.Boolean or
+            SqlTypeKind.TinyInt or
+            SqlTypeKind.SmallInt or
+            SqlTypeKind.Integer or
+            SqlTypeKind.BigInt or
+            SqlTypeKind.Decimal => (short)10,
+            SqlTypeKind.Real or SqlTypeKind.Double => (short)2,
             _ => DBNull.Value,
         };
     }
 
-    private static object GetNumericScale(CoreDbType type)
+    private static object GetNumericScale(ColumnDefinition column)
     {
-        return type switch
+        if (column.DeclaredType is null)
         {
-            CoreDbType.Integer => 0,
+            return column.Type switch
+            {
+                CoreDbType.Integer => 0,
+                CoreDbType.Decimal => CSharpDbDecimalCodec.DefaultScale,
+                _ => DBNull.Value,
+            };
+        }
+
+        SqlTypeDescriptor type = column.EffectiveType;
+        return type.Kind switch
+        {
+            SqlTypeKind.Boolean or
+            SqlTypeKind.TinyInt or
+            SqlTypeKind.SmallInt or
+            SqlTypeKind.Integer or
+            SqlTypeKind.BigInt => 0,
+            SqlTypeKind.Decimal => ResolveDecimalFacets(type).Scale,
             _ => DBNull.Value,
         };
     }
+
+    private static object GetDateTimePrecision(ColumnDefinition column)
+        => column.DeclaredType is not null &&
+           column.EffectiveType.Kind is
+               SqlTypeKind.Time or
+               SqlTypeKind.Timestamp or
+               SqlTypeKind.TimestampWithTimeZone
+            ? checked((short)(column.EffectiveType.FractionalSecondsPrecision ?? 0))
+            : DBNull.Value;
+
+    private static (int Precision, int Scale) ResolveDecimalFacets(SqlTypeDescriptor type)
+        => CSharpDbDecimalCodec.ResolveFacets(type.Precision, type.Scale);
 }

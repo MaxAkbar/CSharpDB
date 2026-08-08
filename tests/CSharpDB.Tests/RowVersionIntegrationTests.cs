@@ -83,6 +83,116 @@ public sealed class RowVersionIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task RowVersion_AllocatorIsDatabaseWideAndDurableAcrossDeleteAndReopen()
+    {
+        await _db.ExecuteAsync(
+            "CREATE TABLE first_items (id INTEGER PRIMARY KEY, version ROWVERSION)",
+            Ct);
+        await _db.ExecuteAsync(
+            "CREATE TABLE second_items (id INTEGER PRIMARY KEY, version TIMESTAMP)",
+            Ct);
+
+        await _db.ExecuteAsync("INSERT INTO first_items (id) VALUES (1)", Ct);
+        Assert.Equal(1UL, await ReadStoredRowVersionAsync("first_items", 1));
+        await _db.ExecuteAsync("INSERT INTO second_items (id) VALUES (1)", Ct);
+        Assert.Equal(2UL, await ReadStoredRowVersionAsync("second_items", 1));
+        await _db.ExecuteAsync("UPDATE first_items SET id = id WHERE id = 1", Ct);
+        Assert.Equal(3UL, await ReadStoredRowVersionAsync("first_items", 1));
+
+        await _db.ExecuteAsync("DELETE FROM first_items WHERE id = 1", Ct);
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(_dbPath, Ct);
+
+        await _db.ExecuteAsync("INSERT INTO second_items (id) VALUES (2)", Ct);
+        Assert.True(
+            await ReadStoredRowVersionAsync("second_items", 2) > 3UL,
+            "A reopen may skip an unused durable reservation, but must never move the allocator backwards.");
+    }
+
+    [Fact]
+    public async Task RowVersion_ConcurrentInsertsAllocateUniqueDatabaseWideTokens()
+    {
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(
+            _dbPath,
+            new DatabaseOptions
+            {
+                ImplicitInsertExecutionMode =
+                    ImplicitInsertExecutionMode.ConcurrentWriteTransactions,
+            },
+            Ct);
+        await _db.ExecuteAsync(
+            "CREATE TABLE concurrent_items (id INTEGER PRIMARY KEY, version ROWVERSION)",
+            Ct);
+
+        Task[] inserts = Enumerable.Range(1, 32)
+            .Select(async id =>
+            {
+                await using QueryResult result = await _db.ExecuteAsync(
+                    $"INSERT INTO concurrent_items (id) VALUES ({id})",
+                    Ct);
+            })
+            .ToArray();
+        await Task.WhenAll(inserts);
+
+        ulong[] tokens;
+        await using (QueryResult selected = await _db.ExecuteAsync(
+            "SELECT version FROM concurrent_items",
+            Ct))
+        {
+            tokens = (await selected.ToListAsync(Ct))
+                .Select(row => ReadRowVersion(row[0].AsBlob))
+                .Order()
+                .ToArray();
+        }
+
+        Assert.Equal(32, tokens.Length);
+        Assert.Equal(32, tokens.Distinct().Count());
+        Assert.All(tokens, static token => Assert.NotEqual(0UL, token));
+
+        ulong maximumCommittedToken = tokens[^1];
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(
+            _dbPath,
+            new DatabaseOptions
+            {
+                ImplicitInsertExecutionMode =
+                    ImplicitInsertExecutionMode.ConcurrentWriteTransactions,
+            },
+            Ct);
+        await _db.ExecuteAsync(
+            "INSERT INTO concurrent_items (id) VALUES (33)",
+            Ct);
+        Assert.True(
+            await ReadStoredRowVersionAsync("concurrent_items", 33) > maximumCommittedToken,
+            "The durable allocator must resume above every token committed before reopen.");
+    }
+
+    [Fact]
+    public async Task RowVersion_ExplicitWriteTransactionRefreshesSharedAllocatorCatalog()
+    {
+        await _db.ExecuteAsync(
+            "CREATE TABLE transaction_items (id INTEGER PRIMARY KEY, version ROWVERSION)",
+            Ct);
+
+        await using (WriteTransaction transaction =
+            await _db.BeginWriteTransactionAsync(Ct))
+        {
+            await transaction.ExecuteAsync(
+                "INSERT INTO transaction_items (id) VALUES (1)",
+                Ct);
+            await transaction.CommitAsync(Ct);
+        }
+
+        await _db.ExecuteAsync(
+            "INSERT INTO transaction_items (id) VALUES (2)",
+            Ct);
+
+        Assert.Equal(1UL, await ReadStoredRowVersionAsync("transaction_items", 1));
+        Assert.Equal(2UL, await ReadStoredRowVersionAsync("transaction_items", 2));
+    }
+
+    [Fact]
     public async Task RowVersion_ExplicitInsertAndUpdateAssignmentsAreRejected()
     {
         await _db.ExecuteAsync(
@@ -139,6 +249,73 @@ public sealed class RowVersionIntegrationTests : IAsyncLifetime
         }
 
         await AssertStoredRowVersionAsync(1, 1);
+    }
+
+    [Fact]
+    public async Task RowVersion_LegacyTransactionRollbackDoesNotReuseTokenAfterReopen()
+    {
+        await _db.ExecuteAsync(
+            "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, version ROWVERSION)",
+            Ct);
+        await _db.ExecuteAsync("INSERT INTO items (id, name) VALUES (1, 'before')", Ct);
+
+        await _db.BeginTransactionAsync(Ct);
+        ulong rolledBackToken;
+        try
+        {
+            await using QueryResult update = await _db.ExecuteAsync(
+                "UPDATE items SET name = 'rolled back' WHERE id = 1",
+                Ct);
+            Assert.True(update.TryGetGeneratedRowVersion(out byte[] generated));
+            rolledBackToken = ReadRowVersion(generated);
+            await _db.RollbackAsync(Ct);
+        }
+        catch
+        {
+            await _db.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(_dbPath, Ct);
+        await _db.ExecuteAsync("INSERT INTO items (id, name) VALUES (2, 'after')", Ct);
+
+        Assert.Equal(1UL, await ReadStoredRowVersionAsync("items", 1));
+        ulong reopenedToken = await ReadStoredRowVersionAsync("items", 2);
+        Assert.True(
+            reopenedToken > rolledBackToken,
+            $"Reopened allocator reused or moved behind rolled-back token {rolledBackToken}; issued {reopenedToken}.");
+    }
+
+    [Fact]
+    public async Task RowVersion_WriteTransactionRollbackDoesNotReuseTokenAfterReopen()
+    {
+        await _db.ExecuteAsync(
+            "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, version ROWVERSION)",
+            Ct);
+        await _db.ExecuteAsync("INSERT INTO items (id, name) VALUES (1, 'before')", Ct);
+
+        ulong rolledBackToken;
+        await using (WriteTransaction transaction =
+            await _db.BeginWriteTransactionAsync(Ct))
+        {
+            await using QueryResult update = await transaction.ExecuteAsync(
+                "UPDATE items SET name = 'rolled back' WHERE id = 1",
+                Ct);
+            Assert.True(update.TryGetGeneratedRowVersion(out byte[] generated));
+            rolledBackToken = ReadRowVersion(generated);
+            await transaction.RollbackAsync(Ct);
+        }
+
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(_dbPath, Ct);
+        await _db.ExecuteAsync("INSERT INTO items (id, name) VALUES (2, 'after')", Ct);
+
+        Assert.Equal(1UL, await ReadStoredRowVersionAsync("items", 1));
+        ulong reopenedToken = await ReadStoredRowVersionAsync("items", 2);
+        Assert.True(
+            reopenedToken > rolledBackToken,
+            $"Reopened allocator reused or moved behind rolled-back token {rolledBackToken}; issued {reopenedToken}.");
     }
 
     [Fact]
@@ -368,7 +545,7 @@ public sealed class RowVersionIntegrationTests : IAsyncLifetime
 
         Assert.Equal(2, await batch.ExecuteAsync(Ct));
         await AssertStoredRowVersionAsync(1, 1);
-        await AssertStoredRowVersionAsync(2, 1);
+        await AssertStoredRowVersionAsync(2, 2);
 
         await _db.ExecuteAsync(
             "CREATE TABLE generated_only (version BLOB ROWVERSION NOT NULL)",
@@ -382,7 +559,7 @@ public sealed class RowVersionIntegrationTests : IAsyncLifetime
             await _db.ExecuteAsync("SELECT version FROM generated_only", Ct);
         DbValue[] generatedOnlyRow =
             Assert.Single(await generatedOnlyResult.ToListAsync(Ct));
-        Assert.Equal(1UL, ReadRowVersion(generatedOnlyRow[0].AsBlob));
+        Assert.Equal(3UL, ReadRowVersion(generatedOnlyRow[0].AsBlob));
     }
 
     private async Task AssertStoredRowVersionAsync(long id, ulong expected)
@@ -392,6 +569,15 @@ public sealed class RowVersionIntegrationTests : IAsyncLifetime
             Ct);
         DbValue[] row = Assert.Single(await result.ToListAsync(Ct));
         Assert.Equal(expected, ReadRowVersion(row[0].AsBlob));
+    }
+
+    private async Task<ulong> ReadStoredRowVersionAsync(string tableName, long id)
+    {
+        await using QueryResult result = await _db.ExecuteAsync(
+            $"SELECT version FROM {tableName} WHERE id = {id}",
+            Ct);
+        DbValue[] row = Assert.Single(await result.ToListAsync(Ct));
+        return ReadRowVersion(row[0].AsBlob);
     }
 
     private static void AssertGeneratedRowVersion(QueryResult result, ulong expected)

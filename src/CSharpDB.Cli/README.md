@@ -205,8 +205,10 @@ Parse-level `Conditional` evidence does not claim schema binding, scratch
 execution, or semantic equivalence, and rewrite candidates are never applied.
 For `type-map --profile custom`, the custom-map file is one strict JSON object
 keyed by exact catalog object ID. Values are case-insensitive `integer`, `real`,
-`text`, or `blob`; unknown IDs, duplicate properties, comments, trailing
-commas, and invalid types are rejected.
+`decimal`, `text`, or `blob`; these select the persistent physical carrier,
+while reports expose the retained logical declaration as `targetSqlType`.
+Unknown IDs, duplicate properties, comments, trailing commas, and invalid types
+are rejected.
 
 Pass both `--typed-intent` and
 `--expected-intent-manifest-digest` to select v2. The canonical sidecar must
@@ -233,13 +235,16 @@ switch.
 
 The T-SQL allowlist is intentionally narrow: ordinary two-part, exact-lowercase
 `dbo` table creation, supported built-in scalar column types and facets,
-explicit nullability, primary and unique keys over SQL Server signed-integer
-columns, source-ordered foreign keys, and later simple ascending indexes over
-the same source type family. Explicit constraint names share the schema-object
-namespace with tables; index names are table-scoped and cannot collide with a
-named key's backing index on that table. Defaults, identity, computed or
-generated columns, rowversion, checks, non-`dbo` or one-part names, `ALTER`,
-`DROP`, views, sequences, triggers, routines,
+explicit nullability for ordinary non-key columns, primary and unique keys over
+SQL Server signed-integer columns, source-ordered foreign keys, and later simple
+ascending indexes over the same source type family. SQL Server `rowversion` and
+`timestamp` declarations lower to generated, implicitly non-nullable CSharpDB
+`ROWVERSION`; they may omit nullability or state `NOT NULL`, while explicit
+`NULL` is rejected. Explicit constraint names share the schema-object namespace
+with tables; index names are table-scoped and cannot collide with a named key's
+backing index on that table. Defaults, identity, computed or other generated
+columns, checks, non-`dbo` or one-part names, `ALTER`, `DROP`, views, sequences,
+triggers, routines,
 derived/temporal/graph/storage features,
 filtered/included/descending/clustered indexes, and other statement or
 physical-option shapes fail closed. Any unsupported statement prevents

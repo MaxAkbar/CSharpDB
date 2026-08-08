@@ -109,6 +109,8 @@ public static class TableArchiveWriter
         if (!destination.CanWrite)
             throw new ArgumentException("Native table archives require a writable destination stream.", nameof(destination));
 
+        ValidateSchemaTypes(schema);
+
         int primaryKeyColumnIndex = FindIntegerPrimaryKeyColumnIndex(schema);
         if (primaryKeyColumnIndex >= 0 && !destination.CanRead)
         {
@@ -481,6 +483,40 @@ public static class TableArchiveWriter
         }
 
         return row;
+    }
+
+    private static void ValidateSchemaTypes(TableSchema schema)
+    {
+        if (schema.Columns.Count == 0)
+            throw new InvalidDataException("The table archive schema has no columns.");
+
+        foreach (ColumnDefinition column in schema.Columns)
+        {
+            if (column.Type == DbType.Null)
+            {
+                throw new InvalidDataException(
+                    $"Archived column '{column.Name}' has an invalid persistent type.");
+            }
+            if (column.DeclaredType is { } declaredType &&
+                declaredType.StorageType != column.Type)
+            {
+                throw new InvalidDataException(
+                    $"Archived column '{column.Name}' declares {declaredType.ToSql()} but stores values as {column.Type}.");
+            }
+            if (column.IsIdentity &&
+                (column.Type != DbType.Integer ||
+                 column.DeclaredType is { Kind: not (SqlTypeKind.Integer or SqlTypeKind.BigInt) }))
+            {
+                throw new InvalidDataException(
+                    $"Archived identity column '{column.Name}' must be declared INTEGER or BIGINT.");
+            }
+            if (column.IsRowVersion &&
+                column.DeclaredType is { Kind: not SqlTypeKind.Blob })
+            {
+                throw new InvalidDataException(
+                    $"Archived ROWVERSION column '{column.Name}' must be declared BLOB.");
+            }
+        }
     }
 
     private readonly record struct NativePrimaryKeyIndexEntry(long Key, long RowOffset);

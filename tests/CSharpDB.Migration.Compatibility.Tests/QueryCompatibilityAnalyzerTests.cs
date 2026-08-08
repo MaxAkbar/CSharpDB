@@ -62,6 +62,29 @@ public sealed class QueryCompatibilityAnalyzerTests
     }
 
     [Fact]
+    public void CSharpDbXmlFunctions_AreRecognizedAsBuiltIns()
+    {
+        QueryCompatibilityResult result = Analyze(
+            QuerySourceDialect.CSharpDb,
+            """
+            SELECT XML_EXISTS(payload, '/root'),
+                   XMLEXISTS(payload, '/root/item'),
+                   XML_VALUE(payload, '/root/item')
+            FROM documents
+            ORDER BY id;
+            """);
+
+        Assert.Equal(MigrationCompatibilityStatus.Conditional, result.Status);
+        Assert.True(result.SourceParsed);
+        Assert.True(result.TargetParsed);
+        Assert.DoesNotContain(
+            result.Diagnostics,
+            static item =>
+                item.RuleId ==
+                QueryCompatibilityRuleIds.UnboundFunction);
+    }
+
+    [Fact]
     public void TsqlPortableSelect_ParsesInBothDialects()
     {
         QueryCompatibilityResult result = Analyze(

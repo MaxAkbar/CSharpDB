@@ -18,6 +18,39 @@ public sealed partial class SqlDocumentationExampleTests
                 new(BlockCount: 37, ExecutedBlockCount: 10, SyntaxBlockCount: 1, GrammarBlockCount: 26),
         };
 
+    private static readonly IReadOnlyDictionary<SqlTypeKind, string[]> ExpectedSqlTypeNames =
+        new Dictionary<SqlTypeKind, string[]>
+        {
+            [SqlTypeKind.Boolean] = ["BOOLEAN", "BOOL", "BIT"],
+            [SqlTypeKind.TinyInt] = ["TINYINT"],
+            [SqlTypeKind.SmallInt] = ["SMALLINT"],
+            [SqlTypeKind.Integer] = ["INTEGER", "INT"],
+            [SqlTypeKind.BigInt] = ["BIGINT"],
+            [SqlTypeKind.Real] = ["REAL"],
+            [SqlTypeKind.Double] = ["DOUBLE PRECISION", "DOUBLE", "FLOAT"],
+            [SqlTypeKind.Decimal] = ["DECIMAL", "NUMERIC"],
+            [SqlTypeKind.Char] = ["CHAR", "CHARACTER", "NCHAR"],
+            [SqlTypeKind.VarChar] = ["VARCHAR", "CHARACTER VARYING", "NVARCHAR"],
+            [SqlTypeKind.Text] = ["TEXT", "CLOB"],
+            [SqlTypeKind.Binary] = ["BINARY"],
+            [SqlTypeKind.VarBinary] = ["VARBINARY"],
+            [SqlTypeKind.Blob] = ["BLOB"],
+            [SqlTypeKind.Uuid] = ["UUID", "GUID", "UNIQUEIDENTIFIER"],
+            [SqlTypeKind.Date] = ["DATE"],
+            [SqlTypeKind.Time] = ["TIME"],
+            [SqlTypeKind.Timestamp] = ["DATETIME2", "DATETIME"],
+            [SqlTypeKind.TimestampWithTimeZone] =
+                ["DATETIMEOFFSET", "TIMESTAMP WITH TIME ZONE"],
+            [SqlTypeKind.IntervalYearToMonth] = ["INTERVAL YEAR TO MONTH"],
+            [SqlTypeKind.IntervalDayToSecond] = ["INTERVAL DAY TO SECOND"],
+            [SqlTypeKind.Json] = ["JSON"],
+            [SqlTypeKind.Xml] = ["XML"],
+            [SqlTypeKind.Bit] = ["BIT"],
+            [SqlTypeKind.VarBit] = ["BIT VARYING", "VARBIT"],
+        };
+
+    private static readonly string[] ExpectedRowVersionTypeNames = ["ROWVERSION", "TIMESTAMP"];
+
     private static readonly IReadOnlyDictionary<string, string> FixtureSqlByName =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
@@ -353,7 +386,6 @@ public sealed partial class SqlDocumentationExampleTests
         string publicReference = await File.ReadAllTextAsync(
             Path.Combine(repositoryRoot, "www", "docs", "sql-reference.html"),
             TestContext.Current.CancellationToken);
-
         string[] supportedCoverage =
         [
             "SELECT [DISTINCT]",
@@ -432,6 +464,90 @@ public sealed partial class SqlDocumentationExampleTests
             "<li>Deferred foreign-key constraints and <code>MATCH FULL</code>/<code>MATCH PARTIAL</code></li>",
             publicReference,
             StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PublicSqlReference_ListsEveryLogicalTypeAndAcceptedBaseNameExactlyOnce()
+    {
+        string repositoryRoot = FindRepositoryRoot();
+        string publicReference = await File.ReadAllTextAsync(
+            Path.Combine(repositoryRoot, "www", "docs", "sql-reference.html"),
+            TestContext.Current.CancellationToken);
+        string localTypeContract = await File.ReadAllTextAsync(
+            Path.Combine(repositoryRoot, "docs", "sql-type-semantics-4.5.md"),
+            TestContext.Current.CancellationToken);
+
+        Match[] kindMarkers = SqlTypeKindMarkerRegex()
+            .Matches(publicReference)
+            .Cast<Match>()
+            .ToArray();
+        Assert.Equal(Enum.GetValues<SqlTypeKind>().Length, kindMarkers.Length);
+        Assert.Equal(Enum.GetValues<SqlTypeKind>().Length, ExpectedSqlTypeNames.Count);
+
+        foreach (SqlTypeKind kind in Enum.GetValues<SqlTypeKind>())
+        {
+            Assert.True(
+                ExpectedSqlTypeNames.TryGetValue(kind, out string[]? expectedNames),
+                $"The documentation guard does not define accepted names for {kind}.");
+            Match marker = Assert.Single(
+                kindMarkers,
+                match => string.Equals(
+                    match.Groups["kind"].Value,
+                    kind.ToString(),
+                    StringComparison.Ordinal));
+            AssertSqlTypeNames(marker.Groups["tag"].Value, expectedNames!, kind.ToString());
+        }
+
+        Match rowVersionMarker = Assert.Single(
+            SqlTypeSpecialMarkerRegex()
+                .Matches(publicReference)
+                .Cast<Match>(),
+            match => string.Equals(
+                match.Groups["special"].Value,
+                "RowVersion",
+                StringComparison.Ordinal));
+        AssertSqlTypeNames(
+            rowVersionMarker.Groups["tag"].Value,
+            ExpectedRowVersionTypeNames,
+            "RowVersion");
+
+        string[] allAcceptedNames = ExpectedSqlTypeNames.Values
+            .SelectMany(static names => names)
+            .Concat(ExpectedRowVersionTypeNames)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        foreach (string acceptedName in allAcceptedNames)
+        {
+            Assert.Contains(
+                $"`{acceptedName}`",
+                localTypeContract,
+                StringComparison.Ordinal);
+        }
+    }
+
+    private static void AssertSqlTypeNames(
+        string markerTag,
+        IReadOnlyCollection<string> expectedNames,
+        string typeLabel)
+    {
+        Match namesAttribute = Assert.Single(
+            SqlTypeNamesAttributeRegex().Matches(markerTag).Cast<Match>());
+        string[] actualNames = namesAttribute.Groups["names"].Value
+            .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.True(
+            actualNames.Length == actualNames.Distinct(StringComparer.Ordinal).Count(),
+            $"{typeLabel} contains a duplicate data-sql-type-names entry.");
+        string[] expected = expectedNames.Order(StringComparer.Ordinal).ToArray();
+        string[] actual = actualNames.Order(StringComparer.Ordinal).ToArray();
+        Assert.True(
+            expected.SequenceEqual(actual, StringComparer.Ordinal),
+            $"{typeLabel} names differ. Expected [{string.Join(", ", expected)}], " +
+            $"actual [{string.Join(", ", actual)}].");
+        Assert.DoesNotContain(
+            "NULL",
+            actualNames,
+            StringComparer.Ordinal);
     }
 
     private static IReadOnlyList<SqlScriptStatement> ParseSql(
@@ -521,6 +637,21 @@ public sealed partial class SqlDocumentationExampleTests
 
     [GeneratedRegex("<[^>]+>", RegexOptions.CultureInvariant)]
     private static partial Regex HtmlTagRegex();
+
+    [GeneratedRegex(
+        """(?<tag><[A-Za-z][^>]*\bdata-sql-type-kind="(?<kind>[^"]+)"[^>]*>)""",
+        RegexOptions.CultureInvariant)]
+    private static partial Regex SqlTypeKindMarkerRegex();
+
+    [GeneratedRegex(
+        """(?<tag><[A-Za-z][^>]*\bdata-sql-type-special="(?<special>[^"]+)"[^>]*>)""",
+        RegexOptions.CultureInvariant)]
+    private static partial Regex SqlTypeSpecialMarkerRegex();
+
+    [GeneratedRegex(
+        """\bdata-sql-type-names="(?<names>[^"]*)""",
+        RegexOptions.CultureInvariant)]
+    private static partial Regex SqlTypeNamesAttributeRegex();
 
     private sealed record ExpectedCoverage(
         int BlockCount,

@@ -235,8 +235,9 @@ internal sealed class SchemaCommand : IMetaCommand
             bool hasTrailingItems = i < schema.Columns.Count - 1 || schema.ForeignKeys.Count > 0;
             string comma = hasTrailingItems ? "," : string.Empty;
 
-            string type = col.Type.ToString().ToUpperInvariant();
-            string rowVersion = col.IsRowVersion ? " ROWVERSION" : string.Empty;
+            string type = col.IsRowVersion
+                ? "ROWVERSION"
+                : col.EffectiveType.ToSql();
             string pk = col.IsPrimaryKey ? " PRIMARY KEY" : string.Empty;
             string identity = col.IsIdentity ? " IDENTITY" : string.Empty;
             string nn = !col.Nullable ? " NOT NULL" : string.Empty;
@@ -259,7 +260,7 @@ internal sealed class SchemaCommand : IMetaCommand
                 }
             }
 
-            sql.AppendLine($"  {col.Name} {type}{rowVersion}{pk}{identity}{nn}{foreignKey}{comma}");
+            sql.AppendLine($"  {col.Name} {type}{pk}{identity}{nn}{foreignKey}{comma}");
         }
 
         sql.Append(");");
@@ -1088,12 +1089,16 @@ internal static class MetaCommandHelpers
             Columns = schema.Columns
                 .Select(column => new ClientColumnDefinition
                 {
+                    SchemaId = column.SchemaId,
                     Name = column.Name,
                     Type = MapDbType(column.Type),
+                    DeclaredType = MapSqlType(column.DeclaredType),
                     Nullable = column.Nullable,
                     IsPrimaryKey = column.IsPrimaryKey,
                     IsIdentity = column.IsIdentity,
                     IsRowVersion = column.IsRowVersion,
+                    Collation = column.Collation,
+                    DefaultSql = column.DefaultSql,
                 })
                 .ToArray(),
             ForeignKeys = schema.ForeignKeys
@@ -1302,8 +1307,49 @@ internal static class MetaCommandHelpers
     {
         CSharpDB.Primitives.DbType.Integer => CSharpDB.Client.Models.DbType.Integer,
         CSharpDB.Primitives.DbType.Real => CSharpDB.Client.Models.DbType.Real,
+        CSharpDB.Primitives.DbType.Decimal => CSharpDB.Client.Models.DbType.Decimal,
         CSharpDB.Primitives.DbType.Text => CSharpDB.Client.Models.DbType.Text,
         CSharpDB.Primitives.DbType.Blob => CSharpDB.Client.Models.DbType.Blob,
         _ => throw new ArgumentOutOfRangeException(nameof(type), type, null),
     };
+
+    private static CSharpDB.Client.Models.SqlTypeDescriptor? MapSqlType(
+        CSharpDB.Primitives.SqlTypeDescriptor? type) => type is null
+        ? null
+        : new CSharpDB.Client.Models.SqlTypeDescriptor
+        {
+            Kind = type.Kind switch
+            {
+                CSharpDB.Primitives.SqlTypeKind.Boolean => CSharpDB.Client.Models.SqlTypeKind.Boolean,
+                CSharpDB.Primitives.SqlTypeKind.TinyInt => CSharpDB.Client.Models.SqlTypeKind.TinyInt,
+                CSharpDB.Primitives.SqlTypeKind.SmallInt => CSharpDB.Client.Models.SqlTypeKind.SmallInt,
+                CSharpDB.Primitives.SqlTypeKind.Integer => CSharpDB.Client.Models.SqlTypeKind.Integer,
+                CSharpDB.Primitives.SqlTypeKind.BigInt => CSharpDB.Client.Models.SqlTypeKind.BigInt,
+                CSharpDB.Primitives.SqlTypeKind.Real => CSharpDB.Client.Models.SqlTypeKind.Real,
+                CSharpDB.Primitives.SqlTypeKind.Double => CSharpDB.Client.Models.SqlTypeKind.Double,
+                CSharpDB.Primitives.SqlTypeKind.Decimal => CSharpDB.Client.Models.SqlTypeKind.Decimal,
+                CSharpDB.Primitives.SqlTypeKind.Char => CSharpDB.Client.Models.SqlTypeKind.Char,
+                CSharpDB.Primitives.SqlTypeKind.VarChar => CSharpDB.Client.Models.SqlTypeKind.VarChar,
+                CSharpDB.Primitives.SqlTypeKind.Text => CSharpDB.Client.Models.SqlTypeKind.Text,
+                CSharpDB.Primitives.SqlTypeKind.Binary => CSharpDB.Client.Models.SqlTypeKind.Binary,
+                CSharpDB.Primitives.SqlTypeKind.VarBinary => CSharpDB.Client.Models.SqlTypeKind.VarBinary,
+                CSharpDB.Primitives.SqlTypeKind.Blob => CSharpDB.Client.Models.SqlTypeKind.Blob,
+                CSharpDB.Primitives.SqlTypeKind.Uuid => CSharpDB.Client.Models.SqlTypeKind.Uuid,
+                CSharpDB.Primitives.SqlTypeKind.Date => CSharpDB.Client.Models.SqlTypeKind.Date,
+                CSharpDB.Primitives.SqlTypeKind.Time => CSharpDB.Client.Models.SqlTypeKind.Time,
+                CSharpDB.Primitives.SqlTypeKind.Timestamp => CSharpDB.Client.Models.SqlTypeKind.Timestamp,
+                CSharpDB.Primitives.SqlTypeKind.TimestampWithTimeZone => CSharpDB.Client.Models.SqlTypeKind.TimestampWithTimeZone,
+                CSharpDB.Primitives.SqlTypeKind.IntervalYearToMonth => CSharpDB.Client.Models.SqlTypeKind.IntervalYearToMonth,
+                CSharpDB.Primitives.SqlTypeKind.IntervalDayToSecond => CSharpDB.Client.Models.SqlTypeKind.IntervalDayToSecond,
+                CSharpDB.Primitives.SqlTypeKind.Json => CSharpDB.Client.Models.SqlTypeKind.Json,
+                CSharpDB.Primitives.SqlTypeKind.Xml => CSharpDB.Client.Models.SqlTypeKind.Xml,
+                CSharpDB.Primitives.SqlTypeKind.Bit => CSharpDB.Client.Models.SqlTypeKind.Bit,
+                CSharpDB.Primitives.SqlTypeKind.VarBit => CSharpDB.Client.Models.SqlTypeKind.VarBit,
+                _ => throw new ArgumentOutOfRangeException(nameof(type), type.Kind, null),
+            },
+            Length = type.Length,
+            Precision = type.Precision,
+            Scale = type.Scale,
+            FractionalSecondsPrecision = type.FractionalSecondsPrecision,
+        };
 }

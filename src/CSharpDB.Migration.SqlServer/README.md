@@ -93,9 +93,10 @@ must fit the following whole-script additive DDL allowlist:
   most 1,024 columns.
 - Accepted no-parameter built-in shapes are `bigint`, `int`, `smallint`,
   `tinyint`, `bit`, `real`, `money`, `smallmoney`, `datetime`,
-  `smalldatetime`, `text`, `ntext`, `image`, `uniqueidentifier`, and `date`.
-  User-defined, alias, qualified, `rowversion`/`timestamp`, and every unlisted
-  type fail closed.
+  `smalldatetime`, `text`, `ntext`, `image`, `uniqueidentifier`, `date`,
+  `rowversion`, and `timestamp`. SQL Server `rowversion` and `timestamp` are
+  equivalent generated token declarations and lower to CSharpDB `ROWVERSION`.
+  User-defined, alias, qualified, and every unlisted type fail closed.
 - `decimal`/`numeric` default to `(18,0)`, with precision 1 through 38 and
   scale 0 through the selected precision. `float` has optional precision 1
   through 53 and defaults to 53. `char`, `varchar`, `binary`, and `varbinary`
@@ -104,12 +105,15 @@ must fit the following whole-script additive DDL allowlist:
   and accept 1 through 4,000; only `nvarchar` also accepts `max`. `time`,
   `datetime2`, and `datetimeoffset` accept fractional precision 0 through 7
   and default to 7.
-- Every non-primary-key column must state exactly one `NULL` or `NOT NULL`;
-  primary-key columns may omit nullability but cannot be nullable. Defaults,
-  identity, computed or generated values, column indexes, encryption, masking,
-  hidden/row-guid/persisted flags, and storage options are outside the
-  allowlist. Explicit `COLLATE` is accepted only for a text-mapped type, and
-  remains conditional rather than proving SQL Server collation semantics.
+- Every ordinary non-primary-key column must state exactly one `NULL` or
+  `NOT NULL`; primary-key columns may omit nullability but cannot be nullable.
+  A `rowversion`/`timestamp` column is generated and implicitly non-nullable: it
+  may omit nullability or state `NOT NULL`, while an explicit `NULL` is rejected.
+  Defaults, identity, computed or other generated values, column indexes,
+  encryption, masking, hidden/row-guid/persisted flags, and storage options are
+  outside the allowlist. Explicit `COLLATE` is accepted only for a text-mapped
+  type, and remains conditional rather than proving SQL Server collation
+  semantics.
 - Only primary keys, unique constraints, and foreign keys are lowered.
   Primary and unique key members must be distinct, ascending, non-null columns
   of the SQL Server `bigint`, `int`, `smallint`, or `tinyint` source family,

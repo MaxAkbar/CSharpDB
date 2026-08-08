@@ -1,6 +1,7 @@
 using System.Globalization;
 using CSharpDB.Primitives;
 using CSharpDB.Sql;
+using SqlBitString = CSharpDB.Client.Models.SqlBitString;
 
 namespace CSharpDB.Data;
 
@@ -322,6 +323,7 @@ internal sealed class PreparedStatementTemplate
         switch (tableRef)
         {
             case SimpleTableRef:
+            case SingleRowTableRef:
                 changed = false;
                 return tableRef;
             case JoinTableRef join:
@@ -409,6 +411,22 @@ internal sealed class PreparedStatementTemplate
                 {
                     Operand = operand,
                     Collation = collate.Collation,
+                };
+            }
+            case CastExpression cast:
+            {
+                var operand = BindExpression(cast.Operand, parameters, out bool operandChanged);
+                if (!operandChanged)
+                {
+                    changed = false;
+                    return cast;
+                }
+
+                changed = true;
+                return new CastExpression
+                {
+                    Operand = operand,
+                    TargetType = cast.TargetType,
                 };
             }
             case LikeExpression like:
@@ -865,12 +883,19 @@ internal sealed class PreparedStatementTemplate
         return rewritten.ToList();
     }
 
-    private static LiteralExpression BindParameter(ParameterExpression parameter, CSharpDbParameterCollection parameters)
+    private static Expression BindParameter(ParameterExpression parameter, CSharpDbParameterCollection parameters)
     {
-        if (!parameters.TryGetValue(parameter.Name.AsSpan(), out var value))
+        if (!parameters.TryGetParameter(parameter.Name.AsSpan(), out CSharpDbParameter? boundParameter))
             throw new InvalidOperationException($"Parameter '@{parameter.Name}' was not supplied.");
 
-        return ToLiteral(value);
+        LiteralExpression literal = ToLiteral(boundParameter.Value);
+        return boundParameter.DbType == System.Data.DbType.Boolean || boundParameter.Value is bool
+            ? new CastExpression
+            {
+                Operand = literal,
+                TargetType = SqlTypeDescriptor.Create(SqlTypeKind.Boolean),
+            }
+            : literal;
     }
 
     private static bool TryGetLiteralDbValue(LiteralExpression literal, out DbValue value)
@@ -906,6 +931,14 @@ internal sealed class PreparedStatementTemplate
             DbType.Null => new LiteralExpression { Value = null, LiteralType = TokenType.Null },
             DbType.Integer => new LiteralExpression { Value = dbValue.AsInteger, LiteralType = TokenType.IntegerLiteral },
             DbType.Real => new LiteralExpression { Value = dbValue.AsReal, LiteralType = TokenType.RealLiteral },
+            // RealLiteral remains the AST compatibility carrier. RawText is the
+            // authoritative exact value consumed when the target is DECIMAL.
+            DbType.Decimal => new LiteralExpression
+            {
+                Value = (double)dbValue.AsDecimal,
+                LiteralType = TokenType.RealLiteral,
+                RawText = dbValue.AsDecimal.ToString(CultureInfo.InvariantCulture),
+            },
             DbType.Text => new LiteralExpression { Value = dbValue.AsText, LiteralType = TokenType.StringLiteral },
             DbType.Blob => new LiteralExpression { Value = dbValue.AsBlob, LiteralType = TokenType.BlobLiteral },
             _ => throw new NotSupportedException($"Unsupported parameter type '{dbValue.Type}'."),
@@ -930,10 +963,18 @@ internal sealed class PreparedStatementTemplate
             bool bv => DbValue.FromInteger(bv ? 1 : 0),
             double d => DbValue.FromReal(d),
             float f => DbValue.FromReal(f),
-            decimal m => DbValue.FromReal((double)m),
+            decimal m => DbValue.FromDecimal(m),
             string sv => DbValue.FromText(sv),
-            DateTime dt => DbValue.FromText(dt.ToString("O", CultureInfo.InvariantCulture)),
-            Guid g => DbValue.FromText(g.ToString()),
+            char character => DbValue.FromText(character.ToString()),
+            Guid g => DbValue.FromText(CSharpDbTextCodec.FormatGuid(g)),
+            DateOnly date => DbValue.FromText(CSharpDbTextCodec.FormatDate(date)),
+            TimeOnly time => DbValue.FromText(CSharpDbTextCodec.FormatTime(time)),
+            DateTime dt => DbValue.FromText(CSharpDbTextCodec.FormatDateTime(dt)),
+            DateTimeOffset dateTimeOffset => DbValue.FromText(
+                CSharpDbTextCodec.FormatDateTimeOffset(dateTimeOffset)),
+            SqlBitString bits => DbValue.FromBitString(
+                bits.PackedBytes.ToArray(),
+                bits.BitLength),
             byte[] blob => DbValue.FromBlob(blob),
             ReadOnlyMemory<byte> blob => DbValue.FromBlob(blob.ToArray()),
             _ => DbValue.FromText(value.ToString()!),
@@ -1054,6 +1095,9 @@ internal sealed class PreparedStatementTemplate
                 return;
             case CollateExpression collate:
                 CollectParameterNames(collate.Operand, names, seen);
+                return;
+            case CastExpression cast:
+                CollectParameterNames(cast.Operand, names, seen);
                 return;
             case LikeExpression like:
                 CollectParameterNames(like.Operand, names, seen);
@@ -1244,7 +1288,7 @@ internal sealed class PreparedStatementTemplate
                 for (int i = 0; i < _lru.Count; i++)
                 {
                     var entry = _lru[i];
-                    if (!Matches(entry.Values, parameterNames, parameters))
+                    if (!Matches(entry.Parameters, parameterNames, parameters))
                         continue;
 
                     if (i != 0)
@@ -1265,7 +1309,7 @@ internal sealed class PreparedStatementTemplate
                 for (int i = 0; i < _lru.Count; i++)
                 {
                     var existing = _lru[i];
-                    if (!Matches(existing.Values, parameterNames, parameters))
+                    if (!Matches(existing.Parameters, parameterNames, parameters))
                         continue;
 
                     if (i != 0)
@@ -1286,22 +1330,29 @@ internal sealed class PreparedStatementTemplate
             return created;
         }
 
-        private static object?[] CaptureValues(string[] parameterNames, CSharpDbParameterCollection parameters)
+        private static BoundParameterKey[] CaptureValues(
+            string[] parameterNames,
+            CSharpDbParameterCollection parameters)
         {
-            var values = new object?[parameterNames.Length];
+            var values = new BoundParameterKey[parameterNames.Length];
             for (int i = 0; i < parameterNames.Length; i++)
             {
                 string name = parameterNames[i];
-                if (!parameters.TryGetValue(name.AsSpan(), out object? value))
+                if (!parameters.TryGetParameter(name.AsSpan(), out CSharpDbParameter? parameter))
                     throw new InvalidOperationException($"Parameter '@{name}' was not supplied.");
 
-                values[i] = NormalizeNull(value);
+                values[i] = new BoundParameterKey(
+                    NormalizeNull(parameter.Value),
+                    parameter.DbType);
             }
 
             return values;
         }
 
-        private static bool Matches(object?[] cachedValues, string[] parameterNames, CSharpDbParameterCollection parameters)
+        private static bool Matches(
+            BoundParameterKey[] cachedValues,
+            string[] parameterNames,
+            CSharpDbParameterCollection parameters)
         {
             if (cachedValues.Length != parameterNames.Length)
                 return false;
@@ -1309,10 +1360,12 @@ internal sealed class PreparedStatementTemplate
             for (int i = 0; i < parameterNames.Length; i++)
             {
                 string name = parameterNames[i];
-                if (!parameters.TryGetValue(name.AsSpan(), out object? value))
+                if (!parameters.TryGetParameter(name.AsSpan(), out CSharpDbParameter? parameter))
                     throw new InvalidOperationException($"Parameter '@{name}' was not supplied.");
 
-                if (!Equals(cachedValues[i], NormalizeNull(value)))
+                if (cachedValues[i] != new BoundParameterKey(
+                    NormalizeNull(parameter.Value),
+                    parameter.DbType))
                     return false;
             }
 
@@ -1322,6 +1375,12 @@ internal sealed class PreparedStatementTemplate
         private static object? NormalizeNull(object? value)
             => value is DBNull ? null : value;
 
-        private readonly record struct CacheEntry(object?[] Values, Statement Statement);
+        private readonly record struct BoundParameterKey(
+            object? Value,
+            System.Data.DbType DbType);
+
+        private readonly record struct CacheEntry(
+            BoundParameterKey[] Parameters,
+            Statement Statement);
     }
 }

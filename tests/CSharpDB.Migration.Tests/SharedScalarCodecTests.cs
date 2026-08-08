@@ -123,8 +123,8 @@ public sealed class SharedScalarCodecTests
             .Single(item => item.SourceObjectId == "syn:column:orders:tax")
             .TypeMappings
             .Single();
-        Assert.Equal(DbType.Integer, tax.TargetType);
-        Assert.Equal("decimal-scaled-int64", tax.Conversion!.ConversionId);
+        Assert.Equal(DbType.Decimal, tax.TargetType);
+        Assert.Equal("decimal-native", tax.Conversion!.ConversionId);
         Assert.Contains(
             tax.Conversion.Parameters,
             item => item.Name == "codecVersion" &&

@@ -249,8 +249,10 @@ public sealed class RetainedDatabaseSnapshotTableReader : IAsyncDisposable
 
     private static ColumnDefinition CopyColumn(ColumnDefinition column) => new()
     {
+        SchemaId = column.SchemaId,
         Name = column.Name,
         Type = column.Type,
+        DeclaredType = column.DeclaredType,
         Nullable = column.Nullable,
         IsPrimaryKey = column.IsPrimaryKey,
         IsIdentity = column.IsIdentity,

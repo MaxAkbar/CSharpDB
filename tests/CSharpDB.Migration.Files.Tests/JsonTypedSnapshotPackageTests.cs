@@ -451,9 +451,9 @@ public sealed class JsonTypedSnapshotPackageTests
                     item => item.Second,
                     StringComparer.Ordinal);
         Assert.Equal(
-            12_345,
+            123.45m,
             values[JsonMigrationObjectIds.Column(0)]
-                .AsInteger);
+                .AsDecimal);
         Assert.Equal(
             "00112233-4455-6677-8899-aabbccddeeff",
             values[JsonMigrationObjectIds.Column(1)]
@@ -471,7 +471,7 @@ public sealed class JsonTypedSnapshotPackageTests
             values[JsonMigrationObjectIds.Column(4)]
                 .AsText);
         Assert.Equal(
-            "2026-07-23 08:09:10.1234567-07:00",
+            "2026-07-23 15:09:10.1234567+00:00",
             values[JsonMigrationObjectIds.Column(5)]
                 .AsText);
         Assert.Equal(

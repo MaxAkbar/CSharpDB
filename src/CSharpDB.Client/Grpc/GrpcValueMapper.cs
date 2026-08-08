@@ -1,5 +1,8 @@
 using System.Collections;
+using System.Globalization;
 using System.Text.Json;
+using CSharpDB.Client.Models;
+using CSharpDB.Primitives;
 using Google.Protobuf;
 using Google.Protobuf.WellKnownTypes;
 
@@ -46,7 +49,7 @@ public static class GrpcValueMapper
                 message.Int64Value = (long)number;
                 return message;
             case ulong number:
-                message.DoubleValue = number;
+                message.DecimalValue = number.ToString(CultureInfo.InvariantCulture);
                 return message;
             case float number:
                 message.DoubleValue = number;
@@ -55,10 +58,32 @@ public static class GrpcValueMapper
                 message.DoubleValue = number;
                 return message;
             case decimal number:
-                message.DoubleValue = (double)number;
+                message.DecimalValue = number.ToString(CultureInfo.InvariantCulture);
+                return message;
+            case char character:
+                message.StringValue = character.ToString();
+                return message;
+            case Guid guid:
+                message.StringValue = CSharpDbTextCodec.FormatGuid(guid);
+                return message;
+            case DateOnly date:
+                message.StringValue = CSharpDbTextCodec.FormatDate(date);
+                return message;
+            case TimeOnly time:
+                message.StringValue = CSharpDbTextCodec.FormatTime(time);
+                return message;
+            case DateTime dateTime:
+                message.StringValue = CSharpDbTextCodec.FormatDateTime(dateTime);
+                return message;
+            case DateTimeOffset dateTimeOffset:
+                message.StringValue = CSharpDbTextCodec.FormatDateTimeOffset(dateTimeOffset);
                 return message;
             case string text:
                 message.StringValue = text;
+                return message;
+            case SqlBitString bits:
+                message.BytesValue = ByteString.CopyFrom(bits.PackedBytes.ToArray());
+                message.BitLength = bits.BitLength;
                 return message;
             case byte[] bytes:
                 message.BytesValue = ByteString.CopyFrom(bytes);
@@ -148,8 +173,9 @@ public static class GrpcValueMapper
             VariantValue.KindOneofCase.BoolValue => value.BoolValue,
             VariantValue.KindOneofCase.Int64Value => value.Int64Value,
             VariantValue.KindOneofCase.DoubleValue => value.DoubleValue,
+            VariantValue.KindOneofCase.DecimalValue => ParseDecimal(value.DecimalValue),
             VariantValue.KindOneofCase.StringValue => value.StringValue,
-            VariantValue.KindOneofCase.BytesValue => value.BytesValue.ToByteArray(),
+            VariantValue.KindOneofCase.BytesValue => FromBytes(value),
             VariantValue.KindOneofCase.ObjectValue => ToDictionary(value.ObjectValue),
             VariantValue.KindOneofCase.ArrayValue => ToArray(value.ArrayValue),
             VariantValue.KindOneofCase.None => null,
@@ -184,6 +210,7 @@ public static class GrpcValueMapper
             VariantValue.KindOneofCase.BoolValue => value.BoolValue,
             VariantValue.KindOneofCase.Int64Value => value.Int64Value,
             VariantValue.KindOneofCase.DoubleValue => value.DoubleValue,
+            VariantValue.KindOneofCase.DecimalValue => ParseDecimal(value.DecimalValue),
             VariantValue.KindOneofCase.StringValue => value.StringValue,
             VariantValue.KindOneofCase.ObjectValue => value.ObjectValue.Fields.ToDictionary(
                 entry => entry.Key,
@@ -193,5 +220,29 @@ public static class GrpcValueMapper
             VariantValue.KindOneofCase.None => null,
             _ => throw new ArgumentOutOfRangeException(nameof(value.KindCase), value.KindCase, "Unsupported value kind."),
         };
+    }
+
+    private static decimal ParseDecimal(string value)
+        => decimal.Parse(
+            value,
+            NumberStyles.Number | NumberStyles.AllowExponent,
+            CultureInfo.InvariantCulture);
+
+    private static object FromBytes(VariantValue value)
+    {
+        byte[] bytes = value.BytesValue.ToByteArray();
+        if (value.BitLength == 0)
+            return bytes;
+
+        try
+        {
+            return new SqlBitString(bytes, value.BitLength);
+        }
+        catch (Exception error) when (error is ArgumentException or OverflowException)
+        {
+            throw new CSharpDbClientException(
+                "The gRPC transport returned an invalid SQL bit-string value.",
+                error);
+        }
     }
 }

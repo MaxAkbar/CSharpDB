@@ -309,6 +309,166 @@ public sealed class CollationRuntimeTests
     }
 
     [Fact]
+    public async Task Distinct_UsesDeclaredNoCaseCollation_InHashAndOrderedPaths()
+    {
+        await using var db = await Database.OpenInMemoryAsync(Ct);
+        await db.ExecuteAsync("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT COLLATE NOCASE)", Ct);
+        await db.ExecuteAsync("INSERT INTO items VALUES (1, 'a')", Ct);
+        await db.ExecuteAsync("INSERT INTO items VALUES (2, 'A')", Ct);
+
+        await using (var hashResult = await db.ExecuteAsync("SELECT DISTINCT name FROM items", Ct))
+        {
+            var rows = await hashResult.ToListAsync(Ct);
+            Assert.Single(rows);
+            Assert.Equal("a", rows[0][0].AsText, ignoreCase: true);
+        }
+
+        await using (var orderedResult = await db.ExecuteAsync("SELECT DISTINCT name FROM items ORDER BY name", Ct))
+        {
+            var rows = await orderedResult.ToListAsync(Ct);
+            Assert.Single(rows);
+            Assert.Equal("a", rows[0][0].AsText, ignoreCase: true);
+        }
+    }
+
+    [Fact]
+    public async Task Distinct_UsesExplicitNoCaseCollation()
+    {
+        await using var db = await Database.OpenInMemoryAsync(Ct);
+        await db.ExecuteAsync("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)", Ct);
+        await db.ExecuteAsync("INSERT INTO items VALUES (1, 'a')", Ct);
+        await db.ExecuteAsync("INSERT INTO items VALUES (2, 'A')", Ct);
+
+        await using var result = await db.ExecuteAsync(
+            "SELECT DISTINCT name COLLATE NOCASE AS normalized_name FROM items",
+            Ct);
+        var rows = await result.ToListAsync(Ct);
+
+        Assert.Single(rows);
+        Assert.Equal("a", rows[0][0].AsText, ignoreCase: true);
+    }
+
+    [Fact]
+    public async Task GroupBy_UsesDeclaredAndExplicitNoCaseCollations()
+    {
+        await using var db = await Database.OpenInMemoryAsync(Ct);
+        await db.ExecuteAsync("CREATE TABLE declared_items (id INTEGER PRIMARY KEY, bucket TEXT, name TEXT COLLATE NOCASE)", Ct);
+        await db.ExecuteAsync("INSERT INTO declared_items VALUES (1, 'all', 'a')", Ct);
+        await db.ExecuteAsync("INSERT INTO declared_items VALUES (2, 'all', 'A')", Ct);
+
+        await using (var declaredResult = await db.ExecuteAsync(
+            "SELECT name, COUNT(*) FROM declared_items GROUP BY name",
+            Ct))
+        {
+            var rows = await declaredResult.ToListAsync(Ct);
+            Assert.Single(rows);
+            Assert.Equal(2L, rows[0][1].AsInteger);
+        }
+
+        await using (var distinctAggregateResult = await db.ExecuteAsync(
+            "SELECT bucket, COUNT(DISTINCT name) FROM declared_items GROUP BY bucket",
+            Ct))
+        {
+            var rows = await distinctAggregateResult.ToListAsync(Ct);
+            Assert.Single(rows);
+            Assert.Equal(1L, rows[0][1].AsInteger);
+        }
+
+        await db.ExecuteAsync("CREATE TABLE explicit_items (id INTEGER PRIMARY KEY, name TEXT)", Ct);
+        await db.ExecuteAsync("INSERT INTO explicit_items VALUES (1, 'a')", Ct);
+        await db.ExecuteAsync("INSERT INTO explicit_items VALUES (2, 'A')", Ct);
+
+        await using (var explicitResult = await db.ExecuteAsync(
+            "SELECT name COLLATE NOCASE, COUNT(*) FROM explicit_items GROUP BY name COLLATE NOCASE",
+            Ct))
+        {
+            var rows = await explicitResult.ToListAsync(Ct);
+            Assert.Single(rows);
+            Assert.Equal(2L, rows[0][1].AsInteger);
+        }
+    }
+
+    [Fact]
+    public async Task Join_UsesDeclaredAndExplicitNoCaseCollations()
+    {
+        await using var db = await Database.OpenInMemoryAsync(Ct);
+        await db.ExecuteAsync("CREATE TABLE declared_left (id INTEGER PRIMARY KEY, code TEXT COLLATE NOCASE)", Ct);
+        await db.ExecuteAsync("CREATE TABLE declared_right (id INTEGER PRIMARY KEY, code TEXT COLLATE NOCASE)", Ct);
+        await db.ExecuteAsync("INSERT INTO declared_left VALUES (1, 'a')", Ct);
+        await db.ExecuteAsync("INSERT INTO declared_right VALUES (2, 'A')", Ct);
+        await db.ExecuteAsync("INSERT INTO declared_right VALUES (3, 'b')", Ct);
+
+        await using (var declaredResult = await db.ExecuteAsync(
+            "SELECT l.id, r.id FROM declared_left l JOIN declared_right r ON l.code = r.code",
+            Ct))
+        {
+            var rows = await declaredResult.ToListAsync(Ct);
+            var row = Assert.Single(rows);
+            Assert.Equal(1L, row[0].AsInteger);
+            Assert.Equal(2L, row[1].AsInteger);
+        }
+
+        await db.ExecuteAsync("CREATE TABLE explicit_left (id INTEGER PRIMARY KEY, code TEXT)", Ct);
+        await db.ExecuteAsync("CREATE TABLE explicit_right (id INTEGER PRIMARY KEY, code TEXT)", Ct);
+        await db.ExecuteAsync("INSERT INTO explicit_left VALUES (4, 'x')", Ct);
+        await db.ExecuteAsync("INSERT INTO explicit_right VALUES (5, 'X')", Ct);
+        await db.ExecuteAsync("INSERT INTO explicit_right VALUES (6, 'y')", Ct);
+
+        await using (var explicitResult = await db.ExecuteAsync(
+            "SELECT l.id, r.id FROM explicit_left l JOIN explicit_right r ON l.code COLLATE NOCASE = r.code",
+            Ct))
+        {
+            var rows = await explicitResult.ToListAsync(Ct);
+            var row = Assert.Single(rows);
+            Assert.Equal(4L, row[0].AsInteger);
+            Assert.Equal(5L, row[1].AsInteger);
+        }
+    }
+
+    [Fact]
+    public async Task ScalarAggregates_UseNoCaseCollation_InFastAndFilteredPaths()
+    {
+        await using var db = await Database.OpenInMemoryAsync(Ct);
+        await db.ExecuteAsync("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT COLLATE NOCASE)", Ct);
+        await db.ExecuteAsync("INSERT INTO items VALUES (1, 'Z')", Ct);
+        await db.ExecuteAsync("INSERT INTO items VALUES (2, 'a')", Ct);
+        await db.ExecuteAsync("INSERT INTO items VALUES (3, 'A')", Ct);
+
+        await using (var distinctResult = await db.ExecuteAsync(
+            "SELECT COUNT(DISTINCT name) FROM items",
+            Ct))
+        {
+            Assert.Equal(2L, Assert.Single(await distinctResult.ToListAsync(Ct))[0].AsInteger);
+        }
+
+        await using (var filteredDistinctResult = await db.ExecuteAsync(
+            "SELECT COUNT(DISTINCT name) FROM items WHERE id > 0",
+            Ct))
+        {
+            Assert.Equal(2L, Assert.Single(await filteredDistinctResult.ToListAsync(Ct))[0].AsInteger);
+        }
+
+        await using (var minimumResult = await db.ExecuteAsync("SELECT MIN(name) FROM items", Ct))
+        {
+            Assert.Equal("a", Assert.Single(await minimumResult.ToListAsync(Ct))[0].AsText, ignoreCase: true);
+        }
+
+        await using (var filteredMaximumResult = await db.ExecuteAsync(
+            "SELECT MAX(name) FROM items WHERE id > 0",
+            Ct))
+        {
+            Assert.Equal("Z", Assert.Single(await filteredMaximumResult.ToListAsync(Ct))[0].AsText);
+        }
+
+        await using (var explicitDistinctResult = await db.ExecuteAsync(
+            "SELECT COUNT(DISTINCT name COLLATE NOCASE) FROM items",
+            Ct))
+        {
+            Assert.Equal(2L, Assert.Single(await explicitDistinctResult.ToListAsync(Ct))[0].AsInteger);
+        }
+    }
+
+    [Fact]
     public async Task UnsupportedCollation_Throws()
     {
         await using var db = await Database.OpenInMemoryAsync(Ct);

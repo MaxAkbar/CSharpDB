@@ -216,6 +216,46 @@ public sealed class MigrationCompatibilityCommandRunnerTests
     }
 
     [Fact]
+    public async Task TypeMap_CustomMapAcceptsExactDecimalTarget()
+    {
+        using var workspace = new TemporaryDirectory();
+        string catalog = await WriteCatalogAsync(
+            workspace.PathFor("source.catalog.json"),
+            nativeType: "DECIMAL(18,2)",
+            logicalType: "decimal",
+            new MigrationCatalogFacet { Name = "precision", Value = "18" },
+            new MigrationCatalogFacet { Name = "scale", Value = "2" });
+        string customMap = workspace.PathFor("custom-map.json");
+        string reportPath = workspace.PathFor("custom.report.json");
+        await File.WriteAllTextAsync(
+            customMap,
+            """
+            {
+              "compat:column:rows:value": "decimal"
+            }
+            """,
+            Cancellation);
+
+        RunResult result = await RunAsync(
+            [
+                "migrate", "type-map", catalog,
+                "--out", reportPath,
+                "--profile", "custom",
+                "--custom-map", customMap,
+                "--format", "json",
+            ]);
+
+        Assert.Equal(InspectorCommandRunner.ExitOk, result.ExitCode);
+        using JsonDocument report = await ReadJsonAsync(reportPath);
+        JsonElement entry = report.RootElement.GetProperty("entries")[0];
+        Assert.Equal("decimal", entry.GetProperty("requestedTargetType").GetString());
+        Assert.Equal("decimal", entry.GetProperty("targetType").GetString());
+        Assert.Equal(
+            "decimal-native",
+            entry.GetProperty("conversion").GetProperty("conversionId").GetString());
+    }
+
+    [Fact]
     public async Task TypeMap_InvalidCustomMapReturnsSanitizedErrorWithoutReport()
     {
         using var workspace = new TemporaryDirectory();
@@ -886,13 +926,15 @@ public sealed class MigrationCompatibilityCommandRunnerTests
         Assert.Equal(
             "csharpdb-data-type-mapping-report/v1",
             root.GetProperty("format").GetString());
-        Assert.Equal("4.4.0", root.GetProperty("targetCSharpDbVersion").GetString());
+        Assert.Equal(
+            CSharpDbCapabilityCatalogLoader.CurrentTargetVersion,
+            root.GetProperty("targetCSharpDbVersion").GetString());
         Assert.Equal("synthetic", root.GetProperty("sourceKind").GetString());
         Assert.Matches("^[0-9a-f]{64}$", root.GetProperty("catalogDigest").GetString());
         Assert.Equal(
             "csharpdb-standard-mapping",
             root.GetProperty("mappingPolicyId").GetString());
-        Assert.Equal(1, root.GetProperty("mappingPolicyVersion").GetInt32());
+        Assert.Equal(2, root.GetProperty("mappingPolicyVersion").GetInt32());
         Assert.Equal(1, root.GetProperty("summary").GetProperty("total").GetInt32());
         Assert.Single(root.GetProperty("entries").EnumerateArray());
     }
@@ -902,7 +944,9 @@ public sealed class MigrationCompatibilityCommandRunnerTests
         Assert.Equal(
             "csharpdb-query-compatibility-report/v1",
             root.GetProperty("format").GetString());
-        Assert.Equal("4.4.0", root.GetProperty("targetCSharpDbVersion").GetString());
+        Assert.Equal(
+            CSharpDbCapabilityCatalogLoader.CurrentTargetVersion,
+            root.GetProperty("targetCSharpDbVersion").GetString());
         Assert.Matches("^[0-9a-f]{64}$", root.GetProperty("capabilityDigest").GetString());
         Assert.Equal(1, root.GetProperty("summary").GetProperty("total").GetInt32());
         Assert.Single(root.GetProperty("results").EnumerateArray());

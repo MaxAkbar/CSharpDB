@@ -136,14 +136,35 @@ internal static class RowConstraintValidator
         for (int i = 0; i < schema.Columns.Count; i++)
         {
             ColumnDefinition column = schema.Columns[i];
+            if (column.Type == DbType.Null)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.TypeMismatch,
+                    $"Persistent column '{schema.TableName}.{column.Name}' cannot use NULL as its storage type.");
+            }
+            if (column.DeclaredType is not null &&
+                column.DeclaredType.StorageType != column.Type)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.TypeMismatch,
+                    $"Column '{schema.TableName}.{column.Name}' declares {column.DeclaredType.ToSql()} but uses incompatible {column.Type} storage.");
+            }
+            if (column.Collation is not null &&
+                column.EffectiveType.Kind is not (
+                    SqlTypeKind.Char or SqlTypeKind.VarChar or SqlTypeKind.Text))
+            {
+                throw new CSharpDbException(
+                    ErrorCode.TypeMismatch,
+                    $"COLLATE is only valid for character column '{schema.TableName}.{column.Name}'.");
+            }
             if (column.IsRowVersion)
             {
                 rowVersionCount++;
-                if (column.Type != DbType.Blob)
+                if (column.EffectiveType.Kind != SqlTypeKind.Blob)
                 {
                     throw new CSharpDbException(
                         ErrorCode.TypeMismatch,
-                        $"ROWVERSION column '{schema.TableName}.{column.Name}' must use BLOB storage.");
+                        $"ROWVERSION column '{schema.TableName}.{column.Name}' must be declared as BLOB.");
                 }
 
                 if (column.Nullable)
@@ -266,19 +287,7 @@ internal static class RowConstraintValidator
 
     public static void ValidateDefaultExpression(Expression expression, string columnName)
     {
-        bool supported = expression switch
-        {
-            LiteralExpression => true,
-            UnaryExpression
-            {
-                Op: TokenType.Minus,
-                Operand: LiteralExpression
-                {
-                    LiteralType: TokenType.IntegerLiteral or TokenType.RealLiteral,
-                },
-            } => true,
-            _ => false,
-        };
+        bool supported = IsSupportedDefaultExpression(expression);
 
         if (!supported)
         {
@@ -312,9 +321,48 @@ internal static class RowConstraintValidator
 
         Expression expression = ParseMetadataExpression(column.DefaultSql, "DEFAULT");
         ValidateDefaultExpression(expression, column.Name);
-        DbValue value = EvaluateDefaultExpression(expression, schema);
-        ValidateDefaultValueType(column, value);
-        return value;
+        DbValue evaluated = EvaluateDefaultExpression(expression, schema);
+        if (column.EffectiveType.Kind == SqlTypeKind.Decimal &&
+            TryGetSignedNumericLiteralText(expression, out string? rawText))
+        {
+            evaluated = DbValue.FromDecimal(decimal.Parse(
+                rawText!,
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture));
+        }
+
+        return SqlTypeCoercion.CoerceForAssignment(
+            evaluated,
+            column,
+            schema.TableName);
+    }
+
+    /// <summary>
+    /// Validates and canonicalizes a materialized row before it crosses the
+    /// storage boundary. The mutable overload is deliberately preferred by all
+    /// DML paths so physical tags and logical facets cannot diverge.
+    /// </summary>
+    public static void ValidateRow(TableSchema schema, DbValue[] row)
+    {
+        if (row.Length != schema.Columns.Count)
+        {
+            throw new CSharpDbException(
+                ErrorCode.ConstraintViolation,
+                $"Row for table '{schema.TableName}' has {row.Length} values; expected {schema.Columns.Count}.");
+        }
+
+        for (int i = 0; i < row.Length; i++)
+        {
+            if (!row[i].IsNull)
+            {
+                row[i] = SqlTypeCoercion.CoerceForAssignment(
+                    row[i],
+                    schema.Columns[i],
+                    schema.TableName);
+            }
+        }
+
+        ValidateRow(schema, (ReadOnlySpan<DbValue>)row);
     }
 
     public static void ValidateRow(TableSchema schema, ReadOnlySpan<DbValue> row)
@@ -362,15 +410,56 @@ internal static class RowConstraintValidator
 
     private static void ValidateDefaultValueType(ColumnDefinition column, DbValue value)
     {
-        if (value.IsNull || value.Type == column.Type)
-            return;
+        if (!value.IsNull)
+            _ = SqlTypeCoercion.CoerceForAssignment(value, column);
+    }
 
-        if (column.Type == DbType.Real && value.Type == DbType.Integer)
-            return;
+    private static bool IsSupportedDefaultExpression(Expression expression) =>
+        expression switch
+        {
+            LiteralExpression => true,
+            UnaryExpression
+            {
+                Op: TokenType.Minus,
+                Operand: LiteralExpression
+                {
+                    LiteralType: TokenType.IntegerLiteral or TokenType.RealLiteral,
+                },
+            } => true,
+            CastExpression cast => IsSupportedDefaultExpression(cast.Operand),
+            _ => false,
+        };
 
-        throw new CSharpDbException(
-            ErrorCode.TypeMismatch,
-            $"DEFAULT for column '{column.Name}' has type {value.Type}, but the column type is {column.Type}.");
+    private static bool TryGetSignedNumericLiteralText(
+        Expression expression,
+        out string? rawText)
+    {
+        if (expression is LiteralExpression
+            {
+                RawText: { Length: > 0 } literalText,
+                LiteralType: TokenType.IntegerLiteral or TokenType.RealLiteral,
+            })
+        {
+            rawText = literalText;
+            return true;
+        }
+
+        if (expression is UnaryExpression
+            {
+                Op: TokenType.Minus,
+                Operand: LiteralExpression
+                {
+                    RawText: { Length: > 0 } negativeLiteralText,
+                    LiteralType: TokenType.IntegerLiteral or TokenType.RealLiteral,
+                },
+            })
+        {
+            rawText = $"-{negativeLiteralText}";
+            return true;
+        }
+
+        rawText = null;
+        return false;
     }
 
     private static void ValidateCheckExpression(
@@ -408,6 +497,9 @@ internal static class RowConstraintValidator
                 return;
             case CollateExpression collate:
                 ValidateCheckExpression(collate.Operand, schema, scopedColumnName);
+                return;
+            case CastExpression cast:
+                ValidateCheckExpression(cast.Operand, schema, scopedColumnName);
                 return;
             case LikeExpression like:
                 ValidateCheckExpression(like.Operand, schema, scopedColumnName);

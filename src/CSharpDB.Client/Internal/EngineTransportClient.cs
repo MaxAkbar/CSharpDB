@@ -16,6 +16,9 @@ using CoreIndexSchema = CSharpDB.Primitives.IndexSchema;
 using CoreKeyConstraintDefinition = CSharpDB.Primitives.KeyConstraintDefinition;
 using CoreKeyConstraintKind = CSharpDB.Primitives.KeyConstraintKind;
 using CoreSqlIdentifierRules = CSharpDB.Primitives.SqlIdentifierRules;
+using CoreSqlTypeDescriptor = CSharpDB.Primitives.SqlTypeDescriptor;
+using CoreSqlTypeKind = CSharpDB.Primitives.SqlTypeKind;
+using CoreTextCodec = CSharpDB.Primitives.CSharpDbTextCodec;
 using CoreTableSchema = CSharpDB.Primitives.TableSchema;
 using CoreTriggerEvent = CSharpDB.Primitives.TriggerEvent;
 using CoreTriggerSchema = CSharpDB.Primitives.TriggerSchema;
@@ -1148,9 +1151,13 @@ internal sealed partial class EngineTransportClient :
                     Models.DbType.Real => CoreDbType.Real,
                     Models.DbType.Text => CoreDbType.Text,
                     Models.DbType.Blob => CoreDbType.Blob,
+                    Models.DbType.Decimal => CoreDbType.Decimal,
                     _ => throw new CSharpDbClientException(
                         $"Unsupported column type '{column.Type}'."),
                 },
+                DeclaredType = column.DeclaredType is null
+                    ? null
+                    : MapCoreSqlTypeDescriptor(column.DeclaredType),
                 Nullable = column.Nullable,
                 IsPrimaryKey = column.IsPrimaryKey,
                 IsIdentity = column.IsIdentity,
@@ -1208,6 +1215,43 @@ internal sealed partial class EngineTransportClient :
                 }).ToArray(),
             NextRowId = schema.NextRowId,
         };
+
+    private static CoreSqlTypeDescriptor MapCoreSqlTypeDescriptor(
+        Models.SqlTypeDescriptor type) =>
+        CoreSqlTypeDescriptor.Create(
+            type.Kind switch
+            {
+                Models.SqlTypeKind.Boolean => CoreSqlTypeKind.Boolean,
+                Models.SqlTypeKind.TinyInt => CoreSqlTypeKind.TinyInt,
+                Models.SqlTypeKind.SmallInt => CoreSqlTypeKind.SmallInt,
+                Models.SqlTypeKind.Integer => CoreSqlTypeKind.Integer,
+                Models.SqlTypeKind.BigInt => CoreSqlTypeKind.BigInt,
+                Models.SqlTypeKind.Real => CoreSqlTypeKind.Real,
+                Models.SqlTypeKind.Double => CoreSqlTypeKind.Double,
+                Models.SqlTypeKind.Decimal => CoreSqlTypeKind.Decimal,
+                Models.SqlTypeKind.Char => CoreSqlTypeKind.Char,
+                Models.SqlTypeKind.VarChar => CoreSqlTypeKind.VarChar,
+                Models.SqlTypeKind.Text => CoreSqlTypeKind.Text,
+                Models.SqlTypeKind.Binary => CoreSqlTypeKind.Binary,
+                Models.SqlTypeKind.VarBinary => CoreSqlTypeKind.VarBinary,
+                Models.SqlTypeKind.Blob => CoreSqlTypeKind.Blob,
+                Models.SqlTypeKind.Uuid => CoreSqlTypeKind.Uuid,
+                Models.SqlTypeKind.Date => CoreSqlTypeKind.Date,
+                Models.SqlTypeKind.Time => CoreSqlTypeKind.Time,
+                Models.SqlTypeKind.Timestamp => CoreSqlTypeKind.Timestamp,
+                Models.SqlTypeKind.TimestampWithTimeZone => CoreSqlTypeKind.TimestampWithTimeZone,
+                Models.SqlTypeKind.IntervalYearToMonth => CoreSqlTypeKind.IntervalYearToMonth,
+                Models.SqlTypeKind.IntervalDayToSecond => CoreSqlTypeKind.IntervalDayToSecond,
+                Models.SqlTypeKind.Json => CoreSqlTypeKind.Json,
+                Models.SqlTypeKind.Xml => CoreSqlTypeKind.Xml,
+                Models.SqlTypeKind.Bit => CoreSqlTypeKind.Bit,
+                Models.SqlTypeKind.VarBit => CoreSqlTypeKind.VarBit,
+                _ => throw new CSharpDbClientException($"Unsupported logical column type '{type.Kind}'."),
+            },
+            type.Length,
+            type.Precision,
+            type.Scale,
+            type.FractionalSecondsPrecision);
 
     private static CheckConstraintDefinition MapCheckConstraintDefinition(CoreCheckConstraintDefinition check)
         => new()
@@ -1289,14 +1333,57 @@ internal sealed partial class EngineTransportClient :
                 CoreDbType.Real => Models.DbType.Real,
                 CoreDbType.Text => Models.DbType.Text,
                 CoreDbType.Blob => Models.DbType.Blob,
+                CoreDbType.Decimal => Models.DbType.Decimal,
                 _ => throw new CSharpDbClientException($"Unsupported column type '{column.Type}'."),
             },
+            DeclaredType = column.DeclaredType is null
+                ? null
+                : MapSqlTypeDescriptor(column.DeclaredType),
             Nullable = column.Nullable,
             IsPrimaryKey = column.IsPrimaryKey,
             IsIdentity = column.IsIdentity,
             IsRowVersion = column.IsRowVersion,
             Collation = column.Collation,
             DefaultSql = column.DefaultSql,
+        };
+
+    private static Models.SqlTypeDescriptor MapSqlTypeDescriptor(
+        CoreSqlTypeDescriptor type) =>
+        new()
+        {
+            Kind = type.Kind switch
+            {
+                CoreSqlTypeKind.Boolean => Models.SqlTypeKind.Boolean,
+                CoreSqlTypeKind.TinyInt => Models.SqlTypeKind.TinyInt,
+                CoreSqlTypeKind.SmallInt => Models.SqlTypeKind.SmallInt,
+                CoreSqlTypeKind.Integer => Models.SqlTypeKind.Integer,
+                CoreSqlTypeKind.BigInt => Models.SqlTypeKind.BigInt,
+                CoreSqlTypeKind.Real => Models.SqlTypeKind.Real,
+                CoreSqlTypeKind.Double => Models.SqlTypeKind.Double,
+                CoreSqlTypeKind.Decimal => Models.SqlTypeKind.Decimal,
+                CoreSqlTypeKind.Char => Models.SqlTypeKind.Char,
+                CoreSqlTypeKind.VarChar => Models.SqlTypeKind.VarChar,
+                CoreSqlTypeKind.Text => Models.SqlTypeKind.Text,
+                CoreSqlTypeKind.Binary => Models.SqlTypeKind.Binary,
+                CoreSqlTypeKind.VarBinary => Models.SqlTypeKind.VarBinary,
+                CoreSqlTypeKind.Blob => Models.SqlTypeKind.Blob,
+                CoreSqlTypeKind.Uuid => Models.SqlTypeKind.Uuid,
+                CoreSqlTypeKind.Date => Models.SqlTypeKind.Date,
+                CoreSqlTypeKind.Time => Models.SqlTypeKind.Time,
+                CoreSqlTypeKind.Timestamp => Models.SqlTypeKind.Timestamp,
+                CoreSqlTypeKind.TimestampWithTimeZone => Models.SqlTypeKind.TimestampWithTimeZone,
+                CoreSqlTypeKind.IntervalYearToMonth => Models.SqlTypeKind.IntervalYearToMonth,
+                CoreSqlTypeKind.IntervalDayToSecond => Models.SqlTypeKind.IntervalDayToSecond,
+                CoreSqlTypeKind.Json => Models.SqlTypeKind.Json,
+                CoreSqlTypeKind.Xml => Models.SqlTypeKind.Xml,
+                CoreSqlTypeKind.Bit => Models.SqlTypeKind.Bit,
+                CoreSqlTypeKind.VarBit => Models.SqlTypeKind.VarBit,
+                _ => throw new CSharpDbClientException($"Unsupported logical column type '{type.Kind}'."),
+            },
+            Length = type.Length,
+            Precision = type.Precision,
+            Scale = type.Scale,
+            FractionalSecondsPrecision = type.FractionalSecondsPrecision,
         };
 
     private static IndexSchema MapIndexSchema(CoreIndexSchema index)
@@ -1447,9 +1534,21 @@ internal sealed partial class EngineTransportClient :
         {
             IsQuery = result.IsQuery,
             ColumnNames = result.IsQuery ? result.Schema.Select(column => column.Name).ToArray() : null,
-            ColumnTypes = result.IsQuery ? result.Schema.Select(column => column.Type.ToString().ToUpperInvariant()).ToArray() : null,
+            Columns = result.IsQuery && result.Schema.All(column => column.Type is not CoreDbType.Null)
+                ? result.Schema.Select(MapColumnDefinition).ToArray()
+                : null,
+            ColumnTypes = result.IsQuery
+                ? result.Schema.Select(column =>
+                    column.IsRowVersion
+                        ? "ROWVERSION"
+                        : column.Type is CoreDbType.Null && column.DeclaredType is null
+                            ? "NULL"
+                            : column.EffectiveType.ToSql()).ToArray()
+                : null,
             ColumnNullability = result.IsQuery ? result.Schema.Select(column => column.Nullable).ToArray() : null,
-            Rows = result.IsQuery ? rows.Select(ToObjects).ToList() : null,
+            Rows = result.IsQuery
+                ? rows.Select(row => ToObjects(result.Schema, row)).ToList()
+                : null,
             RowsAffected = result.IsQuery ? rows.Count : result.RowsAffected,
         };
     }
@@ -1536,27 +1635,33 @@ internal sealed partial class EngineTransportClient :
     {
         var values = new Dictionary<string, object?>(schema.Length, StringComparer.OrdinalIgnoreCase);
         for (int i = 0; i < schema.Length && i < row.Length; i++)
-            values[schema[i].Name] = ToObject(row[i]);
+            values[schema[i].Name] = ToObject(row[i], schema[i]);
         return values;
     }
 
-    private static List<object?[]> ToObjects(List<CSharpDB.Primitives.DbValue[]> rows)
-        => rows.Select(ToObjects).ToList();
-
-    private static object?[] ToObjects(CSharpDB.Primitives.DbValue[] row)
+    private static object?[] ToObjects(
+        CoreColumnDefinition[] schema,
+        CSharpDB.Primitives.DbValue[] row)
     {
         var values = new object?[row.Length];
         for (int i = 0; i < row.Length; i++)
-            values[i] = ToObject(row[i]);
+            values[i] = ToObject(row[i], i < schema.Length ? schema[i] : null);
         return values;
     }
 
-    private static object? ToObject(CSharpDB.Primitives.DbValue value) => value.Type switch
+    private static object? ToObject(
+        CSharpDB.Primitives.DbValue value,
+        CoreColumnDefinition? column = null) => value.Type switch
     {
         CoreDbType.Null => null,
+        CoreDbType.Integer when column?.DeclaredType?.Kind == CoreSqlTypeKind.Boolean =>
+            value.AsInteger != 0,
         CoreDbType.Integer => value.AsInteger,
         CoreDbType.Real => value.AsReal,
+        CoreDbType.Decimal => value.AsDecimal,
         CoreDbType.Text => value.AsText,
+        CoreDbType.Blob when value.IsBitString =>
+            new SqlBitString(value.AsBlob, value.BitLength),
         CoreDbType.Blob => value.AsBlob,
         _ => throw new CSharpDbClientException($"Unsupported DbValue type '{value.Type}'."),
     };
@@ -1571,10 +1676,17 @@ internal sealed partial class EngineTransportClient :
         {
             CoreDbType.Integer when normalized is long integer => value.AsInteger == integer,
             CoreDbType.Real when normalized is double real => Math.Abs(value.AsReal - real) < double.Epsilon,
+            CoreDbType.Decimal when normalized is decimal number => value.AsDecimal == number,
             CoreDbType.Text when normalized is string text => string.Equals(value.AsText, text, StringComparison.Ordinal),
+            CoreDbType.Blob when normalized is SqlBitString bits =>
+                value.IsBitString &&
+                value.BitLength == bits.BitLength &&
+                value.AsBlob.AsSpan().SequenceEqual(bits.PackedBytes.Span),
             CoreDbType.Blob when normalized is byte[] blob => value.AsBlob.AsSpan().SequenceEqual(blob),
             CoreDbType.Integer when normalized is double real => Math.Abs(value.AsReal - real) < double.Epsilon,
             CoreDbType.Real when normalized is long integer => Math.Abs(value.AsReal - integer) < double.Epsilon,
+            CoreDbType.Decimal when normalized is long integer => value.AsDecimal == integer,
+            CoreDbType.Decimal when normalized is double real => value.AsReal == real,
             _ => false,
         };
     }
@@ -1585,7 +1697,14 @@ internal sealed partial class EngineTransportClient :
         JsonElement json => NormalizeJsonElement(json),
         bool boolean => boolean ? 1L : 0L,
         byte or sbyte or short or ushort or int or uint or long => Convert.ToInt64(value, CultureInfo.InvariantCulture),
-        float or double or decimal => Convert.ToDouble(value, CultureInfo.InvariantCulture),
+        decimal number => number,
+        float or double => Convert.ToDouble(value, CultureInfo.InvariantCulture),
+        Guid guid => CoreTextCodec.FormatGuid(guid),
+        DateOnly date => CoreTextCodec.FormatDate(date),
+        TimeOnly time => CoreTextCodec.FormatTime(time),
+        DateTime dateTime => CoreTextCodec.FormatDateTime(dateTime),
+        DateTimeOffset dateTimeOffset => CoreTextCodec.FormatDateTimeOffset(dateTimeOffset),
+        SqlBitString bits => bits,
         string text => text,
         byte[] blob => blob,
         _ => Convert.ToString(value, CultureInfo.InvariantCulture),
@@ -1609,8 +1728,10 @@ internal sealed partial class EngineTransportClient :
         {
             null => "NULL",
             long integer => integer.ToString(CultureInfo.InvariantCulture),
+            decimal exact => exact.ToString(CultureInfo.InvariantCulture),
             double real => real.ToString(CultureInfo.InvariantCulture),
             string text => $"'{text.Replace("'", "''", StringComparison.Ordinal)}'",
+            SqlBitString bits => $"'{bits.ToBitString()}'",
             byte[] blob => $"X'{Convert.ToHexString(blob)}'",
             _ => $"'{Convert.ToString(normalized, CultureInfo.InvariantCulture)?.Replace("'", "''", StringComparison.Ordinal) ?? string.Empty}'",
         };
@@ -1703,6 +1824,7 @@ internal sealed partial class EngineTransportClient :
         Models.DbType.Real => "REAL",
         Models.DbType.Text => "TEXT",
         Models.DbType.Blob => "BLOB",
+        Models.DbType.Decimal => "DECIMAL",
         _ => throw new CSharpDbClientException($"Unsupported DbType '{type}'."),
     };
 

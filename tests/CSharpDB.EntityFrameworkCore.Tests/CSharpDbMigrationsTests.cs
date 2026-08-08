@@ -199,7 +199,7 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
                 Name = "Version",
                 Table = createTable.Name,
                 ClrType = typeof(byte[]),
-                ColumnType = "BLOB",
+                ColumnType = "ROWVERSION",
                 IsNullable = false,
                 IsRowVersion = true,
             });
@@ -219,7 +219,7 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
                 .CommandText;
 
         Assert.Contains(
-            "\"Version\" BLOB ROWVERSION NOT NULL",
+            "\"Version\" ROWVERSION NOT NULL",
             createSql,
             StringComparison.Ordinal);
 
@@ -1935,7 +1935,7 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
     }
 
     [Fact]
-    public void MigrationsSqlGenerator_UnsupportedAlterColumnTypeChange_RemainsExplicitlyRejected()
+    public void MigrationsSqlGenerator_LogicalAlterColumnTypeChange_GeneratesValidatedRewrite()
     {
         string dbPath = Path.Combine(_workspace, "alter-column-type-rejection.db");
         using var db = new MigrationRuntimeContext($"Data Source={dbPath}");
@@ -1958,11 +1958,13 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
             },
         };
 
-        var error = Assert.Throws<NotSupportedException>(
-            () => generator.Generate([operation], model: null));
-        Assert.Contains("from store type 'TEXT' to 'INTEGER'", error.Message, StringComparison.Ordinal);
-        Assert.Contains("INTEGER-to-REAL", error.Message, StringComparison.Ordinal);
-        Assert.Contains("TEXT-to-BLOB", error.Message, StringComparison.Ordinal);
+        string sql = Assert.Single(
+                generator.Generate([operation], model: null))
+            .CommandText;
+        Assert.Contains(
+            "ALTER TABLE \"Items\" ALTER COLUMN \"Value\" TYPE INTEGER",
+            sql,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -2089,13 +2091,17 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
             },
         };
 
-        var error = Assert.Throws<NotSupportedException>(
-            () => generator.Generate([operation], db.Model));
-        Assert.Contains("from store type 'REAL' to 'TEXT'", error.Message, StringComparison.Ordinal);
+        string sql = Assert.Single(
+                generator.Generate([operation], db.Model))
+            .CommandText;
+        Assert.Contains(
+            "ALTER TABLE \"Blogs\" ALTER COLUMN \"Name\" TYPE TEXT",
+            sql,
+            StringComparison.Ordinal);
     }
 
     [Fact]
-    public void MigrationsSqlGenerator_DecimalScaleChange_RemainsExplicitlyRejected()
+    public void MigrationsSqlGenerator_NativeDecimalScaleChangeUsesValidatedRewriteAndLegacyRemainsGuarded()
     {
         string dbPath =
             Path.Combine(
@@ -2163,26 +2169,23 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
                             .Model
                             .GetRelationalModel())));
         Assert.Equal(
-            typeof(long),
+            typeof(decimal),
             generatedOperation.ClrType);
-        Assert.Equal(
-            "18,4",
+        Assert.Null(
             generatedOperation[
                 "CSharpDB:DecimalStorage"]);
-        Assert.Equal(
-            "18,2",
+        Assert.Null(
             generatedOperation.OldColumn[
                 "CSharpDB:DecimalStorage"]);
-
-        NotSupportedException generatedError =
-            Assert.Throws<NotSupportedException>(
-                () => generator.Generate(
+        string generatedSql = Assert.Single(
+                generator.Generate(
                     [generatedOperation],
-                    scaleFour.Model));
+                    scaleFour.Model))
+            .CommandText;
         Assert.Contains(
-            "from decimal(18, 2) to decimal(18, 4)",
-            generatedError.Message,
-            StringComparison.Ordinal);
+            "TYPE DECIMAL(18,4)",
+            generatedSql,
+            StringComparison.OrdinalIgnoreCase);
 
         using var integerSource =
             new LongDecimalTransitionMigrationContext(
@@ -2199,22 +2202,21 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
                             .GetService<IDesignTimeModel>()
                             .Model
                             .GetRelationalModel())));
-        Assert.Equal(
-            "18,2",
+        Assert.Null(
             transitionOperation[
                 "CSharpDB:DecimalStorage"]);
         Assert.Null(
             transitionOperation.OldColumn[
                 "CSharpDB:DecimalStorage"]);
-        NotSupportedException transitionError =
-            Assert.Throws<NotSupportedException>(
-                () => generator.Generate(
+        string transitionSql = Assert.Single(
+                generator.Generate(
                     [transitionOperation],
-                    scaleTwo.Model));
+                    scaleTwo.Model))
+            .CommandText;
         Assert.Contains(
-            "into or out of provider-owned scaled decimal storage",
-            transitionError.Message,
-            StringComparison.Ordinal);
+            "TYPE DECIMAL(18,2)",
+            transitionSql,
+            StringComparison.OrdinalIgnoreCase);
 
         var createTable =
             new CreateTableOperation
@@ -2256,14 +2258,14 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
                 Table = "DecimalItems",
                 Columns = ["Amount"],
             };
-        NotSupportedException addKeyError =
-            Assert.Throws<NotSupportedException>(
-                () => generator.Generate(
+        string addKeySql = Assert.Single(
+                generator.Generate(
                     [addDecimalPrimaryKey],
-                    scaleTwo.Model));
+                    scaleTwo.Model))
+            .CommandText;
         Assert.Contains(
-            "decimal primary key",
-            addKeyError.Message,
+            "PRIMARY KEY (\"Amount\")",
+            addKeySql,
             StringComparison.OrdinalIgnoreCase);
 
         using var converted =

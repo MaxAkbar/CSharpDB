@@ -2,6 +2,7 @@ using CSharpDB.Data;
 using CSharpDB.Engine;
 using CSharpDB.Execution;
 using CSharpDB.Primitives;
+using SqlBitString = CSharpDB.Client.Models.SqlBitString;
 
 namespace CSharpDB.Native;
 
@@ -50,7 +51,15 @@ internal sealed class NativePreparedStatement
 
     internal void BindDouble(string name, double value) => SetParameter(name, value);
 
+    internal void BindDecimal(string name, long coefficient, int scale) =>
+        SetParameter(name, DbValue.FromDecimalParts(coefficient, scale).AsDecimal);
+
     internal void BindText(string name, string? value) => SetParameter(name, value);
+
+    internal void BindBlob(string name, byte[] value) => SetParameter(name, value);
+
+    internal void BindBitString(string name, byte[] packedBytes, int bitLength) =>
+        SetParameter(name, new SqlBitString(packedBytes, bitLength));
 
     internal void BindNull(string name) => SetParameter(name, DBNull.Value);
 

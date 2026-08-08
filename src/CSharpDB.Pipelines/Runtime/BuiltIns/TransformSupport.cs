@@ -33,6 +33,11 @@ internal static class TransformSupport
                 string textValue => double.Parse(textValue, CultureInfo.InvariantCulture),
                 _ => Convert.ToDouble(value, CultureInfo.InvariantCulture),
             },
+            DbType.Decimal => value switch
+            {
+                decimal decimalValue => decimalValue,
+                _ => Convert.ToDecimal(value, CultureInfo.InvariantCulture),
+            },
             DbType.Text => value switch
             {
                 string textValue => textValue,
@@ -289,7 +294,8 @@ internal static class TransformSupport
         DbValue dbValue => dbValue,
         bool boolValue => DbValue.FromInteger(boolValue ? 1 : 0),
         byte or sbyte or short or ushort or int or uint or long => DbValue.FromInteger(Convert.ToInt64(value, CultureInfo.InvariantCulture)),
-        float or double or decimal => DbValue.FromReal(Convert.ToDouble(value, CultureInfo.InvariantCulture)),
+        decimal decimalValue => DbValue.FromDecimal(decimalValue),
+        float or double => DbValue.FromReal(Convert.ToDouble(value, CultureInfo.InvariantCulture)),
         string text => DbValue.FromText(text),
         byte[] bytes => DbValue.FromBlob(bytes),
         _ => DbValue.FromText(Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty),
@@ -300,6 +306,7 @@ internal static class TransformSupport
         DbType.Null => null,
         DbType.Integer => value.AsInteger,
         DbType.Real => value.AsReal,
+        DbType.Decimal => value.AsDecimal,
         DbType.Text => value.AsText,
         DbType.Blob => value.AsBlob,
         _ => null,

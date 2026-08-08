@@ -40,6 +40,7 @@ public static class GrpcModelMapper
             DbType.Real => DbTypeEnum.DbTypeReal,
             DbType.Text => DbTypeEnum.DbTypeText,
             DbType.Blob => DbTypeEnum.DbTypeBlob,
+            DbType.Decimal => DbTypeEnum.DbTypeDecimal,
             _ => throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported database type."),
         };
 
@@ -50,7 +51,90 @@ public static class GrpcModelMapper
             DbTypeEnum.DbTypeReal => DbType.Real,
             DbTypeEnum.DbTypeText => DbType.Text,
             DbTypeEnum.DbTypeBlob => DbType.Blob,
+            DbTypeEnum.DbTypeDecimal => DbType.Decimal,
             _ => throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported database type enum."),
+        };
+
+    public static SqlTypeKindEnum ToMessage(SqlTypeKind value)
+        => value switch
+        {
+            SqlTypeKind.Boolean => SqlTypeKindEnum.SqlTypeKindBoolean,
+            SqlTypeKind.TinyInt => SqlTypeKindEnum.SqlTypeKindTinyInt,
+            SqlTypeKind.SmallInt => SqlTypeKindEnum.SqlTypeKindSmallInt,
+            SqlTypeKind.Integer => SqlTypeKindEnum.SqlTypeKindInteger,
+            SqlTypeKind.BigInt => SqlTypeKindEnum.SqlTypeKindBigInt,
+            SqlTypeKind.Real => SqlTypeKindEnum.SqlTypeKindReal,
+            SqlTypeKind.Double => SqlTypeKindEnum.SqlTypeKindDouble,
+            SqlTypeKind.Decimal => SqlTypeKindEnum.SqlTypeKindDecimal,
+            SqlTypeKind.Char => SqlTypeKindEnum.SqlTypeKindChar,
+            SqlTypeKind.VarChar => SqlTypeKindEnum.SqlTypeKindVarChar,
+            SqlTypeKind.Text => SqlTypeKindEnum.SqlTypeKindText,
+            SqlTypeKind.Binary => SqlTypeKindEnum.SqlTypeKindBinary,
+            SqlTypeKind.VarBinary => SqlTypeKindEnum.SqlTypeKindVarBinary,
+            SqlTypeKind.Blob => SqlTypeKindEnum.SqlTypeKindBlob,
+            SqlTypeKind.Uuid => SqlTypeKindEnum.SqlTypeKindUuid,
+            SqlTypeKind.Date => SqlTypeKindEnum.SqlTypeKindDate,
+            SqlTypeKind.Time => SqlTypeKindEnum.SqlTypeKindTime,
+            SqlTypeKind.Timestamp => SqlTypeKindEnum.SqlTypeKindTimestamp,
+            SqlTypeKind.TimestampWithTimeZone => SqlTypeKindEnum.SqlTypeKindTimestampWithTimeZone,
+            SqlTypeKind.IntervalYearToMonth => SqlTypeKindEnum.SqlTypeKindIntervalYearToMonth,
+            SqlTypeKind.IntervalDayToSecond => SqlTypeKindEnum.SqlTypeKindIntervalDayToSecond,
+            SqlTypeKind.Json => SqlTypeKindEnum.SqlTypeKindJson,
+            SqlTypeKind.Xml => SqlTypeKindEnum.SqlTypeKindXml,
+            SqlTypeKind.Bit => SqlTypeKindEnum.SqlTypeKindBit,
+            SqlTypeKind.VarBit => SqlTypeKindEnum.SqlTypeKindVarBit,
+            _ => throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported logical SQL type."),
+        };
+
+    public static SqlTypeKind ToModel(SqlTypeKindEnum value)
+        => value switch
+        {
+            SqlTypeKindEnum.SqlTypeKindBoolean => SqlTypeKind.Boolean,
+            SqlTypeKindEnum.SqlTypeKindTinyInt => SqlTypeKind.TinyInt,
+            SqlTypeKindEnum.SqlTypeKindSmallInt => SqlTypeKind.SmallInt,
+            SqlTypeKindEnum.SqlTypeKindInteger => SqlTypeKind.Integer,
+            SqlTypeKindEnum.SqlTypeKindBigInt => SqlTypeKind.BigInt,
+            SqlTypeKindEnum.SqlTypeKindReal => SqlTypeKind.Real,
+            SqlTypeKindEnum.SqlTypeKindDouble => SqlTypeKind.Double,
+            SqlTypeKindEnum.SqlTypeKindDecimal => SqlTypeKind.Decimal,
+            SqlTypeKindEnum.SqlTypeKindChar => SqlTypeKind.Char,
+            SqlTypeKindEnum.SqlTypeKindVarChar => SqlTypeKind.VarChar,
+            SqlTypeKindEnum.SqlTypeKindText => SqlTypeKind.Text,
+            SqlTypeKindEnum.SqlTypeKindBinary => SqlTypeKind.Binary,
+            SqlTypeKindEnum.SqlTypeKindVarBinary => SqlTypeKind.VarBinary,
+            SqlTypeKindEnum.SqlTypeKindBlob => SqlTypeKind.Blob,
+            SqlTypeKindEnum.SqlTypeKindUuid => SqlTypeKind.Uuid,
+            SqlTypeKindEnum.SqlTypeKindDate => SqlTypeKind.Date,
+            SqlTypeKindEnum.SqlTypeKindTime => SqlTypeKind.Time,
+            SqlTypeKindEnum.SqlTypeKindTimestamp => SqlTypeKind.Timestamp,
+            SqlTypeKindEnum.SqlTypeKindTimestampWithTimeZone => SqlTypeKind.TimestampWithTimeZone,
+            SqlTypeKindEnum.SqlTypeKindIntervalYearToMonth => SqlTypeKind.IntervalYearToMonth,
+            SqlTypeKindEnum.SqlTypeKindIntervalDayToSecond => SqlTypeKind.IntervalDayToSecond,
+            SqlTypeKindEnum.SqlTypeKindJson => SqlTypeKind.Json,
+            SqlTypeKindEnum.SqlTypeKindXml => SqlTypeKind.Xml,
+            SqlTypeKindEnum.SqlTypeKindBit => SqlTypeKind.Bit,
+            SqlTypeKindEnum.SqlTypeKindVarBit => SqlTypeKind.VarBit,
+            _ => throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported logical SQL type enum."),
+        };
+
+    public static SqlTypeDescriptorMessage ToMessage(SqlTypeDescriptor value)
+        => new()
+        {
+            Kind = ToMessage(value.Kind),
+            Length = value.Length,
+            Precision = value.Precision,
+            Scale = value.Scale,
+            FractionalSecondsPrecision = value.FractionalSecondsPrecision,
+        };
+
+    public static SqlTypeDescriptor ToModel(SqlTypeDescriptorMessage value)
+        => new()
+        {
+            Kind = ToModel(value.Kind),
+            Length = value.Length,
+            Precision = value.Precision,
+            Scale = value.Scale,
+            FractionalSecondsPrecision = value.FractionalSecondsPrecision,
         };
 
     public static ForeignKeyOnDeleteActionEnum ToMessage(ForeignKeyOnDeleteAction value)
@@ -163,7 +247,8 @@ public static class GrpcModelMapper
         };
 
     public static ColumnDefinitionMessage ToMessage(ColumnDefinition value)
-        => new()
+    {
+        var message = new ColumnDefinitionMessage
         {
             SchemaId = FormatSchemaId(value.SchemaId),
             Name = value.Name,
@@ -176,12 +261,19 @@ public static class GrpcModelMapper
             DefaultSql = value.DefaultSql ?? string.Empty,
         };
 
+        if (value.DeclaredType is not null)
+            message.DeclaredType = ToMessage(value.DeclaredType);
+
+        return message;
+    }
+
     public static ColumnDefinition ToModel(ColumnDefinitionMessage value)
         => new()
         {
             SchemaId = ParseSchemaId(value.SchemaId),
             Name = value.Name,
             Type = ToModel(value.Type),
+            DeclaredType = value.DeclaredType is null ? null : ToModel(value.DeclaredType),
             Nullable = value.Nullable,
             IsPrimaryKey = value.IsPrimaryKey,
             IsIdentity = value.IsIdentity,
@@ -479,7 +571,8 @@ public static class GrpcModelMapper
         };
 
     public static SqlExecutionResultMessage ToMessage(SqlExecutionResult value)
-        => new()
+    {
+        var message = new SqlExecutionResultMessage
         {
             IsQuery = value.IsQuery,
             ColumnNames = value.ColumnNames is null ? null : ToStringList(value.ColumnNames),
@@ -492,6 +585,10 @@ public static class GrpcModelMapper
             Error = value.Error,
             Elapsed = Duration.FromTimeSpan(value.Elapsed),
         };
+        if (value.Columns is not null)
+            message.Columns.Add(value.Columns.Select(ToMessage));
+        return message;
+    }
 
     public static SqlExecutionResult ToModel(SqlExecutionResultMessage value)
         => new()
@@ -500,6 +597,9 @@ public static class GrpcModelMapper
             ColumnNames = value.ColumnNames?.Values.ToArray(),
             ColumnTypes = value.ColumnTypes?.Values.ToArray(),
             ColumnNullability = value.ColumnNullability?.Values.ToArray(),
+            Columns = value.Columns.Count == 0
+                ? null
+                : value.Columns.Select(ToModel).ToArray(),
             Rows = value.Rows is null ? null : ToRows(value.Rows),
             RowsAffected = value.RowsAffected,
             Error = value.Error,

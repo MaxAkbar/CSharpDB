@@ -120,6 +120,85 @@ public sealed class DataGridTests
         Assert.Equal(" WHERE 0 = 1", whereClause);
     }
 
+    [Theory]
+    [InlineData("True", "1")]
+    [InlineData("false", "0")]
+    [InlineData("1", "1")]
+    [InlineData("-2", "1")]
+    [InlineData("0", "0")]
+    public void BuildWhereClause_ExactBooleanFilterUsesLogicalLiteral(
+        string filter,
+        string expectedLiteral)
+    {
+        var component = new DataGrid();
+        SetProperty(component, nameof(DataGrid.Columns), new[] { "IsActive" });
+        SetProperty(component, nameof(DataGrid.ColumnTypes), new[] { "BOOLEAN" });
+        GetFilters(component)[0] = filter;
+        GetFilterModes(component)[0] = DataGridFilterMatchMode.Exact;
+
+        string whereClause = (string)InvokeNonPublic(component, "BuildWhereClause")!;
+
+        Assert.Equal($" WHERE IsActive = {expectedLiteral}", whereClause);
+    }
+
+    [Fact]
+    public void BuildWhereClause_ExactBooleanFilterRejectsUnknownText()
+    {
+        var component = new DataGrid();
+        SetProperty(component, nameof(DataGrid.Columns), new[] { "IsActive" });
+        SetProperty(component, nameof(DataGrid.ColumnTypes), new[] { "BOOLEAN" });
+        GetFilters(component)[0] = "truthy";
+        GetFilterModes(component)[0] = DataGridFilterMatchMode.Exact;
+
+        string whereClause = (string)InvokeNonPublic(component, "BuildWhereClause")!;
+
+        Assert.Equal(" WHERE 0 = 1", whereClause);
+    }
+
+    [Theory]
+    [InlineData("TINYINT", "255", 255L)]
+    [InlineData("SMALLINT", "-32768", -32768L)]
+    [InlineData("INTEGER", "2147483647", 2147483647L)]
+    [InlineData("BIGINT", "9223372036854775807", long.MaxValue)]
+    public void ParseCellValue_LogicalIntegralTypeProducesIntegerCarrier(
+        string columnType,
+        string text,
+        long expected)
+    {
+        var component = new DataGrid();
+        SetProperty(component, nameof(DataGrid.ColumnTypes), new[] { columnType });
+
+        object? value = InvokeNonPublic(
+            component,
+            "ParseCellValue",
+            text,
+            0,
+            false);
+
+        Assert.Equal(expected, Assert.IsType<long>(value));
+    }
+
+    [Theory]
+    [InlineData("true", true)]
+    [InlineData("0", false)]
+    [InlineData("-4.5", true)]
+    public void ParseCellValue_BooleanTypeProducesBoolean(
+        string text,
+        bool expected)
+    {
+        var component = new DataGrid();
+        SetProperty(component, nameof(DataGrid.ColumnTypes), new[] { "BOOLEAN" });
+
+        object? value = InvokeNonPublic(
+            component,
+            "ParseCellValue",
+            text,
+            0,
+            false);
+
+        Assert.Equal(expected, Assert.IsType<bool>(value));
+    }
+
     [Fact]
     public void BuildWhereClause_ExactFilterModeWithUnknownTypeFallsBackToTextPredicate()
     {

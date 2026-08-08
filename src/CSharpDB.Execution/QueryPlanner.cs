@@ -725,6 +725,7 @@ public sealed partial class QueryPlanner
     private readonly Func<string, long, long>? _nextRowIdReservationProvider;
     private readonly Func<string, long, int, (long Start, long EndExclusive)>? _nextRowIdRangeReservationProvider;
     private readonly Action<string, long>? _nextRowIdObservationProvider;
+    private readonly Func<ulong, ulong>? _rowVersionAllocator;
     private readonly bool _useTransientNextRowIdHints;
     private readonly AdaptiveQueryReoptimizationRuntimeDiagnostics _adaptiveRuntimeDiagnostics;
 
@@ -884,7 +885,8 @@ public sealed partial class QueryPlanner
         DbFunctionRegistry? functions = null,
         AdaptiveQueryReoptimizationOptions? adaptiveQueryReoptimization = null,
         string? externalTableBasePath = null,
-        WindowExecutionOptions? windowExecution = null)
+        WindowExecutionOptions? windowExecution = null,
+        Func<ulong, ulong>? rowVersionAllocator = null)
         : this(
             pager,
             catalog,
@@ -898,7 +900,8 @@ public sealed partial class QueryPlanner
             functions,
             adaptiveQueryReoptimization,
             externalTableBasePath,
-            windowExecution: windowExecution)
+            windowExecution: windowExecution,
+            rowVersionAllocator: rowVersionAllocator)
     {
     }
 
@@ -916,7 +919,8 @@ public sealed partial class QueryPlanner
         AdaptiveQueryReoptimizationOptions? adaptiveQueryReoptimization = null,
         string? externalTableBasePath = null,
         TemporaryTableManager? temporaryTables = null,
-        WindowExecutionOptions? windowExecution = null)
+        WindowExecutionOptions? windowExecution = null,
+        Func<ulong, ulong>? rowVersionAllocator = null)
     {
         _pager = pager;
         _catalog = catalog;
@@ -934,6 +938,7 @@ public sealed partial class QueryPlanner
         _nextRowIdReservationProvider = nextRowIdReservationProvider;
         _nextRowIdRangeReservationProvider = nextRowIdRangeReservationProvider;
         _nextRowIdObservationProvider = nextRowIdObservationProvider;
+        _rowVersionAllocator = rowVersionAllocator;
         _observedSchemaVersion = catalog.SchemaVersion;
         _useTransientNextRowIdHints = useTransientNextRowIdHints;
         AdaptiveQueryReoptimization = NormalizeAdaptiveQueryReoptimizationOptions(adaptiveQueryReoptimization);
@@ -1386,12 +1391,13 @@ public sealed partial class QueryPlanner
         var declaredColumns = stmt.Columns.Select(c => new ColumnDefinition
         {
             Name = c.Name,
-            Type = MapType(c.TypeToken),
+            Type = c.DeclaredType.StorageType,
+            DeclaredType = c.DeclaredType,
             IsPrimaryKey = c.IsPrimaryKey,
             IsIdentity = c.IsIdentity,
             IsRowVersion = c.IsRowVersion,
             Nullable = c.IsNullable,
-            Collation = ValidateAndNormalizeColumnCollation(c.Name, c.TypeToken, c.Collation),
+            Collation = ValidateAndNormalizeColumnCollation(c.Name, c.DeclaredType, c.Collation),
             DefaultSql = CanonicalizeDefaultExpression(c),
         }).ToArray();
         KeyConstraintDefinition[] keyConstraints = MaterializeKeyConstraints(
@@ -1455,12 +1461,14 @@ public sealed partial class QueryPlanner
         var columns = stmt.Columns.Select(c => new ColumnDefinition
         {
             Name = c.Name,
-            Type = MapType(c.TypeToken),
+            Type = c.DeclaredType.StorageType,
+            DeclaredType = c.DeclaredType,
             IsPrimaryKey = c.IsPrimaryKey,
-            IsIdentity = c.IsIdentity || (c.IsPrimaryKey && c.TypeToken == TokenType.Integer),
+            IsIdentity = c.IsIdentity ||
+                (c.IsPrimaryKey && c.DeclaredType.Kind is SqlTypeKind.Integer or SqlTypeKind.BigInt),
             IsRowVersion = false,
             Nullable = c.IsNullable,
-            Collation = ValidateAndNormalizeColumnCollation(c.Name, c.TypeToken, c.Collation),
+            Collation = ValidateAndNormalizeColumnCollation(c.Name, c.DeclaredType, c.Collation),
             DefaultSql = CanonicalizeDefaultExpression(c),
         }).ToArray();
 
@@ -1619,8 +1627,10 @@ public sealed partial class QueryPlanner
             TableName = stmt.TargetTableName,
             Columns = tempSchema.Columns.Select(static column => new ColumnDefinition
             {
+                SchemaId = column.SchemaId,
                 Name = column.Name,
                 Type = column.Type,
+                DeclaredType = column.DeclaredType,
                 Nullable = column.Nullable,
                 IsPrimaryKey = column.IsPrimaryKey,
                 IsIdentity = column.IsIdentity,
@@ -1741,12 +1751,15 @@ public sealed partial class QueryPlanner
                 newCols.Add(new ColumnDefinition
                 {
                     Name = add.Column.Name,
-                    Type = MapType(add.Column.TypeToken),
+                    Type = add.Column.DeclaredType.StorageType,
+                    DeclaredType = add.Column.DeclaredType,
                     IsPrimaryKey = add.Column.IsPrimaryKey,
-                    IsIdentity = add.Column.IsIdentity || (add.Column.IsPrimaryKey && add.Column.TypeToken == TokenType.Integer),
+                    IsIdentity = add.Column.IsIdentity ||
+                        (add.Column.IsPrimaryKey &&
+                         add.Column.DeclaredType.Kind is SqlTypeKind.Integer or SqlTypeKind.BigInt),
                     IsRowVersion = false,
                     Nullable = add.Column.IsNullable,
-                    Collation = ValidateAndNormalizeColumnCollation(add.Column.Name, add.Column.TypeToken, add.Column.Collation),
+                    Collation = ValidateAndNormalizeColumnCollation(add.Column.Name, add.Column.DeclaredType, add.Column.Collation),
                     DefaultSql = CanonicalizeDefaultExpression(add.Column),
                 });
 
@@ -2145,7 +2158,7 @@ public sealed partial class QueryPlanner
                     stmt.TableName,
                     schema,
                     setType.ColumnName,
-                    setType.TypeToken,
+                    setType.DeclaredType,
                     ct);
                 break;
             }
@@ -2424,11 +2437,11 @@ public sealed partial class QueryPlanner
             }
 
             DbType columnType = column.Type;
-            if (columnType is not (DbType.Integer or DbType.Real or DbType.Text))
+            if (!SupportsEqualityIndex(columnType))
             {
                 throw new CSharpDbException(
                     ErrorCode.TypeMismatch,
-                    "Only INTEGER, REAL, and TEXT equality indexes are supported.");
+                    "Equality indexes support INTEGER, REAL, DECIMAL, TEXT, and BLOB storage types.");
             }
 
             string? columnCollation = i < stmt.ColumnCollations.Count
@@ -2718,12 +2731,7 @@ public sealed partial class QueryPlanner
     private static string ExprToSql(Expression expr) => expr switch
     {
         DefaultExpression => "DEFAULT",
-        LiteralExpression lit => lit.Value == null ? "NULL"
-            : lit.LiteralType == TokenType.BlobLiteral ? $"X'{Convert.ToHexString((byte[])lit.Value)}'"
-            : lit.LiteralType == TokenType.StringLiteral ? $"'{lit.Value.ToString()!.Replace("'", "''")}'"
-            : lit.LiteralType == TokenType.RealLiteral && lit.Value is double realValue
-                ? SqlLiteralRules.FormatReal(realValue)
-            : Convert.ToString(lit.Value, CultureInfo.InvariantCulture)!,
+        LiteralExpression lit => LiteralToSql(lit),
         ParameterExpression param => $"@{param.Name}",
         ColumnRefExpression col => col.TableAlias != null
             ? $"{SqlIdentifierRules.Quote(col.TableAlias)}.{SqlIdentifierRules.Quote(col.ColumnName)}"
@@ -2731,6 +2739,7 @@ public sealed partial class QueryPlanner
         BinaryExpression bin => $"({ExprToSql(bin.Left)} {BinaryOpToSql(bin.Op)} {ExprToSql(bin.Right)})",
         UnaryExpression un => un.Op == TokenType.Not ? $"NOT {ExprToSql(un.Operand)}" : $"-{ExprToSql(un.Operand)}",
         CollateExpression collate => $"{ExprToSql(collate.Operand)} COLLATE {SqlIdentifierRules.Quote(collate.Collation)}",
+        CastExpression cast => $"CAST({ExprToSql(cast.Operand)} AS {cast.TargetType.ToSql()})",
         FunctionCallExpression func => func.IsStarArg ? $"{func.FunctionName}(*)"
             : $"{func.FunctionName}({(func.IsDistinct ? "DISTINCT " : "")}{string.Join(", ", func.Arguments.Select(ExprToSql))})",
         WindowFunctionExpression window => WindowFunctionToSql(window),
@@ -2744,6 +2753,38 @@ public sealed partial class QueryPlanner
         IsNullExpression isn => $"{ExprToSql(isn.Operand)} IS{(isn.Negated ? " NOT" : "")} NULL",
         _ => throw new InvalidOperationException($"Cannot serialize expression: {expr.GetType().Name}"),
     };
+
+    private static string LiteralToSql(LiteralExpression literal)
+    {
+        if (literal.Value is null)
+            return "NULL";
+        if (literal.LiteralType == TokenType.BlobLiteral)
+            return $"X'{Convert.ToHexString((byte[])literal.Value)}'";
+        if (literal.LiteralType == TokenType.StringLiteral)
+            return $"'{literal.Value.ToString()!.Replace("'", "''")}'";
+        if (literal.LiteralType == TokenType.RealLiteral && literal.Value is double realValue)
+        {
+            if (literal.RawText is { Length: > 0 } rawText &&
+                rawText.All(static character =>
+                    character is >= '0' and <= '9' or '.' or 'e' or 'E' or '+' or '-') &&
+                double.TryParse(
+                    rawText,
+                    NumberStyles.Float,
+                    CultureInfo.InvariantCulture,
+                    out double parsed) &&
+                double.IsFinite(parsed))
+            {
+                // Preserve the parser-validated spelling. Exact DECIMAL
+                // defaults, CHECK expressions, and persisted views must not
+                // make a round trip through binary64 during serialization.
+                return rawText;
+            }
+
+            return SqlLiteralRules.FormatReal(realValue);
+        }
+
+        return Convert.ToString(literal.Value, CultureInfo.InvariantCulture)!;
+    }
 
     private static string WindowFunctionToSql(WindowFunctionExpression window)
     {
@@ -2848,11 +2889,16 @@ public sealed partial class QueryPlanner
                     cols = new ColumnDefinition[cte.ColumnNames.Count];
                     for (int i = 0; i < cols.Length; i++)
                     {
+                        ColumnDefinition? sourceColumn = i < result.Schema.Length
+                            ? result.Schema[i]
+                            : null;
                         cols[i] = new ColumnDefinition
                         {
                             Name = cte.ColumnNames[i],
-                            Type = i < result.Schema.Length ? result.Schema[i].Type : DbType.Null,
-                            Nullable = true,
+                            Type = sourceColumn?.Type ?? DbType.Null,
+                            DeclaredType = sourceColumn?.DeclaredType,
+                            Nullable = sourceColumn?.Nullable ?? true,
+                            Collation = sourceColumn?.Collation,
                         };
                     }
                 }
@@ -3070,6 +3116,12 @@ public sealed partial class QueryPlanner
                     Operand = await RewriteSubqueriesInExpressionAsync(collate.Operand, ct),
                     Collation = collate.Collation,
                 };
+            case CastExpression cast:
+                return new CastExpression
+                {
+                    Operand = await RewriteSubqueriesInExpressionAsync(cast.Operand, ct),
+                    TargetType = cast.TargetType,
+                };
             case LikeExpression like:
                 return new LikeExpression
                 {
@@ -3125,8 +3177,8 @@ public sealed partial class QueryPlanner
                 if (!CanExecuteStandalone(query))
                     return new ScalarSubqueryExpression { Query = query };
 
-                var value = await ExecuteScalarSubqueryAsync(query, ct);
-                return CreateLiteralExpression(value);
+                var scalar = await ExecuteScalarSubqueryAsync(query, ct);
+                return CreateLiteralExpression(scalar.Value, scalar.DeclaredType);
             }
             case ExistsExpression exists:
             {
@@ -3197,19 +3249,21 @@ public sealed partial class QueryPlanner
         }
     }
 
-    private async ValueTask<DbValue> ExecuteScalarSubqueryAsync(QueryStatement query, CancellationToken ct)
+    private async ValueTask<(DbValue Value, SqlTypeDescriptor? DeclaredType)> ExecuteScalarSubqueryAsync(
+        QueryStatement query,
+        CancellationToken ct)
     {
         await using var result = await ExecuteQueryAsync(query, ct);
         EnsureSingleColumnSubquery(result.Schema, "Scalar subquery");
 
         if (!await result.MoveNextAsync(ct))
-            return DbValue.Null;
+            return (DbValue.Null, result.Schema[0].DeclaredType);
 
         var value = result.Current[0];
         if (await result.MoveNextAsync(ct))
             throw new CSharpDbException(ErrorCode.SyntaxError, "Scalar subquery returned more than one row.");
 
-        return value;
+        return (value, result.Schema[0].DeclaredType);
     }
 
     private async ValueTask<bool> ExecuteExistsSubqueryAsync(QueryStatement query, CancellationToken ct)
@@ -3225,7 +3279,11 @@ public sealed partial class QueryPlanner
 
         var values = new List<Expression>();
         while (await result.MoveNextAsync(ct))
-            values.Add(CreateLiteralExpression(result.Current[0]));
+        {
+            values.Add(CreateLiteralExpression(
+                result.Current[0],
+                result.Schema[0].DeclaredType));
+        }
 
         return values;
     }
@@ -3236,17 +3294,38 @@ public sealed partial class QueryPlanner
             throw new CSharpDbException(ErrorCode.SyntaxError, $"{description} must return exactly one column.");
     }
 
-    private static LiteralExpression CreateLiteralExpression(DbValue value)
+    private static Expression CreateLiteralExpression(
+        DbValue value,
+        SqlTypeDescriptor? declaredType = null)
     {
-        return value.Type switch
+        Expression literal = value.Type switch
         {
             DbType.Null => new LiteralExpression { Value = null, LiteralType = TokenType.Null },
             DbType.Integer => new LiteralExpression { Value = value.AsInteger, LiteralType = TokenType.IntegerLiteral },
             DbType.Real => new LiteralExpression { Value = value.AsReal, LiteralType = TokenType.RealLiteral },
+            DbType.Decimal => new LiteralExpression
+            {
+                Value = (double)value.AsDecimal,
+                LiteralType = TokenType.RealLiteral,
+                RawText = value.AsDecimal.ToString(CultureInfo.InvariantCulture),
+            },
             DbType.Text => new LiteralExpression { Value = value.AsText, LiteralType = TokenType.StringLiteral },
-            DbType.Blob => throw new CSharpDbException(ErrorCode.TypeMismatch, "Blob-valued subqueries are not supported in expressions."),
+            DbType.Blob => new LiteralExpression { Value = value.AsBlob, LiteralType = TokenType.BlobLiteral },
             _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unsupported subquery value type '{value.Type}'."),
         };
+
+        SqlTypeDescriptor? targetType = declaredType;
+        if (targetType is null && value.Type == DbType.Decimal)
+        {
+            targetType = SqlTypeDescriptor.Create(
+                SqlTypeKind.Decimal,
+                precision: SqlTypeDescriptor.MaximumDecimalPrecision,
+                scale: value.DecimalScale);
+        }
+
+        return targetType is null
+            ? literal
+            : new CastExpression { Operand = literal, TargetType = targetType };
     }
 
     private bool CanExecuteStandalone(QueryStatement query)
@@ -3306,6 +3385,8 @@ public sealed partial class QueryPlanner
                 return ExpressionHasExternalReferences(unary.Operand, visibleScopes);
             case CollateExpression collate:
                 return ExpressionHasExternalReferences(collate.Operand, visibleScopes);
+            case CastExpression cast:
+                return ExpressionHasExternalReferences(cast.Operand, visibleScopes);
             case LikeExpression like:
                 return ExpressionHasExternalReferences(like.Operand, visibleScopes)
                     || ExpressionHasExternalReferences(like.Pattern, visibleScopes)
@@ -3487,6 +3568,12 @@ public sealed partial class QueryPlanner
                 {
                     Operand = BindOuterScopesInExpression(collate.Operand, visibleScopes, outerScopes),
                     Collation = collate.Collation,
+                };
+            case CastExpression cast:
+                return new CastExpression
+                {
+                    Operand = BindOuterScopesInExpression(cast.Operand, visibleScopes, outerScopes),
+                    TargetType = cast.TargetType,
                 };
             case LikeExpression like:
                 return new LikeExpression
@@ -3814,6 +3901,7 @@ public sealed partial class QueryPlanner
         BinaryExpression binary => ContainsSubqueries(binary.Left) || ContainsSubqueries(binary.Right),
         UnaryExpression unary => ContainsSubqueries(unary.Operand),
         CollateExpression collate => ContainsSubqueries(collate.Operand),
+        CastExpression cast => ContainsSubqueries(cast.Operand),
         LikeExpression like => ContainsSubqueries(like.Operand)
             || ContainsSubqueries(like.Pattern)
             || (like.EscapeChar != null && ContainsSubqueries(like.EscapeChar)),
@@ -4886,7 +4974,7 @@ public sealed partial class QueryPlanner
             return false;
 
         DbType type = schema.Columns[resolvedIndex].Type;
-        if (type is not (DbType.Integer or DbType.Real))
+        if (type is not (DbType.Integer or DbType.Real or DbType.Decimal))
             return false;
 
         columnIndex = resolvedIndex;
@@ -4959,9 +5047,9 @@ public sealed partial class QueryPlanner
                     continue;
                 }
 
-                if (DbValue.Compare(value, minValues[i]) < 0)
+                if (SqlTypeCoercion.Compare(value, minValues[i], schema.Columns[i].DeclaredType) < 0)
                     minValues[i] = value;
-                if (DbValue.Compare(value, maxValues[i]) > 0)
+                if (SqlTypeCoercion.Compare(value, maxValues[i], schema.Columns[i].DeclaredType) > 0)
                     maxValues[i] = value;
             }
 
@@ -5008,8 +5096,12 @@ public sealed partial class QueryPlanner
             {
                 TableName = tableName,
                 ColumnName = schema.Columns[i].Name,
-                FrequentValues = BuildFrequentValues(valueFrequencies[i]),
-                HistogramBuckets = BuildHistogramBuckets(sampledValues[i]),
+                FrequentValues = BuildFrequentValues(
+                    valueFrequencies[i],
+                    schema.Columns[i].DeclaredType),
+                HistogramBuckets = BuildHistogramBuckets(
+                    sampledValues[i],
+                    schema.Columns[i].DeclaredType),
             };
         }
 
@@ -5069,7 +5161,9 @@ public sealed partial class QueryPlanner
         return plans;
     }
 
-    private static FrequentValueStatistics[] BuildFrequentValues(Dictionary<DbValue, long>? frequencies)
+    private static FrequentValueStatistics[] BuildFrequentValues(
+        Dictionary<DbValue, long>? frequencies,
+        SqlTypeDescriptor? declaredType)
     {
         if (frequencies == null || frequencies.Count == 0)
             return Array.Empty<FrequentValueStatistics>();
@@ -5077,7 +5171,10 @@ public sealed partial class QueryPlanner
         return frequencies
             .Where(static pair => pair.Value > 1)
             .OrderByDescending(static pair => pair.Value)
-            .ThenBy(static pair => pair.Key, Comparer<DbValue>.Create(static (left, right) => DbValue.Compare(left, right)))
+            .ThenBy(
+                static pair => pair.Key,
+                Comparer<DbValue>.Create((left, right) =>
+                    SqlTypeCoercion.Compare(left, right, declaredType)))
             .Take(AnalyzeFrequentValueCount)
             .Select(static pair => new FrequentValueStatistics
             {
@@ -5087,12 +5184,14 @@ public sealed partial class QueryPlanner
             .ToArray();
     }
 
-    private static HistogramBucketStatistics[] BuildHistogramBuckets(List<DbValue>? values)
+    private static HistogramBucketStatistics[] BuildHistogramBuckets(
+        List<DbValue>? values,
+        SqlTypeDescriptor? declaredType)
     {
         if (values == null || values.Count == 0)
             return Array.Empty<HistogramBucketStatistics>();
 
-        values.Sort(static (left, right) => DbValue.Compare(left, right));
+        values.Sort((left, right) => SqlTypeCoercion.Compare(left, right, declaredType));
         int bucketCount = Math.Min(AnalyzeHistogramBucketCount, values.Count);
         int bucketSize = (int)DivideRoundUp(values.Count, bucketCount);
         var buckets = new List<HistogramBucketStatistics>(bucketCount);
@@ -5167,6 +5266,11 @@ public sealed partial class QueryPlanner
                 break;
             case DbType.Real:
                 builder.Append(BitConverter.DoubleToInt64Bits(value.AsReal));
+                break;
+            case DbType.Decimal:
+                builder.Append(value.DecimalCoefficient)
+                    .Append(':')
+                    .Append(value.DecimalScale);
                 break;
             case DbType.Text:
                 builder.Append(Convert.ToBase64String(Encoding.UTF8.GetBytes(value.AsText)));
@@ -5419,6 +5523,12 @@ public sealed partial class QueryPlanner
                 {
                     Operand = ResolveNewOldRefsInExpression(collate.Operand, compositeRow, compositeSchema),
                     Collation = collate.Collation,
+                };
+            case CastExpression cast:
+                return new CastExpression
+                {
+                    Operand = ResolveNewOldRefsInExpression(cast.Operand, compositeRow, compositeSchema),
+                    TargetType = cast.TargetType,
                 };
             case LikeExpression like:
                 return new LikeExpression
@@ -6479,6 +6589,12 @@ public sealed partial class QueryPlanner
                     Operand = await RewriteCorrelatedExpressionAsync(collate.Operand, outerScopes, ct),
                     Collation = collate.Collation,
                 };
+            case CastExpression cast:
+                return new CastExpression
+                {
+                    Operand = await RewriteCorrelatedExpressionAsync(cast.Operand, outerScopes, ct),
+                    TargetType = cast.TargetType,
+                };
             case LikeExpression like:
                 return new LikeExpression
                 {
@@ -6509,7 +6625,8 @@ public sealed partial class QueryPlanner
             case ScalarSubqueryExpression scalarSubquery:
             {
                 var boundQuery = BindOuterScopesInQuery(scalarSubquery.Query, outerScopes);
-                return CreateLiteralExpression(await ExecuteScalarSubqueryAsync(boundQuery, ct));
+                var scalar = await ExecuteScalarSubqueryAsync(boundQuery, ct);
+                return CreateLiteralExpression(scalar.Value, scalar.DeclaredType);
             }
             case ExistsExpression exists:
             {
@@ -7393,6 +7510,22 @@ public sealed partial class QueryPlanner
                     : expression;
             }
 
+            case CastExpression cast:
+            {
+                Expression operand =
+                    RewriteAggregateOrderByExpression(
+                        cast.Operand,
+                        outputSlots,
+                        out changed);
+                return changed
+                    ? new CastExpression
+                    {
+                        Operand = operand,
+                        TargetType = cast.TargetType,
+                    }
+                    : expression;
+            }
+
             case IsNullExpression isNull:
             {
                 Expression operand =
@@ -7754,12 +7887,25 @@ public sealed partial class QueryPlanner
             {
                 Name = name,
                 Type = DbType.Integer,
+                DeclaredType = SqlTypeDescriptor.Create(SqlTypeKind.BigInt),
                 Nullable = false,
             };
         }
 
+        ColumnDefinition argument = InferColumnDef(window.Function.Arguments[0], null, schema, 0);
         if (functionName == "AVG")
         {
+            if (argument.Type == DbType.Decimal)
+            {
+                return new ColumnDefinition
+                {
+                    Name = name,
+                    Type = DbType.Decimal,
+                    DeclaredType = DecimalAggregateSemantics.AverageResultType,
+                    Nullable = true,
+                };
+            }
+
             return new ColumnDefinition
             {
                 Name = name,
@@ -7768,11 +7914,11 @@ public sealed partial class QueryPlanner
             };
         }
 
-        ColumnDefinition argument = InferColumnDef(window.Function.Arguments[0], null, schema, 0);
         return new ColumnDefinition
         {
             Name = name,
             Type = argument.Type,
+            DeclaredType = argument.DeclaredType,
             Nullable = true,
             Collation = argument.Collation,
         };
@@ -7806,6 +7952,7 @@ public sealed partial class QueryPlanner
             var left = leftSchema[i];
             var right = rightSchema[i];
             DbType outputType = MergeCompoundType(left.Type, right.Type, i);
+            SqlTypeDescriptor? outputDeclaredType = MergeCompoundDeclaredType(left, right, outputType, i);
             string? outputCollation = null;
             if (outputType == DbType.Text)
             {
@@ -7835,6 +7982,7 @@ public sealed partial class QueryPlanner
             {
                 Name = left.Name,
                 Type = outputType,
+                DeclaredType = outputDeclaredType,
                 Nullable = left.Nullable || right.Nullable || left.Type == DbType.Null || right.Type == DbType.Null,
                 Collation = outputCollation,
             };
@@ -7851,13 +7999,197 @@ public sealed partial class QueryPlanner
             return right;
         if (right == DbType.Null)
             return left;
-        if (left is DbType.Integer or DbType.Real && right is DbType.Integer or DbType.Real)
-            return DbType.Real;
+        if (left is (DbType.Integer or DbType.Real or DbType.Decimal) &&
+            right is (DbType.Integer or DbType.Real or DbType.Decimal))
+        {
+            if (left == DbType.Real || right == DbType.Real)
+                return DbType.Real;
+            return DbType.Decimal;
+        }
 
         throw new CSharpDbException(
             ErrorCode.TypeMismatch,
             $"Set operation column {columnIndex + 1} has incompatible types: left branch is {left}, right branch is {right}.");
     }
+
+    private static SqlTypeDescriptor? MergeCompoundDeclaredType(
+        ColumnDefinition left,
+        ColumnDefinition right,
+        DbType outputType,
+        int columnIndex)
+    {
+        if (left.Type == DbType.Null)
+            return right.DeclaredType;
+        if (right.Type == DbType.Null)
+            return left.DeclaredType;
+
+        SqlTypeDescriptor leftType = left.EffectiveType;
+        SqlTypeDescriptor rightType = right.EffectiveType;
+        if (leftType == rightType)
+            return left.DeclaredType ?? right.DeclaredType;
+
+        bool leftNumeric = IsSetOperationNumericType(leftType.Kind);
+        bool rightNumeric = IsSetOperationNumericType(rightType.Kind);
+        if (leftNumeric || rightNumeric)
+        {
+            if (!leftNumeric || !rightNumeric)
+                throw IncompatibleSetOperationLogicalTypes(leftType, rightType, columnIndex);
+
+            if (outputType == DbType.Decimal)
+            {
+                if (leftType.Kind == SqlTypeKind.Decimal &&
+                    rightType.Kind == SqlTypeKind.Decimal)
+                {
+                    return MergeSetOperationDecimalTypes(leftType, rightType, columnIndex);
+                }
+
+                // A mixed integral/decimal set has no value-aware facet
+                // information at planning time. Preserve the exact numeric
+                // family without advertising one branch's narrower domain.
+                return SqlTypeDescriptor.Create(SqlTypeKind.Decimal);
+            }
+
+            if (outputType == DbType.Real)
+            {
+                return SqlTypeDescriptor.Create(
+                    leftType.Kind is SqlTypeKind.Double or SqlTypeKind.Decimal ||
+                    rightType.Kind is SqlTypeKind.Double or SqlTypeKind.Decimal
+                        ? SqlTypeKind.Double
+                        : SqlTypeKind.Real);
+            }
+
+            if (outputType == DbType.Integer)
+                return MergeSetOperationIntegralTypes(leftType.Kind, rightType.Kind);
+        }
+
+        if (IsCharacterType(leftType.Kind) && IsCharacterType(rightType.Kind))
+            return MergeSetOperationCharacterTypes(leftType, rightType);
+
+        if (IsBinaryType(leftType.Kind) && IsBinaryType(rightType.Kind))
+            return MergeSetOperationBinaryTypes(leftType, rightType);
+
+        if (IsBitStringType(leftType.Kind) && IsBitStringType(rightType.Kind))
+            return MergeSetOperationBitStringTypes(leftType, rightType);
+
+        throw IncompatibleSetOperationLogicalTypes(leftType, rightType, columnIndex);
+    }
+
+    private static SqlTypeDescriptor MergeSetOperationDecimalTypes(
+        SqlTypeDescriptor left,
+        SqlTypeDescriptor right,
+        int columnIndex)
+    {
+        (int leftPrecision, int leftScale) = CSharpDbDecimalCodec.ResolveFacets(
+            left.Precision,
+            left.Scale);
+        (int rightPrecision, int rightScale) = CSharpDbDecimalCodec.ResolveFacets(
+            right.Precision,
+            right.Scale);
+        int scale = Math.Max(leftScale, rightScale);
+        int precision = Math.Max(
+            leftPrecision - leftScale,
+            rightPrecision - rightScale) + scale;
+
+        if (precision > SqlTypeDescriptor.MaximumDecimalPrecision)
+        {
+            throw new CSharpDbException(
+                ErrorCode.TypeMismatch,
+                $"Set operation column {columnIndex + 1} cannot represent both decimal domains " +
+                $"'{left.ToSql()}' and '{right.ToSql()}' within maximum precision " +
+                $"{SqlTypeDescriptor.MaximumDecimalPrecision}.");
+        }
+
+        return SqlTypeDescriptor.Create(
+            SqlTypeKind.Decimal,
+            precision: precision,
+            scale: scale);
+    }
+
+    private static SqlTypeDescriptor MergeSetOperationIntegralTypes(
+        SqlTypeKind left,
+        SqlTypeKind right)
+    {
+        SqlTypeKind kind = Math.Max(IntegralTypeRank(left), IntegralTypeRank(right)) switch
+        {
+            0 => SqlTypeKind.TinyInt,
+            1 => SqlTypeKind.SmallInt,
+            2 => SqlTypeKind.Integer,
+            _ => SqlTypeKind.BigInt,
+        };
+        return SqlTypeDescriptor.Create(kind);
+    }
+
+    private static int IntegralTypeRank(SqlTypeKind kind) => kind switch
+    {
+        SqlTypeKind.TinyInt => 0,
+        SqlTypeKind.SmallInt => 1,
+        SqlTypeKind.Integer => 2,
+        SqlTypeKind.BigInt => 3,
+        _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "An integral SQL type is required."),
+    };
+
+    private static SqlTypeDescriptor MergeSetOperationCharacterTypes(
+        SqlTypeDescriptor left,
+        SqlTypeDescriptor right)
+    {
+        if (left.Kind == SqlTypeKind.Text || right.Kind == SqlTypeKind.Text)
+            return SqlTypeDescriptor.Create(SqlTypeKind.Text);
+
+        int? length = left.Length.HasValue && right.Length.HasValue
+            ? Math.Max(left.Length.Value, right.Length.Value)
+            : null;
+        return SqlTypeDescriptor.Create(SqlTypeKind.VarChar, length: length);
+    }
+
+    private static SqlTypeDescriptor MergeSetOperationBinaryTypes(
+        SqlTypeDescriptor left,
+        SqlTypeDescriptor right)
+    {
+        if (left.Kind == SqlTypeKind.Blob || right.Kind == SqlTypeKind.Blob)
+            return SqlTypeDescriptor.Create(SqlTypeKind.Blob);
+
+        int? length = left.Length.HasValue && right.Length.HasValue
+            ? Math.Max(left.Length.Value, right.Length.Value)
+            : null;
+        return SqlTypeDescriptor.Create(SqlTypeKind.VarBinary, length: length);
+    }
+
+    private static SqlTypeDescriptor MergeSetOperationBitStringTypes(
+        SqlTypeDescriptor left,
+        SqlTypeDescriptor right)
+    {
+        int? length = left.Length.HasValue && right.Length.HasValue
+            ? Math.Max(left.Length.Value, right.Length.Value)
+            : null;
+        return SqlTypeDescriptor.Create(SqlTypeKind.VarBit, length: length);
+    }
+
+    private static bool IsSetOperationNumericType(SqlTypeKind kind) =>
+        kind is SqlTypeKind.TinyInt or
+            SqlTypeKind.SmallInt or
+            SqlTypeKind.Integer or
+            SqlTypeKind.BigInt or
+            SqlTypeKind.Real or
+            SqlTypeKind.Double or
+            SqlTypeKind.Decimal;
+
+    private static bool IsCharacterType(SqlTypeKind kind) =>
+        kind is SqlTypeKind.Char or SqlTypeKind.VarChar or SqlTypeKind.Text;
+
+    private static bool IsBinaryType(SqlTypeKind kind) =>
+        kind is SqlTypeKind.Binary or SqlTypeKind.VarBinary or SqlTypeKind.Blob;
+
+    private static bool IsBitStringType(SqlTypeKind kind) =>
+        kind is SqlTypeKind.Bit or SqlTypeKind.VarBit;
+
+    private static CSharpDbException IncompatibleSetOperationLogicalTypes(
+        SqlTypeDescriptor left,
+        SqlTypeDescriptor right,
+        int columnIndex) =>
+        new(
+            ErrorCode.TypeMismatch,
+            $"Set operation column {columnIndex + 1} has incompatible logical types: " +
+            $"left branch is {left.ToSql()}, right branch is {right.ToSql()}.");
 
     private static List<DbValue[]> ExecuteUnion(
         List<DbValue[]> leftRows,
@@ -8107,7 +8439,7 @@ public sealed partial class QueryPlanner
         if (predicateColumnIndex < 0 || predicateColumnIndex >= schema.Columns.Count)
             return false;
         DbType predicateColumnType = schema.Columns[predicateColumnIndex].Type;
-        if (predicateColumnType is not (DbType.Integer or DbType.Real or DbType.Text))
+        if (!SupportsEqualityIndex(predicateColumnType))
         {
             return false;
         }
@@ -8151,19 +8483,11 @@ public sealed partial class QueryPlanner
             if (matchedIndex == null)
                 return false;
 
-            bool hasCompatibleLiteral =
-                predicateColumnType == DbType.Real
-                    ? predicateLiteral.Type is DbType.Integer or DbType.Real
-                    : predicateLiteral.Type == predicateColumnType;
+            bool hasCompatibleLiteral = IsCompatibleEqualityLiteral(
+                predicateColumnType,
+                predicateLiteral.Type);
             if (!hasCompatibleLiteral)
                 return false;
-
-            if (!predicateUsesDirectIntegerKey &&
-                predicateColumnType != DbType.Real &&
-                !(predicateLiteral.Type == DbType.Text && predicateColumnType == DbType.Text))
-            {
-                return false;
-            }
 
             normalizedPredicateLiteral = predicateUsesDirectIntegerKey
                 ? predicateLiteral
@@ -8584,7 +8908,7 @@ public sealed partial class QueryPlanner
             row,
             rowIdReservationCountHint,
             ct);
-        byte[]? generatedRowVersion = MaterializeInitialRowVersion(schema, row);
+        byte[]? generatedRowVersion = await MaterializeInitialRowVersionAsync(schema, row, ct);
         RowConstraintValidator.ValidateRow(schema, row);
         long? generatedIntegerIdentity = autoGeneratedRowId &&
             schema.PrimaryKeyColumnIndex >= 0 &&
@@ -9319,7 +9643,8 @@ public sealed partial class QueryPlanner
             func.FunctionName,
             outputSchema,
             isDistinct: func.IsDistinct,
-            recordSerializer: GetReadSerializer(schema)));
+            recordSerializer: GetReadSerializer(schema),
+            argumentCollation: CollationSupport.ResolveExpressionCollation(func.Arguments[0], schema)));
         return true;
     }
 
@@ -9397,6 +9722,9 @@ public sealed partial class QueryPlanner
         }
 
         var outputSchema = BuildAggregateOutputSchema(stmt.Columns, schema);
+        string? aggregateArgumentCollation = isCountStar
+            ? null
+            : CollationSupport.ResolveExpressionCollation(aggregateExpression!, schema);
         if ((isCountStar || columnIndex >= 0) &&
             TryBuildKeyAggregateQuery(
                 simpleRef.TableName,
@@ -9437,7 +9765,8 @@ public sealed partial class QueryPlanner
                         func.FunctionName,
                         outputSchema,
                         isDistinct: func.IsDistinct,
-                        recordSerializer: serializer)
+                        recordSerializer: serializer,
+                        argumentCollation: aggregateArgumentCollation)
                     : new ScalarAggregateLookupOperator(
                         _catalog.GetIndexStore(indexedLookupPlan.Index!.IndexName, _pager),
                         tableTree,
@@ -9446,7 +9775,8 @@ public sealed partial class QueryPlanner
                         func.FunctionName,
                         outputSchema,
                         isDistinct: func.IsDistinct,
-                        recordSerializer: serializer);
+                        recordSerializer: serializer,
+                        argumentCollation: aggregateArgumentCollation);
                 result = new QueryResult(
                     AnnotatePhysicalPredicate(
                         aggregateLookup,
@@ -9518,7 +9848,8 @@ public sealed partial class QueryPlanner
                 aggregateArgumentEvaluator: compactIndexedAggregateEvaluator,
                 isDistinct: func.IsDistinct,
                 isCountStar,
-                batchPlan: indexedScalarBatchPlan);
+                batchPlan: indexedScalarBatchPlan,
+                argumentCollation: aggregateArgumentCollation);
             ApplyLogicalPredicateReadScope(simpleRef.TableName, stmt.Where, schema, filteredPayloadAggregate);
             result = new QueryResult(filteredPayloadAggregate);
             return true;
@@ -9567,7 +9898,8 @@ public sealed partial class QueryPlanner
             isDistinct: func.IsDistinct,
             isCountStar,
             recordSerializer: GetReadSerializer(schema),
-            batchPlan: scalarBatchPlan);
+            batchPlan: scalarBatchPlan,
+            argumentCollation: aggregateArgumentCollation);
         ApplyLogicalPredicateReadScope(simpleRef.TableName, stmt.Where, schema, filteredAggregate);
         result = new QueryResult(filteredAggregate);
         return true;
@@ -9884,7 +10216,8 @@ public sealed partial class QueryPlanner
             outputSchema,
             isDistinct: func.IsDistinct,
             emitOnEmptyInput: false,
-            recordSerializer: GetReadSerializer(schema)));
+            recordSerializer: GetReadSerializer(schema),
+            argumentCollation: CollationSupport.ResolveExpressionCollation(func.Arguments[0], schema)));
         return true;
     }
 
@@ -9996,6 +10329,16 @@ public sealed partial class QueryPlanner
         var schema = GetSchema(simpleRef.TableName);
         if (!TryResolveCompositeGroupByColumns(stmt.GroupBy, schema, expectedAlias, out var groupColumnIndices))
             return false;
+
+        for (int i = 0; i < groupColumnIndices.Length; i++)
+        {
+            ColumnDefinition groupColumn = schema.Columns[groupColumnIndices[i]];
+            if (groupColumn.Type == DbType.Text &&
+                !CollationSupport.IsBinaryOrDefault(groupColumn.Collation))
+            {
+                return false;
+            }
+        }
 
         var matchingIndex = FindCompositeGroupedIndex(simpleRef.TableName, schema, groupColumnIndices);
         if (matchingIndex == null)
@@ -10481,7 +10824,6 @@ public sealed partial class QueryPlanner
                     newRow[pkIdx] = DbValue.FromInteger(rowId);
                 if (hasIntegerPrimaryKey && newRow[pkIdx].Type != DbType.Integer)
                     throw new CSharpDbException(ErrorCode.TypeMismatch, "INTEGER PRIMARY KEY must remain an integer value.");
-                AdvanceRowVersion(schema, oldRow, newRow);
                 RowConstraintValidator.ValidateRow(schema, newRow);
             }
 
@@ -10579,7 +10921,6 @@ public sealed partial class QueryPlanner
                 throw new CSharpDbException(
                     ErrorCode.TypeMismatch,
                     "INTEGER PRIMARY KEY must remain an integer value.");
-            AdvanceRowVersion(schema, oldRow, newRow);
             RowConstraintValidator.ValidateRow(schema, newRow);
 
             // BEFORE UPDATE triggers
@@ -11339,7 +11680,6 @@ public sealed partial class QueryPlanner
                 }
             }
 
-            AdvanceRowVersion(schema, oldRow, newRow);
             RowConstraintValidator.ValidateRow(schema, newRow);
             await FireTriggersAsync(tableName, TriggerTiming.Before, TriggerEvent.Update, oldRow, newRow, schema, ct);
             await RefreshRowVersionAfterBeforeTriggersAsync(
@@ -11772,6 +12112,9 @@ public sealed partial class QueryPlanner
             case CollateExpression collate:
                 ValidateHygieneExpression(collate.Operand, schema);
                 break;
+            case CastExpression cast:
+                ValidateHygieneExpression(cast.Operand, schema);
+                break;
             case LikeExpression like:
                 ValidateHygieneExpression(like.Operand, schema);
                 ValidateHygieneExpression(like.Pattern, schema);
@@ -11833,6 +12176,7 @@ public sealed partial class QueryPlanner
             DbType.Null => string.Empty,
             DbType.Integer => value.AsInteger.ToString(CultureInfo.InvariantCulture),
             DbType.Real => BitConverter.DoubleToInt64Bits(value.AsReal).ToString(CultureInfo.InvariantCulture),
+            DbType.Decimal => $"{value.DecimalCoefficient}:{value.DecimalScale}",
             DbType.Text => CollationSupport.NormalizeText(value.AsText, collation),
             DbType.Blob => Convert.ToBase64String(value.AsBlob),
             _ => string.Empty,
@@ -12639,6 +12983,19 @@ public sealed partial class QueryPlanner
                 {
                     Operand = rewrittenCollateOperand,
                     Collation = collate.Collation,
+                };
+                return true;
+            case CastExpression cast:
+                if (!TryRewriteSimpleViewPredicateExpression(cast.Operand, viewRef, outputExpressionMap, out var rewrittenCastOperand))
+                {
+                    rewritten = expression;
+                    return false;
+                }
+
+                rewritten = new CastExpression
+                {
+                    Operand = rewrittenCastOperand,
+                    TargetType = cast.TargetType,
                 };
                 return true;
             case LikeExpression like:
@@ -13734,6 +14091,8 @@ public sealed partial class QueryPlanner
                 return TryCollectReferencedJoinTables(unary.Operand, leaves, referencedTables);
             case CollateExpression collate:
                 return TryCollectReferencedJoinTables(collate.Operand, leaves, referencedTables);
+            case CastExpression cast:
+                return TryCollectReferencedJoinTables(cast.Operand, leaves, referencedTables);
 
             case LikeExpression like:
                 return TryCollectReferencedJoinTables(like.Operand, leaves, referencedTables) &&
@@ -14941,6 +15300,13 @@ public sealed partial class QueryPlanner
         if (expression is not BinaryExpression { Op: BinaryOp.Equals } equalsExpr)
             return false;
 
+        string? comparisonCollation = CollationSupport.ResolveComparisonCollation(
+            equalsExpr.Left,
+            equalsExpr.Right,
+            compositeSchema);
+        if (!CollationSupport.IsBinaryOrDefault(comparisonCollation))
+            return false;
+
         if (!TryResolveNormalizedJoinColumnIndex(equalsExpr.Left, compositeSchema, out int leftAbs) ||
             !TryResolveNormalizedJoinColumnIndex(equalsExpr.Right, compositeSchema, out int rightAbs))
         {
@@ -15011,7 +15377,7 @@ public sealed partial class QueryPlanner
             return false;
 
         DbType columnType = compositeSchema.Columns[resolvedIndex].Type;
-        if (columnType is not (DbType.Integer or DbType.Real))
+        if (columnType is not (DbType.Integer or DbType.Real or DbType.Decimal))
             return false;
 
         absoluteIndex = resolvedIndex;
@@ -15437,7 +15803,7 @@ public sealed partial class QueryPlanner
                 }
 
                 DbType colType = schema.Columns[colIndex].Type;
-                if (colType is not (DbType.Integer or DbType.Real or DbType.Text))
+                if (!SupportsEqualityIndex(colType))
                 {
                     matches = false;
                     break;
@@ -15449,9 +15815,9 @@ public sealed partial class QueryPlanner
                     break;
                 }
 
-                bool hasCompatibleLiteral = colType == DbType.Real
-                    ? literal.Type is DbType.Integer or DbType.Real
-                    : literal.Type == colType;
+                bool hasCompatibleLiteral = IsCompatibleEqualityLiteral(
+                    colType,
+                    literal.Type);
                 if (!hasCompatibleLiteral)
                 {
                     matches = false;
@@ -15679,28 +16045,85 @@ public sealed partial class QueryPlanner
 
         if (columnSide is not ColumnRefExpression col || literalSide is not LiteralExpression lit)
             return false;
-        if (!TryConvertLiteral(lit, out var literal) || literal.IsNull)
-            return false;
-
         int resolvedIndex = col.TableAlias != null
             ? schema.GetQualifiedColumnIndex(col.TableAlias, col.ColumnName)
             : schema.GetColumnIndex(col.ColumnName);
         if (resolvedIndex < 0 || resolvedIndex >= schema.Columns.Count)
             return false;
 
-        DbType columnType = schema.Columns[resolvedIndex].Type;
-        if (columnType is not (DbType.Integer or DbType.Real or DbType.Text))
+        ColumnDefinition column = schema.Columns[resolvedIndex];
+        DbType columnType = column.Type;
+        if (!SupportsEqualityIndex(columnType) ||
+            !TryConvertLiteralForColumn(lit, column, out DbValue literal) ||
+            literal.IsNull)
             return false;
 
-        bool hasCompatibleLiteral = columnType == DbType.Real
-            ? literal.Type is DbType.Integer or DbType.Real
-            : literal.Type == columnType;
+        bool hasCompatibleLiteral = IsCompatibleEqualityLiteral(
+            columnType,
+            literal.Type);
         if (!hasCompatibleLiteral)
             return false;
 
         columnIndex = resolvedIndex;
         lookupLiteral = literal;
         return true;
+    }
+
+    private static bool SupportsEqualityIndex(DbType type) =>
+        type is DbType.Integer or DbType.Real or DbType.Decimal or DbType.Text or DbType.Blob;
+
+    private static bool IsCompatibleEqualityLiteral(DbType columnType, DbType literalType) =>
+        columnType switch
+        {
+            DbType.Real => literalType is DbType.Integer or DbType.Real,
+            DbType.Decimal => literalType is DbType.Integer or DbType.Decimal,
+            _ => literalType == columnType,
+        };
+
+    private static bool TryConvertLiteralForColumn(
+        LiteralExpression literal,
+        ColumnDefinition column,
+        out DbValue value)
+    {
+        if (column.Type == DbType.Decimal &&
+            literal.RawText is { Length: > 0 } rawText &&
+            literal.LiteralType is TokenType.IntegerLiteral or TokenType.RealLiteral &&
+            decimal.TryParse(
+                rawText,
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out decimal exact))
+        {
+            try
+            {
+                value = SqlTypeCoercion.Cast(DbValue.FromDecimal(exact), column.EffectiveType);
+                return true;
+            }
+            catch (CSharpDbException)
+            {
+                value = DbValue.Null;
+                return false;
+            }
+        }
+
+        if (!TryConvertLiteral(literal, out DbValue rawValue))
+        {
+            value = DbValue.Null;
+            return false;
+        }
+
+        try
+        {
+            value = column.DeclaredType is null
+                ? rawValue
+                : SqlTypeCoercion.CoerceForAssignment(rawValue, column);
+            return true;
+        }
+        catch (CSharpDbException)
+        {
+            value = DbValue.Null;
+            return false;
+        }
     }
 
     private static IndexSchema? FindLookupIndexForColumn(
@@ -17268,6 +17691,9 @@ public sealed partial class QueryPlanner
             if (columnIndex < 0 || columnIndex >= schema.Columns.Count)
                 continue;
 
+            if (SqlTypeCoercion.IsInterval(schema.Columns[columnIndex].DeclaredType))
+                continue;
+
             string? effectiveCollation = CollationSupport.GetEffectiveIndexColumnCollation(idx, schema, 0, columnIndex);
             ExtractOrderedTextIndexRange(
                 where,
@@ -18088,7 +18514,7 @@ public sealed partial class QueryPlanner
             return false;
         }
 
-        if (!TryConvertLiteral(lit, out literal))
+        if (!TryConvertLiteralForColumn(lit, schema.Columns[columnIndex], out literal))
             return false;
 
         if (!CanPushDownPredicate(schema, columnIndex, literal, queryCollation))
@@ -18100,6 +18526,11 @@ public sealed partial class QueryPlanner
     private static bool CanPushDownPredicate(TableSchema schema, int columnIndex, DbValue literal, string? queryCollation = null)
     {
         if (columnIndex < 0 || columnIndex >= schema.Columns.Count)
+            return false;
+
+        // Encoded pushdown compares text lexically. SQL intervals have a
+        // duration ordering that does not match their display spelling.
+        if (SqlTypeCoercion.IsInterval(schema.Columns[columnIndex].DeclaredType))
             return false;
 
         if (schema.Columns[columnIndex].Type != DbType.Text || literal.Type != DbType.Text)
@@ -18615,6 +19046,7 @@ public sealed partial class QueryPlanner
             BinaryExpression bin => ContainsAggregate(bin.Left) || ContainsAggregate(bin.Right),
             UnaryExpression un => ContainsAggregate(un.Operand),
             CollateExpression collate => ContainsAggregate(collate.Operand),
+            CastExpression cast => ContainsAggregate(cast.Operand),
             _ => false,
         };
     }
@@ -18943,6 +19375,8 @@ public sealed partial class QueryPlanner
                 return TryAccumulateMaxReferencedColumn(un.Operand, schema, ref maxColumnIndex);
             case CollateExpression collate:
                 return TryAccumulateMaxReferencedColumn(collate.Operand, schema, ref maxColumnIndex);
+            case CastExpression cast:
+                return TryAccumulateMaxReferencedColumn(cast.Operand, schema, ref maxColumnIndex);
             case LikeExpression like:
                 return TryAccumulateMaxReferencedColumn(like.Operand, schema, ref maxColumnIndex)
                     && TryAccumulateMaxReferencedColumn(like.Pattern, schema, ref maxColumnIndex)
@@ -19007,6 +19441,7 @@ public sealed partial class QueryPlanner
             {
                 Name = operand.Name,
                 Type = operand.Type,
+                DeclaredType = operand.DeclaredType,
                 Nullable = operand.Nullable,
                 IsPrimaryKey = operand.IsPrimaryKey,
                 IsIdentity = operand.IsIdentity,
@@ -19017,7 +19452,9 @@ public sealed partial class QueryPlanner
 
         if (expr is ColumnRefExpression colRef)
         {
-            int idx = schema.GetColumnIndex(colRef.ColumnName);
+            int idx = colRef.TableAlias != null
+                ? schema.GetQualifiedColumnIndex(colRef.TableAlias, colRef.ColumnName)
+                : schema.GetColumnIndex(colRef.ColumnName);
             if (idx >= 0)
             {
                 ColumnDefinition source = schema.Columns[idx];
@@ -19028,6 +19465,7 @@ public sealed partial class QueryPlanner
                 {
                     Name = alias,
                     Type = source.Type,
+                    DeclaredType = source.DeclaredType,
                     Nullable = source.Nullable,
                     IsPrimaryKey = source.IsPrimaryKey,
                     IsIdentity = source.IsIdentity,
@@ -19055,9 +19493,100 @@ public sealed partial class QueryPlanner
             {
                 Name = alias ?? $"expr{index}",
                 Type = type,
+                DeclaredType = literal is
+                    {
+                        LiteralType: TokenType.IntegerLiteral,
+                        Value: long integerValue,
+                    }
+                        ? ExpressionEvaluator.IntegerTypeForValue(integerValue)
+                        : null,
                 Nullable = literal.Value == null,
             };
         }
+
+        if (expr is CastExpression cast)
+        {
+            ColumnDefinition operand = InferColumnDef(cast.Operand, null, schema, index);
+            return new ColumnDefinition
+            {
+                Name = alias ?? $"expr{index}",
+                Type = cast.TargetType.StorageType,
+                DeclaredType = cast.TargetType,
+                Nullable = operand.Nullable,
+            };
+        }
+
+        if (expr is UnaryExpression unary)
+        {
+            ColumnDefinition operand = InferColumnDef(unary.Operand, null, schema, index);
+            if (unary.Op == TokenType.Not)
+            {
+                return BooleanExpressionColumn(
+                    alias ?? $"expr{index}",
+                    operand.Nullable);
+            }
+
+            if (unary.Op == TokenType.Minus)
+            {
+                return InferUnaryMinusColumn(
+                    operand,
+                    unary.Operand,
+                    alias ?? $"expr{index}");
+            }
+        }
+
+        if (expr is BinaryExpression binary)
+        {
+            ColumnDefinition left = InferColumnDef(binary.Left, null, schema, index);
+            ColumnDefinition right = InferColumnDef(binary.Right, null, schema, index);
+            if (binary.Op is BinaryOp.Plus or BinaryOp.Minus or BinaryOp.Multiply or BinaryOp.Divide)
+            {
+                return InferArithmeticColumn(
+                    binary.Op,
+                    left,
+                    right,
+                    alias ?? $"expr{index}");
+            }
+
+            return BooleanExpressionColumn(
+                alias ?? $"expr{index}",
+                left.Nullable || right.Nullable);
+        }
+
+        if (expr is LikeExpression like)
+        {
+            ColumnDefinition operand = InferColumnDef(like.Operand, null, schema, index);
+            ColumnDefinition pattern = InferColumnDef(like.Pattern, null, schema, index);
+            bool nullable = operand.Nullable || pattern.Nullable;
+            if (like.EscapeChar is not null)
+                nullable |= InferColumnDef(like.EscapeChar, null, schema, index).Nullable;
+            return BooleanExpressionColumn(alias ?? $"expr{index}", nullable);
+        }
+
+        if (expr is InExpression inExpression)
+        {
+            bool nullable = InferColumnDef(inExpression.Operand, null, schema, index).Nullable;
+            foreach (Expression value in inExpression.Values)
+                nullable |= InferColumnDef(value, null, schema, index).Nullable;
+            return BooleanExpressionColumn(alias ?? $"expr{index}", nullable);
+        }
+
+        if (expr is InSubqueryExpression)
+            return BooleanExpressionColumn(alias ?? $"expr{index}", nullable: true);
+
+        if (expr is ExistsExpression)
+            return BooleanExpressionColumn(alias ?? $"expr{index}", nullable: false);
+
+        if (expr is BetweenExpression between)
+        {
+            bool nullable = InferColumnDef(between.Operand, null, schema, index).Nullable ||
+                InferColumnDef(between.Low, null, schema, index).Nullable ||
+                InferColumnDef(between.High, null, schema, index).Nullable;
+            return BooleanExpressionColumn(alias ?? $"expr{index}", nullable);
+        }
+
+        if (expr is IsNullExpression)
+            return BooleanExpressionColumn(alias ?? $"expr{index}", nullable: false);
 
         if (expr is FunctionCallExpression func)
         {
@@ -19067,10 +19596,112 @@ public sealed partial class QueryPlanner
             string name = func.IsStarArg
                 ? $"{func.FunctionName}(*)"
                 : $"{func.FunctionName}({argumentText})";
+            string functionName = func.FunctionName.ToUpperInvariant();
+            ColumnDefinition? argument = func.Arguments.Count > 0
+                ? InferColumnDef(func.Arguments[0], null, schema, index)
+                : null;
+
+            if (functionName is "XML_EXISTS" or "XMLEXISTS")
+            {
+                bool nullable = func.Arguments.Any(expression =>
+                    InferColumnDef(expression, null, schema, index).Nullable);
+                return BooleanExpressionColumn(alias ?? name, nullable);
+            }
+
+            if (argument is not null &&
+                functionName is "MIN" or "MAX")
+            {
+                return new ColumnDefinition
+                {
+                    Name = alias ?? name,
+                    Type = argument.Type,
+                    DeclaredType = argument.DeclaredType,
+                    Nullable = true,
+                    Collation = argument.Collation,
+                };
+            }
+
+            if (argument?.Type == DbType.Decimal && functionName == "AVG")
+            {
+                return new ColumnDefinition
+                {
+                    Name = alias ?? name,
+                    Type = DbType.Decimal,
+                    DeclaredType = DecimalAggregateSemantics.AverageResultType,
+                    Nullable = true,
+                };
+            }
+
+            if (argument is not null &&
+                functionName is "ABS" or "ROUND" or "INT" or "FLOOR" or "FIX" &&
+                argument.Type is DbType.Integer or DbType.Real or DbType.Decimal)
+            {
+                SqlTypeDescriptor? resultType = argument.Type == DbType.Integer
+                    ? argument.EffectiveType.Kind switch
+                    {
+                        SqlTypeKind.Integer => SqlTypeDescriptor.Create(SqlTypeKind.Integer),
+                        SqlTypeKind.BigInt => SqlTypeDescriptor.Create(SqlTypeKind.BigInt),
+                        _ => SqlTypeDescriptor.Create(SqlTypeKind.BigInt),
+                    }
+                    : argument.DeclaredType;
+                return new ColumnDefinition
+                {
+                    Name = alias ?? name,
+                    Type = argument.Type,
+                    DeclaredType = resultType,
+                    Nullable = true,
+                };
+            }
+
+            if (argument?.Type == DbType.Decimal && functionName == "SUM")
+            {
+                return new ColumnDefinition
+                {
+                    Name = alias ?? name,
+                    Type = DbType.Decimal,
+                    DeclaredType = argument.DeclaredType,
+                    Nullable = true,
+                };
+            }
+
+            if (functionName == "COUNT")
+            {
+                return new ColumnDefinition
+                {
+                    Name = alias ?? name,
+                    Type = DbType.Integer,
+                    DeclaredType = SqlTypeDescriptor.Create(SqlTypeKind.BigInt),
+                    Nullable = false,
+                };
+            }
+
+            if (argument?.Type == DbType.Integer && functionName == "SUM")
+            {
+                return new ColumnDefinition
+                {
+                    Name = alias ?? name,
+                    Type = DbType.Integer,
+                    DeclaredType = SqlTypeDescriptor.Create(SqlTypeKind.BigInt),
+                    Nullable = true,
+                };
+            }
+
             DbType type = DbBuiltInScalarFunctions.TryGetReturnType(func.FunctionName, out DbType builtInType)
                 ? builtInType
                 : DbType.Null;
-            return new ColumnDefinition { Name = alias ?? name, Type = type, Nullable = true };
+            SqlTypeDescriptor? declaredReturnType =
+                DbBuiltInFunctionRegistry.TryGet(
+                    func.FunctionName,
+                    out DbBuiltInFunctionDescriptor descriptor)
+                    ? descriptor.DeclaredReturnType
+                    : null;
+            return new ColumnDefinition
+            {
+                Name = alias ?? name,
+                Type = type,
+                DeclaredType = declaredReturnType,
+                Nullable = true,
+            };
         }
 
         if (expr is WindowFunctionExpression window)
@@ -19084,6 +19715,208 @@ public sealed partial class QueryPlanner
 
         return new ColumnDefinition { Name = alias ?? $"expr{index}", Type = DbType.Null, Nullable = true };
     }
+
+    private static ColumnDefinition BooleanExpressionColumn(string name, bool nullable) =>
+        new()
+        {
+            Name = name,
+            Type = DbType.Integer,
+            DeclaredType = SqlTypeDescriptor.Create(SqlTypeKind.Boolean),
+            Nullable = nullable,
+        };
+
+    private static ColumnDefinition InferUnaryMinusColumn(
+        ColumnDefinition operand,
+        Expression operandExpression,
+        string name)
+    {
+        if (operand.Type == DbType.Null || !IsArithmeticNumericColumn(operand))
+            return new ColumnDefinition { Name = name, Type = DbType.Null, Nullable = true };
+
+        SqlTypeDescriptor? declaredType = operandExpression is LiteralExpression
+            {
+                LiteralType: TokenType.IntegerLiteral,
+                Value: long value,
+            } && value is >= 0 and <= 2_147_483_648L
+                ? SqlTypeDescriptor.Create(SqlTypeKind.Integer)
+                : operand.EffectiveType.Kind switch
+                {
+                    SqlTypeKind.Integer => SqlTypeDescriptor.Create(SqlTypeKind.Integer),
+                    SqlTypeKind.BigInt => SqlTypeDescriptor.Create(SqlTypeKind.BigInt),
+                    SqlTypeKind.TinyInt or SqlTypeKind.SmallInt =>
+                        SqlTypeDescriptor.Create(SqlTypeKind.BigInt),
+                    _ => operand.DeclaredType,
+                };
+        return new ColumnDefinition
+        {
+            Name = name,
+            Type = operand.Type,
+            DeclaredType = declaredType,
+            Nullable = operand.Nullable,
+        };
+    }
+
+    private static ColumnDefinition InferArithmeticColumn(
+        BinaryOp operation,
+        ColumnDefinition left,
+        ColumnDefinition right,
+        string name)
+    {
+        bool nullable = left.Nullable || right.Nullable ||
+            left.Type == DbType.Null || right.Type == DbType.Null;
+
+        if (left.Type == DbType.Null && right.Type == DbType.Null)
+            return new ColumnDefinition { Name = name, Type = DbType.Null, Nullable = true };
+
+        if (left.Type == DbType.Null || right.Type == DbType.Null)
+        {
+            ColumnDefinition known = left.Type == DbType.Null ? right : left;
+            if (!IsArithmeticNumericColumn(known))
+                return new ColumnDefinition { Name = name, Type = DbType.Null, Nullable = true };
+
+            return new ColumnDefinition
+            {
+                Name = name,
+                Type = known.Type,
+                DeclaredType = known.DeclaredType,
+                Nullable = true,
+            };
+        }
+
+        if (!IsArithmeticNumericColumn(left) || !IsArithmeticNumericColumn(right))
+            return new ColumnDefinition { Name = name, Type = DbType.Null, Nullable = true };
+
+        DbType outputType = left.Type == DbType.Real || right.Type == DbType.Real
+            ? DbType.Real
+            : left.Type == DbType.Decimal || right.Type == DbType.Decimal
+                ? DbType.Decimal
+                : DbType.Integer;
+        SqlTypeDescriptor? declaredType = InferArithmeticDeclaredType(
+            operation,
+            left,
+            right,
+            outputType);
+
+        return new ColumnDefinition
+        {
+            Name = name,
+            Type = outputType,
+            DeclaredType = declaredType,
+            Nullable = nullable,
+        };
+    }
+
+    private static SqlTypeDescriptor? InferArithmeticDeclaredType(
+        BinaryOp operation,
+        ColumnDefinition left,
+        ColumnDefinition right,
+        DbType outputType)
+    {
+        if (outputType == DbType.Integer)
+        {
+            SqlTypeKind leftKind = left.EffectiveType.Kind;
+            SqlTypeKind rightKind = right.EffectiveType.Kind;
+            if (leftKind == SqlTypeKind.BigInt || rightKind == SqlTypeKind.BigInt)
+                return SqlTypeDescriptor.Create(SqlTypeKind.BigInt);
+            if (leftKind == SqlTypeKind.Integer && rightKind == SqlTypeKind.Integer)
+                return SqlTypeDescriptor.Create(SqlTypeKind.Integer);
+
+            return SqlTypeDescriptor.Create(SqlTypeKind.BigInt);
+        }
+
+        if (outputType == DbType.Real)
+        {
+            SqlTypeKind leftKind = left.EffectiveType.Kind;
+            SqlTypeKind rightKind = right.EffectiveType.Kind;
+            SqlTypeKind resultKind = leftKind is SqlTypeKind.Double or SqlTypeKind.Decimal ||
+                rightKind is SqlTypeKind.Double or SqlTypeKind.Decimal
+                    ? SqlTypeKind.Double
+                    : SqlTypeKind.Real;
+            return SqlTypeDescriptor.Create(resultKind);
+        }
+
+        if (!TryGetExactNumericFacets(left, out int leftPrecision, out int leftScale) ||
+            !TryGetExactNumericFacets(right, out int rightPrecision, out int rightScale))
+        {
+            return null;
+        }
+
+        int precision;
+        int scale;
+        switch (operation)
+        {
+            case BinaryOp.Plus:
+            case BinaryOp.Minus:
+                scale = Math.Max(leftScale, rightScale);
+                precision = Math.Max(
+                    leftPrecision - leftScale,
+                    rightPrecision - rightScale) + scale + 1;
+                break;
+            case BinaryOp.Multiply:
+                scale = leftScale + rightScale;
+                precision = leftPrecision + rightPrecision;
+                break;
+            case BinaryOp.Divide:
+                // Runtime decimal division retains as many exact decimal
+                // digits as the value requires (up to the engine limit).
+                // Without applying a result cast, no narrower scale is a
+                // truthful guarantee for repeating quotients.
+                return null;
+            default:
+                return null;
+        }
+
+        if (precision is < 1 or > SqlTypeDescriptor.MaximumDecimalPrecision ||
+            scale < 0 || scale > precision)
+        {
+            return null;
+        }
+
+        return SqlTypeDescriptor.Create(
+            SqlTypeKind.Decimal,
+            precision: precision,
+            scale: scale);
+    }
+
+    private static bool TryGetExactNumericFacets(
+        ColumnDefinition column,
+        out int precision,
+        out int scale)
+    {
+        SqlTypeDescriptor type = column.EffectiveType;
+        switch (type.Kind)
+        {
+            case SqlTypeKind.Decimal:
+                (precision, scale) = CSharpDbDecimalCodec.ResolveFacets(
+                    type.Precision,
+                    type.Scale);
+                return true;
+            case SqlTypeKind.TinyInt:
+                precision = 3;
+                scale = 0;
+                return true;
+            case SqlTypeKind.SmallInt:
+                precision = 5;
+                scale = 0;
+                return true;
+            case SqlTypeKind.Integer:
+                precision = 10;
+                scale = 0;
+                return true;
+            case SqlTypeKind.BigInt:
+                precision = 19;
+                scale = 0;
+                return true;
+            default:
+                precision = 0;
+                scale = 0;
+                return false;
+        }
+    }
+
+    private static bool IsArithmeticNumericColumn(ColumnDefinition column) =>
+        (column.Type is DbType.Integer or DbType.Real or DbType.Decimal) &&
+        IsSetOperationNumericType(column.EffectiveType.Kind);
 
     private static bool TryBuildColumnProjection(
         IReadOnlyList<SelectColumn> columns,
@@ -19113,10 +19946,12 @@ public sealed partial class QueryPlanner
                 {
                     Name = column.Alias,
                     Type = sourceColumn.Type,
+                    DeclaredType = sourceColumn.DeclaredType,
                     Nullable = sourceColumn.Nullable,
                     IsPrimaryKey = sourceColumn.IsPrimaryKey,
                     IsIdentity = sourceColumn.IsIdentity,
                     IsRowVersion = sourceColumn.IsRowVersion,
+                    Collation = sourceColumn.Collation,
                 }
                 : sourceColumn;
         }
@@ -19175,6 +20010,8 @@ public sealed partial class QueryPlanner
                 return TryAccumulateReferencedColumns(un.Operand, schema, referencedColumns);
             case CollateExpression collate:
                 return TryAccumulateReferencedColumns(collate.Operand, schema, referencedColumns);
+            case CastExpression cast:
+                return TryAccumulateReferencedColumns(cast.Operand, schema, referencedColumns);
             case LikeExpression like:
                 return TryAccumulateReferencedColumns(like.Operand, schema, referencedColumns)
                     && TryAccumulateReferencedColumns(like.Pattern, schema, referencedColumns)
@@ -19769,6 +20606,7 @@ public sealed partial class QueryPlanner
             BinaryExpression bin => ComputeRequiresQualifiedMappings(bin.Left) || ComputeRequiresQualifiedMappings(bin.Right),
             UnaryExpression un => ComputeRequiresQualifiedMappings(un.Operand),
             CollateExpression collate => ComputeRequiresQualifiedMappings(collate.Operand),
+            CastExpression cast => ComputeRequiresQualifiedMappings(cast.Operand),
             LikeExpression like => ComputeRequiresQualifiedMappings(like.Operand)
                 || ComputeRequiresQualifiedMappings(like.Pattern)
                 || (like.EscapeChar != null && ComputeRequiresQualifiedMappings(like.EscapeChar)),
@@ -20561,7 +21399,7 @@ public sealed partial class QueryPlanner
                     DbValue.FromText(tableName),
                     DbValue.FromText(col.Name),
                     DbValue.FromInteger(i + 1),
-                    DbValue.FromText(col.Type.ToString().ToUpperInvariant()),
+                    DbValue.FromText(col.EffectiveType.ToSql()),
                     DbValue.FromInteger(col.Nullable ? 1 : 0),
                     DbValue.FromInteger(col.IsPrimaryKey ? 1 : 0),
                     DbValue.FromInteger(col.IsIdentity ? 1 : 0),
@@ -20626,7 +21464,7 @@ public sealed partial class QueryPlanner
                     DbValue.FromText(tableName),
                     DbValue.FromText(col.Name),
                     DbValue.FromInteger(i + 1),
-                    DbValue.FromText(col.Type.ToString().ToUpperInvariant()),
+                    DbValue.FromText(col.EffectiveType.ToSql()),
                     DbValue.FromInteger(col.Nullable ? 1 : 0),
                     DbValue.FromInteger(col.IsPrimaryKey ? 1 : 0),
                     DbValue.FromInteger(col.IsIdentity ? 1 : 0),
@@ -20837,7 +21675,11 @@ public sealed partial class QueryPlanner
             DbValue.FromText(descriptor.Name),
             DbValue.FromText(descriptor.Signature),
             DbValue.FromText(descriptor.Kind.ToString().ToUpperInvariant()),
-            descriptor.ReturnType.HasValue ? DbValue.FromText(descriptor.ReturnType.Value.ToString().ToUpperInvariant()) : DbValue.Null,
+            descriptor.DeclaredReturnType is not null
+                ? DbValue.FromText(descriptor.DeclaredReturnType.ToSql())
+                : descriptor.ReturnType.HasValue
+                    ? DbValue.FromText(descriptor.ReturnType.Value.ToString().ToUpperInvariant())
+                    : DbValue.Null,
             DbValue.FromText(descriptor.ReturnTypeRule),
             DbValue.FromText(descriptor.NullBehavior.ToString().ToLowerInvariant()),
             DbValue.FromText(descriptor.Volatility.ToString().ToLowerInvariant()),
@@ -21499,7 +22341,8 @@ public sealed partial class QueryPlanner
             // primary keys whose types cannot use the current backing indexes.
             // Their scalar metadata remains available to callers, while new
             // table-level logical keys retain the explicitly qualified types.
-            if (inlinePrimaryKeyColumn.Type is DbType.Integer or DbType.Text)
+            if (inlinePrimaryKeyColumn.Type is
+                DbType.Integer or DbType.Decimal or DbType.Text or DbType.Blob)
                 keys.Add((null, KeyConstraintKind.PrimaryKey, inlinePrimaryKeyColumns));
         }
 
@@ -21557,11 +22400,11 @@ public sealed partial class QueryPlanner
                         $"Column '{resolvedName}' is specified more than once in a key constraint on table '{tableName}'.");
                 }
 
-                if (columns[resolvedColumnIndex].Type is not (DbType.Integer or DbType.Text))
+                if (!SupportsEqualityIndex(columns[resolvedColumnIndex].Type))
                 {
                     throw new CSharpDbException(
                         ErrorCode.TypeMismatch,
-                        $"Key column '{tableName}.{resolvedName}' must use INTEGER or TEXT in the first logical-key slice.");
+                        $"Key column '{tableName}.{resolvedName}' must use an equality-indexable SQL type.");
                 }
 
                 normalizedColumns[columnIndex] = resolvedName;
@@ -21575,13 +22418,14 @@ public sealed partial class QueryPlanner
                     $"Table '{tableName}' defines the same {FormatKeyConstraintKind(key.Kind)} more than once.");
             }
 
+            ColumnDefinition keyColumn = columns.First(column => string.Equals(
+                column.Name,
+                normalizedColumns[0],
+                StringComparison.OrdinalIgnoreCase));
             bool usesPhysicalIntegerPrimaryKey =
                 key.Kind == KeyConstraintKind.PrimaryKey &&
                 normalizedColumns.Length == 1 &&
-                columns.First(column => string.Equals(
-                    column.Name,
-                    normalizedColumns[0],
-                    StringComparison.OrdinalIgnoreCase)).Type == DbType.Integer;
+                IsRowIdPrimaryKeyType(keyColumn);
             string? backingIndexName = usesPhysicalIntegerPrimaryKey
                 ? null
                 : GenerateKeyConstraintBackingIndexName(
@@ -21621,12 +22465,14 @@ public sealed partial class QueryPlanner
             bool isPrimaryKey = primaryKeyColumns.Contains(column.Name);
             return new ColumnDefinition
             {
+                SchemaId = column.SchemaId,
                 Name = column.Name,
                 Type = column.Type,
+                DeclaredType = column.DeclaredType,
                 Nullable = isPrimaryKey ? false : column.Nullable,
                 IsPrimaryKey = isPrimaryKey,
                 IsIdentity = column.IsIdentity ||
-                    (isPrimaryKey && usesPhysicalIntegerPrimaryKey && column.Type == DbType.Integer),
+                    (isPrimaryKey && usesPhysicalIntegerPrimaryKey && IsRowIdPrimaryKeyType(column)),
                 IsRowVersion = column.IsRowVersion,
                 Collation = column.Collation,
                 DefaultSql = column.DefaultSql,
@@ -21669,8 +22515,12 @@ public sealed partial class QueryPlanner
         }
 
         int columnIndex = schema.GetColumnIndex(primaryKey.Columns[0]);
-        return columnIndex >= 0 && schema.Columns[columnIndex].Type == DbType.Integer;
+        return columnIndex >= 0 && IsRowIdPrimaryKeyType(schema.Columns[columnIndex]);
     }
+
+    private static bool IsRowIdPrimaryKeyType(ColumnDefinition column) =>
+        column.Type == DbType.Integer &&
+        column.EffectiveType.Kind is SqlTypeKind.Integer or SqlTypeKind.BigInt;
 
     private TableRewriteIndexRebuildPlan GetIndexesForPhysicalIntegerPrimaryKeyRekey(
         TableSchema tableSchema)
@@ -21847,8 +22697,10 @@ public sealed partial class QueryPlanner
         ColumnDefinition[] newColumns = schema.Columns
             .Select(column => new ColumnDefinition
             {
+                SchemaId = column.SchemaId,
                 Name = column.Name,
                 Type = column.Type,
+                DeclaredType = column.DeclaredType,
                 Nullable = column.Nullable,
                 IsPrimaryKey = false,
                 IsIdentity = usesPhysicalIntegerPrimaryKey &&
@@ -21995,12 +22847,16 @@ public sealed partial class QueryPlanner
         string? defaultSql = null,
         bool replaceDefault = false,
         DbType? type = null,
+        SqlTypeDescriptor? declaredType = null,
+        bool replaceDeclaredType = false,
         string? collation = null,
         bool replaceCollation = false) =>
         new()
         {
+            SchemaId = column.SchemaId,
             Name = column.Name,
             Type = type ?? column.Type,
+            DeclaredType = replaceDeclaredType ? declaredType : column.DeclaredType,
             Nullable = nullable ?? column.Nullable,
             IsPrimaryKey = column.IsPrimaryKey,
             IsIdentity = column.IsIdentity,
@@ -22015,6 +22871,7 @@ public sealed partial class QueryPlanner
         IReadOnlyList<CheckConstraintDefinition>? checkConstraints = null) =>
         new()
         {
+            SchemaId = schema.SchemaId,
             TableName = schema.TableName,
             Columns = columns ?? schema.Columns,
             ForeignKeys = schema.ForeignKeys,
@@ -22027,41 +22884,38 @@ public sealed partial class QueryPlanner
         string tableName,
         TableSchema schema,
         string columnName,
-        TokenType targetTypeToken,
+        SqlTypeDescriptor targetDeclaredType,
         CancellationToken ct)
     {
         int columnIndex = RequireAlterColumnIndex(schema, columnName);
         ColumnDefinition current = schema.Columns[columnIndex];
-        DbType targetType = MapType(targetTypeToken);
-        if (targetType == current.Type)
+        DbType targetType = targetDeclaredType.StorageType;
+        if (targetDeclaredType == current.EffectiveType)
             return;
 
-        bool isExactNumericConversion =
-            current.Type == DbType.Integer && targetType == DbType.Real ||
-            current.Type == DbType.Real && targetType == DbType.Integer;
-        bool isExactTextBlobConversion =
-            current.Type == DbType.Text && targetType == DbType.Blob ||
-            current.Type == DbType.Blob && targetType == DbType.Text;
-        if (!isExactNumericConversion && !isExactTextBlobConversion)
-        {
-            throw new CSharpDbException(
-                ErrorCode.TypeMismatch,
-                $"ALTER COLUMN TYPE supports only exact INTEGER-to-REAL, REAL-to-INTEGER, TEXT-to-BLOB, and BLOB-to-TEXT conversions; column '{tableName}.{current.Name}' cannot change from {current.Type} to {targetType}.");
-        }
+        bool canRebuildDependentSqlIndexes =
+            current.Type == targetType ||
+            ((current.Type is DbType.Integer or DbType.Real or DbType.Decimal) &&
+             (targetType is DbType.Integer or DbType.Real or DbType.Decimal));
 
         IndexSchema[] dependentIndexes =
             await EnsureAlterColumnRewriteHasNoUnsupportedDependenciesAsync(
                 tableName,
                 schema,
                 current,
-                allowReadySqlIndexes: isExactNumericConversion,
+                allowReadySqlIndexes: canRebuildDependentSqlIndexes,
                 ct);
 
         ColumnDefinition[] newColumns = schema.Columns.ToArray();
         newColumns[columnIndex] = CopyColumnDefinition(
             current,
             type: targetType,
-            collation: null,
+            declaredType: targetDeclaredType,
+            replaceDeclaredType: true,
+            collation: targetDeclaredType.Kind is
+                SqlTypeKind.Char or SqlTypeKind.VarChar or SqlTypeKind.Text
+                    ? current.Collation
+                    : null,
             replaceCollation: true);
         TableSchema targetSchema = CopyTableSchema(schema, columns: newColumns);
 
@@ -22088,27 +22942,26 @@ public sealed partial class QueryPlanner
             mappings[i] = TableRewriteColumnMapping.FromSource(i);
 
         TableRewriteValueConversion conversion =
-            (current.Type, targetType) switch
+            (current.EffectiveType.Kind, targetDeclaredType.Kind) switch
             {
-                (DbType.Integer, DbType.Real) =>
+                (SqlTypeKind.Integer or SqlTypeKind.BigInt,
+                    SqlTypeKind.Real or SqlTypeKind.Double) =>
                     TableRewriteValueConversion.IntegerToReal,
-                (DbType.Real, DbType.Integer) =>
+                (SqlTypeKind.Real or SqlTypeKind.Double,
+                    SqlTypeKind.Integer or SqlTypeKind.BigInt) =>
                     TableRewriteValueConversion.RealToInteger,
-                (DbType.Text, DbType.Blob) =>
+                (SqlTypeKind.Text, SqlTypeKind.Blob) =>
                     TableRewriteValueConversion.TextToBlob,
-                (DbType.Blob, DbType.Text) =>
+                (SqlTypeKind.Blob, SqlTypeKind.Text) =>
                     TableRewriteValueConversion.BlobToText,
-                _ => throw new InvalidOperationException(
-                    $"Unsupported validated ALTER COLUMN conversion from {current.Type} to {targetType}."),
+                _ => TableRewriteValueConversion.SqlCast,
             };
         mappings[columnIndex] =
             TableRewriteColumnMapping.ConvertFromSource(columnIndex, conversion);
 
         await ExecuteTableRewriteAsync(
             new TableRewritePlan(schema, targetSchema, mappings),
-            isExactNumericConversion
-                ? dependentIndexes
-                : Array.Empty<IndexSchema>(),
+            dependentIndexes,
             ct);
     }
 
@@ -22591,6 +23444,7 @@ public sealed partial class QueryPlanner
                 || ExpressionReferencesColumn(binary.Right, columnName),
             UnaryExpression unary => ExpressionReferencesColumn(unary.Operand, columnName),
             CollateExpression collate => ExpressionReferencesColumn(collate.Operand, columnName),
+            CastExpression cast => ExpressionReferencesColumn(cast.Operand, columnName),
             LikeExpression like => ExpressionReferencesColumn(like.Operand, columnName)
                 || ExpressionReferencesColumn(like.Pattern, columnName)
                 || (like.EscapeChar is not null && ExpressionReferencesColumn(like.EscapeChar, columnName)),
@@ -23000,6 +23854,8 @@ public sealed partial class QueryPlanner
                 ExpressionReferencesTable(between.High, tableName, visitedViews),
             IsNullExpression isNull =>
                 ExpressionReferencesTable(isNull.Operand, tableName, visitedViews),
+            CastExpression cast =>
+                ExpressionReferencesTable(cast.Operand, tableName, visitedViews),
             FunctionCallExpression function =>
                 function.Arguments.Any(argument =>
                     ExpressionReferencesTable(argument, tableName, visitedViews)),
@@ -23013,15 +23869,6 @@ public sealed partial class QueryPlanner
             _ => false,
         };
 
-    private static DbType MapType(TokenType token) => token switch
-    {
-        TokenType.Integer => DbType.Integer,
-        TokenType.Real => DbType.Real,
-        TokenType.Text => DbType.Text,
-        TokenType.Blob => DbType.Blob,
-        _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unknown type token: {token}"),
-    };
-
     private static string? NormalizeCollationName(string? collation)
     {
         string? normalized = CollationSupport.NormalizeMetadataName(collation);
@@ -23033,14 +23880,21 @@ public sealed partial class QueryPlanner
         return normalized;
     }
 
-    private static string? ValidateAndNormalizeColumnCollation(string columnName, TokenType typeToken, string? collation)
+    private static string? ValidateAndNormalizeColumnCollation(
+        string columnName,
+        SqlTypeDescriptor declaredType,
+        string? collation)
     {
         string? normalized = NormalizeCollationName(collation);
         if (normalized == null)
             return null;
 
-        if (typeToken != TokenType.Text)
-            throw new CSharpDbException(ErrorCode.TypeMismatch, $"COLLATE is only supported for TEXT columns. Column '{columnName}' uses type '{typeToken}'.");
+        if (declaredType.Kind is not (SqlTypeKind.Char or SqlTypeKind.VarChar or SqlTypeKind.Text))
+        {
+            throw new CSharpDbException(
+                ErrorCode.TypeMismatch,
+                $"COLLATE is only supported for character columns. Column '{columnName}' uses type '{declaredType.ToSql()}'.");
+        }
 
         return normalized;
     }
@@ -23134,11 +23988,11 @@ public sealed partial class QueryPlanner
             }
 
             ColumnDefinition childColumn = columns[childColumnIndex];
-            if (childColumn.Type is not (DbType.Integer or DbType.Text))
+            if (!SupportsEqualityIndex(childColumn.Type))
             {
                 throw new CSharpDbException(
                     ErrorCode.TypeMismatch,
-                    $"Foreign key column '{tableName}.{childColumn.Name}' must use INTEGER or TEXT.");
+                    $"Foreign key column '{tableName}.{childColumn.Name}' must use an equality-indexable SQL type.");
             }
             if (!seenChildColumns.Add(childColumn.Name))
             {
@@ -23260,11 +24114,14 @@ public sealed partial class QueryPlanner
 
             ColumnDefinition childColumn = columns[childColumnIndices[i]];
             ColumnDefinition parentColumn = parentSchema.Columns[parentColumnIndex];
-            if (parentColumn.Type != childColumn.Type)
+            if (parentColumn.Type != childColumn.Type ||
+                parentColumn.DeclaredType is not null &&
+                childColumn.DeclaredType is not null &&
+                parentColumn.EffectiveType != childColumn.EffectiveType)
             {
                 throw new CSharpDbException(
                     ErrorCode.TypeMismatch,
-                    $"Foreign key column '{tableName}.{childColumn.Name}' type '{childColumn.Type}' does not match referenced column '{parentSchema.TableName}.{parentColumn.Name}' type '{parentColumn.Type}'.");
+                    $"Foreign key column '{tableName}.{childColumn.Name}' type '{childColumn.EffectiveType.ToSql()}' does not match referenced column '{parentSchema.TableName}.{parentColumn.Name}' type '{parentColumn.EffectiveType.ToSql()}'.");
             }
             if (!seenParentColumns.Add(parentColumn.Name))
             {
@@ -23716,6 +24573,7 @@ public sealed partial class QueryPlanner
                     SchemaId = column.SchemaId,
                     Name = newColumnName,
                     Type = column.Type,
+                    DeclaredType = column.DeclaredType,
                     Nullable = column.Nullable,
                     IsPrimaryKey = column.IsPrimaryKey,
                     IsIdentity = column.IsIdentity,
@@ -23947,6 +24805,11 @@ public sealed partial class QueryPlanner
                 Operand = RenameColumnReferences(collate.Operand, oldColumnName, newColumnName),
                 Collation = collate.Collation,
             },
+            CastExpression cast => new CastExpression
+            {
+                Operand = RenameColumnReferences(cast.Operand, oldColumnName, newColumnName),
+                TargetType = cast.TargetType,
+            },
             LikeExpression like => new LikeExpression
             {
                 Operand = RenameColumnReferences(like.Operand, oldColumnName, newColumnName),
@@ -24045,7 +24908,10 @@ public sealed partial class QueryPlanner
                 if (values[i] is DefaultExpression)
                     continue;
 
-                row[columnIndex] = ResolveInsertValue(values[i], schema);
+                row[columnIndex] = ResolveInsertValue(
+                    values[i],
+                    schema,
+                    schema.Columns[columnIndex]);
                 useDefault[columnIndex] = false;
             }
         }
@@ -24058,7 +24924,7 @@ public sealed partial class QueryPlanner
                 if (values[i] is DefaultExpression)
                     continue;
 
-                row[i] = ResolveInsertValue(values[i], schema);
+                row[i] = ResolveInsertValue(values[i], schema, schema.Columns[i]);
                 useDefault[i] = false;
             }
         }
@@ -24119,44 +24985,155 @@ public sealed partial class QueryPlanner
         return -1;
     }
 
-    private static byte[]? MaterializeInitialRowVersion(TableSchema schema, DbValue[] row)
+    private async ValueTask<byte[]?> MaterializeInitialRowVersionAsync(
+        TableSchema schema,
+        DbValue[] row,
+        CancellationToken ct)
     {
         int rowVersionColumnIndex = GetRowVersionColumnIndex(schema);
         if (rowVersionColumnIndex < 0)
             return null;
 
-        byte[] generatedRowVersion = new byte[sizeof(ulong)];
-        BinaryPrimitives.WriteUInt64BigEndian(generatedRowVersion, 1);
+        byte[] generatedRowVersion = await AllocateDatabaseRowVersionAsync(ct);
         row[rowVersionColumnIndex] = DbValue.FromBlob(generatedRowVersion);
         return generatedRowVersion;
     }
 
-    private static byte[]? AdvanceRowVersion(TableSchema schema, DbValue[] oldRow, DbValue[] newRow)
+    private async ValueTask<byte[]?> AdvanceRowVersionAsync(
+        TableSchema schema,
+        DbValue[] newRow,
+        CancellationToken ct)
     {
         int rowVersionColumnIndex = GetRowVersionColumnIndex(schema);
         if (rowVersionColumnIndex < 0)
             return null;
 
-        DbValue oldValue = oldRow[rowVersionColumnIndex];
-        if (oldValue.Type != DbType.Blob || oldValue.AsBlob.Length != sizeof(ulong))
-        {
-            throw new CSharpDbException(
-                ErrorCode.CorruptDatabase,
-                $"ROWVERSION column '{schema.Columns[rowVersionColumnIndex].Name}' contains an invalid value.");
-        }
+        byte[] generatedRowVersion = await AllocateDatabaseRowVersionAsync(ct);
+        newRow[rowVersionColumnIndex] = DbValue.FromBlob(generatedRowVersion);
+        return generatedRowVersion;
+    }
 
-        ulong current = BinaryPrimitives.ReadUInt64BigEndian(oldValue.AsBlob);
-        if (current == ulong.MaxValue)
+    private async ValueTask<byte[]> AllocateDatabaseRowVersionAsync(CancellationToken ct)
+    {
+        ulong highWater = _catalog.RowVersionHighWater;
+        if (highWater == ulong.MaxValue)
         {
             throw new CSharpDbException(
                 ErrorCode.ConstraintViolation,
-                $"ROWVERSION column '{schema.Columns[rowVersionColumnIndex].Name}' has reached its maximum value.");
+                "The database-wide ROWVERSION allocator has reached its maximum value.");
         }
 
+        ulong next = _rowVersionAllocator is null
+            ? highWater + 1
+            : _rowVersionAllocator(highWater);
+        // With a database-owned high/low allocator, the catalog value is the
+        // durable reservation ceiling rather than the last issued token, so an
+        // issued value is expected to be below that ceiling.  Standalone
+        // planners still require the transactional counter to advance directly.
+        if (next == 0 || (_rowVersionAllocator is null && next <= highWater))
+        {
+            throw new CSharpDbException(
+                ErrorCode.ConstraintViolation,
+                "The database-wide ROWVERSION allocator has reached its maximum value.");
+        }
+
+        // A database-owned allocator durably reserves its range before the
+        // surrounding user transaction begins.  Persisting the issued token
+        // through the user transaction would make a rollback forget the
+        // allocation (and a stale concurrent catalog could also lower a newer
+        // reservation).  Standalone planners retain the original transactional
+        // high-water behavior.
+        if (_rowVersionAllocator is null)
+            await _catalog.PersistRowVersionHighWaterAsync(next, ct);
         byte[] generatedRowVersion = new byte[sizeof(ulong)];
-        BinaryPrimitives.WriteUInt64BigEndian(generatedRowVersion, current + 1);
-        newRow[rowVersionColumnIndex] = DbValue.FromBlob(generatedRowVersion);
+        BinaryPrimitives.WriteUInt64BigEndian(generatedRowVersion, next);
         return generatedRowVersion;
+    }
+
+    internal async ValueTask<ulong> GetDatabaseRowVersionHighWaterAsync(CancellationToken ct = default)
+    {
+        ulong highWater = _catalog.RowVersionHighWater;
+        foreach (string tableName in _catalog.GetTableNames())
+        {
+            TableSchema? schema = _catalog.GetTable(tableName);
+            if (schema is null)
+                continue;
+
+            int rowVersionColumnIndex = GetRowVersionColumnIndex(schema);
+            if (rowVersionColumnIndex < 0)
+                continue;
+
+            IRecordSerializer serializer = GetReadSerializer(schema);
+            BTree tree = _catalog.GetTableTree(tableName, _pager);
+            await using var cursor = tree.CreateCursor();
+            while (await cursor.MoveNextAsync(ct))
+            {
+                DbValue[] row = serializer.Decode(cursor.CurrentValue.Span);
+                if (rowVersionColumnIndex >= row.Length)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.CorruptDatabase,
+                        $"ROWVERSION column '{schema.Columns[rowVersionColumnIndex].Name}' is missing from a stored row.");
+                }
+
+                DbValue value = row[rowVersionColumnIndex];
+                if (value.Type != DbType.Blob || value.AsBlob.Length != sizeof(ulong))
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.CorruptDatabase,
+                        $"ROWVERSION column '{schema.Columns[rowVersionColumnIndex].Name}' contains an invalid value.");
+                }
+
+                highWater = Math.Max(
+                    highWater,
+                    BinaryPrimitives.ReadUInt64BigEndian(value.AsBlob));
+            }
+        }
+
+        return highWater;
+    }
+
+    internal async ValueTask<bool> RegenerateLegacyRowVersionTokensAsync(CancellationToken ct = default)
+    {
+        // The durable allocator sentinel is the upgrade marker. Databases written by
+        // the former per-row implementation have ROWVERSION columns but no sentinel,
+        // and may contain duplicate tokens across rows or tables.
+        if (_catalog.RowVersionHighWater != 0)
+            return false;
+
+        bool regeneratedAny = false;
+        foreach (string tableName in _catalog.GetTableNames())
+        {
+            TableSchema? schema = _catalog.GetTable(tableName);
+            if (schema is null)
+                continue;
+
+            int rowVersionColumnIndex = GetRowVersionColumnIndex(schema);
+            if (rowVersionColumnIndex < 0)
+                continue;
+
+            BTree tree = _catalog.GetTableTree(tableName, _pager);
+            IRecordSerializer serializer = GetReadSerializer(schema);
+            var storedRows = new List<(long RowId, DbValue[] Row)>();
+            await using (var cursor = tree.CreateCursor())
+            {
+                while (await cursor.MoveNextAsync(ct))
+                    storedRows.Add((cursor.CurrentKey, serializer.Decode(cursor.CurrentValue.Span)));
+            }
+
+            foreach ((long rowId, DbValue[] oldRow) in storedRows)
+            {
+                var newRow = (DbValue[])oldRow.Clone();
+                await AdvanceRowVersionAsync(schema, newRow, ct);
+                RowConstraintValidator.ValidateRow(schema, newRow);
+                await tree.DeleteAsync(rowId, ct);
+                await tree.InsertAsync(rowId, _recordSerializer.Encode(newRow), ct);
+                RecordLogicalMutationWrites(tableName, schema, oldRow, newRow, rowId, rowId);
+                regeneratedAny = true;
+            }
+        }
+
+        return regeneratedAny;
     }
 
     private static byte[] GetRowVersionValue(
@@ -24189,7 +25166,7 @@ public sealed partial class QueryPlanner
         if (persistedRow is null)
             return;
 
-        AdvanceRowVersion(schema, persistedRow, newRow);
+        await AdvanceRowVersionAsync(schema, newRow, ct);
         RowConstraintValidator.ValidateRow(schema, newRow);
     }
 
@@ -24222,10 +25199,26 @@ public sealed partial class QueryPlanner
         }
     }
 
-    private DbValue ResolveInsertValue(Expression valueExpression, TableSchema schema)
+    private DbValue ResolveInsertValue(
+        Expression valueExpression,
+        TableSchema schema,
+        ColumnDefinition targetColumn)
     {
         if (valueExpression is LiteralExpression literal)
+        {
+            if (targetColumn.EffectiveType.Kind == SqlTypeKind.Decimal &&
+                literal.RawText is { Length: > 0 } rawText &&
+                literal.LiteralType is TokenType.IntegerLiteral or TokenType.RealLiteral)
+            {
+                decimal exact = decimal.Parse(
+                    rawText,
+                    NumberStyles.Float,
+                    CultureInfo.InvariantCulture);
+                return DbValue.FromDecimal(exact);
+            }
+
             return ResolveInsertLiteral(literal);
+        }
 
         return ExpressionEvaluator.Evaluate(valueExpression, Array.Empty<DbValue>(), schema, _functions);
     }
@@ -24826,7 +25819,6 @@ public sealed partial class QueryPlanner
         if (ForeignKeyValuesEqual(schema, childColumnIndices, oldRow, newRow))
             return;
 
-        AdvanceRowVersion(schema, oldRow, newRow);
         RowConstraintValidator.ValidateRow(schema, newRow);
 
         await FireTriggersAsync(
@@ -24987,6 +25979,13 @@ public sealed partial class QueryPlanner
                 case DbType.Real:
                     builder.Append('R')
                         .Append(BitConverter.DoubleToInt64Bits(value.AsReal))
+                        .Append(';');
+                    break;
+                case DbType.Decimal:
+                    builder.Append('D')
+                        .Append(value.DecimalCoefficient)
+                        .Append(':')
+                        .Append(value.DecimalScale)
                         .Append(';');
                     break;
                 case DbType.Text:
@@ -25502,7 +26501,7 @@ public sealed partial class QueryPlanner
             row,
             rowIdReservationCountHint,
             ct);
-        byte[]? generatedRowVersion = MaterializeInitialRowVersion(schema, row);
+        byte[]? generatedRowVersion = await MaterializeInitialRowVersionAsync(schema, row, ct);
         RowConstraintValidator.ValidateRow(schema, row);
         long? generatedIntegerIdentity = autoGeneratedRowId &&
             schema.PrimaryKeyColumnIndex >= 0 &&
@@ -25607,6 +26606,14 @@ public sealed partial class QueryPlanner
         {
             if (!row[pkIdx].IsNull)
             {
+                // Validate the logical INTEGER/BIGINT boundary before an
+                // explicit identity value can advance the shared row-id hint.
+                // A rejected out-of-range INTEGER must not exhaust later
+                // generated identities in this process.
+                row[pkIdx] = SqlTypeCoercion.CoerceForAssignment(
+                    row[pkIdx],
+                    schema.Columns[pkIdx],
+                    tableName);
                 long explicitRowId = row[pkIdx].AsInteger;
                 if (explicitRowId >= 0 && explicitRowId < long.MaxValue)
                     ObserveExplicitRowId(tableName, schema, checked(explicitRowId + 1));
@@ -25625,6 +26632,10 @@ public sealed partial class QueryPlanner
                     ErrorCode.SyntaxError,
                     $"Primary key column '{schema.Columns[pkIdx].Name}' requires an explicit value.");
 
+            row[pkIdx] = SqlTypeCoercion.CoerceForAssignment(
+                row[pkIdx],
+                schema.Columns[pkIdx],
+                tableName);
             long rowId = row[pkIdx].AsInteger;
             if (rowId >= 0 && rowId < long.MaxValue)
                 ObserveExplicitRowId(tableName, schema, checked(rowId + 1));
@@ -25644,6 +26655,21 @@ public sealed partial class QueryPlanner
         if (!_nextRowIdCache.TryGetValue(tableName, out long nextRowId))
             nextRowId = await LoadNextRowIdAsync(tableName, schema, tree, ct);
 
+        long maximumRowId = GetGeneratedRowIdMaximum(schema);
+        if (nextRowId > maximumRowId)
+            throw IdentityExhausted(tableName, schema, maximumRowId);
+
+        if (nextRowId == long.MaxValue)
+        {
+            // EndExclusive and NextRowId cannot represent long.MaxValue + 1.
+            // Permit the final BIGINT value once, then report deterministic
+            // exhaustion on later attempts (including after reopen).
+            if (await tree.FindAsync(long.MaxValue, ct) is not null)
+                throw IdentityExhausted(tableName, schema, long.MaxValue);
+
+            return long.MaxValue;
+        }
+
         long rowId;
         if (_nextRowIdRangeReservationProvider is not null)
             rowId = ReserveRowIdFromLease(tableName, nextRowId, rowIdReservationCountHint);
@@ -25652,8 +26678,38 @@ public sealed partial class QueryPlanner
         else
             rowId = nextRowId;
 
+        if (rowId > maximumRowId)
+            throw IdentityExhausted(tableName, schema, maximumRowId);
+
         UpdateNextRowIdState(tableName, schema, checked(rowId + 1));
         return rowId;
+    }
+
+    private static long GetGeneratedRowIdMaximum(TableSchema schema)
+    {
+        int primaryKeyColumnIndex = schema.PrimaryKeyColumnIndex;
+        if (primaryKeyColumnIndex >= 0 &&
+            schema.Columns[primaryKeyColumnIndex].IsIdentity &&
+            schema.Columns[primaryKeyColumnIndex].EffectiveType.Kind == SqlTypeKind.Integer)
+        {
+            return int.MaxValue;
+        }
+
+        return long.MaxValue;
+    }
+
+    private static CSharpDbException IdentityExhausted(
+        string tableName,
+        TableSchema schema,
+        long maximumRowId)
+    {
+        int primaryKeyColumnIndex = schema.PrimaryKeyColumnIndex;
+        string typeName = primaryKeyColumnIndex >= 0
+            ? schema.Columns[primaryKeyColumnIndex].EffectiveType.ToSql()
+            : "BIGINT";
+        return new CSharpDbException(
+            ErrorCode.ConstraintViolation,
+            $"{typeName} identity for table '{tableName}' is exhausted at {maximumRowId}.");
     }
 
     private long ReserveRowIdFromLease(string tableName, long minimumNextRowId, int rowIdReservationCountHint)
@@ -25716,7 +26772,7 @@ public sealed partial class QueryPlanner
             if (cursor.CurrentKey > maxId)
                 maxId = cursor.CurrentKey;
         }
-        return maxId + 1;
+        return maxId == long.MaxValue ? long.MaxValue : maxId + 1;
     }
 
     private void UpdateNextRowIdState(string tableName, TableSchema schema, long nextRowId)

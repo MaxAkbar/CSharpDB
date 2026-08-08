@@ -47,7 +47,23 @@ public static class TableEndpoints
         var response = new TableSchemaResponse(
             schema.TableName,
             schema.Columns.Select(c => new ColumnResponse(
-                c.Name, c.Type.ToString(), c.Nullable, c.IsPrimaryKey, c.IsIdentity, c.IsRowVersion, c.Collation, c.DefaultSql, c.SchemaId)).ToList(),
+                c.Name,
+                c.Type.ToString(),
+                c.Nullable,
+                c.IsPrimaryKey,
+                c.IsIdentity,
+                c.IsRowVersion,
+                c.Collation,
+                c.DefaultSql,
+                c.SchemaId,
+                c.DeclaredType is null
+                    ? null
+                    : new SqlTypeDescriptorResponse(
+                        c.DeclaredType.Kind.ToString(),
+                        c.DeclaredType.Length,
+                        c.DeclaredType.Precision,
+                        c.DeclaredType.Scale,
+                        c.DeclaredType.FractionalSecondsPrecision))).ToList(),
             schema.ForeignKeys.Select(fk => new ForeignKeyResponse(
                 fk.ConstraintName,
                 fk.ColumnName,
@@ -102,7 +118,7 @@ public static class TableEndpoints
     {
         if (!Enum.TryParse<DbType>(req.Type, ignoreCase: true, out var dbType) ||
             !Enum.IsDefined(dbType))
-            return Results.BadRequest(new { error = $"Invalid column type '{req.Type}'. Valid types: Integer, Real, Text, Blob." });
+            return Results.BadRequest(new { error = $"Invalid storage type '{req.Type}'. Valid types: Integer, Real, Decimal, Text, Blob." });
 
         await db.AddColumnAsync(name, req.ColumnName, dbType, req.NotNull, req.Collation);
         return Results.NoContent();

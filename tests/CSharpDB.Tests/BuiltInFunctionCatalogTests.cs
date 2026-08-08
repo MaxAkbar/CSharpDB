@@ -21,7 +21,8 @@ public sealed class BuiltInFunctionCatalogTests
 
         Assert.True(DbBuiltInFunctionRegistry.TryGet("floor", out var floor));
         Assert.Equal("INT", floor.Name);
-        Assert.Equal(DbType.Real, floor.ReturnType);
+        Assert.Null(floor.ReturnType);
+        Assert.Equal("input numeric type", floor.ReturnTypeRule);
 
         Assert.True(DbBuiltInFunctionRegistry.TryGet("count", out var count));
         Assert.Equal(DbBuiltInFunctionKind.Aggregate, count.Kind);
@@ -48,6 +49,7 @@ public sealed class BuiltInFunctionCatalogTests
             Assert.Equal("text, text", function.AcceptedTypes);
             Assert.Equal(DbType.Integer, function.ReturnType);
             Assert.Equal("boolean integer", function.ReturnTypeRule);
+            Assert.Equal(SqlTypeKind.Boolean, function.DeclaredReturnType?.Kind);
             Assert.Equal(DbFunctionNullBehavior.Propagates, function.NullBehavior);
             Assert.Equal(DbFunctionVolatility.Immutable, function.Volatility);
             Assert.True(function.IsDeterministic);
@@ -153,6 +155,34 @@ public sealed class BuiltInFunctionCatalogTests
     }
 
     [Fact]
+    public async Task IntegerNumericFunctions_PreserveExactBigIntValuesAndMetadata()
+    {
+        await using var db = await Database.OpenInMemoryAsync(Ct);
+        await using var result = await db.ExecuteAsync(
+            "SELECT ABS(9007199254740993), ROUND(9007199254740993), " +
+            "INT(9007199254740993), FLOOR(9007199254740993), FIX(9007199254740993)",
+            Ct);
+
+        DbValue[] row = Assert.Single(await result.ToListAsync(Ct));
+        Assert.All(row, static value =>
+        {
+            Assert.Equal(DbType.Integer, value.Type);
+            Assert.Equal(9007199254740993L, value.AsInteger);
+        });
+        Assert.All(result.Schema, static column =>
+        {
+            Assert.Equal(DbType.Integer, column.Type);
+            Assert.Equal(SqlTypeKind.BigInt, column.EffectiveType.Kind);
+        });
+
+        Assert.Throws<OverflowException>(() =>
+            DbBuiltInScalarFunctions.TryEvaluate(
+                "ABS",
+                [DbValue.FromInteger(long.MinValue)],
+                out _));
+    }
+
+    [Fact]
     public async Task SystemFunctions_ExposesBuiltInsAliasesAndUserCallbacksWithMetadata()
     {
         var options = new DatabaseOptions().ConfigureFunctions(functions =>
@@ -184,7 +214,7 @@ public sealed class BuiltInFunctionCatalogTests
         Assert.Equal("LEN", rows[2][1].AsText);
         Assert.Equal("LEN(1)", rows[2][2].AsText);
         Assert.Equal("SCALAR", rows[2][3].AsText);
-        Assert.Equal("INTEGER", rows[2][4].AsText);
+        Assert.Equal("BIGINT", rows[2][4].AsText);
         Assert.Equal(1, rows[2][7].AsInteger);
         Assert.Equal(1, rows[2][8].AsInteger);
 
@@ -214,6 +244,6 @@ public sealed class BuiltInFunctionCatalogTests
         Assert.All(rows, static row => Assert.Equal("WINDOW", row[2].AsText));
         Assert.True(rows[0][3].IsNull);
         Assert.True(rows[1][3].IsNull);
-        Assert.Equal("INTEGER", rows[2][3].AsText);
+        Assert.Equal("BIGINT", rows[2][3].AsText);
     }
 }

@@ -10,6 +10,8 @@ using CoreDbType = CSharpDB.Primitives.DbType;
 using CoreForeignKeyDefinition = CSharpDB.Primitives.ForeignKeyDefinition;
 using CoreForeignKeyOnDeleteAction = CSharpDB.Primitives.ForeignKeyOnDeleteAction;
 using CoreIndexSchema = CSharpDB.Primitives.IndexSchema;
+using CoreSqlTypeDescriptor = CSharpDB.Primitives.SqlTypeDescriptor;
+using CoreSqlTypeKind = CSharpDB.Primitives.SqlTypeKind;
 using CoreTableSchema = CSharpDB.Primitives.TableSchema;
 using CoreTriggerEvent = CSharpDB.Primitives.TriggerEvent;
 using CoreTriggerSchema = CSharpDB.Primitives.TriggerSchema;
@@ -127,7 +129,8 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
             result.ColumnNames ?? [],
             result.ColumnTypes,
             result.ColumnNullability,
-            sourceRows);
+            sourceRows,
+            result.Columns);
         return QueryResult.FromMaterializedRows(schema, rows);
     }
 
@@ -174,6 +177,9 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
             SchemaId = column.SchemaId,
             Name = column.Name,
             Type = MapDbType(column.Type),
+            DeclaredType = column.DeclaredType is null
+                ? null
+                : MapSqlTypeDescriptor(column.DeclaredType),
             Nullable = column.Nullable,
             IsPrimaryKey = column.IsPrimaryKey,
             IsIdentity = column.IsIdentity,
@@ -181,6 +187,43 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
             Collation = column.Collation,
             DefaultSql = column.DefaultSql,
         };
+
+    private static CSharpDB.Primitives.SqlTypeDescriptor MapSqlTypeDescriptor(
+        CSharpDB.Client.Models.SqlTypeDescriptor type)
+        => CSharpDB.Primitives.SqlTypeDescriptor.Create(
+            type.Kind switch
+            {
+                CSharpDB.Client.Models.SqlTypeKind.Boolean => CSharpDB.Primitives.SqlTypeKind.Boolean,
+                CSharpDB.Client.Models.SqlTypeKind.TinyInt => CSharpDB.Primitives.SqlTypeKind.TinyInt,
+                CSharpDB.Client.Models.SqlTypeKind.SmallInt => CSharpDB.Primitives.SqlTypeKind.SmallInt,
+                CSharpDB.Client.Models.SqlTypeKind.Integer => CSharpDB.Primitives.SqlTypeKind.Integer,
+                CSharpDB.Client.Models.SqlTypeKind.BigInt => CSharpDB.Primitives.SqlTypeKind.BigInt,
+                CSharpDB.Client.Models.SqlTypeKind.Real => CSharpDB.Primitives.SqlTypeKind.Real,
+                CSharpDB.Client.Models.SqlTypeKind.Double => CSharpDB.Primitives.SqlTypeKind.Double,
+                CSharpDB.Client.Models.SqlTypeKind.Decimal => CSharpDB.Primitives.SqlTypeKind.Decimal,
+                CSharpDB.Client.Models.SqlTypeKind.Char => CSharpDB.Primitives.SqlTypeKind.Char,
+                CSharpDB.Client.Models.SqlTypeKind.VarChar => CSharpDB.Primitives.SqlTypeKind.VarChar,
+                CSharpDB.Client.Models.SqlTypeKind.Text => CSharpDB.Primitives.SqlTypeKind.Text,
+                CSharpDB.Client.Models.SqlTypeKind.Binary => CSharpDB.Primitives.SqlTypeKind.Binary,
+                CSharpDB.Client.Models.SqlTypeKind.VarBinary => CSharpDB.Primitives.SqlTypeKind.VarBinary,
+                CSharpDB.Client.Models.SqlTypeKind.Blob => CSharpDB.Primitives.SqlTypeKind.Blob,
+                CSharpDB.Client.Models.SqlTypeKind.Uuid => CSharpDB.Primitives.SqlTypeKind.Uuid,
+                CSharpDB.Client.Models.SqlTypeKind.Date => CSharpDB.Primitives.SqlTypeKind.Date,
+                CSharpDB.Client.Models.SqlTypeKind.Time => CSharpDB.Primitives.SqlTypeKind.Time,
+                CSharpDB.Client.Models.SqlTypeKind.Timestamp => CSharpDB.Primitives.SqlTypeKind.Timestamp,
+                CSharpDB.Client.Models.SqlTypeKind.TimestampWithTimeZone => CSharpDB.Primitives.SqlTypeKind.TimestampWithTimeZone,
+                CSharpDB.Client.Models.SqlTypeKind.IntervalYearToMonth => CSharpDB.Primitives.SqlTypeKind.IntervalYearToMonth,
+                CSharpDB.Client.Models.SqlTypeKind.IntervalDayToSecond => CSharpDB.Primitives.SqlTypeKind.IntervalDayToSecond,
+                CSharpDB.Client.Models.SqlTypeKind.Json => CSharpDB.Primitives.SqlTypeKind.Json,
+                CSharpDB.Client.Models.SqlTypeKind.Xml => CSharpDB.Primitives.SqlTypeKind.Xml,
+                CSharpDB.Client.Models.SqlTypeKind.Bit => CSharpDB.Primitives.SqlTypeKind.Bit,
+                CSharpDB.Client.Models.SqlTypeKind.VarBit => CSharpDB.Primitives.SqlTypeKind.VarBit,
+                _ => throw new InvalidOperationException($"Unsupported logical SQL type '{type.Kind}'."),
+            },
+            type.Length,
+            type.Precision,
+            type.Scale,
+            type.FractionalSecondsPrecision);
 
     private static CoreForeignKeyDefinition MapForeignKeyDefinition(CSharpDB.Client.Models.ForeignKeyDefinition foreignKey)
         => new()
@@ -252,19 +295,37 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
         IReadOnlyList<string> columnNames,
         IReadOnlyList<string>? columnTypes,
         IReadOnlyList<bool>? columnNullability,
-        IReadOnlyList<object?[]> rows)
+        IReadOnlyList<object?[]> rows,
+        IReadOnlyList<CSharpDB.Client.Models.ColumnDefinition>? columns)
     {
+        if (columns is not null && columns.Count == columnNames.Count)
+            return columns.Select(MapColumnDefinition).ToArray();
+
         var schema = new CoreColumnDefinition[columnNames.Count];
         for (int i = 0; i < columnNames.Count; i++)
         {
+            CoreDbType storageType = ResolveColumnType(columnTypes, rows, i);
+            CoreSqlTypeDescriptor? declaredType = null;
+            bool isRowVersion = false;
+            if (columnTypes is not null && i < columnTypes.Count)
+            {
+                TryResolveLogicalColumnType(
+                    columnTypes[i],
+                    ref storageType,
+                    out declaredType,
+                    out isRowVersion);
+            }
+
             schema[i] = new CoreColumnDefinition
             {
                 Name = columnNames[i],
-                Type = ResolveColumnType(columnTypes, rows, i),
+                Type = storageType,
+                DeclaredType = declaredType,
                 Nullable = columnNullability is not null &&
                            i < columnNullability.Count
                     ? columnNullability[i]
                     : true,
+                IsRowVersion = isRowVersion,
             };
         }
 
@@ -289,6 +350,48 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
         return InferColumnType(rows, ordinal);
     }
 
+    private static void TryResolveLogicalColumnType(
+        string reportedType,
+        ref CoreDbType storageType,
+        out CoreSqlTypeDescriptor? declaredType,
+        out bool isRowVersion)
+    {
+        declaredType = null;
+        isRowVersion = false;
+
+        if (string.Equals(reportedType, "NULL", StringComparison.OrdinalIgnoreCase))
+        {
+            storageType = CoreDbType.Null;
+            return;
+        }
+
+        if (string.Equals(reportedType, "ROWVERSION", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(reportedType, "TIMESTAMP", StringComparison.OrdinalIgnoreCase))
+        {
+            storageType = CoreDbType.Blob;
+            declaredType = CoreSqlTypeDescriptor.Create(CoreSqlTypeKind.Blob);
+            isRowVersion = true;
+            return;
+        }
+
+        try
+        {
+            if (Parser.Parse($"SELECT CAST(NULL AS {reportedType})") is SelectStatement
+                {
+                    Columns: [{ Expression: CastExpression cast }],
+                })
+            {
+                declaredType = cast.TargetType;
+                storageType = declaredType.StorageType;
+            }
+        }
+        catch (CSharpDbException)
+        {
+            // Older servers can return provider-specific labels. Retain the
+            // physical/inferred fallback when a label is not valid CSharpDB SQL.
+        }
+    }
+
     private static CoreDbType InferColumnType(IReadOnlyList<object?[]> rows, int ordinal)
     {
         foreach (object?[] row in rows)
@@ -303,9 +406,11 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
             return value switch
             {
                 bool or byte or sbyte or short or ushort or int or uint or long or ulong => CoreDbType.Integer,
-                float or double or decimal => CoreDbType.Real,
+                float or double => CoreDbType.Real,
+                decimal => CoreDbType.Decimal,
+                SqlBitString => CoreDbType.Blob,
                 byte[] or ReadOnlyMemory<byte> => CoreDbType.Blob,
-                Guid or DateTime or DateTimeOffset or char or string or JsonElement => CoreDbType.Text,
+                Guid or DateOnly or TimeOnly or DateTime or DateTimeOffset or char or string or JsonElement => CoreDbType.Text,
                 _ => CoreDbType.Text,
             };
         }
@@ -320,6 +425,7 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
             CSharpDB.Client.Models.DbType.Real => CoreDbType.Real,
             CSharpDB.Client.Models.DbType.Text => CoreDbType.Text,
             CSharpDB.Client.Models.DbType.Blob => CoreDbType.Blob,
+            CSharpDB.Client.Models.DbType.Decimal => CoreDbType.Decimal,
             _ => CoreDbType.Null,
         };
 
@@ -338,12 +444,18 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
             ulong number when number <= long.MaxValue => DbValue.FromInteger((long)number),
             float number => DbValue.FromReal(number),
             double number => DbValue.FromReal(number),
-            decimal number => DbValue.FromReal((double)number),
+            decimal number => DbValue.FromDecimal(number),
             string text => DbValue.FromText(text),
             char character => DbValue.FromText(character.ToString()),
-            Guid guid => DbValue.FromText(guid.ToString()),
-            DateTime dateTime => DbValue.FromText(dateTime.ToString("O", CultureInfo.InvariantCulture)),
-            DateTimeOffset dateTimeOffset => DbValue.FromText(dateTimeOffset.ToString("O", CultureInfo.InvariantCulture)),
+            Guid guid => DbValue.FromText(CSharpDbTextCodec.FormatGuid(guid)),
+            DateOnly date => DbValue.FromText(CSharpDbTextCodec.FormatDate(date)),
+            TimeOnly time => DbValue.FromText(CSharpDbTextCodec.FormatTime(time)),
+            DateTime dateTime => DbValue.FromText(CSharpDbTextCodec.FormatDateTime(dateTime)),
+            DateTimeOffset dateTimeOffset => DbValue.FromText(
+                CSharpDbTextCodec.FormatDateTimeOffset(dateTimeOffset)),
+            SqlBitString bits => DbValue.FromBitString(
+                bits.PackedBytes.ToArray(),
+                bits.BitLength),
             byte[] blob => DbValue.FromBlob(blob),
             ReadOnlyMemory<byte> blob => DbValue.FromBlob(blob.ToArray()),
             JsonElement json => json.ValueKind == JsonValueKind.Null

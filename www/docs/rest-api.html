@@ -237,42 +237,82 @@ dotnet run --project src/CSharpDB.Daemon/CSharpDB.Daemon.csproj</code></pre></di
                 <div class="code-block" data-title="JSON"><pre><code>{
   "tableName": "users",
   "columns": [
-    { "name": "id", "type": "Integer", "nullable": false, "isPrimaryKey": true, "isIdentity": true },
-    { "name": "name", "type": "Text", "nullable": false, "isPrimaryKey": false, "isIdentity": false },
-    { "name": "age", "type": "Integer", "nullable": true, "isPrimaryKey": false, "isIdentity": false }
-  ]
+    {
+      "name": "id",
+      "type": "Integer",
+      "nullable": false,
+      "isPrimaryKey": true,
+      "isIdentity": true,
+      "isRowVersion": false,
+      "collation": null,
+      "defaultSql": null,
+      "schemaId": "bd8b9e88-dfd0-4df1-9477-cf5f6064ec7a",
+      "declaredType": {
+        "kind": "Integer",
+        "length": null,
+        "precision": null,
+        "scale": null,
+        "fractionalSecondsPrecision": null
+      }
+    },
+    {
+      "name": "active",
+      "type": "Integer",
+      "nullable": false,
+      "isPrimaryKey": false,
+      "isIdentity": false,
+      "isRowVersion": false,
+      "collation": null,
+      "defaultSql": "1",
+      "schemaId": "7fd8f17c-49e4-4b27-b91c-a12ddf2998f2",
+      "declaredType": {
+        "kind": "Boolean",
+        "length": null,
+        "precision": null,
+        "scale": null,
+        "fractionalSecondsPrecision": null
+      }
+    }
+  ],
+  "foreignKeys": [],
+  "keyConstraints": [],
+  "checkConstraints": [],
+  "nextRowId": 2,
+  "schemaId": "67a2381a-844c-452a-a331-f42eb9f8e0cf"
 }</code></pre></div>
+                <p><code>type</code> is the compact physical carrier (<code>Integer</code>, <code>Real</code>, <code>Decimal</code>, <code>Text</code>, or <code>Blob</code>), not the declared SQL spelling. <code>declaredType</code> carries the logical kind and facets; it can be absent for legacy metadata. A rowversion is identified by <code>isRowVersion: true</code> even though its carrier is <code>Blob</code>. See the <a href="sql-reference.html#data-types">complete SQL data type reference</a>.</p>
 
                 <h4><code>GET /api/tables/{name}/count</code></h4>
                 <p>Get the row count for a table.</p>
                 <p><strong>Response:</strong></p>
-                <div class="code-block" data-title="JSON"><pre><code>{ "count": 42 }</code></pre></div>
+                <div class="code-block" data-title="JSON"><pre><code>{ "tableName": "users", "count": 42 }</code></pre></div>
 
                 <h4><code>DELETE /api/tables/{name}</code></h4>
                 <p>Drop a table.</p>
-                <p><strong>Response:</strong> <code>200 OK</code> with <code>{ "message": "Table 'users' dropped." }</code></p>
+                <p><strong>Response:</strong> <code>204 No Content</code></p>
 
                 <h4><code>PATCH /api/tables/{name}/rename</code></h4>
                 <p>Rename a table.</p>
                 <p><strong>Request:</strong></p>
                 <div class="code-block" data-title="JSON"><pre><code>{ "newName": "customers" }</code></pre></div>
-                <p><strong>Response:</strong> <code>200 OK</code> with <code>{ "message": "Table renamed from 'users' to 'customers'." }</code></p>
+                <p><strong>Response:</strong> <code>204 No Content</code></p>
 
                 <h4><code>POST /api/tables/{name}/columns</code></h4>
                 <p>Add a column to a table.</p>
                 <p><strong>Request:</strong></p>
                 <div class="code-block" data-title="JSON"><pre><code>{ "columnName": "email", "type": "TEXT", "notNull": false }</code></pre></div>
-                <p><strong>Response:</strong> <code>200 OK</code> with <code>{ "message": "Column 'email' added to 'users'." }</code></p>
+                <p>The convenience endpoint accepts physical carrier names only: <code>Integer</code>, <code>Real</code>, <code>Decimal</code>, <code>Text</code>, or <code>Blob</code> (case-insensitive). Use <code>POST /api/sql/execute</code> for a logical or faceted declaration such as <code>BOOLEAN</code>, <code>VARCHAR(100)</code>, or <code>DATETIMEOFFSET(7)</code>.</p>
+                <p><strong>Response:</strong> <code>204 No Content</code></p>
 
                 <h4><code>DELETE /api/tables/{name}/columns/{col}</code></h4>
                 <p>Drop a column.</p>
-                <p><strong>Response:</strong> <code>200 OK</code> with <code>{ "message": "Column 'email' dropped from 'users'." }</code></p>
+                <p><strong>Response:</strong> <code>204 No Content</code></p>
 
                 <h4><code>PATCH /api/tables/{name}/columns/{col}/rename</code></h4>
                 <p>Rename a column.</p>
                 <p><strong>Request:</strong></p>
                 <div class="code-block" data-title="JSON"><pre><code>{ "newName": "full_name" }</code></pre></div>
-                <p><strong>Response:</strong> <code>200 OK</code> with <code>{ "message": "Column renamed from 'name' to 'full_name' in 'users'." }</code></p>
+                <p><strong>Response:</strong> <code>204 No Content</code></p>
 
                 <h3 id="rows">Rows</h3>
 
@@ -285,16 +325,18 @@ dotnet run --project src/CSharpDB.Daemon/CSharpDB.Daemon.csproj</code></pre></di
                 </ul>
                 <p><strong>Response:</strong></p>
                 <div class="code-block" data-title="JSON"><pre><code>{
-  "tableName": "users",
+  "columnNames": ["id", "name", "active"],
+  "rows": [
+    { "id": 1, "name": "Alice", "active": true },
+    { "id": 2, "name": "Bob", "active": false }
+  ],
+  "totalRows": 3,
   "page": 1,
   "pageSize": 50,
-  "totalRows": 3,
-  "columns": ["id", "name", "age"],
-  "rows": [
-    { "id": 1, "name": "Alice", "age": 30 },
-    { "id": 2, "name": "Bob", "age": 25 }
-  ]
+  "totalPages": 1,
+  "columnTypes": ["INTEGER", "TEXT", "BOOLEAN"]
 }</code></pre></div>
+                <p><code>columnTypes</code> contains canonical logical SQL spellings. It is the appropriate field for interpreting values; unlike the schema endpoint's <code>type</code> field, it is not a physical-carrier list.</p>
 
                 <h4><code>GET /api/tables/{name}/rows/{pkValue}</code></h4>
                 <p>Get a single row by primary key.</p>
@@ -309,7 +351,7 @@ dotnet run --project src/CSharpDB.Daemon/CSharpDB.Daemon.csproj</code></pre></di
                 <p>Insert a new row.</p>
                 <p><strong>Request:</strong></p>
                 <div class="code-block" data-title="JSON"><pre><code>{ "values": { "id": 4, "name": "Diana", "age": 28 } }</code></pre></div>
-                <p><strong>Response:</strong> <code>201 Created</code> with <code>{ "message": "Row inserted into 'users'.", "rowsAffected": 1 }</code></p>
+                <p><strong>Response:</strong> <code>201 Created</code> with <code>{ "rowsAffected": 1 }</code></p>
 
                 <h4><code>PUT /api/tables/{name}/rows/{pkValue}</code></h4>
                 <p>Update a row by primary key.</p>
@@ -319,7 +361,7 @@ dotnet run --project src/CSharpDB.Daemon/CSharpDB.Daemon.csproj</code></pre></di
                 </ul>
                 <p><strong>Request:</strong></p>
                 <div class="code-block" data-title="JSON"><pre><code>{ "values": { "name": "Diana Updated", "age": 29 } }</code></pre></div>
-                <p><strong>Response:</strong> <code>200 OK</code> with <code>{ "message": "Row updated in 'users'.", "rowsAffected": 1 }</code></p>
+                <p><strong>Response:</strong> <code>200 OK</code> with <code>{ "rowsAffected": 1 }</code></p>
 
                 <h4><code>DELETE /api/tables/{name}/rows/{pkValue}</code></h4>
                 <p>Delete a row by primary key.</p>
@@ -327,7 +369,9 @@ dotnet run --project src/CSharpDB.Daemon/CSharpDB.Daemon.csproj</code></pre></di
                 <ul>
                     <li><code>pkColumn</code> (default: "id") — Name of the primary key column</li>
                 </ul>
-                <p><strong>Response:</strong> <code>200 OK</code> with <code>{ "message": "Row deleted from 'users'.", "rowsAffected": 1 }</code></p>
+                <p><strong>Response:</strong> <code>200 OK</code> with <code>{ "rowsAffected": 1 }</code></p>
+
+                <p>REST row values use JSON's transport types and are then checked against the target column's declared SQL type. Integral numbers are read as signed 64-bit values, exact JSON decimals are retained as <code>Decimal</code> when possible, and JSON Booleans are normalized to <code>0</code>/<code>1</code> before logical column coercion. Send ordinary binary as <code>{"$csharpdb":"binary-v1","base64":"..."}</code> and a non-byte-aligned SQL bit string as <code>{"$csharpdb":"bit-string-v1","base64":"...","bitLength":13}</code>. Returned ordinary binary uses JSON base64; returned bit strings retain the tagged envelope and exact bit length.</p>
 
                 <h3 id="indexes">Indexes</h3>
 
@@ -441,20 +485,54 @@ dotnet run --project src/CSharpDB.Daemon/CSharpDB.Daemon.csproj</code></pre></di
                 <div class="code-block" data-title="JSON"><pre><code>{
   "isQuery": true,
   "columnNames": ["name", "price"],
+  "columnTypes": ["TEXT", "DECIMAL(10,2)"],
   "rows": [
     { "name": "Widget", "price": 29.99 },
     { "name": "Gadget", "price": 14.99 }
   ],
   "rowsAffected": 0,
-  "elapsed": 1.23
+  "error": null,
+  "elapsedMs": 1.23,
+  "columnNullability": [false, false],
+  "columns": [
+    {
+      "name": "name",
+      "type": "Text",
+      "nullable": false,
+      "isPrimaryKey": false,
+      "isIdentity": false,
+      "isRowVersion": false,
+      "collation": null,
+      "defaultSql": null,
+      "schemaId": "00000000-0000-0000-0000-000000000000",
+      "declaredType": { "kind": "Text", "length": null, "precision": null, "scale": null, "fractionalSecondsPrecision": null }
+    },
+    {
+      "name": "price",
+      "type": "Decimal",
+      "nullable": false,
+      "isPrimaryKey": false,
+      "isIdentity": false,
+      "isRowVersion": false,
+      "collation": null,
+      "defaultSql": null,
+      "schemaId": "00000000-0000-0000-0000-000000000000",
+      "declaredType": { "kind": "Decimal", "length": null, "precision": 10, "scale": 2, "fractionalSecondsPrecision": null }
+    }
+  ]
 }</code></pre></div>
+                <p><code>columnTypes</code> is the canonical SQL type list. The optional structured <code>columns</code> list also exposes each result's physical <code>type</code>, declared logical descriptor, nullability, and rowversion flag.</p>
                 <p><strong>Response (mutation):</strong></p>
                 <div class="code-block" data-title="JSON"><pre><code>{
   "isQuery": false,
   "columnNames": null,
+  "columnTypes": null,
   "rows": null,
   "rowsAffected": 3,
-  "elapsed": 0.87
+  "error": null,
+  "elapsedMs": 0.87,
+  "columnNullability": null,
+  "columns": null
 }</code></pre></div>
 
                 <h3 id="procedures">Procedures</h3>

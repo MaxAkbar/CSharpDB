@@ -49,7 +49,7 @@ public sealed class JsonTypedMigrationDataSourceTests
         Assert.Equal(DbType.Blob, values[JsonMigrationObjectIds.Column(0)].Type);
         Assert.Equal(DbType.Text, values[JsonMigrationObjectIds.Column(1)].Type);
         Assert.Equal(
-            DbType.Integer,
+            DbType.Decimal,
             values[JsonMigrationObjectIds.Column(2)].Type);
         Assert.All(
             Enumerable.Range(3, 5),
@@ -70,8 +70,8 @@ public sealed class JsonTypedMigrationDataSourceTests
             "12345678901234567890.123456789012345678",
             values[JsonMigrationObjectIds.Column(1)].AsText);
         Assert.Equal(
-            12_345,
-            values[JsonMigrationObjectIds.Column(2)].AsInteger);
+            123.45m,
+            values[JsonMigrationObjectIds.Column(2)].AsDecimal);
         Assert.Equal(
             "00112233-4455-6677-8899-aabbccddeeff",
             values[JsonMigrationObjectIds.Column(3)].AsText);
@@ -85,7 +85,7 @@ public sealed class JsonTypedMigrationDataSourceTests
             "2026-07-23 08:09:10.1234567",
             values[JsonMigrationObjectIds.Column(6)].AsText);
         Assert.Equal(
-            "2026-07-23 08:09:10.1234567-07:00",
+            "2026-07-23 15:09:10.1234567+00:00",
             values[JsonMigrationObjectIds.Column(7)].AsText);
         Assert.Equal(
             long.MinValue,

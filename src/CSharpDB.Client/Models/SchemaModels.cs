@@ -6,6 +6,136 @@ public enum DbType
     Real,
     Text,
     Blob,
+    Decimal,
+}
+
+/// <summary>
+/// Logical SQL type declared for a column. Multiple logical types can share
+/// the same compact physical <see cref="DbType"/> representation.
+/// </summary>
+public enum SqlTypeKind : byte
+{
+    Boolean,
+    TinyInt,
+    SmallInt,
+    Integer,
+    BigInt,
+    Real,
+    Double,
+    Decimal,
+    Char,
+    VarChar,
+    Text,
+    Binary,
+    VarBinary,
+    Blob,
+    Uuid,
+    Date,
+    Time,
+    Timestamp,
+    TimestampWithTimeZone,
+    IntervalYearToMonth,
+    IntervalDayToSecond,
+    Json,
+    Xml,
+    Bit,
+    VarBit,
+}
+
+/// <summary>
+/// Transport-safe description of a declared SQL type and its optional facets.
+/// </summary>
+public sealed class SqlTypeDescriptor
+{
+    public required SqlTypeKind Kind { get; init; }
+    public int? Length { get; init; }
+    public int? Precision { get; init; }
+    public int? Scale { get; init; }
+    public int? FractionalSecondsPrecision { get; init; }
+
+    public DbType StorageType => Kind switch
+    {
+        SqlTypeKind.Boolean or
+        SqlTypeKind.TinyInt or
+        SqlTypeKind.SmallInt or
+        SqlTypeKind.Integer or
+        SqlTypeKind.BigInt => DbType.Integer,
+        SqlTypeKind.Real or SqlTypeKind.Double => DbType.Real,
+        SqlTypeKind.Decimal => DbType.Decimal,
+        SqlTypeKind.Binary or
+        SqlTypeKind.VarBinary or
+        SqlTypeKind.Blob or
+        SqlTypeKind.Uuid or
+        SqlTypeKind.Bit or
+        SqlTypeKind.VarBit => DbType.Blob,
+        _ => DbType.Text,
+    };
+
+    public static SqlTypeDescriptor FromLegacy(DbType type) => new()
+    {
+        Kind = type switch
+        {
+            DbType.Integer => SqlTypeKind.BigInt,
+            DbType.Real => SqlTypeKind.Double,
+            DbType.Text => SqlTypeKind.Text,
+            DbType.Blob => SqlTypeKind.Blob,
+            DbType.Decimal => SqlTypeKind.Decimal,
+            _ => throw new ArgumentOutOfRangeException(nameof(type), type, "Unsupported database type."),
+        },
+    };
+
+    /// <summary>Returns the stable canonical SQL spelling of this logical type.</summary>
+    public string ToSql() => Kind switch
+    {
+        SqlTypeKind.Boolean => "BOOLEAN",
+        SqlTypeKind.TinyInt => "TINYINT",
+        SqlTypeKind.SmallInt => "SMALLINT",
+        SqlTypeKind.Integer => "INTEGER",
+        SqlTypeKind.BigInt => "BIGINT",
+        SqlTypeKind.Real => "REAL",
+        SqlTypeKind.Double => "DOUBLE PRECISION",
+        SqlTypeKind.Decimal => FormatPrecisionAndScale("DECIMAL"),
+        SqlTypeKind.Char => FormatLength("CHAR"),
+        SqlTypeKind.VarChar => FormatLength("VARCHAR"),
+        SqlTypeKind.Text => "TEXT",
+        SqlTypeKind.Binary => FormatLength("BINARY"),
+        SqlTypeKind.VarBinary => FormatLength("VARBINARY"),
+        SqlTypeKind.Blob => "BLOB",
+        SqlTypeKind.Uuid => "UUID",
+        SqlTypeKind.Date => "DATE",
+        SqlTypeKind.Time => FormatFractionalSeconds("TIME"),
+        SqlTypeKind.Timestamp => FormatFractionalSeconds("DATETIME2"),
+        SqlTypeKind.TimestampWithTimeZone => FormatFractionalSeconds("DATETIMEOFFSET"),
+        SqlTypeKind.IntervalYearToMonth => "INTERVAL YEAR TO MONTH",
+        SqlTypeKind.IntervalDayToSecond =>
+            FractionalSecondsPrecision is int fractionalSecondsPrecision
+                ? $"INTERVAL DAY TO SECOND({fractionalSecondsPrecision})"
+                : "INTERVAL DAY TO SECOND",
+        SqlTypeKind.Json => "JSON",
+        SqlTypeKind.Xml => "XML",
+        SqlTypeKind.Bit => FormatLength("BIT"),
+        SqlTypeKind.VarBit => FormatLength("BIT VARYING"),
+        _ => throw new InvalidOperationException($"Unsupported SQL type kind '{Kind}'."),
+    };
+
+    public override string ToString() => ToSql();
+
+    private string FormatLength(string name) =>
+        Length is int length ? $"{name}({length})" : name;
+
+    private string FormatPrecisionAndScale(string name)
+    {
+        if (Precision is not int precision)
+            return name;
+        return Scale is int scale
+            ? $"{name}({precision},{scale})"
+            : $"{name}({precision})";
+    }
+
+    private string FormatFractionalSeconds(string name) =>
+        FractionalSecondsPrecision is int precision
+            ? $"{name}({precision})"
+            : name;
 }
 
 public sealed class ColumnDefinition
@@ -13,6 +143,8 @@ public sealed class ColumnDefinition
     public Guid SchemaId { get; init; }
     public required string Name { get; init; }
     public required DbType Type { get; init; }
+    public SqlTypeDescriptor? DeclaredType { get; init; }
+    public SqlTypeDescriptor EffectiveType => DeclaredType ?? SqlTypeDescriptor.FromLegacy(Type);
     public bool Nullable { get; init; } = true;
     public bool IsPrimaryKey { get; init; }
     public bool IsIdentity { get; init; }

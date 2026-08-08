@@ -317,10 +317,11 @@ csharpdb migrate type-map .\catalog.json `
   --profile queryable `
   --format json `
   --out .\type-map.json</code></pre></div>
-                <p>The report covers every typed catalog object and classifies the selected representation as exact, lossless re-encoding, lossy, or unsupported. A custom profile requires an explicit per-object mapping file. The file is one strict JSON object whose property names are exact catalog <code>objectId</code> values and whose string values are the case-insensitive persistent CSharpDB types <code>integer</code>, <code>real</code>, <code>text</code>, or <code>blob</code>:</p>
+                <p>The report covers every typed catalog object and classifies the selected representation as exact, lossless re-encoding, lossy, or unsupported. <code>targetType</code> is a persistent physical carrier, while <code>targetSqlType</code> is the canonical logical SQL declaration retained in target metadata; several logical declarations can share one carrier. See the <a href="sql-reference.html#data-types">complete SQL data type reference</a>.</p>
+                <p>A custom profile requires an explicit per-object mapping file. The file is one strict JSON object whose property names are exact catalog <code>objectId</code> values and whose string values are the case-insensitive persistent CSharpDB types <code>integer</code>, <code>real</code>, <code>decimal</code>, <code>text</code>, or <code>blob</code>:</p>
                 <div class="code-block" data-title="custom-map.json"><pre><code>{
-  "&lt;exact-column-object-id-from-catalog&gt;": "text",
-  "&lt;another-exact-column-object-id&gt;": "real"
+  "&lt;exact-decimal-column-object-id-from-catalog&gt;": "decimal",
+  "&lt;another-exact-column-object-id&gt;": "text"
 }</code></pre></div>
                 <p>Use the IDs printed in the catalog or type-map report. Unknown IDs, duplicate JSON properties, invalid type names, comments, and trailing commas are rejected. Generating a report does not approve a lossy conversion.</p>
 

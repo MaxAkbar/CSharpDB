@@ -1,7 +1,9 @@
 using System.Diagnostics;
+using System.Buffers.Binary;
 using System.Text;
 using System.Text.RegularExpressions;
 using CSharpDB.Engine;
+using CSharpDB.Primitives;
 
 namespace CSharpDB.Tests;
 
@@ -32,6 +34,44 @@ public sealed class ProcessCrashDurabilityTests
             await using var db = await Database.OpenAsync(dbPath, ct);
             Assert.Equal(1L, await GetScalarAsync(db, "SELECT COUNT(*) FROM t", ct));
             Assert.Equal(101L, await GetScalarAsync(db, "SELECT val FROM t WHERE id = 1", ct));
+        }
+        finally
+        {
+            DeleteDirectoryIfExists(workDir);
+        }
+    }
+
+    [Fact]
+    public async Task RowVersionAllocator_CommittedValueSurvivesProcessCrash()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string workDir = NewTempDirectory();
+        string dbPath = Path.Combine(workDir, "rowversion-commit-returned.db");
+        string markerPath = Path.Combine(workDir, "rowversion-commit-returned.marker");
+
+        try
+        {
+            await using (var setup = await Database.OpenAsync(dbPath, ct))
+            {
+                await setup.ExecuteAsync(
+                    "CREATE TABLE versions (id INTEGER PRIMARY KEY, version ROWVERSION)",
+                    ct);
+            }
+
+            CrashHarnessResult crash = await RunCrashHarnessAsync(
+                "rowversion-commit-after-return",
+                dbPath,
+                markerPath,
+                ct);
+            AssertCrashAfterMarker(crash, markerPath);
+
+            await using var db = await Database.OpenAsync(dbPath, ct);
+            ulong committedToken = await GetRowVersionAsync(db, 1, ct);
+            Assert.NotEqual(0UL, committedToken);
+            await db.ExecuteAsync("INSERT INTO versions (id) VALUES (2)", ct);
+            Assert.True(
+                await GetRowVersionAsync(db, 2, ct) > committedToken,
+                "A process restart may skip an unused durable reservation, but the allocator must remain monotonic.");
         }
         finally
         {
@@ -117,6 +157,18 @@ public sealed class ProcessCrashDurabilityTests
         await using var result = await db.ExecuteAsync(sql, ct);
         var rows = await result.ToListAsync(ct);
         return rows[0][0].AsInteger;
+    }
+
+    private static async Task<ulong> GetRowVersionAsync(
+        Database db,
+        long id,
+        CancellationToken ct)
+    {
+        await using var result = await db.ExecuteAsync(
+            $"SELECT version FROM versions WHERE id = {id}",
+            ct);
+        DbValue[] row = Assert.Single(await result.ToListAsync(ct));
+        return BinaryPrimitives.ReadUInt64BigEndian(row[0].AsBlob);
     }
 
     private static async Task<CrashHarnessResult> RunCrashHarnessAsync(

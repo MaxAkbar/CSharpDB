@@ -32,14 +32,14 @@ public sealed class PhysicalExplainGrpcTransportTests
 
     private static readonly string[] PlanColumnTypes =
     [
-        "INTEGER",
-        "INTEGER",
+        "BIGINT",
+        "BIGINT",
         "TEXT",
-        "INTEGER",
-        "REAL",
-        "INTEGER",
-        "INTEGER",
-        "INTEGER",
+        "BIGINT",
+        "DOUBLE PRECISION",
+        "BIGINT",
+        "BIGINT",
+        "BIGINT",
         "TEXT",
         "TEXT",
         "TEXT",

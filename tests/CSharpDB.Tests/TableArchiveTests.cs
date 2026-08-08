@@ -13,6 +13,160 @@ namespace CSharpDB.Tests;
 public class TableArchiveTests
 {
     [Fact]
+    public async Task DescriptorlessLegacyIntegerArchiveRestoresAsBigIntWithoutNarrowing()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string databasePath = Path.Combine(
+            Path.GetTempPath(),
+            $"legacy_bigint_restore_{Guid.NewGuid():N}.db");
+        string archivePath = Path.Combine(
+            Path.GetTempPath(),
+            $"legacy_bigint_restore_{Guid.NewGuid():N}.csdbtable");
+        var schema = new TableSchema
+        {
+            TableName = "legacy_values",
+            Columns =
+            [
+                new ColumnDefinition
+                {
+                    Name = "key",
+                    Type = DbType.Text,
+                    Nullable = false,
+                    IsPrimaryKey = true,
+                },
+                new ColumnDefinition
+                {
+                    Name = "wide_value",
+                    Type = DbType.Integer,
+                    Nullable = false,
+                },
+            ],
+        };
+        DbValue[][] rows =
+        [
+            [DbValue.FromText("only"), DbValue.FromInteger(2_147_483_648L)],
+        ];
+
+        try
+        {
+            await TableArchiveWriter.WriteAsync(
+                archivePath,
+                schema,
+                TableArchiveWriter.ToAsyncRows(rows, ct),
+                ct);
+
+            await using var client = new EngineTransportClient(databasePath);
+            var service = new TableImportExportService(
+                client,
+                new TableArchiveDownloadStore());
+            RestoreTableResult restore = await service.RestoreTableAsync(
+                new RestoreTableRequest
+                {
+                    ArchivePath = archivePath,
+                    TargetTableName = "restored_legacy_values",
+                },
+                ct);
+
+            Assert.Equal(1, restore.RowsInserted);
+            CSharpDB.Client.Models.TableSchema restoredSchema =
+                Assert.IsType<CSharpDB.Client.Models.TableSchema>(
+                    await client.GetTableSchemaAsync(
+                        "restored_legacy_values",
+                        ct));
+            Assert.Equal(
+                CSharpDB.Client.Models.SqlTypeKind.BigInt,
+                restoredSchema.Columns.Single(
+                    column => column.Name == "wide_value").EffectiveType.Kind);
+
+            CSharpDB.Client.Models.SqlExecutionResult query =
+                await client.ExecuteSqlAsync(
+                    "SELECT wide_value FROM restored_legacy_values",
+                    ct);
+            Assert.Null(query.Error);
+            Assert.Equal(
+                2_147_483_648L,
+                Assert.IsType<long>(Assert.Single(query.Rows!)[0]));
+        }
+        finally
+        {
+            if (File.Exists(archivePath))
+                File.Delete(archivePath);
+            if (File.Exists(databasePath))
+                File.Delete(databasePath);
+            if (File.Exists(databasePath + ".wal"))
+                File.Delete(databasePath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task ExactArchiveRestore_PreservesFixedAndVaryingBitLengths()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string databasePath = Path.Combine(
+            Path.GetTempPath(),
+            $"bit_length_restore_{Guid.NewGuid():N}.db");
+        string archivePath = Path.Combine(
+            Path.GetTempPath(),
+            $"bit_length_restore_{Guid.NewGuid():N}.csdbtable");
+
+        try
+        {
+            await using var client = new EngineTransportClient(databasePath);
+            var service = new TableImportExportService(
+                client,
+                new TableArchiveDownloadStore());
+
+            Assert.Null((await client.ExecuteSqlAsync(
+                "CREATE TABLE bit_restore (" +
+                "id INTEGER PRIMARY KEY, fixed_bits BIT(5), " +
+                "varying_bits VARBIT(8)); " +
+                "INSERT INTO bit_restore VALUES (1, '10101', '10101');",
+                ct)).Error);
+
+            await service.ExportTableAsync(
+                new TableExportRequest
+                {
+                    TableName = "bit_restore",
+                    Destination = TableExportDestination.ServerPath,
+                    ServerPath = archivePath,
+                },
+                ct: ct);
+
+            Assert.Null((await client.ExecuteSqlAsync(
+                "DROP TABLE bit_restore;",
+                ct)).Error);
+
+            RestoreTableResult restore = await service.RestoreTableAsync(
+                new RestoreTableRequest
+                {
+                    ArchivePath = archivePath,
+                    TargetTableName = "bit_restore",
+                },
+                ct);
+
+            Assert.Equal(1, restore.RowsInserted);
+            CSharpDB.Client.Models.SqlExecutionResult query =
+                await client.ExecuteSqlAsync(
+                    "SELECT CAST(fixed_bits AS TEXT), " +
+                    "CAST(varying_bits AS TEXT) FROM bit_restore;",
+                    ct);
+            Assert.Null(query.Error);
+            object?[] row = Assert.Single(query.Rows!);
+            Assert.Equal("10101", row[0]);
+            Assert.Equal("10101", row[1]);
+        }
+        finally
+        {
+            if (File.Exists(archivePath))
+                File.Delete(archivePath);
+            if (File.Exists(databasePath))
+                File.Delete(databasePath);
+            if (File.Exists(databasePath + ".wal"))
+                File.Delete(databasePath + ".wal");
+        }
+    }
+
+    [Fact]
     public async Task ExactArchiveRestore_PreservesStableSchemaIdentities()
     {
         CancellationToken ct = TestContext.Current.CancellationToken;
@@ -391,11 +545,13 @@ public class TableArchiveTests
                 ct);
 
             byte[] archive = await File.ReadAllBytesAsync(path, ct);
-            byte[] versionSix =
-                Encoding.UTF8.GetBytes("\"formatVersion\": 6");
-            int versionOffset = archive.AsSpan().IndexOf(versionSix);
+            byte[] latestVersion =
+                Encoding.UTF8.GetBytes(
+                    $"\"formatVersion\": {TableArchiveManifest.LatestFormatVersion}");
+            int versionOffset = archive.AsSpan().IndexOf(latestVersion);
             Assert.True(versionOffset >= 0);
-            archive[versionOffset + versionSix.Length - 1] = (byte)'5';
+            archive[versionOffset + latestVersion.Length - 1] =
+                checked((byte)('0' + TableArchiveManifest.LatestFormatVersion - 1));
             await File.WriteAllBytesAsync(path, archive, ct);
 
             await Assert.ThrowsAsync<InvalidDataException>(

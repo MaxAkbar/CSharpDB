@@ -1,4 +1,5 @@
 using CSharpDB.Migration.Validation;
+using CSharpDB.Primitives;
 
 namespace CSharpDB.Migration.Tests;
 
@@ -84,6 +85,84 @@ public sealed class MigrationNormalizedSchemaTests
 
         Assert.Throws<InvalidDataException>(
             () => MigrationNormalizedSchemaContract.Create([first, second]));
+    }
+
+    [Fact]
+    public void ExpectedSchemaRetainsThePlannedLogicalSqlType()
+    {
+        var source = new MigrationSourceIdentity
+        {
+            Kind = MigrationSourceKind.Synthetic,
+            Identity = "synthetic:normalized-logical-type",
+            Fingerprint = new string('1', 64),
+            ProviderVersion = "fixture-v1",
+            SourceVersion = "fixture-v1",
+            Consistency = new MigrationConsistencyStrategy
+            {
+                Kind = MigrationConsistencyKind.Immutable,
+                Description = "Immutable normalized-schema fixture.",
+            },
+        };
+        var column = new MigrationCatalogObject
+        {
+            ObjectId = "column:flag",
+            Kind = MigrationObjectKind.Column,
+            SourceName = "flag",
+            NativeType = "sys.bit",
+            Facets =
+            [
+                new MigrationCatalogFacet { Name = "nullable", Value = "false" },
+            ],
+        };
+        var mapping = new MigrationTypeMapping
+        {
+            SourceObjectId = column.ObjectId,
+            SourceNativeType = column.NativeType!,
+            TargetType = DbType.Integer,
+            TargetSqlType = "BOOLEAN",
+            Classification = MigrationMappingClassification.Exact,
+            Profile = MigrationMappingProfile.Preserve,
+            Coverage = new MigrationProfileCoverage
+            {
+                Kind = MigrationCoverageKind.Full,
+                ValuesExamined = 0,
+                TotalValues = 0,
+            },
+        };
+        var catalog = new MigrationCatalog
+        {
+            TargetCSharpDbVersion = "4.5.0",
+            Source = source,
+            Objects = [column],
+        };
+        var plan = new MigrationPlan
+        {
+            TargetCSharpDbVersion = catalog.TargetCSharpDbVersion,
+            Source = source,
+            CatalogDigest = new string('2', 64),
+            CapabilityDigest = new string('3', 64),
+            NamingAlgorithmVersion = "fixture-v1",
+            MappingPolicyId = "fixture",
+            MappingPolicyVersion = StandardDataTypeMappingProvider.StandardPolicyVersion,
+            MappingProfile = MigrationMappingProfile.Preserve,
+            Objects =
+            [
+                new MigrationPlanObject
+                {
+                    SourceObjectId = column.ObjectId,
+                    TargetName = "flag",
+                    TypeMappings = [mapping],
+                },
+            ],
+        };
+
+        MigrationNormalizedSchema normalized =
+            MigrationNormalizedSchemaContract.CreateExpected(plan, catalog);
+        MigrationNormalizedSchemaObject normalizedColumn = Assert.Single(normalized.Objects);
+
+        Assert.Contains(
+            normalizedColumn.Attributes,
+            attribute => attribute.Name == "targetSqlType" && attribute.Value == "BOOLEAN");
     }
 
     private static MigrationNormalizedSchemaObject Object(

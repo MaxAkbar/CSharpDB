@@ -44,7 +44,9 @@ public sealed class InspectorCommandRunnerTests
                 stderr,
                 ct);
 
-            Assert.Equal(InspectorCommandRunner.ExitOk, code);
+            Assert.True(
+                code == InspectorCommandRunner.ExitOk,
+                $"Inspector failed with exit code {code}: {stderr}{Environment.NewLine}{stdout}");
             Assert.Contains("\"schemaVersion\": \"1.0\"", stdout.ToString(), StringComparison.Ordinal);
             Assert.True(string.IsNullOrWhiteSpace(stderr.ToString()));
         }

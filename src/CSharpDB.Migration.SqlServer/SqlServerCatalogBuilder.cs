@@ -368,7 +368,9 @@ internal static partial class SqlServerCatalogBuilder
                 column.TypeSchema,
                 "sys",
                 StringComparison.Ordinal);
-            string logicalType = computed || rowVersion || userDefinedType
+            string logicalType = rowVersion
+                ? "rowVersion"
+                : computed || userDefinedType
                 ? "native"
                 : LogicalType(column.SystemTypeName);
             var facets = new List<MigrationCatalogFacet>

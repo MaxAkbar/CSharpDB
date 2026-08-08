@@ -97,12 +97,12 @@ public sealed record CSharpDbCapabilityCatalog
         Rules.Single(rule => rule.ObjectKind == kind && rule.Feature == CSharpDbCapabilityFeature.Object).Status;
 
     public bool IsColumnType(DbType type) =>
-        ValueTypes.Single(item => item.Type == type).IsColumnType;
+        ValueTypes.FirstOrDefault(item => item.Type == type)?.IsColumnType == true;
 }
 
 public static class CSharpDbCapabilityCatalogLoader
 {
-    public const string CurrentTargetVersion = "4.4.0";
+    public const string CurrentTargetVersion = "4.5.0";
     public const string Format = "csharpdb-target-capabilities/v1";
 
     private static readonly JsonSerializerOptions s_options = CreateOptions();
@@ -110,6 +110,7 @@ public static class CSharpDbCapabilityCatalogLoader
         new Dictionary<string, Lazy<CSharpDbCapabilityCatalog>>(StringComparer.Ordinal)
         {
             ["4.3.0"] = CreateCatalog("4.3.0"),
+            ["4.4.0"] = CreateCatalog("4.4.0"),
             [CurrentTargetVersion] = CreateCatalog(CurrentTargetVersion),
         };
 
@@ -198,11 +199,43 @@ public static class CSharpDbCapabilityCatalogLoader
         if (catalog.MaxIdentifierLength != SqlIdentifierRules.MaxLength)
             throw new InvalidDataException("Capability catalog identifier limit does not match CSharpDB.Primitives.");
 
-        DbType[] runtimeTypes = Enum.GetValues<DbType>();
-        if (!runtimeTypes.SequenceEqual(catalog.ValueTypes.Select(item => item.Type)))
-            throw new InvalidDataException("Capability catalog must describe every DbType exactly once.");
+        DbType[] catalogTypes = catalog.ValueTypes.Select(item => item.Type).ToArray();
+        if (catalogTypes.Distinct().Count() != catalogTypes.Length)
+            throw new InvalidDataException("Capability catalog must describe each advertised DbType exactly once.");
+        DbType[] legacyTypes =
+        [
+            DbType.Null,
+            DbType.Integer,
+            DbType.Real,
+            DbType.Text,
+            DbType.Blob,
+        ];
+        if (!legacyTypes.All(catalogTypes.Contains))
+        {
+            throw new InvalidDataException(
+                "Capability catalog must retain every legacy DbType contract.");
+        }
+        if (string.Equals(targetVersion, CurrentTargetVersion, StringComparison.Ordinal) &&
+            !Enum.GetValues<DbType>().SequenceEqual(catalogTypes))
+        {
+            throw new InvalidDataException(
+                "The current capability catalog must describe every runtime DbType exactly once.");
+        }
         if (catalog.ValueTypes.Single(item => item.Type == DbType.Null).IsColumnType)
             throw new InvalidDataException("DbType.Null cannot be declared as a persistent column type.");
+
+        CSharpDbCapabilityRule enforcementRule = catalog.Rules.Single(rule =>
+            rule.ObjectKind == MigrationObjectKind.Column &&
+            rule.Feature == CSharpDbCapabilityFeature.TargetTypeEnforcement);
+        bool ruleAdvertisesEnforcement = enforcementRule.Status is
+            MigrationCompatibilityStatus.Compatible or
+            MigrationCompatibilityStatus.CompatibleWithRewrite or
+            MigrationCompatibilityStatus.Conditional;
+        if (catalog.EngineEnforcesMappedColumnType != ruleAdvertisesEnforcement)
+        {
+            throw new InvalidDataException(
+                "Capability catalog target-type enforcement flag and rule disagree.");
+        }
 
         var evidenceIds = new HashSet<string>(StringComparer.Ordinal);
         foreach (CSharpDbCapabilityEvidence evidence in catalog.Evidence)

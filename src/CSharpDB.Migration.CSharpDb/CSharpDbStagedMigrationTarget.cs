@@ -422,8 +422,39 @@ public sealed class CSharpDbStagedMigrationTarget :
             : null;
         if (dataInsert is not null)
         {
+            TableSchema targetSchema = _database.GetTableSchema(tablePlan.TargetName!) ??
+                throw new InvalidDataException(
+                    $"Migration target table '{tablePlan.TargetName}' is missing.");
+            int[] writableOrdinals = targetSchema.Columns
+                .Select((column, ordinal) => (column, ordinal))
+                .Where(static item => !item.column.IsRowVersion)
+                .Select(static item => item.ordinal)
+                .ToArray();
+            if (writableOrdinals.Length != dataInsert.ColumnCount)
+            {
+                throw new InvalidDataException(
+                    $"Migration target table '{tablePlan.TargetName}' writable-column contract is inconsistent.");
+            }
+
             foreach (MigrationTargetRow row in batch.Rows)
-                dataInsert.AddRow(row.Values.ToArray());
+            {
+                if (row.Values.Count != targetSchema.Columns.Count)
+                {
+                    throw new InvalidDataException(
+                        $"Migration row for '{tablePlan.TargetName}' has {row.Values.Count} values; expected {targetSchema.Columns.Count} including generated columns.");
+                }
+
+                if (writableOrdinals.Length == targetSchema.Columns.Count)
+                {
+                    dataInsert.AddRow(row.Values.ToArray());
+                    continue;
+                }
+
+                var writableValues = new DbValue[writableOrdinals.Length];
+                for (int ordinal = 0; ordinal < writableOrdinals.Length; ordinal++)
+                    writableValues[ordinal] = row.Values[writableOrdinals[ordinal]];
+                dataInsert.AddRow(writableValues);
+            }
         }
 
         InsertBatch? rejectInsert = IsLegacyTarget

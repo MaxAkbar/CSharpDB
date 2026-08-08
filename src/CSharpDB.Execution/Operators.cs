@@ -442,6 +442,31 @@ internal static class BoundColumnAccessHelper
         }
     }
 
+    public static bool TryDecodeNumericValue(
+        ReadOnlySpan<byte> payload,
+        IRecordSerializer serializer,
+        RecordColumnAccessor? accessor,
+        int columnIndex,
+        out DbValue value)
+    {
+        try
+        {
+            return accessor is { } boundAccessor
+                ? boundAccessor.TryDecodeNumericValue(payload, out value)
+                : serializer.TryDecodeNumericValueColumn(payload, columnIndex, out value);
+        }
+        catch (InvalidOperationException)
+        {
+            value = DbValue.Null;
+            return false;
+        }
+        catch (CSharpDbException ex) when (ex.Code == ErrorCode.TypeMismatch)
+        {
+            value = DbValue.Null;
+            return false;
+        }
+    }
+
     public static DbValue Decode(
         ReadOnlySpan<byte> payload,
         IRecordSerializer serializer,
@@ -2921,10 +2946,12 @@ public sealed class DistinctOperator :
     private const int DefaultBatchSize = 64;
 
     private readonly IOperator _source;
-    private readonly HashSet<DistinctRowKey> _seenRows = new(new DistinctRowKeyComparer());
+    private readonly string?[] _collations;
+    private readonly HashSet<DistinctRowKey> _seenRows;
     private readonly HashSet<DbValue> _seenSingleValues = new();
     private readonly bool _singleColumnFastPath;
     private readonly bool _orderedSingleColumnFastPath;
+    private readonly string? _singleColumnCollation;
     private bool _reuseCurrentBatch = true;
     private RowBatch _currentBatch = new(0, DefaultBatchSize);
     private RowBatch? _pendingSourceBatch;
@@ -2940,8 +2967,19 @@ public sealed class DistinctOperator :
     public DistinctOperator(IOperator source, bool inputIsOrdered = false)
     {
         _source = PhysicalPlanCapture.WrapIfActive(source);
+        _collations = new string?[_source.OutputSchema.Length];
+        for (int i = 0; i < _collations.Length; i++)
+        {
+            ColumnDefinition column = _source.OutputSchema[i];
+            _collations[i] = column.Type == DbType.Text
+                ? CollationSupport.NormalizeMetadataName(column.Collation)
+                : null;
+        }
+
+        _seenRows = new HashSet<DistinctRowKey>(new DistinctRowKeyComparer(_collations));
         _singleColumnFastPath = _source.OutputSchema.Length == 1;
         _orderedSingleColumnFastPath = inputIsOrdered && _singleColumnFastPath;
+        _singleColumnCollation = _singleColumnFastPath ? _collations[0] : null;
     }
 
     public async ValueTask OpenAsync(CancellationToken ct = default)
@@ -3107,11 +3145,11 @@ public sealed class DistinctOperator :
             _currentBatch = CreateBatch(_source.OutputSchema.Length);
     }
 
-    private static int ComputeHashCode(DbValue[] row)
+    private int ComputeHashCode(DbValue[] row)
     {
         var hash = new HashCode();
         for (int i = 0; i < row.Length; i++)
-            hash.Add(row[i]);
+            hash.Add(NormalizeDistinctValue(row[i], _collations[i]));
         return hash.ToHashCode();
     }
 
@@ -3125,7 +3163,7 @@ public sealed class DistinctOperator :
     private bool TryAddDistinctRow(ReadOnlySpan<DbValue> row)
     {
         if (_singleColumnFastPath)
-            return _seenSingleValues.Add(row[0]);
+            return _seenSingleValues.Add(NormalizeDistinctValue(row[0], _singleColumnCollation));
 
         var ownedRow = row.ToArray();
         var rowKey = new DistinctRowKey(ownedRow, ComputeHashCode(ownedRow));
@@ -3134,13 +3172,23 @@ public sealed class DistinctOperator :
 
     private bool TryAddOrderedSingleValue(DbValue value)
     {
-        if (_hasLastOrderedSingleValue && _lastOrderedSingleValue.Equals(value))
+        if (_hasLastOrderedSingleValue && DistinctValuesEqual(_lastOrderedSingleValue, value, _singleColumnCollation))
             return false;
 
         _lastOrderedSingleValue = value;
         _hasLastOrderedSingleValue = true;
         return true;
     }
+
+    private static DbValue NormalizeDistinctValue(DbValue value, string? collation) =>
+        CollationSupport.IsBinaryOrDefault(collation)
+            ? value
+            : CollationSupport.NormalizeIndexValue(value, collation);
+
+    private static bool DistinctValuesEqual(DbValue left, DbValue right, string? collation) =>
+        CollationSupport.IsBinaryOrDefault(collation)
+            ? left.Equals(right)
+            : CollationSupport.Compare(left, right, collation) == 0;
 
     private RowBatch EnsureBatch(int columnCount)
     {
@@ -3166,6 +3214,13 @@ public sealed class DistinctOperator :
 
     private sealed class DistinctRowKeyComparer : IEqualityComparer<DistinctRowKey>
     {
+        private readonly string?[] _collations;
+
+        public DistinctRowKeyComparer(string?[] collations)
+        {
+            _collations = collations;
+        }
+
         public bool Equals(DistinctRowKey x, DistinctRowKey y)
         {
             if (x.HashCode != y.HashCode)
@@ -3175,7 +3230,7 @@ public sealed class DistinctOperator :
 
             for (int i = 0; i < x.Values.Length; i++)
             {
-                if (!x.Values[i].Equals(y.Values[i]))
+                if (!DistinctValuesEqual(x.Values[i], y.Values[i], _collations[i]))
                     return false;
             }
 
@@ -3521,9 +3576,18 @@ internal sealed class AggregateDistinctValueSet
     private ulong[]? _integerBitmap;
     private HashSet<long>? _integerValues;
     private HashSet<DbValue>? _values;
+    private readonly string? _collation;
+
+    public AggregateDistinctValueSet(string? collation = null)
+    {
+        _collation = CollationSupport.NormalizeMetadataName(collation);
+    }
 
     public bool Add(DbValue value)
     {
+        if (value.Type == DbType.Text && !CollationSupport.IsBinaryOrDefault(_collation))
+            value = CollationSupport.NormalizeIndexValue(value, _collation);
+
         if (value.Type == DbType.Integer)
             return AddInteger(value.AsInteger);
 
@@ -3718,6 +3782,7 @@ public sealed class HashAggregateOperator :
     private readonly List<FunctionCallExpression> _aggregateFunctions = new();
     private readonly Dictionary<FunctionCallExpression, int> _aggregateIndices = new();
     private readonly SpanExpressionEvaluator[]? _groupByEvaluators;
+    private readonly string?[] _groupByCollations;
     private readonly bool _groupByIsConstant;
     private readonly SimpleGroupedBatchKeyPlan? _simpleGroupedBatchKeyPlan;
     private readonly SimpleGroupedBatchPlan? _simpleGroupedBatchPlan;
@@ -3752,7 +3817,18 @@ public sealed class HashAggregateOperator :
         if (_groupByExprs is { Count: > 0 })
         {
             _groupByEvaluators = BuildGroupByEvaluators(_groupByExprs, _inputSchema, _functions);
+            _groupByCollations = new string?[_groupByExprs.Count];
+            for (int i = 0; i < _groupByExprs.Count; i++)
+            {
+                _groupByCollations[i] = CollationSupport.ResolveExpressionCollation(
+                    _groupByExprs[i],
+                    _inputSchema);
+            }
             _groupByIsConstant = _groupByExprs.All(e => e is LiteralExpression);
+        }
+        else
+        {
+            _groupByCollations = Array.Empty<string?>();
         }
 
         foreach (var col in _selectColumns)
@@ -3820,7 +3896,7 @@ public sealed class HashAggregateOperator :
                     var groupIndex = new Dictionary<DbValue, int>();
                     await ConsumeSourceRowsAsync(row =>
                     {
-                        var key = groupByEvaluator(row);
+                        var key = NormalizeGroupKeyValue(groupByEvaluator(row), 0);
                         if (!groupIndex.TryGetValue(key, out int idx))
                         {
                             idx = groups.Count;
@@ -3924,7 +4000,7 @@ public sealed class HashAggregateOperator :
                 for (int rowIndex = 0; rowIndex < batch.Count; rowIndex++)
                 {
                     var row = batch.GetRowSpan(rowIndex);
-                    DbValue key = row[groupColumnIndex];
+                    DbValue key = NormalizeGroupKeyValue(row[groupColumnIndex], 0);
                     if (!groupIndex.TryGetValue(key, out int index))
                     {
                         index = groups.Count;
@@ -3980,7 +4056,7 @@ public sealed class HashAggregateOperator :
                 for (int rowIndex = 0; rowIndex < batch.Count; rowIndex++)
                 {
                     var row = batch.GetRowSpan(rowIndex);
-                    var key = groupByEvaluator(row);
+                    var key = NormalizeGroupKeyValue(groupByEvaluator(row), 0);
                     if (!groupIndex.TryGetValue(key, out int idx))
                     {
                         idx = groups.Count;
@@ -4040,7 +4116,7 @@ public sealed class HashAggregateOperator :
                 for (int rowIndex = 0; rowIndex < batch.Count; rowIndex++)
                 {
                     var row = batch.GetRowSpan(rowIndex);
-                    DbValue key = groupKeyTerm.Evaluate(row);
+                    DbValue key = NormalizeGroupKeyValue(groupKeyTerm.Evaluate(row), 0);
                     if (!groupIndex.TryGetValue(key, out int index))
                     {
                         index = groups.Count;
@@ -4184,12 +4260,12 @@ public sealed class HashAggregateOperator :
                 term = new SimpleGroupedBatchAggregateTerm(SimpleGroupedBatchAggregateKind.CountValue, columnIndex, func.IsDistinct);
                 return true;
             case "SUM":
-                if (columnType is not DbType.Integer and not DbType.Real)
+                if (columnType is not DbType.Integer and not DbType.Real and not DbType.Decimal)
                     return false;
                 term = new SimpleGroupedBatchAggregateTerm(SimpleGroupedBatchAggregateKind.Sum, columnIndex, func.IsDistinct);
                 return true;
             case "AVG":
-                if (columnType is not DbType.Integer and not DbType.Real)
+                if (columnType is not DbType.Integer and not DbType.Real and not DbType.Decimal)
                     return false;
                 term = new SimpleGroupedBatchAggregateTerm(SimpleGroupedBatchAggregateKind.Avg, columnIndex, func.IsDistinct);
                 return true;
@@ -4212,7 +4288,7 @@ public sealed class HashAggregateOperator :
         return columnIndex >= 0;
     }
 
-    private static GroupKey BuildSimpleBatchGroupKey(ReadOnlySpan<DbValue> row, int[] groupColumnIndices)
+    private GroupKey BuildSimpleBatchGroupKey(ReadOnlySpan<DbValue> row, int[] groupColumnIndices)
     {
         var values = new DbValue[groupColumnIndices.Length];
         var hash = new HashCode();
@@ -4221,6 +4297,7 @@ public sealed class HashAggregateOperator :
             DbValue value = (uint)groupColumnIndices[i] < (uint)row.Length
                 ? row[groupColumnIndices[i]]
                 : DbValue.Null;
+            value = NormalizeGroupKeyValue(value, i);
             values[i] = value;
             hash.Add(value);
         }
@@ -4228,13 +4305,13 @@ public sealed class HashAggregateOperator :
         return new GroupKey(values, hash.ToHashCode());
     }
 
-    private static GroupKey BuildSimpleBatchGroupKey(ReadOnlySpan<DbValue> row, BatchProjectionTerm[] groupKeyTerms)
+    private GroupKey BuildSimpleBatchGroupKey(ReadOnlySpan<DbValue> row, BatchProjectionTerm[] groupKeyTerms)
     {
         var values = new DbValue[groupKeyTerms.Length];
         var hash = new HashCode();
         for (int i = 0; i < groupKeyTerms.Length; i++)
         {
-            DbValue value = groupKeyTerms[i].Evaluate(row);
+            DbValue value = NormalizeGroupKeyValue(groupKeyTerms[i].Evaluate(row), i);
             values[i] = value;
             hash.Add(value);
         }
@@ -4270,6 +4347,9 @@ public sealed class HashAggregateOperator :
                 break;
             case CollateExpression collate:
                 CollectAggregates(collate.Operand);
+                break;
+            case CastExpression cast:
+                CollectAggregates(cast.Operand);
                 break;
             case IsNullExpression isNull:
                 CollectAggregates(isNull.Operand);
@@ -4314,12 +4394,22 @@ public sealed class HashAggregateOperator :
         var hash = new HashCode();
         for (int i = 0; i < _groupByEvaluators.Length; i++)
         {
-            var val = _groupByEvaluators[i](row);
+            var val = NormalizeGroupKeyValue(_groupByEvaluators[i](row), i);
             values[i] = val;
             hash.Add(val);
         }
 
         return new GroupKey(values, hash.ToHashCode());
+    }
+
+    private DbValue NormalizeGroupKeyValue(DbValue value, int groupKeyIndex)
+    {
+        string? collation = (uint)groupKeyIndex < (uint)_groupByCollations.Length
+            ? _groupByCollations[groupKeyIndex]
+            : null;
+        return CollationSupport.IsBinaryOrDefault(collation)
+            ? value
+            : CollationSupport.NormalizeIndexValue(value, collation);
     }
 
     private static SpanExpressionEvaluator[] BuildGroupByEvaluators(List<Expression> expressions, TableSchema schema, DbFunctionRegistry functions)
@@ -4379,10 +4469,19 @@ public sealed class HashAggregateOperator :
         {
             FunctionCallExpression func => ScalarFunctionEvaluator.IsAggregateFunction(func.FunctionName)
                 ? EvaluateAggregate(func, group)
-                : ScalarFunctionEvaluator.Evaluate(func, arg => EvalWithAggregates(arg, group), _functions),
+                : ExpressionEvaluator.EnforceDeclaredIntegerRange(
+                    ScalarFunctionEvaluator.Evaluate(
+                        func,
+                        arg => EvalWithAggregates(arg, group),
+                        _functions),
+                    ExpressionEvaluator.ResolveDeclaredType(func, _inputSchema)),
             BinaryExpression bin => EvalBinaryWithAgg(bin, group),
             UnaryExpression un => EvalUnaryWithAgg(un, group),
             CollateExpression collate => EvalWithAggregates(collate.Operand, group),
+            CastExpression cast => SqlTypeCoercion.Cast(
+                EvalWithAggregates(cast.Operand, group),
+                cast.TargetType,
+                ExpressionEvaluator.ResolveDeclaredType(cast.Operand, _inputSchema)),
             IsNullExpression isNull => EvalIsNullWithAgg(isNull, group),
             _ => group.FirstRow != null
                 ? ExpressionEvaluator.Evaluate(expr, group.FirstRow, _inputSchema, _functions)
@@ -4400,23 +4499,36 @@ public sealed class HashAggregateOperator :
 
     private DbValue EvalBinaryWithAgg(BinaryExpression bin, GroupState group)
     {
+        if (bin.Op is BinaryOp.Plus or BinaryOp.Minus or BinaryOp.Multiply or BinaryOp.Divide)
+            ExpressionEvaluator.ValidateArithmeticOperands(bin.Left, bin.Right, _inputSchema);
+
         var left = EvalWithAggregates(bin.Left, group);
         var right = EvalWithAggregates(bin.Right, group);
+        SqlTypeDescriptor? comparisonType = ExpressionEvaluator.ResolveComparisonDeclaredType(
+            bin.Left,
+            bin.Right,
+            _inputSchema);
+        string? collation = CollationSupport.ResolveComparisonCollation(bin.Left, bin.Right, _inputSchema);
 
         return bin.Op switch
         {
-            BinaryOp.Equals => CompareOrNull(left, right, static comparison => comparison == 0),
-            BinaryOp.NotEquals => CompareOrNull(left, right, static comparison => comparison != 0),
-            BinaryOp.LessThan => CompareOrNull(left, right, static comparison => comparison < 0),
-            BinaryOp.GreaterThan => CompareOrNull(left, right, static comparison => comparison > 0),
-            BinaryOp.LessOrEqual => CompareOrNull(left, right, static comparison => comparison <= 0),
-            BinaryOp.GreaterOrEqual => CompareOrNull(left, right, static comparison => comparison >= 0),
+            BinaryOp.Equals => CompareOrNull(left, right, comparisonType, collation, static comparison => comparison == 0),
+            BinaryOp.NotEquals => CompareOrNull(left, right, comparisonType, collation, static comparison => comparison != 0),
+            BinaryOp.LessThan => CompareOrNull(left, right, comparisonType, collation, static comparison => comparison < 0),
+            BinaryOp.GreaterThan => CompareOrNull(left, right, comparisonType, collation, static comparison => comparison > 0),
+            BinaryOp.LessOrEqual => CompareOrNull(left, right, comparisonType, collation, static comparison => comparison <= 0),
+            BinaryOp.GreaterOrEqual => CompareOrNull(left, right, comparisonType, collation, static comparison => comparison >= 0),
             BinaryOp.And => SqlAnd(left, right),
             BinaryOp.Or => SqlOr(left, right),
-            BinaryOp.Plus => ArithOp(left, right, (a, b) => a + b, (a, b) => a + b),
-            BinaryOp.Minus => ArithOp(left, right, (a, b) => a - b, (a, b) => a - b),
-            BinaryOp.Multiply => ArithOp(left, right, (a, b) => a * b, (a, b) => a * b),
-            BinaryOp.Divide => ArithOp(left, right, (a, b) => b != 0 ? a / b : 0, (a, b) => b != 0 ? a / b : 0),
+            BinaryOp.Plus or BinaryOp.Minus or BinaryOp.Multiply or BinaryOp.Divide =>
+                ExpressionEvaluator.EvaluateArithmetic(
+                    bin.Op,
+                    left,
+                    right,
+                    ExpressionEvaluator.ResolveArithmeticDeclaredType(
+                        bin.Left,
+                        bin.Right,
+                        _inputSchema)),
             _ => DbValue.Null,
         };
     }
@@ -4430,12 +4542,14 @@ public sealed class HashAggregateOperator :
     private static DbValue CompareOrNull(
         DbValue left,
         DbValue right,
+        SqlTypeDescriptor? declaredType,
+        string? collation,
         Func<int, bool> predicate)
     {
         if (left.IsNull || right.IsNull)
             return DbValue.Null;
 
-        return BoolToDb(predicate(DbValue.Compare(left, right)));
+        return BoolToDb(predicate(SqlTypeCoercion.Compare(left, right, declaredType, collation)));
     }
 
     private static DbValue SqlAnd(DbValue left, DbValue right)
@@ -4462,12 +4576,17 @@ public sealed class HashAggregateOperator :
 
     private DbValue EvalUnaryWithAgg(UnaryExpression un, GroupState group)
     {
+        if (un.Op == TokenType.Minus)
+            ExpressionEvaluator.ValidateNumericNegationOperand(un.Operand, _inputSchema);
+
         var operand = EvalWithAggregates(un.Operand, group);
         return un.Op switch
         {
             TokenType.Not => operand.IsNull ? DbValue.Null : BoolToDb(!operand.IsTruthy),
-            TokenType.Minus when operand.Type == DbType.Integer => DbValue.FromInteger(-operand.AsInteger),
-            TokenType.Minus when operand.Type == DbType.Real => DbValue.FromReal(-operand.AsReal),
+            TokenType.Minus when operand.Type is DbType.Integer or DbType.Real or DbType.Decimal =>
+                ExpressionEvaluator.NegateNumeric(
+                    operand,
+                    ExpressionEvaluator.ResolveNegatedDeclaredType(un.Operand, _inputSchema)),
             _ => DbValue.Null,
         };
     }
@@ -4553,11 +4672,12 @@ public sealed class HashAggregateOperator :
         private readonly int _directColumnIndex;
         private readonly bool _hasLiteralArgument;
         private readonly DbValue _literalArgument;
+        private readonly SqlTypeDescriptor? _argumentType;
+        private readonly string? _argumentCollation;
 
         private AggregateDistinctValueSet? _distinctValues;
         private long _count;
-        private double _sum;
-        private bool _hasReal;
+        private NumericAggregateAccumulator _numericAggregate;
         private bool _hasAny;
         private DbValue? _best;
 
@@ -4569,15 +4689,20 @@ public sealed class HashAggregateOperator :
             _isStarArg = func.IsStarArg;
             _directColumnIndex = TryResolveDirectColumnIndex(func, schema);
             _hasLiteralArgument = TryResolveLiteralArgument(func, out _literalArgument);
+            _argumentType = func.Arguments.Count == 1
+                ? ExpressionEvaluator.ResolveDeclaredType(func.Arguments[0], schema)
+                : null;
+            _argumentCollation = func.Arguments.Count == 1
+                ? CollationSupport.ResolveExpressionCollation(func.Arguments[0], schema)
+                : null;
             Reset();
         }
 
         public void Reset()
         {
-            _distinctValues = _isDistinct ? new AggregateDistinctValueSet() : null;
+            _distinctValues = _isDistinct ? new AggregateDistinctValueSet(_argumentCollation) : null;
             _count = 0;
-            _sum = 0;
-            _hasReal = false;
+            _numericAggregate.Reset();
             _hasAny = false;
             _best = null;
         }
@@ -4604,9 +4729,8 @@ public sealed class HashAggregateOperator :
                 var val = _argumentEvaluator!(row);
                 if (val.IsNull) return;
                 if (_distinctValues != null && !_distinctValues.Add(val)) return;
+                _numericAggregate.Add(val);
                 _hasAny = true;
-                if (val.Type == DbType.Real) _hasReal = true;
-                _sum += val.Type == DbType.Real ? val.AsReal : val.AsInteger;
                 _count++;
                 return;
             }
@@ -4622,7 +4746,7 @@ public sealed class HashAggregateOperator :
                     return;
                 }
 
-                int cmp = DbValue.Compare(val, _best.Value);
+                int cmp = SqlTypeCoercion.Compare(val, _best.Value, _argumentType, _argumentCollation);
                 if ((_name == "MIN" && cmp < 0) || (_name == "MAX" && cmp > 0))
                     _best = val;
                 return;
@@ -4654,9 +4778,8 @@ public sealed class HashAggregateOperator :
                     DbValue value = GetValue(row, term.ColumnIndex);
                     if (value.IsNull) return;
                     if (term.IsDistinct && _distinctValues != null && !_distinctValues.Add(value)) return;
+                    _numericAggregate.Add(value);
                     _hasAny = true;
-                    if (value.Type == DbType.Real) _hasReal = true;
-                    _sum += value.Type == DbType.Real ? value.AsReal : value.AsInteger;
                     _count++;
                     return;
                 }
@@ -4673,7 +4796,7 @@ public sealed class HashAggregateOperator :
                         return;
                     }
 
-                    int cmp = DbValue.Compare(value, _best.Value);
+                    int cmp = SqlTypeCoercion.Compare(value, _best.Value, _argumentType, _argumentCollation);
                     if ((term.Kind == SimpleGroupedBatchAggregateKind.Min && cmp < 0) ||
                         (term.Kind == SimpleGroupedBatchAggregateKind.Max && cmp > 0))
                     {
@@ -4709,9 +4832,8 @@ public sealed class HashAggregateOperator :
                 var val = EvaluateArgument(row, ref rowBuffer);
                 if (val.IsNull) return;
                 if (_distinctValues != null && !_distinctValues.Add(val)) return;
+                _numericAggregate.Add(val);
                 _hasAny = true;
-                if (val.Type == DbType.Real) _hasReal = true;
-                _sum += val.Type == DbType.Real ? val.AsReal : val.AsInteger;
                 _count++;
                 return;
             }
@@ -4727,7 +4849,7 @@ public sealed class HashAggregateOperator :
                     return;
                 }
 
-                int cmp = DbValue.Compare(val, _best.Value);
+                int cmp = SqlTypeCoercion.Compare(val, _best.Value, _argumentType, _argumentCollation);
                 if ((_name == "MIN" && cmp < 0) || (_name == "MAX" && cmp > 0))
                     _best = val;
                 return;
@@ -4839,13 +4961,13 @@ public sealed class HashAggregateOperator :
             if (_name == "SUM")
             {
                 if (!_hasAny) return DbValue.FromInteger(0);
-                return _hasReal ? DbValue.FromReal(_sum) : DbValue.FromInteger((long)_sum);
+                return _numericAggregate.GetSumOrZero();
             }
 
             if (_name == "AVG")
             {
                 if (!_hasAny) return DbValue.Null;
-                return DbValue.FromReal(_sum / _count);
+                return _numericAggregate.GetAverageOrNull();
             }
 
             if (_name is "MIN" or "MAX")
@@ -5076,6 +5198,9 @@ public sealed class ScalarAggregateOperator :
             case CollateExpression collate:
                 CollectAggregates(collate.Operand);
                 break;
+            case CastExpression cast:
+                CollectAggregates(cast.Operand);
+                break;
             case IsNullExpression isNull:
                 CollectAggregates(isNull.Operand);
                 break;
@@ -5088,10 +5213,19 @@ public sealed class ScalarAggregateOperator :
         {
             FunctionCallExpression func => ScalarFunctionEvaluator.IsAggregateFunction(func.FunctionName)
                 ? EvaluateAggregate(func)
-                : ScalarFunctionEvaluator.Evaluate(func, arg => EvalWithAggregates(arg, firstRow), _functions),
+                : ExpressionEvaluator.EnforceDeclaredIntegerRange(
+                    ScalarFunctionEvaluator.Evaluate(
+                        func,
+                        arg => EvalWithAggregates(arg, firstRow),
+                        _functions),
+                    ExpressionEvaluator.ResolveDeclaredType(func, _inputSchema)),
             BinaryExpression bin => EvalBinaryWithAgg(bin, firstRow),
             UnaryExpression un => EvalUnaryWithAgg(un, firstRow),
             CollateExpression collate => EvalWithAggregates(collate.Operand, firstRow),
+            CastExpression cast => SqlTypeCoercion.Cast(
+                EvalWithAggregates(cast.Operand, firstRow),
+                cast.TargetType,
+                ExpressionEvaluator.ResolveDeclaredType(cast.Operand, _inputSchema)),
             IsNullExpression isNull => EvalIsNullWithAgg(isNull, firstRow),
             _ => firstRow != null
                 ? ExpressionEvaluator.Evaluate(expr, firstRow, _inputSchema, _functions)
@@ -5109,23 +5243,36 @@ public sealed class ScalarAggregateOperator :
 
     private DbValue EvalBinaryWithAgg(BinaryExpression bin, DbValue[]? firstRow)
     {
+        if (bin.Op is BinaryOp.Plus or BinaryOp.Minus or BinaryOp.Multiply or BinaryOp.Divide)
+            ExpressionEvaluator.ValidateArithmeticOperands(bin.Left, bin.Right, _inputSchema);
+
         var left = EvalWithAggregates(bin.Left, firstRow);
         var right = EvalWithAggregates(bin.Right, firstRow);
+        SqlTypeDescriptor? comparisonType = ExpressionEvaluator.ResolveComparisonDeclaredType(
+            bin.Left,
+            bin.Right,
+            _inputSchema);
+        string? collation = CollationSupport.ResolveComparisonCollation(bin.Left, bin.Right, _inputSchema);
 
         return bin.Op switch
         {
-            BinaryOp.Equals => CompareOrNull(left, right, static comparison => comparison == 0),
-            BinaryOp.NotEquals => CompareOrNull(left, right, static comparison => comparison != 0),
-            BinaryOp.LessThan => CompareOrNull(left, right, static comparison => comparison < 0),
-            BinaryOp.GreaterThan => CompareOrNull(left, right, static comparison => comparison > 0),
-            BinaryOp.LessOrEqual => CompareOrNull(left, right, static comparison => comparison <= 0),
-            BinaryOp.GreaterOrEqual => CompareOrNull(left, right, static comparison => comparison >= 0),
+            BinaryOp.Equals => CompareOrNull(left, right, comparisonType, collation, static comparison => comparison == 0),
+            BinaryOp.NotEquals => CompareOrNull(left, right, comparisonType, collation, static comparison => comparison != 0),
+            BinaryOp.LessThan => CompareOrNull(left, right, comparisonType, collation, static comparison => comparison < 0),
+            BinaryOp.GreaterThan => CompareOrNull(left, right, comparisonType, collation, static comparison => comparison > 0),
+            BinaryOp.LessOrEqual => CompareOrNull(left, right, comparisonType, collation, static comparison => comparison <= 0),
+            BinaryOp.GreaterOrEqual => CompareOrNull(left, right, comparisonType, collation, static comparison => comparison >= 0),
             BinaryOp.And => SqlAnd(left, right),
             BinaryOp.Or => SqlOr(left, right),
-            BinaryOp.Plus => ArithOp(left, right, (a, b) => a + b, (a, b) => a + b),
-            BinaryOp.Minus => ArithOp(left, right, (a, b) => a - b, (a, b) => a - b),
-            BinaryOp.Multiply => ArithOp(left, right, (a, b) => a * b, (a, b) => a * b),
-            BinaryOp.Divide => ArithOp(left, right, (a, b) => b != 0 ? a / b : 0, (a, b) => b != 0 ? a / b : 0),
+            BinaryOp.Plus or BinaryOp.Minus or BinaryOp.Multiply or BinaryOp.Divide =>
+                ExpressionEvaluator.EvaluateArithmetic(
+                    bin.Op,
+                    left,
+                    right,
+                    ExpressionEvaluator.ResolveArithmeticDeclaredType(
+                        bin.Left,
+                        bin.Right,
+                        _inputSchema)),
             _ => DbValue.Null,
         };
     }
@@ -5139,12 +5286,14 @@ public sealed class ScalarAggregateOperator :
     private static DbValue CompareOrNull(
         DbValue left,
         DbValue right,
+        SqlTypeDescriptor? declaredType,
+        string? collation,
         Func<int, bool> predicate)
     {
         if (left.IsNull || right.IsNull)
             return DbValue.Null;
 
-        return BoolToDb(predicate(DbValue.Compare(left, right)));
+        return BoolToDb(predicate(SqlTypeCoercion.Compare(left, right, declaredType, collation)));
     }
 
     private static DbValue SqlAnd(DbValue left, DbValue right)
@@ -5171,12 +5320,17 @@ public sealed class ScalarAggregateOperator :
 
     private DbValue EvalUnaryWithAgg(UnaryExpression un, DbValue[]? firstRow)
     {
+        if (un.Op == TokenType.Minus)
+            ExpressionEvaluator.ValidateNumericNegationOperand(un.Operand, _inputSchema);
+
         var operand = EvalWithAggregates(un.Operand, firstRow);
         return un.Op switch
         {
             TokenType.Not => operand.IsNull ? DbValue.Null : BoolToDb(!operand.IsTruthy),
-            TokenType.Minus when operand.Type == DbType.Integer => DbValue.FromInteger(-operand.AsInteger),
-            TokenType.Minus when operand.Type == DbType.Real => DbValue.FromReal(-operand.AsReal),
+            TokenType.Minus when operand.Type is DbType.Integer or DbType.Real or DbType.Decimal =>
+                ExpressionEvaluator.NegateNumeric(
+                    operand,
+                    ExpressionEvaluator.ResolveNegatedDeclaredType(un.Operand, _inputSchema)),
             _ => DbValue.Null,
         };
     }
@@ -5200,11 +5354,12 @@ public sealed class ScalarAggregateOperator :
         private readonly int _directColumnIndex;
         private readonly bool _hasLiteralArgument;
         private readonly DbValue _literalArgument;
+        private readonly SqlTypeDescriptor? _argumentType;
+        private readonly string? _argumentCollation;
 
         private AggregateDistinctValueSet? _distinctValues;
         private long _count;
-        private double _sum;
-        private bool _hasReal;
+        private NumericAggregateAccumulator _numericAggregate;
         private bool _hasAny;
         private DbValue? _best;
 
@@ -5216,15 +5371,20 @@ public sealed class ScalarAggregateOperator :
             _isStarArg = func.IsStarArg;
             _directColumnIndex = TryResolveDirectColumnIndex(func, schema);
             _hasLiteralArgument = TryResolveLiteralArgument(func, out _literalArgument);
+            _argumentType = func.Arguments.Count == 1
+                ? ExpressionEvaluator.ResolveDeclaredType(func.Arguments[0], schema)
+                : null;
+            _argumentCollation = func.Arguments.Count == 1
+                ? CollationSupport.ResolveExpressionCollation(func.Arguments[0], schema)
+                : null;
             Reset();
         }
 
         public void Reset()
         {
-            _distinctValues = _isDistinct ? new AggregateDistinctValueSet() : null;
+            _distinctValues = _isDistinct ? new AggregateDistinctValueSet(_argumentCollation) : null;
             _count = 0;
-            _sum = 0;
-            _hasReal = false;
+            _numericAggregate.Reset();
             _hasAny = false;
             _best = null;
         }
@@ -5251,9 +5411,8 @@ public sealed class ScalarAggregateOperator :
                 var val = _argumentEvaluator!(row);
                 if (val.IsNull) return;
                 if (_distinctValues != null && !_distinctValues.Add(val)) return;
+                _numericAggregate.Add(val);
                 _hasAny = true;
-                if (val.Type == DbType.Real) _hasReal = true;
-                _sum += val.Type == DbType.Real ? val.AsReal : val.AsInteger;
                 _count++;
                 return;
             }
@@ -5269,7 +5428,7 @@ public sealed class ScalarAggregateOperator :
                     return;
                 }
 
-                int cmp = DbValue.Compare(val, _best.Value);
+                int cmp = SqlTypeCoercion.Compare(val, _best.Value, _argumentType, _argumentCollation);
                 if ((_name == "MIN" && cmp < 0) || (_name == "MAX" && cmp > 0))
                     _best = val;
                 return;
@@ -5300,9 +5459,8 @@ public sealed class ScalarAggregateOperator :
                 var val = EvaluateArgument(row, ref rowBuffer);
                 if (val.IsNull) return;
                 if (_distinctValues != null && !_distinctValues.Add(val)) return;
+                _numericAggregate.Add(val);
                 _hasAny = true;
-                if (val.Type == DbType.Real) _hasReal = true;
-                _sum += val.Type == DbType.Real ? val.AsReal : val.AsInteger;
                 _count++;
                 return;
             }
@@ -5318,7 +5476,7 @@ public sealed class ScalarAggregateOperator :
                     return;
                 }
 
-                int cmp = DbValue.Compare(val, _best.Value);
+                int cmp = SqlTypeCoercion.Compare(val, _best.Value, _argumentType, _argumentCollation);
                 if ((_name == "MIN" && cmp < 0) || (_name == "MAX" && cmp > 0))
                     _best = val;
                 return;
@@ -5427,13 +5585,13 @@ public sealed class ScalarAggregateOperator :
             if (_name == "SUM")
             {
                 if (!_hasAny) return DbValue.FromInteger(0);
-                return _hasReal ? DbValue.FromReal(_sum) : DbValue.FromInteger((long)_sum);
+                return _numericAggregate.GetSumOrZero();
             }
 
             if (_name == "AVG")
             {
                 if (!_hasAny) return DbValue.Null;
-                return DbValue.FromReal(_sum / _count);
+                return _numericAggregate.GetAverageOrNull();
             }
 
             if (_name is "MIN" or "MAX")
@@ -5492,6 +5650,7 @@ public sealed class SortOperator :
         public readonly int KeyIndex;
         public readonly int Direction;
         public readonly string? Collation;
+        public readonly SqlTypeDescriptor? DeclaredType;
         public readonly Func<DbValue[], DbValue>? KeyEvaluator;
 
         public CompiledSortClause(
@@ -5500,6 +5659,7 @@ public sealed class SortOperator :
             int keyIndex,
             bool descending,
             string? collation,
+            SqlTypeDescriptor? declaredType,
             Func<DbValue[], DbValue>? keyEvaluator)
         {
             Expression = expression;
@@ -5507,6 +5667,7 @@ public sealed class SortOperator :
             KeyIndex = keyIndex;
             Direction = descending ? -1 : 1;
             Collation = collation;
+            DeclaredType = declaredType;
             KeyEvaluator = keyEvaluator;
         }
 
@@ -5980,7 +6141,7 @@ public sealed class SortOperator :
             var clause = _compiledOrderBy[i];
             var va = clause.EvaluateRow(a);
             var vb = clause.EvaluateRow(b);
-            int cmp = CollationSupport.Compare(va, vb, clause.Collation);
+            int cmp = SqlTypeCoercion.Compare(va, vb, clause.DeclaredType, clause.Collation);
             if (cmp != 0) return cmp * clause.Direction;
         }
 
@@ -6010,7 +6171,11 @@ public sealed class SortOperator :
                     ? singleRows[bIndex][_singleClauseColumnIndex]
                     : DbValue.Null);
             if (_singleClauseComparerKind == SingleClauseComparerKind.Default)
-                return CollationSupport.Compare(va, vb, _singleClauseCollation) * _singleClauseDirection;
+                return SqlTypeCoercion.Compare(
+                    va,
+                    vb,
+                    _compiledOrderBy[0].DeclaredType,
+                    _singleClauseCollation) * _singleClauseDirection;
             return CompareSingleClauseValues(va, vb) * _singleClauseDirection;
         }
 
@@ -6025,7 +6190,7 @@ public sealed class SortOperator :
             var vb = clause.KeyIndex >= 0
                 ? keyColumns[clause.KeyIndex][bIndex]
                 : clause.EvaluateRow(rows[bIndex]);
-            int cmp = CollationSupport.Compare(va, vb, clause.Collation);
+            int cmp = SqlTypeCoercion.Compare(va, vb, clause.DeclaredType, clause.Collation);
             if (cmp != 0) return cmp * clause.Direction;
         }
 
@@ -6047,10 +6212,18 @@ public sealed class SortOperator :
             int columnIndex = ResolveColumnIndex(clause.Expression, schema);
             int keyIndex = columnIndex >= 0 ? -1 : precomputedKeyCount++;
             string? collation = CollationSupport.ResolveExpressionCollation(clause.Expression, schema);
+            SqlTypeDescriptor? declaredType = ExpressionEvaluator.ResolveDeclaredType(clause.Expression, schema);
             Func<DbValue[], DbValue>? keyEvaluator = keyIndex >= 0
                 ? ExpressionCompiler.Compile(clause.Expression, schema, functions)
                 : null;
-            compiled[i] = new CompiledSortClause(clause.Expression, columnIndex, keyIndex, clause.Descending, collation, keyEvaluator);
+            compiled[i] = new CompiledSortClause(
+                clause.Expression,
+                columnIndex,
+                keyIndex,
+                clause.Descending,
+                collation,
+                declaredType,
+                keyEvaluator);
         }
 
         return compiled;
@@ -6074,6 +6247,12 @@ public sealed class SortOperator :
         TableSchema schema)
     {
         if (clause.KeyIndex >= 0 || clause.ColumnIndex < 0 || clause.ColumnIndex >= schema.Columns.Count)
+            return SingleClauseComparerKind.Default;
+
+        SqlTypeDescriptor? declaredType =
+            clause.DeclaredType ?? schema.Columns[clause.ColumnIndex].DeclaredType;
+        if (SqlTypeCoercion.IsInterval(declaredType) ||
+            declaredType?.Kind is SqlTypeKind.Real or SqlTypeKind.Double)
             return SingleClauseComparerKind.Default;
 
         return schema.Columns[clause.ColumnIndex].Type switch
@@ -6117,7 +6296,11 @@ public sealed class SortOperator :
                 break;
         }
 
-        return CollationSupport.Compare(a, b, _singleClauseCollation);
+        return SqlTypeCoercion.Compare(
+            a,
+            b,
+            _compiledOrderBy[0].DeclaredType,
+            _singleClauseCollation);
     }
 
     private bool TryPrecomputeSingleClauseKeys(List<DbValue[]> rows, int rowCount)
@@ -6491,6 +6674,7 @@ public sealed class TopNSortOperator :
         public readonly int KeyIndex;
         public readonly int Direction;
         public readonly string? Collation;
+        public readonly SqlTypeDescriptor? DeclaredType;
         public readonly Func<DbValue[], DbValue>? KeyEvaluator;
 
         public CompiledSortClause(
@@ -6500,6 +6684,7 @@ public sealed class TopNSortOperator :
             int keyIndex,
             bool descending,
             string? collation,
+            SqlTypeDescriptor? declaredType,
             Func<DbValue[], DbValue>? keyEvaluator)
         {
             Expression = expression;
@@ -6508,6 +6693,7 @@ public sealed class TopNSortOperator :
             KeyIndex = keyIndex;
             Direction = descending ? -1 : 1;
             Collation = collation;
+            DeclaredType = declaredType;
             KeyEvaluator = keyEvaluator;
         }
 
@@ -6878,7 +7064,11 @@ public sealed class TopNSortOperator :
                 rightValue = clause.EvaluateRow(right.Row);
             }
 
-            int cmp = CollationSupport.Compare(leftValue, rightValue, clause.Collation);
+            int cmp = SqlTypeCoercion.Compare(
+                leftValue,
+                rightValue,
+                clause.DeclaredType,
+                clause.Collation);
             if (cmp != 0)
                 return cmp * clause.Direction;
         }
@@ -6893,7 +7083,8 @@ public sealed class TopNSortOperator :
 
     private int CompareSingleKeyRowIdRankedRows(SingleKeyRowIdRankedRow left, SingleKeyRowIdRankedRow right)
     {
-        int cmp = CollationSupport.Compare(left.Key, right.Key, _compiledOrderBy[0].Collation);
+        CompiledSortClause clause = _compiledOrderBy[0];
+        int cmp = SqlTypeCoercion.Compare(left.Key, right.Key, clause.DeclaredType, clause.Collation);
         if (cmp == 0)
             return 0;
 
@@ -7056,6 +7247,7 @@ public sealed class TopNSortOperator :
                 out maxReferencedColumnIndex);
             int keyIndex = columnIndex >= 0 ? -1 : precomputedKeyCount++;
             string? collation = CollationSupport.ResolveExpressionCollation(clause.Expression, schema);
+            SqlTypeDescriptor? declaredType = ExpressionEvaluator.ResolveDeclaredType(clause.Expression, schema);
             Func<DbValue[], DbValue>? keyEvaluator = keyIndex >= 0
                 ? ExpressionCompiler.Compile(clause.Expression, schema, functions)
                 : null;
@@ -7066,6 +7258,7 @@ public sealed class TopNSortOperator :
                 keyIndex,
                 clause.Descending,
                 collation,
+                declaredType,
                 keyEvaluator);
         }
 
@@ -7123,6 +7316,8 @@ public sealed class TopNSortOperator :
                 return TryAccumulateMaxReferencedColumn(unaryExpression.Operand, schema, ref maxReferencedColumnIndex);
             case CollateExpression collateExpression:
                 return TryAccumulateMaxReferencedColumn(collateExpression.Operand, schema, ref maxReferencedColumnIndex);
+            case CastExpression castExpression:
+                return TryAccumulateMaxReferencedColumn(castExpression.Operand, schema, ref maxReferencedColumnIndex);
             case LikeExpression likeExpression:
                 return TryAccumulateMaxReferencedColumn(likeExpression.Operand, schema, ref maxReferencedColumnIndex)
                     && TryAccumulateMaxReferencedColumn(likeExpression.Pattern, schema, ref maxReferencedColumnIndex)
@@ -7990,6 +8185,8 @@ public sealed class HashJoinOperator :
                 return TryMarkBuildSideColumnsForExpression(unaryExpression.Operand, markBuildColumn);
             case CollateExpression collateExpression:
                 return TryMarkBuildSideColumnsForExpression(collateExpression.Operand, markBuildColumn);
+            case CastExpression castExpression:
+                return TryMarkBuildSideColumnsForExpression(castExpression.Operand, markBuildColumn);
             case LikeExpression likeExpression:
                 return TryMarkBuildSideColumnsForExpression(likeExpression.Operand, markBuildColumn)
                     && TryMarkBuildSideColumnsForExpression(likeExpression.Pattern, markBuildColumn)
@@ -9839,6 +10036,8 @@ public sealed class IndexNestedLoopJoinOperator :
                 return TryMarkConditionColumnsForExpression(unaryExpression.Operand, markOuterColumn, markRightColumn);
             case CollateExpression collateExpression:
                 return TryMarkConditionColumnsForExpression(collateExpression.Operand, markOuterColumn, markRightColumn);
+            case CastExpression castExpression:
+                return TryMarkConditionColumnsForExpression(castExpression.Operand, markOuterColumn, markRightColumn);
             case LikeExpression likeExpression:
                 return TryMarkConditionColumnsForExpression(likeExpression.Operand, markOuterColumn, markRightColumn)
                     && TryMarkConditionColumnsForExpression(likeExpression.Pattern, markOuterColumn, markRightColumn)
@@ -9975,6 +10174,15 @@ public sealed class IndexNestedLoopJoinOperator :
                 return false;
 
             key = (long)real;
+            return true;
+        }
+
+        if (value.Type == DbType.Decimal)
+        {
+            decimal exact = value.AsDecimal;
+            if (decimal.Truncate(exact) != exact || exact < long.MinValue || exact > long.MaxValue)
+                return false;
+            key = decimal.ToInt64(exact);
             return true;
         }
 
@@ -10314,8 +10522,7 @@ public sealed class IndexNestedLoopJoinOperator :
 
 /// <summary>
 /// Index nested-loop join operator for hashed secondary indexes.
-/// Supports exact equality lookups over single-column text indexes and
-/// composite integer/text indexes on the right side.
+/// Supports exact equality lookups over hash-index-compatible right-side keys.
 /// </summary>
 public sealed class HashedIndexNestedLoopJoinOperator :
     IOperator,
@@ -10337,6 +10544,7 @@ public sealed class HashedIndexNestedLoopJoinOperator :
     private readonly JoinType _joinType;
     private readonly int[] _outerKeyIndices;
     private readonly int[] _rightKeyColumnIndices;
+    private readonly DbType[] _rightKeyColumnTypes;
     private readonly string?[] _rightKeyCollations;
     private readonly SqlIndexStorageMode _storageMode;
     private readonly bool _usesOrderedTextPayload;
@@ -10406,6 +10614,14 @@ public sealed class HashedIndexNestedLoopJoinOperator :
         _joinType = joinType;
         _outerKeyIndices = outerKeyIndices.ToArray();
         _rightKeyColumnIndices = rightKeyColumnIndices.ToArray();
+        _rightKeyColumnTypes = new DbType[_rightKeyColumnIndices.Length];
+        for (int i = 0; i < _rightKeyColumnIndices.Length; i++)
+        {
+            int compositeColumnIndex = leftColCount + _rightKeyColumnIndices[i];
+            _rightKeyColumnTypes[i] = (uint)compositeColumnIndex < (uint)compositeSchema.Columns.Count
+                ? compositeSchema.Columns[compositeColumnIndex].Type
+                : DbType.Null;
+        }
         _rightKeyCollations = rightKeyCollations.ToArray();
         _storageMode = storageMode;
         _usesOrderedTextPayload = usesOrderedTextPayload;
@@ -10758,11 +10974,16 @@ public sealed class HashedIndexNestedLoopJoinOperator :
                 ? outerRow[outerKeyIndex]
                 : DbValue.Null;
 
-            if (value.IsNull || value.Type is not (DbType.Integer or DbType.Text))
+            if (value.IsNull ||
+                !IndexMaintenanceHelper.TryNormalizeLookupComponent(
+                    value,
+                    _rightKeyColumnTypes[i],
+                    i < _rightKeyCollations.Length ? _rightKeyCollations[i] : null,
+                    out DbValue normalized))
+            {
                 return false;
+            }
 
-            string? collation = i < _rightKeyCollations.Length ? _rightKeyCollations[i] : null;
-            var normalized = CollationSupport.NormalizeIndexValue(value, collation);
             keyComponents[i] = normalized;
             if (normalized.Type == DbType.Text)
             {
@@ -11749,6 +11970,8 @@ public sealed class NestedLoopJoinOperator :
                 return TryMarkConditionColumnsForExpression(unaryExpression.Operand, markLeftColumn, markRightColumn);
             case CollateExpression collateExpression:
                 return TryMarkConditionColumnsForExpression(collateExpression.Operand, markLeftColumn, markRightColumn);
+            case CastExpression castExpression:
+                return TryMarkConditionColumnsForExpression(castExpression.Operand, markLeftColumn, markRightColumn);
             case LikeExpression likeExpression:
                 return TryMarkConditionColumnsForExpression(likeExpression.Operand, markLeftColumn, markRightColumn)
                     && TryMarkConditionColumnsForExpression(likeExpression.Pattern, markLeftColumn, markRightColumn)
@@ -14345,7 +14568,7 @@ public sealed class IndexKeyAggregateOperator :
 
         await using var cursor = _indexStore.CreateCursor(_scanRange);
         long count = 0;
-        double sum = 0;
+        var numericAggregate = new NumericAggregateAccumulator();
         bool hasAny = false;
 
         while (await cursor.MoveNextAsync(ct))
@@ -14363,13 +14586,11 @@ public sealed class IndexKeyAggregateOperator :
                     hasAny = true;
                     break;
                 case AggregateKind.Sum:
-                    sum += _isDistinct ? key : (double)key * entryCount;
-                    count += aggregateCount;
+                    numericAggregate.AddRepeatedInteger(key, aggregateCount);
                     hasAny = true;
                     break;
                 case AggregateKind.Avg:
-                    sum += _isDistinct ? key : (double)key * entryCount;
-                    count += aggregateCount;
+                    numericAggregate.AddRepeatedInteger(key, aggregateCount);
                     hasAny = true;
                     break;
                 case AggregateKind.Min:
@@ -14381,8 +14602,8 @@ public sealed class IndexKeyAggregateOperator :
         DbValue aggregate = _kind switch
         {
             AggregateKind.Count => DbValue.FromInteger(count),
-            AggregateKind.Sum => !hasAny ? DbValue.FromInteger(0) : DbValue.FromInteger((long)sum),
-            AggregateKind.Avg => !hasAny ? DbValue.Null : DbValue.FromReal(sum / count),
+            AggregateKind.Sum => !hasAny ? DbValue.FromInteger(0) : numericAggregate.GetSumOrZero(),
+            AggregateKind.Avg => !hasAny ? DbValue.Null : numericAggregate.GetAverageOrNull(),
             AggregateKind.Min => DbValue.Null,
             AggregateKind.Max => DbValue.Null,
             _ => DbValue.Null,
@@ -14482,8 +14703,16 @@ public sealed class IndexGroupedAggregateOperator :
 
     private void PopulateCurrent(long key, int entryCount)
     {
-        double avg = key;
-        double sum = (double)key * entryCount;
+        var numericAggregate = new NumericAggregateAccumulator();
+        for (int i = 0; i < _projectionKinds.Length; i++)
+        {
+            var kind = (GroupedIndexAggregateProjectionKind)_projectionKinds[i];
+            if (kind is GroupedIndexAggregateProjectionKind.Sum or GroupedIndexAggregateProjectionKind.Avg)
+            {
+                numericAggregate.AddRepeatedInteger(key, entryCount);
+                break;
+            }
+        }
 
         for (int i = 0; i < _projectionKinds.Length; i++)
         {
@@ -14491,8 +14720,8 @@ public sealed class IndexGroupedAggregateOperator :
             {
                 GroupedIndexAggregateProjectionKind.GroupKey => DbValue.FromInteger(key),
                 GroupedIndexAggregateProjectionKind.Count => DbValue.FromInteger(entryCount),
-                GroupedIndexAggregateProjectionKind.Sum => DbValue.FromInteger((long)sum),
-                GroupedIndexAggregateProjectionKind.Avg => DbValue.FromReal(avg),
+                GroupedIndexAggregateProjectionKind.Sum => numericAggregate.GetSumOrZero(),
+                GroupedIndexAggregateProjectionKind.Avg => numericAggregate.GetAverageOrNull(),
                 GroupedIndexAggregateProjectionKind.Min => DbValue.FromInteger(key),
                 GroupedIndexAggregateProjectionKind.Max => DbValue.FromInteger(key),
                 _ => DbValue.Null,
@@ -14841,7 +15070,7 @@ public sealed class TableKeyAggregateOperator :
         }
 
         long count = 0;
-        double sum = 0;
+        var numericAggregate = new NumericAggregateAccumulator();
         bool hasAny = false;
 
         do
@@ -14857,13 +15086,11 @@ public sealed class TableKeyAggregateOperator :
                     hasAny = true;
                     break;
                 case AggregateKind.Sum:
-                    sum += key;
-                    count++;
+                    numericAggregate.Add(key);
                     hasAny = true;
                     break;
                 case AggregateKind.Avg:
-                    sum += key;
-                    count++;
+                    numericAggregate.Add(key);
                     hasAny = true;
                     break;
             }
@@ -14873,8 +15100,8 @@ public sealed class TableKeyAggregateOperator :
         DbValue aggregate = _kind switch
         {
             AggregateKind.Count => DbValue.FromInteger(count),
-            AggregateKind.Sum => !hasAny ? DbValue.FromInteger(0) : DbValue.FromInteger((long)sum),
-            AggregateKind.Avg => !hasAny ? DbValue.Null : DbValue.FromReal(sum / count),
+            AggregateKind.Sum => !hasAny ? DbValue.FromInteger(0) : numericAggregate.GetSumOrZero(),
+            AggregateKind.Avg => !hasAny ? DbValue.Null : numericAggregate.GetAverageOrNull(),
             AggregateKind.Min => DbValue.Null,
             AggregateKind.Max => DbValue.Null,
             _ => DbValue.Null,
@@ -14972,6 +15199,7 @@ public sealed class ScalarAggregateLookupOperator :
     private readonly bool _isDistinct;
     private readonly IRecordSerializer _recordSerializer;
     private readonly RecordColumnAccessor? _columnAccessor;
+    private readonly string? _argumentCollation;
     private bool _emitted;
 
     public ColumnDefinition[] OutputSchema { get; }
@@ -14993,7 +15221,8 @@ public sealed class ScalarAggregateLookupOperator :
         string functionName,
         ColumnDefinition[] outputSchema,
         bool isDistinct = false,
-        IRecordSerializer? recordSerializer = null)
+        IRecordSerializer? recordSerializer = null,
+        string? argumentCollation = null)
     {
         _lookupKind = LookupKind.PrimaryKey;
         _tableTree = tableTree;
@@ -15003,6 +15232,7 @@ public sealed class ScalarAggregateLookupOperator :
         _isDistinct = isDistinct;
         _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
         _columnAccessor = BoundColumnAccessHelper.TryCreate(_recordSerializer, columnIndex);
+        _argumentCollation = CollationSupport.NormalizeMetadataName(argumentCollation);
         _kind = ParseKind(functionName);
         OutputSchema = outputSchema;
     }
@@ -15015,7 +15245,8 @@ public sealed class ScalarAggregateLookupOperator :
         string functionName,
         ColumnDefinition[] outputSchema,
         bool isDistinct = false,
-        IRecordSerializer? recordSerializer = null)
+        IRecordSerializer? recordSerializer = null,
+        string? argumentCollation = null)
     {
         _lookupKind = LookupKind.IndexEquality;
         _indexStore = indexStore;
@@ -15025,6 +15256,7 @@ public sealed class ScalarAggregateLookupOperator :
         _isDistinct = isDistinct;
         _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
         _columnAccessor = BoundColumnAccessHelper.TryCreate(_recordSerializer, columnIndex);
+        _argumentCollation = CollationSupport.NormalizeMetadataName(argumentCollation);
         _kind = ParseKind(functionName);
         OutputSchema = outputSchema;
     }
@@ -15035,11 +15267,11 @@ public sealed class ScalarAggregateLookupOperator :
         Current = Array.Empty<DbValue>();
 
         long count = 0;
-        double sum = 0;
-        bool hasReal = false;
-        bool hasAny = false;
+        var numericAggregate = new NumericAggregateAccumulator();
         DbValue? best = null;
-        AggregateDistinctValueSet? distinctValues = _isDistinct ? new AggregateDistinctValueSet() : null;
+        AggregateDistinctValueSet? distinctValues = _isDistinct
+            ? new AggregateDistinctValueSet(_argumentCollation)
+            : null;
         bool cachedResultFinalized = false;
 
         void Accumulate(ReadOnlySpan<byte> payload)
@@ -15053,44 +15285,31 @@ public sealed class ScalarAggregateLookupOperator :
 
             if ((_kind == AggregateKind.Sum || _kind == AggregateKind.Avg) && distinctValues == null)
             {
-                if (!BoundColumnAccessHelper.TryDecodeNumeric(
+                if (!BoundColumnAccessHelper.TryDecodeNumericValue(
                         payload,
                         _recordSerializer,
                         _columnAccessor,
                         _columnIndex,
-                        out long intVal,
-                        out double realVal,
-                        out bool isReal))
+                        out DbValue numericValue))
                 {
                     return;
                 }
 
-                hasAny = true;
-                if (isReal)
-                {
-                    hasReal = true;
-                    sum += realVal;
-                }
-                else
-                {
-                    sum += intVal;
-                }
+                numericAggregate.Add(numericValue);
                 count++;
                 return;
             }
 
             if (distinctValues != null && _kind is AggregateKind.Count or AggregateKind.Sum or AggregateKind.Avg)
             {
-                if (BoundColumnAccessHelper.TryDecodeNumeric(
+                if (BoundColumnAccessHelper.TryDecodeNumericValue(
                         payload,
                         _recordSerializer,
                         _columnAccessor,
                         _columnIndex,
-                        out long intVal,
-                        out double realVal,
-                        out bool isReal))
+                        out DbValue numericValue))
                 {
-                    if (!distinctValues.AddNumeric(intVal, realVal, isReal))
+                    if (!distinctValues.Add(numericValue))
                         return;
 
                     switch (_kind)
@@ -15100,17 +15319,7 @@ public sealed class ScalarAggregateLookupOperator :
                             return;
                         case AggregateKind.Sum:
                         case AggregateKind.Avg:
-                            hasAny = true;
-                            if (isReal)
-                            {
-                                hasReal = true;
-                                sum += realVal;
-                            }
-                            else
-                            {
-                                sum += intVal;
-                            }
-
+                            numericAggregate.Add(numericValue);
                             count++;
                             return;
                     }
@@ -15128,24 +15337,23 @@ public sealed class ScalarAggregateLookupOperator :
                     break;
                 case AggregateKind.Sum:
                 case AggregateKind.Avg:
-                    hasAny = true;
-                    if (val.Type == DbType.Real)
-                    {
-                        hasReal = true;
-                        sum += val.AsReal;
-                    }
-                    else
-                    {
-                        sum += val.AsInteger;
-                    }
+                    numericAggregate.Add(val);
                     count++;
                     break;
                 case AggregateKind.Min:
-                    if (best == null || DbValue.Compare(val, best.Value) < 0)
+                    if (best == null || SqlTypeCoercion.Compare(
+                            val,
+                            best.Value,
+                            OutputSchema.Length > 0 ? OutputSchema[0].DeclaredType : null,
+                            _argumentCollation) < 0)
                         best = val;
                     break;
                 case AggregateKind.Max:
-                    if (best == null || DbValue.Compare(val, best.Value) > 0)
+                    if (best == null || SqlTypeCoercion.Compare(
+                            val,
+                            best.Value,
+                            OutputSchema.Length > 0 ? OutputSchema[0].DeclaredType : null,
+                            _argumentCollation) > 0)
                         best = val;
                     break;
             }
@@ -15220,25 +15428,21 @@ public sealed class ScalarAggregateLookupOperator :
                     AggregateKind.Count => BoundColumnAccessHelper.IsNull(payload, _recordSerializer, _columnAccessor, _columnIndex)
                         ? DbValue.FromInteger(0)
                         : DbValue.FromInteger(1),
-                    AggregateKind.Sum => BoundColumnAccessHelper.TryDecodeNumeric(
+                    AggregateKind.Sum => BoundColumnAccessHelper.TryDecodeNumericValue(
                             payload,
                             _recordSerializer,
                             _columnAccessor,
                             _columnIndex,
-                            out long intVal,
-                            out double realVal,
-                            out bool isReal)
-                        ? isReal ? DbValue.FromReal(realVal) : DbValue.FromInteger(intVal)
+                            out DbValue sumValue)
+                        ? sumValue
                         : DbValue.FromInteger(0),
-                    AggregateKind.Avg => BoundColumnAccessHelper.TryDecodeNumeric(
+                    AggregateKind.Avg => BoundColumnAccessHelper.TryDecodeNumericValue(
                             payload,
                             _recordSerializer,
                             _columnAccessor,
                             _columnIndex,
-                            out long avgIntVal,
-                            out double avgRealVal,
-                            out bool avgIsReal)
-                        ? avgIsReal ? DbValue.FromReal(avgRealVal) : DbValue.FromInteger(avgIntVal)
+                            out DbValue avgValue)
+                        ? avgValue
                         : DbValue.Null,
                     AggregateKind.Min => BoundColumnAccessHelper.Decode(payload, _recordSerializer, _columnAccessor, _columnIndex),
                     AggregateKind.Max => BoundColumnAccessHelper.Decode(payload, _recordSerializer, _columnAccessor, _columnIndex),
@@ -15255,9 +15459,8 @@ public sealed class ScalarAggregateLookupOperator :
             DbValue aggregate = _kind switch
             {
                 AggregateKind.Count => DbValue.FromInteger(count),
-                AggregateKind.Sum => !hasAny ? DbValue.FromInteger(0)
-                    : hasReal ? DbValue.FromReal(sum) : DbValue.FromInteger((long)sum),
-                AggregateKind.Avg => !hasAny ? DbValue.Null : DbValue.FromReal(sum / count),
+                AggregateKind.Sum => numericAggregate.GetSumOrZero(),
+                AggregateKind.Avg => numericAggregate.GetAverageOrNull(),
                 AggregateKind.Min => best ?? DbValue.Null,
                 AggregateKind.Max => best ?? DbValue.Null,
                 _ => DbValue.Null,
@@ -15354,6 +15557,7 @@ public sealed class ScalarAggregateTableOperator :
     private readonly bool _emitOnEmptyInput;
     private readonly IRecordSerializer _recordSerializer;
     private readonly RecordColumnAccessor? _columnAccessor;
+    private readonly string? _argumentCollation;
     private bool _emitted;
     private bool _hasResult;
 
@@ -15371,7 +15575,8 @@ public sealed class ScalarAggregateTableOperator :
         ColumnDefinition[] outputSchema,
         bool isDistinct = false,
         bool emitOnEmptyInput = true,
-        IRecordSerializer? recordSerializer = null)
+        IRecordSerializer? recordSerializer = null,
+        string? argumentCollation = null)
     {
         _tableTree = tableTree;
         _columnIndex = columnIndex;
@@ -15379,6 +15584,7 @@ public sealed class ScalarAggregateTableOperator :
         _emitOnEmptyInput = emitOnEmptyInput;
         _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
         _columnAccessor = BoundColumnAccessHelper.TryCreate(_recordSerializer, columnIndex);
+        _argumentCollation = CollationSupport.NormalizeMetadataName(argumentCollation);
         _kind = functionName switch
         {
             "COUNT" => AggregateKind.Count,
@@ -15399,12 +15605,12 @@ public sealed class ScalarAggregateTableOperator :
         await using var cursor = _tableTree.CreateCursor();
 
         long count = 0;
-        double sum = 0;
-        bool hasReal = false;
-        bool hasAny = false;
+        var numericAggregate = new NumericAggregateAccumulator();
         DbValue? best = null;
         bool sawRow = false;
-        AggregateDistinctValueSet? distinctValues = _isDistinct ? new AggregateDistinctValueSet() : null;
+        AggregateDistinctValueSet? distinctValues = _isDistinct
+            ? new AggregateDistinctValueSet(_argumentCollation)
+            : null;
 
         while (await cursor.MoveNextAsync(ct))
         {
@@ -15425,44 +15631,31 @@ public sealed class ScalarAggregateTableOperator :
 
             if ((_kind == AggregateKind.Sum || _kind == AggregateKind.Avg) && distinctValues == null)
             {
-                if (!BoundColumnAccessHelper.TryDecodeNumeric(
+                if (!BoundColumnAccessHelper.TryDecodeNumericValue(
                         cursor.CurrentValue.Span,
                         _recordSerializer,
                         _columnAccessor,
                         _columnIndex,
-                        out long intVal,
-                        out double realVal,
-                        out bool isReal))
+                        out DbValue numericValue))
                 {
                     continue;
                 }
 
-                hasAny = true;
-                if (isReal)
-                {
-                    hasReal = true;
-                    sum += realVal;
-                }
-                else
-                {
-                    sum += intVal;
-                }
+                numericAggregate.Add(numericValue);
                 count++;
                 continue;
             }
 
             if (distinctValues != null && _kind is AggregateKind.Count or AggregateKind.Sum or AggregateKind.Avg)
             {
-                if (BoundColumnAccessHelper.TryDecodeNumeric(
+                if (BoundColumnAccessHelper.TryDecodeNumericValue(
                         cursor.CurrentValue.Span,
                         _recordSerializer,
                         _columnAccessor,
                         _columnIndex,
-                        out long intVal,
-                        out double realVal,
-                        out bool isReal))
+                        out DbValue numericValue))
                 {
-                    if (!distinctValues.AddNumeric(intVal, realVal, isReal))
+                    if (!distinctValues.Add(numericValue))
                         continue;
 
                     switch (_kind)
@@ -15472,17 +15665,7 @@ public sealed class ScalarAggregateTableOperator :
                             continue;
                         case AggregateKind.Sum:
                         case AggregateKind.Avg:
-                            hasAny = true;
-                            if (isReal)
-                            {
-                                hasReal = true;
-                                sum += realVal;
-                            }
-                            else
-                            {
-                                sum += intVal;
-                            }
-
+                            numericAggregate.Add(numericValue);
                             count++;
                             continue;
                     }
@@ -15504,24 +15687,23 @@ public sealed class ScalarAggregateTableOperator :
                     break;
                 case AggregateKind.Sum:
                 case AggregateKind.Avg:
-                    hasAny = true;
-                    if (val.Type == DbType.Real)
-                    {
-                        hasReal = true;
-                        sum += val.AsReal;
-                    }
-                    else
-                    {
-                        sum += val.AsInteger;
-                    }
+                    numericAggregate.Add(val);
                     count++;
                     break;
                 case AggregateKind.Min:
-                    if (best == null || DbValue.Compare(val, best.Value) < 0)
+                    if (best == null || SqlTypeCoercion.Compare(
+                            val,
+                            best.Value,
+                            OutputSchema.Length > 0 ? OutputSchema[0].DeclaredType : null,
+                            _argumentCollation) < 0)
                         best = val;
                     break;
                 case AggregateKind.Max:
-                    if (best == null || DbValue.Compare(val, best.Value) > 0)
+                    if (best == null || SqlTypeCoercion.Compare(
+                            val,
+                            best.Value,
+                            OutputSchema.Length > 0 ? OutputSchema[0].DeclaredType : null,
+                            _argumentCollation) > 0)
                         best = val;
                     break;
             }
@@ -15530,9 +15712,8 @@ public sealed class ScalarAggregateTableOperator :
         DbValue aggregate = _kind switch
         {
             AggregateKind.Count => DbValue.FromInteger(count),
-            AggregateKind.Sum => !hasAny ? DbValue.FromInteger(0)
-                : hasReal ? DbValue.FromReal(sum) : DbValue.FromInteger((long)sum),
-            AggregateKind.Avg => !hasAny ? DbValue.Null : DbValue.FromReal(sum / count),
+            AggregateKind.Sum => numericAggregate.GetSumOrZero(),
+            AggregateKind.Avg => numericAggregate.GetAverageOrNull(),
             AggregateKind.Min => best ?? DbValue.Null,
             AggregateKind.Max => best ?? DbValue.Null,
             _ => DbValue.Null,
@@ -15584,6 +15765,7 @@ public sealed class FilteredScalarAggregateTableOperator :
     private readonly int[] _decodedColumnIndices;
     private readonly IScalarAggregateBatchPlan? _batchPlan;
     private readonly PreDecodeFilterSpec[] _preDecodeFilters;
+    private readonly string? _argumentCollation;
     private Action? _logicalReadScope;
     private bool _emitted;
 
@@ -15605,7 +15787,8 @@ public sealed class FilteredScalarAggregateTableOperator :
         bool isDistinct = false,
         bool isCountStar = false,
         IRecordSerializer? recordSerializer = null,
-        IScalarAggregateBatchPlan? batchPlan = null)
+        IScalarAggregateBatchPlan? batchPlan = null,
+        string? argumentCollation = null)
     {
         _tableTree = tableTree;
         _columnIndex = columnIndex;
@@ -15616,6 +15799,7 @@ public sealed class FilteredScalarAggregateTableOperator :
         _decodedColumnIndices = decodedColumnIndices;
         _batchPlan = batchPlan;
         _preDecodeFilters = CreatePreDecodeFilters(_batchPlan?.PushdownFilters);
+        _argumentCollation = CollationSupport.NormalizeMetadataName(argumentCollation);
         _kind = functionName switch
         {
             "COUNT" => AggregateKind.Count,
@@ -15701,11 +15885,11 @@ public sealed class FilteredScalarAggregateTableOperator :
         var decodeBuffer = columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
 
         long count = 0;
-        double sum = 0;
-        bool hasReal = false;
-        bool hasAny = false;
+        var numericAggregate = new NumericAggregateAccumulator();
         DbValue? best = null;
-        AggregateDistinctValueSet? distinctValues = _isDistinct ? new AggregateDistinctValueSet() : null;
+        AggregateDistinctValueSet? distinctValues = _isDistinct
+            ? new AggregateDistinctValueSet(_argumentCollation)
+            : null;
 
         while (await cursor.MoveNextAsync(ct))
         {
@@ -15730,16 +15914,14 @@ public sealed class FilteredScalarAggregateTableOperator :
                 (uint)_columnIndex < (uint)_decodedColumnIndices.Length &&
                 _kind is AggregateKind.Count or AggregateKind.Sum or AggregateKind.Avg)
             {
-                if (BoundColumnAccessHelper.TryDecodeNumeric(
+                if (BoundColumnAccessHelper.TryDecodeNumericValue(
                         payload,
                         _recordSerializer,
                         null,
                         _decodedColumnIndices[_columnIndex],
-                        out long intVal,
-                        out double realVal,
-                        out bool isReal))
+                        out DbValue numericValue))
                 {
-                    if (!distinctValues.AddNumeric(intVal, realVal, isReal))
+                    if (!distinctValues.Add(numericValue))
                         continue;
 
                     switch (_kind)
@@ -15749,17 +15931,7 @@ public sealed class FilteredScalarAggregateTableOperator :
                             continue;
                         case AggregateKind.Sum:
                         case AggregateKind.Avg:
-                            hasAny = true;
-                            if (isReal)
-                            {
-                                hasReal = true;
-                                sum += realVal;
-                            }
-                            else
-                            {
-                                sum += intVal;
-                            }
-
+                            numericAggregate.Add(numericValue);
                             count++;
                             continue;
                     }
@@ -15783,24 +15955,23 @@ public sealed class FilteredScalarAggregateTableOperator :
                     break;
                 case AggregateKind.Sum:
                 case AggregateKind.Avg:
-                    hasAny = true;
-                    if (value.Type == DbType.Real)
-                    {
-                        hasReal = true;
-                        sum += value.AsReal;
-                    }
-                    else
-                    {
-                        sum += value.AsInteger;
-                    }
+                    numericAggregate.Add(value);
                     count++;
                     break;
                 case AggregateKind.Min:
-                    if (best == null || DbValue.Compare(value, best.Value) < 0)
+                    if (best == null || SqlTypeCoercion.Compare(
+                            value,
+                            best.Value,
+                            OutputSchema.Length > 0 ? OutputSchema[0].DeclaredType : null,
+                            _argumentCollation) < 0)
                         best = value;
                     break;
                 case AggregateKind.Max:
-                    if (best == null || DbValue.Compare(value, best.Value) > 0)
+                    if (best == null || SqlTypeCoercion.Compare(
+                            value,
+                            best.Value,
+                            OutputSchema.Length > 0 ? OutputSchema[0].DeclaredType : null,
+                            _argumentCollation) > 0)
                         best = value;
                     break;
             }
@@ -15809,9 +15980,8 @@ public sealed class FilteredScalarAggregateTableOperator :
         return _kind switch
         {
             AggregateKind.Count => DbValue.FromInteger(count),
-            AggregateKind.Sum => !hasAny ? DbValue.FromInteger(0)
-                : hasReal ? DbValue.FromReal(sum) : DbValue.FromInteger((long)sum),
-            AggregateKind.Avg => !hasAny ? DbValue.Null : DbValue.FromReal(sum / count),
+            AggregateKind.Sum => numericAggregate.GetSumOrZero(),
+            AggregateKind.Avg => numericAggregate.GetAverageOrNull(),
             AggregateKind.Min => best ?? DbValue.Null,
             AggregateKind.Max => best ?? DbValue.Null,
             _ => DbValue.Null,
@@ -15878,6 +16048,7 @@ public sealed class FilteredScalarAggregatePayloadOperator :
     private readonly int[] _decodedColumnIndices;
     private readonly IScalarAggregateBatchPlan? _batchPlan;
     private readonly PreDecodeFilterSpec[] _preDecodeFilters;
+    private readonly string? _argumentCollation;
     private Action? _logicalReadScope;
     private bool _emitted;
 
@@ -15900,7 +16071,8 @@ public sealed class FilteredScalarAggregatePayloadOperator :
         Func<DbValue[], DbValue>? aggregateArgumentEvaluator = null,
         bool isDistinct = false,
         bool isCountStar = false,
-        IScalarAggregateBatchPlan? batchPlan = null)
+        IScalarAggregateBatchPlan? batchPlan = null,
+        string? argumentCollation = null)
     {
         ArgumentNullException.ThrowIfNull(source);
         if (PhysicalPlanCapture.Unwrap(source) is not IEncodedPayloadSource)
@@ -15918,6 +16090,7 @@ public sealed class FilteredScalarAggregatePayloadOperator :
         _aggregateArgumentEvaluator = aggregateArgumentEvaluator;
         _batchPlan = batchPlan;
         _preDecodeFilters = CreatePreDecodeFilters(_batchPlan?.PushdownFilters);
+        _argumentCollation = CollationSupport.NormalizeMetadataName(argumentCollation);
         _kind = functionName switch
         {
             "COUNT" => AggregateKind.Count,
@@ -15996,11 +16169,11 @@ public sealed class FilteredScalarAggregatePayloadOperator :
         var decodeBuffer = columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
 
         long count = 0;
-        double sum = 0;
-        bool hasReal = false;
-        bool hasAny = false;
+        var numericAggregate = new NumericAggregateAccumulator();
         DbValue? best = null;
-        AggregateDistinctValueSet? distinctValues = _isDistinct ? new AggregateDistinctValueSet() : null;
+        AggregateDistinctValueSet? distinctValues = _isDistinct
+            ? new AggregateDistinctValueSet(_argumentCollation)
+            : null;
 
         while (await _source.MoveNextAsync(ct))
         {
@@ -16025,16 +16198,14 @@ public sealed class FilteredScalarAggregatePayloadOperator :
                 (uint)_columnIndex < (uint)_decodedColumnIndices.Length &&
                 _kind is AggregateKind.Count or AggregateKind.Sum or AggregateKind.Avg)
             {
-                if (BoundColumnAccessHelper.TryDecodeNumeric(
+                if (BoundColumnAccessHelper.TryDecodeNumericValue(
                         payload,
                         _recordSerializer,
                         null,
                         _decodedColumnIndices[_columnIndex],
-                        out long intVal,
-                        out double realVal,
-                        out bool isReal))
+                        out DbValue numericValue))
                 {
-                    if (!distinctValues.AddNumeric(intVal, realVal, isReal))
+                    if (!distinctValues.Add(numericValue))
                         continue;
 
                     switch (_kind)
@@ -16044,17 +16215,7 @@ public sealed class FilteredScalarAggregatePayloadOperator :
                             continue;
                         case AggregateKind.Sum:
                         case AggregateKind.Avg:
-                            hasAny = true;
-                            if (isReal)
-                            {
-                                hasReal = true;
-                                sum += realVal;
-                            }
-                            else
-                            {
-                                sum += intVal;
-                            }
-
+                            numericAggregate.Add(numericValue);
                             count++;
                             continue;
                     }
@@ -16078,24 +16239,23 @@ public sealed class FilteredScalarAggregatePayloadOperator :
                     break;
                 case AggregateKind.Sum:
                 case AggregateKind.Avg:
-                    hasAny = true;
-                    if (value.Type == DbType.Real)
-                    {
-                        hasReal = true;
-                        sum += value.AsReal;
-                    }
-                    else
-                    {
-                        sum += value.AsInteger;
-                    }
+                    numericAggregate.Add(value);
                     count++;
                     break;
                 case AggregateKind.Min:
-                    if (best == null || DbValue.Compare(value, best.Value) < 0)
+                    if (best == null || SqlTypeCoercion.Compare(
+                            value,
+                            best.Value,
+                            OutputSchema.Length > 0 ? OutputSchema[0].DeclaredType : null,
+                            _argumentCollation) < 0)
                         best = value;
                     break;
                 case AggregateKind.Max:
-                    if (best == null || DbValue.Compare(value, best.Value) > 0)
+                    if (best == null || SqlTypeCoercion.Compare(
+                            value,
+                            best.Value,
+                            OutputSchema.Length > 0 ? OutputSchema[0].DeclaredType : null,
+                            _argumentCollation) > 0)
                         best = value;
                     break;
             }
@@ -16104,9 +16264,8 @@ public sealed class FilteredScalarAggregatePayloadOperator :
         return _kind switch
         {
             AggregateKind.Count => DbValue.FromInteger(count),
-            AggregateKind.Sum => !hasAny ? DbValue.FromInteger(0)
-                : hasReal ? DbValue.FromReal(sum) : DbValue.FromInteger((long)sum),
-            AggregateKind.Avg => !hasAny ? DbValue.Null : DbValue.FromReal(sum / count),
+            AggregateKind.Sum => numericAggregate.GetSumOrZero(),
+            AggregateKind.Avg => numericAggregate.GetAverageOrNull(),
             AggregateKind.Min => best ?? DbValue.Null,
             AggregateKind.Max => best ?? DbValue.Null,
             _ => DbValue.Null,
@@ -16385,6 +16544,10 @@ internal static class CompoundRowCoercion
 
         if (targetType == DbType.Real && value.Type == DbType.Integer)
             return DbValue.FromReal(value.AsInteger);
+        if (targetType == DbType.Real && value.Type == DbType.Decimal)
+            return DbValue.FromReal((double)value.AsDecimal);
+        if (targetType == DbType.Decimal && value.Type == DbType.Integer)
+            return DbValue.FromDecimal(value.AsInteger);
 
         throw new CSharpDbException(
             ErrorCode.TypeMismatch,
@@ -16746,6 +16909,15 @@ public sealed class ExternalIndexNestedLoopJoinOperator :
                 return false;
 
             key = (long)real;
+            return true;
+        }
+
+        if (value.Type == DbType.Decimal)
+        {
+            decimal exact = value.AsDecimal;
+            if (decimal.Truncate(exact) != exact || exact < long.MinValue || exact > long.MaxValue)
+                return false;
+            key = decimal.ToInt64(exact);
             return true;
         }
 

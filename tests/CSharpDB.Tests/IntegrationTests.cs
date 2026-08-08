@@ -7654,16 +7654,22 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Index_OnBlobColumn_Fails()
+    public async Task Index_OnBlobColumn_SupportsEqualityLookup()
     {
+        var ct = TestContext.Current.CancellationToken;
         await _db.ExecuteAsync(
             "CREATE TABLE t (id INTEGER PRIMARY KEY, payload BLOB)",
-            TestContext.Current.CancellationToken);
+            ct);
+        await _db.ExecuteAsync(
+            "INSERT INTO t VALUES (1, X'0102'), (2, X'0304'), (3, X'0102')",
+            ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_payload ON t (payload)", ct);
 
-        await Assert.ThrowsAsync<CSharpDbException>(async () =>
-            await _db.ExecuteAsync(
-                "CREATE INDEX idx_payload ON t (payload)",
-                TestContext.Current.CancellationToken));
+        await using var result = await _db.ExecuteAsync(
+            "SELECT id FROM t WHERE payload = X'0102' ORDER BY id",
+            ct);
+        DbValue[][] rows = (await result.ToListAsync(ct)).ToArray();
+        Assert.Equal([1L, 3L], rows.Select(static row => row[0].AsInteger));
     }
 
     [Fact]

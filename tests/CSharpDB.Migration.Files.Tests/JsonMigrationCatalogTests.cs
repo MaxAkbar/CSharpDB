@@ -166,7 +166,7 @@ public sealed class JsonMigrationCatalogTests
             AssertMapping(
                 plan,
                 4,
-                DbType.Integer,
+                DbType.Decimal,
                 MigrationMappingClassification.LosslessReencoded);
             AssertMapping(
                 plan,

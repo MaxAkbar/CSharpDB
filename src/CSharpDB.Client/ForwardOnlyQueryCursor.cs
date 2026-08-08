@@ -1,6 +1,7 @@
 using CSharpDB.Execution;
 using CSharpDB.Primitives;
 using System.Runtime.ExceptionServices;
+using SqlBitString = CSharpDB.Client.Models.SqlBitString;
 
 namespace CSharpDB.Client;
 
@@ -29,7 +30,7 @@ public sealed class ForwardOnlyQueryCursor : IAsyncDisposable
 
         var rows = new List<object?[]>(maxRows);
         while (rows.Count < maxRows && await _result.MoveNextAsync(ct))
-            rows.Add(ToObjects(_result.Current));
+            rows.Add(ToObjects(_result.Schema, _result.Current));
 
         return rows;
     }
@@ -69,20 +70,27 @@ public sealed class ForwardOnlyQueryCursor : IAsyncDisposable
             throw new ObjectDisposedException(nameof(ForwardOnlyQueryCursor));
     }
 
-    private static object?[] ToObjects(DbValue[] row)
+    private static object?[] ToObjects(ColumnDefinition[] schema, DbValue[] row)
     {
         var values = new object?[row.Length];
         for (int i = 0; i < row.Length; i++)
-            values[i] = ToObject(row[i]);
+            values[i] = ToObject(row[i], i < schema.Length ? schema[i] : null);
         return values;
     }
 
-    private static object? ToObject(DbValue value) => value.Type switch
+    private static object? ToObject(
+        DbValue value,
+        ColumnDefinition? column = null) => value.Type switch
     {
         DbType.Null => null,
+        DbType.Integer when column?.DeclaredType?.Kind == SqlTypeKind.Boolean =>
+            value.AsInteger != 0,
         DbType.Integer => value.AsInteger,
         DbType.Real => value.AsReal,
+        DbType.Decimal => value.AsDecimal,
         DbType.Text => value.AsText,
+        DbType.Blob when value.IsBitString =>
+            new SqlBitString(value.AsBlob, value.BitLength),
         DbType.Blob => value.AsBlob,
         _ => throw new CSharpDbClientException($"Unsupported DbValue type '{value.Type}'."),
     };

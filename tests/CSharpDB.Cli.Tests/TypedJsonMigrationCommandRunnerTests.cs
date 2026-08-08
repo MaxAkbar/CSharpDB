@@ -1733,8 +1733,8 @@ public sealed class TypedJsonMigrationCommandRunnerTests
         Assert.Equal(
             "12345678901234567890.123456789012345678",
             row[1].AsText);
-        Assert.Equal(PrimitiveDbType.Integer, row[2].Type);
-        Assert.Equal(12_345, row[2].AsInteger);
+        Assert.Equal(PrimitiveDbType.Decimal, row[2].Type);
+        Assert.Equal(123.45m, row[2].AsDecimal);
         Assert.Equal(
             "00112233-4455-6677-8899-aabbccddeeff",
             row[3].AsText);
@@ -1744,7 +1744,7 @@ public sealed class TypedJsonMigrationCommandRunnerTests
             "2026-07-23 08:09:10.1234567",
             row[6].AsText);
         Assert.Equal(
-            "2026-07-23 08:09:10.1234567-07:00",
+            "2026-07-23 15:09:10.1234567+00:00",
             row[7].AsText);
         Assert.Equal(PrimitiveDbType.Integer, row[8].Type);
         Assert.Equal(long.MinValue, row[8].AsInteger);

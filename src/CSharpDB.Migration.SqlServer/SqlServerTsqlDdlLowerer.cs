@@ -428,15 +428,19 @@ internal static class TsqlDdlLowerer
             bool primary = primaryColumns.Contains(column);
             if (nullability.Length > 1 ||
                 primary && nullability.Any(static item => item.Nullable) ||
-                !primary && nullability.Length != 1)
+                column.IsRowVersion &&
+                    nullability.Any(static item => item.Nullable) ||
+                !primary && !column.IsRowVersion && nullability.Length != 1)
             {
                 table.Context.Reject(
                     SqlServerTsqlDdlCompatibilityAnalyzer
                         .UnsupportedFeatureRuleId,
-                    "Every non-primary-key column must declare exactly one NULL or NOT NULL constraint.");
+                    "Every ordinary non-primary-key column must declare exactly one NULL or NOT NULL constraint, and rowversion columns cannot be nullable.");
                 return;
             }
-            column.Nullable = !primary && nullability[0].Nullable;
+            column.Nullable = !primary &&
+                !column.IsRowVersion &&
+                nullability[0].Nullable;
             column.BindMapping();
         }
 
@@ -814,8 +818,6 @@ internal static class TsqlDdlLowerer
             return false;
         }
         string systemType = sql.Name.BaseIdentifier.Value.ToLowerInvariant();
-        if (SqlServerTypeSemantics.IsRowVersion(systemType))
-            return false;
         string logicalType =
             SqlServerTypeSemantics.LogicalType(systemType);
         if (logicalType == "native")
@@ -824,7 +826,10 @@ internal static class TsqlDdlLowerer
         string[] parameters = sql.Parameters
             .Select(static parameter => parameter.Value)
             .ToArray();
-        var facets = new List<MigrationCatalogFacet>();
+        var facets = new List<MigrationCatalogFacet>
+        {
+            Facet("sqlServerSystemTypeName", systemType),
+        };
         bool valid = sql.SqlDataTypeOption switch
         {
             SqlDataTypeOption.BigInt or
@@ -835,6 +840,8 @@ internal static class TsqlDdlLowerer
             SqlDataTypeOption.Real or
             SqlDataTypeOption.DateTime or
             SqlDataTypeOption.SmallDateTime or
+            SqlDataTypeOption.Timestamp or
+            SqlDataTypeOption.Rowversion or
             SqlDataTypeOption.Text or
             SqlDataTypeOption.NText or
             SqlDataTypeOption.Image or
@@ -886,6 +893,8 @@ internal static class TsqlDdlLowerer
         };
         if (!valid)
             return false;
+        if (Value(facets, "fractionalSeconds") is string fractionalSeconds)
+            facets.Add(Facet("sqlServerScale", fractionalSeconds));
         string native = NativeType(
             systemType,
             sql.SqlDataTypeOption,
@@ -1169,7 +1178,11 @@ internal static class TsqlDdlLowerer
                             .ToString()
                             .ToLowerInvariant()),
                     Facet("identity", "false"),
-                    Facet("rowVersion", "false"),
+                    Facet(
+                        "rowVersion",
+                        column.IsRowVersion
+                            .ToString()
+                            .ToLowerInvariant()),
                 };
                 facets.AddRange(column.Type.Facets);
                 objects.Add(new MigrationCatalogObject
@@ -1213,6 +1226,10 @@ internal static class TsqlDdlLowerer
         internal int Ordinal { get; }
         internal TypeShape Type { get; }
         internal string LogicalType => Type.LogicalType;
+        internal bool IsRowVersion => string.Equals(
+            LogicalType,
+            "rowVersion",
+            StringComparison.Ordinal);
         internal bool Nullable { get; set; }
         internal DbType? TargetType { get; private set; }
         internal MigrationTypeMapping? Mapping { get; private set; }

@@ -419,7 +419,10 @@ public sealed class SchemaComparisonService
         };
 
     private static bool ColumnEquals(ClientColumnDefinition left, ClientColumnDefinition right)
-        => left.Type == right.Type
+        => string.Equals(
+               left.EffectiveType.ToSql(),
+               right.EffectiveType.ToSql(),
+               StringComparison.OrdinalIgnoreCase)
            && left.Nullable == right.Nullable
            && left.IsPrimaryKey == right.IsPrimaryKey
            && left.IsIdentity == right.IsIdentity
@@ -431,7 +434,10 @@ public sealed class SchemaComparisonService
                StringComparison.Ordinal);
 
     private static bool IsColumnChangeDestructive(ClientColumnDefinition source, ClientColumnDefinition target)
-        => source.Type != target.Type
+        => !string.Equals(
+               source.EffectiveType.ToSql(),
+               target.EffectiveType.ToSql(),
+               StringComparison.OrdinalIgnoreCase)
            || !source.Nullable && target.Nullable
            || source.IsPrimaryKey != target.IsPrimaryKey
            || source.IsIdentity != target.IsIdentity
@@ -440,7 +446,12 @@ public sealed class SchemaComparisonService
     private static IReadOnlyDictionary<string, string> DiffColumnDetails(ClientColumnDefinition source, ClientColumnDefinition target)
     {
         var details = new Dictionary<string, string>();
-        AddIfDifferent(details, "type", source.Type.ToString(), target.Type.ToString(), StringComparison.Ordinal);
+        AddIfDifferent(
+            details,
+            "type",
+            source.EffectiveType.ToSql(),
+            target.EffectiveType.ToSql(),
+            StringComparison.OrdinalIgnoreCase);
         AddIfDifferent(details, "nullable", source.Nullable.ToString(), target.Nullable.ToString(), StringComparison.Ordinal);
         AddIfDifferent(details, "primaryKey", source.IsPrimaryKey.ToString(), target.IsPrimaryKey.ToString(), StringComparison.Ordinal);
         AddIfDifferent(details, "identity", source.IsIdentity.ToString(), target.IsIdentity.ToString(), StringComparison.Ordinal);

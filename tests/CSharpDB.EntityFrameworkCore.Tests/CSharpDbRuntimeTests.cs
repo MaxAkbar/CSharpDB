@@ -4269,6 +4269,11 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
     {
         await using var db = new RowVersionModelContext(
             $"Data Source={GetDbPath("rowversion-insert")}");
+        Assert.Equal(
+            "ROWVERSION",
+            db.Model.FindEntityType(typeof(RowVersionEntity))!
+                .FindProperty(nameof(RowVersionEntity.Version))!
+                .GetColumnType());
         await db.Database.EnsureCreatedAsync(Ct);
 
         var entity = new RowVersionEntity
@@ -4476,7 +4481,7 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
         AssertRowVersionModelRejected<ConvertedRowVersionContext>(
             "value converter");
         AssertRowVersionModelRejected<WrongStoreTypeRowVersionContext>(
-            "requires BLOB");
+            "requires ROWVERSION");
         AssertRowVersionModelRejected<DefaultedRowVersionContext>(
             "database default");
         AssertRowVersionModelRejected<SqlDefaultedRowVersionContext>(
@@ -4525,7 +4530,7 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task DecimalScaledIntegerMapping_RoundTripsAndSupportsParametersComparisonsAndOrdering()
+    public async Task DecimalNativeMapping_RoundTripsAndSupportsParametersComparisonsAndOrdering()
     {
         string dbPath = GetDbPath("decimal");
 
@@ -4534,6 +4539,11 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
                          $"Data Source={dbPath}"))
         {
             await db.Database.EnsureCreatedAsync(Ct);
+            var amountProperty = db.Model
+                .FindEntityType(typeof(DecimalEntity))!
+                .FindProperty(nameof(DecimalEntity.Amount))!;
+            Assert.Equal("DECIMAL(18,4)", amountProperty.GetColumnType());
+            Assert.Null(amountProperty.GetRelationalTypeMapping().Converter);
             db.Items.AddRange(
                 new DecimalEntity
                 {
@@ -4561,7 +4571,7 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
 
             string sql = query.ToQueryString();
             Assert.Contains(
-                "@minimum='-100'",
+                "@minimum='-0.0100'",
                 sql,
                 StringComparison.Ordinal);
             Assert.Contains(
@@ -4597,8 +4607,8 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
                 "SELECT Amount FROM Items WHERE Amount > 0 ORDER BY Amount DESC LIMIT 1";
             object? stored = await command.ExecuteScalarAsync(Ct);
             Assert.Equal(
-                123456789012345678L,
-                Convert.ToInt64(stored));
+                12345678901234.5678m,
+                Convert.ToDecimal(stored, CultureInfo.InvariantCulture));
         }
 
         await using var reopened =
@@ -4633,14 +4643,15 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
         defaultFacetCommand.CommandText =
             "SELECT Amount FROM Items";
         Assert.Equal(
-            1234L,
-            Convert.ToInt64(
+            12.34m,
+            Convert.ToDecimal(
                 await defaultFacetCommand.ExecuteScalarAsync(
-                    Ct)));
+                    Ct),
+                CultureInfo.InvariantCulture));
     }
 
     [Fact]
-    public async Task DecimalScaledIntegerMapping_RejectsLossyAndOverflowingValues()
+    public async Task DecimalNativeMapping_RejectsLossyAndOverflowingValues()
     {
         string scalePath =
             GetDbPath("decimal-scale-rejection");
@@ -4683,22 +4694,19 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
             StringComparison.OrdinalIgnoreCase);
 
         overflowDb.ChangeTracker.Clear();
-        await overflowDb.Database.ExecuteSqlRawAsync(
-            "INSERT INTO Items (Amount, OptionalAmount, ComparisonAmount) VALUES (1000000000000000000, NULL, 0)",
-            cancellationToken: Ct);
-        Exception storedOverflow =
+        Exception literalOverflow =
             await Assert.ThrowsAnyAsync<Exception>(
-                () => overflowDb.Items
-                    .AsNoTracking()
-                    .SingleAsync(Ct));
+                () => overflowDb.Database.ExecuteSqlRawAsync(
+                    "INSERT INTO Items (Amount, OptionalAmount, ComparisonAmount) VALUES (1000000000000000000, NULL, 0)",
+                    cancellationToken: Ct));
         Assert.Contains(
-            "Stored scaled integer '1000000000000000000' exceeds CSharpDB decimal(18, 4)",
-            storedOverflow.ToString(),
-            StringComparison.Ordinal);
+            "precision of 18 digits",
+            literalOverflow.ToString(),
+            StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task DecimalModelValidation_RejectsUnsupportedFacetsDefaultsAndKeys()
+    public async Task DecimalModelValidation_RejectsInvalidFacetsAndUnsupportedProviderShapes()
     {
         await AssertDecimalModelErrorAsync<
             InvalidDecimalPrecisionContext>(
@@ -4706,12 +4714,6 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
         await AssertDecimalModelErrorAsync<
             InvalidDecimalScaleContext>(
             "decimal(4, 5) is invalid");
-        await AssertDecimalModelErrorAsync<
-            DecimalDefaultContext>(
-            "Decimal defaults are not supported");
-        await AssertDecimalModelErrorAsync<
-            DecimalKeyContext>(
-            "as a key");
         await AssertDecimalModelErrorAsync<
             DecimalGeneratedContext>(
             "generated-value semantics");
@@ -4721,19 +4723,39 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
         await AssertDecimalModelErrorAsync<
             DecimalComplexTypeContext>(
             "complex properties");
-        await AssertDecimalModelErrorAsync<
-            DecimalDbFunctionContext>(
-            "uses decimal parameters or return values");
     }
 
     [Fact]
-    public async Task UnsupportedDecimalExpressions_ReportBeforeCommandDispatch()
+    public async Task DecimalNativeModel_AllowsDefaultsKeysAndDbFunctions()
+    {
+        await using var defaults = new DecimalDefaultContext(
+            $"Data Source={GetDbPath("decimal-default-model")}");
+        await using var keys = new DecimalKeyContext(
+            $"Data Source={GetDbPath("decimal-key-model")}");
+        await using var functions = new DecimalDbFunctionContext(
+            $"Data Source={GetDbPath("decimal-function-model")}");
+
+        await defaults.Database.EnsureCreatedAsync(Ct);
+        defaults.Items.Add(new DecimalEntity());
+        await defaults.SaveChangesAsync(Ct);
+        Assert.Equal(0m, await defaults.Items.Select(item => item.Amount).SingleAsync(Ct));
+
+        await keys.Database.EnsureCreatedAsync(Ct);
+        keys.Items.Add(new DecimalKeyEntity { Id = 12.34m });
+        await keys.SaveChangesAsync(Ct);
+        Assert.Equal(12.34m, await keys.Items.Select(item => item.Id).SingleAsync(Ct));
+
+        Assert.NotNull(functions.Model);
+    }
+
+    [Fact]
+    public async Task LegacyScaledIntegerDecimalDiagnostics_ReportBeforeCommandDispatch()
     {
         string dbPath =
             GetDbPath("decimal-expression-diagnostics");
         var interceptor = new ReaderCountingInterceptor();
         await using var db =
-            new DecimalModelContext(
+            new LegacyDecimalModelContext(
                 $"Data Source={dbPath}",
                 interceptor);
         await db.Database.EnsureCreatedAsync(Ct);
@@ -5128,6 +5150,53 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
         Assert.Equal(
             0,
             mixedMappingInterceptor.ReaderCommandCount);
+    }
+
+    [Fact]
+    public async Task NativeDecimalExpressions_ExecuteWithExactNumericSemantics()
+    {
+        string dbPath = GetDbPath("decimal-native-expressions");
+        await using var db = new DecimalModelContext($"Data Source={dbPath}");
+        await db.Database.EnsureCreatedAsync(Ct);
+        db.Items.Add(new DecimalEntity
+        {
+            Amount = 12.3400m,
+            OptionalAmount = 12.34m,
+            ComparisonAmount = 1.00m,
+        });
+        await db.SaveChangesAsync(Ct);
+        db.ChangeTracker.Clear();
+
+        Assert.Single(await db.Items
+            .Where(item => item.Amount * 2m > 20m)
+            .ToListAsync(Ct));
+        Assert.Single(await db.Items
+            .Where(item => (decimal)item.Id < item.Amount)
+            .ToListAsync(Ct));
+        Assert.Single(await db.Items
+            .Where(item =>
+                item.OptionalAmount != null &&
+                item.Amount == item.OptionalAmount.Value)
+            .ToListAsync(Ct));
+        decimal exactParameter = 12.34m;
+        Assert.Single(await db.Items
+            .Where(item => item.Amount == exactParameter)
+            .ToListAsync(Ct));
+        decimal exactDelta = 0.66m;
+        Assert.Equal(
+            13.00m,
+            await db.Items
+                .Select(item => item.Amount + exactDelta)
+                .SingleAsync(Ct));
+        Assert.Equal(
+            12.34m,
+            await db.Items
+                .Select(item => item.OptionalAmount ?? item.Amount)
+                .SingleAsync(Ct));
+        Assert.Equal(12.34m, await db.Items.SumAsync(item => item.Amount, Ct));
+        Assert.Equal(12.34m, await db.Items.AverageAsync(item => item.Amount, Ct));
+        Assert.Equal(12.34m, await db.Items.MinAsync(item => item.Amount, Ct));
+        Assert.Equal(12.34m, await db.Items.MaxAsync(item => item.Amount, Ct));
     }
 
     [Fact]
@@ -5965,6 +6034,37 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
         }
     }
 
+    private sealed class LegacyDecimalModelContext : TestDbContext
+    {
+        public LegacyDecimalModelContext(
+            string connectionString,
+            params IInterceptor[] interceptors)
+            : base(connectionString, interceptors)
+        {
+        }
+
+        public DbSet<DecimalEntity> Items => Set<DecimalEntity>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<DecimalEntity>()
+                .Property(item => item.Amount)
+                .HasPrecision(18, 4)
+                .HasColumnType("INTEGER");
+            modelBuilder.Entity<DecimalEntity>()
+                .Property(item => item.OptionalAmount)
+                .HasPrecision(10, 2)
+                .HasColumnType("INTEGER");
+            modelBuilder.Entity<DecimalEntity>()
+                .Property(item => item.ComparisonAmount)
+                .HasPrecision(10, 2)
+                .HasColumnType("INTEGER");
+            modelBuilder.Entity<DecimalEntity>()
+                .HasIndex(item => item.Amount)
+                .IsUnique();
+        }
+    }
+
     private sealed class GlobalFilterDecimalContext
         : TestDbContext
     {
@@ -5985,15 +6085,18 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
         {
             modelBuilder.Entity<DecimalEntity>()
                 .Property(item => item.Amount)
-                .HasPrecision(18, 4);
+                .HasPrecision(18, 4)
+                .HasColumnType("INTEGER");
             modelBuilder.Entity<DecimalEntity>()
                 .Property(item =>
                     item.OptionalAmount)
-                .HasPrecision(10, 2);
+                .HasPrecision(10, 2)
+                .HasColumnType("INTEGER");
             modelBuilder.Entity<DecimalEntity>()
                 .Property(item =>
                     item.ComparisonAmount)
-                .HasPrecision(10, 2);
+                .HasPrecision(10, 2)
+                .HasColumnType("INTEGER");
             modelBuilder.Entity<DecimalEntity>()
                 .HasQueryFilter(item =>
                     Items

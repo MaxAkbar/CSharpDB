@@ -88,6 +88,26 @@ SQL tools:
 - `ExecuteSql`
 - `GetSqlReference`
 
+## Type Metadata and JSON Values
+
+`DescribeTable` and `BrowseTable` return both `type` and `storageType` for each
+column. `type` is the canonical declared SQL spelling, such as `BOOLEAN`,
+`INTEGER`, `DECIMAL(18,4)`, or `DATETIMEOFFSET(7)`. `storageType` is the compact
+physical carrier (`Integer`, `Real`, `Decimal`, `Text`, or `Blob`). Logical
+types can share a carrier without sharing their SQL semantics; for example,
+`BOOLEAN`, `INTEGER`, and `BIGINT` all use `Integer` storage. Rowversion columns
+are reported as `ROWVERSION` and also carry `isRowVersion: true`. See the
+[complete SQL data type reference](https://csharpdb.com/docs/sql-reference.html#data-types).
+
+The mutation tools intentionally accept a small JSON value surface. JSON
+integers become signed 64-bit values, other JSON numbers become binary64,
+Booleans become integer `0`/`1`, strings remain strings, and `null` remains
+SQL `NULL`; arrays and objects are passed as their JSON text. The target column
+still applies its declared-type validation and coercion. For exact decimal,
+ordinary binary, exact-length bit-string, or other type-specific input, use
+`ExecuteSql` or a typed `CSharpDB.Client` API rather than relying on generic MCP
+JSON coercion.
+
 ## Project Layout
 
 - `Program.cs` - host setup, configuration parsing, and MCP server registration

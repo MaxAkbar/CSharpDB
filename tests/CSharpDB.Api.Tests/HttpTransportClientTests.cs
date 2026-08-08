@@ -181,6 +181,53 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task HttpTransport_PreservesLogicalTypesAndExactDecimalValues()
+    {
+        SqlExecutionResult create = await _client.ExecuteSqlAsync(
+            """
+            CREATE TABLE http_logical_types (
+                id INTEGER PRIMARY KEY,
+                amount DECIMAL(18,6),
+                token UUID,
+                payload BINARY(3)
+            );
+            INSERT INTO http_logical_types VALUES (
+                1,
+                123456789012.345678,
+                '00112233-4455-6677-8899-aabbccddeeff',
+                X'010203'
+            );
+            """,
+            Ct);
+        Assert.Null(create.Error);
+
+        TableSchema schema = Assert.IsType<TableSchema>(
+            await _client.GetTableSchemaAsync("http_logical_types", Ct));
+        ColumnDefinition amount = Assert.Single(schema.Columns, column => column.Name == "amount");
+        ColumnDefinition token = Assert.Single(schema.Columns, column => column.Name == "token");
+        ColumnDefinition payload = Assert.Single(schema.Columns, column => column.Name == "payload");
+        Assert.Equal(DbType.Decimal, amount.Type);
+        Assert.Equal("DECIMAL(18,6)", amount.EffectiveType.ToSql());
+        Assert.Equal(DbType.Blob, token.Type);
+        Assert.Equal("UUID", token.EffectiveType.ToSql());
+        Assert.Equal("BINARY(3)", payload.EffectiveType.ToSql());
+
+        SqlExecutionResult query = await _client.ExecuteSqlAsync(
+            "SELECT amount, token, payload FROM http_logical_types;",
+            Ct);
+        Assert.Null(query.Error);
+        Assert.Equal(
+            ["DECIMAL(18,6)", "UUID", "BINARY(3)"],
+            Assert.IsType<string[]>(query.ColumnTypes));
+        object?[] row = Assert.Single(query.Rows!);
+        Assert.Equal(123456789012.345678m, Assert.IsType<decimal>(row[0]));
+        Assert.Equal(
+            Convert.FromHexString("00112233445566778899AABBCCDDEEFF"),
+            Assert.IsType<byte[]>(row[1]));
+        Assert.Equal([1, 2, 3], Assert.IsType<byte[]>(row[2]));
+    }
+
+    [Fact]
     public async Task HttpTransport_GetTableSchemaAsync_SupportsDotSegmentTableName()
     {
         SqlExecutionResult create = await _client.ExecuteSqlAsync(
@@ -673,6 +720,406 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
         Assert.Equal(["BLOB"], Assert.IsType<string[]>(statement.ColumnTypes));
         object?[] procedureRow = Assert.Single(statement.Rows!);
         Assert.Equal(defaultPayload, Assert.IsType<byte[]>(Assert.Single(procedureRow)));
+    }
+
+    [Fact]
+    public async Task HttpTransport_BinaryBackedRowsAndKeysRoundTripThroughCrud()
+    {
+        byte[] key = [0x00, 0x01, 0xFE, 0xFF];
+        byte[] uuid = Convert.FromHexString("00112233445566778899AABBCCDDEEFF");
+        const string Base64LookingText = "AQID";
+
+        SqlExecutionResult create = await _client.ExecuteSqlAsync(
+            """
+            CREATE TABLE http_binary_crud (
+                key_blob BLOB PRIMARY KEY,
+                fixed_bytes BINARY(4),
+                varying_bytes VARBINARY(6),
+                token UUID,
+                flags BIT(8),
+                note TEXT
+            );
+            CREATE TABLE http_text_key_crud (
+                key_text TEXT PRIMARY KEY,
+                payload BLOB,
+                note TEXT
+            );
+            CREATE TABLE http_fixed_binary_key_crud (
+                key_bytes BINARY(4) PRIMARY KEY,
+                note TEXT
+            );
+            CREATE TABLE http_varying_binary_key_crud (
+                key_bytes VARBINARY(4) PRIMARY KEY,
+                note TEXT
+            );
+            CREATE TABLE http_bit_key_crud (
+                key_bits BIT(8) PRIMARY KEY,
+                note TEXT
+            );
+            """,
+            Ct);
+        Assert.Null(create.Error);
+
+        Assert.Equal(
+            1,
+            await _client.InsertRowAsync(
+                "http_binary_crud",
+                new Dictionary<string, object?>
+                {
+                    ["key_blob"] = key,
+                    ["fixed_bytes"] = new byte[] { 0x10, 0x20 },
+                    ["varying_bytes"] = new byte[] { 0x30, 0x40, 0x50 },
+                    ["token"] = uuid,
+                    ["flags"] = new byte[] { 0xA5 },
+                    ["note"] = Base64LookingText,
+                },
+                Ct));
+
+        Dictionary<string, object?> inserted = Assert.IsType<Dictionary<string, object?>>(
+            await _client.GetRowByPkAsync(
+                "http_binary_crud",
+                "key_blob",
+                key,
+                Ct));
+        byte[] returnedKey = Assert.IsType<byte[]>(inserted["key_blob"]);
+        Assert.Equal(key, returnedKey);
+        Assert.Equal([0x10, 0x20, 0x00, 0x00], Assert.IsType<byte[]>(inserted["fixed_bytes"]));
+        Assert.Equal([0x30, 0x40, 0x50], Assert.IsType<byte[]>(inserted["varying_bytes"]));
+        Assert.Equal(uuid, Assert.IsType<byte[]>(inserted["token"]));
+        SqlBitString insertedFlags = Assert.IsType<SqlBitString>(inserted["flags"]);
+        Assert.Equal(8, insertedFlags.BitLength);
+        Assert.Equal([0xA5], insertedFlags.PackedBytes.ToArray());
+        Assert.Equal(Base64LookingText, inserted["note"]);
+
+        byte[] updatedUuid = Convert.FromHexString("FFEEDDCCBBAA99887766554433221100");
+        Assert.Equal(
+            1,
+            await _client.UpdateRowAsync(
+                "http_binary_crud",
+                "key_blob",
+                returnedKey,
+                new Dictionary<string, object?>
+                {
+                    ["fixed_bytes"] = new byte[] { 0x01, 0x02, 0x03, 0x04 },
+                    ["varying_bytes"] = new byte[] { 0x05 },
+                    ["token"] = updatedUuid,
+                    ["flags"] = new byte[] { 0x5A },
+                    ["note"] = "AAE=",
+                },
+                Ct));
+
+        Dictionary<string, object?> updated = Assert.IsType<Dictionary<string, object?>>(
+            await _client.GetRowByPkAsync(
+                "http_binary_crud",
+                "key_blob",
+                returnedKey,
+                Ct));
+        Assert.Equal([0x01, 0x02, 0x03, 0x04], Assert.IsType<byte[]>(updated["fixed_bytes"]));
+        Assert.Equal([0x05], Assert.IsType<byte[]>(updated["varying_bytes"]));
+        Assert.Equal(updatedUuid, Assert.IsType<byte[]>(updated["token"]));
+        SqlBitString updatedFlags = Assert.IsType<SqlBitString>(updated["flags"]);
+        Assert.Equal(8, updatedFlags.BitLength);
+        Assert.Equal([0x5A], updatedFlags.PackedBytes.ToArray());
+        Assert.Equal("AAE=", updated["note"]);
+
+        Assert.Equal(
+            1,
+            await _client.DeleteRowAsync(
+                "http_binary_crud",
+                "key_blob",
+                returnedKey,
+                Ct));
+        Assert.Null(await _client.GetRowByPkAsync(
+            "http_binary_crud",
+            "key_blob",
+            returnedKey,
+            Ct));
+
+        Assert.Equal(
+            1,
+            await _client.InsertRowAsync(
+                "http_text_key_crud",
+                new Dictionary<string, object?>
+                {
+                    ["key_text"] = Base64LookingText,
+                    ["payload"] = new byte[] { 0xDE, 0xAD },
+                    ["note"] = "AA==",
+                },
+                Ct));
+        Dictionary<string, object?> textKeyRow = Assert.IsType<Dictionary<string, object?>>(
+            await _client.GetRowByPkAsync(
+                "http_text_key_crud",
+                "key_text",
+                Base64LookingText,
+                Ct));
+        Assert.Equal(Base64LookingText, textKeyRow["key_text"]);
+        Assert.Equal([0xDE, 0xAD], Assert.IsType<byte[]>(textKeyRow["payload"]));
+        Assert.Equal("AA==", textKeyRow["note"]);
+        Assert.Equal(
+            1,
+            await _client.DeleteRowAsync(
+                "http_text_key_crud",
+                "key_text",
+                Base64LookingText,
+                Ct));
+
+        await AssertBinaryKeyCrudAsync(
+            "http_fixed_binary_key_crud",
+            "key_bytes",
+            [0x10, 0x20, 0x30, 0x40]);
+        await AssertBinaryKeyCrudAsync(
+            "http_varying_binary_key_crud",
+            "key_bytes",
+            [0x50, 0x60]);
+        await AssertBinaryKeyCrudAsync(
+            "http_bit_key_crud",
+            "key_bits",
+            [0xA5]);
+
+        async Task AssertBinaryKeyCrudAsync(
+            string tableName,
+            string columnName,
+            byte[] binaryKey)
+        {
+            Assert.Equal(
+                1,
+                await _client.InsertRowAsync(
+                    tableName,
+                    new Dictionary<string, object?>
+                    {
+                        [columnName] = binaryKey,
+                        ["note"] = "initial",
+                    },
+                    Ct));
+            Assert.NotNull(await _client.GetRowByPkAsync(
+                tableName,
+                columnName,
+                binaryKey,
+                Ct));
+            Assert.Equal(
+                1,
+                await _client.UpdateRowAsync(
+                    tableName,
+                    columnName,
+                    binaryKey,
+                    new Dictionary<string, object?> { ["note"] = "updated" },
+                    Ct));
+            Assert.Equal(
+                "updated",
+                (await _client.GetRowByPkAsync(
+                    tableName,
+                    columnName,
+                    binaryKey,
+                    Ct))!["note"]);
+            Assert.Equal(
+                1,
+                await _client.DeleteRowAsync(
+                    tableName,
+                    columnName,
+                    binaryKey,
+                    Ct));
+        }
+    }
+
+    [Fact]
+    public async Task HttpTransport_BitStringsPreserveLengthAndRoundTripThroughCrud()
+    {
+        Assert.Null((await _client.ExecuteSqlAsync(
+            "CREATE TABLE http_bits (" +
+            "id INTEGER PRIMARY KEY, fixed_bits BIT(3), " +
+            "varying_bits VARBIT(8), payload BLOB); " +
+            "INSERT INTO http_bits VALUES (1, '1', '1', X'80');",
+            Ct)).Error);
+
+        Dictionary<string, object?> first = Assert.IsType<Dictionary<string, object?>>(
+            await _client.GetRowByPkAsync("http_bits", "id", 1, Ct));
+        SqlBitString fixedBits = Assert.IsType<SqlBitString>(first["fixed_bits"]);
+        SqlBitString varyingBits = Assert.IsType<SqlBitString>(first["varying_bits"]);
+        Assert.Equal(3, fixedBits.BitLength);
+        Assert.Equal("100", fixedBits.ToBitString());
+        Assert.Equal(1, varyingBits.BitLength);
+        Assert.Equal("1", varyingBits.ToBitString());
+        Assert.Equal(new byte[] { 0x80 }, fixedBits.PackedBytes.ToArray());
+        Assert.Equal(new byte[] { 0x80 }, varyingBits.PackedBytes.ToArray());
+        Assert.Equal(new byte[] { 0x80 }, Assert.IsType<byte[]>(first["payload"]));
+
+        Assert.Equal(1, await _client.InsertRowAsync(
+            "http_bits",
+            new Dictionary<string, object?>
+            {
+                ["id"] = 2,
+                ["fixed_bits"] = fixedBits,
+                ["varying_bits"] = varyingBits,
+                ["payload"] = first["payload"],
+            },
+            Ct));
+
+        SqlExecutionResult copied = await _client.ExecuteSqlAsync(
+            "SELECT fixed_bits, varying_bits, payload FROM http_bits WHERE id = 2;",
+            Ct);
+        Assert.Null(copied.Error);
+        object?[] copiedRow = Assert.Single(copied.Rows!);
+        Assert.Equal(fixedBits, Assert.IsType<SqlBitString>(copiedRow[0]));
+        Assert.Equal(varyingBits, Assert.IsType<SqlBitString>(copiedRow[1]));
+        Assert.Equal(new byte[] { 0x80 }, Assert.IsType<byte[]>(copiedRow[2]));
+
+        await _client.CreateProcedureAsync(
+            new ProcedureDefinition
+            {
+                Name = "HttpBitDefault",
+                BodySql = "SELECT CAST(@bits AS VARBIT(8)) AS bits;",
+                Parameters =
+                [
+                    new ProcedureParameterDefinition
+                    {
+                        Name = "bits",
+                        Type = DbType.Blob,
+                        Required = false,
+                        Default = varyingBits,
+                    },
+                ],
+            },
+            Ct);
+
+        ProcedureDefinition detail = Assert.IsType<ProcedureDefinition>(
+            await _client.GetProcedureAsync("HttpBitDefault", Ct));
+        Assert.Equal(
+            varyingBits,
+            Assert.IsType<SqlBitString>(Assert.Single(detail.Parameters).Default));
+
+        ProcedureExecutionResult defaultExecution = await _client.ExecuteProcedureAsync(
+            "HttpBitDefault",
+            new Dictionary<string, object?>(),
+            Ct);
+        Assert.True(defaultExecution.Succeeded, defaultExecution.Error);
+        Assert.Equal(
+            varyingBits,
+            Assert.IsType<SqlBitString>(
+                Assert.Single(Assert.Single(defaultExecution.Statements).Rows!)[0]));
+
+        ProcedureExecutionResult argumentExecution = await _client.ExecuteProcedureAsync(
+            "HttpBitDefault",
+            new Dictionary<string, object?> { ["bits"] = fixedBits },
+            Ct);
+        Assert.True(argumentExecution.Succeeded, argumentExecution.Error);
+        Assert.Equal(
+            fixedBits,
+            Assert.IsType<SqlBitString>(
+                Assert.Single(Assert.Single(argumentExecution.Statements).Rows!)[0]));
+    }
+
+    [Fact]
+    public async Task HttpTransport_TypedScalarKeysRoundTripThroughCrud()
+    {
+        const decimal DecimalKey = 12345678901234.5678m;
+        const float RealKey = 1.25f;
+        const double DoubleKey = 1.23456789012345d;
+        DateOnly dateKey = new(2026, 8, 5);
+        TimeOnly timeKey = new TimeOnly(14, 30, 15)
+            .Add(TimeSpan.FromTicks(1_234_567));
+        DateTime timestampKey = new DateTime(
+                2026, 8, 5, 14, 30, 15, DateTimeKind.Unspecified)
+            .AddTicks(1_234_567);
+        DateTimeOffset zonedKey = new(timestampKey, TimeSpan.FromHours(-7));
+        TimeSpan intervalKey = TimeSpan.FromDays(1) +
+                               new TimeSpan(2, 3, 4) +
+                               TimeSpan.FromTicks(5_000_000);
+        Guid uuidKey = Guid.Parse("01234567-89ab-cdef-0123-456789abcdef");
+
+        SqlExecutionResult create = await _client.ExecuteSqlAsync(
+            """
+            CREATE TABLE http_boolean_key (key_value BOOLEAN PRIMARY KEY, note TEXT);
+            CREATE TABLE http_decimal_key (key_value DECIMAL(18,4) PRIMARY KEY, note TEXT);
+            CREATE TABLE http_real_key (key_value REAL PRIMARY KEY, note TEXT);
+            CREATE TABLE http_double_key (key_value DOUBLE PRECISION PRIMARY KEY, note TEXT);
+            CREATE TABLE http_date_key (key_value DATE PRIMARY KEY, note TEXT);
+            CREATE TABLE http_time_key (key_value TIME(7) PRIMARY KEY, note TEXT);
+            CREATE TABLE http_timestamp_key (key_value DATETIME2(7) PRIMARY KEY, note TEXT);
+            CREATE TABLE http_zoned_key (
+                key_value DATETIMEOFFSET(7) PRIMARY KEY,
+                note TEXT
+            );
+            CREATE TABLE http_interval_key (
+                key_value INTERVAL DAY TO SECOND(7) PRIMARY KEY,
+                note TEXT
+            );
+            CREATE TABLE http_year_month_key (
+                key_value INTERVAL YEAR TO MONTH PRIMARY KEY,
+                note TEXT
+            );
+            CREATE TABLE http_uuid_key (key_value UUID PRIMARY KEY, note TEXT);
+            CREATE TABLE http_typed_looking_text_key (key_value TEXT PRIMARY KEY, note TEXT);
+
+            INSERT INTO http_boolean_key VALUES (1, 'initial');
+            INSERT INTO http_decimal_key VALUES (12345678901234.5678, 'initial');
+            INSERT INTO http_real_key VALUES (1.25, 'initial');
+            INSERT INTO http_double_key VALUES (1.23456789012345, 'initial');
+            INSERT INTO http_date_key VALUES ('2026-08-05', 'initial');
+            INSERT INTO http_time_key VALUES ('14:30:15.1234567', 'initial');
+            INSERT INTO http_timestamp_key VALUES (
+                '2026-08-05 14:30:15.1234567',
+                'initial'
+            );
+            INSERT INTO http_zoned_key VALUES (
+                '2026-08-05 14:30:15.1234567-07:00',
+                'initial'
+            );
+            INSERT INTO http_interval_key VALUES ('1.02:03:04.5', 'initial');
+            INSERT INTO http_year_month_key VALUES ('2-03', 'initial');
+            INSERT INTO http_uuid_key VALUES (
+                '01234567-89ab-cdef-0123-456789abcdef',
+                'initial'
+            );
+            INSERT INTO http_typed_looking_text_key VALUES ('123.4500', 'initial');
+            INSERT INTO http_typed_looking_text_key VALUES ('2026-08-05', 'initial');
+            """,
+            Ct);
+        Assert.Null(create.Error);
+
+        await AssertCrudAsync("http_boolean_key", true);
+        await AssertCrudAsync("http_decimal_key", DecimalKey);
+        await AssertCrudAsync("http_real_key", RealKey);
+        await AssertCrudAsync("http_double_key", DoubleKey);
+        await AssertCrudAsync("http_date_key", dateKey);
+        await AssertCrudAsync("http_time_key", timeKey);
+        await AssertCrudAsync("http_timestamp_key", timestampKey);
+        await AssertCrudAsync("http_zoned_key", zonedKey);
+        await AssertCrudAsync("http_interval_key", intervalKey);
+        await AssertCrudAsync("http_year_month_key", "2-03");
+        await AssertCrudAsync("http_uuid_key", uuidKey);
+
+        // The declared schema wins over the CLR marker. Numeric- and
+        // date-looking TEXT keys must remain text all the way to the engine.
+        await AssertCrudAsync("http_typed_looking_text_key", 123.4500m);
+        await AssertCrudAsync("http_typed_looking_text_key", dateKey);
+
+        async Task AssertCrudAsync(string tableName, object key)
+        {
+            Dictionary<string, object?> initial = Assert.IsType<Dictionary<string, object?>>(
+                await _client.GetRowByPkAsync(tableName, "key_value", key, Ct));
+            Assert.Equal("initial", initial["note"]);
+
+            Assert.Equal(
+                1,
+                await _client.UpdateRowAsync(
+                    tableName,
+                    "key_value",
+                    key,
+                    new Dictionary<string, object?> { ["note"] = "updated" },
+                    Ct));
+            Dictionary<string, object?> updated = Assert.IsType<Dictionary<string, object?>>(
+                await _client.GetRowByPkAsync(tableName, "key_value", key, Ct));
+            Assert.Equal("updated", updated["note"]);
+
+            Assert.Equal(
+                1,
+                await _client.DeleteRowAsync(tableName, "key_value", key, Ct));
+            Assert.Null(await _client.GetRowByPkAsync(
+                tableName,
+                "key_value",
+                key,
+                Ct));
+        }
     }
 
     [Fact]

@@ -137,6 +137,9 @@ public sealed class HostCallbackCatalogService
         "VALUES",
         "WEEKDAY",
         "WHERE",
+        "XMLEXISTS",
+        "XML_EXISTS",
+        "XML_VALUE",
         "YEAR",
     ];
 

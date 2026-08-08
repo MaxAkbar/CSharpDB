@@ -87,6 +87,9 @@ generation are deferred enhancements.
 compact root array or LF-terminated NDJSON without buffering the table. Its
 canonical manifest binds retained source identity, ordered schema, framing,
 resource ceilings, physical bytes, and matching lossless logical evidence.
+Exact `DECIMAL` values are emitted as normalized JSON numbers and hashed by
+coefficient and scale rather than through binary floating point; legacy v1
+type tags, encodings, schema digests, and envelope identifiers are unchanged.
 The local-Windows restart-only publisher uses private sibling staging,
 handle-bound no-replace data-before-manifest commits, exact pair/data-only
 reuse, and fail-closed namespace and ACL qualification.
@@ -135,6 +138,9 @@ qualification remain later gates.
 The typed `csharpdb-csv-export-manifest/v1` sidecar contract now binds a
 CSharpDB snapshot, ordered typed schema, fixed RFC 4180 codec, physical data
 digest, source/export logical digests, and a BLOB decoded-size ceiling.
+Native CSharpDB `DECIMAL` values use normalized invariant plain-number text
+and the canonical coefficient-and-scale digest representation; the additive
+database-type and value-encoding tags leave existing v1 artifacts unchanged.
 `LosslessV1` preserves source values; the separately named
 `SpreadsheetSafeLossyV1` profile records
 aggregate formula-mitigation changes without putting cell values in the

@@ -72,6 +72,16 @@ public sealed class CSharpDbStagedMigrationTargetTests
                 row => row.Values[payloadIndex].Type == DbType.Blob &&
                     row.Values[payloadIndex].AsBlob.AsSpan().SequenceEqual(
                         new byte[] { 0x43, 0x53, 0x44, 0x42, 0x01 }));
+
+            List<MigrationValidationRow> orders = await CollectAsync(
+                snapshot.ReadRowsAsync("syn:table:orders", Ct));
+            int taxIndex = IncludedColumnIds(catalog, plan, "syn:table:orders")
+                .ToList()
+                .IndexOf("syn:column:orders:tax");
+            Assert.True(taxIndex >= 0);
+            Assert.All(orders, row => Assert.Equal(DbType.Decimal, row.Values[taxIndex].Type));
+            Assert.Equal(7.25m, orders[0].Values[taxIndex].AsDecimal);
+            Assert.Equal(84.25m, orders[^1].Values[taxIndex].AsDecimal);
         }
 
         Assert.True(File.Exists(files.TargetPath));
@@ -79,6 +89,80 @@ public sealed class CSharpDbStagedMigrationTargetTests
         Assert.Equal(
             Enum.GetNames<MigrationSchemaStage>(),
             await ReadStageNamesAsync(files.TargetPath, Ct));
+    }
+
+    [Fact]
+    public async Task RowVersionBatch_IgnoresSourceTokenAndGeneratesTargetToken()
+    {
+        using var files = new TemporaryTargetDirectory();
+        MigrationCatalog catalog = RowVersionCatalog();
+        MigrationPlan plan = ReadyPlan(catalog, batchSize: 2);
+        const string snapshotIdentity = "sqlserver-rowversion-snapshot-v1";
+        const string tableObjectId = "sqlserver:table:logical_values";
+        string[] columnObjectIds = IncludedColumnIds(catalog, plan, tableObjectId);
+        byte[] sourceToken = Enumerable.Repeat((byte)0x7f, sizeof(long)).ToArray();
+        var unsigned = new MigrationTargetBatch
+        {
+            PlanDigest = MigrationArtifactSerializer.ComputePlanDigest(plan),
+            CatalogDigest = plan.CatalogDigest,
+            SourceFingerprint = plan.Source.Fingerprint,
+            SourceSnapshotIdentity = snapshotIdentity,
+            SourceObjectId = tableObjectId,
+            ColumnObjectIds = columnObjectIds,
+            BatchOrdinal = 0,
+            BatchDigest = string.Empty,
+            RejectContractVersion = MigrationRejectContract.DeterministicFailFastV1,
+            Rows =
+            [
+                new MigrationTargetRow
+                {
+                    SourceRowOrdinal = 0,
+                    Values =
+                    [
+                        DbValue.FromInteger(7),
+                        DbValue.FromBlob(sourceToken),
+                    ],
+                },
+            ],
+        };
+        MigrationTargetBatch rejectSealed = unsigned with
+        {
+            RejectDigest = MigrationRejectDigest.Compute(unsigned),
+        };
+        MigrationTargetBatch batch = rejectSealed with
+        {
+            BatchDigest = MigrationBatchDigest.Compute(rejectSealed),
+        };
+
+        await using (CSharpDbStagedMigrationTarget target =
+                     await CSharpDbStagedMigrationTarget.CreateNewAsync(
+                         files.TargetPath,
+                         plan,
+                         catalog,
+                         snapshotIdentity,
+                         cancellationToken: Ct))
+        {
+            await target.ApplySchemaAsync(
+                plan,
+                catalog,
+                MigrationSchemaStage.LoadEssential,
+                Ct);
+            MigrationBatchReceipt receipt = await target.WriteBatchAsync(batch, Ct);
+            Assert.Equal(1, receipt.RowCount);
+        }
+
+        string targetTable = plan.Objects.Single(item => item.SourceObjectId == tableObjectId).TargetName!;
+        string idColumn = plan.Objects.Single(item => item.SourceObjectId == columnObjectIds[0]).TargetName!;
+        string versionColumn = plan.Objects.Single(item => item.SourceObjectId == columnObjectIds[1]).TargetName!;
+        await using Database database = await Database.OpenAsync(files.TargetPath, Ct);
+        await using var result = await database.ExecuteAsync(
+            $"SELECT \"{idColumn}\", \"{versionColumn}\" FROM \"{targetTable}\"",
+            Ct);
+        Assert.True(await result.MoveNextAsync(Ct));
+        Assert.Equal(7L, result.Current[0].AsInteger);
+        byte[] generatedToken = result.Current[1].AsBlob;
+        Assert.Equal(sizeof(long), generatedToken.Length);
+        Assert.NotEqual(Convert.ToHexString(sourceToken), Convert.ToHexString(generatedToken));
     }
 
     [Fact]
@@ -1297,6 +1381,64 @@ public sealed class CSharpDbStagedMigrationTargetTests
             },
             cancellationToken);
 
+    private static MigrationCatalog RowVersionCatalog() => new()
+    {
+        TargetCSharpDbVersion =
+            CSharpDbCapabilityCatalogLoader.CurrentTargetVersion,
+        Source = new MigrationSourceIdentity
+        {
+            Kind = MigrationSourceKind.SqlServer,
+            Identity = "sqlserver:rowversion-staged-load",
+            Fingerprint =
+                "b567114590215510ace1987ce559c4c1f78447009516ea967fe0994ff7e155f1",
+            ProviderVersion = "fixture-v1",
+            SourceVersion = "fixture-v1",
+            Consistency = new MigrationConsistencyStrategy
+            {
+                Kind = MigrationConsistencyKind.Immutable,
+                Description = "Immutable SQL Server rowversion fixture.",
+            },
+        },
+        Objects =
+        [
+            new MigrationCatalogObject
+            {
+                ObjectId = "sqlserver:table:logical_values",
+                Kind = MigrationObjectKind.Table,
+                SourceName = "logical_values",
+            },
+            new MigrationCatalogObject
+            {
+                ObjectId = "sqlserver:column:logical_values:id",
+                Kind = MigrationObjectKind.Column,
+                ParentObjectId = "sqlserver:table:logical_values",
+                SourceName = "id",
+                NativeType = "sys.int",
+                Facets =
+                [
+                    new MigrationCatalogFacet { Name = "logicalType", Value = "signedInteger" },
+                    new MigrationCatalogFacet { Name = "nullable", Value = "false" },
+                    new MigrationCatalogFacet { Name = "sqlServerSystemTypeName", Value = "int" },
+                ],
+            },
+            new MigrationCatalogObject
+            {
+                ObjectId = "sqlserver:column:logical_values:version",
+                Kind = MigrationObjectKind.Column,
+                ParentObjectId = "sqlserver:table:logical_values",
+                SourceName = "version",
+                NativeType = "sys.rowversion",
+                Facets =
+                [
+                    new MigrationCatalogFacet { Name = "logicalType", Value = "rowVersion" },
+                    new MigrationCatalogFacet { Name = "nullable", Value = "false" },
+                    new MigrationCatalogFacet { Name = "rowVersion", Value = "true" },
+                    new MigrationCatalogFacet { Name = "sqlServerSystemTypeName", Value = "rowversion" },
+                ],
+            },
+        ],
+    };
+
     private static MigrationPlan ReadyPlan(MigrationCatalog catalog, int batchSize)
     {
         MigrationPlan plan = new MigrationPlanner().CreatePlan(
@@ -1613,12 +1755,12 @@ public sealed class CSharpDbStagedMigrationTargetTests
                 "\"source_fingerprint\" TEXT NOT NULL, " +
                 "\"source_snapshot_identity\" TEXT NOT NULL, " +
                 "\"source_object_id\" TEXT NOT NULL, " +
-                "\"batch_ordinal\" INTEGER NOT NULL, " +
+                "\"batch_ordinal\" BIGINT NOT NULL, " +
                 "\"start_cursor\" TEXT, " +
                 "\"next_cursor\" TEXT, " +
                 "\"batch_digest\" TEXT NOT NULL, " +
-                "\"row_count\" INTEGER NOT NULL, " +
-                "\"rejected_row_count\" INTEGER NOT NULL, " +
+                "\"row_count\" BIGINT NOT NULL, " +
+                "\"rejected_row_count\" BIGINT NOT NULL, " +
                 "CONSTRAINT \"__csharpdb_migration_receipts_pk\" " +
                 "PRIMARY KEY (\"plan_digest\", \"source_object_id\", \"batch_ordinal\"))",
                 cancellationToken);

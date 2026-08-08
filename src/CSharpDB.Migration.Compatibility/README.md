@@ -24,12 +24,14 @@ mapping profiles. It does not change the catalog or create a migration plan.
 
 The CLI custom-map file is a strict JSON object keyed by exact catalog
 `objectId`. Each value is one case-insensitive persistent CSharpDB type:
-`integer`, `real`, `text`, or `blob`.
+`integer`, `real`, `decimal`, `text`, or `blob`. These select the persistent
+physical carrier; migration reports expose the retained logical declaration
+separately as `targetSqlType`.
 
 ```json
 {
-  "<exact-column-object-id-from-catalog>": "text",
-  "<another-exact-column-object-id>": "real"
+  "<exact-decimal-column-object-id-from-catalog>": "decimal",
+  "<another-exact-column-object-id>": "text"
 }
 ```
 

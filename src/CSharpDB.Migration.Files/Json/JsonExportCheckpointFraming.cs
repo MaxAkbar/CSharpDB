@@ -657,6 +657,7 @@ internal static class JsonExportCheckpointFraming
         {
             JsonExportDatabaseType.Integer => 1,
             JsonExportDatabaseType.Real => 1,
+            JsonExportDatabaseType.Decimal => 1,
             JsonExportDatabaseType.Text => 2,
             JsonExportDatabaseType.Blob => 2,
             _ => throw Invalid(

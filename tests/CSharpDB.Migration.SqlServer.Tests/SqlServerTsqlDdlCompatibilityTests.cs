@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using CSharpDB.Migration.CSharpDb;
+using Microsoft.SqlServer.TransactSql.ScriptDom;
 
 namespace CSharpDB.Migration.SqlServer.Tests;
 
@@ -110,6 +111,90 @@ public sealed class SqlServerTsqlDdlCompatibilityTests
         Assert.NotNull(report.GeneratedDdlDigest);
     }
 
+    [Theory]
+    [InlineData("rowversion")]
+    [InlineData("timestamp")]
+    public async Task RowVersionType_PassesScratchAsGeneratedLogicalType(
+        string sourceType)
+    {
+        string script = string.Concat(
+            "CREATE TABLE dbo.versioned_values (value ",
+            sourceType,
+            ");");
+
+        CSharpDbDdlCompatibilityReport report =
+            await SqlServerTsqlDdlCompatibilityAnalyzer.AnalyzeAsync(
+                script,
+                cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.Equal(
+            MigrationCompatibilityStatus.CompatibleWithRewrite,
+            report.Status);
+        Assert.Equal(
+            MigrationEvidenceLevel.ScratchExecuted,
+            report.HighestEvidence);
+        Assert.NotNull(report.GeneratedDdlDigest);
+        Assert.Equal(report.ExpectedSchemaDigest, report.ActualSchemaDigest);
+    }
+
+    [Fact]
+    public void LoweredCatalog_PreservesSqlServerLogicalTargetTypes()
+    {
+        const string script =
+            """
+            CREATE TABLE dbo.logical_values (
+                tiny_value tinyint NOT NULL,
+                small_value smallint NOT NULL,
+                int_value int NOT NULL,
+                big_value bigint NOT NULL,
+                flag_value bit NOT NULL,
+                time_value datetime2(3) NOT NULL,
+                offset_value datetimeoffset(4) NOT NULL,
+                version_value rowversion NOT NULL
+            );
+            """;
+
+        MigrationCatalog catalog = LowerCatalog(script);
+        var expectedTypes = new Dictionary<string, string>(
+            StringComparer.Ordinal)
+        {
+            ["tiny_value"] = "TINYINT",
+            ["small_value"] = "SMALLINT",
+            ["int_value"] = "INTEGER",
+            ["big_value"] = "BIGINT",
+            ["flag_value"] = "BOOLEAN",
+            ["time_value"] = "DATETIME2(3)",
+            ["offset_value"] = "DATETIMEOFFSET(4)",
+            ["version_value"] = "ROWVERSION",
+        };
+        var provider = new StandardDataTypeMappingProvider();
+
+        foreach (MigrationCatalogObject column in catalog.Objects.Where(
+                     static item => item.Kind == MigrationObjectKind.Column))
+        {
+            MigrationTypeMapping mapping = provider.Map(
+                new MigrationTypeMappingRequest
+                {
+                    SourceObject = column,
+                    Profile = MigrationMappingProfile.Preserve,
+                    Coverage = new MigrationProfileCoverage
+                    {
+                        Kind = MigrationCoverageKind.None,
+                        RequiresFullStreamValidation = true,
+                    },
+                }).Mapping;
+
+            Assert.Equal(expectedTypes[column.SourceName!], mapping.TargetSqlType);
+        }
+
+        MigrationCatalogObject rowVersion = Assert.Single(
+            catalog.Objects,
+            static item => item.SourceName == "version_value");
+        Assert.Contains(
+            rowVersion.Facets,
+            static facet => facet.Name == "rowVersion" && facet.Value == "true");
+    }
+
     [Fact]
     public async Task OrderedKeysForeignKeyAndIndex_PassAcrossGoBatches()
     {
@@ -153,7 +238,6 @@ public sealed class SqlServerTsqlDdlCompatibilityTests
     [InlineData("CREATE TABLE dbo.widgets (id int);")]
     [InlineData("CREATE TABLE dbo.widgets (id int NOT NULL DEFAULT 1);")]
     [InlineData("CREATE TABLE dbo.widgets (id int IDENTITY NOT NULL);")]
-    [InlineData("CREATE TABLE dbo.widgets (value rowversion NOT NULL);")]
     [InlineData("CREATE TABLE dbo.widgets (value xml NOT NULL);")]
     [InlineData("CREATE TABLE dbo.widgets (value custom_type NOT NULL);")]
     [InlineData("DROP TABLE dbo.widgets;")]
@@ -629,5 +713,24 @@ public sealed class SqlServerTsqlDdlCompatibilityTests
         hash.AppendData(Encoding.UTF8.GetBytes(script));
         return Convert.ToHexString(hash.GetHashAndReset())
             .ToLowerInvariant();
+    }
+
+    private static MigrationCatalog LowerCatalog(string script)
+    {
+        var parser = new TSql160Parser(
+            initialQuotedIdentifiers: true,
+            SqlEngineType.Standalone);
+        using var reader = new StringReader(script);
+        TSqlFragment fragment = parser.Parse(reader, out IList<ParseError> errors);
+        Assert.Empty(errors);
+        TSqlScript parsed = Assert.IsType<TSqlScript>(fragment);
+        TsqlDdlLoweringResult result = TsqlDdlLowerer.Lower(
+            parsed.Batches.SelectMany(static batch => batch.Statements).ToArray(),
+            ExpectedDigest(script),
+            CSharpDbCapabilityCatalogLoader.LoadEmbedded(),
+            SqlServerTsqlDdlCompatibilityOptions.HardMaxCatalogObjectCount,
+            CancellationToken.None);
+
+        return Assert.IsType<MigrationCatalog>(result.Catalog);
     }
 }

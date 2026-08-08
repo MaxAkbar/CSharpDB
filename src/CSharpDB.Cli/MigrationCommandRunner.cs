@@ -4484,6 +4484,7 @@ internal static class MigrationCommandRunner
                 targetType is not (
                     DbType.Integer or
                     DbType.Real or
+                    DbType.Decimal or
                     DbType.Text or
                     DbType.Blob))
             {

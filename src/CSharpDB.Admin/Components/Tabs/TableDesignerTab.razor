@@ -61,26 +61,49 @@
                             <td>
                                 <select class="designer-cell-select"
                                         value="@col.DataType"
-                                        @onchange="e => col.DataType = e.Value?.ToString() ?? string.Empty"
+                                        @onchange="e => OnDataTypeChanged(idx, e.Value?.ToString() ?? string.Empty)"
                                         @onfocus="() => _selectedIndex = idx">
                                     <option value="INTEGER">INTEGER</option>
+                                    <option value="BOOLEAN">BOOLEAN</option>
+                                    <option value="TINYINT">TINYINT</option>
+                                    <option value="SMALLINT">SMALLINT</option>
+                                    <option value="BIGINT">BIGINT</option>
                                     <option value="REAL">REAL</option>
+                                    <option value="DOUBLE PRECISION">DOUBLE PRECISION</option>
+                                    <option value="DECIMAL">DECIMAL</option>
+                                    <option value="CHAR">CHAR</option>
+                                    <option value="VARCHAR">VARCHAR</option>
                                     <option value="TEXT">TEXT</option>
+                                    <option value="BINARY">BINARY</option>
+                                    <option value="VARBINARY">VARBINARY</option>
                                     <option value="BLOB">BLOB</option>
+                                    <option value="UUID">UUID</option>
+                                    <option value="DATE">DATE</option>
+                                    <option value="TIME">TIME</option>
+                                    <option value="DATETIME2">DATETIME2</option>
+                                    <option value="DATETIMEOFFSET">DATETIMEOFFSET</option>
+                                    <option value="ROWVERSION">ROWVERSION</option>
+                                    <option value="INTERVAL YEAR TO MONTH">INTERVAL YEAR TO MONTH</option>
+                                    <option value="INTERVAL DAY TO SECOND">INTERVAL DAY TO SECOND</option>
+                                    <option value="JSON">JSON</option>
+                                    <option value="XML">XML</option>
+                                    <option value="BIT">BIT</option>
+                                    <option value="BIT VARYING">BIT VARYING</option>
                                 </select>
                             </td>
                             <td class="center-cell">
                                 <input type="checkbox" checked="@col.IsPrimaryKey"
+                                       disabled="@(col.DataType == "ROWVERSION")"
                                        @onchange="e => OnPrimaryKeyChanged(idx, (bool)(e.Value ?? false))" />
                             </td>
                             <td class="center-cell">
                                 <input type="checkbox" checked="@col.IsIdentity"
-                                       disabled="@(!col.IsPrimaryKey || col.DataType != "INTEGER")"
+                                       disabled="@(!CanUseIdentity(col))"
                                        @onchange="e => col.IsIdentity = (bool)(e.Value ?? false)" />
                             </td>
                             <td class="center-cell">
                                 <input type="checkbox" checked="@col.AllowNulls"
-                                       disabled="@col.IsPrimaryKey"
+                                       disabled="@(col.IsPrimaryKey || col.DataType == "ROWVERSION")"
                                        @onchange="e => col.AllowNulls = (bool)(e.Value ?? false)" />
                             </td>
                             <td class="center-cell">
@@ -171,12 +194,34 @@
     private void OnPrimaryKeyChanged(int index, bool isPk)
     {
         var col = _columns[index];
+        if (col.DataType == "ROWVERSION")
+            return;
+
         col.IsPrimaryKey = isPk;
         if (isPk)
             col.AllowNulls = false;
         else
             col.IsIdentity = false;
     }
+
+    private void OnDataTypeChanged(int index, string dataType)
+    {
+        DesignerColumn column = _columns[index];
+        column.DataType = dataType;
+        if (dataType == "ROWVERSION")
+        {
+            column.IsPrimaryKey = false;
+            column.IsIdentity = false;
+            column.AllowNulls = false;
+        }
+        else if (!CanUseIdentity(column))
+        {
+            column.IsIdentity = false;
+        }
+    }
+
+    private static bool CanUseIdentity(DesignerColumn column) =>
+        column.IsPrimaryKey && column.DataType is "INTEGER" or "BIGINT";
 
     private string? BuildCreateTableSql()
     {
@@ -193,7 +238,9 @@
             var parts = new List<string> { $"    {col.Name}", col.DataType };
             if (col.IsPrimaryKey)
                 parts.Add("PRIMARY KEY");
-            if (col.IsIdentity && col.IsPrimaryKey && col.DataType == "INTEGER")
+            if (col.IsIdentity &&
+                col.IsPrimaryKey &&
+                col.DataType is "INTEGER" or "BIGINT")
                 parts.Add("IDENTITY");
             if (!col.AllowNulls && !col.IsPrimaryKey)
                 parts.Add("NOT NULL");

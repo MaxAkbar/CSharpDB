@@ -52,7 +52,7 @@ public sealed class EmbeddedStorageTuningTests : IAsyncLifetime
         using var command = connection.CreateCommand();
         command.CommandText = "SELECT value FROM bench WHERE id = 1;";
 
-        Assert.Equal(10L, await command.ExecuteScalarAsync(Ct));
+        Assert.Equal(10, await command.ExecuteScalarAsync(Ct));
         Assert.True(
             interceptor.GetReadSourceCount(PageReadSource.MemoryMappedMainFile) > 0,
             "Expected file-backed direct tuning to enable memory-mapped main-file reads.");
@@ -106,7 +106,7 @@ public sealed class EmbeddedStorageTuningTests : IAsyncLifetime
         await command.ExecuteNonQueryAsync(Ct);
         command.CommandText = "SELECT value FROM items WHERE id = 1;";
 
-        Assert.Equal(21L, await command.ExecuteScalarAsync(Ct));
+        Assert.Equal(21, await command.ExecuteScalarAsync(Ct));
         Assert.True(
             interceptor.TotalReads > 0 || interceptor.TotalWrites > 0,
             "Expected private in-memory direct tuning to attach the configured page interceptor.");
@@ -159,7 +159,7 @@ public sealed class EmbeddedStorageTuningTests : IAsyncLifetime
         using var command = connection.CreateCommand();
         command.CommandText = "SELECT value FROM bench WHERE id = 1;";
 
-        Assert.Equal(10L, await command.ExecuteScalarAsync(Ct));
+        Assert.Equal(10, await command.ExecuteScalarAsync(Ct));
         Assert.True(interceptor.TotalReads > 0, "Expected the explicit direct options to attach the interceptor.");
         Assert.Equal(
             0,

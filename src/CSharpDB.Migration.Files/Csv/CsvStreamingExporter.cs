@@ -423,6 +423,19 @@ public sealed partial class CsvStreamingExporter
                             recordByteLength = checked(recordByteLength + lexical.Length);
                             break;
                         }
+                    case DbType.Decimal:
+                        {
+                            decimal scalar = value.AsDecimal;
+                            string lexical = scalar.ToString(CultureInfo.InvariantCulture);
+                            fields[index] = PreparedField.Text(lexical, quote: false);
+                            CanonicalValue canonical = CanonicalValue.Decimal(scalar);
+                            sourceLogicalValues[index] = canonical;
+                            exportedLogicalValues[index] = canonical;
+                            recordSyntaxCharacters = checked(
+                                recordSyntaxCharacters + lexical.Length);
+                            recordByteLength = checked(recordByteLength + lexical.Length);
+                            break;
+                        }
                     case DbType.Text:
                         {
                             string sourceText = value.AsText;
@@ -791,6 +804,10 @@ public sealed partial class CsvStreamingExporter
                 CsvExportDatabaseType.Real,
                 CanonicalType.Binary64,
                 CsvExportContracts.RealValueEncoding),
+            DbType.Decimal => (
+                CsvExportDatabaseType.Decimal,
+                CanonicalType.Decimal,
+                CsvExportContracts.DecimalValueEncoding),
             DbType.Text => (
                 CsvExportDatabaseType.Text,
                 CanonicalType.Text,

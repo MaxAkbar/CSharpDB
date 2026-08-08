@@ -4,6 +4,7 @@ using CSharpDB.Admin.Models;
 using CSharpDB.Client;
 using CSharpDB.Client.Models;
 using CSharpDB.ImportExport.TableArchives;
+using CSharpDB.Sql;
 using ArchiveColumn = CSharpDB.ImportExport.Models.TableArchiveColumn;
 using ArchiveForeignKey = CSharpDB.ImportExport.Models.TableArchiveForeignKey;
 using PrimitiveForeignKeyOnDeleteAction = CSharpDB.Primitives.ForeignKeyOnDeleteAction;
@@ -233,10 +234,7 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
                 sb.Append("    ")
                     .Append(FormatIdentifier(column.Name))
                     .Append(' ')
-                    .Append(column.TypeLabel);
-
-                if (column.IsRowVersion)
-                    sb.Append(" ROWVERSION");
+                    .Append(column.IsRowVersion ? "ROWVERSION" : column.TypeLabel);
                 if (column.IsPrimaryKey)
                     sb.Append(" PRIMARY KEY");
                 if (column.IsIdentity)
@@ -365,11 +363,17 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
                 DataModelNode? addNode = FindStateNode(state, operation.TableName);
                 if (addNode is not null && !addNode.Columns.Any(column => string.Equals(column.Name, operation.ColumnName, StringComparison.OrdinalIgnoreCase)))
                 {
+                    string normalizedColumnType = NormalizeTypeLabel(operation.ColumnType);
+                    bool isRowVersion = string.Equals(
+                        normalizedColumnType,
+                        "ROWVERSION",
+                        StringComparison.Ordinal);
                     addNode.Columns.Add(new DataModelColumn
                     {
                         Name = RequireValue(operation.ColumnName, "column name"),
-                        TypeLabel = NormalizeTypeLabel(operation.ColumnType),
-                        Nullable = !operation.NotNull,
+                        TypeLabel = normalizedColumnType,
+                        IsRowVersion = isRowVersion,
+                        Nullable = !operation.NotNull && !isRowVersion,
                     });
                 }
                 break;
@@ -434,12 +438,7 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
                 break;
 
             case DataModelPendingOperationKind.AddColumn:
-                await client.AddColumnAsync(
-                    operation.TableName,
-                    RequireValue(operation.ColumnName, "column name"),
-                    ParseClientDbType(operation.ColumnType),
-                    operation.NotNull,
-                    ct);
+                ThrowIfSqlError(await client.ExecuteSqlAsync(BuildOperationSql(operation), ct));
                 break;
 
             case DataModelPendingOperationKind.DropColumn:
@@ -525,9 +524,9 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
             sb.Append("    ")
                 .Append(FormatIdentifier(column.Name))
                 .Append(' ')
-                .Append(NormalizeTypeLabel(column.TypeLabel));
-            if (column.IsRowVersion)
-                sb.Append(" ROWVERSION");
+                .Append(column.IsRowVersion
+                    ? "ROWVERSION"
+                    : NormalizeTypeLabel(column.TypeLabel));
             if (column.IsPrimaryKey)
                 sb.Append(" PRIMARY KEY");
             if (column.IsIdentity)
@@ -688,7 +687,7 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
     private static DataModelColumnMetadata MapColumn(ColumnDefinition column) => new()
     {
         Name = column.Name,
-        TypeLabel = column.Type.ToString().ToUpperInvariant(),
+        TypeLabel = column.IsRowVersion ? "ROWVERSION" : column.EffectiveType.ToSql(),
         IsPrimaryKey = column.IsPrimaryKey,
         IsIdentity = column.IsIdentity,
         IsRowVersion = column.IsRowVersion,
@@ -700,7 +699,10 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
     private static DataModelColumnMetadata MapArchiveColumn(ArchiveColumn column) => new()
     {
         Name = column.Name,
-        TypeLabel = column.Type.ToString().ToUpperInvariant(),
+        TypeLabel = column.IsRowVersion
+            ? "ROWVERSION"
+            : (column.DeclaredType ??
+                CSharpDB.Primitives.SqlTypeDescriptor.FromLegacy(column.Type)).ToSql(),
         IsPrimaryKey = column.IsPrimaryKey,
         IsIdentity = column.IsIdentity,
         IsRowVersion = column.IsRowVersion,
@@ -772,7 +774,7 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
         ThrowIfSqlError(await client.ExecuteSqlAsync(
             $"""
             CREATE TABLE IF NOT EXISTS {DiagramTableName} (
-                id INTEGER PRIMARY KEY IDENTITY,
+                id BIGINT PRIMARY KEY IDENTITY,
                 name TEXT NOT NULL,
                 diagram_json TEXT NOT NULL,
                 created_utc TEXT NOT NULL,
@@ -822,22 +824,49 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
 
     private static string NormalizeTypeLabel(string value)
     {
-        string normalized = value.Trim().ToUpperInvariant();
-        return normalized switch
-        {
-            "INT" => "INTEGER",
-            "INTEGER" or "REAL" or "TEXT" or "BLOB" => normalized,
-            _ => "TEXT",
-        };
-    }
+        if (string.IsNullOrWhiteSpace(value))
+            throw new InvalidOperationException("A column SQL type is required.");
 
-    private static DbType ParseClientDbType(string value) => NormalizeTypeLabel(value) switch
-    {
-        "INTEGER" => DbType.Integer,
-        "REAL" => DbType.Real,
-        "BLOB" => DbType.Blob,
-        _ => DbType.Text,
-    };
+        try
+        {
+            Statement statement = Parser.Parse(
+                $"CREATE TABLE __csharpdb_type_probe (__value {value.Trim()});");
+            if (statement is not CreateTableStatement { Columns.Count: 1 } create ||
+                create.CheckConstraints.Count != 0 ||
+                create.KeyConstraints.Count != 0 ||
+                create.ForeignKeys.Count != 0)
+            {
+                throw new InvalidOperationException($"Invalid column SQL type '{value}'.");
+            }
+
+            ColumnDef column = create.Columns[0];
+            if (column.IsRowVersion &&
+                !column.IsPrimaryKey &&
+                !column.IsIdentity &&
+                column.Collation is null &&
+                column.ForeignKey is null &&
+                column.DefaultExpression is null &&
+                column.CheckConstraints.Count == 0)
+            {
+                return "ROWVERSION";
+            }
+
+            if (column.IsPrimaryKey || column.IsIdentity || column.IsRowVersion ||
+                !column.IsNullable || column.Collation is not null ||
+                column.ForeignKey is not null || column.DefaultExpression is not null ||
+                column.CheckConstraints.Count != 0)
+            {
+                throw new InvalidOperationException(
+                    $"Column type '{value}' contains unsupported column modifiers.");
+            }
+
+            return column.DeclaredType.ToSql();
+        }
+        catch (CSharpDB.Primitives.CSharpDbException error)
+        {
+            throw new InvalidOperationException($"Invalid column SQL type '{value}'.", error);
+        }
+    }
 
     private static ForeignKeyOnDeleteAction ParseOnDeleteAction(string? value)
         => ParseReferentialAction(value);

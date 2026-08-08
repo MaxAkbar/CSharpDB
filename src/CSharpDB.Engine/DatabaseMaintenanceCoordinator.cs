@@ -181,6 +181,12 @@ public static class DatabaseMaintenanceCoordinator
             try
             {
                 await CopyDatabaseAsync(source, destination, ct);
+                if (source.Catalog.RowVersionHighWater > 0)
+                {
+                    await destination.Catalog.PersistRowVersionHighWaterAsync(
+                        source.Catalog.RowVersionHighWater,
+                        ct);
+                }
                 await destination.Catalog.PersistDirtyAdvisoryStatisticsAsync(ct);
                 await destination.Catalog.PersistAllRootPageChangesAsync(ct);
                 await destination.Pager.CommitAsync(ct);
@@ -747,6 +753,7 @@ public static class DatabaseMaintenanceCoordinator
                 SchemaId = column.SchemaId,
                 Name = column.Name,
                 Type = column.Type,
+                DeclaredType = column.DeclaredType,
                 Nullable = column.Nullable,
                 IsPrimaryKey = column.IsPrimaryKey,
                 IsIdentity = column.IsIdentity,

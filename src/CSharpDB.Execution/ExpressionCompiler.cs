@@ -65,6 +65,7 @@ internal static class ExpressionCompiler
             BinaryExpression bin => CompileMappedBinary(bin, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions),
             UnaryExpression un => CompileMappedUnary(un, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions),
             CollateExpression collate => CompileMappedCore(collate.Operand, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions),
+            CastExpression cast => CompileMappedCast(cast, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions),
             FunctionCallExpression func => CompileMappedFunction(func, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions),
             WindowFunctionExpression => (_, _) => throw new CSharpDbException(
                 ErrorCode.SyntaxError,
@@ -117,33 +118,47 @@ internal static class ExpressionCompiler
         bool singleRowOnly,
         DbFunctionRegistry? functions)
     {
+        if (bin.Op is BinaryOp.Plus or BinaryOp.Minus or BinaryOp.Multiply or BinaryOp.Divide)
+            ExpressionEvaluator.ValidateArithmeticOperands(bin.Left, bin.Right, schema);
+
         var left = CompileMappedCore(bin.Left, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions);
         var right = CompileMappedCore(bin.Right, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions);
         string? collation = CollationSupport.ResolveComparisonCollation(bin.Left, bin.Right, schema);
+        SqlTypeDescriptor? comparisonType = ExpressionEvaluator.ResolveComparisonDeclaredType(bin.Left, bin.Right, schema);
+        SqlTypeDescriptor? arithmeticType =
+            bin.Op is BinaryOp.Plus or BinaryOp.Minus or BinaryOp.Multiply or BinaryOp.Divide
+                ? ExpressionEvaluator.ResolveArithmeticDeclaredType(bin.Left, bin.Right, schema)
+                : null;
 
         return (leftRow, rightRow) =>
         {
             var leftValue = left(leftRow, rightRow);
             var rightValue = right(leftRow, rightRow);
 
+            if (bin.Op is BinaryOp.Equals or BinaryOp.NotEquals or
+                BinaryOp.LessThan or BinaryOp.GreaterThan or
+                BinaryOp.LessOrEqual or BinaryOp.GreaterOrEqual)
+            {
+                ExpressionEvaluator.CoerceComparisonOperands(
+                    bin.Left,
+                    bin.Right,
+                    schema,
+                    ref leftValue,
+                    ref rightValue);
+            }
+
             return bin.Op switch
             {
-                BinaryOp.Equals => CompareOrNull(leftValue, rightValue, collation, static comparison => comparison == 0),
-                BinaryOp.NotEquals => CompareOrNull(leftValue, rightValue, collation, static comparison => comparison != 0),
-                BinaryOp.LessThan => CompareOrNull(leftValue, rightValue, collation, static comparison => comparison < 0),
-                BinaryOp.GreaterThan => CompareOrNull(leftValue, rightValue, collation, static comparison => comparison > 0),
-                BinaryOp.LessOrEqual => CompareOrNull(leftValue, rightValue, collation, static comparison => comparison <= 0),
-                BinaryOp.GreaterOrEqual => CompareOrNull(leftValue, rightValue, collation, static comparison => comparison >= 0),
+                BinaryOp.Equals => CompareOrNull(leftValue, rightValue, comparisonType, collation, static comparison => comparison == 0),
+                BinaryOp.NotEquals => CompareOrNull(leftValue, rightValue, comparisonType, collation, static comparison => comparison != 0),
+                BinaryOp.LessThan => CompareOrNull(leftValue, rightValue, comparisonType, collation, static comparison => comparison < 0),
+                BinaryOp.GreaterThan => CompareOrNull(leftValue, rightValue, comparisonType, collation, static comparison => comparison > 0),
+                BinaryOp.LessOrEqual => CompareOrNull(leftValue, rightValue, comparisonType, collation, static comparison => comparison <= 0),
+                BinaryOp.GreaterOrEqual => CompareOrNull(leftValue, rightValue, comparisonType, collation, static comparison => comparison >= 0),
                 BinaryOp.And => SqlAnd(leftValue, rightValue),
                 BinaryOp.Or => SqlOr(leftValue, rightValue),
-                BinaryOp.Plus => ArithmeticOp(leftValue, rightValue, static (a, b) => a + b, static (a, b) => a + b),
-                BinaryOp.Minus => ArithmeticOp(leftValue, rightValue, static (a, b) => a - b, static (a, b) => a - b),
-                BinaryOp.Multiply => ArithmeticOp(leftValue, rightValue, static (a, b) => a * b, static (a, b) => a * b),
-                BinaryOp.Divide => ArithmeticOp(
-                    leftValue,
-                    rightValue,
-                    static (a, b) => b != 0 ? a / b : throw DivZero(),
-                    static (a, b) => b != 0 ? a / b : throw DivZero()),
+                BinaryOp.Plus or BinaryOp.Minus or BinaryOp.Multiply or BinaryOp.Divide =>
+                    ExpressionEvaluator.EvaluateArithmetic(bin.Op, leftValue, rightValue, arithmeticType),
                 _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unknown binary op: {bin.Op}"),
             };
         };
@@ -158,7 +173,13 @@ internal static class ExpressionCompiler
         bool singleRowOnly,
         DbFunctionRegistry? functions)
     {
+        if (un.Op == TokenType.Minus)
+            ExpressionEvaluator.ValidateNumericNegationOperand(un.Operand, schema);
+
         var operand = CompileMappedCore(un.Operand, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions);
+        SqlTypeDescriptor? resultType = un.Op == TokenType.Minus
+            ? ExpressionEvaluator.ResolveNegatedDeclaredType(un.Operand, schema)
+            : null;
 
         return (leftRow, rightRow) =>
         {
@@ -168,16 +189,49 @@ internal static class ExpressionCompiler
                 TokenType.Not => operandValue.IsNull
                     ? DbValue.Null
                     : BoolToDb(!operandValue.IsTruthy),
-                TokenType.Minus => operandValue.Type switch
-                {
-                    DbType.Null => DbValue.Null,
-                    DbType.Integer => DbValue.FromInteger(-operandValue.AsInteger),
-                    DbType.Real => DbValue.FromReal(-operandValue.AsReal),
-                    _ => throw new CSharpDbException(ErrorCode.TypeMismatch, "Cannot negate non-numeric value."),
-                },
+                TokenType.Minus => ExpressionEvaluator.NegateNumeric(operandValue, resultType),
                 _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unknown unary op: {un.Op}"),
             };
         };
+    }
+
+    private static JoinSpanExpressionEvaluator CompileMappedCast(
+        CastExpression cast,
+        TableSchema schema,
+        int leftColumnCount,
+        int[]? leftColumnMap,
+        int[]? rightColumnMap,
+        bool singleRowOnly,
+        DbFunctionRegistry? functions)
+    {
+        if (cast.TargetType.Kind == SqlTypeKind.Decimal &&
+            ExpressionEvaluator.TryGetExactNumericLiteral(cast.Operand, out decimal exact))
+        {
+            DbValue exactValue = SqlTypeCoercion.Cast(DbValue.FromDecimal(exact), cast.TargetType);
+            return (_, _) => exactValue;
+        }
+
+        if (cast.Operand is LiteralExpression)
+        {
+            DbValue value = ExpressionEvaluator.Evaluate(
+                cast,
+                ReadOnlySpan<DbValue>.Empty,
+                schema,
+                functions);
+            return (_, _) => value;
+        }
+
+        JoinSpanExpressionEvaluator operand = CompileMappedCore(
+            cast.Operand,
+            schema,
+            leftColumnCount,
+            leftColumnMap,
+            rightColumnMap,
+            singleRowOnly,
+            functions);
+        SqlTypeDescriptor? sourceType = ExpressionEvaluator.ResolveDeclaredType(cast.Operand, schema);
+        return (leftRow, rightRow) =>
+            SqlTypeCoercion.Cast(operand(leftRow, rightRow), cast.TargetType, sourceType);
     }
 
     private static JoinSpanExpressionEvaluator CompileMappedFunction(
@@ -231,6 +285,7 @@ internal static class ExpressionCompiler
         var argumentEvaluators = new JoinSpanExpressionEvaluator[func.Arguments.Count];
         for (int i = 0; i < argumentEvaluators.Length; i++)
             argumentEvaluators[i] = CompileMappedCore(func.Arguments[i], schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions);
+        SqlTypeDescriptor? resultType = ExpressionEvaluator.ResolveDeclaredType(func, schema);
 
         return (leftRow, rightRow) =>
         {
@@ -238,7 +293,9 @@ internal static class ExpressionCompiler
             for (int i = 0; i < argumentEvaluators.Length; i++)
                 arguments[i] = argumentEvaluators[i](leftRow, rightRow);
 
-            return ScalarFunctionEvaluator.Evaluate(func, arguments, functions);
+            return ExpressionEvaluator.EnforceDeclaredIntegerRange(
+                ScalarFunctionEvaluator.Evaluate(func, arguments, functions),
+                resultType);
         };
     }
 
@@ -295,6 +352,7 @@ internal static class ExpressionCompiler
         for (int i = 0; i < inExpr.Values.Count; i++)
             valueEvals[i] = CompileMappedCore(inExpr.Values[i], schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions);
         string? collation = CollationSupport.ResolveExpressionCollation(inExpr.Operand, schema);
+        SqlTypeDescriptor? comparisonType = ExpressionEvaluator.ResolveDeclaredType(inExpr.Operand, schema);
 
         return (leftRow, rightRow) =>
         {
@@ -313,7 +371,13 @@ internal static class ExpressionCompiler
                     continue;
                 }
 
-                if (CollationSupport.Compare(operand, value, collation) == 0)
+                value = ExpressionEvaluator.CoerceValueForTypedExpression(
+                    inExpr.Operand,
+                    inExpr.Values[i],
+                    value,
+                    schema);
+
+                if (ExpressionEvaluator.CompareValues(operand, value, comparisonType, collation) == 0)
                 {
                     found = true;
                     break;
@@ -341,6 +405,7 @@ internal static class ExpressionCompiler
         var lowEval = CompileMappedCore(between.Low, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions);
         var highEval = CompileMappedCore(between.High, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions);
         string? collation = CollationSupport.ResolveExpressionCollation(between.Operand, schema);
+        SqlTypeDescriptor? comparisonType = ExpressionEvaluator.ResolveDeclaredType(between.Operand, schema);
 
         return (leftRow, rightRow) =>
         {
@@ -350,9 +415,20 @@ internal static class ExpressionCompiler
             if (operand.IsNull || low.IsNull || high.IsNull)
                 return DbValue.Null;
 
+            low = ExpressionEvaluator.CoerceValueForTypedExpression(
+                between.Operand,
+                between.Low,
+                low,
+                schema);
+            high = ExpressionEvaluator.CoerceValueForTypedExpression(
+                between.Operand,
+                between.High,
+                high,
+                schema);
+
             bool inRange =
-                CollationSupport.Compare(operand, low, collation) >= 0 &&
-                CollationSupport.Compare(operand, high, collation) <= 0;
+                ExpressionEvaluator.CompareValues(operand, low, comparisonType, collation) >= 0 &&
+                ExpressionEvaluator.CompareValues(operand, high, comparisonType, collation) <= 0;
             return BoolToDb(between.Negated ? !inRange : inRange);
         };
     }
@@ -497,6 +573,7 @@ internal static class ExpressionCompiler
     private static DbValue CompareOrNull(
         DbValue left,
         DbValue right,
+        SqlTypeDescriptor? declaredType,
         string? collation,
         Func<int, bool> predicate)
     {
@@ -504,7 +581,7 @@ internal static class ExpressionCompiler
             return DbValue.Null;
 
         return BoolToDb(
-            predicate(CollationSupport.Compare(left, right, collation)));
+            predicate(ExpressionEvaluator.CompareValues(left, right, declaredType, collation)));
     }
 
     private static DbValue SqlAnd(DbValue left, DbValue right)
@@ -532,27 +609,6 @@ internal static class ExpressionCompiler
             ? DbValue.Null
             : BoolToDb(false);
     }
-
-    private static DbValue ArithmeticOp(
-        DbValue left,
-        DbValue right,
-        Func<long, long, long> intOp,
-        Func<double, double, double> realOp)
-    {
-        if (left.IsNull || right.IsNull)
-            return DbValue.Null;
-
-        if (left.Type == DbType.Real || right.Type == DbType.Real)
-            return DbValue.FromReal(realOp(left.AsReal, right.AsReal));
-
-        if (left.Type == DbType.Integer && right.Type == DbType.Integer)
-            return DbValue.FromInteger(intOp(left.AsInteger, right.AsInteger));
-
-        throw new CSharpDbException(ErrorCode.TypeMismatch, "Cannot perform arithmetic on non-numeric values.");
-    }
-
-    private static Exception DivZero() =>
-        new CSharpDbException(ErrorCode.Unknown, "Division by zero.");
 
     private static bool SqlLikeMatch(string text, string pattern, char? escape)
     {

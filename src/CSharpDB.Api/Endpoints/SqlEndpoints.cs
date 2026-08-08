@@ -84,6 +84,26 @@ public static class SqlEndpoints
             RowsAffected: result.RowsAffected,
             Error: result.Error,
             ElapsedMs: result.Elapsed.TotalMilliseconds,
-            ColumnNullability: result.ColumnNullability);
+            ColumnNullability: result.ColumnNullability,
+            Columns: result.Columns?.Select(ToResponse).ToArray());
     }
+
+    private static ColumnResponse ToResponse(CSharpDB.Client.Models.ColumnDefinition column) => new(
+        column.Name,
+        column.Type.ToString(),
+        column.Nullable,
+        column.IsPrimaryKey,
+        column.IsIdentity,
+        column.IsRowVersion,
+        column.Collation,
+        column.DefaultSql,
+        column.SchemaId,
+        column.DeclaredType is null
+            ? null
+            : new SqlTypeDescriptorResponse(
+                column.DeclaredType.Kind.ToString(),
+                column.DeclaredType.Length,
+                column.DeclaredType.Precision,
+                column.DeclaredType.Scale,
+                column.DeclaredType.FractionalSecondsPrecision));
 }

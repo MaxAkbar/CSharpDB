@@ -81,15 +81,27 @@ Returns `{ rowsAffected: number }`.
 
 Execute a SELECT and return all rows as an array of objects.
 
-**Value type mapping:**
+**Native value mapping:**
 
-| CSharpDB Type | JavaScript Type |
-|---------------|-----------------|
-| INTEGER | `bigint` |
-| REAL | `number` |
-| TEXT | `string` |
-| BLOB | `Buffer` |
-| NULL | `null` |
+| Physical carrier | JavaScript value returned by this wrapper |
+|------------------|-------------------------------------------|
+| `INTEGER` | `bigint` |
+| `REAL` | `number` |
+| `TEXT` | `string` |
+| `BLOB` | `Buffer` |
+| `DECIMAL` | Not currently materialized; this wrapper returns `null` for native type code 5 |
+| `NULL` | `null` |
+
+This table describes the NativeAOT ABI's compact physical carriers, not SQL
+declarations. Logical types can share a carrier: `BOOLEAN`, `TINYINT`,
+`SMALLINT`, `INTEGER`, and `BIGINT` all arrive through `INTEGER`; temporal,
+interval, JSON, and XML values arrive through `TEXT`; UUID, bit strings, and
+rowversion arrive through `BLOB`. The current Node wrapper does not expose the
+native declared-type or bit-length metadata and therefore does not convert
+those values to higher-level JavaScript types. See the
+[complete SQL data type reference](https://csharpdb.com/docs/sql-reference.html#data-types),
+and use an explicit SQL conversion when an application needs a representation
+that this wrapper supports.
 
 ### `db.queryOne(sql): Row | null`
 

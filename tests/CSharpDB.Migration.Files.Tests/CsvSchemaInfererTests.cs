@@ -50,7 +50,10 @@ public sealed class CsvSchemaInfererTests
             Assert.Equal(
                 MigrationMappingClassification.LosslessReencoded,
                 Mapping(plan, "csv:column:2").Classification);
-            Assert.Equal(DbType.Integer, Mapping(plan, "csv:column:3").TargetType);
+            Assert.Equal(DbType.Decimal, Mapping(plan, "csv:column:3").TargetType);
+            Assert.Equal(
+                "decimal-native",
+                Mapping(plan, "csv:column:3").Conversion?.ConversionId);
             Assert.Equal("5", Facet(Column(catalog, 3), "precision"));
             Assert.Equal("2", Facet(Column(catalog, 3), "scale"));
         }

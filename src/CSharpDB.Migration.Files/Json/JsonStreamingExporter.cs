@@ -659,6 +659,30 @@ public sealed partial class JsonStreamingExporter
                             break;
                         }
 
+                    case DbType.Decimal:
+                        {
+                            decimal scalar = value.AsDecimal;
+                            string lexical = scalar.ToString(
+                                CultureInfo.InvariantCulture);
+                            ValidateNumber(
+                                lexical,
+                                row.RowId,
+                                binding.PropertyName);
+                            values[index] =
+                                PreparedValue.Number(
+                                    lexical);
+                            CanonicalValue canonical =
+                                CanonicalValue.Decimal(
+                                    scalar);
+                            sourceLogicalValues[index] =
+                                canonical;
+                            objectByteLength =
+                                checked(
+                                    objectByteLength +
+                                    lexical.Length);
+                            break;
+                        }
+
                     case DbType.Text:
                         {
                             string text = value.AsText;
@@ -1049,6 +1073,10 @@ public sealed partial class JsonStreamingExporter
                                     ParseRenderedReal(
                                         actual.NumberLexeme,
                                         binding.PropertyName),
+                                DbType.Decimal =>
+                                    ParseRenderedDecimal(
+                                        actual.NumberLexeme,
+                                        binding.PropertyName),
                                 _ => throw new InvalidOperationException(
                                     "A rendered JSON number has a nonnumeric source type."),
                             };
@@ -1173,6 +1201,28 @@ public sealed partial class JsonStreamingExporter
         }
 
         return CanonicalValue.Binary64(value);
+    }
+
+    private static CanonicalValue ParseRenderedDecimal(
+        string lexical,
+        string propertyName)
+    {
+        if (!decimal.TryParse(
+                lexical,
+                NumberStyles.AllowLeadingSign |
+                NumberStyles.AllowDecimalPoint,
+                CultureInfo.InvariantCulture,
+                out decimal value) ||
+            !string.Equals(
+                value.ToString(CultureInfo.InvariantCulture),
+                lexical,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                $"Rendered JSON export column '{propertyName}' is not a normalized exact decimal value.");
+        }
+
+        return CanonicalValue.Decimal(value);
     }
 
     private static byte[] DecodeRenderedBlob(
@@ -1706,6 +1756,11 @@ public sealed partial class JsonStreamingExporter
                 CanonicalType.Binary64,
                 JsonExportContracts
                     .RealValueEncoding),
+            DbType.Decimal => (
+                JsonExportDatabaseType.Decimal,
+                CanonicalType.Decimal,
+                JsonExportContracts
+                    .DecimalValueEncoding),
             DbType.Text => (
                 JsonExportDatabaseType.Text,
                 CanonicalType.Text,

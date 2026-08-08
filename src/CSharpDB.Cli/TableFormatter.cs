@@ -36,7 +36,7 @@ internal sealed class TableFormatter
                 DbValue value = row[i];
                 string text = Truncate(FormatValue(value));
                 string? style = GetValueStyle(value);
-                cells[i] = CreateCell(text, style, value.Type is DbType.Integer or DbType.Real);
+                cells[i] = CreateCell(text, style, value.Type is DbType.Integer or DbType.Real or DbType.Decimal);
             }
 
             table.AddRow(cells);
@@ -104,7 +104,7 @@ internal sealed class TableFormatter
     private static string? GetValueStyle(DbValue value) => value.Type switch
     {
         DbType.Null => "italic grey",
-        DbType.Integer or DbType.Real => "yellow",
+        DbType.Integer or DbType.Real or DbType.Decimal => "yellow",
         DbType.Text => "green",
         DbType.Blob => "orchid",
         _ => null,

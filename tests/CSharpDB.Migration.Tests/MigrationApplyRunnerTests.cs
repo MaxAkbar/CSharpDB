@@ -373,6 +373,62 @@ public sealed class MigrationApplyRunnerTests
     }
 
     [Fact]
+    public void ValueConverter_ConvertsBoundedDecimalToNativeExactTag()
+    {
+        MigrationCatalogObject column =
+            Column("column:amount", "DECIMAL(8,3)", nullable: false);
+        MigrationTypeMapping mapping = ConvertedMapping(
+            column,
+            DbType.Decimal,
+            "decimal-native",
+            new MigrationCatalogFacet { Name = "precision", Value = "8" },
+            new MigrationCatalogFacet { Name = "scale", Value = "3" });
+
+        DbValue converted = MigrationValueConverter.Convert(
+            new MigrationSourceValue
+            {
+                Kind = MigrationSourceValueKind.Decimal,
+                CanonicalText = "-12345.670",
+            },
+            column,
+            mapping,
+            rowOrdinal: 9);
+
+        Assert.Equal(DbType.Decimal, converted.Type);
+        Assert.Equal(-12345.67m, converted.AsDecimal);
+        Assert.Equal(-1_234_567L, converted.DecimalCoefficient);
+        Assert.Equal(2, converted.DecimalScale);
+        Assert.Equal(10, MigrationValueConverter.GetCanonicalByteCount(converted));
+    }
+
+    [Fact]
+    public void ValueConverter_AppliesDateTimeOffsetTargetSemanticsBeforeBatchDigesting()
+    {
+        MigrationCatalogObject column =
+            Column("column:occurred-at", "DATETIMEOFFSET(7)", nullable: false);
+        MigrationTypeMapping mapping = ConvertedMapping(
+            column,
+            DbType.Text,
+            "datetimeoffset-text") with
+        {
+            TargetSqlType = "DATETIMEOFFSET(7)",
+        };
+
+        DbValue converted = MigrationValueConverter.Convert(
+            new MigrationSourceValue
+            {
+                Kind = MigrationSourceValueKind.DateTimeOffset,
+                CanonicalText = "2026-08-05T14:30:15.1234567-07:00",
+            },
+            column,
+            mapping,
+            rowOrdinal: 1);
+
+        Assert.Equal(DbType.Text, converted.Type);
+        Assert.Equal("2026-08-05 21:30:15.1234567+00:00", converted.AsText);
+    }
+
+    [Fact]
     public void ValueConverter_RejectsWrongKindNullabilityDecimalOverflowAndNonFiniteReal()
     {
         MigrationCatalogObject integerColumn = Column("column:integer", "INT64", nullable: false);

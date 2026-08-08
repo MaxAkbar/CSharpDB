@@ -22,6 +22,30 @@ ADO.NET provider for the [CSharpDB](https://github.com/MaxAkbar/CSharpDB) embedd
 | `CSharpDbFactory` | Singleton `DbProviderFactory` for creating connections and commands |
 | `CSharpDbParameter` | Parameter support with `AddWithValue` convenience method |
 
+## SQL Types and ADO.NET Values
+
+CSharpDB keeps a declared logical SQL type separately from its compact physical
+record carrier. `CSharpDbDataReader.GetDataTypeName()` returns the canonical
+logical spelling (including facets and `ROWVERSION`), while `GetFieldType()` and
+`GetValue()` materialize the logical CLR value:
+
+| Logical family | ADO.NET value |
+|----------------|---------------|
+| `BOOLEAN` | `bool` |
+| `TINYINT`, `SMALLINT`, `INTEGER`, `BIGINT` | `byte`, `short`, `int`, `long` respectively |
+| `REAL`, `DOUBLE PRECISION`, `DECIMAL` | `double`, `double`, `decimal` respectively |
+| character, JSON, XML, and year-to-month interval types | `string` |
+| binary types and `ROWVERSION` | `byte[]` |
+| `BIT(n)` and `VARBIT` | `CSharpDB.Client.Models.SqlBitString` |
+| UUID and temporal types | `Guid`, `DateOnly`, `TimeOnly`, `DateTime`, or `DateTimeOffset` |
+| `INTERVAL DAY TO SECOND` | `TimeSpan` |
+
+See the [complete SQL data type reference](https://csharpdb.com/docs/sql-reference.html#data-types)
+for declarations, aliases, and facets. Metadata from databases that predate
+declared types falls back to its physical compatibility view: `Integer` becomes
+`long`, `Real` becomes `double`, `Decimal` becomes `decimal`, `Text` becomes
+`string`, and `Blob` becomes `byte[]`.
+
 ## Usage
 
 ```csharp

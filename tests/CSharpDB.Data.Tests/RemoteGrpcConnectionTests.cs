@@ -72,19 +72,65 @@ public sealed class RemoteGrpcConnectionTests : IAsyncLifetime
         await conn.OpenAsync(Ct);
 
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "CREATE TABLE grpc_nullable_type (value INTEGER);";
+        cmd.CommandText = "CREATE TABLE grpc_nullable_type (int_value INTEGER, big_value BIGINT);";
         await cmd.ExecuteNonQueryAsync(Ct);
 
-        cmd.CommandText = "INSERT INTO grpc_nullable_type VALUES (NULL);";
+        cmd.CommandText = "INSERT INTO grpc_nullable_type VALUES (NULL, NULL);";
         await cmd.ExecuteNonQueryAsync(Ct);
 
-        cmd.CommandText = "SELECT value FROM grpc_nullable_type;";
+        cmd.CommandText = "SELECT int_value, big_value FROM grpc_nullable_type;";
         await using var reader = await cmd.ExecuteReaderAsync(Ct);
 
         Assert.Equal("INTEGER", reader.GetDataTypeName(0));
-        Assert.Equal(typeof(long), reader.GetFieldType(0));
+        Assert.Equal(typeof(int), reader.GetFieldType(0));
+        Assert.Equal("BIGINT", reader.GetDataTypeName(1));
+        Assert.Equal(typeof(long), reader.GetFieldType(1));
         Assert.True(await reader.ReadAsync(Ct));
         Assert.True(reader.IsDBNull(0));
+        Assert.True(reader.IsDBNull(1));
+    }
+
+    [Fact]
+    public async Task QuerySchema_AllNullIntegerColumns_PreserveDeclaredTypesOverHttp()
+    {
+        using HttpClient transportClient = _factory.CreateClient();
+        await using var conn = new CSharpDbConnection(
+            "Transport=Http;Endpoint=http://localhost",
+            transportClient);
+        await conn.OpenAsync(Ct);
+
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "CREATE TABLE http_nullable_types (int_value INTEGER, big_value BIGINT);";
+        await cmd.ExecuteNonQueryAsync(Ct);
+        cmd.CommandText = "INSERT INTO http_nullable_types VALUES (NULL, NULL);";
+        await cmd.ExecuteNonQueryAsync(Ct);
+        cmd.CommandText = "SELECT int_value, big_value FROM http_nullable_types;";
+
+        await using var reader = await cmd.ExecuteReaderAsync(Ct);
+        Assert.Equal("INTEGER", reader.GetDataTypeName(0));
+        Assert.Equal(typeof(int), reader.GetFieldType(0));
+        Assert.Equal("BIGINT", reader.GetDataTypeName(1));
+        Assert.Equal(typeof(long), reader.GetFieldType(1));
+        Assert.True(await reader.ReadAsync(Ct));
+        Assert.True(reader.IsDBNull(0));
+        Assert.True(reader.IsDBNull(1));
+    }
+
+    [Fact]
+    public async Task QuerySchema_MixedBooleanAndUntypedNull_PreservesLogicalTypeOverGrpc()
+    {
+        await using var conn = CreateConnection();
+        await conn.OpenAsync(Ct);
+
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT CAST(1 AS BOOLEAN) AS flag, NULL AS missing;";
+        await using var reader = await cmd.ExecuteReaderAsync(Ct);
+
+        Assert.Equal("BOOLEAN", reader.GetDataTypeName(0));
+        Assert.Equal(typeof(bool), reader.GetFieldType(0));
+        Assert.True(await reader.ReadAsync(Ct));
+        Assert.True(Assert.IsType<bool>(reader.GetValue(0)));
+        Assert.True(reader.IsDBNull(1));
     }
 
     [Fact]
@@ -113,11 +159,11 @@ public sealed class RemoteGrpcConnectionTests : IAsyncLifetime
             directSchema,
             await CapturePhysicalExplainSchemaAsync(grpcConnection));
 
-        Assert.Contains("node_id|INTEGER|False", directSchema);
+        Assert.Contains("node_id|BIGINT|False", directSchema);
         Assert.Contains("operator_type|TEXT|False", directSchema);
         Assert.Contains("status|TEXT|False", directSchema);
-        Assert.Contains("parent_node_id|INTEGER|True", directSchema);
-        Assert.Contains("estimated_cost|REAL|True", directSchema);
+        Assert.Contains("parent_node_id|BIGINT|True", directSchema);
+        Assert.Contains("estimated_cost|DOUBLE PRECISION|True", directSchema);
     }
 
     [Fact]
@@ -624,6 +670,7 @@ public sealed class RemoteGrpcConnectionTests : IAsyncLifetime
         value switch
         {
             DBNull => "NULL",
+            int integer => $"INTEGER:{integer.ToString(CultureInfo.InvariantCulture)}",
             long integer => $"INTEGER:{integer.ToString(CultureInfo.InvariantCulture)}",
             double real => $"REAL:{real.ToString("R", CultureInfo.InvariantCulture)}",
             string text => $"TEXT:{text}",

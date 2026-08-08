@@ -321,7 +321,9 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
                 "api/table-operations/row",
                 Q("name", tableName),
                 Q("pkColumn", pkColumn),
-                Q("pkValue", ConvertKey(pkValue))),
+                Q("pkValue", ConvertKey(pkValue)),
+                Q("pkEncoding", GetKeyEncoding(pkValue)),
+                Q("pkType", GetKeyTransportType(pkValue))),
             payload: null,
             ct);
 
@@ -341,7 +343,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
         using var response = await SendAsync(
             HttpMethod.Post,
             BuildUri("api/table-operations/rows", Q("name", tableName)),
-            new { Values = values },
+            new { Values = EncodeMutationValues(values) },
             ct);
         var payload = await ReadRequiredAsync<ApiMutationResponse>(response, ct);
         return payload.RowsAffected;
@@ -355,8 +357,10 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
                 "api/table-operations/row",
                 Q("name", tableName),
                 Q("pkColumn", pkColumn),
-                Q("pkValue", ConvertKey(pkValue))),
-            new { Values = values },
+                Q("pkValue", ConvertKey(pkValue)),
+                Q("pkEncoding", GetKeyEncoding(pkValue)),
+                Q("pkType", GetKeyTransportType(pkValue))),
+            new { Values = EncodeMutationValues(values) },
             ct);
         var payload = await ReadRequiredAsync<ApiMutationResponse>(response, ct);
         return payload.RowsAffected;
@@ -370,7 +374,9 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
                 "api/table-operations/row",
                 Q("name", tableName),
                 Q("pkColumn", pkColumn),
-                Q("pkValue", ConvertKey(pkValue))),
+                Q("pkValue", ConvertKey(pkValue)),
+                Q("pkEncoding", GetKeyEncoding(pkValue)),
+                Q("pkType", GetKeyTransportType(pkValue))),
             payload: null,
             ct);
 
@@ -669,7 +675,11 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
 
     public async Task<ProcedureExecutionResult> ExecuteProcedureAsync(string name, IReadOnlyDictionary<string, object?> args, CancellationToken ct = default)
     {
-        using var response = await SendAsync(HttpMethod.Post, BuildUri($"api/procedures/{Escape(name)}/execute"), new { Args = args }, ct);
+        using var response = await SendAsync(
+            HttpMethod.Post,
+            BuildUri($"api/procedures/{Escape(name)}/execute"),
+            new { Args = EncodeMutationValues(args) },
+            ct);
         if (response.IsSuccessStatusCode || response.StatusCode == HttpStatusCode.BadRequest)
         {
             var payload = await ReadRequiredBodyAsync<ApiProcedureExecutionResponse>(response, ct);
@@ -1047,14 +1057,31 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
     private static string Escape(string value) => Uri.EscapeDataString(value);
 
     private static string ConvertKey(object value)
-        => value switch
+    {
+        byte[]? binary = GetBinaryBytes(value);
+        if (binary is not null)
+            return Convert.ToBase64String(binary);
+
+        return value switch
         {
             null => throw new ArgumentNullException(nameof(value)),
+            bool boolean => boolean ? "1" : "0",
+            DateOnly date => CSharpDB.Primitives.CSharpDbTextCodec.FormatDate(date),
+            TimeOnly time => CSharpDB.Primitives.CSharpDbTextCodec.FormatTime(time),
+            DateTime timestamp => CSharpDB.Primitives.CSharpDbTextCodec.FormatDateTime(timestamp),
+            DateTimeOffset timestampWithTimeZone =>
+                CSharpDB.Primitives.CSharpDbTextCodec.FormatDateTimeOffset(timestampWithTimeZone),
+            TimeSpan interval => interval.ToString("c", System.Globalization.CultureInfo.InvariantCulture),
+            Guid guid => CSharpDB.Primitives.CSharpDbTextCodec.FormatGuid(guid),
+            float single => single.ToString("R", System.Globalization.CultureInfo.InvariantCulture),
+            double real => real.ToString("R", System.Globalization.CultureInfo.InvariantCulture),
+            decimal exact => exact.ToString(System.Globalization.CultureInfo.InvariantCulture),
             JsonElement element => element.ValueKind switch
             {
                 JsonValueKind.String => element.GetString() ?? string.Empty,
                 JsonValueKind.Number when element.TryGetInt64(out long integer) => integer.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                JsonValueKind.Number => element.GetDouble().ToString(System.Globalization.CultureInfo.InvariantCulture),
+                JsonValueKind.Number when element.TryGetDecimal(out decimal number) => number.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                JsonValueKind.Number => element.GetDouble().ToString("R", System.Globalization.CultureInfo.InvariantCulture),
                 JsonValueKind.True => "1",
                 JsonValueKind.False => "0",
                 _ => element.GetRawText(),
@@ -1062,6 +1089,83 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
             IFormattable formattable => formattable.ToString(null, System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty,
             _ => Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty,
         };
+    }
+
+    private static string? GetKeyEncoding(object value) =>
+        GetBinaryBytes(value) is null ? null : "base64";
+
+    private static string? GetKeyTransportType(object? value)
+    {
+        if (GetBinaryBytes(value) is not null)
+            return "binary";
+
+        return value switch
+        {
+            bool => "boolean",
+            byte or sbyte or short or ushort or int or uint or long or ulong => "integer",
+            float or double => "real",
+            decimal => "decimal",
+            Guid => "uuid",
+            DateOnly => "date",
+            TimeOnly => "time",
+            DateTime => "timestamp",
+            DateTimeOffset => "timestamp-with-time-zone",
+            TimeSpan => "interval-day-to-second",
+            JsonElement element => element.ValueKind switch
+            {
+                JsonValueKind.True or JsonValueKind.False => "boolean",
+                JsonValueKind.Number when element.TryGetInt64(out _) => "integer",
+                JsonValueKind.Number when element.TryGetDecimal(out _) => "decimal",
+                JsonValueKind.Number => "real",
+                _ => null,
+            },
+            _ => null,
+        };
+    }
+
+    private static Dictionary<string, object?> EncodeMutationValues(
+        IReadOnlyDictionary<string, object?> values)
+    {
+        var encoded = new Dictionary<string, object?>(values.Count, StringComparer.OrdinalIgnoreCase);
+        foreach ((string key, object? value) in values)
+            encoded[key] = EncodeMutationValue(value);
+        return encoded;
+    }
+
+    private static object? EncodeMutationValue(object? value)
+    {
+        if (value is SqlBitString bitString)
+        {
+            return new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["$csharpdb"] = "bit-string-v1",
+                ["base64"] = Convert.ToBase64String(bitString.PackedBytes.Span),
+                ["bitLength"] = bitString.BitLength,
+            };
+        }
+
+        byte[]? binary = GetBinaryBytes(value);
+        if (binary is null)
+            return value;
+
+        // System.Text.Json normally turns byte[] into an untagged base64
+        // string, which is indistinguishable from ordinary TEXT. Keep the
+        // encoding explicit so the API can reconstruct a binary scalar.
+        return new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["$csharpdb"] = "binary-v1",
+            ["base64"] = Convert.ToBase64String(binary),
+        };
+    }
+
+    private static byte[]? GetBinaryBytes(object? value) => value switch
+    {
+        byte[] bytes => bytes,
+        ReadOnlyMemory<byte> memory => memory.ToArray(),
+        Memory<byte> memory => memory.ToArray(),
+        ArraySegment<byte> segment => segment.ToArray(),
+        _ => null,
+    };
 
     private static JsonSerializerOptions CreateJsonOptions()
     {
@@ -1095,14 +1199,26 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
     }
 
     private static ColumnDefinition MapColumn(ApiColumnResponse payload)
-        => new()
+    {
+        DbType storageType = Enum.TryParse<DbType>(payload.Type, ignoreCase: true, out var type)
+            && Enum.IsDefined(type)
+                ? type
+                : throw new CSharpDbClientException($"Unsupported column type '{payload.Type}'.");
+        SqlTypeDescriptor? declaredType = payload.DeclaredType is null
+            ? null
+            : MapSqlTypeDescriptor(payload.DeclaredType);
+        if (declaredType is not null && declaredType.StorageType != storageType)
+        {
+            throw new CSharpDbClientException(
+                $"Column '{payload.Name}' declares {declaredType.ToSql()} but reports incompatible storage type {storageType}.");
+        }
+
+        return new ColumnDefinition
         {
             SchemaId = payload.SchemaId,
             Name = payload.Name,
-            Type = Enum.TryParse<DbType>(payload.Type, ignoreCase: true, out var type)
-                && Enum.IsDefined(type)
-                ? type
-                : throw new CSharpDbClientException($"Unsupported column type '{payload.Type}'."),
+            Type = storageType,
+            DeclaredType = declaredType,
             Nullable = payload.Nullable,
             IsPrimaryKey = payload.IsPrimaryKey,
             IsIdentity = payload.IsIdentity,
@@ -1110,6 +1226,26 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
             Collation = payload.Collation,
             DefaultSql = payload.DefaultSql,
         };
+    }
+
+    private static SqlTypeDescriptor MapSqlTypeDescriptor(ApiSqlTypeDescriptorResponse payload)
+    {
+        if (!Enum.TryParse<SqlTypeKind>(payload.Kind, ignoreCase: true, out var kind) ||
+            !Enum.IsDefined(kind))
+        {
+            throw new CSharpDbClientException(
+                $"Unsupported declared SQL type kind '{payload.Kind}'.");
+        }
+
+        return new SqlTypeDescriptor
+        {
+            Kind = kind,
+            Length = payload.Length,
+            Precision = payload.Precision,
+            Scale = payload.Scale,
+            FractionalSecondsPrecision = payload.FractionalSecondsPrecision,
+        };
+    }
 
     private static ForeignKeyDefinition MapForeignKey(ApiForeignKeyResponse payload)
         => new()
@@ -1279,6 +1415,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
             ColumnNames = payload.ColumnNames,
             ColumnTypes = payload.ColumnTypes,
             ColumnNullability = payload.ColumnNullability,
+            Columns = payload.Columns?.Select(MapColumn).ToArray(),
             Rows = payload.ColumnNames is null
                 ? null
                 : MapRows(payload.ColumnNames, payload.Rows, payload.ColumnTypes),
@@ -1321,7 +1458,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
     {
         var declaredTypes = schema.Columns.ToDictionary(
             column => column.Name,
-            column => column.Type.ToString(),
+            column => column.EffectiveType.ToSql(),
             StringComparer.OrdinalIgnoreCase);
         var normalized = new Dictionary<string, object?>(values.Count, StringComparer.OrdinalIgnoreCase);
         foreach (var (key, value) in values)
@@ -1333,18 +1470,37 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
         return normalized;
     }
 
-    private static object? NormalizeValue(object? value, string? declaredType = null) => value switch
+    private static object? NormalizeValue(object? value, string? declaredType = null)
     {
-        null => null,
-        JsonElement { ValueKind: JsonValueKind.String } element
-            when string.Equals(declaredType, "BLOB", StringComparison.OrdinalIgnoreCase) =>
-            DecodeBlob(element.GetString() ?? string.Empty),
-        string encoded
-            when string.Equals(declaredType, "BLOB", StringComparison.OrdinalIgnoreCase) =>
-            DecodeBlob(encoded),
-        JsonElement element => NormalizeJsonElement(element),
-        _ => value,
-    };
+        if (value is null)
+            return null;
+
+        if (TryDecodeBitStringEnvelope(value, out SqlBitString? bitString))
+            return bitString;
+
+        if (IsBlobBackedType(declaredType))
+        {
+            return value switch
+            {
+                JsonElement { ValueKind: JsonValueKind.String } blobElement =>
+                    DecodeBlob(blobElement.GetString() ?? string.Empty),
+                string encoded => DecodeBlob(encoded),
+                byte[] bytes => bytes,
+                _ => throw new CSharpDbClientException(
+                    $"HTTP transport returned a non-string value for {declaredType ?? "BLOB"}.")
+            };
+        }
+
+        if (value is JsonElement { ValueKind: JsonValueKind.Number } number)
+        {
+            if (IsDecimalType(declaredType) && number.TryGetDecimal(out decimal exact))
+                return exact;
+            if (IsRealType(declaredType))
+                return number.GetDouble();
+        }
+
+        return value is JsonElement jsonElement ? NormalizeJsonElement(jsonElement) : value;
+    }
 
     private static byte[] DecodeBlob(string encoded)
     {
@@ -1360,11 +1516,48 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
         }
     }
 
+    private static bool TryDecodeBitStringEnvelope(
+        object value,
+        out SqlBitString? bitString)
+    {
+        bitString = null;
+        if (value is not JsonElement { ValueKind: JsonValueKind.Object } element ||
+            !element.TryGetProperty("$csharpdb", out JsonElement marker) ||
+            marker.ValueKind != JsonValueKind.String ||
+            !string.Equals(marker.GetString(), "bit-string-v1", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (!element.TryGetProperty("base64", out JsonElement payload) ||
+            payload.ValueKind != JsonValueKind.String ||
+            !element.TryGetProperty("bitLength", out JsonElement length) ||
+            !length.TryGetInt32(out int bitLength))
+        {
+            throw new CSharpDbClientException(
+                "HTTP transport returned an invalid SQL bit-string envelope.");
+        }
+
+        try
+        {
+            bitString = new SqlBitString(
+                Convert.FromBase64String(payload.GetString() ?? string.Empty),
+                bitLength);
+            return true;
+        }
+        catch (Exception error) when (error is FormatException or ArgumentException or OverflowException)
+        {
+            throw new CSharpDbClientException(
+                "HTTP transport returned an invalid SQL bit-string value.",
+                error);
+        }
+    }
+
     private static string[] GetColumnTypes(string[] columnNames, TableSchema schema)
     {
         var declaredTypes = schema.Columns.ToDictionary(
             column => column.Name,
-            column => column.Type.ToString().ToUpperInvariant(),
+            column => column.EffectiveType.ToSql(),
             StringComparer.OrdinalIgnoreCase);
         return columnNames
             .Select(columnName => declaredTypes.GetValueOrDefault(columnName) ?? string.Empty)
@@ -1378,9 +1571,35 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
         JsonValueKind.False => false,
         JsonValueKind.True => true,
         JsonValueKind.Number when value.TryGetInt64(out long integer) => integer,
+        JsonValueKind.Number when value.TryGetDecimal(out decimal number) => number,
         JsonValueKind.Number => value.GetDouble(),
         _ => value.GetRawText(),
     };
+
+    private static bool IsDecimalType(string? type) =>
+        type is not null &&
+        type.TrimStart().StartsWith("DECIMAL", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsRealType(string? type) =>
+        type is not null &&
+        (type.Trim().Equals("REAL", StringComparison.OrdinalIgnoreCase) ||
+         type.Trim().Equals("DOUBLE", StringComparison.OrdinalIgnoreCase) ||
+         type.Trim().Equals("DOUBLE PRECISION", StringComparison.OrdinalIgnoreCase) ||
+         type.Trim().Equals("FLOAT", StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsBlobBackedType(string? type)
+    {
+        if (string.IsNullOrWhiteSpace(type))
+            return false;
+
+        string normalized = type.TrimStart();
+        return normalized.StartsWith("BLOB", StringComparison.OrdinalIgnoreCase) ||
+               normalized.StartsWith("BINARY", StringComparison.OrdinalIgnoreCase) ||
+               normalized.StartsWith("VARBINARY", StringComparison.OrdinalIgnoreCase) ||
+               normalized.StartsWith("UUID", StringComparison.OrdinalIgnoreCase) ||
+               normalized.StartsWith("BIT", StringComparison.OrdinalIgnoreCase) ||
+               normalized.StartsWith("VARBIT", StringComparison.OrdinalIgnoreCase);
+    }
 
     private static object CreateProcedurePayload(ProcedureDefinition definition, string? newNameOverride)
     {
@@ -1389,7 +1608,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
             parameter.Name,
             Type = parameter.Type.ToString(),
             parameter.Required,
-            Default = parameter.Default,
+            Default = EncodeMutationValue(parameter.Default),
             parameter.Description,
         }).ToList();
 
@@ -1441,7 +1660,14 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
         bool IsRowVersion,
         string? Collation,
         string? DefaultSql,
-        Guid SchemaId = default);
+        Guid SchemaId = default,
+        ApiSqlTypeDescriptorResponse? DeclaredType = null);
+    private sealed record ApiSqlTypeDescriptorResponse(
+        string Kind,
+        int? Length = null,
+        int? Precision = null,
+        int? Scale = null,
+        int? FractionalSecondsPrecision = null);
     private sealed record ApiForeignKeyResponse(string ConstraintName, string ColumnName, string ReferencedTableName, string ReferencedColumnName, string OnDelete, string SupportingIndexName, IReadOnlyList<string>? ColumnNames = null, IReadOnlyList<string>? ReferencedColumnNames = null, Guid SchemaId = default, IReadOnlyList<Guid>? ColumnSchemaIds = null, Guid ReferencedTableSchemaId = default, IReadOnlyList<Guid>? ReferencedColumnSchemaIds = null, Guid ReferencedKeySchemaId = default, string? OnUpdate = null);
     private sealed record ApiKeyConstraintResponse(string? ConstraintName, string Kind, IReadOnlyList<string> Columns, string? BackingIndexName, Guid SchemaId = default);
     private sealed record ApiCheckConstraintResponse(string? ConstraintName, string ExpressionSql, string? ColumnName, Guid SchemaId = default);
@@ -1452,7 +1678,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
     private sealed record ApiIndexResponse(string IndexName, string TableName, IReadOnlyList<string> Columns, bool IsUnique, IReadOnlyList<string?> ColumnCollations);
     private sealed record ApiViewResponse(string ViewName, string Sql);
     private sealed record ApiTriggerResponse(string TriggerName, string TableName, string Timing, string Event, string BodySql);
-    private sealed record ApiSqlResultResponse(bool IsQuery, string[]? ColumnNames, string[]? ColumnTypes, bool[]? ColumnNullability, IReadOnlyList<Dictionary<string, object?>>? Rows, int RowsAffected, string? Error, double ElapsedMs);
+    private sealed record ApiSqlResultResponse(bool IsQuery, string[]? ColumnNames, string[]? ColumnTypes, bool[]? ColumnNullability, IReadOnlyList<Dictionary<string, object?>>? Rows, int RowsAffected, string? Error, double ElapsedMs, IReadOnlyList<ApiColumnResponse>? Columns = null);
     private sealed record ApiShardSqlExecutionResultResponse(string ShardId, ApiSqlResultResponse? Result, string? Error);
     private sealed record ApiProcedureDetailResponse(string Name, string BodySql, IReadOnlyList<ApiProcedureParameterResponse> Parameters, string? Description, bool IsEnabled, DateTime CreatedUtc, DateTime UpdatedUtc);
     private sealed record ApiProcedureParameterResponse(string Name, string Type, bool Required, object? Default, string? Description);

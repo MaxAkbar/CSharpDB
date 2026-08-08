@@ -841,10 +841,13 @@
                 Type Tags:
                   Null (0x00)    -&gt; no data
                   Integer (0x01) -&gt; 8 bytes, little-endian long
-                  Text (0x02)    -&gt; [length: varint] [UTF-8 bytes]
-                  Real (0x03)    -&gt; 8 bytes, little-endian double (IEEE 754)
+                  Real (0x02)    -&gt; 8 bytes, little-endian double (IEEE 754)
+                  Text (0x03)    -&gt; [length: varint] [UTF-8 bytes]
                   Blob (0x04)    -&gt; [length: varint] [raw bytes]
+                  Decimal (0x05) -&gt; 8-byte coefficient + 1-byte scale
+                  Bit string (0x80) -&gt; [bitLength: varint] [packed bytes]
                 </code></pre></div>
+                <p>These are physical record tags. Declared logical types and aliases are documented in the <a href="sql-reference.html#data-types">complete datatype matrix</a>.</p>
                 <h3 id="r1-encode-and-decode-a-row">R1. Encode and Decode a Row</h3>
                 <div class="code-block" data-title="C#"><pre><code class="language-csharp">var values = new DbValue[]
                 {

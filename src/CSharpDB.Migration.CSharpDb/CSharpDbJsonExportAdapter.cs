@@ -502,6 +502,7 @@ public sealed class CSharpDbJsonExportAdapter
         {
             Name = column.Name,
             Type = column.Type,
+            DeclaredType = column.DeclaredType,
             Nullable = column.Nullable,
             IsPrimaryKey = column.IsPrimaryKey,
             IsIdentity = column.IsIdentity,
