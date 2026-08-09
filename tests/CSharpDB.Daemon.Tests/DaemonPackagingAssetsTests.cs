@@ -75,10 +75,12 @@ public sealed class DaemonPackagingAssetsTests
 
         Assert.Contains("name: Release\n", trigger);
         Assert.Contains("      - \"v*\"", trigger);
-        Assert.Contains("workflow_dispatch:", trigger);
+        Assert.DoesNotContain("workflow_dispatch:", trigger);
+        Assert.Contains("group: release-${{ github.ref }}", trigger);
         Assert.Contains("uses: ./.github/workflows/release.yml", trigger);
         Assert.Contains("NUGET_USER: ${{ secrets.NUGET_USER }}", trigger);
         Assert.DoesNotContain("secrets: inherit", trigger);
+        Assert.DoesNotContain("waive_local_durable", trigger);
         Assert.Contains("contents: write", trigger);
         Assert.Contains("statuses: read", trigger);
         Assert.Contains("id-token: write", trigger);
@@ -268,9 +270,10 @@ public sealed class DaemonPackagingAssetsTests
             "release_commit: ${{ inputs.release_commit }}",
             normalized);
         Assert.Contains(
-            "previous_release_ref: ${{ inputs.waive_local_durable_for_v450 && '86e25435f3c64f47afe2a776c6b03cbe84e56858' || '' }}",
+            "previous_release_ref: ${{ inputs.release_tag == 'v4.5.1' && '86e25435f3c64f47afe2a776c6b03cbe84e56858' || '' }}",
             normalized);
         Assert.Contains("verify-local-durable-performance:", normalized);
+        Assert.Contains("name: Verify local durable performance qualification", normalized);
         Assert.Contains("statuses: read", normalized);
         Assert.Contains("LOCAL_DURABLE_ATTESTOR", normalized);
         Assert.Contains("github.repository_owner", normalized);
@@ -279,7 +282,13 @@ public sealed class DaemonPackagingAssetsTests
         Assert.Contains(
             "./scripts/Test-LocalDurableStatus.ps1",
             normalized);
-        Assert.Contains("if: ${{ !inputs.waive_local_durable_for_v450 }}", normalized);
+        Assert.Contains(
+            """
+                  - name: Require a successful matching-commit local performance status
+                    shell: pwsh
+            """.ReplaceLineEndings("\n"),
+            normalized);
+        Assert.DoesNotContain("waive_local_durable", normalized);
         Assert.Contains("-Commit '${{ inputs.release_commit }}'", normalized);
         Assert.Contains("-ReleaseVersion '${{ inputs.release_tag }}'", normalized);
         Assert.Contains("-GitHubRepository '${{ github.repository }}'", normalized);
@@ -303,7 +312,30 @@ public sealed class DaemonPackagingAssetsTests
     }
 
     [Fact]
-    public void ReleaseWorkflow_OneTimeV450RecoveryIsPinnedAndCannotBecomeGeneralWaiver()
+    public void ReleaseWorkflow_V451HostedBaselineUsesLastPublishedV440Only()
+    {
+        string repoRoot = FindRepoRoot();
+        string implementation = File.ReadAllText(Path.Combine(
+            repoRoot,
+            ".github",
+            "workflows",
+            "release.yml")).ReplaceLineEndings("\n");
+
+        const string expectedBaselineInput =
+            "previous_release_ref: ${{ inputs.release_tag == 'v4.5.1' && " +
+            "'86e25435f3c64f47afe2a776c6b03cbe84e56858' || '' }}";
+
+        Assert.Contains("v4.5.0 was tagged but never published", implementation);
+        Assert.Contains(expectedBaselineInput, implementation);
+        Assert.Single(
+            System.Text.RegularExpressions.Regex.Matches(
+                implementation,
+                @"(?m)^\s+previous_release_ref:"));
+        Assert.DoesNotContain("waive", implementation, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ReleaseWorkflow_IsTagOnlyAndHasNoManualRecoveryOrDurableWaiver()
     {
         string repoRoot = FindRepoRoot();
         string trigger = File.ReadAllText(Path.Combine(
@@ -317,47 +349,28 @@ public sealed class DaemonPackagingAssetsTests
             "workflows",
             "release.yml")).ReplaceLineEndings("\n");
 
-        const string releaseTag = "v4.5.0";
-        const string releaseCommit = "7aeb66031237283c3643e73849618bf299729ed6";
-        const string baselineCommit = "86e25435f3c64f47afe2a776c6b03cbe84e56858";
-
-        int dispatchStart = trigger.IndexOf("  workflow_dispatch:\n", StringComparison.Ordinal);
-        int concurrencyStart = trigger.IndexOf("\nconcurrency:\n", StringComparison.Ordinal);
-        Assert.True(dispatchStart >= 0 && concurrencyStart > dispatchStart);
-        string dispatchInputs = trigger[dispatchStart..concurrencyStart];
-
-        Assert.Contains("approve_v4_5_0_local_durable_waiver:", dispatchInputs);
-        Assert.Contains("type: boolean", dispatchInputs);
-        Assert.Contains("default: false", dispatchInputs);
-        Assert.DoesNotContain("release_tag:", dispatchInputs);
-        Assert.DoesNotContain("release_commit:", dispatchInputs);
-
-        Assert.Contains("refs/heads/main", trigger);
-        Assert.Contains("MaxAkbar/CSharpDB/.github/workflows/publish-release.yml@refs/heads/main", trigger);
-        Assert.Contains("ACTOR_ID: ${{ github.actor_id }}", trigger);
-        Assert.Contains("$expectedActorId = '13856299'", trigger);
-        Assert.Contains("$expectedTag = 'v4.5.0'", trigger);
-        Assert.Contains($"$expectedCommit = '{releaseCommit}'", trigger);
-        Assert.Contains("$expectedStatusId = 51899579502L", trigger);
-        Assert.Contains("$expectedStatusTime = '2026-08-09T06:02:33Z'", trigger);
-        Assert.Contains("$expectedStatusDescription = 'policy=durable-v3; design=6B500421; local durable qualification failed'", trigger);
-        Assert.Contains("$expectedCiRunId = 31260517686L", trigger);
-        Assert.Contains("environment: v4-5-0-recovery", trigger);
-        Assert.Contains("waive_local_durable_for_v450: false", trigger);
-        Assert.Contains("waive_local_durable_for_v450: true", trigger);
-        Assert.Contains($"release_tag: {releaseTag}", trigger);
-        Assert.Contains($"release_commit: {releaseCommit}", trigger);
-        Assert.Contains("release-${{ github.event_name == 'workflow_dispatch' && 'refs/tags/v4.5.0' || github.ref }}", trigger);
+        Assert.Contains("      - \"v*\"", trigger);
+        Assert.Contains("group: release-${{ github.ref }}", trigger);
+        Assert.Contains("release_tag: ${{ github.ref_name }}", trigger);
+        Assert.Contains("release_commit: ${{ github.sha }}", trigger);
+        Assert.Contains("NUGET_USER: ${{ secrets.NUGET_USER }}", trigger);
+        Assert.DoesNotContain("workflow_dispatch:", trigger);
+        Assert.DoesNotContain("recovery", trigger, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("waive", trigger, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("v4.5.0", trigger);
         Assert.DoesNotContain("statuses: write", trigger);
         Assert.DoesNotContain("secrets: inherit", trigger);
 
-        Assert.Contains("if: ${{ inputs.waive_local_durable_for_v450 }}", implementation);
-        Assert.Contains($"$env:RELEASE_TAG -cne '{releaseTag}'", implementation);
-        Assert.Contains($"$env:RELEASE_COMMIT -cne '{releaseCommit}'", implementation);
-        Assert.Contains(baselineCommit, implementation);
+        Assert.Contains("- name: Require the exact existing release tag and commit", implementation);
+        Assert.Contains("- name: Require a successful matching-commit local performance status", implementation);
+        Assert.Contains("./scripts/Test-LocalDurableStatus.ps1", implementation);
+        Assert.DoesNotContain("workflow_dispatch", implementation);
+        Assert.DoesNotContain("waive", implementation, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("7aeb66031237283c3643e73849618bf299729ed6", implementation);
         Assert.Contains("- name: Revalidate the immutable publication target", implementation);
         Assert.Contains("- name: Require the immutable target and absent release before creation", implementation);
         Assert.Contains("packages will not be published", implementation);
+        Assert.Contains("publication will not update it", implementation);
         Assert.DoesNotContain("Publish-DurableCarryForwardStatus.ps1", implementation);
         Assert.DoesNotContain("statuses: write", implementation);
         Assert.Equal(
@@ -414,6 +427,16 @@ public sealed class DaemonPackagingAssetsTests
         Assert.Contains("Test-MySqlMigrationIsolation.ps1", script);
         Assert.Contains("Test-AccessMigrationIsolation.ps1", script);
         Assert.Contains("Test-EfCoreMigrationTool.ps1", script);
+
+        System.Text.RegularExpressions.Match fullTestArguments =
+            System.Text.RegularExpressions.Regex.Match(
+                script,
+                @"(?s)-StepName 'full-test-suite'.*?-ArgumentList @\((?<arguments>.*?)\)");
+        Assert.True(fullTestArguments.Success);
+        Assert.Contains(
+            "'--maxcpucount:1'",
+            fullTestArguments.Groups["arguments"].Value,
+            StringComparison.Ordinal);
 
         System.Text.RegularExpressions.Match accessArguments =
             System.Text.RegularExpressions.Regex.Match(

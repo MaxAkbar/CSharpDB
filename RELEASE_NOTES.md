@@ -1,11 +1,23 @@
 # What's New
 
-## CSharpDB 4.5.0
+## CSharpDB 4.5.1
 
-CSharpDB 4.5.0 adds a persisted logical SQL type system across the engine,
+CSharpDB 4.5.1 is the first published release in the 4.5 line. The `v4.5.0`
+Git tag is retained as release-attempt history, but it was not published as a
+release. These notes therefore preserve the complete public change from
+v4.4.0 to v4.5.1.
+
+This release adds a persisted logical SQL type system across the engine,
 providers, transports, migration tooling, archives, and public metadata. It
 also adds bounded XPath 1.0 querying for XML values. Declared types, coercion,
 materialization, and schema rendering now follow one contract end to end.
+
+### Batch Insert Performance
+
+- Removed an avoidable per-value allocation from successful declared-type
+  assignment coercion. Qualified type-mismatch diagnostics are now formatted
+  only on failure, preserving the same error messages and SQL semantics while
+  improving in-memory SQL batch-insert throughput.
 
 ### Complete SQL Type System
 
@@ -68,7 +80,7 @@ in the [SQL datatype reference](https://csharpdb.com/docs/sql-reference.html#dat
   are rejected, and document depth and XPath length are limited.
 - The supported surface is the documented function-style API. Standard
   `XMLEXISTS(... PASSING ...)`, `XML_TABLE`, and XML path indexes are not part
-  of 4.5.0.
+  of 4.5.1.
 
 ### Providers, Migration, and Interchange
 
@@ -80,8 +92,9 @@ in the [SQL datatype reference](https://csharpdb.com/docs/sql-reference.html#dat
 - Added explicit SQL Server migration mappings for integer widths, `bit`,
   temporal types, and `timestamp`/`rowversion`. Migration plans now preserve
   the logical target SQL declaration separately from its physical carrier.
-- Added a separately digested 4.5.0 migration capability catalog while
-  retaining the immutable 4.4.0 and 4.3.0 catalogs for deterministic replay.
+- Added a separately digested current `4.5.1` migration capability catalog
+  while retaining the immutable 4.5.0, 4.4.0, and 4.3.0 catalogs for
+  deterministic replay.
 - Native table archive format v8 records the final 4.5 integer semantics and
   preserves every logical facet. CSV/JSON migration manifests and streaming
   exports retain exact decimals and logical target declarations.
