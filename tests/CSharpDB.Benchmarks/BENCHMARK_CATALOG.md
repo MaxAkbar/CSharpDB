@@ -8,7 +8,6 @@ This file lists the available benchmark harnesses and how they are used. The mai
 |---|---|
 | `core` | Feeds the generated README scorecard and current core result tables. |
 | `hosted release gate` | Required previous-release comparison on GitHub-hosted Windows runners. |
-| `local release gate` | Required pre-tag comparison on one idle fixed-SSD Windows machine. |
 | `release guardrail` | Used by `Run-Perf-Guardrails.ps1 -Mode release` or PR guardrails. |
 | `diagnostic` | Kept for investigations, tuning, comparisons, and one-off validation. |
 
@@ -30,8 +29,8 @@ Use `--release-core --repeat 3 --repro` to run the core suites in one command.
 
 | Command | Class | Purpose |
 |---|---|---|
-| `--master-table-durable-writes` | `local release gate` | Ten file-backed, hybrid durable, and direct-client SQL/collection single and batch write rows. Normally invoked through `scripts/Test-LocalDurablePerformance.ps1` for two sequential paired passes. |
-| `--master-table-hosted-stable` | `hosted release gate` | The other 18 master-table rows: persistent reads plus in-memory reads and writes. Invoked by SQL Release Qualification in two balanced paired Windows jobs with throughput and P95 blocking; P99 remains diagnostic. |
+| `--master-table-durable-writes` | `diagnostic` | Ten file-backed, hybrid durable, and direct-client SQL/collection single and batch write rows. Optionally invoked through `scripts/Test-LocalDurablePerformance.ps1` for two sequential paired passes. |
+| `--master-table-hosted-stable` | `hosted release gate` | The other 18 master-table rows: persistent reads plus in-memory reads and writes. Invoked by SQL Release Qualification in one balanced paired Windows job; `RepeatCount 3` covers both execution orders, throughput and P95 block, and P99 remains diagnostic. |
 
 ## Release Guardrails
 

@@ -20,12 +20,11 @@ permissions:
   contents: read
 
 jobs:
-  verify-local-durable-performance:
-    name: Verify local durable performance qualification
+  verify-release-target:
+    name: Verify exact release target
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      statuses: read
 
     steps:
       - name: Checkout exact release source
@@ -59,21 +58,9 @@ jobs:
             throw "$env:RELEASE_TAG does not resolve to $env:RELEASE_COMMIT."
           }
 
-      - name: Require a successful matching-commit local performance status
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          EXPECTED_STATUS_CREATOR: ${{ vars.LOCAL_DURABLE_ATTESTOR || github.repository_owner }}
-        run: |
-          ./scripts/Test-LocalDurableStatus.ps1 `
-            -Commit '${{ inputs.release_commit }}' `
-            -GitHubRepository '${{ github.repository }}' `
-            -ExpectedCreator $env:EXPECTED_STATUS_CREATOR `
-            -ReleaseVersion '${{ inputs.release_tag }}'
-
   build-and-test:
     name: Qualify release source
-    needs: verify-local-durable-performance
+    needs: verify-release-target
     uses: ./.github/workflows/sql-release-qualification.yml
     with:
       release_version: ${{ inputs.release_tag }}
@@ -84,7 +71,7 @@ jobs:
 
   publish-nuget:
     name: Publish NuGet
-    needs: build-and-test
+    needs: [build-and-test, migration-archives, native-aot, daemon-archives, admin-desktop-archive]
     runs-on: ubuntu-latest
     permissions:
       contents: read

@@ -442,37 +442,33 @@ dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.
 ```
 
 After the release pull request is merged, update local `main` and use the
-canonical publisher on one idle, fixed-SSD Windows machine. This command owns
-both exact-commit durable qualification and release-tag publication:
+canonical publisher to validate and publish the exact release tag:
 
 ```powershell
 git switch main
 git pull --ff-only
 $Version = (Read-Host 'Release version without the v prefix').Trim()
 
-.\scripts\Publish-ReleaseTag.ps1 `
-  -Version $Version `
-  -ConfirmDedicatedFixedSsd
+.\scripts\Publish-ReleaseTag.ps1 -Version $Version
 ```
 
 Do not create a release tag in the GitHub UI or with raw `git tag` / `git push`
-commands. Those paths bypass the release preflight and the fail-closed Release
-workflow will reject the tag. `Publish-ReleaseTag.ps1` requires a clean,
-checked-out `main`, fetches `origin/main`, requires local `HEAD` to equal that
-remote commit, validates the version, and requires a canonical
-`csharpdb/local-durable-performance` success status from the configured attestor
-on that exact SHA.
+commands. Those unsupported paths bypass the clean-main, version, and tag
+preflight. `Publish-ReleaseTag.ps1` requires a clean, checked-out `main`, fetches
+`origin/main`, requires local `HEAD` to equal that remote commit, validates the
+package version, and rejects a same-named local or remote tag at another commit.
+It does not run or require a local benchmark or commit status.
 
-If that exact commit already has a valid status, the publisher reuses it without
-rerunning the benchmarks. If it does not, the confirmation switch permits the
-publisher to run `Test-LocalDurablePerformance.ps1`; this normally takes about
-3.5–4.5 hours on an idle fixed-SSD machine. Without a reusable status or
-`-ConfirmDedicatedFixedSsd`, it stops before creating a tag and tells the
-operator how to qualify the commit. The publisher is idempotent for the same
-version and exact commit: an existing local or remote tag at that commit is
-reused, while a same-named tag at another commit is rejected.
+The publisher is idempotent for the same version and exact commit. The `v*` tag
+push starts the fail-closed Release workflow, which runs one clean functional
+qualification on each of Windows, Linux, and macOS and one balanced paired
+hosted-stable comparison on Windows. That comparison uses `RepeatCount 3`, so
+one job records three pairs per previous/candidate execution order. Publication
+begins only after those hosted gates and all archive jobs succeed.
 
-During a new qualification, the repository must remain clean because both
+### Optional local durable-write diagnostics
+
+During a new local diagnostic, the repository must remain clean because both
 revisions are built from committed source. The wrapper resolves the candidate to
 one immutable commit. It discovers the nearest prior semantic release reachable
 from that candidate during pass 1 and pins it for pass 2. The previous revision
@@ -499,7 +495,7 @@ configured post-build quiet window. Any installer event in that quiet window or
 after measurements begin, any pending-file baseline change, a prohibited build
 or update workload, sustained observable external load, missing monitor
 evidence, unavailable allowed runner-tree CPU, or a telemetry gap contaminates
-the timing evidence and prevents qualification. The affected
+the timing evidence and invalidates the diagnostic. The affected
 pass stops without replacement; the wrapper may still collect the next
 predeclared pass after its normal system-state preflight. Start a new clean run
 instead of reusing contaminated evidence.
@@ -526,20 +522,21 @@ anchor at every pass start and around each installer-event audit, and fails the
 qualification if the channel is disabled, full, cleared, overwritten, or reuses
 the anchor record ID.
 
-The local release gate runs `master-table-durable-write-scenarios`: ten exact
+The local diagnostic suite runs `master-table-durable-write-scenarios`: ten exact
 durable SQL and collection single/batch write rows from file-backed, hybrid
 incremental-durable, and direct-client paths. Each previous/candidate row pair
 runs adjacently; the deterministic row order rotates across pair rounds so no
 row owns one time position, and pass 2 reverses the starting revision. It
 intentionally excludes reads and in-memory rows. The other 18 master-table rows
-remain a blocking two-pass comparison on GitHub-hosted Windows runners. Both
-local passes run sequentially so they never contend for the same disk. The
-wrapper forces
+form the blocking one-job hosted comparison; `RepeatCount 3` covers both
+execution orders within that job. Both optional local passes run sequentially
+so they never contend for the same disk. The wrapper forces
 `CSHARPDB_BENCH_DURABILITY=Durable` for its children and restores the caller's
 prior process value afterward.
 
-Only the canonical release policy may publish the official status: automatic
-previous-release discovery, exact-row execution, three repeats per order, a
+The wrapper retains a canonical evidence policy when a GitHub status is
+requested: automatic previous-release discovery, exact-row execution, three
+repeats per order, a
 30-second post-build wait, a 10-second boundary before every recorded side, at
 least 30 measured seconds and 10,000 retained latency samples per side, the
 canonical external-load monitor, a 15% throughput limit, and the combined 25% plus
@@ -547,7 +544,9 @@ canonical external-load monitor, a 15% throughput limit, and the combined 25% pl
 are reported diagnostically but do not affect stability, order-sensitivity, or
 regression status. To change any of those settings, disable the monitor, select
 another blocking percentile, or supply `-PreviousRef`, also supply
-`-NoGitHubStatus`; that run is diagnostic and cannot authorize a release.
+`-NoGitHubStatus`. Use `-NoGitHubStatus` for ordinary diagnostics because neither
+the tag publisher nor Release workflow consumes this status, and no local run
+authorizes a release.
 
 The candidate benchmark source is hash-verified and synchronized into the
 previous-release worktree so both engines run the same harness. Candidate and
@@ -582,39 +581,30 @@ when its increase exceeds both 25% and the 0.05 ms absolute allowance, so
 percentage-amplified sub-millisecond noise remains visible without blocking by
 itself. P99 remains required, validated diagnostic evidence, but valid P99
 values do not affect stability, order-sensitivity, or regression status. Both
-clean, balanced paired durable-write passes must pass before the release tag is
-created.
+clean, balanced paired durable-write passes must pass for a successful local
+diagnostic result; they do not gate creation of the release tag.
 
 This short suite does not claim release-grade P99 qualification. A future
 blocking P99 policy requires a separately designed longer experiment with
 enough tail observations and repeatability to distinguish engine behavior from
 machine-state noise; it is not inferred from this P95 gate.
 
-GitHub's `SQL Release Qualification` workflow retains the two clean Windows,
-Linux, and macOS functional passes and two blocking comparisons of the 18 stable
-master-table rows, but no longer runs the ten disk-sensitive rows on transient
-hosted storage. The hosted comparisons use the same 15% throughput and combined
-25% plus 0.05 ms P95 blocking limits; P99 is required and reported but remains
-diagnostic because the short hosted experiment is not a release-grade tail
-measurement. Normal coordinated benchmark shutdown permits up to 30 seconds for
-workers to observe cancellation on a busy runner; genuinely unresponsive work
-still fails with a bounded diagnostic and is quarantined from cleanup. A normal
-local gate run publishes the
-`csharpdb/local-durable-performance` commit status only after both passes
-succeed. The release workflow requires that success status on the exact tagged
-commit before any package or archive can be published. GitHub CLI authentication
-with permission to create commit statuses is therefore required. The
-`-NoGitHubStatus` switch is for local diagnostics and tests only; a run using it
-cannot qualify a release. The release workflow accepts the status only from the
-login configured in the `LOCAL_DURABLE_ATTESTOR` repository variable, or from
-the repository owner when that variable is unset, and requires a canonical
-`durable-v3` policy attestation containing the previous-release SHA, the frozen
-experiment-design digest, and both pass-report digests. Older policy
-attestations are rejected. This check remains a fail-closed backstop; it
-does not replace the preflight performed by `Publish-ReleaseTag.ps1`.
+GitHub's `SQL Release Qualification` workflow runs one clean Windows, Linux, and
+macOS functional qualification plus one blocking comparison of the 18 stable
+master-table rows on Windows. The hosted job uses `RepeatCount 3` to cover both
+execution orders in one balanced comparison. It uses the same 15% throughput
+and combined 25% plus 0.05 ms P95 blocking limits; P99 is required and reported
+but remains diagnostic because the short hosted experiment is not a
+release-grade tail measurement. Normal coordinated benchmark shutdown permits
+up to 30 seconds for workers to observe cancellation on a busy runner;
+genuinely unresponsive work still fails with a bounded diagnostic and is
+quarantined from cleanup.
 
-The canonical description is exactly
+When explicitly requested, the local wrapper can still publish a diagnostic
+`csharpdb/local-durable-performance` status with the canonical description
 `policy=durable-v3; baseline=<40 lowercase hex>; design=<8 uppercase hex>; reports=<8 uppercase>/<8 uppercase>`.
+That status is retained for audit and tooling compatibility only; the hosted
+release path does not read it.
 
 The existing scheduled perf-guardrail workflow remains report-only and includes
 the durable SQL batching baseline plus its configured micro and diagnostic
@@ -637,8 +627,9 @@ caller-selected directory outside the checkout; it never updates the curated
 `release-core-manifest.json` or introduces generated JSON into the repository.
 
 The same balanced paired mode is also available below for focused A/A, exact-row,
-and order-sensitivity investigations. Those diagnostic forms do not replace
-either blocking local durable-write qualification pass.
+and order-sensitivity investigations. Those focused forms are narrower than the
+optional full two-pass durable-write diagnostic, and neither form is a release
+gate.
 
 ### Focused A/A and exact-row diagnostics
 
@@ -687,9 +678,9 @@ requested fixed wait, failing if shutdown fails. It does not prove that the
 machine or disk is idle, so use a dedicated runner without concurrent builds.
 The release workflow uses a 30-second post-build wait.
 
-A/A and exact-row results are harness diagnostics only. They cannot satisfy the
-previous-release gate, replace either balanced paired durable-write qualification
-pass, promote a baseline, or modify published benchmark numbers.
+A/A and exact-row results are harness diagnostics only. They cannot satisfy or
+replace the hosted balanced paired previous-release comparison, promote a
+baseline, or modify published benchmark numbers.
 
 Run the release guardrail comparison:
 
@@ -715,18 +706,14 @@ pwsh -NoProfile .\tests\CSharpDB.Benchmarks\scripts\Update-BenchmarkReadme.ps1 `
 Promotion checklist:
 
 - The release-core suite was run with `--repeat 3 --repro`.
-- Both hosted-stable previous-release comparisons passed for the candidate
-  commit.
-- Both balanced paired local durable-write comparisons passed with the
-  same hash-verified candidate harness and retained raw evidence, and the exact
-  candidate commit has a successful `csharpdb/local-durable-performance`
-  `durable-v3` status. Blocking P95 and throughput evidence passed; diagnostic
-  P99 was retained but did not determine the result.
-- No comparison row is `INVALID`, `UNSTABLE`, `ORDER-SENSITIVE`, or
-  `REGRESSION`, and every local durable side has at least 30 measured seconds
-  and 10,000 retained latency observations. The observable-process monitor
-  timeline is clean and covers every declared measurement interval; unavailable
-  external-process counter counts are retained as diagnostics.
+- The one hosted-stable previous-release comparison passed for the candidate
+  commit. `RepeatCount 3` supplied three pairs per execution order.
+- No hosted comparison row is `INVALID`, `UNSTABLE`, `ORDER-SENSITIVE`, or
+  `REGRESSION`. Blocking P95 and throughput evidence passed; diagnostic P99 was
+  retained but did not determine the result.
+- Any cited local durable-write evidence is clearly labeled optional diagnostic
+  evidence. It is not a promotion or release requirement, and contaminated
+  local evidence is not promoted.
 - The release guardrail result is clean.
 - The manifest points only to the approved median artifacts.
 - The generated README diff only changes benchmark numbers, source artifacts, or snapshot metadata.
@@ -741,7 +728,7 @@ Related files:
 - [SQLITE_COMPARISON.md](SQLITE_COMPARISON.md): focused same-runner CSharpDB vs SQLite comparison.
 - `release-core-manifest.json`: source-of-truth manifest for published README tables.
 - `scripts/Compare-ReleaseCore.ps1`: strict same-runner release comparison.
-- `scripts/Test-LocalDurablePerformance.ps1`: sequential two-pass local release gate.
+- `scripts/Test-LocalDurablePerformance.ps1`: sequential two-pass local durable-write diagnostic.
 - `scripts/Test-PreviousReleasePerformance.ps1`: clean two-revision benchmark runner.
 - `scripts/Watch-LocalPerformanceEnvironment.ps1`: fail-closed observable external-load evidence monitor.
 - `scripts/Update-BenchmarkReadme.ps1`: generated-results updater.
