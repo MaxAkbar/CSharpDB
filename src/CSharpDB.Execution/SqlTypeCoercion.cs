@@ -21,10 +21,6 @@ internal static class SqlTypeCoercion
         string? tableName = null)
     {
         ArgumentNullException.ThrowIfNull(column);
-        string target = tableName is null
-            ? $"column '{column.Name}'"
-            : $"column '{tableName}.{column.Name}'";
-
         if (value.IsNull)
             return value;
 
@@ -47,6 +43,9 @@ internal static class SqlTypeCoercion
             OverflowException or
             JsonException)
         {
+            string target = tableName is null
+                ? $"column '{column.Name}'"
+                : $"column '{tableName}.{column.Name}'";
             throw new CSharpDbException(
                 ErrorCode.TypeMismatch,
                 $"Value of type {value.Type} is not valid for {target} declared as {column.EffectiveType.ToSql()}: {ex.Message}",
