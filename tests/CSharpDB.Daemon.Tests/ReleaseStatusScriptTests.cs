@@ -226,22 +226,17 @@ public sealed class ReleaseStatusScriptTests
     }
 
     [Fact]
-    public void PublishReleaseTag_RequiresExactCleanMainStatusBeforeExactTagPush()
+    public void PublishReleaseTag_RequiresExactCleanMainAndVersionBeforeExactTagPush()
     {
         string repoRoot = FindRepoRoot();
         string publisher = File.ReadAllText(Path.Combine(
             repoRoot,
             "scripts",
             "Publish-ReleaseTag.ps1"));
-        string verifier = File.ReadAllText(Path.Combine(
+        string tagValidator = File.ReadAllText(Path.Combine(
             repoRoot,
             "scripts",
-            "Test-LocalDurableStatus.ps1"));
-        string carryForwardPublisher = File.ReadAllText(Path.Combine(
-            repoRoot,
-            "scripts",
-            "Publish-DurableCarryForwardStatus.ps1"));
-
+            "Test-ReleaseTag.ps1"));
         Assert.Contains(
             "status', '--porcelain=v1', '--untracked-files=all",
             publisher);
@@ -250,79 +245,51 @@ public sealed class ReleaseStatusScriptTests
         Assert.Contains("refs/heads/main:refs/remotes/origin/main", publisher);
         Assert.Contains("origin/main^{commit}", publisher);
         Assert.Contains("local main to equal origin/main exactly", publisher);
-        Assert.Contains("Test-LocalDurableStatus.ps1", publisher);
-        Assert.Contains("-Commit $headCommit", publisher);
-        Assert.Contains("exact commit $headCommit", publisher);
-        Assert.Contains("Test-LocalDurablePerformance.ps1", publisher);
-        Assert.Contains("-CandidateRef $headCommit", publisher);
+        Assert.Contains("$packageVersion -cne $releaseVersion", publisher);
+        Assert.Contains("$currentMainCommit -cne $headCommit", publisher);
+        Assert.Contains("Test-ReleaseTag.ps1", publisher);
+        Assert.Contains(
+            "& $tagValidator -Version $releaseTag -TagCommit $headCommit",
+            publisher);
         Assert.Contains("refs/tags/$releaseTag`:refs/tags/$releaseTag", publisher);
         Assert.DoesNotContain("--force", publisher, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("parents", verifier, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("exit 0", verifier, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains(
-            "^policy=durable-v3; baseline=[0-9a-f]{40}; design=[0-9A-F]{8}; " +
-            "reports=[0-9A-F]{8}/[0-9A-F]{8}$",
-            verifier);
-        Assert.Contains(
-            "csharpdb/local-durable-performance-carry-forward-v4.4.0",
-            verifier);
-        Assert.Contains(
-            "61e4d025087f4fae7208381288fba6115f0d1e30",
-            verifier);
-        Assert.Contains("51598901859", verifier);
-        Assert.Contains(
-            "policy=durable-v2; baseline=7880dad112f3fdf011c134db2f8a08ec646ee326;",
-            verifier);
-        Assert.Contains("ee1ea0e996fc22e093e950ec32e14543cd5caeca", verifier);
-        Assert.Contains("51664261883", verifier);
-        Assert.Contains("local durable qualification failed", verifier);
-        Assert.Contains(
-            "src/CSharpDB.Migration/MigrationRejectArtifactPublication.cs",
-            verifier);
-        Assert.Contains("'merge-base', '--is-ancestor'", verifier);
-        Assert.Contains("'--name-status'", verifier);
-        Assert.Contains("'--no-renames'", verifier);
-        Assert.Contains("8e43642cfcd3e523046302b99253673ceb5a33ce", verifier);
-        Assert.Contains("bee4859c14381fc2dbe209e2e0c84909dc98adc9", verifier);
+        Assert.DoesNotContain("Test-LocalDurableStatus.ps1", publisher);
+        Assert.DoesNotContain("Test-LocalDurablePerformance.ps1", publisher);
+        Assert.DoesNotContain("Publish-DurableCarryForwardStatus.ps1", publisher);
+        Assert.DoesNotContain("ConfirmDedicatedFixedSsd", publisher);
+        Assert.DoesNotContain("ApproveDurableV2CarryForward", publisher);
+        Assert.DoesNotContain("csharpdb/local-durable-performance", publisher);
+        Assert.DoesNotContain("Test-Documentation.ps1", tagValidator);
 
-        Assert.Contains("Authenticated GitHub user", carryForwardPublisher);
-        Assert.Contains("statuses/$headCommit", carryForwardPublisher);
-        Assert.Contains("Invoke-StatusVerifier -EligibilityOnly", carryForwardPublisher);
-        Assert.Contains("Publish-DurableCarryForwardStatus.ps1", publisher);
-        Assert.Contains("-ApproveDurableV2CarryForward", publisher);
-        Assert.Contains("mutually exclusive", publisher);
-        Assert.Contains("-ReleaseVersion $releaseVersion", publisher);
-        Assert.DoesNotContain("refs/tags/", carryForwardPublisher, StringComparison.Ordinal);
-
-        int sourceEvidence = carryForwardPublisher.IndexOf(
-            "Invoke-StatusVerifier -EligibilityOnly",
+        int exactMainValidation = publisher.IndexOf(
+            "$headCommit = Get-ExactCurrentMainCommit",
             StringComparison.Ordinal);
-        int publishStatus = carryForwardPublisher.IndexOf(
-            "--method POST",
-            StringComparison.Ordinal);
-        Assert.True(sourceEvidence >= 0);
-        Assert.True(
-            publishStatus > sourceEvidence,
-            "The source evidence must be verified before a carry-forward status is published.");
-
-        int initialVerifier = publisher.IndexOf(
-            "Invoke-StatusVerifier",
-            publisher.IndexOf("$hasReusableStatus", StringComparison.Ordinal),
+        int versionValidation = publisher.IndexOf(
+            "$packageVersion -cne $releaseVersion",
             StringComparison.Ordinal);
         int localTagMutation = publisher.IndexOf(
             "'tag', $releaseTag, $headCommit",
+            StringComparison.Ordinal);
+        int tagValidation = publisher.IndexOf(
+            "& $tagValidator -Version $releaseTag -TagCommit $headCommit",
             StringComparison.Ordinal);
         int exactTagPush = publisher.IndexOf(
             "refs/tags/$releaseTag`:refs/tags/$releaseTag",
             localTagMutation,
             StringComparison.Ordinal);
 
-        Assert.True(initialVerifier >= 0, "The exact status must be verified.");
+        Assert.True(exactMainValidation >= 0, "The exact main commit must be validated.");
         Assert.True(
-            localTagMutation > initialVerifier,
-            "The exact status must be verified before a local tag is created.");
+            versionValidation > exactMainValidation,
+            "The package version must be validated after resolving exact main.");
         Assert.True(
-            exactTagPush > localTagMutation,
+            localTagMutation > versionValidation,
+            "The package version must be validated before a local tag is created.");
+        Assert.True(
+            tagValidation > localTagMutation,
+            "The exact local tag must be validated before it is pushed.");
+        Assert.True(
+            exactTagPush > tagValidation,
             "Only the exact validated tag may be pushed after local validation.");
     }
 

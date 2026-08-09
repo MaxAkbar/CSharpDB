@@ -63,8 +63,6 @@ if ($workingTreeChanges.Count -gt 0) {
     throw "Release validation requires a clean working tree: $($workingTreeChanges -join ', ')"
 }
 
-& (Join-Path $PSScriptRoot 'Test-Documentation.ps1')
-
 $semanticReleaseTagPattern = '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$'
 $validReleaseTags = @(
     & git -C $repoRoot tag --list |

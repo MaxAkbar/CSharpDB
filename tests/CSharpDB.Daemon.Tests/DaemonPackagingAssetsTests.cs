@@ -82,7 +82,7 @@ public sealed class DaemonPackagingAssetsTests
         Assert.DoesNotContain("secrets: inherit", trigger);
         Assert.DoesNotContain("waive_local_durable", trigger);
         Assert.Contains("contents: write", trigger);
-        Assert.Contains("statuses: read", trigger);
+        Assert.DoesNotContain("statuses:", trigger);
         Assert.Contains("id-token: write", trigger);
         Assert.Contains("cancel-in-progress: false", trigger);
 
@@ -92,7 +92,7 @@ public sealed class DaemonPackagingAssetsTests
     }
 
     [Fact]
-    public void SqlReleaseQualificationWorkflow_RunsFunctionalAndHostedStablePerformancePasses()
+    public void SqlReleaseQualificationWorkflow_RunsOneFunctionalPassPerOsAndOneHostedPairedBenchmark()
     {
         string repoRoot = FindRepoRoot();
         string workflow = File.ReadAllText(Path.Combine(
@@ -109,13 +109,13 @@ public sealed class DaemonPackagingAssetsTests
         Assert.Contains("- ubuntu-latest", normalized);
         Assert.Contains("- windows-latest", normalized);
         Assert.Contains("- macos-latest", normalized);
-        Assert.Contains(
-            """
-            qualification_pass:
-                      - 1
-                      - 2
-            """.ReplaceLineEndings("\n"),
-            normalized);
+        Assert.DoesNotContain("qualification_pass:", normalized);
+        Assert.Equal(
+            2,
+            System.Text.RegularExpressions.Regex.Matches(
+                normalized,
+                @"(?m)^\s+-QualificationPass 1 `$").Count);
+        Assert.DoesNotContain("-QualificationPass 2", normalized);
         Assert.Contains("Test-SqlReleaseQualification.ps1", normalized);
         Assert.Contains("${{ runner.temp }}", normalized);
         Assert.Equal(
@@ -127,7 +127,13 @@ public sealed class DaemonPackagingAssetsTests
             "sql-release-qualification-${{ inputs.release_commit || github.sha }}",
             normalized);
         Assert.Contains(
+            "sql-release-qualification-${{ inputs.release_commit || github.sha }}-${{ matrix.os }}-attempt-${{ github.run_attempt }}",
+            normalized);
+        Assert.Contains(
             "previous-release-hosted-stable-performance-${{ inputs.release_commit || github.sha }}",
+            normalized);
+        Assert.Contains(
+            "previous-release-hosted-stable-performance-${{ inputs.release_commit || github.sha }}-attempt-${{ github.run_attempt }}",
             normalized);
         Assert.DoesNotContain(
             "    env:\n      QUALIFICATION_OUTPUT: ${{ runner.temp }}",
@@ -250,7 +256,7 @@ public sealed class DaemonPackagingAssetsTests
     }
 
     [Fact]
-    public void ReleaseWorkflow_GatesEveryPublisherOnFunctionalHostedAndLocalQualification()
+    public void ReleaseWorkflow_GatesEveryPublisherOnExactTargetFunctionalAndHostedQualification()
     {
         string repoRoot = FindRepoRoot();
         string workflow = File.ReadAllText(Path.Combine(
@@ -272,27 +278,20 @@ public sealed class DaemonPackagingAssetsTests
         Assert.Contains(
             "previous_release_ref: ${{ inputs.release_tag == 'v4.5.1' && '86e25435f3c64f47afe2a776c6b03cbe84e56858' || '' }}",
             normalized);
-        Assert.Contains("verify-local-durable-performance:", normalized);
-        Assert.Contains("name: Verify local durable performance qualification", normalized);
-        Assert.Contains("statuses: read", normalized);
-        Assert.Contains("LOCAL_DURABLE_ATTESTOR", normalized);
-        Assert.Contains("github.repository_owner", normalized);
+        Assert.Contains("verify-release-target:", normalized);
+        Assert.Contains("name: Verify exact release target", normalized);
+        Assert.DoesNotContain("statuses:", normalized);
+        Assert.DoesNotContain("LOCAL_DURABLE_ATTESTOR", normalized);
         Assert.Contains("- name: Checkout exact release source", normalized);
         Assert.Contains("uses: actions/checkout@v7", normalized);
         Assert.Contains(
-            "./scripts/Test-LocalDurableStatus.ps1",
-            normalized);
-        Assert.Contains(
             """
-                  - name: Require a successful matching-commit local performance status
+                  - name: Require the exact existing release tag and commit
                     shell: pwsh
             """.ReplaceLineEndings("\n"),
             normalized);
+        Assert.DoesNotContain("Test-LocalDurableStatus.ps1", normalized);
         Assert.DoesNotContain("waive_local_durable", normalized);
-        Assert.Contains("-Commit '${{ inputs.release_commit }}'", normalized);
-        Assert.Contains("-ReleaseVersion '${{ inputs.release_tag }}'", normalized);
-        Assert.Contains("-GitHubRepository '${{ github.repository }}'", normalized);
-        Assert.Contains("-ExpectedCreator $env:EXPECTED_STATUS_CREATOR", normalized);
         Assert.DoesNotContain("github.ref_name", normalized);
         Assert.DoesNotContain("github.sha", normalized);
         Assert.Equal(
@@ -301,14 +300,20 @@ public sealed class DaemonPackagingAssetsTests
                 normalized,
                 @"(?m)^          ref: \$\{\{ inputs\.release_commit \}\}$").Count);
         Assert.Equal(
-            5,
+            4,
             System.Text.RegularExpressions.Regex.Matches(
                 normalized,
                 @"(?m)^    needs: build-and-test$").Count);
+        Assert.Contains(
+            "needs: [build-and-test, migration-archives, native-aot, daemon-archives, admin-desktop-archive]",
+            normalized);
+        Assert.Contains(
+            "needs: [publish-nuget, migration-archives, native-aot, daemon-archives, admin-desktop-archive]",
+            normalized);
         Assert.Single(
             System.Text.RegularExpressions.Regex.Matches(
                 normalized,
-                @"(?m)^    needs: verify-local-durable-performance$"));
+                @"(?m)^    needs: verify-release-target$"));
     }
 
     [Fact]
@@ -362,8 +367,8 @@ public sealed class DaemonPackagingAssetsTests
         Assert.DoesNotContain("secrets: inherit", trigger);
 
         Assert.Contains("- name: Require the exact existing release tag and commit", implementation);
-        Assert.Contains("- name: Require a successful matching-commit local performance status", implementation);
-        Assert.Contains("./scripts/Test-LocalDurableStatus.ps1", implementation);
+        Assert.DoesNotContain("matching-commit local performance status", implementation);
+        Assert.DoesNotContain("Test-LocalDurableStatus.ps1", implementation);
         Assert.DoesNotContain("workflow_dispatch", implementation);
         Assert.DoesNotContain("waive", implementation, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("7aeb66031237283c3643e73849618bf299729ed6", implementation);

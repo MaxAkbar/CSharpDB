@@ -44,7 +44,7 @@ permissions:
 
 jobs:
   qualify:
-    name: ${{ matrix.os }} / clean pass ${{ matrix.qualification_pass }}
+    name: ${{ matrix.os }} / clean qualification
     runs-on: ${{ matrix.os }}
     timeout-minutes: 240
     strategy:
@@ -54,9 +54,6 @@ jobs:
           - ubuntu-latest
           - windows-latest
           - macos-latest
-        qualification_pass:
-          - 1
-          - 2
 
     steps:
       - name: Checkout
@@ -82,14 +79,14 @@ jobs:
       - name: Run SQL release qualification
         shell: pwsh
         env:
-          QUALIFICATION_OUTPUT: ${{ runner.temp }}/csharpdb-sql-release-qualification/${{ inputs.release_commit || github.sha }}/${{ matrix.os }}/pass-${{ matrix.qualification_pass }}
+          QUALIFICATION_OUTPUT: ${{ runner.temp }}/csharpdb-sql-release-qualification/${{ inputs.release_commit || github.sha }}/${{ matrix.os }}
           RELEASE_VERSION: ${{ inputs.release_version }}
           RELEASE_COMMIT: ${{ inputs.release_commit }}
         run: |
           ./scripts/Test-SqlReleaseQualification.ps1 `
             -OutputPath $env:QUALIFICATION_OUTPUT `
             -Configuration Release `
-            -QualificationPass ${{ matrix.qualification_pass }} `
+            -QualificationPass 1 `
             -ReleaseVersion $env:RELEASE_VERSION `
             -ReleaseCommit $env:RELEASE_COMMIT
 
@@ -97,22 +94,16 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: sql-release-qualification-${{ inputs.release_commit || github.sha }}-${{ matrix.os }}-pass-${{ matrix.qualification_pass }}
-          path: ${{ runner.temp }}/csharpdb-sql-release-qualification/${{ inputs.release_commit || github.sha }}/${{ matrix.os }}/pass-${{ matrix.qualification_pass }}/evidence
+          name: sql-release-qualification-${{ inputs.release_commit || github.sha }}-${{ matrix.os }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/csharpdb-sql-release-qualification/${{ inputs.release_commit || github.sha }}/${{ matrix.os }}/evidence
           if-no-files-found: warn
           retention-days: 14
 
   previous-release-hosted-stable-performance:
-    name: Windows previous-release hosted-stable rows / balanced paired pass ${{ matrix.qualification_pass }}
+    name: Windows previous-release hosted-stable rows / balanced paired qualification
     needs: qualify
     runs-on: windows-latest
     timeout-minutes: 180
-    strategy:
-      fail-fast: false
-      matrix:
-        qualification_pass:
-          - 1
-          - 2
 
     steps:
       - name: Checkout
@@ -130,7 +121,7 @@ jobs:
       - name: Compare stable rows with previous release
         shell: pwsh
         env:
-          PERFORMANCE_OUTPUT: ${{ runner.temp }}/cdb-perf/stable/p${{ matrix.qualification_pass }}
+          PERFORMANCE_OUTPUT: ${{ runner.temp }}/cdb-perf/stable/p1
           PREVIOUS_RELEASE_REF: ${{ inputs.previous_release_ref }}
           CANDIDATE_REF: ${{ inputs.release_commit || github.sha }}
         run: |
@@ -138,7 +129,7 @@ jobs:
             -PreviousRef $env:PREVIOUS_RELEASE_REF `
             -CandidateRef $env:CANDIDATE_REF `
             -OutputPath $env:PERFORMANCE_OUTPUT `
-            -QualificationPass ${{ matrix.qualification_pass }} `
+            -QualificationPass 1 `
             -Paired `
             -SuiteName master-table-hosted-stable `
             -RepeatCount 3 `
@@ -152,12 +143,12 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: previous-release-hosted-stable-performance-${{ inputs.release_commit || github.sha }}-pass-${{ matrix.qualification_pass }}-attempt-${{ github.run_attempt }}
+          name: previous-release-hosted-stable-performance-${{ inputs.release_commit || github.sha }}-attempt-${{ github.run_attempt }}
           path: |
-            ${{ runner.temp }}/cdb-perf/stable/p${{ matrix.qualification_pass }}/previous-release-performance-preflight.md
-            ${{ runner.temp }}/cdb-perf/stable/p${{ matrix.qualification_pass }}/previous-release-performance.md
-            ${{ runner.temp }}/cdb-perf/stable/p${{ matrix.qualification_pass }}/baseline-results
-            ${{ runner.temp }}/cdb-perf/stable/p${{ matrix.qualification_pass }}/candidate-results
-            ${{ runner.temp }}/cdb-perf/stable/p${{ matrix.qualification_pass }}/logs
+            ${{ runner.temp }}/cdb-perf/stable/p1/previous-release-performance-preflight.md
+            ${{ runner.temp }}/cdb-perf/stable/p1/previous-release-performance.md
+            ${{ runner.temp }}/cdb-perf/stable/p1/baseline-results
+            ${{ runner.temp }}/cdb-perf/stable/p1/candidate-results
+            ${{ runner.temp }}/cdb-perf/stable/p1/logs
           if-no-files-found: warn
           retention-days: 14

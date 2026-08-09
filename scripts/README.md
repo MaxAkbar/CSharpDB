@@ -12,8 +12,9 @@ and are included in daemon release archives.
 
 The release and local workflow notes are grouped by audience:
 
-- Release maintainers use `scripts/Publish-ReleaseTag.ps1` to qualify the exact
-  merged `main` commit and publish its release tag. They can use
+- Release maintainers use `scripts/Publish-ReleaseTag.ps1` to validate the exact
+  merged `main` commit and publish its release tag. The tag push starts the
+  hosted release qualification and publication workflow. Maintainers can use
   `scripts/Publish-CSharpDbDaemonRelease.ps1` directly for local packaging
   checks. The GitHub Release workflow also uses the daemon publisher after the
   guarded `v*` tag is pushed.
@@ -48,7 +49,8 @@ Use this path before tagging or when validating release packaging locally.
 Commit implementation, version, documentation, roadmap, and release-note
 changes together. The release tag is the immutable record of that source state.
 
-2. Run the complete local release qualification from a clean checkout.
+2. Optionally run the complete local release qualification from a clean
+   checkout before opening or merging the release pull request.
 
 ```powershell
 $QualificationOutput = Join-Path `
@@ -67,20 +69,22 @@ isolation check on Windows. Logs, TRX results, temporary package state, and the
 Markdown result are written beneath the caller-selected output path outside
 the repository. The source tree must be clean before and after the run.
 
-The authoritative GitHub `SQL Release Qualification` workflow executes this
-same functional check in two independent clean jobs on each of Windows, Linux,
-and macOS. It can be started manually for a release candidate and is also
-required automatically by the tag release workflow before any publishing job
-starts. Before the workflow has first reached the default branch, pushing a
-non-release `qualification-*` tag runs it from that exact candidate commit
-without invoking the `v*` publishing workflow. Once registered on the default
-branch, normal manual dispatch can target any release-candidate branch. The
-workflow also keeps the 18 persistent-read and in-memory master-table rows
-blocking in two balanced paired Windows jobs. Only the ten disk-sensitive
-durable writes are excluded from hosted performance qualification.
+The authoritative GitHub `SQL Release Qualification` workflow executes one
+clean functional qualification job on each of Windows, Linux, and macOS. It can
+be started manually for a release candidate and is required automatically by
+the tag release workflow before any publishing job starts. Before the workflow
+has first reached the default branch, pushing a non-release `qualification-*`
+tag runs it from that exact candidate commit without invoking the `v*`
+publishing workflow. Once registered on the default branch, normal manual
+dispatch can target any release-candidate branch.
 
-The durable-write comparison is run against the final release commit immediately
-before tagging in step 5 below.
+The workflow also runs one balanced paired previous-release comparison for the
+18 hosted-stable persistent-read and in-memory master-table rows on Windows.
+`RepeatCount 3` records three pairs beginning with the previous release and
+three beginning with the candidate in the same job, so both execution orders
+are covered without duplicate pass jobs. The ten disk-sensitive durable-write
+rows remain available through the optional local diagnostic tooling below; they
+are not a release prerequisite.
 
 For a same-artifact exact-row A/A diagnostic, use an absent or empty output
 directory outside the checkout:
@@ -107,8 +111,8 @@ requires equal commits and maps one candidate DLL and closure to both labels.
 Both logical identities, the shared execution-time path, and all relative
 closure file hashes are recorded.
 
-These controls diagnose the harness only and cannot replace either balanced
-paired cross-version qualification pass or promote a baseline.
+These controls diagnose the harness only and cannot replace the hosted balanced
+paired cross-version qualification or promote a baseline.
 `-PostBuildQuiescenceSeconds` is an opt-in build-server shutdown plus fixed wait,
 not a machine-idleness guarantee, and it can affect concurrent .NET builds.
 Preflight metadata, hash manifests, raw and aggregate CSV evidence, logs, and
@@ -136,8 +140,8 @@ Get-ChildItem artifacts\daemon-release-local\archives
 Get-Content artifacts\daemon-release-local\archives\SHA256SUMS.txt
 ```
 
-5. After the pull request is merged, update local `main`, then run the canonical
-   release-tag publisher on the dedicated fixed-SSD Windows machine.
+5. After the pull request is merged, update local `main`, then run the
+   release-tag publisher.
 
 ```powershell
 git switch main
@@ -147,110 +151,61 @@ if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za
   throw 'Enter a semantic release version in major.minor.patch form.'
 }
 
-.\scripts\Publish-ReleaseTag.ps1 `
-  -Version $Version `
-  -ConfirmDedicatedFixedSsd
+.\scripts\Publish-ReleaseTag.ps1 -Version $Version
 ```
 
 `Publish-ReleaseTag.ps1` is the only supported way to create a release tag. Do
 not create release tags in the GitHub UI or with raw `git tag` / `git push`
-commands; those paths bypass the preflight and cause the fail-closed Release
-workflow to reject the tag. The publisher requires a clean, checked-out `main`,
-fetches `origin/main`, and requires local `HEAD` to equal that remote commit. It
-also validates the requested version and requires a canonical
-`csharpdb/local-durable-performance` success status from the configured attestor
-on that exact SHA before it creates or pushes the tag.
+commands; those unsupported paths bypass the clean-main, version, and tag
+preflight. The publisher requires a clean, checked-out `main`, fetches
+`origin/main`, and requires local `HEAD` to equal that remote commit. It
+also validates that the requested version matches the package version and that
+the local or remote tag is absent or already points to that exact commit. It
+rechecks `main` before validating and pushing the tag. It does not build, test,
+benchmark, inspect a commit status, or accept a local-performance waiver.
 
-When that exact commit already has a valid status, the publisher reuses it and
-does not rerun the benchmarks. Otherwise `-ConfirmDedicatedFixedSsd` authorizes
-the publisher to run the local durable wrapper. That wrapper forces durable mode
-and qualifies each of the ten durable SQL/collection single and batch write rows
-independently in two sequential balanced paired passes. Every row uses adjacent
-previous/candidate measurements, pass two reverses the starting order, and each
-individual measurement must retain at least 30 seconds and 10,000 latency
-samples. On an idle fixed-SSD machine this normally takes 3.5–4.5 hours total.
-It pins the candidate and previous commits, uses symmetrically conditioned
-artifacts with the same hash-recorded candidate benchmark harness, retains
-hash-verified raw evidence and a Markdown summary outside the repository,
-creates no repository JSON, and publishes the status only after both passes
-succeed. Without a reusable status or the confirmation switch, the publisher
-stops before creating a tag and explains how to run the required qualification.
+The command is idempotent for the same version and exact commit. It safely
+reuses an existing local or remote tag at that commit and rejects a same-named
+tag that points elsewhere.
 
-Every logical side has one predeclared attempt; a failed or contaminated sample
-is not discarded, replaced, or silently retried. After conditioning,
-build-server shutdown, and the post-build quiet window, the canonical Windows
-monitor takes one-second samples until after the final declared measurement.
-It excludes the qualification runner and its descendants. Five consecutive
-samples above either 8% observable external process CPU, 0.5 CPU-core
-equivalent, or 4,194,304 observable external process read-plus-write bytes per
-second make contamination sticky. The canonical prohibited external process
-names are `devenv`, `msbuild`, `vbcscompiler`, `testhost`, `vstest.console`,
-`msiexec`, `trustedinstaller`, `tiworker`, `mousocoreworker`, `usoclient`,
-`winget`, and `nuget`; observing any outside the runner tree contaminates
-immediately. External process I/O is process-transfer telemetry rather than
-whole-disk telemetry. Unavailable external process counters are retained as
-diagnostics, while inability to observe allowed runner-tree CPU contaminates
-immediately. The monitor must be ready before the first measurement, its
-ready-to-first and inter-sample gaps may not exceed five seconds, and its final
-sample must cover the final declared measurement end. Missing, stale,
-discontinuous, or early-exit monitor evidence fails closed. The official status
-cannot disable or alter the monitor; overrides are diagnostic only.
+The `v*` tag push starts the fail-closed Release workflow. The workflow first
+verifies that the existing tag resolves to the supplied exact commit. It then
+runs one clean functional qualification on each supported operating system and
+one balanced paired hosted-stable performance comparison on Windows. The
+performance job uses `RepeatCount 3`, which covers both previous/candidate
+execution orders in one job. For v4.5.1, the hosted comparison is pinned to the
+last published v4.4.0 commit because v4.5.0 was tagged but not published.
 
-The wrapper's Windows quiescence preflight refuses to start while a Windows
-Installer transaction is active or Component-Based Servicing (CBS) or Windows
-Update reports that a restart is required. It classifies
-`PendingFileRenameOperations` separately: a stable, well-formed deletion-only
-set may be fingerprinted and accepted as the
-run baseline, while malformed entries and replacement or rename operations
-block qualification. An active installer normally means wait for it to finish
-and run the preflight again; restart Windows when CBS or Windows Update requires
-it, or when blocking file operations remain after installers and updates have
-settled.
+Publication starts only after the hosted gates and all release-archive jobs
+succeed. The workflow publishes the NuGet packages, daemon archives for
+`win-x64`, `linux-x64`, and `osx-arm64`, migration and NativeAOT artifacts, and
+the Admin desktop archive, then creates the GitHub Release with the combined
+checksums and smoke-tested assets.
 
-Before, during, and after each pass, the wrapper records and audits Windows
-Installer transactions, Application event-log continuity, and the fingerprinted
-pending-file-operation baseline. A completed toolchain setup transaction is
-allowed only when it finishes before the configured post-build quiet window.
-Missing or unverifiable interference evidence, any installer event in that quiet
-window or after measurements begin, any pending-file baseline change, or any
-external-monitor contamination fails closed, prevents qualification, and stops
-the affected pass without replacing evidence. The wrapper may still collect the
-next predeclared pass after its normal system-state preflight.
-Start a new clean run instead of reusing contaminated evidence.
+### Optional local durable diagnostics
 
-The command is idempotent for the same version and exact commit: it safely
-reuses a valid status and an existing local or remote tag that already points to
-that commit. It rejects a same-named tag that points elsewhere. Optional
-`-GitHubRepository owner/name` and `-ExpectedStatusCreator login` arguments are
-available when repository discovery or the configured attestor must be supplied
-explicitly.
+`Test-LocalDurablePerformance.ps1` remains available when a maintainer needs to
+investigate the ten disk-sensitive durable SQL and collection write rows on an
+idle fixed-SSD Windows machine. It is diagnostic only: the tag publisher and
+Release workflow do not require or consume its commit status or evidence.
 
-The Release workflow remains a fail-closed backstop. It independently requires
-the matching-commit status, completes both clean functional passes on Windows,
-Linux, and macOS, and runs the 18 persistent-read and in-memory performance rows
-on hosted Windows runners before publishing. Those hosted comparisons block on
-throughput and P95 while retaining P99 as required diagnostic evidence. It then
-publishes the daemon archives for `win-x64`, `linux-x64`, and `osx-arm64`,
-smoke-starts each extracted binary,
-calls the daemon REST `/api/info` endpoint, verifies a gRPC `GetInfoAsync`
-client call, combines checksums, and attaches everything to the GitHub Release.
+Use `-NoGitHubStatus` for ordinary diagnostics so the run cannot be mistaken for
+release authorization. The wrapper retains its exact-row paired design,
+duration and latency-sample floors, Windows installer/update preflight, and
+external CPU, I/O, and prohibited-process monitoring. Contaminated evidence is
+never retried or promoted silently; start a new diagnostic run when needed.
 
-`-NoGitHubStatus` is available only for diagnostics and wrapper tests. A run with
-that switch does not satisfy the release workflow's matching-commit check.
-The official status is available only with automatic previous-release discovery
-and the canonical `durable-v3` exact-row, duration/sample-floor, quiescence, and
-regression settings. The blocking limits remain 15% for throughput; P95 fails
-only when it exceeds both 25% relative regression and 0.05 ms absolute
-regression. P99 is retained as diagnostic evidence and is not release-blocking.
-Selecting P99 or any other override requires `-NoGitHubStatus`.
+```powershell
+$DiagnosticOutput = Join-Path `
+  ([IO.Path]::GetTempPath()) `
+  "csharpdb-local-durable-$([Guid]::NewGuid().ToString('N'))"
 
-Canonical success has exactly this description:
-`policy=durable-v3; baseline=<40 lowercase hex>; design=<8 uppercase hex>; reports=<8 uppercase>/<8 uppercase>`.
-The design and report digests bind the policy design and both pass reports to the
-exact candidate status. Older policy descriptions are rejected. The workflow
-accepts the status only from the login named by the `LOCAL_DURABLE_ATTESTOR`
-repository variable, falling back to the repository owner when the variable is
-unset.
+.\tests\CSharpDB.Benchmarks\scripts\Test-LocalDurablePerformance.ps1 `
+  -CandidateRef HEAD `
+  -OutputPath $DiagnosticOutput `
+  -ConfirmDedicatedFixedSsd `
+  -NoGitHubStatus
+```
 
 ## Operator Walkthrough
 
@@ -514,9 +469,9 @@ $OutputPath = Join-Path `
   -QualificationPass 1
 ```
 
-The GitHub workflow runs qualification passes 1 and 2 in separate clean hosted
-jobs for each supported operating system. The pass number identifies evidence;
-it does not weaken or filter the checks.
+The GitHub workflow runs one clean qualification job for each supported
+operating system. It supplies `-QualificationPass 1` as a stable evidence label;
+the label does not weaken or filter the checks and does not imply a second run.
 
 ### `Test-AccessMigrationIsolation.ps1`
 

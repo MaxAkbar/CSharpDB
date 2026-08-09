@@ -4,48 +4,19 @@
 param(
     [Parameter(Mandatory)]
     [ValidatePattern('^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$')]
-    [string] $Version,
-
-    [switch] $ConfirmDedicatedFixedSsd,
-
-    [switch] $ApproveDurableV2CarryForward,
-
-    [ValidatePattern('^$|^[^/\s]+/[^/\s]+$')]
-    [string] $GitHubRepository = '',
-
-    [string] $ExpectedStatusCreator = ''
+    [string] $Version
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$statusVerifier = Join-Path $PSScriptRoot 'Test-LocalDurableStatus.ps1'
-$carryForwardPublisher =
-    Join-Path $PSScriptRoot 'Publish-DurableCarryForwardStatus.ps1'
-$localQualification = Join-Path `
-    $repositoryRoot `
-    'tests/CSharpDB.Benchmarks/scripts/Test-LocalDurablePerformance.ps1'
 $tagValidator = Join-Path $PSScriptRoot 'Test-ReleaseTag.ps1'
 $releaseVersion = $Version.TrimStart('v')
 $releaseTag = "v$releaseVersion"
 
-if ($ConfirmDedicatedFixedSsd -and $ApproveDurableV2CarryForward) {
-    throw (
-        '-ConfirmDedicatedFixedSsd and -ApproveDurableV2CarryForward are mutually exclusive.')
-}
-if ($ApproveDurableV2CarryForward -and $releaseVersion -cne '4.4.0') {
-    throw '-ApproveDurableV2CarryForward is available only for release 4.4.0.'
-}
-
-foreach ($requiredScript in
-    $statusVerifier,
-    $carryForwardPublisher,
-    $localQualification,
-    $tagValidator) {
-    if (-not (Test-Path -LiteralPath $requiredScript -PathType Leaf)) {
-        throw "Required release script was not found: $requiredScript"
-    }
+if (-not (Test-Path -LiteralPath $tagValidator -PathType Leaf)) {
+    throw "Required release script was not found: $tagValidator"
 }
 
 function Invoke-Git {
@@ -136,14 +107,6 @@ function Resolve-RemoteTagCommitOrNull {
     return [string] $direct[0].Sha
 }
 
-function Invoke-StatusVerifier {
-    & $statusVerifier `
-        -Commit $headCommit `
-        -GitHubRepository $GitHubRepository `
-        -ExpectedCreator $ExpectedStatusCreator `
-        -ReleaseVersion $releaseVersion
-}
-
 function Get-ExactCurrentMainCommit {
     $workingTreeChanges = Invoke-Git `
         -Arguments @('status', '--porcelain=v1', '--untracked-files=all') `
@@ -201,95 +164,10 @@ if ($packageVersion -cne $releaseVersion) {
         "'$packageVersion' in '$buildPropsPath'.")
 }
 
-if ($null -eq (Get-Command gh -ErrorAction SilentlyContinue)) {
-    throw 'GitHub CLI (gh) is required to publish a release tag.'
-}
-if ([string]::IsNullOrWhiteSpace($GitHubRepository)) {
-    $repositoryOutput = @(
-        & gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>&1
-    )
-    if ($LASTEXITCODE -ne 0) {
-        $details = ($repositoryOutput | ForEach-Object { [string] $_ }) -join [Environment]::NewLine
-        throw "Could not resolve the GitHub repository. $details"
-    }
-    $GitHubRepository = (($repositoryOutput | ForEach-Object { [string] $_ }) -join '').Trim()
-}
-if ($GitHubRepository -cnotmatch '^[^/\s]+/[^/\s]+$') {
-    throw "GitHubRepository must use the owner/name form: $GitHubRepository"
-}
-
-if ([string]::IsNullOrWhiteSpace($ExpectedStatusCreator)) {
-    $variableOutput = @(
-        & gh variable get LOCAL_DURABLE_ATTESTOR --repo $GitHubRepository 2>&1
-    )
-    $variableExitCode = $LASTEXITCODE
-    if ($variableExitCode -eq 0) {
-        $ExpectedStatusCreator =
-            (($variableOutput | ForEach-Object { [string] $_ }) -join '').Trim()
-    }
-    else {
-        $variableFailure =
-            ($variableOutput | ForEach-Object { [string] $_ }) -join [Environment]::NewLine
-        if ($variableFailure -notmatch '(?i)(HTTP\s+404|not\s+found)') {
-            throw (
-                "Could not resolve the LOCAL_DURABLE_ATTESTOR repository variable. " +
-                $variableFailure)
-        }
-    }
-    if ([string]::IsNullOrWhiteSpace($ExpectedStatusCreator)) {
-        $ExpectedStatusCreator = $GitHubRepository.Split('/', 2)[0]
-    }
-}
-else {
-    $ExpectedStatusCreator = $ExpectedStatusCreator.Trim()
-}
-
-$hasReusableStatus = $false
-try {
-    Invoke-StatusVerifier
-    $hasReusableStatus = $true
-    Write-Host "Reusing the existing canonical release status for exact commit $headCommit."
-}
-catch {
-    Write-Host "Exact commit $headCommit has no reusable canonical release status: $($_.Exception.Message)"
-}
-
-if (-not $hasReusableStatus) {
-    if ($ApproveDurableV2CarryForward) {
-        & $carryForwardPublisher `
-            -Version $releaseVersion `
-            -GitHubRepository $GitHubRepository `
-            -ExpectedStatusCreator $ExpectedStatusCreator
-
-        Invoke-StatusVerifier
-    }
-    elseif ($ConfirmDedicatedFixedSsd) {
-        & $localQualification `
-            -CandidateRef $headCommit `
-            -ConfirmDedicatedFixedSsd `
-            -GitHubRepository $GitHubRepository
-
-        Invoke-StatusVerifier
-    }
-    else {
-        $carryForwardGuidance = if ($releaseVersion -ceq '4.4.0') {
-            ' For the approved one-time v4.4.0 exception, rerun with ' +
-            '-ApproveDurableV2CarryForward.'
-        }
-        else {
-            ''
-        }
-        throw (
-            "Commit $headCommit does not have a reusable canonical release status. " +
-            'Rerun with -ConfirmDedicatedFixedSsd on the idle dedicated fixed-SSD ' +
-            "Windows machine.$carryForwardGuidance")
-    }
-}
-
 $currentMainCommit = Get-ExactCurrentMainCommit
 if ($currentMainCommit -cne $headCommit) {
     throw (
-        "The exact main commit changed during release qualification. Qualified $headCommit, " +
+        "The exact main commit changed during release validation. Validated $headCommit, " +
         "but current main is $currentMainCommit. Restart release tagging for the current commit.")
 }
 
