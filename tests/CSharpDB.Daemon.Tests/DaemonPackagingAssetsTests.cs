@@ -75,8 +75,10 @@ public sealed class DaemonPackagingAssetsTests
 
         Assert.Contains("name: Release\n", trigger);
         Assert.Contains("      - \"v*\"", trigger);
+        Assert.Contains("workflow_dispatch:", trigger);
         Assert.Contains("uses: ./.github/workflows/release.yml", trigger);
-        Assert.Contains("secrets: inherit", trigger);
+        Assert.Contains("NUGET_USER: ${{ secrets.NUGET_USER }}", trigger);
+        Assert.DoesNotContain("secrets: inherit", trigger);
         Assert.Contains("contents: write", trigger);
         Assert.Contains("statuses: read", trigger);
         Assert.Contains("id-token: write", trigger);
@@ -114,6 +116,17 @@ public sealed class DaemonPackagingAssetsTests
             normalized);
         Assert.Contains("Test-SqlReleaseQualification.ps1", normalized);
         Assert.Contains("${{ runner.temp }}", normalized);
+        Assert.Equal(
+            2,
+            System.Text.RegularExpressions.Regex.Matches(
+                normalized,
+                @"(?m)^          ref: \$\{\{ inputs\.release_commit \|\| github\.sha \}\}$").Count);
+        Assert.Contains(
+            "sql-release-qualification-${{ inputs.release_commit || github.sha }}",
+            normalized);
+        Assert.Contains(
+            "previous-release-hosted-stable-performance-${{ inputs.release_commit || github.sha }}",
+            normalized);
         Assert.DoesNotContain(
             "    env:\n      QUALIFICATION_OUTPUT: ${{ runner.temp }}",
             normalized);
@@ -249,12 +262,14 @@ public sealed class DaemonPackagingAssetsTests
             "uses: ./.github/workflows/sql-release-qualification.yml",
             normalized);
         Assert.Contains(
-            "release_version: ${{ github.ref_name }}",
+            "release_version: ${{ inputs.release_tag }}",
             normalized);
         Assert.Contains(
-            "release_commit: ${{ github.sha }}",
+            "release_commit: ${{ inputs.release_commit }}",
             normalized);
-        Assert.DoesNotContain("previous_release_ref:", normalized);
+        Assert.Contains(
+            "previous_release_ref: ${{ inputs.waive_local_durable_for_v450 && '86e25435f3c64f47afe2a776c6b03cbe84e56858' || '' }}",
+            normalized);
         Assert.Contains("verify-local-durable-performance:", normalized);
         Assert.Contains("statuses: read", normalized);
         Assert.Contains("LOCAL_DURABLE_ATTESTOR", normalized);
@@ -264,9 +279,18 @@ public sealed class DaemonPackagingAssetsTests
         Assert.Contains(
             "./scripts/Test-LocalDurableStatus.ps1",
             normalized);
-        Assert.Contains("-Commit '${{ github.sha }}'", normalized);
+        Assert.Contains("if: ${{ !inputs.waive_local_durable_for_v450 }}", normalized);
+        Assert.Contains("-Commit '${{ inputs.release_commit }}'", normalized);
+        Assert.Contains("-ReleaseVersion '${{ inputs.release_tag }}'", normalized);
         Assert.Contains("-GitHubRepository '${{ github.repository }}'", normalized);
         Assert.Contains("-ExpectedCreator $env:EXPECTED_STATUS_CREATOR", normalized);
+        Assert.DoesNotContain("github.ref_name", normalized);
+        Assert.DoesNotContain("github.sha", normalized);
+        Assert.Equal(
+            7,
+            System.Text.RegularExpressions.Regex.Matches(
+                normalized,
+                @"(?m)^          ref: \$\{\{ inputs\.release_commit \}\}$").Count);
         Assert.Equal(
             5,
             System.Text.RegularExpressions.Regex.Matches(
@@ -276,6 +300,76 @@ public sealed class DaemonPackagingAssetsTests
             System.Text.RegularExpressions.Regex.Matches(
                 normalized,
                 @"(?m)^    needs: verify-local-durable-performance$"));
+    }
+
+    [Fact]
+    public void ReleaseWorkflow_OneTimeV450RecoveryIsPinnedAndCannotBecomeGeneralWaiver()
+    {
+        string repoRoot = FindRepoRoot();
+        string trigger = File.ReadAllText(Path.Combine(
+            repoRoot,
+            ".github",
+            "workflows",
+            "publish-release.yml")).ReplaceLineEndings("\n");
+        string implementation = File.ReadAllText(Path.Combine(
+            repoRoot,
+            ".github",
+            "workflows",
+            "release.yml")).ReplaceLineEndings("\n");
+
+        const string releaseTag = "v4.5.0";
+        const string releaseCommit = "7aeb66031237283c3643e73849618bf299729ed6";
+        const string baselineCommit = "86e25435f3c64f47afe2a776c6b03cbe84e56858";
+
+        int dispatchStart = trigger.IndexOf("  workflow_dispatch:\n", StringComparison.Ordinal);
+        int concurrencyStart = trigger.IndexOf("\nconcurrency:\n", StringComparison.Ordinal);
+        Assert.True(dispatchStart >= 0 && concurrencyStart > dispatchStart);
+        string dispatchInputs = trigger[dispatchStart..concurrencyStart];
+
+        Assert.Contains("approve_v4_5_0_local_durable_waiver:", dispatchInputs);
+        Assert.Contains("type: boolean", dispatchInputs);
+        Assert.Contains("default: false", dispatchInputs);
+        Assert.DoesNotContain("release_tag:", dispatchInputs);
+        Assert.DoesNotContain("release_commit:", dispatchInputs);
+
+        Assert.Contains("refs/heads/main", trigger);
+        Assert.Contains("MaxAkbar/CSharpDB/.github/workflows/publish-release.yml@refs/heads/main", trigger);
+        Assert.Contains("ACTOR_ID: ${{ github.actor_id }}", trigger);
+        Assert.Contains("$expectedActorId = '13856299'", trigger);
+        Assert.Contains("$expectedTag = 'v4.5.0'", trigger);
+        Assert.Contains($"$expectedCommit = '{releaseCommit}'", trigger);
+        Assert.Contains("$expectedStatusId = 51899579502L", trigger);
+        Assert.Contains("$expectedStatusTime = '2026-08-09T06:02:33Z'", trigger);
+        Assert.Contains("$expectedStatusDescription = 'policy=durable-v3; design=6B500421; local durable qualification failed'", trigger);
+        Assert.Contains("$expectedCiRunId = 31260517686L", trigger);
+        Assert.Contains("environment: v4-5-0-recovery", trigger);
+        Assert.Contains("waive_local_durable_for_v450: false", trigger);
+        Assert.Contains("waive_local_durable_for_v450: true", trigger);
+        Assert.Contains($"release_tag: {releaseTag}", trigger);
+        Assert.Contains($"release_commit: {releaseCommit}", trigger);
+        Assert.Contains("release-${{ github.event_name == 'workflow_dispatch' && 'refs/tags/v4.5.0' || github.ref }}", trigger);
+        Assert.DoesNotContain("statuses: write", trigger);
+        Assert.DoesNotContain("secrets: inherit", trigger);
+
+        Assert.Contains("if: ${{ inputs.waive_local_durable_for_v450 }}", implementation);
+        Assert.Contains($"$env:RELEASE_TAG -cne '{releaseTag}'", implementation);
+        Assert.Contains($"$env:RELEASE_COMMIT -cne '{releaseCommit}'", implementation);
+        Assert.Contains(baselineCommit, implementation);
+        Assert.Contains("- name: Revalidate the immutable publication target", implementation);
+        Assert.Contains("- name: Require the immutable target and absent release before creation", implementation);
+        Assert.Contains("packages will not be published", implementation);
+        Assert.DoesNotContain("Publish-DurableCarryForwardStatus.ps1", implementation);
+        Assert.DoesNotContain("statuses: write", implementation);
+        Assert.Equal(
+            2,
+            System.Text.RegularExpressions.Regex.Matches(
+                implementation,
+                @"(?m)^          tag_name: \$\{\{ inputs\.release_tag \}\}$").Count);
+        Assert.Equal(
+            2,
+            System.Text.RegularExpressions.Regex.Matches(
+                implementation,
+                @"(?m)^          target_commitish: \$\{\{ inputs\.release_commit \}\}$").Count);
     }
 
     [Fact]

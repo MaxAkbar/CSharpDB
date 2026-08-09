@@ -288,7 +288,7 @@ public sealed class MigrationReleasePackagingTests
             workflow,
             StringComparison.Ordinal);
         Assert.Contains(
-            "RELEASE_TAG: ${{ github.ref_name }}",
+            "RELEASE_TAG: ${{ inputs.release_tag }}",
             workflow,
             StringComparison.Ordinal);
         Assert.Contains(

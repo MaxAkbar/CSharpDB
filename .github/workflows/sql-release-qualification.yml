@@ -64,6 +64,7 @@ jobs:
         with:
           clean: true
           fetch-depth: 0
+          ref: ${{ inputs.release_commit || github.sha }}
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v6
@@ -81,7 +82,7 @@ jobs:
       - name: Run SQL release qualification
         shell: pwsh
         env:
-          QUALIFICATION_OUTPUT: ${{ runner.temp }}/csharpdb-sql-release-qualification/${{ github.sha }}/${{ matrix.os }}/pass-${{ matrix.qualification_pass }}
+          QUALIFICATION_OUTPUT: ${{ runner.temp }}/csharpdb-sql-release-qualification/${{ inputs.release_commit || github.sha }}/${{ matrix.os }}/pass-${{ matrix.qualification_pass }}
           RELEASE_VERSION: ${{ inputs.release_version }}
           RELEASE_COMMIT: ${{ inputs.release_commit }}
         run: |
@@ -96,8 +97,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: sql-release-qualification-${{ github.sha }}-${{ matrix.os }}-pass-${{ matrix.qualification_pass }}
-          path: ${{ runner.temp }}/csharpdb-sql-release-qualification/${{ github.sha }}/${{ matrix.os }}/pass-${{ matrix.qualification_pass }}/evidence
+          name: sql-release-qualification-${{ inputs.release_commit || github.sha }}-${{ matrix.os }}-pass-${{ matrix.qualification_pass }}
+          path: ${{ runner.temp }}/csharpdb-sql-release-qualification/${{ inputs.release_commit || github.sha }}/${{ matrix.os }}/pass-${{ matrix.qualification_pass }}/evidence
           if-no-files-found: warn
           retention-days: 14
 
@@ -119,6 +120,7 @@ jobs:
         with:
           clean: true
           fetch-depth: 0
+          ref: ${{ inputs.release_commit || github.sha }}
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v6
@@ -150,7 +152,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: previous-release-hosted-stable-performance-${{ github.sha }}-pass-${{ matrix.qualification_pass }}-attempt-${{ github.run_attempt }}
+          name: previous-release-hosted-stable-performance-${{ inputs.release_commit || github.sha }}-pass-${{ matrix.qualification_pass }}-attempt-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/cdb-perf/stable/p${{ matrix.qualification_pass }}/previous-release-performance-preflight.md
             ${{ runner.temp }}/cdb-perf/stable/p${{ matrix.qualification_pass }}/previous-release-performance.md

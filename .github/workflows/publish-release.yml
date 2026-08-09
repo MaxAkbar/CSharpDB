@@ -4,22 +4,177 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      approve_v4_5_0_local_durable_waiver:
+        description: Approve the one-time v4.5.0 local durable performance waiver
+        required: true
+        default: false
+        type: boolean
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.event_name == 'workflow_dispatch' && 'refs/tags/v4.5.0' || github.ref }}
   cancel-in-progress: false
 
 permissions:
-  contents: write
-  statuses: read
-  id-token: write
+  contents: read
 
 jobs:
-  publish:
+  publish-tag:
+    if: github.event_name == 'push'
     name: Publish exact release tag
     permissions:
       contents: write
       statuses: read
       id-token: write
     uses: ./.github/workflows/release.yml
-    secrets: inherit
+    with:
+      release_tag: ${{ github.ref_name }}
+      release_commit: ${{ github.sha }}
+      waive_local_durable_for_v450: false
+    secrets:
+      NUGET_USER: ${{ secrets.NUGET_USER }}
+
+  validate-v4-5-0-recovery:
+    if: github.event_name == 'workflow_dispatch'
+    name: Validate one-time v4.5.0 recovery
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      statuses: read
+
+    steps:
+      - name: Require the exact approved recovery request and evidence
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APPROVED: ${{ inputs.approve_v4_5_0_local_durable_waiver }}
+          ACTOR_ID: ${{ github.actor_id }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $expectedRepository = 'MaxAkbar/CSharpDB'
+          $expectedActor = 'MaxAkbar'
+          $expectedActorId = '13856299'
+          $expectedWorkflowRef = 'MaxAkbar/CSharpDB/.github/workflows/publish-release.yml@refs/heads/main'
+          $expectedTag = 'v4.5.0'
+          $expectedCommit = '7aeb66031237283c3643e73849618bf299729ed6'
+          $expectedStatusId = 51899579502L
+          $expectedStatusTime = '2026-08-09T06:02:33Z'
+          $expectedStatusDescription = 'policy=durable-v3; design=6B500421; local durable qualification failed'
+          $expectedCiRunId = 31260517686L
+
+          if ($env:APPROVED -cne 'true') {
+            throw 'The one-time v4.5.0 local durable waiver was not explicitly approved.'
+          }
+          if ($env:GITHUB_REPOSITORY -cne $expectedRepository) {
+            throw "Recovery is pinned to $expectedRepository."
+          }
+          if ($env:GITHUB_EVENT_NAME -cne 'workflow_dispatch') {
+            throw 'Recovery must be started through workflow_dispatch.'
+          }
+          if ($env:GITHUB_REF -cne 'refs/heads/main') {
+            throw 'Recovery must be dispatched from refs/heads/main.'
+          }
+          if ($env:WORKFLOW_REF -cne $expectedWorkflowRef) {
+            throw "Unexpected workflow identity: $env:WORKFLOW_REF"
+          }
+          if ($env:GITHUB_ACTOR -cne $expectedActor -or
+              $env:TRIGGERING_ACTOR -cne $expectedActor -or
+              $env:ACTOR_ID -cne $expectedActorId) {
+            throw 'Recovery must be started and triggered by the pinned repository owner.'
+          }
+
+          $tagRefJson = & gh api "repos/$expectedRepository/git/ref/tags/$expectedTag"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not resolve the immutable $expectedTag tag."
+          }
+          $tagRef = $tagRefJson | ConvertFrom-Json
+          if ($tagRef.object.type -cne 'commit' -or $tagRef.object.sha -cne $expectedCommit) {
+            throw "$expectedTag is not the expected lightweight tag at $expectedCommit."
+          }
+
+          $statusesJson = & gh api "repos/$expectedRepository/commits/$expectedCommit/statuses"
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Could not read the preserved local durable status evidence.'
+          }
+          $latestStatus = @(
+            $statusesJson |
+              ConvertFrom-Json |
+              Where-Object context -CEQ 'csharpdb/local-durable-performance'
+          ) | Select-Object -First 1
+          $latestStatusTime = if ($null -eq $latestStatus) {
+            $null
+          }
+          else {
+            ([DateTimeOffset]$latestStatus.created_at).ToUniversalTime().ToString(
+              'yyyy-MM-ddTHH:mm:ssZ',
+              [Globalization.CultureInfo]::InvariantCulture)
+          }
+          if ($null -eq $latestStatus -or
+              [long]$latestStatus.id -ne $expectedStatusId -or
+              $latestStatus.state -cne 'failure' -or
+              $latestStatus.creator.login -cne $expectedActor -or
+              $latestStatusTime -cne $expectedStatusTime -or
+              $latestStatus.description -cne $expectedStatusDescription) {
+            throw 'The newest local durable status is not the exact preserved v4.5.0 failure being waived.'
+          }
+
+          $ciRunJson = & gh api "repos/$expectedRepository/actions/runs/$expectedCiRunId"
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Could not read the pinned exact-commit CI evidence.'
+          }
+          $ciRun = $ciRunJson | ConvertFrom-Json
+          if ([long]$ciRun.id -ne $expectedCiRunId -or
+              $ciRun.path -cne '.github/workflows/ci.yml' -or
+              $ciRun.event -cne 'push' -or
+              $ciRun.head_sha -cne $expectedCommit -or
+              $ciRun.status -cne 'completed' -or
+              $ciRun.conclusion -cne 'success' -or
+              $ciRun.actor.login -cne $expectedActor) {
+            throw 'The pinned exact-commit CI run is not the expected successful qualification.'
+          }
+
+          $releaseIds = @(
+            & gh api --paginate "repos/$expectedRepository/releases" --jq '.[] | select(.tag_name == "v4.5.0") | .id'
+          )
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Could not check for an existing v4.5.0 GitHub Release.'
+          }
+          if ($releaseIds.Count -ne 0) {
+            throw 'A v4.5.0 GitHub Release already exists; recovery will not update it.'
+          }
+
+          Write-Host '::notice title=Recovery evidence verified::The exact failed local qualification and successful exact-commit CI run are preserved. No success status will be created.'
+
+  approve-v4-5-0-recovery:
+    if: github.event_name == 'workflow_dispatch'
+    name: Approve one-time v4.5.0 recovery
+    needs: validate-v4-5-0-recovery
+    runs-on: ubuntu-latest
+    environment: v4-5-0-recovery
+    permissions:
+      contents: read
+
+    steps:
+      - name: Record protected environment approval
+        run: echo "Protected approval granted for the exact v4.5.0 recovery."
+
+  recover-v4-5-0:
+    if: github.event_name == 'workflow_dispatch'
+    name: Recover exact v4.5.0 release
+    needs: approve-v4-5-0-recovery
+    permissions:
+      contents: write
+      statuses: read
+      id-token: write
+    uses: ./.github/workflows/release.yml
+    with:
+      release_tag: v4.5.0
+      release_commit: 7aeb66031237283c3643e73849618bf299729ed6
+      waive_local_durable_for_v450: true
+    secrets:
+      NUGET_USER: ${{ secrets.NUGET_USER }}
