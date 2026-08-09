@@ -11,11 +11,6 @@ on:
         description: Exact commit targeted by release_tag
         required: true
         type: string
-      waive_local_durable_for_v450:
-        description: One-time owner-approved waiver pinned to the failed v4.5.0 qualification
-        required: false
-        default: false
-        type: boolean
     secrets:
       NUGET_USER:
         description: NuGet profile name used by Trusted Publishing
@@ -26,7 +21,7 @@ permissions:
 
 jobs:
   verify-local-durable-performance:
-    name: Verify local durable performance qualification or approved recovery
+    name: Verify local durable performance qualification
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -64,32 +59,7 @@ jobs:
             throw "$env:RELEASE_TAG does not resolve to $env:RELEASE_COMMIT."
           }
 
-      - name: Record the approved one-time v4.5.0 waiver
-        if: ${{ inputs.waive_local_durable_for_v450 }}
-        shell: pwsh
-        env:
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          RELEASE_COMMIT: ${{ inputs.release_commit }}
-          WORKFLOW_REF: ${{ github.workflow_ref }}
-          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          if ($env:GITHUB_REPOSITORY -cne 'MaxAkbar/CSharpDB' -or
-              $env:GITHUB_EVENT_NAME -cne 'workflow_dispatch' -or
-              $env:GITHUB_REF -cne 'refs/heads/main' -or
-              $env:WORKFLOW_REF -cne 'MaxAkbar/CSharpDB/.github/workflows/publish-release.yml@refs/heads/main' -or
-              $env:GITHUB_ACTOR -cne 'MaxAkbar' -or
-              $env:TRIGGERING_ACTOR -cne 'MaxAkbar' -or
-              $env:RELEASE_TAG -cne 'v4.5.0' -or
-              $env:RELEASE_COMMIT -cne '7aeb66031237283c3643e73849618bf299729ed6') {
-            throw 'The local durable waiver is valid only for the exact owner-dispatched v4.5.0 recovery.'
-          }
-
-          Write-Host '::warning title=Explicit v4.5.0 recovery waiver::The failed local durable-v3 evidence is preserved. Hosted qualification remains blocking, and no success status is being fabricated.'
-
       - name: Require a successful matching-commit local performance status
-        if: ${{ !inputs.waive_local_durable_for_v450 }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -108,7 +78,9 @@ jobs:
     with:
       release_version: ${{ inputs.release_tag }}
       release_commit: ${{ inputs.release_commit }}
-      previous_release_ref: ${{ inputs.waive_local_durable_for_v450 && '86e25435f3c64f47afe2a776c6b03cbe84e56858' || '' }}
+      # v4.5.0 was tagged but never published, so v4.5.1 must measure the
+      # cumulative public delta from the last published release, v4.4.0.
+      previous_release_ref: ${{ inputs.release_tag == 'v4.5.1' && '86e25435f3c64f47afe2a776c6b03cbe84e56858' || '' }}
 
   publish-nuget:
     name: Publish NuGet
@@ -804,7 +776,7 @@ jobs:
             throw "Could not check for an existing $env:RELEASE_TAG GitHub Release."
           }
           if ($releaseTags -ccontains $env:RELEASE_TAG) {
-            throw "A $env:RELEASE_TAG GitHub Release already exists; recovery will not update it."
+            throw "A $env:RELEASE_TAG GitHub Release already exists; publication will not update it."
           }
 
       - name: Create release (custom notes)

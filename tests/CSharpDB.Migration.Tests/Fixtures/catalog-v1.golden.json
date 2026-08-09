@@ -1,9 +1,9 @@
 {
   "format": "csharpdb-migration-catalog/v1",
   "digestAlgorithm": "sha256",
-  "digest": "fdb2779f7d108a81d7f7f23b7e776a25f3ae67f216accedbba55aca876b1f6dd",
+  "digest": "3f4e60759e6b1e795b931fd3cecce9b8a6e5701c14d477aa92fa0e7fa50feaea",
   "payload": {
-    "targetCSharpDbVersion": "4.5.0",
+    "targetCSharpDbVersion": "4.5.1",
     "source": {
       "kind": "synthetic",
       "identity": "fixture:awkward-v1",

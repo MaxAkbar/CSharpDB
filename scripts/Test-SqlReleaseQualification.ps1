@@ -240,6 +240,7 @@ try {
             $Configuration,
             '--no-build',
             '--no-restore',
+            '--maxcpucount:1',
             '--verbosity',
             'minimal',
             '--logger',
