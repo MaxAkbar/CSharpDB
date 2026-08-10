@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using CSharpDB.Engine;
 using CSharpDB.Execution;
+using CSharpDB.Observability;
 using CSharpDB.Primitives;
 using CSharpDB.Sql;
 
@@ -20,6 +21,7 @@ internal static class CSharpDbConnectionPoolRegistry
     internal static async ValueTask<PooledDatabaseSession> OpenPooledSessionAsync(
         PoolKey key,
         Func<CancellationToken, ValueTask<Database>> openDatabaseAsync,
+        CSharpDbObservabilityOptions? observabilityOptionsSnapshot,
         CancellationToken cancellationToken)
     {
         while (true)
@@ -44,6 +46,7 @@ internal static class CSharpDbConnectionPoolRegistry
             CSharpDbConnectionPool pool = await GetOrCreateAsync(
                 key,
                 openDatabaseAsync,
+                observabilityOptionsSnapshot,
                 cancellationToken);
             try
             {
@@ -59,6 +62,7 @@ internal static class CSharpDbConnectionPoolRegistry
     private static async ValueTask<CSharpDbConnectionPool> GetOrCreateAsync(
         PoolKey key,
         Func<CancellationToken, ValueTask<Database>> openDatabaseAsync,
+        CSharpDbObservabilityOptions? observabilityOptionsSnapshot,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(openDatabaseAsync);
@@ -66,9 +70,21 @@ internal static class CSharpDbConnectionPoolRegistry
         while (true)
         {
             Task? retirementTask = null;
-            await s_gate.WaitAsync(cancellationToken);
+            IDisposable? lifecycleBoundary = null;
+            bool registryGateHeld = false;
             try
             {
+                while (!await TryAcquireRegistryGateForCloseAsync(
+                           cancellationToken,
+                           lifecycleBoundary is not null,
+                           dataSource: key.DataSource))
+                {
+                    lifecycleBoundary ??=
+                        DataLifecycleDiagnosticBoundary.EnterEnabledBoundary(
+                            OpaqueDiagnosticsId.Create());
+                }
+                registryGateHeld = true;
+
                 ThrowIfFileDeletionReserved(key.DataSource);
 
                 if (s_directLeaseCounts.TryGetValue(key.DataSource, out int directLeaseCount) &&
@@ -124,7 +140,11 @@ internal static class CSharpDbConnectionPoolRegistry
                             incompatiblePool));
                     }
 
-                    var created = new CSharpDbConnectionPool(key, key.MaxPoolSize, openDatabaseAsync);
+                    var created = new CSharpDbConnectionPool(
+                        key,
+                        key.MaxPoolSize,
+                        openDatabaseAsync,
+                        observabilityOptionsSnapshot);
                     if (!s_pools.TryAdd(key, created))
                         return s_pools[key];
 
@@ -133,7 +153,9 @@ internal static class CSharpDbConnectionPoolRegistry
             }
             finally
             {
-                s_gate.Release();
+                if (registryGateHeld)
+                    s_gate.Release();
+                lifecycleBoundary?.Dispose();
             }
 
             await retirementTask.WaitAsync(cancellationToken);
@@ -143,6 +165,7 @@ internal static class CSharpDbConnectionPoolRegistry
     internal static async ValueTask<DirectDatabaseSession> OpenDirectSessionAsync(
         string dataSource,
         Func<CancellationToken, ValueTask<Database>> openDatabaseAsync,
+        CSharpDbObservabilityOptions? observabilityOptionsSnapshot,
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(dataSource);
@@ -154,7 +177,8 @@ internal static class CSharpDbConnectionPoolRegistry
             Database database = await openDatabaseAsync(cancellationToken);
             return new DirectDatabaseSession(
                 database,
-                directDatabase => DisposeDirectDatabaseAsync(dataSource, directDatabase));
+                directDatabase => DisposeDirectDatabaseAsync(dataSource, directDatabase),
+                observabilityOptionsSnapshot);
         }
         catch
         {
@@ -165,9 +189,21 @@ internal static class CSharpDbConnectionPoolRegistry
 
     internal static async ValueTask ClearPoolAsync(PoolKey key)
     {
-        await s_gate.WaitAsync();
+        IDisposable? lifecycleBoundary = null;
+        bool registryGateHeld = false;
         try
         {
+            while (!await TryAcquireRegistryGateForCloseAsync(
+                       CancellationToken.None,
+                       lifecycleBoundary is not null,
+                       exactKey: key))
+            {
+                lifecycleBoundary ??=
+                    DataLifecycleDiagnosticBoundary.EnterEnabledBoundary(
+                        OpaqueDiagnosticsId.Create());
+            }
+            registryGateHeld = true;
+
             if (s_pools.TryRemove(key, out CSharpDbConnectionPool? pool))
             {
                 try
@@ -182,7 +218,9 @@ internal static class CSharpDbConnectionPoolRegistry
         }
         finally
         {
-            s_gate.Release();
+            if (registryGateHeld)
+                s_gate.Release();
+            lifecycleBoundary?.Dispose();
         }
     }
 
@@ -190,10 +228,21 @@ internal static class CSharpDbConnectionPoolRegistry
     {
         ArgumentNullException.ThrowIfNull(predicate);
 
-        await s_gate.WaitAsync();
+        IDisposable? lifecycleBoundary = null;
+        bool registryGateHeld = false;
         List<Exception>? errors = null;
         try
         {
+            while (!await TryAcquireRegistryGateForCloseAsync(
+                       CancellationToken.None,
+                       lifecycleBoundary is not null))
+            {
+                lifecycleBoundary ??=
+                    DataLifecycleDiagnosticBoundary.EnterEnabledBoundary(
+                        OpaqueDiagnosticsId.Create());
+            }
+            registryGateHeld = true;
+
             KeyValuePair<PoolKey, CSharpDbConnectionPool>[] matches = s_pools
                 .Where(pair => predicate(pair.Key))
                 .ToArray();
@@ -219,7 +268,9 @@ internal static class CSharpDbConnectionPoolRegistry
         }
         finally
         {
-            s_gate.Release();
+            if (registryGateHeld)
+                s_gate.Release();
+            lifecycleBoundary?.Dispose();
         }
 
         ThrowDisableErrors(errors);
@@ -227,10 +278,21 @@ internal static class CSharpDbConnectionPoolRegistry
 
     internal static async ValueTask ClearAllAsync()
     {
-        await s_gate.WaitAsync();
+        IDisposable? lifecycleBoundary = null;
+        bool registryGateHeld = false;
         List<Exception>? errors = null;
         try
         {
+            while (!await TryAcquireRegistryGateForCloseAsync(
+                       CancellationToken.None,
+                       lifecycleBoundary is not null))
+            {
+                lifecycleBoundary ??=
+                    DataLifecycleDiagnosticBoundary.EnterEnabledBoundary(
+                        OpaqueDiagnosticsId.Create());
+            }
+            registryGateHeld = true;
+
             KeyValuePair<PoolKey, CSharpDbConnectionPool>[] entries = s_pools.ToArray();
             s_pools.Clear();
 
@@ -252,7 +314,9 @@ internal static class CSharpDbConnectionPoolRegistry
         }
         finally
         {
-            s_gate.Release();
+            if (registryGateHeld)
+                s_gate.Release();
+            lifecycleBoundary?.Dispose();
         }
 
         ThrowDisableErrors(errors);
@@ -265,9 +329,21 @@ internal static class CSharpDbConnectionPoolRegistry
         ArgumentException.ThrowIfNullOrWhiteSpace(dataSource);
         var reservation = new FileDeletionReservation(dataSource);
 
-        await s_gate.WaitAsync(cancellationToken);
+        IDisposable? lifecycleBoundary = null;
+        bool registryGateHeld = false;
         try
         {
+            while (!await TryAcquireRegistryGateForCloseAsync(
+                       cancellationToken,
+                       lifecycleBoundary is not null,
+                       dataSource: dataSource))
+            {
+                lifecycleBoundary ??=
+                    DataLifecycleDiagnosticBoundary.EnterEnabledBoundary(
+                        OpaqueDiagnosticsId.Create());
+            }
+            registryGateHeld = true;
+
             if (s_fileDeletionReservations.ContainsKey(dataSource))
             {
                 throw new InvalidOperationException(
@@ -324,7 +400,9 @@ internal static class CSharpDbConnectionPoolRegistry
         }
         finally
         {
-            s_gate.Release();
+            if (registryGateHeld)
+                s_gate.Release();
+            lifecycleBoundary?.Dispose();
         }
     }
 
@@ -341,9 +419,21 @@ internal static class CSharpDbConnectionPoolRegistry
         string dataSource,
         CancellationToken cancellationToken)
     {
-        await s_gate.WaitAsync(cancellationToken);
+        IDisposable? lifecycleBoundary = null;
+        bool registryGateHeld = false;
         try
         {
+            while (!await TryAcquireRegistryGateForCloseAsync(
+                       cancellationToken,
+                       lifecycleBoundary is not null,
+                       dataSource: dataSource))
+            {
+                lifecycleBoundary ??=
+                    DataLifecycleDiagnosticBoundary.EnterEnabledBoundary(
+                        OpaqueDiagnosticsId.Create());
+            }
+            registryGateHeld = true;
+
             ThrowIfFileDeletionReserved(dataSource);
 
             if (s_retiringPools.TryGetValue(dataSource, out Task? retiring))
@@ -390,7 +480,9 @@ internal static class CSharpDbConnectionPoolRegistry
         }
         finally
         {
-            s_gate.Release();
+            if (registryGateHeld)
+                s_gate.Release();
+            lifecycleBoundary?.Dispose();
         }
     }
 
@@ -462,6 +554,56 @@ internal static class CSharpDbConnectionPoolRegistry
             throw new InvalidOperationException(
                 "Cannot open an embedded connection while the database for the same data source is being deleted.");
         }
+    }
+
+    private static async ValueTask<bool> TryAcquireRegistryGateForCloseAsync(
+            CancellationToken cancellationToken,
+            bool boundaryEstablished,
+            string? dataSource = null,
+            PoolKey? exactKey = null)
+    {
+        await s_gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (!boundaryEstablished &&
+                HasLifecycleLoggingPool(dataSource, exactKey))
+            {
+                s_gate.Release();
+                return false;
+            }
+
+            // The caller now owns the acquired registry gate. If a close boundary
+            // was required, it was entered by the caller before this retry so its
+            // AsyncLocal frame is visible to every nested database disposal.
+            return true;
+        }
+        catch
+        {
+            s_gate.Release();
+            throw;
+        }
+    }
+
+    private static bool HasLifecycleLoggingPool(
+        string? dataSource,
+        PoolKey? exactKey)
+    {
+        foreach (CSharpDbConnectionPool pool in s_pools.Values)
+        {
+            PoolKey key = pool.Key;
+            if (dataSource is not null &&
+                !s_pathComparer.Equals(key.DataSource, dataSource))
+            {
+                continue;
+            }
+
+            if (exactKey is PoolKey expected && !key.Equals(expected))
+                continue;
+            if (pool.LifecycleLoggingEnabled)
+                return true;
+        }
+
+        return false;
     }
 
     private static async ValueTask ReleaseFileDeletionReservationAsync(
@@ -539,6 +681,8 @@ internal sealed class CSharpDbConnectionPool
     private readonly HashSet<long> _sessionsWithTemporaryState = [];
 
     private readonly PoolKey _key;
+    private readonly CSharpDbObservabilityOptions? _observabilityOptionsSnapshot;
+    private readonly bool _lifecycleLoggingEnabled;
     private Database? _database;
     private bool _disabled;
     private bool _poisoned;
@@ -550,17 +694,28 @@ internal sealed class CSharpDbConnectionPool
     private bool _transactionSchemaMutated;
     private int _temporaryCleanupCountForTest;
 
+    internal static Action? BeforeFirstPhysicalOpenForTest { get; set; }
+    internal static Action? BeforeOpenSessionGateForTest { get; set; }
+
     internal CSharpDbConnectionPool(
         PoolKey key,
         int maxPoolSize,
-        Func<CancellationToken, ValueTask<Database>> openDatabaseAsync)
+        Func<CancellationToken, ValueTask<Database>> openDatabaseAsync,
+        CSharpDbObservabilityOptions? observabilityOptionsSnapshot = null)
     {
         _key = key;
+        _observabilityOptionsSnapshot = observabilityOptionsSnapshot;
+        _lifecycleLoggingEnabled =
+            DataLifecycleDiagnosticBoundary.IsLifecycleLoggingEnabled(
+                _observabilityOptionsSnapshot);
         _sessionSlots = new SemaphoreSlim(maxPoolSize, maxPoolSize);
         _openDatabaseAsync = openDatabaseAsync;
     }
 
     internal PoolKey Key => _key;
+    internal CSharpDbObservabilityOptions? ObservabilityOptionsSnapshot =>
+        _observabilityOptionsSnapshot;
+    internal bool LifecycleLoggingEnabled => _lifecycleLoggingEnabled;
     internal int ActiveSessionCount => Volatile.Read(ref _activeSessionCount);
     internal Task Retirement => _retirement.Task;
     internal int ActiveSnapshotReaderCountForTest => _database?.ActiveReaderCount ?? 0;
@@ -574,15 +729,21 @@ internal sealed class CSharpDbConnectionPool
     {
         await _sessionSlots.WaitAsync(cancellationToken);
         bool sessionCreated = false;
+        using IDisposable? lifecycleBoundary = EnterDatabaseOpenBoundary();
         try
         {
+            BeforeOpenSessionGateForTest?.Invoke();
             await _gate.WaitAsync(cancellationToken);
             try
             {
                 if (_disabled)
                     throw new CSharpDbConnectionPoolRetiredException();
 
-                _database ??= await _openDatabaseAsync(cancellationToken);
+                if (_database is null)
+                {
+                    BeforeFirstPhysicalOpenForTest?.Invoke();
+                    _database = await _openDatabaseAsync(cancellationToken);
+                }
                 long sessionId = ++_nextSessionId;
                 Interlocked.Increment(ref _activeSessionCount);
                 sessionCreated = true;
@@ -600,18 +761,60 @@ internal sealed class CSharpDbConnectionPool
         }
     }
 
+    private IDisposable? EnterDatabaseOpenBoundary()
+    {
+        if (Volatile.Read(ref _database) is not null ||
+            !DataLifecycleDiagnosticBoundary.IsLifecycleLoggingEnabled(
+                _observabilityOptionsSnapshot))
+        {
+            return null;
+        }
+
+        return DataLifecycleDiagnosticBoundary.EnterEnabledBoundary(
+            OpaqueDiagnosticsId.Create());
+    }
+
     internal ValueTask<QueryResult> ExecuteAsync(
         long sessionId,
         string sql,
         CancellationToken cancellationToken)
+        => ExecuteAsync(sessionId, sql, sql, cancellationToken);
+
+    internal ValueTask<QueryResult> ExecuteAsync(
+        long sessionId,
+        string executionSql,
+        string? observabilitySql,
+        CancellationToken cancellationToken)
+        => ExecuteAsync(
+            sessionId,
+            executionSql,
+            observabilitySql,
+            observation: null,
+            cancellationToken);
+
+    internal ValueTask<QueryResult> ExecuteAsync(
+        long sessionId,
+        string executionSql,
+        string? observabilitySql,
+        AdoCommandObservation? observation,
+        CancellationToken cancellationToken)
     {
-        SqlStatementClassification classification = SqlStatementClassifier.Classify(sql);
+        SqlStatementClassification classification = SqlStatementClassifier.Classify(executionSql);
         return classification.IsReadOnly
-            ? ExecuteReadAsync(sessionId, classification.Statement, cancellationToken)
+            ? ExecuteReadAsync(
+                sessionId,
+                classification.Statement,
+                observabilitySql,
+                observation,
+                cancellationToken)
             : ExecuteWriteAsync(
                 sessionId,
                 classification.Statement,
-                database => database.ExecuteAsync(classification.Statement, cancellationToken),
+                database => database.ExecuteAsync(
+                    classification.Statement,
+                    QueryObservabilitySource.CreateFingerprint(database, observabilitySql),
+                    cancellationToken),
+                observation,
                 cancellationToken);
     }
 
@@ -619,14 +822,43 @@ internal sealed class CSharpDbConnectionPool
         long sessionId,
         Statement statement,
         CancellationToken cancellationToken)
+        => ExecuteAsync(sessionId, statement, observabilitySql: null, cancellationToken);
+
+    internal ValueTask<QueryResult> ExecuteAsync(
+        long sessionId,
+        Statement statement,
+        string? observabilitySql,
+        CancellationToken cancellationToken)
+        => ExecuteAsync(
+            sessionId,
+            statement,
+            observabilitySql,
+            observation: null,
+            cancellationToken);
+
+    internal ValueTask<QueryResult> ExecuteAsync(
+        long sessionId,
+        Statement statement,
+        string? observabilitySql,
+        AdoCommandObservation? observation,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(statement);
         return SqlStatementClassifier.IsReadOnly(statement)
-            ? ExecuteReadAsync(sessionId, statement, cancellationToken)
+            ? ExecuteReadAsync(
+                sessionId,
+                statement,
+                observabilitySql,
+                observation,
+                cancellationToken)
             : ExecuteWriteAsync(
                 sessionId,
                 statement,
-                database => database.ExecuteAsync(statement, cancellationToken),
+                database => database.ExecuteAsync(
+                    statement,
+                    QueryObservabilitySource.CreateFingerprint(database, observabilitySql),
+                    cancellationToken),
+                observation,
                 cancellationToken);
     }
 
@@ -634,10 +866,34 @@ internal sealed class CSharpDbConnectionPool
         long sessionId,
         SimpleInsertSql insert,
         CancellationToken cancellationToken)
+        => ExecuteAsync(sessionId, insert, observabilitySql: null, cancellationToken);
+
+    internal ValueTask<QueryResult> ExecuteAsync(
+        long sessionId,
+        SimpleInsertSql insert,
+        string? observabilitySql,
+        CancellationToken cancellationToken)
+        => ExecuteAsync(
+            sessionId,
+            insert,
+            observabilitySql,
+            observation: null,
+            cancellationToken);
+
+    internal ValueTask<QueryResult> ExecuteAsync(
+        long sessionId,
+        SimpleInsertSql insert,
+        string? observabilitySql,
+        AdoCommandObservation? observation,
+        CancellationToken cancellationToken)
         => ExecuteWriteAsync(
             sessionId,
             statement: null,
-            database => database.ExecuteAsync(insert, cancellationToken),
+            database => database.ExecuteAsync(
+                insert,
+                QueryObservabilitySource.CreateFingerprint(database, observabilitySql),
+                cancellationToken),
+            observation,
             cancellationToken);
 
     internal async ValueTask BeginTransactionAsync(
@@ -930,14 +1186,20 @@ internal sealed class CSharpDbConnectionPool
     private async ValueTask<QueryResult> ExecuteReadAsync(
         long sessionId,
         Statement statement,
+        string? observabilitySql,
+        AdoCommandObservation? observation,
         CancellationToken cancellationToken)
     {
-        await _gate.WaitAsync(cancellationToken);
+        using (observation?.MeasureQueueWait())
+            await _gate.WaitAsync(cancellationToken);
+        using IDisposable? queueDurationScope = observation?.EnterQueueDurationScope();
         try
         {
             ThrowIfUnavailable();
 
             Database database = GetDatabase();
+            QueryFingerprint? fingerprint =
+                QueryObservabilitySource.CreateFingerprint(database, observabilitySql);
             using var temporaryScope = database.EnterTemporaryTableSessionScope(sessionId);
             if (_transactionOwnerSessionId.HasValue &&
                 _transactionOwnerSessionId.Value != sessionId &&
@@ -948,7 +1210,11 @@ internal sealed class CSharpDbConnectionPool
 
             if (_transactionOwnerSessionId == sessionId)
             {
-                QueryResult liveResult = await database.ExecuteAsync(statement, cancellationToken);
+                observation?.MarkDispatchHandoff();
+                QueryResult liveResult = await database.ExecuteAsync(
+                    statement,
+                    fingerprint,
+                    cancellationToken);
                 return await DetachQueryResultAsync(liveResult, cancellationToken);
             }
 
@@ -957,7 +1223,11 @@ internal sealed class CSharpDbConnectionPool
                 if (_transactionOwnerSessionId.HasValue)
                     throw new InvalidOperationException(BusyMessage);
 
-                QueryResult temporaryResult = await database.ExecuteAsync(statement, cancellationToken);
+                observation?.MarkDispatchHandoff();
+                QueryResult temporaryResult = await database.ExecuteAsync(
+                    statement,
+                    fingerprint,
+                    cancellationToken);
                 return await DetachQueryResultAsync(temporaryResult, cancellationToken);
             }
 
@@ -969,7 +1239,11 @@ internal sealed class CSharpDbConnectionPool
             TrackReaderSession(sessionId, readerSession);
             try
             {
-                QueryResult result = await readerSession.ExecuteReadAsync(statement, cancellationToken);
+                observation?.MarkDispatchHandoff();
+                QueryResult result = await readerSession.ExecuteReadAsync(
+                    statement,
+                    fingerprint,
+                    cancellationToken);
                 result.AppendDisposeCallback(
                     () => ReleaseReaderSessionAsync(sessionId, readerSession));
                 return result;
@@ -991,9 +1265,12 @@ internal sealed class CSharpDbConnectionPool
         long sessionId,
         Statement? statement,
         Func<Database, ValueTask<QueryResult>> executeAsync,
+        AdoCommandObservation? observation,
         CancellationToken cancellationToken)
     {
-        await _gate.WaitAsync(cancellationToken);
+        using (observation?.MeasureQueueWait())
+            await _gate.WaitAsync(cancellationToken);
+        using IDisposable? queueDurationScope = observation?.EnterQueueDurationScope();
         try
         {
             ThrowIfUnavailable();
@@ -1016,6 +1293,7 @@ internal sealed class CSharpDbConnectionPool
                         _transactionSchemaMutated = true;
                 }
 
+                observation?.MarkDispatchHandoff();
                 QueryResult result = await executeAsync(database);
                 return await DetachQueryResultAsync(result, cancellationToken);
             }
@@ -1234,6 +1512,8 @@ internal sealed class PooledDatabaseSession : ICSharpDbSession
     }
 
     public bool SupportsStructuredExecution => true;
+    public CSharpDbObservabilityOptions? ObservabilityOptionsSnapshot =>
+        _ownerPool.ObservabilityOptionsSnapshot;
     internal int ActiveSnapshotReaderCountForTest =>
         _ownerPool.ActiveSnapshotReaderCountForTest;
     internal int TemporaryCleanupCountForTest =>
@@ -1245,14 +1525,80 @@ internal sealed class PooledDatabaseSession : ICSharpDbSession
         => GetPool().ExecuteAsync(_sessionId, sql, cancellationToken);
 
     public ValueTask<QueryResult> ExecuteAsync(
+        string executionSql,
+        string? observabilitySql,
+        CancellationToken cancellationToken = default)
+        => GetPool().ExecuteAsync(
+            _sessionId,
+            executionSql,
+            observabilitySql,
+            cancellationToken);
+
+    public ValueTask<QueryResult> ExecuteAsync(
+        string executionSql,
+        string? observabilitySql,
+        AdoCommandObservation? observation,
+        CancellationToken cancellationToken = default)
+        => GetPool().ExecuteAsync(
+            _sessionId,
+            executionSql,
+            observabilitySql,
+            observation,
+            cancellationToken);
+
+    public ValueTask<QueryResult> ExecuteAsync(
         Statement statement,
         CancellationToken cancellationToken = default)
         => GetPool().ExecuteAsync(_sessionId, statement, cancellationToken);
 
     public ValueTask<QueryResult> ExecuteAsync(
+        Statement statement,
+        string? observabilitySql,
+        CancellationToken cancellationToken = default)
+        => GetPool().ExecuteAsync(
+            _sessionId,
+            statement,
+            observabilitySql,
+            cancellationToken);
+
+    public ValueTask<QueryResult> ExecuteAsync(
+        Statement statement,
+        string? observabilitySql,
+        AdoCommandObservation? observation,
+        CancellationToken cancellationToken = default)
+        => GetPool().ExecuteAsync(
+            _sessionId,
+            statement,
+            observabilitySql,
+            observation,
+            cancellationToken);
+
+    public ValueTask<QueryResult> ExecuteAsync(
         SimpleInsertSql insert,
         CancellationToken cancellationToken = default)
         => GetPool().ExecuteAsync(_sessionId, insert, cancellationToken);
+
+    public ValueTask<QueryResult> ExecuteAsync(
+        SimpleInsertSql insert,
+        string? observabilitySql,
+        CancellationToken cancellationToken = default)
+        => GetPool().ExecuteAsync(
+            _sessionId,
+            insert,
+            observabilitySql,
+            cancellationToken);
+
+    public ValueTask<QueryResult> ExecuteAsync(
+        SimpleInsertSql insert,
+        string? observabilitySql,
+        AdoCommandObservation? observation,
+        CancellationToken cancellationToken = default)
+        => GetPool().ExecuteAsync(
+            _sessionId,
+            insert,
+            observabilitySql,
+            observation,
+            cancellationToken);
 
     public ValueTask BeginTransactionAsync(CancellationToken cancellationToken = default)
         => GetPool().BeginTransactionAsync(_sessionId, cancellationToken);

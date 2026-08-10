@@ -9,6 +9,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\CSharpDB.Observability\CSharpDB.Observability.csproj" />
     <ProjectReference Include="..\CSharpDB.Pipelines\CSharpDB.Pipelines.csproj" />
     <ProjectReference Include="..\CSharpDB.Engine\CSharpDB.Engine.csproj" />
     <ProjectReference Include="..\CSharpDB.ImportExport\CSharpDB.ImportExport.csproj" />
@@ -30,6 +31,7 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.10" />
   </ItemGroup>
 
   <ItemGroup>

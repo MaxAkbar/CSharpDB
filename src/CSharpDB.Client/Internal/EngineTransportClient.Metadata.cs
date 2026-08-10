@@ -1,6 +1,7 @@
 using System.Globalization;
 using CSharpDB.Client.Models;
 using CSharpDB.Engine;
+using CSharpDB.Observability;
 
 namespace CSharpDB.Client.Internal;
 
@@ -11,51 +12,45 @@ internal sealed partial class EngineTransportClient
 
     public async Task<IReadOnlyList<string>> GetViewNamesAsync(CancellationToken ct = default)
     {
-        await _lock.WaitAsync(ct);
-        try
-        {
-            await EnsureCatalogsInitializedAsync(ct);
-            var db = await GetDatabaseAsync(ct);
-            return db.GetViewNames()
-                .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
-                .ToArray();
-        }
-        finally { _lock.Release(); }
+        using ClientLockLease clientLock = await AcquireClientLockAsync(ct);
+        await EnsureCatalogsInitializedAsync(ct);
+        var db = await GetDatabaseAsync(ct);
+        return db.GetViewNames()
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
     }
 
     public async Task<string?> GetViewSqlAsync(string viewName, CancellationToken ct = default)
     {
-        await _lock.WaitAsync(ct);
-        try
-        {
-            await EnsureCatalogsInitializedAsync(ct);
-            string normalizedViewName = RequireIdentifier(viewName, nameof(viewName));
-            return (await GetDatabaseAsync(ct)).GetViewSql(normalizedViewName);
-        }
-        finally { _lock.Release(); }
+        using ClientLockLease clientLock = await AcquireClientLockAsync(ct);
+        await EnsureCatalogsInitializedAsync(ct);
+        string normalizedViewName = RequireIdentifier(viewName, nameof(viewName));
+        return (await GetDatabaseAsync(ct)).GetViewSql(normalizedViewName);
     }
 
     private async Task<DatabaseInfo> GetInfoCoreAsync(CancellationToken ct)
     {
-        await _lock.WaitAsync(ct);
-        try
-        {
-            await EnsureCatalogsInitializedAsync(ct);
-            var db = await GetDatabaseAsync(ct);
+        using ClientLockLease clientLock = await AcquireClientLockAsync(ct);
+        await EnsureCatalogsInitializedAsync(ct);
+        var db = await GetDatabaseAsync(ct);
 
-            return new DatabaseInfo
-            {
-                DataSource = _databasePath,
-                TableCount = db.GetTableNames().Count(name => !IsInternalTable(name)),
-                IndexCount = db.GetIndexes().Count(index => !IsInternalTable(index.TableName)),
-                ViewCount = db.GetViewNames().Count,
-                TriggerCount = db.GetTriggers().Count,
-                ProcedureCount = await CountRowsViaScalarAsync(db, ProcedureTableName, ct),
-                CollectionCount = db.GetCollectionNames().Count,
-                SavedQueryCount = await CountRowsViaScalarAsync(db, SavedQueryTableName, ct),
-            };
-        }
-        finally { _lock.Release(); }
+        return new DatabaseInfo
+        {
+            DataSource = _databasePath,
+            TableCount = db.GetTableNames().Count(name => !IsInternalTable(name)),
+            IndexCount = db.GetIndexes().Count(index => !IsInternalTable(index.TableName)),
+            ViewCount = db.GetViewNames().Count,
+            TriggerCount = db.GetTriggers().Count,
+            ProcedureCount = await CountInternalCatalogRowsViaScalarAsync(
+                db,
+                ProcedureTableName,
+                ct),
+            CollectionCount = db.GetCollectionNames().Count,
+            SavedQueryCount = await CountInternalCatalogRowsViaScalarAsync(
+                db,
+                SavedQueryTableName,
+                ct),
+        };
     }
 
     private async Task EnsureCatalogsInitializedAsync(CancellationToken ct)
@@ -64,6 +59,8 @@ internal sealed partial class EngineTransportClient
             return;
 
         var db = await GetDatabaseAsync(ct);
+
+        using IDisposable suppression = CSharpDbOperationScope.SuppressDiagnostics();
         await EnsureProcedureCatalogAsync(db, ct);
         await EnsureSavedQueryCatalogAsync(db, ct);
         _catalogsInitialized = true;
@@ -107,7 +104,7 @@ internal sealed partial class EngineTransportClient
             """, ct);
     }
 
-    private static async Task<int> CountRowsViaScalarAsync(Database db, string tableName, CancellationToken ct)
+    private async Task<int> CountRowsViaScalarAsync(Database db, string tableName, CancellationToken ct)
     {
         var result = await ExecuteQueryAsync(
             db,
@@ -117,5 +114,14 @@ internal sealed partial class EngineTransportClient
             return 0;
 
         return Convert.ToInt32(result.Rows[0][0], CultureInfo.InvariantCulture);
+    }
+
+    private async Task<int> CountInternalCatalogRowsViaScalarAsync(
+        Database db,
+        string tableName,
+        CancellationToken ct)
+    {
+        using IDisposable suppression = CSharpDbOperationScope.SuppressDiagnostics();
+        return await CountRowsViaScalarAsync(db, tableName, ct);
     }
 }

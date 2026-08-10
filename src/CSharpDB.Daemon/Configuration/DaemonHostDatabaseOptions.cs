@@ -1,6 +1,8 @@
 using CSharpDB.Client;
 using CSharpDB.Engine;
+using CSharpDB.Observability;
 using Microsoft.Extensions.Configuration;
+using ClientTransport = CSharpDB.Client.CSharpDbTransport;
 
 namespace CSharpDB.Daemon.Configuration;
 
@@ -47,27 +49,32 @@ internal static class DaemonClientOptionsBuilder
 
     public static CSharpDbClientOptions Build(
         IConfiguration configuration,
-        DaemonHostDatabaseOptions hostDatabaseOptions)
+        DaemonHostDatabaseOptions hostDatabaseOptions,
+        CSharpDbObservabilityOptions observabilityOptions)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(hostDatabaseOptions);
+        ArgumentNullException.ThrowIfNull(observabilityOptions);
 
         return new CSharpDbClientOptions
         {
-            Transport = CSharpDbTransport.Direct,
+            Transport = ClientTransport.Direct,
             ConnectionString = configuration.GetConnectionString("CSharpDB") ?? FallbackConnectionString,
-            DirectDatabaseOptions = BuildDirectDatabaseOptions(hostDatabaseOptions),
+            DirectDatabaseOptions = BuildDirectDatabaseOptions(hostDatabaseOptions, observabilityOptions),
             HybridDatabaseOptions = hostDatabaseOptions.OpenMode == DaemonHostOpenMode.HybridIncrementalDurable
                 ? BuildHybridDatabaseOptions(hostDatabaseOptions)
                 : null,
         };
     }
 
-    private static DatabaseOptions BuildDirectDatabaseOptions(DaemonHostDatabaseOptions hostDatabaseOptions)
+    private static DatabaseOptions BuildDirectDatabaseOptions(
+        DaemonHostDatabaseOptions hostDatabaseOptions,
+        CSharpDbObservabilityOptions observabilityOptions)
     {
         var options = new DatabaseOptions
         {
             ImplicitInsertExecutionMode = hostDatabaseOptions.ImplicitInsertExecutionMode,
+            ObservabilityOptions = observabilityOptions,
         };
 
         if (!hostDatabaseOptions.UseWriteOptimizedPreset)

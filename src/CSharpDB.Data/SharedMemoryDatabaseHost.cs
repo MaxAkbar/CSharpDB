@@ -1,7 +1,9 @@
 using System.Collections.Concurrent;
+using System.Text.Json;
 using CSharpDB.Primitives;
 using CSharpDB.Engine;
 using CSharpDB.Execution;
+using CSharpDB.Observability;
 using CSharpDB.Sql;
 
 namespace CSharpDB.Data;
@@ -13,20 +15,33 @@ internal static class SharedMemoryDatabaseRegistry
     internal static async ValueTask<ICSharpDbSession> OpenSessionAsync(
         string name,
         string? loadFromPath,
+        DatabaseOptions? databaseOptions,
+        DatabaseOptions runtimeDatabaseOptions,
         CancellationToken cancellationToken = default)
     {
         while (true)
         {
             if (s_hosts.TryGetValue(name, out var existing))
-                return await existing.OpenSessionAsync(loadFromPath, cancellationToken);
+            {
+                return await existing.OpenSessionAsync(
+                    loadFromPath,
+                    databaseOptions,
+                    cancellationToken);
+            }
 
-            var created = new SharedMemoryDatabaseHost(name);
+            var created = new SharedMemoryDatabaseHost(
+                name,
+                databaseOptions,
+                runtimeDatabaseOptions);
             if (!s_hosts.TryAdd(name, created))
                 continue;
 
             try
             {
-                return await created.OpenSessionAsync(loadFromPath, cancellationToken);
+                return await created.OpenSessionAsync(
+                    loadFromPath,
+                    databaseOptions,
+                    cancellationToken);
             }
             catch
             {
@@ -60,6 +75,11 @@ internal sealed class SharedMemoryDatabaseHost
     private const string BusyMessage = "Database is busy with an active transaction.";
 
     private readonly string _name;
+    private readonly DatabaseOptions? _databaseOptions;
+    private readonly DatabaseOptions _runtimeDatabaseOptions;
+    private readonly string? _observabilityConfiguration;
+    private readonly CSharpDbObservabilityOptions? _observabilityOptionsSnapshot;
+    private readonly bool _lifecycleLoggingEnabled;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     private Database? _database;
@@ -72,13 +92,28 @@ internal sealed class SharedMemoryDatabaseHost
     private bool _seedConfigured;
     private string? _seedSourcePath;
 
-    internal SharedMemoryDatabaseHost(string name)
+    internal SharedMemoryDatabaseHost(
+        string name,
+        DatabaseOptions? databaseOptions,
+        DatabaseOptions runtimeDatabaseOptions)
     {
         _name = name;
+        _databaseOptions = databaseOptions;
+        _runtimeDatabaseOptions = runtimeDatabaseOptions ??
+            throw new ArgumentNullException(nameof(runtimeDatabaseOptions));
+        _observabilityConfiguration = SerializeObservabilityConfiguration(databaseOptions);
+        _observabilityOptionsSnapshot = runtimeDatabaseOptions.ObservabilityOptions;
+        _lifecycleLoggingEnabled =
+            DataLifecycleDiagnosticBoundary.IsLifecycleLoggingEnabled(
+                _observabilityOptionsSnapshot);
     }
+
+    internal CSharpDbObservabilityOptions? ObservabilityOptionsSnapshot =>
+        _observabilityOptionsSnapshot;
 
     internal async ValueTask<SharedMemoryDatabaseSession> OpenSessionAsync(
         string? loadFromPath,
+        DatabaseOptions? databaseOptions,
         CancellationToken cancellationToken = default)
     {
         await _gate.WaitAsync(cancellationToken);
@@ -86,6 +121,15 @@ internal sealed class SharedMemoryDatabaseHost
         {
             if (_disabled)
                 throw new InvalidOperationException("The shared in-memory database is no longer accepting new sessions.");
+            if (!ReferenceEquals(_databaseOptions, databaseOptions) ||
+                !string.Equals(
+                    _observabilityConfiguration,
+                    SerializeObservabilityConfiguration(databaseOptions),
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Shared in-memory database '{_name}' was already initialized with different DatabaseOptions.");
+            }
 
             string? normalizedLoadPath = NormalizeOptionalPath(loadFromPath);
             await EnsureInitializedAsync(normalizedLoadPath, cancellationToken);
@@ -100,29 +144,62 @@ internal sealed class SharedMemoryDatabaseHost
         }
     }
 
-    internal async ValueTask<QueryResult> ExecuteAsync(
+    internal ValueTask<QueryResult> ExecuteAsync(
         long sessionId,
         string sql,
         CancellationToken cancellationToken = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(sql);
+        => ExecuteAsync(sessionId, sql, sql, cancellationToken);
 
-        await _gate.WaitAsync(cancellationToken);
+    internal ValueTask<QueryResult> ExecuteAsync(
+        long sessionId,
+        string executionSql,
+        string? observabilitySql,
+        CancellationToken cancellationToken = default)
+        => ExecuteAsync(
+            sessionId,
+            executionSql,
+            observabilitySql,
+            observation: null,
+            cancellationToken);
+
+    internal async ValueTask<QueryResult> ExecuteAsync(
+        long sessionId,
+        string executionSql,
+        string? observabilitySql,
+        AdoCommandObservation? observation,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(executionSql);
+
+        using (observation?.MeasureQueueWait())
+            await _gate.WaitAsync(cancellationToken);
+        using IDisposable? queueDurationScope = observation?.EnterQueueDurationScope();
         try
         {
             if (OwnedByOtherSession(sessionId))
             {
-                var statement = Parser.Parse(sql);
+                var statement = Parser.Parse(executionSql);
                 if (!IsReadOnly(statement))
                     throw new InvalidOperationException(BusyMessage);
 
-                await using var query = await GetTransactionSnapshotDatabase().ExecuteAsync(statement, cancellationToken);
+                Database snapshotDatabase = GetTransactionSnapshotDatabase();
+                QueryFingerprint? fingerprint =
+                    QueryObservabilitySource.CreateFingerprint(snapshotDatabase, observabilitySql);
+                observation?.MarkDispatchHandoff();
+                await using var query = await snapshotDatabase.ExecuteAsync(
+                    statement,
+                    fingerprint,
+                    cancellationToken);
                 return await DetachQueryResultAsync(query, cancellationToken);
             }
 
             Database database = GetDatabase();
             using var temporaryScope = database.EnterTemporaryTableSessionScope(sessionId);
-            await using var liveQuery = await database.ExecuteAsync(sql, cancellationToken);
+            observation?.MarkDispatchHandoff();
+            await using var liveQuery = await database.ExecuteAsync(
+                executionSql,
+                observabilitySql,
+                cancellationToken);
             return await DetachQueryResultAsync(liveQuery, cancellationToken);
         }
         finally
@@ -130,15 +207,37 @@ internal sealed class SharedMemoryDatabaseHost
             _gate.Release();
         }
     }
+
+    internal ValueTask<QueryResult> ExecuteAsync(
+        long sessionId,
+        Statement statement,
+        CancellationToken cancellationToken = default)
+        => ExecuteAsync(sessionId, statement, observabilitySql: null, cancellationToken);
+
+    internal ValueTask<QueryResult> ExecuteAsync(
+        long sessionId,
+        Statement statement,
+        string? observabilitySql,
+        CancellationToken cancellationToken = default)
+        => ExecuteAsync(
+            sessionId,
+            statement,
+            observabilitySql,
+            observation: null,
+            cancellationToken);
 
     internal async ValueTask<QueryResult> ExecuteAsync(
         long sessionId,
         Statement statement,
+        string? observabilitySql,
+        AdoCommandObservation? observation,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(statement);
 
-        await _gate.WaitAsync(cancellationToken);
+        using (observation?.MeasureQueueWait())
+            await _gate.WaitAsync(cancellationToken);
+        using IDisposable? queueDurationScope = observation?.EnterQueueDurationScope();
         try
         {
             if (OwnedByOtherSession(sessionId))
@@ -146,13 +245,26 @@ internal sealed class SharedMemoryDatabaseHost
                 if (!IsReadOnly(statement))
                     throw new InvalidOperationException(BusyMessage);
 
-                await using var query = await GetTransactionSnapshotDatabase().ExecuteAsync(statement, cancellationToken);
+                Database snapshotDatabase = GetTransactionSnapshotDatabase();
+                QueryFingerprint? fingerprint =
+                    QueryObservabilitySource.CreateFingerprint(snapshotDatabase, observabilitySql);
+                observation?.MarkDispatchHandoff();
+                await using var query = await snapshotDatabase.ExecuteAsync(
+                    statement,
+                    fingerprint,
+                    cancellationToken);
                 return await DetachQueryResultAsync(query, cancellationToken);
             }
 
             Database database = GetDatabase();
             using var temporaryScope = database.EnterTemporaryTableSessionScope(sessionId);
-            await using var liveQuery = await database.ExecuteAsync(statement, cancellationToken);
+            QueryFingerprint? liveFingerprint =
+                QueryObservabilitySource.CreateFingerprint(database, observabilitySql);
+            observation?.MarkDispatchHandoff();
+            await using var liveQuery = await database.ExecuteAsync(
+                statement,
+                liveFingerprint,
+                cancellationToken);
             return await DetachQueryResultAsync(liveQuery, cancellationToken);
         }
         finally
@@ -161,12 +273,34 @@ internal sealed class SharedMemoryDatabaseHost
         }
     }
 
-    internal async ValueTask<QueryResult> ExecuteAsync(
+    internal ValueTask<QueryResult> ExecuteAsync(
         long sessionId,
         SimpleInsertSql insert,
         CancellationToken cancellationToken = default)
+        => ExecuteAsync(sessionId, insert, observabilitySql: null, cancellationToken);
+
+    internal ValueTask<QueryResult> ExecuteAsync(
+        long sessionId,
+        SimpleInsertSql insert,
+        string? observabilitySql,
+        CancellationToken cancellationToken = default)
+        => ExecuteAsync(
+            sessionId,
+            insert,
+            observabilitySql,
+            observation: null,
+            cancellationToken);
+
+    internal async ValueTask<QueryResult> ExecuteAsync(
+        long sessionId,
+        SimpleInsertSql insert,
+        string? observabilitySql,
+        AdoCommandObservation? observation,
+        CancellationToken cancellationToken = default)
     {
-        await _gate.WaitAsync(cancellationToken);
+        using (observation?.MeasureQueueWait())
+            await _gate.WaitAsync(cancellationToken);
+        using IDisposable? queueDurationScope = observation?.EnterQueueDurationScope();
         try
         {
             if (OwnedByOtherSession(sessionId))
@@ -174,7 +308,13 @@ internal sealed class SharedMemoryDatabaseHost
 
             Database database = GetDatabase();
             using var temporaryScope = database.EnterTemporaryTableSessionScope(sessionId);
-            await using var query = await database.ExecuteAsync(insert, cancellationToken);
+            QueryFingerprint? fingerprint =
+                QueryObservabilitySource.CreateFingerprint(database, observabilitySql);
+            observation?.MarkDispatchHandoff();
+            await using var query = await database.ExecuteAsync(
+                insert,
+                fingerprint,
+                cancellationToken);
             return new QueryResult(query.RowsAffected);
         }
         finally
@@ -446,6 +586,7 @@ internal sealed class SharedMemoryDatabaseHost
         Database? snapshotDatabase = null;
         string? snapshotPath = null;
 
+        using IDisposable? lifecycleBoundary = EnterDatabaseCloseBoundary();
         await _gate.WaitAsync();
         try
         {
@@ -471,13 +612,27 @@ internal sealed class SharedMemoryDatabaseHost
         await DisposeSnapshotAsync(snapshotDatabase, snapshotPath);
     }
 
+    private IDisposable? EnterDatabaseCloseBoundary()
+    {
+        if (!_lifecycleLoggingEnabled)
+            return null;
+
+        return DataLifecycleDiagnosticBoundary.EnterEnabledBoundary(
+            OpaqueDiagnosticsId.Create());
+    }
+
     private async ValueTask EnsureInitializedAsync(string? normalizedLoadPath, CancellationToken cancellationToken)
     {
         if (_database is null)
         {
             _database = normalizedLoadPath is null
-                ? await Database.OpenInMemoryAsync(cancellationToken)
-                : await Database.LoadIntoMemoryAsync(normalizedLoadPath, cancellationToken);
+                ? await Database.OpenInMemoryAsync(
+                    _runtimeDatabaseOptions,
+                    cancellationToken)
+                : await Database.LoadIntoMemoryAsync(
+                    normalizedLoadPath,
+                    _runtimeDatabaseOptions,
+                    cancellationToken);
 
             _seedConfigured = true;
             _seedSourcePath = normalizedLoadPath;
@@ -499,6 +654,18 @@ internal sealed class SharedMemoryDatabaseHost
 
     private Database GetDatabase()
         => _database ?? throw new InvalidOperationException("The shared in-memory database is not available.");
+
+    private static string? SerializeObservabilityConfiguration(
+        DatabaseOptions? databaseOptions)
+    {
+        CSharpDbObservabilityOptions? observability =
+            databaseOptions?.ObservabilityOptions;
+        return observability is null
+            ? null
+            : JsonSerializer.Serialize(
+                observability,
+                CSharpDbObservabilityJsonContext.Default.CSharpDbObservabilityOptions);
+    }
 
     private bool OwnedByOtherSession(long sessionId)
         => _transactionOwnerSessionId.HasValue && _transactionOwnerSessionId.Value != sessionId;
@@ -573,6 +740,8 @@ internal sealed class SharedMemoryDatabaseSession : ICSharpDbSession
     private readonly long _sessionId;
 
     public bool SupportsStructuredExecution => true;
+    public CSharpDbObservabilityOptions? ObservabilityOptionsSnapshot =>
+        GetHost().ObservabilityOptionsSnapshot;
 
     internal SharedMemoryDatabaseSession(SharedMemoryDatabaseHost host, long sessionId)
     {
@@ -583,11 +752,65 @@ internal sealed class SharedMemoryDatabaseSession : ICSharpDbSession
     public ValueTask<QueryResult> ExecuteAsync(string sql, CancellationToken cancellationToken = default)
         => GetHost().ExecuteAsync(_sessionId, sql, cancellationToken);
 
+    public ValueTask<QueryResult> ExecuteAsync(
+        string executionSql,
+        string? observabilitySql,
+        CancellationToken cancellationToken = default)
+        => GetHost().ExecuteAsync(_sessionId, executionSql, observabilitySql, cancellationToken);
+
+    public ValueTask<QueryResult> ExecuteAsync(
+        string executionSql,
+        string? observabilitySql,
+        AdoCommandObservation? observation,
+        CancellationToken cancellationToken = default)
+        => GetHost().ExecuteAsync(
+            _sessionId,
+            executionSql,
+            observabilitySql,
+            observation,
+            cancellationToken);
+
     public ValueTask<QueryResult> ExecuteAsync(Statement statement, CancellationToken cancellationToken = default)
         => GetHost().ExecuteAsync(_sessionId, statement, cancellationToken);
 
+    public ValueTask<QueryResult> ExecuteAsync(
+        Statement statement,
+        string? observabilitySql,
+        CancellationToken cancellationToken = default)
+        => GetHost().ExecuteAsync(_sessionId, statement, observabilitySql, cancellationToken);
+
+    public ValueTask<QueryResult> ExecuteAsync(
+        Statement statement,
+        string? observabilitySql,
+        AdoCommandObservation? observation,
+        CancellationToken cancellationToken = default)
+        => GetHost().ExecuteAsync(
+            _sessionId,
+            statement,
+            observabilitySql,
+            observation,
+            cancellationToken);
+
     public ValueTask<QueryResult> ExecuteAsync(SimpleInsertSql insert, CancellationToken cancellationToken = default)
         => GetHost().ExecuteAsync(_sessionId, insert, cancellationToken);
+
+    public ValueTask<QueryResult> ExecuteAsync(
+        SimpleInsertSql insert,
+        string? observabilitySql,
+        CancellationToken cancellationToken = default)
+        => GetHost().ExecuteAsync(_sessionId, insert, observabilitySql, cancellationToken);
+
+    public ValueTask<QueryResult> ExecuteAsync(
+        SimpleInsertSql insert,
+        string? observabilitySql,
+        AdoCommandObservation? observation,
+        CancellationToken cancellationToken = default)
+        => GetHost().ExecuteAsync(
+            _sessionId,
+            insert,
+            observabilitySql,
+            observation,
+            cancellationToken);
 
     public ValueTask BeginTransactionAsync(CancellationToken cancellationToken = default)
         => GetHost().BeginTransactionAsync(_sessionId, cancellationToken);

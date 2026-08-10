@@ -100,4 +100,65 @@ public sealed class ObservabilityOptionsTests
                 Enumerable.Range(0, CSharpDbDiagnostics.MaximumConfiguredDatabaseAliases + 1)
                     .Select(index => $"shard-{index}")));
     }
+
+    [Fact]
+    public void SlowQueryThresholdOverrides_AreBoundedValidatedAndSerializable()
+    {
+        var options = new CSharpDbObservabilityOptions();
+        options.Logging.SlowQueryThreshold = TimeSpan.FromMilliseconds(500);
+        options.Logging.SlowQueryThresholdOverrides[CSharpDbOperationClass.Query] =
+            TimeSpan.FromMilliseconds(125);
+        options.Logging.SlowQueryThresholdOverrides[CSharpDbOperationClass.Procedure] =
+            TimeSpan.FromSeconds(2);
+        options.Logging.SlowQueryThresholdOverrides[CSharpDbOperationClass.Pipeline] =
+            TimeSpan.FromSeconds(3);
+
+        options.Validate();
+
+        Assert.Equal(
+            TimeSpan.FromMilliseconds(125),
+            options.Logging.GetSlowQueryThreshold(CSharpDbOperationClass.Query));
+        Assert.Equal(
+            TimeSpan.FromSeconds(2),
+            options.Logging.GetSlowQueryThreshold(CSharpDbOperationClass.Procedure));
+        Assert.Equal(
+            TimeSpan.FromMilliseconds(500),
+            options.Logging.GetSlowQueryThreshold(CSharpDbOperationClass.Script));
+        Assert.Equal(
+            TimeSpan.FromSeconds(3),
+            options.Logging.GetSlowQueryThreshold(CSharpDbOperationClass.Pipeline));
+
+        string json = System.Text.Json.JsonSerializer.Serialize(
+            options,
+            CSharpDbObservabilityJsonContext.Default.CSharpDbObservabilityOptions);
+        CSharpDbObservabilityOptions roundTrip = Assert.IsType<CSharpDbObservabilityOptions>(
+            System.Text.Json.JsonSerializer.Deserialize(
+                json,
+                CSharpDbObservabilityJsonContext.Default.CSharpDbObservabilityOptions));
+        Assert.Equal(
+            TimeSpan.FromMilliseconds(125),
+            roundTrip.Logging.GetSlowQueryThreshold(CSharpDbOperationClass.Query));
+        Assert.Equal(
+            TimeSpan.FromSeconds(3),
+            roundTrip.Logging.GetSlowQueryThreshold(CSharpDbOperationClass.Pipeline));
+    }
+
+    [Fact]
+    public void InvalidSlowQueryThresholdOverrides_ReportConfigurationErrors()
+    {
+        var options = new CSharpDbObservabilityOptions();
+        options.Logging.SlowQueryThresholdOverrides[CSharpDbOperationClass.Unknown] =
+            TimeSpan.FromMilliseconds(1);
+        options.Logging.SlowQueryThresholdOverrides[(CSharpDbOperationClass)999] =
+            TimeSpan.FromMilliseconds(1);
+        options.Logging.SlowQueryThresholdOverrides[CSharpDbOperationClass.Query] =
+            TimeSpan.Zero;
+
+        IReadOnlyList<string> errors = options.GetValidationErrors();
+
+        Assert.Contains(errors, error => error.Contains("keys", StringComparison.Ordinal));
+        Assert.Contains(errors, error => error.Contains("[Query]", StringComparison.Ordinal));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            options.Logging.GetSlowQueryThreshold(CSharpDbOperationClass.Unknown));
+    }
 }

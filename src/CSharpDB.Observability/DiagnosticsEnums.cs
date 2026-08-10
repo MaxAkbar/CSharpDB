@@ -52,6 +52,7 @@ public enum CSharpDbOperationClass
     Reindex,
     Vacuum,
     Maintenance,
+    Pipeline,
 }
 
 public enum CSharpDbOperationRole

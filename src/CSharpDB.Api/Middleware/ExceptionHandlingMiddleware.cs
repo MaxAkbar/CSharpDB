@@ -5,6 +5,7 @@ using CSharpDB.Client;
 using CSharpDB.Observability;
 using CSharpDB.Primitives;
 using Microsoft.AspNetCore.Mvc;
+using ObservabilityTransport = CSharpDB.Observability.CSharpDbTransport;
 
 namespace CSharpDB.Api.Middleware;
 
@@ -12,11 +13,16 @@ public sealed class ExceptionHandlingMiddleware
 {
     private readonly RequestDelegate _next;
     private readonly ILogger<ExceptionHandlingMiddleware> _logger;
+    private readonly bool _typedLoggerBridgeAvailable;
 
-    public ExceptionHandlingMiddleware(RequestDelegate next, ILogger<ExceptionHandlingMiddleware> logger)
+    public ExceptionHandlingMiddleware(
+        RequestDelegate next,
+        ILogger<ExceptionHandlingMiddleware> logger,
+        CSharpDbDiagnosticLoggerBridge? diagnosticLoggerBridge = null)
     {
-        _next = next;
-        _logger = logger;
+        _next = next ?? throw new ArgumentNullException(nameof(next));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _typedLoggerBridgeAvailable = diagnosticLoggerBridge is not null;
     }
 
     public async Task InvokeAsync(HttpContext context)
@@ -113,29 +119,11 @@ public sealed class ExceptionHandlingMiddleware
         bool unexpected)
     {
         SafeErrorProjection safeError = SafeErrorProjector.Project(exception, errorKind);
-        string traceId = GetTraceId();
-        int eventId = unexpected
-            ? CSharpDbLogEventIds.ApiUnhandledError
-            : CSharpDbLogEventIds.ApiRequestRejected;
-
-        if (unexpected)
-        {
-            _logger.LogError(
-                new EventId(eventId, nameof(CSharpDbLogEventIds.ApiUnhandledError)),
-                "CSharpDB API request failed with {ErrorCode} ({ErrorType}); trace {TraceId}",
-                safeError.Code,
-                safeError.ErrorType,
-                traceId);
-        }
-        else
-        {
-            _logger.LogWarning(
-                new EventId(eventId, nameof(CSharpDbLogEventIds.ApiRequestRejected)),
-                "CSharpDB API request was rejected with {ErrorCode} ({ErrorType}); trace {TraceId}",
-                safeError.Code,
-                safeError.ErrorType,
-                traceId);
-        }
+        (string traceId, DiagnosticsTraceId? diagnosticTraceId) = GetTraceCorrelation();
+        CSharpDbLogEventDefinition<CSharpDbApiErrorEvent> definition =
+            PublishApiError(unexpected, safeError, diagnosticTraceId);
+        if (!_typedLoggerBridgeAvailable)
+            LogApiErrorFallback(definition, safeError, traceId, unexpected);
 
         if (context.Response.HasStarted)
             ExceptionDispatchInfo.Capture(exception).Throw();
@@ -170,11 +158,63 @@ public sealed class ExceptionHandlingMiddleware
             cancellationToken: CancellationToken.None);
     }
 
-    private static string GetTraceId()
+    private static CSharpDbLogEventDefinition<CSharpDbApiErrorEvent> PublishApiError(
+        bool unexpected,
+        SafeErrorProjection safeError,
+        DiagnosticsTraceId? traceId)
+    {
+        CSharpDbLogEventDefinition<CSharpDbApiErrorEvent> definition = unexpected
+            ? CSharpDbLogEvents.ApiUnhandledError
+            : CSharpDbLogEvents.ApiRequestRejected;
+        ObservabilityTransport transport = CSharpDbOperationScope.CurrentTransport;
+        if (transport is not (ObservabilityTransport.Http or ObservabilityTransport.Grpc))
+            transport = ObservabilityTransport.Http;
+
+        CSharpDbDiagnostics.EventPublisher.Publish(
+            definition,
+            () => new CSharpDbApiErrorEvent(
+                DateTimeOffset.UtcNow,
+                transport,
+                traceId,
+                safeError));
+        return definition;
+    }
+
+    private void LogApiErrorFallback(
+        CSharpDbLogEventDefinition<CSharpDbApiErrorEvent> definition,
+        SafeErrorProjection safeError,
+        string traceId,
+        bool unexpected)
+    {
+        try
+        {
+            _logger.Log(
+                unexpected ? LogLevel.Error : LogLevel.Warning,
+                new EventId(definition.EventId, definition.Name),
+                definition.MessageTemplate,
+                safeError.Code,
+                safeError.ErrorType,
+                traceId);
+        }
+        catch
+        {
+            // The compatibility fallback has the same no-throw contract as
+            // typed DiagnosticListener delivery.
+        }
+    }
+
+    private static (string ResponseTraceId, DiagnosticsTraceId? DiagnosticTraceId)
+        GetTraceCorrelation()
     {
         if (Activity.Current is { } activity && activity.TraceId != default)
-            return activity.TraceId.ToHexString();
+        {
+            DiagnosticsTraceId traceId =
+                DiagnosticsTraceId.FromActivityTraceId(activity.TraceId);
+            return (traceId.Value, traceId);
+        }
 
-        return CSharpDbDiagnostics.CreateOpaqueIdentifier();
+        var fallback = new DiagnosticsTraceId(
+            CSharpDbDiagnostics.CreateOpaqueIdentifier());
+        return (fallback.Value, fallback);
     }
 }

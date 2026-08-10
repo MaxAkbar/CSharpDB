@@ -11,4 +11,9 @@
     <IsAotCompatible>true</IsAotCompatible>
   </PropertyGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="CSharpDB.Client" />
+    <InternalsVisibleTo Include="CSharpDB.Observability.Tests" />
+  </ItemGroup>
+
 </Project>

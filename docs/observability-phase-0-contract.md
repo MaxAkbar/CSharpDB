@@ -80,6 +80,7 @@ Request and statement counters have different meanings:
 | One direct SQL statement | One root `Query` | 1 | 1 |
 | Multi-statement script | One request `Script`, then one child `Query` statement per executed statement | 1 | Number of executed child statements |
 | Client procedure | One request `Procedure`, then one child `Query` statement per executed statement | 1 | Number of executed child statements |
+| Pipeline run | One request `Pipeline`, then one child `Query` statement per user-data SQL operation; catalog, run-log, and checkpoint housekeeping is suppressed | 1 | Number of user-data SQL child statements |
 | Nested planner work or subquery | Part of the current statement | 0 additional | 0 additional |
 | Trigger body | Correlated internal work under the causing statement | 0 additional | 0 additional |
 | Retry or adaptive replan | Another attempt within the same statement operation | 0 additional | 0 additional |
@@ -90,6 +91,13 @@ must not be summed into the aggregate logical request or statement counters.
 Retries and shard attempts may have attempt counters in a later schema; they do
 not create query roots.
 
+The coordinator and internal-attempt hierarchy is process-local. When an
+attempt uses a remote HTTP or gRPC shard, the remote host records its physical
+query as a separate shard-runtime root correlated by the propagated W3C trace;
+Phase 1 does not put CSharpDB operation ids on the wire. Aggregate coordinator
+counts and remote physical counts therefore remain separate views and must not
+be added together.
+
 Transport adapters preserve an inbound HTTP or gRPC activity as parent. A
 direct call creates a root activity only when an activity listener requests
 one. The host/client/ADO.NET boundary establishes transport and safe session
@@ -99,6 +107,25 @@ The statement lifetime covers planning, execution, time to first result, lazy
 row streaming, and disposal. Completion is recorded exactly once for
 exhaustion, early disposal, never-opened disposal, failure, or cancellation.
 Shared zero/one-row DML result instances never receive mutable operation state.
+
+For serialized direct-client and pooled ADO.NET paths, the logical query context
+starts before admission. `QueueDuration` is the measured gate wait, including a
+wait that ends in cancellation; `ExecutionAndConsumptionDuration` is total
+duration minus queue duration, clamped at zero. A script or procedure reports
+that wait on its parent only, while statement children report zero queue time.
+Implicit auto-commit transactions and retries remain inside the causing query
+and do not emit separate transaction requests. Composite parent row totals sum
+rows produced by every child query and rows affected by every child mutation.
+
+Diagnostic listener interest is snapshotted immediately before a serialization
+gate is acquired. Events produced while that gate is owned are delivered only
+after it is released, so a listener or logging provider can re-enter the same
+client, pool, or session without deadlocking it. A subscriber added after the
+snapshot begins with the next operation. HTTP and gRPC request scopes carry
+transport/session correlation only; each inner gate owns and flushes its own
+bounded buffer. Required terminal outcomes have an independent capacity sized
+for the maximum supported composite request and are never evicted by optional
+slow-query events.
 
 ### Time, counters, gauges, and epochs
 
@@ -217,16 +244,40 @@ diagnostics security boundary.
 lookups, SQL and pre-parsed writes, an explicit-transaction write, and a lazy
 128-row stream consumed to exhaustion.
 `ObservabilityNoListenerConnectionPoolBenchmarks` records a complete logical
-pooled ADO.NET connection construction/open/close/disposal cycle. The benchmark
-worker intentionally attaches no activity listener, meter listener, exporter,
-logging bridge, or history consumer and fails setup if the CSharpDB activity
-source already has a listener.
+pooled ADO.NET connection construction/open/close/disposal cycle. Their original
+seven benchmark methods are preserved and parameterized by
+`ObservabilityBenchmarkMode`:
+
+| Mode | Database configuration | Diagnostic/logging consumer |
+| --- | --- | --- |
+| `Disabled` | `DatabaseOptions.ObservabilityOptions = null` | No activity or query diagnostic listener; setup fails if one is already attached |
+| `StructuredLogging` | `Enabled = true`, alias `benchmark`; logging enabled; query completion enabled; slow-query logging disabled; SQL capture `None` | One `CSharpDbDiagnosticLoggerBridge` subscribed to the `CSharpDB` `DiagnosticListener`, backed by an enabled allocation-free sink logger |
+
+Each mode uses 3 warmup iterations and 10 measured iterations under
+`MemoryDiagnoser` with a reported median. Engine seed rows remain `1,024`; the
+stream path consumes exactly `128` rows. The pool remains direct,
+write-optimized, capped at 16 physical connections, and warmed before
+measurement. The structured-logging pool has the same storage preset through
+its explicit `DatabaseOptions`. No mode enables an `ActivityListener`, meter
+listener, exporter, history consumer, or SQL-text capture.
 
 Run the baseline from a Release build:
 
 ```text
 dotnet run -c Release --project tests/CSharpDB.Benchmarks/CSharpDB.Benchmarks.csproj -- --micro --filter *ObservabilityNoListener*
 ```
+
+BenchmarkDotNet emits one row per method and mode: seven `Disabled` rows and
+seven `StructuredLogging` rows. A practical generated-code smoke limits
+the filter to one path and adds BenchmarkDotNet's `Dry` job:
+
+```text
+dotnet run -c Release --project tests/CSharpDB.Benchmarks/CSharpDB.Benchmarks.csproj -- --micro --filter *FastPrimaryKeyLookupSqlAsync* --job Dry
+```
+
+The attribute-defined 3/10 job remains present alongside the added `Dry` job,
+so do not use that command for release evidence. Full qualification omits
+`--job Dry` and uses the first command above.
 
 The following are provisional Phase 0 release ceilings. They become observed
 budgets when the corresponding candidate modes exist. Compare each affected
@@ -247,10 +298,12 @@ The Phase 0 reference run on 2026-08-09 used .NET SDK 10.0.203 and .NET
 | Explicit-transaction insert | 4.136 us | 1,193 B |
 | Stream 128 rows to exhaustion | 14.791 us | 22,800 B |
 
-Phase 0 adds no instrumentation call to these measured runtime paths, so the
-disabled-mode incremental allocation is zero by construction. This run records
-the comparison baseline; it is not a substitute for the three paired launches
-required below when Phase 1 first adds a disabled fast-path branch.
+At reference commit `4f9457fb`, Phase 0 adds no instrumentation call to these
+measured runtime paths, so the disabled-mode incremental allocation is zero by
+construction. The paired Phase 1 benchmark compares its `Disabled` rows against
+that detached reference and its `StructuredLogging` rows against the
+current disabled rows. This historical run is not a substitute for repeated
+paired release qualification.
 
 | Mode compared with the no-listener baseline | Median elapsed-time ceiling | Additional managed allocation ceiling |
 | --- | ---: | ---: |
@@ -269,6 +322,32 @@ be compared to evidence rather than a remembered workstation number.
 
 These budgets measure incremental runtime cost. The configured capacities and
 retention limits remain the separate memory-bound gate for history storage.
+
+### Phase 1 paired qualification
+
+Phase 1 used three independent Release launches of the detached `4f9457fb`
+reference and the candidate modes on the same workstation. The table reports
+the median of the three per-launch medians. The stream was rerun as three fresh
+immediately paired launches after its disabled fast-path compaction; the pool
+candidate was rerun after the final Data-layer lock-boundary hardening.
+
+| Path | Detached reference | Disabled candidate | Disabled change | Structured logging candidate |
+| --- | ---: | ---: | ---: | ---: |
+| Pooled open/close/dispose | 450.9 ns / 256 B | 415.0 ns / 256 B | -7.96% / +0 B | 10.084 us / 10,924 B |
+| SQL primary-key lookup | 435.0 ns / 504 B | 421.6 ns / 504 B | -3.08% / +0 B | 3.476 us / 6,215 B |
+| Pre-parsed primary-key lookup | 537.3 ns / 976 B | 544.0 ns / 976 B | +1.25% / +0 B | 1.682 us / 4,410 B |
+| SQL autocommit insert | 3.579 us / 1,712 B | 3.462 us / 1,712 B | -3.29% / +0 B | 6.819 us / 7,089 B |
+| Pre-parsed autocommit insert | 3.165 us / 1,127 B | 3.120 us / 1,127 B | -1.44% / +0 B | 4.236 us / 4,225 B |
+| Explicit-transaction insert | 3.217 us / 1,193 B | 3.211 us / 1,193 B | -0.18% / +0 B | 5.220 us / 6,091 B |
+| Stream 128 rows to exhaustion | 12.235 us / 22,800 B | 12.001 us / 22,800 B | -1.91% / +0 B | 17.261 us / 36,723 B |
+
+The disabled numeric gate passed on all seven paths and allocated exactly the
+reference bytes. The final pool disabled launches spanned 405.9-423.0 ns
+(4.12%); its structured launches spanned 9.856-11.092 us (12.27%). The earlier
+full matrix and fresh stream pairs also contained greater-than-5% launch spread
+on several reference or structured rows. Keep that variance visible in release
+evidence; the table establishes the numeric gate result, not noise-free
+reproducibility or a structured-logging performance ceiling.
 
 ## Consequences
 

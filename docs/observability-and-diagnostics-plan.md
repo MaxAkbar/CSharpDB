@@ -398,47 +398,47 @@ Exit gate:
 
 ## Phase 1: Structured, Query, And Slow-Query Logging
 
-Status: `Not started`
+Status: `Complete`
 
 Goal: emit correlated, structured lifecycle events for database operations
 while keeping sensitive query data disabled by default.
 
 Work:
 
-- [ ] Add an `ILogger` bridge in the client/hosting layer that subscribes to
+- [x] Add an `ILogger` bridge in the client/hosting layer that subscribes to
   strongly typed core events.
-- [ ] Publish stable event ids and message templates for host startup,
+- [x] Publish stable event ids and message templates for host startup,
   database open/close, query completion, slow query, query failure,
   cancellation, transaction completion, checkpoint, and maintenance events.
-- [ ] Instrument all root `Database.ExecuteAsync` paths without double-counting
+- [x] Instrument all root `Database.ExecuteAsync` paths without double-counting
   cached statements, fast lookups, simple inserts, or explicit transactions.
-- [ ] Instrument scripts and procedures as a parent operation plus child
+- [x] Instrument scripts and procedures as a parent operation plus child
   statements so a slow child is visible without double-counting a request.
-- [ ] Carry the same root context through procedures, triggers, pipelines, and
+- [x] Carry the same root context through procedures, triggers, pipelines, and
   sharded fan-out.
-- [ ] Attach query completion to `QueryResult` so streamed queries finish on
+- [x] Attach query completion to `QueryResult` so streamed queries finish on
   exhaustion, failure, cancellation, or disposal, not when the result object is
   returned.
-- [ ] Use a once-only terminal observer invoked directly from exhaustion,
+- [x] Use a once-only terminal observer invoked directly from exhaustion,
   materialization, failure, cancellation, early disposal, and never-opened
   disposal paths. Do not attach mutable operation callbacks to the shared
   zero/one-row `QueryResult` instances.
-- [ ] Record total duration, time to first result, queue duration,
+- [x] Record total duration, time to first result, queue duration,
   execution/result-consumption duration, rows produced or affected, outcome,
   operation class, query fingerprint, transport, and correlation ids.
-- [ ] Add configurable query logging independent of the general operational
+- [x] Add configurable query logging independent of the general operational
   log level.
-- [ ] Add configurable slow-query logging with one threshold and optional
+- [x] Add configurable slow-query logging with one threshold and optional
   per-operation overrides.
-- [ ] Classify and emit a slow-query event once when the full logical query
+- [x] Classify and emit a slow-query event once when the full logical query
   completes. Phase 2 adds the separate in-flight long-running notification.
-- [ ] Ensure failure events expose stable error type/code fields without
+- [x] Ensure failure events expose stable error type/code fields without
   copying exception messages into metrics or default query history.
-- [ ] Use the Phase 0 centralized safe-error projection in the logging bridge
+- [x] Use the Phase 0 centralized safe-error projection in the logging bridge
   and all new events. Do not attach raw exception objects to query or
   maintenance events by default.
-- [ ] Add a startup warning when raw SQL capture is explicitly enabled.
-- [ ] Add log snapshot and secret-canary tests for direct, REST, gRPC, and API
+- [x] Add a startup warning when raw SQL capture is explicitly enabled.
+- [x] Add log snapshot and secret-canary tests for direct, REST, gRPC, and API
   exception-middleware paths.
 
 Deliverables:
@@ -455,6 +455,26 @@ Exit gate:
 - Default logs contain no SQL text, literal values, parameters, connection
   strings, credentials, file paths, or row data.
 - Logging exceptions never change query results or database durability.
+
+Qualification on 2026-08-10:
+
+- The Release solution build completed with zero warnings and zero errors.
+- Full suites passed: Core `2325/2325`, Data `225/225`, Pipelines `41/41`,
+  benchmark contracts `130/130`, Observability `68/68`, API `94/94`, and
+  Daemon `179/179`.
+- Package closure/topological order, managed full trimming, and a Windows x64
+  NativeAOT publish/runtime smoke all passed without trim or AOT warnings.
+- The disabled performance mode passed all seven Phase 0 gates with zero
+  incremental allocation. The final pooled open/close median was `415.0 ns /`
+  `256 B` versus the detached `450.9 ns / 256 B` reference.
+- Stable recovery/restore/maintenance event definitions are present; live
+  storage/path-owned publication remains in Phase 3 with the corresponding
+  runtime registries. Remote shard physical work remains a distinct runtime
+  root correlated by W3C trace until cross-process propagation in Phase 4.
+- Several reference or structured-logging benchmark launches exceeded the 5%
+  variance preference. Numeric disabled gates passed; preserve that workstation
+  variance caveat in release qualification rather than claiming noise-free
+  reproducibility.
 
 ## Phase 2: Query, Plan, Connection, And Session Visibility
 

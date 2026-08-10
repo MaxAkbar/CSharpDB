@@ -1,5 +1,6 @@
 using System.Globalization;
 using CSharpDB.Client.Models;
+using CSharpDB.Observability;
 using CSharpDB.Pipelines.Models;
 using CSharpDB.Pipelines.Runtime;
 using CSharpDB.Pipelines.Serialization;
@@ -22,6 +23,7 @@ internal sealed class CSharpDbPipelineCatalog
         if (_initialized)
             return;
 
+        using IDisposable suppression = CSharpDbOperationScope.SuppressDiagnostics();
         await _initLock.WaitAsync(ct);
         try
         {
@@ -143,6 +145,7 @@ internal sealed class CSharpDbPipelineCheckpointStore : IPipelineCheckpointStore
 
     public async Task<PipelineCheckpointState?> LoadAsync(string runId, CancellationToken ct = default)
     {
+        using IDisposable suppression = CSharpDbOperationScope.SuppressDiagnostics();
         await _catalog.EnsureInitializedAsync(ct);
 
         SqlExecutionResult result = await _catalog.ExecuteQueryAsync(
@@ -164,6 +167,7 @@ internal sealed class CSharpDbPipelineCheckpointStore : IPipelineCheckpointStore
 
     public async Task SaveAsync(string runId, PipelineCheckpointState checkpoint, CancellationToken ct = default)
     {
+        using IDisposable suppression = CSharpDbOperationScope.SuppressDiagnostics();
         await _catalog.EnsureInitializedAsync(ct);
 
         SqlExecutionResult exists = await _catalog.ExecuteQueryAsync(
@@ -208,6 +212,7 @@ internal sealed class CSharpDbPipelineRunLogger : IPipelineRunLogger
 
     public async Task RunStartedAsync(PipelineExecutionContext context, CancellationToken ct = default)
     {
+        using IDisposable suppression = CSharpDbOperationScope.SuppressDiagnostics();
         await _catalog.EnsureInitializedAsync(ct);
 
         SqlExecutionResult exists = await _catalog.ExecuteQueryAsync(
@@ -270,6 +275,7 @@ internal sealed class CSharpDbPipelineRunLogger : IPipelineRunLogger
 
     public async Task StatusChangedAsync(string runId, PipelineRunStatus status, PipelineRunMetrics metrics, CancellationToken ct = default)
     {
+        using IDisposable suppression = CSharpDbOperationScope.SuppressDiagnostics();
         await _catalog.EnsureInitializedAsync(ct);
 
         string sql = $"""
@@ -287,6 +293,7 @@ internal sealed class CSharpDbPipelineRunLogger : IPipelineRunLogger
 
     public async Task RejectsCapturedAsync(string runId, IReadOnlyList<PipelineRejectRecord> rejects, CancellationToken ct = default)
     {
+        using IDisposable suppression = CSharpDbOperationScope.SuppressDiagnostics();
         await _catalog.EnsureInitializedAsync(ct);
 
         foreach (var reject in rejects)
@@ -307,6 +314,7 @@ internal sealed class CSharpDbPipelineRunLogger : IPipelineRunLogger
 
     public async Task RunCompletedAsync(PipelineRunResult result, CancellationToken ct = default)
     {
+        using IDisposable suppression = CSharpDbOperationScope.SuppressDiagnostics();
         await _catalog.EnsureInitializedAsync(ct);
 
         string sql = $"""

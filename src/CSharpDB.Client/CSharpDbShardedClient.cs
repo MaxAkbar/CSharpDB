@@ -6,14 +6,20 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using CSharpDB.Client.Internal;
 using CSharpDB.Client.Models;
 using CSharpDB.Sql;
 using CSharpDB.Storage.Diagnostics;
+using DatabaseOptions = CSharpDB.Engine.DatabaseOptions;
+using CSharpDbObservabilityJsonContext = CSharpDB.Observability.CSharpDbObservabilityJsonContext;
+using CSharpDbObservabilityOptions = CSharpDB.Observability.CSharpDbObservabilityOptions;
+using CSharpDbOperationScope = CSharpDB.Observability.CSharpDbOperationScope;
+using ObservabilityTransport = CSharpDB.Observability.CSharpDbTransport;
 using CSharpDbStorageException = CSharpDB.Primitives.CSharpDbException;
 
 namespace CSharpDB.Client;
 
-public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdminClient, ICSharpDbShardDirectoryClient
+public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdminClient, ICSharpDbShardDirectoryClient, IClientObservabilitySettingsProvider
 {
     private const string TransactionPrefix = "csdbshard";
 
@@ -42,6 +48,10 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
     }
 
     public string DataSource => $"sharded://{_map.Keyspace}?version={_map.MapVersion}";
+    CSharpDbObservabilityOptions? IClientObservabilitySettingsProvider.ObservabilityOptions
+        => _effectiveOptions.DirectDatabaseOptions?.ObservabilityOptions;
+    ObservabilityTransport IClientObservabilitySettingsProvider.ObservabilityTransport
+        => ObservabilityTransport.Sharded;
 
     internal static CSharpDbShardedClient Create(
         CSharpDbShardingOptions options,
@@ -1451,12 +1461,46 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sql);
 
+        ClientOperationObservation? coordinator =
+            ClientOperationObservation.StartQueryCoordinator(
+                _effectiveOptions.DirectDatabaseOptions?.ObservabilityOptions,
+                sql);
+        using IDisposable? coordinatorScope = coordinator?.EnterScope();
         var results = new List<CSharpDbShardSqlExecutionResult>(_clients.Count);
+        long rowsProduced = 0;
+        long rowsAffected = 0;
+        bool failed = false;
+        bool canceled = false;
         foreach ((string shardId, ICSharpDbClient client) in _clients)
         {
+            CSharpDbShardDefinition shard = _map.GetShard(shardId);
+            ClientOperationObservation? attempt = coordinator?.StartInternalAttempt(
+                GetAttemptObservabilityTransport(shard),
+                shardId);
+            using IDisposable? attemptScope = attempt?.EnterScope();
+            using IDisposable? suppression = attempt is null
+                ? null
+                : CSharpDB.Observability.CSharpDbOperationScope.SuppressDiagnostics();
             try
             {
                 SqlExecutionResult result = await client.ExecuteSqlAsync(sql, ct).ConfigureAwait(false);
+                long attemptRowsProduced = result.IsQuery ? result.Rows?.Count ?? 0 : 0;
+                long attemptRowsAffected = result.IsQuery ? 0 : result.RowsAffected;
+                rowsProduced += attemptRowsProduced;
+                rowsAffected += attemptRowsAffected;
+                if (string.IsNullOrWhiteSpace(result.Error))
+                {
+                    attempt?.Succeed(attemptRowsProduced, attemptRowsAffected);
+                }
+                else
+                {
+                    failed = true;
+                    attempt?.Fail(
+                        CSharpDB.Observability.SafeErrorKind.DatabaseOperation,
+                        attemptRowsProduced,
+                        attemptRowsAffected);
+                }
+
                 results.Add(new CSharpDbShardSqlExecutionResult
                 {
                     ShardId = shardId,
@@ -1466,12 +1510,34 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             }
             catch (Exception ex)
             {
+                failed = true;
+                canceled |= ex is OperationCanceledException;
+                attempt?.Fail(ex);
                 results.Add(new CSharpDbShardSqlExecutionResult
                 {
                     ShardId = shardId,
                     Error = ex.Message,
                 });
             }
+        }
+
+        if (canceled)
+        {
+            coordinator?.Fail(
+                CSharpDB.Observability.SafeErrorKind.OperationCanceled,
+                rowsProduced,
+                rowsAffected);
+        }
+        else if (failed)
+        {
+            coordinator?.Fail(
+                CSharpDB.Observability.SafeErrorKind.DatabaseOperation,
+                rowsProduced,
+                rowsAffected);
+        }
+        else
+        {
+            coordinator?.Succeed(rowsProduced, rowsAffected);
         }
 
         return results;
@@ -1796,8 +1862,10 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
     {
         ArgumentNullException.ThrowIfNull(options);
 
+        CSharpDbShardingOptions runtimeOptions =
+            CSharpDbShardCatalogStore.CloneOptionsForRuntime(options);
         CSharpDbShardCatalogResolution resolution =
-            await CSharpDbShardCatalogStore.ResolveAsync(options, ct).ConfigureAwait(false);
+            await CSharpDbShardCatalogStore.ResolveAsync(runtimeOptions, ct).ConfigureAwait(false);
         CSharpDbShardingOptions effectiveOptions = resolution.EffectiveOptions;
         CSharpDbShardCatalogStore? catalogStore = resolution.Store;
         if (requireCatalogActiveMap && !resolution.LoadedFromCatalog)
@@ -1820,7 +1888,7 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                 clients,
                 routeContextAccessor,
                 catalogStore,
-                CSharpDbShardCatalogStore.CloneOptionsForRuntime(effectiveOptions));
+                effectiveOptions);
         }
         catch
         {
@@ -3497,6 +3565,21 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
         };
     }
 
+    private static ObservabilityTransport GetAttemptObservabilityTransport(
+        CSharpDbShardDefinition shard)
+    {
+        return shard.Transport switch
+        {
+            CSharpDbTransport.Http => ObservabilityTransport.Http,
+            CSharpDbTransport.Grpc => ObservabilityTransport.Grpc,
+            CSharpDbTransport.NamedPipes => ObservabilityTransport.NamedPipe,
+            CSharpDbTransport.Direct => ObservabilityTransport.Direct,
+            null when Uri.TryCreate(shard.Endpoint, UriKind.Absolute, out Uri? endpoint) &&
+                      endpoint.Scheme is "http" or "https" => ObservabilityTransport.Http,
+            _ => ObservabilityTransport.Direct,
+        };
+    }
+
     private static bool ShouldApplyDirectOptions(CSharpDbShardDefinition shard)
     {
         if (shard.Transport is CSharpDbTransport.Http or CSharpDbTransport.Grpc or CSharpDbTransport.NamedPipes)
@@ -3593,7 +3676,7 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
     private CSharpDbRouteContext? GetCurrentRoute()
         => _routeContextAccessor?.Current;
 
-    private sealed class RoutedClient : ICSharpDbClient
+    private sealed class RoutedClient : ICSharpDbClient, IClientObservabilitySettingsProvider
     {
         private readonly CSharpDbShardedClient _owner;
         private readonly CSharpDbRouteContext? _fixedRoute;
@@ -3608,6 +3691,11 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             => _fixedRoute is null
                 ? _owner.DataSource
                 : _owner.ResolveClient(_fixedRoute).DataSource;
+
+        CSharpDbObservabilityOptions? IClientObservabilitySettingsProvider.ObservabilityOptions
+            => _owner._effectiveOptions.DirectDatabaseOptions?.ObservabilityOptions;
+        ObservabilityTransport IClientObservabilitySettingsProvider.ObservabilityTransport
+            => ObservabilityTransport.Sharded;
 
         public Task<DatabaseInfo> GetInfoAsync(CancellationToken ct = default)
             => _fixedRoute is null && _owner.GetCurrentRoute() is null
@@ -3908,13 +3996,18 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
         public bool CanWrite => _options.AllowWrites;
 
         public static CSharpDbShardingOptions CloneOptionsForRuntime(CSharpDbShardingOptions options)
-            => CloneOptions(options, includeRuntimeOptions: true);
+        {
+            CSharpDbShardingOptions clone = CloneOptions(options, includeRuntimeOptions: true);
+            clone.DirectDatabaseOptions = SnapshotDirectDatabaseOptions(options.DirectDatabaseOptions);
+            return clone;
+        }
 
         public static async Task SeedMasterCatalogAsync(
             CSharpDbShardingOptions catalogRuntimeOptions,
             CSharpDbShardingOptions activeMap,
             CancellationToken ct)
         {
+            catalogRuntimeOptions = CloneOptionsForRuntime(catalogRuntimeOptions);
             CSharpDbShardCatalogOptions catalogOptions = CloneCatalogOptions(catalogRuntimeOptions.Catalog);
             ICSharpDbClient catalogClient = CSharpDbClient.Create(BuildCatalogClientOptions(catalogRuntimeOptions, catalogOptions));
             await using var store = new CSharpDbShardCatalogStore(
@@ -4403,6 +4496,7 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                 if (_schemaInitialized)
                     return;
 
+                using IDisposable suppression = CSharpDbOperationScope.SuppressDiagnostics();
                 await ExecuteCSharpDbNonQueryAsync(
                     $"""
                     CREATE TABLE IF NOT EXISTS {ActiveMapsTableName} (
@@ -4566,6 +4660,36 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                 DirectDatabaseOptions = includeRuntimeOptions ? options.DirectDatabaseOptions : null,
                 HybridDatabaseOptions = includeRuntimeOptions ? options.HybridDatabaseOptions : null,
             };
+
+        private static DatabaseOptions? SnapshotDirectDatabaseOptions(DatabaseOptions? options)
+        {
+            if (options is null)
+                return null;
+
+            CSharpDbObservabilityOptions? observabilitySnapshot = null;
+            if (options.ObservabilityOptions is not null)
+            {
+                byte[] serialized = JsonSerializer.SerializeToUtf8Bytes(
+                    options.ObservabilityOptions,
+                    CSharpDbObservabilityJsonContext.Default.CSharpDbObservabilityOptions);
+                observabilitySnapshot = JsonSerializer.Deserialize(
+                    serialized,
+                    CSharpDbObservabilityJsonContext.Default.CSharpDbObservabilityOptions)
+                    ?? throw new InvalidOperationException(
+                        "Failed to snapshot the sharded client observability configuration.");
+            }
+
+            return new DatabaseOptions
+            {
+                AdaptiveQueryReoptimization = options.AdaptiveQueryReoptimization,
+                Functions = options.Functions,
+                ImplicitInsertExecutionMode = options.ImplicitInsertExecutionMode,
+                ObservabilityOptions = observabilitySnapshot,
+                StorageEngineFactory = options.StorageEngineFactory,
+                StorageEngineOptions = options.StorageEngineOptions,
+                WindowExecution = options.WindowExecution,
+            };
+        }
 
         private static CSharpDbShardDefinition CloneShard(CSharpDbShardDefinition shard)
             => new()

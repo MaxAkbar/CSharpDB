@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using CSharpDB.Client.Models;
 using CSharpDB.Engine;
+using CSharpDB.Observability;
 using CSharpDB.Sql;
 using CSharpDB.Storage.Diagnostics;
 
@@ -13,27 +14,20 @@ internal sealed partial class EngineTransportClient
         ArgumentNullException.ThrowIfNull(request);
         ArgumentException.ThrowIfNullOrWhiteSpace(request.DestinationPath);
 
-        await _lock.WaitAsync(ct);
-        try
+        using ClientLockLease clientLock = await AcquireClientLockAsync(ct);
+        if (!_transactions.IsEmpty)
         {
-            if (!_transactions.IsEmpty)
-            {
-                throw new CSharpDbClientException(
-                    "Backup requires committed state. Commit or rollback active client-managed transactions and retry.");
-            }
+            throw new CSharpDbClientException(
+                "Backup requires committed state. Commit or rollback active client-managed transactions and retry.");
+        }
 
-            var database = await GetDatabaseAsync(ct);
-            return MapBackupResult(await DatabaseBackupCoordinator.BackupAsync(
-                database,
-                _databasePath,
-                request.DestinationPath,
-                request.WithManifest,
-                ct));
-        }
-        finally
-        {
-            _lock.Release();
-        }
+        var database = await GetDatabaseAsync(ct);
+        return MapBackupResult(await DatabaseBackupCoordinator.BackupAsync(
+            database,
+            _databasePath,
+            request.DestinationPath,
+            request.WithManifest,
+            ct));
     }
 
     public async Task<RestoreResult> RestoreAsync(RestoreRequest request, CancellationToken ct = default)
@@ -149,53 +143,112 @@ internal sealed partial class EngineTransportClient
 
     private async Task<SqlExecutionResult> ExecuteSqlCoreAsync(string sql, CancellationToken ct)
     {
-        await _lock.WaitAsync(ct);
+        using IDisposable? transportScope = EnterDirectTransportScope();
+        IReadOnlyList<string>? statements = null;
+        CSharpDB.Primitives.CSharpDbException? splitError = null;
         try
         {
-            await EnsureCatalogsInitializedAsync(ct);
-            var db = await GetDatabaseAsync(ct);
-            var stopwatch = Stopwatch.StartNew();
-            IReadOnlyList<string> statements;
-            try
+            statements = SqlScriptSplitter.SplitExecutableStatements(sql);
+        }
+        catch (CSharpDB.Primitives.CSharpDbException exception)
+        {
+            splitError = exception;
+        }
+
+        CSharpDbOperationClass operationClass = splitError is not null ||
+                                                 statements is null ||
+                                                 statements.Count != 1
+            ? CSharpDbOperationClass.Script
+            : CSharpDbOperationClass.Query;
+        CompositeQueryOperation? operation = StartCompositeQueryOperation(
+            operationClass,
+            operationClass == CSharpDbOperationClass.Query ? sql : null);
+        using IDisposable? operationScope = operation?.EnterScope();
+        ClientLockLease clientLock = default;
+        bool lockTaken = false;
+        bool queryDispatched = false;
+        try
+        {
+            clientLock = await AcquireClientLockAsync(ct);
+            lockTaken = true;
+            operation?.MarkDequeued();
+            using IDisposable? queueDurationScope = operation?.EnterQueueDurationScope();
+
+            if (splitError is not null)
             {
-                statements = SqlScriptSplitter.SplitExecutableStatements(sql);
-            }
-            catch (CSharpDB.Primitives.CSharpDbException ex)
-            {
-                stopwatch.Stop();
+                operation?.Fail(splitError.Code);
                 return new SqlExecutionResult
                 {
-                    Error = ex.Message,
-                    ErrorCode = ex.Code,
-                    Elapsed = stopwatch.Elapsed,
+                    Error = splitError.Message,
+                    ErrorCode = splitError.Code,
+                    Elapsed = operation?.Elapsed ?? TimeSpan.Zero,
                 };
             }
 
-            if (statements.Count == 0)
+            if (statements is null || statements.Count == 0)
             {
-                stopwatch.Stop();
-                return new SqlExecutionResult { IsQuery = false, RowsAffected = 0, Elapsed = stopwatch.Elapsed };
+                operation?.Succeed(rowsProduced: 0, rowsAffected: 0);
+                return new SqlExecutionResult
+                {
+                    IsQuery = false,
+                    RowsAffected = 0,
+                    Elapsed = operation?.Elapsed ?? TimeSpan.Zero,
+                };
             }
 
+            await EnsureCatalogsInitializedAsync(ct);
+            var db = await GetDatabaseAsync(ct);
+            var stopwatch = Stopwatch.StartNew();
+
             SqlExecutionResult? lastResult = null;
+            long totalRowsProduced = 0;
+            long observedRowsAffected = 0;
             int totalRowsAffected = 0;
 
             for (int i = 0; i < statements.Count; i++)
             {
                 try
                 {
+                    if (operationClass == CSharpDbOperationClass.Query)
+                        queryDispatched = true;
                     var singleResult = await ExecuteQueryAsync(db, statements[i], ct);
                     lastResult = singleResult;
-                    if (!singleResult.IsQuery)
-                        totalRowsAffected += singleResult.RowsAffected;
+                    if (singleResult.IsQuery)
+                    {
+                        totalRowsProduced = AddDiagnosticCount(
+                            totalRowsProduced,
+                            singleResult.Rows?.Count ?? 0);
+                    }
+                    else
+                    {
+                        totalRowsAffected = unchecked(
+                            totalRowsAffected + singleResult.RowsAffected);
+                        observedRowsAffected = AddDiagnosticCount(
+                            observedRowsAffected,
+                            singleResult.RowsAffected);
+                    }
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException ex)
                 {
+                    if (operationClass != CSharpDbOperationClass.Query || !queryDispatched)
+                    {
+                        operation?.Fail(
+                            ex,
+                            totalRowsProduced,
+                            observedRowsAffected);
+                    }
                     throw;
                 }
                 catch (CSharpDB.Primitives.CSharpDbException ex)
                 {
                     stopwatch.Stop();
+                    if (operationClass != CSharpDbOperationClass.Query || !queryDispatched)
+                    {
+                        operation?.Fail(
+                            ex.Code,
+                            totalRowsProduced,
+                            observedRowsAffected);
+                    }
                     string error = statements.Count > 1 ? $"Statement {i + 1} failed: {ex.Message}" : ex.Message;
                     return new SqlExecutionResult
                     {
@@ -207,6 +260,13 @@ internal sealed partial class EngineTransportClient
                 catch (Exception ex)
                 {
                     stopwatch.Stop();
+                    if (operationClass != CSharpDbOperationClass.Query || !queryDispatched)
+                    {
+                        operation?.Fail(
+                            ex,
+                            totalRowsProduced,
+                            observedRowsAffected);
+                    }
                     string error = statements.Count > 1 ? $"Statement {i + 1} failed: {ex.Message}" : ex.Message;
                     return new SqlExecutionResult { Error = error, Elapsed = stopwatch.Elapsed };
                 }
@@ -214,7 +274,13 @@ internal sealed partial class EngineTransportClient
 
             stopwatch.Stop();
             if (lastResult is null)
+            {
+                operation?.Succeed(rowsProduced: 0, observedRowsAffected);
                 return new SqlExecutionResult { IsQuery = false, RowsAffected = 0, Elapsed = stopwatch.Elapsed };
+            }
+
+            if (operationClass != CSharpDbOperationClass.Query)
+                operation?.Succeed(totalRowsProduced, observedRowsAffected);
 
             return lastResult.IsQuery
                 ? new SqlExecutionResult
@@ -235,7 +301,21 @@ internal sealed partial class EngineTransportClient
                     Elapsed = stopwatch.Elapsed,
                 };
         }
-        finally { _lock.Release(); }
+        catch (Exception exception)
+        {
+            if (operationClass != CSharpDbOperationClass.Query || !queryDispatched)
+            {
+                if (!lockTaken)
+                    operation?.MarkDequeued();
+                operation?.Fail(exception);
+            }
+            throw;
+        }
+        finally
+        {
+            if (lockTaken)
+                clientLock.Dispose();
+        }
     }
 
     private string ResolveDatabasePath(string? databasePath)

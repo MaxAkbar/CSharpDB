@@ -3,6 +3,7 @@ using System.Text.Json;
 using CSharpDB.Client;
 using CSharpDB.Client.Models;
 using CSharpDB.Execution;
+using CSharpDB.Observability;
 using CSharpDB.Primitives;
 using CSharpDB.Sql;
 using CoreColumnDefinition = CSharpDB.Primitives.ColumnDefinition;
@@ -26,6 +27,7 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
     private string? _transactionId;
 
     public bool SupportsStructuredExecution => false;
+    public CSharpDbObservabilityOptions? ObservabilityOptionsSnapshot => null;
 
     internal RemoteDatabaseSession(
         ICSharpDbClient client,
@@ -38,10 +40,49 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
     public ValueTask<QueryResult> ExecuteAsync(string sql, CancellationToken cancellationToken = default)
         => ExecuteSqlCoreAsync(sql, cancellationToken);
 
+    public ValueTask<QueryResult> ExecuteAsync(
+        string executionSql,
+        string? observabilitySql,
+        CancellationToken cancellationToken = default)
+        => ExecuteSqlCoreAsync(executionSql, cancellationToken);
+
+    public ValueTask<QueryResult> ExecuteAsync(
+        string executionSql,
+        string? observabilitySql,
+        AdoCommandObservation? observation,
+        CancellationToken cancellationToken = default)
+        => ExecuteSqlCoreAsync(executionSql, cancellationToken);
+
     public ValueTask<QueryResult> ExecuteAsync(Statement statement, CancellationToken cancellationToken = default)
         => throw new NotSupportedException("Structured statement execution is not supported for remote ADO.NET sessions.");
 
+    public ValueTask<QueryResult> ExecuteAsync(
+        Statement statement,
+        string? observabilitySql,
+        CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("Structured statement execution is not supported for remote ADO.NET sessions.");
+
+    public ValueTask<QueryResult> ExecuteAsync(
+        Statement statement,
+        string? observabilitySql,
+        AdoCommandObservation? observation,
+        CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("Structured statement execution is not supported for remote ADO.NET sessions.");
+
     public ValueTask<QueryResult> ExecuteAsync(SimpleInsertSql insert, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("Structured insert execution is not supported for remote ADO.NET sessions.");
+
+    public ValueTask<QueryResult> ExecuteAsync(
+        SimpleInsertSql insert,
+        string? observabilitySql,
+        CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("Structured insert execution is not supported for remote ADO.NET sessions.");
+
+    public ValueTask<QueryResult> ExecuteAsync(
+        SimpleInsertSql insert,
+        string? observabilitySql,
+        AdoCommandObservation? observation,
+        CancellationToken cancellationToken = default)
         => throw new NotSupportedException("Structured insert execution is not supported for remote ADO.NET sessions.");
 
     public async ValueTask BeginTransactionAsync(CancellationToken cancellationToken = default)

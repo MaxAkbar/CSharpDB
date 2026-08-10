@@ -331,6 +331,7 @@ public static class RetainedDatabaseSnapshot
             ImplicitInsertExecutionMode = source.ImplicitInsertExecutionMode,
             AdaptiveQueryReoptimization = source.AdaptiveQueryReoptimization,
             Functions = source.Functions,
+            ObservabilityOptions = source.ObservabilityOptions,
             WindowExecution = source.WindowExecution,
             // Private retained-snapshot copies always use the engine's bounded
             // file-backed composition root. A caller-supplied factory could

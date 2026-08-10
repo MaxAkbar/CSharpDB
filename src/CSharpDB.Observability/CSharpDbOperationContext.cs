@@ -88,6 +88,24 @@ public sealed record CSharpDbOperationContext
             CaptureCurrentTraceId(),
             timeProvider);
 
+    public static CSharpDbOperationContext CreateRequest(
+        CSharpDbOperationContext parent,
+        CSharpDbOperationClass operationClass)
+    {
+        ArgumentNullException.ThrowIfNull(parent);
+
+        return Create(
+            parent.OperationId,
+            operationClass,
+            CSharpDbOperationRole.Request,
+            parent.Transport,
+            parent.DatabaseAlias,
+            parent.SessionId,
+            queryFingerprint: null,
+            parent.TraceId,
+            parent._timeProvider);
+    }
+
     public static CSharpDbOperationContext CreateStatement(
         CSharpDbOperationContext parent,
         QueryFingerprint queryFingerprint)
@@ -95,6 +113,40 @@ public sealed record CSharpDbOperationContext
         ArgumentNullException.ThrowIfNull(parent);
         ArgumentNullException.ThrowIfNull(queryFingerprint);
 
+        return CreateStatementCore(parent, queryFingerprint);
+    }
+
+    public static CSharpDbOperationContext CreateStatement(CSharpDbOperationContext parent)
+    {
+        ArgumentNullException.ThrowIfNull(parent);
+        return CreateStatementCore(parent, queryFingerprint: null);
+    }
+
+    public static CSharpDbOperationContext CreateInternal(
+        CSharpDbOperationContext parent,
+        CSharpDbOperationClass operationClass,
+        CSharpDbTransport transport,
+        string databaseAlias,
+        QueryFingerprint? queryFingerprint = null)
+    {
+        ArgumentNullException.ThrowIfNull(parent);
+
+        return Create(
+            parent.OperationId,
+            operationClass,
+            CSharpDbOperationRole.Internal,
+            transport,
+            databaseAlias,
+            parent.SessionId,
+            queryFingerprint,
+            parent.TraceId,
+            parent._timeProvider);
+    }
+
+    private static CSharpDbOperationContext CreateStatementCore(
+        CSharpDbOperationContext parent,
+        QueryFingerprint? queryFingerprint)
+    {
         return Create(
             parent.OperationId,
             CSharpDbOperationClass.Query,
@@ -109,6 +161,9 @@ public sealed record CSharpDbOperationContext
 
     public TimeSpan GetElapsedTime()
         => _timeProvider.GetElapsedTime(StartingTimestamp);
+
+    public DateTimeOffset GetUtcNow()
+        => _timeProvider.GetUtcNow();
 
     private static CSharpDbOperationContext Create(
         OpaqueDiagnosticsId? parentOperationId,

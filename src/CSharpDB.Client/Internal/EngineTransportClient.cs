@@ -7,6 +7,7 @@ using System.Text.RegularExpressions;
 using CSharpDB.Client.Models;
 using CSharpDB.Engine;
 using CSharpDB.ImportExport.TableArchives;
+using CSharpDB.Observability;
 using CoreColumnDefinition = CSharpDB.Primitives.ColumnDefinition;
 using CoreCheckConstraintDefinition = CSharpDB.Primitives.CheckConstraintDefinition;
 using CoreDbType = CSharpDB.Primitives.DbType;
@@ -23,12 +24,14 @@ using CoreTableSchema = CSharpDB.Primitives.TableSchema;
 using CoreTriggerEvent = CSharpDB.Primitives.TriggerEvent;
 using CoreTriggerSchema = CSharpDB.Primitives.TriggerSchema;
 using CoreTriggerTiming = CSharpDB.Primitives.TriggerTiming;
+using ObservabilityTransport = CSharpDB.Observability.CSharpDbTransport;
 
 namespace CSharpDB.Client.Internal;
 
 internal sealed partial class EngineTransportClient :
     ICSharpDbClient,
     IEngineBackedClient,
+    IClientObservabilitySettingsProvider,
     ICSharpDbTableArchiveProgressExporter,
     ICSharpDbTransactionalSnapshotReader,
     ICSharpDbTransactionalSchemaIdentityWriter
@@ -39,11 +42,21 @@ internal sealed partial class EngineTransportClient :
     private const string ExternalTablesTableName = "__external_tables";
     private const string DataModelDiagramsTableName = "__data_model_diagrams";
     private static readonly Regex s_identifierPattern = new("^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.Compiled);
+    private static readonly AsyncLocal<DisposeFlushToken?> s_disposeFlushToken = new();
 
     private readonly string _databasePath;
     private readonly DatabaseOptions _directDatabaseOptions;
     private readonly HybridDatabaseOptions? _hybridDatabaseOptions;
     private readonly Func<string, CancellationToken, Task<Database>> _openDatabaseAsync;
+    private readonly bool _observabilityEnabled;
+    private readonly bool _operationalEventsEnabled;
+    private readonly bool _queryEventsEnabled;
+    private readonly bool _slowQueryEventsEnabled;
+    private readonly string _observabilityDatabaseAlias;
+    private readonly TimeSpan _scriptSlowQueryThreshold;
+    private readonly TimeSpan _procedureSlowQueryThreshold;
+    private readonly TimeProvider _observabilityTimeProvider;
+    private OpaqueDiagnosticsId? _diagnosticsSessionId;
     private readonly SemaphoreSlim _lock = new(1, 1);
     private readonly object _databaseGate = new();
     private readonly object _disposeGate = new();
@@ -51,11 +64,13 @@ internal sealed partial class EngineTransportClient :
     private int _activeFinalizations;
     private TaskCompletionSource? _finalizationsDrained;
     private Task<Database>? _databaseTask;
+    private List<CSharpDbDeferredDiagnosticBoundary>? _databaseOpenBoundaries;
     private TaskCompletionSource? _databaseReleaseCompletion;
     private Task? _disposeTask;
     private bool _disposeStarted;
     private long _databaseOwnershipEpoch;
     private bool _catalogsInitialized;
+    private List<ClientLockBoundaryState>? _clientLockBoundaryStates;
 
     public EngineTransportClient(
         string databasePath,
@@ -63,9 +78,23 @@ internal sealed partial class EngineTransportClient :
         HybridDatabaseOptions? hybridDatabaseOptions = null)
         : this(
             NormalizeDisplayDataSource(databasePath),
-            CreateOpenDatabaseAsync(directDatabaseOptions, hybridDatabaseOptions),
-            directDatabaseOptions,
+            CreateRuntimeDatabaseOptions(directDatabaseOptions),
             hybridDatabaseOptions)
+    {
+    }
+
+    private EngineTransportClient(
+        string databasePath,
+        RuntimeDatabaseOptions runtimeDatabaseOptions,
+        HybridDatabaseOptions? hybridDatabaseOptions)
+        : this(
+            databasePath,
+            CreateOpenDatabaseAsync(
+                runtimeDatabaseOptions.Value,
+                hybridDatabaseOptions),
+            runtimeDatabaseOptions,
+            hybridDatabaseOptions,
+            observabilityTimeProvider: null)
     {
     }
 
@@ -73,12 +102,69 @@ internal sealed partial class EngineTransportClient :
         string databasePath,
         Func<string, CancellationToken, Task<Database>> openDatabaseAsync,
         DatabaseOptions? directDatabaseOptions = null,
-        HybridDatabaseOptions? hybridDatabaseOptions = null)
+        HybridDatabaseOptions? hybridDatabaseOptions = null,
+        TimeProvider? observabilityTimeProvider = null)
+        : this(
+            databasePath,
+            openDatabaseAsync,
+            CreateRuntimeDatabaseOptions(directDatabaseOptions),
+            hybridDatabaseOptions,
+            observabilityTimeProvider)
+    {
+    }
+
+    private EngineTransportClient(
+        string databasePath,
+        Func<string, CancellationToken, Task<Database>> openDatabaseAsync,
+        RuntimeDatabaseOptions runtimeDatabaseOptions,
+        HybridDatabaseOptions? hybridDatabaseOptions,
+        TimeProvider? observabilityTimeProvider)
     {
         _databasePath = databasePath;
-        _directDatabaseOptions = directDatabaseOptions ?? new DatabaseOptions();
+        _directDatabaseOptions = runtimeDatabaseOptions.Value;
         _hybridDatabaseOptions = hybridDatabaseOptions;
         _openDatabaseAsync = openDatabaseAsync ?? throw new ArgumentNullException(nameof(openDatabaseAsync));
+        _observabilityTimeProvider = observabilityTimeProvider ?? TimeProvider.System;
+        CSharpDbObservabilityOptions? observability = _directDatabaseOptions.ObservabilityOptions;
+        _observabilityEnabled = observability?.Enabled == true;
+        _operationalEventsEnabled = _observabilityEnabled &&
+            observability!.Logging?.Enabled == true;
+        _queryEventsEnabled = _observabilityEnabled &&
+            observability!.Logging?.Enabled == true &&
+            observability.Logging.Queries;
+        _slowQueryEventsEnabled = _observabilityEnabled &&
+            observability!.Logging?.Enabled == true &&
+            observability.Logging.SlowQueries;
+        _observabilityDatabaseAlias =
+            CSharpDbObservabilityOptions.IsValidDatabaseAlias(observability?.DatabaseAlias)
+                ? observability!.DatabaseAlias
+                : "default";
+        _scriptSlowQueryThreshold = GetConfiguredSlowQueryThreshold(
+            observability?.Logging,
+            CSharpDbOperationClass.Script);
+        _procedureSlowQueryThreshold = GetConfiguredSlowQueryThreshold(
+            observability?.Logging,
+            CSharpDbOperationClass.Procedure);
+    }
+
+    internal static EngineTransportClient CreatePrivateMemory(
+        string displayName,
+        string? loadFromPath,
+        DatabaseOptions? directDatabaseOptions)
+    {
+        RuntimeDatabaseOptions runtimeDatabaseOptions =
+            CreateRuntimeDatabaseOptions(directDatabaseOptions);
+        DatabaseOptions options = runtimeDatabaseOptions.Value;
+        Func<string, CancellationToken, Task<Database>> openDatabaseAsync =
+            string.IsNullOrWhiteSpace(loadFromPath)
+                ? (_, ct) => Database.OpenInMemoryAsync(options, ct).AsTask()
+                : (_, ct) => Database.LoadIntoMemoryAsync(loadFromPath, options, ct).AsTask();
+        return new EngineTransportClient(
+            displayName,
+            openDatabaseAsync,
+            runtimeDatabaseOptions,
+            hybridDatabaseOptions: null,
+            observabilityTimeProvider: null);
     }
 
     public string DataSource => _databasePath;
@@ -87,6 +173,10 @@ internal sealed partial class EngineTransportClient :
     public bool SupportsTransactionalSchemaIdentityWrites => true;
     internal DatabaseOptions DirectDatabaseOptions => _directDatabaseOptions;
     internal HybridDatabaseOptions? HybridDatabaseOptions => _hybridDatabaseOptions;
+    CSharpDbObservabilityOptions? IClientObservabilitySettingsProvider.ObservabilityOptions
+        => _directDatabaseOptions.ObservabilityOptions;
+    ObservabilityTransport IClientObservabilitySettingsProvider.ObservabilityTransport
+        => ObservabilityTransport.Direct;
 
     public Task<DatabaseInfo> GetInfoAsync(CancellationToken ct = default)
         => GetInfoCoreAsync(ct);
@@ -267,26 +357,56 @@ internal sealed partial class EngineTransportClient :
 
     public async Task<Dictionary<string, object?>?> GetRowByPkAsync(string tableName, string pkColumn, object pkValue, CancellationToken ct = default)
     {
-        var db = await GetDatabaseAsync(ct);
-        string normalizedTableName =
-            RequireCatalogIdentifier(tableName, nameof(tableName));
-        string normalizedPkColumn =
-            RequireCatalogIdentifier(pkColumn, nameof(pkColumn));
-        var schema = db.GetTableSchema(normalizedTableName);
-        if (schema is null || IsInternalTable(normalizedTableName))
-            throw new CSharpDbClientException($"Table '{normalizedTableName}' was not found.");
+        using IDisposable? transportScope = EnterDirectTransportScope();
+        string normalizedTableName;
+        string normalizedPkColumn;
+        string sql;
+        try
+        {
+            normalizedTableName = RequireCatalogIdentifier(tableName, nameof(tableName));
+            normalizedPkColumn = RequireCatalogIdentifier(pkColumn, nameof(pkColumn));
+            sql =
+                $"SELECT * FROM {CoreSqlIdentifierRules.Quote(normalizedTableName)} " +
+                $"WHERE {CoreSqlIdentifierRules.Quote(normalizedPkColumn)} = {FormatSqlLiteral(pkValue)}";
+        }
+        catch (Exception exception)
+        {
+            CompositeQueryOperation? invalidOperation = StartCompositeQueryOperation(
+                CSharpDbOperationClass.Query);
+            using IDisposable? invalidOperationScope = invalidOperation?.EnterScope();
+            invalidOperation?.Fail(exception);
+            throw;
+        }
 
-        if (!schema.Columns.Any(column => string.Equals(column.Name, normalizedPkColumn, StringComparison.OrdinalIgnoreCase)))
-            throw new CSharpDbClientException($"Column '{normalizedPkColumn}' was not found in table '{normalizedTableName}'.");
+        CompositeQueryOperation? operation = StartCompositeQueryOperation(
+            CSharpDbOperationClass.Query,
+            sql);
+        using IDisposable? operationScope = operation?.EnterScope();
+        using IDisposable? queueDurationScope = operation?.EnterQueueDurationScope();
+        bool queryDispatched = false;
+        try
+        {
+            var db = await GetDatabaseAsync(ct);
+            var schema = db.GetTableSchema(normalizedTableName);
+            if (schema is null || IsInternalTable(normalizedTableName))
+                throw new CSharpDbClientException($"Table '{normalizedTableName}' was not found.");
 
-        string sql =
-            $"SELECT * FROM {CoreSqlIdentifierRules.Quote(normalizedTableName)} " +
-            $"WHERE {CoreSqlIdentifierRules.Quote(normalizedPkColumn)} = {FormatSqlLiteral(pkValue)}";
-        await using var result = await db.ExecuteAsync(sql, ct);
-        if (!result.IsQuery || !await result.MoveNextAsync(ct))
-            return null;
+            if (!schema.Columns.Any(column => string.Equals(column.Name, normalizedPkColumn, StringComparison.OrdinalIgnoreCase)))
+                throw new CSharpDbClientException($"Column '{normalizedPkColumn}' was not found in table '{normalizedTableName}'.");
 
-        return ToRowDictionary(result.Schema, result.Current);
+            queryDispatched = true;
+            await using var result = await db.ExecuteAsync(sql, ct);
+            if (!result.IsQuery || !await result.MoveNextAsync(ct))
+                return null;
+
+            return ToRowDictionary(result.Schema, result.Current);
+        }
+        catch (Exception exception)
+        {
+            if (!queryDispatched)
+                operation?.Fail(exception);
+            throw;
+        }
     }
 
     public async Task<int> InsertRowAsync(string tableName, Dictionary<string, object?> values, CancellationToken ct = default)
@@ -501,98 +621,132 @@ internal sealed partial class EngineTransportClient :
 
     public async Task<TransactionSessionInfo> BeginTransactionAsync(CancellationToken ct = default)
     {
-        await _lock.WaitAsync(ct);
-        try
+        using ClientLockLease clientLock = await AcquireClientLockAsync(ct);
+        ThrowIfDisposing();
+        long reuseEpoch = CaptureDatabaseOwnershipEpoch();
+        Database? database = null;
+        if (_hybridDatabaseOptions is null)
         {
-            ThrowIfDisposing();
-            long reuseEpoch = CaptureDatabaseOwnershipEpoch();
-            Database? database = null;
-            if (_hybridDatabaseOptions is null)
-            {
-                database = await DetachCachedDatabaseCoreAsync(
-                    ct,
-                    "Cannot start a client-managed transaction while direct snapshot readers are active.");
-                if (database is not null)
-                {
-                    try
-                    {
-                        await database.ResetReusableSessionStateAsync();
-                    }
-                    catch
-                    {
-                        await database.DisposeAsync();
-                        throw;
-                    }
-                }
-            }
-            else
-            {
-                // Hybrid persistence may be configured to run only on Dispose.
-                // Preserve that physical-close boundary rather than retaining
-                // the handle across logical transaction sessions.
-                await ReleaseCachedDatabaseCoreAsync(
-                    ct,
-                    "Cannot start a client-managed transaction while direct snapshot readers are active.");
-            }
-
-            database ??= await _openDatabaseAsync(_databasePath, ct);
-            try
-            {
-                await database.BeginTransactionAsync(ct);
-            }
-            catch
-            {
-                await database.DisposeAsync();
-                throw;
-            }
-
-            string transactionId = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
-            var session = new ClientTransactionSession(database, reuseEpoch);
-            if (!_transactions.TryAdd(transactionId, session))
+            database = await DetachCachedDatabaseCoreAsync(
+                ct,
+                "Cannot start a client-managed transaction while direct snapshot readers are active.");
+            if (database is not null)
             {
                 try
                 {
-                    await database.RollbackAsync(CancellationToken.None);
+                    await database.ResetReusableSessionStateAsync();
                 }
-                finally
+                catch
                 {
                     await database.DisposeAsync();
+                    throw;
                 }
-
-                throw new CSharpDbClientException("Failed to register the transaction session.");
             }
-
-            if (_transactions.Count > 1)
-            {
-                foreach (ClientTransactionSession activeSession in _transactions.Values)
-                    activeSession.DisableReuse();
-            }
-
-            return new TransactionSessionInfo
-            {
-                TransactionId = transactionId,
-                ExpiresAtUtc = DateTime.MaxValue,
-            };
         }
-        finally
+        else
         {
-            _lock.Release();
+            // Hybrid persistence may be configured to run only on Dispose.
+            // Preserve that physical-close boundary rather than retaining
+            // the handle across logical transaction sessions.
+            await ReleaseCachedDatabaseCoreAsync(
+                ct,
+                "Cannot start a client-managed transaction while direct snapshot readers are active.");
         }
+
+        database ??= await _openDatabaseAsync(_databasePath, ct);
+        try
+        {
+            await database.BeginTransactionAsync(ct);
+        }
+        catch
+        {
+            await database.DisposeAsync();
+            throw;
+        }
+
+        string transactionId = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
+        var session = new ClientTransactionSession(database, reuseEpoch);
+        if (!_transactions.TryAdd(transactionId, session))
+        {
+            try
+            {
+                await database.RollbackAsync(CancellationToken.None);
+            }
+            finally
+            {
+                await database.DisposeAsync();
+            }
+
+            throw new CSharpDbClientException("Failed to register the transaction session.");
+        }
+
+        if (_transactions.Count > 1)
+        {
+            foreach (ClientTransactionSession activeSession in _transactions.Values)
+                activeSession.DisableReuse();
+        }
+
+        return new TransactionSessionInfo
+        {
+            TransactionId = transactionId,
+            ExpiresAtUtc = DateTime.MaxValue,
+        };
     }
 
     public async Task<SqlExecutionResult> ExecuteInTransactionAsync(string transactionId, string sql, CancellationToken ct = default)
     {
-        ClientTransactionSession session = GetTransactionSession(transactionId);
-        if (!await session.TryEnterOperationAsync(ct))
-            throw TransactionNotFound(transactionId);
-
+        using IDisposable? transportScope = EnterDirectTransportScope();
+        CompositeQueryOperation? operation = StartCompositeQueryOperation(
+            CSharpDbOperationClass.Query,
+            sql);
+        using IDisposable? operationScope = operation?.EnterScope();
+        ClientTransactionSession? session = null;
+        bool operationGateEntered = false;
+        long queueStartingTimestamp = 0;
+        bool queueMeasurementStarted = false;
+        bool queryDispatched = false;
         try
         {
+            session = GetTransactionSession(transactionId);
+            if (operation is not null)
+            {
+                queueStartingTimestamp = _observabilityTimeProvider.GetTimestamp();
+                queueMeasurementStarted = true;
+            }
+
+            bool entered = await session.TryEnterOperationAsync(ct);
+            if (queueMeasurementStarted)
+            {
+                operation?.MarkDequeued(
+                    _observabilityTimeProvider.GetElapsedTime(queueStartingTimestamp));
+            }
+
+            if (!entered)
+                throw TransactionNotFound(transactionId);
+            operationGateEntered = true;
+            using IDisposable? queueDurationScope = operation?.EnterQueueDurationScope();
+
+            queryDispatched = true;
             return await ExecuteQueryAsync(session.Database, sql, ct);
+        }
+        catch (Exception exception)
+        {
+            if (!queryDispatched)
+            {
+                if (!operationGateEntered)
+                {
+                    operation?.MarkDequeued(queueMeasurementStarted
+                        ? _observabilityTimeProvider.GetElapsedTime(queueStartingTimestamp)
+                        : TimeSpan.Zero);
+                }
+                operation?.Fail(exception);
+            }
+            throw;
         }
         finally
         {
-            session.ExitOperation();
+            if (operationGateEntered)
+                session!.ExitOperation();
         }
     }
 
@@ -671,20 +825,105 @@ internal sealed partial class EngineTransportClient :
     }
 
     public async ValueTask<ForwardOnlyQueryCursor?> TryOpenForwardOnlyQueryCursorAsync(
+        string sql,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sql);
+        CSharpDbDeferredDiagnosticBoundary? deferredBoundary =
+            CreateDeferredTransportBoundary();
+        IDisposable? transportScope = deferredBoundary?.Enter() ??
+            EnterDirectTransportScope();
+        CompositeQueryOperation? operation = StartCompositeQueryOperation(
+            CSharpDbOperationClass.Query,
+            sql);
+        IDisposable? operationScope = operation?.EnterScope();
+        operation?.MarkDequeued(TimeSpan.Zero);
+        IDisposable? queueDurationScope = operation?.EnterQueueDurationScope();
+        CSharpDB.Execution.QueryResult? result = null;
+        bool boundaryTransferred = false;
+        bool queryDispatched = false;
+        try
+        {
+            Database database = await GetDatabaseAsync(ct);
+            queryDispatched = true;
+            result = await database.ExecuteAsync(sql, ct);
+            if (!result.IsQuery)
+                return null;
+
+            var cursor = new ForwardOnlyQueryCursor(
+                result,
+                deferredBoundary: deferredBoundary);
+            boundaryTransferred = true;
+            return cursor;
+        }
+        catch (Exception exception)
+        {
+            if (!queryDispatched)
+                operation?.Fail(exception);
+            throw;
+        }
+        finally
+        {
+            try
+            {
+                if (!boundaryTransferred && result is not null)
+                    await result.DisposeAsync();
+            }
+            finally
+            {
+                queueDurationScope?.Dispose();
+                operationScope?.Dispose();
+                transportScope?.Dispose();
+                if (!boundaryTransferred)
+                    deferredBoundary?.Dispose();
+            }
+        }
+    }
+
+    public async ValueTask<ForwardOnlyQueryCursor?> TryOpenForwardOnlyQueryCursorAsync(
         string transactionId,
         string sql,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sql);
-
-        ClientTransactionSession session = GetTransactionSession(transactionId);
-        if (!await session.TryEnterOperationAsync(ct))
-            throw TransactionNotFound(transactionId);
-
+        CSharpDbDeferredDiagnosticBoundary? deferredBoundary =
+            CreateDeferredTransportBoundary();
+        IDisposable? transportScope = deferredBoundary?.Enter() ??
+            EnterDirectTransportScope();
+        CompositeQueryOperation? operation = StartCompositeQueryOperation(
+            CSharpDbOperationClass.Query,
+            sql);
+        IDisposable? operationScope = operation?.EnterScope();
+        ClientTransactionSession? session = null;
         CSharpDB.Execution.QueryResult? result = null;
         bool operationGateTransferred = false;
+        bool operationGateEntered = false;
+        bool boundaryTransferred = false;
+        long queueStartingTimestamp = 0;
+        bool queueMeasurementStarted = false;
+        bool queryDispatched = false;
         try
         {
+            session = GetTransactionSession(transactionId);
+            if (operation is not null)
+            {
+                queueStartingTimestamp = _observabilityTimeProvider.GetTimestamp();
+                queueMeasurementStarted = true;
+            }
+
+            bool entered = await session.TryEnterOperationAsync(ct);
+            if (queueMeasurementStarted)
+            {
+                operation?.MarkDequeued(
+                    _observabilityTimeProvider.GetElapsedTime(queueStartingTimestamp));
+            }
+
+            if (!entered)
+                throw TransactionNotFound(transactionId);
+            operationGateEntered = true;
+            using IDisposable? queueDurationScope = operation?.EnterQueueDurationScope();
+
+            queryDispatched = true;
             result = await session.Database.ExecuteAsync(sql, ct);
             if (!result.IsQuery)
                 return null;
@@ -695,23 +934,49 @@ internal sealed partial class EngineTransportClient :
                 {
                     session.ExitOperation();
                     return ValueTask.CompletedTask;
-                });
+                },
+                deferredBoundary);
             operationGateTransferred = true;
+            boundaryTransferred = true;
             return cursor;
+        }
+        catch (Exception exception)
+        {
+            if (!queryDispatched)
+            {
+                if (!operationGateEntered)
+                {
+                    operation?.MarkDequeued(queueMeasurementStarted
+                        ? _observabilityTimeProvider.GetElapsedTime(queueStartingTimestamp)
+                        : TimeSpan.Zero);
+                }
+                operation?.Fail(exception);
+            }
+            throw;
         }
         finally
         {
-            if (!operationGateTransferred)
+            try
             {
-                try
+                if (operationGateEntered && !operationGateTransferred)
                 {
-                    if (result is not null)
-                        await result.DisposeAsync();
+                    try
+                    {
+                        if (result is not null)
+                            await result.DisposeAsync();
+                    }
+                    finally
+                    {
+                        session!.ExitOperation();
+                    }
                 }
-                finally
-                {
-                    session.ExitOperation();
-                }
+            }
+            finally
+            {
+                operationScope?.Dispose();
+                transportScope?.Dispose();
+                if (!boundaryTransferred)
+                    deferredBoundary?.Dispose();
             }
         }
     }
@@ -791,20 +1056,57 @@ internal sealed partial class EngineTransportClient :
     }
 
     public async Task CheckpointAsync(CancellationToken ct = default)
-        => await (await GetDatabaseAsync(ct)).CheckpointAsync(ct);
+    {
+        using IDisposable? operationalBoundary =
+            EnterDirectOperationalTransportScope();
+        await (await GetDatabaseAsync(ct)).CheckpointAsync(ct);
+    }
 
     public ValueTask DisposeAsync()
     {
+        TaskCompletionSource? ownedCompletion = null;
+        Task disposeTask;
         lock (_disposeGate)
         {
-            _disposeTask ??= DisposeCoreAsync();
-            return new ValueTask(_disposeTask);
+            if (_disposeTask is null)
+            {
+                ownedCompletion = new TaskCompletionSource(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                _disposeTask = ownedCompletion.Task;
+            }
+
+            disposeTask = _disposeTask;
+        }
+
+        if (ownedCompletion is not null)
+            _ = CompleteDisposeAsync(ownedCompletion);
+
+        if (ownedCompletion is null &&
+            TryGetDisposeFlushReentry(out ValueTask reentrantCompletion))
+        {
+            return reentrantCompletion;
+        }
+
+        return new ValueTask(disposeTask);
+    }
+
+    private async Task CompleteDisposeAsync(TaskCompletionSource completion)
+    {
+        try
+        {
+            await DisposeCoreAsync();
+            completion.TrySetResult();
+        }
+        catch (Exception exception)
+        {
+            completion.TrySetException(exception);
         }
     }
 
     private async Task DisposeCoreAsync()
     {
-        await _lock.WaitAsync();
+        ClientLockLease lifecycleBoundaryLock =
+            await AcquireClientLockAsync(CancellationToken.None);
         List<ClientTransactionSession> sessionsToDispose;
         Task? finalizationsDrained;
         try
@@ -827,9 +1129,10 @@ internal sealed partial class EngineTransportClient :
         }
         finally
         {
-            _lock.Release();
+            lifecycleBoundaryLock.ReleaseLock();
         }
 
+        Exception? disposalFailure = null;
         try
         {
             try
@@ -842,8 +1145,8 @@ internal sealed partial class EngineTransportClient :
                     await finalizationsDrained;
             }
 
-            await _lock.WaitAsync();
-            try
+            using (ClientLockLease finalLock =
+                   await AcquireClientLockAsync(CancellationToken.None))
             {
                 if (_databaseTask is not null)
                 {
@@ -858,25 +1161,95 @@ internal sealed partial class EngineTransportClient :
                     }
                 }
             }
-            finally
-            {
-                _lock.Release();
-            }
+
+        }
+        catch (Exception exception)
+        {
+            disposalFailure = exception;
+            throw;
         }
         finally
         {
-            _lock.Dispose();
+            DisposeFlushToken? previousToken = s_disposeFlushToken.Value;
+            var flushToken = new DisposeFlushToken(
+                this,
+                previousToken,
+                disposalFailure);
+            s_disposeFlushToken.Value = flushToken;
+            try
+            {
+                lifecycleBoundaryLock.Dispose();
+            }
+            finally
+            {
+                flushToken.Deactivate();
+                s_disposeFlushToken.Value = previousToken;
+                _lock.Dispose();
+            }
         }
     }
 
+    private bool TryGetDisposeFlushReentry(
+        out ValueTask reentrantCompletion)
+    {
+        for (DisposeFlushToken? token = s_disposeFlushToken.Value;
+             token is not null;
+             token = token.Previous)
+        {
+            if (token.IsActive && ReferenceEquals(token.Owner, this))
+            {
+                reentrantCompletion = token.Failure is null
+                    ? ValueTask.CompletedTask
+                    : ValueTask.FromException(token.Failure);
+                return true;
+            }
+        }
+
+        reentrantCompletion = default;
+        return false;
+    }
+
     private static Func<string, CancellationToken, Task<Database>> CreateOpenDatabaseAsync(
-        DatabaseOptions? directDatabaseOptions,
+        DatabaseOptions directDatabaseOptions,
         HybridDatabaseOptions? hybridDatabaseOptions)
     {
-        var options = directDatabaseOptions ?? new DatabaseOptions();
         return hybridDatabaseOptions is null
-            ? (path, ct) => Database.OpenAsync(path, options, ct).AsTask()
-            : (path, ct) => Database.OpenHybridAsync(path, options, hybridDatabaseOptions, ct).AsTask();
+            ? (path, ct) => Database.OpenAsync(path, directDatabaseOptions, ct).AsTask()
+            : (path, ct) => Database.OpenHybridAsync(
+                path,
+                directDatabaseOptions,
+                hybridDatabaseOptions,
+                ct).AsTask();
+    }
+
+    private static RuntimeDatabaseOptions CreateRuntimeDatabaseOptions(
+        DatabaseOptions? configuredOptions)
+    {
+        DatabaseOptions source = configuredOptions ?? new DatabaseOptions();
+        CSharpDbObservabilityOptions? observability = source.ObservabilityOptions;
+        CSharpDbObservabilityOptions? observabilitySnapshot = null;
+        if (observability is not null)
+        {
+            byte[] serialized = JsonSerializer.SerializeToUtf8Bytes(
+                observability,
+                CSharpDbObservabilityJsonContext.Default.CSharpDbObservabilityOptions);
+            observabilitySnapshot = JsonSerializer.Deserialize(
+                serialized,
+                CSharpDbObservabilityJsonContext.Default.CSharpDbObservabilityOptions)
+                ?? throw new InvalidOperationException(
+                    "Failed to snapshot the client observability configuration.");
+        }
+
+        return new RuntimeDatabaseOptions(new DatabaseOptions
+        {
+            AdaptiveQueryReoptimization = source.AdaptiveQueryReoptimization,
+            Functions = source.Functions,
+            ImplicitInsertExecutionMode = source.ImplicitInsertExecutionMode,
+            ObservabilityOptions = observabilitySnapshot,
+            StorageEngineFactory = source.StorageEngineFactory,
+            StorageEngineOptions = source.StorageEngineOptions,
+            WindowExecution = source.WindowExecution,
+        });
     }
 
     private static string NormalizeDisplayDataSource(string dataSource)
@@ -887,51 +1260,123 @@ internal sealed partial class EngineTransportClient :
         return Path.GetFullPath(dataSource);
     }
 
+    private readonly record struct RuntimeDatabaseOptions(DatabaseOptions Value);
+
     private async Task<Database> GetDatabaseAsync(CancellationToken ct)
     {
+        using IDisposable? operationalBoundary =
+            EnterDirectOperationalTransportScope();
+
         while (true)
         {
             Task<Database>? openTask = null;
+            Task<Database>? createdOpenTask = null;
             Task? releaseTask = null;
+            IDisposable? databaseGateBoundaryLifetime = null;
 
-            lock (_databaseGate)
+            try
             {
-                if (_databaseReleaseCompletion is { Task.IsCompleted: false } releaseCompletion)
+                lock (_databaseGate)
                 {
-                    releaseTask = releaseCompletion.Task;
-                }
-                else
-                {
-                    _databaseReleaseCompletion = null;
-
-                    if (_databaseTask is null)
+                    if (_databaseReleaseCompletion is { Task.IsCompleted: false } releaseCompletion)
                     {
-                        Task<Database>? createdTask = null;
-                        _databaseOwnershipEpoch++;
-                        createdTask = OpenDatabaseCoreAsync();
-                        _databaseTask = createdTask;
+                        releaseTask = releaseCompletion.Task;
+                    }
+                    else
+                    {
+                        _databaseReleaseCompletion = null;
 
-                        async Task<Database> OpenDatabaseCoreAsync()
+                        if (_databaseTask is null)
                         {
-                            try
+                            CSharpDbDeferredDiagnosticBoundary? openBoundary =
+                                CreateDeferredOperationalTransportBoundary();
+                            var openCompletion = new TaskCompletionSource<Database>(
+                                TaskCreationOptions.RunContinuationsAsynchronously);
+                            createdOpenTask = openCompletion.Task;
+                            _databaseOwnershipEpoch++;
+                            _databaseTask = createdOpenTask;
+                            if (openBoundary is not null)
                             {
-                                return await _openDatabaseAsync(_databasePath, CancellationToken.None);
-                            }
-                            catch
-                            {
-                                lock (_databaseGate)
+                                (_databaseOpenBoundaries ??= []).Add(openBoundary);
+                                databaseGateBoundaryLifetime =
+                                    openBoundary.TryAcquireLifetime();
+                                if (_clientLockBoundaryStates is not null)
                                 {
-                                    if (ReferenceEquals(_databaseTask, createdTask))
-                                        _databaseTask = null;
+                                    foreach (ClientLockBoundaryState boundaryState in
+                                             _clientLockBoundaryStates)
+                                    {
+                                        boundaryState.Attach(openBoundary);
+                                    }
                                 }
+                            }
 
-                                throw;
+                            _ = OpenDatabaseCoreAsync(openCompletion, openBoundary);
+
+                            async Task OpenDatabaseCoreAsync(
+                                TaskCompletionSource<Database> completion,
+                                CSharpDbDeferredDiagnosticBoundary? boundary)
+                            {
+                                IDisposable? boundaryEntry = boundary?.Enter();
+                                try
+                                {
+                                    Database database = await _openDatabaseAsync(
+                                        _databasePath,
+                                        CancellationToken.None);
+                                    completion.TrySetResult(database);
+                                }
+                                catch (OperationCanceledException exception)
+                                {
+                                    completion.TrySetCanceled(exception.CancellationToken);
+                                }
+                                catch (Exception exception)
+                                {
+                                    completion.TrySetException(exception);
+                                }
+                                finally
+                                {
+                                    if (boundary is not null)
+                                    {
+                                        lock (_databaseGate)
+                                        {
+                                            if (_clientLockBoundaryStates is not null)
+                                            {
+                                                foreach (ClientLockBoundaryState boundaryState in
+                                                         _clientLockBoundaryStates)
+                                                {
+                                                    boundaryState.Attach(boundary);
+                                                }
+                                            }
+                                        }
+
+                                        boundaryEntry?.Dispose();
+                                        boundary.Dispose();
+                                        _ = RemoveDatabaseOpenBoundaryAfterFlushAsync(
+                                            boundary);
+                                    }
+
+                                    if (!completion.Task.IsCompletedSuccessfully)
+                                    {
+                                        lock (_databaseGate)
+                                        {
+                                            if (ReferenceEquals(
+                                                    _databaseTask,
+                                                    completion.Task))
+                                            {
+                                                _databaseTask = null;
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
-                    }
 
-                    openTask = _databaseTask;
+                        openTask = createdOpenTask ?? _databaseTask;
+                    }
                 }
+            }
+            finally
+            {
+                databaseGateBoundaryLifetime?.Dispose();
             }
 
             if (releaseTask is not null)
@@ -958,29 +1403,34 @@ internal sealed partial class EngineTransportClient :
         }
     }
 
+    private async Task RemoveDatabaseOpenBoundaryAfterFlushAsync(
+        CSharpDbDeferredDiagnosticBoundary boundary)
+    {
+        await boundary.FlushCompletion.ConfigureAwait(false);
+        lock (_databaseGate)
+        {
+            _databaseOpenBoundaries?.Remove(boundary);
+            if (_databaseOpenBoundaries is { Count: 0 })
+                _databaseOpenBoundaries = null;
+        }
+    }
+
     public async ValueTask<Database?> TryGetDatabaseAsync(CancellationToken ct = default)
         => await GetDatabaseAsync(ct);
 
     public async ValueTask ReleaseCachedDatabaseAsync(CancellationToken ct = default)
     {
-        await _lock.WaitAsync(ct);
-        try
-        {
-            await ReleaseCachedDatabaseCoreAsync(
-                ct,
-                "Cannot release the direct database handle while snapshot readers are active.");
-        }
-        finally
-        {
-            _lock.Release();
-        }
+        using ClientLockLease clientLock = await AcquireClientLockAsync(ct);
+        await ReleaseCachedDatabaseCoreAsync(
+            ct,
+            "Cannot release the direct database handle while snapshot readers are active.");
     }
 
     private async Task<ExclusiveDatabaseAccessLease> AcquireExclusiveDatabaseAccessAsync(
         CancellationToken ct,
         string activeReaderMessage)
     {
-        await _lock.WaitAsync(ct);
+        ClientLockLease clientLock = await AcquireClientLockAsync(ct);
 
         Task<Database>? openTask;
         var releaseCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1014,7 +1464,10 @@ internal sealed partial class EngineTransportClient :
                 }
                 catch
                 {
-                    return new ExclusiveDatabaseAccessLease(this, releaseCompletion);
+                    return new ExclusiveDatabaseAccessLease(
+                        this,
+                        releaseCompletion,
+                        clientLock);
                 }
 
                 if (db.ActiveReaderCount > 0)
@@ -1031,16 +1484,21 @@ internal sealed partial class EngineTransportClient :
                 await db.DisposeAsync();
             }
 
-            return new ExclusiveDatabaseAccessLease(this, releaseCompletion);
+            return new ExclusiveDatabaseAccessLease(
+                this,
+                releaseCompletion,
+                clientLock);
         }
         catch
         {
-            CompleteExclusiveDatabaseAccess(releaseCompletion);
+            CompleteExclusiveDatabaseAccess(releaseCompletion, ref clientLock);
             throw;
         }
     }
 
-    private void CompleteExclusiveDatabaseAccess(TaskCompletionSource releaseCompletion)
+    private void CompleteExclusiveDatabaseAccess(
+        TaskCompletionSource releaseCompletion,
+        ref ClientLockLease clientLock)
     {
         lock (_databaseGate)
         {
@@ -1049,7 +1507,89 @@ internal sealed partial class EngineTransportClient :
         }
 
         releaseCompletion.TrySetResult();
-        _lock.Release();
+        clientLock.Dispose();
+    }
+
+    private struct ClientLockLease : IDisposable
+    {
+        private EngineTransportClient? _owner;
+        private IDisposable? _transportScope;
+        private ClientLockBoundaryState? _boundaryState;
+
+        internal ClientLockLease(
+            EngineTransportClient owner,
+            IDisposable? transportScope,
+            ClientLockBoundaryState? boundaryState)
+        {
+            _owner = owner;
+            _transportScope = transportScope;
+            _boundaryState = boundaryState;
+        }
+
+        internal void ReleaseLock()
+        {
+            EngineTransportClient? owner = _owner;
+            if (owner is null)
+                return;
+
+            _owner = null;
+            ClientLockBoundaryState? boundaryState = _boundaryState;
+            _boundaryState = null;
+            owner.ReleaseClientLock(boundaryState);
+        }
+
+        public void Dispose()
+        {
+            ReleaseLock();
+            IDisposable? transportScope = _transportScope;
+            _transportScope = null;
+            transportScope?.Dispose();
+        }
+    }
+
+    private sealed class DisposeFlushToken(
+        EngineTransportClient owner,
+        DisposeFlushToken? previous,
+        Exception? failure)
+    {
+        private int _active = 1;
+
+        internal EngineTransportClient Owner { get; } = owner;
+        internal DisposeFlushToken? Previous { get; } = previous;
+        internal Exception? Failure { get; } = failure;
+        internal bool IsActive => Volatile.Read(ref _active) != 0;
+
+        internal void Deactivate() => Volatile.Write(ref _active, 0);
+    }
+
+    private sealed class ClientLockBoundaryState
+    {
+        private List<(
+            CSharpDbDeferredDiagnosticBoundary Boundary,
+            IDisposable Lifetime)>? _lifetimes;
+
+        internal void Attach(CSharpDbDeferredDiagnosticBoundary boundary)
+        {
+            if (_lifetimes?.Any(item => ReferenceEquals(item.Boundary, boundary)) == true)
+                return;
+
+            IDisposable? lifetime = boundary.TryAcquireLifetime();
+            if (lifetime is not null)
+                (_lifetimes ??= []).Add((boundary, lifetime));
+        }
+
+        internal void Release()
+        {
+            List<(
+                CSharpDbDeferredDiagnosticBoundary Boundary,
+                IDisposable Lifetime)>? lifetimes = _lifetimes;
+            _lifetimes = null;
+            if (lifetimes is null)
+                return;
+
+            foreach ((_, IDisposable lifetime) in lifetimes)
+                lifetime.Dispose();
+        }
     }
 
     private sealed class ClientTransactionSession
@@ -1105,20 +1645,27 @@ internal sealed partial class EngineTransportClient :
     {
         private readonly EngineTransportClient _owner;
         private readonly TaskCompletionSource _releaseCompletion;
+        private ClientLockLease _clientLock;
         private int _disposed;
 
         public ExclusiveDatabaseAccessLease(
             EngineTransportClient owner,
-            TaskCompletionSource releaseCompletion)
+            TaskCompletionSource releaseCompletion,
+            ClientLockLease clientLock)
         {
             _owner = owner;
             _releaseCompletion = releaseCompletion;
+            _clientLock = clientLock;
         }
 
         public ValueTask DisposeAsync()
         {
             if (Interlocked.Exchange(ref _disposed, 1) == 0)
-                _owner.CompleteExclusiveDatabaseAccess(_releaseCompletion);
+            {
+                _owner.CompleteExclusiveDatabaseAccess(
+                    _releaseCompletion,
+                    ref _clientLock);
+            }
 
             return ValueTask.CompletedTask;
         }
@@ -1526,9 +2073,14 @@ internal sealed partial class EngineTransportClient :
             PhysicalPageCountAfter = result.PhysicalPageCountAfter,
         };
 
-    private static async Task<SqlExecutionResult> ExecuteQueryAsync(Database db, string sql, CancellationToken ct)
+    private async Task<SqlExecutionResult> ExecuteQueryAsync(
+        Database db,
+        string sql,
+        CancellationToken ct,
+        string? observabilitySql = null)
     {
-        await using var result = await db.ExecuteAsync(sql, ct);
+        using IDisposable? transportScope = EnterDirectTransportScope();
+        await using var result = await db.ExecuteAsync(sql, observabilitySql ?? sql, ct);
         var rows = await result.ToListAsync(ct);
         return new SqlExecutionResult
         {
@@ -1553,22 +2105,24 @@ internal sealed partial class EngineTransportClient :
         };
     }
 
-    private static async Task ExecuteStatementAsync(Database db, string sql, CancellationToken ct)
+    private async Task ExecuteStatementAsync(Database db, string sql, CancellationToken ct)
     {
+        using IDisposable? transportScope = EnterDirectTransportScope();
         await using var result = await db.ExecuteAsync(sql, ct);
         if (result.IsQuery)
             await result.ToListAsync(ct);
     }
 
-    private static async Task<int> ExecuteNonQueryAsync(Database db, string sql, CancellationToken ct)
+    private async Task<int> ExecuteNonQueryAsync(Database db, string sql, CancellationToken ct)
     {
+        using IDisposable? transportScope = EnterDirectTransportScope();
         await using var result = await db.ExecuteAsync(sql, ct);
         if (result.IsQuery)
             await result.ToListAsync(ct);
         return result.RowsAffected;
     }
 
-    private static async Task ExecuteInSingleTransactionAsync(Database db, CancellationToken ct, params string[] statements)
+    private async Task ExecuteInSingleTransactionAsync(Database db, CancellationToken ct, params string[] statements)
     {
         await db.BeginTransactionAsync(ct);
         try
@@ -1583,6 +2137,216 @@ internal sealed partial class EngineTransportClient :
             await db.RollbackAsync(ct);
             throw;
         }
+    }
+
+    private ValueTask<ClientLockLease> AcquireClientLockAsync(CancellationToken ct)
+    {
+        IDisposable? transportScope = EnterDirectTransportScope();
+        ClientLockBoundaryState? boundaryState =
+            RegisterPendingClientLockBoundaryState();
+        try
+        {
+            Task waitTask = _lock.WaitAsync(ct);
+            if (waitTask.IsCompletedSuccessfully)
+            {
+                return new ValueTask<ClientLockLease>(
+                    new ClientLockLease(this, transportScope, boundaryState));
+            }
+
+            return AwaitLockAsync(
+                this,
+                waitTask,
+                transportScope,
+                boundaryState);
+        }
+        catch
+        {
+            UnregisterClientLockBoundaryState(boundaryState);
+            transportScope?.Dispose();
+            throw;
+        }
+
+        static async ValueTask<ClientLockLease> AwaitLockAsync(
+            EngineTransportClient owner,
+            Task waitTask,
+            IDisposable? transportScope,
+            ClientLockBoundaryState? boundaryState)
+        {
+            try
+            {
+                await waitTask;
+                return new ClientLockLease(owner, transportScope, boundaryState);
+            }
+            catch
+            {
+                owner.UnregisterClientLockBoundaryState(boundaryState);
+                transportScope?.Dispose();
+                throw;
+            }
+        }
+    }
+
+    private ClientLockBoundaryState? RegisterPendingClientLockBoundaryState()
+    {
+        if (!_operationalEventsEnabled ||
+            CSharpDbOperationScope.IsDiagnosticsSuppressed)
+        {
+            return null;
+        }
+
+        var state = new ClientLockBoundaryState();
+        lock (_databaseGate)
+        {
+            if (_databaseOpenBoundaries is not null)
+            {
+                foreach (CSharpDbDeferredDiagnosticBoundary openBoundary in
+                         _databaseOpenBoundaries)
+                {
+                    state.Attach(openBoundary);
+                }
+            }
+
+            (_clientLockBoundaryStates ??= []).Add(state);
+        }
+
+        return state;
+    }
+
+    private void UnregisterClientLockBoundaryState(
+        ClientLockBoundaryState? boundaryState)
+    {
+        if (boundaryState is null)
+            return;
+
+        lock (_databaseGate)
+        {
+            _clientLockBoundaryStates?.Remove(boundaryState);
+            if (_clientLockBoundaryStates is { Count: 0 })
+                _clientLockBoundaryStates = null;
+        }
+
+        boundaryState.Release();
+    }
+
+    private void ReleaseClientLock(ClientLockBoundaryState? boundaryState)
+    {
+        if (boundaryState is not null)
+        {
+            lock (_databaseGate)
+            {
+                _clientLockBoundaryStates?.Remove(boundaryState);
+                if (_clientLockBoundaryStates is { Count: 0 })
+                    _clientLockBoundaryStates = null;
+            }
+        }
+
+        _lock.Release();
+        boundaryState?.Release();
+    }
+
+    private IDisposable? EnterDirectTransportScope()
+        => EnterDirectTransportScope(includeQueryEvents: true);
+
+    private IDisposable? EnterDirectOperationalTransportScope()
+        => EnterDirectTransportScope(includeQueryEvents: false);
+
+    private CSharpDbDeferredDiagnosticBoundary? CreateDeferredTransportBoundary()
+        => CreateDeferredTransportBoundary(includeQueryEvents: true);
+
+    private CSharpDbDeferredDiagnosticBoundary?
+        CreateDeferredOperationalTransportBoundary()
+        => CreateDeferredTransportBoundary(includeQueryEvents: false);
+
+    private CSharpDbDeferredDiagnosticBoundary? CreateDeferredTransportBoundary(
+        bool includeQueryEvents)
+    {
+        if (!_observabilityEnabled ||
+            CSharpDbOperationScope.IsDiagnosticsSuppressed ||
+            (!_operationalEventsEnabled &&
+             (!includeQueryEvents ||
+              (!_queryEventsEnabled && !_slowQueryEventsEnabled))))
+        {
+            return null;
+        }
+
+        ObservabilityTransport transport = CSharpDbOperationScope.CurrentTransport;
+        OpaqueDiagnosticsId? sessionId = CSharpDbOperationScope.CurrentSessionId;
+        if (transport == ObservabilityTransport.Embedded)
+        {
+            transport = ObservabilityTransport.Direct;
+            sessionId = GetOrCreateDiagnosticsSessionId();
+        }
+
+        return CSharpDbOperationScope.CreateDeferredBoundary(transport, sessionId);
+    }
+
+    private IDisposable? EnterDirectTransportScope(bool includeQueryEvents)
+    {
+        if (!_observabilityEnabled ||
+            CSharpDbOperationScope.IsDiagnosticsSuppressed)
+        {
+            return null;
+        }
+
+        if (!_operationalEventsEnabled &&
+            (!includeQueryEvents ||
+             (!_queryEventsEnabled && !_slowQueryEventsEnabled)))
+        {
+            return null;
+        }
+
+        if (CSharpDbOperationScope.CurrentDiagnosticEventBuffer is not null)
+            return null;
+
+        ObservabilityTransport transport = CSharpDbOperationScope.CurrentTransport;
+        OpaqueDiagnosticsId? sessionId = CSharpDbOperationScope.CurrentSessionId;
+        if (transport == ObservabilityTransport.Embedded)
+        {
+            transport = ObservabilityTransport.Direct;
+            sessionId = GetOrCreateDiagnosticsSessionId();
+        }
+
+        return CSharpDbOperationScope.EnterBoundary(
+            transport,
+            sessionId);
+    }
+
+    private OpaqueDiagnosticsId GetOrCreateDiagnosticsSessionId()
+    {
+        OpaqueDiagnosticsId? sessionId = Volatile.Read(ref _diagnosticsSessionId);
+        if (sessionId is not null)
+            return sessionId;
+
+        OpaqueDiagnosticsId created = OpaqueDiagnosticsId.Create();
+        return Interlocked.CompareExchange(
+            ref _diagnosticsSessionId,
+            created,
+            comparand: null) ?? created;
+    }
+
+    private bool IsQueryObservationRequested()
+    {
+        CSharpDbDiagnosticEventPublisher publisher = CSharpDbDiagnostics.EventPublisher;
+        return (_queryEventsEnabled &&
+                (publisher.IsEnabled(CSharpDbLogEvents.QueryCompleted) ||
+                 publisher.IsEnabled(CSharpDbLogEvents.QueryFailed) ||
+                 publisher.IsEnabled(CSharpDbLogEvents.QueryCanceled))) ||
+               (_slowQueryEventsEnabled && publisher.IsEnabled(CSharpDbLogEvents.SlowQuery));
+    }
+
+    private static TimeSpan GetConfiguredSlowQueryThreshold(
+        CSharpDbLoggingOptions? logging,
+        CSharpDbOperationClass operationClass)
+    {
+        TimeSpan threshold = logging?.SlowQueryThresholdOverrides?.TryGetValue(
+            operationClass,
+            out TimeSpan configured) == true
+                ? configured
+                : logging?.SlowQueryThreshold ?? TimeSpan.FromMilliseconds(500);
+        return threshold > TimeSpan.Zero &&
+               threshold <= CSharpDbObservabilityOptions.MaximumThreshold
+            ? threshold
+            : TimeSpan.FromMilliseconds(500);
     }
 
     private static ViewBrowseResult PageViewResult(ViewBrowseResult result, int page, int pageSize)
@@ -1603,7 +2367,7 @@ internal sealed partial class EngineTransportClient :
         };
     }
 
-    private static async Task<TableBrowseResult> BrowseTablePageAsync(Database db, string tableName, int page, int pageSize, CancellationToken ct)
+    private async Task<TableBrowseResult> BrowseTablePageAsync(Database db, string tableName, int page, int pageSize, CancellationToken ct)
     {
         string normalizedTableName =
             RequireCatalogIdentifier(tableName, nameof(tableName));
@@ -1872,15 +2636,9 @@ internal sealed partial class EngineTransportClient :
         finally
         {
             session.CompleteFinalization();
-            await _lock.WaitAsync(CancellationToken.None);
-            try
-            {
-                UnregisterFinalization();
-            }
-            finally
-            {
-                _lock.Release();
-            }
+            using ClientLockLease clientLock =
+                await AcquireClientLockAsync(CancellationToken.None);
+            UnregisterFinalization();
         }
     }
 
@@ -1889,9 +2647,8 @@ internal sealed partial class EngineTransportClient :
         bool commit,
         CancellationToken ct)
     {
-        await _lock.WaitAsync(ct);
+        ClientLockLease lifecycleBoundaryLock = await AcquireClientLockAsync(ct);
         ClientTransactionSession? session = null;
-        bool lockHeld = true;
         bool adopted = false;
         bool operationGateAcquired = false;
         bool sessionResetSucceeded = false;
@@ -1910,8 +2667,7 @@ internal sealed partial class EngineTransportClient :
             }
 
             RegisterFinalization();
-            _lock.Release();
-            lockHeld = false;
+            lifecycleBoundaryLock.ReleaseLock();
 
             try
             {
@@ -1921,17 +2677,13 @@ internal sealed partial class EngineTransportClient :
             catch
             {
                 bool disposeClaimedSession;
-                await _lock.WaitAsync(CancellationToken.None);
-                try
+                using (ClientLockLease recoveryLock =
+                       await AcquireClientLockAsync(CancellationToken.None))
                 {
                     session.CancelFinalizationClaim();
                     disposeClaimedSession = _disposeStarted;
                     if (!disposeClaimedSession)
                         _transactions.TryAdd(transactionId, session);
-                }
-                finally
-                {
-                    _lock.Release();
                 }
 
                 if (disposeClaimedSession)
@@ -1943,28 +2695,16 @@ internal sealed partial class EngineTransportClient :
                     finally
                     {
                         session.CompleteFinalization();
-                        await _lock.WaitAsync(CancellationToken.None);
-                        try
-                        {
-                            UnregisterFinalization();
-                        }
-                        finally
-                        {
-                            _lock.Release();
-                        }
+                        using ClientLockLease unregisterLock =
+                            await AcquireClientLockAsync(CancellationToken.None);
+                        UnregisterFinalization();
                     }
                 }
                 else
                 {
-                    await _lock.WaitAsync(CancellationToken.None);
-                    try
-                    {
-                        UnregisterFinalization();
-                    }
-                    finally
-                    {
-                        _lock.Release();
-                    }
+                    using ClientLockLease unregisterLock =
+                        await AcquireClientLockAsync(CancellationToken.None);
+                    UnregisterFinalization();
                 }
 
                 session = null;
@@ -1988,15 +2728,11 @@ internal sealed partial class EngineTransportClient :
         {
             if (session is not null && operationGateAcquired)
             {
-                await _lock.WaitAsync(CancellationToken.None);
-                try
+                using (ClientLockLease adoptionLock =
+                       await AcquireClientLockAsync(CancellationToken.None))
                 {
                     if (!_disposeStarted && _hybridDatabaseOptions is null && sessionResetSucceeded)
                         adopted = TryAdoptCachedDatabase(session);
-                }
-                finally
-                {
-                    _lock.Release();
                 }
 
                 try
@@ -2007,20 +2743,13 @@ internal sealed partial class EngineTransportClient :
                 finally
                 {
                     session.CompleteFinalization();
-                    await _lock.WaitAsync(CancellationToken.None);
-                    try
-                    {
-                        UnregisterFinalization();
-                    }
-                    finally
-                    {
-                        _lock.Release();
-                    }
+                    using ClientLockLease unregisterLock =
+                        await AcquireClientLockAsync(CancellationToken.None);
+                    UnregisterFinalization();
                 }
             }
 
-            if (lockHeld)
-                _lock.Release();
+            lifecycleBoundaryLock.Dispose();
         }
     }
 

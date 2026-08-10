@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using CSharpDB.Observability;
 using CSharpDB.Storage.Diagnostics;
 
 namespace CSharpDB.Engine;
@@ -19,53 +20,66 @@ public static class DatabaseBackupCoordinator
         string normalizedSourcePath = Path.GetFullPath(sourcePath);
         string normalizedDestinationPath = Path.GetFullPath(destinationPath);
         EnsurePathsDiffer(normalizedSourcePath, normalizedDestinationPath, "Backup destination must differ from the current database path.");
+        LifecycleOperation? operation = database.StartLifecycleObservability(
+            CSharpDbLogEvents.BackupCompleted,
+            CSharpDbOperationClass.Backup);
 
-        await database.SaveToFileAsync(normalizedDestinationPath, ct);
-
-        var report = await DatabaseInspector.InspectAsync(
-            normalizedDestinationPath,
-            new DatabaseInspectOptions(),
-            ct);
-        string sha256 = await ComputeSha256Async(normalizedDestinationPath, ct);
-        string? manifestPath = null;
-
-        if (withManifest)
+        try
         {
-            manifestPath = normalizedDestinationPath + ".manifest.json";
-            var manifest = new DatabaseBackupManifest
+            await database.SaveToFileAsync(normalizedDestinationPath, ct);
+
+            var report = await DatabaseInspector.InspectAsync(
+                normalizedDestinationPath,
+                new DatabaseInspectOptions(),
+                ct);
+            string sha256 = await ComputeSha256Async(normalizedDestinationPath, ct);
+            string? manifestPath = null;
+
+            if (withManifest)
             {
-                SourceDatabasePath = normalizedSourcePath,
-                BackupDatabasePath = normalizedDestinationPath,
-                CreatedUtc = DateTimeOffset.UtcNow,
+                manifestPath = normalizedDestinationPath + ".manifest.json";
+                var manifest = new DatabaseBackupManifest
+                {
+                    SourceDatabasePath = normalizedSourcePath,
+                    BackupDatabasePath = normalizedDestinationPath,
+                    CreatedUtc = DateTimeOffset.UtcNow,
+                    DatabaseFileBytes = report.Header.FileLengthBytes,
+                    PhysicalPageCount = report.Header.PhysicalPageCount,
+                    DeclaredPageCount = report.Header.DeclaredPageCount,
+                    PageSizeBytes = report.Header.PageSize,
+                    ChangeCounter = report.Header.ChangeCounter,
+                    WarningCount = CountIssues(report.Issues, InspectSeverity.Warning),
+                    ErrorCount = CountIssues(report.Issues, InspectSeverity.Error),
+                    Sha256 = sha256,
+                };
+
+                string json = System.Text.Json.JsonSerializer.Serialize(
+                    manifest,
+                    EngineJsonContext.Default.DatabaseBackupManifest);
+                await File.WriteAllTextAsync(manifestPath, json, ct);
+            }
+
+            var result = new DatabaseBackupResult
+            {
+                SourcePath = normalizedSourcePath,
+                DestinationPath = normalizedDestinationPath,
+                ManifestPath = manifestPath,
                 DatabaseFileBytes = report.Header.FileLengthBytes,
                 PhysicalPageCount = report.Header.PhysicalPageCount,
                 DeclaredPageCount = report.Header.DeclaredPageCount,
-                PageSizeBytes = report.Header.PageSize,
                 ChangeCounter = report.Header.ChangeCounter,
                 WarningCount = CountIssues(report.Issues, InspectSeverity.Warning),
                 ErrorCount = CountIssues(report.Issues, InspectSeverity.Error),
                 Sha256 = sha256,
             };
-
-            string json = System.Text.Json.JsonSerializer.Serialize(
-                manifest,
-                EngineJsonContext.Default.DatabaseBackupManifest);
-            await File.WriteAllTextAsync(manifestPath, json, ct);
+            operation?.Succeed();
+            return result;
         }
-
-        return new DatabaseBackupResult
+        catch (Exception exception)
         {
-            SourcePath = normalizedSourcePath,
-            DestinationPath = normalizedDestinationPath,
-            ManifestPath = manifestPath,
-            DatabaseFileBytes = report.Header.FileLengthBytes,
-            PhysicalPageCount = report.Header.PhysicalPageCount,
-            DeclaredPageCount = report.Header.DeclaredPageCount,
-            ChangeCounter = report.Header.ChangeCounter,
-            WarningCount = CountIssues(report.Issues, InspectSeverity.Warning),
-            ErrorCount = CountIssues(report.Issues, InspectSeverity.Error),
-            Sha256 = sha256,
-        };
+            operation?.Fail(exception);
+            throw;
+        }
     }
 
     public static async ValueTask<DatabaseRestoreResult> ValidateRestoreSourceAsync(

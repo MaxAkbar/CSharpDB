@@ -11,6 +11,7 @@ using Microsoft.Extensions.Logging;
 
 namespace CSharpDB.Api.Tests;
 
+[Collection("ObservabilityDiagnostics")]
 public sealed class ExceptionHandlingMiddlewareTests
 {
     private const string SafeTraceId = "0123456789abcdef0123456789abcdef";
@@ -35,9 +36,11 @@ public sealed class ExceptionHandlingMiddlewareTests
     {
         Exception exception = CreateException(errorCase);
         var logger = new CapturingLogger<ExceptionHandlingMiddleware>();
+        using CSharpDbDiagnosticLoggerBridge bridge = CreateBridge(logger);
         var middleware = new ExceptionHandlingMiddleware(
             _ => Task.FromException(exception),
-            logger);
+            logger,
+            bridge);
         var context = new DefaultHttpContext
         {
             TraceIdentifier = SafeTraceId,
@@ -52,7 +55,7 @@ public sealed class ExceptionHandlingMiddlewareTests
         using JsonDocument problem = await JsonDocument.ParseAsync(
             context.Response.Body,
             cancellationToken: TestContext.Current.CancellationToken);
-        CapturedLog log = Assert.Single(logger.Entries);
+        CapturedLog log = Assert.Single(ApiLogs(logger));
         string payload = problem.RootElement.GetRawText();
 
         Assert.Equal((int)expectedStatus, context.Response.StatusCode);
@@ -66,6 +69,9 @@ public sealed class ExceptionHandlingMiddlewareTests
         Assert.True(CSharpDbDiagnostics.IsValidOpaqueIdentifier(traceId));
         Assert.NotEqual(SafeTraceId, traceId);
         Assert.Contains(traceId, log.Message, StringComparison.Ordinal);
+        Assert.Equal(expectedCode, log.Fields["ErrorCode"]);
+        Assert.Equal(expectedType, log.Fields["ErrorType"]);
+        Assert.Equal(traceId, log.Fields["TraceId"]);
         Assert.Null(log.Exception);
         Assert.DoesNotContain("CanarySecret", payload, StringComparison.Ordinal);
         Assert.DoesNotContain("private", payload, StringComparison.OrdinalIgnoreCase);
@@ -107,15 +113,17 @@ public sealed class ExceptionHandlingMiddlewareTests
         LogLevel expectedLevel)
     {
         var logger = new CapturingLogger<ExceptionHandlingMiddleware>();
+        using CSharpDbDiagnosticLoggerBridge bridge = CreateBridge(logger);
         var middleware = new ExceptionHandlingMiddleware(
             _ => Task.FromException(new CSharpDbException(code, Secret)),
-            logger);
+            logger,
+            bridge);
         var context = CreateContext();
 
         await middleware.InvokeAsync(context);
 
         using JsonDocument problem = await ReadProblemAsync(context);
-        CapturedLog log = Assert.Single(logger.Entries);
+        CapturedLog log = Assert.Single(ApiLogs(logger));
         Assert.Equal((int)expectedStatus, context.Response.StatusCode);
         Assert.Equal(expectedSafeCode, problem.RootElement.GetProperty("errorCode").GetString());
         Assert.Equal(expectedLevel, log.Level);
@@ -134,9 +142,11 @@ public sealed class ExceptionHandlingMiddlewareTests
         activity.SetIdFormat(ActivityIdFormat.W3C);
         activity.Start();
         var logger = new CapturingLogger<ExceptionHandlingMiddleware>();
+        using CSharpDbDiagnosticLoggerBridge bridge = CreateBridge(logger);
         var middleware = new ExceptionHandlingMiddleware(
             _ => Task.FromException(new InvalidOperationException(Secret)),
-            logger);
+            logger,
+            bridge);
         var context = CreateContext();
 
         await middleware.InvokeAsync(context);
@@ -144,16 +154,21 @@ public sealed class ExceptionHandlingMiddlewareTests
         using JsonDocument problem = await ReadProblemAsync(context);
         string traceId = activity.TraceId.ToHexString();
         Assert.Equal(traceId, problem.RootElement.GetProperty("traceId").GetString());
-        Assert.Contains(traceId, Assert.Single(logger.Entries).Message, StringComparison.Ordinal);
+        Assert.Contains(
+            traceId,
+            Assert.Single(ApiLogs(logger)).Message,
+            StringComparison.Ordinal);
     }
 
     [Fact]
     public async Task Middleware_ReplacesUnsafeTraceIdentifierWithOpaqueFallback()
     {
         var logger = new CapturingLogger<ExceptionHandlingMiddleware>();
+        using CSharpDbDiagnosticLoggerBridge bridge = CreateBridge(logger);
         var middleware = new ExceptionHandlingMiddleware(
             _ => Task.FromException(new InvalidOperationException(Secret)),
-            logger);
+            logger,
+            bridge);
         var context = CreateContext();
         context.TraceIdentifier = TraceIdentifierCanary;
 
@@ -162,7 +177,7 @@ public sealed class ExceptionHandlingMiddlewareTests
         using JsonDocument problem = await ReadProblemAsync(context);
         string traceId = Assert.IsType<string>(
             problem.RootElement.GetProperty("traceId").GetString());
-        CapturedLog log = Assert.Single(logger.Entries);
+        CapturedLog log = Assert.Single(ApiLogs(logger));
         string payload = problem.RootElement.GetRawText();
 
         Assert.True(CSharpDbDiagnostics.IsValidOpaqueIdentifier(traceId));
@@ -177,15 +192,17 @@ public sealed class ExceptionHandlingMiddlewareTests
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
         var logger = new CapturingLogger<ExceptionHandlingMiddleware>();
+        using CSharpDbDiagnosticLoggerBridge bridge = CreateBridge(logger);
         var middleware = new ExceptionHandlingMiddleware(
             _ => Task.FromException(new OperationCanceledException(cancellation.Token)),
-            logger);
+            logger,
+            bridge);
         var context = CreateContext();
         context.RequestAborted = cancellation.Token;
 
         await middleware.InvokeAsync(context);
 
-        Assert.Empty(logger.Entries);
+        Assert.Empty(ApiLogs(logger));
         Assert.Equal(0, context.Response.Body.Length);
     }
 
@@ -198,9 +215,12 @@ public sealed class ExceptionHandlingMiddlewareTests
         string expectedCode)
     {
         Exception exception = timeout ? new TimeoutException(Secret) : new OperationCanceledException(Secret);
+        var logger = new CapturingLogger<ExceptionHandlingMiddleware>();
+        using CSharpDbDiagnosticLoggerBridge bridge = CreateBridge(logger);
         var middleware = new ExceptionHandlingMiddleware(
             _ => Task.FromException(exception),
-            new CapturingLogger<ExceptionHandlingMiddleware>());
+            logger,
+            bridge);
         var context = CreateContext();
 
         await middleware.InvokeAsync(context);
@@ -215,9 +235,11 @@ public sealed class ExceptionHandlingMiddlewareTests
     {
         var expected = new InvalidOperationException(Secret);
         var logger = new CapturingLogger<ExceptionHandlingMiddleware>();
+        using CSharpDbDiagnosticLoggerBridge bridge = CreateBridge(logger);
         var middleware = new ExceptionHandlingMiddleware(
             _ => Task.FromException(expected),
-            logger);
+            logger,
+            bridge);
         var context = new DefaultHttpContext();
         context.Features.Set<IHttpResponseFeature>(new StartedResponseFeature());
 
@@ -225,7 +247,83 @@ public sealed class ExceptionHandlingMiddlewareTests
             () => middleware.InvokeAsync(context));
 
         Assert.Same(expected, actual);
-        Assert.Single(logger.Entries);
+        Assert.Single(ApiLogs(logger));
+    }
+
+    [Fact]
+    public async Task ThrowingLoggerProvider_CannotReplaceSafeProblemResponse()
+    {
+        using var bridge = new CSharpDbDiagnosticLoggerBridge(
+            new ThrowingLoggerFactory(),
+            CreateBridgeOptions());
+        var middleware = new ExceptionHandlingMiddleware(
+            _ => Task.FromException(new ArgumentException(Secret)),
+            new ThrowingLogger<ExceptionHandlingMiddleware>(),
+            bridge);
+        var context = CreateContext();
+
+        await middleware.InvokeAsync(context);
+
+        using JsonDocument problem = await ReadProblemAsync(context);
+        Assert.Equal(StatusCodes.Status400BadRequest, context.Response.StatusCode);
+        Assert.Equal(
+            "invalid_argument",
+            problem.RootElement.GetProperty("errorCode").GetString());
+        Assert.DoesNotContain(
+            "CanarySecret",
+            problem.RootElement.GetRawText(),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DefaultDisabledObservability_PreservesOneSafeApiErrorLog()
+    {
+        var logger = new CapturingLogger<ExceptionHandlingMiddleware>();
+        using var bridge = new CSharpDbDiagnosticLoggerBridge(
+            new SingleLoggerFactory(logger),
+            new CSharpDbObservabilityOptions());
+        var middleware = new ExceptionHandlingMiddleware(
+            _ => Task.FromException(new ArgumentException(Secret)),
+            logger,
+            bridge);
+        var context = CreateContext();
+
+        await middleware.InvokeAsync(context);
+
+        using JsonDocument problem = await ReadProblemAsync(context);
+        CapturedLog log = Assert.Single(ApiLogs(logger));
+        Assert.Equal(CSharpDbLogEventIds.ApiRequestRejected, log.EventId.Id);
+        Assert.Equal(LogLevel.Warning, log.Level);
+        Assert.Null(log.Exception);
+        Assert.Equal(StatusCodes.Status400BadRequest, context.Response.StatusCode);
+        Assert.DoesNotContain("CanarySecret", log.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "CanarySecret",
+            problem.RootElement.GetRawText(),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task NoTypedBridge_UsesOneSafeCompatibilityLog()
+    {
+        var logger = new CapturingLogger<ExceptionHandlingMiddleware>();
+        var middleware = new ExceptionHandlingMiddleware(
+            _ => Task.FromException(new ArgumentException(Secret)),
+            logger);
+        var context = CreateContext();
+
+        await middleware.InvokeAsync(context);
+
+        using JsonDocument problem = await ReadProblemAsync(context);
+        CapturedLog log = Assert.Single(ApiLogs(logger));
+        Assert.Equal(CSharpDbLogEventIds.ApiRequestRejected, log.EventId.Id);
+        Assert.Equal("invalid_argument", log.Fields["ErrorCode"]);
+        Assert.Equal("invalid_argument", log.Fields["ErrorType"]);
+        Assert.Equal(
+            problem.RootElement.GetProperty("traceId").GetString(),
+            log.Fields["TraceId"]);
+        Assert.Null(log.Exception);
+        Assert.DoesNotContain("CanarySecret", log.Message, StringComparison.Ordinal);
     }
 
     private static object[] DbCase(
@@ -234,6 +332,27 @@ public sealed class ExceptionHandlingMiddlewareTests
         string safeCode,
         LogLevel level)
         => [code, status, safeCode, level];
+
+    private static CSharpDbDiagnosticLoggerBridge CreateBridge(ILogger logger)
+        => new(new SingleLoggerFactory(logger), CreateBridgeOptions());
+
+    private static CapturedLog[] ApiLogs<T>(CapturingLogger<T> logger)
+        => logger.Entries
+            .Where(static entry =>
+                entry.EventId.Id == CSharpDbLogEventIds.ApiRequestRejected ||
+                entry.EventId.Id == CSharpDbLogEventIds.ApiUnhandledError)
+            .ToArray();
+
+    private static CSharpDbObservabilityOptions CreateBridgeOptions()
+        => new()
+        {
+            Enabled = true,
+            DatabaseAlias = "api-middleware-tests",
+            Logging = new CSharpDbLoggingOptions
+            {
+                Enabled = true,
+            },
+        };
 
     private static DefaultHttpContext CreateContext()
     {
@@ -304,14 +423,52 @@ public sealed class ExceptionHandlingMiddlewareTests
                 logLevel,
                 eventId,
                 formatter(state, exception),
-                exception));
+                exception,
+                state is IEnumerable<KeyValuePair<string, object?>> fields
+                    ? fields.ToDictionary(
+                        static field => field.Key,
+                        static field => field.Value,
+                        StringComparer.Ordinal)
+                    : new Dictionary<string, object?>(StringComparer.Ordinal)));
+    }
+
+    private sealed class SingleLoggerFactory(ILogger logger) : ILoggerFactory
+    {
+        public ILogger CreateLogger(string categoryName) => logger;
+        public void AddProvider(ILoggerProvider provider) { }
+        public void Dispose() { }
+    }
+
+    private sealed class ThrowingLoggerFactory : ILoggerFactory
+    {
+        public ILogger CreateLogger(string categoryName) => new ThrowingLogger<object>();
+        public void AddProvider(ILoggerProvider provider) { }
+        public void Dispose() { }
+    }
+
+    private sealed class ThrowingLogger<T> : ILogger<T>
+    {
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull
+            => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+            => throw new InvalidOperationException("Throwing provider canary.");
     }
 
     private sealed record CapturedLog(
         LogLevel Level,
         EventId EventId,
         string Message,
-        Exception? Exception);
+        Exception? Exception,
+        IReadOnlyDictionary<string, object?> Fields);
 
     private sealed class Customer42ApiKeyCanaryException(
         string message,

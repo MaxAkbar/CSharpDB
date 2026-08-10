@@ -69,6 +69,56 @@ Data Source=csharpdb.db
 
 That means a local `csharpdb.db` file is used by default.
 
+### Observability and structured logging
+
+The standalone host binds `CSharpDB:Observability`, validates it before database
+warmup, gives the same options instance to the direct database, and owns a
+`CSharpDbDiagnosticLoggerBridge` for the host lifetime. HTTP requests establish
+an `Http` transport scope while preserving ASP.NET Core's inbound `Activity`.
+
+Safe query logging can be enabled as follows:
+
+```json
+{
+  "CSharpDB": {
+    "Observability": {
+      "Enabled": true,
+      "DatabaseAlias": "primary",
+      "Logging": {
+        "Enabled": true,
+        "Queries": true,
+        "SlowQueries": true,
+        "SlowQueryThreshold": "00:00:00.500",
+        "SlowQueryThresholdOverrides": {
+          "Query": "00:00:01"
+        },
+        "SqlText": "None"
+      }
+    }
+  }
+}
+```
+
+`CSharpDB.Operational` receives host/lifecycle/API events and `CSharpDB.Query`
+receives query completion, slow-query, failure, and cancellation events. Stable
+fields include opaque operation/parent ids, operation class/role/outcome,
+configured database alias, transport, optional safe session/trace/fingerprint,
+durations, row counts, and reviewed `error.code`/`error.type` values.
+
+The default `SqlText` value is `None`. Built-in logs do not include SQL,
+parameters, row values, credentials, connection strings, paths, raw exceptions,
+or exception messages. `Normalized` capture is an explicit opt-in. `Raw` can
+expose SQL literals and emits startup warning
+`CSharpDB.Host.RawSqlCaptureEnabled` (event id `1003`) exactly once after the
+logging bridge subscribes. Logging-provider failures do not prevent host
+startup or change request results.
+
+Safe API rejection/unhandled-error events retain the existing default logging
+behavior even when general observability is disabled. Embedding applications
+that map the REST surface without registering the typed bridge use the same
+stable event id, reviewed template, and safe code/type/trace fields through a
+no-throw compatibility logger.
+
 ## Running Locally
 
 Start the API:

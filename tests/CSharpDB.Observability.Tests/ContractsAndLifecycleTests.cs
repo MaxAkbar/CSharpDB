@@ -126,6 +126,12 @@ public sealed class ContractsAndLifecycleTests
             CSharpDbTransport.Direct,
             "primary",
             queryFingerprint: fingerprint);
+        CSharpDbOperationContext shardAttempt = CSharpDbOperationContext.CreateInternal(
+            single,
+            CSharpDbOperationClass.Query,
+            CSharpDbTransport.Grpc,
+            "shard-1",
+            fingerprint);
 
         Assert.True(script.CountsAsRequest);
         Assert.False(script.CountsAsStatement);
@@ -134,6 +140,19 @@ public sealed class ContractsAndLifecycleTests
         Assert.Equal(script.OperationId, statement.ParentOperationId);
         Assert.True(single.CountsAsRequest);
         Assert.True(single.CountsAsStatement);
+        Assert.False(shardAttempt.CountsAsRequest);
+        Assert.False(shardAttempt.CountsAsStatement);
+        Assert.Equal(single.OperationId, shardAttempt.ParentOperationId);
+        Assert.Equal(single.TraceId, shardAttempt.TraceId);
+        Assert.Equal(CSharpDbTransport.Grpc, shardAttempt.Transport);
+        Assert.Equal("shard-1", shardAttempt.DatabaseAlias);
+    }
+
+    [Fact]
+    public void OperationClass_AdditionsPreservePublishedNumericValues()
+    {
+        Assert.Equal(12, (int)CSharpDbOperationClass.Maintenance);
+        Assert.Equal(13, (int)CSharpDbOperationClass.Pipeline);
     }
 
     [Fact]
@@ -153,6 +172,9 @@ public sealed class ContractsAndLifecycleTests
 
         Assert.Equal(TimeSpan.FromMilliseconds(125), request.GetElapsedTime());
         Assert.Equal(TimeSpan.FromMilliseconds(125), statement.GetElapsedTime());
+        Assert.Equal(
+            new DateTimeOffset(2026, 8, 9, 12, 0, 0, 125, TimeSpan.Zero),
+            statement.GetUtcNow());
     }
 
     [Fact]

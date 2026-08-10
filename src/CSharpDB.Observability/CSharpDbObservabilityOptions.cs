@@ -44,6 +44,30 @@ public sealed class CSharpDbObservabilityOptions
                 "Logging.SlowQueryThreshold",
                 MaximumThreshold,
                 errors);
+
+            if (Logging.SlowQueryThresholdOverrides is null)
+            {
+                errors.Add("Logging.SlowQueryThresholdOverrides are required.");
+            }
+            else
+            {
+                foreach ((CSharpDbOperationClass operationClass, TimeSpan threshold) in
+                         Logging.SlowQueryThresholdOverrides.OrderBy(static item => (int)item.Key))
+                {
+                    if (operationClass == CSharpDbOperationClass.Unknown || !Enum.IsDefined(operationClass))
+                    {
+                        errors.Add(
+                            "Logging.SlowQueryThresholdOverrides keys must be defined operation classes other than Unknown.");
+                        continue;
+                    }
+
+                    ValidatePositiveDuration(
+                        threshold,
+                        $"Logging.SlowQueryThresholdOverrides[{operationClass}]",
+                        MaximumThreshold,
+                        errors);
+                }
+            }
         }
 
         if (History is null)
@@ -248,7 +272,20 @@ public sealed class CSharpDbLoggingOptions
     public bool Queries { get; set; }
     public bool SlowQueries { get; set; } = true;
     public TimeSpan SlowQueryThreshold { get; set; } = TimeSpan.FromMilliseconds(500);
+    public Dictionary<CSharpDbOperationClass, TimeSpan> SlowQueryThresholdOverrides { get; set; } = new();
     public SqlTextCaptureMode SqlText { get; set; } = SqlTextCaptureMode.None;
+
+    public TimeSpan GetSlowQueryThreshold(CSharpDbOperationClass operationClass)
+    {
+        if (operationClass == CSharpDbOperationClass.Unknown || !Enum.IsDefined(operationClass))
+            throw new ArgumentOutOfRangeException(nameof(operationClass));
+        if (SlowQueryThresholdOverrides is null)
+            throw new InvalidOperationException("Slow-query threshold overrides have not been configured.");
+
+        return SlowQueryThresholdOverrides.TryGetValue(operationClass, out TimeSpan threshold)
+            ? threshold
+            : SlowQueryThreshold;
+    }
 }
 
 public sealed class CSharpDbHistoryOptions

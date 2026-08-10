@@ -91,6 +91,7 @@ public static class CSharpDbRestApiHostExtensions
                 context => context.Request.Path.StartsWithSegments(apiPath),
                 branch =>
                 {
+                    branch.UseMiddleware<CSharpDbOperationScopeMiddleware>();
                     branch.UseCors();
                     branch.UseMiddleware<ExceptionHandlingMiddleware>();
                     branch.UseMiddleware<ApiKeyAuthenticationMiddleware>();
@@ -105,6 +106,7 @@ public static class CSharpDbRestApiHostExtensions
                 context => context.Request.Path.StartsWithSegments(apiPath),
                 branch =>
                 {
+                    branch.UseMiddleware<CSharpDbOperationScopeMiddleware>();
                     branch.UseMiddleware<ApiKeyAuthenticationMiddleware>();
                     branch.UseMiddleware<RouteContextMiddleware>();
                 });

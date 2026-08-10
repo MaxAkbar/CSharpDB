@@ -3,6 +3,8 @@ using CSharpDB.Api.Security;
 using CSharpDB.Client;
 using CSharpDB.Daemon.Configuration;
 using CSharpDB.Daemon.Grpc;
+using CSharpDB.Observability;
+using ObservabilityTransport = CSharpDB.Observability.CSharpDbTransport;
 
 var builder = WebApplication.CreateBuilder(args);
 bool enableRestApi = builder.Configuration.GetValue("CSharpDB:Daemon:EnableRestApi", true);
@@ -13,12 +15,14 @@ builder.Host.UseWindowsService(options =>
 });
 builder.Host.UseSystemd();
 
+builder.Services.AddCSharpDbObservability(builder.Configuration);
 builder.Services.AddSingleton(sp =>
     DaemonClientOptionsBuilder.BindHostDatabaseOptions(sp.GetRequiredService<IConfiguration>()));
 builder.Services.AddSingleton(sp =>
     DaemonClientOptionsBuilder.Build(
         sp.GetRequiredService<IConfiguration>(),
-        sp.GetRequiredService<DaemonHostDatabaseOptions>()));
+        sp.GetRequiredService<DaemonHostDatabaseOptions>(),
+        sp.GetRequiredService<CSharpDbObservabilityOptions>()));
 builder.Services.AddSingleton<ICSharpDbRouteContextAccessor, CSharpDbRouteContextAccessor>();
 builder.Services.AddSingleton<ICSharpDbClient>(sp =>
 {
@@ -38,11 +42,13 @@ if (enableRestApi)
 
 builder.Services.AddGrpc(options =>
 {
+    options.Interceptors.Add<CSharpDbOperationScopeGrpcInterceptor>();
     options.Interceptors.Add<CSharpDbApiKeyGrpcInterceptor>();
     options.Interceptors.Add<CSharpDbRouteContextGrpcInterceptor>();
 });
 
 var app = builder.Build();
+app.UseCSharpDbObservability(ObservabilityTransport.Direct);
 
 await using (var scope = app.Services.CreateAsyncScope())
 {

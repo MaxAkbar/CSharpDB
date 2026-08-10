@@ -32,6 +32,9 @@ internal static class CSharpDbEmbeddedConfigurationResolver
 
         DatabaseOptions effectiveDirectDatabaseOptions = directDatabaseOptions
             ?? CreateDirectDatabaseOptions(requestedStoragePreset, builder.AdaptiveQueryReoptimization);
+        DatabaseOptions runtimeDirectDatabaseOptions = directDatabaseOptions is null
+            ? effectiveDirectDatabaseOptions
+            : DataObservabilityOptionsSnapshot.Freeze(effectiveDirectDatabaseOptions);
 
         HybridDatabaseOptions? effectiveHybridDatabaseOptions = hybridDatabaseOptions
             ?? CreateHybridDatabaseOptions(requestedOpenMode);
@@ -50,7 +53,8 @@ internal static class CSharpDbEmbeddedConfigurationResolver
                 || requestedStoragePreset is not null
                 || requestedOpenMode is not null
                 || builder.AdaptiveQueryReoptimization,
-            builder.AdaptiveQueryReoptimization && directDatabaseOptions is null);
+            builder.AdaptiveQueryReoptimization && directDatabaseOptions is null,
+            runtimeDirectDatabaseOptions);
     }
 
     internal static CSharpDbEmbeddedOpenMode GetEffectiveOpenMode(HybridDatabaseOptions hybridDatabaseOptions)
@@ -128,4 +132,5 @@ internal readonly record struct ResolvedEmbeddedConfiguration(
     DatabaseOptions? ExplicitDirectDatabaseOptions,
     HybridDatabaseOptions? ExplicitHybridDatabaseOptions,
     bool HasRequestedTuning,
-    bool EffectiveAdaptiveQueryReoptimization);
+    bool EffectiveAdaptiveQueryReoptimization,
+    DatabaseOptions RuntimeDirectDatabaseOptions);

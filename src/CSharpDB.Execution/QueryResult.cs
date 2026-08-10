@@ -5,6 +5,11 @@ namespace CSharpDB.Execution;
 
 public sealed class QueryResult : IAsyncDisposable
 {
+    private const byte DisposedFlag = 1 << 0;
+    private const byte OperatorExhaustedFlag = 1 << 1;
+    private const byte LifecycleTerminatedFlag = 1 << 2;
+    private const byte LifecycleStartedFlag = 1 << 3;
+
     private static readonly QueryResult ZeroRowsAffectedResult = new(0);
     private static readonly QueryResult OneRowAffectedResult = new(1);
     private static readonly ConditionalWeakTable<QueryResult, GeneratedIntegerKeyMetadata> s_generatedIntegerKeys = new();
@@ -13,9 +18,9 @@ public sealed class QueryResult : IAsyncDisposable
     private readonly IOperator? _operator;
     private readonly IBatchOperator? _batchOperator;
     private Func<ValueTask>? _disposeCallback;
-    private Func<IDisposable>? _executionScopeFactory;
+    private object? _executionFeatures;
     private bool _opened;
-    private bool _disposed;
+    private byte _lifecycleFlags;
     private DbValue[]? _batchCurrentRow;
     private int _batchRowIndex;
     private bool _batchExhausted;
@@ -94,7 +99,7 @@ public sealed class QueryResult : IAsyncDisposable
         _hasSyncLookupResult = true;
         _hasSyncScalarResult = false;
         _syncRow = syncRow;
-        _syncRowConsumed = syncRow == null; // if no row, already consumed
+        _syncRowConsumed = false;
         Schema = schema;
         RowsAffected = 0;
     }
@@ -132,6 +137,44 @@ public sealed class QueryResult : IAsyncDisposable
 
     internal static QueryResult FromBatchOperator(IBatchOperator op)
         => new(op);
+
+    internal void SetObserver(IQueryResultObserver observer)
+    {
+        ArgumentNullException.ThrowIfNull(observer);
+
+        if (!IsQuery)
+            throw new InvalidOperationException("Observers can only be registered for query results.");
+        if (HasLifecycleStarted)
+            throw new InvalidOperationException("The QueryResult lifecycle has already started.");
+
+        var registration = new QueryResultObserverRegistration(observer);
+        while (true)
+        {
+            if (HasLifecycleStarted)
+                throw new InvalidOperationException("The QueryResult lifecycle has already started.");
+
+            object? features = Volatile.Read(ref _executionFeatures);
+            if (GetObserverRegistration(features) is not null)
+                throw new InvalidOperationException("An observer is already registered for this QueryResult.");
+
+            object replacement = features switch
+            {
+                null => registration,
+                Func<IDisposable> executionScopeFactory =>
+                    new QueryResultExecutionFeatures(executionScopeFactory, registration),
+                _ => throw new InvalidOperationException("Invalid QueryResult execution features."),
+            };
+
+            if (Interlocked.CompareExchange(ref _executionFeatures, replacement, features) != features)
+                continue;
+
+            if ((HasLifecycleStarted || registration.HasLifecycleStarted) &&
+                TryDetachObserver(registration))
+                throw new InvalidOperationException("The QueryResult lifecycle has already started.");
+
+            return;
+        }
+    }
 
     internal IOperator? PhysicalRootOperator =>
         _operator ?? _batchOperator as IOperator;
@@ -229,47 +272,60 @@ public sealed class QueryResult : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(executionScopeFactory);
 
-        if (_executionScopeFactory != null)
-            throw new InvalidOperationException("An execution scope factory is already registered for this QueryResult.");
+        while (true)
+        {
+            object? features = Volatile.Read(ref _executionFeatures);
+            if (GetExecutionScopeFactory(features) is not null)
+                throw new InvalidOperationException("An execution scope factory is already registered for this QueryResult.");
 
-        _executionScopeFactory = executionScopeFactory;
+            object replacement = features switch
+            {
+                null => executionScopeFactory,
+                QueryResultObserverRegistration registration =>
+                    new QueryResultExecutionFeatures(executionScopeFactory, registration),
+                _ => throw new InvalidOperationException("Invalid QueryResult execution features."),
+            };
+
+            if (Interlocked.CompareExchange(ref _executionFeatures, replacement, features) == features)
+                return;
+        }
     }
 
     public async IAsyncEnumerable<DbValue[]> GetRowsAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
     {
-        // Sync fast path: yield the pre-materialized row
         if (_hasSyncLookupResult || _hasSyncScalarResult)
         {
-            if (!_syncRowConsumed)
-            {
-                _syncRowConsumed = true;
-                if (_hasSyncLookupResult)
-                {
-                    if (_syncRow != null)
-                        yield return _syncRow;
-                }
-                else
-                {
-                    yield return GetOrCreateSyncScalarRow();
-                }
-            }
+            while (await MoveNextAsync(ct))
+                yield return GetCurrentRowForEnumeration(clone: false);
+
             yield break;
         }
 
         if (_operator != null)
         {
-            bool cloneRows = _operator.ReusesCurrentRowBuffer;
-            if (cloneRows && _operator is IRowBufferReuseController controller)
+            bool cloneRows;
+            try
             {
-                controller.SetReuseCurrentRowBuffer(false);
                 cloneRows = _operator.ReusesCurrentRowBuffer;
+                if (cloneRows && _operator is IRowBufferReuseController controller)
+                {
+                    controller.SetReuseCurrentRowBuffer(false);
+                    cloneRows = _operator.ReusesCurrentRowBuffer;
+                }
+            }
+            catch (OperationCanceledException ex)
+            {
+                CompleteObserver(QueryResultCompletionReason.Canceled, ex);
+                throw;
+            }
+            catch (Exception ex)
+            {
+                CompleteObserver(QueryResultCompletionReason.Failed, ex);
+                throw;
             }
 
             while (await MoveNextAsync(ct))
-            {
-                var row = Current;
-                yield return cloneRows ? (DbValue[])row.Clone() : row;
-            }
+                yield return GetCurrentRowForEnumeration(cloneRows);
 
             yield break;
         }
@@ -278,7 +334,7 @@ public sealed class QueryResult : IAsyncDisposable
             yield break;
 
         while (await MoveNextAsync(ct))
-            yield return (DbValue[])Current.Clone();
+            yield return GetCurrentRowForEnumeration(clone: true);
     }
 
     public ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
@@ -286,17 +342,46 @@ public sealed class QueryResult : IAsyncDisposable
         // Sync fast path
         if (_hasSyncLookupResult || _hasSyncScalarResult)
         {
-            if (_syncRowConsumed) return ValueTask.FromResult(false);
+            if (_syncRowConsumed)
+            {
+                CompleteObserver(QueryResultCompletionReason.Exhausted);
+                return ValueTask.FromResult(false);
+            }
+
             _syncRowConsumed = true;
-            if (_hasSyncLookupResult && _syncRow == null) return ValueTask.FromResult(false);
+            if (_hasSyncLookupResult && _syncRow == null)
+            {
+                CompleteObserver(QueryResultCompletionReason.Exhausted);
+                return ValueTask.FromResult(false);
+            }
+
+            NotifyRowProduced();
             return ValueTask.FromResult(true);
         }
 
         if (_operator != null)
+        {
+            if (Volatile.Read(ref _executionFeatures) is null)
+                return MoveNextOperatorWithoutFeaturesAsync(ct);
+
+            if (IsOperatorExhausted)
+            {
+                CompleteObserver(QueryResultCompletionReason.Exhausted);
+                return ValueTask.FromResult(false);
+            }
+
             return MoveNextOperatorAsync(ct);
+        }
 
         if (_batchOperator == null || _batchExhausted)
+        {
+            if (_batchExhausted)
+                CompleteObserver(QueryResultCompletionReason.Exhausted);
             return ValueTask.FromResult(false);
+        }
+
+        if (Volatile.Read(ref _executionFeatures) is null)
+            return MoveNextBatchWithoutFeaturesAsync(ct);
 
         return MoveNextBatchAsync(ct);
     }
@@ -331,126 +416,235 @@ public sealed class QueryResult : IAsyncDisposable
     /// </summary>
     public async ValueTask<List<DbValue[]>> ToListAsync(CancellationToken ct = default)
     {
-        if (_hasSyncLookupResult || _hasSyncScalarResult)
+        try
         {
-            if (_syncRowConsumed)
+            if (_hasSyncLookupResult || _hasSyncScalarResult)
+            {
+                var syncRows = new List<DbValue[]>(1);
+                if (!_syncRowConsumed)
+                {
+                    _syncRowConsumed = true;
+                    if (_hasSyncLookupResult)
+                    {
+                        if (_syncRow != null)
+                            syncRows.Add(_syncRow);
+                    }
+                    else
+                    {
+                        syncRows.Add(GetOrCreateSyncScalarRow());
+                    }
+                }
+
+                NotifyRowsProduced(syncRows.Count);
+                CompleteObserver(QueryResultCompletionReason.Exhausted);
+                return syncRows;
+            }
+
+            if (_operator != null)
+            {
+                if (IsOperatorExhausted)
+                {
+                    CompleteObserver(QueryResultCompletionReason.Exhausted);
+                    return new List<DbValue[]>(0);
+                }
+
+                bool cloneRows = _operator.ReusesCurrentRowBuffer;
+                if (cloneRows && _operator is IRowBufferReuseController controller)
+                {
+                    controller.SetReuseCurrentRowBuffer(false);
+                    cloneRows = _operator.ReusesCurrentRowBuffer;
+                }
+
+                bool openedNow = false;
+                if (!_opened)
+                {
+                    using IDisposable? scope = EnterExecutionScope();
+                    await _operator.OpenAsync(ct);
+                    _opened = true;
+                    openedNow = true;
+                }
+
+                if (openedNow &&
+                    !cloneRows &&
+                    _operator is IMaterializedRowsProvider materialized &&
+                    materialized.TryTakeMaterializedRows(out var materializedRows))
+                {
+                    NotifyRowsProduced(materializedRows.Count);
+                    MarkOperatorExhausted();
+                    CompleteObserver(QueryResultCompletionReason.Exhausted);
+                    return materializedRows;
+                }
+
+                int initialCapacity = 0;
+                if (_operator is IEstimatedRowCountProvider estimated &&
+                    estimated.EstimatedRowCount is int rowCount &&
+                    rowCount > 0)
+                {
+                    initialCapacity = rowCount;
+                }
+
+                if (openedNow &&
+                    _operator is IBatchBackedRowOperator batchBacked)
+                {
+                    List<DbValue[]> batchRows = await MaterializeBatchRowsAsync(
+                        batchBacked.BatchSource,
+                        initialCapacity,
+                        -1,
+                        GetExecutionScopeFactory(),
+                        GetRowProducedCallback(),
+                        ct);
+                    MarkOperatorExhausted();
+                    CompleteObserver(QueryResultCompletionReason.Exhausted);
+                    return batchRows;
+                }
+
+                var list = initialCapacity > 0
+                    ? new List<DbValue[]>(initialCapacity)
+                    : new List<DbValue[]>();
+                while (true)
+                {
+                    bool hasRow;
+                    using (IDisposable? scope = EnterExecutionScope())
+                    {
+                        hasRow = await _operator.MoveNextAsync(ct);
+                    }
+
+                    if (!hasRow)
+                        break;
+
+                    var row = _operator.Current;
+                    list.Add(cloneRows ? (DbValue[])row.Clone() : row);
+                    NotifyRowProduced();
+                }
+
+                MarkOperatorExhausted();
+                CompleteObserver(QueryResultCompletionReason.Exhausted);
+                return list;
+            }
+
+            if (_batchOperator == null)
                 return new List<DbValue[]>(0);
 
-            _syncRowConsumed = true;
-
-            if (_hasSyncLookupResult)
-            {
-                if (_syncRow == null)
-                    return new List<DbValue[]>(0);
-
-                return new List<DbValue[]>(1) { _syncRow };
-            }
-
-            return new List<DbValue[]>(1) { GetOrCreateSyncScalarRow() };
-        }
-
-        if (_operator != null)
-        {
-            bool cloneRows = _operator.ReusesCurrentRowBuffer;
-            if (cloneRows && _operator is IRowBufferReuseController controller)
-            {
-                controller.SetReuseCurrentRowBuffer(false);
-                cloneRows = _operator.ReusesCurrentRowBuffer;
-            }
-
-            bool openedNow = false;
             if (!_opened)
             {
                 using IDisposable? scope = EnterExecutionScope();
-                await _operator.OpenAsync(ct);
+                await _batchOperator.OpenAsync(ct);
                 _opened = true;
-                openedNow = true;
+                _batchRowIndex = -1;
+                _batchCurrentRow = null;
+                _batchExhausted = false;
             }
 
-            if (openedNow &&
-                !cloneRows &&
-                _operator is IMaterializedRowsProvider materialized &&
-                materialized.TryTakeMaterializedRows(out var materializedRows))
+            if (_batchExhausted)
             {
-                return materializedRows;
+                CompleteObserver(QueryResultCompletionReason.Exhausted);
+                return new List<DbValue[]>(0);
             }
 
-            int initialCapacity = 0;
-            if (_operator is IEstimatedRowCountProvider estimated &&
-                estimated.EstimatedRowCount is int rowCount &&
-                rowCount > 0)
+            if (_batchOperator is IMaterializedRowsProvider batchMaterialized &&
+                _batchRowIndex < 0 &&
+                _batchOperator.CurrentBatch.Count == 0 &&
+                batchMaterialized.TryTakeMaterializedRows(out var directRows))
             {
-                initialCapacity = rowCount;
+                NotifyRowsProduced(directRows.Count);
+                _batchExhausted = true;
+                CompleteObserver(QueryResultCompletionReason.Exhausted);
+                return directRows;
             }
 
-            if (openedNow &&
-                _operator is IBatchBackedRowOperator batchBacked)
+            int batchInitialCapacity = 0;
+            if (_batchOperator is IEstimatedRowCountProvider batchEstimated &&
+                batchEstimated.EstimatedRowCount is int batchRowCount &&
+                batchRowCount > 0)
             {
-                return await MaterializeBatchRowsAsync(batchBacked.BatchSource, initialCapacity, -1, _executionScopeFactory, ct);
+                batchInitialCapacity = batchRowCount;
             }
 
-            var list = initialCapacity > 0
-                ? new List<DbValue[]>(initialCapacity)
-                : new List<DbValue[]>();
-            while (true)
-            {
-                bool hasRow;
-                using (IDisposable? scope = EnterExecutionScope())
-                {
-                    hasRow = await _operator.MoveNextAsync(ct);
-                }
-
-                if (!hasRow)
-                    break;
-
-                var row = _operator.Current;
-                list.Add(cloneRows ? (DbValue[])row.Clone() : row);
-            }
-
-            return list;
-        }
-
-        if (_batchOperator == null)
-            return new List<DbValue[]>(0);
-
-        if (!_opened)
-        {
-            using IDisposable? scope = EnterExecutionScope();
-            await _batchOperator.OpenAsync(ct);
-            _opened = true;
-            _batchRowIndex = -1;
+            var rows = await MaterializeBatchRowsAsync(
+                _batchOperator,
+                batchInitialCapacity,
+                _batchRowIndex,
+                GetExecutionScopeFactory(),
+                GetRowProducedCallback(),
+                ct);
             _batchCurrentRow = null;
-            _batchExhausted = false;
-        }
-
-        if (_batchExhausted)
-            return new List<DbValue[]>(0);
-
-        if (_batchOperator is IMaterializedRowsProvider batchMaterialized &&
-            _batchRowIndex < 0 &&
-            _batchOperator.CurrentBatch.Count == 0 &&
-            batchMaterialized.TryTakeMaterializedRows(out var directRows))
-        {
             _batchExhausted = true;
-            return directRows;
+            CompleteObserver(QueryResultCompletionReason.Exhausted);
+            return rows;
         }
-
-        int batchInitialCapacity = 0;
-        if (_batchOperator is IEstimatedRowCountProvider batchEstimated &&
-            batchEstimated.EstimatedRowCount is int batchRowCount &&
-            batchRowCount > 0)
+        catch (OperationCanceledException ex)
         {
-            batchInitialCapacity = batchRowCount;
+            CompleteObserver(QueryResultCompletionReason.Canceled, ex);
+            throw;
         }
-
-        var rows = await MaterializeBatchRowsAsync(_batchOperator, batchInitialCapacity, _batchRowIndex, _executionScopeFactory, ct);
-        _batchCurrentRow = null;
-        _batchExhausted = true;
-        return rows;
+        catch (Exception ex)
+        {
+            CompleteObserver(QueryResultCompletionReason.Failed, ex);
+            throw;
+        }
     }
 
     private DbValue[] GetOrCreateSyncScalarRow()
         => _syncScalarRow ??= [_syncScalar];
+
+    private bool HasLifecycleStarted =>
+        _opened ||
+        _syncRowConsumed ||
+        _batchExhausted ||
+        (_lifecycleFlags & (
+            DisposedFlag |
+            OperatorExhaustedFlag |
+            LifecycleTerminatedFlag |
+            LifecycleStartedFlag)) != 0;
+
+    private bool IsOperatorExhausted =>
+        (_lifecycleFlags & OperatorExhaustedFlag) != 0;
+
+    private void MarkOperatorExhausted()
+        => _lifecycleFlags |= OperatorExhaustedFlag;
+
+    private Action? GetRowProducedCallback()
+        => GetObserverRegistration() is null ? null : NotifyRowProduced;
+
+    private void NotifyRowProduced()
+        => GetObserverRegistration()?.OnRowProduced();
+
+    private void NotifyRowsProduced(int count)
+    {
+        QueryResultObserverRegistration? registration = GetObserverRegistration();
+        if (registration is null)
+            return;
+
+        for (int rowIndex = 0; rowIndex < count; rowIndex++)
+            registration.OnRowProduced();
+    }
+
+    private void CompleteObserver(QueryResultCompletionReason reason, Exception? error = null)
+    {
+        if (reason is QueryResultCompletionReason.Failed or QueryResultCompletionReason.Canceled)
+            _lifecycleFlags |= LifecycleTerminatedFlag;
+
+        GetObserverRegistration()?.Complete(reason, error);
+    }
+
+    private DbValue[] GetCurrentRowForEnumeration(bool clone)
+    {
+        try
+        {
+            DbValue[] row = Current;
+            return clone ? (DbValue[])row.Clone() : row;
+        }
+        catch (OperationCanceledException ex)
+        {
+            CompleteObserver(QueryResultCompletionReason.Canceled, ex);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            CompleteObserver(QueryResultCompletionReason.Failed, ex);
+            throw;
+        }
+    }
 
     private DbValue[] MaterializeBatchRow(RowBatch batch, int rowIndex)
     {
@@ -468,6 +662,7 @@ public sealed class QueryResult : IAsyncDisposable
         int initialCapacity,
         int currentBatchRowIndex,
         Func<IDisposable>? executionScopeFactory,
+        Action? rowProduced,
         CancellationToken ct = default)
     {
         var list = initialCapacity > 0
@@ -481,6 +676,7 @@ public sealed class QueryResult : IAsyncDisposable
             var row = batch.ColumnCount == 0 ? Array.Empty<DbValue>() : new DbValue[batch.ColumnCount];
             batch.CopyRowTo(rowIndex, row);
             list.Add(row);
+            rowProduced?.Invoke();
         }
 
         while (true)
@@ -501,6 +697,7 @@ public sealed class QueryResult : IAsyncDisposable
                 var row = columnCount == 0 ? Array.Empty<DbValue>() : new DbValue[columnCount];
                 batch.CopyRowTo(rowIndex, row);
                 list.Add(row);
+                rowProduced?.Invoke();
             }
         }
 
@@ -509,49 +706,90 @@ public sealed class QueryResult : IAsyncDisposable
 
     public ValueTask DisposeAsync()
     {
-        if (_disposed)
+        if ((_lifecycleFlags & DisposedFlag) != 0)
             return ValueTask.CompletedTask;
 
-        _disposed = true;
+        _lifecycleFlags |= DisposedFlag;
+        QueryResultObserverRegistration? registration = GetObserverRegistration();
+        if (registration is null)
+        {
+            if (_operator != null)
+                return DisposeOperatorAsync();
 
-        if (_operator != null)
-            return DisposeOperatorAsync();
+            if (_batchOperator != null)
+                return DisposeBatchOperatorAsync();
 
-        if (_batchOperator != null)
-            return DisposeBatchOperatorAsync();
+            if (_disposeCallback != null)
+                return _disposeCallback();
 
-        if (_disposeCallback != null)
-            return _disposeCallback();
+            return ValueTask.CompletedTask;
+        }
 
-        return ValueTask.CompletedTask;
+        if (!registration.TryStartDisposal())
+            return ValueTask.CompletedTask;
+
+        return DisposeObservedAsync();
     }
 
-    private IDisposable? EnterExecutionScope() => _executionScopeFactory?.Invoke();
+    private async ValueTask DisposeObservedAsync()
+    {
+        try
+        {
+            if (_operator != null)
+            {
+                await DisposeOperatorAsync();
+            }
+            else if (_batchOperator != null)
+            {
+                await DisposeBatchOperatorAsync();
+            }
+            else if (_disposeCallback != null)
+            {
+                await _disposeCallback();
+            }
 
-    private async ValueTask<bool> MoveNextOperatorAsync(CancellationToken ct)
+            CompleteObserver(QueryResultCompletionReason.Disposed);
+        }
+        catch (OperationCanceledException ex)
+        {
+            CompleteObserver(QueryResultCompletionReason.Canceled, ex);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            CompleteObserver(QueryResultCompletionReason.Failed, ex);
+            throw;
+        }
+    }
+
+    private IDisposable? EnterExecutionScope() => GetExecutionScopeFactory()?.Invoke();
+
+    // Preserve the original no-feature streaming path. This is the common
+    // disabled-observability case and deliberately avoids per-row observer,
+    // scope, and exception-projection checks.
+    private async ValueTask<bool> MoveNextOperatorWithoutFeaturesAsync(CancellationToken ct)
     {
         if (_operator == null)
             return false;
 
         if (!_opened)
         {
-            using IDisposable? openScope = EnterExecutionScope();
+            _lifecycleFlags |= LifecycleStartedFlag;
             await _operator.OpenAsync(ct);
             _opened = true;
         }
 
-        using IDisposable? moveScope = EnterExecutionScope();
         return await _operator.MoveNextAsync(ct);
     }
 
-    private async ValueTask<bool> MoveNextBatchAsync(CancellationToken ct)
+    private async ValueTask<bool> MoveNextBatchWithoutFeaturesAsync(CancellationToken ct)
     {
         if (_batchOperator == null || _batchExhausted)
             return false;
 
         if (!_opened)
         {
-            using IDisposable? scope = EnterExecutionScope();
+            _lifecycleFlags |= LifecycleStartedFlag;
             await _batchOperator.OpenAsync(ct);
             _opened = true;
             _batchRowIndex = -1;
@@ -569,7 +807,6 @@ public sealed class QueryResult : IAsyncDisposable
                 return true;
             }
 
-            using IDisposable? scope = EnterExecutionScope();
             if (!await _batchOperator.MoveNextBatchAsync(ct))
             {
                 _batchCurrentRow = null;
@@ -578,6 +815,102 @@ public sealed class QueryResult : IAsyncDisposable
             }
 
             _batchRowIndex = -1;
+        }
+    }
+
+    private async ValueTask<bool> MoveNextOperatorAsync(CancellationToken ct)
+    {
+        if (_operator == null)
+            return false;
+
+        try
+        {
+            if (!_opened)
+            {
+                using IDisposable? openScope = EnterExecutionScope();
+                await _operator.OpenAsync(ct);
+                _opened = true;
+            }
+
+            bool hasRow;
+            using (IDisposable? moveScope = EnterExecutionScope())
+            {
+                hasRow = await _operator.MoveNextAsync(ct);
+            }
+
+            if (hasRow)
+            {
+                NotifyRowProduced();
+            }
+            else
+            {
+                MarkOperatorExhausted();
+                CompleteObserver(QueryResultCompletionReason.Exhausted);
+            }
+
+            return hasRow;
+        }
+        catch (OperationCanceledException ex)
+        {
+            CompleteObserver(QueryResultCompletionReason.Canceled, ex);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            CompleteObserver(QueryResultCompletionReason.Failed, ex);
+            throw;
+        }
+    }
+
+    private async ValueTask<bool> MoveNextBatchAsync(CancellationToken ct)
+    {
+        if (_batchOperator == null || _batchExhausted)
+            return false;
+
+        try
+        {
+            if (!_opened)
+            {
+                using IDisposable? scope = EnterExecutionScope();
+                await _batchOperator.OpenAsync(ct);
+                _opened = true;
+                _batchRowIndex = -1;
+                _batchCurrentRow = null;
+                _batchExhausted = false;
+            }
+
+            while (true)
+            {
+                RowBatch batch = _batchOperator.CurrentBatch;
+                if (_batchRowIndex + 1 < batch.Count)
+                {
+                    _batchRowIndex++;
+                    _batchCurrentRow = MaterializeBatchRow(batch, _batchRowIndex);
+                    NotifyRowProduced();
+                    return true;
+                }
+
+                using IDisposable? scope = EnterExecutionScope();
+                if (!await _batchOperator.MoveNextBatchAsync(ct))
+                {
+                    _batchCurrentRow = null;
+                    _batchExhausted = true;
+                    CompleteObserver(QueryResultCompletionReason.Exhausted);
+                    return false;
+                }
+
+                _batchRowIndex = -1;
+            }
+        }
+        catch (OperationCanceledException ex)
+        {
+            CompleteObserver(QueryResultCompletionReason.Canceled, ex);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            CompleteObserver(QueryResultCompletionReason.Failed, ex);
+            throw;
         }
     }
 
@@ -626,6 +959,142 @@ public sealed class QueryResult : IAsyncDisposable
         finally
         {
             await second();
+        }
+    }
+
+    private QueryResultObserverRegistration? GetObserverRegistration()
+        => GetObserverRegistration(Volatile.Read(ref _executionFeatures));
+
+    private static QueryResultObserverRegistration? GetObserverRegistration(object? features)
+        => features switch
+        {
+            QueryResultObserverRegistration registration => registration,
+            QueryResultExecutionFeatures combined => combined.ObserverRegistration,
+            _ => null,
+        };
+
+    private Func<IDisposable>? GetExecutionScopeFactory()
+        => GetExecutionScopeFactory(Volatile.Read(ref _executionFeatures));
+
+    private static Func<IDisposable>? GetExecutionScopeFactory(object? features)
+        => features switch
+        {
+            Func<IDisposable> executionScopeFactory => executionScopeFactory,
+            QueryResultExecutionFeatures combined => combined.ExecutionScopeFactory,
+            _ => null,
+        };
+
+    private bool TryDetachObserver(QueryResultObserverRegistration registration)
+    {
+        while (true)
+        {
+            object? features = Volatile.Read(ref _executionFeatures);
+            object? replacement;
+            if (ReferenceEquals(features, registration))
+            {
+                replacement = null;
+            }
+            else if (features is QueryResultExecutionFeatures combined &&
+                     ReferenceEquals(combined.ObserverRegistration, registration))
+            {
+                replacement = combined.ExecutionScopeFactory;
+            }
+            else
+            {
+                return false;
+            }
+
+            if (ReferenceEquals(
+                    Interlocked.CompareExchange(ref _executionFeatures, replacement, features),
+                    features))
+            {
+                return true;
+            }
+        }
+    }
+
+    private sealed class QueryResultExecutionFeatures(
+        Func<IDisposable> executionScopeFactory,
+        QueryResultObserverRegistration observerRegistration)
+    {
+        internal Func<IDisposable> ExecutionScopeFactory { get; } = executionScopeFactory;
+
+        internal QueryResultObserverRegistration ObserverRegistration { get; } = observerRegistration;
+    }
+
+    private sealed class QueryResultObserverRegistration
+    {
+        private const int LifecycleStartedFlag = 1 << 0;
+        private const int DisposeStartedFlag = 1 << 1;
+
+        private readonly object _gate = new();
+        private readonly IQueryResultObserver _observer;
+        private long _rowsProduced;
+        private int _lifecycleState;
+        private bool _completed;
+
+        internal QueryResultObserverRegistration(IQueryResultObserver observer)
+        {
+            _observer = observer;
+        }
+
+        internal bool HasLifecycleStarted =>
+            (Volatile.Read(ref _lifecycleState) & LifecycleStartedFlag) != 0;
+
+        internal bool TryStartDisposal()
+        {
+            int previousState = Interlocked.Or(
+                ref _lifecycleState,
+                LifecycleStartedFlag | DisposeStartedFlag);
+            return (previousState & DisposeStartedFlag) == 0;
+        }
+
+        internal void OnRowProduced()
+        {
+            Interlocked.Or(ref _lifecycleState, LifecycleStartedFlag);
+            lock (_gate)
+            {
+                if (_completed)
+                    return;
+
+                _rowsProduced++;
+                if (_rowsProduced == 1)
+                    InvokeSafely(_observer.OnFirstRowProduced);
+
+                InvokeSafely(_observer.OnRowProduced);
+            }
+        }
+
+        internal void Complete(QueryResultCompletionReason reason, Exception? error)
+        {
+            Interlocked.Or(ref _lifecycleState, LifecycleStartedFlag);
+            QueryResultCompletion completion;
+            lock (_gate)
+            {
+                if (_completed)
+                    return;
+
+                _completed = true;
+                completion = new QueryResultCompletion(reason, _rowsProduced, error);
+            }
+
+            // Terminal observers may synchronously re-enter QueryResult (for
+            // example by disposing it from another thread). Invoke only after
+            // releasing the registration gate so diagnostics cannot deadlock
+            // normal result cleanup.
+            InvokeSafely(() => _observer.OnCompleted(completion));
+        }
+
+        private static void InvokeSafely(Action callback)
+        {
+            try
+            {
+                callback();
+            }
+            catch
+            {
+                // Diagnostic observers must never change query behavior.
+            }
         }
     }
 

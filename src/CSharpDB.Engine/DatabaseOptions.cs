@@ -1,4 +1,5 @@
 
+using CSharpDB.Observability;
 using CSharpDB.Primitives;
 
 namespace CSharpDB.Engine;
@@ -8,6 +9,13 @@ namespace CSharpDB.Engine;
 /// </summary>
 public sealed class DatabaseOptions
 {
+    /// <summary>
+    /// Optional observability configuration. A null value, or an options instance whose
+    /// <see cref="CSharpDbObservabilityOptions.Enabled"/> property is false, keeps engine
+    /// observability disabled and does not create runtime instrumentation state.
+    /// </summary>
+    public CSharpDbObservabilityOptions? ObservabilityOptions { get; init; }
+
     /// <summary>
     /// Storage-engine component options.
     /// </summary>

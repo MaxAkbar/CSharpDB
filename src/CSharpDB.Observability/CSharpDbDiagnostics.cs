@@ -13,6 +13,7 @@ public static class CSharpDbDiagnostics
     public const string InstrumentationVersion = "1.0.0";
     public const string ActivitySourceName = "CSharpDB";
     public const string MeterName = "CSharpDB";
+    public const string DiagnosticListenerName = "CSharpDB";
     public const int MaximumDatabaseAliasLength = 64;
     public const int MaximumConfiguredDatabaseAliases = 64;
     public const int OpaqueIdentifierHexLength = 32;
@@ -22,6 +23,12 @@ public static class CSharpDbDiagnostics
 
     public static Meter Meter { get; } =
         new(MeterName, InstrumentationVersion);
+
+    public static DiagnosticListener DiagnosticListener { get; } =
+        new(DiagnosticListenerName);
+
+    public static CSharpDbDiagnosticEventPublisher EventPublisher { get; } =
+        new(DiagnosticListener);
 
     public static string CreateServerInstanceId()
         => Guid.NewGuid().ToString("N");
@@ -129,6 +136,7 @@ public static class CSharpDbLogEventIds
     public const int HostStarting = 1000;
     public const int DatabaseOpened = 1001;
     public const int DatabaseClosed = 1002;
+    public const int RawSqlCaptureEnabled = 1003;
 
     public const int QueryCompleted = 2000;
     public const int SlowQuery = 2001;
