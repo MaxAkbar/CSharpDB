@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>CSharpDB.Observability</AssemblyName>
+    <RootNamespace>CSharpDB.Observability</RootNamespace>
+    <PackageId>CSharpDB.Observability</PackageId>
+    <Description>BCL-only observability contracts, safe diagnostics models, correlation primitives, and runtime snapshot types for CSharpDB.</Description>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+
+</Project>

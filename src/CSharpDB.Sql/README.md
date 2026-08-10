@@ -9,7 +9,7 @@ SQL tokenizer, recursive-descent parser, and abstract syntax tree (AST) for the 
 
 ## Overview
 
-`CSharpDB.Sql` provides a complete SQL front-end: a single-pass tokenizer, a recursive-descent parser, and a rich AST hierarchy. It transforms SQL text into strongly-typed statement and expression objects that downstream components (query planner, execution engine) consume. Zero external dependencies.
+`CSharpDB.Sql` provides a complete SQL front-end: a single-pass tokenizer, a recursive-descent parser, and a rich AST hierarchy. It transforms SQL text into strongly-typed statement and expression objects that downstream components (query planner, execution engine) consume. It has no third-party dependencies.
 
 ## Features
 
@@ -19,6 +19,7 @@ SQL tokenizer, recursive-descent parser, and abstract syntax tree (AST) for the 
 - **Rich query support**: SELECT with JOINs (INNER, LEFT, RIGHT, CROSS), WHERE, GROUP BY, HAVING, ORDER BY, LIMIT/OFFSET, CTEs (`WITH`), set operations (`UNION`, `INTERSECT`, `EXCEPT`), and subquery syntax
 - **Expression tree**: binary/unary operators, LIKE, IN, BETWEEN, IS NULL, aggregate functions (COUNT, SUM, AVG, MIN, MAX with DISTINCT), scalar subqueries, `IN (SELECT ...)`, and `EXISTS (...)`
 - **Fast-path optimizers**: `TryParseSimpleSelect`, `TryParseSimplePrimaryKeyLookup`, and `TryParseSimpleInsert` detect common patterns and skip full AST construction
+- **Safe query correlation**: tokenizer-backed normalization replaces literals and parameters before producing a versioned deterministic fingerprint
 
 ## Usage
 
@@ -51,7 +52,16 @@ if (Parser.TryParseSimplePrimaryKeyLookup(sql, out var lookup))
 {
     // Skip full parsing for SELECT ... WHERE pk = value
 }
+
+// Correlate equivalent query shapes without retaining literals or parameters.
+var fingerprint = SqlQueryNormalizer.CreateFingerprint(
+    "SELECT name FROM users WHERE id = 42");
 ```
+
+`NormalizeAndFingerprint` also returns normalized SQL. Normalized text can
+retain identifiers, so applications should treat it as an explicit diagnostics
+capture mode rather than safe default log content. Parameter and literal values
+are replaced before normalized text or hash input is constructed.
 
 ## JOIN Detection and Multi-Table Queries
 
@@ -128,6 +138,7 @@ dotnet add package CSharpDB
 ## Dependencies
 
 - `CSharpDB.Primitives` - shared type system and schema definitions
+- `CSharpDB.Observability` - versioned query-fingerprint contract
 
 ## Related Packages
 

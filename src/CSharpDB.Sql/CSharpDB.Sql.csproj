@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <ProjectReference Include="..\CSharpDB.Observability\CSharpDB.Observability.csproj" />
     <ProjectReference Include="..\CSharpDB.Primitives\CSharpDB.Primitives.csproj" />
   </ItemGroup>
 

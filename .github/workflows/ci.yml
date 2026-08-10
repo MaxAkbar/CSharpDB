@@ -90,6 +90,7 @@ jobs:
             tests/CSharpDB.Migration.MySql.Tests/CSharpDB.Migration.MySql.Tests.csproj
             tests/CSharpDB.Migration.SqlServer.Tests/CSharpDB.Migration.SqlServer.Tests.csproj
             tests/CSharpDB.Migration.Tests/CSharpDB.Migration.Tests.csproj
+            tests/CSharpDB.Observability.Tests/CSharpDB.Observability.Tests.csproj
             tests/CSharpDB.Pipelines.Tests/CSharpDB.Pipelines.Tests.csproj
           )
 
@@ -174,6 +175,24 @@ jobs:
       - name: Publish NativeAOT library
         run: dotnet publish src/CSharpDB.Native/CSharpDB.Native.csproj -c Release -r ${{ matrix.rid }}
 
+      - name: Publish observability trim and NativeAOT smoke
+        run: dotnet publish tests/CSharpDB.Observability.TrimSmoke/CSharpDB.Observability.TrimSmoke.csproj -c Release -r ${{ matrix.rid }} -p:PublishAot=true -o artifacts/observability-aot/${{ matrix.rid }}
+
+      - name: Run observability trim and NativeAOT smoke
+        shell: pwsh
+        run: |
+          $executableName = if ($IsWindows) {
+            'CSharpDB.Observability.TrimSmoke.exe'
+          }
+          else {
+            'CSharpDB.Observability.TrimSmoke'
+          }
+          $executable = Join-Path 'artifacts/observability-aot/${{ matrix.rid }}' $executableName
+          & $executable
+          if ($LASTEXITCODE -ne 0) {
+            throw "Observability trim and NativeAOT smoke failed with exit code $LASTEXITCODE."
+          }
+
       - name: Verify exported symbols (Linux)
         if: runner.os == 'Linux'
         run: nm -D src/CSharpDB.Native/bin/Release/net10.0/${{ matrix.rid }}/publish/${{ matrix.lib }} | grep -c csharpdb_
@@ -236,6 +255,7 @@ jobs:
           chmod +x scripts/fix-nuget-readme-links.sh
           scripts/fix-nuget-readme-links.sh main \
             src/CSharpDB/README.md \
+            src/CSharpDB.Observability/README.md \
             src/CSharpDB.Primitives/README.md \
             src/CSharpDB.Sql/README.md \
             src/CSharpDB.Storage/README.md \
@@ -258,6 +278,7 @@ jobs:
           set -euo pipefail
           mkdir -p artifacts/nuget
           dotnet pack src/CSharpDB.Primitives/CSharpDB.Primitives.csproj -c Release -o artifacts/nuget
+          dotnet pack src/CSharpDB.Observability/CSharpDB.Observability.csproj -c Release -o artifacts/nuget
           dotnet pack src/CSharpDB.Sql/CSharpDB.Sql.csproj -c Release -o artifacts/nuget
           dotnet pack src/CSharpDB.Storage/CSharpDB.Storage.csproj -c Release -o artifacts/nuget
           dotnet pack src/CSharpDB.ImportExport/CSharpDB.ImportExport.csproj -c Release -o artifacts/nuget
@@ -273,6 +294,10 @@ jobs:
           dotnet pack src/CSharpDB.Migration.DualRun/CSharpDB.Migration.DualRun.csproj -c Release -o artifacts/nuget
           dotnet pack src/CSharpDB.EntityFrameworkCore/CSharpDB.EntityFrameworkCore.csproj -c Release -o artifacts/nuget
           dotnet pack src/CSharpDB/CSharpDB.csproj -c Release -o artifacts/nuget
+
+      - name: Qualify observability package surfaces
+        shell: pwsh
+        run: ./scripts/Test-ObservabilityNuGetPackage.ps1 -FeedPath artifacts/nuget
 
       - name: Qualify packed EF Core provider
         shell: pwsh

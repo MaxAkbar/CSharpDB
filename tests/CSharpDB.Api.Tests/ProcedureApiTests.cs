@@ -145,7 +145,8 @@ public sealed class ProcedureApiTests : IAsyncLifetime
         var payload = await execResp.Content.ReadFromJsonAsync<ProcedureExecutionResponse>(Ct);
         Assert.NotNull(payload);
         Assert.False(payload.Succeeded);
-        Assert.Contains("expects INTEGER", payload.Error ?? string.Empty);
+        Assert.Equal("The database could not complete the request.", payload.Error);
+        Assert.DoesNotContain("expects INTEGER", payload.Error, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

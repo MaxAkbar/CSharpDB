@@ -96,7 +96,8 @@ public sealed record SqlResultResponse(
     string? Error,
     double ElapsedMs,
     bool[]? ColumnNullability = null,
-    IReadOnlyList<ColumnResponse>? Columns = null);
+    IReadOnlyList<ColumnResponse>? Columns = null,
+    CSharpDB.Primitives.ErrorCode? ErrorCode = null);
 
 public sealed record ShardSqlExecutionResultResponse(
     string ShardId,

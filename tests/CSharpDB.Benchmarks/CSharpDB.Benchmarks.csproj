@@ -27,6 +27,7 @@
     <ProjectReference Include="..\..\src\CSharpDB.Migration\CSharpDB.Migration.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Migration.CSharpDb\CSharpDB.Migration.CSharpDb.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Migration.Files\CSharpDB.Migration.Files.csproj" />
+    <ProjectReference Include="..\..\src\CSharpDB.Observability\CSharpDB.Observability.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Sql\CSharpDB.Sql.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Storage\CSharpDB.Storage.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Storage.Diagnostics\CSharpDB.Storage.Diagnostics.csproj" />

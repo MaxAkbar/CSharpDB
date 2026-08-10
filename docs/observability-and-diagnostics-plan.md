@@ -1,7 +1,7 @@
 # Observability And Diagnostics Plan
 
-Internal implementation plan for CSharpDB observability and
-operational-diagnostics work. This plan covers embedded use, the standalone
+Internal implementation plan for the next CSharpDB observability and
+operational-diagnostics release. This plan covers embedded use, the standalone
 REST host, the combined daemon, remote clients, and Admin.
 
 This file intentionally lives under the top-level `docs/` folder and is not
@@ -35,7 +35,7 @@ Prometheus metrics, check health, inspect current and recent database activity,
 and understand storage or maintenance problems without exposing SQL values,
 credentials, or database contents by default.
 
-The observability work is complete only when CSharpDB can:
+The initial observability release is complete only when CSharpDB can:
 
 - Emit stable structured operational logs with correlation identifiers.
 - Record query execution without logging SQL text or parameter values by
@@ -64,6 +64,8 @@ Implemented behavior to preserve and extend:
 - `CSharpDB.Primitives/DbCallbackDiagnostics.cs` and Admin's
   `HostCallbackDiagnosticsHistoryService` demonstrate a strongly typed
   `DiagnosticListener` event and a bounded in-memory history.
+- `CSharpDB.Admin.Forms/Contracts/FormActionDiagnostics.cs` provides a second
+  strongly typed diagnostics pattern with focused tests.
 - `CSharpDB.Execution/QueryPlanner.cs` already tracks select-plan cache,
   adaptive reoptimization, and mutation-target counters for tests and
   benchmarks.
@@ -99,19 +101,33 @@ Known gaps:
   history.
 - Existing planner, storage, WAL, pool, and transaction counters are internal,
   fragmented, and primarily intended for tests or benchmarks.
+- Existing WAL and commit-path benchmark counters can be reset. They cannot be
+  published directly as monotonic production counters without a distinct
+  non-resetting family or a visible counter-epoch change.
 - There is no transport-neutral runtime-diagnostics contract for Admin or
   operators.
-- Several REST SQL, transaction, and maintenance handlers do not currently
-  propagate `HttpContext.RequestAborted` to the engine, so an abandoned HTTP
-  response can leave server-side work running.
+- REST SQL and transaction routes already propagate request cancellation, but
+  maintenance and inspection routes do not do so consistently. The direct
+  inspection helpers also accept a cancellation token and then drop it before
+  invoking the inspectors.
+- ADO.NET `CommandTimeout` is not enforced and `DbCommand.Cancel()` is a no-op.
+  Visibility must not be presented as query-control or cancellation support.
 - Backup and restore return final results but expose no in-progress or recent
   operation status.
+- A successful full restore currently replaces the database without eagerly
+  reopening it; the first later request discovers reopen failures.
 - API and daemon hosts do not configure CSharpDB OpenTelemetry sources,
   exporters, Prometheus scraping, or database health checks.
 - API and daemon hosts do not expose distinct liveness and readiness endpoints.
+- API, daemon, and Admin warm up the database before `app.Run`. As a result,
+  their listeners cannot currently report `starting`, `recovering`, or failed
+  initialization states.
 - Admin has no live metrics or unified operational-diagnostics workspace.
 - No release gate currently verifies telemetry redaction, metric cardinality,
   trace shape, or observability overhead.
+- The API exception middleware currently logs raw exception objects and returns
+  several raw exception messages. Safe-error projection is therefore an early
+  privacy prerequisite, not only a query-logging concern.
 
 ## Non-Negotiable Rules
 
@@ -132,6 +148,8 @@ Known gaps:
 - Use a deterministic normalized query fingerprint for correlation. Never use
   a query fingerprint, query id, session id, table name, database path, or
   exception message as a metric label.
+- Never expose a client-managed transaction id through diagnostics. It is a
+  bearer capability, not a safe session identifier.
 - Metric labels must come from a reviewed bounded set. Initial bounded labels
   are operation class, outcome, transport, and a configured low-cardinality
   database or shard alias.
@@ -143,14 +161,23 @@ Known gaps:
 - Instrument one logical operation once. Internal planner calls, retries,
   triggers, procedures, transport adapters, and lazy result consumption must
   preserve correlation without double-counting the root query.
+- Define scripts and procedures explicitly as one parent operation with child
+  statement operations. Request counts and statement-execution counts are
+  different metrics and must not be conflated.
 - A query span and duration cover planning, execution, row streaming, and
   disposal. Separate timing fields may show time to first result and result
   consumption.
+- Runtime cumulative counters must not decrease. Current values such as active
+  work, WAL frames, or WAL bytes are gauges; benchmark-resettable counters use
+  a separate lifetime family or advance the published counter epoch.
 - Liveness must not depend on opening or querying the database. Readiness may
   perform a bounded, side-effect-free database check.
 - Health responses available without authentication contain status only.
   Detailed failure reasons and runtime diagnostics remain behind the same
   configured API security boundary as inspection and maintenance.
+- Restore readiness remains false until the replacement database has been
+  reopened successfully, or the status explicitly reports `ReopenPending` and
+  readiness stays false until the deferred reopen succeeds.
 - When API security mode is `None`, detailed runtime diagnostics and metrics
   are loopback-only unless an explicit insecure-remote override is configured
   and logged. Do not describe an unauthenticated endpoint as protected.
@@ -190,6 +217,9 @@ The core assemblies emit through those contracts. `CSharpDB.Client` supplies
 the optional `ILogger` bridge and client-facing diagnostics capability.
 `CSharpDB.Api`, `CSharpDB.Daemon`, and `CSharpDB.Admin` bind host options and
 register OpenTelemetry, exporters, health checks, and UI services.
+Reusable ASP.NET Core registration belongs in a host-only adapter or explicit
+per-host composition; Admin must not acquire a dependency on the API executable
+project merely to share health or exporter setup.
 
 Do not extend `ICSharpDbClient` with required members. That would break external
 implementations. Add an optional `ICSharpDbObservabilityClient` capability
@@ -224,12 +254,24 @@ Every root database operation receives:
 Inbound HTTP or gRPC activities remain the parent for remote calls. Direct
 calls create a root activity only when a listener requests one.
 
+Multi-statement scripts and procedures create one request/script parent plus
+one child statement operation per executed statement. Nested planner work,
+subqueries, triggers, and retries remain part of the statement operation rather
+than becoming additional query roots. An immutable root context established by
+the host, client, or ADO.NET layer carries transport and safe session identity
+into the engine; the engine alone cannot infer them.
+
 ### Snapshot Authority
 
 The live engine is authoritative for query, storage, WAL, and operation state.
 Client and host layers contribute their connection, pool, transport, and
 session counters. A snapshot coordinator merges these sources without resetting
 cumulative counters.
+
+Storage initialization and WAL recovery occur before a `Database` instance
+exists. A diagnostics context must therefore enter through storage-engine
+options/factories and survive into the Pager/WAL runtime handle; attaching
+instrumentation only to `Database` would make startup recovery invisible.
 
 Remote Admin reads server snapshots through the optional diagnostics client; it
 must not substitute metrics from the Admin process for metrics from the
@@ -241,9 +283,9 @@ database host.
 | --- | --- | --- |
 | `src/CSharpDB.Sql` tokenizer and parser | Literal-safe normalization and query fingerprint generation. | Reuse the real SQL grammar; do not duplicate tokenization in Observability. |
 | `src/CSharpDB.Engine/Database.cs` | Root query lifecycle, engine counters, active readers, and snapshot composition. | Cover SQL text, pre-parsed statements, simple inserts, fast lookups, explicit transactions, and lazy results exactly once. |
-| `src/CSharpDB.Execution/QueryResult.cs` | Complete query timing and row-consumption lifecycle. | Completion must fire once on exhaustion, failure, cancellation, or disposal. |
+| `src/CSharpDB.Execution/QueryResult.cs` | Complete query timing and row-consumption lifecycle. | Completion must fire once on exhaustion, failure, cancellation, or disposal; do not attach per-operation state to shared zero/one-row DML result singletons. |
 | `src/CSharpDB.Execution/QueryPlanner.cs` | Plan cache, selected-access-path, estimate, and adaptive-plan diagnostics. | Do not run a second plan or `EXPLAIN` automatically for every query. |
-| `src/CSharpDB.Storage/Wal/WriteAheadLog.cs` and `Pager.cs` | Monotonic WAL, checkpoint, commit, cache, and I/O counters. | Snapshot reads must be lock-safe and must not reset benchmark counters. |
+| `src/CSharpDB.Storage/Wal/WriteAheadLog.cs`, `Paging/Pager.cs`, and storage factories | WAL, checkpoint, recovery, commit, cache, and I/O state, including startup-before-Database work. | Snapshot reads must be lock-safe; production counters must be distinct from resettable benchmark counters. |
 | `src/CSharpDB.Storage.Diagnostics` | Explicit offline storage and WAL inspection. | Keep file scans off the metrics and health hot paths. |
 | `src/CSharpDB.Client/Internal/EngineTransportClient*.cs` | Direct-client transactions, exclusive operations, backup/restore status, and direct snapshots. | Avoid leaking local paths and do not hold the client lock while serializing large snapshots. |
 | `src/CSharpDB.Data/CSharpDbConnectionPool.cs` | Pool capacity, waiters, active/idle sessions, readers, and transaction age. | Registry enumeration must be bounded and safe during pool retirement. |
@@ -260,7 +302,7 @@ Phases are ordered by dependency, not calendar estimate.
 
 | Phase | Primary outcome | Depends on |
 | --- | --- | --- |
-| 0 | Contracts, safety policy, correlation, and benchmark baseline. | Baseline recorded when Phase 0 begins. |
+| 0 | Contracts, safety policy, correlation, and benchmark baseline. | Current repository baseline. |
 | 1 | Structured logging plus query and slow-query logging. | Phase 0. |
 | 2 | Active/recent queries, query plans, connections, and sessions. | Phases 0 and 1. |
 | 3 | Runtime storage, WAL, backup, and restore diagnostics. | Phase 0; can overlap late Phase 2 work. |
@@ -269,49 +311,71 @@ Phases are ordered by dependency, not calendar estimate.
 | 6 | Admin metrics and diagnostics UI. | Phases 2 through 5 and transport APIs. |
 | 7 | Qualification, public documentation, packaging, and release closure. | All prior phases. |
 
+Shipping checkpoints:
+
+- **Operator preview:** Phases 0 through 3 plus Phase 5. This is the first
+  trustworthy daemon milestone: safe structured/slow-query logs, active and
+  recent work, runtime storage/WAL/maintenance state, and live/ready signals.
+- **Telemetry beta:** Add Phase 4 after the operation and snapshot contracts
+  have stabilized. Phase 4 and Phase 5 may run in parallel after Phase 3;
+  exporters are not a health dependency.
+- **General availability:** Add the Admin experience, cross-transport and
+  cross-platform qualification, public schema documentation, and release gates
+  from Phases 6 and 7.
+
 ## Phase 0: Contracts, Safety, And Baselines
 
-Status: `Not started`
+Status: `Complete`
 
 Goal: establish one telemetry vocabulary, safe defaults, and measurable
 performance limits before instrumenting independent layers.
 
 Work:
 
-- [ ] Add `CSharpDB.Observability` to the solution as a BCL-only,
+- [x] Add `CSharpDB.Observability` to the solution as a BCL-only,
   AOT-compatible assembly.
-- [ ] Define and qualify a standalone `CSharpDB.Observability` NuGet package,
+- [x] Define and qualify a standalone `CSharpDB.Observability` NuGet package,
   then add it to the all-in-one `CSharpDB` package composition without pulling
   exporter packages into embedded applications.
-- [ ] Add the package immediately to CI packing, README-link rewriting,
+- [x] Add the package immediately to CI packing, README-link rewriting,
   package-smoke, and release-one-by-one qualification so dependent packages
   are never tested against a missing observability dependency.
-- [ ] Define stable source names, schema versioning, operation classes,
+- [x] Define stable source names, schema versioning, operation classes,
   outcomes, correlation fields, and bounded tag keys.
-- [ ] Define `CSharpDbObservabilityOptions` and validate impossible or unsafe
+- [x] Define the parent request/script and child statement hierarchy for
+  scripts and procedures, including which counters apply to each level.
+- [x] Define `CSharpDbObservabilityOptions` and validate impossible or unsafe
   combinations at startup.
-- [ ] Define SQL-text capture modes: `None`, `Normalized`, and `Raw`, with
+- [x] Define SQL-text capture modes: `None`, `Normalized`, and `Raw`, with
   `None` as the default.
-- [ ] Implement deterministic query normalization and fingerprinting in
+- [x] Implement deterministic query normalization and fingerprinting in
   `CSharpDB.Sql` using the existing tokenizer. It must remove literals and
   never retain parameter or row values.
-- [ ] Define immutable runtime snapshot records with `SchemaVersion`,
+- [x] Define immutable runtime snapshot records with `SchemaVersion`,
   `CapturedAtUtc`, process/server instance id, counter epoch, truncation
   indicators, and source/alias metadata.
-- [ ] Define capacity and retention controls for recent queries, active
+- [x] Define cumulative-counter versus gauge semantics, including a distinct
+  non-resetting production-counter family or an epoch advance around every
+  resettable benchmark counter.
+- [x] Define capacity and retention controls for recent queries, active
   operations, and maintenance history.
-- [ ] Define a monotonic timing and test-clock strategy.
-- [ ] Reserve stable structured-log event-id ranges by subsystem.
-- [ ] Define a centralized safe-error projection and exception-detail policy
+- [x] Define a monotonic timing and test-clock strategy.
+- [x] Reserve stable structured-log event-id ranges by subsystem.
+- [x] Define a centralized safe-error projection and exception-detail policy
   for the logging bridge, API middleware, histories, traces, and operation
   status.
-- [ ] Record the approved metric label allowlist and maximum configured
+- [x] Apply that safe-error projection to the existing API exception middleware
+  before broadening diagnostics; remove raw exception-object logging and raw
+  client messages from the default path.
+- [x] Define a host initialization/readiness state machine that can represent
+  startup and WAL recovery before `Database` exists.
+- [x] Record the approved metric label allowlist and maximum configured
   database/shard alias count.
-- [ ] Add baseline benchmarks for query fast paths, writes, streaming results,
+- [x] Add baseline benchmarks for query fast paths, writes, streaming results,
   and connection pooling with no listeners configured.
-- [ ] Set release budgets from those baselines for disabled telemetry,
+- [x] Set release budgets from those baselines for disabled telemetry,
   metrics-only telemetry, and query-history capture.
-- [ ] Document how root operations, nested engine work, retries, triggers,
+- [x] Document how root operations, nested engine work, retries, triggers,
   procedures, and sharded fan-out are counted.
 
 Deliverables:
@@ -348,11 +412,17 @@ Work:
   cancellation, transaction completion, checkpoint, and maintenance events.
 - [ ] Instrument all root `Database.ExecuteAsync` paths without double-counting
   cached statements, fast lookups, simple inserts, or explicit transactions.
+- [ ] Instrument scripts and procedures as a parent operation plus child
+  statements so a slow child is visible without double-counting a request.
 - [ ] Carry the same root context through procedures, triggers, pipelines, and
   sharded fan-out.
 - [ ] Attach query completion to `QueryResult` so streamed queries finish on
   exhaustion, failure, cancellation, or disposal, not when the result object is
   returned.
+- [ ] Use a once-only terminal observer invoked directly from exhaustion,
+  materialization, failure, cancellation, early disposal, and never-opened
+  disposal paths. Do not attach mutable operation callbacks to the shared
+  zero/one-row `QueryResult` instances.
 - [ ] Record total duration, time to first result, queue duration,
   execution/result-consumption duration, rows produced or affected, outcome,
   operation class, query fingerprint, transport, and correlation ids.
@@ -364,9 +434,9 @@ Work:
   completes. Phase 2 adds the separate in-flight long-running notification.
 - [ ] Ensure failure events expose stable error type/code fields without
   copying exception messages into metrics or default query history.
-- [ ] Update the existing API exception middleware and the new logging bridge
-  to use the centralized safe-error projection. Do not attach raw exception
-  objects to query or maintenance events by default.
+- [ ] Use the Phase 0 centralized safe-error projection in the logging bridge
+  and all new events. Do not attach raw exception objects to query or
+  maintenance events by default.
 - [ ] Add a startup warning when raw SQL capture is explicitly enabled.
 - [ ] Add log snapshot and secret-canary tests for direct, REST, gRPC, and API
   exception-middleware paths.
@@ -409,14 +479,25 @@ Work:
   reclassification, adaptive reoptimization, estimated rows, and actual rows
   where they can be collected without replaying the query.
 - [ ] Reuse `EXPLAIN ESTIMATE FOR` for explicit deep inspection and add a link
-  from a recent-query fingerprint when normalized SQL is available.
+  from recent-query detail only when separately authorized captured SQL is
+  available. A fingerprint is non-reversible and normalized SQL with redacted
+  literals is not executable; otherwise require the operator to resubmit SQL.
+- [ ] Never auto-run `EXPLAIN ANALYZE` from diagnostics. It executes the target
+  and can mutate data; Admin must label that behavior explicitly.
 - [ ] Keep automatic full-plan capture off by default and cap any requested
   plan tree by nodes and serialized bytes.
 - [ ] Snapshot ADO.NET pool capacity, waiters, active/idle sessions, active
   readers, retired/poisoned pools, transaction owner, and oldest transaction
   age without exposing raw data-source paths.
+- [ ] Model the pool accurately: active logical sessions, available slots,
+  waiters, active snapshot readers, transaction owner/age, warm-engine idle,
+  and disabled/poisoned/retiring state. The current `IdleCount` is not a count
+  of retained logical sessions.
 - [ ] Snapshot direct-client transaction sessions, active snapshot readers,
   exclusive maintenance state, and in-flight REST/gRPC requests.
+- [ ] Add created/last-active/current-operation timestamps to remote
+  transaction sessions and make abandoned non-expiring sessions visible, while
+  replacing their bearer transaction ids with separate opaque diagnostic ids.
 - [ ] Define aggregate and capped per-shard query/session snapshots.
 - [ ] Add additive `ICSharpDbObservabilityClient` methods for summary, active
   queries, recent queries, query-plan diagnostics, and session diagnostics.
@@ -430,8 +511,12 @@ Work:
 - [ ] Enforce API authentication when configured and loopback-only access when
   security mode is `None`, unless the operator explicitly enables and
   acknowledges insecure remote diagnostics.
-- [ ] Propagate HTTP request cancellation through SQL, transaction,
-  diagnostics, and maintenance endpoints and prove the engine observes it.
+- [ ] Preserve the existing HTTP SQL/transaction and gRPC cancellation paths;
+  propagate request cancellation through maintenance and inspection endpoints,
+  and pass the already-accepted token through direct inspector helpers.
+- [ ] Document that parsing/planning and synchronous fast paths may not observe
+  cancellation immediately. Keep ADO.NET `CommandTimeout`/`Cancel()` and query
+  termination explicitly unsupported until they are implemented and tested.
 - [ ] Add a separate authorized query-detail request for any captured SQL or
   path field. Never include those fields in summary, active, or recent lists.
 - [ ] Define consistent behavior when a custom client does not implement the
@@ -470,15 +555,34 @@ Work:
 - [ ] Define a live storage snapshot for database size, page counts, cache
   usage/hits/misses, dirty pages, active readers/writers, commits, conflicts,
   checkpoint state, and cumulative I/O where available.
+- [ ] Distinguish logical pager I/O from physical device I/O and represent
+  unsupported fields as `Unavailable` or `NotApplicable`, especially for
+  in-memory, hybrid, and custom storage implementations.
 - [ ] Promote existing WAL flush and commit-path counters through a public
   curated immutable runtime model without exposing the large, unstable
-  benchmark snapshot wholesale or changing its reset semantics.
-- [ ] Add current WAL size/frame count, pending commit count, last successful
-  flush/checkpoint, recovery state, and last safe error code.
+  benchmark snapshot wholesale or changing its reset semantics. Publish new
+  non-resetting lifetime counters, or advance the counter epoch when test-only
+  reset APIs run.
+- [ ] Add current WAL logical bytes, allocated/file bytes, committed-frame
+  bytes, retained bytes, coherent frame/commit state, pending commit count,
+  last successful flush/checkpoint, recovery state, and last safe error code.
+  Frame count and WAL sizes are gauges and may decrease after checkpoint.
+- [ ] Model checkpoint phases (`Idle`, `Requested`, `Copying`,
+  `CopyCompleteAwaitingReaders`, `Finalizing`, and `Faulted`), progress,
+  retained-WAL reason, foreground/background origin, and last start/success/
+  failure. Record foreground auto-checkpoint and shutdown checkpoint failures
+  that are currently swallowed or retried.
+- [ ] Instrument recovery through storage-engine options/factories so startup
+  work before `Database` construction is visible. Record scanned/recovered/
+  discarded frames and bytes, safe truncation reason, duration, and outcome
+  without exposing the WAL path.
 - [ ] Instrument missing checkpoint, fsync, write, group-commit, cache, and
   recovery counters with lock-free or low-contention updates.
 - [ ] Use an optional cache-diagnostics provider or a pager-owned counter seam
   so third-party storage/cache implementations do not gain required members.
+- [ ] Do not use `IPageOperationInterceptor` as the production metric hot path;
+  enabling it changes cache fast paths. Use pager-owned counters and optional
+  diagnostics providers for custom caches/devices instead.
 - [ ] Keep `DatabaseInspector`, `WalInspector`, page inspection, and index
   checks explicit and separately labeled as offline/deep inspection.
 - [ ] Add a bounded maintenance-operation registry for checkpoint, backup,
@@ -487,6 +591,10 @@ Work:
   known, outcome, warning/error counts, and safe failure code.
 - [ ] Instrument `DatabaseBackupCoordinator` so an in-progress backup or
   restore is visible before the original call completes.
+- [ ] Register backup/restore before waiting for the client execution or
+  exclusive-access lock. Include queued/acquiring time and explicit phases for
+  checkpoint, copy/stage, validation, hashing/manifest work, replacement,
+  rollback, and reopen.
 - [ ] Retain a bounded recent operation history in memory and clearly report
   that it resets with the process.
 - [ ] Suppress source and destination paths by default; use configured aliases
@@ -494,6 +602,11 @@ Work:
 - [ ] Define restore readiness behavior while exclusive access is being
   acquired, validation is running, the database is being replaced, and the
   replacement is reopening.
+- [ ] Define the restore point of no return and cancellation behavior around
+  non-cancellable file replacement. Eagerly reopen before terminal success, or
+  publish `ReopenPending` and remain not-ready until a deferred reopen passes.
+- [ ] Pass cancellation through explicit deep storage/WAL/page/index inspectors
+  even though those inspectors remain outside normal runtime snapshots.
 - [ ] Add summary, storage, WAL, and maintenance-operation methods to the
   optional diagnostics client and both remote transports.
 - [ ] Define sharded storage aggregation rules and preserve capped per-shard
@@ -511,8 +624,14 @@ Exit gate:
   explicitly requests deep inspection.
 - Counters remain monotonic and consistent during concurrent commits,
   checkpoints, backup, restore, and shutdown.
+- Resettable benchmark diagnostics cannot make production counters decrease;
+  gauges and epochs change according to the published contract.
+- WAL recovery and checkpoint progress/failures are visible even when they
+  occur before `Database` construction or are retried internally.
 - A running backup or restore is visible, reaches one terminal state, and
   cannot remain permanently active after failure or cancellation.
+- Restore never reports ready after replacement until the new database has
+  reopened successfully.
 - Default models and logs contain no database or backup paths.
 
 ## Phase 4: OpenTelemetry And Prometheus
@@ -528,6 +647,9 @@ Work:
   restore, and maintenance from one stable CSharpDB `ActivitySource`.
 - [ ] Make remote query spans children of inbound ASP.NET Core or gRPC spans
   and avoid duplicate client/server/engine root spans.
+- [ ] Prove that a span covering a lazy `QueryResult` does not leave an
+  incorrect ambient `Activity.Current` after the initial execute call or across
+  unrelated caller work; restore parent context deliberately where needed.
 - [ ] Apply the current stable OpenTelemetry database semantic conventions
   where they are safe, documenting any CSharpDB-specific attributes.
 - [ ] Keep statement text disabled and use fingerprints only in traces/logs,
@@ -546,6 +668,10 @@ Work:
 - [ ] Keep exporters out of the core NuGet dependency graph.
 - [ ] Add optional Prometheus export to API and daemon with an explicit enable
   flag, configurable path/listener policy, and safe startup validation.
+- [ ] Make the listener contract explicit: the MVP uses the normal Kestrel
+  listener with peer-address/API-key filtering, or it provisions a separately
+  configured metrics listener. Merely changing `/metrics` path does not create
+  network isolation.
 - [ ] Map configured daemon metrics independently of its normal REST API toggle
   so gRPC-only deployments can still opt into scraping.
 - [ ] Require existing API authentication when it is configured. With security
@@ -595,6 +721,11 @@ Work:
 
 - [ ] Add reusable CSharpDB health registrations in the API host extensions so
   the standalone API and daemon use the same checks.
+- [ ] Replace the current pre-`app.Run` database warmup with a lifecycle/
+  readiness coordinator or background initializer so listeners can report
+  `starting`, `recovering`, initialization failure, and recovery. If startup is
+  intentionally kept fail-fast instead, narrow the advertised health-state
+  contract and tests accordingly.
 - [ ] Map `/health/live` to process liveness only. It must not open, query,
   checkpoint, or inspect the database.
 - [ ] Map `/health/ready` to a bounded readiness snapshot covering host
@@ -619,6 +750,9 @@ Work:
 - [ ] Exempt standard gRPC Health `Check` and `Watch` from API-key
   authentication consistently and return status only. Test unary and streaming
   interceptor behavior explicitly.
+- [ ] Cover unary, client-streaming, server-streaming, and duplex interceptor
+  shapes with an explicit health-method allowlist; do not rely on the current
+  absence of streaming overrides as an authentication policy.
 - [ ] Map daemon health even when its normal REST API surface is disabled.
 - [ ] Define readiness during startup, WAL recovery, read-only mode, backup,
   restore validation, full restore, maintenance, and graceful shutdown.
@@ -710,7 +844,7 @@ Exit gate:
 Status: `Not started`
 
 Goal: prove the complete feature set is safe, interoperable, performant, and
-usable before closing the observability milestone.
+usable before closing its target release.
 
 Work:
 
@@ -750,7 +884,7 @@ Deliverables:
 - Complete public documentation and sample.
 - Cross-platform, core/Native AOT, host publishing, redaction, cardinality,
   concurrency, and performance evidence.
-- Release notes and qualified packages for the release that first ships observability.
+- Target-release notes and qualified packages.
 
 Exit gate:
 
@@ -870,16 +1004,16 @@ file path, and error message are prohibited metric dimensions.
 
 | Area | Required proof |
 | --- | --- |
-| Query lifecycle | SQL, prepared, fast lookup, simple insert, explicit transaction, procedure/trigger, streamed rows, early disposal, cancellation, failure, retry, and sharded fan-out complete exactly once. |
+| Query lifecycle | SQL, prepared, fast lookup/scalar, shared-result DML, simple insert, explicit transaction, multi-statement script, procedure/trigger, streamed rows, early/never-opened disposal, cancellation, failure, retry, and sharded fan-out complete exactly once at the documented request/statement level. |
 | Logging/redaction | Default structured fields are stable; raw SQL opt-in is explicit; values, credentials, connection strings, paths, and row data never leak. |
 | Slow/long queries | Threshold boundaries, streamed results, clock changes, cancellation, and completion produce one long-running and one final outcome as applicable. |
 | Query plans | Cache and adaptive counters are accurate; plan summaries are bounded; explicit explain works; automatic diagnostics do not replay queries. |
-| Sessions/connections | Pool waits, checkout/release, retirement, poison, readers, transactions, remote requests, and disposal remain consistent under concurrency. |
-| Storage/WAL | Counters and gauges remain coherent across commit, checkpoint, recovery, group commit, cache pressure, reopen, and in-memory storage. |
-| Backup/restore | Active phase, progress, success, validation failure, cancellation, exclusive access, reopen failure, and recent history reach one terminal state. |
+| Sessions/connections | Pool waits, checkout/release, slot availability, warm-engine idle, retirement, poison, readers, non-expiring remote transactions, remote requests, and disposal remain consistent under concurrency without exposing bearer transaction ids. |
+| Storage/WAL | Lifetime counters, reset epochs, gauges, logical/allocated WAL sizes, checkpoint phases, recovery tail truncation, group commit, cache pressure, startup-before-Database, reopen, custom providers, and in-memory storage remain coherent. |
+| Backup/restore | Queue/acquire time, active phase, point-of-no-return cancellation, progress, success, validation failure, exclusive access, replacement rollback, reopen failure/pending, readiness, and recent history reach one terminal state. |
 | OpenTelemetry | Span parentage/status, metric units/tags, sampling, resource attributes, exporter outage, and log/trace correlation match the contract. |
 | Prometheus | Disabled, API-key, loopback, remote-denial, gRPC-only daemon, scrape format, concurrent scrape, and adversarial cardinality cases pass. |
-| Health | Live versus ready, Admin `/healthz`, startup, recovery, read-only, restore, timeout, graceful shutdown, REST, and gRPC `Check`/`Watch` behavior are deterministic. |
+| Health | Live versus ready, Admin `/healthz`, listener-before-initialization startup, recovery, initialization failure, read-only, restore/reopen, timeout, graceful shutdown, REST, and authenticated unary/streaming gRPC `Check`/`Watch` behavior are deterministic. |
 | Admin | Direct/HTTP/gRPC/sharded snapshots, database switch, reconnect, active-tab polling, counter epoch reset, stale/truncated data, detail denial, and disposal render correctly. |
 | Compatibility | Existing embedded clients and third-party `ICSharpDbClient` implementations compile and behave unchanged when observability is off. |
 | Platforms | Windows, Ubuntu, and macOS tests plus existing core/NativeAOT and supported packaged-host smoke tests pass. |
@@ -887,7 +1021,8 @@ file path, and error message are prohibited metric dimensions.
 
 ## Compatibility And Rollout
 
-- Treat the observability schema as a versioned public contract after its first supported release.
+- Treat the observability schema as a versioned public contract after its
+  initial release.
 - Add new metrics and fields compatibly; do not silently change the meaning or
   unit of an existing instrument.
 - Deprecate a metric or field for at least one minor release before removal
@@ -924,7 +1059,8 @@ file path, and error message are prohibited metric dimensions.
 
 ## Assumptions
 
-- Phase 0 records the merged baseline before implementation begins.
+- The work starts from the current repository baseline; assign the target
+  version only when the release is scheduled.
 - .NET `ActivitySource`, `Meter`, and `ILogger` remain the primary integration
   points.
 - The standalone API and daemon continue sharing
@@ -973,7 +1109,7 @@ A phase is complete only when:
 - Internal plan status and applicable public documentation are updated.
 - The phase exit gate is demonstrated with reproducible commands or CI jobs.
 
-## Recommended First Work Packet
+## Recommended First Work Packets
 
 Begin with a narrow Phase 0 pull request:
 
@@ -987,3 +1123,12 @@ Begin with a narrow Phase 0 pull request:
    and streamed-result paths.
 5. Record the approved performance budgets and event/metric naming rules in
    this plan before Phase 1 instrumentation begins.
+
+Follow it with a separate Phase 0 safety/lifecycle pull request:
+
+1. Add centralized safe-error projection and remove raw exception-object and
+   raw-message behavior from the default API middleware path.
+2. Define the request/script/statement hierarchy, cumulative-counter versus
+   gauge semantics, and host initialization/readiness state machine.
+3. Add secret-canary middleware tests plus deterministic initialization,
+   counter-epoch, and serializer contract tests.

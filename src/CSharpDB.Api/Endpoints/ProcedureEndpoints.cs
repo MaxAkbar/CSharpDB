@@ -1,5 +1,6 @@
 using CSharpDB.Api.Dtos;
 using CSharpDB.Api.Helpers;
+using CSharpDB.Observability;
 using CSharpDB.Client;
 using CSharpDB.Client.Models;
 
@@ -151,7 +152,9 @@ public static class ProcedureEndpoints
             statement.RowsAffected,
             statement.Elapsed.TotalMilliseconds,
             statement.ColumnTypes)).ToList(),
-        result.Error,
+        result.Error is null
+            ? null
+            : SafeErrorProjector.Project(SafeErrorKind.DatabaseOperation).PublicDetail,
         result.FailedStatementIndex,
         result.Elapsed.TotalMilliseconds);
 }

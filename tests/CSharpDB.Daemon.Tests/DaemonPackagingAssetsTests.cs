@@ -24,7 +24,55 @@ public sealed class DaemonPackagingAssetsTests
         string workflow = File.ReadAllText(Path.Combine(repoRoot, ".github", "workflows", "ci.yml"));
 
         Assert.Contains("src/CSharpDB/README.md", workflow);
+        Assert.Contains("src/CSharpDB.Observability/README.md", workflow);
+        Assert.Contains("dotnet pack src/CSharpDB.Observability/CSharpDB.Observability.csproj", workflow);
         Assert.Contains("dotnet pack src/CSharpDB/CSharpDB.csproj", workflow);
+        Assert.Contains("Test-ObservabilityNuGetPackage.ps1", workflow);
+    }
+
+    [Fact]
+    public void ReleaseWorkflow_PublishesObservabilityBeforeDependentPackages()
+    {
+        string repoRoot = FindRepoRoot();
+        string workflow = File.ReadAllText(Path.Combine(repoRoot, ".github", "workflows", "release.yml"));
+
+        int observabilityPushIndex = workflow.IndexOf(
+            "- name: Push CSharpDB.Observability to NuGet.org",
+            StringComparison.Ordinal);
+        int observabilityWaitIndex = workflow.IndexOf(
+            "- name: Wait for CSharpDB.Observability on NuGet.org",
+            StringComparison.Ordinal);
+        int dependentPushIndex = workflow.IndexOf(
+            "- name: Push dependent packages to NuGet.org",
+            StringComparison.Ordinal);
+
+        Assert.True(observabilityPushIndex >= 0, "The observability package must be pushed explicitly.");
+        Assert.True(
+            observabilityWaitIndex > observabilityPushIndex,
+            "NuGet visibility must be confirmed after pushing observability.");
+        Assert.True(
+            dependentPushIndex > observabilityWaitIndex,
+            "Dependent packages must not be pushed until observability is visible.");
+        Assert.Contains(
+            "CSharpDB.Observability.${{ steps.version.outputs.package_file_version }}.nupkg",
+            workflow);
+
+        string versionResolver = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "scripts",
+            "Get-NuGetPackageIdentityVersion.ps1"));
+        string packageSmoke = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "scripts",
+            "Test-ObservabilityNuGetPackage.ps1"));
+        string packageWait = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "scripts",
+            "Wait-NuGetPackageVersion.ps1"));
+
+        Assert.Contains("IndexOf('+')", versionResolver);
+        Assert.Contains("Get-NuGetPackageIdentityVersion.ps1", packageSmoke);
+        Assert.Contains("Get-NuGetPackageIdentityVersion.ps1", packageWait);
     }
 
     [Fact]
@@ -33,15 +81,26 @@ public sealed class DaemonPackagingAssetsTests
         string repoRoot = FindRepoRoot();
         string workflow = File.ReadAllText(Path.Combine(repoRoot, ".github", "workflows", "release.yml"));
 
-        int verifyIndex = workflow.IndexOf("Wait-NuGetPackageVersion.ps1", StringComparison.Ordinal);
+        int verifyStepIndex = workflow.IndexOf(
+            "- name: Verify packages are visible on NuGet.org",
+            StringComparison.Ordinal);
+        int verifyIndex = verifyStepIndex < 0
+            ? -1
+            : workflow.IndexOf(
+                "Wait-NuGetPackageVersion.ps1",
+                verifyStepIndex,
+                StringComparison.Ordinal);
         int releaseIndex = workflow.IndexOf("softprops/action-gh-release", StringComparison.Ordinal);
 
-        Assert.True(verifyIndex >= 0, "Release workflow must call the NuGet visibility verification script.");
+        Assert.True(
+            verifyIndex > verifyStepIndex,
+            "The final package-visibility step must call the NuGet verification script.");
         Assert.True(releaseIndex > verifyIndex, "NuGet verification must run before the GitHub Release is created.");
 
         string[] packageIds =
         [
             "CSharpDB",
+            "CSharpDB.Observability",
             "CSharpDB.Primitives",
             "CSharpDB.Sql",
             "CSharpDB.Storage",

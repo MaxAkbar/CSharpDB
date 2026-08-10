@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using ErrorCode = CSharpDB.Primitives.ErrorCode;
 
 namespace CSharpDB.Api.Tests;
 
@@ -93,13 +94,59 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
             Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
             using JsonDocument problem = JsonDocument.Parse(
                 await response.Content.ReadAsStringAsync(Ct));
-            Assert.Contains(
+            Assert.Equal(
+                "csharpdb.resource_limit",
+                problem.RootElement.GetProperty("errorCode").GetString());
+            Assert.DoesNotContain(
                 "partition",
                 problem.RootElement.GetProperty("detail").GetString(),
                 StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
+            await DeleteIfExistsAsync(dbPath);
+            await DeleteIfExistsAsync(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task ShardReadOnlyFanOut_ValidationFailure_ReturnsSafeBadRequest()
+    {
+        const string canary =
+            "Password=FanOutSecret;Data Source=C:\\private\\shard.db;INSERT INTO secret_table VALUES (1)";
+        string dbPath = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb_api_shard_validation_{Guid.NewGuid():N}.db");
+        IRejectingShardClient shardClient =
+            DispatchProxy.Create<IRejectingShardClient, RejectingShardClientProxy>();
+        ((RejectingShardClientProxy)shardClient).FailureMessage = canary;
+
+        try
+        {
+            await using var factory = new TestApiFactory(
+                dbPath,
+                clientOverride: shardClient);
+            using HttpClient httpClient = factory.CreateClient();
+
+            using HttpResponseMessage response = await httpClient.PostAsJsonAsync(
+                "/api/sharding/sql/read-all",
+                new { Sql = "INSERT INTO secret_table VALUES (1);" },
+                Ct);
+
+            string payload = await response.Content.ReadAsStringAsync(Ct);
+            using JsonDocument problem = JsonDocument.Parse(payload);
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
+            Assert.Equal("csharpdb.syntax", problem.RootElement.GetProperty("errorCode").GetString());
+            Assert.Equal("The SQL request is invalid.", problem.RootElement.GetProperty("detail").GetString());
+            Assert.DoesNotContain("FanOutSecret", payload, StringComparison.Ordinal);
+            Assert.DoesNotContain("private", payload, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("INSERT", payload, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            await shardClient.DisposeAsync();
             await DeleteIfExistsAsync(dbPath);
             await DeleteIfExistsAsync(dbPath + ".wal");
         }
@@ -632,10 +679,13 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
             new Dictionary<string, object?> { ["id"] = "bad" },
             Ct);
         Assert.False(failedExecution.Succeeded);
-        Assert.Contains("expects INTEGER", failedExecution.Error ?? string.Empty);
+        Assert.Equal("The database could not complete the request.", failedExecution.Error);
+        Assert.DoesNotContain("expects INTEGER", failedExecution.Error, StringComparison.OrdinalIgnoreCase);
 
         var sqlError = await _client.ExecuteSqlAsync("SELECT FROM", Ct);
-        Assert.NotNull(sqlError.Error);
+        Assert.Equal(ErrorCode.SyntaxError, sqlError.ErrorCode);
+        Assert.Equal("The SQL request is invalid.", sqlError.Error);
+        Assert.DoesNotContain("SELECT FROM", sqlError.Error, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -2089,6 +2139,28 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
             RollbackTransactionCancellationToken = cancellationToken;
             return Task.CompletedTask;
         }
+    }
+
+    public interface IRejectingShardClient : ICSharpDbClient, ICSharpDbShardAdminClient;
+
+    public class RejectingShardClientProxy : DispatchProxy
+    {
+        public string FailureMessage { get; set; } = "Rejected shard request.";
+
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+            => targetMethod?.Name switch
+            {
+                "get_DataSource" => "rejecting-shard-client",
+                "GetInfoAsync" => Task.FromResult(new DatabaseInfo
+                {
+                    DataSource = "rejecting-shard-client",
+                }),
+                "ExecuteReadOnlySqlOnAllShardsAsync" =>
+                    Task.FromException<IReadOnlyList<CSharpDbShardSqlExecutionResult>>(
+                        new CSharpDbClientException(FailureMessage)),
+                "DisposeAsync" => ValueTask.CompletedTask,
+                _ => throw new NotSupportedException(targetMethod?.Name),
+            };
     }
 
     private sealed class StaticJsonHandler(string payload) : HttpMessageHandler

@@ -332,6 +332,7 @@ The `CSharpDB` meta-package pulls in the full library set:
 | Package | Purpose |
 |---------|---------|
 | `CSharpDB.Primitives` | Core types — `DbType`, `DbValue`, `TableSchema`, `IndexSchema` |
+| `CSharpDB.Observability` | BCL-only observability contracts, safe snapshots, and correlation vocabulary |
 | `CSharpDB.Sql` | SQL lexer, parser, and AST |
 | `CSharpDB.Storage` | B+tree, pager, WAL, checkpointing, serialization |
 | `CSharpDB.ImportExport` | Native table archive import/export support |

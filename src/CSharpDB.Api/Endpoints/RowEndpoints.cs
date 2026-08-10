@@ -69,7 +69,7 @@ public static class RowEndpoints
             db);
         var row = await db.GetRowByPkAsync(name, pkColumn, coerced);
         return row is null
-            ? Results.NotFound(new { error = $"Row with {pkColumn}='{pkValue}' not found in '{name}'." })
+            ? Results.NotFound(new { error = "The requested row was not found." })
             : Results.Ok(JsonHelper.EncodeDictionary(row));
     }
 
@@ -120,7 +120,7 @@ public static class RowEndpoints
             db);
         var affected = await db.DeleteRowAsync(name, pkColumn, coerced);
         return affected == 0
-            ? Results.NotFound(new { error = $"Row with {pkColumn}='{pkValue}' not found in '{name}'." })
+            ? Results.NotFound(new { error = "The requested row was not found." })
             : Results.Ok(new MutationResponse(affected));
     }
 
