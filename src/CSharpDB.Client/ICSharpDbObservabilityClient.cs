@@ -16,6 +16,28 @@ public interface ICSharpDbObservabilityClient
         GetRuntimeDiagnosticsAsync(CancellationToken ct = default);
 
     /// <summary>
+    /// Gets the current storage diagnostics without initiating offline
+    /// inspection. The default preserves compatibility for existing optional
+    /// capability implementations and reports that the method is unsupported.
+    /// </summary>
+    Task<DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<StorageRuntimeDiagnosticsSnapshot>>>
+        GetStorageDiagnosticsAsync(CancellationToken ct = default)
+        => Task.FromException<DiagnosticsTopologySnapshot<
+            DiagnosticsValueSnapshot<StorageRuntimeDiagnosticsSnapshot>>>(
+                new CSharpDbObservabilityNotSupportedException());
+
+    /// <summary>
+    /// Gets the current WAL and checkpoint diagnostics without scanning the
+    /// WAL. Existing optional capability implementations inherit the safe
+    /// unsupported default.
+    /// </summary>
+    Task<DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<WalRuntimeDiagnosticsSnapshot>>>
+        GetWalDiagnosticsAsync(CancellationToken ct = default)
+        => Task.FromException<DiagnosticsTopologySnapshot<
+            DiagnosticsValueSnapshot<WalRuntimeDiagnosticsSnapshot>>>(
+                new CSharpDbObservabilityNotSupportedException());
+
+    /// <summary>
     /// Gets at most <paramref name="maximumRecords"/> active query records.
     /// </summary>
     Task<DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<ActiveQuerySnapshot>>>
@@ -49,6 +71,32 @@ public interface ICSharpDbObservabilityClient
         GetSessionsAsync(
             int maximumRecords,
             CancellationToken ct = default);
+
+    /// <summary>
+    /// Gets at most <paramref name="maximumRecords"/> active maintenance
+    /// operations. Existing optional capability implementations inherit the
+    /// safe unsupported default.
+    /// </summary>
+    Task<DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>
+        GetActiveMaintenanceOperationsAsync(
+            int maximumRecords,
+            CancellationToken ct = default)
+        => Task.FromException<DiagnosticsTopologySnapshot<
+            DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>(
+                new CSharpDbObservabilityNotSupportedException());
+
+    /// <summary>
+    /// Gets at most <paramref name="maximumRecords"/> recent terminal
+    /// maintenance operations. Existing optional capability implementations
+    /// inherit the safe unsupported default.
+    /// </summary>
+    Task<DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>
+        GetRecentMaintenanceOperationsAsync(
+            int maximumRecords,
+            CancellationToken ct = default)
+        => Task.FromException<DiagnosticsTopologySnapshot<
+            DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>(
+                new CSharpDbObservabilityNotSupportedException());
 
     /// <summary>
     /// Gets separately authorized captured query detail. Ordinary runtime,

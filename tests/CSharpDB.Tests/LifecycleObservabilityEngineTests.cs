@@ -1,8 +1,10 @@
+using System.Reflection;
 using System.Text.Json;
 using CSharpDB.Engine;
 using CSharpDB.Execution;
 using CSharpDB.Observability;
 using CSharpDB.Primitives;
+using CSharpDB.Storage.Diagnostics;
 using CSharpDB.Storage.StorageEngine;
 
 namespace CSharpDB.Tests;
@@ -213,8 +215,22 @@ public sealed class LifecycleObservabilityEngineTests
             CSharpDbLifecycleCompletedEvent checkpoint = Assert.Single(
                 events.Events(CSharpDbLogEvents.CheckpointCompleted.Name));
             Assert.Equal(CSharpDbOperationOutcome.Succeeded, checkpoint.Outcome);
+            StorageRuntimeDiagnostics.Registration storageRegistration =
+                GetStorageRuntimeRegistration(database);
+            StorageRuntimeDiagnostics.CheckpointOperation manualCheckpoint =
+                Assert.IsType<StorageRuntimeDiagnostics.CheckpointOperation>(
+                    storageRegistration.Checkpoint);
+            Assert.Equal(
+                StorageCheckpointOriginRaw.Manual,
+                manualCheckpoint.Raw.Origin);
+            Assert.Equal(
+                checkpoint.Context.OperationId,
+                manualCheckpoint.OperationId);
 
             events.Clear();
+            await ExecuteNonQueryAsync(
+                database,
+                "INSERT INTO lifecycle_backup_items VALUES (2)");
             _ = await DatabaseBackupCoordinator.BackupAsync(
                 database,
                 databasePath,
@@ -224,6 +240,15 @@ public sealed class LifecycleObservabilityEngineTests
             CSharpDbLifecycleCompletedEvent backup = Assert.Single(
                 events.Events(CSharpDbLogEvents.BackupCompleted.Name));
             Assert.Equal(CSharpDbOperationOutcome.Succeeded, backup.Outcome);
+            StorageRuntimeDiagnostics.CheckpointOperation backupCheckpoint =
+                Assert.IsType<StorageRuntimeDiagnostics.CheckpointOperation>(
+                    storageRegistration.Checkpoint);
+            Assert.Equal(
+                StorageCheckpointOriginRaw.Backup,
+                backupCheckpoint.Raw.Origin);
+            Assert.Equal(
+                backup.Context.OperationId,
+                backupCheckpoint.OperationId);
 
             events.Clear();
             await Assert.ThrowsAnyAsync<Exception>(
@@ -317,6 +342,14 @@ public sealed class LifecycleObservabilityEngineTests
 
     private static string CreateDatabasePath()
         => Path.Combine(Path.GetTempPath(), $"csharpdb_lifecycle_{Guid.NewGuid():N}.db");
+
+    private static StorageRuntimeDiagnostics.Registration
+        GetStorageRuntimeRegistration(Database database)
+        => Assert.IsType<StorageRuntimeDiagnostics.Registration>(
+            typeof(Database).GetField(
+                    "_storageRuntimeDiagnosticsRegistration",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!
+                .GetValue(database));
 
     private static void DeleteDatabaseFiles(string databasePath)
     {

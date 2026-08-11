@@ -50,6 +50,43 @@ public sealed partial class CSharpDbShardedClient
     }
 
     public async Task<DiagnosticsTopologySnapshot<
+        DiagnosticsValueSnapshot<StorageRuntimeDiagnosticsSnapshot>>>
+        GetStorageDiagnosticsAsync(CancellationToken ct = default)
+    {
+        ShardCaptureSet<DiagnosticsValueSnapshot<StorageRuntimeDiagnosticsSnapshot>>
+            capture = await CaptureShardsAsync(
+                static (client, _, token) =>
+                    client.GetStorageDiagnosticsAsync(token),
+                ProjectStorageValue,
+                ct).ConfigureAwait(false);
+        DiagnosticsValueSnapshot<StorageRuntimeDiagnosticsSnapshot> aggregate =
+            CreateCoordinatorValueWithoutValue<StorageRuntimeDiagnosticsSnapshot>(
+                GetOrCreateCoordinatorRuntimeState().IsEnabled
+                    ? DiagnosticsAvailability.Unavailable
+                    : DiagnosticsAvailability.Disabled);
+
+        return CreateTopology(aggregate, capture);
+    }
+
+    public async Task<DiagnosticsTopologySnapshot<
+        DiagnosticsValueSnapshot<WalRuntimeDiagnosticsSnapshot>>>
+        GetWalDiagnosticsAsync(CancellationToken ct = default)
+    {
+        ShardCaptureSet<DiagnosticsValueSnapshot<WalRuntimeDiagnosticsSnapshot>>
+            capture = await CaptureShardsAsync(
+                static (client, _, token) => client.GetWalDiagnosticsAsync(token),
+                ProjectWalValue,
+                ct).ConfigureAwait(false);
+        DiagnosticsValueSnapshot<WalRuntimeDiagnosticsSnapshot> aggregate =
+            CreateCoordinatorValueWithoutValue<WalRuntimeDiagnosticsSnapshot>(
+                GetOrCreateCoordinatorRuntimeState().IsEnabled
+                    ? DiagnosticsAvailability.Unavailable
+                    : DiagnosticsAvailability.Disabled);
+
+        return CreateTopology(aggregate, capture);
+    }
+
+    public async Task<DiagnosticsTopologySnapshot<
         DiagnosticsCollectionSnapshot<ActiveQuerySnapshot>>>
         GetActiveQueriesAsync(
             int maximumRecords,
@@ -141,6 +178,58 @@ public sealed partial class CSharpDbShardedClient
                     ToWireRecordBudget(perShardRecordBudgets[shardAlias]),
                     token),
                 (value, shardAlias) => ProjectSessionCollection(
+                    value,
+                    shardAlias,
+                    perShardRecordBudgets[shardAlias]),
+                ct).ConfigureAwait(false);
+
+        return CreateTopology(aggregate, capture);
+    }
+
+    public Task<DiagnosticsTopologySnapshot<
+        DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>
+        GetActiveMaintenanceOperationsAsync(
+            int maximumRecords,
+            CancellationToken ct = default)
+        => GetMaintenanceOperationsAsync(
+            maximumRecords,
+            recent: false,
+            ct);
+
+    public Task<DiagnosticsTopologySnapshot<
+        DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>
+        GetRecentMaintenanceOperationsAsync(
+            int maximumRecords,
+            CancellationToken ct = default)
+        => GetMaintenanceOperationsAsync(
+            maximumRecords,
+            recent: true,
+            ct);
+
+    private async Task<DiagnosticsTopologySnapshot<
+        DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>
+        GetMaintenanceOperationsAsync(
+            int maximumRecords,
+            bool recent,
+            CancellationToken ct)
+    {
+        ValidateDiagnosticsMaximumRecords(maximumRecords);
+        DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot> aggregate =
+            CreateCoordinatorMaintenanceCollection(recent);
+        IReadOnlyDictionary<string, int> perShardRecordBudgets =
+            CreatePerShardRecordBudgets(
+                maximumRecords,
+                aggregate.Records?.Count ?? 0);
+        ShardCaptureSet<DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>
+            capture = await CaptureShardsAsync(
+                (client, shardAlias, token) => recent
+                    ? client.GetRecentMaintenanceOperationsAsync(
+                        ToWireRecordBudget(perShardRecordBudgets[shardAlias]),
+                        token)
+                    : client.GetActiveMaintenanceOperationsAsync(
+                        ToWireRecordBudget(perShardRecordBudgets[shardAlias]),
+                        token),
+                (value, shardAlias) => ProjectMaintenanceCollection(
                     value,
                     shardAlias,
                     perShardRecordBudgets[shardAlias]),
@@ -250,6 +339,12 @@ public sealed partial class CSharpDbShardedClient
             ArgumentNullException.ThrowIfNull(childTopology);
             T projected = project(childTopology.Aggregate, diagnosticsAlias);
             return ShardCapture<T>.Available(diagnosticsAlias, projected);
+        }
+        catch (CSharpDbObservabilityNotSupportedException)
+        {
+            return ShardCapture<T>.WithoutValue(
+                diagnosticsAlias,
+                DiagnosticsAvailability.Unsupported);
         }
         catch (NotSupportedException)
         {
@@ -461,6 +556,28 @@ public sealed partial class CSharpDbShardedClient
             isTruncated: false);
     }
 
+    private DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>
+        CreateCoordinatorMaintenanceCollection(bool recent)
+    {
+        CSharpDbRuntimeDiagnosticsState state =
+            GetOrCreateCoordinatorRuntimeState();
+        if (!state.IsEnabled)
+        {
+            return CreateCoordinatorCollectionWithoutValue<MaintenanceOperationSnapshot>(
+                DiagnosticsAvailability.Disabled);
+        }
+
+        DiagnosticsSnapshotMetadata metadata = CreateAggregateMetadata(
+            DiagnosticsAvailability.Available);
+        return new DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>(
+            metadata,
+            records: [],
+            capacity: state.RecentOperationCapacity,
+            retention: recent ? state.RecentOperationRetention : null,
+            droppedCount: 0,
+            isTruncated: false);
+    }
+
     private DiagnosticsValueSnapshot<QueryPlanDiagnosticsSnapshot>
         CreateCoordinatorQueryPlanValue(OpaqueDiagnosticsId operationId)
     {
@@ -626,10 +743,8 @@ public sealed partial class CSharpDbShardedClient
                 item with { Metadata = projected }),
             ProjectSection(value.Connections, metadata, static (item, projected) =>
                 item with { Metadata = projected }),
-            ProjectSection(value.Storage, metadata, static (item, projected) =>
-                item with { Metadata = projected }),
-            ProjectSection(value.Wal, metadata, static (item, projected) =>
-                item with { Metadata = projected }),
+            ProjectSection(value.Storage, metadata, ProjectStorageSnapshot),
+            ProjectSection(value.Wal, metadata, ProjectWalSnapshot),
             ProjectSection(value.ActiveMaintenance, metadata, static (item, projected) =>
                 item with { Metadata = projected }),
             ProjectSection(value.Health, metadata, static (item, projected) =>
@@ -668,6 +783,192 @@ public sealed partial class CSharpDbShardedClient
             shardAlias,
             maximumRecords,
             static (record, metadata) => record with { Metadata = metadata });
+
+    private static DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>
+        ProjectMaintenanceCollection(
+            DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot> value,
+            string shardAlias,
+            int maximumRecords)
+        => ProjectCollection(
+            value,
+            shardAlias,
+            maximumRecords,
+            static (record, metadata) => record with { Metadata = metadata });
+
+    private static DiagnosticsValueSnapshot<StorageRuntimeDiagnosticsSnapshot>
+        ProjectStorageValue(
+            DiagnosticsValueSnapshot<StorageRuntimeDiagnosticsSnapshot> value,
+            string shardAlias)
+        => ProjectValue(
+            value,
+            shardAlias,
+            ProjectStorageSnapshot);
+
+    private static StorageRuntimeDiagnosticsSnapshot ProjectStorageSnapshot(
+        StorageRuntimeDiagnosticsSnapshot value,
+        DiagnosticsSnapshotMetadata metadata)
+        => new(
+            metadata,
+            value.LogicalDatabaseBytes,
+            value.AllocatedDatabaseBytes,
+            value.PageCount,
+            value.PageReads,
+            value.PageWrites,
+            value.BytesRead,
+            value.BytesWritten,
+            value.CacheHits,
+            value.CacheMisses,
+            value.DirtyPages,
+            value.ActiveReaders,
+            value.ActiveWriters,
+            value.CommitCount,
+            value.ConflictCount)
+        {
+            Cache = ProjectDetailSection(
+                value.Cache,
+                metadata,
+                ProjectStorageCacheSnapshot),
+            PhysicalIo = ProjectDetailSection(
+                value.PhysicalIo,
+                metadata,
+                ProjectStorageDeviceIoSnapshot),
+        };
+
+    private static StorageCacheDiagnosticsSnapshot ProjectStorageCacheSnapshot(
+        StorageCacheDiagnosticsSnapshot value,
+        DiagnosticsSnapshotMetadata metadata)
+        => new(
+            metadata,
+            value.SharedResidentPages,
+            value.SharedCapacityPages,
+            value.WalResidentPages,
+            value.WalCapacityPages);
+
+    private static StorageDeviceIoDiagnosticsSnapshot
+        ProjectStorageDeviceIoSnapshot(
+            StorageDeviceIoDiagnosticsSnapshot value,
+            DiagnosticsSnapshotMetadata metadata)
+        => new(
+            metadata,
+            value.ReadCount,
+            value.BytesRead,
+            value.WriteCount,
+            value.BytesWritten,
+            value.FlushCount,
+            value.ResizeCount,
+            value.SequentialReadCount,
+            value.SequentialBytesRead,
+            value.MemoryMappedPageExposureCount,
+            value.MemoryMappedBytesExposed);
+
+    private static DiagnosticsValueSnapshot<WalRuntimeDiagnosticsSnapshot>
+        ProjectWalValue(
+            DiagnosticsValueSnapshot<WalRuntimeDiagnosticsSnapshot> value,
+            string shardAlias)
+        => ProjectValue(value, shardAlias, ProjectWalSnapshot);
+
+    private static WalRuntimeDiagnosticsSnapshot ProjectWalSnapshot(
+        WalRuntimeDiagnosticsSnapshot value,
+        DiagnosticsSnapshotMetadata metadata)
+        => new(
+            metadata,
+            value.LogicalBytes,
+            value.AllocatedBytes,
+            value.CommittedFrameBytes,
+            value.RetainedBytes,
+            value.FrameCount,
+            value.FlushCount,
+            value.BytesWritten,
+            value.PendingCommitCount,
+            value.CheckpointPhase,
+            value.LastSuccessfulFlushAtUtc,
+            value.LastSuccessfulCheckpointAtUtc,
+            value.LastError)
+        {
+            FlushedCommitCount = value.FlushedCommitCount,
+            DurableFlushCount = value.DurableFlushCount,
+            LastSuccessfulDurableFlushAtUtc =
+                value.LastSuccessfulDurableFlushAtUtc,
+            GroupCommitBatchCount = value.GroupCommitBatchCount,
+            GroupCommitCount = value.GroupCommitCount,
+            LastSuccessfulGroupCommitAtUtc =
+                value.LastSuccessfulGroupCommitAtUtc,
+            Recovery = ProjectDetailSection(
+                value.Recovery,
+                metadata,
+                ProjectWalRecoverySnapshot),
+            Checkpoint = ProjectDetailSection(
+                value.Checkpoint,
+                metadata,
+                ProjectCheckpointSnapshot),
+        };
+
+    private static WalRecoveryDiagnosticsSnapshot ProjectWalRecoverySnapshot(
+        WalRecoveryDiagnosticsSnapshot value,
+        DiagnosticsSnapshotMetadata metadata)
+        => new(
+            metadata,
+            value.OperationId,
+            value.Phase,
+            value.StartedAtUtc,
+            value.CompletedAtUtc,
+            value.Elapsed,
+            value.Outcome,
+            value.ScannedFrameCount,
+            value.ScannedBytes,
+            value.RecoveredFrameCount,
+            value.RecoveredBytes,
+            value.DiscardedFrameCount,
+            value.DiscardedBytes,
+            value.TruncationReason,
+            value.AttemptCount,
+            value.RetryCount,
+            value.LastRetryError,
+            value.Error);
+
+    private static CheckpointDiagnosticsSnapshot ProjectCheckpointSnapshot(
+        CheckpointDiagnosticsSnapshot value,
+        DiagnosticsSnapshotMetadata metadata)
+        => new(
+            metadata,
+            value.OperationId,
+            value.Phase,
+            value.Origin,
+            value.StartedAtUtc,
+            value.Elapsed,
+            value.CompletedPageCount,
+            value.TotalPageCount,
+            value.RetentionReason,
+            value.LastStartedAtUtc,
+            value.LastSuccessfulAtUtc,
+            value.LastFailedAtUtc,
+            value.LastElapsed,
+            value.ActiveCount,
+            value.AttemptCount,
+            value.SuccessCount,
+            value.FailureCount,
+            value.CanceledCount,
+            value.LastError);
+
+    private static DiagnosticsSection<T> ProjectDetailSection<T>(
+        DiagnosticsSection<T> section,
+        DiagnosticsSnapshotMetadata metadata,
+        Func<T, DiagnosticsSnapshotMetadata, T> project)
+        where T : class, IRuntimeDiagnosticsSnapshot
+    {
+        try
+        {
+            return section.Value is null
+                ? DiagnosticsSection<T>.WithoutValue(section.Availability)
+                : DiagnosticsSection<T>.Available(
+                    project(section.Value, metadata));
+        }
+        catch
+        {
+            return DiagnosticsSection<T>.WithoutValue(
+                DiagnosticsAvailability.Unavailable);
+        }
+    }
 
     private static DiagnosticsValueSnapshot<QueryPlanDiagnosticsSnapshot>
         ProjectQueryPlanValue(
@@ -1079,6 +1380,16 @@ public sealed partial class CSharpDbShardedClient
             => ResolveObservabilityClient().GetRuntimeDiagnosticsAsync(ct);
 
         public Task<DiagnosticsTopologySnapshot<
+            DiagnosticsValueSnapshot<StorageRuntimeDiagnosticsSnapshot>>>
+            GetStorageDiagnosticsAsync(CancellationToken ct = default)
+            => ResolveObservabilityClient().GetStorageDiagnosticsAsync(ct);
+
+        public Task<DiagnosticsTopologySnapshot<
+            DiagnosticsValueSnapshot<WalRuntimeDiagnosticsSnapshot>>>
+            GetWalDiagnosticsAsync(CancellationToken ct = default)
+            => ResolveObservabilityClient().GetWalDiagnosticsAsync(ct);
+
+        public Task<DiagnosticsTopologySnapshot<
             DiagnosticsCollectionSnapshot<ActiveQuerySnapshot>>>
             GetActiveQueriesAsync(
                 int maximumRecords,
@@ -1105,6 +1416,24 @@ public sealed partial class CSharpDbShardedClient
                 int maximumRecords,
                 CancellationToken ct = default)
             => ResolveObservabilityClient().GetSessionsAsync(maximumRecords, ct);
+
+        public Task<DiagnosticsTopologySnapshot<
+            DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>
+            GetActiveMaintenanceOperationsAsync(
+                int maximumRecords,
+                CancellationToken ct = default)
+            => ResolveObservabilityClient().GetActiveMaintenanceOperationsAsync(
+                maximumRecords,
+                ct);
+
+        public Task<DiagnosticsTopologySnapshot<
+            DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>
+            GetRecentMaintenanceOperationsAsync(
+                int maximumRecords,
+                CancellationToken ct = default)
+            => ResolveObservabilityClient().GetRecentMaintenanceOperationsAsync(
+                maximumRecords,
+                ct);
 
         public Task<DiagnosticsTopologySnapshot<
             DiagnosticsValueSnapshot<QueryDetailSnapshot>>>

@@ -12,4 +12,8 @@
     <ProjectReference Include="..\CSharpDB.Storage\CSharpDB.Storage.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="CSharpDB.Tests" />
+  </ItemGroup>
+
 </Project>

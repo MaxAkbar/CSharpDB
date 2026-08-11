@@ -43,6 +43,8 @@ internal sealed partial class CSharpDbRuntimeDiagnosticsState : IDisposable
         ActiveQueryCapacity = snapshot.History.ActiveQueryCapacity;
         RecentQueryCapacity = snapshot.History.RecentQueryCapacity;
         RecentQueryRetention = snapshot.History.Retention;
+        RecentOperationCapacity = snapshot.History.RecentOperationCapacity;
+        RecentOperationRetention = snapshot.History.Retention;
         LongRunningQueryThreshold = snapshot.LongRunningQueryThreshold;
         SessionAbandonmentThreshold = snapshot.SessionAbandonmentThreshold;
     }
@@ -54,6 +56,8 @@ internal sealed partial class CSharpDbRuntimeDiagnosticsState : IDisposable
     internal int ActiveQueryCapacity { get; }
     internal int RecentQueryCapacity { get; }
     internal TimeSpan RecentQueryRetention { get; }
+    internal int RecentOperationCapacity { get; }
+    internal TimeSpan RecentOperationRetention { get; }
     internal TimeSpan LongRunningQueryThreshold { get; }
     internal TimeSpan SessionAbandonmentThreshold { get; }
     internal long CounterEpoch => Interlocked.Read(ref _counterEpoch);
@@ -127,6 +131,24 @@ internal sealed partial class CSharpDbRuntimeDiagnosticsState : IDisposable
             throw new ObjectDisposedException(GetType().FullName);
 
         return winner;
+    }
+
+    internal bool TryGetComponent<T>(out T? component)
+        where T : class
+    {
+        lock (_componentGate)
+        {
+            if (Volatile.Read(ref _disposed) == 0 &&
+                _components is not null &&
+                _components.TryGetValue(typeof(T), out object? existing))
+            {
+                component = (T)existing;
+                return true;
+            }
+
+            component = null;
+            return false;
+        }
     }
 
     public void Dispose()

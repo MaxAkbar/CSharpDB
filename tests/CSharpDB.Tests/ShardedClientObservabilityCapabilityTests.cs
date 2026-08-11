@@ -861,6 +861,194 @@ public sealed class ShardedClientObservabilityCapabilityTests
             static item => item.MethodName == nameof(ICSharpDbObservabilityClient.GetQueryDetailAsync));
     }
 
+    [Fact]
+    public async Task DedicatedStorageAndWal_DeepProjectExactShardMetadata()
+    {
+        const string serverId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        (IShardTestClient child, RecordingProxy recording) = CreateObservedClient();
+        recording.SetResult(
+            nameof(ICSharpDbObservabilityClient.GetStorageDiagnosticsAsync),
+            Task.FromResult(StorageTopology(serverId)));
+        recording.SetResult(
+            nameof(ICSharpDbObservabilityClient.GetWalDiagnosticsAsync),
+            Task.FromResult(WalTopology(serverId)));
+        recording.SetResult(
+            nameof(ICSharpDbObservabilityClient.GetRuntimeDiagnosticsAsync),
+            Task.FromResult(RuntimeTopologyWithWalDetails(serverId)));
+
+        await using var client = new CSharpDbShardedClient(
+            CreateOptions("alpha"),
+            new Dictionary<string, ICSharpDbClient> { ["alpha"] = child });
+
+        DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<
+            StorageRuntimeDiagnosticsSnapshot>> storage =
+                await client.GetStorageDiagnosticsAsync(Ct);
+        DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<
+            WalRuntimeDiagnosticsSnapshot>> wal =
+                await client.GetWalDiagnosticsAsync(Ct);
+        DiagnosticsTopologySnapshot<RuntimeDiagnosticsSnapshot> runtime =
+            await client.GetRuntimeDiagnosticsAsync(Ct);
+
+        Assert.Equal(
+            DiagnosticsAvailability.Unavailable,
+            storage.Aggregate.Metadata.Availability);
+        StorageRuntimeDiagnosticsSnapshot storageValue = Assert.IsType<
+            StorageRuntimeDiagnosticsSnapshot>(Assert.Single(storage.Shards!).Value!.Value);
+        Assert.Equal(DiagnosticsScope.Shard, storageValue.Metadata.Scope);
+        Assert.Equal("alpha", storageValue.Metadata.DatabaseAlias);
+        Assert.Equal(storageValue.Metadata, storageValue.Cache.Value!.Metadata);
+        Assert.Equal(
+            storageValue.Metadata,
+            storageValue.PhysicalIo.Value!.Metadata);
+
+        StorageRuntimeDiagnosticsSnapshot summaryStorage = Assert.IsType<
+            StorageRuntimeDiagnosticsSnapshot>(Assert.Single(runtime.Shards!)
+                .Value!.Storage.Value);
+        Assert.Equal(summaryStorage.Metadata, summaryStorage.Cache.Value!.Metadata);
+        Assert.Equal(
+            summaryStorage.Metadata,
+            summaryStorage.PhysicalIo.Value!.Metadata);
+
+        WalRuntimeDiagnosticsSnapshot dedicatedWal = Assert.IsType<
+            WalRuntimeDiagnosticsSnapshot>(Assert.Single(wal.Shards!).Value!.Value);
+        AssertProjectedWalMetadata(dedicatedWal, "alpha");
+        WalRuntimeDiagnosticsSnapshot summaryWal = Assert.IsType<
+            WalRuntimeDiagnosticsSnapshot>(Assert.Single(runtime.Shards!).Value!.Wal.Value);
+        AssertProjectedWalMetadata(summaryWal, "alpha");
+    }
+
+    [Fact]
+    public void DetailProjectionFailure_DegradesOnlyThatDetailToUnavailable()
+    {
+        DiagnosticsSnapshotMetadata metadata = Metadata(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            counterEpoch: 1,
+            DiagnosticsAvailability.Available);
+        DiagnosticsSection<StorageCacheDiagnosticsSnapshot> section =
+            DiagnosticsSection<StorageCacheDiagnosticsSnapshot>.Available(
+                new StorageCacheDiagnosticsSnapshot(
+                    metadata,
+                    sharedResidentPages: 1,
+                    sharedCapacityPages: null,
+                    walResidentPages: 0,
+                    walCapacityPages: 0));
+        MethodInfo method = typeof(CSharpDbShardedClient).GetMethod(
+            "ProjectDetailSection",
+            BindingFlags.Static | BindingFlags.NonPublic)!
+            .MakeGenericMethod(typeof(StorageCacheDiagnosticsSnapshot));
+        Func<StorageCacheDiagnosticsSnapshot, DiagnosticsSnapshotMetadata,
+            StorageCacheDiagnosticsSnapshot> failingProjector =
+                static (_, _) => throw new InvalidOperationException(
+                    "Synthetic nested projection failure.");
+
+        var projected = Assert.IsType<
+            DiagnosticsSection<StorageCacheDiagnosticsSnapshot>>(
+                method.Invoke(
+                    null,
+                    [section, metadata, failingProjector]));
+
+        Assert.Equal(DiagnosticsAvailability.Unavailable, projected.Availability);
+        Assert.Null(projected.Value);
+    }
+
+    [Fact]
+    public async Task MaintenanceCollections_SplitOneGlobalBudgetAcrossShards()
+    {
+        (IShardTestClient alpha, RecordingProxy alphaRecording) =
+            CreateObservedClient();
+        (IShardTestClient bravo, RecordingProxy bravoRecording) =
+            CreateObservedClient();
+        foreach (RecordingProxy recording in new[] { alphaRecording, bravoRecording })
+        {
+            recording.SetResult(
+                nameof(ICSharpDbObservabilityClient.GetActiveMaintenanceOperationsAsync),
+                Task.FromResult(MaintenanceTopology(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    recordCount: 2,
+                    terminal: false)));
+            recording.SetResult(
+                nameof(ICSharpDbObservabilityClient.GetRecentMaintenanceOperationsAsync),
+                Task.FromResult(MaintenanceTopology(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    recordCount: 2,
+                    terminal: true)));
+        }
+
+        CSharpDbShardingOptions options = CreateOptions("bravo", "alpha");
+        int configuredCapacity = options.DirectDatabaseOptions!
+            .ObservabilityOptions!.History.RecentOperationCapacity;
+        TimeSpan configuredRetention = options.DirectDatabaseOptions
+            .ObservabilityOptions.History.Retention;
+        Assert.NotEqual(1, configuredCapacity);
+        await using var client = new CSharpDbShardedClient(
+            options,
+            new Dictionary<string, ICSharpDbClient>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["alpha"] = alpha,
+                ["bravo"] = bravo,
+            });
+
+        DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<
+            MaintenanceOperationSnapshot>> active =
+                await client.GetActiveMaintenanceOperationsAsync(1, Ct);
+        DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<
+            MaintenanceOperationSnapshot>> recent =
+                await client.GetRecentMaintenanceOperationsAsync(2, Ct);
+
+        Assert.Empty(active.Aggregate.Records!);
+        Assert.Equal(configuredCapacity, active.Aggregate.Capacity);
+        Assert.Null(active.Aggregate.Retention);
+        Assert.Equal(configuredCapacity, recent.Aggregate.Capacity);
+        Assert.Equal(configuredRetention, recent.Aggregate.Retention);
+        Assert.Equal(
+            1,
+            active.Shards!.Sum(static shard => shard.Value!.Records!.Count));
+        Assert.Equal(
+            2,
+            recent.Shards!.Sum(static shard => shard.Value!.Records!.Count));
+        Assert.All(
+            new[] { alphaRecording, bravoRecording },
+            static recording =>
+            {
+                Assert.Equal(
+                    1,
+                    Assert.IsType<int>(Assert.Single(
+                        recording.Invocations,
+                        static item => item.MethodName == nameof(
+                            ICSharpDbObservabilityClient.GetActiveMaintenanceOperationsAsync))
+                        .Arguments[0]));
+                Assert.Equal(
+                    1,
+                    Assert.IsType<int>(Assert.Single(
+                        recording.Invocations,
+                        static item => item.MethodName == nameof(
+                            ICSharpDbObservabilityClient.GetRecentMaintenanceOperationsAsync))
+                        .Arguments[0]));
+            });
+    }
+
+    [Fact]
+    public async Task NewShardCapabilityUnsupported_IsProjectedWithoutFailureText()
+    {
+        (IShardTestClient child, RecordingProxy recording) = CreateObservedClient();
+        recording.SetResult(
+            nameof(ICSharpDbObservabilityClient.GetStorageDiagnosticsAsync),
+            Task.FromException<DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<
+                StorageRuntimeDiagnosticsSnapshot>>>(
+                    new CSharpDbObservabilityNotSupportedException()));
+        await using var client = new CSharpDbShardedClient(
+            CreateOptions("alpha"),
+            new Dictionary<string, ICSharpDbClient> { ["alpha"] = child });
+
+        DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<
+            StorageRuntimeDiagnosticsSnapshot>> result =
+                await client.GetStorageDiagnosticsAsync(Ct);
+
+        Assert.Equal(
+            DiagnosticsAvailability.Unsupported,
+            Assert.Single(result.Shards!).Availability);
+    }
+
     private static CSharpDbShardingOptions CreateOptions(params string[] shardIds)
         => new()
         {
@@ -926,6 +1114,239 @@ public sealed class ShardedClientObservabilityCapabilityTests
             DiagnosticsSection<HealthDiagnosticsSnapshot>.WithoutValue(
                 DiagnosticsAvailability.Unavailable));
         return InstanceTopology(snapshot);
+    }
+
+    private static DiagnosticsTopologySnapshot<RuntimeDiagnosticsSnapshot>
+        RuntimeTopologyWithWalDetails(string serverInstanceId)
+    {
+        DiagnosticsSnapshotMetadata metadata = Metadata(
+            serverInstanceId,
+            counterEpoch: 3,
+            DiagnosticsAvailability.Available);
+        var summary = new QueryDiagnosticsSummary(
+            metadata,
+            RequestCount: 1,
+            StatementExecutionCount: 1,
+            SucceededCount: 1,
+            FailedCount: 0,
+            CanceledCount: 0,
+            SlowCount: 0,
+            RowsProduced: 0,
+            RowsAffected: 0,
+            ActiveCount: 0);
+        var snapshot = new RuntimeDiagnosticsSnapshot(
+            metadata,
+            DiagnosticsSection<QueryDiagnosticsSummary>.Available(summary),
+            DiagnosticsSection<ConnectionDiagnosticsSnapshot>.WithoutValue(
+                DiagnosticsAvailability.Unavailable),
+            DiagnosticsSection<StorageRuntimeDiagnosticsSnapshot>.Available(
+                StorageSnapshot(metadata)),
+            DiagnosticsSection<WalRuntimeDiagnosticsSnapshot>.Available(
+                WalSnapshot(metadata)),
+            DiagnosticsSection<MaintenanceOperationSnapshot>.WithoutValue(
+                DiagnosticsAvailability.Unavailable),
+            DiagnosticsSection<HealthDiagnosticsSnapshot>.WithoutValue(
+                DiagnosticsAvailability.Unavailable));
+        return InstanceTopology(snapshot);
+    }
+
+    private static DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<
+        StorageRuntimeDiagnosticsSnapshot>> StorageTopology(
+            string serverInstanceId)
+    {
+        DiagnosticsSnapshotMetadata metadata = Metadata(
+            serverInstanceId,
+            counterEpoch: 3,
+            DiagnosticsAvailability.Available);
+        StorageRuntimeDiagnosticsSnapshot storage = StorageSnapshot(metadata);
+        return InstanceTopology(
+            new DiagnosticsValueSnapshot<StorageRuntimeDiagnosticsSnapshot>(
+                metadata,
+                storage));
+    }
+
+    private static StorageRuntimeDiagnosticsSnapshot StorageSnapshot(
+        DiagnosticsSnapshotMetadata metadata)
+        => new StorageRuntimeDiagnosticsSnapshot(
+            metadata,
+            LogicalDatabaseBytes: 4096,
+            AllocatedDatabaseBytes: 8192,
+            PageCount: 1,
+            PageReads: null,
+            PageWrites: null,
+            BytesRead: null,
+            BytesWritten: null,
+            CacheHits: null,
+            CacheMisses: null,
+            DirtyPages: 0,
+            ActiveReaders: 0,
+            ActiveWriters: 0,
+            CommitCount: 1,
+            ConflictCount: null)
+        {
+            Cache = DiagnosticsSection<StorageCacheDiagnosticsSnapshot>.Available(
+                new StorageCacheDiagnosticsSnapshot(
+                    metadata,
+                    sharedResidentPages: 1,
+                    sharedCapacityPages: 16,
+                    walResidentPages: 2,
+                    walCapacityPages: 8)),
+            PhysicalIo = DiagnosticsSection<StorageDeviceIoDiagnosticsSnapshot>
+                .Available(new StorageDeviceIoDiagnosticsSnapshot(
+                    metadata,
+                    readCount: 3,
+                    bytesRead: 12_288,
+                    writeCount: 1,
+                    bytesWritten: 4_096,
+                    flushCount: 1,
+                    resizeCount: 0,
+                    sequentialReadCount: 2,
+                    sequentialBytesRead: 8_192,
+                    memoryMappedPageExposureCount: 1,
+                    memoryMappedBytesExposed: 4_096)),
+        };
+
+    private static DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<
+        WalRuntimeDiagnosticsSnapshot>> WalTopology(string serverInstanceId)
+    {
+        DiagnosticsSnapshotMetadata metadata = Metadata(
+            serverInstanceId,
+            counterEpoch: 3,
+            DiagnosticsAvailability.Available);
+        return InstanceTopology(
+            new DiagnosticsValueSnapshot<WalRuntimeDiagnosticsSnapshot>(
+                metadata,
+                WalSnapshot(metadata)));
+    }
+
+    private static WalRuntimeDiagnosticsSnapshot WalSnapshot(
+        DiagnosticsSnapshotMetadata metadata)
+    {
+        DateTimeOffset now = metadata.CapturedAtUtc;
+        var recovery = new WalRecoveryDiagnosticsSnapshot(
+            metadata,
+            new OpaqueDiagnosticsId("11111111111111111111111111111111"),
+            WalRecoveryPhase.Completed,
+            now.AddSeconds(-2),
+            now.AddSeconds(-1),
+            TimeSpan.FromSeconds(1),
+            CSharpDbOperationOutcome.Succeeded,
+            scannedFrameCount: 1,
+            scannedBytes: 100,
+            recoveredFrameCount: 1,
+            recoveredBytes: 100,
+            discardedFrameCount: 0,
+            discardedBytes: 0,
+            WalRecoveryTruncationReason.None,
+            attemptCount: 1,
+            retryCount: 0,
+            lastRetryError: null,
+            error: null);
+        var checkpoint = new CheckpointDiagnosticsSnapshot(
+            metadata,
+            new OpaqueDiagnosticsId("22222222222222222222222222222222"),
+            CheckpointPhase.Copying,
+            CheckpointOrigin.BackgroundAuto,
+            now.AddSeconds(-1),
+            TimeSpan.FromSeconds(1),
+            completedPageCount: 0,
+            totalPageCount: 1,
+            CheckpointRetentionReason.None,
+            lastStartedAtUtc: now.AddSeconds(-1),
+            lastSuccessfulAtUtc: null,
+            lastFailedAtUtc: null,
+            lastElapsed: TimeSpan.FromSeconds(1),
+            activeCount: 1,
+            attemptCount: 1,
+            successCount: 0,
+            failureCount: 0,
+            canceledCount: 0,
+            lastError: null);
+        return new WalRuntimeDiagnosticsSnapshot(
+            metadata,
+            LogicalBytes: 100,
+            AllocatedBytes: 128,
+            CommittedFrameBytes: 100,
+            RetainedBytes: 0,
+            FrameCount: 1,
+            FlushCount: 1,
+            BytesWritten: 100,
+            PendingCommitCount: 0,
+            CheckpointPhase.Copying,
+            LastSuccessfulFlushAtUtc: now.AddSeconds(-1),
+            LastSuccessfulCheckpointAtUtc: null,
+            LastError: null)
+        {
+            FlushedCommitCount = 3,
+            DurableFlushCount = 1,
+            LastSuccessfulDurableFlushAtUtc = now.AddSeconds(-1),
+            GroupCommitBatchCount = 1,
+            GroupCommitCount = 2,
+            LastSuccessfulGroupCommitAtUtc = now.AddSeconds(-1),
+            Recovery = DiagnosticsSection<WalRecoveryDiagnosticsSnapshot>.Available(
+                recovery),
+            Checkpoint = DiagnosticsSection<CheckpointDiagnosticsSnapshot>.Available(
+                checkpoint),
+        };
+    }
+
+    private static void AssertProjectedWalMetadata(
+        WalRuntimeDiagnosticsSnapshot wal,
+        string shardAlias)
+    {
+        Assert.Equal(DiagnosticsScope.Shard, wal.Metadata.Scope);
+        Assert.Equal(shardAlias, wal.Metadata.DatabaseAlias);
+        Assert.Equal(wal.Metadata, wal.Recovery.Value!.Metadata);
+        Assert.Equal(wal.Metadata, wal.Checkpoint.Value!.Metadata);
+        Assert.Equal(3, wal.FlushedCommitCount);
+        Assert.Equal(1, wal.DurableFlushCount);
+        Assert.Equal(
+            wal.Metadata.CapturedAtUtc.AddSeconds(-1),
+            wal.LastSuccessfulDurableFlushAtUtc);
+        Assert.Equal(1, wal.GroupCommitBatchCount);
+        Assert.Equal(2, wal.GroupCommitCount);
+        Assert.Equal(
+            wal.Metadata.CapturedAtUtc.AddSeconds(-1),
+            wal.LastSuccessfulGroupCommitAtUtc);
+    }
+
+    private static DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<
+        MaintenanceOperationSnapshot>> MaintenanceTopology(
+            string serverInstanceId,
+            int recordCount,
+            bool terminal)
+    {
+        DiagnosticsSnapshotMetadata metadata = Metadata(
+            serverInstanceId,
+            counterEpoch: 0,
+            DiagnosticsAvailability.Available);
+        MaintenanceOperationSnapshot[] records = Enumerable.Range(1, recordCount)
+            .Select(index => new MaintenanceOperationSnapshot(
+                metadata,
+                new OpaqueDiagnosticsId($"{index:x32}"),
+                MaintenanceOperationKind.Backup,
+                terminal
+                    ? MaintenanceOperationPhase.Completed
+                    : MaintenanceOperationPhase.Copying,
+                metadata.CapturedAtUtc.AddTicks(index),
+                TimeSpan.FromSeconds(1),
+                CompletedUnits: null,
+                TotalUnits: null,
+                terminal
+                    ? CSharpDbOperationOutcome.Succeeded
+                    : CSharpDbOperationOutcome.Unknown,
+                WarningCount: 0,
+                ErrorCount: 0,
+                Error: null))
+            .ToArray();
+        return InstanceTopology(new DiagnosticsCollectionSnapshot<
+            MaintenanceOperationSnapshot>(
+                metadata,
+                records,
+                capacity: Math.Max(1, recordCount),
+                retention: terminal ? TimeSpan.FromMinutes(1) : null,
+                droppedCount: 0,
+                isTruncated: false));
     }
 
     private static DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<ActiveQuerySnapshot>>

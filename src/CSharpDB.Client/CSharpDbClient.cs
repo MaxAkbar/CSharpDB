@@ -204,6 +204,16 @@ public sealed class CSharpDbClient :
         GetRuntimeDiagnosticsAsync(CancellationToken ct = default)
         => GetObservabilityClient().GetRuntimeDiagnosticsAsync(ct);
 
+    public Task<DiagnosticsTopologySnapshot<
+        DiagnosticsValueSnapshot<StorageRuntimeDiagnosticsSnapshot>>>
+        GetStorageDiagnosticsAsync(CancellationToken ct = default)
+        => GetObservabilityClient().GetStorageDiagnosticsAsync(ct);
+
+    public Task<DiagnosticsTopologySnapshot<
+        DiagnosticsValueSnapshot<WalRuntimeDiagnosticsSnapshot>>>
+        GetWalDiagnosticsAsync(CancellationToken ct = default)
+        => GetObservabilityClient().GetWalDiagnosticsAsync(ct);
+
     public Task<DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<ActiveQuerySnapshot>>>
         GetActiveQueriesAsync(int maximumRecords, CancellationToken ct = default)
         => GetObservabilityClient().GetActiveQueriesAsync(maximumRecords, ct);
@@ -221,6 +231,24 @@ public sealed class CSharpDbClient :
     public Task<DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<SessionDiagnosticsSnapshot>>>
         GetSessionsAsync(int maximumRecords, CancellationToken ct = default)
         => GetObservabilityClient().GetSessionsAsync(maximumRecords, ct);
+
+    public Task<DiagnosticsTopologySnapshot<
+        DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>
+        GetActiveMaintenanceOperationsAsync(
+            int maximumRecords,
+            CancellationToken ct = default)
+        => GetObservabilityClient().GetActiveMaintenanceOperationsAsync(
+            maximumRecords,
+            ct);
+
+    public Task<DiagnosticsTopologySnapshot<
+        DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>
+        GetRecentMaintenanceOperationsAsync(
+            int maximumRecords,
+            CancellationToken ct = default)
+        => GetObservabilityClient().GetRecentMaintenanceOperationsAsync(
+            maximumRecords,
+            ct);
 
     public Task<DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<QueryDetailSnapshot>>>
         GetQueryDetailAsync(

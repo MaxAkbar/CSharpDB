@@ -61,6 +61,37 @@ public sealed class CSharpDbConnectionObservabilityCapabilityTests : IAsyncLifet
                 runtime.Aggregate.Connections.Value);
         Assert.Equal(1, connectionSummary.ActiveLogicalSessions);
 
+        DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<
+            StorageRuntimeDiagnosticsSnapshot>> storage =
+                await diagnostics.GetStorageDiagnosticsAsync(Ct);
+        DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<
+            WalRuntimeDiagnosticsSnapshot>> wal =
+                await diagnostics.GetWalDiagnosticsAsync(Ct);
+        Assert.Equal(
+            runtime.Aggregate.Storage.Availability,
+            storage.Metadata.Availability);
+        Assert.Equal(
+            runtime.Aggregate.Wal.Availability,
+            wal.Metadata.Availability);
+        Assert.Equal(runtime.Metadata.ServerInstanceId, storage.Metadata.ServerInstanceId);
+        Assert.Equal(runtime.Metadata.CounterEpoch, wal.Metadata.CounterEpoch);
+        Assert.False(storage.Metadata.RecordsTruncated);
+        Assert.False(wal.Metadata.RecordsTruncated);
+        if (storage.Aggregate.Value is { } storageValue)
+            Assert.Equal(storage.Metadata, storageValue.Metadata);
+        if (wal.Aggregate.Value is { } walValue)
+        {
+            Assert.Equal(wal.Metadata, walValue.Metadata);
+            if (walValue.Recovery.Value is { } recovery)
+                Assert.Equal(wal.Metadata, recovery.Metadata);
+            if (walValue.Checkpoint.Value is { } checkpoint)
+                Assert.Equal(wal.Metadata, checkpoint.Metadata);
+        }
+        await Assert.ThrowsAsync<CSharpDbObservabilityNotSupportedException>(
+            () => diagnostics.GetActiveMaintenanceOperationsAsync(4, Ct));
+        await Assert.ThrowsAsync<CSharpDbObservabilityNotSupportedException>(
+            () => diagnostics.GetRecentMaintenanceOperationsAsync(4, Ct));
+
         DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<RecentQuerySnapshot>>
             recent = await diagnostics.GetRecentQueriesAsync(16, Ct);
         RecentQuerySnapshot completed = Assert.Single(
@@ -103,6 +134,198 @@ public sealed class CSharpDbConnectionObservabilityCapabilityTests : IAsyncLifet
     }
 
     [Fact]
+    public void EmbeddedStorageProjector_ReprojectsNestedDetailMetadata()
+    {
+        DateTimeOffset capturedAt = new(2026, 8, 11, 12, 0, 0, TimeSpan.Zero);
+        var sourceMetadata = new DiagnosticsSnapshotMetadata(
+            CSharpDbDiagnostics.SchemaVersion,
+            capturedAt,
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            counterEpoch: 4,
+            DiagnosticsScope.Instance,
+            DiagnosticsAvailability.Available,
+            DiagnosticsSource.Engine,
+            "embedded",
+            recordsTruncated: false,
+            fieldsTruncated: false);
+        var projectedMetadata = new DiagnosticsSnapshotMetadata(
+            CSharpDbDiagnostics.SchemaVersion,
+            capturedAt.AddSeconds(1),
+            sourceMetadata.ServerInstanceId,
+            sourceMetadata.CounterEpoch,
+            DiagnosticsScope.Instance,
+            DiagnosticsAvailability.Available,
+            DiagnosticsSource.Engine,
+            sourceMetadata.DatabaseAlias,
+            recordsTruncated: false,
+            fieldsTruncated: false);
+        var source = new StorageRuntimeDiagnosticsSnapshot(
+            sourceMetadata,
+            LogicalDatabaseBytes: 4_096,
+            AllocatedDatabaseBytes: 8_192,
+            PageCount: 2,
+            PageReads: 5,
+            PageWrites: 3,
+            BytesRead: 20_480,
+            BytesWritten: 12_288,
+            CacheHits: 3,
+            CacheMisses: 2,
+            DirtyPages: 1,
+            ActiveReaders: 0,
+            ActiveWriters: 0,
+            CommitCount: 4,
+            ConflictCount: 1)
+        {
+            Cache = DiagnosticsSection<StorageCacheDiagnosticsSnapshot>.Available(
+                new StorageCacheDiagnosticsSnapshot(
+                    sourceMetadata,
+                    sharedResidentPages: 4,
+                    sharedCapacityPages: null,
+                    walResidentPages: 2,
+                    walCapacityPages: 8)),
+            PhysicalIo = DiagnosticsSection<StorageDeviceIoDiagnosticsSnapshot>
+                .Available(new StorageDeviceIoDiagnosticsSnapshot(
+                    sourceMetadata,
+                    readCount: 5,
+                    bytesRead: 20_480,
+                    writeCount: 3,
+                    bytesWritten: 12_288,
+                    flushCount: 2,
+                    resizeCount: 1,
+                    sequentialReadCount: 2,
+                    sequentialBytesRead: 8_192,
+                    memoryMappedPageExposureCount: 1,
+                    memoryMappedBytesExposed: 4_096)),
+        };
+
+        StorageRuntimeDiagnosticsSnapshot projected = Assert.IsType<
+            StorageRuntimeDiagnosticsSnapshot>(typeof(CSharpDbConnection)
+                .GetMethod(
+                    "ProjectStorageSnapshot",
+                    BindingFlags.Static | BindingFlags.NonPublic)!
+                .Invoke(null, [source, projectedMetadata]));
+
+        Assert.Equal(projectedMetadata, projected.Metadata);
+        Assert.Equal(projectedMetadata, projected.Cache.Value!.Metadata);
+        Assert.Equal(projectedMetadata, projected.PhysicalIo.Value!.Metadata);
+        Assert.Null(projected.Cache.Value!.SharedCapacityPages);
+        Assert.Equal(source.PageReads, projected.PageReads);
+        Assert.Equal(
+            source.PhysicalIo.Value!.SequentialReadCount,
+            projected.PhysicalIo.Value!.SequentialReadCount);
+    }
+
+    [Fact]
+    public void EmbeddedDetailProjectionFailure_DegradesOnlyThatDetailToUnavailable()
+    {
+        var metadata = new DiagnosticsSnapshotMetadata(
+            CSharpDbDiagnostics.SchemaVersion,
+            new DateTimeOffset(2026, 8, 11, 12, 0, 0, TimeSpan.Zero),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            counterEpoch: 1,
+            DiagnosticsScope.Instance,
+            DiagnosticsAvailability.Available,
+            DiagnosticsSource.Engine,
+            "embedded",
+            recordsTruncated: false,
+            fieldsTruncated: false);
+        DiagnosticsSection<StorageCacheDiagnosticsSnapshot> section =
+            DiagnosticsSection<StorageCacheDiagnosticsSnapshot>.Available(
+                new StorageCacheDiagnosticsSnapshot(
+                    metadata,
+                    sharedResidentPages: 1,
+                    sharedCapacityPages: null,
+                    walResidentPages: 0,
+                    walCapacityPages: 0));
+        MethodInfo method = typeof(CSharpDbConnection).GetMethod(
+            "ProjectDetailSection",
+            BindingFlags.Static | BindingFlags.NonPublic)!
+            .MakeGenericMethod(typeof(StorageCacheDiagnosticsSnapshot));
+        Func<StorageCacheDiagnosticsSnapshot, DiagnosticsSnapshotMetadata,
+            StorageCacheDiagnosticsSnapshot> failingProjector =
+                static (_, _) => throw new InvalidOperationException(
+                    "Synthetic nested projection failure.");
+
+        var projected = Assert.IsType<
+            DiagnosticsSection<StorageCacheDiagnosticsSnapshot>>(
+                method.Invoke(
+                    null,
+                    [section, metadata, failingProjector]));
+
+        Assert.Equal(DiagnosticsAvailability.Unavailable, projected.Availability);
+        Assert.Null(projected.Value);
+    }
+
+    [Fact]
+    public void EmbeddedWalProjector_PreservesDurabilityAndGroupCommitScalars()
+    {
+        DateTimeOffset capturedAt = new(2026, 8, 11, 12, 0, 0, TimeSpan.Zero);
+        var sourceMetadata = new DiagnosticsSnapshotMetadata(
+            CSharpDbDiagnostics.SchemaVersion,
+            capturedAt,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            counterEpoch: 3,
+            DiagnosticsScope.Instance,
+            DiagnosticsAvailability.Available,
+            DiagnosticsSource.Engine,
+            "embedded",
+            recordsTruncated: false,
+            fieldsTruncated: false);
+        var projectedMetadata = new DiagnosticsSnapshotMetadata(
+            CSharpDbDiagnostics.SchemaVersion,
+            capturedAt.AddSeconds(1),
+            sourceMetadata.ServerInstanceId,
+            sourceMetadata.CounterEpoch,
+            DiagnosticsScope.Instance,
+            DiagnosticsAvailability.Available,
+            DiagnosticsSource.Engine,
+            sourceMetadata.DatabaseAlias,
+            recordsTruncated: false,
+            fieldsTruncated: false);
+        var source = new WalRuntimeDiagnosticsSnapshot(
+            sourceMetadata,
+            LogicalBytes: 100,
+            AllocatedBytes: 128,
+            CommittedFrameBytes: 100,
+            RetainedBytes: 0,
+            FrameCount: 1,
+            FlushCount: 3,
+            BytesWritten: 100,
+            PendingCommitCount: 0,
+            CheckpointPhase.Idle,
+            LastSuccessfulFlushAtUtc: capturedAt,
+            LastSuccessfulCheckpointAtUtc: null,
+            LastError: null)
+        {
+            FlushedCommitCount = 6,
+            DurableFlushCount = 4,
+            LastSuccessfulDurableFlushAtUtc = capturedAt.AddSeconds(-2),
+            GroupCommitBatchCount = 2,
+            GroupCommitCount = 5,
+            LastSuccessfulGroupCommitAtUtc = capturedAt.AddSeconds(-1),
+        };
+
+        WalRuntimeDiagnosticsSnapshot projected = Assert.IsType<
+            WalRuntimeDiagnosticsSnapshot>(typeof(CSharpDbConnection)
+                .GetMethod(
+                    "ProjectWalSnapshot",
+                    BindingFlags.Static | BindingFlags.NonPublic)!
+                .Invoke(null, [source, projectedMetadata]));
+
+        Assert.Equal(projectedMetadata, projected.Metadata);
+        Assert.Equal(source.FlushedCommitCount, projected.FlushedCommitCount);
+        Assert.Equal(source.DurableFlushCount, projected.DurableFlushCount);
+        Assert.Equal(
+            source.LastSuccessfulDurableFlushAtUtc,
+            projected.LastSuccessfulDurableFlushAtUtc);
+        Assert.Equal(source.GroupCommitBatchCount, projected.GroupCommitBatchCount);
+        Assert.Equal(source.GroupCommitCount, projected.GroupCommitCount);
+        Assert.Equal(
+            source.LastSuccessfulGroupCommitAtUtc,
+            projected.LastSuccessfulGroupCommitAtUtc);
+    }
+
+    [Fact]
     public async Task DisabledCapability_IsLazyStableAndAllocatesNoRuntimeStateOrSidecar()
     {
         await using var connection = new CSharpDbConnection(
@@ -140,6 +363,16 @@ public sealed class CSharpDbConnectionObservabilityCapabilityTests : IAsyncLifet
             sessions = await diagnostics.GetSessionsAsync(1, Ct);
         Assert.Equal(DiagnosticsAvailability.Disabled, sessions.Metadata.Availability);
         Assert.Null(sessions.Aggregate.Records);
+        DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<
+            StorageRuntimeDiagnosticsSnapshot>> storage =
+                await diagnostics.GetStorageDiagnosticsAsync(Ct);
+        DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<
+            WalRuntimeDiagnosticsSnapshot>> wal =
+                await diagnostics.GetWalDiagnosticsAsync(Ct);
+        Assert.Equal(DiagnosticsAvailability.Disabled, storage.Metadata.Availability);
+        Assert.Equal(DiagnosticsAvailability.Disabled, wal.Metadata.Availability);
+        Assert.Null(session.RuntimeDiagnosticsState);
+        Assert.False(session.HasDiagnosticsSidecarForTest);
     }
 
     [Theory]
@@ -374,6 +607,30 @@ public sealed class CSharpDbConnectionObservabilityCapabilityTests : IAsyncLifet
             Assert.Equal(expected.Metadata.ServerInstanceId, actual.Metadata.ServerInstanceId);
             Assert.Equal(expected.Metadata.CounterEpoch, actual.Metadata.CounterEpoch);
             Assert.Equal(expected.Metadata.Source, actual.Metadata.Source);
+            DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<
+                StorageRuntimeDiagnosticsSnapshot>> expectedStorage =
+                    await directCapability.GetStorageDiagnosticsAsync(Ct);
+            DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<
+                StorageRuntimeDiagnosticsSnapshot>> actualStorage =
+                    await ((ICSharpDbObservabilityClient)supported)
+                        .GetStorageDiagnosticsAsync(Ct);
+            DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<
+                WalRuntimeDiagnosticsSnapshot>> expectedWal =
+                    await directCapability.GetWalDiagnosticsAsync(Ct);
+            DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<
+                WalRuntimeDiagnosticsSnapshot>> actualWal =
+                    await ((ICSharpDbObservabilityClient)supported)
+                        .GetWalDiagnosticsAsync(Ct);
+            AssertEquivalentMetadataExceptCaptureTime(
+                expectedStorage.Metadata,
+                actualStorage.Metadata);
+            Assert.Equal(
+                expectedStorage.Aggregate.Value,
+                actualStorage.Aggregate.Value);
+            AssertEquivalentMetadataExceptCaptureTime(
+                expectedWal.Metadata,
+                actualWal.Metadata);
+            Assert.Equal(expectedWal.Aggregate.Value, actualWal.Aggregate.Value);
         }
 
         ICSharpDbClient plainClient =
@@ -386,6 +643,24 @@ public sealed class CSharpDbConnectionObservabilityCapabilityTests : IAsyncLifet
                 () => ((ICSharpDbObservabilityClient)unsupported)
                     .GetRuntimeDiagnosticsAsync(Ct));
         Assert.Equal(CSharpDbObservabilityNotSupportedException.SafeMessage, exception.Message);
+        await Assert.ThrowsAsync<CSharpDbObservabilityNotSupportedException>(
+            () => ((ICSharpDbObservabilityClient)unsupported)
+                .GetStorageDiagnosticsAsync(Ct));
+    }
+
+    private static void AssertEquivalentMetadataExceptCaptureTime(
+        DiagnosticsSnapshotMetadata expected,
+        DiagnosticsSnapshotMetadata actual)
+    {
+        Assert.Equal(expected.SchemaVersion, actual.SchemaVersion);
+        Assert.Equal(expected.ServerInstanceId, actual.ServerInstanceId);
+        Assert.Equal(expected.CounterEpoch, actual.CounterEpoch);
+        Assert.Equal(expected.Scope, actual.Scope);
+        Assert.Equal(expected.Availability, actual.Availability);
+        Assert.Equal(expected.Source, actual.Source);
+        Assert.Equal(expected.DatabaseAlias, actual.DatabaseAlias);
+        Assert.Equal(expected.RecordsTruncated, actual.RecordsTruncated);
+        Assert.Equal(expected.FieldsTruncated, actual.FieldsTruncated);
     }
 
     [Fact]
@@ -402,11 +677,19 @@ public sealed class CSharpDbConnectionObservabilityCapabilityTests : IAsyncLifet
             () => unopenedDiagnostics.GetSessionsAsync(
                 CSharpDbObservabilityOptions.MaximumHistoryCapacity + 1,
                 Ct));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => unopenedDiagnostics.GetActiveMaintenanceOperationsAsync(0, Ct));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => unopenedDiagnostics.GetRecentMaintenanceOperationsAsync(
+                CSharpDbObservabilityOptions.MaximumHistoryCapacity + 1,
+                Ct));
         using (var canceled = new CancellationTokenSource())
         {
             canceled.Cancel();
             await Assert.ThrowsAnyAsync<OperationCanceledException>(
                 () => unopenedDiagnostics.GetRuntimeDiagnosticsAsync(canceled.Token));
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => unopenedDiagnostics.GetWalDiagnosticsAsync(canceled.Token));
         }
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => unopenedDiagnostics.GetRuntimeDiagnosticsAsync(Ct));

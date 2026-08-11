@@ -47,6 +47,10 @@ public sealed class DiagnosticsHttpTransportTests
 
         DiagnosticsTopologySnapshot<RuntimeDiagnosticsSnapshot> runtime =
             await diagnostics.GetRuntimeDiagnosticsAsync(Ct);
+        DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<StorageRuntimeDiagnosticsSnapshot>> storage =
+            await diagnostics.GetStorageDiagnosticsAsync(Ct);
+        DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<WalRuntimeDiagnosticsSnapshot>> wal =
+            await diagnostics.GetWalDiagnosticsAsync(Ct);
         DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<ActiveQuerySnapshot>> active =
             await diagnostics.GetActiveQueriesAsync(7, Ct);
         DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<RecentQuerySnapshot>> recent =
@@ -55,21 +59,26 @@ public sealed class DiagnosticsHttpTransportTests
             await diagnostics.GetQueryPlanDiagnosticsAsync(OperationId, Ct);
         DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<SessionDiagnosticsSnapshot>> sessions =
             await diagnostics.GetSessionsAsync(9, Ct);
+        DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>> activeMaintenance =
+            await diagnostics.GetActiveMaintenanceOperationsAsync(10, Ct);
+        DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>> recentMaintenance =
+            await diagnostics.GetRecentMaintenanceOperationsAsync(11, Ct);
         DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<QueryDetailSnapshot>> detail =
             await diagnostics.GetQueryDetailAsync(OperationId, Ct);
 
         Assert.All(
             new IRuntimeDiagnosticsSnapshot[]
             {
-                runtime, active, recent, plan, sessions, detail,
+                runtime, storage, wal, active, recent, plan, sessions,
+                activeMaintenance, recentMaintenance, detail,
             },
             snapshot =>
             {
                 Assert.Equal(DiagnosticsAvailability.Disabled, snapshot.Metadata.Availability);
                 Assert.Equal("http-test", snapshot.Metadata.DatabaseAlias);
             });
-        Assert.Equal(6, capture.InvocationCount);
-        Assert.Equal([7, 8, 9], capture.MaximumRecords);
+        Assert.Equal(10, capture.InvocationCount);
+        Assert.Equal([7, 8, 9, 10, 11], capture.MaximumRecords);
         Assert.Equal([OperationId, OperationId], capture.OperationIds);
         Assert.True(capture.AllCallsWereCanceledCapable);
         Assert.True(capture.AllCallsWereDiagnosticsSuppressed);
@@ -167,12 +176,19 @@ public sealed class DiagnosticsHttpTransportTests
         using HttpResponseMessage malformedLimit = await httpClient.GetAsync(
             "/api/diagnostics/queries/active?maximumRecords=not-a-number",
             Ct);
+        using HttpResponseMessage malformedMaintenanceLimit =
+            await httpClient.GetAsync(
+                "/api/diagnostics/maintenance/active?maximumRecords=not-a-number",
+                Ct);
         using HttpResponseMessage malformedId = await httpClient.GetAsync(
             "/api/diagnostics/queries/not-an-operation-id/plan",
             Ct);
 
         Assert.Equal(HttpStatusCode.Forbidden, missingLimit.StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, malformedLimit.StatusCode);
+        Assert.Equal(
+            HttpStatusCode.Forbidden,
+            malformedMaintenanceLimit.StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, malformedId.StatusCode);
         Assert.Equal(0, ((DiagnosticsCaptureProxy)inner).InvocationCount);
     }
@@ -203,6 +219,10 @@ public sealed class DiagnosticsHttpTransportTests
         using HttpResponseMessage excessiveLimit = await httpClient.GetAsync(
             $"/api/diagnostics/sessions?maximumRecords={CSharpDbObservabilityOptions.MaximumHistoryCapacity + 1}",
             Ct);
+        using HttpResponseMessage excessiveMaintenanceLimit =
+            await httpClient.GetAsync(
+                $"/api/diagnostics/maintenance/recent?maximumRecords={CSharpDbObservabilityOptions.MaximumHistoryCapacity + 1}",
+                Ct);
         using HttpResponseMessage malformedId = await httpClient.GetAsync(
             "/api/diagnostics/queries/not-an-operation-id/plan",
             Ct);
@@ -210,6 +230,9 @@ public sealed class DiagnosticsHttpTransportTests
         Assert.Equal(HttpStatusCode.BadRequest, missingLimit.StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, malformedLimit.StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, excessiveLimit.StatusCode);
+        Assert.Equal(
+            HttpStatusCode.BadRequest,
+            excessiveMaintenanceLimit.StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, malformedId.StatusCode);
         Assert.Equal(0, ((DiagnosticsCaptureProxy)inner).InvocationCount);
     }
@@ -606,6 +629,12 @@ public sealed class DiagnosticsHttpTransportTests
                 Ct));
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
             diagnostics.GetSessionsAsync(-1, Ct));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            diagnostics.GetActiveMaintenanceOperationsAsync(0, Ct));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            diagnostics.GetRecentMaintenanceOperationsAsync(
+                CSharpDbObservabilityOptions.MaximumHistoryCapacity + 1,
+                Ct));
         Assert.Equal(0, handler.SendCount);
     }
 
@@ -941,6 +970,10 @@ public sealed class DiagnosticsHttpTransportTests
                         RuntimeDiagnosticsSnapshot>>(RuntimeFailure),
                 "GetRuntimeDiagnosticsAsync" => Task.FromResult(
                     DisabledRuntime()),
+                "GetStorageDiagnosticsAsync" => Task.FromResult(
+                    DisabledValue<StorageRuntimeDiagnosticsSnapshot>()),
+                "GetWalDiagnosticsAsync" => Task.FromResult(
+                    DisabledValue<WalRuntimeDiagnosticsSnapshot>()),
                 "GetActiveQueriesAsync" => CaptureMaximum(
                     (int)args[0]!,
                     DisabledCollection<ActiveQuerySnapshot>()),
@@ -955,6 +988,12 @@ public sealed class DiagnosticsHttpTransportTests
                     ReturnAvailableSessions
                         ? AvailableSessions((int)args[0]!)
                         : DisabledCollection<SessionDiagnosticsSnapshot>()),
+                "GetActiveMaintenanceOperationsAsync" => CaptureMaximum(
+                    (int)args[0]!,
+                    DisabledCollection<MaintenanceOperationSnapshot>()),
+                "GetRecentMaintenanceOperationsAsync" => CaptureMaximum(
+                    (int)args[0]!,
+                    DisabledCollection<MaintenanceOperationSnapshot>()),
                 "GetQueryDetailAsync" => CaptureOperation(
                     (OpaqueDiagnosticsId)args[0]!,
                     DisabledValue<QueryDetailSnapshot>()),

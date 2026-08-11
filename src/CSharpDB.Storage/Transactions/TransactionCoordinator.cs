@@ -26,6 +26,7 @@ internal sealed class TransactionCoordinator : IDisposable
     private long _nextReservedPageId;
     private long _schemaExclusiveOwnerTransactionId;
     private long _schemaExclusiveWaiterTransactionId;
+    private long _explicitTransactionGeneration;
     private int _inTransactionFlag;
     private bool _inTransaction;
     private bool _writerLockReleased;
@@ -37,6 +38,26 @@ internal sealed class TransactionCoordinator : IDisposable
     public bool InTransaction => Volatile.Read(ref _inTransactionFlag) != 0;
 
     public long CurrentCommitVersion => Volatile.Read(ref _commitVersion);
+
+    internal int ActiveWriterCount => GetRuntimeStateSnapshot().ActiveWriterCount;
+
+    internal (
+        int ActiveWriterCount,
+        bool HasActiveExplicitWriters,
+        long ExplicitTransactionGeneration,
+        long LegacyTransactionId)
+        GetRuntimeStateSnapshot()
+    {
+        lock (_stateGate)
+        {
+            int explicitWriterCount = _activeExplicitTransactions.Count;
+            return (
+                explicitWriterCount + (_inTransaction ? 1 : 0),
+                explicitWriterCount != 0,
+                _explicitTransactionGeneration,
+                _currentTransactionId);
+        }
+    }
 
     public bool HasActiveExplicitTransactions
     {
@@ -70,6 +91,7 @@ internal sealed class TransactionCoordinator : IDisposable
         lock (_stateGate)
         {
             _activeExplicitTransactions[transactionId] = startVersion;
+            _explicitTransactionGeneration++;
             SignalSchemaStateChanged_NoLock();
         }
     }
@@ -82,7 +104,8 @@ internal sealed class TransactionCoordinator : IDisposable
         long retentionFloor;
         lock (_stateGate)
         {
-            _activeExplicitTransactions.Remove(transactionId);
+            if (_activeExplicitTransactions.Remove(transactionId))
+                _explicitTransactionGeneration++;
             if (_schemaExclusiveOwnerTransactionId == transactionId)
                 _schemaExclusiveOwnerTransactionId = 0;
             if (_schemaExclusiveWaiterTransactionId == transactionId)

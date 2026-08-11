@@ -3,6 +3,7 @@ using CSharpDB.Client;
 using CSharpDB.Client.Models;
 using CSharpDB.Engine;
 using CSharpDB.Storage.Paging;
+using CSharpDB.Storage.StorageEngine;
 using PrimitiveDbType = CSharpDB.Primitives.DbType;
 using PrimitiveDbValue = CSharpDB.Primitives.DbValue;
 using PrimitiveScalarFunctionOptions = CSharpDB.Primitives.DbScalarFunctionOptions;
@@ -192,6 +193,7 @@ public sealed class ClientDirectDatabaseOptionsTests
         string dbPath = NewTempDbPath();
         string backupPath = Path.Combine(Path.GetTempPath(), $"csharpdb_client_direct_restore_{Guid.NewGuid():N}.db");
         var interceptor = new TrackingPageOperationInterceptor();
+        var storageFactory = new CountingStorageEngineFactory();
 
         try
         {
@@ -200,7 +202,9 @@ public sealed class ClientDirectDatabaseOptionsTests
             await using var client = Assert.IsType<CSharpDbClient>(CSharpDbClient.Create(new CSharpDbClientOptions
             {
                 DataSource = dbPath,
-                DirectDatabaseOptions = CreateDirectDatabaseOptions(interceptor),
+                DirectDatabaseOptions = CreateDirectDatabaseOptions(
+                    interceptor,
+                    storageFactory),
             }));
 
             var backup = await client.BackupAsync(new BackupRequest
@@ -233,6 +237,7 @@ public sealed class ClientDirectDatabaseOptionsTests
             Assert.True(
                 interceptor.GetReadSourceCount(PageReadSource.MemoryMappedMainFile) > 0,
                 "Expected the post-restore reopen to honor DirectDatabaseOptions.");
+            Assert.Equal(2, storageFactory.OpenCount);
         }
         finally
         {
@@ -244,10 +249,14 @@ public sealed class ClientDirectDatabaseOptionsTests
         }
     }
 
-    private static DatabaseOptions CreateDirectDatabaseOptions(IPageOperationInterceptor interceptor)
+    private static DatabaseOptions CreateDirectDatabaseOptions(
+        IPageOperationInterceptor interceptor,
+        IStorageEngineFactory? storageEngineFactory = null)
     {
         return new DatabaseOptions
         {
+            StorageEngineFactory =
+                storageEngineFactory ?? new DefaultStorageEngineFactory(),
             StorageEngineOptions = new CSharpDB.Storage.StorageEngine.StorageEngineOptions
             {
                 PagerOptions = new PagerOptions
@@ -303,5 +312,28 @@ public sealed class ClientDirectDatabaseOptionsTests
         public ValueTask OnCheckpointEndAsync(int committedFrameCount, bool succeeded, CancellationToken ct = default) => ValueTask.CompletedTask;
         public ValueTask OnRecoveryStartAsync(CancellationToken ct = default) => ValueTask.CompletedTask;
         public ValueTask OnRecoveryEndAsync(bool succeeded, CancellationToken ct = default) => ValueTask.CompletedTask;
+    }
+
+    private sealed class CountingStorageEngineFactory : IStorageEngineFactory
+    {
+        private readonly DefaultStorageEngineFactory _inner = new();
+        private int _openCount;
+
+        internal int OpenCount => Volatile.Read(ref _openCount);
+
+        public ValueTask<StorageEngineContext> OpenAsync(
+            string filePath,
+            StorageEngineOptions options,
+            CancellationToken ct = default)
+        {
+            Interlocked.Increment(ref _openCount);
+            return _inner.OpenAsync(filePath, options, ct);
+        }
+
+        public ValueTask<StorageEngineContext> CreateNewAsync(
+            string filePath,
+            StorageEngineOptions options,
+            CancellationToken ct = default)
+            => _inner.CreateNewAsync(filePath, options, ct);
     }
 }

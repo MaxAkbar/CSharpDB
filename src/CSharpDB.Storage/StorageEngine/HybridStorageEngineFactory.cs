@@ -38,8 +38,15 @@ internal static class HybridStorageEngineFactory
                 options.ChecksumProvider,
                 options.DurabilityMode,
                 options.DurableGroupCommit.BatchWindow,
-                options.WalPreallocationChunkBytes);
-            pager = await Pager.CreateAsync(device, wal, walIndex, hybridPagerOptions, ct);
+                options.WalPreallocationChunkBytes,
+                options.RuntimeDiagnosticsObserver);
+            pager = await Pager.CreateAsync(
+                device,
+                wal,
+                walIndex,
+                hybridPagerOptions,
+                options.RuntimeDiagnosticsObserver,
+                ct);
 
             if (isNew)
             {

@@ -25,6 +25,52 @@ public sealed partial class CSharpDbConnection : ICSharpDbObservabilityClient
         return CaptureEmbeddedRuntimeDiagnosticsAsync(target, ct);
     }
 
+    public async Task<DiagnosticsTopologySnapshot<
+        DiagnosticsValueSnapshot<StorageRuntimeDiagnosticsSnapshot>>>
+        GetStorageDiagnosticsAsync(CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        DiagnosticsTarget target = CaptureDiagnosticsTarget();
+        if (target.RemoteClient is { } remote)
+        {
+            return await DelegateRemoteAsync(
+                () => remote.GetStorageDiagnosticsAsync(ct));
+        }
+
+        DiagnosticsTopologySnapshot<RuntimeDiagnosticsSnapshot> runtime =
+            await CaptureEmbeddedRuntimeDiagnosticsAsync(target, ct);
+        DiagnosticsValueSnapshot<StorageRuntimeDiagnosticsSnapshot> value =
+            CreateValueFromRuntimeSection(
+                runtime.Aggregate.Metadata,
+                runtime.Aggregate.Storage,
+                ProjectStorageSnapshot);
+        ct.ThrowIfCancellationRequested();
+        return CreateInstanceTopology(value);
+    }
+
+    public async Task<DiagnosticsTopologySnapshot<
+        DiagnosticsValueSnapshot<WalRuntimeDiagnosticsSnapshot>>>
+        GetWalDiagnosticsAsync(CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        DiagnosticsTarget target = CaptureDiagnosticsTarget();
+        if (target.RemoteClient is { } remote)
+        {
+            return await DelegateRemoteAsync(
+                () => remote.GetWalDiagnosticsAsync(ct));
+        }
+
+        DiagnosticsTopologySnapshot<RuntimeDiagnosticsSnapshot> runtime =
+            await CaptureEmbeddedRuntimeDiagnosticsAsync(target, ct);
+        DiagnosticsValueSnapshot<WalRuntimeDiagnosticsSnapshot> value =
+            CreateValueFromRuntimeSection(
+                runtime.Aggregate.Metadata,
+                runtime.Aggregate.Wal,
+                ProjectWalSnapshot);
+        ct.ThrowIfCancellationRequested();
+        return CreateInstanceTopology(value);
+    }
+
     public Task<DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<ActiveQuerySnapshot>>>
         GetActiveQueriesAsync(
             int maximumRecords,
@@ -194,6 +240,51 @@ public sealed partial class CSharpDbConnection : ICSharpDbObservabilityClient
         return Task.FromResult(CreateInstanceTopology(value));
     }
 
+    public Task<DiagnosticsTopologySnapshot<
+        DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>
+        GetActiveMaintenanceOperationsAsync(
+            int maximumRecords,
+            CancellationToken ct = default)
+        => GetMaintenanceOperationsAsync(
+            maximumRecords,
+            recent: false,
+            ct);
+
+    public Task<DiagnosticsTopologySnapshot<
+        DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>
+        GetRecentMaintenanceOperationsAsync(
+            int maximumRecords,
+            CancellationToken ct = default)
+        => GetMaintenanceOperationsAsync(
+            maximumRecords,
+            recent: true,
+            ct);
+
+    private Task<DiagnosticsTopologySnapshot<
+        DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>
+        GetMaintenanceOperationsAsync(
+            int maximumRecords,
+            bool recent,
+            CancellationToken ct)
+    {
+        ValidateMaximumRecords(maximumRecords);
+        ct.ThrowIfCancellationRequested();
+        DiagnosticsTarget target = CaptureDiagnosticsTarget();
+        if (target.RemoteClient is { } remote)
+        {
+            return DelegateRemoteAsync(
+                () => recent
+                    ? remote.GetRecentMaintenanceOperationsAsync(
+                        maximumRecords,
+                        ct)
+                    : remote.GetActiveMaintenanceOperationsAsync(
+                        maximumRecords,
+                        ct));
+        }
+
+        throw new CSharpDbObservabilityNotSupportedException();
+    }
+
     private async Task<DiagnosticsTopologySnapshot<RuntimeDiagnosticsSnapshot>>
         CaptureEmbeddedRuntimeDiagnosticsAsync(
             DiagnosticsTarget target,
@@ -335,6 +426,191 @@ public sealed partial class CSharpDbConnection : ICSharpDbObservabilityClient
                 DiagnosticsAvailability.Unavailable,
                 DiagnosticsSource.Engine),
             value: null);
+    }
+
+    private static DiagnosticsValueSnapshot<T> CreateValueFromRuntimeSection<T>(
+        DiagnosticsSnapshotMetadata runtimeMetadata,
+        DiagnosticsSection<T> section,
+        Func<T, DiagnosticsSnapshotMetadata, T> project)
+        where T : class, IRuntimeDiagnosticsSnapshot
+    {
+        ArgumentNullException.ThrowIfNull(runtimeMetadata);
+        ArgumentNullException.ThrowIfNull(section);
+        DiagnosticsSnapshotMetadata metadata = new(
+            runtimeMetadata.SchemaVersion,
+            runtimeMetadata.CapturedAtUtc,
+            runtimeMetadata.ServerInstanceId,
+            runtimeMetadata.CounterEpoch,
+            runtimeMetadata.Scope,
+            section.Availability,
+            runtimeMetadata.Source,
+            runtimeMetadata.DatabaseAlias,
+            recordsTruncated: false,
+            fieldsTruncated: section.Value is not null &&
+                runtimeMetadata.FieldsTruncated);
+        return new DiagnosticsValueSnapshot<T>(
+            metadata,
+            section.Value is { } value ? project(value, metadata) : null);
+    }
+
+    private static StorageRuntimeDiagnosticsSnapshot ProjectStorageSnapshot(
+        StorageRuntimeDiagnosticsSnapshot value,
+        DiagnosticsSnapshotMetadata metadata)
+        => new(
+            metadata,
+            value.LogicalDatabaseBytes,
+            value.AllocatedDatabaseBytes,
+            value.PageCount,
+            value.PageReads,
+            value.PageWrites,
+            value.BytesRead,
+            value.BytesWritten,
+            value.CacheHits,
+            value.CacheMisses,
+            value.DirtyPages,
+            value.ActiveReaders,
+            value.ActiveWriters,
+            value.CommitCount,
+            value.ConflictCount)
+        {
+            Cache = ProjectDetailSection(
+                value.Cache,
+                metadata,
+                ProjectStorageCacheSnapshot),
+            PhysicalIo = ProjectDetailSection(
+                value.PhysicalIo,
+                metadata,
+                ProjectStorageDeviceIoSnapshot),
+        };
+
+    private static StorageCacheDiagnosticsSnapshot ProjectStorageCacheSnapshot(
+        StorageCacheDiagnosticsSnapshot value,
+        DiagnosticsSnapshotMetadata metadata)
+        => new(
+            metadata,
+            value.SharedResidentPages,
+            value.SharedCapacityPages,
+            value.WalResidentPages,
+            value.WalCapacityPages);
+
+    private static StorageDeviceIoDiagnosticsSnapshot
+        ProjectStorageDeviceIoSnapshot(
+            StorageDeviceIoDiagnosticsSnapshot value,
+            DiagnosticsSnapshotMetadata metadata)
+        => new(
+            metadata,
+            value.ReadCount,
+            value.BytesRead,
+            value.WriteCount,
+            value.BytesWritten,
+            value.FlushCount,
+            value.ResizeCount,
+            value.SequentialReadCount,
+            value.SequentialBytesRead,
+            value.MemoryMappedPageExposureCount,
+            value.MemoryMappedBytesExposed);
+
+    private static WalRuntimeDiagnosticsSnapshot ProjectWalSnapshot(
+        WalRuntimeDiagnosticsSnapshot value,
+        DiagnosticsSnapshotMetadata metadata)
+        => new(
+            metadata,
+            value.LogicalBytes,
+            value.AllocatedBytes,
+            value.CommittedFrameBytes,
+            value.RetainedBytes,
+            value.FrameCount,
+            value.FlushCount,
+            value.BytesWritten,
+            value.PendingCommitCount,
+            value.CheckpointPhase,
+            value.LastSuccessfulFlushAtUtc,
+            value.LastSuccessfulCheckpointAtUtc,
+            value.LastError)
+        {
+            FlushedCommitCount = value.FlushedCommitCount,
+            DurableFlushCount = value.DurableFlushCount,
+            LastSuccessfulDurableFlushAtUtc =
+                value.LastSuccessfulDurableFlushAtUtc,
+            GroupCommitBatchCount = value.GroupCommitBatchCount,
+            GroupCommitCount = value.GroupCommitCount,
+            LastSuccessfulGroupCommitAtUtc =
+                value.LastSuccessfulGroupCommitAtUtc,
+            Recovery = ProjectDetailSection(
+                value.Recovery,
+                metadata,
+                ProjectWalRecoverySnapshot),
+            Checkpoint = ProjectDetailSection(
+                value.Checkpoint,
+                metadata,
+                ProjectCheckpointSnapshot),
+        };
+
+    private static WalRecoveryDiagnosticsSnapshot ProjectWalRecoverySnapshot(
+        WalRecoveryDiagnosticsSnapshot value,
+        DiagnosticsSnapshotMetadata metadata)
+        => new(
+            metadata,
+            value.OperationId,
+            value.Phase,
+            value.StartedAtUtc,
+            value.CompletedAtUtc,
+            value.Elapsed,
+            value.Outcome,
+            value.ScannedFrameCount,
+            value.ScannedBytes,
+            value.RecoveredFrameCount,
+            value.RecoveredBytes,
+            value.DiscardedFrameCount,
+            value.DiscardedBytes,
+            value.TruncationReason,
+            value.AttemptCount,
+            value.RetryCount,
+            value.LastRetryError,
+            value.Error);
+
+    private static CheckpointDiagnosticsSnapshot ProjectCheckpointSnapshot(
+        CheckpointDiagnosticsSnapshot value,
+        DiagnosticsSnapshotMetadata metadata)
+        => new(
+            metadata,
+            value.OperationId,
+            value.Phase,
+            value.Origin,
+            value.StartedAtUtc,
+            value.Elapsed,
+            value.CompletedPageCount,
+            value.TotalPageCount,
+            value.RetentionReason,
+            value.LastStartedAtUtc,
+            value.LastSuccessfulAtUtc,
+            value.LastFailedAtUtc,
+            value.LastElapsed,
+            value.ActiveCount,
+            value.AttemptCount,
+            value.SuccessCount,
+            value.FailureCount,
+            value.CanceledCount,
+            value.LastError);
+
+    private static DiagnosticsSection<T> ProjectDetailSection<T>(
+        DiagnosticsSection<T> section,
+        DiagnosticsSnapshotMetadata metadata,
+        Func<T, DiagnosticsSnapshotMetadata, T> project)
+        where T : class, IRuntimeDiagnosticsSnapshot
+    {
+        try
+        {
+            return section.Value is null
+                ? DiagnosticsSection<T>.WithoutValue(section.Availability)
+                : DiagnosticsSection<T>.Available(
+                    project(section.Value, metadata));
+        }
+        catch
+        {
+            return DiagnosticsSection<T>.WithoutValue(
+                DiagnosticsAvailability.Unavailable);
+        }
     }
 
     private DiagnosticsTarget CaptureDiagnosticsTarget()

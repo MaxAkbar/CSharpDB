@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using CSharpDB.Primitives;
 using CSharpDB.Execution;
+using CSharpDB.Observability;
 using CSharpDB.Storage.Diagnostics;
 using CSharpDB.Storage.Indexing;
 using CSharpDB.Storage.Paging;
@@ -81,10 +82,40 @@ public static class DatabaseMaintenanceCoordinator
         CancellationToken ct = default)
         => DatabaseForeignKeyMigrationCoordinator.MigrateAsync(databasePath, request, ct);
 
-    public static async ValueTask<DatabaseReindexResult> ReindexAsync(
+    internal static ValueTask<DatabaseForeignKeyMigrationResult>
+        MigrateForeignKeysFromClientAsync(
+            string databasePath,
+            DatabaseForeignKeyMigrationRequest request,
+            MaintenanceObservation? observation,
+            CancellationToken ct = default)
+        => DatabaseForeignKeyMigrationCoordinator.MigrateFromClientAsync(
+            databasePath,
+            request,
+            observation,
+            ct);
+
+    public static ValueTask<DatabaseReindexResult> ReindexAsync(
         string databasePath,
         DatabaseReindexRequest request,
         CancellationToken ct = default)
+        => ReindexCoreAsync(
+            databasePath,
+            request,
+            observation: null,
+            ct: ct);
+
+    internal static ValueTask<DatabaseReindexResult> ReindexFromClientAsync(
+        string databasePath,
+        DatabaseReindexRequest request,
+        MaintenanceObservation? observation,
+        CancellationToken ct = default)
+        => ReindexCoreAsync(databasePath, request, observation, ct);
+
+    private static async ValueTask<DatabaseReindexResult> ReindexCoreAsync(
+        string databasePath,
+        DatabaseReindexRequest request,
+        MaintenanceObservation? observation,
+        CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -94,13 +125,17 @@ public static class DatabaseMaintenanceCoordinator
         try
         {
             context = await OpenStorageContextAsync(fullPath, ct);
+            observation?.SetPhase(MaintenanceOperationPhase.Validating);
             var indexes = ResolveTargetIndexes(context.Catalog, request).ToArray();
             var affectedTables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             int recoveredCorruptIndexCount = 0;
+            long rebuiltIndexCount = 0;
 
             await context.Pager.BeginTransactionAsync(ct);
             try
             {
+                observation?.SetProgress(0, indexes.LongLength);
+                observation?.SetPhase(MaintenanceOperationPhase.Copying);
                 foreach (var indexSchema in indexes)
                 {
                     affectedTables.Add(indexSchema.TableName);
@@ -122,8 +157,14 @@ public static class DatabaseMaintenanceCoordinator
 
                     if (recoveredCorruptIndex)
                         recoveredCorruptIndexCount++;
+
+                    rebuiltIndexCount++;
+                    observation?.SetProgress(
+                        rebuiltIndexCount,
+                        indexes.LongLength);
                 }
 
+                observation?.SetPhase(MaintenanceOperationPhase.Staging);
                 foreach (string tableName in affectedTables)
                     await context.Catalog.PersistRootPageChangesAsync(tableName, ct);
 
@@ -131,6 +172,7 @@ public static class DatabaseMaintenanceCoordinator
             }
             catch
             {
+                observation?.SetPhase(MaintenanceOperationPhase.RollingBack);
                 await context.Pager.RollbackAsync(ct);
                 throw;
             }
@@ -150,15 +192,44 @@ public static class DatabaseMaintenanceCoordinator
         }
     }
 
-    public static async ValueTask<DatabaseVacuumResult> VacuumAsync(
+    public static ValueTask<DatabaseVacuumResult> VacuumAsync(
         string databasePath,
         CancellationToken ct = default)
-        => await VacuumAsync(databasePath, ct, ReplaceVacuumedDatabaseFilesAsync);
+        => VacuumCoreAsync(
+            databasePath,
+            ct,
+            ReplaceVacuumedDatabaseFilesAsync,
+            observation: null);
 
-    internal static async ValueTask<DatabaseVacuumResult> VacuumAsync(
+    internal static ValueTask<DatabaseVacuumResult> VacuumFromClientAsync(
+        string databasePath,
+        MaintenanceObservation? observation,
+        CancellationToken ct = default)
+        => VacuumCoreAsync(
+            databasePath,
+            ct,
+            ReplaceVacuumedDatabaseFilesAsync,
+            observation);
+
+    internal static ValueTask<DatabaseVacuumResult> VacuumAsync(
         string databasePath,
         CancellationToken ct,
         Func<string, string, string, CancellationToken, ValueTask<bool>> replaceDatabaseFilesAsync,
+        string? tempPathOverride = null,
+        string? backupPathOverride = null)
+        => VacuumCoreAsync(
+            databasePath,
+            ct,
+            replaceDatabaseFilesAsync,
+            observation: null,
+            tempPathOverride: tempPathOverride,
+            backupPathOverride: backupPathOverride);
+
+    private static async ValueTask<DatabaseVacuumResult> VacuumCoreAsync(
+        string databasePath,
+        CancellationToken ct,
+        Func<string, string, string, CancellationToken, ValueTask<bool>> replaceDatabaseFilesAsync,
+        MaintenanceObservation? observation,
         string? tempPathOverride = null,
         string? backupPathOverride = null)
     {
@@ -173,6 +244,7 @@ public static class DatabaseMaintenanceCoordinator
 
         try
         {
+            observation?.SetPhase(MaintenanceOperationPhase.Validating);
             beforeReport = await DatabaseInspector.InspectAsync(fullPath, new DatabaseInspectOptions(), ct);
             source = await OpenStorageContextAsync(fullPath, ct);
             destination = await OpenStorageContextAsync(tempPath, ct);
@@ -180,7 +252,9 @@ public static class DatabaseMaintenanceCoordinator
             await destination.Pager.BeginTransactionAsync(ct);
             try
             {
+                observation?.SetPhase(MaintenanceOperationPhase.Copying);
                 await CopyDatabaseAsync(source, destination, ct);
+                observation?.SetPhase(MaintenanceOperationPhase.Staging);
                 if (source.Catalog.RowVersionHighWater > 0)
                 {
                     await destination.Catalog.PersistRowVersionHighWaterAsync(
@@ -193,6 +267,7 @@ public static class DatabaseMaintenanceCoordinator
             }
             catch
             {
+                observation?.SetPhase(MaintenanceOperationPhase.RollingBack);
                 await destination.Pager.RollbackAsync(ct);
                 throw;
             }
@@ -209,8 +284,10 @@ public static class DatabaseMaintenanceCoordinator
             await source.Pager.DisposeAsync();
             source = null;
 
+            observation?.SetPhase(MaintenanceOperationPhase.Replacing);
             deleteBackupFiles = await replaceDatabaseFilesAsync(fullPath, tempPath, backupPath, ct);
 
+            observation?.SetPhase(MaintenanceOperationPhase.Validating);
             var afterReport = await DatabaseInspector.InspectAsync(fullPath, new DatabaseInspectOptions(), ct);
             return new DatabaseVacuumResult
             {

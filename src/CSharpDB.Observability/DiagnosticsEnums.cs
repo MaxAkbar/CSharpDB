@@ -176,6 +176,44 @@ public enum CheckpointPhase
     Faulted,
 }
 
+public enum WalRecoveryPhase
+{
+    Unknown = 0,
+    Scanning,
+    Checkpointing,
+    Completed,
+}
+
+public enum WalRecoveryTruncationReason
+{
+    Unknown = 0,
+    None,
+    IncompleteTail,
+    SaltMismatch,
+    ChecksumMismatch,
+    UncommittedTail,
+}
+
+public enum CheckpointOrigin
+{
+    Unknown = 0,
+    Manual,
+    ForegroundAuto,
+    BackgroundAuto,
+    StartupRecovery,
+    Backup,
+    Shutdown,
+}
+
+public enum CheckpointRetentionReason
+{
+    Unknown = 0,
+    None,
+    ActiveReaders,
+    NewerCommits,
+    ActiveReadersAndNewerCommits,
+}
+
 public enum CSharpDbHostLifecyclePhase
 {
     Unknown = 0,

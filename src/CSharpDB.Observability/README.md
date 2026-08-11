@@ -23,7 +23,7 @@ second SQL parser.
 ## Contract highlights
 
 - Activity and metric source name: `CSharpDB`
-- Snapshot schema version: `1.0`
+- Snapshot schema version: `1.1` (1.0 payloads remain supported)
 - SQL capture default: `None`
 - Metric dimensions: reviewed bounded enums plus a validated configured alias
 - Ordinary snapshots never contain raw SQL, values, paths, or exception text

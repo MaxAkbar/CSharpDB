@@ -470,6 +470,26 @@ public sealed class CSharpDbRpcService : CSharpDbRpc.CSharpDbRpcBase
             DiagnosticsJsonTypeInfo<DiagnosticsTopologySnapshot<
                 RuntimeDiagnosticsSnapshot>>());
 
+    public override Task<DiagnosticsJsonResponse> GetStorageDiagnostics(
+        Empty request,
+        ServerCallContext context)
+        => ExecuteDiagnosticsAsync(
+            context,
+            CSharpDbDiagnosticsAccessKind.Runtime,
+            static (capability, ct) => capability.GetStorageDiagnosticsAsync(ct),
+            DiagnosticsJsonTypeInfo<DiagnosticsTopologySnapshot<
+                DiagnosticsValueSnapshot<StorageRuntimeDiagnosticsSnapshot>>>());
+
+    public override Task<DiagnosticsJsonResponse> GetWalDiagnostics(
+        Empty request,
+        ServerCallContext context)
+        => ExecuteDiagnosticsAsync(
+            context,
+            CSharpDbDiagnosticsAccessKind.Runtime,
+            static (capability, ct) => capability.GetWalDiagnosticsAsync(ct),
+            DiagnosticsJsonTypeInfo<DiagnosticsTopologySnapshot<
+                DiagnosticsValueSnapshot<WalRuntimeDiagnosticsSnapshot>>>());
+
     public override Task<DiagnosticsJsonResponse> GetActiveQueries(
         DiagnosticsRecordsRequest request,
         ServerCallContext context)
@@ -527,6 +547,38 @@ public sealed class CSharpDbRpcService : CSharpDbRpc.CSharpDbRpcBase
             },
             DiagnosticsJsonTypeInfo<DiagnosticsTopologySnapshot<
                 DiagnosticsCollectionSnapshot<SessionDiagnosticsSnapshot>>>());
+
+    public override Task<DiagnosticsJsonResponse> GetActiveMaintenanceOperations(
+        DiagnosticsRecordsRequest request,
+        ServerCallContext context)
+        => ExecuteDiagnosticsAsync(
+            context,
+            CSharpDbDiagnosticsAccessKind.Runtime,
+            (capability, ct) =>
+            {
+                ValidateDiagnosticsMaximumRecords(request.MaximumRecords);
+                return capability.GetActiveMaintenanceOperationsAsync(
+                    request.MaximumRecords,
+                    ct);
+            },
+            DiagnosticsJsonTypeInfo<DiagnosticsTopologySnapshot<
+                DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>());
+
+    public override Task<DiagnosticsJsonResponse> GetRecentMaintenanceOperations(
+        DiagnosticsRecordsRequest request,
+        ServerCallContext context)
+        => ExecuteDiagnosticsAsync(
+            context,
+            CSharpDbDiagnosticsAccessKind.Runtime,
+            (capability, ct) =>
+            {
+                ValidateDiagnosticsMaximumRecords(request.MaximumRecords);
+                return capability.GetRecentMaintenanceOperationsAsync(
+                    request.MaximumRecords,
+                    ct);
+            },
+            DiagnosticsJsonTypeInfo<DiagnosticsTopologySnapshot<
+                DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>());
 
     public override Task<DiagnosticsJsonResponse> GetQueryDetail(
         DiagnosticsOperationRequest request,

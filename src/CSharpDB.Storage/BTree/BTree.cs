@@ -594,7 +594,10 @@ public sealed class BTree
 
         while (true)
         {
-            if (!_pager.TryGetSnapshotCachedPageReadBuffer(pageId, snapshot, out var page))
+            if (!_pager.TryGetSnapshotCachedPageReadBufferAndRecordRead(
+                    pageId,
+                    snapshot,
+                    out var page))
                 return false;
 
             var sp = new ReadOnlySlottedPage(page.Memory, pageId);

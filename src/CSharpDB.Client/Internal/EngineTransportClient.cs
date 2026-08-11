@@ -44,6 +44,8 @@ internal sealed partial class EngineTransportClient :
     private const string DataModelDiagramsTableName = "__data_model_diagrams";
     private static readonly Regex s_identifierPattern = new("^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.Compiled);
     private static readonly AsyncLocal<DisposeFlushToken?> s_disposeFlushToken = new();
+    internal static Func<Database, ValueTask>?
+        DisposeExclusiveDatabaseForTests;
 
     private readonly string _databasePath;
     private readonly DatabaseOptions _directDatabaseOptions;
@@ -1137,9 +1139,40 @@ internal sealed partial class EngineTransportClient :
 
     public async Task CheckpointAsync(CancellationToken ct = default)
     {
-        using IDisposable? operationalBoundary =
+        IDisposable? operationalBoundary =
             EnterDirectOperationalTransportScope();
-        await (await GetDatabaseAsync(ct)).CheckpointAsync(ct);
+        ClientMaintenanceLifetimeLease? maintenanceLifetime = null;
+        MaintenanceObservation? operation = null;
+        IDisposable? operationScope = null;
+        try
+        {
+            if (IsClientMaintenanceObservationEnabled())
+            {
+                maintenanceLifetime = RegisterClientMaintenanceLifetime();
+                operation = StartClientMaintenanceObservation(
+                    MaintenanceOperationKind.Checkpoint,
+                    MaintenanceOperationPhase.Queued,
+                    CSharpDbOperationClass.Checkpoint,
+                    CSharpDbLogEvents.CheckpointCompleted);
+                operationScope = operation?.EnterScope();
+            }
+
+            operation?.SetPhase(
+                MaintenanceOperationPhase.AcquiringAccess);
+            Database database = await GetDatabaseAsync(ct);
+            await database.CheckpointFromClientAsync(operation, ct);
+        }
+        catch (Exception exception)
+        {
+            operation?.Fail(exception);
+            throw;
+        }
+        finally
+        {
+            operationScope?.Dispose();
+            maintenanceLifetime?.Dispose();
+            operationalBoundary?.Dispose();
+        }
     }
 
     public ValueTask DisposeAsync()
@@ -1189,6 +1222,7 @@ internal sealed partial class EngineTransportClient :
             await AcquireClientLockAsync(CancellationToken.None);
         List<ClientTransactionSession> sessionsToDispose;
         Task? finalizationsDrained;
+        Task? maintenanceLifetimesDrained;
         try
         {
             _disposeStarted = true;
@@ -1206,6 +1240,8 @@ internal sealed partial class EngineTransportClient :
             }
 
             finalizationsDrained = GetFinalizationsDrainedTask();
+            maintenanceLifetimesDrained =
+                GetMaintenanceLifetimesDrainedTask();
         }
         finally
         {
@@ -1223,6 +1259,8 @@ internal sealed partial class EngineTransportClient :
             {
                 if (finalizationsDrained is not null)
                     await finalizationsDrained;
+                if (maintenanceLifetimesDrained is not null)
+                    await maintenanceLifetimesDrained;
             }
 
             using (ClientLockLease finalLock =
@@ -1264,6 +1302,7 @@ internal sealed partial class EngineTransportClient :
             {
                 flushToken.Deactivate();
                 s_disposeFlushToken.Value = previousToken;
+                DisposeClientMaintenanceDiagnostics();
                 DisposeRuntimeDiagnosticsStates();
                 _lock.Dispose();
             }
@@ -1383,12 +1422,22 @@ internal sealed partial class EngineTransportClient :
         CSharpDbRuntimeDiagnosticsState replacement =
             current.CreateForOptions(observability);
         DatabaseOptions replacementOptions = CreateDatabaseOptionsForOpen(replacement);
-        Volatile.Write(
-            ref _runtimeDatabaseFamily,
-            new RuntimeDatabaseFamily(
-                replacementOptions,
-                advanceCounterEpochOnFirstSuccessfulOpen: true));
-        RetireRuntimeDiagnosticsState(current);
+        bool disposeCurrent;
+        lock (_runtimeDiagnosticsLifetimeGate)
+        {
+            Volatile.Write(
+                ref _runtimeDatabaseFamily,
+                new RuntimeDatabaseFamily(
+                    replacementOptions,
+                    advanceCounterEpochOnFirstSuccessfulOpen: true));
+            disposeCurrent =
+                _runtimeDiagnosticsSessionOwners?.ContainsKey(current) != true;
+            if (!disposeCurrent)
+                (_retiredRuntimeDiagnosticsStates ??= []).Add(current);
+        }
+
+        if (disposeCurrent)
+            current.Dispose();
     }
 
     private void RetainRuntimeDiagnosticsState(ClientTransactionSession session)
@@ -1453,21 +1502,6 @@ internal sealed partial class EngineTransportClient :
                         _retiredRuntimeDiagnosticsStates = null;
                 }
             }
-        }
-
-        if (dispose)
-            state.Dispose();
-    }
-
-    private void RetireRuntimeDiagnosticsState(
-        CSharpDbRuntimeDiagnosticsState state)
-    {
-        bool dispose;
-        lock (_runtimeDiagnosticsLifetimeGate)
-        {
-            dispose = _runtimeDiagnosticsSessionOwners?.ContainsKey(state) != true;
-            if (!dispose)
-                (_retiredRuntimeDiagnosticsStates ??= []).Add(state);
         }
 
         if (dispose)
@@ -1724,24 +1758,38 @@ internal sealed partial class EngineTransportClient :
 
     private async Task<ExclusiveDatabaseAccessLease> AcquireExclusiveDatabaseAccessAsync(
         CancellationToken ct,
-        string activeReaderMessage)
+        string activeReaderMessage,
+        string? activeTransactionMessage = null,
+        MaintenanceObservation? maintenanceOperation = null)
     {
         ClientLockLease clientLock = await AcquireClientLockAsync(ct);
 
         Task<Database>? openTask;
-        var releaseCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        lock (_databaseGate)
-        {
-            openTask = _databaseTask;
-            _catalogsInitialized = false;
-            _databaseTask = null;
-            _databaseReleaseCompletion = releaseCompletion;
-        }
-        Volatile.Write(ref _exclusiveMaintenanceActive, 1);
+        TaskCompletionSource? releaseCompletion = null;
+        bool reopenUnchangedDestinationOnPrePonr = false;
 
         try
         {
+            ThrowIfDisposing();
+            if (activeTransactionMessage is not null && !_transactions.IsEmpty)
+            {
+                throw new ExclusiveDatabaseAccessRejectedException(
+                    activeTransactionMessage);
+            }
+
+            maintenanceOperation?.SetPhase(
+                MaintenanceOperationPhase.AcquiringAccess);
+            releaseCompletion = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            lock (_databaseGate)
+            {
+                openTask = _databaseTask;
+                _catalogsInitialized = false;
+                _databaseTask = null;
+                _databaseReleaseCompletion = releaseCompletion;
+            }
+            Volatile.Write(ref _exclusiveMaintenanceActive, 1);
+
             if (openTask is not null)
             {
                 Database db;
@@ -1764,7 +1812,8 @@ internal sealed partial class EngineTransportClient :
                     return new ExclusiveDatabaseAccessLease(
                         this,
                         releaseCompletion,
-                        clientLock);
+                        clientLock,
+                        reopenUnchangedDestinationOnPrePonr: false);
                 }
 
                 if (db.ActiveReaderCount > 0)
@@ -1775,22 +1824,101 @@ internal sealed partial class EngineTransportClient :
                             _databaseTask = openTask;
                     }
 
-                    throw new CSharpDbClientException(activeReaderMessage);
+                    throw new ExclusiveDatabaseAccessRejectedException(
+                        activeReaderMessage);
                 }
 
-                await db.DisposeAsync();
+                try
+                {
+                    Func<Database, ValueTask>? disposeForTests =
+                        Volatile.Read(ref DisposeExclusiveDatabaseForTests);
+                    if (disposeForTests is null)
+                        await db.DisposeAsync();
+                    else
+                        await disposeForTests(db);
+                }
+                catch (Exception disposalException)
+                {
+                    try
+                    {
+                        maintenanceOperation?.SetPhase(
+                            MaintenanceOperationPhase.Reopening);
+                        await ReopenAndCacheExclusiveDatabaseAsync(
+                            releaseCompletion,
+                            CancellationToken.None);
+                    }
+                    catch (Exception recoveryException)
+                    {
+                        throw new AggregateException(
+                            "Exclusive database access failed and the unchanged database could not be reopened.",
+                            disposalException,
+                            recoveryException);
+                    }
+
+                    throw;
+                }
+                reopenUnchangedDestinationOnPrePonr = true;
                 MarkRuntimeDiagnosticsCounterFamilyReset();
             }
 
             return new ExclusiveDatabaseAccessLease(
                 this,
                 releaseCompletion,
-                clientLock);
+                clientLock,
+                reopenUnchangedDestinationOnPrePonr);
         }
-        catch
+        catch (Exception exception)
         {
-            CompleteExclusiveDatabaseAccess(releaseCompletion, ref clientLock);
+            if (releaseCompletion is null)
+            {
+                clientLock.Dispose();
+            }
+            else
+            {
+                CompleteExclusiveDatabaseAccess(
+                    releaseCompletion,
+                    ref clientLock);
+            }
+
+            if (exception is ExclusiveDatabaseAccessRejectedException rejection &&
+                maintenanceOperation is null)
+            {
+                throw new CSharpDbClientException(rejection.Message);
+            }
             throw;
+        }
+    }
+
+    private async ValueTask ReopenAndCacheExclusiveDatabaseAsync(
+        TaskCompletionSource releaseCompletion,
+        CancellationToken ct)
+    {
+        Database? database = null;
+        try
+        {
+            database = await OpenOwnedDatabaseAsync(_databasePath, ct);
+            lock (_databaseGate)
+            {
+                if (!ReferenceEquals(
+                        _databaseReleaseCompletion,
+                        releaseCompletion) ||
+                    releaseCompletion.Task.IsCompleted ||
+                    _databaseTask is not null)
+                {
+                    throw new InvalidOperationException(
+                        "Exclusive database access ended before the restored database could be cached.");
+                }
+
+                _databaseOwnershipEpoch++;
+                _catalogsInitialized = false;
+                _databaseTask = Task.FromResult(database);
+                database = null;
+            }
+        }
+        finally
+        {
+            if (database is not null)
+                await database.DisposeAsync();
         }
     }
 
@@ -2269,12 +2397,17 @@ internal sealed partial class EngineTransportClient :
         public ExclusiveDatabaseAccessLease(
             EngineTransportClient owner,
             TaskCompletionSource releaseCompletion,
-            ClientLockLease clientLock)
+            ClientLockLease clientLock,
+            bool reopenUnchangedDestinationOnPrePonr)
         {
             _owner = owner;
             _releaseCompletion = releaseCompletion;
             _clientLock = clientLock;
+            ReopenUnchangedDestinationOnPrePonr =
+                reopenUnchangedDestinationOnPrePonr;
         }
+
+        internal bool ReopenUnchangedDestinationOnPrePonr { get; }
 
         public ValueTask DisposeAsync()
         {
@@ -2287,7 +2420,20 @@ internal sealed partial class EngineTransportClient :
 
             return ValueTask.CompletedTask;
         }
+
+        internal ValueTask ReopenAndCacheAsync(CancellationToken ct)
+        {
+            ObjectDisposedException.ThrowIf(
+                Volatile.Read(ref _disposed) != 0,
+                this);
+            return _owner.ReopenAndCacheExclusiveDatabaseAsync(
+                _releaseCompletion,
+                ct);
+        }
     }
+
+    private sealed class ExclusiveDatabaseAccessRejectedException(
+        string message) : Exception(message);
 
     private static TableSchema MapTableSchema(CoreTableSchema schema)
         => new()

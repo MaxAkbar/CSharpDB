@@ -14,20 +14,59 @@ internal sealed partial class EngineTransportClient
         ArgumentNullException.ThrowIfNull(request);
         ArgumentException.ThrowIfNullOrWhiteSpace(request.DestinationPath);
 
-        using ClientLockLease clientLock = await AcquireClientLockAsync(ct);
-        if (!_transactions.IsEmpty)
+        IDisposable? diagnosticBoundary = EnterDirectOperationalTransportScope();
+        ClientMaintenanceLifetimeLease? maintenanceLifetime = null;
+        MaintenanceObservation? operation = null;
+        IDisposable? operationScope = null;
+        ClientLockLease clientLock = default;
+        bool lockTaken = false;
+        try
         {
-            throw new CSharpDbClientException(
-                "Backup requires committed state. Commit or rollback active client-managed transactions and retry.");
-        }
+            if (IsClientMaintenanceObservationEnabled())
+            {
+                maintenanceLifetime = RegisterClientMaintenanceLifetime();
+                operation = StartClientMaintenanceObservation(
+                    MaintenanceOperationKind.Backup,
+                    MaintenanceOperationPhase.Queued,
+                    CSharpDbOperationClass.Backup,
+                    CSharpDbLogEvents.BackupCompleted);
+                operationScope = operation?.EnterScope();
+            }
 
-        var database = await GetDatabaseAsync(ct);
-        return MapBackupResult(await DatabaseBackupCoordinator.BackupAsync(
-            database,
-            _databasePath,
-            request.DestinationPath,
-            request.WithManifest,
-            ct));
+            clientLock = await AcquireClientLockAsync(ct);
+            lockTaken = true;
+            ThrowIfDisposing();
+            if (!_transactions.IsEmpty)
+            {
+                operation?.Reject(SafeErrorKind.DatabaseBusy);
+                throw new CSharpDbClientException(
+                    "Backup requires committed state. Commit or rollback active client-managed transactions and retry.");
+            }
+
+            operation?.SetPhase(MaintenanceOperationPhase.AcquiringAccess);
+            var database = await GetDatabaseAsync(ct);
+            return MapBackupResult(
+                await DatabaseBackupCoordinator.BackupFromClientAsync(
+                    database,
+                    _databasePath,
+                    request.DestinationPath,
+                    request.WithManifest,
+                    operation,
+                    ct));
+        }
+        catch (Exception exception)
+        {
+            operation?.Fail(exception);
+            throw;
+        }
+        finally
+        {
+            if (lockTaken)
+                clientLock.Dispose();
+            operationScope?.Dispose();
+            maintenanceLifetime?.Dispose();
+            diagnosticBoundary?.Dispose();
+        }
     }
 
     public async Task<RestoreResult> RestoreAsync(RestoreRequest request, CancellationToken ct = default)
@@ -37,49 +76,165 @@ internal sealed partial class EngineTransportClient
 
         if (request.ValidateOnly)
         {
-            return MapRestoreResult(await DatabaseBackupCoordinator.ValidateRestoreSourceAsync(
-                request.SourcePath,
-                ct));
+            IDisposable? diagnosticBoundary =
+                EnterDirectOperationalTransportScope();
+            ClientMaintenanceLifetimeLease? maintenanceLifetime = null;
+            MaintenanceObservation? operation = null;
+            IDisposable? operationScope = null;
+            try
+            {
+                if (IsClientMaintenanceObservationEnabled())
+                {
+                    maintenanceLifetime = RegisterClientMaintenanceLifetime();
+                    operation = StartClientMaintenanceObservation(
+                        MaintenanceOperationKind.RestoreValidation,
+                        MaintenanceOperationPhase.Validating,
+                        CSharpDbOperationClass.Restore,
+                        CSharpDbLogEvents.RestoreCompleted);
+                    operationScope = operation?.EnterScope();
+                }
+                return MapRestoreResult(
+                    await DatabaseBackupCoordinator
+                        .ValidateRestoreSourceFromClientAsync(
+                            request.SourcePath,
+                            operation,
+                            ct));
+            }
+            catch (Exception exception)
+            {
+                operation?.Fail(exception);
+                throw;
+            }
+            finally
+            {
+                operationScope?.Dispose();
+                maintenanceLifetime?.Dispose();
+                diagnosticBoundary?.Dispose();
+            }
         }
 
-        await using var _ = await AcquireExclusiveDatabaseAccessAsync(
-            ct,
-            "Restore requires exclusive access. Close active snapshot readers and retry.");
-
-        if (!_transactions.IsEmpty)
+        IDisposable? fullRestoreBoundary = EnterDirectOperationalTransportScope();
+        ClientMaintenanceLifetimeLease? fullRestoreLifetime = null;
+        MaintenanceObservation? fullRestoreOperation = null;
+        IDisposable? fullRestoreScope = null;
+        ExclusiveDatabaseAccessLease? exclusiveLease = null;
+        try
         {
-            throw new CSharpDbClientException(
-                "Restore requires exclusive access. Commit or rollback active client-managed transactions and retry.");
-        }
+            if (IsClientMaintenanceObservationEnabled())
+            {
+                fullRestoreLifetime = RegisterClientMaintenanceLifetime();
+                fullRestoreOperation = StartClientMaintenanceObservation(
+                    MaintenanceOperationKind.Restore,
+                    MaintenanceOperationPhase.Queued,
+                    CSharpDbOperationClass.Restore,
+                    CSharpDbLogEvents.RestoreCompleted);
+                fullRestoreScope = fullRestoreOperation?.EnterScope();
+            }
 
-        return MapRestoreResult(await DatabaseBackupCoordinator.RestoreAsync(
-            request.SourcePath,
-            _databasePath,
-            static _ => ValueTask.CompletedTask,
-            ct));
+            if (_databasePath.StartsWith(
+                    ":memory:",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                fullRestoreOperation?.Reject(
+                    SafeErrorKind.ClientConfiguration);
+                throw new CSharpDbClientException(
+                    "Full restore requires a file-backed direct database.");
+            }
+
+            exclusiveLease = await AcquireExclusiveDatabaseAccessAsync(
+                ct,
+                "Restore requires exclusive access. Close active snapshot readers and retry.",
+                "Restore requires exclusive access. Commit or rollback active client-managed transactions and retry.",
+                fullRestoreOperation);
+
+            return MapRestoreResult(
+                await DatabaseBackupCoordinator.RestoreFromClientAsync(
+                    request.SourcePath,
+                    _databasePath,
+                    exclusiveLease.ReopenAndCacheAsync,
+                    exclusiveLease.ReopenUnchangedDestinationOnPrePonr,
+                    fullRestoreOperation,
+                    ct));
+        }
+        catch (ExclusiveDatabaseAccessRejectedException exception)
+        {
+            fullRestoreOperation?.Reject(SafeErrorKind.DatabaseBusy);
+            throw new CSharpDbClientException(exception.Message);
+        }
+        catch (Exception exception)
+        {
+            fullRestoreOperation?.Fail(exception);
+            throw;
+        }
+        finally
+        {
+            if (exclusiveLease is not null)
+                await exclusiveLease.DisposeAsync();
+            fullRestoreScope?.Dispose();
+            fullRestoreLifetime?.Dispose();
+            fullRestoreBoundary?.Dispose();
+        }
     }
 
     public async Task<ForeignKeyMigrationResult> MigrateForeignKeysAsync(ForeignKeyMigrationRequest request, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        await using var _ = await AcquireExclusiveDatabaseAccessAsync(
-            ct,
-            "Foreign key migration requires exclusive access. Close active snapshot readers and retry.");
-
-        if (!_transactions.IsEmpty)
+        IDisposable? diagnosticBoundary = EnterDirectOperationalTransportScope();
+        ClientMaintenanceLifetimeLease? maintenanceLifetime = null;
+        MaintenanceObservation? operation = null;
+        IDisposable? operationScope = null;
+        ExclusiveDatabaseAccessLease? exclusiveLease = null;
+        try
         {
-            throw new CSharpDbClientException(
-                "Foreign key migration requires exclusive access. Commit or rollback active client-managed transactions and retry.");
+            if (IsClientMaintenanceObservationEnabled())
+            {
+                maintenanceLifetime = RegisterClientMaintenanceLifetime();
+                operation = StartClientMaintenanceObservation(
+                    MaintenanceOperationKind.ForeignKeyMigration,
+                    MaintenanceOperationPhase.Queued,
+                    CSharpDbOperationClass.Maintenance,
+                    CSharpDbLogEvents.MaintenanceCompleted);
+                operationScope = operation?.EnterScope();
+            }
+
+            exclusiveLease = await AcquireExclusiveDatabaseAccessAsync(
+                ct,
+                "Foreign key migration requires exclusive access. Close active snapshot readers and retry.",
+                "Foreign key migration requires exclusive access. Commit or rollback active client-managed transactions and retry.",
+                operation);
+
+            ForeignKeyMigrationResult result = MapForeignKeyMigrationResult(
+                await DatabaseMaintenanceCoordinator
+                    .MigrateForeignKeysFromClientAsync(
+                        _databasePath,
+                        MapForeignKeyMigrationRequest(request),
+                        operation,
+                        ct));
+            operation?.Succeed(
+                result.AffectedTables,
+                result.AffectedTables,
+                errorCount: result.ViolationCount);
+            return result;
         }
-
-        ForeignKeyMigrationResult result = MapForeignKeyMigrationResult(
-            await DatabaseMaintenanceCoordinator.MigrateForeignKeysAsync(
-                _databasePath,
-                MapForeignKeyMigrationRequest(request),
-                ct));
-
-        return result;
+        catch (ExclusiveDatabaseAccessRejectedException exception)
+        {
+            operation?.Reject(SafeErrorKind.DatabaseBusy);
+            throw new CSharpDbClientException(exception.Message);
+        }
+        catch (Exception exception)
+        {
+            operation?.Fail(exception);
+            throw;
+        }
+        finally
+        {
+            if (exclusiveLease is not null)
+                await exclusiveLease.DisposeAsync();
+            operationScope?.Dispose();
+            maintenanceLifetime?.Dispose();
+            diagnosticBoundary?.Dispose();
+        }
     }
 
     public async Task<CSharpDB.Client.Models.DatabaseMaintenanceReport> GetMaintenanceReportAsync(CancellationToken ct = default)
@@ -119,32 +274,114 @@ internal sealed partial class EngineTransportClient
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        await using var _ = await AcquireExclusiveDatabaseAccessAsync(
-            ct,
-            "Maintenance requires exclusive access. Close active snapshot readers and retry.");
-
-        if (!_transactions.IsEmpty)
+        IDisposable? diagnosticBoundary = EnterDirectOperationalTransportScope();
+        ClientMaintenanceLifetimeLease? maintenanceLifetime = null;
+        MaintenanceObservation? operation = null;
+        IDisposable? operationScope = null;
+        ExclusiveDatabaseAccessLease? exclusiveLease = null;
+        try
         {
-            throw new CSharpDbClientException(
-                "Maintenance requires exclusive access. Commit or rollback active client-managed transactions and retry.");
-        }
+            if (IsClientMaintenanceObservationEnabled())
+            {
+                maintenanceLifetime = RegisterClientMaintenanceLifetime();
+                operation = StartClientMaintenanceObservation(
+                    MaintenanceOperationKind.Reindex,
+                    MaintenanceOperationPhase.Queued,
+                    CSharpDbOperationClass.Reindex,
+                    CSharpDbLogEvents.MaintenanceCompleted);
+                operationScope = operation?.EnterScope();
+            }
 
-        return MapReindexResult(await DatabaseMaintenanceCoordinator.ReindexAsync(_databasePath, MapReindexRequest(request), ct));
+            exclusiveLease = await AcquireExclusiveDatabaseAccessAsync(
+                ct,
+                "Maintenance requires exclusive access. Close active snapshot readers and retry.",
+                "Maintenance requires exclusive access. Commit or rollback active client-managed transactions and retry.",
+                operation);
+
+            ReindexResult result = MapReindexResult(
+                await DatabaseMaintenanceCoordinator.ReindexFromClientAsync(
+                    _databasePath,
+                    MapReindexRequest(request),
+                    operation,
+                    ct));
+            operation?.Succeed(
+                result.RebuiltIndexCount,
+                result.RebuiltIndexCount,
+                warningCount: result.RecoveredCorruptIndexCount);
+            return result;
+        }
+        catch (ExclusiveDatabaseAccessRejectedException exception)
+        {
+            operation?.Reject(SafeErrorKind.DatabaseBusy);
+            throw new CSharpDbClientException(exception.Message);
+        }
+        catch (Exception exception)
+        {
+            operation?.Fail(exception);
+            throw;
+        }
+        finally
+        {
+            if (exclusiveLease is not null)
+                await exclusiveLease.DisposeAsync();
+            operationScope?.Dispose();
+            maintenanceLifetime?.Dispose();
+            diagnosticBoundary?.Dispose();
+        }
     }
 
     private async Task<VacuumResult> VacuumCoreAsync(CancellationToken ct)
     {
-        await using var _ = await AcquireExclusiveDatabaseAccessAsync(
-            ct,
-            "Maintenance requires exclusive access. Close active snapshot readers and retry.");
-
-        if (!_transactions.IsEmpty)
+        IDisposable? diagnosticBoundary = EnterDirectOperationalTransportScope();
+        ClientMaintenanceLifetimeLease? maintenanceLifetime = null;
+        MaintenanceObservation? operation = null;
+        IDisposable? operationScope = null;
+        ExclusiveDatabaseAccessLease? exclusiveLease = null;
+        try
         {
-            throw new CSharpDbClientException(
-                "Maintenance requires exclusive access. Commit or rollback active client-managed transactions and retry.");
-        }
+            if (IsClientMaintenanceObservationEnabled())
+            {
+                maintenanceLifetime = RegisterClientMaintenanceLifetime();
+                operation = StartClientMaintenanceObservation(
+                    MaintenanceOperationKind.Vacuum,
+                    MaintenanceOperationPhase.Queued,
+                    CSharpDbOperationClass.Vacuum,
+                    CSharpDbLogEvents.MaintenanceCompleted);
+                operationScope = operation?.EnterScope();
+            }
 
-        return MapVacuumResult(await DatabaseMaintenanceCoordinator.VacuumAsync(_databasePath, ct));
+            exclusiveLease = await AcquireExclusiveDatabaseAccessAsync(
+                ct,
+                "Maintenance requires exclusive access. Close active snapshot readers and retry.",
+                "Maintenance requires exclusive access. Commit or rollback active client-managed transactions and retry.",
+                operation);
+
+            VacuumResult result = MapVacuumResult(
+                await DatabaseMaintenanceCoordinator.VacuumFromClientAsync(
+                    _databasePath,
+                    operation,
+                    ct));
+            operation?.Succeed();
+            return result;
+        }
+        catch (ExclusiveDatabaseAccessRejectedException exception)
+        {
+            operation?.Reject(SafeErrorKind.DatabaseBusy);
+            throw new CSharpDbClientException(exception.Message);
+        }
+        catch (Exception exception)
+        {
+            operation?.Fail(exception);
+            throw;
+        }
+        finally
+        {
+            if (exclusiveLease is not null)
+                await exclusiveLease.DisposeAsync();
+            operationScope?.Dispose();
+            maintenanceLifetime?.Dispose();
+            diagnosticBoundary?.Dispose();
+        }
     }
 
     private async Task<SqlExecutionResult> ExecuteSqlCoreAsync(string sql, CancellationToken ct)

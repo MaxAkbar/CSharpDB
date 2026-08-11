@@ -11,6 +11,7 @@ public static class DatabaseInspector
         DatabaseInspectOptions? options = null,
         CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         options ??= new DatabaseInspectOptions();
 
         InspectorEngine.DatabaseSnapshot snapshot = await InspectorEngine.ReadDatabaseSnapshotAsync(
@@ -18,7 +19,7 @@ public static class DatabaseInspector
             captureLeafPayload: true,
             ct);
 
-        var issues = new List<IntegrityIssue>(snapshot.Issues);
+        List<IntegrityIssue> issues = InspectorEngine.CopyIssues(snapshot.Issues, ct);
 
         // Cross-check schema root and reachable trees.
         uint schemaRoot = snapshot.Header.SchemaRootPage;
@@ -39,40 +40,66 @@ public static class DatabaseInspector
                 snapshot.Pages,
                 snapshot.PhysicalPageCount,
                 issues,
-                scope: "schema-catalog");
+                scope: "schema-catalog",
+                ct: ct);
 
-            CatalogRoots roots = CollectCatalogRoots(schemaTreePages, snapshot.Pages, snapshot.PhysicalPageCount, issues);
+            CatalogRoots roots = CollectCatalogRoots(
+                schemaTreePages,
+                snapshot.Pages,
+                snapshot.PhysicalPageCount,
+                issues,
+                ct);
 
-            ValidateRootPage(roots.IndexCatalogRootPage, "index-catalog", snapshot, issues);
-            ValidateRootPage(roots.ViewCatalogRootPage, "view-catalog", snapshot, issues);
-            ValidateRootPage(roots.TriggerCatalogRootPage, "trigger-catalog", snapshot, issues);
-            ValidateRootPage(roots.TableStatsCatalogRootPage, "table-stats-catalog", snapshot, issues);
-            ValidateRootPage(roots.ColumnStatsCatalogRootPage, "column-stats-catalog", snapshot, issues);
+            ValidateRootPage(roots.IndexCatalogRootPage, "index-catalog", snapshot, issues, ct);
+            ValidateRootPage(roots.ViewCatalogRootPage, "view-catalog", snapshot, issues, ct);
+            ValidateRootPage(roots.TriggerCatalogRootPage, "trigger-catalog", snapshot, issues, ct);
+            ValidateRootPage(roots.TableStatsCatalogRootPage, "table-stats-catalog", snapshot, issues, ct);
+            ValidateRootPage(roots.ColumnStatsCatalogRootPage, "column-stats-catalog", snapshot, issues, ct);
 
             foreach (var tableRoot in roots.TableRoots)
-                ValidateRootPage(tableRoot.RootPage, $"table:{tableRoot.Name}", snapshot, issues);
+            {
+                ct.ThrowIfCancellationRequested();
+                ValidateRootPage(tableRoot.RootPage, $"table:{tableRoot.Name}", snapshot, issues, ct);
+            }
 
             foreach (var indexRoot in roots.IndexRoots)
-                ValidateRootPage(indexRoot.RootPage, $"index:{indexRoot.Name}", snapshot, issues);
+            {
+                ct.ThrowIfCancellationRequested();
+                ValidateRootPage(indexRoot.RootPage, $"index:{indexRoot.Name}", snapshot, issues, ct);
+            }
 
             foreach (var viewRoot in roots.ViewRoots)
-                ValidateRootPage(viewRoot.RootPage, $"view:{viewRoot.Name}", snapshot, issues);
+            {
+                ct.ThrowIfCancellationRequested();
+                ValidateRootPage(viewRoot.RootPage, $"view:{viewRoot.Name}", snapshot, issues, ct);
+            }
 
             foreach (var triggerRoot in roots.TriggerRoots)
-                ValidateRootPage(triggerRoot.RootPage, $"trigger:{triggerRoot.Name}", snapshot, issues);
+            {
+                ct.ThrowIfCancellationRequested();
+                ValidateRootPage(triggerRoot.RootPage, $"trigger:{triggerRoot.Name}", snapshot, issues, ct);
+            }
         }
 
-        var histogram = snapshot.Pages.Values
-            .GroupBy(p => InspectorEngine.PageTypeName(p.PageType), StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
+        var histogram = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (InspectorEngine.ParsedPage page in snapshot.Pages.Values)
+        {
+            ct.ThrowIfCancellationRequested();
+            string pageTypeName = InspectorEngine.PageTypeName(page.PageType);
+            histogram.TryGetValue(pageTypeName, out int count);
+            histogram[pageTypeName] = count + 1;
+        }
 
         List<PageReport>? pageReports = null;
         if (options.IncludePages)
         {
-            pageReports = snapshot.Pages
-                .OrderBy(kvp => kvp.Key)
-                .Select(kvp => ToReport(kvp.Value))
-                .ToList();
+            pageReports = new List<PageReport>(snapshot.Pages.Count);
+            for (uint pageId = 0; pageId < (uint)snapshot.PhysicalPageCount; pageId++)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (snapshot.Pages.TryGetValue(pageId, out InspectorEngine.ParsedPage? page))
+                    pageReports.Add(ToReport(page, ct));
+            }
         }
 
         return new DatabaseInspectReport
@@ -92,6 +119,7 @@ public static class DatabaseInspector
         bool includeHex = false,
         CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         var issues = new List<IntegrityIssue>();
 
         byte[]? pageBytes = await InspectorEngine.ReadPageBytesAsync(dbPath, pageId, ct);
@@ -116,7 +144,11 @@ public static class DatabaseInspector
             };
         }
 
-        InspectorEngine.ParsePageResult parsed = InspectorEngine.ParsePage(pageId, pageBytes, captureLeafPayload: true);
+        InspectorEngine.ParsePageResult parsed = InspectorEngine.ParsePage(
+            pageId,
+            pageBytes,
+            captureLeafPayload: true,
+            ct: ct);
         issues.AddRange(parsed.Issues);
 
         return new PageInspectReport
@@ -124,44 +156,59 @@ public static class DatabaseInspector
             DatabasePath = dbPath,
             PageId = pageId,
             Exists = true,
-            Page = ToReport(parsed.Page),
-            HexDump = includeHex ? InspectorEngine.BuildHexDump(pageBytes) : null,
+            Page = ToReport(parsed.Page, ct),
+            HexDump = includeHex ? InspectorEngine.BuildHexDump(pageBytes, ct) : null,
             Issues = issues,
         };
     }
 
-    private static PageReport ToReport(InspectorEngine.ParsedPage page)
+    private static PageReport ToReport(InspectorEngine.ParsedPage page, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
+
         List<LeafCellReport>? leafCells = null;
         List<InteriorCellReport>? interiorCells = null;
 
         if (page.PageType == PageConstants.PageTypeLeaf)
         {
-            leafCells = page.LeafCells
-                .Select(c => new LeafCellReport
+            leafCells = new List<LeafCellReport>(page.LeafCells.Count);
+            foreach (InspectorEngine.ParsedLeafCell cell in page.LeafCells)
+            {
+                ct.ThrowIfCancellationRequested();
+                leafCells.Add(new LeafCellReport
                 {
-                    CellIndex = c.CellIndex,
-                    CellOffset = c.CellOffset,
-                    HeaderBytes = c.HeaderBytes,
-                    CellTotalBytes = c.CellTotalBytes,
-                    Key = c.Key,
-                    PayloadBytes = c.Payload?.Length ?? 0,
-                })
-                .ToList();
+                    CellIndex = cell.CellIndex,
+                    CellOffset = cell.CellOffset,
+                    HeaderBytes = cell.HeaderBytes,
+                    CellTotalBytes = cell.CellTotalBytes,
+                    Key = cell.Key,
+                    PayloadBytes = cell.Payload?.Length ?? 0,
+                });
+            }
         }
         else if (page.PageType == PageConstants.PageTypeInterior)
         {
-            interiorCells = page.InteriorCells
-                .Select(c => new InteriorCellReport
+            interiorCells = new List<InteriorCellReport>(page.InteriorCells.Count);
+            foreach (InspectorEngine.ParsedInteriorCell cell in page.InteriorCells)
+            {
+                ct.ThrowIfCancellationRequested();
+                interiorCells.Add(new InteriorCellReport
                 {
-                    CellIndex = c.CellIndex,
-                    CellOffset = c.CellOffset,
-                    HeaderBytes = c.HeaderBytes,
-                    CellTotalBytes = c.CellTotalBytes,
-                    LeftChildPage = c.LeftChildPage,
-                    Key = c.Key,
-                })
-                .ToList();
+                    CellIndex = cell.CellIndex,
+                    CellOffset = cell.CellOffset,
+                    HeaderBytes = cell.HeaderBytes,
+                    CellTotalBytes = cell.CellTotalBytes,
+                    LeftChildPage = cell.LeftChildPage,
+                    Key = cell.Key,
+                });
+            }
+        }
+
+        var cellOffsets = new List<int>(page.CellOffsets.Count);
+        foreach (ushort cellOffset in page.CellOffsets)
+        {
+            ct.ThrowIfCancellationRequested();
+            cellOffsets.Add(cellOffset);
         }
 
         return new PageReport
@@ -174,7 +221,7 @@ public static class DatabaseInspector
             CellContentStart = page.CellContentStart,
             RightChildOrNextLeaf = page.RightChildOrNextLeaf,
             FreeSpaceBytes = page.FreeSpaceBytes,
-            CellOffsets = page.CellOffsets.Select(x => (int)x).ToList(),
+            CellOffsets = cellOffsets,
             LeafCells = leafCells,
             InteriorCells = interiorCells,
         };
@@ -184,8 +231,11 @@ public static class DatabaseInspector
         uint rootPage,
         string scope,
         InspectorEngine.DatabaseSnapshot snapshot,
-        List<IntegrityIssue> issues)
+        List<IntegrityIssue> issues,
+        CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
+
         if (rootPage == PageConstants.NullPageId)
             return;
 
@@ -225,7 +275,7 @@ public static class DatabaseInspector
             return;
         }
 
-        _ = InspectorEngine.WalkBTree(rootPage, snapshot.Pages, snapshot.PhysicalPageCount, issues, scope);
+        _ = InspectorEngine.WalkBTree(rootPage, snapshot.Pages, snapshot.PhysicalPageCount, issues, scope, ct);
     }
 
     private readonly record struct NamedRoot(string Name, uint RootPage);
@@ -248,7 +298,8 @@ public static class DatabaseInspector
         HashSet<uint> schemaTreePages,
         IReadOnlyDictionary<uint, InspectorEngine.ParsedPage> pages,
         int physicalPageCount,
-        List<IntegrityIssue> issues)
+        List<IntegrityIssue> issues,
+        CancellationToken ct)
     {
         uint indexCatalogRoot = 0;
         uint viewCatalogRoot = 0;
@@ -259,11 +310,15 @@ public static class DatabaseInspector
 
         foreach (uint pageId in schemaTreePages)
         {
+            ct.ThrowIfCancellationRequested();
+
             if (!pages.TryGetValue(pageId, out var page) || page.PageType != PageConstants.PageTypeLeaf)
                 continue;
 
             foreach (var cell in page.LeafCells)
             {
+                ct.ThrowIfCancellationRequested();
+
                 if (!cell.Key.HasValue || cell.Payload is null)
                     continue;
 
@@ -354,9 +409,9 @@ public static class DatabaseInspector
             }
         }
 
-        var indexRoots = CollectIndexRoots(indexCatalogRoot, pages, physicalPageCount, issues);
-        var viewRoots = CollectViewRoots(viewCatalogRoot, pages, physicalPageCount, issues);
-        var triggerRoots = CollectTriggerRoots(triggerCatalogRoot, pages, physicalPageCount, issues);
+        var indexRoots = CollectIndexRoots(indexCatalogRoot, pages, physicalPageCount, issues, ct);
+        var viewRoots = CollectViewRoots(viewCatalogRoot, pages, physicalPageCount, issues, ct);
+        var triggerRoots = CollectTriggerRoots(triggerCatalogRoot, pages, physicalPageCount, issues, ct);
 
         return new CatalogRoots
         {
@@ -376,20 +431,25 @@ public static class DatabaseInspector
         uint indexCatalogRoot,
         IReadOnlyDictionary<uint, InspectorEngine.ParsedPage> pages,
         int physicalPageCount,
-        List<IntegrityIssue> issues)
+        List<IntegrityIssue> issues,
+        CancellationToken ct)
     {
         var roots = new List<NamedRoot>();
         if (indexCatalogRoot == 0)
             return roots;
 
-        var treePages = InspectorEngine.WalkBTree(indexCatalogRoot, pages, physicalPageCount, issues, "index-catalog");
+        var treePages = InspectorEngine.WalkBTree(indexCatalogRoot, pages, physicalPageCount, issues, "index-catalog", ct);
         foreach (uint pageId in treePages)
         {
+            ct.ThrowIfCancellationRequested();
+
             if (!pages.TryGetValue(pageId, out var page) || page.PageType != PageConstants.PageTypeLeaf)
                 continue;
 
             foreach (var cell in page.LeafCells)
             {
+                ct.ThrowIfCancellationRequested();
+
                 if (cell.Payload is null || cell.Payload.Length < 4)
                     continue;
 
@@ -420,20 +480,25 @@ public static class DatabaseInspector
         uint viewCatalogRoot,
         IReadOnlyDictionary<uint, InspectorEngine.ParsedPage> pages,
         int physicalPageCount,
-        List<IntegrityIssue> issues)
+        List<IntegrityIssue> issues,
+        CancellationToken ct)
     {
         var roots = new List<NamedRoot>();
         if (viewCatalogRoot == 0)
             return roots;
 
-        var treePages = InspectorEngine.WalkBTree(viewCatalogRoot, pages, physicalPageCount, issues, "view-catalog");
+        var treePages = InspectorEngine.WalkBTree(viewCatalogRoot, pages, physicalPageCount, issues, "view-catalog", ct);
         foreach (uint pageId in treePages)
         {
+            ct.ThrowIfCancellationRequested();
+
             if (!pages.TryGetValue(pageId, out var page) || page.PageType != PageConstants.PageTypeLeaf)
                 continue;
 
             foreach (var cell in page.LeafCells)
             {
+                ct.ThrowIfCancellationRequested();
+
                 if (cell.Payload is null)
                     continue;
 
@@ -463,20 +528,25 @@ public static class DatabaseInspector
         uint triggerCatalogRoot,
         IReadOnlyDictionary<uint, InspectorEngine.ParsedPage> pages,
         int physicalPageCount,
-        List<IntegrityIssue> issues)
+        List<IntegrityIssue> issues,
+        CancellationToken ct)
     {
         var roots = new List<NamedRoot>();
         if (triggerCatalogRoot == 0)
             return roots;
 
-        var treePages = InspectorEngine.WalkBTree(triggerCatalogRoot, pages, physicalPageCount, issues, "trigger-catalog");
+        var treePages = InspectorEngine.WalkBTree(triggerCatalogRoot, pages, physicalPageCount, issues, "trigger-catalog", ct);
         foreach (uint pageId in treePages)
         {
+            ct.ThrowIfCancellationRequested();
+
             if (!pages.TryGetValue(pageId, out var page) || page.PageType != PageConstants.PageTypeLeaf)
                 continue;
 
             foreach (var cell in page.LeafCells)
             {
+                ct.ThrowIfCancellationRequested();
+
                 if (cell.Payload is null)
                     continue;
 

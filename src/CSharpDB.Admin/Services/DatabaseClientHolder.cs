@@ -278,6 +278,14 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbObservabili
         GetRuntimeDiagnosticsAsync(CancellationToken ct = default)
         => DelegateObservabilityAsync(client => client.GetRuntimeDiagnosticsAsync(ct));
 
+    public Task<DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<StorageRuntimeDiagnosticsSnapshot>>>
+        GetStorageDiagnosticsAsync(CancellationToken ct = default)
+        => DelegateObservabilityAsync(client => client.GetStorageDiagnosticsAsync(ct));
+
+    public Task<DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<WalRuntimeDiagnosticsSnapshot>>>
+        GetWalDiagnosticsAsync(CancellationToken ct = default)
+        => DelegateObservabilityAsync(client => client.GetWalDiagnosticsAsync(ct));
+
     public Task<DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<ActiveQuerySnapshot>>>
         GetActiveQueriesAsync(int maximumRecords, CancellationToken ct = default)
         => DelegateObservabilityAsync(client => client.GetActiveQueriesAsync(maximumRecords, ct));
@@ -293,6 +301,14 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbObservabili
     public Task<DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<SessionDiagnosticsSnapshot>>>
         GetSessionsAsync(int maximumRecords, CancellationToken ct = default)
         => DelegateObservabilityAsync(client => client.GetSessionsAsync(maximumRecords, ct));
+
+    public Task<DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>
+        GetActiveMaintenanceOperationsAsync(int maximumRecords, CancellationToken ct = default)
+        => DelegateObservabilityAsync(client => client.GetActiveMaintenanceOperationsAsync(maximumRecords, ct));
+
+    public Task<DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>
+        GetRecentMaintenanceOperationsAsync(int maximumRecords, CancellationToken ct = default)
+        => DelegateObservabilityAsync(client => client.GetRecentMaintenanceOperationsAsync(maximumRecords, ct));
 
     public Task<DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<QueryDetailSnapshot>>>
         GetQueryDetailAsync(OpaqueDiagnosticsId operationId, CancellationToken ct = default)

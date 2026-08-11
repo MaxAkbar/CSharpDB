@@ -482,7 +482,8 @@ Qualification on 2026-08-10:
 
 ## Phase 2: Query, Plan, Connection, And Session Visibility
 
-Status: `Complete` (2026-08-11)
+Status: `Complete` (2026-08-11). Formal performance attribution remains
+unqualified on this host, as recorded in the qualification evidence below.
 
 Progress on 2026-08-10:
 
@@ -685,7 +686,7 @@ Exit gate:
 
 Satisfied on 2026-08-11. The implementation, compatibility, security,
 boundedness, lifecycle, packaging, trim/AOT, and paired performance evidence
-above demonstrates the acceptance criteria below; Phase 3 has not started.
+above demonstrates the acceptance criteria below; Phase 3 started afterward.
 
 - Concurrent query start, completion, cancellation, and disposal cannot leak
   active entries or complete an entry twice.
@@ -700,81 +701,301 @@ above demonstrates the acceptance criteria below; Phase 3 has not started.
 
 ## Phase 3: Storage, WAL, Backup, And Restore Diagnostics
 
-Status: `Not started`
+Status: `Complete` (2026-08-11)
 
 Goal: turn existing internal storage counters and maintenance results into safe
 live operational snapshots without converting offline inspection into a hot
 path.
 
+First live-gauge slice on 2026-08-11:
+
+- Reused the existing Phase 2 storage, WAL, checkpoint-phase, availability, and
+  JSON contracts; no public DTO, protobuf, endpoint, or client-interface change
+  was required.
+- Added runtime-family-owned registration for successfully opened public
+  built-in database handles. Failed opens and private snapshot handles never
+  register; custom storage factories report `Unsupported`; enabled families
+  without a live handle report `Unavailable`; disabled diagnostics create no
+  component.
+- Added bounded, O(1), read-side-stabilized gauges for logical database and WAL
+  extents, file extents where applicable, pages, dirty pages when they are
+  knowable, active readers and writers, WAL frames and committed-frame bytes,
+  retained checkpoint suffix bytes, outstanding logical commits, and current
+  checkpoint phase. In-memory and snapshot-resident modes never infer physical
+  allocation from a backing path.
+- At this first checkpoint, kept resettable benchmark counters and semantically
+  ambiguous commit/conflict values out of the public runtime snapshot.
+  Checkpoint/recovery detail and maintenance history remain subsequent Phase 3
+  slices; the non-resetting cumulative counter follow-on is recorded below.
+- Registration disposal is serialized against capture and completes before
+  pager disposal. Multiple live handles use documented maxima, saturating sums,
+  nullable propagation, and highest-phase aggregation; aggregate multi-family
+  summaries remain unavailable while exact family children are authoritative.
+- Independent review caught and fixed fault-state relabeling and mixed-epoch
+  WAL/Pager captures. The frozen slice passed clean Release builds, `116/116`
+  focused storage/checkpoint tests, `93/93` Engine/Client runtime-adjacent tests,
+  and a root rerun of the `82/82` WAL plus storage-runtime tests.
+
+Non-resetting lifetime-counter follow-on on 2026-08-11:
+
+- Added sticky, saturating production lifetimes for logical WAL commit
+  publications, file-WAL commit-publication batches, and the committed frame
+  bytes covered by those batches. They project through the existing
+  `Storage.CommitCount`, `Wal.FlushCount`, and `Wal.BytesWritten` fields without
+  changing a public DTO, JSON contract, protobuf, endpoint, or client interface.
+- Recovered historical commits do not enter the current runtime family's
+  lifetime. Checkpoint compaction, WAL reset/replacement, and benchmark counter
+  reset cannot decrease the production totals. Benchmark reset now advances
+  private baselines while the sticky production family remains intact.
+- In-memory WAL reports the logical commit lifetime and leaves the file-only
+  flush/byte fields null. A live mixed file/in-memory aggregate propagates that
+  null honestly; retiring an in-memory provider preserves its known logical
+  contribution without poisoning a later file-only aggregate. A failed or
+  invalid final provider capture makes the affected runtime-family lifetimes
+  permanently unknown rather than publishing a decreasing value.
+- Provider unregister takes one final serialized capture and rolls only
+  cumulative fields into runtime-family retired totals; gauges disappear with
+  the live handle. Repeated disposal is exact-once, reopen adds new live work to
+  the retired totals, and all additions saturate instead of wrapping.
+- Independent frozen-tree qualification passed clean Storage and full test
+  builds, the combined `124/124` storage/WAL/checkpoint/runtime matrix, and the
+  exact `8/8` lifetime/interleaving matrix. The paired disabled-write performance
+  gate also qualified: median-of-three SQL autocommit `-0.443338%`, pre-parsed
+  autocommit `-2.289208%`, and explicit-transaction `-0.702317%`, with unchanged
+  allocation on all three rows and all six launch spreads below `5%`.
+
+WAL durability and group-commit contract follow-on:
+
+- The original positional `WalRuntimeDiagnosticsSnapshot` constructor and
+  `Deconstruct` shape remain exactly 13 values. Six optional init-only JSON members
+  add `FlushedCommitCount`, `DurableFlushCount`,
+  `LastSuccessfulDurableFlushAtUtc`, `GroupCommitBatchCount`,
+  `GroupCommitCount`, and `LastSuccessfulGroupCommitAtUtc`; older payloads omit
+  them and deserialize each as unknown (`null`). All six are file-WAL-only:
+  memory WAL reports them as unknown, and a live mixed file/memory aggregate
+  propagates that unknown honestly.
+- `FlushCount`, `BytesWritten`, and `LastSuccessfulFlushAtUtc` retain their
+  existing commit-publication-batch meaning. `FlushedCommitCount` counts the
+  logical commits covered by those batches. `DurableFlushCount` instead counts
+  every successful actual durable WAL-policy `FlushToDisk` call, including
+  creation, reset, compaction, checkpoint, and commit paths, so it may exceed
+  `FlushCount`. Its timestamp is the latest such successful durable WAL sync.
+  A buffered file WAL can still report publication and group counts while
+  reporting a known zero durable flush count and no durable timestamp.
+- `GroupCommitBatchCount` counts publication batches containing at least two
+  logical commits, while `GroupCommitCount` counts the logical commits in those
+  batches. Producers keep group batches no greater than `FlushCount`, and keep
+  group commits at least twice the group-batch count using saturating arithmetic
+  and no greater than `FlushedCommitCount`, whenever the related values are
+  known. A last-success timestamp requires a positive corresponding count;
+  positive counts need not have a timestamp. All scalar setters independently
+  reject negative values or non-UTC timestamps without making object-initializer
+  or JSON property order significant.
+
+Logical cache and primary physical-I/O contract follow-on:
+
+- The existing positional `StorageRuntimeDiagnosticsSnapshot` constructor and
+  `Deconstruct` shape remain exactly 15 values. Two additive init-only sections,
+  `Cache` and `PhysicalIo`, carry independently available detail and default to
+  `Unavailable` when omitted by a 1.0/1.1 payload. Available children must share
+  the complete parent capture metadata; direct, sharded, and ADO.NET projections
+  rebuild that metadata recursively instead of relabeling only the parent.
+- The existing top-level `PageReads`, `BytesRead`, `CacheHits`, and
+  `CacheMisses` remain the compatibility surface for logical pager reads. One
+  page read is a successful `PageBufferManager` materialization from the main or
+  WAL cache, WAL or main device, memory mapping, or a completed speculative
+  uncached read even if its result is later unused. Transaction-local modified
+  page returns and failed cache-only probes do not count. `BytesRead` adds the
+  materialized page bytes, and cache hits plus misses partition every successful
+  tracked page read exactly.
+- `PageWrites` is the sticky, saturating count of page images published by
+  successful live commits, and `BytesWritten` is that logical count multiplied
+  by the page size using saturating arithmetic. Recovery and checkpoint index
+  maintenance do not increment either field. `ConflictCount` is the sticky,
+  saturating count of terminal logical key or range conflicts raised while
+  validating explicit transactions. These logical fields are distinct from
+  `PhysicalIo.WriteCount` and `PhysicalIo.BytesWritten` on the primary device.
+- `Cache` is a live-only occupancy gauge: shared resident pages, optional shared
+  capacity (`null` means unbounded), WAL resident pages, and WAL capacity.
+  Built-in file and memory pagers report it while live. Gauges disappear at
+  drain and are never rolled into retired totals. A custom or otherwise
+  non-built-in cache reports `Unsupported`; the optional producer seam is
+  internal and is not a third-party extension contract. A local capture failure
+  reports only this section as `Unavailable`.
+- `PhysicalIo` counts calls and bytes for the primary database device only;
+  WAL-device work is never included. Sequential read calls and bytes are
+  explicit subsets of total reads. Memory-mapped page exposure count and bytes
+  are separate mapping observations, not physical reads or operating-system page
+  faults. File storage reports this section as `Available`, built-in memory
+  storage as `NotApplicable`, and a custom or otherwise non-built-in device as
+  `Unsupported`; the optional producer seam is internal and is not a
+  third-party extension contract. Local capture failures report `Unavailable`.
+- Physical counters are cumulative and include the final shutdown checkpoint
+  and primary-device work. Drain first retires a pre-dispose watermark, then
+  pager disposal contributes one sealed post-drain delta so final I/O is neither
+  lost nor double-counted. Counter arithmetic saturates rather than wrapping.
+
+Bounded maintenance and backup/validation slice on 2026-08-11:
+
+- Added a bounded, process-local maintenance registry using the existing
+  history capacity and retention settings. It exposes the deterministic oldest
+  active operation through the existing `ActiveMaintenance` summary, keeps
+  bounded recent terminal records internally, discloses hidden active work and
+  dropped history through truncation state, and never evicts a running
+  operation to admit diagnostics for another one.
+- Client-origin maintenance records live for the client lifetime so queued work
+  survives runtime-family replacement. A direct public backup coordinated from
+  an existing `Database` uses an exact-family state fallback; the client path
+  suppresses that fallback so one logical backup never appears twice. Exact
+  family children show only their state-owned work, while the aggregate merges
+  client and family-owned work and discloses omitted capped families.
+- Runtime maintenance visibility covers client/operator-owned checkpoint,
+  backup, restore validation, restore, foreign-key migration, reindex, and
+  vacuum operations, plus state-owned direct checkpoint and `Database`-attached
+  backup. Ownerless public static coordinator calls have no runtime registry
+  owner and remain outside this visibility contract.
+- Backup now registers before the client lock and reports truthful
+  `Queued`, `AcquiringAccess`, `Checkpointing`, `Copying`, `Staging`,
+  `Validating`, and `Hashing` phases. Restore validation reports `Validating`.
+  One operation context and opaque id are shared by runtime state and the
+  existing typed lifecycle event, with one terminal success, rejection,
+  cancellation, or failure after cleanup completes.
+- The Pager contributes best-effort backup progress only at real work
+  boundaries. The public save/backup/validation signatures and null observer
+  path are unchanged; callback failures are isolated and no path or raw
+  exception text enters runtime diagnostics.
+- Ordinary runtime-diagnostics snapshots and diagnostic/lifecycle logs contain
+  configured aliases but no database or backup paths. Explicit deep-inspection
+  reports and existing backup/restore result DTOs remain separately authorized,
+  path-bearing contracts; no general path-capture option is claimed here.
+- Disabled backup and validation create no maintenance registry, runtime
+  component, lifetime lease, or drain signal. Full replacement restore remains
+  the next bounded slice because its cancellation point, paired database/WAL
+  rollback, and eager reopen require a separate safety change.
+- Independent frozen-tree qualification passed a clean Release build, the
+  focused `15/15` maintenance/Pager matrix, and a `152/152` lifecycle,
+  runtime, storage, checkpoint, and save adjacency suite with no failures or
+  skips. Public API, ABI, DTO, JSON, and protocol shapes remain unchanged.
+
+Hardened full-restore slice on 2026-08-11:
+
+- Full client restore now joins the same bounded maintenance lifecycle before
+  waiting for exclusive access and reports `Queued`, `AcquiringAccess`,
+  `Copying`, `Staging`, `Validating`, `Replacing`, `RollingBack` when needed,
+  `Reopening`, and one terminal `Completed` state with the same opaque id as
+  the typed restore lifecycle event.
+- The final caller-cancellation check is immediately before the first live
+  database or WAL mutation. After that point, replacement, rollback, cleanup,
+  and reopen are deliberately non-cancellable so cancellation cannot interrupt
+  consistency recovery.
+- Existing database and WAL files are backed up as one pair and retained until
+  the replacement has reopened successfully. Any publish or replacement-open
+  failure restores both files, reopens the original, and rethrows the original
+  failure; recovery failures retain the paired forensic backups and surface one
+  path-safe aggregate failure. A successful result is impossible before the
+  replacement has been opened and adopted into the client cache.
+- Reopen occurs directly under the exclusive lease rather than recursively
+  calling the normal database getter. The existing runtime-family reset occurs
+  once, custom direct options/factories/interceptors are reused, lazy clients
+  remain lazy after pre-replacement failures, and disposal cannot race the
+  restore into a lock cycle or resurrect work after shutdown.
+- Private in-memory clients reject full file replacement before detaching any
+  state; validation-only remains supported. The Phase 3 availability invariant
+  ends at successful reopen and adoption before terminal success. No deferred
+  `ReopenPending` or host ready/not-ready state is claimed because this client
+  has no background reopen owner; Phase 5 owns readiness publication.
+- Independent frozen-tree qualification passed a clean non-incremental Release
+  build, `28/28` focused maintenance/restore-safety tests, and a `179/179`
+  restore, client, runtime, storage, and checkpoint regression suite with no
+  failures or skips. Public API, ABI, DTO, JSON, and protocol shapes remain
+  unchanged.
+
 Work:
 
-- [ ] Define a live storage snapshot for database size, page counts, cache
+- [x] Define a live storage snapshot for database size, page counts, cache
   usage/hits/misses, dirty pages, active readers/writers, commits, conflicts,
   checkpoint state, and cumulative I/O where available.
-- [ ] Distinguish logical pager I/O from physical device I/O and represent
-  unsupported fields as `Unavailable` or `NotApplicable`, especially for
-  in-memory, hybrid, and custom storage implementations.
-- [ ] Promote existing WAL flush and commit-path counters through a public
+- [x] Distinguish logical pager I/O from physical device I/O and represent
+  per-section support honestly as `Unsupported`, `Unavailable`, or
+  `NotApplicable`, especially for in-memory, hybrid, and custom storage
+  implementations.
+- [x] Promote existing WAL flush and commit-path counters through a public
   curated immutable runtime model without exposing the large, unstable
   benchmark snapshot wholesale or changing its reset semantics. Publish new
   non-resetting lifetime counters, or advance the counter epoch when test-only
   reset APIs run.
-- [ ] Add current WAL logical bytes, allocated/file bytes, committed-frame
+- [x] Add current WAL logical bytes, allocated/file bytes, committed-frame
   bytes, retained bytes, coherent frame/commit state, pending commit count,
   last successful flush/checkpoint, recovery state, and last safe error code.
   Frame count and WAL sizes are gauges and may decrease after checkpoint.
-- [ ] Model checkpoint phases (`Idle`, `Requested`, `Copying`,
+- [x] Model checkpoint phases (`Idle`, `Requested`, `Copying`,
   `CopyCompleteAwaitingReaders`, `Finalizing`, and `Faulted`), progress,
   retained-WAL reason, foreground/background origin, and last start/success/
   failure. Record foreground auto-checkpoint and shutdown checkpoint failures
   that are currently swallowed or retried.
-- [ ] Instrument recovery through storage-engine options/factories so startup
+- [x] Instrument recovery through storage-engine options/factories so startup
   work before `Database` construction is visible. Record scanned/recovered/
   discarded frames and bytes, safe truncation reason, duration, and outcome
   without exposing the WAL path.
-- [ ] Instrument missing checkpoint, fsync, write, group-commit, cache, and
+- [x] Instrument missing checkpoint, fsync, write, group-commit, cache, and
   recovery counters with lock-free or low-contention updates.
-- [ ] Use an optional cache-diagnostics provider or a pager-owned counter seam
+- [x] Use an optional cache-diagnostics provider or a pager-owned counter seam
   so third-party storage/cache implementations do not gain required members.
-- [ ] Do not use `IPageOperationInterceptor` as the production metric hot path;
-  enabling it changes cache fast paths. Use pager-owned counters and optional
-  diagnostics providers for custom caches/devices instead.
-- [ ] Keep `DatabaseInspector`, `WalInspector`, page inspection, and index
+- [x] Do not use `IPageOperationInterceptor` as the production metric hot path;
+  enabling it changes cache fast paths. Use pager-owned counters and internal
+  diagnostics providers for built-in caches/devices; custom implementations
+  remain unchanged and report `Unsupported`.
+- [x] Keep `DatabaseInspector`, `WalInspector`, page inspection, and index
   checks explicit and separately labeled as offline/deep inspection.
-- [ ] Add a bounded maintenance-operation registry for checkpoint, backup,
-  restore validation, restore, reindex, vacuum, and foreign-key migration.
-- [ ] Report operation id, phase, start time, elapsed time, progress units when
+- [x] Add a bounded maintenance-operation registry for client/operator-owned
+  checkpoint, backup, restore validation, restore, reindex, vacuum, and
+  foreign-key migration, plus state-owned direct checkpoint and backup.
+- [x] Report operation id, phase, start time, elapsed time, progress units when
   known, outcome, warning/error counts, and safe failure code.
-- [ ] Instrument `DatabaseBackupCoordinator` so an in-progress backup or
-  restore is visible before the original call completes.
-- [ ] Register backup/restore before waiting for the client execution or
+- [x] Instrument client/operator-owned `DatabaseBackupCoordinator` paths so an
+  in-progress backup, restore validation, or full restore is visible before the
+  original call completes; direct `Database`-attached backup uses a state-owned
+  fallback. Ownerless public static coordinator calls remain outside the
+  runtime visibility contract.
+- [x] Register backup/restore before waiting for the client execution or
   exclusive-access lock. Include queued/acquiring time and explicit phases for
   checkpoint, copy/stage, validation, hashing/manifest work, replacement,
   rollback, and reopen.
-- [ ] Retain a bounded recent operation history in memory and clearly report
+- [x] Retain a bounded recent operation history in memory and clearly report
   that it resets with the process.
-- [ ] Suppress source and destination paths by default; use configured aliases
-  or final file names only under an explicit path-capture option.
-- [ ] Define restore readiness behavior while exclusive access is being
-  acquired, validation is running, the database is being replaced, and the
-  replacement is reopening.
-- [ ] Define the restore point of no return and cancellation behavior around
-  non-cancellable file replacement. Eagerly reopen before terminal success, or
-  publish `ReopenPending` and remain not-ready until a deferred reopen passes.
-- [ ] Pass cancellation through explicit deep storage/WAL/page/index inspectors
+- [x] Keep ordinary runtime-diagnostics snapshots and diagnostic/lifecycle logs
+  path-free and alias-only. Explicit deep-inspection reports and existing
+  backup/restore result DTOs remain separately authorized, path-bearing
+  contracts.
+- [x] Define restore availability through exclusive-access acquisition,
+  validation, replacement, and reopen. After replacement begins, full restore
+  cannot reach terminal success until the replacement has reopened and been
+  adopted; Phase 5 owns host ready/not-ready publication.
+- [x] Define the restore point of no return and cancellation behavior around
+  non-cancellable file replacement. Eagerly reopen and adopt before terminal
+  success; no deferred `ReopenPending` state is claimed in Phase 3.
+- [x] Pass cancellation through explicit deep storage/WAL/page/index inspectors
   even though those inspectors remain outside normal runtime snapshots.
-- [ ] Add summary, storage, WAL, and maintenance-operation methods to the
+- [x] Add summary, storage, WAL, and maintenance-operation methods to the
   optional diagnostics client and both remote transports.
-- [ ] Define sharded storage aggregation rules and preserve capped per-shard
+- [x] Define sharded storage aggregation rules and preserve capped per-shard
   records for diagnosis.
 
 Deliverables:
 
 - Live storage and WAL diagnostics.
-- Current and recent backup/restore/maintenance status.
+- Current and recent client/operator-owned backup/restore/maintenance status,
+  plus state-owned direct checkpoint and backup status.
 - Transport-neutral snapshot models and endpoints.
 
 Exit gate:
+
+The functional and semantic exit gates were satisfied on 2026-08-11 for the
+runtime-diagnostics scope described above. Host ready/not-ready publication
+remains Phase 5 work; ownerless public static coordinator calls and explicitly
+path-bearing inspection/result contracts are outside Phase 3's runtime
+visibility and privacy guarantees. Formal performance attribution is not
+claimed because the final host-stability prerequisite did not qualify.
 
 - Snapshot collection does not scan the database or WAL files unless the caller
   explicitly requests deep inspection.
@@ -784,11 +1005,50 @@ Exit gate:
   gauges and epochs change according to the published contract.
 - WAL recovery and checkpoint progress/failures are visible even when they
   occur before `Database` construction or are retried internally.
-- A running backup or restore is visible, reaches one terminal state, and
-  cannot remain permanently active after failure or cancellation.
-- Restore never reports ready after replacement until the new database has
-  reopened successfully.
-- Default models and logs contain no database or backup paths.
+- A registered client/operator-owned backup or restore is visible, reaches one
+  terminal state, and cannot remain permanently active after failure or
+  cancellation; state-owned direct checkpoint and backup follow the same rule.
+- After replacement begins, full restore cannot report terminal success until
+  the new database has reopened and been adopted successfully. Phase 5 owns
+  ready/not-ready publication.
+- Ordinary runtime-diagnostics snapshots and diagnostic/lifecycle logs contain
+  no database or backup paths. Explicit deep-inspection reports and existing
+  backup/restore result DTOs retain their path-bearing contracts.
+
+Qualification on 2026-08-11:
+
+- The strict build completed with zero warnings and zero errors.
+- The final cache/physical-I/O focused matrix passed `26/26`, and its broader
+  runtime/storage/WAL/checkpoint/maintenance adjacency matrix passed `240/240`.
+- Full suites passed: Core `2670/2670`, Observability `110/110`, Data `270/270`,
+  API `137/137`, Daemon `204/204`, Pipelines `41/41`, benchmark contracts
+  `130/130`, Admin `452/452`, and EF Core `153/153`. The Daemon suite's first
+  sandboxed run could not create its temporary Git repositories; its complete
+  normal-environment rerun passed.
+- NuGet package-closure validation passed. Managed full-trim publication built
+  without warnings or errors and its executable smoke test passed. Native AOT
+  publication then completed through the pinned Visual Studio 2026 Insiders
+  MSVC 14.51 and Windows SDK 10.0.28000.0 toolchain, and the native executable
+  smoke test passed.
+- Earlier independent frozen-tree evidence for maintenance/restore safety,
+  explicit inspector cancellation, recovery/checkpoint detail, WAL lifetime
+  counters, and disabled diagnostics remained clean. Exact focused counts and
+  qualifications are retained in the slice notes above where applicable.
+- The final performance packet used three strict serial pre-cache/final
+  BenchmarkDotNet pairs with the same verified 179-file benchmark harness.
+  All six launches were structurally complete (`126` rows total, three warmups
+  and ten measured iterations per row). Median-of-three disabled elapsed-time
+  limits passed `7/7`, from `+0.687082%` at the slowest to `-15.351512%` at the
+  fastest, and allocation limits passed `7/7` at exactly `+0 B`.
+- That packet is diagnostic rather than formal qualification evidence. Three
+  separate 305-sample idle gates failed the reconstructed host-isolation
+  policy, and every disabled baseline/final series exceeded the required `5%`
+  launch-spread ceiling, so the complete formal disabled result is `0/7`.
+  HistoryCapture elapsed limits passed `5/6`, allocations passed `6/6`, and
+  stability passed `0/6`; the 128-row stream missed its elapsed allowance by
+  `464.455261 ns`. Raw-log and exported-CSV reductions produced identical
+  decisions. Re-run these performance gates on an isolated host before making
+  a formal no-regression release claim.
 
 ## Phase 4: OpenTelemetry And Prometheus
 

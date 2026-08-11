@@ -115,10 +115,14 @@ public sealed class HostRequestDiagnosticsGrpcTests
 
     [Theory]
     [InlineData("/csharpdb.rpc.CSharpDbRpc/GetRuntimeDiagnostics")]
+    [InlineData("/csharpdb.rpc.CSharpDbRpc/GetStorageDiagnostics")]
+    [InlineData("/csharpdb.rpc.CSharpDbRpc/GetWalDiagnostics")]
     [InlineData("/csharpdb.rpc.CSharpDbRpc/GetActiveQueries")]
     [InlineData("/csharpdb.rpc.CSharpDbRpc/GetRecentQueries")]
     [InlineData("/csharpdb.rpc.CSharpDbRpc/GetQueryPlanDiagnostics")]
     [InlineData("/csharpdb.rpc.CSharpDbRpc/GetSessions")]
+    [InlineData("/csharpdb.rpc.CSharpDbRpc/GetActiveMaintenanceOperations")]
+    [InlineData("/csharpdb.rpc.CSharpDbRpc/GetRecentMaintenanceOperations")]
     [InlineData("/csharpdb.rpc.CSharpDbRpc/GetQueryDetail")]
     public void DiagnosticsGrpcMethods_AreExplicitlySuppressed(string method)
     {

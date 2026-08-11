@@ -19,12 +19,20 @@ public static class DiagnosticsEndpoints
         this RouteGroupBuilder group)
     {
         group.MapGet("/diagnostics/runtime", GetRuntimeDiagnostics);
+        group.MapGet("/diagnostics/storage", GetStorageDiagnostics);
+        group.MapGet("/diagnostics/wal", GetWalDiagnostics);
         group.MapGet("/diagnostics/queries/active", GetActiveQueries);
         group.MapGet("/diagnostics/queries/recent", GetRecentQueries);
         group.MapGet(
             "/diagnostics/queries/{operationId}/plan",
             GetQueryPlanDiagnostics);
         group.MapGet("/diagnostics/sessions", GetSessions);
+        group.MapGet(
+            "/diagnostics/maintenance/active",
+            GetActiveMaintenanceOperations);
+        group.MapGet(
+            "/diagnostics/maintenance/recent",
+            GetRecentMaintenanceOperations);
         group.MapGet(
             "/diagnostics/queries/{operationId}/detail",
             GetQueryDetail);
@@ -44,6 +52,39 @@ public static class DiagnosticsEndpoints
             db,
             static (capability, ct) => capability.GetRuntimeDiagnosticsAsync(ct),
             JsonTypes.Runtime,
+            context.RequestAborted);
+    }
+
+    private static async Task<IResult> GetStorageDiagnostics(
+        ICSharpDbClient db,
+        HttpContext context,
+        IOptions<CSharpDbApiSecurityOptions> security)
+    {
+        IResult? denied = Authorize(
+            context,
+            security.Value,
+            CSharpDbDiagnosticsAccessKind.Runtime);
+        return denied ?? await ExecuteAsync(
+            db,
+            static (capability, ct) =>
+                capability.GetStorageDiagnosticsAsync(ct),
+            JsonTypes.Storage,
+            context.RequestAborted);
+    }
+
+    private static async Task<IResult> GetWalDiagnostics(
+        ICSharpDbClient db,
+        HttpContext context,
+        IOptions<CSharpDbApiSecurityOptions> security)
+    {
+        IResult? denied = Authorize(
+            context,
+            security.Value,
+            CSharpDbDiagnosticsAccessKind.Runtime);
+        return denied ?? await ExecuteAsync(
+            db,
+            static (capability, ct) => capability.GetWalDiagnosticsAsync(ct),
+            JsonTypes.Wal,
             context.RequestAborted);
     }
 
@@ -163,6 +204,52 @@ public static class DiagnosticsEndpoints
             db,
             (capability, ct) => capability.GetQueryDetailAsync(id!, ct),
             JsonTypes.Detail,
+            context.RequestAborted);
+    }
+
+    private static async Task<IResult> GetActiveMaintenanceOperations(
+        string? maximumRecords,
+        ICSharpDbClient db,
+        HttpContext context,
+        IOptions<CSharpDbApiSecurityOptions> security)
+    {
+        IResult? denied = Authorize(
+            context,
+            security.Value,
+            CSharpDbDiagnosticsAccessKind.Runtime);
+        if (denied is not null)
+            return denied;
+        if (!TryParseMaximumRecords(maximumRecords, out int recordLimit))
+            return InvalidMaximumRecords();
+
+        return await ExecuteAsync(
+            db,
+            (capability, ct) =>
+                capability.GetActiveMaintenanceOperationsAsync(recordLimit, ct),
+            JsonTypes.ActiveMaintenance,
+            context.RequestAborted);
+    }
+
+    private static async Task<IResult> GetRecentMaintenanceOperations(
+        string? maximumRecords,
+        ICSharpDbClient db,
+        HttpContext context,
+        IOptions<CSharpDbApiSecurityOptions> security)
+    {
+        IResult? denied = Authorize(
+            context,
+            security.Value,
+            CSharpDbDiagnosticsAccessKind.Runtime);
+        if (denied is not null)
+            return denied;
+        if (!TryParseMaximumRecords(maximumRecords, out int recordLimit))
+            return InvalidMaximumRecords();
+
+        return await ExecuteAsync(
+            db,
+            (capability, ct) =>
+                capability.GetRecentMaintenanceOperationsAsync(recordLimit, ct),
+            JsonTypes.RecentMaintenance,
             context.RequestAborted);
     }
 
@@ -315,6 +402,16 @@ public static class DiagnosticsEndpoints
             Get<DiagnosticsTopologySnapshot<RuntimeDiagnosticsSnapshot>>();
 
         internal static readonly JsonTypeInfo<DiagnosticsTopologySnapshot<
+            DiagnosticsValueSnapshot<StorageRuntimeDiagnosticsSnapshot>>> Storage =
+            Get<DiagnosticsTopologySnapshot<
+                DiagnosticsValueSnapshot<StorageRuntimeDiagnosticsSnapshot>>>();
+
+        internal static readonly JsonTypeInfo<DiagnosticsTopologySnapshot<
+            DiagnosticsValueSnapshot<WalRuntimeDiagnosticsSnapshot>>> Wal =
+            Get<DiagnosticsTopologySnapshot<
+                DiagnosticsValueSnapshot<WalRuntimeDiagnosticsSnapshot>>>();
+
+        internal static readonly JsonTypeInfo<DiagnosticsTopologySnapshot<
             DiagnosticsCollectionSnapshot<ActiveQuerySnapshot>>> Active =
             Get<DiagnosticsTopologySnapshot<
                 DiagnosticsCollectionSnapshot<ActiveQuerySnapshot>>>();
@@ -333,6 +430,18 @@ public static class DiagnosticsEndpoints
             DiagnosticsCollectionSnapshot<SessionDiagnosticsSnapshot>>> Sessions =
             Get<DiagnosticsTopologySnapshot<
                 DiagnosticsCollectionSnapshot<SessionDiagnosticsSnapshot>>>();
+
+        internal static readonly JsonTypeInfo<DiagnosticsTopologySnapshot<
+            DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>
+            ActiveMaintenance =
+                Get<DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<
+                    MaintenanceOperationSnapshot>>>();
+
+        internal static readonly JsonTypeInfo<DiagnosticsTopologySnapshot<
+            DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>
+            RecentMaintenance =
+                Get<DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<
+                    MaintenanceOperationSnapshot>>>();
 
         internal static readonly JsonTypeInfo<DiagnosticsTopologySnapshot<
             DiagnosticsValueSnapshot<QueryDetailSnapshot>>> Detail =

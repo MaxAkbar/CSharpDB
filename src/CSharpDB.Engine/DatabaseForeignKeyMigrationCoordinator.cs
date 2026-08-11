@@ -1,4 +1,5 @@
 using CSharpDB.Execution;
+using CSharpDB.Observability;
 using CSharpDB.Primitives;
 using CSharpDB.Storage.BTrees;
 using CSharpDB.Storage.Catalog;
@@ -16,10 +17,30 @@ internal static class DatabaseForeignKeyMigrationCoordinator
     private const string SystemAliasPrefix = "sys_";
     private const string MissingReferencedParentReason = "MissingReferencedParent";
 
-    public static async ValueTask<DatabaseForeignKeyMigrationResult> MigrateAsync(
+    public static ValueTask<DatabaseForeignKeyMigrationResult> MigrateAsync(
         string databasePath,
         DatabaseForeignKeyMigrationRequest request,
         CancellationToken ct = default)
+        => MigrateCoreAsync(
+            databasePath,
+            request,
+            observation: null,
+            ct: ct);
+
+    internal static ValueTask<DatabaseForeignKeyMigrationResult>
+        MigrateFromClientAsync(
+            string databasePath,
+            DatabaseForeignKeyMigrationRequest request,
+            MaintenanceObservation? observation,
+            CancellationToken ct = default)
+        => MigrateCoreAsync(databasePath, request, observation, ct);
+
+    private static async ValueTask<DatabaseForeignKeyMigrationResult>
+        MigrateCoreAsync(
+            string databasePath,
+            DatabaseForeignKeyMigrationRequest request,
+            MaintenanceObservation? observation,
+            CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -31,7 +52,14 @@ internal static class DatabaseForeignKeyMigrationCoordinator
         {
             context = await OpenStorageContextAsync(fullPath, ct);
             TableMigrationPlan[] plans = BuildMigrationPlans(context.Catalog, request).ToArray();
-            var validation = await ValidateDataAsync(context, plans, sampleLimit, ct);
+            observation?.SetProgress(0, plans.LongLength);
+            observation?.SetPhase(MaintenanceOperationPhase.Validating);
+            var validation = await ValidateDataAsync(
+                context,
+                plans,
+                sampleLimit,
+                observation,
+                ct);
 
             var baseResult = new DatabaseForeignKeyMigrationResult
             {
@@ -68,6 +96,8 @@ internal static class DatabaseForeignKeyMigrationCoordinator
             string? backupDestinationPath = null;
             if (!string.IsNullOrWhiteSpace(request.BackupDestinationPath))
             {
+                observation?.SetProgress(null, null);
+                observation?.SetPhase(MaintenanceOperationPhase.Staging);
                 backupDestinationPath = Path.GetFullPath(request.BackupDestinationPath);
                 await using var backupDatabase = await Database.OpenAsync(fullPath, ct);
                 _ = await DatabaseBackupCoordinator.BackupAsync(
@@ -82,10 +112,20 @@ internal static class DatabaseForeignKeyMigrationCoordinator
             await context.Pager.BeginTransactionAsync(ct);
             try
             {
+                observation?.SetProgress(0, plans.LongLength);
+                observation?.SetPhase(MaintenanceOperationPhase.Copying);
                 long copiedRows = 0;
+                long completedPlans = 0;
                 foreach (TableMigrationPlan plan in plans)
+                {
                     copiedRows += await ApplyPlanAsync(context, plan, ct);
+                    completedPlans++;
+                    observation?.SetProgress(
+                        completedPlans,
+                        plans.LongLength);
+                }
 
+                observation?.SetPhase(MaintenanceOperationPhase.Staging);
                 await context.Catalog.PersistDirtyAdvisoryStatisticsAsync(ct);
                 await context.Catalog.PersistAllRootPageChangesAsync(ct);
                 await context.Pager.CommitAsync(ct);
@@ -105,6 +145,7 @@ internal static class DatabaseForeignKeyMigrationCoordinator
             }
             catch
             {
+                observation?.SetPhase(MaintenanceOperationPhase.RollingBack);
                 await context.Pager.RollbackAsync(ct);
                 throw;
             }
@@ -386,13 +427,19 @@ internal static class DatabaseForeignKeyMigrationCoordinator
         StorageEngineContext context,
         IReadOnlyList<TableMigrationPlan> plans,
         int sampleLimit,
+        MaintenanceObservation? observation,
         CancellationToken ct)
     {
         var accumulator = new ValidationAccumulator(sampleLimit);
+        long completedPlans = 0;
         foreach (TableMigrationPlan plan in plans)
         {
             if (plan.NewForeignKeys.Length == 0)
+            {
+                completedPlans++;
+                observation?.SetProgress(completedPlans, plans.Count);
                 continue;
+            }
 
             BTree tableTree = context.Catalog.GetTableTree(plan.OriginalSchema.TableName);
             IRecordSerializer serializer = GetReadSerializer(context.RecordSerializer, plan.OriginalSchema);
@@ -436,6 +483,9 @@ internal static class DatabaseForeignKeyMigrationCoordinator
                     });
                 }
             }
+
+            completedPlans++;
+            observation?.SetProgress(completedPlans, plans.Count);
         }
 
         return accumulator;

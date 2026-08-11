@@ -31,9 +31,10 @@ internal sealed class MemoryMappedPageReadProvider : IPageReadProvider, IDisposa
         long offset = (long)pageId * PageConstants.PageSize;
         if (_mappedMemory is not null && offset >= 0 && offset + PageConstants.PageSize <= _mappedLength)
         {
-            return ValueTask.FromResult(
-                PageReadBuffer.FromReadOnlyMemory(
-                    _mappedMemory.Memory.Slice((int)offset, PageConstants.PageSize)));
+            PageReadBuffer buffer = PageReadBuffer.FromReadOnlyMemory(
+                _mappedMemory.Memory.Slice((int)offset, PageConstants.PageSize));
+            _device.RecordMemoryMappedPageExposure(PageConstants.PageSize);
+            return ValueTask.FromResult(buffer);
         }
 
         return _fallback.ReadPageAsync(pageId, ct);
@@ -46,6 +47,7 @@ internal sealed class MemoryMappedPageReadProvider : IPageReadProvider, IDisposa
         {
             byte[] buffer = GC.AllocateUninitializedArray<byte>(PageConstants.PageSize);
             _mappedMemory.Memory.Span.Slice((int)offset, PageConstants.PageSize).CopyTo(buffer);
+            _device.RecordMemoryMappedPageExposure(PageConstants.PageSize);
             return buffer;
         }
 

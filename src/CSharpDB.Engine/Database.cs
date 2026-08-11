@@ -8,6 +8,7 @@ using CSharpDB.Execution;
 using CSharpDB.Sql;
 using CSharpDB.Storage.BTrees;
 using CSharpDB.Storage.Catalog;
+using CSharpDB.Storage.Diagnostics;
 using CSharpDB.Storage.Indexing;
 using CSharpDB.Storage.Serialization;
 using CSharpDB.Storage.StorageEngine;
@@ -63,6 +64,7 @@ public sealed class Database : IAsyncDisposable
     private readonly CSharpDbObservabilityOptions? _observabilityOptions;
     private readonly CSharpDbRuntimeDiagnosticsState? _runtimeDiagnosticsState;
     private readonly bool _ownsRuntimeDiagnosticsState;
+    private readonly StorageRuntimeDiagnosticsProvenance _storageRuntimeDiagnosticsProvenance;
     private readonly QueryObservability? _queryObservability;
     private readonly IQueryPlanRuntimeObserver? _queryPlanRuntimeObserver;
     private readonly TemporaryTableManager _temporaryTables;
@@ -94,6 +96,8 @@ public sealed class Database : IAsyncDisposable
     private LifecycleOperation? _explicitTransactionObservation;
     private int _openCompleted;
     private int _closeObservationStarted;
+    private StorageRuntimeDiagnostics.Registration?
+        _storageRuntimeDiagnosticsRegistration;
 
     /// <summary>
     /// When true, simple PK equality lookups (SELECT * WHERE pk = N) use a synchronous
@@ -244,7 +248,12 @@ public sealed class Database : IAsyncDisposable
         string? databasePath = null,
         StorageEngineOptions? temporaryStorageOptions = null,
         bool skipDisposePersistence = false,
-        WindowExecutionOptions? windowExecution = null)
+        WindowExecutionOptions? windowExecution = null,
+        StorageRuntimeDiagnosticsProvenance storageRuntimeDiagnosticsProvenance =
+            StorageRuntimeDiagnosticsProvenance.BuiltIn,
+        bool ownsRuntimeDiagnosticsState = false,
+        StorageRuntimeDiagnostics.Registration?
+            storageRuntimeDiagnosticsRegistration = null)
     {
         _pager = pager;
         _catalog = catalog;
@@ -253,12 +262,15 @@ public sealed class Database : IAsyncDisposable
         _indexProvider = indexProvider;
         _catalogStore = catalogStore;
         _observabilityOptions = observabilityOptions;
-        _ownsRuntimeDiagnosticsState =
+        _ownsRuntimeDiagnosticsState = ownsRuntimeDiagnosticsState ||
             observabilityOptions is not null && runtimeDiagnosticsState is null;
         _runtimeDiagnosticsState = runtimeDiagnosticsState ??
             (observabilityOptions is null
                 ? null
                 : new CSharpDbRuntimeDiagnosticsState(observabilityOptions));
+        _storageRuntimeDiagnosticsProvenance = storageRuntimeDiagnosticsProvenance;
+        _storageRuntimeDiagnosticsRegistration =
+            storageRuntimeDiagnosticsRegistration;
         _queryObservability = _runtimeDiagnosticsState?.IsEnabled != true
             ? null
             : new QueryObservability(_runtimeDiagnosticsState);
@@ -838,11 +850,19 @@ public sealed class Database : IAsyncDisposable
             observabilityOptions,
             CSharpDbLogEvents.DatabaseOpened,
             CSharpDbOperationClass.Database);
+        using StorageRuntimeOpenScope storageDiagnostics =
+            StorageRuntimeOpenScope.Begin(
+                options,
+                observabilityOptions,
+                StorageRuntimeDiagnosticsProvenance.BuiltIn,
+                recoveryApplicable: false);
 
         try
         {
-            var context = await InMemoryStorageEngineFactory.OpenAsync(options.StorageEngineOptions, ct: ct);
-            Database database = await CompleteOpenAsync(new Database(
+            var context = await InMemoryStorageEngineFactory.OpenAsync(
+                storageDiagnostics.StorageOptions,
+                ct: ct);
+            var database = new Database(
                 context.Pager,
                 context.Catalog,
                 context.RecordSerializer,
@@ -850,14 +870,19 @@ public sealed class Database : IAsyncDisposable
                 context.IndexProvider,
                 context.CatalogStore,
                 observabilityOptions,
-                options.RuntimeDiagnosticsState,
+                storageDiagnostics.RuntimeState,
                 context.AdvisoryStatisticsPersistenceMode,
                 options.ImplicitInsertExecutionMode,
                 options.AdaptiveQueryReoptimization,
                 options.Functions,
                 temporaryStorageOptions: options.StorageEngineOptions,
-                windowExecution: options.WindowExecution),
-                ct);
+                windowExecution: options.WindowExecution,
+                ownsRuntimeDiagnosticsState:
+                    storageDiagnostics.OwnsRuntimeState,
+                storageRuntimeDiagnosticsRegistration:
+                    storageDiagnostics.Registration);
+            storageDiagnostics.TransferOwnership();
+            database = await CompleteOpenAsync(database, ct);
             return CompleteObservedOpen(database, operation);
         }
         catch (Exception exception)
@@ -901,6 +926,12 @@ public sealed class Database : IAsyncDisposable
             observabilityOptions,
             CSharpDbLogEvents.DatabaseOpened,
             CSharpDbOperationClass.Database);
+        using StorageRuntimeOpenScope storageDiagnostics =
+            StorageRuntimeOpenScope.Begin(
+                options,
+                observabilityOptions,
+                StorageRuntimeDiagnosticsProvenance.BuiltIn,
+                recoveryApplicable: File.Exists(fullPath));
         try
         {
             if (hybridOptions.PersistenceMode == HybridPersistenceMode.Snapshot)
@@ -916,14 +947,16 @@ public sealed class Database : IAsyncDisposable
                         : Array.Empty<byte>();
 
                     snapshotContext = await InMemoryStorageEngineFactory.OpenAsync(
-                        options.StorageEngineOptions,
+                        storageDiagnostics.StorageOptions,
                         databaseBytes,
                         walBytes,
                         ct);
                 }
                 else
                 {
-                    snapshotContext = await InMemoryStorageEngineFactory.OpenAsync(options.StorageEngineOptions, ct: ct);
+                    snapshotContext = await InMemoryStorageEngineFactory.OpenAsync(
+                        storageDiagnostics.StorageOptions,
+                        ct: ct);
                 }
 
                 var snapshotDatabase = new Database(
@@ -934,7 +967,7 @@ public sealed class Database : IAsyncDisposable
                     snapshotContext.IndexProvider,
                     snapshotContext.CatalogStore,
                     observabilityOptions,
-                    options.RuntimeDiagnosticsState,
+                    storageDiagnostics.RuntimeState,
                     snapshotContext.AdvisoryStatisticsPersistenceMode,
                     options.ImplicitInsertExecutionMode,
                     options.AdaptiveQueryReoptimization,
@@ -942,12 +975,20 @@ public sealed class Database : IAsyncDisposable
                     new HybridDatabasePersistenceCoordinator(fullPath, hybridOptions.PersistenceTriggers),
                     fullPath,
                     temporaryStorageOptions: options.StorageEngineOptions,
-                    windowExecution: options.WindowExecution);
+                    windowExecution: options.WindowExecution,
+                    ownsRuntimeDiagnosticsState:
+                        storageDiagnostics.OwnsRuntimeState,
+                    storageRuntimeDiagnosticsRegistration:
+                        storageDiagnostics.Registration);
+                storageDiagnostics.TransferOwnership();
                 Database openedSnapshot = await CompleteOpenAsync(snapshotDatabase, ct);
                 return CompleteObservedOpen(openedSnapshot, operation);
             }
 
-            var context = await HybridStorageEngineFactory.OpenAsync(fullPath, options.StorageEngineOptions, ct);
+            var context = await HybridStorageEngineFactory.OpenAsync(
+                fullPath,
+                storageDiagnostics.StorageOptions,
+                ct);
             var database = new Database(
                 context.Pager,
                 context.Catalog,
@@ -956,14 +997,19 @@ public sealed class Database : IAsyncDisposable
                 context.IndexProvider,
                 context.CatalogStore,
                 observabilityOptions,
-                options.RuntimeDiagnosticsState,
+                storageDiagnostics.RuntimeState,
                 context.AdvisoryStatisticsPersistenceMode,
                 options.ImplicitInsertExecutionMode,
                 options.AdaptiveQueryReoptimization,
                 options.Functions,
                 databasePath: fullPath,
                 temporaryStorageOptions: options.StorageEngineOptions,
-                windowExecution: options.WindowExecution);
+                windowExecution: options.WindowExecution,
+                ownsRuntimeDiagnosticsState:
+                    storageDiagnostics.OwnsRuntimeState,
+                storageRuntimeDiagnosticsRegistration:
+                    storageDiagnostics.Registration);
+            storageDiagnostics.TransferOwnership();
             try
             {
                 await database.UpgradeLegacyRowVersionAllocatorAsync(ct);
@@ -1013,6 +1059,12 @@ public sealed class Database : IAsyncDisposable
             observabilityOptions,
             CSharpDbLogEvents.DatabaseOpened,
             CSharpDbOperationClass.Database);
+        using StorageRuntimeOpenScope storageDiagnostics =
+            StorageRuntimeOpenScope.Begin(
+                options,
+                observabilityOptions,
+                StorageRuntimeDiagnosticsProvenance.BuiltIn,
+                recoveryApplicable: true);
         try
         {
             if (!File.Exists(fullPath))
@@ -1025,12 +1077,12 @@ public sealed class Database : IAsyncDisposable
                 : Array.Empty<byte>();
 
             var context = await InMemoryStorageEngineFactory.OpenAsync(
-                options.StorageEngineOptions,
+                storageDiagnostics.StorageOptions,
                 databaseBytes,
                 walBytes,
                 ct);
 
-            Database database = await CompleteOpenAsync(new Database(
+            var database = new Database(
                 context.Pager,
                 context.Catalog,
                 context.RecordSerializer,
@@ -1038,15 +1090,20 @@ public sealed class Database : IAsyncDisposable
                 context.IndexProvider,
                 context.CatalogStore,
                 observabilityOptions,
-                options.RuntimeDiagnosticsState,
+                storageDiagnostics.RuntimeState,
                 context.AdvisoryStatisticsPersistenceMode,
                 options.ImplicitInsertExecutionMode,
                 options.AdaptiveQueryReoptimization,
                 options.Functions,
                 databasePath: fullPath,
                 temporaryStorageOptions: options.StorageEngineOptions,
-                windowExecution: options.WindowExecution),
-                ct);
+                windowExecution: options.WindowExecution,
+                ownsRuntimeDiagnosticsState:
+                    storageDiagnostics.OwnsRuntimeState,
+                storageRuntimeDiagnosticsRegistration:
+                    storageDiagnostics.Registration);
+            storageDiagnostics.TransferOwnership();
+            database = await CompleteOpenAsync(database, ct);
             return CompleteObservedOpen(database, operation);
         }
         catch (Exception exception)
@@ -1073,10 +1130,22 @@ public sealed class Database : IAsyncDisposable
             observabilityOptions,
             CSharpDbLogEvents.DatabaseOpened,
             CSharpDbOperationClass.Database);
+        StorageRuntimeDiagnosticsProvenance provenance =
+            GetStorageRuntimeDiagnosticsProvenance(
+                options.StorageEngineFactory);
+        using StorageRuntimeOpenScope storageDiagnostics =
+            StorageRuntimeOpenScope.Begin(
+                options,
+                observabilityOptions,
+                provenance,
+                recoveryApplicable: File.Exists(fullPath));
         try
         {
-            var context = await options.StorageEngineFactory.OpenAsync(fullPath, options.StorageEngineOptions, ct);
-            Database database = await CompleteOpenAsync(new Database(
+            var context = await options.StorageEngineFactory.OpenAsync(
+                fullPath,
+                storageDiagnostics.StorageOptions,
+                ct);
+            var database = new Database(
                 context.Pager,
                 context.Catalog,
                 context.RecordSerializer,
@@ -1084,15 +1153,22 @@ public sealed class Database : IAsyncDisposable
                 context.IndexProvider,
                 context.CatalogStore,
                 observabilityOptions,
-                options.RuntimeDiagnosticsState,
+                storageDiagnostics.RuntimeState,
                 context.AdvisoryStatisticsPersistenceMode,
                 options.ImplicitInsertExecutionMode,
                 options.AdaptiveQueryReoptimization,
                 options.Functions,
                 databasePath: fullPath,
                 temporaryStorageOptions: options.StorageEngineOptions,
-                windowExecution: options.WindowExecution),
-                ct);
+                windowExecution: options.WindowExecution,
+                storageRuntimeDiagnosticsProvenance:
+                    provenance,
+                ownsRuntimeDiagnosticsState:
+                    storageDiagnostics.OwnsRuntimeState,
+                storageRuntimeDiagnosticsRegistration:
+                    storageDiagnostics.Registration);
+            storageDiagnostics.TransferOwnership();
+            database = await CompleteOpenAsync(database, ct);
             return CompleteObservedOpen(database, operation);
         }
         catch (Exception exception)
@@ -1117,9 +1193,13 @@ public sealed class Database : IAsyncDisposable
         _ = QueryPlanner.NormalizeWindowExecutionOptions(options.WindowExecution);
 
         string fullPath = Path.GetFullPath(filePath);
+        StorageEngineOptions privateStorageOptions =
+            options.StorageEngineOptions.RuntimeDiagnosticsObserver is null
+                ? options.StorageEngineOptions
+                : options.StorageEngineOptions.WithRuntimeDiagnosticsObserver(null);
         var context = await new DefaultStorageEngineFactory().OpenAsync(
             fullPath,
-            options.StorageEngineOptions,
+            privateStorageOptions,
             ct);
         return new Database(
             context.Pager,
@@ -1155,9 +1235,13 @@ public sealed class Database : IAsyncDisposable
         _ = QueryPlanner.NormalizeWindowExecutionOptions(options.WindowExecution);
 
         string fullPath = Path.GetFullPath(filePath);
+        StorageEngineOptions privateStorageOptions =
+            options.StorageEngineOptions.RuntimeDiagnosticsObserver is null
+                ? options.StorageEngineOptions
+                : options.StorageEngineOptions.WithRuntimeDiagnosticsObserver(null);
         var context = await new DefaultStorageEngineFactory().OpenAsync(
             fullPath,
-            options.StorageEngineOptions,
+            privateStorageOptions,
             ct);
         await context.Pager.DisposeAsync();
     }
@@ -1181,13 +1265,22 @@ public sealed class Database : IAsyncDisposable
             observabilityOptions,
             CSharpDbLogEvents.DatabaseOpened,
             CSharpDbOperationClass.Database);
+        StorageRuntimeDiagnosticsProvenance provenance =
+            GetStorageRuntimeDiagnosticsProvenance(
+                options.StorageEngineFactory);
+        using StorageRuntimeOpenScope storageDiagnostics =
+            StorageRuntimeOpenScope.Begin(
+                options,
+                observabilityOptions,
+                provenance,
+                recoveryApplicable: false);
         try
         {
             var context = await options.StorageEngineFactory.CreateNewAsync(
                 fullPath,
-                options.StorageEngineOptions,
+                storageDiagnostics.StorageOptions,
                 ct);
-            Database database = await CompleteOpenAsync(new Database(
+            var database = new Database(
                 context.Pager,
                 context.Catalog,
                 context.RecordSerializer,
@@ -1195,15 +1288,22 @@ public sealed class Database : IAsyncDisposable
                 context.IndexProvider,
                 context.CatalogStore,
                 observabilityOptions,
-                options.RuntimeDiagnosticsState,
+                storageDiagnostics.RuntimeState,
                 context.AdvisoryStatisticsPersistenceMode,
                 options.ImplicitInsertExecutionMode,
                 options.AdaptiveQueryReoptimization,
                 options.Functions,
                 databasePath: fullPath,
                 temporaryStorageOptions: options.StorageEngineOptions,
-                windowExecution: options.WindowExecution),
-                ct);
+                windowExecution: options.WindowExecution,
+                storageRuntimeDiagnosticsProvenance:
+                    provenance,
+                ownsRuntimeDiagnosticsState:
+                    storageDiagnostics.OwnsRuntimeState,
+                storageRuntimeDiagnosticsRegistration:
+                    storageDiagnostics.Registration);
+            storageDiagnostics.TransferOwnership();
+            database = await CompleteOpenAsync(database, ct);
             return CompleteObservedOpen(database, operation);
         }
         catch (Exception exception)
@@ -1251,8 +1351,117 @@ public sealed class Database : IAsyncDisposable
         LifecycleOperation? operation)
     {
         Volatile.Write(ref database._openCompleted, 1);
+        if (database._storageRuntimeDiagnosticsRegistration is { } opening)
+        {
+            opening.Promote(database._pager);
+        }
+        else
+        {
+            database._storageRuntimeDiagnosticsRegistration =
+                StorageRuntimeDiagnostics.TryRegister(
+                    database._runtimeDiagnosticsState,
+                    database._pager,
+                    database._storageRuntimeDiagnosticsProvenance);
+        }
         operation?.Succeed();
         return database;
+    }
+
+    private static StorageRuntimeDiagnosticsProvenance
+        GetStorageRuntimeDiagnosticsProvenance(IStorageEngineFactory factory)
+        => factory.GetType() == typeof(DefaultStorageEngineFactory)
+            ? StorageRuntimeDiagnosticsProvenance.BuiltIn
+            : StorageRuntimeDiagnosticsProvenance.CustomFactory;
+
+    private sealed class StorageRuntimeOpenScope : IDisposable
+    {
+        private readonly bool _ownsRuntimeState;
+        private int _transferred;
+
+        private StorageRuntimeOpenScope(
+            CSharpDbRuntimeDiagnosticsState? runtimeState,
+            bool ownsRuntimeState,
+            StorageRuntimeDiagnosticsProvenance provenance,
+            StorageEngineOptions storageOptions,
+            StorageRuntimeDiagnostics.Registration? registration)
+        {
+            RuntimeState = runtimeState;
+            _ownsRuntimeState = ownsRuntimeState;
+            Provenance = provenance;
+            StorageOptions = storageOptions;
+            Registration = registration;
+        }
+
+        internal CSharpDbRuntimeDiagnosticsState? RuntimeState { get; }
+        internal bool OwnsRuntimeState => _ownsRuntimeState;
+        internal StorageRuntimeDiagnosticsProvenance Provenance { get; }
+        internal StorageEngineOptions StorageOptions { get; }
+        internal StorageRuntimeDiagnostics.Registration? Registration { get; }
+
+        internal static StorageRuntimeOpenScope Begin(
+            DatabaseOptions options,
+            CSharpDbObservabilityOptions? observabilityOptions,
+            StorageRuntimeDiagnosticsProvenance provenance,
+            bool recoveryApplicable)
+        {
+            CSharpDbRuntimeDiagnosticsState? runtimeState =
+                options.RuntimeDiagnosticsState;
+            bool ownsRuntimeState = false;
+            if (runtimeState is null && observabilityOptions is not null)
+            {
+                runtimeState = new CSharpDbRuntimeDiagnosticsState(
+                    observabilityOptions);
+                ownsRuntimeState = true;
+            }
+
+            StorageRuntimeDiagnostics.Registration? registration =
+                provenance == StorageRuntimeDiagnosticsProvenance.BuiltIn
+                    ? StorageRuntimeDiagnostics.TryBeginBuiltInOpen(
+                        runtimeState,
+                        recoveryApplicable)
+                    : null;
+            StorageEngineOptions storageOptions = options.StorageEngineOptions;
+            IStorageRuntimeDiagnosticsObserver? observer =
+                provenance == StorageRuntimeDiagnosticsProvenance.BuiltIn
+                    ? registration?.Observer
+                    : null;
+            if (!ReferenceEquals(
+                    storageOptions.RuntimeDiagnosticsObserver,
+                    observer))
+            {
+                try
+                {
+                    storageOptions =
+                        storageOptions.WithRuntimeDiagnosticsObserver(observer);
+                }
+                catch
+                {
+                    registration?.Dispose();
+                    registration = null;
+                    storageOptions = options.StorageEngineOptions;
+                }
+            }
+
+            return new StorageRuntimeOpenScope(
+                runtimeState,
+                ownsRuntimeState,
+                provenance,
+                storageOptions,
+                registration);
+        }
+
+        internal void TransferOwnership()
+            => Volatile.Write(ref _transferred, 1);
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _transferred, 1) != 0)
+                return;
+
+            Registration?.Dispose();
+            if (_ownsRuntimeState)
+                RuntimeState?.Dispose();
+        }
     }
 
     private async ValueTask UpgradeLegacyRowVersionAllocatorAsync(CancellationToken ct)
@@ -1631,6 +1840,16 @@ public sealed class Database : IAsyncDisposable
         CSharpDbLogEventDefinition<CSharpDbLifecycleCompletedEvent> definition,
         CSharpDbOperationClass operationClass)
         => LifecycleObservability.Start(_observabilityOptions, definition, operationClass);
+
+    internal LifecycleOperation? StartLifecycleObservabilityExact(
+        CSharpDbLogEventDefinition<CSharpDbLifecycleCompletedEvent> definition,
+        CSharpDbOperationClass operationClass,
+        CSharpDbOperationContext context)
+        => LifecycleObservability.StartExact(
+            _observabilityOptions,
+            definition,
+            operationClass,
+            context);
 
     internal static ValueTask<QueryResult> ObserveQueryAsync<TState>(
         IQueryExecutionObservation operation,
@@ -2075,13 +2294,34 @@ public sealed class Database : IAsyncDisposable
     /// <summary>
     /// Manually trigger a WAL checkpoint.
     /// </summary>
-    public async ValueTask CheckpointAsync(CancellationToken ct = default)
+    public ValueTask CheckpointAsync(CancellationToken ct = default)
+        => CheckpointCoreAsync(
+            observation: null,
+            allowStateFallback: true,
+            ct: ct);
+
+    internal ValueTask CheckpointFromClientAsync(
+        MaintenanceObservation? observation,
+        CancellationToken ct = default)
+        => CheckpointCoreAsync(
+            observation: observation,
+            allowStateFallback: observation is null,
+            ct: ct);
+
+    private async ValueTask CheckpointCoreAsync(
+        MaintenanceObservation? observation,
+        bool allowStateFallback,
+        CancellationToken ct)
     {
-        LifecycleOperation? operation = StartLifecycleObservability(
-            CSharpDbLogEvents.CheckpointCompleted,
-            CSharpDbOperationClass.Checkpoint);
+        MaintenanceObservation? operation = observation;
+        if (operation is null && allowStateFallback)
+            operation = StartDirectCheckpointObservation();
+        using IDisposable? operationScope = operation is null
+            ? null
+            : operation.EnterScope();
         try
         {
+            operation?.SetPhase(MaintenanceOperationPhase.Checkpointing);
             await _pager.CheckpointAsync(ct);
             await PersistHybridStateAsync(HybridPersistenceTriggers.Checkpoint, ct);
             operation?.Succeed();
@@ -2091,6 +2331,70 @@ public sealed class Database : IAsyncDisposable
             operation?.Fail(exception);
             throw;
         }
+    }
+
+    private MaintenanceObservation? StartDirectCheckpointObservation()
+    {
+        if (CSharpDbOperationScope.IsDiagnosticsSuppressed)
+            return null;
+
+        CSharpDbRuntimeDiagnosticsState? runtimeState =
+            _runtimeDiagnosticsState;
+        if (runtimeState?.IsEnabled == true)
+        {
+            try
+            {
+                CSharpDbOperationContext? parent =
+                    CSharpDbOperationScope.Current;
+                CSharpDbOperationContext context = parent is null
+                    ? CSharpDbOperationContext.CreateRoot(
+                        CSharpDbOperationClass.Checkpoint,
+                        CSharpDbOperationScope.CurrentTransport,
+                        runtimeState.DatabaseAlias,
+                        CSharpDbOperationScope.CurrentSessionId,
+                        timeProvider: runtimeState.TimeProvider)
+                    : CSharpDbOperationContext.CreateRequest(
+                        parent,
+                        CSharpDbOperationClass.Checkpoint,
+                        runtimeState.TimeProvider);
+                MaintenanceRuntimeDiagnostics.MaintenanceRuntimeOperation?
+                    runtimeOperation = MaintenanceRuntimeDiagnostics
+                        .GetOrCreate(runtimeState)
+                        ?.TryStart(
+                            context,
+                            MaintenanceOperationKind.Checkpoint,
+                            MaintenanceOperationPhase.Checkpointing);
+                LifecycleOperation? lifecycleOperation =
+                    StartLifecycleObservabilityExact(
+                        CSharpDbLogEvents.CheckpointCompleted,
+                        CSharpDbOperationClass.Checkpoint,
+                        context);
+                if (runtimeOperation is not null ||
+                    lifecycleOperation is not null)
+                {
+                    return new MaintenanceObservation(
+                        context,
+                        runtimeOperation,
+                        lifecycleOperation);
+                }
+            }
+            catch
+            {
+                // Runtime maintenance diagnostics remain best-effort. Fall
+                // through so lifecycle-only checkpoint logging is preserved.
+            }
+        }
+
+        LifecycleOperation? fallbackLifecycle =
+            StartLifecycleObservability(
+                CSharpDbLogEvents.CheckpointCompleted,
+                CSharpDbOperationClass.Checkpoint);
+        return fallbackLifecycle is null
+            ? null
+            : new MaintenanceObservation(
+                fallbackLifecycle.Context,
+                runtimeOperation: null,
+                fallbackLifecycle);
     }
 
     /// <summary>
@@ -2108,6 +2412,17 @@ public sealed class Database : IAsyncDisposable
         string filePath,
         bool writeScopeHeld,
         CancellationToken ct = default)
+        => await SaveToFileAsync(
+            filePath,
+            writeScopeHeld,
+            progressObserver: null,
+            ct: ct);
+
+    internal async ValueTask SaveToFileAsync(
+        string filePath,
+        bool writeScopeHeld,
+        IPagerSaveToFileProgressObserver? progressObserver,
+        CancellationToken ct = default)
     {
         IDisposable? writeScope = null;
         try
@@ -2116,7 +2431,7 @@ public sealed class Database : IAsyncDisposable
                 writeScope = await AcquireWriteOperationScopeAsync(ct);
 
             await FlushPendingAdvisoryStatisticsAsync(ct, writeScopeHeld: true);
-            await _pager.SaveToFileAsync(filePath, ct);
+            await _pager.SaveToFileAsync(filePath, ct, progressObserver);
         }
         finally
         {
@@ -3139,14 +3454,35 @@ public sealed class Database : IAsyncDisposable
             }
             finally
             {
-                if (_ownsRuntimeDiagnosticsState)
-                    _runtimeDiagnosticsState?.Dispose();
-                await _temporaryTables.DisposeAsync();
-                await _pager.DisposeAsync();
-                _hybridPersistenceCoordinator?.Dispose();
-                _sharedRowVersionReservationGate.Dispose();
-                _writeOperationGate.Dispose();
-                _sharedStateGate.Dispose();
+                StorageRuntimeDiagnostics.Registration? storageRegistration =
+                    Interlocked.Exchange(
+                    ref _storageRuntimeDiagnosticsRegistration,
+                    null);
+                storageRegistration?.DrainProvider();
+                try
+                {
+                    try
+                    {
+                        await _temporaryTables.DisposeAsync();
+                    }
+                    finally
+                    {
+                        // The raw provider is already drained, but the observer
+                        // lease remains attached so a swallowed shutdown
+                        // checkpoint can publish its terminal state.
+                        await _pager.DisposeAsync();
+                    }
+                }
+                finally
+                {
+                    storageRegistration?.Dispose();
+                    if (_ownsRuntimeDiagnosticsState)
+                        _runtimeDiagnosticsState?.Dispose();
+                    _hybridPersistenceCoordinator?.Dispose();
+                    _sharedRowVersionReservationGate.Dispose();
+                    _writeOperationGate.Dispose();
+                    _sharedStateGate.Dispose();
+                }
             }
 
             closeOperation?.Succeed();

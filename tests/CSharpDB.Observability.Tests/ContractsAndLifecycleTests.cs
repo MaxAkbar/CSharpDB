@@ -399,7 +399,7 @@ public sealed class ContractsAndLifecycleTests
             metadata,
             CSharpDbObservabilityJsonContext.Default.DiagnosticsSnapshotMetadata);
         string compatibleMetadataJson = metadataJson.Replace(
-            "\"schemaVersion\":\"1.0\"",
+            $"\"schemaVersion\":\"{CSharpDbDiagnostics.SchemaVersion}\"",
             "\"schemaVersion\":\"1.42\"",
             StringComparison.Ordinal);
         string errorJson = JsonSerializer.Serialize(
@@ -475,7 +475,7 @@ public sealed class ContractsAndLifecycleTests
         string json = JsonSerializer.Serialize(
             metadata,
             CSharpDbObservabilityJsonContext.Default.DiagnosticsSnapshotMetadata).Replace(
-                "\"schemaVersion\":\"1.0\"",
+                $"\"schemaVersion\":\"{CSharpDbDiagnostics.SchemaVersion}\"",
                 "\"schemaVersion\":\"1.C:\\\\private\"",
                 StringComparison.Ordinal);
 

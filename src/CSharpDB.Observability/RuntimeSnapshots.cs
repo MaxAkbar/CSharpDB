@@ -1432,6 +1432,97 @@ public sealed record SessionDiagnosticsSnapshot(
     }
 }
 
+/// <summary>
+/// Point-in-time occupancy of the shared main-page cache and the dedicated
+/// WAL read cache. A null shared capacity denotes an unbounded shared cache.
+/// </summary>
+public sealed record StorageCacheDiagnosticsSnapshot : IRuntimeDiagnosticsSnapshot
+{
+    [JsonConstructor]
+    public StorageCacheDiagnosticsSnapshot(
+        DiagnosticsSnapshotMetadata metadata,
+        long sharedResidentPages,
+        long? sharedCapacityPages,
+        long walResidentPages,
+        long walCapacityPages)
+    {
+        Metadata = RuntimeDiagnosticsSnapshotContract.ValidateStorageCache(
+            metadata,
+            sharedResidentPages,
+            sharedCapacityPages,
+            walResidentPages,
+            walCapacityPages);
+        SharedResidentPages = sharedResidentPages;
+        SharedCapacityPages = sharedCapacityPages;
+        WalResidentPages = walResidentPages;
+        WalCapacityPages = walCapacityPages;
+    }
+
+    public DiagnosticsSnapshotMetadata Metadata { get; }
+    public long SharedResidentPages { get; }
+    public long? SharedCapacityPages { get; }
+    public long WalResidentPages { get; }
+    public long WalCapacityPages { get; }
+}
+
+/// <summary>
+/// Physical calls made to the primary database storage device. WAL I/O is
+/// excluded. Sequential reads are a subset of reads, while memory-mapped page
+/// exposures describe mappings returned to the pager rather than OS faults.
+/// </summary>
+public sealed record StorageDeviceIoDiagnosticsSnapshot : IRuntimeDiagnosticsSnapshot
+{
+    [JsonConstructor]
+    public StorageDeviceIoDiagnosticsSnapshot(
+        DiagnosticsSnapshotMetadata metadata,
+        long readCount,
+        long bytesRead,
+        long writeCount,
+        long bytesWritten,
+        long flushCount,
+        long resizeCount,
+        long sequentialReadCount,
+        long sequentialBytesRead,
+        long memoryMappedPageExposureCount,
+        long memoryMappedBytesExposed)
+    {
+        Metadata = RuntimeDiagnosticsSnapshotContract.ValidateStorageDeviceIo(
+            metadata,
+            readCount,
+            bytesRead,
+            writeCount,
+            bytesWritten,
+            flushCount,
+            resizeCount,
+            sequentialReadCount,
+            sequentialBytesRead,
+            memoryMappedPageExposureCount,
+            memoryMappedBytesExposed);
+        ReadCount = readCount;
+        BytesRead = bytesRead;
+        WriteCount = writeCount;
+        BytesWritten = bytesWritten;
+        FlushCount = flushCount;
+        ResizeCount = resizeCount;
+        SequentialReadCount = sequentialReadCount;
+        SequentialBytesRead = sequentialBytesRead;
+        MemoryMappedPageExposureCount = memoryMappedPageExposureCount;
+        MemoryMappedBytesExposed = memoryMappedBytesExposed;
+    }
+
+    public DiagnosticsSnapshotMetadata Metadata { get; }
+    public long ReadCount { get; }
+    public long BytesRead { get; }
+    public long WriteCount { get; }
+    public long BytesWritten { get; }
+    public long FlushCount { get; }
+    public long ResizeCount { get; }
+    public long SequentialReadCount { get; }
+    public long SequentialBytesRead { get; }
+    public long MemoryMappedPageExposureCount { get; }
+    public long MemoryMappedBytesExposed { get; }
+}
+
 public sealed record StorageRuntimeDiagnosticsSnapshot(
     DiagnosticsSnapshotMetadata Metadata,
     long? LogicalDatabaseBytes,
@@ -1480,11 +1571,30 @@ public sealed record StorageRuntimeDiagnosticsSnapshot(
     private int? _activeWriters = RuntimeDiagnosticsSnapshotContract.OptionalNonNegative(ActiveWriters, nameof(ActiveWriters));
     private long? _commitCount = RuntimeDiagnosticsSnapshotContract.OptionalNonNegative(CommitCount, nameof(CommitCount));
     private long? _conflictCount = RuntimeDiagnosticsSnapshotContract.OptionalNonNegative(ConflictCount, nameof(ConflictCount));
+    private DiagnosticsSection<StorageCacheDiagnosticsSnapshot> _cache =
+        DiagnosticsSection<StorageCacheDiagnosticsSnapshot>.WithoutValue(
+            DiagnosticsAvailability.Unavailable);
+    private DiagnosticsSection<StorageDeviceIoDiagnosticsSnapshot> _physicalIo =
+        DiagnosticsSection<StorageDeviceIoDiagnosticsSnapshot>.WithoutValue(
+            DiagnosticsAvailability.Unavailable);
 
     public DiagnosticsSnapshotMetadata Metadata
     {
         get => _metadata;
-        init => _metadata = RuntimeDiagnosticsSnapshotContract.AvailableMetadata(value);
+        init
+        {
+            DiagnosticsSnapshotMetadata valid =
+                RuntimeDiagnosticsSnapshotContract.AvailableMetadata(value);
+            RuntimeDiagnosticsSnapshotContract.ValidateStorageDetailSection(
+                valid,
+                _cache,
+                nameof(Cache));
+            RuntimeDiagnosticsSnapshotContract.ValidateStorageDetailSection(
+                valid,
+                _physicalIo,
+                nameof(PhysicalIo));
+            _metadata = valid;
+        }
     }
 
     public long? LogicalDatabaseBytes { get => _logicalDatabaseBytes; init => _logicalDatabaseBytes = RuntimeDiagnosticsSnapshotContract.OptionalNonNegative(value, nameof(LogicalDatabaseBytes)); }
@@ -1501,6 +1611,258 @@ public sealed record StorageRuntimeDiagnosticsSnapshot(
     public int? ActiveWriters { get => _activeWriters; init => _activeWriters = RuntimeDiagnosticsSnapshotContract.OptionalNonNegative(value, nameof(ActiveWriters)); }
     public long? CommitCount { get => _commitCount; init => _commitCount = RuntimeDiagnosticsSnapshotContract.OptionalNonNegative(value, nameof(CommitCount)); }
     public long? ConflictCount { get => _conflictCount; init => _conflictCount = RuntimeDiagnosticsSnapshotContract.OptionalNonNegative(value, nameof(ConflictCount)); }
+
+    /// <summary>
+    /// Shared main-page and dedicated WAL read-cache occupancy. Older payloads
+    /// omit this member and therefore deserialize to Unavailable.
+    /// </summary>
+    public DiagnosticsSection<StorageCacheDiagnosticsSnapshot> Cache
+    {
+        get => _cache;
+        init
+        {
+            DiagnosticsSection<StorageCacheDiagnosticsSnapshot> effective =
+                value ?? DiagnosticsSection<StorageCacheDiagnosticsSnapshot>
+                    .WithoutValue(DiagnosticsAvailability.Unavailable);
+            RuntimeDiagnosticsSnapshotContract.ValidateStorageDetailSection(
+                _metadata,
+                effective,
+                nameof(Cache));
+            _cache = effective;
+        }
+    }
+
+    /// <summary>
+    /// Physical I/O for the primary database device only. Older payloads omit
+    /// this member and therefore deserialize to Unavailable.
+    /// </summary>
+    public DiagnosticsSection<StorageDeviceIoDiagnosticsSnapshot> PhysicalIo
+    {
+        get => _physicalIo;
+        init
+        {
+            DiagnosticsSection<StorageDeviceIoDiagnosticsSnapshot> effective =
+                value ?? DiagnosticsSection<StorageDeviceIoDiagnosticsSnapshot>
+                    .WithoutValue(DiagnosticsAvailability.Unavailable);
+            RuntimeDiagnosticsSnapshotContract.ValidateStorageDetailSection(
+                _metadata,
+                effective,
+                nameof(PhysicalIo));
+            _physicalIo = effective;
+        }
+    }
+}
+
+/// <summary>
+/// The current or most recently completed WAL recovery attempt. Counts cover
+/// only the observed runtime attempt and never include commits recovered into
+/// a new production counter family.
+/// </summary>
+public sealed record WalRecoveryDiagnosticsSnapshot : IRuntimeDiagnosticsSnapshot
+{
+    [JsonConstructor]
+    public WalRecoveryDiagnosticsSnapshot(
+        DiagnosticsSnapshotMetadata metadata,
+        OpaqueDiagnosticsId operationId,
+        WalRecoveryPhase phase,
+        DateTimeOffset startedAtUtc,
+        DateTimeOffset? completedAtUtc,
+        TimeSpan elapsed,
+        CSharpDbOperationOutcome outcome,
+        long scannedFrameCount,
+        long scannedBytes,
+        long recoveredFrameCount,
+        long recoveredBytes,
+        long discardedFrameCount,
+        long discardedBytes,
+        WalRecoveryTruncationReason truncationReason,
+        long attemptCount,
+        long retryCount,
+        SafeErrorProjection? lastRetryError,
+        SafeErrorProjection? error)
+    {
+        Metadata = RuntimeDiagnosticsSnapshotContract.ValidateWalRecovery(
+            metadata,
+            operationId,
+            phase,
+            startedAtUtc,
+            completedAtUtc,
+            elapsed,
+            outcome,
+            scannedFrameCount,
+            scannedBytes,
+            recoveredFrameCount,
+            recoveredBytes,
+            discardedFrameCount,
+            discardedBytes,
+            truncationReason,
+            attemptCount,
+            retryCount,
+            lastRetryError,
+            error);
+        OperationId = operationId;
+        Phase = phase;
+        StartedAtUtc = startedAtUtc;
+        CompletedAtUtc = completedAtUtc;
+        Elapsed = elapsed;
+        Outcome = outcome;
+        ScannedFrameCount = scannedFrameCount;
+        ScannedBytes = scannedBytes;
+        RecoveredFrameCount = recoveredFrameCount;
+        RecoveredBytes = recoveredBytes;
+        DiscardedFrameCount = discardedFrameCount;
+        DiscardedBytes = discardedBytes;
+        TruncationReason = truncationReason;
+        AttemptCount = attemptCount;
+        RetryCount = retryCount;
+        LastRetryError = lastRetryError;
+        Error = error;
+    }
+
+    public DiagnosticsSnapshotMetadata Metadata { get; }
+    public OpaqueDiagnosticsId OperationId { get; }
+    public WalRecoveryPhase Phase { get; }
+    public DateTimeOffset StartedAtUtc { get; }
+    public DateTimeOffset? CompletedAtUtc { get; }
+    public TimeSpan Elapsed { get; }
+    public CSharpDbOperationOutcome Outcome { get; }
+
+    /// <summary>
+    /// Frame candidates actually examined after the WAL header. An incomplete
+    /// trailing candidate counts once. Recovery may discard an unexamined
+    /// suffix after an early failure, so discarded candidates can exceed this
+    /// value.
+    /// </summary>
+    public long ScannedFrameCount { get; }
+
+    /// <summary>
+    /// Actual WAL frame bytes examined, including any incomplete trailing
+    /// candidate bytes. A discarded suffix can contain additional bytes that
+    /// were not examined after the truncation boundary was established.
+    /// </summary>
+    public long ScannedBytes { get; }
+    public long RecoveredFrameCount { get; }
+    public long RecoveredBytes { get; }
+
+    /// <summary>
+    /// Frame candidates discarded during safe recovery. An incomplete
+    /// trailing candidate counts once.
+    /// </summary>
+    public long DiscardedFrameCount { get; }
+    public long DiscardedBytes { get; }
+    public WalRecoveryTruncationReason TruncationReason { get; }
+
+    /// <summary>
+    /// Scan attempts made by this current or latest recovery operation,
+    /// including the first attempt. The count saturates instead of wrapping.
+    /// </summary>
+    public long AttemptCount { get; }
+
+    /// <summary>
+    /// Failed scan attempts that were followed by another attempt. This is
+    /// always lower than <see cref="AttemptCount"/>.
+    /// </summary>
+    public long RetryCount { get; }
+
+    /// <summary>
+    /// The safe error from the latest retried attempt, or null when no retry
+    /// occurred. <see cref="Error"/> remains the final outcome error.
+    /// </summary>
+    public SafeErrorProjection? LastRetryError { get; }
+    public SafeErrorProjection? Error { get; }
+}
+
+/// <summary>
+/// Bounded checkpoint progress and sticky lifetime status for one runtime
+/// counter family. Current-operation fields are omitted when no checkpoint is
+/// admitted. The inactive phase preserves the authoritative highest provider
+/// latch; origin and last timing identify the most recently completed attempt
+/// compatible with that phase. When no coherent attempt exists for that latch,
+/// the enclosing checkpoint section is unavailable.
+/// </summary>
+public sealed record CheckpointDiagnosticsSnapshot : IRuntimeDiagnosticsSnapshot
+{
+    [JsonConstructor]
+    public CheckpointDiagnosticsSnapshot(
+        DiagnosticsSnapshotMetadata metadata,
+        OpaqueDiagnosticsId? operationId,
+        CheckpointPhase phase,
+        CheckpointOrigin origin,
+        DateTimeOffset? startedAtUtc,
+        TimeSpan? elapsed,
+        long? completedPageCount,
+        long? totalPageCount,
+        CheckpointRetentionReason retentionReason,
+        DateTimeOffset? lastStartedAtUtc,
+        DateTimeOffset? lastSuccessfulAtUtc,
+        DateTimeOffset? lastFailedAtUtc,
+        TimeSpan? lastElapsed,
+        long activeCount,
+        long attemptCount,
+        long successCount,
+        long failureCount,
+        long canceledCount,
+        SafeErrorProjection? lastError)
+    {
+        Metadata = RuntimeDiagnosticsSnapshotContract.ValidateCheckpoint(
+            metadata,
+            operationId,
+            phase,
+            origin,
+            startedAtUtc,
+            elapsed,
+            completedPageCount,
+            totalPageCount,
+            retentionReason,
+            lastStartedAtUtc,
+            lastSuccessfulAtUtc,
+            lastFailedAtUtc,
+            lastElapsed,
+            activeCount,
+            attemptCount,
+            successCount,
+            failureCount,
+            canceledCount,
+            lastError);
+        OperationId = operationId;
+        Phase = phase;
+        Origin = origin;
+        StartedAtUtc = startedAtUtc;
+        Elapsed = elapsed;
+        CompletedPageCount = completedPageCount;
+        TotalPageCount = totalPageCount;
+        RetentionReason = retentionReason;
+        LastStartedAtUtc = lastStartedAtUtc;
+        LastSuccessfulAtUtc = lastSuccessfulAtUtc;
+        LastFailedAtUtc = lastFailedAtUtc;
+        LastElapsed = lastElapsed;
+        ActiveCount = activeCount;
+        AttemptCount = attemptCount;
+        SuccessCount = successCount;
+        FailureCount = failureCount;
+        CanceledCount = canceledCount;
+        LastError = lastError;
+    }
+
+    public DiagnosticsSnapshotMetadata Metadata { get; }
+    public OpaqueDiagnosticsId? OperationId { get; }
+    public CheckpointPhase Phase { get; }
+    public CheckpointOrigin Origin { get; }
+    public DateTimeOffset? StartedAtUtc { get; }
+    public TimeSpan? Elapsed { get; }
+    public long? CompletedPageCount { get; }
+    public long? TotalPageCount { get; }
+    public CheckpointRetentionReason RetentionReason { get; }
+    public DateTimeOffset? LastStartedAtUtc { get; }
+    public DateTimeOffset? LastSuccessfulAtUtc { get; }
+    public DateTimeOffset? LastFailedAtUtc { get; }
+    public TimeSpan? LastElapsed { get; }
+    public long ActiveCount { get; }
+    public long AttemptCount { get; }
+    public long SuccessCount { get; }
+    public long FailureCount { get; }
+    public long CanceledCount { get; }
+    public SafeErrorProjection? LastError { get; }
 }
 
 public sealed record WalRuntimeDiagnosticsSnapshot(
@@ -1544,11 +1906,36 @@ public sealed record WalRuntimeDiagnosticsSnapshot(
     private DateTimeOffset? _lastSuccessfulFlushAtUtc = RuntimeDiagnosticsSnapshotContract.OptionalUtc(LastSuccessfulFlushAtUtc, nameof(LastSuccessfulFlushAtUtc));
     private DateTimeOffset? _lastSuccessfulCheckpointAtUtc = RuntimeDiagnosticsSnapshotContract.OptionalUtc(LastSuccessfulCheckpointAtUtc, nameof(LastSuccessfulCheckpointAtUtc));
     private SafeErrorProjection? _lastError = LastError;
+    private long? _flushedCommitCount;
+    private long? _durableFlushCount;
+    private DateTimeOffset? _lastSuccessfulDurableFlushAtUtc;
+    private long? _groupCommitBatchCount;
+    private long? _groupCommitCount;
+    private DateTimeOffset? _lastSuccessfulGroupCommitAtUtc;
+    private DiagnosticsSection<WalRecoveryDiagnosticsSnapshot> _recovery =
+        DiagnosticsSection<WalRecoveryDiagnosticsSnapshot>.WithoutValue(
+            DiagnosticsAvailability.Unavailable);
+    private DiagnosticsSection<CheckpointDiagnosticsSnapshot> _checkpoint =
+        DiagnosticsSection<CheckpointDiagnosticsSnapshot>.WithoutValue(
+            DiagnosticsAvailability.Unavailable);
 
     public DiagnosticsSnapshotMetadata Metadata
     {
         get => _metadata;
-        init => _metadata = RuntimeDiagnosticsSnapshotContract.AvailableMetadata(value);
+        init
+        {
+            DiagnosticsSnapshotMetadata valid =
+                RuntimeDiagnosticsSnapshotContract.AvailableMetadata(value);
+            RuntimeDiagnosticsSnapshotContract.ValidateWalDetailSection(
+                valid,
+                _recovery,
+                nameof(Recovery));
+            RuntimeDiagnosticsSnapshotContract.ValidateWalDetailSection(
+                valid,
+                _checkpoint,
+                nameof(Checkpoint));
+            _metadata = valid;
+        }
     }
 
     public long? LogicalBytes { get => _logicalBytes; init => _logicalBytes = RuntimeDiagnosticsSnapshotContract.OptionalNonNegative(value, nameof(LogicalBytes)); }
@@ -1559,10 +1946,148 @@ public sealed record WalRuntimeDiagnosticsSnapshot(
     public long? FlushCount { get => _flushCount; init => _flushCount = RuntimeDiagnosticsSnapshotContract.OptionalNonNegative(value, nameof(FlushCount)); }
     public long? BytesWritten { get => _bytesWritten; init => _bytesWritten = RuntimeDiagnosticsSnapshotContract.OptionalNonNegative(value, nameof(BytesWritten)); }
     public int? PendingCommitCount { get => _pendingCommitCount; init => _pendingCommitCount = RuntimeDiagnosticsSnapshotContract.OptionalNonNegative(value, nameof(PendingCommitCount)); }
-    public CheckpointPhase CheckpointPhase { get => _checkpointPhase; init => _checkpointPhase = RuntimeDiagnosticsSnapshotContract.DefinedEnum(value, nameof(CheckpointPhase)); }
+    public CheckpointPhase CheckpointPhase
+    {
+        get => _checkpointPhase;
+        init
+        {
+            CheckpointPhase valid = RuntimeDiagnosticsSnapshotContract.DefinedEnum(
+                value,
+                nameof(CheckpointPhase));
+            RuntimeDiagnosticsSnapshotContract.ValidateWalCheckpointPhase(
+                valid,
+                _checkpoint);
+            _checkpointPhase = valid;
+        }
+    }
     public DateTimeOffset? LastSuccessfulFlushAtUtc { get => _lastSuccessfulFlushAtUtc; init => _lastSuccessfulFlushAtUtc = RuntimeDiagnosticsSnapshotContract.OptionalUtc(value, nameof(LastSuccessfulFlushAtUtc)); }
     public DateTimeOffset? LastSuccessfulCheckpointAtUtc { get => _lastSuccessfulCheckpointAtUtc; init => _lastSuccessfulCheckpointAtUtc = RuntimeDiagnosticsSnapshotContract.OptionalUtc(value, nameof(LastSuccessfulCheckpointAtUtc)); }
     public SafeErrorProjection? LastError { get => _lastError; init => _lastError = value; }
+
+    /// <summary>
+    /// Logical commits covered by commit-publication batches. This is distinct
+    /// from <see cref="FlushCount"/>, which counts those batches. This field is
+    /// file-WAL-only and is unknown for memory WAL or a mixed aggregate.
+    /// </summary>
+    public long? FlushedCommitCount
+    {
+        get => _flushedCommitCount;
+        init => _flushedCommitCount = RuntimeDiagnosticsSnapshotContract
+            .OptionalNonNegative(value, nameof(FlushedCommitCount));
+    }
+
+    /// <summary>
+    /// Successful durable WAL policy <c>FlushToDisk</c> calls, including
+    /// creation, reset, compaction, checkpoint, and commit paths. This may be
+    /// greater than <see cref="FlushCount"/>. This field is file-WAL-only and
+    /// is unknown for memory WAL or a mixed aggregate.
+    /// </summary>
+    public long? DurableFlushCount
+    {
+        get => _durableFlushCount;
+        init => _durableFlushCount = RuntimeDiagnosticsSnapshotContract
+            .OptionalNonNegative(value, nameof(DurableFlushCount));
+    }
+
+    /// <summary>
+    /// UTC completion time of the most recent successful durable WAL policy
+    /// <c>FlushToDisk</c> call. Producers publish this only when
+    /// <see cref="DurableFlushCount"/> is positive. This field is file-WAL-only
+    /// and is unknown for memory WAL or a mixed aggregate.
+    /// </summary>
+    public DateTimeOffset? LastSuccessfulDurableFlushAtUtc
+    {
+        get => _lastSuccessfulDurableFlushAtUtc;
+        init => _lastSuccessfulDurableFlushAtUtc =
+            RuntimeDiagnosticsSnapshotContract.OptionalUtc(
+                value,
+                nameof(LastSuccessfulDurableFlushAtUtc));
+    }
+
+    /// <summary>
+    /// Commit-publication batches that grouped at least two logical commits.
+    /// Producers keep this no greater than <see cref="FlushCount"/> when both
+    /// values are known. This field is file-WAL-only and is unknown for memory
+    /// WAL or a mixed aggregate.
+    /// </summary>
+    public long? GroupCommitBatchCount
+    {
+        get => _groupCommitBatchCount;
+        init => _groupCommitBatchCount = RuntimeDiagnosticsSnapshotContract
+            .OptionalNonNegative(value, nameof(GroupCommitBatchCount));
+    }
+
+    /// <summary>
+    /// Logical commits covered by grouped commit-publication batches. Producers
+    /// keep this between twice <see cref="GroupCommitBatchCount"/> (using
+    /// saturating arithmetic) and <see cref="FlushedCommitCount"/> when the
+    /// corresponding values are known. This field is file-WAL-only and is
+    /// unknown for memory WAL or a mixed aggregate.
+    /// </summary>
+    public long? GroupCommitCount
+    {
+        get => _groupCommitCount;
+        init => _groupCommitCount = RuntimeDiagnosticsSnapshotContract
+            .OptionalNonNegative(value, nameof(GroupCommitCount));
+    }
+
+    /// <summary>
+    /// UTC completion time of the most recent successful grouped commit batch.
+    /// Producers publish this only when <see cref="GroupCommitBatchCount"/> is
+    /// positive. This field is file-WAL-only and is unknown for memory WAL or a
+    /// mixed aggregate.
+    /// </summary>
+    public DateTimeOffset? LastSuccessfulGroupCommitAtUtc
+    {
+        get => _lastSuccessfulGroupCommitAtUtc;
+        init => _lastSuccessfulGroupCommitAtUtc =
+            RuntimeDiagnosticsSnapshotContract.OptionalUtc(
+                value,
+                nameof(LastSuccessfulGroupCommitAtUtc));
+    }
+
+    /// <summary>
+    /// Current or most recently completed recovery detail. Older payloads omit
+    /// this member and therefore deserialize to Unavailable.
+    /// </summary>
+    public DiagnosticsSection<WalRecoveryDiagnosticsSnapshot> Recovery
+    {
+        get => _recovery;
+        init
+        {
+            DiagnosticsSection<WalRecoveryDiagnosticsSnapshot> effective =
+                value ?? DiagnosticsSection<WalRecoveryDiagnosticsSnapshot>
+                    .WithoutValue(DiagnosticsAvailability.Unavailable);
+            RuntimeDiagnosticsSnapshotContract.ValidateWalDetailSection(
+                _metadata,
+                effective,
+                nameof(Recovery));
+            _recovery = effective;
+        }
+    }
+
+    /// <summary>
+    /// Current and sticky checkpoint detail. Older payloads omit this member
+    /// and therefore deserialize to Unavailable.
+    /// </summary>
+    public DiagnosticsSection<CheckpointDiagnosticsSnapshot> Checkpoint
+    {
+        get => _checkpoint;
+        init
+        {
+            DiagnosticsSection<CheckpointDiagnosticsSnapshot> effective =
+                value ?? DiagnosticsSection<CheckpointDiagnosticsSnapshot>
+                    .WithoutValue(DiagnosticsAvailability.Unavailable);
+            RuntimeDiagnosticsSnapshotContract.ValidateWalDetailSection(
+                _metadata,
+                effective,
+                nameof(Checkpoint));
+            RuntimeDiagnosticsSnapshotContract.ValidateWalCheckpointPhase(
+                _checkpointPhase,
+                effective);
+            _checkpoint = effective;
+        }
+    }
 }
 
 public sealed record MaintenanceOperationSnapshot(
@@ -2156,6 +2681,94 @@ file static class RuntimeDiagnosticsSnapshotContract
         return validMetadata;
     }
 
+    internal static DiagnosticsSnapshotMetadata ValidateStorageCache(
+        DiagnosticsSnapshotMetadata? metadata,
+        long sharedResidentPages,
+        long? sharedCapacityPages,
+        long walResidentPages,
+        long walCapacityPages)
+    {
+        DiagnosticsSnapshotMetadata validMetadata =
+            RequireAvailableMetadata(metadata);
+        RequireNonNegative(sharedResidentPages, nameof(sharedResidentPages));
+        RequireOptionalNonNegative(sharedCapacityPages, nameof(sharedCapacityPages));
+        RequireNonNegative(walResidentPages, nameof(walResidentPages));
+        RequireNonNegative(walCapacityPages, nameof(walCapacityPages));
+        if (sharedCapacityPages is not null &&
+            sharedResidentPages > sharedCapacityPages)
+        {
+            throw new ArgumentException(
+                "Shared resident pages cannot exceed the bounded shared cache capacity.",
+                nameof(sharedResidentPages));
+        }
+        if (walResidentPages > walCapacityPages)
+        {
+            throw new ArgumentException(
+                "WAL resident pages cannot exceed the WAL cache capacity.",
+                nameof(walResidentPages));
+        }
+        return validMetadata;
+    }
+
+    internal static DiagnosticsSnapshotMetadata ValidateStorageDeviceIo(
+        DiagnosticsSnapshotMetadata? metadata,
+        long readCount,
+        long bytesRead,
+        long writeCount,
+        long bytesWritten,
+        long flushCount,
+        long resizeCount,
+        long sequentialReadCount,
+        long sequentialBytesRead,
+        long memoryMappedPageExposureCount,
+        long memoryMappedBytesExposed)
+    {
+        DiagnosticsSnapshotMetadata validMetadata =
+            RequireAvailableMetadata(metadata);
+        RequireNonNegative(readCount, nameof(readCount));
+        RequireNonNegative(bytesRead, nameof(bytesRead));
+        RequireNonNegative(writeCount, nameof(writeCount));
+        RequireNonNegative(bytesWritten, nameof(bytesWritten));
+        RequireNonNegative(flushCount, nameof(flushCount));
+        RequireNonNegative(resizeCount, nameof(resizeCount));
+        RequireNonNegative(sequentialReadCount, nameof(sequentialReadCount));
+        RequireNonNegative(sequentialBytesRead, nameof(sequentialBytesRead));
+        RequireNonNegative(
+            memoryMappedPageExposureCount,
+            nameof(memoryMappedPageExposureCount));
+        RequireNonNegative(
+            memoryMappedBytesExposed,
+            nameof(memoryMappedBytesExposed));
+        if (sequentialReadCount > readCount)
+        {
+            throw new ArgumentException(
+                "Sequential read calls cannot exceed total read calls.",
+                nameof(sequentialReadCount));
+        }
+        if (sequentialBytesRead > bytesRead)
+        {
+            throw new ArgumentException(
+                "Sequential bytes read cannot exceed total bytes read.",
+                nameof(sequentialBytesRead));
+        }
+        return validMetadata;
+    }
+
+    internal static void ValidateStorageDetailSection<T>(
+        DiagnosticsSnapshotMetadata metadata,
+        DiagnosticsSection<T>? section,
+        string parameterName)
+        where T : class, IRuntimeDiagnosticsSnapshot
+    {
+        ArgumentNullException.ThrowIfNull(section, parameterName);
+        if (section.Value is not null && section.Value.Metadata != metadata)
+        {
+            throw new ArgumentException(
+                "An available storage detail section must share the complete parent capture metadata.",
+                parameterName);
+        }
+    }
+
     internal static DiagnosticsSnapshotMetadata ValidateWal(
         DiagnosticsSnapshotMetadata? metadata,
         long? logicalBytes,
@@ -2184,6 +2797,312 @@ file static class RuntimeDiagnosticsSnapshotContract
         RequireOptionalUtc(lastSuccessfulFlushAtUtc, nameof(lastSuccessfulFlushAtUtc));
         RequireOptionalUtc(lastSuccessfulCheckpointAtUtc, nameof(lastSuccessfulCheckpointAtUtc));
         return validMetadata;
+    }
+
+    internal static DiagnosticsSnapshotMetadata ValidateWalRecovery(
+        DiagnosticsSnapshotMetadata? metadata,
+        OpaqueDiagnosticsId? operationId,
+        WalRecoveryPhase phase,
+        DateTimeOffset startedAtUtc,
+        DateTimeOffset? completedAtUtc,
+        TimeSpan elapsed,
+        CSharpDbOperationOutcome outcome,
+        long scannedFrameCount,
+        long scannedBytes,
+        long recoveredFrameCount,
+        long recoveredBytes,
+        long discardedFrameCount,
+        long discardedBytes,
+        WalRecoveryTruncationReason truncationReason,
+        long attemptCount,
+        long retryCount,
+        SafeErrorProjection? lastRetryError,
+        SafeErrorProjection? error)
+    {
+        DiagnosticsSnapshotMetadata validMetadata =
+            RequireAvailableMetadata(metadata);
+        ArgumentNullException.ThrowIfNull(operationId);
+        RequireKnownEnum(phase, nameof(phase));
+        RequireUtc(startedAtUtc, nameof(startedAtUtc));
+        RequireOptionalUtc(completedAtUtc, nameof(completedAtUtc));
+        RequireNonNegative(elapsed, nameof(elapsed));
+        if (!Enum.IsDefined(outcome))
+            throw new ArgumentOutOfRangeException(nameof(outcome));
+        RequireNonNegative(scannedFrameCount, nameof(scannedFrameCount));
+        RequireNonNegative(scannedBytes, nameof(scannedBytes));
+        RequireNonNegative(recoveredFrameCount, nameof(recoveredFrameCount));
+        RequireNonNegative(recoveredBytes, nameof(recoveredBytes));
+        RequireNonNegative(discardedFrameCount, nameof(discardedFrameCount));
+        RequireNonNegative(discardedBytes, nameof(discardedBytes));
+        if (!Enum.IsDefined(truncationReason))
+            throw new ArgumentOutOfRangeException(nameof(truncationReason));
+        if (attemptCount <= 0)
+            throw new ArgumentOutOfRangeException(nameof(attemptCount));
+        RequireNonNegative(retryCount, nameof(retryCount));
+        if (retryCount >= attemptCount)
+        {
+            throw new ArgumentException(
+                "Recovery retries must be fewer than recovery attempts.",
+                nameof(retryCount));
+        }
+        if ((retryCount > 0) != (lastRetryError is not null))
+        {
+            throw new ArgumentException(
+                "Retried recovery attempts require exactly one safe last-retry error projection.",
+                nameof(lastRetryError));
+        }
+        if (recoveredFrameCount > scannedFrameCount)
+        {
+            throw new ArgumentException(
+                "Recovered frame counts cannot exceed scanned frames.");
+        }
+        if (recoveredBytes > scannedBytes)
+        {
+            throw new ArgumentException(
+                "Recovered bytes cannot exceed scanned bytes.");
+        }
+
+        bool isCompleted = phase == WalRecoveryPhase.Completed;
+        bool hasTerminalOutcome = outcome != CSharpDbOperationOutcome.Unknown;
+        if (isCompleted != hasTerminalOutcome ||
+            isCompleted != completedAtUtc.HasValue)
+        {
+            throw new ArgumentException(
+                "Only completed recovery can report a completion time and terminal outcome, and completed recovery requires both.");
+        }
+        ValidateOptionalOutcomeError(outcome, error);
+
+        bool discardedAnything = discardedFrameCount > 0 || discardedBytes > 0;
+        if (discardedAnything &&
+            truncationReason is WalRecoveryTruncationReason.Unknown or
+                WalRecoveryTruncationReason.None)
+        {
+            throw new ArgumentException(
+                "Discarded WAL data requires a specific path-free truncation reason.",
+                nameof(truncationReason));
+        }
+        if (!discardedAnything &&
+            truncationReason is not (WalRecoveryTruncationReason.Unknown or
+                WalRecoveryTruncationReason.None))
+        {
+            throw new ArgumentException(
+                "A WAL truncation reason requires discarded frames or bytes.",
+                nameof(truncationReason));
+        }
+        if (outcome == CSharpDbOperationOutcome.Succeeded &&
+            truncationReason == WalRecoveryTruncationReason.Unknown)
+        {
+            throw new ArgumentException(
+                "Successful recovery must state whether WAL data was truncated.",
+                nameof(truncationReason));
+        }
+
+        return validMetadata;
+    }
+
+    internal static DiagnosticsSnapshotMetadata ValidateCheckpoint(
+        DiagnosticsSnapshotMetadata? metadata,
+        OpaqueDiagnosticsId? operationId,
+        CheckpointPhase phase,
+        CheckpointOrigin origin,
+        DateTimeOffset? startedAtUtc,
+        TimeSpan? elapsed,
+        long? completedPageCount,
+        long? totalPageCount,
+        CheckpointRetentionReason retentionReason,
+        DateTimeOffset? lastStartedAtUtc,
+        DateTimeOffset? lastSuccessfulAtUtc,
+        DateTimeOffset? lastFailedAtUtc,
+        TimeSpan? lastElapsed,
+        long activeCount,
+        long attemptCount,
+        long successCount,
+        long failureCount,
+        long canceledCount,
+        SafeErrorProjection? lastError)
+    {
+        DiagnosticsSnapshotMetadata validMetadata =
+            RequireAvailableMetadata(metadata);
+        RequireKnownEnum(phase, nameof(phase));
+        if (!Enum.IsDefined(origin))
+            throw new ArgumentOutOfRangeException(nameof(origin));
+        RequireOptionalUtc(startedAtUtc, nameof(startedAtUtc));
+        RequireOptionalDuration(elapsed, nameof(elapsed));
+        RequireOptionalNonNegative(completedPageCount, nameof(completedPageCount));
+        RequireOptionalNonNegative(totalPageCount, nameof(totalPageCount));
+        if (!Enum.IsDefined(retentionReason) ||
+            retentionReason == CheckpointRetentionReason.Unknown)
+        {
+            throw new ArgumentOutOfRangeException(nameof(retentionReason));
+        }
+        RequireOptionalUtc(lastStartedAtUtc, nameof(lastStartedAtUtc));
+        RequireOptionalUtc(lastSuccessfulAtUtc, nameof(lastSuccessfulAtUtc));
+        RequireOptionalUtc(lastFailedAtUtc, nameof(lastFailedAtUtc));
+        RequireOptionalDuration(lastElapsed, nameof(lastElapsed));
+        RequireNonNegative(activeCount, nameof(activeCount));
+        RequireNonNegative(attemptCount, nameof(attemptCount));
+        RequireNonNegative(successCount, nameof(successCount));
+        RequireNonNegative(failureCount, nameof(failureCount));
+        RequireNonNegative(canceledCount, nameof(canceledCount));
+
+        bool hasRepresentativeOperation = operationId is not null;
+        bool hasActiveOperations = activeCount > 0;
+        if (hasRepresentativeOperation != hasActiveOperations ||
+            hasRepresentativeOperation != startedAtUtc.HasValue ||
+            hasRepresentativeOperation != elapsed.HasValue)
+        {
+            throw new ArgumentException(
+                "Active checkpoints require one representative operation id, start time, and elapsed duration, and inactive checkpoints must omit them.");
+        }
+        if (completedPageCount.HasValue != totalPageCount.HasValue)
+        {
+            throw new ArgumentException(
+                "Completed and total checkpoint page counts must either both be present or both be omitted.");
+        }
+        if (completedPageCount > totalPageCount)
+        {
+            throw new ArgumentException(
+                "Completed checkpoint pages cannot exceed total pages.",
+                nameof(completedPageCount));
+        }
+        if (completedPageCount.HasValue && !hasActiveOperations)
+        {
+            throw new ArgumentException(
+                "Checkpoint progress requires a current operation id.",
+                nameof(completedPageCount));
+        }
+        if (phase is CheckpointPhase.Copying or
+            CheckpointPhase.CopyCompleteAwaitingReaders or
+            CheckpointPhase.Finalizing && !hasActiveOperations)
+        {
+            throw new ArgumentException(
+                "An actively executing checkpoint phase requires a current operation id.",
+                nameof(operationId));
+        }
+        if (phase is CheckpointPhase.Idle or CheckpointPhase.Faulted &&
+            hasActiveOperations)
+        {
+            throw new ArgumentException(
+                "An idle or faulted checkpoint cannot retain a current operation id.",
+                nameof(operationId));
+        }
+        if (phase == CheckpointPhase.CopyCompleteAwaitingReaders &&
+            retentionReason is not (CheckpointRetentionReason.ActiveReaders or
+                CheckpointRetentionReason.ActiveReadersAndNewerCommits))
+        {
+            throw new ArgumentException(
+                "A checkpoint awaiting readers must report reader retention.",
+                nameof(retentionReason));
+        }
+        if (phase == CheckpointPhase.Idle &&
+            retentionReason != CheckpointRetentionReason.None)
+        {
+            throw new ArgumentException(
+                "An idle checkpoint cannot report retained WAL work.",
+                nameof(retentionReason));
+        }
+
+        if (activeCount > 1 && !validMetadata.FieldsTruncated)
+        {
+            throw new ArgumentException(
+                "Multiple active checkpoints require FieldsTruncated because current-operation detail is representative.",
+                nameof(metadata));
+        }
+
+        if (activeCount > attemptCount ||
+            successCount > attemptCount ||
+            failureCount > attemptCount ||
+            canceledCount > attemptCount ||
+            (attemptCount != long.MaxValue &&
+                successCount > attemptCount - failureCount - canceledCount))
+        {
+            throw new ArgumentException(
+                "Checkpoint terminal counters cannot exceed the attempt count.");
+        }
+        if (attemptCount != long.MaxValue)
+        {
+            long terminalCount = successCount + failureCount + canceledCount;
+            long expectedTerminalCount = attemptCount - activeCount;
+            if (terminalCount != expectedTerminalCount)
+            {
+                throw new ArgumentException(
+                    "Every admitted checkpoint attempt must be current or terminal exactly once.");
+            }
+        }
+        if (attemptCount == 0)
+        {
+            if (origin != CheckpointOrigin.Unknown ||
+                lastStartedAtUtc is not null ||
+                lastElapsed is not null ||
+                hasActiveOperations ||
+                successCount != 0 || failureCount != 0 || canceledCount != 0 ||
+                lastSuccessfulAtUtc is not null || lastFailedAtUtc is not null ||
+                lastError is not null)
+            {
+                throw new ArgumentException(
+                    "Checkpoint history and current-operation fields require at least one attempt.");
+            }
+        }
+        else
+        {
+            if (origin == CheckpointOrigin.Unknown ||
+                lastStartedAtUtc is null ||
+                lastElapsed is null)
+            {
+                throw new ArgumentException(
+                    "Checkpoint attempts require a known origin, last-start timestamp, and last elapsed duration.");
+            }
+        }
+
+        if ((successCount > 0) != lastSuccessfulAtUtc.HasValue)
+        {
+            throw new ArgumentException(
+                "Checkpoint success history requires a matching last-success timestamp.",
+                nameof(lastSuccessfulAtUtc));
+        }
+        bool hasFailedTerminal = failureCount > 0 || canceledCount > 0;
+        if (hasFailedTerminal != lastFailedAtUtc.HasValue ||
+            hasFailedTerminal != (lastError is not null))
+        {
+            throw new ArgumentException(
+                "Checkpoint failure or cancellation history requires a matching timestamp and safe error.");
+        }
+        if (phase == CheckpointPhase.Faulted && !hasFailedTerminal)
+        {
+            throw new ArgumentException(
+                "A faulted checkpoint requires retained failure or cancellation history.",
+                nameof(phase));
+        }
+
+        return validMetadata;
+    }
+
+    internal static void ValidateWalDetailSection<T>(
+        DiagnosticsSnapshotMetadata metadata,
+        DiagnosticsSection<T>? section,
+        string parameterName)
+        where T : class, IRuntimeDiagnosticsSnapshot
+    {
+        ArgumentNullException.ThrowIfNull(section, parameterName);
+        if (section.Value is not null && section.Value.Metadata != metadata)
+        {
+            throw new ArgumentException(
+                "An available WAL detail section must share the complete parent capture metadata.",
+                parameterName);
+        }
+    }
+
+    internal static void ValidateWalCheckpointPhase(
+        CheckpointPhase phase,
+        DiagnosticsSection<CheckpointDiagnosticsSnapshot>? section)
+    {
+        ArgumentNullException.ThrowIfNull(section);
+        if (section.Value is { } checkpoint && checkpoint.Phase != phase)
+        {
+            throw new ArgumentException(
+                "The WAL checkpoint phase must match its available checkpoint detail.",
+                nameof(section));
+        }
     }
 
     internal static DiagnosticsSnapshotMetadata ValidateMaintenance(

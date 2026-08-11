@@ -21,8 +21,30 @@ public sealed class WalIndex
     // Monotonically increasing commit counter.
     private long _commitCounter;
 
+    // Sticky-saturating logical commits published through the normal commit path.
+    // Recovery, checkpoint remapping, and index reset intentionally do not alter it.
+    private long _logicalCommitCount;
+
+    // Sticky-saturating committed page images published through the normal live
+    // commit path. Recovery and checkpoint index maintenance do not alter it.
+    private long _logicalPageWriteCount;
+
     /// <summary>Total number of committed frames.</summary>
     public int FrameCount => _frameCount;
+
+    internal (
+        int FrameCount,
+        long LogicalCommitCount,
+        long LogicalPageWriteCount) GetRuntimeStateSnapshot()
+    {
+        lock (_gate)
+        {
+            return (
+                _frameCount,
+                _logicalCommitCount,
+                _logicalPageWriteCount);
+        }
+    }
 
     /// <summary>Total number of committed publish cycles.</summary>
     public long CommitCounter
@@ -68,6 +90,35 @@ public sealed class WalIndex
     /// frames for that commit have been added.
     /// </summary>
     public void AdvanceCommit()
+        => AdvanceCommit(committedFrameCount: 0);
+
+    /// <summary>
+    /// Advance the live commit counters after publishing the exact number of
+    /// frames made visible by the commit.
+    /// </summary>
+    internal void AdvanceCommit(int committedFrameCount)
+    {
+        if (committedFrameCount < 0)
+            throw new ArgumentOutOfRangeException(nameof(committedFrameCount));
+
+        lock (_gate)
+        {
+            _commitCounter++;
+            if (_logicalCommitCount != long.MaxValue)
+                _logicalCommitCount++;
+            _logicalPageWriteCount = _logicalPageWriteCount >=
+                long.MaxValue - committedFrameCount
+                    ? long.MaxValue
+                    : _logicalPageWriteCount + committedFrameCount;
+        }
+    }
+
+    /// <summary>
+    /// Reconstruct the snapshot generation while scanning an existing WAL.
+    /// Recovered commits predate this live runtime epoch and therefore do not
+    /// contribute to its logical lifetime commit count.
+    /// </summary>
+    internal void AdvanceRecoveredCommit()
     {
         lock (_gate)
         {

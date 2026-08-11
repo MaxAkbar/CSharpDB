@@ -1,3 +1,5 @@
+using CSharpDB.Storage.Diagnostics;
+
 namespace CSharpDB.Storage.StorageEngine;
 
 /// <summary>
@@ -81,4 +83,29 @@ public sealed class StorageEngineOptions
     /// Checksum provider used by WAL frame/header verification.
     /// </summary>
     public IPageChecksumProvider ChecksumProvider { get; init; } = new AdditiveChecksumProvider();
+
+    /// <summary>
+    /// Internal per-open diagnostics bridge. It is injected only after public
+    /// option composition is complete and is never exposed to custom factories.
+    /// </summary>
+    internal IStorageRuntimeDiagnosticsObserver? RuntimeDiagnosticsObserver { get; init; }
+
+    internal StorageEngineOptions WithRuntimeDiagnosticsObserver(
+        IStorageRuntimeDiagnosticsObserver? observer)
+    {
+        return new StorageEngineOptions
+        {
+            DurabilityMode = DurabilityMode,
+            PrimaryFileShare = PrimaryFileShare,
+            DurableGroupCommit = DurableGroupCommit,
+            AdvisoryStatisticsPersistenceMode = AdvisoryStatisticsPersistenceMode,
+            WalPreallocationChunkBytes = WalPreallocationChunkBytes,
+            PagerOptions = PagerOptions,
+            SerializerProvider = SerializerProvider,
+            IndexProvider = IndexProvider,
+            CatalogStore = CatalogStore,
+            ChecksumProvider = ChecksumProvider,
+            RuntimeDiagnosticsObserver = observer,
+        };
+    }
 }

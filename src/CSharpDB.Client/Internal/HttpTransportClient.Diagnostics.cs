@@ -14,6 +14,24 @@ internal sealed partial class HttpTransportClient
             DiagnosticsJsonTypeInfo<DiagnosticsTopologySnapshot<RuntimeDiagnosticsSnapshot>>(),
             ct);
 
+    public Task<DiagnosticsTopologySnapshot<
+        DiagnosticsValueSnapshot<StorageRuntimeDiagnosticsSnapshot>>>
+        GetStorageDiagnosticsAsync(CancellationToken ct = default)
+        => GetDiagnosticsAsync(
+            BuildUri("api/diagnostics/storage"),
+            DiagnosticsJsonTypeInfo<DiagnosticsTopologySnapshot<
+                DiagnosticsValueSnapshot<StorageRuntimeDiagnosticsSnapshot>>>(),
+            ct);
+
+    public Task<DiagnosticsTopologySnapshot<
+        DiagnosticsValueSnapshot<WalRuntimeDiagnosticsSnapshot>>>
+        GetWalDiagnosticsAsync(CancellationToken ct = default)
+        => GetDiagnosticsAsync(
+            BuildUri("api/diagnostics/wal"),
+            DiagnosticsJsonTypeInfo<DiagnosticsTopologySnapshot<
+                DiagnosticsValueSnapshot<WalRuntimeDiagnosticsSnapshot>>>(),
+            ct);
+
     public Task<DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<ActiveQuerySnapshot>>>
         GetActiveQueriesAsync(
             int maximumRecords,
@@ -73,6 +91,40 @@ internal sealed partial class HttpTransportClient
                     System.Globalization.CultureInfo.InvariantCulture))),
             DiagnosticsJsonTypeInfo<DiagnosticsTopologySnapshot<
                 DiagnosticsCollectionSnapshot<SessionDiagnosticsSnapshot>>>(),
+            ct);
+    }
+
+    public Task<DiagnosticsTopologySnapshot<
+        DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>
+        GetActiveMaintenanceOperationsAsync(
+            int maximumRecords,
+            CancellationToken ct = default)
+    {
+        ValidateDiagnosticsMaximumRecords(maximumRecords);
+        return GetDiagnosticsAsync(
+            BuildUri(
+                "api/diagnostics/maintenance/active",
+                Q("maximumRecords", maximumRecords.ToString(
+                    System.Globalization.CultureInfo.InvariantCulture))),
+            DiagnosticsJsonTypeInfo<DiagnosticsTopologySnapshot<
+                DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>(),
+            ct);
+    }
+
+    public Task<DiagnosticsTopologySnapshot<
+        DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>
+        GetRecentMaintenanceOperationsAsync(
+            int maximumRecords,
+            CancellationToken ct = default)
+    {
+        ValidateDiagnosticsMaximumRecords(maximumRecords);
+        return GetDiagnosticsAsync(
+            BuildUri(
+                "api/diagnostics/maintenance/recent",
+                Q("maximumRecords", maximumRecords.ToString(
+                    System.Globalization.CultureInfo.InvariantCulture))),
+            DiagnosticsJsonTypeInfo<DiagnosticsTopologySnapshot<
+                DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>(),
             ct);
     }
 

@@ -146,6 +146,10 @@ public sealed class GrpcClientTests : IAsyncLifetime
 
             Observability.DiagnosticsTopologySnapshot<Observability.RuntimeDiagnosticsSnapshot> runtime =
                 await diagnostics.GetRuntimeDiagnosticsAsync(Ct);
+            Observability.DiagnosticsTopologySnapshot<Observability.DiagnosticsValueSnapshot<Observability.StorageRuntimeDiagnosticsSnapshot>> storage =
+                await diagnostics.GetStorageDiagnosticsAsync(Ct);
+            Observability.DiagnosticsTopologySnapshot<Observability.DiagnosticsValueSnapshot<Observability.WalRuntimeDiagnosticsSnapshot>> wal =
+                await diagnostics.GetWalDiagnosticsAsync(Ct);
             Observability.DiagnosticsTopologySnapshot<Observability.DiagnosticsCollectionSnapshot<Observability.ActiveQuerySnapshot>> active =
                 await diagnostics.GetActiveQueriesAsync(4, Ct);
             Observability.DiagnosticsTopologySnapshot<Observability.DiagnosticsCollectionSnapshot<Observability.RecentQuerySnapshot>> recent =
@@ -154,13 +158,18 @@ public sealed class GrpcClientTests : IAsyncLifetime
                 await diagnostics.GetQueryPlanDiagnosticsAsync(operationId, Ct);
             Observability.DiagnosticsTopologySnapshot<Observability.DiagnosticsCollectionSnapshot<Observability.SessionDiagnosticsSnapshot>> sessions =
                 await diagnostics.GetSessionsAsync(6, Ct);
+            Observability.DiagnosticsTopologySnapshot<Observability.DiagnosticsCollectionSnapshot<Observability.MaintenanceOperationSnapshot>> activeMaintenance =
+                await diagnostics.GetActiveMaintenanceOperationsAsync(7, Ct);
+            Observability.DiagnosticsTopologySnapshot<Observability.DiagnosticsCollectionSnapshot<Observability.MaintenanceOperationSnapshot>> recentMaintenance =
+                await diagnostics.GetRecentMaintenanceOperationsAsync(8, Ct);
             Observability.DiagnosticsTopologySnapshot<Observability.DiagnosticsValueSnapshot<Observability.QueryDetailSnapshot>> detail =
                 await diagnostics.GetQueryDetailAsync(operationId, Ct);
 
             Assert.All(
                 new Observability.IRuntimeDiagnosticsSnapshot[]
                 {
-                    runtime, active, recent, plan, sessions, detail,
+                    runtime, storage, wal, active, recent, plan, sessions,
+                    activeMaintenance, recentMaintenance, detail,
                 },
                 snapshot =>
                 {
@@ -269,6 +278,11 @@ public sealed class GrpcClientTests : IAsyncLifetime
                 () => rpc.GetActiveQueriesAsync(
                     new DiagnosticsRecordsRequest { MaximumRecords = 0 },
                     cancellationToken: Ct).ResponseAsync);
+            RpcException unauthenticatedMaintenance =
+                await Assert.ThrowsAsync<RpcException>(
+                    () => rpc.GetActiveMaintenanceOperationsAsync(
+                        new DiagnosticsRecordsRequest { MaximumRecords = 0 },
+                        cancellationToken: Ct).ResponseAsync);
             var headers = new Metadata
             {
                 { "x-csharpdb-api-key", apiKey },
@@ -278,6 +292,12 @@ public sealed class GrpcClientTests : IAsyncLifetime
                     new DiagnosticsRecordsRequest { MaximumRecords = 0 },
                     headers,
                     cancellationToken: Ct).ResponseAsync);
+            RpcException invalidMaintenanceLimit =
+                await Assert.ThrowsAsync<RpcException>(
+                    () => rpc.GetRecentMaintenanceOperationsAsync(
+                        new DiagnosticsRecordsRequest { MaximumRecords = 0 },
+                        headers,
+                        cancellationToken: Ct).ResponseAsync);
             RpcException invalidId = await Assert.ThrowsAsync<RpcException>(
                 () => rpc.GetQueryPlanDiagnosticsAsync(
                     new DiagnosticsOperationRequest
@@ -288,7 +308,13 @@ public sealed class GrpcClientTests : IAsyncLifetime
                     cancellationToken: Ct).ResponseAsync);
 
             Assert.Equal(StatusCode.Unauthenticated, unauthenticated.StatusCode);
+            Assert.Equal(
+                StatusCode.Unauthenticated,
+                unauthenticatedMaintenance.StatusCode);
             Assert.Equal(StatusCode.InvalidArgument, invalidLimit.StatusCode);
+            Assert.Equal(
+                StatusCode.InvalidArgument,
+                invalidMaintenanceLimit.StatusCode);
             Assert.Equal(StatusCode.InvalidArgument, invalidId.StatusCode);
         }
         finally
@@ -314,6 +340,12 @@ public sealed class GrpcClientTests : IAsyncLifetime
                 Ct));
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
             diagnostics.GetSessionsAsync(-1, Ct));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            diagnostics.GetActiveMaintenanceOperationsAsync(0, Ct));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            diagnostics.GetRecentMaintenanceOperationsAsync(
+                Observability.CSharpDbObservabilityOptions.MaximumHistoryCapacity + 1,
+                Ct));
     }
 
     [Fact]
@@ -356,6 +388,7 @@ public sealed class GrpcClientTests : IAsyncLifetime
             Assert.Equal(
                 CSharpDbObservabilityNotSupportedException.SafeMessage,
                 error.Message);
+            Assert.Null(error.InnerException);
         }
         finally
         {

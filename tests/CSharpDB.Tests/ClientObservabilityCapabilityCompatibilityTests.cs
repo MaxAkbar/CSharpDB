@@ -24,10 +24,14 @@ public sealed class ClientObservabilityCapabilityCompatibilityTests
             contract.GetMethods(BindingFlags.Public | BindingFlags.Instance),
             static method => method.Name is
                 nameof(ICSharpDbObservabilityClient.GetRuntimeDiagnosticsAsync) or
+                nameof(ICSharpDbObservabilityClient.GetStorageDiagnosticsAsync) or
+                nameof(ICSharpDbObservabilityClient.GetWalDiagnosticsAsync) or
                 nameof(ICSharpDbObservabilityClient.GetActiveQueriesAsync) or
                 nameof(ICSharpDbObservabilityClient.GetRecentQueriesAsync) or
                 nameof(ICSharpDbObservabilityClient.GetQueryPlanDiagnosticsAsync) or
                 nameof(ICSharpDbObservabilityClient.GetSessionsAsync) or
+                nameof(ICSharpDbObservabilityClient.GetActiveMaintenanceOperationsAsync) or
+                nameof(ICSharpDbObservabilityClient.GetRecentMaintenanceOperationsAsync) or
                 nameof(ICSharpDbObservabilityClient.GetQueryDetailAsync));
 
         string binaryAndSourceShape = string.Join(

@@ -107,10 +107,14 @@ service CSharpDbRpc {
   rpc InspectPage (InspectPageRequest) returns (PageInspectReportMessage);
   rpc CheckIndexes (CheckIndexesRequest) returns (IndexInspectReportMessage);
   rpc GetRuntimeDiagnostics (google.protobuf.Empty) returns (DiagnosticsJsonResponse);
+  rpc GetStorageDiagnostics (google.protobuf.Empty) returns (DiagnosticsJsonResponse);
+  rpc GetWalDiagnostics (google.protobuf.Empty) returns (DiagnosticsJsonResponse);
   rpc GetActiveQueries (DiagnosticsRecordsRequest) returns (DiagnosticsJsonResponse);
   rpc GetRecentQueries (DiagnosticsRecordsRequest) returns (DiagnosticsJsonResponse);
   rpc GetQueryPlanDiagnostics (DiagnosticsOperationRequest) returns (DiagnosticsJsonResponse);
   rpc GetSessions (DiagnosticsRecordsRequest) returns (DiagnosticsJsonResponse);
+  rpc GetActiveMaintenanceOperations (DiagnosticsRecordsRequest) returns (DiagnosticsJsonResponse);
+  rpc GetRecentMaintenanceOperations (DiagnosticsRecordsRequest) returns (DiagnosticsJsonResponse);
   rpc GetQueryDetail (DiagnosticsOperationRequest) returns (DiagnosticsJsonResponse);
 }
 

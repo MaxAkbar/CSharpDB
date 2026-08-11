@@ -18,6 +18,28 @@ internal sealed partial class GrpcTransportClient
                 RuntimeDiagnosticsSnapshot>>(),
             ct);
 
+    public Task<DiagnosticsTopologySnapshot<
+        DiagnosticsValueSnapshot<StorageRuntimeDiagnosticsSnapshot>>>
+        GetStorageDiagnosticsAsync(CancellationToken ct = default)
+        => CallDiagnosticsAsync(
+            _client.GetStorageDiagnosticsAsync(
+                EmptyRequest,
+                cancellationToken: ct),
+            DiagnosticsJsonTypeInfo<DiagnosticsTopologySnapshot<
+                DiagnosticsValueSnapshot<StorageRuntimeDiagnosticsSnapshot>>>(),
+            ct);
+
+    public Task<DiagnosticsTopologySnapshot<
+        DiagnosticsValueSnapshot<WalRuntimeDiagnosticsSnapshot>>>
+        GetWalDiagnosticsAsync(CancellationToken ct = default)
+        => CallDiagnosticsAsync(
+            _client.GetWalDiagnosticsAsync(
+                EmptyRequest,
+                cancellationToken: ct),
+            DiagnosticsJsonTypeInfo<DiagnosticsTopologySnapshot<
+                DiagnosticsValueSnapshot<WalRuntimeDiagnosticsSnapshot>>>(),
+            ct);
+
     public Task<DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<ActiveQuerySnapshot>>>
         GetActiveQueriesAsync(
             int maximumRecords,
@@ -90,6 +112,44 @@ internal sealed partial class GrpcTransportClient
             ct);
     }
 
+    public Task<DiagnosticsTopologySnapshot<
+        DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>
+        GetActiveMaintenanceOperationsAsync(
+            int maximumRecords,
+            CancellationToken ct = default)
+    {
+        ValidateDiagnosticsMaximumRecords(maximumRecords);
+        return CallDiagnosticsAsync(
+            _client.GetActiveMaintenanceOperationsAsync(
+                new DiagnosticsRecordsRequest
+                {
+                    MaximumRecords = maximumRecords,
+                },
+                cancellationToken: ct),
+            DiagnosticsJsonTypeInfo<DiagnosticsTopologySnapshot<
+                DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>(),
+            ct);
+    }
+
+    public Task<DiagnosticsTopologySnapshot<
+        DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>
+        GetRecentMaintenanceOperationsAsync(
+            int maximumRecords,
+            CancellationToken ct = default)
+    {
+        ValidateDiagnosticsMaximumRecords(maximumRecords);
+        return CallDiagnosticsAsync(
+            _client.GetRecentMaintenanceOperationsAsync(
+                new DiagnosticsRecordsRequest
+                {
+                    MaximumRecords = maximumRecords,
+                },
+                cancellationToken: ct),
+            DiagnosticsJsonTypeInfo<DiagnosticsTopologySnapshot<
+                DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>(),
+            ct);
+    }
+
     public Task<DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<QueryDetailSnapshot>>>
         GetQueryDetailAsync(
             OpaqueDiagnosticsId operationId,
@@ -131,7 +191,9 @@ internal sealed partial class GrpcTransportClient
         }
         catch (RpcException ex) when (ex.StatusCode == StatusCode.Unimplemented)
         {
-            throw new CSharpDbObservabilityNotSupportedException(ex);
+            // An older or custom server may control the gRPC status detail.
+            // Do not retain that remote text in the public safe exception.
+            throw new CSharpDbObservabilityNotSupportedException();
         }
         catch (RpcException ex)
         {

@@ -9,7 +9,7 @@ namespace CSharpDB.Observability;
 /// </summary>
 public static class CSharpDbDiagnostics
 {
-    public const string SchemaVersion = "1.0";
+    public const string SchemaVersion = "1.1";
     public const string InstrumentationVersion = "1.0.0";
     public const string ActivitySourceName = "CSharpDB";
     public const string MeterName = "CSharpDB";

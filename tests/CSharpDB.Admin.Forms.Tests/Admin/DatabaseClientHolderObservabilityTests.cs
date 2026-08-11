@@ -34,6 +34,8 @@ public sealed class DatabaseClientHolderObservabilityTests
 
         await Assert.ThrowsAsync<CSharpDbObservabilityNotSupportedException>(
             () => diagnostics.GetRuntimeDiagnosticsAsync(Ct));
+        await Assert.ThrowsAsync<CSharpDbObservabilityNotSupportedException>(
+            () => diagnostics.GetStorageDiagnosticsAsync(Ct));
         Assert.Empty(recording.Invocations);
     }
 
@@ -73,26 +75,46 @@ public sealed class DatabaseClientHolderObservabilityTests
         var diagnostics = (ICSharpDbObservabilityClient)holder;
 
         using var runtimeCancellation = new CancellationTokenSource();
+        using var storageCancellation = new CancellationTokenSource();
+        using var walCancellation = new CancellationTokenSource();
         using var activeCancellation = new CancellationTokenSource();
         using var recentCancellation = new CancellationTokenSource();
         using var planCancellation = new CancellationTokenSource();
         using var sessionsCancellation = new CancellationTokenSource();
+        using var activeMaintenanceCancellation = new CancellationTokenSource();
+        using var recentMaintenanceCancellation = new CancellationTokenSource();
         using var detailCancellation = new CancellationTokenSource();
         var planId = new OpaqueDiagnosticsId("11111111111111111111111111111111");
         var detailId = new OpaqueDiagnosticsId("22222222222222222222222222222222");
 
         await diagnostics.GetRuntimeDiagnosticsAsync(runtimeCancellation.Token);
+        await diagnostics.GetStorageDiagnosticsAsync(storageCancellation.Token);
+        await diagnostics.GetWalDiagnosticsAsync(walCancellation.Token);
         await diagnostics.GetActiveQueriesAsync(7, activeCancellation.Token);
         await diagnostics.GetRecentQueriesAsync(11, recentCancellation.Token);
         await diagnostics.GetQueryPlanDiagnosticsAsync(planId, planCancellation.Token);
         await diagnostics.GetSessionsAsync(13, sessionsCancellation.Token);
+        await diagnostics.GetActiveMaintenanceOperationsAsync(
+            17,
+            activeMaintenanceCancellation.Token);
+        await diagnostics.GetRecentMaintenanceOperationsAsync(
+            19,
+            recentMaintenanceCancellation.Token);
         await diagnostics.GetQueryDetailAsync(detailId, detailCancellation.Token);
 
-        Assert.Equal(6, recording.Invocations.Count);
+        Assert.Equal(10, recording.Invocations.Count);
         AssertInvocation(
             recording,
             nameof(ICSharpDbObservabilityClient.GetRuntimeDiagnosticsAsync),
             runtimeCancellation.Token);
+        AssertInvocation(
+            recording,
+            nameof(ICSharpDbObservabilityClient.GetStorageDiagnosticsAsync),
+            storageCancellation.Token);
+        AssertInvocation(
+            recording,
+            nameof(ICSharpDbObservabilityClient.GetWalDiagnosticsAsync),
+            walCancellation.Token);
         AssertInvocation(
             recording,
             nameof(ICSharpDbObservabilityClient.GetActiveQueriesAsync),
@@ -113,6 +135,16 @@ public sealed class DatabaseClientHolderObservabilityTests
             nameof(ICSharpDbObservabilityClient.GetSessionsAsync),
             13,
             sessionsCancellation.Token);
+        AssertInvocation(
+            recording,
+            nameof(ICSharpDbObservabilityClient.GetActiveMaintenanceOperationsAsync),
+            17,
+            activeMaintenanceCancellation.Token);
+        AssertInvocation(
+            recording,
+            nameof(ICSharpDbObservabilityClient.GetRecentMaintenanceOperationsAsync),
+            19,
+            recentMaintenanceCancellation.Token);
         AssertInvocation(
             recording,
             nameof(ICSharpDbObservabilityClient.GetQueryDetailAsync),
@@ -233,6 +265,14 @@ public sealed class DatabaseClientHolderObservabilityTests
             nameof(ICSharpDbObservabilityClient.GetRuntimeDiagnosticsAsync),
             Task.FromResult<DiagnosticsTopologySnapshot<RuntimeDiagnosticsSnapshot>>(null!));
         recording.SetResult(
+            nameof(ICSharpDbObservabilityClient.GetStorageDiagnosticsAsync),
+            Task.FromResult<DiagnosticsTopologySnapshot<
+                DiagnosticsValueSnapshot<StorageRuntimeDiagnosticsSnapshot>>>(null!));
+        recording.SetResult(
+            nameof(ICSharpDbObservabilityClient.GetWalDiagnosticsAsync),
+            Task.FromResult<DiagnosticsTopologySnapshot<
+                DiagnosticsValueSnapshot<WalRuntimeDiagnosticsSnapshot>>>(null!));
+        recording.SetResult(
             nameof(ICSharpDbObservabilityClient.GetActiveQueriesAsync),
             Task.FromResult<DiagnosticsTopologySnapshot<
                 DiagnosticsCollectionSnapshot<ActiveQuerySnapshot>>>(null!));
@@ -248,6 +288,14 @@ public sealed class DatabaseClientHolderObservabilityTests
             nameof(ICSharpDbObservabilityClient.GetSessionsAsync),
             Task.FromResult<DiagnosticsTopologySnapshot<
                 DiagnosticsCollectionSnapshot<SessionDiagnosticsSnapshot>>>(null!));
+        recording.SetResult(
+            nameof(ICSharpDbObservabilityClient.GetActiveMaintenanceOperationsAsync),
+            Task.FromResult<DiagnosticsTopologySnapshot<
+                DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>(null!));
+        recording.SetResult(
+            nameof(ICSharpDbObservabilityClient.GetRecentMaintenanceOperationsAsync),
+            Task.FromResult<DiagnosticsTopologySnapshot<
+                DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>(null!));
         recording.SetResult(
             nameof(ICSharpDbObservabilityClient.GetQueryDetailAsync),
             Task.FromResult<DiagnosticsTopologySnapshot<

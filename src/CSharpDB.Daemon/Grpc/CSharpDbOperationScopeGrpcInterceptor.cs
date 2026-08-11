@@ -114,10 +114,14 @@ public sealed class CSharpDbOperationScopeGrpcInterceptor : Interceptor
             ? method.AsSpan(separator + 1)
             : method.AsSpan();
         return name.SequenceEqual("GetRuntimeDiagnostics") ||
+               name.SequenceEqual("GetStorageDiagnostics") ||
+               name.SequenceEqual("GetWalDiagnostics") ||
                name.SequenceEqual("GetActiveQueries") ||
                name.SequenceEqual("GetRecentQueries") ||
                name.SequenceEqual("GetQueryPlanDiagnostics") ||
                name.SequenceEqual("GetSessions") ||
+               name.SequenceEqual("GetActiveMaintenanceOperations") ||
+               name.SequenceEqual("GetRecentMaintenanceOperations") ||
                name.SequenceEqual("GetQueryDetail");
     }
 }

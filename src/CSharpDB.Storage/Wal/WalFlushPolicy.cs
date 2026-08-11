@@ -6,6 +6,7 @@ namespace CSharpDB.Storage.Wal;
 internal interface IWalFlushPolicy
 {
     bool AllowsWriteConcurrencyDuringCommitFlush { get; }
+    bool PerformsDurableFlush => false;
     ValueTask FlushCommitAsync(SafeFileHandle handle, CancellationToken cancellationToken);
 }
 
@@ -26,6 +27,7 @@ internal sealed class BufferedWalFlushPolicy : IWalFlushPolicy
 {
     public static BufferedWalFlushPolicy Instance { get; } = new();
     public bool AllowsWriteConcurrencyDuringCommitFlush => false;
+    public bool PerformsDurableFlush => false;
 
     private BufferedWalFlushPolicy()
     {
@@ -42,6 +44,7 @@ internal sealed class DurableWalFlushPolicy : IWalFlushPolicy
 {
     public static DurableWalFlushPolicy Instance { get; } = new();
     public bool AllowsWriteConcurrencyDuringCommitFlush => true;
+    public bool PerformsDurableFlush => true;
 
     private DurableWalFlushPolicy()
     {

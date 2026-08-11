@@ -14,6 +14,33 @@ internal static class LifecycleObservability
         CSharpDbObservabilityOptions? options,
         CSharpDbLogEventDefinition<CSharpDbLifecycleCompletedEvent> definition,
         CSharpDbOperationClass operationClass)
+        => StartCore(options, definition, operationClass, exactContext: null);
+
+    /// <summary>
+    /// Starts a lifecycle event for an already-created operation context. This
+    /// preserves the exact operation id shared with runtime diagnostics rather
+    /// than deriving a child from the ambient scope.
+    /// </summary>
+    internal static LifecycleOperation? StartExact(
+        CSharpDbObservabilityOptions? options,
+        CSharpDbLogEventDefinition<CSharpDbLifecycleCompletedEvent> definition,
+        CSharpDbOperationClass operationClass,
+        CSharpDbOperationContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        if (context.OperationClass != operationClass)
+            throw new ArgumentException(
+                "The lifecycle operation class must match the supplied context.",
+                nameof(context));
+
+        return StartCore(options, definition, operationClass, context);
+    }
+
+    private static LifecycleOperation? StartCore(
+        CSharpDbObservabilityOptions? options,
+        CSharpDbLogEventDefinition<CSharpDbLifecycleCompletedEvent> definition,
+        CSharpDbOperationClass operationClass,
+        CSharpDbOperationContext? exactContext)
     {
         if (options is null ||
             !options.Logging.Enabled ||
@@ -28,16 +55,8 @@ internal static class LifecycleObservability
 
         try
         {
-            CSharpDbOperationContext? ambient = CSharpDbOperationScope.Current;
-            CSharpDbOperationContext context = ambient switch
-            {
-                null => CSharpDbOperationContext.CreateRoot(
-                    operationClass,
-                    CSharpDbOperationScope.CurrentTransport,
-                    options.DatabaseAlias,
-                    sessionId: CSharpDbOperationScope.CurrentSessionId),
-                _ => CSharpDbOperationContext.CreateRequest(ambient, operationClass),
-            };
+            CSharpDbOperationContext context = exactContext ??
+                CreateContext(options, operationClass);
 
             return new LifecycleOperation(context, definition, publisher);
         }
@@ -47,6 +66,22 @@ internal static class LifecycleObservability
             // the observed operation.
             return null;
         }
+    }
+
+    private static CSharpDbOperationContext CreateContext(
+        CSharpDbObservabilityOptions options,
+        CSharpDbOperationClass operationClass)
+    {
+        CSharpDbOperationContext? ambient = CSharpDbOperationScope.Current;
+        return ambient switch
+        {
+            null => CSharpDbOperationContext.CreateRoot(
+                operationClass,
+                CSharpDbOperationScope.CurrentTransport,
+                options.DatabaseAlias,
+                sessionId: CSharpDbOperationScope.CurrentSessionId),
+            _ => CSharpDbOperationContext.CreateRequest(ambient, operationClass),
+        };
     }
 }
 
@@ -67,8 +102,15 @@ internal sealed class LifecycleOperation
         _publisher = publisher;
     }
 
+    internal CSharpDbOperationContext Context => _context;
+
     internal void Succeed()
         => Complete(CSharpDbOperationOutcome.Succeeded, error: null);
+
+    internal void Reject(SafeErrorKind errorKind)
+        => Complete(
+            CSharpDbOperationOutcome.Rejected,
+            SafeErrorProjector.Project(errorKind));
 
     internal void Fail(Exception exception)
     {
@@ -117,7 +159,7 @@ internal sealed class LifecycleOperation
         }
     }
 
-    private static SafeErrorProjection ProjectError(Exception exception)
+    internal static SafeErrorProjection ProjectError(Exception exception)
     {
         if (exception is OperationCanceledException)
             return SafeErrorProjector.Project(SafeErrorKind.OperationCanceled);

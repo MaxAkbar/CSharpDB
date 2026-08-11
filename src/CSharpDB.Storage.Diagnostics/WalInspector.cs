@@ -10,6 +10,7 @@ public static class WalInspector
         DatabaseInspectOptions? options = null,
         CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         _ = options;
 
         string walPath = dbPath + ".wal";
@@ -127,6 +128,8 @@ public static class WalInspector
 
         for (int i = 0; i < fullFrameCount; i++)
         {
+            ct.ThrowIfCancellationRequested();
+
             long frameOffset = PageConstants.WalHeaderSize + (long)i * PageConstants.WalFrameSize;
 
             int headerBytes = await ReadAtAsync(stream, frameOffset, frameHeader, ct);
@@ -174,7 +177,7 @@ public static class WalInspector
                 });
             }
 
-            uint actualHeaderChecksum = InspectorEngine.Checksum(frameHeader.AsSpan(0, 16));
+            uint actualHeaderChecksum = InspectorEngine.Checksum(frameHeader.AsSpan(0, 16), ct);
             if (actualHeaderChecksum != expectedHeaderChecksum)
             {
                 issues.Add(new IntegrityIssue
@@ -187,7 +190,7 @@ public static class WalInspector
                 });
             }
 
-            uint actualDataChecksum = InspectorEngine.Checksum(pageData);
+            uint actualDataChecksum = InspectorEngine.Checksum(pageData, ct);
             if (actualDataChecksum != expectedDataChecksum)
             {
                 issues.Add(new IntegrityIssue
