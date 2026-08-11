@@ -1,3 +1,4 @@
+using CSharpDB.Client;
 using CSharpDB.Primitives;
 using CSharpDB.Engine;
 using CSharpDB.Execution;
@@ -10,6 +11,10 @@ internal interface ICSharpDbSession : IAsyncDisposable
 {
     bool SupportsStructuredExecution { get; }
     CSharpDbObservabilityOptions? ObservabilityOptionsSnapshot { get; }
+    CSharpDbRuntimeDiagnosticsState? RuntimeDiagnosticsState { get; }
+    object? RuntimeDiagnosticsIdentityKey { get; }
+    IDataRuntimeDiagnosticsContributor? RuntimeDiagnosticsContributor { get; }
+    ICSharpDbObservabilityClient? RemoteObservabilityClient { get; }
     ValueTask<QueryResult> ExecuteAsync(string sql, CancellationToken cancellationToken = default);
     ValueTask<QueryResult> ExecuteAsync(
         string executionSql,

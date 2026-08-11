@@ -84,6 +84,19 @@ public sealed class ObservabilityHostTests
     }
 
     [Fact]
+    public void LegacyNullOptionsConstructor_RemainsSourceCompatible()
+    {
+        Task continuationTask = Task.CompletedTask;
+        RequestDelegate next = _ => continuationTask;
+
+        var middleware = new CSharpDbOperationScopeMiddleware(next, null);
+
+        Assert.Same(
+            continuationTask,
+            middleware.InvokeAsync(new DefaultHttpContext()));
+    }
+
+    [Fact]
     public void InvalidConfigurationFailsBeforeDatabaseWarmup()
     {
         IConfiguration configuration = BuildConfiguration(new Dictionary<string, string?>

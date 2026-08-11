@@ -18,25 +18,34 @@ public static class MaintenanceEndpoints
         return group;
     }
 
-    private static async Task<IResult> Checkpoint(ICSharpDbClient db)
+    private static async Task<IResult> Checkpoint(ICSharpDbClient db, HttpContext context)
     {
-        await db.CheckpointAsync();
+        await db.CheckpointAsync(context.RequestAborted);
         return Results.NoContent();
     }
 
-    private static async Task<IResult> Backup(ICSharpDbClient db, BackupRequest request)
+    private static async Task<IResult> Backup(
+        ICSharpDbClient db,
+        BackupRequest request,
+        HttpContext context)
     {
-        var result = await db.BackupAsync(request);
+        var result = await db.BackupAsync(request, context.RequestAborted);
         return Results.Ok(result);
     }
 
-    private static async Task<IResult> Restore(ICSharpDbClient db, RestoreRequest request)
+    private static async Task<IResult> Restore(
+        ICSharpDbClient db,
+        RestoreRequest request,
+        HttpContext context)
     {
-        var result = await db.RestoreAsync(request);
+        var result = await db.RestoreAsync(request, context.RequestAborted);
         return Results.Ok(result);
     }
 
-    private static async Task<IResult> MigrateForeignKeys(ICSharpDbClient db, ForeignKeyMigrationRequest request)
+    private static async Task<IResult> MigrateForeignKeys(
+        ICSharpDbClient db,
+        ForeignKeyMigrationRequest request,
+        HttpContext context)
     {
         foreach (ForeignKeyMigrationConstraintSpec constraint in request.Constraints)
         {
@@ -55,25 +64,28 @@ public static class MaintenanceEndpoints
             }
         }
 
-        var result = await db.MigrateForeignKeysAsync(request);
+        var result = await db.MigrateForeignKeysAsync(request, context.RequestAborted);
         return Results.Ok(result);
     }
 
-    private static async Task<IResult> GetReport(ICSharpDbClient db)
+    private static async Task<IResult> GetReport(ICSharpDbClient db, HttpContext context)
     {
-        var report = await db.GetMaintenanceReportAsync();
+        var report = await db.GetMaintenanceReportAsync(context.RequestAborted);
         return Results.Ok(report);
     }
 
-    private static async Task<IResult> Reindex(ICSharpDbClient db, ReindexRequest request)
+    private static async Task<IResult> Reindex(
+        ICSharpDbClient db,
+        ReindexRequest request,
+        HttpContext context)
     {
-        var result = await db.ReindexAsync(request);
+        var result = await db.ReindexAsync(request, context.RequestAborted);
         return Results.Ok(result);
     }
 
-    private static async Task<IResult> Vacuum(ICSharpDbClient db)
+    private static async Task<IResult> Vacuum(ICSharpDbClient db, HttpContext context)
     {
-        var result = await db.VacuumAsync();
+        var result = await db.VacuumAsync(context.RequestAborted);
         return Results.Ok(result);
     }
 }

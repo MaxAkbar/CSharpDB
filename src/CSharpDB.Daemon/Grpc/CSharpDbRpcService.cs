@@ -1,18 +1,50 @@
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
+using CSharpDB.Api.Diagnostics;
+using CSharpDB.Api.Security;
 using CSharpDB.Client;
 using CSharpDB.Client.Grpc;
 using CSharpDB.Client.Models;
+using CSharpDB.Observability;
 using CSharpDB.Sql;
+using Google.Protobuf;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using CoreDbException = CSharpDB.Primitives.CSharpDbException;
 using CoreErrorCode = CSharpDB.Primitives.ErrorCode;
 
 namespace CSharpDB.Daemon.Grpc;
 
-public sealed class CSharpDbRpcService(ICSharpDbClient client) : CSharpDbRpc.CSharpDbRpcBase
+public sealed class CSharpDbRpcService : CSharpDbRpc.CSharpDbRpcBase
 {
     private static readonly Empty EmptyResponse = new();
+    private readonly ICSharpDbClient client;
+    private readonly IOptions<CSharpDbApiSecurityOptions> securityOptions;
+    private readonly IServiceProvider? services;
+
+    public CSharpDbRpcService(ICSharpDbClient client)
+        : this(
+            client,
+            Options.Create(new CSharpDbApiSecurityOptions()),
+            serviceProvider: null)
+    {
+    }
+
+    [ActivatorUtilitiesConstructor]
+    public CSharpDbRpcService(
+        ICSharpDbClient client,
+        IOptions<CSharpDbApiSecurityOptions> securityOptions,
+        IServiceProvider? serviceProvider)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentNullException.ThrowIfNull(securityOptions);
+
+        this.client = client;
+        this.securityOptions = securityOptions;
+        services = serviceProvider;
+    }
 
     public override Task<DatabaseInfoMessage> GetInfo(Empty request, ServerCallContext context)
         => ExecuteAsync(context, ct => client.GetInfoAsync(ct), GrpcModelMapper.ToMessage);
@@ -427,6 +459,245 @@ public sealed class CSharpDbRpcService(ICSharpDbClient client) : CSharpDbRpc.CSh
 
     public override Task<IndexInspectReportMessage> CheckIndexes(CheckIndexesRequest request, ServerCallContext context)
         => ExecuteAsync(context, ct => client.CheckIndexesAsync(NullIfEmpty(request.DatabasePath), NullIfEmpty(request.IndexName), request.SampleSize, ct), GrpcModelMapper.ToMessage);
+
+    public override Task<DiagnosticsJsonResponse> GetRuntimeDiagnostics(
+        Empty request,
+        ServerCallContext context)
+        => ExecuteDiagnosticsAsync(
+            context,
+            CSharpDbDiagnosticsAccessKind.Runtime,
+            static (capability, ct) => capability.GetRuntimeDiagnosticsAsync(ct),
+            DiagnosticsJsonTypeInfo<DiagnosticsTopologySnapshot<
+                RuntimeDiagnosticsSnapshot>>());
+
+    public override Task<DiagnosticsJsonResponse> GetActiveQueries(
+        DiagnosticsRecordsRequest request,
+        ServerCallContext context)
+        => ExecuteDiagnosticsAsync(
+            context,
+            CSharpDbDiagnosticsAccessKind.Runtime,
+            (capability, ct) =>
+            {
+                ValidateDiagnosticsMaximumRecords(request.MaximumRecords);
+                return capability.GetActiveQueriesAsync(request.MaximumRecords, ct);
+            },
+            DiagnosticsJsonTypeInfo<DiagnosticsTopologySnapshot<
+                DiagnosticsCollectionSnapshot<ActiveQuerySnapshot>>>());
+
+    public override Task<DiagnosticsJsonResponse> GetRecentQueries(
+        DiagnosticsRecordsRequest request,
+        ServerCallContext context)
+        => ExecuteDiagnosticsAsync(
+            context,
+            CSharpDbDiagnosticsAccessKind.Runtime,
+            (capability, ct) =>
+            {
+                ValidateDiagnosticsMaximumRecords(request.MaximumRecords);
+                return capability.GetRecentQueriesAsync(request.MaximumRecords, ct);
+            },
+            DiagnosticsJsonTypeInfo<DiagnosticsTopologySnapshot<
+                DiagnosticsCollectionSnapshot<RecentQuerySnapshot>>>());
+
+    public override Task<DiagnosticsJsonResponse> GetQueryPlanDiagnostics(
+        DiagnosticsOperationRequest request,
+        ServerCallContext context)
+        => ExecuteDiagnosticsAsync(
+            context,
+            CSharpDbDiagnosticsAccessKind.Runtime,
+            (capability, ct) => capability.GetQueryPlanDiagnosticsAsync(
+                CreateDiagnosticsOperationId(request.OperationId),
+                ct),
+            DiagnosticsJsonTypeInfo<DiagnosticsTopologySnapshot<
+                DiagnosticsValueSnapshot<QueryPlanDiagnosticsSnapshot>>>());
+
+    public override Task<DiagnosticsJsonResponse> GetSessions(
+        DiagnosticsRecordsRequest request,
+        ServerCallContext context)
+        => ExecuteDiagnosticsAsync(
+            context,
+            CSharpDbDiagnosticsAccessKind.Runtime,
+            (capability, ct) =>
+            {
+                ValidateDiagnosticsMaximumRecords(request.MaximumRecords);
+                return GetSessionsWithHostRequestsAsync(
+                    capability,
+                    TryGetHostRequestContributor(services),
+                    request.MaximumRecords,
+                    ct);
+            },
+            DiagnosticsJsonTypeInfo<DiagnosticsTopologySnapshot<
+                DiagnosticsCollectionSnapshot<SessionDiagnosticsSnapshot>>>());
+
+    public override Task<DiagnosticsJsonResponse> GetQueryDetail(
+        DiagnosticsOperationRequest request,
+        ServerCallContext context)
+        => ExecuteDiagnosticsAsync(
+            context,
+            CSharpDbDiagnosticsAccessKind.QueryDetail,
+            (capability, ct) => capability.GetQueryDetailAsync(
+                CreateDiagnosticsOperationId(request.OperationId),
+                ct),
+            DiagnosticsJsonTypeInfo<DiagnosticsTopologySnapshot<
+                DiagnosticsValueSnapshot<QueryDetailSnapshot>>>());
+
+    private async Task<DiagnosticsJsonResponse> ExecuteDiagnosticsAsync<T>(
+        ServerCallContext context,
+        CSharpDbDiagnosticsAccessKind accessKind,
+        Func<ICSharpDbObservabilityClient, CancellationToken, Task<T>> action,
+        JsonTypeInfo<T> jsonTypeInfo)
+    {
+        AuthorizeDiagnostics(context, accessKind);
+        if (client is not ICSharpDbObservabilityClient capability)
+            throw UnsupportedDiagnostics();
+
+        try
+        {
+            using IDisposable suppression =
+                CSharpDbOperationScope.SuppressDiagnostics();
+            T result = await action(capability, context.CancellationToken)
+                .ConfigureAwait(false);
+            return new DiagnosticsJsonResponse
+            {
+                JsonUtf8 = ByteString.CopyFrom(
+                    JsonSerializer.SerializeToUtf8Bytes(result, jsonTypeInfo)),
+            };
+        }
+        catch (OperationCanceledException) when (
+            context.CancellationToken.IsCancellationRequested)
+        {
+            throw new RpcException(new Status(
+                StatusCode.Cancelled,
+                "The runtime diagnostics request was canceled."));
+        }
+        catch (CSharpDbObservabilityNotSupportedException)
+        {
+            throw UnsupportedDiagnostics();
+        }
+        catch (RpcException)
+        {
+            throw;
+        }
+        catch (ArgumentException)
+        {
+            throw new RpcException(new Status(
+                StatusCode.InvalidArgument,
+                "The runtime diagnostics request is invalid."));
+        }
+        catch (Exception)
+        {
+            throw new RpcException(new Status(
+                StatusCode.Internal,
+                "The runtime diagnostics request failed."));
+        }
+    }
+
+    private static async Task<DiagnosticsTopologySnapshot<
+        DiagnosticsCollectionSnapshot<SessionDiagnosticsSnapshot>>>
+        GetSessionsWithHostRequestsAsync(
+            ICSharpDbObservabilityClient capability,
+            ICSharpDbHostRequestDiagnosticsContributor? contributor,
+            int maximumRecords,
+            CancellationToken cancellationToken)
+    {
+        DiagnosticsTopologySnapshot<
+            DiagnosticsCollectionSnapshot<SessionDiagnosticsSnapshot>> result =
+            await capability.GetSessionsAsync(
+                maximumRecords,
+                cancellationToken).ConfigureAwait(false);
+        return CSharpDbHostRequestDiagnosticsProjection.MergeSessions(
+            result,
+            contributor,
+            maximumRecords);
+    }
+
+    private static ICSharpDbHostRequestDiagnosticsContributor?
+        TryGetHostRequestContributor(IServiceProvider? serviceProvider)
+    {
+        if (serviceProvider is null)
+            return null;
+
+        try
+        {
+            if (serviceProvider.GetService<CSharpDbObservabilityOptions>()
+                    ?.Enabled != true)
+            {
+                return null;
+            }
+
+            return serviceProvider.GetService<
+                ICSharpDbHostRequestDiagnosticsContributor>();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private void AuthorizeDiagnostics(
+        ServerCallContext context,
+        CSharpDbDiagnosticsAccessKind accessKind)
+    {
+        CSharpDbApiSecurityOptions security = securityOptions.Value;
+        string headerName = CSharpDbApiKeyValidator.NormalizeHeaderName(
+            security.ApiKeyHeaderName,
+            forGrpc: true);
+        string? suppliedApiKey = context.RequestHeaders.GetValue(headerName);
+        CSharpDbDiagnosticsAccessDecision decision =
+            CSharpDbDiagnosticsAccessPolicy.Evaluate(
+                security,
+                context.GetHttpContext().Connection.RemoteIpAddress,
+                suppliedApiKey,
+                accessKind);
+        switch (decision)
+        {
+            case CSharpDbDiagnosticsAccessDecision.Allowed:
+                return;
+            case CSharpDbDiagnosticsAccessDecision.Unauthenticated:
+                throw new RpcException(new Status(
+                    StatusCode.Unauthenticated,
+                    "A valid CSharpDB API key is required for runtime diagnostics."));
+            default:
+                throw new RpcException(new Status(
+                    StatusCode.PermissionDenied,
+                    "Runtime diagnostics access is not permitted from this endpoint."));
+        }
+    }
+
+    private static OpaqueDiagnosticsId CreateDiagnosticsOperationId(string value)
+    {
+        try
+        {
+            return new OpaqueDiagnosticsId(value);
+        }
+        catch (ArgumentException)
+        {
+            throw new RpcException(new Status(
+                StatusCode.InvalidArgument,
+                "A 32-character lowercase hexadecimal diagnostics operation id is required."));
+        }
+    }
+
+    private static void ValidateDiagnosticsMaximumRecords(int maximumRecords)
+    {
+        if (maximumRecords <= 0 ||
+            maximumRecords > CSharpDbObservabilityOptions.MaximumHistoryCapacity)
+        {
+            throw new RpcException(new Status(
+                StatusCode.InvalidArgument,
+                $"maximum_records must be between 1 and {CSharpDbObservabilityOptions.MaximumHistoryCapacity}."));
+        }
+    }
+
+    private static RpcException UnsupportedDiagnostics()
+        => new(new Status(
+            StatusCode.Unimplemented,
+            CSharpDbObservabilityNotSupportedException.SafeMessage));
+
+    private static JsonTypeInfo<T> DiagnosticsJsonTypeInfo<T>()
+        => (JsonTypeInfo<T>)(CSharpDbObservabilityJsonContext.Default
+            .GetTypeInfo(typeof(T)) ??
+            throw new InvalidOperationException(
+                "The diagnostics response is missing source-generated JSON metadata."));
 
     private async Task<TResponse> ExecuteAsync<TModel, TResponse>(ServerCallContext context, Func<CancellationToken, Task<TModel>> action, Func<TModel, TResponse> map)
     {

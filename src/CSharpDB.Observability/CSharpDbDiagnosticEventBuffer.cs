@@ -8,11 +8,12 @@ namespace CSharpDB.Observability;
 internal sealed class CSharpDbDiagnosticEventBuffer
 {
     // One composite request can execute at most 4,096 statements. Each
-    // statement and its parent have one required terminal and, independently,
-    // one optional slow-query event. Separate budgets prevent optional events
-    // from displacing required outcomes. Headroom covers an enclosing logical
-    // operation and future additive boundary events without relying on a
-    // brittle total-count constant.
+    // statement and its parent have one required terminal, one once-only
+    // long-running notification, and independently one optional slow-query
+    // terminal event. Separate budgets prevent either secondary family from
+    // displacing required outcomes or each other. Headroom covers an enclosing
+    // logical operation and future additive boundary events without relying on
+    // a brittle total-count constant.
     private const int SupportedCompositeStatementCount = 4_096;
     private const int CompositeParentCount = 1;
     private const int BoundaryHeadroom = 128;
@@ -20,12 +21,15 @@ internal sealed class CSharpDbDiagnosticEventBuffer
         SupportedCompositeStatementCount + CompositeParentCount + BoundaryHeadroom;
     private const int MaximumOptionalEvents =
         SupportedCompositeStatementCount + CompositeParentCount + BoundaryHeadroom;
+    private const int MaximumLongRunningEvents =
+        SupportedCompositeStatementCount + CompositeParentCount + BoundaryHeadroom;
     private const int MaximumOperationalEvents = BoundaryHeadroom;
 
     private readonly object _gate = new();
     private readonly CSharpDbDiagnosticEventPublisher _publisher;
     private readonly HashSet<string> _enabledEventNames;
     private readonly Queue<BufferedDiagnosticEvent> _terminalEvents = new();
+    private readonly Queue<BufferedDiagnosticEvent> _longRunningEvents = new();
     private readonly Queue<BufferedDiagnosticEvent> _optionalEvents = new();
     private readonly Queue<BufferedDiagnosticEvent> _operationalEvents = new();
     private long _nextSequence;
@@ -73,6 +77,16 @@ internal sealed class CSharpDbDiagnosticEventBuffer
                         MaximumOptionalEvents,
                         item);
                     break;
+                case BufferedEventClass.LongRunning:
+                    // A long-running notification is once-only and cannot be
+                    // reconstructed after a deferred boundary flushes. Keep a
+                    // dedicated composite-sized budget so final slow events do
+                    // not evict it at the maximum statement fan-out.
+                    EnqueueBounded(
+                        _longRunningEvents,
+                        MaximumLongRunningEvents,
+                        item);
+                    break;
                 default:
                     // Operational headroom is isolated from query terminals;
                     // an excessive unsupported stream retains its newest state.
@@ -116,6 +130,7 @@ internal sealed class CSharpDbDiagnosticEventBuffer
         {
             int count =
                 _terminalEvents.Count +
+                _longRunningEvents.Count +
                 _optionalEvents.Count +
                 _operationalEvents.Count;
             if (count == 0)
@@ -125,6 +140,8 @@ internal sealed class CSharpDbDiagnosticEventBuffer
             int offset = 0;
             _terminalEvents.CopyTo(items, offset);
             offset += _terminalEvents.Count;
+            _longRunningEvents.CopyTo(items, offset);
+            offset += _longRunningEvents.Count;
             _optionalEvents.CopyTo(items, offset);
             offset += _optionalEvents.Count;
             _operationalEvents.CopyTo(items, offset);
@@ -133,6 +150,7 @@ internal sealed class CSharpDbDiagnosticEventBuffer
                 static (left, right) => left.Sequence.CompareTo(right.Sequence));
 
             _terminalEvents.Clear();
+            _longRunningEvents.Clear();
             _optionalEvents.Clear();
             _operationalEvents.Clear();
             return items;
@@ -141,6 +159,14 @@ internal sealed class CSharpDbDiagnosticEventBuffer
 
     private static BufferedEventClass Classify(string eventName)
     {
+        if (string.Equals(
+                eventName,
+                CSharpDbLogEvents.LongRunningQuery.Name,
+                StringComparison.Ordinal))
+        {
+            return BufferedEventClass.LongRunning;
+        }
+
         if (string.Equals(
                 eventName,
                 CSharpDbLogEvents.SlowQuery.Name,
@@ -176,6 +202,7 @@ internal sealed class CSharpDbDiagnosticEventBuffer
     private enum BufferedEventClass
     {
         QueryTerminal,
+        LongRunning,
         Optional,
         Operational,
     }

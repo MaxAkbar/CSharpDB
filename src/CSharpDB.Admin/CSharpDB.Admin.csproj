@@ -20,4 +20,8 @@
     <ProjectReference Include="..\CSharpDB.Admin.Reports\CSharpDB.Admin.Reports.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="CSharpDB.Admin.Forms.Tests" />
+  </ItemGroup>
+
 </Project>

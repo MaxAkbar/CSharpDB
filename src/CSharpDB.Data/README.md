@@ -109,6 +109,43 @@ conn.ConnectionString = "Data Source=myapp.db";
 await conn.OpenAsync();
 ```
 
+## Runtime Diagnostics
+
+An open `CSharpDbConnection` implements the optional
+`ICSharpDbObservabilityClient` capability without adding members to the ADO.NET
+base classes or to `ICSharpDbClient`:
+
+```csharp
+var diagnostics = (ICSharpDbObservabilityClient)connection;
+var runtime = await diagnostics.GetRuntimeDiagnosticsAsync(ct);
+var sessions = await diagnostics.GetSessionsAsync(100, ct);
+```
+
+Embedded diagnostics use the connection's exact physical owner: the direct
+session itself, its owning pool, or its named shared-memory host. They do not
+search a global alias registry, so unrelated databases or pools with the same
+alias cannot leak into the result. Disabled diagnostics retain one stable lazy
+identity per physical owner without creating a runtime diagnostics component;
+an enabled owner whose exact state is unavailable reports `Unavailable`
+instead of inventing data. Remote connections delegate to the daemon's
+optional capability. Calling diagnostics never opens a closed connection or
+creates a new database session as a side effect.
+
+Runtime, active-query, recent-query, plan, and session results never expose raw
+data-source paths, transaction bearer ids, connection strings, credentials,
+parameters, or row values. Captured SQL is returned only by the separate query
+detail method and is still governed by the configured SQL-capture mode and
+remote host authorization.
+
+### Cancellation and query control
+
+Async command and diagnostics cancellation tokens are forwarded to supported
+operations, but cancellation is cooperative. Parsing, planning, synchronous
+fast paths, or an operation already completing may not observe it immediately.
+`CSharpDbCommand.CommandTimeout` is not currently enforced,
+`CSharpDbCommand.Cancel()` is a no-op, and the provider has no query/session
+kill API. Runtime diagnostics provide visibility, not termination control.
+
 ## Daemon-Backed Connections
 
 Use a remote transport connection string when you want ADO.NET to talk to a running `CSharpDB.Daemon` host instead of opening the database file directly:

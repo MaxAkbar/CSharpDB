@@ -112,6 +112,13 @@ public static class CSharpDbLogEvents
             CSharpDbLogEventCategory.Query,
             "Query {OperationId} was canceled with code {ErrorCode} in {DurationMs} ms.");
 
+    public static CSharpDbLogEventDefinition<CSharpDbLongRunningQueryEvent> LongRunningQuery { get; } =
+        Define<CSharpDbLongRunningQueryEvent>(
+            CSharpDbLogEventIds.LongRunningQuery,
+            "CSharpDB.Query.LongRunning",
+            CSharpDbLogEventCategory.Query,
+            "Query {OperationId} is still running after {ElapsedMs} ms; threshold {LongRunningQueryThresholdMs} ms; phase {Phase}.");
+
     public static CSharpDbLogEventDefinition<CSharpDbLifecycleCompletedEvent> TransactionCompleted { get; } =
         Define<CSharpDbLifecycleCompletedEvent>(
             CSharpDbLogEventIds.TransactionCompleted,
@@ -186,6 +193,7 @@ public static class CSharpDbLogEvents
             SlowQuery,
             QueryFailed,
             QueryCanceled,
+            LongRunningQuery,
             TransactionCompleted,
             CheckpointCompleted,
             RecoveryCompleted,
@@ -386,6 +394,57 @@ public sealed record CSharpDbSlowQueryEvent : CSharpDbQueryTerminalEvent
         if (requiresError != (error is not null))
             throw new ArgumentException("The terminal outcome and safe error projection are inconsistent.");
     }
+}
+
+/// <summary>
+/// Once-only notification captured while a query is still active. This event
+/// intentionally contains no SQL text, parameter values, row data, or error
+/// details; the independent terminal event remains the source of final outcome.
+/// </summary>
+public sealed record CSharpDbLongRunningQueryEvent
+{
+    [JsonConstructor]
+    public CSharpDbLongRunningQueryEvent(
+        CSharpDbOperationContext context,
+        DateTimeOffset observedAtUtc,
+        TimeSpan elapsed,
+        TimeSpan longRunningQueryThreshold,
+        QueryExecutionPhase phase)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        if (observedAtUtc.Offset != TimeSpan.Zero)
+            throw new ArgumentException("The event timestamp must be UTC.", nameof(observedAtUtc));
+        if (elapsed < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(elapsed));
+        if (longRunningQueryThreshold <= TimeSpan.Zero ||
+            longRunningQueryThreshold > CSharpDbObservabilityOptions.MaximumThreshold)
+        {
+            throw new ArgumentOutOfRangeException(nameof(longRunningQueryThreshold));
+        }
+        if (elapsed < longRunningQueryThreshold)
+        {
+            throw new ArgumentException(
+                "A long-running query event must meet its configured threshold.",
+                nameof(elapsed));
+        }
+        if (phase is QueryExecutionPhase.Unknown or QueryExecutionPhase.Completed ||
+            !Enum.IsDefined(phase))
+        {
+            throw new ArgumentOutOfRangeException(nameof(phase));
+        }
+
+        Context = context;
+        ObservedAtUtc = observedAtUtc;
+        Elapsed = elapsed;
+        LongRunningQueryThreshold = longRunningQueryThreshold;
+        Phase = phase;
+    }
+
+    public CSharpDbOperationContext Context { get; }
+    public DateTimeOffset ObservedAtUtc { get; }
+    public TimeSpan Elapsed { get; }
+    public TimeSpan LongRunningQueryThreshold { get; }
+    public QueryExecutionPhase Phase { get; }
 }
 
 public sealed record CSharpDbQueryFailedEvent : CSharpDbQueryTerminalEvent

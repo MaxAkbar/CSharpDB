@@ -285,16 +285,59 @@ public sealed class ContractsAndLifecycleTests
     }
 
     [Fact]
+    public void CounterEpoch_SaturatesWithoutOverflowingMetadataDomain()
+    {
+        var epoch = new CSharpDbCounterEpoch(long.MaxValue - 1);
+
+        Assert.Equal(long.MaxValue, epoch.Advance());
+        Parallel.For(0, 1_000, _ => epoch.Advance());
+
+        Assert.Equal(long.MaxValue, epoch.Value);
+    }
+
+    [Fact]
     public void OpaqueIdentifiers_RejectCallerValuesAndSerializeAsStrings()
     {
         Assert.Throws<ArgumentException>(() => new OpaqueDiagnosticsId("BearerCapabilitySecret"));
 
         OpaqueDiagnosticsId id = OpaqueDiagnosticsId.Create();
+        OpaqueDiagnosticsId roundTrippedText = new(id.Value);
         string json = JsonSerializer.Serialize(
             id,
             CSharpDbObservabilityJsonContext.Default.OpaqueDiagnosticsId);
 
+        Assert.Equal(id, roundTrippedText);
+        Assert.Equal(id.GetHashCode(), roundTrippedText.GetHashCode());
+        Assert.Equal(32, id.Value.Length);
         Assert.Equal($"\"{id.Value}\"", json);
+    }
+
+    [Fact]
+    public void OperationContext_RuntimeOwnershipDoesNotChangeRecordIdentity()
+    {
+        CSharpDbOperationContext context = CSharpDbOperationContext.CreateRoot(
+            CSharpDbOperationClass.Query,
+            CSharpDbTransport.Embedded,
+            "primary");
+        CSharpDbOperationContext copied = context with { };
+        var keyed = new Dictionary<CSharpDbOperationContext, string>
+        {
+            [context] = "present",
+        };
+        int hashBeforeClaim = context.GetHashCode();
+        var owner = new object();
+
+        Assert.True(context.TryClaimRuntimeDiagnostics(owner));
+
+        Assert.Equal(hashBeforeClaim, context.GetHashCode());
+        Assert.Equal(copied, context);
+        Assert.False(copied.TryClaimRuntimeDiagnostics(new object()));
+        Assert.Equal("present", keyed[context]);
+        Assert.Equal("present", keyed[copied]);
+
+        context.ReleaseRuntimeDiagnostics(owner);
+        Assert.Equal(hashBeforeClaim, context.GetHashCode());
+        Assert.Equal(copied, context);
     }
 
     [Fact]
@@ -452,6 +495,10 @@ public sealed class ContractsAndLifecycleTests
             .GetTypeInfo(typeof(BoundedDiagnosticsSnapshot<MaintenanceOperationSnapshot>)));
         Assert.NotNull(CSharpDbObservabilityJsonContext.Default
             .GetTypeInfo(typeof(DiagnosticsSection<StorageRuntimeDiagnosticsSnapshot>)));
+        Assert.NotNull(CSharpDbObservabilityJsonContext.Default
+            .GetTypeInfo(typeof(DiagnosticsCollectionSnapshot<ActiveQuerySnapshot>)));
+        Assert.NotNull(CSharpDbObservabilityJsonContext.Default
+            .GetTypeInfo(typeof(ShardDiagnosticsSection<DiagnosticsCollectionSnapshot<ActiveQuerySnapshot>>)));
     }
 
     private sealed class ManualTimeProvider(DateTimeOffset utcNow) : TimeProvider

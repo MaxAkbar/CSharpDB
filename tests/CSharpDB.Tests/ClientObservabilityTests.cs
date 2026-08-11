@@ -261,6 +261,95 @@ public sealed class ClientObservabilityTests
     }
 
     [Fact]
+    public async Task DirectClient_QueuedLateSubscriber_BeginsWithNextQuery()
+    {
+        TimeSpan threshold = TimeSpan.FromMinutes(1);
+        var clock = new ManualTimeProvider(
+            new DateTimeOffset(2026, 8, 10, 12, 30, 0, TimeSpan.Zero));
+        DatabaseOptions options = CreateOptions(SqlTextCaptureMode.None);
+        options.ObservabilityOptions!.Logging.SlowQueries = true;
+        options.ObservabilityOptions.Logging.SlowQueryThreshold = threshold;
+        options.ObservabilityOptions.LongRunningQueryThreshold = threshold;
+        Database database = await Database.OpenInMemoryAsync(options, TestCancellationToken);
+        var openRequested = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseOpen = new TaskCompletionSource<Database>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var observer = new WarmupEventObserver();
+        var client = new EngineTransportClient(
+            ":memory:queued-listener-snapshot",
+            (_, _) => OpenAsync(),
+            options,
+            observabilityTimeProvider: clock);
+        Task<SqlExecutionResult>? lockHolder = null;
+
+        async Task<Database> OpenAsync()
+        {
+            openRequested.TrySetResult();
+            return await releaseOpen.Task;
+        }
+
+        try
+        {
+            lockHolder = client.ExecuteSqlAsync("SELECT 1", TestCancellationToken);
+            await openRequested.Task.WaitAsync(TestCancellationToken);
+            using var lateCancellation = new CancellationTokenSource();
+            Task<SqlExecutionResult> startedBeforeSubscription =
+                client.ExecuteSqlAsync("SELECT 2", lateCancellation.Token);
+
+            using IDisposable subscription = CSharpDbDiagnostics.DiagnosticListener.Subscribe(
+                observer,
+                static name => name.StartsWith("CSharpDB.Query.", StringComparison.Ordinal));
+            clock.Advance(threshold);
+            CSharpDbRuntimeDiagnosticsState runtimeState =
+                Assert.IsType<CSharpDbRuntimeDiagnosticsState>(
+                    client.CurrentRuntimeDiagnosticsState);
+            QueryRuntimeDiagnostics registry = QueryRuntimeDiagnostics.GetOrCreate(
+                runtimeState,
+                startSweepTimer: false);
+
+            Assert.Equal(2, registry.SweepLongRunningQueries());
+            Assert.Empty(observer.Events<CSharpDbLongRunningQueryEvent>(
+                CSharpDbLogEvents.LongRunningQuery.Name));
+
+            lateCancellation.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => startedBeforeSubscription);
+            Assert.Empty(observer.EventsStartingWith("CSharpDB.Query."));
+
+            using var nextCancellation = new CancellationTokenSource();
+            Task<SqlExecutionResult> startedAfterSubscription =
+                client.ExecuteSqlAsync("SELECT 3", nextCancellation.Token);
+            clock.Advance(threshold);
+
+            Assert.Equal(1, registry.SweepLongRunningQueries());
+            Assert.Single(observer.Events<CSharpDbLongRunningQueryEvent>(
+                CSharpDbLogEvents.LongRunningQuery.Name));
+
+            nextCancellation.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => startedAfterSubscription);
+            Assert.Single(observer.Events<CSharpDbQueryCanceledEvent>(
+                CSharpDbLogEvents.QueryCanceled.Name));
+        }
+        finally
+        {
+            releaseOpen.TrySetResult(database);
+            if (lockHolder is not null)
+            {
+                try
+                {
+                    await lockHolder;
+                }
+                catch
+                {
+                }
+            }
+            await client.DisposeAsync();
+        }
+    }
+
+    [Fact]
     public async Task DirectClient_ScriptParent_SumsEverySelectAndMutation()
     {
         string databasePath = CreateDatabasePath();
@@ -1340,6 +1429,7 @@ public sealed class ClientObservabilityTests
     public void LoggerBridge_UsesTypedEvents_RedactsErrors_AndContainsProviderFailures()
     {
         var options = CreateOptions(SqlTextCaptureMode.None).ObservabilityOptions!;
+        options.Logging.SlowQueries = true;
         var logger = new CapturingLogger();
         using var bridge = new CSharpDbDiagnosticLoggerBridge(
             new SingleLoggerFactory(logger),
@@ -1369,12 +1459,24 @@ public sealed class ClientObservabilityTests
                 rowsAffected: 0,
                 safeError));
         CSharpDbDiagnostics.EventPublisher.Publish(
+            CSharpDbLogEvents.LongRunningQuery,
+            () => new CSharpDbLongRunningQueryEvent(
+                context,
+                context.GetUtcNow(),
+                elapsed: TimeSpan.FromSeconds(1),
+                longRunningQueryThreshold: TimeSpan.FromSeconds(1),
+                QueryExecutionPhase.Executing));
+        CSharpDbDiagnostics.EventPublisher.Publish(
             CSharpDbLogEvents.RawSqlCaptureEnabled,
             static () => new CSharpDbRawSqlCaptureEnabledEvent(
                 "client-test",
                 SqlTextCaptureMode.Raw));
 
         Assert.Contains(logger.Entries, item => item.EventId.Id == CSharpDbLogEventIds.QueryFailed);
+        Assert.Contains(
+            logger.Entries,
+            item => item.EventId.Id == CSharpDbLogEventIds.LongRunningQuery &&
+                    item.Level == LogLevel.Warning);
         Assert.Contains(
             logger.Entries,
             item => item.EventId.Id == CSharpDbLogEventIds.RawSqlCaptureEnabled &&

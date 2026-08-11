@@ -61,7 +61,10 @@ public sealed class Database : IAsyncDisposable
     private readonly IIndexProvider _indexProvider;
     private readonly ICatalogStore _catalogStore;
     private readonly CSharpDbObservabilityOptions? _observabilityOptions;
+    private readonly CSharpDbRuntimeDiagnosticsState? _runtimeDiagnosticsState;
+    private readonly bool _ownsRuntimeDiagnosticsState;
     private readonly QueryObservability? _queryObservability;
+    private readonly IQueryPlanRuntimeObserver? _queryPlanRuntimeObserver;
     private readonly TemporaryTableManager _temporaryTables;
     private readonly AdvisoryStatisticsPersistenceMode _advisoryStatisticsPersistenceMode;
     private readonly DbFunctionRegistry _functions;
@@ -119,17 +122,53 @@ public sealed class Database : IAsyncDisposable
 
     internal TimeSpan? ObservabilitySlowQueryThreshold => _observabilityOptions?.Logging.SlowQueryThreshold;
 
+    internal CSharpDbRuntimeDiagnosticsState? RuntimeDiagnosticsState =>
+        _runtimeDiagnosticsState;
+
+    internal BoundedDiagnosticsSnapshot<ActiveQuerySnapshot>? GetActiveQueryDiagnosticsSnapshot(
+        int maximumRecords)
+        => _queryObservability?.GetActiveSnapshot(maximumRecords);
+
+    internal BoundedDiagnosticsSnapshot<RecentQuerySnapshot>? GetRecentQueryDiagnosticsSnapshot(
+        int maximumRecords)
+        => _queryObservability?.GetRecentSnapshot(maximumRecords);
+
+    internal DiagnosticsCollectionSnapshot<ActiveQuerySnapshot>?
+        GetActiveQueryDiagnosticsCollection(int maximumRecords)
+        => _queryObservability?.GetActiveCollectionSnapshot(maximumRecords);
+
+    internal DiagnosticsCollectionSnapshot<RecentQuerySnapshot>?
+        GetRecentQueryDiagnosticsCollection(int maximumRecords)
+        => _queryObservability?.GetRecentCollectionSnapshot(maximumRecords);
+
+    internal QueryDiagnosticsSummary? GetQueryDiagnosticsSummary()
+        => _queryObservability?.GetSummary();
+
+    internal QueryPlanDiagnosticsSnapshot? GetQueryPlanDiagnosticsSnapshot(
+        OpaqueDiagnosticsId operationId)
+        => _queryObservability?.GetPlanSnapshot(operationId);
+
+    internal QueryDetailSnapshot? GetQueryDetailDiagnosticsSnapshot(
+        OpaqueDiagnosticsId operationId)
+        => _queryObservability?.GetQueryDetailSnapshot(operationId);
+
     internal WalFlushDiagnosticsSnapshot GetWalFlushDiagnosticsSnapshot() =>
         _pager.GetWalFlushDiagnosticsSnapshot();
 
-    internal void ResetWalFlushDiagnostics() =>
+    internal void ResetWalFlushDiagnostics()
+    {
         _pager.ResetWalFlushDiagnostics();
+        _runtimeDiagnosticsState?.AdvanceCounterEpoch();
+    }
 
     internal CommitPathDiagnosticsSnapshot GetCommitPathDiagnosticsSnapshot() =>
         _pager.GetCommitPathDiagnosticsSnapshot();
 
-    internal void ResetCommitPathDiagnostics() =>
+    internal void ResetCommitPathDiagnostics()
+    {
         _pager.ResetCommitPathDiagnostics();
+        _runtimeDiagnosticsState?.AdvanceCounterEpoch();
+    }
 
     internal RowIdReservationDiagnosticsSnapshot GetRowIdReservationDiagnosticsSnapshot() =>
         new(
@@ -140,6 +179,7 @@ public sealed class Database : IAsyncDisposable
     {
         Interlocked.Exchange(ref _rowIdReservationCount, 0);
         Interlocked.Exchange(ref _rowIdReservedRowCount, 0);
+        _runtimeDiagnosticsState?.AdvanceCounterEpoch();
     }
 
     internal AdaptiveQueryReoptimizationDiagnosticsSnapshot GetAdaptiveQueryReoptimizationDiagnosticsSnapshot()
@@ -157,8 +197,11 @@ public sealed class Database : IAsyncDisposable
             snapshot.ReoptimizationLimitFallbackCount);
     }
 
-    internal void ResetAdaptiveQueryReoptimizationDiagnostics() =>
+    internal void ResetAdaptiveQueryReoptimizationDiagnostics()
+    {
         _planner.ResetAdaptiveQueryReoptimizationDiagnostics();
+        _runtimeDiagnosticsState?.AdvanceCounterEpoch();
+    }
 
     internal MutationTargetCollectionDiagnosticsSnapshot GetMutationTargetCollectionDiagnosticsSnapshot()
     {
@@ -173,6 +216,7 @@ public sealed class Database : IAsyncDisposable
         _planner.ResetMutationTargetCollectionDiagnostics();
         Interlocked.Exchange(ref _transactionIndexedMutationTargetCollectionCount, 0);
         Interlocked.Exchange(ref _transactionScannedMutationTargetCollectionCount, 0);
+        _runtimeDiagnosticsState?.AdvanceCounterEpoch();
     }
 
     internal void RecordMutationTargetCollectionDiagnostics(MutationTargetCollectionDiagnosticsSnapshot snapshot)
@@ -191,6 +235,7 @@ public sealed class Database : IAsyncDisposable
         IIndexProvider indexProvider,
         ICatalogStore catalogStore,
         CSharpDbObservabilityOptions? observabilityOptions,
+        CSharpDbRuntimeDiagnosticsState? runtimeDiagnosticsState,
         AdvisoryStatisticsPersistenceMode advisoryStatisticsPersistenceMode,
         ImplicitInsertExecutionMode implicitInsertExecutionMode = ImplicitInsertExecutionMode.Serialized,
         AdaptiveQueryReoptimizationOptions? adaptiveQueryReoptimization = null,
@@ -208,9 +253,16 @@ public sealed class Database : IAsyncDisposable
         _indexProvider = indexProvider;
         _catalogStore = catalogStore;
         _observabilityOptions = observabilityOptions;
-        _queryObservability = observabilityOptions is null
+        _ownsRuntimeDiagnosticsState =
+            observabilityOptions is not null && runtimeDiagnosticsState is null;
+        _runtimeDiagnosticsState = runtimeDiagnosticsState ??
+            (observabilityOptions is null
+                ? null
+                : new CSharpDbRuntimeDiagnosticsState(observabilityOptions));
+        _queryObservability = _runtimeDiagnosticsState?.IsEnabled != true
             ? null
-            : new QueryObservability(observabilityOptions);
+            : new QueryObservability(_runtimeDiagnosticsState);
+        _queryPlanRuntimeObserver = _queryObservability?.PlanRuntimeObserver;
         _temporaryTables = new TemporaryTableManager(temporaryStorageOptions ?? new StorageEngineOptions());
         _advisoryStatisticsPersistenceMode = advisoryStatisticsPersistenceMode;
         _functions = functions ?? DbFunctionRegistry.Empty;
@@ -233,7 +285,10 @@ public sealed class Database : IAsyncDisposable
             externalTableBasePath: GetExternalTableBasePath(_databasePath),
             temporaryTables: _temporaryTables,
             windowExecution: windowExecution,
-            rowVersionAllocator: ReserveSharedRowVersion);
+            rowVersionAllocator: ReserveSharedRowVersion)
+        {
+            PlanRuntimeObserver = _queryPlanRuntimeObserver,
+        };
         _statementCache = new StatementCache(DefaultStatementCacheCapacity);
         _observedSchemaVersion = catalog.SchemaVersion;
         RefreshSharedNextRowIdHintsFromCatalog();
@@ -289,6 +344,7 @@ public sealed class Database : IAsyncDisposable
                     rowVersionAllocator: ReserveSharedRowVersion)
                 {
                     PreferSyncPointLookups = PreferSyncPointLookups,
+                    PlanRuntimeObserver = _queryPlanRuntimeObserver,
                 };
 
                 return new WriteTransaction(
@@ -794,6 +850,7 @@ public sealed class Database : IAsyncDisposable
                 context.IndexProvider,
                 context.CatalogStore,
                 observabilityOptions,
+                options.RuntimeDiagnosticsState,
                 context.AdvisoryStatisticsPersistenceMode,
                 options.ImplicitInsertExecutionMode,
                 options.AdaptiveQueryReoptimization,
@@ -877,6 +934,7 @@ public sealed class Database : IAsyncDisposable
                     snapshotContext.IndexProvider,
                     snapshotContext.CatalogStore,
                     observabilityOptions,
+                    options.RuntimeDiagnosticsState,
                     snapshotContext.AdvisoryStatisticsPersistenceMode,
                     options.ImplicitInsertExecutionMode,
                     options.AdaptiveQueryReoptimization,
@@ -898,6 +956,7 @@ public sealed class Database : IAsyncDisposable
                 context.IndexProvider,
                 context.CatalogStore,
                 observabilityOptions,
+                options.RuntimeDiagnosticsState,
                 context.AdvisoryStatisticsPersistenceMode,
                 options.ImplicitInsertExecutionMode,
                 options.AdaptiveQueryReoptimization,
@@ -979,6 +1038,7 @@ public sealed class Database : IAsyncDisposable
                 context.IndexProvider,
                 context.CatalogStore,
                 observabilityOptions,
+                options.RuntimeDiagnosticsState,
                 context.AdvisoryStatisticsPersistenceMode,
                 options.ImplicitInsertExecutionMode,
                 options.AdaptiveQueryReoptimization,
@@ -1024,6 +1084,7 @@ public sealed class Database : IAsyncDisposable
                 context.IndexProvider,
                 context.CatalogStore,
                 observabilityOptions,
+                options.RuntimeDiagnosticsState,
                 context.AdvisoryStatisticsPersistenceMode,
                 options.ImplicitInsertExecutionMode,
                 options.AdaptiveQueryReoptimization,
@@ -1068,6 +1129,7 @@ public sealed class Database : IAsyncDisposable
             context.IndexProvider,
             context.CatalogStore,
             observabilityOptions,
+            options.RuntimeDiagnosticsState,
             context.AdvisoryStatisticsPersistenceMode,
             options.ImplicitInsertExecutionMode,
             options.AdaptiveQueryReoptimization,
@@ -1133,6 +1195,7 @@ public sealed class Database : IAsyncDisposable
                 context.IndexProvider,
                 context.CatalogStore,
                 observabilityOptions,
+                options.RuntimeDiagnosticsState,
                 context.AdvisoryStatisticsPersistenceMode,
                 options.ImplicitInsertExecutionMode,
                 options.AdaptiveQueryReoptimization,
@@ -1244,24 +1307,151 @@ public sealed class Database : IAsyncDisposable
     /// Execute a SQL statement. Returns a QueryResult with rows (for SELECT) or affected count (for DML/DDL).
     /// </summary>
     public ValueTask<QueryResult> ExecuteAsync(string sql, CancellationToken ct = default)
-        => ExecuteObservedSqlAsync(sql, sql, ct);
+    {
+        QueryObservability? observability = _queryObservability;
+        return observability is null
+            ? ExecuteSqlCoreAsync(sql, ct)
+            : ExecuteObservedSqlAsync(observability, sql, sql, ct);
+    }
 
     internal ValueTask<QueryResult> ExecuteAsync(
         string sql,
         string? observabilitySql,
         CancellationToken ct = default)
-        => ExecuteObservedSqlAsync(sql, observabilitySql, ct);
+    {
+        QueryObservability? observability = _queryObservability;
+        return observability is null
+            ? ExecuteSqlCoreAsync(sql, ct)
+            : ExecuteObservedSqlAsync(observability, sql, observabilitySql, ct);
+    }
 
     private ValueTask<QueryResult> ExecuteObservedSqlAsync(
+        QueryObservability observability,
         string sql,
         string? observabilitySql,
         CancellationToken ct)
     {
-        QueryOperation? operation = _queryObservability?.Start(observabilitySql);
-        return operation is null
-            ? ExecuteSqlCoreAsync(sql, ct)
-            : ObserveQueryAsync(operation, () => ExecuteSqlCoreAsync(sql, ct));
+        IQueryExecutionObservation? operation =
+            observability.StartExecution(
+                observabilitySql,
+                allowLeanRuntime: !LooksLikeInsert(sql));
+        if (operation is null)
+            return ExecuteSqlCoreAsync(sql, ct);
+
+        IQueryPlanRuntimeObserver? explicitPlanObserver =
+            operation.ExplicitPlanObserver;
+        try
+        {
+            if (explicitPlanObserver is not null &&
+                CanExecuteScopeFreeSimpleRead())
+            {
+                if (Parser.TryParseSimplePrimaryKeyLookup(sql, out var lookup) &&
+                    !(_temporaryTables.HasAnyTableContext &&
+                      _planner.HasTemporaryTable(lookup.TableName)))
+                {
+                    return ObserveQueryAsync(
+                        operation,
+                        (
+                            Target: this,
+                            Operation: operation,
+                            Lookup: lookup,
+                            PlanObserver: explicitPlanObserver,
+                            CancellationToken: ct),
+                        static state => state.Target.ExecuteScopeFreePrimaryKeyLookupAsync(
+                            state.Operation,
+                            state.Lookup,
+                            state.PlanObserver,
+                            state.CancellationToken),
+                        enterOperationScope: false);
+                }
+
+                if (_statementCache.TryGet(sql, out Statement cachedStatement) &&
+                    cachedStatement is SelectStatement cachedSelect &&
+                    _planner.CanExecuteSimpleReadWithExplicitObserver(cachedSelect))
+                {
+                    return ObserveQueryAsync(
+                        operation,
+                        (
+                            Target: this,
+                            Statement: cachedSelect,
+                            PlanObserver: explicitPlanObserver,
+                            CancellationToken: ct),
+                        static state => state.Target.ExecuteScopeFreeSimpleReadAsync(
+                            state.Statement,
+                            state.PlanObserver,
+                            state.CancellationToken),
+                        enterOperationScope: false);
+                }
+            }
+        }
+        catch
+        {
+            // Eligibility probing is an optimization only. Re-run the exact
+            // operation through the ordinary observed path so parse, catalog,
+            // and cache failures retain their original query semantics and
+            // cannot strand an active diagnostics lease.
+        }
+
+        return ObserveQueryAsync(
+            operation,
+            (Target: this, Sql: sql, CancellationToken: ct),
+            static state => state.Target.ExecuteSqlCoreAsync(
+                state.Sql,
+                state.CancellationToken));
     }
+
+    private bool CanExecuteScopeFreeSimpleRead()
+        => !_inTransaction &&
+           _pendingCollectionCatalogMutations.Count == 0 &&
+           _catalog.SchemaVersion == _observedSchemaVersion;
+
+    private ValueTask<QueryResult> ExecuteScopeFreePrimaryKeyLookupAsync(
+        IQueryExecutionObservation operation,
+        SimplePrimaryKeyLookupSql lookup,
+        IQueryPlanRuntimeObserver planObserver,
+        CancellationToken ct)
+    {
+        ValueTask<QueryResult?> directResult =
+            _planner.TryExecuteSimplePrimaryKeyLookupDirectAsync(
+                lookup,
+                ct,
+                planObserver,
+                cachedOnly: true);
+        if (!directResult.IsCompleted)
+            return CompleteUnexpectedScopeFreeLookupAsync(directResult);
+
+        QueryResult? result = directResult.GetAwaiter().GetResult();
+        if (result is not null)
+        {
+            return ValueTask.FromResult(result);
+        }
+
+        // cachedOnly guarantees that this probe has not started I/O. Any
+        // ineligible or cache-miss case is reinvoked under the ordinary
+        // ambient frame so async, nested, and fallback paths keep their full
+        // correlation semantics.
+        return ExecuteScopedPrimaryKeyLookupAsync(operation, lookup, ct);
+    }
+
+    private static async ValueTask<QueryResult> CompleteUnexpectedScopeFreeLookupAsync(
+        ValueTask<QueryResult?> directResult)
+        => await directResult ?? throw new InvalidOperationException(
+            "A scope-free primary-key lookup unexpectedly required fallback I/O.");
+
+    private ValueTask<QueryResult> ExecuteScopedPrimaryKeyLookupAsync(
+        IQueryExecutionObservation operation,
+        SimplePrimaryKeyLookupSql lookup,
+        CancellationToken ct)
+    {
+        using IDisposable scope = operation.EnterScope();
+        return ExecuteSimplePrimaryKeyLookupAsync(lookup, ct);
+    }
+
+    private ValueTask<QueryResult> ExecuteScopeFreeSimpleReadAsync(
+        SelectStatement statement,
+        IQueryPlanRuntimeObserver planObserver,
+        CancellationToken ct)
+        => _planner.ExecuteSimpleReadAsync(statement, planObserver, ct);
 
     private async ValueTask<QueryResult> ExecuteSqlCoreAsync(string sql, CancellationToken ct)
     {
@@ -1346,10 +1536,48 @@ public sealed class Database : IAsyncDisposable
         QueryFingerprint? suppliedFingerprint,
         CancellationToken ct)
     {
-        QueryOperation? operation = _queryObservability?.Start(sql: null, suppliedFingerprint);
-        return operation is null
-            ? ExecuteStatementRootCoreAsync(statement, ct)
-            : ObserveQueryAsync(operation, () => ExecuteStatementRootCoreAsync(statement, ct));
+        IQueryExecutionObservation? operation =
+            _queryObservability?.StartExecution(
+                sql: null,
+                suppliedFingerprint,
+                allowLeanRuntime: statement is SelectStatement);
+        if (operation is null)
+            return ExecuteStatementRootCoreAsync(statement, ct);
+
+        IQueryPlanRuntimeObserver? explicitPlanObserver =
+            operation.ExplicitPlanObserver;
+        try
+        {
+            if (explicitPlanObserver is not null &&
+                CanExecuteScopeFreeSimpleRead() &&
+                statement is SelectStatement select &&
+                _planner.CanExecuteSimpleReadWithExplicitObserver(select))
+            {
+                return ObserveQueryAsync(
+                    operation,
+                    (
+                        Target: this,
+                        Statement: select,
+                        PlanObserver: explicitPlanObserver,
+                        CancellationToken: ct),
+                    static state => state.Target.ExecuteScopeFreeSimpleReadAsync(
+                        state.Statement,
+                        state.PlanObserver,
+                        state.CancellationToken),
+                    enterOperationScope: false);
+            }
+        }
+        catch
+        {
+            // Classifier/catalog failures are observed by the ordinary path.
+        }
+
+        return ObserveQueryAsync(
+            operation,
+            (Target: this, Statement: statement, CancellationToken: ct),
+            static state => state.Target.ExecuteStatementRootCoreAsync(
+                state.Statement,
+                state.CancellationToken));
     }
 
     private async ValueTask<QueryResult> ExecuteStatementRootCoreAsync(
@@ -1374,10 +1602,16 @@ public sealed class Database : IAsyncDisposable
         QueryFingerprint? suppliedFingerprint,
         CancellationToken ct)
     {
-        QueryOperation? operation = _queryObservability?.Start(sql: null, suppliedFingerprint);
+        IQueryExecutionObservation? operation =
+            _queryObservability?.StartExecution(sql: null, suppliedFingerprint);
         return operation is null
             ? ExecuteSimpleInsertRootCoreAsync(insert, ct)
-            : ObserveQueryAsync(operation, () => ExecuteSimpleInsertRootCoreAsync(insert, ct));
+            : ObserveQueryAsync(
+                operation,
+                (Target: this, Insert: insert, CancellationToken: ct),
+                static state => state.Target.ExecuteSimpleInsertRootCoreAsync(
+                    state.Insert,
+                    state.CancellationToken));
     }
 
     private async ValueTask<QueryResult> ExecuteSimpleInsertRootCoreAsync(
@@ -1388,29 +1622,68 @@ public sealed class Database : IAsyncDisposable
         return await ExecuteSimpleInsertAsync(insert, ct);
     }
 
-    internal QueryOperation? StartQueryObservability(
+    internal IQueryExecutionObservation? StartQueryObservability(
         string? sql,
         QueryFingerprint? suppliedFingerprint = null)
-        => _queryObservability?.Start(sql, suppliedFingerprint);
+        => _queryObservability?.StartExecution(sql, suppliedFingerprint);
 
     internal LifecycleOperation? StartLifecycleObservability(
         CSharpDbLogEventDefinition<CSharpDbLifecycleCompletedEvent> definition,
         CSharpDbOperationClass operationClass)
         => LifecycleObservability.Start(_observabilityOptions, definition, operationClass);
 
-    internal static ValueTask<QueryResult> ObserveQueryAsync(
-        QueryOperation operation,
-        Func<ValueTask<QueryResult>> execution)
-        => CompleteObservedQueryAsync(operation, execution);
-
-    private static async ValueTask<QueryResult> CompleteObservedQueryAsync(
-        QueryOperation operation,
-        Func<ValueTask<QueryResult>> execution)
+    internal static ValueTask<QueryResult> ObserveQueryAsync<TState>(
+        IQueryExecutionObservation operation,
+        TState state,
+        Func<TState, ValueTask<QueryResult>> execution,
+        bool enterOperationScope = true)
     {
-        using IDisposable scope = operation.EnterScope();
+        using IDisposable? scope = enterOperationScope
+            ? operation.EnterScope()
+            : null;
         try
         {
-            return operation.Observe(await execution());
+            operation.MarkExecuting();
+            ValueTask<QueryResult> pendingResult = execution(state);
+            if (!pendingResult.IsCompletedSuccessfully)
+            {
+                return CompleteObservedQueryAsync(
+                    operation,
+                    pendingResult,
+                    enterOperationScope);
+            }
+
+            return ValueTask.FromResult(operation.Observe(pendingResult.Result));
+        }
+        catch (Exception exception)
+        {
+            try
+            {
+                operation.Fail(exception);
+            }
+            catch (Exception observationException)
+            {
+                return ValueTask.FromException<QueryResult>(observationException);
+            }
+
+            return ValueTask.FromException<QueryResult>(exception);
+        }
+    }
+
+    private static async ValueTask<QueryResult> CompleteObservedQueryAsync(
+        IQueryExecutionObservation operation,
+        ValueTask<QueryResult> pendingResult,
+        bool enterOperationScope)
+    {
+        // The execution's continuation already captured the invocation scope.
+        // Re-enter here so terminal observation and failures remain attributed
+        // after the non-async caller restores its ambient frame.
+        using IDisposable? scope = enterOperationScope
+            ? operation.EnterScope()
+            : null;
+        try
+        {
+            return operation.Observe(await pendingResult);
         }
         catch (Exception exception)
         {
@@ -1878,6 +2151,7 @@ public sealed class Database : IAsyncDisposable
             _planner.AdaptiveQueryReoptimization,
             _planner.WindowExecution,
             _queryObservability,
+            _queryPlanRuntimeObserver,
             snapshotRowCounts,
             allowCurrentCatalogRowCounts);
     }
@@ -2688,6 +2962,13 @@ public sealed class Database : IAsyncDisposable
 
     private async ValueTask<IDisposable> AcquireWriteOperationScopeAsync(CancellationToken ct)
     {
+        if (_writeOperationGate.Wait(0))
+            return new WriteOperationScope(_writeOperationGate);
+
+        // Report only a real write-admission wait. The generation-safe lease
+        // restores the prior query phase on acquisition/cancellation without
+        // inferring time spent by a consumer between streamed rows.
+        using IDisposable? waiting = _queryObservability?.EnterWaiting();
         await _writeOperationGate.WaitAsync(ct);
         return new WriteOperationScope(_writeOperationGate);
     }
@@ -2858,6 +3139,8 @@ public sealed class Database : IAsyncDisposable
             }
             finally
             {
+                if (_ownsRuntimeDiagnosticsState)
+                    _runtimeDiagnosticsState?.Dispose();
                 await _temporaryTables.DisposeAsync();
                 await _pager.DisposeAsync();
                 _hybridPersistenceCoordinator?.Dispose();
@@ -3021,6 +3304,7 @@ public sealed class Database : IAsyncDisposable
         private readonly AdaptiveQueryReoptimizationOptions _adaptiveQueryReoptimization;
         private readonly WindowExecutionOptions _windowExecution;
         private readonly QueryObservability? _queryObservability;
+        private readonly IQueryPlanRuntimeObserver? _queryPlanRuntimeObserver;
         private Pager? _snapshotPager;
         private QueryPlanner? _planner;
         private string? _lastSql;
@@ -3038,6 +3322,7 @@ public sealed class Database : IAsyncDisposable
             AdaptiveQueryReoptimizationOptions adaptiveQueryReoptimization,
             WindowExecutionOptions windowExecution,
             QueryObservability? queryObservability,
+            IQueryPlanRuntimeObserver? queryPlanRuntimeObserver,
             IReadOnlyDictionary<string, long> snapshotRowCounts,
             bool allowCurrentCatalogRowCounts)
         {
@@ -3054,6 +3339,7 @@ public sealed class Database : IAsyncDisposable
             _adaptiveQueryReoptimization = adaptiveQueryReoptimization;
             _windowExecution = windowExecution;
             _queryObservability = queryObservability;
+            _queryPlanRuntimeObserver = queryPlanRuntimeObserver;
             _snapshotRowCounts = snapshotRowCounts;
             _allowCurrentCatalogRowCounts = allowCurrentCatalogRowCounts;
         }
@@ -3064,12 +3350,16 @@ public sealed class Database : IAsyncDisposable
         public ValueTask<QueryResult> ExecuteReadAsync(string sql,
             CancellationToken ct = default)
         {
-            QueryOperation? operation = _queryObservability?.Start(sql);
+            IQueryExecutionObservation? operation =
+                _queryObservability?.StartExecution(sql);
             return operation is null
                 ? ExecuteReadSqlCoreAsync(sql, ct)
                 : Database.ObserveQueryAsync(
                     operation,
-                    () => ExecuteReadSqlCoreAsync(sql, ct));
+                    (Target: this, Sql: sql, CancellationToken: ct),
+                    static state => state.Target.ExecuteReadSqlCoreAsync(
+                        state.Sql,
+                        state.CancellationToken));
         }
 
         private ValueTask<QueryResult> ExecuteReadSqlCoreAsync(
@@ -3104,12 +3394,16 @@ public sealed class Database : IAsyncDisposable
             QueryFingerprint? suppliedFingerprint,
             CancellationToken ct = default)
         {
-            QueryOperation? operation = _queryObservability?.Start(sql: null, suppliedFingerprint);
+            IQueryExecutionObservation? operation =
+                _queryObservability?.StartExecution(sql: null, suppliedFingerprint);
             return operation is null
                 ? ExecuteReadCoreAsync(stmt, ct)
                 : Database.ObserveQueryAsync(
                     operation,
-                    () => ExecuteReadCoreAsync(stmt, ct));
+                    (Target: this, Statement: stmt, CancellationToken: ct),
+                    static state => state.Target.ExecuteReadCoreAsync(
+                        state.Statement,
+                        state.CancellationToken));
         }
 
         private ValueTask<QueryResult> ExecuteReadCoreAsync(
@@ -3130,6 +3424,9 @@ public sealed class Database : IAsyncDisposable
                 {
                     if (TryExecuteCountStarFastPath(select, out QueryResult fastCountResult))
                     {
+                        ObserveReaderFastPlan(
+                            QueryPlanAccessPathCategory.TableScan,
+                            estimatedRows: 1);
                         fastCountResult.SetDisposeCallback(_releaseActiveQueryCallback);
                         return ValueTask.FromResult(fastCountResult);
                     }
@@ -3140,6 +3437,9 @@ public sealed class Database : IAsyncDisposable
                         QueryResult? fastLookupResult = fastLookupTask.Result;
                         if (fastLookupResult is not null)
                         {
+                            ObserveReaderFastPlan(
+                                QueryPlanAccessPathCategory.PrimaryKeyLookup,
+                                estimatedRows: 1);
                             fastLookupResult.SetDisposeCallback(_releaseActiveQueryCallback);
                             return ValueTask.FromResult(fastLookupResult);
                         }
@@ -3150,13 +3450,7 @@ public sealed class Database : IAsyncDisposable
                     }
                 }
 
-                _planner ??= new QueryPlanner(
-                    GetOrCreateSnapshotPager(),
-                    _catalog,
-                    _recordSerializer,
-                    functions: _functions,
-                    adaptiveQueryReoptimization: _adaptiveQueryReoptimization,
-                    windowExecution: _windowExecution);
+                _planner ??= CreatePlanner();
                 ValueTask<QueryResult> plannerTask = _planner.ExecuteAsync(stmt, ct);
                 if (plannerTask.IsCompletedSuccessfully)
                 {
@@ -3257,17 +3551,14 @@ public sealed class Database : IAsyncDisposable
                 QueryResult? fastLookupResult = await fastLookupTask;
                 if (fastLookupResult is not null)
                 {
+                    ObserveReaderFastPlan(
+                        QueryPlanAccessPathCategory.PrimaryKeyLookup,
+                        estimatedRows: 1);
                     fastLookupResult.SetDisposeCallback(_releaseActiveQueryCallback);
                     return fastLookupResult;
                 }
 
-                _planner ??= new QueryPlanner(
-                    GetOrCreateSnapshotPager(),
-                    _catalog,
-                    _recordSerializer,
-                    functions: _functions,
-                    adaptiveQueryReoptimization: _adaptiveQueryReoptimization,
-                    windowExecution: _windowExecution);
+                _planner ??= CreatePlanner();
                 QueryResult plannerResult = await _planner.ExecuteAsync(stmt, ct);
                 plannerResult.SetDisposeCallback(_releaseActiveQueryCallback);
                 return plannerResult;
@@ -3402,6 +3693,35 @@ public sealed class Database : IAsyncDisposable
 
         private Pager GetOrCreateSnapshotPager()
             => _snapshotPager ??= _pager.CreateSnapshotReader(_snapshot);
+
+        private QueryPlanner CreatePlanner()
+        {
+            var planner = new QueryPlanner(
+                GetOrCreateSnapshotPager(),
+                _catalog,
+                _recordSerializer,
+                functions: _functions,
+                adaptiveQueryReoptimization: _adaptiveQueryReoptimization,
+                windowExecution: _windowExecution)
+            {
+                PlanRuntimeObserver = _queryPlanRuntimeObserver,
+            };
+            return planner;
+        }
+
+        private void ObserveReaderFastPlan(
+            QueryPlanAccessPathCategory accessPath,
+            long? estimatedRows)
+        {
+            IQueryPlanRuntimeObserver? observer = _queryPlanRuntimeObserver;
+            if (observer is null)
+                return;
+
+            var selection = new QueryPlanRuntimeSelection(
+                accessPath,
+                estimatedRows);
+            QueryPlanRuntimeObserver.AccessPathSelected(observer, in selection);
+        }
 
         private IRecordSerializer GetReadSerializer(TableSchema schema)
             => _collectionReadSerializer != null && schema.TableName.StartsWith("_col_", StringComparison.Ordinal)
@@ -3647,6 +3967,30 @@ public sealed class Database : IAsyncDisposable
             }
 
             return false;
+        }
+
+        internal bool TryGet(string sql, out Statement statement)
+        {
+            statement = null!;
+            if (_capacity == 0)
+                return false;
+
+            lock (_gate)
+            {
+                if (_lastSql != null &&
+                    string.Equals(_lastSql, sql, StringComparison.Ordinal) &&
+                    _lastStatement != null)
+                {
+                    statement = _lastStatement;
+                    return true;
+                }
+
+                if (!_map.TryGetValue(sql, out Statement? cachedStatement))
+                    return false;
+
+                statement = cachedStatement;
+                return true;
+            }
         }
 
         internal Statement GetOrAdd(string sql, Func<string, Statement> parse)

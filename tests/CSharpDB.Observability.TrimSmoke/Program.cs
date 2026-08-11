@@ -46,10 +46,58 @@ var activeQueries = new BoundedDiagnosticsSnapshot<ActiveQuerySnapshot>(
     [activeQuery],
     droppedCount: 0,
     isTruncated: false);
+var activeQueryCollection = new DiagnosticsCollectionSnapshot<ActiveQuerySnapshot>(
+    metadata,
+    [activeQuery],
+    capacity: 1_000,
+    retention: null,
+    droppedCount: 0,
+    isTruncated: false);
 string activeQueriesJson = JsonSerializer.Serialize(
     activeQueries,
     CSharpDbObservabilityJsonContext.Default.GetTypeInfo(
         typeof(BoundedDiagnosticsSnapshot<ActiveQuerySnapshot>))!);
+string activeQueryCollectionJson = JsonSerializer.Serialize(
+    activeQueryCollection,
+    CSharpDbObservabilityJsonContext.Default.GetTypeInfo(
+        typeof(DiagnosticsCollectionSnapshot<ActiveQuerySnapshot>))!);
+var planValue = new DiagnosticsValueSnapshot<QueryPlanDiagnosticsSnapshot>(
+    metadata,
+    new QueryPlanDiagnosticsSnapshot(
+        metadata,
+        activeQuery.OperationId,
+        result.Fingerprint,
+        QueryAccessPathCategory.PrimaryKeyLookup,
+        PlanCacheHit: true,
+        Reoptimized: false,
+        EstimatedRows: 1,
+        ActualRows: 1,
+        PlanNodeCount: null,
+        PlanTruncated: false));
+string planValueJson = JsonSerializer.Serialize(
+    planValue,
+    CSharpDbObservabilityJsonContext.Default
+        .DiagnosticsValueSnapshotQueryPlanDiagnosticsSnapshot);
+var queryDetail = new QueryDetailSnapshot(
+    metadata,
+    activeQuery.OperationId,
+    result.Fingerprint,
+    SqlTextCaptureMode.Normalized,
+    result.NormalizedText);
+var queryDetailValue = new DiagnosticsValueSnapshot<QueryDetailSnapshot>(
+    metadata,
+    queryDetail);
+var queryDetailTopology = new DiagnosticsTopologySnapshot<
+    DiagnosticsValueSnapshot<QueryDetailSnapshot>>(
+    queryDetailValue,
+    shards: null,
+    shardCapacity: null,
+    droppedShardCount: null,
+    shardsTruncated: null);
+string queryDetailTopologyJson = JsonSerializer.Serialize(
+    queryDetailTopology,
+    CSharpDbObservabilityJsonContext.Default
+        .DiagnosticsTopologySnapshotDiagnosticsValueSnapshotQueryDetailSnapshot);
 var hostState = new CSharpDbHostState();
 CSharpDbHostStateSnapshot failedHost = hostState.MarkFailed(
     SafeErrorProjector.Project(SafeErrorKind.DatabaseIo));
@@ -74,6 +122,15 @@ var queryEvent = new CSharpDbQueryFailedEvent(
 string queryEventJson = JsonSerializer.Serialize(
     queryEvent,
     CSharpDbObservabilityJsonContext.Default.CSharpDbQueryFailedEvent);
+var longRunningEvent = new CSharpDbLongRunningQueryEvent(
+    operation,
+    DateTimeOffset.UtcNow,
+    elapsed: TimeSpan.FromSeconds(1),
+    longRunningQueryThreshold: TimeSpan.FromMilliseconds(500),
+    QueryExecutionPhase.Executing);
+string longRunningEventJson = JsonSerializer.Serialize(
+    longRunningEvent,
+    CSharpDbObservabilityJsonContext.Default.CSharpDbLongRunningQueryEvent);
 
 OpaqueDiagnosticsId boundarySessionId = OpaqueDiagnosticsId.Create();
 using (CSharpDbOperationScope.EnterBoundary(
@@ -105,7 +162,11 @@ if (result.NormalizedText.Contains(secret, StringComparison.Ordinal) ||
     fingerprintJson.Contains(secret, StringComparison.Ordinal) ||
     optionsJson.Contains(secret, StringComparison.Ordinal) ||
     activeQueriesJson.Contains(secret, StringComparison.Ordinal) ||
-    queryEventJson.Contains(secret, StringComparison.Ordinal))
+    activeQueryCollectionJson.Contains(secret, StringComparison.Ordinal) ||
+    planValueJson.Contains(secret, StringComparison.Ordinal) ||
+    queryDetailTopologyJson.Contains(secret, StringComparison.Ordinal) ||
+    queryEventJson.Contains(secret, StringComparison.Ordinal) ||
+    longRunningEventJson.Contains(secret, StringComparison.Ordinal))
 {
     throw new InvalidOperationException("Sensitive SQL literal content escaped normalization.");
 }
@@ -117,6 +178,12 @@ if (!queryEventJson.Contains("csharpdb.operation_failed", StringComparison.Ordin
     !queryEventJson.Contains(result.Fingerprint.Value, StringComparison.Ordinal))
 {
     throw new InvalidOperationException("The typed query event was not source-generated safely.");
+}
+
+if (!longRunningEventJson.Contains("Executing", StringComparison.Ordinal) ||
+    longRunningEventJson.Contains("capturedSql", StringComparison.OrdinalIgnoreCase))
+{
+    throw new InvalidOperationException("The long-running query event was not source-generated safely.");
 }
 
 if (JsonSerializer.Deserialize(
@@ -145,6 +212,44 @@ if (JsonSerializer.Deserialize(activeQueriesJson, activeQueriesTypeInfo) is not
         "0123456789abcdef0123456789abcdef")
 {
     throw new InvalidOperationException("The bounded active-query contract did not round-trip.");
+}
+
+var activeQueryCollectionTypeInfo = CSharpDbObservabilityJsonContext.Default.GetTypeInfo(
+    typeof(DiagnosticsCollectionSnapshot<ActiveQuerySnapshot>))!;
+if (JsonSerializer.Deserialize(activeQueryCollectionJson, activeQueryCollectionTypeInfo) is not
+    DiagnosticsCollectionSnapshot<ActiveQuerySnapshot> deserializedCollection ||
+    deserializedCollection.Records?.Count != 1 ||
+    deserializedCollection.Capacity != 1_000 ||
+    deserializedCollection.Metadata.ServerInstanceId != metadata.ServerInstanceId)
+{
+    throw new InvalidOperationException("The identified diagnostics collection did not round-trip.");
+}
+
+if (JsonSerializer.Deserialize(
+        planValueJson,
+        CSharpDbObservabilityJsonContext.Default
+            .DiagnosticsValueSnapshotQueryPlanDiagnosticsSnapshot) is not
+    DiagnosticsValueSnapshot<QueryPlanDiagnosticsSnapshot> deserializedPlan ||
+    deserializedPlan.Value?.OperationId != activeQuery.OperationId ||
+    deserializedPlan.Metadata != deserializedPlan.Value.Metadata)
+{
+    throw new InvalidOperationException("The identified diagnostics value did not round-trip.");
+}
+
+if (JsonSerializer.Deserialize(
+        queryDetailTopologyJson,
+        CSharpDbObservabilityJsonContext.Default
+            .DiagnosticsTopologySnapshotDiagnosticsValueSnapshotQueryDetailSnapshot) is not
+    DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<QueryDetailSnapshot>>
+        deserializedDetailTopology ||
+    deserializedDetailTopology.Aggregate.Value?.OperationId != activeQuery.OperationId ||
+    deserializedDetailTopology.Aggregate.Value.CaptureMode != SqlTextCaptureMode.Normalized ||
+    deserializedDetailTopology.Aggregate.Value.CapturedSqlText != result.NormalizedText ||
+    CSharpDbObservabilityJsonContext.Default.GetTypeInfo(
+        typeof(ShardDiagnosticsSection<RuntimeDiagnosticsSnapshot>)) is null)
+{
+    throw new InvalidOperationException(
+        "The bounded query-detail topology did not round-trip through the trimmed context.");
 }
 
 Console.WriteLine("Observability source-generated JSON and SQL fingerprint trim/NativeAOT smoke passed.");

@@ -16,11 +16,42 @@ internal static class DataObservabilityOptionsSnapshot
             Functions = configured.Functions,
             ImplicitInsertExecutionMode = configured.ImplicitInsertExecutionMode,
             ObservabilityOptions = Create(configured.ObservabilityOptions),
+            RuntimeDiagnosticsState = configured.RuntimeDiagnosticsState,
             StorageEngineFactory = configured.StorageEngineFactory,
             StorageEngineOptions = configured.StorageEngineOptions,
             WindowExecution = configured.WindowExecution,
         };
     }
+
+    internal static DatabaseOptions WithRuntimeDiagnosticsState(
+        DatabaseOptions configured,
+        CSharpDbRuntimeDiagnosticsState runtimeDiagnosticsState)
+    {
+        ArgumentNullException.ThrowIfNull(configured);
+        ArgumentNullException.ThrowIfNull(runtimeDiagnosticsState);
+
+        return new DatabaseOptions
+        {
+            AdaptiveQueryReoptimization = configured.AdaptiveQueryReoptimization,
+            Functions = configured.Functions,
+            ImplicitInsertExecutionMode = configured.ImplicitInsertExecutionMode,
+            ObservabilityOptions = configured.ObservabilityOptions,
+            RuntimeDiagnosticsState = runtimeDiagnosticsState,
+            StorageEngineFactory = configured.StorageEngineFactory,
+            StorageEngineOptions = configured.StorageEngineOptions,
+            WindowExecution = configured.WindowExecution,
+        };
+    }
+
+    internal static DatabaseOptions WithRuntimeDiagnosticsStateForTest(
+        DatabaseOptions configured,
+        object runtimeDiagnosticsState)
+        => WithRuntimeDiagnosticsState(
+            configured,
+            runtimeDiagnosticsState as CSharpDbRuntimeDiagnosticsState
+            ?? throw new ArgumentException(
+                "The value is not a runtime diagnostics state.",
+                nameof(runtimeDiagnosticsState)));
 
     internal static CSharpDbObservabilityOptions? Create(
         CSharpDbObservabilityOptions? configured)

@@ -32,6 +32,23 @@ public sealed class QueryFingerprintTests
         Assert.Equal(firstFingerprint, secondFingerprint);
     }
 
+    [Theory]
+    [InlineData("SELECT value FROM observability_baseline WHERE id = 512")]
+    [InlineData("INSERT INTO observability_baseline VALUES (1042, 10420, 'sql')")]
+    [InlineData("SELECT id, value FROM observability_baseline LIMIT 128")]
+    [InlineData("select id from users /* ignored */ where value != @secret and deleted is null;")]
+    [InlineData("INSERT INTO blobs VALUES (1, X'DEADBEEF')")]
+    public void AllocationLightFingerprintPath_MatchesCanonicalTokenizerContract(
+        string sql)
+    {
+        QueryFingerprint optimized = SqlQueryNormalizer.CreateFingerprint(sql, Ct);
+        QueryFingerprint canonical = SqlQueryNormalizer
+            .NormalizeAndFingerprint(sql, Ct)
+            .Fingerprint;
+
+        Assert.Equal(canonical, optimized);
+    }
+
     [Fact]
     public void NormalizeAndFingerprint_RemovesLiteralAndParameterValuesBeforePublication()
     {

@@ -12,8 +12,9 @@ namespace CSharpDB.Benchmarks.Micro;
 
 /// <summary>
 /// Paired engine-path modes for calculating observability overhead. Disabled
-/// retains the Phase 0 no-listener baseline. StructuredLogging enables
-/// query completion events with one active DiagnosticListener/logger bridge.
+/// retains the Phase 0 no-listener baseline. HistoryCapture enables only the
+/// Phase 2 bounded runtime ledger, while StructuredLogging also enables query
+/// completion events with one active DiagnosticListener/logger bridge.
 /// </summary>
 [BenchmarkCategory("Observability", "Qualification", "PairedModes")]
 [MemoryDiagnoser]
@@ -36,6 +37,7 @@ public class ObservabilityNoListenerEngineBenchmarks
 
     [Params(
         ObservabilityBenchmarkMode.Disabled,
+        ObservabilityBenchmarkMode.HistoryCapture,
         ObservabilityBenchmarkMode.StructuredLogging)]
     public ObservabilityBenchmarkMode Mode { get; set; }
 
@@ -45,14 +47,19 @@ public class ObservabilityNoListenerEngineBenchmarks
         ObservabilityBaselineGuard.EnsureNoListeners();
 
         DatabaseOptions? databaseOptions = null;
-        if (Mode == ObservabilityBenchmarkMode.StructuredLogging)
+        if (Mode != ObservabilityBenchmarkMode.Disabled)
         {
             CSharpDbObservabilityOptions observabilityOptions =
-                ObservabilityBenchmarkConfiguration.CreateStructuredQueryLoggingOptions();
-            _loggerBridge = new CSharpDbDiagnosticLoggerBridge(
-                ObservabilityBenchmarkLoggerFactory.Instance,
-                observabilityOptions);
-            ObservabilityBaselineGuard.EnsureStructuredQueryLoggingListener();
+                Mode == ObservabilityBenchmarkMode.HistoryCapture
+                    ? ObservabilityBenchmarkConfiguration.CreateHistoryCaptureOptions()
+                    : ObservabilityBenchmarkConfiguration.CreateStructuredQueryLoggingOptions();
+            if (Mode == ObservabilityBenchmarkMode.StructuredLogging)
+            {
+                _loggerBridge = new CSharpDbDiagnosticLoggerBridge(
+                    ObservabilityBenchmarkLoggerFactory.Instance,
+                    observabilityOptions);
+                ObservabilityBaselineGuard.EnsureStructuredQueryLoggingListener();
+            }
             databaseOptions = new DatabaseOptions
             {
                 ObservabilityOptions = observabilityOptions,
@@ -186,11 +193,12 @@ public class ObservabilityNoListenerConnectionPoolBenchmarks
 {
     private string _databasePath = null!;
     private string _connectionString = null!;
-    private DatabaseOptions? _structuredLoggingDatabaseOptions;
+    private DatabaseOptions? _databaseOptions;
     private CSharpDbDiagnosticLoggerBridge? _loggerBridge;
 
     [Params(
         ObservabilityBenchmarkMode.Disabled,
+        ObservabilityBenchmarkMode.HistoryCapture,
         ObservabilityBenchmarkMode.StructuredLogging)]
     public ObservabilityBenchmarkMode Mode { get; set; }
 
@@ -200,15 +208,20 @@ public class ObservabilityNoListenerConnectionPoolBenchmarks
         ObservabilityBaselineGuard.EnsureNoListeners();
         await CSharpDbConnection.ClearAllPoolsAsync();
 
-        if (Mode == ObservabilityBenchmarkMode.StructuredLogging)
+        if (Mode != ObservabilityBenchmarkMode.Disabled)
         {
             CSharpDbObservabilityOptions observabilityOptions =
-                ObservabilityBenchmarkConfiguration.CreateStructuredQueryLoggingOptions();
-            _loggerBridge = new CSharpDbDiagnosticLoggerBridge(
-                ObservabilityBenchmarkLoggerFactory.Instance,
-                observabilityOptions);
-            ObservabilityBaselineGuard.EnsureStructuredQueryLoggingListener();
-            _structuredLoggingDatabaseOptions = new DatabaseOptions
+                Mode == ObservabilityBenchmarkMode.HistoryCapture
+                    ? ObservabilityBenchmarkConfiguration.CreateHistoryCaptureOptions()
+                    : ObservabilityBenchmarkConfiguration.CreateStructuredQueryLoggingOptions();
+            if (Mode == ObservabilityBenchmarkMode.StructuredLogging)
+            {
+                _loggerBridge = new CSharpDbDiagnosticLoggerBridge(
+                    ObservabilityBenchmarkLoggerFactory.Instance,
+                    observabilityOptions);
+                ObservabilityBaselineGuard.EnsureStructuredQueryLoggingListener();
+            }
+            _databaseOptions = new DatabaseOptions
             {
                 ObservabilityOptions = observabilityOptions,
             }.ConfigureStorageEngine(builder => builder.UseWriteOptimizedPreset());
@@ -252,9 +265,9 @@ public class ObservabilityNoListenerConnectionPoolBenchmarks
     }
 
     private DbConnection CreateConnection()
-        => _structuredLoggingDatabaseOptions is null
+        => _databaseOptions is null
             ? new CSharpDbConnection(_connectionString)
-            : new CSharpDbConnection(_connectionString, _structuredLoggingDatabaseOptions);
+            : new CSharpDbConnection(_connectionString, _databaseOptions);
 
     private static void DeleteIfExists(string? path)
     {
@@ -294,10 +307,22 @@ public enum ObservabilityBenchmarkMode
 {
     Disabled = 0,
     StructuredLogging = 1,
+    HistoryCapture = 2,
 }
 
 file static class ObservabilityBenchmarkConfiguration
 {
+    public static CSharpDbObservabilityOptions CreateHistoryCaptureOptions()
+        => new()
+        {
+            Enabled = true,
+            DatabaseAlias = "benchmark",
+            Logging = new CSharpDbLoggingOptions
+            {
+                Enabled = false,
+            },
+        };
+
     public static CSharpDbObservabilityOptions CreateStructuredQueryLoggingOptions()
         => new()
         {

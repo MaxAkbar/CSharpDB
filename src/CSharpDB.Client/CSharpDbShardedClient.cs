@@ -19,7 +19,7 @@ using CSharpDbStorageException = CSharpDB.Primitives.CSharpDbException;
 
 namespace CSharpDB.Client;
 
-public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdminClient, ICSharpDbShardDirectoryClient, IClientObservabilitySettingsProvider
+public sealed partial class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdminClient, ICSharpDbShardDirectoryClient, IClientObservabilitySettingsProvider, ICSharpDbObservabilityClient
 {
     private const string TransactionPrefix = "csdbshard";
 
@@ -37,13 +37,20 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
         Dictionary<string, ICSharpDbClient> clients,
         ICSharpDbRouteContextAccessor? routeContextAccessor,
         CSharpDbShardCatalogStore? catalogStore,
-        CSharpDbShardingOptions effectiveOptions)
+        CSharpDbShardingOptions effectiveOptions,
+        TimeProvider? coordinatorTimeProvider = null)
     {
         _map = map;
         _clients = clients;
         _routeContextAccessor = routeContextAccessor;
         _catalogStore = catalogStore;
         _effectiveOptions = effectiveOptions;
+        _diagnosticsDatabaseAlias = ResolveDiagnosticsDatabaseAlias(effectiveOptions);
+        _coordinatorTimeProvider = coordinatorTimeProvider;
+        _coordinatorRuntimeState = CreateCoordinatorRuntimeStateIfEnabled(
+            effectiveOptions,
+            _diagnosticsDatabaseAlias,
+            coordinatorTimeProvider);
         _requestRoutedClient = new RoutedClient(this, fixedRoute: null);
     }
 
@@ -1461,11 +1468,13 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sql);
 
-        ClientOperationObservation? coordinator =
-            ClientOperationObservation.StartQueryCoordinator(
-                _effectiveOptions.DirectDatabaseOptions?.ObservabilityOptions,
-                sql);
-        using IDisposable? coordinatorScope = coordinator?.EnterScope();
+        CoordinatorRuntimeObservation? coordinatorRuntime =
+            StartCoordinatorRuntimeObservation(
+                sql,
+                out ClientOperationObservation? coordinator);
+        using IDisposable? coordinatorScope =
+            coordinatorRuntime?.EnterScope() ?? coordinator?.EnterScope();
+        coordinatorRuntime?.MarkExecuting();
         var results = new List<CSharpDbShardSqlExecutionResult>(_clients.Count);
         long rowsProduced = 0;
         long rowsAffected = 0;
@@ -1480,14 +1489,18 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             using IDisposable? attemptScope = attempt?.EnterScope();
             using IDisposable? suppression = attempt is null
                 ? null
-                : CSharpDB.Observability.CSharpDbOperationScope.SuppressDiagnostics();
+                : CSharpDB.Observability.CSharpDbOperationScope.SuppressDiagnosticEvents();
             try
             {
                 SqlExecutionResult result = await client.ExecuteSqlAsync(sql, ct).ConfigureAwait(false);
                 long attemptRowsProduced = result.IsQuery ? result.Rows?.Count ?? 0 : 0;
                 long attemptRowsAffected = result.IsQuery ? 0 : result.RowsAffected;
-                rowsProduced += attemptRowsProduced;
-                rowsAffected += attemptRowsAffected;
+                rowsProduced = SaturatingAddNonNegative(
+                    rowsProduced,
+                    attemptRowsProduced);
+                rowsAffected = SaturatingAddNonNegative(
+                    rowsAffected,
+                    attemptRowsAffected);
                 if (string.IsNullOrWhiteSpace(result.Error))
                 {
                     attempt?.Succeed(attemptRowsProduced, attemptRowsAffected);
@@ -1523,6 +1536,12 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
 
         if (canceled)
         {
+            coordinatorRuntime?.Complete(
+                CSharpDB.Observability.CSharpDbOperationOutcome.Canceled,
+                rowsProduced,
+                rowsAffected,
+                CSharpDB.Observability.SafeErrorProjector.Project(
+                    CSharpDB.Observability.SafeErrorKind.OperationCanceled));
             coordinator?.Fail(
                 CSharpDB.Observability.SafeErrorKind.OperationCanceled,
                 rowsProduced,
@@ -1530,6 +1549,12 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
         }
         else if (failed)
         {
+            coordinatorRuntime?.Complete(
+                CSharpDB.Observability.CSharpDbOperationOutcome.Failed,
+                rowsProduced,
+                rowsAffected,
+                CSharpDB.Observability.SafeErrorProjector.Project(
+                    CSharpDB.Observability.SafeErrorKind.DatabaseOperation));
             coordinator?.Fail(
                 CSharpDB.Observability.SafeErrorKind.DatabaseOperation,
                 rowsProduced,
@@ -1537,6 +1562,11 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
         }
         else
         {
+            coordinatorRuntime?.Complete(
+                CSharpDB.Observability.CSharpDbOperationOutcome.Succeeded,
+                rowsProduced,
+                rowsAffected,
+                error: null);
             coordinator?.Succeed(rowsProduced, rowsAffected);
         }
 
@@ -1577,6 +1607,9 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                 (exceptions ??= []).Add(ex);
             }
         }
+
+        Volatile.Write(ref _coordinatorDiagnosticsDisposed, 1);
+        Interlocked.Exchange(ref _coordinatorRuntimeState, null)?.Dispose();
 
         if (exceptions is { Count: > 0 })
             throw new AggregateException(exceptions);
@@ -3676,7 +3709,7 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
     private CSharpDbRouteContext? GetCurrentRoute()
         => _routeContextAccessor?.Current;
 
-    private sealed class RoutedClient : ICSharpDbClient, IClientObservabilitySettingsProvider
+    private sealed partial class RoutedClient : ICSharpDbClient, IClientObservabilitySettingsProvider, ICSharpDbObservabilityClient
     {
         private readonly CSharpDbShardedClient _owner;
         private readonly CSharpDbRouteContext? _fixedRoute;

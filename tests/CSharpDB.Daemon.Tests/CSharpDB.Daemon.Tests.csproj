@@ -11,6 +11,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\CSharpDB.Api\CSharpDB.Api.csproj" Aliases="CSharpDbApi" />
     <ProjectReference Include="..\..\src\CSharpDB.Daemon\CSharpDB.Daemon.csproj" />
   </ItemGroup>
 

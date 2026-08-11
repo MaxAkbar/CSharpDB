@@ -108,6 +108,27 @@ public enum QueryAccessPathCategory
     Temporary,
 }
 
+public enum ConnectionPoolLifecycleState
+{
+    Unknown = 0,
+    Enabled = 1,
+    Disabled = 2,
+    Poisoned = 3,
+    Retiring = 4,
+    Retired = 5,
+}
+
+public enum DiagnosticsSessionState
+{
+    Unknown = 0,
+    Idle = 1,
+    Active = 2,
+    Transaction = 3,
+    SnapshotReader = 4,
+    Abandoned = 5,
+    Disposed = 6,
+}
+
 public enum CounterSemantics
 {
     Unknown = 0,

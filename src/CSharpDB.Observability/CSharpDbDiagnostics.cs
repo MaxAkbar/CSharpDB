@@ -16,6 +16,7 @@ public static class CSharpDbDiagnostics
     public const string DiagnosticListenerName = "CSharpDB";
     public const int MaximumDatabaseAliasLength = 64;
     public const int MaximumConfiguredDatabaseAliases = 64;
+    public const int MaximumRuntimeDiagnosticsFamilies = 64;
     public const int OpaqueIdentifierHexLength = 32;
 
     public static ActivitySource ActivitySource { get; } =
@@ -142,6 +143,7 @@ public static class CSharpDbLogEventIds
     public const int SlowQuery = 2001;
     public const int QueryFailed = 2002;
     public const int QueryCanceled = 2003;
+    public const int LongRunningQuery = 2004;
 
     public const int TransactionCompleted = 3000;
 

@@ -1,6 +1,8 @@
+using CSharpDB.Api.Diagnostics;
 using CSharpDB.Observability;
 using Grpc.Core;
 using Grpc.Core.Interceptors;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace CSharpDB.Daemon.Grpc;
 
@@ -10,12 +12,33 @@ namespace CSharpDB.Daemon.Grpc;
 /// </summary>
 public sealed class CSharpDbOperationScopeGrpcInterceptor : Interceptor
 {
-    private readonly bool _loggingEnabled;
+    private readonly bool _enabled;
+    private readonly CSharpDbHostRequestDiagnostics? _requestDiagnostics;
 
     public CSharpDbOperationScopeGrpcInterceptor(CSharpDbObservabilityOptions options)
+        : this(options, null!)
+    {
+    }
+
+    [ActivatorUtilitiesConstructor]
+    public CSharpDbOperationScopeGrpcInterceptor(
+        CSharpDbObservabilityOptions options,
+        IServiceProvider serviceProvider)
     {
         ArgumentNullException.ThrowIfNull(options);
-        _loggingEnabled = options.Enabled && options.Logging?.Enabled == true;
+        _enabled = options.Enabled;
+        if (_enabled && serviceProvider is not null)
+        {
+            try
+            {
+                _requestDiagnostics = serviceProvider
+                    .GetService<CSharpDbHostRequestDiagnostics>();
+            }
+            catch
+            {
+                // Diagnostics registration must never prevent host startup.
+            }
+        }
     }
 
     public override Task<TResponse> UnaryServerHandler<TRequest, TResponse>(
@@ -23,12 +46,14 @@ public sealed class CSharpDbOperationScopeGrpcInterceptor : Interceptor
         ServerCallContext context,
         UnaryServerMethod<TRequest, TResponse> continuation)
     {
-        return _loggingEnabled
-            ? InvokeWithScopeAsync(request, context, continuation)
-            : continuation(request, context);
+        return _enabled &&
+               !CSharpDbOperationScope.IsDiagnosticsSuppressed &&
+               !IsDiagnosticsMethod(context?.Method)
+            ? InvokeWithScopeAsync(request, context!, continuation)
+            : continuation(request, context!);
     }
 
-    private static async Task<TResponse> InvokeWithScopeAsync<TRequest, TResponse>(
+    private async Task<TResponse> InvokeWithScopeAsync<TRequest, TResponse>(
         TRequest request,
         ServerCallContext context,
         UnaryServerMethod<TRequest, TResponse> continuation)
@@ -36,11 +61,17 @@ public sealed class CSharpDbOperationScopeGrpcInterceptor : Interceptor
         where TResponse : class
     {
         IDisposable? scope = null;
+        IDisposable? requestLease = null;
         try
         {
+            OpaqueDiagnosticsId sessionId = OpaqueDiagnosticsId.Create();
+            requestLease = _requestDiagnostics?.TryBeginRequest(
+                sessionId,
+                CSharpDbTransport.Grpc,
+                CSharpDbOperationScope.Current?.OperationId);
             scope = CSharpDbOperationScope.EnterTransport(
                 CSharpDbTransport.Grpc,
-                OpaqueDiagnosticsId.Create());
+                sessionId);
         }
         catch
         {
@@ -55,6 +86,15 @@ public sealed class CSharpDbOperationScopeGrpcInterceptor : Interceptor
         {
             try
             {
+                requestLease?.Dispose();
+            }
+            catch
+            {
+                // Diagnostics state must never affect RPC completion.
+            }
+
+            try
+            {
                 scope?.Dispose();
             }
             catch
@@ -62,5 +102,22 @@ public sealed class CSharpDbOperationScopeGrpcInterceptor : Interceptor
                 // Diagnostics context must never affect RPC completion.
             }
         }
+    }
+
+    internal static bool IsDiagnosticsMethod(string? method)
+    {
+        if (string.IsNullOrEmpty(method))
+            return false;
+
+        int separator = method.LastIndexOf('/');
+        ReadOnlySpan<char> name = separator >= 0
+            ? method.AsSpan(separator + 1)
+            : method.AsSpan();
+        return name.SequenceEqual("GetRuntimeDiagnostics") ||
+               name.SequenceEqual("GetActiveQueries") ||
+               name.SequenceEqual("GetRecentQueries") ||
+               name.SequenceEqual("GetQueryPlanDiagnostics") ||
+               name.SequenceEqual("GetSessions") ||
+               name.SequenceEqual("GetQueryDetail");
     }
 }

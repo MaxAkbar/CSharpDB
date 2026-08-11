@@ -1,12 +1,15 @@
 using System.Net;
 using System.Globalization;
+using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using CSharpDB.Client;
 using CSharpDB.Client.Grpc;
 using CSharpDB.Client.Models;
 using CSharpDB.Daemon.Configuration;
+using CSharpDB.Daemon.Grpc;
 using CSharpDB.Engine;
+using Observability = CSharpDB.Observability;
 using Google.Protobuf;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
@@ -15,6 +18,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using CSharpDB.Storage.Checkpointing;
 using CSharpDB.Storage.Paging;
@@ -104,6 +108,464 @@ public sealed class GrpcClientTests : IAsyncLifetime
                 entry =>
                     entry.Key == GrpcMetadataNames.ErrorCode &&
                     entry.Value == CSharpDB.Primitives.ErrorCode.ResourceLimitExceeded.ToString());
+        }
+        finally
+        {
+            TryDelete(dbPath);
+            TryDelete(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task DiagnosticsCapability_RoundTripsAllGrpcMethods()
+    {
+        const string apiKey = "grpc-diagnostics-key";
+        string dbPath = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb_daemon_diagnostics_{Guid.NewGuid():N}.db");
+        var configuration = new Dictionary<string, string?>
+        {
+            ["CSharpDB:Daemon:Security:Mode"] = "ApiKey",
+            ["CSharpDB:Daemon:Security:ApiKey"] = apiKey,
+            ["CSharpDB:Daemon:Security:AllowSensitiveQueryDetailAccess"] = "true",
+        };
+
+        try
+        {
+            await using var factory = new TestDaemonFactory(
+                dbPath,
+                configuration);
+            using HttpClient transportClient = CreateGrpcHttpClient(factory);
+            await using ICSharpDbClient client = CreateGrpcClient(
+                transportClient,
+                apiKey);
+            var diagnostics = Assert.IsAssignableFrom<
+                ICSharpDbObservabilityClient>(client);
+            var operationId = new Observability.OpaqueDiagnosticsId(
+                "0123456789abcdef0123456789abcdef");
+
+            Observability.DiagnosticsTopologySnapshot<Observability.RuntimeDiagnosticsSnapshot> runtime =
+                await diagnostics.GetRuntimeDiagnosticsAsync(Ct);
+            Observability.DiagnosticsTopologySnapshot<Observability.DiagnosticsCollectionSnapshot<Observability.ActiveQuerySnapshot>> active =
+                await diagnostics.GetActiveQueriesAsync(4, Ct);
+            Observability.DiagnosticsTopologySnapshot<Observability.DiagnosticsCollectionSnapshot<Observability.RecentQuerySnapshot>> recent =
+                await diagnostics.GetRecentQueriesAsync(5, Ct);
+            Observability.DiagnosticsTopologySnapshot<Observability.DiagnosticsValueSnapshot<Observability.QueryPlanDiagnosticsSnapshot>> plan =
+                await diagnostics.GetQueryPlanDiagnosticsAsync(operationId, Ct);
+            Observability.DiagnosticsTopologySnapshot<Observability.DiagnosticsCollectionSnapshot<Observability.SessionDiagnosticsSnapshot>> sessions =
+                await diagnostics.GetSessionsAsync(6, Ct);
+            Observability.DiagnosticsTopologySnapshot<Observability.DiagnosticsValueSnapshot<Observability.QueryDetailSnapshot>> detail =
+                await diagnostics.GetQueryDetailAsync(operationId, Ct);
+
+            Assert.All(
+                new Observability.IRuntimeDiagnosticsSnapshot[]
+                {
+                    runtime, active, recent, plan, sessions, detail,
+                },
+                snapshot =>
+                {
+                    Assert.Equal(
+                        Observability.DiagnosticsAvailability.Disabled,
+                        snapshot.Metadata.Availability);
+                    Assert.Equal(
+                        Observability.DiagnosticsScope.Instance,
+                        snapshot.Metadata.Scope);
+                });
+        }
+        finally
+        {
+            TryDelete(dbPath);
+            TryDelete(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task DiagnosticsCapability_RequiresSeparateGrpcDetailAuthorization()
+    {
+        const string apiKey = "grpc-diagnostics-detail-key";
+        string dbPath = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb_daemon_diagnostics_detail_{Guid.NewGuid():N}.db");
+        var configuration = new Dictionary<string, string?>
+        {
+            ["CSharpDB:Daemon:Security:Mode"] = "ApiKey",
+            ["CSharpDB:Daemon:Security:ApiKey"] = apiKey,
+            ["CSharpDB:Daemon:Security:AllowSensitiveQueryDetailAccess"] = "false",
+        };
+
+        try
+        {
+            await using var factory = new TestDaemonFactory(
+                dbPath,
+                configuration);
+            using HttpClient transportClient = CreateGrpcHttpClient(factory);
+            await using ICSharpDbClient client = CreateGrpcClient(
+                transportClient,
+                apiKey);
+            var diagnostics = Assert.IsAssignableFrom<
+                ICSharpDbObservabilityClient>(client);
+            var operationId = new Observability.OpaqueDiagnosticsId(
+                "0123456789abcdef0123456789abcdef");
+
+            CSharpDbClientException error = await Assert.ThrowsAsync<
+                CSharpDbClientException>(
+                () => diagnostics.GetQueryDetailAsync(operationId, Ct));
+            Assert.Contains(
+                "PermissionDenied",
+                error.Message,
+                StringComparison.Ordinal);
+
+            Observability.DiagnosticsTopologySnapshot<Observability.RuntimeDiagnosticsSnapshot> runtime =
+                await diagnostics.GetRuntimeDiagnosticsAsync(Ct);
+            Assert.Equal(
+                Observability.DiagnosticsAvailability.Disabled,
+                runtime.Metadata.Availability);
+        }
+        finally
+        {
+            TryDelete(dbPath);
+            TryDelete(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public void DiagnosticsService_PreservesTheLegacyPublicConstructor()
+    {
+        ConstructorInfo? constructor = typeof(CSharpDbRpcService).GetConstructor(
+            [typeof(ICSharpDbClient)]);
+
+        Assert.NotNull(constructor);
+    }
+
+    [Fact]
+    public async Task DiagnosticsGrpcAuthorization_PrecedesInputValidation()
+    {
+        const string apiKey = "grpc-diagnostics-ordering-key";
+        string dbPath = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb_daemon_diagnostics_ordering_{Guid.NewGuid():N}.db");
+        var configuration = new Dictionary<string, string?>
+        {
+            ["CSharpDB:Daemon:Security:Mode"] = "ApiKey",
+            ["CSharpDB:Daemon:Security:ApiKey"] = apiKey,
+        };
+
+        try
+        {
+            await using var factory = new TestDaemonFactory(
+                dbPath,
+                configuration);
+            using HttpClient transportClient = CreateGrpcHttpClient(factory);
+            using var channel = GrpcChannel.ForAddress(
+                "http://localhost",
+                new GrpcChannelOptions
+                {
+                    HttpClient = transportClient,
+                    DisposeHttpClient = false,
+                });
+            var rpc = new CSharpDbRpc.CSharpDbRpcClient(channel);
+
+            RpcException unauthenticated = await Assert.ThrowsAsync<RpcException>(
+                () => rpc.GetActiveQueriesAsync(
+                    new DiagnosticsRecordsRequest { MaximumRecords = 0 },
+                    cancellationToken: Ct).ResponseAsync);
+            var headers = new Metadata
+            {
+                { "x-csharpdb-api-key", apiKey },
+            };
+            RpcException invalidLimit = await Assert.ThrowsAsync<RpcException>(
+                () => rpc.GetActiveQueriesAsync(
+                    new DiagnosticsRecordsRequest { MaximumRecords = 0 },
+                    headers,
+                    cancellationToken: Ct).ResponseAsync);
+            RpcException invalidId = await Assert.ThrowsAsync<RpcException>(
+                () => rpc.GetQueryPlanDiagnosticsAsync(
+                    new DiagnosticsOperationRequest
+                    {
+                        OperationId = "not-an-operation-id",
+                    },
+                    headers,
+                    cancellationToken: Ct).ResponseAsync);
+
+            Assert.Equal(StatusCode.Unauthenticated, unauthenticated.StatusCode);
+            Assert.Equal(StatusCode.InvalidArgument, invalidLimit.StatusCode);
+            Assert.Equal(StatusCode.InvalidArgument, invalidId.StatusCode);
+        }
+        finally
+        {
+            TryDelete(dbPath);
+            TryDelete(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task DiagnosticsGrpcClient_ValidatesBoundsBeforeStartingCalls()
+    {
+        using HttpClient transportClient = CreateGrpcHttpClient(_factory);
+        await using ICSharpDbClient client = CreateGrpcClient(transportClient);
+        var diagnostics = Assert.IsAssignableFrom<ICSharpDbObservabilityClient>(
+            client);
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            diagnostics.GetActiveQueriesAsync(0, Ct));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            diagnostics.GetRecentQueriesAsync(
+                Observability.CSharpDbObservabilityOptions.MaximumHistoryCapacity + 1,
+                Ct));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            diagnostics.GetSessionsAsync(-1, Ct));
+    }
+
+    [Fact]
+    public async Task MissingServerCapability_MapsGrpcUnimplementedToSafeUnsupported()
+    {
+        const string apiKey = "grpc-diagnostics-unsupported-key";
+        string dbPath = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb_daemon_diagnostics_unsupported_{Guid.NewGuid():N}.db");
+        ICSharpDbClient unsupported =
+            DispatchProxy.Create<ICSharpDbClient, UnsupportedClientProxy>();
+        var configuration = new Dictionary<string, string?>
+        {
+            ["CSharpDB:Daemon:Security:Mode"] = "ApiKey",
+            ["CSharpDB:Daemon:Security:ApiKey"] = apiKey,
+        };
+
+        try
+        {
+            await using var factory = new TestDaemonFactory(
+                dbPath,
+                configuration,
+                configureServices: services =>
+                {
+                    services.RemoveAll<ICSharpDbClient>();
+                    services.AddSingleton(unsupported);
+                });
+            using HttpClient transportClient = CreateGrpcHttpClient(factory);
+            await using ICSharpDbClient client = CreateGrpcClient(
+                transportClient,
+                apiKey);
+            var diagnostics = Assert.IsAssignableFrom<
+                ICSharpDbObservabilityClient>(client);
+
+            CSharpDbObservabilityNotSupportedException error =
+                await Assert.ThrowsAsync<
+                    CSharpDbObservabilityNotSupportedException>(
+                    () => diagnostics.GetRuntimeDiagnosticsAsync(Ct));
+
+            Assert.Equal(
+                CSharpDbObservabilityNotSupportedException.SafeMessage,
+                error.Message);
+        }
+        finally
+        {
+            TryDelete(dbPath);
+            TryDelete(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public void OrdinaryGrpcUnimplemented_RemainsAConfigurationFailure()
+    {
+        System.Type transportType = typeof(CSharpDbClient).Assembly.GetType(
+            "CSharpDB.Client.Internal.GrpcTransportClient",
+            throwOnError: true)!;
+        MethodInfo translate = transportType.GetMethod(
+            "TranslateRpcException",
+            BindingFlags.NonPublic | BindingFlags.Static)!;
+        var rpcError = new RpcException(new Status(
+            StatusCode.Unimplemented,
+            "ordinary method is unavailable"));
+
+        var translated = Assert.IsAssignableFrom<Exception>(
+            translate.Invoke(null, [rpcError]));
+
+        Assert.IsType<CSharpDbClientConfigurationException>(translated);
+        Assert.IsNotType<CSharpDbObservabilityNotSupportedException>(translated);
+    }
+
+    [Fact]
+    public async Task DiagnosticsGrpcCancellation_ReachesTheServerCapability()
+    {
+        const string apiKey = "grpc-diagnostics-cancellation-key";
+        string dbPath = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb_daemon_diagnostics_cancellation_{Guid.NewGuid():N}.db");
+        ICancelableDiagnosticsClient inner = DispatchProxy.Create<
+            ICancelableDiagnosticsClient,
+            CancelableDiagnosticsProxy>();
+        var capture = (CancelableDiagnosticsProxy)inner;
+        var configuration = new Dictionary<string, string?>
+        {
+            ["CSharpDB:Daemon:Security:Mode"] = "ApiKey",
+            ["CSharpDB:Daemon:Security:ApiKey"] = apiKey,
+        };
+
+        try
+        {
+            await using var factory = new TestDaemonFactory(
+                dbPath,
+                configuration,
+                configureServices: services =>
+                {
+                    services.RemoveAll<ICSharpDbClient>();
+                    services.AddSingleton<ICSharpDbClient>(inner);
+                });
+            using HttpClient transportClient = CreateGrpcHttpClient(factory);
+            await using ICSharpDbClient client = CreateGrpcClient(
+                transportClient,
+                apiKey);
+            var diagnostics = Assert.IsAssignableFrom<
+                ICSharpDbObservabilityClient>(client);
+            using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                Ct);
+
+            Task request = diagnostics.GetRuntimeDiagnosticsAsync(
+                cancellation.Token);
+            await capture.Started.Task.WaitAsync(Ct);
+            cancellation.Cancel();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => request);
+            await capture.CancellationObserved.Task.WaitAsync(Ct);
+        }
+        finally
+        {
+            TryDelete(dbPath);
+            TryDelete(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task Sessions_IncludeInFlightGrpcCalls_ButNotTheDiagnosticsCall()
+    {
+        const string apiKey = "grpc-diagnostics-sessions-key";
+        string dbPath = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb_daemon_diagnostics_sessions_{Guid.NewGuid():N}.db");
+        IHostSessionDiagnosticsClient inner = DispatchProxy.Create<
+            IHostSessionDiagnosticsClient,
+            HostSessionDiagnosticsProxy>();
+        var capture = (HostSessionDiagnosticsProxy)inner;
+        var configuration = new Dictionary<string, string?>
+        {
+            ["CSharpDB:Daemon:Security:Mode"] = "ApiKey",
+            ["CSharpDB:Daemon:Security:ApiKey"] = apiKey,
+            ["CSharpDB:Observability:Enabled"] = "true",
+            ["CSharpDB:Observability:Logging:Enabled"] = "false",
+        };
+
+        try
+        {
+            await using var factory = new TestDaemonFactory(
+                dbPath,
+                configuration,
+                configureServices: services =>
+                {
+                    services.RemoveAll<ICSharpDbClient>();
+                    services.AddSingleton<ICSharpDbClient>(inner);
+                });
+            using HttpClient transportClient = CreateGrpcHttpClient(factory);
+            await using ICSharpDbClient client = CreateGrpcClient(
+                transportClient,
+                apiKey);
+            var diagnostics = Assert.IsAssignableFrom<
+                ICSharpDbObservabilityClient>(client);
+
+            Task<IReadOnlyList<string>> heldCall = client.GetTableNamesAsync(Ct);
+            try
+            {
+                await capture.Started.Task.WaitAsync(Ct);
+                Observability.DiagnosticsTopologySnapshot<
+                    Observability.DiagnosticsCollectionSnapshot<
+                        Observability.SessionDiagnosticsSnapshot>> sessions =
+                    await diagnostics.GetSessionsAsync(8, Ct);
+
+                Observability.SessionDiagnosticsSnapshot session = Assert.Single(
+                    sessions.Aggregate.Records!);
+                Assert.Equal(
+                    Observability.CSharpDbTransport.Grpc,
+                    session.Transport);
+                Assert.Equal(
+                    Observability.DiagnosticsSessionState.Active,
+                    session.State);
+                Assert.True(capture.DiagnosticsWereSuppressed);
+            }
+            finally
+            {
+                capture.Release.TrySetResult((IReadOnlyList<string>)[]);
+                _ = await heldCall;
+            }
+        }
+        finally
+        {
+            TryDelete(dbPath);
+            TryDelete(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public void DisabledObservability_DoesNotResolveGrpcHostRequestContributor()
+    {
+        var provider = new RecordingServiceProvider(
+            new Observability.CSharpDbObservabilityOptions
+            {
+                Enabled = false,
+            });
+        MethodInfo helper = typeof(CSharpDbRpcService).GetMethod(
+            "TryGetHostRequestContributor",
+            BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        object? contributor = helper.Invoke(null, [provider]);
+
+        Assert.Null(contributor);
+        Assert.Equal(
+            [typeof(Observability.CSharpDbObservabilityOptions)],
+            provider.RequestedTypes);
+    }
+
+    [Fact]
+    public async Task CapabilityArgumentFailures_DoNotLeakDetailsOverGrpc()
+    {
+        const string apiKey = "grpc-diagnostics-safe-error-key";
+        const string canary = "grpc-private-capability-argument";
+        string dbPath = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb_daemon_diagnostics_safe_error_{Guid.NewGuid():N}.db");
+        IThrowingDiagnosticsClient inner = DispatchProxy.Create<
+            IThrowingDiagnosticsClient,
+            ThrowingDiagnosticsProxy>();
+        ((ThrowingDiagnosticsProxy)inner).ErrorMessage = canary;
+        var configuration = new Dictionary<string, string?>
+        {
+            ["CSharpDB:Daemon:Security:Mode"] = "ApiKey",
+            ["CSharpDB:Daemon:Security:ApiKey"] = apiKey,
+        };
+
+        try
+        {
+            await using var factory = new TestDaemonFactory(
+                dbPath,
+                configuration,
+                configureServices: services =>
+                {
+                    services.RemoveAll<ICSharpDbClient>();
+                    services.AddSingleton<ICSharpDbClient>(inner);
+                });
+            using HttpClient transportClient = CreateGrpcHttpClient(factory);
+            await using ICSharpDbClient client = CreateGrpcClient(
+                transportClient,
+                apiKey);
+            var diagnostics = Assert.IsAssignableFrom<
+                ICSharpDbObservabilityClient>(client);
+
+            ArgumentException error = await Assert.ThrowsAsync<ArgumentException>(
+                () => diagnostics.GetRuntimeDiagnosticsAsync(Ct));
+
+            Assert.DoesNotContain(canary, error.ToString(), StringComparison.Ordinal);
+            Assert.Contains(
+                "The runtime diagnostics request is invalid.",
+                error.Message,
+                StringComparison.Ordinal);
         }
         finally
         {
@@ -2347,10 +2809,190 @@ public sealed class GrpcClientTests : IAsyncLifetime
         await collection.PutAsync("seed", document.RootElement.Clone(), TestContext.Current.CancellationToken);
     }
 
+    private static Observability.DiagnosticsTopologySnapshot<
+        Observability.DiagnosticsCollectionSnapshot<
+            Observability.SessionDiagnosticsSnapshot>> AvailableSessions(
+                int capacity)
+    {
+        var metadata = new Observability.DiagnosticsSnapshotMetadata(
+            Observability.CSharpDbDiagnostics.SchemaVersion,
+            new DateTimeOffset(2026, 8, 10, 12, 0, 0, TimeSpan.Zero),
+            "abcdef0123456789abcdef0123456789",
+            counterEpoch: 0,
+            Observability.DiagnosticsScope.Instance,
+            Observability.DiagnosticsAvailability.Available,
+            Observability.DiagnosticsSource.Client,
+            "grpc-test",
+            recordsTruncated: false,
+            fieldsTruncated: false);
+        var collection = new Observability.DiagnosticsCollectionSnapshot<
+            Observability.SessionDiagnosticsSnapshot>(
+                metadata,
+                [],
+                capacity,
+                retention: null,
+                droppedCount: 0,
+                isTruncated: false);
+        return new Observability.DiagnosticsTopologySnapshot<
+            Observability.DiagnosticsCollectionSnapshot<
+                Observability.SessionDiagnosticsSnapshot>>(
+                    collection,
+                    null,
+                    null,
+                    null,
+                    null);
+    }
+
+    public interface ICancelableDiagnosticsClient :
+        ICSharpDbClient,
+        ICSharpDbObservabilityClient;
+
+    public interface IHostSessionDiagnosticsClient :
+        ICSharpDbClient,
+        ICSharpDbObservabilityClient;
+
+    public interface IThrowingDiagnosticsClient :
+        ICSharpDbClient,
+        ICSharpDbObservabilityClient;
+
+    public class UnsupportedClientProxy : DispatchProxy
+    {
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+            => targetMethod?.Name switch
+            {
+                "get_DataSource" => "unsupported-grpc-diagnostics-client",
+                "GetInfoAsync" => Task.FromResult(new DatabaseInfo
+                {
+                    DataSource = "unsupported-grpc-diagnostics-client",
+                }),
+                "DisposeAsync" => ValueTask.CompletedTask,
+                _ => throw new NotSupportedException(targetMethod?.Name),
+            };
+    }
+
+    public class CancelableDiagnosticsProxy : DispatchProxy
+    {
+        public TaskCompletionSource Started { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource CancellationObserved { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+            => targetMethod?.Name switch
+            {
+                "get_DataSource" => "cancelable-grpc-diagnostics-client",
+                "GetInfoAsync" => Task.FromResult(new DatabaseInfo
+                {
+                    DataSource = "cancelable-grpc-diagnostics-client",
+                }),
+                "GetRuntimeDiagnosticsAsync" => WaitForCancellationAsync(
+                    (CancellationToken)args![^1]!),
+                "DisposeAsync" => ValueTask.CompletedTask,
+                _ => throw new NotSupportedException(targetMethod?.Name),
+            };
+
+        private async Task<Observability.DiagnosticsTopologySnapshot<
+            Observability.RuntimeDiagnosticsSnapshot>> WaitForCancellationAsync(
+                CancellationToken cancellationToken)
+        {
+            Started.TrySetResult();
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+            finally
+            {
+                if (cancellationToken.IsCancellationRequested)
+                    CancellationObserved.TrySetResult();
+            }
+
+            throw new InvalidOperationException(
+                "The cancellation test operation unexpectedly completed.");
+        }
+    }
+
+    public class HostSessionDiagnosticsProxy : DispatchProxy
+    {
+        public TaskCompletionSource Started { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<IReadOnlyList<string>> Release { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public bool DiagnosticsWereSuppressed { get; private set; }
+
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+            => targetMethod?.Name switch
+            {
+                "get_DataSource" => "grpc-host-session-client",
+                "GetInfoAsync" => Task.FromResult(new DatabaseInfo
+                {
+                    DataSource = "grpc-host-session-client",
+                }),
+                "GetTableNamesAsync" => HoldOrdinaryCallAsync(),
+                "GetSessionsAsync" => CaptureSessions(
+                    (int)args![0]!),
+                "DisposeAsync" => ValueTask.CompletedTask,
+                _ => throw new NotSupportedException(targetMethod?.Name),
+            };
+
+        private Task<IReadOnlyList<string>> HoldOrdinaryCallAsync()
+        {
+            Started.TrySetResult();
+            return Release.Task;
+        }
+
+        private Task<Observability.DiagnosticsTopologySnapshot<
+            Observability.DiagnosticsCollectionSnapshot<
+                Observability.SessionDiagnosticsSnapshot>>> CaptureSessions(
+                    int maximumRecords)
+        {
+            DiagnosticsWereSuppressed =
+                Observability.CSharpDbOperationScope.IsDiagnosticsSuppressed;
+            return Task.FromResult(AvailableSessions(maximumRecords));
+        }
+    }
+
+    public class ThrowingDiagnosticsProxy : DispatchProxy
+    {
+        public string ErrorMessage { get; set; } = "private diagnostics error";
+
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+            => targetMethod?.Name switch
+            {
+                "get_DataSource" => "throwing-grpc-diagnostics-client",
+                "GetInfoAsync" => Task.FromResult(new DatabaseInfo
+                {
+                    DataSource = "throwing-grpc-diagnostics-client",
+                }),
+                "GetRuntimeDiagnosticsAsync" => Task.FromException<
+                    Observability.DiagnosticsTopologySnapshot<
+                        Observability.RuntimeDiagnosticsSnapshot>>(
+                            new ArgumentException(ErrorMessage)),
+                "DisposeAsync" => ValueTask.CompletedTask,
+                _ => throw new NotSupportedException(targetMethod?.Name),
+            };
+    }
+
+    private sealed class RecordingServiceProvider(
+        Observability.CSharpDbObservabilityOptions options) : IServiceProvider
+    {
+        private readonly List<System.Type> _requestedTypes = [];
+
+        internal IReadOnlyList<System.Type> RequestedTypes => _requestedTypes;
+
+        public object? GetService(System.Type serviceType)
+        {
+            _requestedTypes.Add(serviceType);
+            return serviceType == typeof(Observability.CSharpDbObservabilityOptions)
+                ? options
+                : null;
+        }
+    }
+
     private sealed class TestDaemonFactory(
         string dbPath,
         IReadOnlyDictionary<string, string?>? extraConfig = null,
-        CSharpDbClientOptions? clientOptionsOverride = null) : WebApplicationFactory<Program>
+        CSharpDbClientOptions? clientOptionsOverride = null,
+        Action<IServiceCollection>? configureServices = null) : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
@@ -2360,6 +3002,7 @@ public sealed class GrpcClientTests : IAsyncLifetime
                 services.AddHostedService<TestDaemonClientShutdown>();
                 if (clientOptionsOverride is not null)
                     services.AddSingleton(clientOptionsOverride);
+                configureServices?.Invoke(services);
             });
             builder.ConfigureAppConfiguration((_, config) =>
             {

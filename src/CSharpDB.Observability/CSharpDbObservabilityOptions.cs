@@ -15,6 +15,11 @@ public sealed class CSharpDbObservabilityOptions
     public CSharpDbLoggingOptions Logging { get; set; } = new();
     public CSharpDbHistoryOptions History { get; set; } = new();
     public TimeSpan LongRunningQueryThreshold { get; set; } = TimeSpan.FromSeconds(5);
+    /// <summary>
+    /// Idle duration after which an otherwise-open, non-expiring transaction
+    /// session is classified as abandoned in runtime diagnostics.
+    /// </summary>
+    public TimeSpan SessionAbandonmentThreshold { get; set; } = TimeSpan.FromMinutes(30);
     public CSharpDbOpenTelemetryOptions OpenTelemetry { get; set; } = new();
     public CSharpDbPrometheusOptions Prometheus { get; set; } = new();
     public CSharpDbHealthOptions Health { get; set; } = new();
@@ -28,6 +33,11 @@ public sealed class CSharpDbObservabilityOptions
             LongRunningQueryThreshold,
             nameof(LongRunningQueryThreshold),
             MaximumThreshold,
+            errors);
+        ValidatePositiveDuration(
+            SessionAbandonmentThreshold,
+            nameof(SessionAbandonmentThreshold),
+            MaximumRetention,
             errors);
 
         if (Logging is null)

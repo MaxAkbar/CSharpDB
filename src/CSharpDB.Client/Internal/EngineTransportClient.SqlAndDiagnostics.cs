@@ -92,21 +92,27 @@ internal sealed partial class EngineTransportClient
         => VacuumCoreAsync(ct);
 
     public Task<DatabaseInspectReport> InspectStorageAsync(string? databasePath = null, bool includePages = false, CancellationToken ct = default)
-        => InspectStorageCoreAsync(databasePath, includePages);
+        => InspectStorageCoreAsync(databasePath, includePages, ct);
 
     public Task<WalInspectReport> CheckWalAsync(string? databasePath = null, CancellationToken ct = default)
-        => WalInspector.InspectAsync(ResolveDatabasePath(databasePath)).AsTask();
+        => WalInspector.InspectAsync(ResolveDatabasePath(databasePath), ct: ct).AsTask();
 
     public Task<PageInspectReport> InspectPageAsync(uint pageId, bool includeHex = false, string? databasePath = null, CancellationToken ct = default)
-        => DatabaseInspector.InspectPageAsync(ResolveDatabasePath(databasePath), pageId, includeHex).AsTask();
+        => DatabaseInspector.InspectPageAsync(ResolveDatabasePath(databasePath), pageId, includeHex, ct).AsTask();
 
     public Task<IndexInspectReport> CheckIndexesAsync(string? databasePath = null, string? indexName = null, int? sampleSize = null, CancellationToken ct = default)
-        => IndexInspector.CheckAsync(ResolveDatabasePath(databasePath), indexName, sampleSize).AsTask();
+        => IndexInspector.CheckAsync(ResolveDatabasePath(databasePath), indexName, sampleSize, ct).AsTask();
 
-    private async Task<DatabaseInspectReport> InspectStorageCoreAsync(string? databasePath, bool includePages)
+    private async Task<DatabaseInspectReport> InspectStorageCoreAsync(
+        string? databasePath,
+        bool includePages,
+        CancellationToken ct)
     {
         string dbPath = ResolveDatabasePath(databasePath);
-        return await DatabaseInspector.InspectAsync(dbPath, new DatabaseInspectOptions { IncludePages = includePages });
+        return await DatabaseInspector.InspectAsync(
+            dbPath,
+            new DatabaseInspectOptions { IncludePages = includePages },
+            ct);
     }
 
     private async Task<ReindexResult> ReindexCoreAsync(ReindexRequest request, CancellationToken ct)

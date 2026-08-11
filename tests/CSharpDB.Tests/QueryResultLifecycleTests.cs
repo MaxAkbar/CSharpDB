@@ -1,5 +1,6 @@
 using CSharpDB.Execution;
 using CSharpDB.Primitives;
+using System.Reflection;
 
 namespace CSharpDB.Tests;
 
@@ -11,6 +12,23 @@ public sealed class QueryResultLifecycleTests
     [
         new ColumnDefinition { Name = "value", Type = DbType.Integer },
     ];
+
+    [Fact]
+    public void RuntimeScopeArbitration_UsesExistingExecutionFeatureStorage()
+    {
+        Assert.Null(typeof(QueryResult).GetField(
+            "_runtimeExecutionScopeState",
+            BindingFlags.Instance | BindingFlags.NonPublic));
+        FieldInfo executionFeatures = Assert.IsAssignableFrom<FieldInfo>(
+            typeof(QueryResult).GetField(
+                "_executionFeatures",
+                BindingFlags.Instance | BindingFlags.NonPublic));
+        QueryResult result = QueryResult.FromSyncLookup(
+            [DbValue.FromInteger(0)],
+            SingleColumnSchema);
+
+        Assert.Null(executionFeatures.GetValue(result));
+    }
 
     [Fact]
     public async Task MoveNextAsync_ReportsRowsAndExhaustionExactlyOnce()
@@ -29,6 +47,25 @@ public sealed class QueryResultLifecycleTests
         Assert.Equal(1, observer.FirstRowCount);
         Assert.Equal(2, observer.RowCount);
         AssertCompletion(observer, QueryResultCompletionReason.Exhausted, 2);
+    }
+
+    [Fact]
+    public async Task TerminalOnlyObserver_ReceivesFirstRowAndExactTerminalCount()
+    {
+        var observer = new TerminalOnlyObserver();
+        var result = new QueryResult(new SequenceOperator(1, 2, 3));
+        result.SetObserver(observer);
+
+        while (await result.MoveNextAsync(TestCancellationToken))
+        {
+        }
+
+        await result.DisposeAsync();
+
+        Assert.Equal(1, observer.FirstRowCount);
+        QueryResultCompletion completion = Assert.Single(observer.Completions);
+        Assert.Equal(QueryResultCompletionReason.Exhausted, completion.Reason);
+        Assert.Equal(3, completion.RowsProduced);
     }
 
     [Fact]
@@ -366,6 +403,94 @@ public sealed class QueryResultLifecycleTests
     }
 
     [Fact]
+    public async Task ConcurrentFirstRowAndDisposal_FirstRowAlwaysPrecedesTerminal()
+    {
+        var observer = new BlockingFirstRowObserver();
+        var result = new QueryResult(new SequenceOperator(1));
+        result.SetObserver(observer);
+
+        Task<bool> moveNext = Task.Run(
+            async () => await result.MoveNextAsync(TestCancellationToken),
+            TestCancellationToken);
+        await observer.FirstRowEntered.WaitAsync(
+            TimeSpan.FromSeconds(5),
+            TestCancellationToken);
+
+        Task disposal = result.DisposeAsync().AsTask();
+        await disposal.WaitAsync(TimeSpan.FromSeconds(5), TestCancellationToken);
+        Assert.False(observer.TerminalInvoked);
+
+        observer.ReleaseFirstRow();
+        Assert.True(await moveNext.WaitAsync(
+            TimeSpan.FromSeconds(5),
+            TestCancellationToken));
+        QueryResultCompletion completion = await observer.Terminal.WaitAsync(
+            TimeSpan.FromSeconds(5),
+            TestCancellationToken);
+
+        Assert.Equal(1, observer.FirstRowCount);
+        Assert.Equal(1, observer.TerminalCount);
+        Assert.Equal(QueryResultCompletionReason.Disposed, completion.Reason);
+        Assert.Equal(1, completion.RowsProduced);
+    }
+
+    [Fact]
+    public async Task ConcurrentFirstRowAndFailingDisposal_PreservesTerminalError()
+    {
+        var failure = new InvalidOperationException("Dispose failed.");
+        var observer = new BlockingFirstRowObserver();
+        var result = new QueryResult(new SequenceOperator(1));
+        result.SetDisposeCallback(() => ValueTask.FromException(failure));
+        result.SetObserver(observer);
+
+        Task<bool> moveNext = Task.Run(
+            async () => await result.MoveNextAsync(TestCancellationToken),
+            TestCancellationToken);
+        await observer.FirstRowEntered.WaitAsync(
+            TimeSpan.FromSeconds(5),
+            TestCancellationToken);
+
+        InvalidOperationException thrown = await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await result.DisposeAsync()
+                .AsTask()
+                .WaitAsync(TimeSpan.FromSeconds(5), TestCancellationToken));
+        Assert.Same(failure, thrown);
+        Assert.False(observer.TerminalInvoked);
+
+        observer.ReleaseFirstRow();
+        Assert.True(await moveNext.WaitAsync(
+            TimeSpan.FromSeconds(5),
+            TestCancellationToken));
+        QueryResultCompletion completion = await observer.Terminal.WaitAsync(
+            TimeSpan.FromSeconds(5),
+            TestCancellationToken);
+
+        Assert.Equal(1, observer.FirstRowCount);
+        Assert.Equal(1, observer.TerminalCount);
+        Assert.Equal(QueryResultCompletionReason.Failed, completion.Reason);
+        Assert.Equal(1, completion.RowsProduced);
+        Assert.Same(failure, completion.Error);
+    }
+
+    [Fact]
+    public async Task FirstRowObserver_ReentrantDisposal_DefersOneTerminalWithoutDeadlock()
+    {
+        var observer = new ReentrantFirstRowDisposalObserver();
+        var result = new QueryResult(new SequenceOperator(1));
+        observer.Result = result;
+        result.SetObserver(observer);
+
+        Assert.True(await result.MoveNextAsync(TestCancellationToken)
+            .AsTask()
+            .WaitAsync(TimeSpan.FromSeconds(5), TestCancellationToken));
+
+        QueryResultCompletion completion = Assert.Single(observer.Completions);
+        Assert.Equal(QueryResultCompletionReason.Disposed, completion.Reason);
+        Assert.Equal(1, completion.RowsProduced);
+        Assert.Equal(1, observer.FirstRowCount);
+    }
+
+    [Fact]
     public async Task TerminalObserver_CanSynchronouslyWaitForReentrantDisposal()
     {
         var observer = new ReentrantDisposalObserver();
@@ -434,6 +559,169 @@ public sealed class QueryResultLifecycleTests
         Assert.Same(error, completion.Error);
     }
 
+    [Fact]
+    public async Task DirectLifecycleInstall_AtomicallyArbitratesRuntimeScopeRequirement()
+    {
+        QueryResult scopeFirst = QueryResult.FromSyncLookup(
+            [DbValue.FromInteger(1)],
+            SingleColumnSchema);
+        scopeFirst.RequireRuntimeExecutionScope();
+        var unusedRegistration = new BlockingDirectLifecycleRegistration(
+            blockLifecycleRead: false);
+        Assert.Equal(
+            QueryResultDirectLifecycleInstallResult.NeedsPromotion,
+            scopeFirst.TrySetDirectLifecycleRegistration(unusedRegistration));
+        Assert.True(scopeFirst.RequiresRuntimeExecutionScope);
+
+        QueryResult directFirst = QueryResult.FromSyncLookup(
+            [DbValue.FromInteger(2)],
+            SingleColumnSchema);
+        var registration = new BlockingDirectLifecycleRegistration(
+            blockLifecycleRead: true);
+        Task<QueryResultDirectLifecycleInstallResult> install = Task.Run(
+            () => directFirst.TrySetDirectLifecycleRegistration(registration),
+            TestCancellationToken);
+        await registration.LifecycleReadStarted.Task.WaitAsync(
+            TimeSpan.FromSeconds(5),
+            TestCancellationToken);
+        var scopeCallStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<Exception?> requireScope = Task.Run(() =>
+        {
+            scopeCallStarted.TrySetResult();
+            try
+            {
+                directFirst.RequireRuntimeExecutionScope();
+                return null;
+            }
+            catch (Exception exception)
+            {
+                return exception;
+            }
+        }, TestCancellationToken);
+        await scopeCallStarted.Task.WaitAsync(
+            TimeSpan.FromSeconds(5),
+            TestCancellationToken);
+        try
+        {
+            await Task.Delay(50, TestCancellationToken);
+            Assert.False(requireScope.IsCompleted);
+        }
+        finally
+        {
+            registration.ReleaseLifecycleRead();
+        }
+
+        QueryResultDirectLifecycleInstallResult installResult =
+            await install.WaitAsync(TimeSpan.FromSeconds(5), TestCancellationToken);
+        registration.CommitInstallation();
+        Assert.Equal(
+            QueryResultDirectLifecycleInstallResult.Installed,
+            installResult);
+        Assert.IsType<InvalidOperationException>(
+            await requireScope.WaitAsync(TimeSpan.FromSeconds(5), TestCancellationToken));
+        Assert.False(directFirst.RequiresRuntimeExecutionScope);
+    }
+
+    [Fact]
+    public async Task DirectLifecycleInstall_RollbackReleasesRuntimeScopeWaiter()
+    {
+        QueryResult result = QueryResult.FromSyncLookup(
+            [DbValue.FromInteger(3)],
+            SingleColumnSchema);
+        var registration = new BlockingDirectLifecycleRegistration(
+            blockLifecycleRead: true);
+        Task<QueryResultDirectLifecycleInstallResult> install = Task.Run(
+            () => result.TrySetDirectLifecycleRegistration(registration),
+            TestCancellationToken);
+        await registration.LifecycleReadStarted.Task.WaitAsync(
+            TimeSpan.FromSeconds(5),
+            TestCancellationToken);
+
+        Assert.True(await result.MoveNextAsync(TestCancellationToken));
+        Task requireScope = Task.Run(
+            result.RequireRuntimeExecutionScope,
+            TestCancellationToken);
+        try
+        {
+            await Task.Delay(50, TestCancellationToken);
+            Assert.False(requireScope.IsCompleted);
+        }
+        finally
+        {
+            registration.ReleaseLifecycleRead();
+        }
+
+        Assert.Equal(
+            QueryResultDirectLifecycleInstallResult.TooLateOrConflicting,
+            await install.WaitAsync(TimeSpan.FromSeconds(5), TestCancellationToken));
+        await requireScope.WaitAsync(TimeSpan.FromSeconds(5), TestCancellationToken);
+        Assert.True(result.RequiresRuntimeExecutionScope);
+    }
+
+    [Fact]
+    public async Task SyncMoveNext_PublishesLifecycleBeforeFeatureArbitration()
+    {
+        QueryResult result = QueryResult.FromSyncLookup(
+            [DbValue.FromInteger(4)],
+            SingleColumnSchema);
+        var registration = new BlockingCommitReadDirectLifecycleRegistration();
+        Assert.Equal(
+            QueryResultDirectLifecycleInstallResult.Installed,
+            result.TrySetDirectLifecycleRegistration(registration));
+        registration.CommitInstallation();
+
+        Task<bool> moveNext = Task.Run(
+            async () => await result.MoveNextAsync(TestCancellationToken),
+            TestCancellationToken);
+        await registration.CommitReadStarted.Task.WaitAsync(
+            TimeSpan.FromSeconds(5),
+            TestCancellationToken);
+        try
+        {
+            FieldInfo syncRowConsumed = Assert.IsAssignableFrom<FieldInfo>(
+                typeof(QueryResult).GetField(
+                    "_syncRowConsumed",
+                    BindingFlags.Instance | BindingFlags.NonPublic));
+            Assert.True(Assert.IsType<bool>(syncRowConsumed.GetValue(result)));
+            Assert.Throws<InvalidOperationException>(
+                () => result.SetObserver(new RecordingObserver()));
+        }
+        finally
+        {
+            registration.ReleaseCommitRead();
+        }
+
+        Assert.True(await moveNext.WaitAsync(
+            TimeSpan.FromSeconds(5),
+            TestCancellationToken));
+        Assert.Equal(1, registration.RowsProduced);
+    }
+
+    [Fact]
+    public async Task RuntimeScopeRequirement_SurvivesScopeAndObserverComposition()
+    {
+        QueryResult result = QueryResult.FromSyncLookup(
+            [DbValue.FromInteger(4)],
+            SingleColumnSchema);
+        var observer = new RecordingObserver();
+        int scopeDepth = 0;
+        result.RequireRuntimeExecutionScope();
+        result.SetExecutionScopeFactory(() => new CallbackScope(
+            () => scopeDepth++,
+            () => scopeDepth--));
+        result.PrependExecutionScopeFactory(() => new CallbackScope(
+            () => scopeDepth++,
+            () => scopeDepth--));
+        result.SetObserver(observer);
+
+        Assert.True(result.RequiresRuntimeExecutionScope);
+        Assert.True(await result.MoveNextAsync(TestCancellationToken));
+        await result.DisposeAsync();
+        Assert.Equal(0, scopeDepth);
+        AssertCompletion(observer, QueryResultCompletionReason.Disposed, 1);
+    }
+
     private class NoOpOperator : IOperator
     {
         public ColumnDefinition[] OutputSchema { get; } = [];
@@ -443,6 +731,102 @@ public sealed class QueryResultLifecycleTests
         public ValueTask<bool> MoveNextAsync(CancellationToken ct = default) =>
             ValueTask.FromResult(false);
         public virtual ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class CallbackScope : IDisposable
+    {
+        private readonly Action _dispose;
+
+        internal CallbackScope(Action enter, Action dispose)
+        {
+            _dispose = dispose;
+            enter();
+        }
+
+        public void Dispose() => _dispose();
+    }
+
+    private sealed class BlockingDirectLifecycleRegistration(
+        bool blockLifecycleRead) : IQueryResultDirectLifecycleRegistration
+    {
+        private readonly TaskCompletionSource _releaseLifecycleRead = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource LifecycleReadStarted { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private int _committed;
+
+        public bool IsDirectLifecycleCommitted =>
+            Volatile.Read(ref _committed) != 0;
+
+        public bool HasLifecycleStarted
+        {
+            get
+            {
+                LifecycleReadStarted.TrySetResult();
+                if (blockLifecycleRead)
+                    _releaseLifecycleRead.Task.GetAwaiter().GetResult();
+                return false;
+            }
+        }
+
+        public bool TryStartDisposal() => true;
+
+        public void OnRowProduced()
+        {
+        }
+
+        public void Complete(QueryResultCompletionReason reason, Exception? error)
+        {
+        }
+
+        internal void ReleaseLifecycleRead()
+            => _releaseLifecycleRead.TrySetResult();
+
+        internal void CommitInstallation()
+            => Volatile.Write(ref _committed, 1);
+    }
+
+    private sealed class BlockingCommitReadDirectLifecycleRegistration :
+        IQueryResultDirectLifecycleRegistration
+    {
+        private readonly TaskCompletionSource _releaseCommitRead = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _committed;
+        private int _rowsProduced;
+
+        internal TaskCompletionSource CommitReadStarted { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal int RowsProduced => Volatile.Read(ref _rowsProduced);
+
+        public bool IsDirectLifecycleCommitted
+        {
+            get
+            {
+                CommitReadStarted.TrySetResult();
+                _releaseCommitRead.Task.GetAwaiter().GetResult();
+                return Volatile.Read(ref _committed) != 0;
+            }
+        }
+
+        public bool HasLifecycleStarted => RowsProduced != 0;
+
+        public bool TryStartDisposal() => true;
+
+        public void OnRowProduced()
+            => Interlocked.Increment(ref _rowsProduced);
+
+        public void Complete(QueryResultCompletionReason reason, Exception? error)
+        {
+        }
+
+        internal void CommitInstallation()
+            => Volatile.Write(ref _committed, 1);
+
+        internal void ReleaseCommitRead()
+            => _releaseCommitRead.TrySetResult();
     }
 
     private sealed class ThrowingDisposeOperator : NoOpOperator
@@ -481,7 +865,7 @@ public sealed class QueryResultLifecycleTests
         return batch;
     }
 
-    private sealed class RecordingObserver : IQueryResultObserver
+    private sealed class RecordingObserver : IQueryResultRowObserver
     {
         private readonly object _gate = new();
         private readonly List<QueryResultCompletion> _completions = [];
@@ -511,7 +895,7 @@ public sealed class QueryResultLifecycleTests
         }
     }
 
-    private sealed class ThrowingObserver : IQueryResultObserver
+    private sealed class ThrowingObserver : IQueryResultRowObserver
     {
         private int _firstRowAttempts;
         private int _rowAttempts;
@@ -538,6 +922,21 @@ public sealed class QueryResultLifecycleTests
             Interlocked.Increment(ref _completionAttempts);
             throw new InvalidOperationException("Completion observer failed.");
         }
+    }
+
+    private sealed class TerminalOnlyObserver : IQueryResultObserver
+    {
+        private readonly List<QueryResultCompletion> _completions = [];
+        private int _firstRowCount;
+
+        internal int FirstRowCount => Volatile.Read(ref _firstRowCount);
+        internal IReadOnlyList<QueryResultCompletion> Completions => _completions;
+
+        public void OnFirstRowProduced()
+            => Interlocked.Increment(ref _firstRowCount);
+
+        public void OnCompleted(QueryResultCompletion completion)
+            => _completions.Add(completion);
     }
 
     private sealed class ReentrantDisposalObserver : IQueryResultObserver
@@ -567,6 +966,58 @@ public sealed class QueryResultLifecycleTests
             if (disposal.Wait(TimeSpan.FromSeconds(2)))
                 Volatile.Write(ref _disposalCompletedInsideCallback, 1);
         }
+    }
+
+    private sealed class BlockingFirstRowObserver : IQueryResultObserver
+    {
+        private readonly TaskCompletionSource _firstRowEntered = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _releaseFirstRow = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<QueryResultCompletion> _terminal = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _firstRowCount;
+        private int _terminalCount;
+
+        internal Task FirstRowEntered => _firstRowEntered.Task;
+        internal Task<QueryResultCompletion> Terminal => _terminal.Task;
+        internal int FirstRowCount => Volatile.Read(ref _firstRowCount);
+        internal int TerminalCount => Volatile.Read(ref _terminalCount);
+        internal bool TerminalInvoked => TerminalCount != 0;
+
+        internal void ReleaseFirstRow() => _releaseFirstRow.TrySetResult();
+
+        public void OnFirstRowProduced()
+        {
+            Interlocked.Increment(ref _firstRowCount);
+            _firstRowEntered.TrySetResult();
+            _releaseFirstRow.Task.GetAwaiter().GetResult();
+        }
+
+        public void OnCompleted(QueryResultCompletion completion)
+        {
+            Interlocked.Increment(ref _terminalCount);
+            _terminal.TrySetResult(completion);
+        }
+    }
+
+    private sealed class ReentrantFirstRowDisposalObserver : IQueryResultObserver
+    {
+        private readonly List<QueryResultCompletion> _completions = [];
+        private int _firstRowCount;
+
+        internal QueryResult Result { get; set; } = null!;
+        internal IReadOnlyList<QueryResultCompletion> Completions => _completions;
+        internal int FirstRowCount => Volatile.Read(ref _firstRowCount);
+
+        public void OnFirstRowProduced()
+        {
+            Interlocked.Increment(ref _firstRowCount);
+            Result.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
+
+        public void OnCompleted(QueryResultCompletion completion)
+            => _completions.Add(completion);
     }
 
     private class SequenceOperator : IOperator

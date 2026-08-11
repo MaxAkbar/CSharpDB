@@ -9,6 +9,7 @@ namespace CSharpDB.Client;
 
 public sealed class CSharpDbClient :
     ICSharpDbClient,
+    ICSharpDbObservabilityClient,
     IEngineBackedClient,
     IClientObservabilitySettingsProvider,
     ICSharpDbTableArchiveProgressExporter,
@@ -198,4 +199,36 @@ public sealed class CSharpDbClient :
         => _inner is IEngineBackedClient engineBacked
             ? engineBacked.ReleaseCachedDatabaseAsync(ct)
             : ValueTask.CompletedTask;
+
+    public Task<DiagnosticsTopologySnapshot<RuntimeDiagnosticsSnapshot>>
+        GetRuntimeDiagnosticsAsync(CancellationToken ct = default)
+        => GetObservabilityClient().GetRuntimeDiagnosticsAsync(ct);
+
+    public Task<DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<ActiveQuerySnapshot>>>
+        GetActiveQueriesAsync(int maximumRecords, CancellationToken ct = default)
+        => GetObservabilityClient().GetActiveQueriesAsync(maximumRecords, ct);
+
+    public Task<DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<RecentQuerySnapshot>>>
+        GetRecentQueriesAsync(int maximumRecords, CancellationToken ct = default)
+        => GetObservabilityClient().GetRecentQueriesAsync(maximumRecords, ct);
+
+    public Task<DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<QueryPlanDiagnosticsSnapshot>>>
+        GetQueryPlanDiagnosticsAsync(
+            OpaqueDiagnosticsId operationId,
+            CancellationToken ct = default)
+        => GetObservabilityClient().GetQueryPlanDiagnosticsAsync(operationId, ct);
+
+    public Task<DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<SessionDiagnosticsSnapshot>>>
+        GetSessionsAsync(int maximumRecords, CancellationToken ct = default)
+        => GetObservabilityClient().GetSessionsAsync(maximumRecords, ct);
+
+    public Task<DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<QueryDetailSnapshot>>>
+        GetQueryDetailAsync(
+            OpaqueDiagnosticsId operationId,
+            CancellationToken ct = default)
+        => GetObservabilityClient().GetQueryDetailAsync(operationId, ct);
+
+    private ICSharpDbObservabilityClient GetObservabilityClient()
+        => _inner as ICSharpDbObservabilityClient ??
+           throw new CSharpDbObservabilityNotSupportedException();
 }

@@ -13,6 +13,7 @@ internal enum AdaptiveQueryReoptimizationFallbackReason
 internal sealed class AdaptiveQueryExecutionLease
 {
     private int _remainingReoptimizations;
+    private int _requiresRuntimeExecutionScope;
 
     public AdaptiveQueryExecutionLease(AdaptiveQueryReoptimizationOptions options)
     {
@@ -21,6 +22,12 @@ internal sealed class AdaptiveQueryExecutionLease
     }
 
     public AdaptiveQueryReoptimizationOptions Options { get; }
+
+    internal bool RequiresRuntimeExecutionScope
+        => Volatile.Read(ref _requiresRuntimeExecutionScope) != 0;
+
+    internal void RequireRuntimeExecutionScope()
+        => Volatile.Write(ref _requiresRuntimeExecutionScope, 1);
 
     public bool TryConsumeReoptimization()
     {
@@ -43,6 +50,7 @@ internal sealed class AdaptiveQueryReoptimizationRuntimeDiagnostics
     private readonly Action<AdaptiveQueryReoptimizationFallbackReason> _recordRejectedSwitch;
     private readonly Action _recordDivergence;
     private readonly Action<long> _recordBufferedRows;
+    private IQueryPlanRuntimeObserver? _queryPlanRuntimeObserver;
 
     public AdaptiveQueryReoptimizationRuntimeDiagnostics(
         Action recordAttempt,
@@ -58,9 +66,43 @@ internal sealed class AdaptiveQueryReoptimizationRuntimeDiagnostics
         _recordBufferedRows = recordBufferedRows;
     }
 
-    public void RecordAttempt() => _recordAttempt();
-    public void RecordSuccessfulSwitch() => _recordSuccessfulSwitch();
-    public void RecordRejectedSwitch(AdaptiveQueryReoptimizationFallbackReason reason) => _recordRejectedSwitch(reason);
-    public void RecordDivergence() => _recordDivergence();
+    public IQueryPlanRuntimeObserver? RuntimeObserver
+    {
+        get => Volatile.Read(ref _queryPlanRuntimeObserver);
+        set => Volatile.Write(ref _queryPlanRuntimeObserver, value);
+    }
+
+    public void RecordAttempt()
+    {
+        _recordAttempt();
+        QueryPlanRuntimeObserver.PlanChanged(
+            RuntimeObserver,
+            QueryPlanChangeKind.AdaptiveReoptimizationAttempted);
+    }
+
+    public void RecordSuccessfulSwitch()
+    {
+        _recordSuccessfulSwitch();
+        QueryPlanRuntimeObserver.PlanChanged(
+            RuntimeObserver,
+            QueryPlanChangeKind.AdaptiveReoptimized);
+    }
+
+    public void RecordRejectedSwitch(AdaptiveQueryReoptimizationFallbackReason reason)
+    {
+        _recordRejectedSwitch(reason);
+        QueryPlanRuntimeObserver.PlanChanged(
+            RuntimeObserver,
+            QueryPlanChangeKind.AdaptiveReoptimizationRejected);
+    }
+
+    public void RecordDivergence()
+    {
+        _recordDivergence();
+        QueryPlanRuntimeObserver.PlanChanged(
+            RuntimeObserver,
+            QueryPlanChangeKind.AdaptiveCardinalityReclassified);
+    }
+
     public void RecordBufferedRows(long count) => _recordBufferedRows(count);
 }

@@ -12,7 +12,7 @@ using Empty = Google.Protobuf.WellKnownTypes.Empty;
 
 namespace CSharpDB.Client.Internal;
 
-internal sealed class GrpcTransportClient : ICSharpDbClient, ICSharpDbShardAdminClient, ICSharpDbShardDirectoryClient
+internal sealed partial class GrpcTransportClient : ICSharpDbClient, ICSharpDbShardAdminClient, ICSharpDbShardDirectoryClient, ICSharpDbObservabilityClient
 {
     private static readonly Empty EmptyRequest = new();
 

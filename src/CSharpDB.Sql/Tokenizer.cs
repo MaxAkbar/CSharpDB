@@ -115,6 +115,13 @@ public sealed class Tokenizer
     private readonly string _input;
     private int _pos;
 
+    internal static bool TryGetKeyword(
+        ReadOnlySpan<char> value,
+        out TokenType tokenType)
+        => Keywords
+            .GetAlternateLookup<ReadOnlySpan<char>>()
+            .TryGetValue(value, out tokenType);
+
     public Tokenizer(string input)
     {
         _input = input;

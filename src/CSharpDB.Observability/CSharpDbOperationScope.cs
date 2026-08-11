@@ -93,10 +93,69 @@ public static class CSharpDbOperationScope
         }
     }
 
+    /// <summary>
+    /// Gets whether the current flow should retain runtime history while
+    /// suppressing duplicate built-in diagnostic events owned by an outer
+    /// logical operation boundary.
+    /// </summary>
+    internal static bool AreDiagnosticEventsSuppressed
+    {
+        get
+        {
+            for (ScopeFrame? frame = s_current.Value; frame is not null; frame = frame.Parent)
+            {
+                if (frame.SuppressDiagnosticEvents)
+                    return true;
+            }
+
+            return false;
+        }
+    }
+
     public static IDisposable Enter(CSharpDbOperationContext operation)
     {
         ArgumentNullException.ThrowIfNull(operation);
         return Push(new ScopeFrame(s_current.Value, operation, transport: null));
+    }
+
+    /// <summary>
+    /// Carries an internal runtime-registry lease with the public correlation
+    /// context so an outer admission layer and Engine can transfer one active
+    /// record without exposing the implementation in public contracts.
+    /// </summary>
+    internal static IDisposable Enter(
+        CSharpDbOperationContext operation,
+        object queryRuntimeOperation)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+        ArgumentNullException.ThrowIfNull(queryRuntimeOperation);
+        return Push(new ScopeFrame(
+            s_current.Value,
+            operation,
+            transport: null,
+            queryRuntimeOperation: queryRuntimeOperation));
+    }
+
+    /// <summary>
+    /// Carries the listener-interest decision made by an outer serialized
+    /// adapter together with the exact operation frame. Engine adoption uses
+    /// this immutable snapshot instead of consulting listeners again after an
+    /// admission wait.
+    /// </summary>
+    internal static IDisposable Enter(
+        CSharpDbOperationContext operation,
+        object? queryRuntimeOperation,
+        CSharpDbQueryEventInterestSnapshot queryEventInterest,
+        CSharpDbDeferredDiagnosticBoundary? queryEventBoundary = null)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+        return Push(new ScopeFrame(
+            s_current.Value,
+            operation,
+            transport: null,
+            queryRuntimeOperation: queryRuntimeOperation,
+            queryEventInterest: queryEventInterest,
+            queryEventBoundary: queryEventBoundary));
     }
 
     public static IDisposable EnterTransport(CSharpDbTransport transport)
@@ -168,6 +227,17 @@ public static class CSharpDbOperationScope
             transport: null,
             suppressDiagnostics: true));
 
+    /// <summary>
+    /// Suppresses built-in listener events without suppressing config-driven
+    /// runtime counters and bounded histories.
+    /// </summary>
+    internal static IDisposable SuppressDiagnosticEvents()
+        => Push(new ScopeFrame(
+            s_current.Value,
+            operation: null,
+            transport: null,
+            suppressDiagnosticEvents: true));
+
     internal static CSharpDbDeferredDiagnosticBoundary CreateDeferredBoundary(
         CSharpDbTransport transport,
         OpaqueDiagnosticsId? sessionId = null)
@@ -196,6 +266,156 @@ public static class CSharpDbOperationScope
     internal static CSharpDbDiagnosticEventBuffer? CurrentDiagnosticEventBuffer
         => FindDiagnosticEventBuffer(s_current.Value);
 
+    internal static object? CurrentQueryRuntimeOperation
+    {
+        get
+        {
+            for (ScopeFrame? frame = s_current.Value; frame is not null; frame = frame.Parent)
+            {
+                // Boundary, transport, and queue-duration frames do not
+                // establish an operation, so they may be skipped. The first
+                // operation frame is authoritative: a distinct child without
+                // a lease must never inherit its parent's runtime owner.
+                if (frame.Operation is not null)
+                    return frame.QueryRuntimeOperation;
+            }
+
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Captures the authoritative operation and its exact runtime lease from
+    /// one ambient-frame walk. Planner callbacks use the pair together and
+    /// must never combine a nested operation with a parent's runtime lease.
+    /// </summary>
+    internal static CSharpDbQueryRuntimeBinding CaptureQueryRuntimeBinding()
+    {
+        for (ScopeFrame? frame = s_current.Value; frame is not null; frame = frame.Parent)
+        {
+            if (frame.Operation is not null)
+            {
+                return new CSharpDbQueryRuntimeBinding(
+                    frame.Operation,
+                    frame.QueryRuntimeOperation);
+            }
+        }
+
+        return default;
+    }
+
+    internal static CSharpDbQueryEventInterestSnapshot?
+        CurrentQueryEventInterest
+    {
+        get
+        {
+            for (ScopeFrame? frame = s_current.Value; frame is not null; frame = frame.Parent)
+            {
+                // Like the runtime lease, listener interest belongs only to
+                // the first operation frame. A nested operation cannot inherit
+                // a parent adapter's start-time decision.
+                if (frame.Operation is not null)
+                    return frame.QueryEventInterest;
+            }
+
+            return null;
+        }
+    }
+
+    internal static CSharpDbDeferredDiagnosticBoundary? CurrentQueryEventBoundary
+    {
+        get
+        {
+            for (ScopeFrame? frame = s_current.Value; frame is not null; frame = frame.Parent)
+            {
+                if (frame.Operation is not null)
+                    return frame.QueryEventBoundary;
+            }
+
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Captures the ambient values needed to begin one Engine query while
+    /// walking the AsyncLocal scope chain once. Individual public accessors
+    /// remain available for callers that need only one value.
+    /// </summary>
+    internal static CSharpDbQueryScopeSnapshot CaptureQueryScope()
+    {
+        CSharpDbOperationContext? operation = null;
+        CSharpDbTransport transport = CSharpDbTransport.Embedded;
+        OpaqueDiagnosticsId? sessionId = null;
+        TimeSpan queryQueueDuration = TimeSpan.Zero;
+        object? queryRuntimeOperation = null;
+        CSharpDbQueryEventInterestSnapshot? queryEventInterest = null;
+        CSharpDbDeferredDiagnosticBoundary? queryEventBoundary = null;
+        bool operationCaptured = false;
+        bool transportCaptured = false;
+        bool sessionCaptured = false;
+        bool queueDurationCaptured = false;
+        bool suppressDiagnostics = false;
+        bool suppressDiagnosticEvents = false;
+
+        for (ScopeFrame? frame = s_current.Value; frame is not null; frame = frame.Parent)
+        {
+            suppressDiagnostics |= frame.SuppressDiagnostics;
+            suppressDiagnosticEvents |= frame.SuppressDiagnosticEvents;
+
+            if (!transportCaptured)
+            {
+                if (frame.Transport is CSharpDbTransport frameTransport)
+                {
+                    transport = frameTransport;
+                    transportCaptured = true;
+                }
+                else if (frame.Operation is not null)
+                {
+                    transport = frame.Operation.Transport;
+                    transportCaptured = true;
+                }
+            }
+
+            if (!sessionCaptured)
+            {
+                OpaqueDiagnosticsId? frameSessionId =
+                    frame.SessionId ?? frame.Operation?.SessionId;
+                if (frameSessionId is not null)
+                {
+                    sessionId = frameSessionId;
+                    sessionCaptured = true;
+                }
+            }
+
+            if (!queueDurationCaptured &&
+                frame.QueryQueueDuration is TimeSpan frameQueueDuration)
+            {
+                queryQueueDuration = frameQueueDuration;
+                queueDurationCaptured = true;
+            }
+
+            if (!operationCaptured && frame.Operation is not null)
+            {
+                operation = frame.Operation;
+                queryRuntimeOperation = frame.QueryRuntimeOperation;
+                queryEventInterest = frame.QueryEventInterest;
+                queryEventBoundary = frame.QueryEventBoundary;
+                operationCaptured = true;
+            }
+        }
+
+        return new CSharpDbQueryScopeSnapshot(
+            operation,
+            transport,
+            sessionId,
+            queryQueueDuration,
+            suppressDiagnostics,
+            suppressDiagnosticEvents,
+            queryRuntimeOperation,
+            queryEventInterest,
+            queryEventBoundary);
+    }
+
     private static CSharpDbDiagnosticEventBuffer CreateDiagnosticEventBuffer()
     {
         CSharpDbDiagnosticEventBuffer? parent = FindDiagnosticEventBuffer(s_current.Value);
@@ -215,19 +435,20 @@ public static class CSharpDbOperationScope
         return null;
     }
 
-    private static ScopeLease Push(
+    private static ScopeFrame Push(
         ScopeFrame frame,
         CSharpDbDiagnosticEventBuffer? ownedDiagnosticEventBuffer = null)
     {
+        frame.SetOwnedDiagnosticEventBuffer(ownedDiagnosticEventBuffer);
         s_current.Value = frame;
-        return new ScopeLease(frame.Token, ownedDiagnosticEventBuffer);
+        return frame;
     }
 
-    private static ScopeFrame? RemoveFrame(ScopeFrame? frame, object token)
+    private static ScopeFrame? RemoveFrame(ScopeFrame? frame, ScopeFrame token)
     {
         if (frame is null)
             return null;
-        if (ReferenceEquals(frame.Token, token))
+        if (ReferenceEquals(frame.RemovalToken, token))
             return frame.Parent;
 
         ScopeFrame? newParent = RemoveFrame(frame.Parent, token);
@@ -241,11 +462,18 @@ public static class CSharpDbOperationScope
                 frame.SuppressDiagnostics,
                 frame.QueryQueueDuration,
                 frame.DiagnosticEventBuffer,
-                frame.Token);
+                frame.QueryRuntimeOperation,
+                frame.QueryEventInterest,
+                frame.QueryEventBoundary,
+                frame.SuppressDiagnosticEvents,
+                frame.RemovalToken);
     }
 
-    private sealed class ScopeFrame
+    private sealed class ScopeFrame : IDisposable
     {
+        private CSharpDbDiagnosticEventBuffer? _ownedDiagnosticEventBuffer;
+        private int _disposed;
+
         public ScopeFrame(
             ScopeFrame? parent,
             CSharpDbOperationContext? operation,
@@ -253,7 +481,11 @@ public static class CSharpDbOperationScope
             OpaqueDiagnosticsId? sessionId = null,
             bool suppressDiagnostics = false,
             TimeSpan? queryQueueDuration = null,
-            CSharpDbDiagnosticEventBuffer? diagnosticEventBuffer = null)
+            CSharpDbDiagnosticEventBuffer? diagnosticEventBuffer = null,
+            object? queryRuntimeOperation = null,
+            CSharpDbQueryEventInterestSnapshot? queryEventInterest = null,
+            CSharpDbDeferredDiagnosticBoundary? queryEventBoundary = null,
+            bool suppressDiagnosticEvents = false)
             : this(
                 parent,
                 operation,
@@ -262,7 +494,11 @@ public static class CSharpDbOperationScope
                 suppressDiagnostics,
                 queryQueueDuration,
                 diagnosticEventBuffer,
-                new object())
+                queryRuntimeOperation,
+                queryEventInterest,
+                queryEventBoundary,
+                suppressDiagnosticEvents,
+                removalToken: null)
         {
         }
 
@@ -274,7 +510,11 @@ public static class CSharpDbOperationScope
             bool suppressDiagnostics,
             TimeSpan? queryQueueDuration,
             CSharpDbDiagnosticEventBuffer? diagnosticEventBuffer,
-            object token)
+            object? queryRuntimeOperation,
+            CSharpDbQueryEventInterestSnapshot? queryEventInterest,
+            CSharpDbDeferredDiagnosticBoundary? queryEventBoundary,
+            bool suppressDiagnosticEvents,
+            ScopeFrame? removalToken)
         {
             Parent = parent;
             Operation = operation;
@@ -283,7 +523,11 @@ public static class CSharpDbOperationScope
             SuppressDiagnostics = suppressDiagnostics;
             QueryQueueDuration = queryQueueDuration;
             DiagnosticEventBuffer = diagnosticEventBuffer;
-            Token = token;
+            QueryRuntimeOperation = queryRuntimeOperation;
+            QueryEventInterest = queryEventInterest;
+            QueryEventBoundary = queryEventBoundary;
+            SuppressDiagnosticEvents = suppressDiagnosticEvents;
+            RemovalToken = removalToken ?? this;
         }
 
         public ScopeFrame? Parent { get; }
@@ -293,32 +537,30 @@ public static class CSharpDbOperationScope
         public bool SuppressDiagnostics { get; }
         public TimeSpan? QueryQueueDuration { get; }
         public CSharpDbDiagnosticEventBuffer? DiagnosticEventBuffer { get; }
-        public object Token { get; }
-    }
+        public object? QueryRuntimeOperation { get; }
+        public CSharpDbQueryEventInterestSnapshot? QueryEventInterest { get; }
+        public CSharpDbDeferredDiagnosticBoundary? QueryEventBoundary { get; }
+        public bool SuppressDiagnosticEvents { get; }
+        public ScopeFrame RemovalToken { get; }
 
-    private sealed class ScopeLease(
-        object token,
-        CSharpDbDiagnosticEventBuffer? diagnosticEventBuffer) : IDisposable
-    {
-        private object? _token = token;
-        private CSharpDbDiagnosticEventBuffer? _diagnosticEventBuffer =
-            diagnosticEventBuffer;
+        internal void SetOwnedDiagnosticEventBuffer(
+            CSharpDbDiagnosticEventBuffer? diagnosticEventBuffer)
+            => _ownedDiagnosticEventBuffer = diagnosticEventBuffer;
 
         public void Dispose()
         {
-            object? activeToken = Interlocked.Exchange(ref _token, null);
-            if (activeToken is null)
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
                 return;
 
             ScopeFrame? current = s_current.Value;
-            ScopeFrame? updated = RemoveFrame(current, activeToken);
+            ScopeFrame? updated = RemoveFrame(current, this);
             if (ReferenceEquals(current, updated))
                 return;
 
             s_current.Value = updated;
 
             CSharpDbDiagnosticEventBuffer? buffer = Interlocked.Exchange(
-                ref _diagnosticEventBuffer,
+                ref _ownedDiagnosticEventBuffer,
                 null);
             if (buffer is null)
                 return;
@@ -332,3 +574,27 @@ public static class CSharpDbOperationScope
         }
     }
 }
+
+/// <summary>
+/// Immutable internal listener-interest decision associated with one query
+/// operation. This is correlation metadata, not a subscription or payload.
+/// </summary>
+internal readonly record struct CSharpDbQueryEventInterestSnapshot(
+    bool QueryEventsEnabled,
+    bool SlowQueryEventsEnabled,
+    bool LongRunningQueryEventsEnabled);
+
+internal readonly record struct CSharpDbQueryScopeSnapshot(
+    CSharpDbOperationContext? Operation,
+    CSharpDbTransport Transport,
+    OpaqueDiagnosticsId? SessionId,
+    TimeSpan QueryQueueDuration,
+    bool IsDiagnosticsSuppressed,
+    bool AreDiagnosticEventsSuppressed,
+    object? QueryRuntimeOperation,
+    CSharpDbQueryEventInterestSnapshot? QueryEventInterest,
+    CSharpDbDeferredDiagnosticBoundary? QueryEventBoundary);
+
+internal readonly record struct CSharpDbQueryRuntimeBinding(
+    CSharpDbOperationContext? Operation,
+    object? RuntimeOperation);

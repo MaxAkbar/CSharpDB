@@ -101,6 +101,16 @@ internal sealed class ClientOperationObservation
             sql);
     }
 
+    internal static ClientOperationObservation? StartQueryCoordinator(
+        CSharpDbObservabilityOptions? options,
+        string sql,
+        CSharpDbOperationContext context)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sql);
+        ArgumentNullException.ThrowIfNull(context);
+        return TryStart(options, _ => context, sql);
+    }
+
     private static ObservabilityTransport ResolveRootTransport(
         ObservabilityTransport fallback)
     {
@@ -176,7 +186,9 @@ internal sealed class ClientOperationObservation
         Func<ObservationSettings, CSharpDbOperationContext> createContext,
         string? sql)
     {
-        if (CSharpDbOperationScope.IsDiagnosticsSuppressed || options?.Enabled != true)
+        if (CSharpDbOperationScope.IsDiagnosticsSuppressed ||
+            CSharpDbOperationScope.AreDiagnosticEventsSuppressed ||
+            options?.Enabled != true)
             return null;
 
         try

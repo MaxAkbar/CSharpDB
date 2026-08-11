@@ -191,7 +191,9 @@ mode to require a shared key on every REST route under `/api`.
       "Security": {
         "Mode": "ApiKey",
         "ApiKey": "replace-with-a-secret",
-        "ApiKeyHeaderName": "X-CSharpDB-Api-Key"
+        "ApiKeyHeaderName": "X-CSharpDB-Api-Key",
+        "AllowInsecureRemoteDiagnostics": false,
+        "AllowSensitiveQueryDetailAccess": false
       }
     }
   }
@@ -213,6 +215,15 @@ Missing or wrong keys return `401 Unauthorized`. API-key mode is a simple
 shared-secret guard; it is not JWT, RBAC, mTLS, or a replacement for TLS
 termination and network access controls.
 
+Runtime diagnostics have an additional fail-closed access policy. In
+`ApiKey` mode they require the configured key. In `None` mode they are allowed
+only when the request has a proven loopback address; null, wildcard, and
+non-loopback addresses are denied unless
+`AllowInsecureRemoteDiagnostics=true` is an explicit operator choice. Query
+detail always also requires `AllowSensitiveQueryDetailAccess=true`, including
+in API-key mode. Missing or wrong keys return `401`; policy denials return
+`403`.
+
 ## Endpoint Overview
 
 All routes are under `/api`.
@@ -222,6 +233,29 @@ All routes are under `/api`.
 | Method | Route | Description |
 | --- | --- | --- |
 | `GET` | `/api/info` | Returns top-level database counts and data source information. |
+
+### Runtime Diagnostics
+
+| Method | Route | Description |
+| --- | --- | --- |
+| `GET` | `/api/diagnostics/runtime` | Get the current runtime summary. |
+| `GET` | `/api/diagnostics/queries/active?maximumRecords=100` | Get a capped active-query snapshot. |
+| `GET` | `/api/diagnostics/queries/recent?maximumRecords=100` | Get a capped recent-query snapshot. |
+| `GET` | `/api/diagnostics/queries/{operationId}/plan` | Get the retained bounded plan summary without replaying SQL. |
+| `GET` | `/api/diagnostics/sessions?maximumRecords=100` | Get capped database and host-request session state. |
+| `GET` | `/api/diagnostics/queries/{operationId}/detail` | Get separately captured and authorized query detail. |
+
+Diagnostics requests are suppressed from their own query/session observation,
+so polling the endpoints does not recursively fill the ledger. Session results
+merge the host's in-flight HTTP requests with the underlying database sessions
+when runtime diagnostics are enabled. Normal summaries and lists never contain
+SQL text, values, connection strings, credentials, or file paths. A client
+without the optional diagnostics capability returns `501 Not Implemented`.
+
+`HttpContext.RequestAborted` is forwarded through diagnostics, maintenance,
+and storage inspection calls. Cancellation is cooperative: parsing, planning,
+and synchronous fast paths may complete before observing it. The API does not
+provide a query/session kill endpoint.
 
 ### Tables And Columns
 
@@ -511,6 +545,10 @@ Current status mapping:
   - SQL syntax errors
   - type mismatch errors
   - client configuration errors
+- `401 Unauthorized`
+  - missing or invalid API key when API-key mode is enabled
+- `403 Forbidden`
+  - diagnostics access denied by the loopback or sensitive-detail policy
 - `404 NotFound`
   - missing tables
   - missing columns
@@ -522,10 +560,10 @@ Current status mapping:
   - existing triggers
 - `422 UnprocessableEntity`
   - constraint violations
+- `501 NotImplemented`
+  - the configured client does not support optional runtime diagnostics
 - `503 ServiceUnavailable`
   - busy database
-- `401 Unauthorized`
-  - missing or invalid API key when API-key mode is enabled
 - `500 InternalServerError`
   - unexpected runtime failures
 

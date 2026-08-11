@@ -39,7 +39,11 @@ internal sealed class CSharpDbDeferredDiagnosticBoundary : IDisposable
     {
         lock (_stateGate)
         {
-            if (_disposeRequested)
+            // A retained lifetime deliberately keeps a deferred boundary open
+            // after its outer adapter has requested disposal. Forward-only
+            // consumers may therefore re-enter it until the final owner
+            // releases that lifetime and the flush is claimed.
+            if (_flushClaimed)
             {
                 throw new ObjectDisposedException(
                     nameof(CSharpDbDeferredDiagnosticBoundary));

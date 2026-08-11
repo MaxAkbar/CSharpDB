@@ -44,11 +44,19 @@ internal static class CSharpDbProviderValidation
             optionsExtension?.HybridDatabaseOptions,
             optionsExtension?.StoragePreset,
             optionsExtension?.EmbeddedOpenMode);
+        try
+        {
+            ValidateEmbeddedTuningSupport(builder, desiredConfiguration);
 
-        ValidateEmbeddedTuningSupport(builder, desiredConfiguration);
-
-        if (connection is CSharpDbConnection csharpDbConnection && optionsExtension is not null)
-            ValidateExistingConnectionTuning(csharpDbConnection, builder, optionsExtension);
+            if (connection is CSharpDbConnection csharpDbConnection && optionsExtension is not null)
+                ValidateExistingConnectionTuning(csharpDbConnection, builder, optionsExtension);
+        }
+        finally
+        {
+            // Validation resolves configuration for comparison only; it never
+            // creates a physical database family that could adopt this state.
+            desiredConfiguration.RuntimeDiagnosticsStateOwner?.Dispose();
+        }
     }
 
     public static bool IsPrivateMemory(string? dataSource)
@@ -101,40 +109,52 @@ internal static class CSharpDbProviderValidation
             builder,
             connection.DirectDatabaseOptions,
             connection.HybridDatabaseOptions);
-
-        ResolvedEmbeddedConfiguration desiredConfiguration = CSharpDbEmbeddedConfigurationResolver.Resolve(
-            builder,
-            optionsExtension.DirectDatabaseOptions,
-            optionsExtension.HybridDatabaseOptions,
-            optionsExtension.StoragePreset,
-            optionsExtension.EmbeddedOpenMode);
-
-        if (optionsExtension.DirectDatabaseOptions is not null
-            && !ReferenceEquals(connection.DirectDatabaseOptions, optionsExtension.DirectDatabaseOptions))
+        try
         {
-            throw new InvalidOperationException(
-                "UseCSharpDb(existingConnection, ...) cannot apply DirectDatabaseOptions that conflict with the supplied CSharpDbConnection.");
+            ResolvedEmbeddedConfiguration desiredConfiguration = CSharpDbEmbeddedConfigurationResolver.Resolve(
+                builder,
+                optionsExtension.DirectDatabaseOptions,
+                optionsExtension.HybridDatabaseOptions,
+                optionsExtension.StoragePreset,
+                optionsExtension.EmbeddedOpenMode);
+            try
+            {
+                if (optionsExtension.DirectDatabaseOptions is not null
+                    && !ReferenceEquals(connection.DirectDatabaseOptions, optionsExtension.DirectDatabaseOptions))
+                {
+                    throw new InvalidOperationException(
+                        "UseCSharpDb(existingConnection, ...) cannot apply DirectDatabaseOptions that conflict with the supplied CSharpDbConnection.");
+                }
+
+                if (optionsExtension.HybridDatabaseOptions is not null
+                    && !ReferenceEquals(connection.HybridDatabaseOptions, optionsExtension.HybridDatabaseOptions))
+                {
+                    throw new InvalidOperationException(
+                        "UseCSharpDb(existingConnection, ...) cannot apply HybridDatabaseOptions that conflict with the supplied CSharpDbConnection.");
+                }
+
+                if (optionsExtension.StoragePreset is not null
+                    && actualConfiguration.EffectiveStoragePreset != desiredConfiguration.EffectiveStoragePreset)
+                {
+                    throw new InvalidOperationException(
+                        "UseCSharpDb(existingConnection, ...) cannot apply a StoragePreset that conflicts with the supplied CSharpDbConnection.");
+                }
+
+                if (optionsExtension.EmbeddedOpenMode is not null
+                    && actualConfiguration.EffectiveOpenMode != desiredConfiguration.EffectiveOpenMode)
+                {
+                    throw new InvalidOperationException(
+                        "UseCSharpDb(existingConnection, ...) cannot apply an EmbeddedOpenMode that conflicts with the supplied CSharpDbConnection.");
+                }
+            }
+            finally
+            {
+                desiredConfiguration.RuntimeDiagnosticsStateOwner?.Dispose();
+            }
         }
-
-        if (optionsExtension.HybridDatabaseOptions is not null
-            && !ReferenceEquals(connection.HybridDatabaseOptions, optionsExtension.HybridDatabaseOptions))
+        finally
         {
-            throw new InvalidOperationException(
-                "UseCSharpDb(existingConnection, ...) cannot apply HybridDatabaseOptions that conflict with the supplied CSharpDbConnection.");
-        }
-
-        if (optionsExtension.StoragePreset is not null
-            && actualConfiguration.EffectiveStoragePreset != desiredConfiguration.EffectiveStoragePreset)
-        {
-            throw new InvalidOperationException(
-                "UseCSharpDb(existingConnection, ...) cannot apply a StoragePreset that conflicts with the supplied CSharpDbConnection.");
-        }
-
-        if (optionsExtension.EmbeddedOpenMode is not null
-            && actualConfiguration.EffectiveOpenMode != desiredConfiguration.EffectiveOpenMode)
-        {
-            throw new InvalidOperationException(
-                "UseCSharpDb(existingConnection, ...) cannot apply an EmbeddedOpenMode that conflicts with the supplied CSharpDbConnection.");
+            actualConfiguration.RuntimeDiagnosticsStateOwner?.Dispose();
         }
     }
 }

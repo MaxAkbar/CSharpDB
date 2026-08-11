@@ -9,7 +9,7 @@ public sealed class DiagnosticEventContractTests
     [Fact]
     public void EventCatalog_HasStableUniqueIdsNamesCategoriesAndSafeTemplates()
     {
-        Assert.Equal(17, CSharpDbLogEvents.All.Count);
+        Assert.Equal(18, CSharpDbLogEvents.All.Count);
         Assert.Equal(
             CSharpDbLogEvents.All.Count,
             CSharpDbLogEvents.All.Select(static definition => definition.EventId).Distinct().Count());
@@ -23,6 +23,7 @@ public sealed class DiagnosticEventContractTests
         Assert.Equal(CSharpDbLogEventIds.SlowQuery, CSharpDbLogEvents.SlowQuery.EventId);
         Assert.Equal(CSharpDbLogEventIds.QueryFailed, CSharpDbLogEvents.QueryFailed.EventId);
         Assert.Equal(CSharpDbLogEventIds.QueryCanceled, CSharpDbLogEvents.QueryCanceled.EventId);
+        Assert.Equal(CSharpDbLogEventIds.LongRunningQuery, CSharpDbLogEvents.LongRunningQuery.EventId);
         Assert.Equal(CSharpDbLogEventIds.TransactionCompleted, CSharpDbLogEvents.TransactionCompleted.EventId);
         Assert.Equal(CSharpDbLogEventIds.CheckpointCompleted, CSharpDbLogEvents.CheckpointCompleted.EventId);
         Assert.Equal(CSharpDbLogEventIds.MaintenanceCompleted, CSharpDbLogEvents.MaintenanceCompleted.EventId);
@@ -124,6 +125,47 @@ public sealed class DiagnosticEventContractTests
             CSharpDbOperationOutcome.Succeeded,
             error: null,
             slowQueryThreshold: TimeSpan.FromMilliseconds(500)));
+    }
+
+    [Fact]
+    public void LongRunningQueryEvent_IsImmutableThresholdBoundAndContainsNoSensitivePayload()
+    {
+        CSharpDbOperationContext context = CreateQueryContext();
+        var longRunning = new CSharpDbLongRunningQueryEvent(
+            context,
+            new DateTimeOffset(2026, 8, 10, 12, 0, 2, TimeSpan.Zero),
+            elapsed: TimeSpan.FromSeconds(2),
+            longRunningQueryThreshold: TimeSpan.FromSeconds(1),
+            QueryExecutionPhase.Executing);
+
+        Assert.Same(context, longRunning.Context);
+        Assert.Equal(TimeSpan.FromSeconds(2), longRunning.Elapsed);
+        Assert.Equal(TimeSpan.FromSeconds(1), longRunning.LongRunningQueryThreshold);
+        Assert.Equal(QueryExecutionPhase.Executing, longRunning.Phase);
+        Assert.All(
+            typeof(CSharpDbLongRunningQueryEvent).GetProperties(),
+            static property => Assert.Null(property.SetMethod));
+
+        Assert.Throws<ArgumentException>(() => new CSharpDbLongRunningQueryEvent(
+            context,
+            longRunning.ObservedAtUtc,
+            elapsed: TimeSpan.FromMilliseconds(999),
+            longRunningQueryThreshold: TimeSpan.FromSeconds(1),
+            QueryExecutionPhase.Executing));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new CSharpDbLongRunningQueryEvent(
+            context,
+            longRunning.ObservedAtUtc,
+            elapsed: TimeSpan.FromSeconds(2),
+            longRunningQueryThreshold: TimeSpan.FromSeconds(1),
+            QueryExecutionPhase.Completed));
+
+        string json = JsonSerializer.Serialize(
+            longRunning,
+            CSharpDbObservabilityJsonContext.Default.CSharpDbLongRunningQueryEvent);
+        Assert.DoesNotContain("sql", json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("parameter", json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("error", json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("path", json, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -244,6 +286,7 @@ public sealed class DiagnosticEventContractTests
             typeof(CSharpDbSlowQueryEvent),
             typeof(CSharpDbQueryFailedEvent),
             typeof(CSharpDbQueryCanceledEvent),
+            typeof(CSharpDbLongRunningQueryEvent),
             typeof(CSharpDbHostStartingEvent),
             typeof(CSharpDbRawSqlCaptureEnabledEvent),
             typeof(CSharpDbLifecycleCompletedEvent),

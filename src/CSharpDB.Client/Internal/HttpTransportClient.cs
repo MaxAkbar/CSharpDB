@@ -7,7 +7,7 @@ using CSharpDB.Storage.Diagnostics;
 
 namespace CSharpDB.Client.Internal;
 
-internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbShardAdminClient, ICSharpDbShardDirectoryClient
+internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbShardAdminClient, ICSharpDbShardDirectoryClient, ICSharpDbObservabilityClient
 {
     private static readonly JsonSerializerOptions s_jsonOptions = CreateJsonOptions();
 

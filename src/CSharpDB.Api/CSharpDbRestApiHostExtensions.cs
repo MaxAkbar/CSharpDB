@@ -83,6 +83,7 @@ public static class CSharpDbRestApiHostExtensions
         configure?.Invoke(options);
 
         string routePrefix = NormalizeRoutePrefix(options.RoutePrefix);
+        string diagnosticsPath = CombineDiagnosticsPath(routePrefix);
         var apiPath = new PathString(routePrefix);
 
         if (options.ApplyMiddlewareToApiOnly)
@@ -91,7 +92,8 @@ public static class CSharpDbRestApiHostExtensions
                 context => context.Request.Path.StartsWithSegments(apiPath),
                 branch =>
                 {
-                    branch.UseMiddleware<CSharpDbOperationScopeMiddleware>();
+                    branch.UseMiddleware<CSharpDbOperationScopeMiddleware>(
+                        diagnosticsPath);
                     branch.UseCors();
                     branch.UseMiddleware<ExceptionHandlingMiddleware>();
                     branch.UseMiddleware<ApiKeyAuthenticationMiddleware>();
@@ -106,7 +108,8 @@ public static class CSharpDbRestApiHostExtensions
                 context => context.Request.Path.StartsWithSegments(apiPath),
                 branch =>
                 {
-                    branch.UseMiddleware<CSharpDbOperationScopeMiddleware>();
+                    branch.UseMiddleware<CSharpDbOperationScopeMiddleware>(
+                        diagnosticsPath);
                     branch.UseMiddleware<ApiKeyAuthenticationMiddleware>();
                     branch.UseMiddleware<RouteContextMiddleware>();
                 });
@@ -139,6 +142,7 @@ public static class CSharpDbRestApiHostExtensions
         api.MapInspectEndpoints();
         api.MapMaintenanceEndpoints();
         api.MapShardAdminEndpoints();
+        api.MapDiagnosticsEndpoints();
 
         return app;
     }
@@ -153,4 +157,7 @@ public static class CSharpDbRestApiHostExtensions
             ? routePrefix
             : "/" + routePrefix;
     }
+
+    private static string CombineDiagnosticsPath(string routePrefix)
+        => routePrefix.TrimEnd('/') + "/diagnostics";
 }

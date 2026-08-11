@@ -110,4 +110,23 @@ public sealed class ClientStorageInspectionTests : IAsyncLifetime
         Assert.True(report.Exists);
         Assert.NotNull(report.Page);
     }
+
+    [Fact]
+    public async Task DirectInspectors_ObservePreCanceledToken()
+    {
+        await ExecuteSqlAsync(
+            "CREATE TABLE canceled_inspection (id INTEGER PRIMARY KEY, n INTEGER); " +
+            "INSERT INTO canceled_inspection VALUES (1, 10);");
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => _client.InspectStorageAsync(ct: cancellation.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => _client.CheckWalAsync(ct: cancellation.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => _client.InspectPageAsync(0, ct: cancellation.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => _client.CheckIndexesAsync(ct: cancellation.Token));
+    }
 }

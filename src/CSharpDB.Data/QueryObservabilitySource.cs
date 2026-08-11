@@ -38,7 +38,8 @@ internal static class QueryObservabilitySource
         return publisher.IsEnabled(CSharpDbLogEvents.QueryCompleted) ||
                publisher.IsEnabled(CSharpDbLogEvents.QueryFailed) ||
                publisher.IsEnabled(CSharpDbLogEvents.QueryCanceled) ||
-               publisher.IsEnabled(CSharpDbLogEvents.SlowQuery);
+               publisher.IsEnabled(CSharpDbLogEvents.SlowQuery) ||
+               publisher.IsEnabled(CSharpDbLogEvents.LongRunningQuery);
     }
 
     internal static bool IsObservationRequested(CSharpDbObservabilityOptions? options)
@@ -53,7 +54,9 @@ internal static class QueryObservabilitySource
                 (publisher.IsEnabled(CSharpDbLogEvents.QueryCompleted) ||
                  publisher.IsEnabled(CSharpDbLogEvents.QueryFailed) ||
                  publisher.IsEnabled(CSharpDbLogEvents.QueryCanceled))) ||
-               (options.Logging.SlowQueries && publisher.IsEnabled(CSharpDbLogEvents.SlowQuery));
+               (options.Logging.SlowQueries &&
+                (publisher.IsEnabled(CSharpDbLogEvents.SlowQuery) ||
+                 publisher.IsEnabled(CSharpDbLogEvents.LongRunningQuery)));
     }
 
     internal static bool IsBoundaryRequired(CSharpDbObservabilityOptions? options)

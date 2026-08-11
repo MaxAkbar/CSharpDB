@@ -198,6 +198,47 @@ var client = CSharpDbClient.Create(new CSharpDbClientOptions
 API-key mode is shared-secret authentication only. It does not provide JWT,
 RBAC, mTLS, or TLS termination.
 
+## Runtime diagnostics capability
+
+Runtime diagnostics are additive: `ICSharpDbClient` is unchanged, and callers
+discover `ICSharpDbObservabilityClient` when the selected client supports it.
+The built-in direct, HTTP, gRPC, sharded, and routed clients implement the
+capability.
+
+```csharp
+if (client is ICSharpDbObservabilityClient diagnostics)
+{
+    var runtime = await diagnostics.GetRuntimeDiagnosticsAsync(ct);
+    var recent = await diagnostics.GetRecentQueriesAsync(100, ct);
+}
+```
+
+The optional surface provides runtime summary, capped active and recent query
+collections, bounded automatic plan diagnostics, capped sessions, and a
+separate query-detail lookup. It never opens a database merely to answer a
+diagnostics request and never replays SQL. Custom clients and older remote
+hosts remain compatible: capability discovery is false for an object that does
+not implement the interface, while built-in remote transports translate an
+unsupported endpoint into `CSharpDbObservabilityNotSupportedException` instead
+of returning invented data.
+
+Sharded snapshots contain a coordinator aggregate plus bounded per-shard
+children. The aggregate collections are capped, while each reachable shard
+retains its own instance id, counter epoch, and availability. Physical shard
+counters are not summed into the coordinator because their lifetimes and
+epochs may differ. A routed client delegates to its selected physical shard.
+
+Ordinary runtime, active-query, recent-query, plan, and session responses never
+contain SQL text, parameter or row values, credentials, connection strings, or
+file paths. Captured SQL is available only through the separate query-detail
+method and only when capture permits it and, for remote calls, the host also
+authorizes it.
+
+Cancellation tokens are forwarded through direct and remote diagnostics calls,
+but cancellation is cooperative. Parsing, planning, and synchronous fast paths
+may finish before observing cancellation. This visibility surface does not
+provide query or session termination.
+
 ## Direct Client Lifecycle
 
 Keep a direct embedded `ICSharpDbClient` alive for the lifetime of the owning

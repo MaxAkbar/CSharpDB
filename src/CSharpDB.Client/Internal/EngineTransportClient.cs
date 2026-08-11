@@ -30,6 +30,7 @@ namespace CSharpDB.Client.Internal;
 
 internal sealed partial class EngineTransportClient :
     ICSharpDbClient,
+    ICSharpDbObservabilityClient,
     IEngineBackedClient,
     IClientObservabilitySettingsProvider,
     ICSharpDbTableArchiveProgressExporter,
@@ -47,7 +48,7 @@ internal sealed partial class EngineTransportClient :
     private readonly string _databasePath;
     private readonly DatabaseOptions _directDatabaseOptions;
     private readonly HybridDatabaseOptions? _hybridDatabaseOptions;
-    private readonly Func<string, CancellationToken, Task<Database>> _openDatabaseAsync;
+    private readonly Func<string, DatabaseOptions, CancellationToken, Task<Database>> _openDatabaseAsync;
     private readonly bool _observabilityEnabled;
     private readonly bool _operationalEventsEnabled;
     private readonly bool _queryEventsEnabled;
@@ -56,7 +57,14 @@ internal sealed partial class EngineTransportClient :
     private readonly TimeSpan _scriptSlowQueryThreshold;
     private readonly TimeSpan _procedureSlowQueryThreshold;
     private readonly TimeProvider _observabilityTimeProvider;
-    private OpaqueDiagnosticsId? _diagnosticsSessionId;
+    private RuntimeDatabaseFamily _runtimeDatabaseFamily;
+    private readonly object _runtimeDiagnosticsLifetimeGate = new();
+    private Dictionary<CSharpDbRuntimeDiagnosticsState, int>?
+        _runtimeDiagnosticsSessionOwners;
+    private HashSet<CSharpDbRuntimeDiagnosticsState>?
+        _retiredRuntimeDiagnosticsStates;
+    private CSharpDbRuntimeDiagnosticsState? _disabledRuntimeDiagnosticsState;
+    private DirectDiagnosticsSession? _diagnosticsSession;
     private readonly SemaphoreSlim _lock = new(1, 1);
     private readonly object _databaseGate = new();
     private readonly object _disposeGate = new();
@@ -68,6 +76,7 @@ internal sealed partial class EngineTransportClient :
     private TaskCompletionSource? _databaseReleaseCompletion;
     private Task? _disposeTask;
     private bool _disposeStarted;
+    private int _exclusiveMaintenanceActive;
     private long _databaseOwnershipEpoch;
     private bool _catalogsInitialized;
     private List<ClientLockBoundaryState>? _clientLockBoundaryStates;
@@ -78,7 +87,7 @@ internal sealed partial class EngineTransportClient :
         HybridDatabaseOptions? hybridDatabaseOptions = null)
         : this(
             NormalizeDisplayDataSource(databasePath),
-            CreateRuntimeDatabaseOptions(directDatabaseOptions),
+            CreateRuntimeDatabaseOptions(directDatabaseOptions, timeProvider: null),
             hybridDatabaseOptions)
     {
     }
@@ -89,9 +98,7 @@ internal sealed partial class EngineTransportClient :
         HybridDatabaseOptions? hybridDatabaseOptions)
         : this(
             databasePath,
-            CreateOpenDatabaseAsync(
-                runtimeDatabaseOptions.Value,
-                hybridDatabaseOptions),
+            CreateOpenDatabaseAsync(hybridDatabaseOptions),
             runtimeDatabaseOptions,
             hybridDatabaseOptions,
             observabilityTimeProvider: null)
@@ -106,8 +113,23 @@ internal sealed partial class EngineTransportClient :
         TimeProvider? observabilityTimeProvider = null)
         : this(
             databasePath,
+            AdaptOpenDatabaseAsync(openDatabaseAsync),
+            CreateRuntimeDatabaseOptions(directDatabaseOptions, observabilityTimeProvider),
+            hybridDatabaseOptions,
+            observabilityTimeProvider)
+    {
+    }
+
+    internal EngineTransportClient(
+        string databasePath,
+        Func<string, DatabaseOptions, CancellationToken, Task<Database>> openDatabaseAsync,
+        DatabaseOptions? directDatabaseOptions = null,
+        HybridDatabaseOptions? hybridDatabaseOptions = null,
+        TimeProvider? observabilityTimeProvider = null)
+        : this(
+            databasePath,
             openDatabaseAsync,
-            CreateRuntimeDatabaseOptions(directDatabaseOptions),
+            CreateRuntimeDatabaseOptions(directDatabaseOptions, observabilityTimeProvider),
             hybridDatabaseOptions,
             observabilityTimeProvider)
     {
@@ -115,7 +137,7 @@ internal sealed partial class EngineTransportClient :
 
     private EngineTransportClient(
         string databasePath,
-        Func<string, CancellationToken, Task<Database>> openDatabaseAsync,
+        Func<string, DatabaseOptions, CancellationToken, Task<Database>> openDatabaseAsync,
         RuntimeDatabaseOptions runtimeDatabaseOptions,
         HybridDatabaseOptions? hybridDatabaseOptions,
         TimeProvider? observabilityTimeProvider)
@@ -125,6 +147,9 @@ internal sealed partial class EngineTransportClient :
         _hybridDatabaseOptions = hybridDatabaseOptions;
         _openDatabaseAsync = openDatabaseAsync ?? throw new ArgumentNullException(nameof(openDatabaseAsync));
         _observabilityTimeProvider = observabilityTimeProvider ?? TimeProvider.System;
+        _runtimeDatabaseFamily = new RuntimeDatabaseFamily(
+            _directDatabaseOptions,
+            runtimeDatabaseOptions.AdvanceCounterEpochOnFirstSuccessfulOpen);
         CSharpDbObservabilityOptions? observability = _directDatabaseOptions.ObservabilityOptions;
         _observabilityEnabled = observability?.Enabled == true;
         _operationalEventsEnabled = _observabilityEnabled &&
@@ -153,12 +178,11 @@ internal sealed partial class EngineTransportClient :
         DatabaseOptions? directDatabaseOptions)
     {
         RuntimeDatabaseOptions runtimeDatabaseOptions =
-            CreateRuntimeDatabaseOptions(directDatabaseOptions);
-        DatabaseOptions options = runtimeDatabaseOptions.Value;
-        Func<string, CancellationToken, Task<Database>> openDatabaseAsync =
+            CreateRuntimeDatabaseOptions(directDatabaseOptions, timeProvider: null);
+        Func<string, DatabaseOptions, CancellationToken, Task<Database>> openDatabaseAsync =
             string.IsNullOrWhiteSpace(loadFromPath)
-                ? (_, ct) => Database.OpenInMemoryAsync(options, ct).AsTask()
-                : (_, ct) => Database.LoadIntoMemoryAsync(loadFromPath, options, ct).AsTask();
+                ? (_, options, ct) => Database.OpenInMemoryAsync(options, ct).AsTask()
+                : (_, options, ct) => Database.LoadIntoMemoryAsync(loadFromPath, options, ct).AsTask();
         return new EngineTransportClient(
             displayName,
             openDatabaseAsync,
@@ -172,7 +196,22 @@ internal sealed partial class EngineTransportClient :
     public bool SupportsTransactionalSnapshotReads => true;
     public bool SupportsTransactionalSchemaIdentityWrites => true;
     internal DatabaseOptions DirectDatabaseOptions => _directDatabaseOptions;
+    internal DatabaseOptions CurrentDatabaseOptionsForOpen =>
+        Volatile.Read(ref _runtimeDatabaseFamily).DatabaseOptions;
+    internal CSharpDbRuntimeDiagnosticsState? CurrentRuntimeDiagnosticsState =>
+        Volatile.Read(ref _runtimeDatabaseFamily).RuntimeDiagnosticsState;
     internal HybridDatabaseOptions? HybridDatabaseOptions => _hybridDatabaseOptions;
+    internal string? RuntimeDiagnosticsServerInstanceId =>
+        CurrentRuntimeDiagnosticsState?.ServerInstanceId;
+    internal long? RuntimeDiagnosticsCounterEpoch =>
+        CurrentRuntimeDiagnosticsState?.CounterEpoch;
+    internal bool UsesCurrentRuntimeDiagnosticsState(Database database)
+    {
+        ArgumentNullException.ThrowIfNull(database);
+        return ReferenceEquals(
+            CurrentRuntimeDiagnosticsState,
+            database.RuntimeDiagnosticsState);
+    }
     CSharpDbObservabilityOptions? IClientObservabilitySettingsProvider.ObservabilityOptions
         => _directDatabaseOptions.ObservabilityOptions;
     ObservabilityTransport IClientObservabilitySettingsProvider.ObservabilityTransport
@@ -382,11 +421,12 @@ internal sealed partial class EngineTransportClient :
             CSharpDbOperationClass.Query,
             sql);
         using IDisposable? operationScope = operation?.EnterScope();
-        using IDisposable? queueDurationScope = operation?.EnterQueueDurationScope();
         bool queryDispatched = false;
         try
         {
             var db = await GetDatabaseAsync(ct);
+            operation?.MarkDequeued();
+            using IDisposable? queueDurationScope = operation?.EnterQueueDurationScope();
             var schema = db.GetTableSchema(normalizedTableName);
             if (schema is null || IsInternalTable(normalizedTableName))
                 throw new CSharpDbClientException($"Table '{normalizedTableName}' was not found.");
@@ -653,7 +693,7 @@ internal sealed partial class EngineTransportClient :
                 "Cannot start a client-managed transaction while direct snapshot readers are active.");
         }
 
-        database ??= await _openDatabaseAsync(_databasePath, ct);
+        database ??= await OpenOwnedDatabaseAsync(_databasePath, ct);
         try
         {
             await database.BeginTransactionAsync(ct);
@@ -665,7 +705,16 @@ internal sealed partial class EngineTransportClient :
         }
 
         string transactionId = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
-        var session = new ClientTransactionSession(database, reuseEpoch);
+        var session = new ClientTransactionSession(
+            database,
+            reuseEpoch,
+            _observabilityEnabled
+                ? database.RuntimeDiagnosticsState?.TimeProvider ??
+                  _observabilityTimeProvider
+                : null,
+            database.RuntimeDiagnosticsState?.SessionAbandonmentThreshold ??
+            _directDatabaseOptions.ObservabilityOptions?.SessionAbandonmentThreshold ??
+            TimeSpan.FromMinutes(30));
         if (!_transactions.TryAdd(transactionId, session))
         {
             try
@@ -679,6 +728,8 @@ internal sealed partial class EngineTransportClient :
 
             throw new CSharpDbClientException("Failed to register the transaction session.");
         }
+
+        RetainRuntimeDiagnosticsState(session);
 
         if (_transactions.Count > 1)
         {
@@ -695,10 +746,14 @@ internal sealed partial class EngineTransportClient :
 
     public async Task<SqlExecutionResult> ExecuteInTransactionAsync(string transactionId, string sql, CancellationToken ct = default)
     {
-        using IDisposable? transportScope = EnterDirectTransportScope();
+        OpaqueDiagnosticsId? diagnosticsSessionId =
+            TryGetTransactionDiagnosticsSessionId(transactionId);
+        using IDisposable? transportScope =
+            EnterDirectTransportScopeForSession(diagnosticsSessionId);
         CompositeQueryOperation? operation = StartCompositeQueryOperation(
             CSharpDbOperationClass.Query,
-            sql);
+            sql,
+            diagnosticsSessionId);
         using IDisposable? operationScope = operation?.EnterScope();
         ClientTransactionSession? session = null;
         bool operationGateEntered = false;
@@ -708,6 +763,8 @@ internal sealed partial class EngineTransportClient :
         try
         {
             session = GetTransactionSession(transactionId);
+            operation?.BindRuntimeDiagnosticsState(
+                session.Database.RuntimeDiagnosticsState);
             if (operation is not null)
             {
                 queueStartingTimestamp = _observabilityTimeProvider.GetTimestamp();
@@ -724,6 +781,7 @@ internal sealed partial class EngineTransportClient :
             if (!entered)
                 throw TransactionNotFound(transactionId);
             operationGateEntered = true;
+            session.SetCurrentDiagnosticsOperation(operation?.OperationId);
             using IDisposable? queueDurationScope = operation?.EnterQueueDurationScope();
 
             queryDispatched = true;
@@ -746,7 +804,10 @@ internal sealed partial class EngineTransportClient :
         finally
         {
             if (operationGateEntered)
+            {
+                session!.ClearCurrentDiagnosticsOperation(operation?.OperationId);
                 session!.ExitOperation();
+            }
         }
     }
 
@@ -837,14 +898,15 @@ internal sealed partial class EngineTransportClient :
             CSharpDbOperationClass.Query,
             sql);
         IDisposable? operationScope = operation?.EnterScope();
-        operation?.MarkDequeued(TimeSpan.Zero);
-        IDisposable? queueDurationScope = operation?.EnterQueueDurationScope();
+        IDisposable? queueDurationScope = null;
         CSharpDB.Execution.QueryResult? result = null;
         bool boundaryTransferred = false;
         bool queryDispatched = false;
         try
         {
             Database database = await GetDatabaseAsync(ct);
+            operation?.MarkDequeued();
+            queueDurationScope = operation?.EnterQueueDurationScope();
             queryDispatched = true;
             result = await database.ExecuteAsync(sql, ct);
             if (!result.IsQuery)
@@ -886,25 +948,31 @@ internal sealed partial class EngineTransportClient :
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sql);
+        OpaqueDiagnosticsId? diagnosticsSessionId =
+            TryGetTransactionDiagnosticsSessionId(transactionId);
         CSharpDbDeferredDiagnosticBoundary? deferredBoundary =
-            CreateDeferredTransportBoundary();
+            CreateDeferredTransportBoundaryForSession(diagnosticsSessionId);
         IDisposable? transportScope = deferredBoundary?.Enter() ??
             EnterDirectTransportScope();
         CompositeQueryOperation? operation = StartCompositeQueryOperation(
             CSharpDbOperationClass.Query,
-            sql);
+            sql,
+            diagnosticsSessionId);
         IDisposable? operationScope = operation?.EnterScope();
         ClientTransactionSession? session = null;
         CSharpDB.Execution.QueryResult? result = null;
         bool operationGateTransferred = false;
         bool operationGateEntered = false;
         bool boundaryTransferred = false;
+        bool diagnosticsReaderRegistered = false;
         long queueStartingTimestamp = 0;
         bool queueMeasurementStarted = false;
         bool queryDispatched = false;
         try
         {
             session = GetTransactionSession(transactionId);
+            operation?.BindRuntimeDiagnosticsState(
+                session.Database.RuntimeDiagnosticsState);
             if (operation is not null)
             {
                 queueStartingTimestamp = _observabilityTimeProvider.GetTimestamp();
@@ -921,6 +989,7 @@ internal sealed partial class EngineTransportClient :
             if (!entered)
                 throw TransactionNotFound(transactionId);
             operationGateEntered = true;
+            session.SetCurrentDiagnosticsOperation(operation?.OperationId);
             using IDisposable? queueDurationScope = operation?.EnterQueueDurationScope();
 
             queryDispatched = true;
@@ -928,10 +997,15 @@ internal sealed partial class EngineTransportClient :
             if (!result.IsQuery)
                 return null;
 
+            session.AddDiagnosticsReader();
+            diagnosticsReaderRegistered = true;
             var cursor = new ForwardOnlyQueryCursor(
                 result,
                 () =>
                 {
+                    session.RemoveDiagnosticsReader();
+                    diagnosticsReaderRegistered = false;
+                    session.ClearCurrentDiagnosticsOperation(operation?.OperationId);
                     session.ExitOperation();
                     return ValueTask.CompletedTask;
                 },
@@ -967,6 +1041,12 @@ internal sealed partial class EngineTransportClient :
                     }
                     finally
                     {
+                        if (diagnosticsReaderRegistered)
+                        {
+                            session!.RemoveDiagnosticsReader();
+                            diagnosticsReaderRegistered = false;
+                        }
+                        session!.ClearCurrentDiagnosticsOperation(operation?.OperationId);
                         session!.ExitOperation();
                     }
                 }
@@ -1184,6 +1264,7 @@ internal sealed partial class EngineTransportClient :
             {
                 flushToken.Deactivate();
                 s_disposeFlushToken.Value = previousToken;
+                DisposeRuntimeDiagnosticsStates();
                 _lock.Dispose();
             }
         }
@@ -1209,21 +1290,29 @@ internal sealed partial class EngineTransportClient :
         return false;
     }
 
-    private static Func<string, CancellationToken, Task<Database>> CreateOpenDatabaseAsync(
-        DatabaseOptions directDatabaseOptions,
-        HybridDatabaseOptions? hybridDatabaseOptions)
+    private static Func<string, DatabaseOptions, CancellationToken, Task<Database>>
+        CreateOpenDatabaseAsync(HybridDatabaseOptions? hybridDatabaseOptions)
     {
         return hybridDatabaseOptions is null
-            ? (path, ct) => Database.OpenAsync(path, directDatabaseOptions, ct).AsTask()
-            : (path, ct) => Database.OpenHybridAsync(
+            ? (path, options, ct) => Database.OpenAsync(path, options, ct).AsTask()
+            : (path, options, ct) => Database.OpenHybridAsync(
                 path,
-                directDatabaseOptions,
+                options,
                 hybridDatabaseOptions,
                 ct).AsTask();
     }
 
+    private static Func<string, DatabaseOptions, CancellationToken, Task<Database>>
+        AdaptOpenDatabaseAsync(
+            Func<string, CancellationToken, Task<Database>> openDatabaseAsync)
+    {
+        ArgumentNullException.ThrowIfNull(openDatabaseAsync);
+        return (path, _, ct) => openDatabaseAsync(path, ct);
+    }
+
     private static RuntimeDatabaseOptions CreateRuntimeDatabaseOptions(
-        DatabaseOptions? configuredOptions)
+        DatabaseOptions? configuredOptions,
+        TimeProvider? timeProvider)
     {
         DatabaseOptions source = configuredOptions ?? new DatabaseOptions();
         CSharpDbObservabilityOptions? observability = source.ObservabilityOptions;
@@ -1240,17 +1329,193 @@ internal sealed partial class EngineTransportClient :
                     "Failed to snapshot the client observability configuration.");
         }
 
-        return new RuntimeDatabaseOptions(new DatabaseOptions
-        {
-            AdaptiveQueryReoptimization = source.AdaptiveQueryReoptimization,
-            Functions = source.Functions,
-            ImplicitInsertExecutionMode = source.ImplicitInsertExecutionMode,
-            ObservabilityOptions = observabilitySnapshot,
-            StorageEngineFactory = source.StorageEngineFactory,
-            StorageEngineOptions = source.StorageEngineOptions,
-            WindowExecution = source.WindowExecution,
-        });
+        bool retainsRuntimeIdentity =
+            observabilitySnapshot?.Enabled == true &&
+            source.RuntimeDiagnosticsState is not null;
+        CSharpDbRuntimeDiagnosticsState? runtimeDiagnosticsState =
+            observabilitySnapshot?.Enabled == true
+                ? source.RuntimeDiagnosticsState?.CreateForOptions(observabilitySnapshot)
+                  ?? new CSharpDbRuntimeDiagnosticsState(observabilitySnapshot, timeProvider)
+                : null;
+
+        return new RuntimeDatabaseOptions(
+            new DatabaseOptions
+            {
+                AdaptiveQueryReoptimization = source.AdaptiveQueryReoptimization,
+                Functions = source.Functions,
+                ImplicitInsertExecutionMode = source.ImplicitInsertExecutionMode,
+                ObservabilityOptions = observabilitySnapshot,
+                RuntimeDiagnosticsState = runtimeDiagnosticsState,
+                StorageEngineFactory = source.StorageEngineFactory,
+                StorageEngineOptions = source.StorageEngineOptions,
+                WindowExecution = source.WindowExecution,
+            },
+            retainsRuntimeIdentity);
     }
+
+    private async Task<Database> OpenOwnedDatabaseAsync(
+        string databasePath,
+        CancellationToken ct)
+    {
+        RuntimeDatabaseFamily runtimeFamily =
+            Volatile.Read(ref _runtimeDatabaseFamily);
+        DatabaseOptions databaseOptions = runtimeFamily.DatabaseOptions;
+        // The injected two-argument factory is an internal fault/reentrancy
+        // test seam and ignores databaseOptions. Normal composition consumes
+        // this exact per-family state in the Database it constructs.
+        Database database = await _openDatabaseAsync(databasePath, databaseOptions, ct);
+        runtimeFamily.CompleteOpen();
+
+        return database;
+    }
+
+    private void MarkRuntimeDiagnosticsCounterFamilyReset()
+    {
+        RuntimeDatabaseFamily currentFamily =
+            Volatile.Read(ref _runtimeDatabaseFamily);
+        CSharpDbRuntimeDiagnosticsState? current =
+            currentFamily.RuntimeDiagnosticsState;
+        CSharpDbObservabilityOptions? observability =
+            _directDatabaseOptions.ObservabilityOptions;
+        if (current is null || observability is null)
+            return;
+
+        CSharpDbRuntimeDiagnosticsState replacement =
+            current.CreateForOptions(observability);
+        DatabaseOptions replacementOptions = CreateDatabaseOptionsForOpen(replacement);
+        Volatile.Write(
+            ref _runtimeDatabaseFamily,
+            new RuntimeDatabaseFamily(
+                replacementOptions,
+                advanceCounterEpochOnFirstSuccessfulOpen: true));
+        RetireRuntimeDiagnosticsState(current);
+    }
+
+    private void RetainRuntimeDiagnosticsState(ClientTransactionSession session)
+    {
+        CSharpDbRuntimeDiagnosticsState? state =
+            session.Database.RuntimeDiagnosticsState;
+        if (state is null)
+            return;
+
+        lock (_runtimeDiagnosticsLifetimeGate)
+            RetainRuntimeDiagnosticsStateLocked(state);
+    }
+
+    private void ReleaseRuntimeDiagnosticsState(ClientTransactionSession session)
+    {
+        if (!session.TryReleaseRuntimeDiagnosticsStateOwnership())
+            return;
+
+        CSharpDbRuntimeDiagnosticsState? state =
+            session.Database.RuntimeDiagnosticsState;
+        if (state is null)
+            return;
+
+        ReleaseRuntimeDiagnosticsStateOwnership(state);
+    }
+
+    private void RetainRuntimeDiagnosticsStateLocked(
+        CSharpDbRuntimeDiagnosticsState state)
+    {
+        _runtimeDiagnosticsSessionOwners ??= [];
+        _runtimeDiagnosticsSessionOwners.TryGetValue(state, out int ownerCount);
+        _runtimeDiagnosticsSessionOwners[state] = ownerCount == int.MaxValue
+            ? int.MaxValue
+            : ownerCount + 1;
+    }
+
+    private void ReleaseRuntimeDiagnosticsStateOwnership(
+        CSharpDbRuntimeDiagnosticsState state)
+    {
+        bool dispose = false;
+        lock (_runtimeDiagnosticsLifetimeGate)
+        {
+            if (_runtimeDiagnosticsSessionOwners is not null &&
+                _runtimeDiagnosticsSessionOwners.TryGetValue(state, out int ownerCount))
+            {
+                if (ownerCount == int.MaxValue)
+                {
+                    // Saturation is fail-safe: retain the state until process
+                    // teardown rather than risking premature disposal.
+                }
+                else if (ownerCount > 1)
+                {
+                    _runtimeDiagnosticsSessionOwners[state] = ownerCount - 1;
+                }
+                else
+                {
+                    _runtimeDiagnosticsSessionOwners.Remove(state);
+                    if (_runtimeDiagnosticsSessionOwners.Count == 0)
+                        _runtimeDiagnosticsSessionOwners = null;
+                    dispose = _retiredRuntimeDiagnosticsStates?.Remove(state) == true;
+                    if (_retiredRuntimeDiagnosticsStates is { Count: 0 })
+                        _retiredRuntimeDiagnosticsStates = null;
+                }
+            }
+        }
+
+        if (dispose)
+            state.Dispose();
+    }
+
+    private void RetireRuntimeDiagnosticsState(
+        CSharpDbRuntimeDiagnosticsState state)
+    {
+        bool dispose;
+        lock (_runtimeDiagnosticsLifetimeGate)
+        {
+            dispose = _runtimeDiagnosticsSessionOwners?.ContainsKey(state) != true;
+            if (!dispose)
+                (_retiredRuntimeDiagnosticsStates ??= []).Add(state);
+        }
+
+        if (dispose)
+            state.Dispose();
+    }
+
+    private void DisposeRuntimeDiagnosticsStates()
+    {
+        CSharpDbRuntimeDiagnosticsState? current =
+            CurrentRuntimeDiagnosticsState;
+        CSharpDbRuntimeDiagnosticsState[] states;
+        lock (_runtimeDiagnosticsLifetimeGate)
+        {
+            var collected = new HashSet<CSharpDbRuntimeDiagnosticsState>(
+                _retiredRuntimeDiagnosticsStates ?? []);
+            if (current is not null)
+                collected.Add(current);
+            if (_disabledRuntimeDiagnosticsState is not null)
+                collected.Add(_disabledRuntimeDiagnosticsState);
+            var disposable = new List<CSharpDbRuntimeDiagnosticsState>(collected.Count);
+            foreach (CSharpDbRuntimeDiagnosticsState state in collected)
+            {
+                if (_runtimeDiagnosticsSessionOwners?.ContainsKey(state) == true)
+                    (_retiredRuntimeDiagnosticsStates ??= []).Add(state);
+                else
+                    disposable.Add(state);
+            }
+            states = disposable.ToArray();
+            _disabledRuntimeDiagnosticsState = null;
+        }
+
+        foreach (CSharpDbRuntimeDiagnosticsState state in states)
+            state.Dispose();
+    }
+
+    private DatabaseOptions CreateDatabaseOptionsForOpen(
+        CSharpDbRuntimeDiagnosticsState runtimeDiagnosticsState)
+        => new()
+        {
+            AdaptiveQueryReoptimization = _directDatabaseOptions.AdaptiveQueryReoptimization,
+            Functions = _directDatabaseOptions.Functions,
+            ImplicitInsertExecutionMode = _directDatabaseOptions.ImplicitInsertExecutionMode,
+            ObservabilityOptions = runtimeDiagnosticsState.CreateOptionsSnapshot(),
+            RuntimeDiagnosticsState = runtimeDiagnosticsState,
+            StorageEngineFactory = _directDatabaseOptions.StorageEngineFactory,
+            StorageEngineOptions = _directDatabaseOptions.StorageEngineOptions,
+            WindowExecution = _directDatabaseOptions.WindowExecution,
+        };
 
     private static string NormalizeDisplayDataSource(string dataSource)
     {
@@ -1260,7 +1525,38 @@ internal sealed partial class EngineTransportClient :
         return Path.GetFullPath(dataSource);
     }
 
-    private readonly record struct RuntimeDatabaseOptions(DatabaseOptions Value);
+    private readonly record struct RuntimeDatabaseOptions(
+        DatabaseOptions Value,
+        bool AdvanceCounterEpochOnFirstSuccessfulOpen);
+
+    private sealed class RuntimeDatabaseFamily
+    {
+        private int _advanceCounterEpochOnNextOpen;
+
+        internal RuntimeDatabaseFamily(
+            DatabaseOptions databaseOptions,
+            bool advanceCounterEpochOnFirstSuccessfulOpen)
+        {
+            DatabaseOptions = databaseOptions;
+            RuntimeDiagnosticsState = databaseOptions.RuntimeDiagnosticsState;
+            _advanceCounterEpochOnNextOpen =
+                advanceCounterEpochOnFirstSuccessfulOpen ? 1 : 0;
+        }
+
+        internal DatabaseOptions DatabaseOptions { get; }
+        internal CSharpDbRuntimeDiagnosticsState? RuntimeDiagnosticsState { get; }
+
+        internal void CompleteOpen()
+        {
+            CSharpDbRuntimeDiagnosticsState? state = RuntimeDiagnosticsState;
+            if (state is null)
+                return;
+
+            bool replacesExistingFamily =
+                Interlocked.Exchange(ref _advanceCounterEpochOnNextOpen, 0) != 0;
+            state.CompleteCounterFamilyOpen(replacesExistingFamily);
+        }
+    }
 
     private async Task<Database> GetDatabaseAsync(CancellationToken ct)
     {
@@ -1319,7 +1615,7 @@ internal sealed partial class EngineTransportClient :
                                 IDisposable? boundaryEntry = boundary?.Enter();
                                 try
                                 {
-                                    Database database = await _openDatabaseAsync(
+                                    Database database = await OpenOwnedDatabaseAsync(
                                         _databasePath,
                                         CancellationToken.None);
                                     completion.TrySetResult(database);
@@ -1442,6 +1738,7 @@ internal sealed partial class EngineTransportClient :
             _databaseTask = null;
             _databaseReleaseCompletion = releaseCompletion;
         }
+        Volatile.Write(ref _exclusiveMaintenanceActive, 1);
 
         try
         {
@@ -1482,6 +1779,7 @@ internal sealed partial class EngineTransportClient :
                 }
 
                 await db.DisposeAsync();
+                MarkRuntimeDiagnosticsCounterFamilyReset();
             }
 
             return new ExclusiveDatabaseAccessLease(
@@ -1500,6 +1798,7 @@ internal sealed partial class EngineTransportClient :
         TaskCompletionSource releaseCompletion,
         ref ClientLockLease clientLock)
     {
+        Volatile.Write(ref _exclusiveMaintenanceActive, 0);
         lock (_databaseGate)
         {
             if (ReferenceEquals(_databaseReleaseCompletion, releaseCompletion))
@@ -1592,21 +1891,134 @@ internal sealed partial class EngineTransportClient :
         }
     }
 
+    private static long GetUtcNowTicksSafely(TimeProvider timeProvider, long fallbackTicks)
+    {
+        try
+        {
+            return timeProvider.GetUtcNow().UtcDateTime.Ticks;
+        }
+        catch
+        {
+            return fallbackTicks;
+        }
+    }
+
+    private static long GetTimestampSafely(TimeProvider timeProvider, long fallbackTimestamp)
+    {
+        try
+        {
+            return timeProvider.GetTimestamp();
+        }
+        catch
+        {
+            return fallbackTimestamp;
+        }
+    }
+
+    private static TimeSpan GetElapsedTimeSafely(
+        TimeProvider timeProvider,
+        long startingTimestamp,
+        long endingTimestamp)
+    {
+        try
+        {
+            TimeSpan elapsed = timeProvider.GetElapsedTime(
+                startingTimestamp,
+                endingTimestamp);
+            return elapsed < TimeSpan.Zero ? TimeSpan.Zero : elapsed;
+        }
+        catch
+        {
+            return TimeSpan.Zero;
+        }
+    }
+
+    private sealed class DirectDiagnosticsSession
+    {
+        private readonly TimeProvider _timeProvider;
+        private readonly long _createdAtUtcTicks;
+        private long _lastActiveAtUtcTicks;
+
+        internal DirectDiagnosticsSession(TimeProvider timeProvider)
+        {
+            _timeProvider = timeProvider;
+            _createdAtUtcTicks = GetUtcNowTicksSafely(
+                timeProvider,
+                DateTimeOffset.UtcNow.UtcDateTime.Ticks);
+            _lastActiveAtUtcTicks = _createdAtUtcTicks;
+            SessionId = OpaqueDiagnosticsId.Create();
+        }
+
+        internal OpaqueDiagnosticsId SessionId { get; }
+        internal DateTimeOffset CreatedAtUtc =>
+            new(_createdAtUtcTicks, TimeSpan.Zero);
+        internal DateTimeOffset LastActiveAtUtc =>
+            new(Interlocked.Read(ref _lastActiveAtUtcTicks), TimeSpan.Zero);
+
+        internal void Touch()
+        {
+            long current = Interlocked.Read(ref _lastActiveAtUtcTicks);
+            long captured = GetUtcNowTicksSafely(_timeProvider, current);
+            captured = Math.Max(_createdAtUtcTicks, captured);
+            while (captured > current)
+            {
+                long observed = Interlocked.CompareExchange(
+                    ref _lastActiveAtUtcTicks,
+                    captured,
+                    current);
+                if (observed == current)
+                    break;
+                current = observed;
+            }
+        }
+    }
+
     private sealed class ClientTransactionSession
     {
         private readonly SemaphoreSlim _operationGate = new(1, 1);
+        private readonly TimeProvider? _diagnosticsTimeProvider;
+        private readonly TimeSpan _diagnosticsAbandonmentThreshold;
+        private readonly long _createdAtUtcTicks;
+        private readonly long _createdTimestamp;
+        private OpaqueDiagnosticsId? _diagnosticsSessionId;
+        private OpaqueDiagnosticsId? _currentDiagnosticsOperationId;
+        private long _lastActiveAtUtcTicks;
+        private long _lastActiveTimestamp;
+        private int _activeGateOperations;
+        private int _activeDiagnosticsReaders;
         private int _reuseDisabled;
+        private int _runtimeDiagnosticsStateOwnershipReleased;
         private int _state;
 
-        public ClientTransactionSession(Database database, long reuseEpoch)
+        public ClientTransactionSession(
+            Database database,
+            long reuseEpoch,
+            TimeProvider? diagnosticsTimeProvider,
+            TimeSpan diagnosticsAbandonmentThreshold)
         {
             Database = database;
             ReuseEpoch = reuseEpoch;
+            _diagnosticsTimeProvider = diagnosticsTimeProvider;
+            _diagnosticsAbandonmentThreshold = diagnosticsAbandonmentThreshold;
+            if (diagnosticsTimeProvider is not null)
+            {
+                _createdAtUtcTicks = GetUtcNowTicksSafely(
+                    diagnosticsTimeProvider,
+                    DateTimeOffset.UtcNow.UtcDateTime.Ticks);
+                _lastActiveAtUtcTicks = _createdAtUtcTicks;
+                _createdTimestamp = GetTimestampSafely(
+                    diagnosticsTimeProvider,
+                    fallbackTimestamp: 0);
+                _lastActiveTimestamp = _createdTimestamp;
+            }
         }
 
         public Database Database { get; }
         public long ReuseEpoch { get; }
         public bool ReuseAllowed => Volatile.Read(ref _reuseDisabled) == 0;
+        public bool CanPublishDiagnostics => _diagnosticsTimeProvider is not null;
+        public bool HasActiveDiagnosticsReader =>
+            Volatile.Read(ref _activeDiagnosticsReaders) > 0;
 
         public void DisableReuse() => Volatile.Write(ref _reuseDisabled, 1);
 
@@ -1617,13 +2029,214 @@ internal sealed partial class EngineTransportClient :
 
             await _operationGate.WaitAsync(ct);
             if (Volatile.Read(ref _state) == 0)
+            {
+                // Publish ownership before consulting the clock so even a slow
+                // or adversarial provider cannot make active work look idle.
+                Volatile.Write(ref _activeGateOperations, 1);
+                TouchDiagnosticsActivity();
                 return true;
+            }
 
             _operationGate.Release();
             return false;
         }
 
-        public void ExitOperation() => _operationGate.Release();
+        public void ExitOperation()
+        {
+            // Refresh activity before publishing the idle transition. Snapshot
+            // readers sample this marker before the timestamp.
+            TouchDiagnosticsActivity();
+            Volatile.Write(ref _activeGateOperations, 0);
+            _operationGate.Release();
+        }
+
+        public void SetCurrentDiagnosticsOperation(OpaqueDiagnosticsId? operationId)
+        {
+            if (_diagnosticsTimeProvider is null || operationId is null)
+                return;
+
+            TouchDiagnosticsActivity();
+            Volatile.Write(ref _currentDiagnosticsOperationId, operationId);
+        }
+
+        public void ClearCurrentDiagnosticsOperation(OpaqueDiagnosticsId? operationId)
+        {
+            if (operationId is null)
+                return;
+
+            // Move the activity watermark first. Otherwise a concurrent
+            // snapshot can observe a cleared operation with an old idle time.
+            TouchDiagnosticsActivity();
+            Interlocked.CompareExchange(
+                ref _currentDiagnosticsOperationId,
+                value: null,
+                comparand: operationId);
+        }
+
+        public void AddDiagnosticsReader()
+        {
+            while (true)
+            {
+                int current = Volatile.Read(ref _activeDiagnosticsReaders);
+                if (current == int.MaxValue ||
+                    Interlocked.CompareExchange(
+                        ref _activeDiagnosticsReaders,
+                        current + 1,
+                        current) == current)
+                {
+                    return;
+                }
+            }
+        }
+
+        public void RemoveDiagnosticsReader()
+        {
+            while (true)
+            {
+                int current = Volatile.Read(ref _activeDiagnosticsReaders);
+                if (current <= 0)
+                    return;
+                if (Interlocked.CompareExchange(
+                        ref _activeDiagnosticsReaders,
+                        current - 1,
+                        current) == current)
+                {
+                    return;
+                }
+            }
+        }
+
+        public OpaqueDiagnosticsId? GetOrCreateDiagnosticsSessionId()
+        {
+            if (_diagnosticsTimeProvider is null)
+                return null;
+
+            OpaqueDiagnosticsId? sessionId = Volatile.Read(ref _diagnosticsSessionId);
+            if (sessionId is not null)
+                return sessionId;
+
+            OpaqueDiagnosticsId created = OpaqueDiagnosticsId.Create();
+            return Interlocked.CompareExchange(
+                ref _diagnosticsSessionId,
+                created,
+                comparand: null) ?? created;
+        }
+
+        public SessionDiagnosticsSnapshot CreateDiagnosticsSnapshot(
+            DiagnosticsSnapshotMetadata metadata,
+            DateTimeOffset capturedAtUtc)
+        {
+            if (_diagnosticsTimeProvider is null)
+            {
+                throw new InvalidOperationException(
+                    "Disabled transaction sessions do not publish diagnostics records.");
+            }
+
+            OpaqueDiagnosticsId sessionId = GetOrCreateDiagnosticsSessionId()
+                ?? throw new InvalidOperationException(
+                    "Enabled transaction diagnostics require a safe session identifier.");
+
+            int lifecycleStateBefore = Volatile.Read(ref _state);
+            bool hadActiveGateOperation =
+                Volatile.Read(ref _activeGateOperations) != 0;
+            OpaqueDiagnosticsId? currentOperationId =
+                Volatile.Read(ref _currentDiagnosticsOperationId);
+            bool hasActiveReader = Volatile.Read(ref _activeDiagnosticsReaders) > 0;
+            long lastActiveAtUtcTicks = Interlocked.Read(ref _lastActiveAtUtcTicks);
+            long lastActiveTimestamp = Interlocked.Read(ref _lastActiveTimestamp);
+            bool hasActiveGateOperation = hadActiveGateOperation ||
+                Volatile.Read(ref _activeGateOperations) != 0;
+            currentOperationId ??= Volatile.Read(ref _currentDiagnosticsOperationId);
+            hasActiveReader = hasActiveReader ||
+                Volatile.Read(ref _activeDiagnosticsReaders) > 0;
+            lastActiveAtUtcTicks = Math.Max(
+                lastActiveAtUtcTicks,
+                Interlocked.Read(ref _lastActiveAtUtcTicks));
+            lastActiveTimestamp = Math.Max(
+                lastActiveTimestamp,
+                Interlocked.Read(ref _lastActiveTimestamp));
+            int lifecycleStateAfter = Volatile.Read(ref _state);
+            long capturedTimestamp = GetTimestampSafely(
+                _diagnosticsTimeProvider,
+                lastActiveTimestamp);
+            TimeSpan idleDuration = GetElapsedTimeSafely(
+                _diagnosticsTimeProvider,
+                lastActiveTimestamp,
+                capturedTimestamp);
+            DateTimeOffset createdAtUtc = new(_createdAtUtcTicks, TimeSpan.Zero);
+            DateTimeOffset lastActiveAtUtc = new(lastActiveAtUtcTicks, TimeSpan.Zero);
+            bool isAbandoned = lifecycleStateBefore == 0 &&
+                lifecycleStateAfter == 0 &&
+                !hasActiveGateOperation &&
+                currentOperationId is null &&
+                !hasActiveReader &&
+                idleDuration >= _diagnosticsAbandonmentThreshold;
+            return new SessionDiagnosticsSnapshot(
+                metadata,
+                sessionId,
+                createdAtUtc,
+                lastActiveAtUtc,
+                currentOperationId,
+                hasActiveReader,
+                HasActiveTransaction: true,
+                ObservabilityTransport.Direct)
+            {
+                State = isAbandoned
+                    ? DiagnosticsSessionState.Abandoned
+                    : hasActiveReader
+                        ? DiagnosticsSessionState.SnapshotReader
+                        : DiagnosticsSessionState.Transaction,
+            };
+        }
+
+        private void TouchDiagnosticsActivity()
+        {
+            TimeProvider? timeProvider = _diagnosticsTimeProvider;
+            if (timeProvider is null)
+                return;
+
+            long current = Interlocked.Read(ref _lastActiveAtUtcTicks);
+            long captured = GetUtcNowTicksSafely(timeProvider, current);
+            captured = Math.Max(_createdAtUtcTicks, captured);
+            while (captured > current)
+            {
+                long observed = Interlocked.CompareExchange(
+                    ref _lastActiveAtUtcTicks,
+                    captured,
+                    current);
+                if (observed == current)
+                    break;
+                current = observed;
+            }
+
+            current = Interlocked.Read(ref _lastActiveTimestamp);
+            long capturedTimestamp = GetTimestampSafely(timeProvider, current);
+            while (capturedTimestamp > current)
+            {
+                long observed = Interlocked.CompareExchange(
+                    ref _lastActiveTimestamp,
+                    capturedTimestamp,
+                    current);
+                if (observed == current)
+                    break;
+                current = observed;
+            }
+        }
+
+        public TimeSpan GetDiagnosticsAge()
+        {
+            TimeProvider? timeProvider = _diagnosticsTimeProvider;
+            if (timeProvider is null)
+                return TimeSpan.Zero;
+
+            long capturedTimestamp = GetTimestampSafely(
+                timeProvider,
+                _createdTimestamp);
+            return GetElapsedTimeSafely(
+                timeProvider,
+                _createdTimestamp,
+                capturedTimestamp);
+        }
 
         public bool TryClaimFinalization()
             => Interlocked.CompareExchange(ref _state, 1, 0) == 0;
@@ -1639,6 +2252,11 @@ internal sealed partial class EngineTransportClient :
             Volatile.Write(ref _state, 2);
             _operationGate.Release();
         }
+
+        public bool TryReleaseRuntimeDiagnosticsStateOwnership()
+            => Interlocked.Exchange(
+                ref _runtimeDiagnosticsStateOwnershipReleased,
+                1) == 0;
     }
 
     private sealed class ExclusiveDatabaseAccessLease : IAsyncDisposable
@@ -2247,18 +2865,31 @@ internal sealed partial class EngineTransportClient :
     private IDisposable? EnterDirectTransportScope()
         => EnterDirectTransportScope(includeQueryEvents: true);
 
+    private IDisposable? EnterDirectTransportScopeForSession(
+        OpaqueDiagnosticsId? diagnosticsSessionId)
+        => EnterDirectTransportScope(
+            includeQueryEvents: true,
+            diagnosticsSessionId);
+
     private IDisposable? EnterDirectOperationalTransportScope()
         => EnterDirectTransportScope(includeQueryEvents: false);
 
     private CSharpDbDeferredDiagnosticBoundary? CreateDeferredTransportBoundary()
         => CreateDeferredTransportBoundary(includeQueryEvents: true);
 
+    private CSharpDbDeferredDiagnosticBoundary? CreateDeferredTransportBoundaryForSession(
+        OpaqueDiagnosticsId? diagnosticsSessionId)
+        => CreateDeferredTransportBoundary(
+            includeQueryEvents: true,
+            diagnosticsSessionId);
+
     private CSharpDbDeferredDiagnosticBoundary?
         CreateDeferredOperationalTransportBoundary()
         => CreateDeferredTransportBoundary(includeQueryEvents: false);
 
     private CSharpDbDeferredDiagnosticBoundary? CreateDeferredTransportBoundary(
-        bool includeQueryEvents)
+        bool includeQueryEvents,
+        OpaqueDiagnosticsId? diagnosticsSessionId = null)
     {
         if (!_observabilityEnabled ||
             CSharpDbOperationScope.IsDiagnosticsSuppressed ||
@@ -2274,13 +2905,15 @@ internal sealed partial class EngineTransportClient :
         if (transport == ObservabilityTransport.Embedded)
         {
             transport = ObservabilityTransport.Direct;
-            sessionId = GetOrCreateDiagnosticsSessionId();
+            sessionId = diagnosticsSessionId ?? GetOrCreateDiagnosticsSessionId();
         }
 
         return CSharpDbOperationScope.CreateDeferredBoundary(transport, sessionId);
     }
 
-    private IDisposable? EnterDirectTransportScope(bool includeQueryEvents)
+    private IDisposable? EnterDirectTransportScope(
+        bool includeQueryEvents,
+        OpaqueDiagnosticsId? diagnosticsSessionId = null)
     {
         if (!_observabilityEnabled ||
             CSharpDbOperationScope.IsDiagnosticsSuppressed)
@@ -2303,7 +2936,7 @@ internal sealed partial class EngineTransportClient :
         if (transport == ObservabilityTransport.Embedded)
         {
             transport = ObservabilityTransport.Direct;
-            sessionId = GetOrCreateDiagnosticsSessionId();
+            sessionId = diagnosticsSessionId ?? GetOrCreateDiagnosticsSessionId();
         }
 
         return CSharpDbOperationScope.EnterBoundary(
@@ -2313,25 +2946,45 @@ internal sealed partial class EngineTransportClient :
 
     private OpaqueDiagnosticsId GetOrCreateDiagnosticsSessionId()
     {
-        OpaqueDiagnosticsId? sessionId = Volatile.Read(ref _diagnosticsSessionId);
-        if (sessionId is not null)
-            return sessionId;
+        DirectDiagnosticsSession session = GetOrCreateDirectDiagnosticsSession();
+        session.Touch();
+        return session.SessionId;
+    }
 
-        OpaqueDiagnosticsId created = OpaqueDiagnosticsId.Create();
+    private OpaqueDiagnosticsId? TryGetTransactionDiagnosticsSessionId(
+        string transactionId)
+        => _observabilityEnabled &&
+           _transactions.TryGetValue(transactionId, out ClientTransactionSession? session)
+            ? session.GetOrCreateDiagnosticsSessionId()
+            : null;
+
+    private DirectDiagnosticsSession GetOrCreateDirectDiagnosticsSession()
+    {
+        DirectDiagnosticsSession? session = Volatile.Read(ref _diagnosticsSession);
+        if (session is not null)
+            return session;
+
+        var created = new DirectDiagnosticsSession(_observabilityTimeProvider);
         return Interlocked.CompareExchange(
-            ref _diagnosticsSessionId,
+            ref _diagnosticsSession,
             created,
             comparand: null) ?? created;
     }
 
-    private bool IsQueryObservationRequested()
+    private void CaptureQueryObservationInterest(
+        out bool queryEventsObserved,
+        out bool slowQueryEventsObserved,
+        out bool longRunningQueryEventsObserved)
     {
         CSharpDbDiagnosticEventPublisher publisher = CSharpDbDiagnostics.EventPublisher;
-        return (_queryEventsEnabled &&
-                (publisher.IsEnabled(CSharpDbLogEvents.QueryCompleted) ||
-                 publisher.IsEnabled(CSharpDbLogEvents.QueryFailed) ||
-                 publisher.IsEnabled(CSharpDbLogEvents.QueryCanceled))) ||
-               (_slowQueryEventsEnabled && publisher.IsEnabled(CSharpDbLogEvents.SlowQuery));
+        queryEventsObserved = _queryEventsEnabled &&
+            (publisher.IsEnabled(CSharpDbLogEvents.QueryCompleted) ||
+             publisher.IsEnabled(CSharpDbLogEvents.QueryFailed) ||
+             publisher.IsEnabled(CSharpDbLogEvents.QueryCanceled));
+        slowQueryEventsObserved = _slowQueryEventsEnabled &&
+            publisher.IsEnabled(CSharpDbLogEvents.SlowQuery);
+        longRunningQueryEventsObserved = _slowQueryEventsEnabled &&
+            publisher.IsEnabled(CSharpDbLogEvents.LongRunningQuery);
     }
 
     private static TimeSpan GetConfiguredSlowQueryThreshold(
@@ -2635,6 +3288,7 @@ internal sealed partial class EngineTransportClient :
         }
         finally
         {
+            ReleaseRuntimeDiagnosticsState(session);
             session.CompleteFinalization();
             using ClientLockLease clientLock =
                 await AcquireClientLockAsync(CancellationToken.None);
@@ -2694,6 +3348,7 @@ internal sealed partial class EngineTransportClient :
                     }
                     finally
                     {
+                        ReleaseRuntimeDiagnosticsState(session);
                         session.CompleteFinalization();
                         using ClientLockLease unregisterLock =
                             await AcquireClientLockAsync(CancellationToken.None);
@@ -2742,6 +3397,7 @@ internal sealed partial class EngineTransportClient :
                 }
                 finally
                 {
+                    ReleaseRuntimeDiagnosticsState(session);
                     session.CompleteFinalization();
                     using ClientLockLease unregisterLock =
                         await AcquireClientLockAsync(CancellationToken.None);
@@ -2765,6 +3421,9 @@ internal sealed partial class EngineTransportClient :
         {
             if (!session.ReuseAllowed ||
                 session.ReuseEpoch != _databaseOwnershipEpoch ||
+                !ReferenceEquals(
+                    session.Database.RuntimeDiagnosticsState,
+                    CurrentRuntimeDiagnosticsState) ||
                 !_transactions.IsEmpty ||
                 _databaseTask is not null ||
                 _databaseReleaseCompletion is { Task.IsCompleted: false })
@@ -2895,6 +3554,7 @@ internal sealed partial class EngineTransportClient :
             }
 
             await db.DisposeAsync();
+            MarkRuntimeDiagnosticsCounterFamilyReset();
         }
         finally
         {

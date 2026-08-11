@@ -44,10 +44,16 @@ public sealed class WriteTransaction : IAsyncDisposable
     /// </summary>
     public ValueTask<QueryResult> ExecuteAsync(string sql, CancellationToken ct = default)
     {
-        QueryOperation? operation = _database.StartQueryObservability(sql);
+        IQueryExecutionObservation? operation =
+            _database.StartQueryObservability(sql);
         return operation is null
             ? ExecuteSqlCoreAsync(sql, ct)
-            : Database.ObserveQueryAsync(operation, () => ExecuteSqlCoreAsync(sql, ct));
+            : Database.ObserveQueryAsync(
+                operation,
+                (Target: this, Sql: sql, CancellationToken: ct),
+                static state => state.Target.ExecuteSqlCoreAsync(
+                    state.Sql,
+                    state.CancellationToken));
     }
 
     private async ValueTask<QueryResult> ExecuteSqlCoreAsync(string sql, CancellationToken ct)
@@ -66,12 +72,16 @@ public sealed class WriteTransaction : IAsyncDisposable
     /// </summary>
     public ValueTask<QueryResult> ExecuteAsync(Statement statement, CancellationToken ct = default)
     {
-        QueryOperation? operation = _database.StartQueryObservability(sql: null);
+        IQueryExecutionObservation? operation =
+            _database.StartQueryObservability(sql: null);
         return operation is null
             ? ExecuteStatementRootCoreAsync(statement, ct)
             : Database.ObserveQueryAsync(
                 operation,
-                () => ExecuteStatementRootCoreAsync(statement, ct));
+                (Target: this, Statement: statement, CancellationToken: ct),
+                static state => state.Target.ExecuteStatementRootCoreAsync(
+                    state.Statement,
+                    state.CancellationToken));
     }
 
     private async ValueTask<QueryResult> ExecuteStatementRootCoreAsync(
@@ -105,12 +115,16 @@ public sealed class WriteTransaction : IAsyncDisposable
     /// </summary>
     public ValueTask<QueryResult> ExecuteSnapshotReadAsync(string sql, CancellationToken ct = default)
     {
-        QueryOperation? operation = _database.StartQueryObservability(sql);
+        IQueryExecutionObservation? operation =
+            _database.StartQueryObservability(sql);
         return operation is null
             ? ExecuteSnapshotReadSqlCoreAsync(sql, ct)
             : Database.ObserveQueryAsync(
                 operation,
-                () => ExecuteSnapshotReadSqlCoreAsync(sql, ct));
+                (Target: this, Sql: sql, CancellationToken: ct),
+                static state => state.Target.ExecuteSnapshotReadSqlCoreAsync(
+                    state.Sql,
+                    state.CancellationToken));
     }
 
     private async ValueTask<QueryResult> ExecuteSnapshotReadSqlCoreAsync(
@@ -133,12 +147,16 @@ public sealed class WriteTransaction : IAsyncDisposable
     /// </summary>
     public ValueTask<QueryResult> ExecuteSnapshotReadAsync(Statement statement, CancellationToken ct = default)
     {
-        QueryOperation? operation = _database.StartQueryObservability(sql: null);
+        IQueryExecutionObservation? operation =
+            _database.StartQueryObservability(sql: null);
         return operation is null
             ? ExecuteSnapshotReadStatementCoreAsync(statement, ct)
             : Database.ObserveQueryAsync(
                 operation,
-                () => ExecuteSnapshotReadStatementCoreAsync(statement, ct));
+                (Target: this, Statement: statement, CancellationToken: ct),
+                static state => state.Target.ExecuteSnapshotReadStatementCoreAsync(
+                    state.Statement,
+                    state.CancellationToken));
     }
 
     private async ValueTask<QueryResult> ExecuteSnapshotReadStatementCoreAsync(

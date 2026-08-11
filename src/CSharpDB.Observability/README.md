@@ -46,6 +46,15 @@ is recorded in the
 | `QueryFingerprint` | Versioned, non-SQL fingerprint contract |
 | `SafeErrorProjection` | Stable error code/type projection without exception messages |
 | `RuntimeDiagnosticsSnapshot` | Immutable, versioned runtime snapshot envelope |
+| `DiagnosticsValueSnapshot<T>` | Identified optional value with explicit availability |
+| `DiagnosticsCollectionSnapshot<T>` | Identified bounded collection with explicit availability, capacity, retention, drops, and truncation |
+| `DiagnosticsTopologySnapshot<T>` | Single-instance or aggregate-plus-shard topology envelope |
+| `RuntimeDiagnosticsFamilySection<T>` | Current and retained runtime-family values without conflating counter epochs |
+| `ShardDiagnosticsSection<T>` | Safe per-shard availability wrapper that preserves the child instance identity |
+| `ActiveQuerySnapshot`, `RecentQuerySnapshot` | Safe bounded query-ledger records |
+| `QueryPlanDiagnosticsSnapshot` | Bounded automatic plan summary that never replays SQL |
+| `QueryDetailSnapshot` | Separately requested captured query text, subject to capture and host policy |
+| `ConnectionDiagnosticsSnapshot`, `SessionDiagnosticsSnapshot` | Safe physical-owner and logical-session state |
 | `CSharpDbHostState` | Thread-safe startup, recovery, readiness, and shutdown state |
 | `BoundedDiagnosticHistory<T>` | Capacity- and retention-bounded in-memory history |
 
@@ -60,7 +69,7 @@ category, and reviewed message template. Phase 1 reserves these ranges:
 | Category | Event-id range | Current events |
 | --- | ---: | --- |
 | Host | 1000-1099 | host starting, database opened/closed, raw-SQL-capture warning |
-| Query | 2000-2099 | completed, slow, failed, canceled |
+| Query | 2000-2099 | completed, slow, failed, canceled, `LongRunningQuery` (2004) |
 | Transaction | 3000-3099 | transaction completed |
 | Storage | 4000-4099 | checkpoint and recovery completed |
 | Maintenance | 5000-5099 | backup, restore, and maintenance completed |
@@ -97,6 +106,41 @@ Listener interest around serialization locks is snapshotted before admission,
 then buffered events are flushed after the lock is released. Correlation-only
 HTTP/gRPC scopes do not own a request-wide buffer; each inner lock boundary
 remains independently bounded.
+
+## Phase 2 runtime collection contract
+
+Runtime collection responses carry one exact capture metadata value shared by
+every returned record. Available collections may be empty, but still report
+their configured capacity, optional retention, dropped count, and truncation.
+`Disabled`, `Unsupported`, `Denied`, and `Unavailable` collections omit those
+bounded values instead of returning ambiguous zeroes.
+
+Per-shard responses always expose only a validated shard alias. An available
+child retains its own opaque server-instance id and counter epoch; an
+unavailable child has no fabricated payload. A host identity can be retained
+across database switch/reopen while the immutable per-database alias/options
+snapshot is replaced. This lets consumers distinguish configuration change,
+counter reset, and a genuine server restart.
+
+`DiagnosticsTopologySnapshot<T>` represents either one exact instance or a
+coordinator aggregate with capped per-shard children. Aggregate collection
+views are bounded, but physical shard counters are not summed across distinct
+server lifetimes or counter epochs. A reachable shard may truthfully be
+`Available`, `Disabled`, `Unsupported`, `Denied`, or `Unavailable` without
+fabricating a child payload.
+
+Query-plan diagnostics retain only a bounded summary and never execute or
+replay SQL. Ordinary runtime, active-query, recent-query, plan, connection, and
+session snapshots remain safe. SQL text, when capture is explicitly enabled,
+is available only through the separate query-detail value and is subject to an
+additional host-owned authorization policy. Authentication, loopback policy,
+HTTP/gRPC status mapping, and cancellation are deliberately implemented by the
+API/client host layers rather than this BCL-only contracts package.
+
+Accepted cancellation tokens are preserved by the contracts and forwarded by
+built-in producers and transports, but cancellation remains cooperative. These
+models expose runtime state only; they do not define query/session termination,
+ADO.NET command timeout enforcement, or `DbCommand.Cancel()` behavior.
 
 ## Installation
 

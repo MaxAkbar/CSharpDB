@@ -1,3 +1,4 @@
+using CSharpDB.Engine;
 using CSharpDB.Observability;
 using CSharpDB.Primitives;
 using CSharpDB.Sql;
@@ -13,14 +14,84 @@ internal sealed class AdoCommandObservation : IDisposable
 {
     internal static Action? QueueWaitStartingForTest { get; set; }
 
+    internal static DiagnosticsCollectionSnapshot<ActiveQuerySnapshot>
+        CaptureActiveQueriesForTest(
+            object runtimeDiagnosticsState,
+            int maximumRecords = 32)
+        => QueryRuntimeDiagnostics
+            .GetOrCreate(GetRuntimeDiagnosticsStateForTest(runtimeDiagnosticsState))
+            .GetActiveCollectionSnapshot(maximumRecords);
+
+    internal static DiagnosticsCollectionSnapshot<RecentQuerySnapshot>
+        CaptureRecentQueriesForTest(
+            object runtimeDiagnosticsState,
+            int maximumRecords = 32)
+        => QueryRuntimeDiagnostics
+            .GetOrCreate(GetRuntimeDiagnosticsStateForTest(runtimeDiagnosticsState))
+            .GetRecentCollectionSnapshot(maximumRecords);
+
+    internal static QueryDetailSnapshot? CaptureQueryDetailForTest(
+        object runtimeDiagnosticsState,
+        OpaqueDiagnosticsId operationId)
+        => QueryRuntimeDiagnostics
+            .GetOrCreate(GetRuntimeDiagnosticsStateForTest(runtimeDiagnosticsState))
+            .GetQueryDetailSnapshot(operationId);
+
+    internal static object? GetRuntimeDiagnosticsStateForTest(
+        ICSharpDbSession session)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        return session.RuntimeDiagnosticsState;
+    }
+
+    internal static IDisposable CreateRuntimeDiagnosticsStateForTest(
+        CSharpDbObservabilityOptions options,
+        TimeProvider? timeProvider = null)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return new CSharpDbRuntimeDiagnosticsState(options, timeProvider);
+    }
+
+    internal static AdoCommandObservation? TryStartForTest(
+        CSharpDbObservabilityOptions options,
+        object runtimeDiagnosticsState,
+        string sql,
+        OpaqueDiagnosticsId sessionId)
+        => TryStart(
+            options,
+            GetRuntimeDiagnosticsStateForTest(runtimeDiagnosticsState),
+            sql,
+            sessionId);
+
+    internal static AdoRuntimeDiagnosticsStateInfoForTest
+        GetRuntimeDiagnosticsStateInfoForTest(object runtimeDiagnosticsState)
+    {
+        CSharpDbRuntimeDiagnosticsState state =
+            GetRuntimeDiagnosticsStateForTest(runtimeDiagnosticsState);
+        return new AdoRuntimeDiagnosticsStateInfoForTest(
+            state.ServerInstanceId,
+            state.DatabaseAlias,
+            state.ActiveQueryCapacity);
+    }
+
+    private static CSharpDbRuntimeDiagnosticsState GetRuntimeDiagnosticsStateForTest(
+        object runtimeDiagnosticsState)
+        => runtimeDiagnosticsState as CSharpDbRuntimeDiagnosticsState
+           ?? throw new ArgumentException(
+               "The value is not a runtime diagnostics state.",
+               nameof(runtimeDiagnosticsState));
+
     private readonly CSharpDbOperationContext? _context;
     private readonly bool _queryEventsEnabled;
     private readonly bool _slowQueryEventsEnabled;
     private readonly TimeSpan _slowQueryThreshold;
     private readonly SqlTextCaptureMode _sqlTextCaptureMode;
     private readonly string? _capturedSqlText;
+    private readonly CSharpDbRuntimeDiagnosticsState? _runtimeDiagnosticsState;
+    private readonly QueryRuntimeDiagnostics.QueryRuntimeOperation? _runtimeOperation;
     private readonly IDisposable? _operationScope;
     private readonly IDisposable _boundaryScope;
+    private readonly CSharpDbDeferredDiagnosticBoundary? _deferredEventBoundary;
 
     // 0 = ADO pre-dispatch, 1 = handed to Engine, 2 = completed by ADO.
     private int _ownershipState;
@@ -34,8 +105,11 @@ internal sealed class AdoCommandObservation : IDisposable
         TimeSpan slowQueryThreshold,
         SqlTextCaptureMode sqlTextCaptureMode,
         string? capturedSqlText,
+        CSharpDbRuntimeDiagnosticsState? runtimeDiagnosticsState,
+        QueryRuntimeDiagnostics.QueryRuntimeOperation? runtimeOperation,
         IDisposable operationScope,
-        IDisposable boundaryScope)
+        IDisposable boundaryScope,
+        CSharpDbDeferredDiagnosticBoundary? deferredEventBoundary)
     {
         _context = context;
         _queryEventsEnabled = queryEventsEnabled;
@@ -43,46 +117,65 @@ internal sealed class AdoCommandObservation : IDisposable
         _slowQueryThreshold = slowQueryThreshold;
         _sqlTextCaptureMode = sqlTextCaptureMode;
         _capturedSqlText = capturedSqlText;
+        _runtimeDiagnosticsState = runtimeDiagnosticsState;
+        _runtimeOperation = runtimeOperation;
         _operationScope = operationScope;
         _boundaryScope = boundaryScope;
-    }
-
-    private AdoCommandObservation(IDisposable boundaryScope)
-    {
-        _context = null;
-        _queryEventsEnabled = false;
-        _slowQueryEventsEnabled = false;
-        _slowQueryThreshold = TimeSpan.Zero;
-        _sqlTextCaptureMode = SqlTextCaptureMode.None;
-        _capturedSqlText = null;
-        _operationScope = null;
-        _boundaryScope = boundaryScope;
+        _deferredEventBoundary = deferredEventBoundary;
     }
 
     internal static AdoCommandObservation? TryStart(
         CSharpDbObservabilityOptions? options,
+        CSharpDbRuntimeDiagnosticsState? runtimeDiagnosticsState,
         string sql,
         OpaqueDiagnosticsId sessionId)
     {
-        if (!QueryObservabilitySource.IsBoundaryRequired(options))
+        if (CSharpDbOperationScope.IsDiagnosticsSuppressed ||
+            options?.Enabled != true)
+        {
+            return null;
+        }
+
+        bool runtimeHistoryEnabled = runtimeDiagnosticsState?.IsEnabled == true;
+        bool eventBoundaryRequired =
+            QueryObservabilitySource.IsBoundaryRequired(options);
+        if (!runtimeHistoryEnabled && !eventBoundaryRequired)
             return null;
 
         IDisposable? boundaryScope = null;
         IDisposable? operationScope = null;
+        CSharpDbDeferredDiagnosticBoundary? deferredEventBoundary = null;
+        QueryRuntimeDiagnostics.QueryRuntimeOperation? runtimeOperation = null;
         try
         {
-            boundaryScope = CSharpDbOperationScope.EnterBoundary(
-                CSharpDbTransport.Direct,
-                sessionId);
-            if (!QueryObservabilitySource.IsObservationRequested(options))
+            if (eventBoundaryRequired)
             {
-                var boundaryOnlyObservation = new AdoCommandObservation(
-                    boundaryScope);
-                boundaryScope = null;
-                return boundaryOnlyObservation;
+                deferredEventBoundary =
+                    CSharpDbOperationScope.CreateDeferredBoundary(
+                        CSharpDbTransport.Direct,
+                        sessionId);
+                boundaryScope = deferredEventBoundary.Enter();
+            }
+            else
+            {
+                boundaryScope = CSharpDbOperationScope.EnterTransport(
+                    CSharpDbTransport.Direct,
+                    sessionId);
             }
 
-            CSharpDbLoggingOptions logging = options!.Logging;
+            CSharpDbLoggingOptions logging = options.Logging;
+            CSharpDbDiagnosticEventPublisher publisher =
+                CSharpDbDiagnostics.EventPublisher;
+            bool publishQueryEvents = logging.Enabled && logging.Queries &&
+                (publisher.IsEnabled(CSharpDbLogEvents.QueryCompleted) ||
+                 publisher.IsEnabled(CSharpDbLogEvents.QueryFailed) ||
+                 publisher.IsEnabled(CSharpDbLogEvents.QueryCanceled));
+            bool publishSlowQueryEvents = logging.Enabled &&
+                logging.SlowQueries &&
+                publisher.IsEnabled(CSharpDbLogEvents.SlowQuery);
+            bool publishLongRunningQueryEvents = logging.Enabled &&
+                logging.SlowQueries &&
+                publisher.IsEnabled(CSharpDbLogEvents.LongRunningQuery);
             QueryFingerprint? fingerprint = null;
             string? capturedSqlText = null;
 
@@ -95,13 +188,23 @@ internal sealed class AdoCommandObservation : IDisposable
                         QueryFingerprintResult normalized =
                             SqlQueryFingerprintProvider.Instance.NormalizeAndFingerprint(sql);
                         fingerprint = normalized.Fingerprint;
-                        capturedSqlText = normalized.NormalizedText;
+                        if (runtimeHistoryEnabled ||
+                            publishQueryEvents ||
+                            publishSlowQueryEvents)
+                        {
+                            capturedSqlText = normalized.NormalizedText;
+                        }
                     }
                     else
                     {
                         fingerprint = SqlQueryFingerprintProvider.Instance.CreateFingerprint(sql);
-                        if (logging.SqlText == SqlTextCaptureMode.Raw)
+                        if (logging.SqlText == SqlTextCaptureMode.Raw &&
+                            (runtimeHistoryEnabled ||
+                             publishQueryEvents ||
+                             publishSlowQueryEvents))
+                        {
                             capturedSqlText = sql;
+                        }
                     }
                 }
                 catch
@@ -117,28 +220,55 @@ internal sealed class AdoCommandObservation : IDisposable
             CSharpDbOperationContext context = CSharpDbOperationContext.CreateRoot(
                 CSharpDbOperationClass.Query,
                 CSharpDbOperationScope.CurrentTransport,
-                options.DatabaseAlias,
+                runtimeDiagnosticsState?.DatabaseAlias ?? options.DatabaseAlias,
                 CSharpDbOperationScope.CurrentSessionId,
-                fingerprint);
-            operationScope = CSharpDbOperationScope.Enter(context);
+                fingerprint,
+                runtimeDiagnosticsState?.TimeProvider);
+            if (runtimeHistoryEnabled)
+            {
+                runtimeOperation = QueryRuntimeDiagnostics
+                    .GetOrCreate(runtimeDiagnosticsState!)
+                    .TryStart(
+                        context,
+                        QueryExecutionPhase.Queued,
+                        logging.SqlText,
+                        capturedSqlText,
+                        suppressDiagnosticEvents: false,
+                        publishLongRunningQueryEvents,
+                        out _);
+            }
+            operationScope = CSharpDbOperationScope.Enter(
+                context,
+                runtimeOperation,
+                new CSharpDbQueryEventInterestSnapshot(
+                    publishQueryEvents,
+                    publishSlowQueryEvents,
+                    publishLongRunningQueryEvents),
+                deferredEventBoundary);
 
             var observation = new AdoCommandObservation(
                 context,
-                logging.Enabled && logging.Queries,
-                logging.Enabled && logging.SlowQueries,
+                publishQueryEvents,
+                publishSlowQueryEvents,
                 logging.GetSlowQueryThreshold(CSharpDbOperationClass.Query),
                 logging.SqlText,
                 capturedSqlText,
+                runtimeDiagnosticsState,
+                runtimeOperation,
                 operationScope,
-                boundaryScope);
+                boundaryScope,
+                deferredEventBoundary);
             operationScope = null;
             boundaryScope = null;
+            deferredEventBoundary = null;
             return observation;
         }
         catch
         {
+            runtimeOperation?.Abandon();
             operationScope?.Dispose();
             boundaryScope?.Dispose();
+            deferredEventBoundary?.Dispose();
             return null;
         }
     }
@@ -196,8 +326,30 @@ internal sealed class AdoCommandObservation : IDisposable
     /// Transfers terminal ownership to Engine immediately before Database is
     /// called. A failure after this point is observed by Engine, never here.
     /// </summary>
-    internal void MarkDispatchHandoff()
-        => Interlocked.CompareExchange(ref _ownershipState, 1, 0);
+    internal void MarkDispatchHandoff(Database database)
+    {
+        ArgumentNullException.ThrowIfNull(database);
+        if (_runtimeOperation is not null &&
+            !ReferenceEquals(
+                _runtimeDiagnosticsState,
+                database.RuntimeDiagnosticsState))
+        {
+            if (Interlocked.CompareExchange(ref _ownershipState, 2, 0) == 0)
+            {
+                try
+                {
+                    _runtimeOperation.Abandon();
+                }
+                catch
+                {
+                    // A racing family retirement cannot affect dispatch.
+                }
+            }
+            return;
+        }
+
+        Interlocked.CompareExchange(ref _ownershipState, 1, 0);
+    }
 
     internal void FailBeforeDispatch(Exception exception)
     {
@@ -209,16 +361,45 @@ internal sealed class AdoCommandObservation : IDisposable
         if (_context is null)
             return;
 
+        TimeSpan totalDuration;
+        DateTimeOffset completedAtUtc;
         try
         {
-            TimeSpan totalDuration = _context.GetElapsedTime();
-            TimeSpan queueDuration = GetQueueDuration(totalDuration);
-            TimeSpan executionAndConsumptionDuration = totalDuration - queueDuration;
-            DateTimeOffset completedAtUtc = _context.GetUtcNow();
-            SafeErrorProjection error = ProjectError(exception);
-            CSharpDbOperationOutcome outcome = exception is OperationCanceledException
-                ? CSharpDbOperationOutcome.Canceled
-                : CSharpDbOperationOutcome.Failed;
+            totalDuration = _context.GetElapsedTime();
+            completedAtUtc = _context.GetUtcNow();
+        }
+        catch
+        {
+            totalDuration = TimeSpan.Zero;
+            completedAtUtc = _context.StartedAtUtc;
+        }
+
+        TimeSpan queueDuration = GetQueueDuration(totalDuration);
+        TimeSpan executionAndConsumptionDuration = totalDuration - queueDuration;
+        SafeErrorProjection error = ProjectError(exception);
+        CSharpDbOperationOutcome outcome = exception is OperationCanceledException
+            ? CSharpDbOperationOutcome.Canceled
+            : CSharpDbOperationOutcome.Failed;
+        try
+        {
+            _runtimeOperation?.Complete(
+                outcome,
+                completedAtUtc,
+                totalDuration,
+                timeToFirstResult: null,
+                rowsProduced: 0,
+                rowsAffected: 0,
+                error,
+                isSlow: totalDuration >= _slowQueryThreshold);
+        }
+        catch
+        {
+            // Runtime history is best effort and must not replace the
+            // original binding, classification, or admission failure.
+        }
+
+        try
+        {
             CSharpDbDiagnosticEventPublisher publisher = CSharpDbDiagnostics.EventPublisher;
 
             if (_queryEventsEnabled)
@@ -290,8 +471,33 @@ internal sealed class AdoCommandObservation : IDisposable
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
-        _operationScope?.Dispose();
-        _boundaryScope.Dispose();
+        if (Interlocked.CompareExchange(ref _ownershipState, 2, 0) == 0)
+        {
+            try
+            {
+                _runtimeOperation?.Abandon();
+            }
+            catch
+            {
+                // Abandonment is diagnostic cleanup only.
+            }
+        }
+
+        try
+        {
+            _operationScope?.Dispose();
+        }
+        finally
+        {
+            try
+            {
+                _boundaryScope.Dispose();
+            }
+            finally
+            {
+                _deferredEventBoundary?.Dispose();
+            }
+        }
     }
 
     private TimeSpan GetQueueDuration()
@@ -376,3 +582,8 @@ internal sealed class AdoCommandObservation : IDisposable
         return SafeErrorProjector.Project(kind);
     }
 }
+
+internal readonly record struct AdoRuntimeDiagnosticsStateInfoForTest(
+    string ServerInstanceId,
+    string DatabaseAlias,
+    int ActiveQueryCapacity);

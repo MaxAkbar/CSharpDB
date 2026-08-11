@@ -106,6 +106,26 @@ public sealed record CSharpDbOperationContext
             parent._timeProvider);
     }
 
+    internal static CSharpDbOperationContext CreateRequest(
+        CSharpDbOperationContext parent,
+        CSharpDbOperationClass operationClass,
+        TimeProvider timeProvider)
+    {
+        ArgumentNullException.ThrowIfNull(parent);
+        ArgumentNullException.ThrowIfNull(timeProvider);
+
+        return Create(
+            parent.OperationId,
+            operationClass,
+            CSharpDbOperationRole.Request,
+            parent.Transport,
+            parent.DatabaseAlias,
+            parent.SessionId,
+            queryFingerprint: null,
+            parent.TraceId,
+            timeProvider);
+    }
+
     public static CSharpDbOperationContext CreateStatement(
         CSharpDbOperationContext parent,
         QueryFingerprint queryFingerprint)
@@ -120,6 +140,25 @@ public sealed record CSharpDbOperationContext
     {
         ArgumentNullException.ThrowIfNull(parent);
         return CreateStatementCore(parent, queryFingerprint: null);
+    }
+
+    internal static CSharpDbOperationContext CreateStatement(
+        CSharpDbOperationContext parent,
+        QueryFingerprint? queryFingerprint,
+        TimeProvider timeProvider)
+    {
+        ArgumentNullException.ThrowIfNull(parent);
+        ArgumentNullException.ThrowIfNull(timeProvider);
+        return Create(
+            parent.OperationId,
+            CSharpDbOperationClass.Query,
+            CSharpDbOperationRole.Statement,
+            parent.Transport,
+            parent.DatabaseAlias,
+            parent.SessionId,
+            queryFingerprint,
+            parent.TraceId,
+            timeProvider);
     }
 
     public static CSharpDbOperationContext CreateInternal(
@@ -162,8 +201,124 @@ public sealed record CSharpDbOperationContext
     public TimeSpan GetElapsedTime()
         => _timeProvider.GetElapsedTime(StartingTimestamp);
 
+    internal long GetTimestamp()
+        => _timeProvider.GetTimestamp();
+
+    internal TimeSpan GetElapsedTime(long endingTimestamp)
+        => _timeProvider.GetElapsedTime(StartingTimestamp, endingTimestamp);
+
     public DateTimeOffset GetUtcNow()
         => _timeProvider.GetUtcNow();
+
+    internal static CSharpDbOperationContext CreateCapturedRoot(
+        OpaqueDiagnosticsId operationId,
+        CSharpDbTransport transport,
+        string databaseAlias,
+        QueryFingerprint? queryFingerprint,
+        TimeProvider timeProvider,
+        DateTimeOffset startedAtUtc,
+        long startingTimestamp)
+    {
+        ArgumentNullException.ThrowIfNull(operationId);
+        ArgumentNullException.ThrowIfNull(timeProvider);
+        if (transport == CSharpDbTransport.Unknown || !Enum.IsDefined(transport))
+            throw new ArgumentOutOfRangeException(nameof(transport));
+        if (!CSharpDbObservabilityOptions.IsValidDatabaseAlias(databaseAlias))
+            throw new ArgumentException("A safe database alias is required.", nameof(databaseAlias));
+
+        return new CSharpDbOperationContext(
+            operationId,
+            parentOperationId: null,
+            CSharpDbOperationClass.Query,
+            CSharpDbOperationRole.Root,
+            startedAtUtc,
+            startingTimestamp,
+            traceId: null,
+            transport,
+            databaseAlias,
+            sessionId: null,
+            queryFingerprint,
+            timeProvider);
+    }
+
+    /// <summary>
+    /// Runtime ownership is mutable implementation state and must not change
+    /// this public record's immutable correlation value semantics.
+    /// </summary>
+    public bool Equals(CSharpDbOperationContext? other)
+        => other is not null &&
+           EqualityContract == other.EqualityContract &&
+           EqualityComparer<TimeProvider>.Default.Equals(
+               _timeProvider,
+               other._timeProvider) &&
+           EqualityComparer<OpaqueDiagnosticsId>.Default.Equals(
+               OperationId,
+               other.OperationId) &&
+           EqualityComparer<OpaqueDiagnosticsId?>.Default.Equals(
+               ParentOperationId,
+               other.ParentOperationId) &&
+           OperationClass == other.OperationClass &&
+           Role == other.Role &&
+           StartedAtUtc == other.StartedAtUtc &&
+           StartingTimestamp == other.StartingTimestamp &&
+           EqualityComparer<DiagnosticsTraceId?>.Default.Equals(
+               TraceId,
+               other.TraceId) &&
+           Transport == other.Transport &&
+           string.Equals(DatabaseAlias, other.DatabaseAlias, StringComparison.Ordinal) &&
+           EqualityComparer<OpaqueDiagnosticsId?>.Default.Equals(
+               SessionId,
+               other.SessionId) &&
+           EqualityComparer<QueryFingerprint?>.Default.Equals(
+               QueryFingerprint,
+               other.QueryFingerprint);
+
+    public override int GetHashCode()
+    {
+        var hash = new HashCode();
+        hash.Add(EqualityContract);
+        hash.Add(_timeProvider);
+        hash.Add(OperationId);
+        hash.Add(ParentOperationId);
+        hash.Add(OperationClass);
+        hash.Add(Role);
+        hash.Add(StartedAtUtc);
+        hash.Add(StartingTimestamp);
+        hash.Add(TraceId);
+        hash.Add(Transport);
+        hash.Add(DatabaseAlias, StringComparer.Ordinal);
+        hash.Add(SessionId);
+        hash.Add(QueryFingerprint);
+        return hash.ToHashCode();
+    }
+
+    /// <summary>
+    /// Claims the single runtime-history owner for this exact logical
+    /// operation. The claim lives with the immutable correlation context so
+    /// duplicate registries do not need a per-operation weak-table entry.
+    /// A registry rebind transfers the already-held claim explicitly.
+    /// </summary>
+    internal bool TryClaimRuntimeDiagnostics(object owner)
+    {
+        ArgumentNullException.ThrowIfNull(owner);
+        return OperationId.TryClaimRuntimeDiagnostics(owner);
+    }
+
+    internal bool TryTransferRuntimeDiagnostics(
+        object previousOwner,
+        object newOwner)
+    {
+        ArgumentNullException.ThrowIfNull(previousOwner);
+        ArgumentNullException.ThrowIfNull(newOwner);
+
+        return OperationId.TryTransferRuntimeDiagnostics(previousOwner, newOwner);
+    }
+
+    internal void ReleaseRuntimeDiagnostics(object owner)
+    {
+        ArgumentNullException.ThrowIfNull(owner);
+        OperationId.ReleaseRuntimeDiagnostics(owner);
+    }
 
     private static CSharpDbOperationContext Create(
         OpaqueDiagnosticsId? parentOperationId,
@@ -212,7 +367,31 @@ public sealed class CSharpDbCounterEpoch
 {
     private long _value;
 
+    public CSharpDbCounterEpoch()
+    {
+    }
+
+    internal CSharpDbCounterEpoch(long initialValue)
+    {
+        if (initialValue < 0)
+            throw new ArgumentOutOfRangeException(nameof(initialValue));
+
+        _value = initialValue;
+    }
+
     public long Value => Interlocked.Read(ref _value);
 
-    public long Advance() => Interlocked.Increment(ref _value);
+    public long Advance()
+    {
+        while (true)
+        {
+            long current = Interlocked.Read(ref _value);
+            if (current == long.MaxValue)
+                return current;
+
+            long next = current + 1;
+            if (Interlocked.CompareExchange(ref _value, next, current) == current)
+                return next;
+        }
+    }
 }

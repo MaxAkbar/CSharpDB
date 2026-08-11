@@ -10,7 +10,7 @@ using CSharpDbTransport = CSharpDB.Client.CSharpDbTransport;
 
 namespace CSharpDB.Data;
 
-public sealed class CSharpDbConnection : DbConnection
+public sealed partial class CSharpDbConnection : DbConnection
 {
     private static readonly ConditionalWeakTable<CSharpDbConnection, OpaqueDiagnosticsId>
         s_diagnosticsSessionIds = new();
@@ -336,8 +336,10 @@ public sealed class CSharpDbConnection : DbConnection
 
         try
         {
+            ICSharpDbSession session = GetSession();
             return AdoCommandObservation.TryStart(
                 options,
+                session.RuntimeDiagnosticsState,
                 commandText,
                 GetOrCreateDiagnosticsSessionId());
         }
@@ -368,14 +370,18 @@ public sealed class CSharpDbConnection : DbConnection
     private IDisposable? EnterDatabaseOpenBoundary(
         DatabaseOptions? runtimeDatabaseOptions)
     {
-        if (!DataLifecycleDiagnosticBoundary.IsDatabaseOpenBoundaryEnabled(
-                runtimeDatabaseOptions))
+        if (runtimeDatabaseOptions?.ObservabilityOptions?.Enabled != true)
         {
             return null;
         }
 
-        return DataLifecycleDiagnosticBoundary.EnterEnabledBoundary(
-            GetOrCreateDiagnosticsSessionId());
+        OpaqueDiagnosticsId sessionId = GetOrCreateDiagnosticsSessionId();
+        return DataLifecycleDiagnosticBoundary.IsDatabaseOpenBoundaryEnabled(
+                runtimeDatabaseOptions)
+            ? DataLifecycleDiagnosticBoundary.EnterEnabledBoundary(sessionId)
+            : CSharpDbOperationScope.EnterTransport(
+                CSharpDB.Observability.CSharpDbTransport.Direct,
+                sessionId);
     }
 
     private IDisposable? EnterDatabaseCloseBoundary()
@@ -462,9 +468,17 @@ public sealed class CSharpDbConnection : DbConnection
             builder,
             directDatabaseOptions,
             hybridDatabaseOptions);
-
-        return CSharpDbConnectionPoolRegistry.GetIdleCountForTest(
-            CreatePoolKey(target.Key, builder.MaxPoolSize, configuration));
+        try
+        {
+            return CSharpDbConnectionPoolRegistry.GetIdleCountForTest(
+                CreatePoolKey(target.Key, builder.MaxPoolSize, configuration));
+        }
+        finally
+        {
+            // This helper resolves only a comparison key; no physical family
+            // can adopt a resolver-created diagnostics state.
+            configuration.RuntimeDiagnosticsStateOwner?.Dispose();
+        }
     }
 
     // ─── Schema introspection ─────────────────────────────────────
@@ -577,6 +591,7 @@ public sealed class CSharpDbConnection : DbConnection
                 NormalizeOptionalFilePath(builder.LoadFrom),
                 plan.Configuration.ExplicitDirectDatabaseOptions,
                 plan.Configuration.RuntimeDirectDatabaseOptions,
+                plan.Configuration.RuntimeDiagnosticsStateOwner,
                 cancellationToken),
             _ => throw new InvalidOperationException("Unsupported connection target."),
         };
@@ -600,14 +615,18 @@ public sealed class CSharpDbConnection : DbConnection
                 key,
                 ct => OpenEmbeddedDatabaseAsync(normalizedPath, configuration, ct),
                 configuration.RuntimeDirectDatabaseOptions.ObservabilityOptions,
-                cancellationToken);
+                cancellationToken,
+                configuration.RuntimeDirectDatabaseOptions.RuntimeDiagnosticsState?.TimeProvider,
+                configuration.RuntimeDiagnosticsStateOwner);
         }
 
         return await CSharpDbConnectionPoolRegistry.OpenDirectSessionAsync(
             normalizedPath,
             ct => OpenEmbeddedDatabaseAsync(normalizedPath, configuration, ct),
             configuration.RuntimeDirectDatabaseOptions.ObservabilityOptions,
-            cancellationToken);
+            cancellationToken,
+            configuration.RuntimeDirectDatabaseOptions.RuntimeDiagnosticsState?.TimeProvider,
+            configuration.RuntimeDiagnosticsStateOwner);
     }
 
     private static async ValueTask<ICSharpDbSession> OpenPreparedPooledSessionAsync(
@@ -618,7 +637,9 @@ public sealed class CSharpDbConnection : DbConnection
             plan.PoolKey,
             ct => OpenEmbeddedDatabaseAsync(plan.NormalizedPath, plan.Configuration, ct),
             plan.Configuration.RuntimeDirectDatabaseOptions.ObservabilityOptions,
-            cancellationToken);
+            cancellationToken,
+            plan.Configuration.RuntimeDirectDatabaseOptions.RuntimeDiagnosticsState?.TimeProvider,
+            plan.Configuration.RuntimeDiagnosticsStateOwner);
     }
 
     private static async ValueTask<Engine.Database> OpenEmbeddedDatabaseAsync(
@@ -643,20 +664,36 @@ public sealed class CSharpDbConnection : DbConnection
         ResolvedEmbeddedConfiguration configuration,
         CancellationToken cancellationToken)
     {
-        CSharpDbObservabilityOptions? observabilityOptionsSnapshot =
-            configuration.RuntimeDirectDatabaseOptions.ObservabilityOptions;
-        Engine.Database database = string.IsNullOrWhiteSpace(loadFromPath)
-            ? await Engine.Database.OpenInMemoryAsync(
-                configuration.RuntimeDirectDatabaseOptions,
-                cancellationToken)
-            : await Engine.Database.LoadIntoMemoryAsync(
-                NormalizeDataSourcePath(loadFromPath),
-                configuration.RuntimeDirectDatabaseOptions,
-                cancellationToken);
+        try
+        {
+            CSharpDbObservabilityOptions? observabilityOptionsSnapshot =
+                configuration.RuntimeDirectDatabaseOptions.ObservabilityOptions;
+            Engine.Database database = string.IsNullOrWhiteSpace(loadFromPath)
+                ? await Engine.Database.OpenInMemoryAsync(
+                    configuration.RuntimeDirectDatabaseOptions,
+                    cancellationToken)
+                : await Engine.Database.LoadIntoMemoryAsync(
+                    NormalizeDataSourcePath(loadFromPath),
+                    configuration.RuntimeDirectDatabaseOptions,
+                    cancellationToken);
 
-        return new DirectDatabaseSession(
-            database,
-            observabilityOptionsSnapshot: observabilityOptionsSnapshot);
+            var session = new DirectDatabaseSession(
+                database,
+                observabilityOptionsSnapshot: observabilityOptionsSnapshot,
+                diagnosticsTimeProvider:
+                    configuration.RuntimeDirectDatabaseOptions.RuntimeDiagnosticsState?.TimeProvider,
+                runtimeDiagnosticsStateOwner:
+                    configuration.RuntimeDiagnosticsStateOwner,
+                diagnosticsDisposed:
+                    CSharpDbConnectionPoolRegistry.UnregisterDirectDiagnosticsSession);
+            CSharpDbConnectionPoolRegistry.TryRegisterDirectDiagnosticsSession(session);
+            return session;
+        }
+        catch
+        {
+            configuration.RuntimeDiagnosticsStateOwner?.Dispose();
+            throw;
+        }
     }
 
     private async ValueTask<ICSharpDbSession> OpenRemoteSessionAsync(
@@ -706,7 +743,16 @@ public sealed class CSharpDbConnection : DbConnection
     private SharedPooledOpenPlan? GetSharedPooledOpenPlan()
     {
         if (_sharedPooledOpenPlan is not null)
-            return _sharedPooledOpenPlan;
+        {
+            if (_sharedPooledOpenPlan.Configuration.RuntimeDiagnosticsStateOwner
+                    is not { IsDisposed: true })
+            {
+                return _sharedPooledOpenPlan;
+            }
+
+            _sharedPooledOpenPlan = null;
+            s_sharedPooledOpenPlans.Remove(_connectionString);
+        }
 
         if (DirectDatabaseOptions is not null || HybridDatabaseOptions is not null)
             return null;
@@ -715,6 +761,12 @@ public sealed class CSharpDbConnection : DbConnection
                 _connectionString,
                 out SharedPooledOpenPlan? sharedPooledPlan))
         {
+            if (sharedPooledPlan.Configuration.RuntimeDiagnosticsStateOwner
+                    is { IsDisposed: true })
+            {
+                s_sharedPooledOpenPlans.Remove(_connectionString);
+                return null;
+            }
             _sharedPooledOpenPlan = sharedPooledPlan;
         }
 
@@ -742,13 +794,24 @@ public sealed class CSharpDbConnection : DbConnection
             embedded.Target.Key,
             embedded.Configuration,
             poolKey);
-        _sharedPooledOpenPlan = s_sharedPooledOpenPlans.GetValue(
+        SharedPooledOpenPlan adopted = s_sharedPooledOpenPlans.GetValue(
             _connectionString,
             _ => candidate);
+        _sharedPooledOpenPlan = adopted;
+        // A concurrent loser still opens with its per-connection candidate.
+        // The pool registry disposes that owner only after an existing family
+        // has successfully accepted the session (or the open definitively
+        // fails), avoiding a disposed state between resolution and adoption.
     }
 
     private ConnectionOpenPlan GetConnectionOpenPlan()
     {
+        if (_connectionOpenPlan?.Embedded?.Configuration
+                .RuntimeDiagnosticsStateOwner is { IsDisposed: true })
+        {
+            _connectionOpenPlan = null;
+        }
+
         if (_connectionOpenPlan is { CurrentDirectoryKey: null } absoluteOrNonFilePlan)
             return absoluteOrNonFilePlan;
 
@@ -780,7 +843,15 @@ public sealed class CSharpDbConnection : DbConnection
                 DirectDatabaseOptions,
                 HybridDatabaseOptions);
 
-            ValidateEmbeddedTuningSupport(target, configuration);
+            try
+            {
+                ValidateEmbeddedTuningSupport(target, configuration);
+            }
+            catch
+            {
+                configuration.RuntimeDiagnosticsStateOwner?.Dispose();
+                throw;
+            }
             PoolKey? poolKey = target.Kind == ConnectionTargetKind.File
                 && string.IsNullOrWhiteSpace(builder.LoadFrom)
                 && builder.Pooling

@@ -1,4 +1,5 @@
 using CSharpDB.Client;
+using CSharpDB.Api.Diagnostics;
 using CSharpDB.Observability;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Configuration;
@@ -34,6 +35,16 @@ public static class CSharpDbObservabilityHostExtensions
             return options;
         });
         services.TryAddSingleton<CSharpDbDiagnosticLoggerBridge>();
+        services.TryAddSingleton<CSharpDbHostRequestDiagnostics>(serviceProvider =>
+        {
+            CSharpDbObservabilityOptions options = serviceProvider
+                .GetRequiredService<CSharpDbObservabilityOptions>();
+            return new CSharpDbHostRequestDiagnostics(
+                options.History.ActiveQueryCapacity);
+        });
+        services.TryAddSingleton<ICSharpDbHostRequestDiagnosticsContributor>(
+            serviceProvider => serviceProvider
+                .GetRequiredService<CSharpDbHostRequestDiagnostics>());
         return services;
     }
 

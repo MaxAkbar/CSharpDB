@@ -45,6 +45,40 @@ public sealed class OperationScopeTests
     }
 
     [Fact]
+    public void InternalRuntimeOperation_FlowsWithExactContextAndRestores()
+    {
+        CSharpDbOperationContext context = CSharpDbOperationContext.CreateRoot(
+            CSharpDbOperationClass.Query,
+            CSharpDbTransport.Direct,
+            "primary");
+        var runtimeOperation = new object();
+
+        Assert.Null(CSharpDbOperationScope.CurrentQueryRuntimeOperation);
+        using (CSharpDbOperationScope.Enter(context, runtimeOperation))
+        {
+            Assert.Same(context, CSharpDbOperationScope.Current);
+            Assert.Same(
+                runtimeOperation,
+                CSharpDbOperationScope.CurrentQueryRuntimeOperation);
+
+            CSharpDbOperationContext child =
+                CSharpDbOperationContext.CreateStatement(context);
+            using (CSharpDbOperationScope.Enter(child))
+            {
+                Assert.Same(child, CSharpDbOperationScope.Current);
+                Assert.Null(CSharpDbOperationScope.CurrentQueryRuntimeOperation);
+            }
+
+            Assert.Same(
+                runtimeOperation,
+                CSharpDbOperationScope.CurrentQueryRuntimeOperation);
+        }
+
+        Assert.Null(CSharpDbOperationScope.Current);
+        Assert.Null(CSharpDbOperationScope.CurrentQueryRuntimeOperation);
+    }
+
+    [Fact]
     public void Scope_OutOfOrderAndRepeatedDisposalCannotLeakAmbientState()
     {
         IDisposable outer = CSharpDbOperationScope.EnterTransport(CSharpDbTransport.Http);
@@ -354,6 +388,7 @@ public sealed class OperationScopeTests
                 name == CSharpDbLogEvents.QueryFailed.Name ||
                 name == CSharpDbLogEvents.QueryCanceled.Name ||
                 name == CSharpDbLogEvents.SlowQuery.Name ||
+                name == CSharpDbLogEvents.LongRunningQuery.Name ||
                 name == CSharpDbLogEvents.HostStarting.Name ||
                 name == CSharpDbLogEvents.TransactionCompleted.Name);
 
@@ -383,10 +418,12 @@ public sealed class OperationScopeTests
                         PublishCanceled(statement);
                         break;
                 }
+                PublishLongRunning(statement);
                 PublishSlow(statement);
             }
 
             PublishCompleted(parent);
+            PublishLongRunning(parent);
             PublishSlow(parent);
 
             // Model enclosing logical work that shares the same outer boundary.
@@ -397,6 +434,7 @@ public sealed class OperationScopeTests
                     CSharpDbTransport.Direct,
                     "primary");
                 PublishCompleted(outer);
+                PublishLongRunning(outer);
                 PublishSlow(outer);
             }
 
@@ -438,8 +476,13 @@ public sealed class OperationScopeTests
             .Select(static item => item.Value)
             .OfType<CSharpDbSlowQueryEvent>()
             .ToArray();
+        CSharpDbLongRunningQueryEvent[] longRunning = received
+            .Select(static item => item.Value)
+            .OfType<CSharpDbLongRunningQueryEvent>()
+            .ToArray();
         Assert.Equal(statementCount + 1 + boundaryHeadroom, terminals.Length);
         Assert.Equal(statementCount + 1 + boundaryHeadroom, slow.Length);
+        Assert.Equal(statementCount + 1 + boundaryHeadroom, longRunning.Length);
         Assert.Equal(
             boundaryHeadroom / 2,
             received.Count(static item =>
@@ -459,6 +502,12 @@ public sealed class OperationScopeTests
             item => item.Context.OperationId == firstStatementId);
         Assert.Contains(
             slow,
+            item => item.Context.OperationId == parent.OperationId);
+        Assert.Contains(
+            longRunning,
+            item => item.Context.OperationId == firstStatementId);
+        Assert.Contains(
+            longRunning,
             item => item.Context.OperationId == parent.OperationId);
     }
 
@@ -533,6 +582,16 @@ public sealed class OperationScopeTests
                 TimeSpan.Zero,
                 rowsProduced: 0,
                 rowsAffected: 0));
+
+    private static void PublishLongRunning(CSharpDbOperationContext context)
+        => CSharpDbDiagnostics.EventPublisher.Publish(
+            CSharpDbLogEvents.LongRunningQuery,
+            () => new CSharpDbLongRunningQueryEvent(
+                context,
+                context.GetUtcNow(),
+                TimeSpan.FromSeconds(1),
+                TimeSpan.FromSeconds(1),
+                QueryExecutionPhase.Executing));
 
     private static void PublishFailed(CSharpDbOperationContext context)
         => CSharpDbDiagnostics.EventPublisher.Publish(

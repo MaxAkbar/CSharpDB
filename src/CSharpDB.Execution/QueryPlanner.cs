@@ -873,6 +873,17 @@ public sealed partial class QueryPlanner
     public AdaptiveQueryReoptimizationOptions AdaptiveQueryReoptimization { get; }
     public WindowExecutionOptions WindowExecution { get; }
 
+    /// <summary>
+    /// Planner-lifetime observer. Hosts must install one stable adapter when the
+    /// planner is created and must never swap per-query observers while query
+    /// results can still be streamed.
+    /// </summary>
+    internal IQueryPlanRuntimeObserver? PlanRuntimeObserver
+    {
+        get => _adaptiveRuntimeDiagnostics.RuntimeObserver;
+        set => _adaptiveRuntimeDiagnostics.RuntimeObserver = value;
+    }
+
     public QueryPlanner(
         Pager pager,
         SchemaCatalog catalog,
@@ -994,6 +1005,87 @@ public sealed partial class QueryPlanner
         InvalidateSchemaSensitiveCachesIfNeeded();
 
         return ExecuteCoreAsync(stmt, ct);
+    }
+
+    /// <summary>
+    /// Executes one conservatively classified, single-table read while
+    /// attributing planner callbacks to the supplied immutable query token.
+    /// The planner-wide observer remains unchanged so concurrent and nested
+    /// executions cannot steal each other's runtime attribution.
+    /// </summary>
+    internal ValueTask<QueryResult> ExecuteSimpleReadAsync(
+        SelectStatement statement,
+        IQueryPlanRuntimeObserver runtimeObserver,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(statement);
+        ArgumentNullException.ThrowIfNull(runtimeObserver);
+        if (!CanExecuteSimpleReadWithExplicitObserver(statement))
+        {
+            throw new InvalidOperationException(
+                "The statement is not eligible for explicit simple-read attribution.");
+        }
+
+        InvalidateSchemaSensitiveCachesIfNeeded();
+        WindowExpressionSupport.ValidateQuery(statement);
+        ValidateStarAggregateProjection(statement);
+        return ValueTask.FromResult(ExecuteSelect(
+            statement,
+            suppressAdaptiveReoptimization: false,
+            explicitRuntimeObserver: runtimeObserver));
+    }
+
+    internal bool CanExecuteSimpleReadWithExplicitObserver(SelectStatement statement)
+    {
+        ArgumentNullException.ThrowIfNull(statement);
+        if (statement.From is not SimpleTableRef table ||
+            _cteData is not null ||
+            HasTemporaryTables ||
+            _catalog.IsView(table.TableName) ||
+            IsSystemCatalogTable(table.TableName) ||
+            IsExternalTable(table.TableName) ||
+            statement.IsDistinct ||
+            statement.GroupBy is not null ||
+            statement.Having is not null ||
+            statement.WindowDefinitions.Count != 0 ||
+            statement.OrderBy is not null ||
+            statement.Offset is not null)
+        {
+            return false;
+        }
+
+        for (int columnIndex = 0; columnIndex < statement.Columns.Count; columnIndex++)
+        {
+            SelectColumn column = statement.Columns[columnIndex];
+            if (!column.IsStar && column.Expression is not ColumnRefExpression)
+                return false;
+        }
+
+        return statement.Where is null ||
+               IsExplicitSimpleReadPredicate(statement.Where);
+    }
+
+    private static bool IsExplicitSimpleReadPredicate(Expression expression)
+    {
+        if (expression is not BinaryExpression binary)
+            return false;
+        if (binary.Op == BinaryOp.And)
+        {
+            return IsExplicitSimpleReadPredicate(binary.Left) &&
+                   IsExplicitSimpleReadPredicate(binary.Right);
+        }
+
+        if (binary.Op is not (BinaryOp.Equals or BinaryOp.NotEquals or
+            BinaryOp.LessThan or BinaryOp.GreaterThan or
+            BinaryOp.LessOrEqual or BinaryOp.GreaterOrEqual))
+        {
+            return false;
+        }
+
+        return binary.Left is ColumnRefExpression &&
+                   binary.Right is LiteralExpression or ParameterExpression ||
+               binary.Right is ColumnRefExpression &&
+                   binary.Left is LiteralExpression or ParameterExpression;
     }
 
     private async ValueTask<QueryResult> ExecuteCoreAsync(Statement stmt, CancellationToken ct)
@@ -6722,80 +6814,140 @@ public sealed partial class QueryPlanner
         return scopes;
     }
 
-    private QueryResult ExecuteSelect(SelectStatement stmt, bool suppressAdaptiveReoptimization = false)
+    private QueryResult ExecuteSelect(
+        SelectStatement stmt,
+        bool suppressAdaptiveReoptimization = false,
+        IQueryPlanRuntimeObserver? explicitRuntimeObserver = null)
     {
         if (WindowExpressionSupport.ContainsWindowFunctions(stmt))
-            return ExecuteSelectGeneral(stmt, suppressAdaptiveReoptimization);
+            return ObserveSelectedPlan(
+                ExecuteSelectGeneral(stmt, suppressAdaptiveReoptimization),
+                SelectPlanKind.General,
+                explicitRuntimeObserver: explicitRuntimeObserver);
 
         if (_cteData != null)
-            return ExecuteSelectGeneral(stmt, suppressAdaptiveReoptimization);
+            return ObserveSelectedPlan(
+                ExecuteSelectGeneral(stmt, suppressAdaptiveReoptimization),
+                SelectPlanKind.General,
+                explicitRuntimeObserver: explicitRuntimeObserver);
 
         if (HasTemporaryTables && TableRefContainsTemporaryTable(stmt.From))
-            return ExecuteSelectGeneral(stmt, suppressAdaptiveReoptimization);
+            return ObserveSelectedPlan(
+                ExecuteSelectGeneral(stmt, suppressAdaptiveReoptimization),
+                SelectPlanKind.General,
+                QueryPlanAccessPathCategory.Temporary,
+                explicitRuntimeObserver);
 
         if (_selectPlanCache.TryGetValue(stmt, out var cachedPlan))
         {
             _selectPlanCacheHitCount++;
-            return ExecuteSelectWithCachedPlan(stmt, cachedPlan, suppressAdaptiveReoptimization);
+            ObservePlanCacheLookup(
+                hit: true,
+                explicitRuntimeObserver: explicitRuntimeObserver);
+            return ExecuteSelectWithCachedPlan(
+                stmt,
+                cachedPlan,
+                suppressAdaptiveReoptimization,
+                explicitRuntimeObserver);
         }
 
         _selectPlanCacheMissCount++;
+        ObservePlanCacheLookup(
+            hit: false,
+            explicitRuntimeObserver: explicitRuntimeObserver);
 
         var result = ClassifyAndExecuteSelect(stmt, out var selectedPlan, suppressAdaptiveReoptimization);
         CacheSelectPlan(stmt, selectedPlan);
-        return result;
+        return ObserveSelectedPlan(
+            result,
+            selectedPlan,
+            explicitRuntimeObserver: explicitRuntimeObserver);
     }
 
     private QueryResult ExecuteSelectWithCachedPlan(
         SelectStatement stmt,
         SelectPlanKind cachedPlan,
-        bool suppressAdaptiveReoptimization)
+        bool suppressAdaptiveReoptimization,
+        IQueryPlanRuntimeObserver? explicitRuntimeObserver)
     {
         switch (cachedPlan)
         {
             case SelectPlanKind.FastExternalPrimaryKeyLookup:
                 if (TryFastExternalPkLookup(stmt, out var fastExternalPkResult))
-                    return fastExternalPkResult;
+                    return ObserveSelectedPlan(
+                        fastExternalPkResult,
+                        cachedPlan,
+                        explicitRuntimeObserver: explicitRuntimeObserver);
                 break;
             case SelectPlanKind.FastPrimaryKeyLookup:
                 if (TryFastPkLookup(stmt, out var fastPkResult))
-                    return fastPkResult;
+                    return ObserveSelectedPlan(
+                        fastPkResult,
+                        cachedPlan,
+                        explicitRuntimeObserver: explicitRuntimeObserver);
                 break;
             case SelectPlanKind.FastIndexedLookup:
                 if (TryFastIndexedLookup(stmt, out var fastIndexedResult))
-                    return fastIndexedResult;
+                    return ObserveSelectedPlan(
+                        fastIndexedResult,
+                        cachedPlan,
+                        explicitRuntimeObserver: explicitRuntimeObserver);
                 break;
             case SelectPlanKind.FastSimpleTableScan:
                 if (TryFastSimpleTableScan(stmt, out var fastTableScanResult))
-                    return fastTableScanResult;
+                    return ObserveSelectedPlan(
+                        fastTableScanResult,
+                        cachedPlan,
+                        explicitRuntimeObserver: explicitRuntimeObserver);
                 break;
             case SelectPlanKind.SimpleSystemCatalogCountStar:
                 if (TryBuildSimpleSystemCatalogCountStarQuery(stmt, out var systemCountResult))
-                    return systemCountResult;
+                    return ObserveSelectedPlan(
+                        systemCountResult,
+                        cachedPlan,
+                        explicitRuntimeObserver: explicitRuntimeObserver);
                 break;
             case SelectPlanKind.SimpleCountStar:
                 if (TryBuildSimpleCountStarQuery(stmt, out var countResult))
-                    return countResult;
+                    return ObserveSelectedPlan(
+                        countResult,
+                        cachedPlan,
+                        explicitRuntimeObserver: explicitRuntimeObserver);
                 break;
             case SelectPlanKind.SimpleScalarAggregateColumn:
                 if (TryBuildSimpleScalarAggregateColumnQuery(stmt, out var scalarAggResult))
-                    return scalarAggResult;
+                    return ObserveSelectedPlan(
+                        scalarAggResult,
+                        cachedPlan,
+                        explicitRuntimeObserver: explicitRuntimeObserver);
                 break;
             case SelectPlanKind.SimpleLookupScalarAggregateColumn:
                 if (TryBuildSimpleLookupScalarAggregateColumnQuery(stmt, out var lookupScalarAggResult))
-                    return lookupScalarAggResult;
+                    return ObserveSelectedPlan(
+                        lookupScalarAggResult,
+                        cachedPlan,
+                        explicitRuntimeObserver: explicitRuntimeObserver);
                 break;
             case SelectPlanKind.SimpleGroupedIndexAggregate:
                 if (TryBuildSimpleGroupedIndexAggregateQuery(stmt, out var groupedIndexAggResult) ||
                     TryBuildCompositeGroupedIndexAggregateQuery(stmt, out groupedIndexAggResult))
-                    return groupedIndexAggResult;
+                    return ObserveSelectedPlan(
+                        groupedIndexAggResult,
+                        cachedPlan,
+                        explicitRuntimeObserver: explicitRuntimeObserver);
                 break;
             case SelectPlanKind.SimpleConstantGroupAggregateColumn:
                 if (TryBuildSimpleConstantGroupAggregateColumnQuery(stmt, out var constantGroupAggResult))
-                    return constantGroupAggResult;
+                    return ObserveSelectedPlan(
+                        constantGroupAggResult,
+                        cachedPlan,
+                        explicitRuntimeObserver: explicitRuntimeObserver);
                 break;
             case SelectPlanKind.General:
-                return ExecuteSelectGeneral(stmt, suppressAdaptiveReoptimization);
+                return ObserveSelectedPlan(
+                    ExecuteSelectGeneral(stmt, suppressAdaptiveReoptimization),
+                    cachedPlan,
+                    explicitRuntimeObserver: explicitRuntimeObserver);
             default:
                 throw new InvalidOperationException($"Unknown select plan kind: {cachedPlan}");
         }
@@ -6803,10 +6955,237 @@ public sealed partial class QueryPlanner
         // Plan assumptions no longer hold (typically after cache invalidation edge cases).
         // Reclassify and refresh the cache entry.
         _selectPlanCacheReclassificationCount++;
+        ObservePlanChanged(
+            QueryPlanChangeKind.CachedPlanReclassified,
+            explicitRuntimeObserver);
         var result = ClassifyAndExecuteSelect(stmt, out var updatedPlan, suppressAdaptiveReoptimization);
         CacheSelectPlan(stmt, updatedPlan);
+        return ObserveSelectedPlan(
+            result,
+            updatedPlan,
+            explicitRuntimeObserver: explicitRuntimeObserver);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private QueryResult ObserveSelectedPlan(
+        QueryResult result,
+        SelectPlanKind planKind,
+        QueryPlanAccessPathCategory preferredAccessPath = QueryPlanAccessPathCategory.Unknown,
+        IQueryPlanRuntimeObserver? explicitRuntimeObserver = null)
+    {
+        IQueryPlanRuntimeObserver? observer =
+            explicitRuntimeObserver ?? PlanRuntimeObserver;
+        return observer is null
+            ? result
+            : ObserveSelectedPlanEnabled(observer, result, planKind, preferredAccessPath);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ObservePlanCacheLookup(
+        bool hit,
+        IQueryPlanRuntimeObserver? explicitRuntimeObserver = null)
+    {
+        IQueryPlanRuntimeObserver? observer =
+            explicitRuntimeObserver ?? PlanRuntimeObserver;
+        if (observer is not null)
+            QueryPlanRuntimeObserver.PlanCacheLookup(observer, hit);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ObservePlanChanged(
+        QueryPlanChangeKind change,
+        IQueryPlanRuntimeObserver? explicitRuntimeObserver = null)
+    {
+        IQueryPlanRuntimeObserver? observer =
+            explicitRuntimeObserver ?? PlanRuntimeObserver;
+        if (observer is not null)
+            QueryPlanRuntimeObserver.PlanChanged(observer, change);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private QueryResult ObserveDirectSelectedPlan(
+        QueryResult result,
+        QueryPlanAccessPathCategory accessPath,
+        long? estimatedRows,
+        IQueryPlanRuntimeObserver? explicitRuntimeObserver = null)
+    {
+        IQueryPlanRuntimeObserver? observer =
+            explicitRuntimeObserver ?? PlanRuntimeObserver;
+        if (observer is not null)
+        {
+            var selection = new QueryPlanRuntimeSelection(accessPath, estimatedRows);
+            QueryPlanRuntimeObserver.AccessPathSelected(observer, in selection);
+        }
+
         return result;
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ObserveSimpleLookupSelection(
+        bool isPrimaryKeyLookup,
+        IndexSchema? matchedIndex)
+    {
+        IQueryPlanRuntimeObserver? observer = PlanRuntimeObserver;
+        if (observer is null)
+            return;
+
+        var selection = new QueryPlanRuntimeSelection(
+            isPrimaryKeyLookup
+                ? QueryPlanAccessPathCategory.PrimaryKeyLookup
+                : QueryPlanAccessPathCategory.IndexSeek,
+            isPrimaryKeyLookup || matchedIndex?.IsUnique == true ? 1 : null);
+        QueryPlanRuntimeObserver.AccessPathSelected(observer, in selection);
+    }
+
+    private static QueryResult ObserveSelectedPlanEnabled(
+        IQueryPlanRuntimeObserver observer,
+        QueryResult result,
+        SelectPlanKind planKind,
+        QueryPlanAccessPathCategory preferredAccessPath)
+    {
+        QueryPlanRuntimeSelection selection;
+        try
+        {
+            QueryPlanAccessPathCategory accessPath = QueryPlanAccessPathCategory.Unknown;
+            long? estimatedRows = null;
+
+            if (result.PhysicalRootOperator is { } root)
+                InspectSelectedPlan(root, ref accessPath, ref estimatedRows);
+
+            if (preferredAccessPath != QueryPlanAccessPathCategory.Unknown)
+            {
+                accessPath = preferredAccessPath;
+            }
+            else if (accessPath == QueryPlanAccessPathCategory.Unknown)
+            {
+                accessPath = GetFallbackAccessPath(planKind);
+            }
+
+            estimatedRows ??= GetFallbackEstimatedRows(planKind);
+            selection = new QueryPlanRuntimeSelection(accessPath, estimatedRows);
+        }
+        catch
+        {
+            // Metadata collection is diagnostics-only and cannot fail planning.
+            selection = new QueryPlanRuntimeSelection(
+                preferredAccessPath != QueryPlanAccessPathCategory.Unknown
+                    ? preferredAccessPath
+                    : GetFallbackAccessPath(planKind),
+                GetFallbackEstimatedRows(planKind));
+        }
+
+        QueryPlanRuntimeObserver.AccessPathSelected(observer, in selection);
+        return result;
+    }
+
+    private static void InspectSelectedPlan(
+        IOperator source,
+        ref QueryPlanAccessPathCategory accessPath,
+        ref long? estimatedRows)
+    {
+        source = PhysicalPlanCapture.Unwrap(source);
+
+        PhysicalAccessPath physicalAccessPath = PhysicalAccessPath.None;
+        if (source is IPhysicalOperatorMetadataProvider provider)
+        {
+            PhysicalOperatorMetadata metadata = provider.GetPhysicalOperatorMetadata();
+            physicalAccessPath = metadata.AccessPath;
+            estimatedRows ??= metadata.EstimatedRows;
+        }
+
+        QueryPlanAccessPathCategory candidate = MapAccessPath(source, physicalAccessPath);
+        if (GetAccessPathPriority(candidate) > GetAccessPathPriority(accessPath))
+            accessPath = candidate;
+
+        if (source is not IPhysicalOperatorChildren children)
+            return;
+
+        IReadOnlyList<IOperator> physicalChildren = children.PhysicalChildren;
+        for (int i = 0; i < physicalChildren.Count; i++)
+            InspectSelectedPlan(physicalChildren[i], ref accessPath, ref estimatedRows);
+    }
+
+    private static QueryPlanAccessPathCategory MapAccessPath(
+        IOperator source,
+        PhysicalAccessPath physicalAccessPath)
+    {
+        if (physicalAccessPath != PhysicalAccessPath.None)
+        {
+            return physicalAccessPath switch
+            {
+                PhysicalAccessPath.TableScan => QueryPlanAccessPathCategory.TableScan,
+                PhysicalAccessPath.PrimaryKey => QueryPlanAccessPathCategory.PrimaryKeyLookup,
+                PhysicalAccessPath.UniqueIndex => QueryPlanAccessPathCategory.IndexSeek,
+                PhysicalAccessPath.Index => source is
+                    IndexOrderedScanOperator or IndexOrderedProjectionScanOperator
+                        ? QueryPlanAccessPathCategory.IndexScan
+                        : QueryPlanAccessPathCategory.IndexSeek,
+                PhysicalAccessPath.OrderedIndex => QueryPlanAccessPathCategory.IndexScan,
+                PhysicalAccessPath.TemporaryTable => QueryPlanAccessPathCategory.Temporary,
+                _ => QueryPlanAccessPathCategory.Unknown,
+            };
+        }
+
+        return source switch
+        {
+            PrimaryKeyLookupOperator or PrimaryKeyProjectionLookupOperator =>
+                QueryPlanAccessPathCategory.PrimaryKeyLookup,
+            UniqueIndexLookupOperator or UniqueIndexProjectionLookupOperator or
+                IndexScanOperator or IndexScanProjectionOperator or
+                HashedIndexProjectionLookupOperator or
+                IndexNestedLoopJoinOperator or HashedIndexNestedLoopJoinOperator or
+                ExternalIndexNestedLoopJoinOperator or AdaptiveIndexNestedLoopJoinOperator or
+                NumericRelationshipIndexJoinOperator =>
+                QueryPlanAccessPathCategory.IndexSeek,
+            IndexOrderedScanOperator or IndexOrderedProjectionScanOperator or
+                IndexKeyAggregateOperator or IndexGroupedAggregateOperator or
+                CompositeIndexGroupedAggregateOperator =>
+                QueryPlanAccessPathCategory.IndexScan,
+            CompactTableScanProjectionOperator or TableScanOperator =>
+                QueryPlanAccessPathCategory.TableScan,
+            _ => QueryPlanAccessPathCategory.Unknown,
+        };
+    }
+
+    private static int GetAccessPathPriority(QueryPlanAccessPathCategory accessPath)
+        => accessPath switch
+        {
+            QueryPlanAccessPathCategory.Unknown => 0,
+            QueryPlanAccessPathCategory.TableScan => 1,
+            QueryPlanAccessPathCategory.Temporary => 2,
+            QueryPlanAccessPathCategory.IndexScan => 3,
+            QueryPlanAccessPathCategory.IndexSeek => 4,
+            QueryPlanAccessPathCategory.PrimaryKeyLookup => 5,
+            QueryPlanAccessPathCategory.FullTextIndex => 6,
+            _ => 0,
+        };
+
+    private static QueryPlanAccessPathCategory GetFallbackAccessPath(SelectPlanKind planKind)
+        => planKind switch
+        {
+            SelectPlanKind.FastExternalPrimaryKeyLookup or
+                SelectPlanKind.FastPrimaryKeyLookup => QueryPlanAccessPathCategory.PrimaryKeyLookup,
+            SelectPlanKind.FastIndexedLookup or
+                SelectPlanKind.SimpleLookupScalarAggregateColumn => QueryPlanAccessPathCategory.IndexSeek,
+            SelectPlanKind.SimpleGroupedIndexAggregate => QueryPlanAccessPathCategory.IndexScan,
+            SelectPlanKind.FastSimpleTableScan or
+                SelectPlanKind.SimpleCountStar or
+                SelectPlanKind.SimpleScalarAggregateColumn => QueryPlanAccessPathCategory.TableScan,
+            _ => QueryPlanAccessPathCategory.Unknown,
+        };
+
+    private static long? GetFallbackEstimatedRows(SelectPlanKind planKind)
+        => planKind switch
+        {
+            SelectPlanKind.FastExternalPrimaryKeyLookup or
+                SelectPlanKind.FastPrimaryKeyLookup or
+                SelectPlanKind.SimpleSystemCatalogCountStar or
+                SelectPlanKind.SimpleCountStar or
+                SelectPlanKind.SimpleScalarAggregateColumn or
+                SelectPlanKind.SimpleLookupScalarAggregateColumn or
+                SelectPlanKind.SimpleConstantGroupAggregateColumn => 1,
+            _ => null,
+        };
 
     private QueryResult ClassifyAndExecuteSelect(
         SelectStatement stmt,
@@ -7269,7 +7648,10 @@ public sealed partial class QueryPlanner
 
         op = ApplyOffsetAndLimit(op, stmt.Offset, stmt.Limit);
 
-        return CreateQueryResult(op);
+        QueryResult result = CreateQueryResult(op);
+        if (adaptiveLease?.RequiresRuntimeExecutionScope == true)
+            result.RequireRuntimeExecutionScope();
+        return result;
     }
 
     private static bool ShouldPreserveJoinOrderForRowGoal(SelectStatement stmt)
@@ -8316,7 +8698,9 @@ public sealed partial class QueryPlanner
 
     internal async ValueTask<QueryResult?> TryExecuteSimplePrimaryKeyLookupDirectAsync(
         SimplePrimaryKeyLookupSql lookup,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        IQueryPlanRuntimeObserver? explicitRuntimeObserver = null,
+        bool cachedOnly = false)
     {
         if (_catalog.IsView(lookup.TableName))
             return null;
@@ -8364,12 +8748,31 @@ public sealed partial class QueryPlanner
 
         long lookupValue = predicateLiteral.AsInteger;
         var tableTree = _catalog.GetTableTree(lookup.TableName, _pager);
-        ReadOnlyMemory<byte>? payload = tableTree.TryFindCachedMemory(lookupValue, out var cachedPayload)
-            ? cachedPayload
-            : await tableTree.FindMemoryAsync(lookupValue, ct);
+        ReadOnlyMemory<byte>? payload;
+        if (tableTree.TryFindCachedMemory(lookupValue, out var cachedPayload))
+        {
+            payload = cachedPayload;
+        }
+        else
+        {
+            // The explicit-observer fast path is allowed to run without an
+            // ambient operation frame only while it remains synchronous. A
+            // cache miss returns control to Database, which reinvokes the
+            // lookup under the ordinary operation scope before awaiting I/O.
+            if (cachedOnly)
+                return null;
+
+            payload = await tableTree.FindMemoryAsync(lookupValue, ct);
+        }
 
         if (payload is not { } payloadMemory)
-            return QueryResult.FromSyncLookup(null, outputColumns);
+        {
+            return ObserveDirectSelectedPlan(
+                QueryResult.FromSyncLookup(null, outputColumns),
+                QueryPlanAccessPathCategory.PrimaryKeyLookup,
+                estimatedRows: 1,
+                explicitRuntimeObserver: explicitRuntimeObserver);
+        }
 
         var serializer = GetReadSerializer(schema);
         if (lookup.HasResidualPredicate)
@@ -8392,12 +8795,22 @@ public sealed partial class QueryPlanner
                     BinaryOp.Equals,
                     lookup.ResidualPredicateLiteral))
             {
-                return QueryResult.FromSyncLookup(null, outputColumns);
+                return ObserveDirectSelectedPlan(
+                    QueryResult.FromSyncLookup(null, outputColumns),
+                    QueryPlanAccessPathCategory.PrimaryKeyLookup,
+                    estimatedRows: 1,
+                    explicitRuntimeObserver: explicitRuntimeObserver);
             }
         }
 
         if (lookup.SelectStar)
-            return QueryResult.FromSyncLookup(serializer.Decode(payloadMemory.Span), outputColumns);
+        {
+            return ObserveDirectSelectedPlan(
+                QueryResult.FromSyncLookup(serializer.Decode(payloadMemory.Span), outputColumns),
+                QueryPlanAccessPathCategory.PrimaryKeyLookup,
+                estimatedRows: 1,
+                explicitRuntimeObserver: explicitRuntimeObserver);
+        }
 
         if (IsPrimaryKeyOnlyProjection(projectionColumnIndices, pkIdx))
         {
@@ -8408,14 +8821,22 @@ public sealed partial class QueryPlanner
                 Array.Fill(row, keyValue);
             }
 
-            return QueryResult.FromSyncLookup(row, outputColumns);
+            return ObserveDirectSelectedPlan(
+                QueryResult.FromSyncLookup(row, outputColumns),
+                QueryPlanAccessPathCategory.PrimaryKeyLookup,
+                estimatedRows: 1,
+                explicitRuntimeObserver: explicitRuntimeObserver);
         }
 
         var projectedRow = new DbValue[projectionColumnIndices.Length];
         for (int i = 0; i < projectionColumnIndices.Length; i++)
             projectedRow[i] = serializer.DecodeColumn(payloadMemory.Span, projectionColumnIndices[i]);
 
-        return QueryResult.FromSyncLookup(projectedRow, outputColumns);
+        return ObserveDirectSelectedPlan(
+            QueryResult.FromSyncLookup(projectedRow, outputColumns),
+            QueryPlanAccessPathCategory.PrimaryKeyLookup,
+            estimatedRows: 1,
+            explicitRuntimeObserver: explicitRuntimeObserver);
     }
 
     public bool TryExecuteSimplePrimaryKeyLookup(SimplePrimaryKeyLookupSql lookup, out QueryResult result)
@@ -8556,10 +8977,12 @@ public sealed partial class QueryPlanner
             {
                 var row = payload is { } payloadMemory ? GetReadSerializer(schema).Decode(payloadMemory.Span) : null;
                 result = QueryResult.FromSyncLookup(row, GetSchemaColumnsArray(schema));
+                ObserveSimpleLookupSelection(isPrimaryKeyLookup, matchedIndex);
                 return true;
             }
 
             result = new QueryResult(lookupOp);
+            ObserveSimpleLookupSelection(isPrimaryKeyLookup, matchedIndex);
             return true;
         }
 
@@ -8585,10 +9008,12 @@ public sealed partial class QueryPlanner
                 }
 
                 result = QueryResult.FromSyncLookup(row, outputColumns);
+                ObserveSimpleLookupSelection(isPrimaryKeyLookup, matchedIndex);
                 return true;
             }
 
             result = new QueryResult(new PrimaryKeyProjectionLookupOperator(tableTree, lookupValue, outputColumns));
+            ObserveSimpleLookupSelection(isPrimaryKeyLookup, matchedIndex);
             return true;
         }
 
@@ -8620,6 +9045,7 @@ public sealed partial class QueryPlanner
                         pkIdx,
                         predicateColumnIndex);
                 result = new QueryResult(projectionLookup);
+                ObserveSimpleLookupSelection(isPrimaryKeyLookup, matchedIndex);
                 return true;
             }
 
@@ -8642,6 +9068,7 @@ public sealed partial class QueryPlanner
                         [predicateColumnIndex],
                         [normalizedPredicateLiteral],
                         GetReadSerializer(schema)));
+                ObserveSimpleLookupSelection(isPrimaryKeyLookup, matchedIndex);
                 return true;
             }
         }
@@ -8662,6 +9089,7 @@ public sealed partial class QueryPlanner
 
         IOperator op = new ProjectionOperator(lookupOp, projectionColumnIndices, outputColumns, schema);
         result = new QueryResult(op);
+        ObserveSimpleLookupSelection(isPrimaryKeyLookup, matchedIndex);
         return true;
     }
 

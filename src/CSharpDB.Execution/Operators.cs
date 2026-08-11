@@ -9210,6 +9210,7 @@ internal sealed class AdaptiveIndexNestedLoopJoinOperator :
         _createLookupJoin = createLookupJoin;
         _createHashJoin = createHashJoin;
         _lease = lease;
+        lease.RequireRuntimeExecutionScope();
         _diagnostics = diagnostics;
         _estimatedOuterRows = Math.Max(estimatedOuterRows, 1);
         _estimatedRowCount = estimatedRowCount;
@@ -9461,6 +9462,7 @@ internal sealed class AdaptiveHashJoinOperator :
         _estimatedRowCount = estimatedRowCount;
         _functions = functions;
         _lease = lease;
+        lease.RequireRuntimeExecutionScope();
         _diagnostics = diagnostics;
         OutputSchema = compositeSchema.Columns as ColumnDefinition[] ?? compositeSchema.Columns.ToArray();
         _currentBatch = new RowBatch(OutputSchema.Length, DefaultBatchSize);

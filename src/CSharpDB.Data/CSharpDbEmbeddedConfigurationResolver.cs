@@ -1,9 +1,12 @@
 using CSharpDB.Engine;
+using CSharpDB.Observability;
 
 namespace CSharpDB.Data;
 
 internal static class CSharpDbEmbeddedConfigurationResolver
 {
+    internal static TimeProvider? RuntimeDiagnosticsTimeProviderForTest { get; set; }
+
     internal static bool HasRequestedTuning(
         CSharpDbConnectionStringBuilder builder,
         DatabaseOptions? directDatabaseOptions,
@@ -35,6 +38,20 @@ internal static class CSharpDbEmbeddedConfigurationResolver
         DatabaseOptions runtimeDirectDatabaseOptions = directDatabaseOptions is null
             ? effectiveDirectDatabaseOptions
             : DataObservabilityOptionsSnapshot.Freeze(effectiveDirectDatabaseOptions);
+        DataRuntimeDiagnosticsStateOwner? runtimeDiagnosticsStateOwner = null;
+        if (runtimeDirectDatabaseOptions.ObservabilityOptions?.Enabled == true &&
+            runtimeDirectDatabaseOptions.RuntimeDiagnosticsState is null)
+        {
+            var runtimeDiagnosticsState = new CSharpDbRuntimeDiagnosticsState(
+                runtimeDirectDatabaseOptions.ObservabilityOptions,
+                RuntimeDiagnosticsTimeProviderForTest);
+            runtimeDiagnosticsStateOwner = new DataRuntimeDiagnosticsStateOwner(
+                runtimeDiagnosticsState);
+            runtimeDirectDatabaseOptions =
+                DataObservabilityOptionsSnapshot.WithRuntimeDiagnosticsState(
+                    runtimeDirectDatabaseOptions,
+                    runtimeDiagnosticsState);
+        }
 
         HybridDatabaseOptions? effectiveHybridDatabaseOptions = hybridDatabaseOptions
             ?? CreateHybridDatabaseOptions(requestedOpenMode);
@@ -54,7 +71,8 @@ internal static class CSharpDbEmbeddedConfigurationResolver
                 || requestedOpenMode is not null
                 || builder.AdaptiveQueryReoptimization,
             builder.AdaptiveQueryReoptimization && directDatabaseOptions is null,
-            runtimeDirectDatabaseOptions);
+            runtimeDirectDatabaseOptions,
+            runtimeDiagnosticsStateOwner);
     }
 
     internal static CSharpDbEmbeddedOpenMode GetEffectiveOpenMode(HybridDatabaseOptions hybridDatabaseOptions)
@@ -133,4 +151,39 @@ internal readonly record struct ResolvedEmbeddedConfiguration(
     HybridDatabaseOptions? ExplicitHybridDatabaseOptions,
     bool HasRequestedTuning,
     bool EffectiveAdaptiveQueryReoptimization,
-    DatabaseOptions RuntimeDirectDatabaseOptions);
+    DatabaseOptions RuntimeDirectDatabaseOptions,
+    DataRuntimeDiagnosticsStateOwner? RuntimeDiagnosticsStateOwner)
+{
+    internal bool HasRuntimeDiagnosticsStateForTest =>
+        RuntimeDirectDatabaseOptions.RuntimeDiagnosticsState is not null;
+
+    internal object? RuntimeDiagnosticsStateForTest =>
+        RuntimeDirectDatabaseOptions.RuntimeDiagnosticsState;
+}
+
+/// <summary>
+/// Owns a resolver-created diagnostics state until the physical embedded
+/// family that adopted it reaches final retirement. The wrapper also lets
+/// cached open plans recognize that a retired family must be resolved again.
+/// A direct Database is one physical family; a pool or named-memory host keeps
+/// its family alive across logical connection closes until explicit retirement.
+/// </summary>
+internal sealed class DataRuntimeDiagnosticsStateOwner : IDisposable
+{
+    private CSharpDbRuntimeDiagnosticsState? _state;
+
+    internal DataRuntimeDiagnosticsStateOwner(
+        CSharpDbRuntimeDiagnosticsState state)
+    {
+        _state = state ?? throw new ArgumentNullException(nameof(state));
+    }
+
+    internal CSharpDbRuntimeDiagnosticsState State =>
+        Volatile.Read(ref _state) ??
+        throw new ObjectDisposedException(GetType().FullName);
+
+    internal bool IsDisposed => Volatile.Read(ref _state) is null;
+
+    public void Dispose()
+        => Interlocked.Exchange(ref _state, null)?.Dispose();
+}

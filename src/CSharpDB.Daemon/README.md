@@ -139,6 +139,8 @@ section:
 - `CSharpDB:Daemon:Security:Mode`
 - `CSharpDB:Daemon:Security:ApiKey`
 - `CSharpDB:Daemon:Security:ApiKeyHeaderName`
+- `CSharpDB:Daemon:Security:AllowInsecureRemoteDiagnostics`
+- `CSharpDB:Daemon:Security:AllowSensitiveQueryDetailAccess`
 - `CSharpDB:HostDatabase:OpenMode`
 - `CSharpDB:HostDatabase:ImplicitInsertExecutionMode`
 - `CSharpDB:HostDatabase:UseWriteOptimizedPreset`
@@ -185,6 +187,8 @@ Current daemon defaults:
 - `EnableRestApi = true`
 - `Security:Mode = None`
 - `Security:ApiKeyHeaderName = X-CSharpDB-Api-Key`
+- `Security:AllowInsecureRemoteDiagnostics = false`
+- `Security:AllowSensitiveQueryDetailAccess = false`
 - `OpenMode = HybridIncrementalDurable`
 - `ImplicitInsertExecutionMode = ConcurrentWriteTransactions`
 - `UseWriteOptimizedPreset = true`
@@ -318,6 +322,15 @@ The default header is `X-CSharpDB-Api-Key`. Override it with
 
 This is shared-secret authentication only. It does not provide JWT, RBAC, mTLS,
 per-user auditing, or TLS termination.
+
+Diagnostics use the same policy for REST and gRPC. In `ApiKey` mode a correct
+key is required. In `None` mode diagnostics are loopback-only and fail closed
+when the remote address is null, wildcard, or non-loopback;
+`AllowInsecureRemoteDiagnostics=true` is the explicit override for
+non-loopback access. Query detail additionally requires
+`AllowSensitiveQueryDetailAccess=true` in either mode. REST reports missing or
+wrong keys as `401` and other denials as `403`; gRPC reports
+`Unauthenticated` and `PermissionDenied` respectively.
 
 ## Local Development
 
@@ -640,6 +653,8 @@ supported keys remain the standard daemon settings:
 - `CSharpDB__Daemon__Security__Mode`
 - `CSharpDB__Daemon__Security__ApiKey`
 - `CSharpDB__Daemon__Security__ApiKeyHeaderName`
+- `CSharpDB__Daemon__Security__AllowInsecureRemoteDiagnostics`
+- `CSharpDB__Daemon__Security__AllowSensitiveQueryDetailAccess`
 - `CSharpDB__HostDatabase__OpenMode`
 - `CSharpDB__HostDatabase__ImplicitInsertExecutionMode`
 - `CSharpDB__HostDatabase__UseWriteOptimizedPreset`
@@ -680,16 +695,37 @@ Practical guidance:
 Current state:
 
 - startup fails early if the database cannot be opened
-- ASP.NET Core logging is available through the standard host logging pipeline
+- structured CSharpDB events are available through the standard host logging
+  pipeline when observability is enabled
 - `/api/info` is available when REST hosting is enabled
+- REST and gRPC expose the same optional runtime summary, capped active/recent
+  queries, bounded plan summary, capped sessions, and separately authorized
+  query-detail capability
+- diagnostics calls do not observe themselves; session snapshots merge
+  in-flight HTTP/gRPC host requests with underlying database sessions when
+  runtime diagnostics are enabled
+- unsupported configured clients return REST `501 Not Implemented` or gRPC
+  `Unimplemented`
+
+REST uses the six `/api/diagnostics` routes documented by `CSharpDB.Api` when
+REST hosting is enabled. gRPC exposes `GetRuntimeDiagnostics`,
+`GetActiveQueries`, `GetRecentQueries`, `GetQueryPlanDiagnostics`,
+`GetSessions`, and `GetQueryDetail`. Both transports preserve the same runtime
+identity and availability envelopes. Ordinary diagnostics never return SQL,
+values, credentials, connection strings, or paths; query detail is the only
+captured-SQL surface.
+
+Request cancellation flows into diagnostics and other async host operations,
+but it is cooperative. Parsing, planning, and synchronous fast paths may finish
+before observing cancellation. There is no query/session termination RPC.
 
 Not implemented yet in this host:
 
 - `/health`
 - `/metrics`
-- authorization
+- role-based or per-user authorization
 - TLS-specific configuration helpers
-- admin endpoints beyond the existing database REST API
+- a query/session kill endpoint
 
 For broader future direction, see the
 [CSharpDB roadmap](https://csharpdb.com/roadmap.html).
@@ -739,6 +775,6 @@ Important files:
 ## Status
 
 This README documents the current daemon implementation, service packaging,
-REST/gRPC host consolidation, and opt-in API-key security.
-Authorization, TLS/mTLS helpers, and marketplace distribution remain tracked in
-the [CSharpDB roadmap](https://csharpdb.com/roadmap.html).
+REST/gRPC host consolidation, opt-in API-key security, and runtime diagnostics.
+Role-based authorization, TLS/mTLS helpers, and marketplace distribution remain
+tracked in the [CSharpDB roadmap](https://csharpdb.com/roadmap.html).

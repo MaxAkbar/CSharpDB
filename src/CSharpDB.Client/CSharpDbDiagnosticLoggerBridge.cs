@@ -74,6 +74,10 @@ public sealed class CSharpDbDiagnosticLoggerBridge :
                     when name == CSharpDbLogEvents.SlowQuery.Name && _slowQueriesEnabled:
                     LogSlowQuery(payload);
                     break;
+                case (var name, CSharpDbLongRunningQueryEvent payload)
+                    when name == CSharpDbLogEvents.LongRunningQuery.Name && _slowQueriesEnabled:
+                    LogLongRunningQuery(payload);
+                    break;
                 case (var name, CSharpDbQueryFailedEvent payload)
                     when name == CSharpDbLogEvents.QueryFailed.Name && _queriesEnabled:
                     LogQueryFailed(payload);
@@ -136,8 +140,11 @@ public sealed class CSharpDbDiagnosticLoggerBridge :
                 return _queriesEnabled;
             }
 
-            if (name == CSharpDbLogEvents.SlowQuery.Name)
+            if (name == CSharpDbLogEvents.SlowQuery.Name ||
+                name == CSharpDbLogEvents.LongRunningQuery.Name)
+            {
                 return _slowQueriesEnabled;
+            }
 
             if (name == CSharpDbLogEvents.ApiRequestRejected.Name ||
                 name == CSharpDbLogEvents.ApiUnhandledError.Name)
@@ -178,6 +185,19 @@ public sealed class CSharpDbDiagnosticLoggerBridge :
             payload.Outcome,
             payload.TotalDuration.TotalMilliseconds,
             payload.SlowQueryThreshold.TotalMilliseconds);
+    }
+
+    private void LogLongRunningQuery(CSharpDbLongRunningQueryEvent payload)
+    {
+        using IDisposable? scope = BeginLongRunningQueryScope(payload);
+        LogSafely(
+            _queryLogger,
+            LogLevel.Warning,
+            CSharpDbLogEvents.LongRunningQuery,
+            payload.Context.OperationId.Value,
+            payload.Elapsed.TotalMilliseconds,
+            payload.LongRunningQueryThreshold.TotalMilliseconds,
+            payload.Phase);
     }
 
     private void LogQueryFailed(CSharpDbQueryFailedEvent payload)
@@ -296,6 +316,16 @@ public sealed class CSharpDbDiagnosticLoggerBridge :
         if (payload.CapturedSqlText is not null)
             fields["csharpdb.query.sql"] = payload.CapturedSqlText;
 
+        return BeginScopeSafely(_queryLogger, fields);
+    }
+
+    private IDisposable? BeginLongRunningQueryScope(CSharpDbLongRunningQueryEvent payload)
+    {
+        Dictionary<string, object?> fields = CreateOperationFields(payload.Context, error: null);
+        fields["csharpdb.query.elapsed_ms"] = payload.Elapsed.TotalMilliseconds;
+        fields["csharpdb.query.long_running_threshold_ms"] =
+            payload.LongRunningQueryThreshold.TotalMilliseconds;
+        fields["csharpdb.query.phase"] = payload.Phase.ToString();
         return BeginScopeSafely(_queryLogger, fields);
     }
 

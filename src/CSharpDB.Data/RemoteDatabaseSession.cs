@@ -28,6 +28,11 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
 
     public bool SupportsStructuredExecution => false;
     public CSharpDbObservabilityOptions? ObservabilityOptionsSnapshot => null;
+    public CSharpDbRuntimeDiagnosticsState? RuntimeDiagnosticsState => null;
+    public object? RuntimeDiagnosticsIdentityKey => null;
+    public IDataRuntimeDiagnosticsContributor? RuntimeDiagnosticsContributor => null;
+    public ICSharpDbObservabilityClient? RemoteObservabilityClient =>
+        Volatile.Read(ref _client) as ICSharpDbObservabilityClient;
 
     internal RemoteDatabaseSession(
         ICSharpDbClient client,

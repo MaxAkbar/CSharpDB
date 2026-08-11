@@ -10,6 +10,15 @@ namespace CSharpDB.Engine;
 public sealed class DatabaseOptions
 {
     /// <summary>
+    /// Client/host-owned diagnostics state used to retain one runtime identity
+    /// across per-database option snapshots and replacement database handles.
+    /// This remains null for the default disabled path.
+    /// </summary>
+    internal CSharpDbRuntimeDiagnosticsState? RuntimeDiagnosticsState { get; init; }
+
+    internal bool HasRuntimeDiagnosticsState => RuntimeDiagnosticsState is not null;
+
+    /// <summary>
     /// Optional observability configuration. A null value, or an options instance whose
     /// <see cref="CSharpDbObservabilityOptions.Enabled"/> property is false, keeps engine
     /// observability disabled and does not create runtime instrumentation state.

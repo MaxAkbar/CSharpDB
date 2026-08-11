@@ -13,7 +13,11 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="CSharpDB.Client" />
+    <InternalsVisibleTo Include="CSharpDB.Data" />
+    <InternalsVisibleTo Include="CSharpDB.Engine" />
     <InternalsVisibleTo Include="CSharpDB.Observability.Tests" />
+    <InternalsVisibleTo Include="CSharpDB.Sql" />
+    <InternalsVisibleTo Include="CSharpDB.Tests" />
   </ItemGroup>
 
 </Project>
