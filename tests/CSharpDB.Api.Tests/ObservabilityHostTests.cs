@@ -515,13 +515,15 @@ public sealed class ObservabilityHostTests
             $"csharpdb-api-exporter-{Guid.NewGuid():N}.db");
         var exportedActivities = new List<Activity>();
         var exportedMetrics = new List<Metric>();
+        var exportedLogs = new StructuredLogCaptureProvider();
 
         try
         {
             await using var factory = new ExporterApiFactory(
                 databasePath,
                 exportedActivities,
-                exportedMetrics);
+                exportedMetrics,
+                exportedLogs);
             using HttpClient client = factory.CreateClient();
             exportedActivities.Clear();
             exportedMetrics.Clear();
@@ -599,6 +601,24 @@ public sealed class ObservabilityHostTests
             Assert.DoesNotContain(databasePath, activityProjection, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain(secret, metricProjection, StringComparison.Ordinal);
             Assert.DoesNotContain(databasePath, metricProjection, StringComparison.OrdinalIgnoreCase);
+
+            StructuredLogCapture queryLog = Assert.Single(
+                exportedLogs.Entries,
+                static entry => entry.EventId == CSharpDbLogEventIds.QueryCompleted);
+            Assert.Equal(
+                query.TraceId.ToHexString(),
+                Assert.IsType<string>(queryLog.Scope["trace.id"]));
+            Assert.Equal(
+                Assert.IsType<string>(query.GetTagItem("csharpdb.operation.id")),
+                Assert.IsType<string>(queryLog.Scope["csharpdb.operation.id"]));
+            string logProjection = string.Join(
+                "|",
+                queryLog.Scope.Select(static field =>
+                    $"{field.Key}={field.Value}"));
+            Assert.DoesNotContain(secret, logProjection, StringComparison.Ordinal);
+            Assert.DoesNotContain(databasePath, logProjection, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(secret, queryLog.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain(databasePath, queryLog.Message, StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
@@ -716,6 +736,67 @@ public sealed class ObservabilityHostTests
         Assert.Null(error);
         Assert.NotNull(app.Services.GetService<TracerProvider>());
         Assert.NotNull(app.Services.GetService<MeterProvider>());
+    }
+
+    [Fact]
+    public async Task UnavailableOtlpCollector_DoesNotAffectConcurrentQueriesOrBoundedShutdown()
+    {
+        string databasePath = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb-api-unavailable-exporter-{Guid.NewGuid():N}.db");
+        var factory = new UnavailableExporterApiFactory(databasePath);
+        try
+        {
+            using HttpClient client = factory.CreateClient();
+            Task<HttpResponseMessage>[] requests = Enumerable.Range(0, 32)
+                .Select(index => client.PostAsJsonAsync(
+                    "/api/sql/execute",
+                    new ExecuteSqlRequest($"SELECT {index} AS exporter_failure_canary"),
+                    TestContext.Current.CancellationToken))
+                .ToArray();
+
+            HttpResponseMessage[] responses = await Task.WhenAll(requests)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            try
+            {
+                Assert.All(responses, static response => response.EnsureSuccessStatusCode());
+            }
+            finally
+            {
+                foreach (HttpResponseMessage response in responses)
+                    response.Dispose();
+            }
+
+            TracerProvider tracerProvider =
+                factory.Services.GetRequiredService<TracerProvider>();
+            MeterProvider meterProvider =
+                factory.Services.GetRequiredService<MeterProvider>();
+            Exception? flushError = Record.Exception(() =>
+            {
+                _ = tracerProvider.ForceFlush(2_000);
+                _ = meterProvider.ForceFlush(2_000);
+            });
+            Assert.Null(flushError);
+
+            using HttpResponseMessage finalResponse = await client.PostAsJsonAsync(
+                "/api/sql/execute",
+                new ExecuteSqlRequest("SELECT 42 AS after_exporter_failure"),
+                TestContext.Current.CancellationToken);
+            finalResponse.EnsureSuccessStatusCode();
+
+            await factory.DisposeAsync().AsTask().WaitAsync(
+                TimeSpan.FromSeconds(15),
+                TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            await factory.DisposeAsync();
+            TryDelete(databasePath);
+            TryDelete(databasePath + ".wal");
+            TryDelete(databasePath + "-wal");
+            TryDelete(databasePath + "-shm");
+            TryDelete(databasePath + ".manifest.json");
+        }
     }
 
     [Fact]
@@ -1091,7 +1172,8 @@ public sealed class ObservabilityHostTests
     private sealed class ExporterApiFactory(
         string databasePath,
         ICollection<Activity> exportedActivities,
-        ICollection<Metric> exportedMetrics) : WebApplicationFactory<Program>
+        ICollection<Metric> exportedMetrics,
+        ILoggerProvider logProvider) : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
@@ -1102,7 +1184,10 @@ public sealed class ObservabilityHostTests
                 "api-exporter-test");
             builder.UseSetting(
                 "CSharpDB:Observability:Logging:Enabled",
-                "false");
+                "true");
+            builder.UseSetting(
+                "CSharpDB:Observability:Logging:Queries",
+                "true");
             builder.UseSetting(
                 "CSharpDB:Observability:OpenTelemetry:Enabled",
                 "true");
@@ -1118,18 +1203,125 @@ public sealed class ObservabilityHostTests
                         ["CSharpDB:Observability:Enabled"] = "true",
                         ["CSharpDB:Observability:DatabaseAlias"] =
                             "api-exporter-test",
-                        ["CSharpDB:Observability:Logging:Enabled"] = "false",
+                        ["CSharpDB:Observability:Logging:Enabled"] = "true",
+                        ["CSharpDB:Observability:Logging:Queries"] = "true",
+                        ["CSharpDB:Observability:Logging:SlowQueries"] = "false",
                         ["CSharpDB:Observability:OpenTelemetry:Enabled"] =
                             "true",
                         ["CSharpDB:Observability:OpenTelemetry:SamplingRatio"] =
                             "1",
                     }));
+            builder.ConfigureLogging(logging => logging.AddProvider(logProvider));
             builder.ConfigureServices(services =>
                 services.AddOpenTelemetry()
                     .WithTracing(tracing =>
                         tracing.AddInMemoryExporter(exportedActivities))
                     .WithMetrics(metrics =>
                         metrics.AddInMemoryExporter(exportedMetrics)));
+        }
+    }
+
+    private sealed class StructuredLogCaptureProvider :
+        ILoggerProvider,
+        ISupportExternalScope
+    {
+        private IExternalScopeProvider _scopeProvider =
+            new LoggerExternalScopeProvider();
+
+        internal ConcurrentQueue<StructuredLogCapture> Entries { get; } = new();
+
+        public ILogger CreateLogger(string categoryName)
+            => new StructuredCaptureLogger(
+                Entries,
+                () => Volatile.Read(ref _scopeProvider));
+
+        public void SetScopeProvider(IExternalScopeProvider scopeProvider)
+            => Volatile.Write(ref _scopeProvider, scopeProvider);
+
+        public void Dispose()
+        {
+        }
+    }
+
+    private sealed class StructuredCaptureLogger(
+        ConcurrentQueue<StructuredLogCapture> entries,
+        Func<IExternalScopeProvider> getScopeProvider) : ILogger
+    {
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull
+            => getScopeProvider().Push(state);
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            var scope = new Dictionary<string, object?>(StringComparer.Ordinal);
+            getScopeProvider().ForEachScope(
+                static (current, fields) =>
+                {
+                    if (current is not IEnumerable<KeyValuePair<string, object?>> values)
+                        return;
+                    foreach (KeyValuePair<string, object?> value in values)
+                        fields[value.Key] = value.Value;
+                },
+                scope);
+            entries.Enqueue(new StructuredLogCapture(
+                eventId.Id,
+                formatter(state, exception),
+                scope));
+        }
+    }
+
+    private sealed record StructuredLogCapture(
+        int EventId,
+        string Message,
+        IReadOnlyDictionary<string, object?> Scope);
+
+    private sealed class UnavailableExporterApiFactory(
+        string databasePath) : WebApplicationFactory<Program>
+    {
+        protected override void ConfigureWebHost(IWebHostBuilder builder)
+        {
+            builder.UseEnvironment("Testing");
+            builder.UseSetting("CSharpDB:Observability:Enabled", "true");
+            builder.UseSetting(
+                "CSharpDB:Observability:DatabaseAlias",
+                "api-unavailable-exporter-test");
+            builder.UseSetting(
+                "CSharpDB:Observability:Logging:Enabled",
+                "false");
+            builder.UseSetting(
+                "CSharpDB:Observability:OpenTelemetry:Enabled",
+                "true");
+            builder.UseSetting(
+                "CSharpDB:Observability:OpenTelemetry:SamplingRatio",
+                "1");
+            builder.UseSetting(
+                "CSharpDB:Observability:OpenTelemetry:Otlp:Enabled",
+                "true");
+            builder.UseSetting(
+                "OTEL_EXPORTER_OTLP_ENDPOINT",
+                "http://127.0.0.1:1");
+            builder.ConfigureAppConfiguration((_, configuration) =>
+                configuration.AddInMemoryCollection(
+                    new Dictionary<string, string?>
+                    {
+                        ["ConnectionStrings:CSharpDB"] =
+                            $"Data Source={databasePath}",
+                        ["CSharpDB:Observability:Enabled"] = "true",
+                        ["CSharpDB:Observability:DatabaseAlias"] =
+                            "api-unavailable-exporter-test",
+                        ["CSharpDB:Observability:Logging:Enabled"] = "false",
+                        ["CSharpDB:Observability:OpenTelemetry:Enabled"] = "true",
+                        ["CSharpDB:Observability:OpenTelemetry:SamplingRatio"] = "1",
+                        ["CSharpDB:Observability:OpenTelemetry:Otlp:Enabled"] = "true",
+                        ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://127.0.0.1:1",
+                    }));
         }
     }
 

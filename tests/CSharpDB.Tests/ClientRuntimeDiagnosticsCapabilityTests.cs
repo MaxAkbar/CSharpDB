@@ -126,6 +126,53 @@ public sealed class ClientRuntimeDiagnosticsCapabilityTests
     }
 
     [Fact]
+    public async Task EnabledDirectCapability_AllTenModelsUseAvailableSourceGeneratedContracts()
+    {
+        DatabaseOptions options = CreateOptions("direct-all-models");
+        options.ObservabilityOptions!.Logging.SqlText = SqlTextCaptureMode.Normalized;
+        await using var client = CreateClient(options);
+        var diagnostics = Assert.IsAssignableFrom<ICSharpDbObservabilityClient>(client);
+
+        SqlExecutionResult execution = await client.ExecuteSqlAsync(
+            "SELECT 42 AS all_model_canary",
+            Ct);
+        Assert.Null(execution.Error);
+        DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<RecentQuerySnapshot>> recent =
+            await diagnostics.GetRecentQueriesAsync(16, Ct);
+        OpaqueDiagnosticsId operationId = Assert.Single(recent.Aggregate.Records!).OperationId;
+
+        IRuntimeDiagnosticsSnapshot[] snapshots =
+        [
+            await diagnostics.GetRuntimeDiagnosticsAsync(Ct),
+            await diagnostics.GetStorageDiagnosticsAsync(Ct),
+            await diagnostics.GetWalDiagnosticsAsync(Ct),
+            await diagnostics.GetActiveQueriesAsync(16, Ct),
+            recent,
+            await diagnostics.GetQueryPlanDiagnosticsAsync(operationId, Ct),
+            await diagnostics.GetSessionsAsync(16, Ct),
+            await diagnostics.GetActiveMaintenanceOperationsAsync(16, Ct),
+            await diagnostics.GetRecentMaintenanceOperationsAsync(16, Ct),
+            await diagnostics.GetQueryDetailAsync(operationId, Ct),
+        ];
+
+        Assert.Equal(10, snapshots.Length);
+        Assert.All(snapshots, static snapshot =>
+        {
+            Assert.Equal(DiagnosticsScope.Instance, snapshot.Metadata.Scope);
+            Assert.Equal(DiagnosticsAvailability.Available, snapshot.Metadata.Availability);
+            var typeInfo = CSharpDbObservabilityJsonContext.Default.GetTypeInfo(
+                snapshot.GetType());
+            Assert.NotNull(typeInfo);
+            string json = JsonSerializer.Serialize(snapshot, typeInfo);
+            object? roundTrip = JsonSerializer.Deserialize(json, typeInfo);
+            Assert.NotNull(roundTrip);
+            Assert.Equal(
+                json,
+                JsonSerializer.Serialize(roundTrip, typeInfo));
+        });
+    }
+
+    [Fact]
     public async Task ExplicitRawCapture_IsAvailableOnlyThroughTheSeparateDetailCapability()
     {
         const string sql = "SELECT 'separately-authorized-client-detail'";

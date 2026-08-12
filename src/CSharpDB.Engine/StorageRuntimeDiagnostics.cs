@@ -1041,17 +1041,27 @@ internal sealed class StorageRuntimeDiagnostics :
         Registration registration,
         RecoveryOperation candidate)
     {
+        StorageActivityLease? activityLease = null;
         lock (_gate)
         {
-            if (!CanObserve(registration) ||
-                registration.Recovery is { CompletedAtUtc: null })
+            if (CanObserve(registration) &&
+                registration.Recovery is not { CompletedAtUtc: null })
             {
-                return;
+                registration.Recovery = candidate;
+                candidate.MetricsStarted =
+                    _runtimeMetrics?.RecoveryStarted() == true;
+                activityLease = candidate.PrepareActivity(
+                    CSharpDbActivityOperation.ShouldStart(
+                        _runtimeState.TracingEnabled));
             }
+        }
 
-            registration.Recovery = candidate;
-            candidate.MetricsStarted =
-                _runtimeMetrics?.RecoveryStarted() == true;
+        if (activityLease is not null)
+        {
+            StartAndAttachStorageActivity(
+                candidate.Start,
+                CSharpDbOperationClass.Recovery,
+                activityLease);
         }
     }
 
@@ -1073,32 +1083,47 @@ internal sealed class StorageRuntimeDiagnostics :
         StorageRecoveryRuntimeRawSnapshot raw,
         ClockReading? observedAt)
     {
+        StorageActivityLease? activityLease = null;
         lock (_gate)
         {
-            if (!CanObserve(registration))
-                return;
-
-            RecoveryOperation? current = registration.Recovery is
-                { CompletedAtUtc: null } existing
-                    ? existing
-                    : candidate;
-            if (current is null)
-                return;
-            if (!ReferenceEquals(current, registration.Recovery))
+            if (CanObserve(registration))
             {
-                registration.Recovery = current;
-                current.MetricsStarted =
-                    _runtimeMetrics?.RecoveryStarted() == true;
-            }
+                RecoveryOperation? current = registration.Recovery switch
+                {
+                    { CompletedAtUtc: null } existing => existing,
+                    null => candidate,
+                    _ => null,
+                };
+                if (current is not null)
+                {
+                    if (!ReferenceEquals(current, registration.Recovery))
+                    {
+                        registration.Recovery = current;
+                        current.MetricsStarted =
+                            _runtimeMetrics?.RecoveryStarted() == true;
+                        activityLease = current.PrepareActivity(
+                            CSharpDbActivityOperation.ShouldStart(
+                                _runtimeState.TracingEnabled));
+                    }
 
-            RecordRecoveryRetry(current, raw);
-            current.Raw = raw;
-            if (observedAt is { } observation)
-            {
-                current.Elapsed = CalculateElapsed(
-                    current.StartingTimestamp,
-                    observation.Timestamp);
+                    RecordRecoveryRetry(current, raw);
+                    current.Raw = raw;
+                    if (observedAt is { } observation)
+                    {
+                        current.Elapsed = CalculateElapsed(
+                            current.StartingTimestamp,
+                            observation.Timestamp);
+                    }
+                }
             }
+        }
+
+        if (candidate is not null && activityLease is not null)
+        {
+            StartAndAttachStorageActivity(
+                candidate.Start,
+                CSharpDbOperationClass.Recovery,
+                activityLease);
         }
     }
 
@@ -1108,65 +1133,93 @@ internal sealed class StorageRuntimeDiagnostics :
         StorageRecoveryRuntimeRawSnapshot raw,
         ClockReading? completedAt)
     {
-        bool metricsStarted;
-        CSharpDbOperationOutcome outcome;
-        TimeSpan duration;
+        bool metricsStarted = false;
+        CSharpDbOperationOutcome outcome = CSharpDbOperationOutcome.Unknown;
+        TimeSpan duration = TimeSpan.Zero;
+        SafeErrorProjection? error = null;
+        StorageActivityAction activityAction = default;
+        DateTimeOffset activityCompletedAtUtc = DateTimeOffset.UnixEpoch;
+        StorageActivityLease? activityLease = null;
+        bool completed = false;
         lock (_gate)
         {
-            if (!CanObserve(registration))
-                return;
+            if (CanObserve(registration))
+            {
+                RecoveryOperation? current = registration.Recovery switch
+                {
+                    { CompletedAtUtc: null } existing => existing,
+                    null => candidate,
+                    _ => null,
+                };
+                if (current is not null && !current.CompletedAtUtc.HasValue)
+                {
+                    if (!ReferenceEquals(current, registration.Recovery))
+                    {
+                        registration.Recovery = current;
+                        current.MetricsStarted =
+                            _runtimeMetrics?.RecoveryStarted() == true;
+                        activityLease = current.PrepareActivity(
+                            CSharpDbActivityOperation.ShouldStart(
+                                _runtimeState.TracingEnabled));
+                    }
 
-            RecoveryOperation? current = registration.Recovery is
-                { CompletedAtUtc: null } existing
-                    ? existing
-                    : candidate;
-            if (current is null)
-                return;
-            if (current.CompletedAtUtc.HasValue)
-                return;
-            if (!ReferenceEquals(current, registration.Recovery))
-            {
-                registration.Recovery = current;
-                current.MetricsStarted =
-                    _runtimeMetrics?.RecoveryStarted() == true;
-            }
+                    RecordRecoveryRetry(current, raw);
+                    current.Raw = raw;
+                    if (completedAt is { } completion)
+                    {
+                        current.Elapsed = CalculateElapsed(
+                            current.StartingTimestamp,
+                            completion.Timestamp);
+                        current.CompletedAtUtc = completion.UtcNow;
+                    }
+                    else
+                    {
+                        current.CompletedAtUtc = SafeCompletionUtc(
+                            current.StartedAtUtc,
+                            current.Elapsed);
+                    }
+                    if (_lastCompletedRecovery is null ||
+                        IsLaterRecoveryCompletion(current, _lastCompletedRecovery))
+                    {
+                        _lastCompletedRecovery = current;
+                    }
 
-            RecordRecoveryRetry(current, raw);
-            current.Raw = raw;
-            if (completedAt is { } completion)
-            {
-                current.Elapsed = CalculateElapsed(
-                    current.StartingTimestamp,
-                    completion.Timestamp);
-                current.CompletedAtUtc = completion.UtcNow;
-            }
-            else
-            {
-                current.CompletedAtUtc = SafeCompletionUtc(
-                    current.StartedAtUtc,
-                    current.Elapsed);
-            }
-            if (_lastCompletedRecovery is null ||
-                IsLaterRecoveryCompletion(current, _lastCompletedRecovery))
-            {
-                _lastCompletedRecovery = current;
-            }
+                    outcome = MapOutcome(raw.Outcome);
+                    if (outcome is CSharpDbOperationOutcome.Failed or
+                        CSharpDbOperationOutcome.Canceled)
+                    {
+                        error = ProjectFailure(raw.FailureKind, outcome);
+                        SetLastError(error);
+                    }
 
-            outcome = MapOutcome(raw.Outcome);
-            if (outcome is CSharpDbOperationOutcome.Failed or
-                CSharpDbOperationOutcome.Canceled)
-            {
-                SetLastError(ProjectFailure(raw.FailureKind, outcome));
+                    duration = current.Elapsed;
+                    activityCompletedAtUtc = current.CompletedAtUtc ??
+                        SafeCompletionUtc(current.StartedAtUtc, duration);
+                    metricsStarted = current.TakeMetricsStarted();
+                    activityAction = current.CompleteActivity(
+                        outcome,
+                        error,
+                        activityCompletedAtUtc);
+                    completed = true;
+                }
             }
-
-            duration = current.Elapsed;
-            metricsStarted = current.TakeMetricsStarted();
         }
+
+        if (candidate is not null && activityLease is not null)
+        {
+            StartAndAttachStorageActivity(
+                candidate.Start,
+                CSharpDbOperationClass.Recovery,
+                activityLease);
+        }
+        if (!completed)
+            return;
 
         _runtimeMetrics?.RecoveryCompleted(
             metricsStarted,
             outcome,
             duration);
+        ApplyStorageActivityAction(activityAction);
     }
 
     private void RecordRecoveryRetry(
@@ -1186,19 +1239,30 @@ internal sealed class StorageRuntimeDiagnostics :
         Registration registration,
         CheckpointOperation candidate)
     {
+        StorageActivityLease? activityLease = null;
         lock (_gate)
         {
-            if (!CanObserve(registration) ||
-                registration.Checkpoint is { CompletedAtUtc: null })
+            if (CanObserve(registration) &&
+                registration.Checkpoint is not { CompletedAtUtc: null })
             {
-                return;
+                registration.Checkpoint = candidate;
+                candidate.MetricsStarted =
+                    _runtimeMetrics?.CheckpointStarted() == true;
+                _checkpointAttemptCount = SaturatingIncrement(
+                    _checkpointAttemptCount);
+                activityLease = candidate.PrepareActivity(
+                    candidate.ShouldTraceActivity &&
+                    CSharpDbActivityOperation.ShouldStart(
+                        _runtimeState.TracingEnabled));
             }
+        }
 
-            registration.Checkpoint = candidate;
-            candidate.MetricsStarted =
-                _runtimeMetrics?.CheckpointStarted() == true;
-            _checkpointAttemptCount = SaturatingIncrement(
-                _checkpointAttemptCount);
+        if (activityLease is not null)
+        {
+            StartAndAttachStorageActivity(
+                candidate.Start,
+                CSharpDbOperationClass.Checkpoint,
+                activityLease);
         }
     }
 
@@ -1233,6 +1297,9 @@ internal sealed class StorageRuntimeDiagnostics :
         bool metricsStarted;
         CSharpDbOperationOutcome outcome;
         TimeSpan duration;
+        SafeErrorProjection? error;
+        StorageActivityAction activityAction;
+        DateTimeOffset activityCompletedAtUtc;
         lock (_gate)
         {
             if (!CanObserve(registration) ||
@@ -1300,12 +1367,24 @@ internal sealed class StorageRuntimeDiagnostics :
 
             duration = current.Elapsed;
             metricsStarted = current.TakeMetricsStarted();
+            activityCompletedAtUtc = current.CompletedAtUtc ?? SafeCompletionUtc(
+                current.StartedAtUtc,
+                duration);
+            error = outcome is CSharpDbOperationOutcome.Failed or
+                CSharpDbOperationOutcome.Canceled
+                    ? ProjectFailure(raw.FailureKind, outcome)
+                    : null;
+            activityAction = current.CompleteActivity(
+                outcome,
+                error,
+                activityCompletedAtUtc);
         }
 
         _runtimeMetrics?.CheckpointCompleted(
             metricsStarted,
             outcome,
             duration);
+        ApplyStorageActivityAction(activityAction);
     }
 
     private void RecordLatestFailedCheckpoint(
@@ -1535,7 +1614,93 @@ internal sealed class StorageRuntimeDiagnostics :
             registration.Recovery?.TakeMetricsStarted() == true);
         _runtimeMetrics?.CheckpointAbandoned(
             registration.Checkpoint?.TakeMetricsStarted() == true);
+        ApplyStorageActivityAction(
+            registration.Recovery?.AbandonActivity() ?? default);
+        ApplyStorageActivityAction(
+            registration.Checkpoint?.AbandonActivity() ?? default);
     }
+
+    private CSharpDbActivityOperation? TryStartStorageActivity(
+        OperationStart start,
+        CSharpDbOperationClass operationClass)
+    {
+        if (!CSharpDbActivityOperation.ShouldStart(_runtimeState.TracingEnabled))
+            return null;
+
+        try
+        {
+            return CSharpDbActivityOperation.StartCapturedRoot(
+                operationClass,
+                start.StartedAtUtc,
+                new StorageActivityStart(
+                    start,
+                    operationClass,
+                    _runtimeState.DatabaseAlias,
+                    _timeProvider),
+                static state => CSharpDbOperationContext.CreateCapturedRoot(
+                        state.Start.OperationId,
+                        state.OperationClass,
+                        CSharpDbTransport.Embedded,
+                        state.DatabaseAlias,
+                        queryFingerprint: null,
+                        state.TimeProvider,
+                        state.Start.StartedAtUtc,
+                        state.Start.StartingTimestamp)
+                    .WithCurrentTraceId(),
+                out _);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private void StartAndAttachStorageActivity(
+        OperationStart start,
+        CSharpDbOperationClass operationClass,
+        StorageActivityLease activityLease)
+    {
+        if (!activityLease.TryClaimStart())
+            return;
+
+        CSharpDbActivityOperation? activity = TryStartStorageActivity(
+            start,
+            operationClass);
+        ApplyStorageActivityAction(activityLease.Attach(activity));
+    }
+
+    private static void ApplyStorageActivityAction(
+        StorageActivityAction action)
+    {
+        if (action.Operation is not { } operation)
+            return;
+
+        if (action.IsTerminal)
+        {
+            operation.CompleteAt(
+                action.Outcome,
+                action.Error,
+                action.CompletedAtUtc);
+        }
+        else
+        {
+            operation.Abandon();
+        }
+    }
+
+    private RecoveryOperation CreateRecoveryOperation(OperationStart start)
+        => new(start);
+
+    private CheckpointOperation CreateCheckpointOperation(
+        OperationStart start,
+        StorageCheckpointRuntimeRawSnapshot raw)
+        => new(start, raw, ShouldTracePhysicalCheckpoint(raw.Origin));
+
+    private static bool ShouldTracePhysicalCheckpoint(
+        StorageCheckpointOriginRaw origin)
+        => origin is StorageCheckpointOriginRaw.ForegroundAuto or
+            StorageCheckpointOriginRaw.BackgroundAuto or
+            StorageCheckpointOriginRaw.Shutdown;
 
     private void RetireCumulativeCounters(Registration registration)
     {
@@ -2193,16 +2358,140 @@ internal sealed class StorageRuntimeDiagnostics :
         DateTimeOffset UtcNow,
         long Timestamp);
 
+    private readonly record struct StorageActivityStart(
+        OperationStart Start,
+        CSharpDbOperationClass OperationClass,
+        string DatabaseAlias,
+        TimeProvider TimeProvider);
+
     internal readonly record struct OperationStart(
         OpaqueDiagnosticsId OperationId,
         string SortKey,
         DateTimeOffset StartedAtUtc,
         long StartingTimestamp);
 
+    internal readonly record struct StorageActivityAction(
+        CSharpDbActivityOperation? Operation,
+        bool IsTerminal,
+        CSharpDbOperationOutcome Outcome,
+        SafeErrorProjection? Error,
+        DateTimeOffset CompletedAtUtc);
+
+    internal sealed class StorageActivityLease
+    {
+        private CSharpDbActivityOperation? _operation;
+        private bool _startClaimed;
+        private bool _attachmentFinished;
+        private bool _terminalRecorded;
+        private bool _abandoned;
+        private CSharpDbOperationOutcome _outcome;
+        private SafeErrorProjection? _error;
+        private DateTimeOffset _completedAtUtc;
+
+        internal bool TryClaimStart()
+        {
+            lock (this)
+            {
+                if (_startClaimed || _abandoned)
+                    return false;
+
+                _startClaimed = true;
+                return true;
+            }
+        }
+
+        internal StorageActivityAction Attach(
+            CSharpDbActivityOperation? operation)
+        {
+            lock (this)
+            {
+                if (_attachmentFinished || _abandoned)
+                {
+                    return operation is null
+                        ? default
+                        : new StorageActivityAction(
+                            operation,
+                            IsTerminal: false,
+                            CSharpDbOperationOutcome.Unknown,
+                            Error: null,
+                            CompletedAtUtc: default);
+                }
+
+                _attachmentFinished = true;
+                if (operation is null)
+                    return default;
+
+                if (_terminalRecorded)
+                {
+                    return new StorageActivityAction(
+                        operation,
+                        IsTerminal: true,
+                        _outcome,
+                        _error,
+                        _completedAtUtc);
+                }
+
+                _operation = operation;
+                return default;
+            }
+        }
+
+        internal StorageActivityAction Complete(
+            CSharpDbOperationOutcome outcome,
+            SafeErrorProjection? error,
+            DateTimeOffset completedAtUtc)
+        {
+            lock (this)
+            {
+                if (_terminalRecorded || _abandoned)
+                    return default;
+
+                _terminalRecorded = true;
+                _outcome = outcome;
+                _error = error;
+                _completedAtUtc = completedAtUtc;
+                if (_operation is not { } operation)
+                    return default;
+
+                _operation = null;
+                return new StorageActivityAction(
+                    operation,
+                    IsTerminal: true,
+                    outcome,
+                    error,
+                    completedAtUtc);
+            }
+        }
+
+        internal StorageActivityAction Abandon()
+        {
+            lock (this)
+            {
+                if (_terminalRecorded || _abandoned)
+                    return default;
+
+                _abandoned = true;
+                if (_operation is not { } operation)
+                    return default;
+
+                _operation = null;
+                return new StorageActivityAction(
+                    operation,
+                    IsTerminal: false,
+                    CSharpDbOperationOutcome.Unknown,
+                    Error: null,
+                    CompletedAtUtc: default);
+            }
+        }
+    }
+
     internal sealed class RecoveryOperation
     {
+        private StorageActivityLease? _activityLease;
+
         internal RecoveryOperation(OperationStart start)
         {
+            Start = start;
             OperationId = start.OperationId;
             SortKey = start.SortKey;
             StartedAtUtc = start.StartedAtUtc;
@@ -2218,6 +2507,7 @@ internal sealed class StorageRuntimeDiagnostics :
                 FailureKind: StorageRuntimeFailureKindRaw.None);
         }
 
+        internal OperationStart Start { get; }
         internal OpaqueDiagnosticsId OperationId { get; }
         internal string SortKey { get; }
         internal DateTimeOffset StartedAtUtc { get; }
@@ -2234,21 +2524,45 @@ internal sealed class StorageRuntimeDiagnostics :
             MetricsStarted = false;
             return started;
         }
+
+        internal StorageActivityLease? PrepareActivity(bool enabled)
+        {
+            if (!enabled)
+                return null;
+
+            return _activityLease ??= new StorageActivityLease();
+        }
+
+        internal StorageActivityAction CompleteActivity(
+            CSharpDbOperationOutcome outcome,
+            SafeErrorProjection? error,
+            DateTimeOffset completedAtUtc)
+            => _activityLease?.Complete(outcome, error, completedAtUtc) ??
+                default;
+
+        internal StorageActivityAction AbandonActivity()
+            => _activityLease?.Abandon() ?? default;
     }
 
     internal sealed class CheckpointOperation
     {
+        private StorageActivityLease? _activityLease;
+
         internal CheckpointOperation(
             OperationStart start,
-            StorageCheckpointRuntimeRawSnapshot raw)
+            StorageCheckpointRuntimeRawSnapshot raw,
+            bool shouldTraceActivity)
         {
+            Start = start;
             OperationId = start.OperationId;
             SortKey = start.SortKey;
             StartedAtUtc = start.StartedAtUtc;
             StartingTimestamp = start.StartingTimestamp;
             Raw = raw;
+            ShouldTraceActivity = shouldTraceActivity;
         }
 
+        internal OperationStart Start { get; }
         internal OpaqueDiagnosticsId OperationId { get; }
         internal string SortKey { get; }
         internal DateTimeOffset StartedAtUtc { get; }
@@ -2257,6 +2571,7 @@ internal sealed class StorageRuntimeDiagnostics :
         internal TimeSpan Elapsed { get; set; }
         internal StorageCheckpointRuntimeRawSnapshot Raw { get; set; }
         internal bool MetricsStarted { get; set; }
+        internal bool ShouldTraceActivity { get; }
 
         internal bool TakeMetricsStarted()
         {
@@ -2264,6 +2579,24 @@ internal sealed class StorageRuntimeDiagnostics :
             MetricsStarted = false;
             return started;
         }
+
+        internal StorageActivityLease? PrepareActivity(bool enabled)
+        {
+            if (!enabled)
+                return null;
+
+            return _activityLease ??= new StorageActivityLease();
+        }
+
+        internal StorageActivityAction CompleteActivity(
+            CSharpDbOperationOutcome outcome,
+            SafeErrorProjection? error,
+            DateTimeOffset completedAtUtc)
+            => _activityLease?.Complete(outcome, error, completedAtUtc) ??
+                default;
+
+        internal StorageActivityAction AbandonActivity()
+            => _activityLease?.Abandon() ?? default;
     }
 
     internal sealed class Registration :
@@ -2391,7 +2724,7 @@ internal sealed class StorageRuntimeDiagnostics :
                     ? null
                     : TryCreateOperationStart(owner._timeProvider);
                 if (start is { } value)
-                    owner?.RecoveryStarted(this, new RecoveryOperation(value));
+                    owner?.RecoveryStarted(this, owner.CreateRecoveryOperation(value));
             }
             catch
             {
@@ -2415,7 +2748,7 @@ internal sealed class StorageRuntimeDiagnostics :
                 owner.RecoveryChanged(
                     this,
                     start is { } value
-                        ? new RecoveryOperation(value)
+                        ? owner.CreateRecoveryOperation(value)
                         : null,
                     snapshot,
                     TryCaptureClock(owner._timeProvider));
@@ -2442,7 +2775,7 @@ internal sealed class StorageRuntimeDiagnostics :
                 owner.RecoveryCompleted(
                     this,
                     start is { } value
-                        ? new RecoveryOperation(value)
+                        ? owner.CreateRecoveryOperation(value)
                         : null,
                     snapshot,
                     TryCaptureClock(owner._timeProvider));
@@ -2468,7 +2801,7 @@ internal sealed class StorageRuntimeDiagnostics :
                 {
                     owner.CheckpointStarted(
                         this,
-                        new CheckpointOperation(value, snapshot));
+                        owner.CreateCheckpointOperation(value, snapshot));
                 }
             }
             catch

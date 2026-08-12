@@ -179,12 +179,14 @@ internal sealed partial class EngineTransportClient
         {
             ConnectionCapture connectionCapture = CaptureConnections();
             MaintenanceRuntimeDiagnosticsCapture maintenanceCapture =
-                CaptureMaintenance(
-                    families,
-                    families.Current,
-                    includeClientRegistry: true,
-                    maximumActiveRecords: 1,
-                    maximumRecentRecords: 0);
+                families.Current.HistoryEnabled
+                    ? CaptureMaintenance(
+                        families,
+                        families.Current,
+                        includeClientRegistry: true,
+                        maximumActiveRecords: 1,
+                        maximumRecentRecords: 0)
+                    : MaintenanceRuntimeDiagnosticsCapture.Empty;
             bool maintenanceTruncated = IsMaintenanceCaptureTruncated(
                 maintenanceCapture);
             DiagnosticsSnapshotMetadata provisionalMetadata =
@@ -194,9 +196,11 @@ internal sealed partial class EngineTransportClient
                 DiagnosticsSource.Client,
                 recordsTruncated: maintenanceTruncated,
                 fieldsTruncated: connectionCapture.FieldsTruncated);
-            QueryDiagnosticsSummary raw = QueryRuntimeDiagnostics
-                .GetOrCreate(families.Current)
-                .GetSummary();
+            QueryDiagnosticsSummary? raw = families.Current.HistoryEnabled
+                ? QueryRuntimeDiagnostics
+                    .GetOrCreate(families.Current)
+                    .GetSummary()
+                : null;
             StorageRuntimeDiagnosticsCapture storage =
                 CaptureStorageWithDetailOverlay(
                     families,
@@ -207,23 +211,34 @@ internal sealed partial class EngineTransportClient
                 DiagnosticsAvailability.Available,
                 maintenanceTruncated,
                 connectionCapture.FieldsTruncated || storage.FieldsTruncated);
-            QueryDiagnosticsSummary queries = raw with { Metadata = metadata };
+            QueryDiagnosticsSummary? queries = raw is null
+                ? null
+                : raw with { Metadata = metadata };
             ConnectionDiagnosticsSnapshot connections = CreateConnectionSnapshot(
                 metadata,
                 connectionCapture);
             var snapshot = new RuntimeDiagnosticsSnapshot(
                 metadata,
-                DiagnosticsSection<QueryDiagnosticsSummary>.Available(queries),
+                queries is null
+                    ? DiagnosticsSection<QueryDiagnosticsSummary>.WithoutValue(
+                        DiagnosticsAvailability.Disabled)
+                    : DiagnosticsSection<QueryDiagnosticsSummary>.Available(
+                        queries),
                 DiagnosticsSection<ConnectionDiagnosticsSnapshot>.Available(connections),
                 ReprojectStorageSection(storage.Storage, metadata),
                 ReprojectWalSection(storage.Wal, metadata),
-                CreateMaintenanceSection(maintenanceCapture, metadata),
+                families.Current.HistoryEnabled
+                    ? CreateMaintenanceSection(maintenanceCapture, metadata)
+                    : DiagnosticsSection<MaintenanceOperationSnapshot>
+                        .WithoutValue(DiagnosticsAvailability.Disabled),
                 DiagnosticsSection<HealthDiagnosticsSnapshot>.WithoutValue(
                     DiagnosticsAvailability.Unavailable));
             return CreateInstanceTopology(snapshot);
         }
 
         bool hasEnabledFamily = families.States.Any(static state => state.IsEnabled);
+        bool hasHistoryFamily = families.States.Any(
+            static state => state.HistoryEnabled);
         RuntimeDiagnosticsFamilySection<RuntimeDiagnosticsSnapshot>[] exactFamilies =
             families.States
                 .Select(state => CreateExactRuntimeSummaryFamily(families, state))
@@ -242,10 +257,12 @@ internal sealed partial class EngineTransportClient
 
         ConnectionCapture aggregateConnections = CaptureConnections();
         MaintenanceRuntimeDiagnosticsCapture aggregateMaintenance =
-            CaptureAggregateMaintenance(
-                families,
-                maximumActiveRecords: 1,
-                maximumRecentRecords: 0);
+            hasHistoryFamily
+                ? CaptureAggregateMaintenance(
+                    families,
+                    maximumActiveRecords: 1,
+                    maximumRecentRecords: 0)
+                : MaintenanceRuntimeDiagnosticsCapture.Empty;
         DiagnosticsSnapshotMetadata aggregateMetadata = families.Current.CreateMetadata(
             DiagnosticsScope.Aggregate,
             DiagnosticsAvailability.Available,
@@ -256,16 +273,21 @@ internal sealed partial class EngineTransportClient
         var aggregateSnapshot = new RuntimeDiagnosticsSnapshot(
             aggregateMetadata,
             DiagnosticsSection<QueryDiagnosticsSummary>.WithoutValue(
-                DiagnosticsAvailability.Unavailable),
+                hasHistoryFamily
+                    ? DiagnosticsAvailability.Unavailable
+                    : DiagnosticsAvailability.Disabled),
             DiagnosticsSection<ConnectionDiagnosticsSnapshot>.Available(
                 CreateConnectionSnapshot(aggregateMetadata, aggregateConnections)),
             DiagnosticsSection<StorageRuntimeDiagnosticsSnapshot>.WithoutValue(
                 DiagnosticsAvailability.Unavailable),
             DiagnosticsSection<WalRuntimeDiagnosticsSnapshot>.WithoutValue(
                 DiagnosticsAvailability.Unavailable),
-            CreateMaintenanceSection(
-                aggregateMaintenance,
-                aggregateMetadata),
+            hasHistoryFamily
+                ? CreateMaintenanceSection(
+                    aggregateMaintenance,
+                    aggregateMetadata)
+                : DiagnosticsSection<MaintenanceOperationSnapshot>
+                    .WithoutValue(DiagnosticsAvailability.Disabled),
             DiagnosticsSection<HealthDiagnosticsSnapshot>.WithoutValue(
                 DiagnosticsAvailability.Unavailable));
         return CreateAggregateTopology(
@@ -290,12 +312,14 @@ internal sealed partial class EngineTransportClient
         }
 
         MaintenanceRuntimeDiagnosticsCapture maintenanceCapture =
-            CaptureMaintenance(
-                families,
-                state,
-                includeClientRegistry: false,
-                maximumActiveRecords: 1,
-                maximumRecentRecords: 0);
+            state.HistoryEnabled
+                ? CaptureMaintenance(
+                    families,
+                    state,
+                    includeClientRegistry: false,
+                    maximumActiveRecords: 1,
+                    maximumRecentRecords: 0)
+                : MaintenanceRuntimeDiagnosticsCapture.Empty;
         bool maintenanceTruncated = IsMaintenanceCaptureTruncated(
             maintenanceCapture);
         DiagnosticsSnapshotMetadata provisionalMetadata = state.CreateMetadata(
@@ -303,9 +327,11 @@ internal sealed partial class EngineTransportClient
             DiagnosticsAvailability.Available,
             DiagnosticsSource.Engine,
             recordsTruncated: maintenanceTruncated);
-        QueryDiagnosticsSummary raw = QueryRuntimeDiagnostics
-            .GetOrCreate(state)
-            .GetSummary();
+        QueryDiagnosticsSummary? raw = state.HistoryEnabled
+            ? QueryRuntimeDiagnostics
+                .GetOrCreate(state)
+                .GetSummary()
+            : null;
         StorageRuntimeDiagnosticsCapture storage =
             CaptureStorageWithDetailOverlay(
                 families,
@@ -318,13 +344,19 @@ internal sealed partial class EngineTransportClient
             storage.FieldsTruncated);
         var snapshot = new RuntimeDiagnosticsSnapshot(
             metadata,
-            DiagnosticsSection<QueryDiagnosticsSummary>.Available(
-                raw with { Metadata = metadata }),
+            raw is null
+                ? DiagnosticsSection<QueryDiagnosticsSummary>.WithoutValue(
+                    DiagnosticsAvailability.Disabled)
+                : DiagnosticsSection<QueryDiagnosticsSummary>.Available(
+                    raw with { Metadata = metadata }),
             DiagnosticsSection<ConnectionDiagnosticsSnapshot>.WithoutValue(
                 DiagnosticsAvailability.NotApplicable),
             ReprojectStorageSection(storage.Storage, metadata),
             ReprojectWalSection(storage.Wal, metadata),
-            CreateMaintenanceSection(maintenanceCapture, metadata),
+            state.HistoryEnabled
+                ? CreateMaintenanceSection(maintenanceCapture, metadata)
+                : DiagnosticsSection<MaintenanceOperationSnapshot>
+                    .WithoutValue(DiagnosticsAvailability.Disabled),
             DiagnosticsSection<HealthDiagnosticsSnapshot>.WithoutValue(
                 DiagnosticsAvailability.Unavailable));
         return new RuntimeDiagnosticsFamilySection<RuntimeDiagnosticsSnapshot>(
@@ -618,7 +650,7 @@ internal sealed partial class EngineTransportClient
                 })
                 .ToArray();
 
-        if (!families.States.Any(static state => state.IsEnabled))
+        if (!families.States.Any(static state => state.HistoryEnabled))
         {
             DiagnosticsSnapshotMetadata disabled = families.Current.CreateMetadata(
                 DiagnosticsScope.Aggregate,
@@ -661,7 +693,7 @@ internal sealed partial class EngineTransportClient
             DiagnosticsScope scope,
             DiagnosticsSource source)
     {
-        if (!state.IsEnabled)
+        if (!state.HistoryEnabled)
         {
             DiagnosticsSnapshotMetadata disabled = state.CreateMetadata(
                 scope,
@@ -1419,7 +1451,7 @@ internal sealed partial class EngineTransportClient
                     collection.Metadata.DatabaseAlias,
                     collection))
                 .ToArray();
-        if (!families.States.Any(static state => state.IsEnabled))
+        if (!families.States.Any(static state => state.HistoryEnabled))
         {
             DiagnosticsSnapshotMetadata disabledMetadata = families.Current.CreateMetadata(
                 DiagnosticsScope.Aggregate,
@@ -1470,7 +1502,7 @@ internal sealed partial class EngineTransportClient
             CSharpDbRuntimeDiagnosticsState state,
             int maximumRecords)
     {
-        if (state.IsEnabled)
+        if (state.HistoryEnabled)
         {
             return QueryRuntimeDiagnostics
                 .GetOrCreate(state)
@@ -1505,7 +1537,7 @@ internal sealed partial class EngineTransportClient
                     collection.Metadata.DatabaseAlias,
                     collection))
                 .ToArray();
-        if (!families.States.Any(static state => state.IsEnabled))
+        if (!families.States.Any(static state => state.HistoryEnabled))
         {
             DiagnosticsSnapshotMetadata disabledMetadata = families.Current.CreateMetadata(
                 DiagnosticsScope.Aggregate,
@@ -1556,7 +1588,7 @@ internal sealed partial class EngineTransportClient
             CSharpDbRuntimeDiagnosticsState state,
             int maximumRecords)
     {
-        if (state.IsEnabled)
+        if (state.HistoryEnabled)
         {
             return QueryRuntimeDiagnostics
                 .GetOrCreate(state)
@@ -1580,10 +1612,10 @@ internal sealed partial class EngineTransportClient
         DiagnosticsValueSnapshot<QueryPlanDiagnosticsSnapshot>[] exact = families.States
             .Select(state =>
             {
-                QueryPlanDiagnosticsSnapshot? plan = state.IsEnabled
+                QueryPlanDiagnosticsSnapshot? plan = state.HistoryEnabled
                     ? QueryRuntimeDiagnostics.GetOrCreate(state).GetPlanSnapshot(operationId)
                     : null;
-                DiagnosticsAvailability availability = !state.IsEnabled
+                DiagnosticsAvailability availability = !state.HistoryEnabled
                     ? DiagnosticsAvailability.Disabled
                     : plan is null
                         ? DiagnosticsAvailability.Unavailable
@@ -1607,7 +1639,7 @@ internal sealed partial class EngineTransportClient
             .FirstOrDefault(static plan => plan is not null);
         DiagnosticsAvailability aggregateAvailability = selected is not null
             ? DiagnosticsAvailability.Available
-            : families.States.Any(static state => state.IsEnabled)
+            : families.States.Any(static state => state.HistoryEnabled)
                 ? DiagnosticsAvailability.Unavailable
                 : DiagnosticsAvailability.Disabled;
         DiagnosticsSnapshotMetadata aggregateMetadata = families.Current.CreateMetadata(
@@ -1635,14 +1667,14 @@ internal sealed partial class EngineTransportClient
         DiagnosticsValueSnapshot<QueryDetailSnapshot>[] exact = families.States
             .Select(state =>
             {
-                QueryDetailSnapshot? detail = state.IsEnabled
+                QueryDetailSnapshot? detail = state.HistoryEnabled
                     ? QueryRuntimeDiagnostics
                         .GetOrCreate(state, startSweepTimer: false)
                         .GetQueryDetailSnapshot(operationId)
                     : null;
                 DiagnosticsAvailability availability = detail is not null
                     ? DiagnosticsAvailability.Available
-                    : state.IsEnabled
+                    : state.HistoryEnabled
                         ? DiagnosticsAvailability.Unavailable
                         : DiagnosticsAvailability.Disabled;
                 DiagnosticsSnapshotMetadata metadata = detail?.Metadata ??
@@ -1665,7 +1697,7 @@ internal sealed partial class EngineTransportClient
             .FirstOrDefault(static detail => detail is not null);
         DiagnosticsAvailability aggregateAvailability = selected is not null
             ? DiagnosticsAvailability.Available
-            : families.States.Any(static state => state.IsEnabled)
+            : families.States.Any(static state => state.HistoryEnabled)
                 ? DiagnosticsAvailability.Unavailable
                 : DiagnosticsAvailability.Disabled;
         DiagnosticsSnapshotMetadata aggregateMetadata = families.Current.CreateMetadata(

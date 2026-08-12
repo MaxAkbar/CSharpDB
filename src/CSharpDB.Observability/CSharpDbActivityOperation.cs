@@ -11,13 +11,16 @@ namespace CSharpDB.Observability;
 internal sealed class CSharpDbActivityOperation
 {
     private readonly Activity _activity;
+    private readonly bool _preserveAmbientOnStop;
     private int _completed;
 
     private CSharpDbActivityOperation(
         Activity activity,
-        CSharpDbOperationContext context)
+        CSharpDbOperationContext context,
+        bool preserveAmbientOnStop = false)
     {
         _activity = activity;
+        _preserveAmbientOnStop = preserveAmbientOnStop;
         SetStartTags(activity, context);
     }
 
@@ -64,6 +67,59 @@ internal sealed class CSharpDbActivityOperation
             {
                 // Listener failures are diagnostic work and must not strand
                 // the ambient activity while context creation unwinds.
+            }
+
+            throw;
+        }
+        finally
+        {
+            Activity.Current = previous;
+        }
+    }
+
+    /// <summary>
+    /// Starts a root activity at an already-captured physical-operation time.
+    /// The explicit empty parent prevents a storage callback thread's ambient
+    /// activity from becoming an accidental parent.
+    /// </summary>
+    internal static CSharpDbActivityOperation? StartCapturedRoot<TState>(
+        CSharpDbOperationClass operationClass,
+        DateTimeOffset startedAtUtc,
+        TState state,
+        Func<TState, CSharpDbOperationContext> createContext,
+        out CSharpDbOperationContext context)
+    {
+        ArgumentNullException.ThrowIfNull(createContext);
+
+        Activity? previous = Activity.Current;
+        Activity? activity = null;
+        try
+        {
+            Activity.Current = null;
+            activity = CSharpDbDiagnostics.ActivitySource.StartActivity(
+                GetActivityName(operationClass),
+                ActivityKind.Internal,
+                parentContext: default,
+                tags: null,
+                links: null,
+                startTime: startedAtUtc.ToUniversalTime());
+            context = createContext(state);
+            return activity is null
+                ? null
+                : new CSharpDbActivityOperation(
+                    activity,
+                    context,
+                    preserveAmbientOnStop: true);
+        }
+        catch
+        {
+            try
+            {
+                activity?.Stop();
+            }
+            catch
+            {
+                // Listener failures are diagnostic work only.
             }
 
             throw;
@@ -131,7 +187,13 @@ internal sealed class CSharpDbActivityOperation
     internal void Complete(
         CSharpDbOperationOutcome outcome,
         SafeErrorProjection? error = null)
-        => CompleteCore(outcome, error, beforeStop: null);
+        => CompleteCore(outcome, error, beforeStop: null, completedAtUtc: null);
+
+    internal void CompleteAt(
+        CSharpDbOperationOutcome outcome,
+        SafeErrorProjection? error,
+        DateTimeOffset completedAtUtc)
+        => CompleteCore(outcome, error, beforeStop: null, completedAtUtc);
 
     /// <summary>
     /// Stops an activity whose diagnostic setup could not be retained without
@@ -145,7 +207,7 @@ internal sealed class CSharpDbActivityOperation
         try
         {
             RegisterOutlivingAmbientDescendant();
-            _activity.Stop();
+            StopActivity();
         }
         catch
         {
@@ -179,7 +241,8 @@ internal sealed class CSharpDbActivityOperation
                 }
 
                 activity.SetTag("csharpdb.query.slow", isSlow);
-            });
+            },
+            completedAtUtc: null);
 
     internal void CompleteMaintenance(
         CSharpDbOperationOutcome outcome,
@@ -199,12 +262,14 @@ internal sealed class CSharpDbActivityOperation
                     activity.SetTag("csharpdb.maintenance.total_units", total);
                 activity.SetTag("csharpdb.maintenance.warning_count", warningCount);
                 activity.SetTag("csharpdb.maintenance.error_count", errorCount);
-            });
+            },
+            completedAtUtc: null);
 
     private void CompleteCore(
         CSharpDbOperationOutcome outcome,
         SafeErrorProjection? error,
-        Action<Activity>? beforeStop)
+        Action<Activity>? beforeStop,
+        DateTimeOffset? completedAtUtc)
     {
         if (Interlocked.Exchange(ref _completed, 1) != 0)
             return;
@@ -227,8 +292,16 @@ internal sealed class CSharpDbActivityOperation
                 _activity.SetStatus(ActivityStatusCode.Error);
             }
 
+            if (completedAtUtc is DateTimeOffset capturedCompletion)
+            {
+                DateTimeOffset safeCompletion = capturedCompletion.ToUniversalTime();
+                if (safeCompletion < _activity.StartTimeUtc)
+                    safeCompletion = _activity.StartTimeUtc;
+                _activity.SetEndTime(safeCompletion.UtcDateTime);
+            }
+
             RegisterOutlivingAmbientDescendant();
-            _activity.Stop();
+            StopActivity();
         }
         catch
         {
@@ -237,7 +310,7 @@ internal sealed class CSharpDbActivityOperation
             try
             {
                 RegisterOutlivingAmbientDescendant();
-                _activity.Stop();
+                StopActivity();
             }
             catch
             {
@@ -250,6 +323,26 @@ internal sealed class CSharpDbActivityOperation
     {
         if (IsDescendantOf(Activity.Current, _activity))
             CompletedOwnerAmbientGuard.Register(_activity);
+    }
+
+    private void StopActivity()
+    {
+        if (!_preserveAmbientOnStop)
+        {
+            _activity.Stop();
+            return;
+        }
+
+        Activity? ambient = Activity.Current;
+        try
+        {
+            _activity.Stop();
+        }
+        finally
+        {
+            if (!ReferenceEquals(Activity.Current, ambient))
+                Activity.Current = ambient;
+        }
     }
 
     private static void SetStartTags(

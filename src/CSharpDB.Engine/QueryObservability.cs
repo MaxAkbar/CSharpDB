@@ -20,6 +20,7 @@ internal sealed class QueryObservability : IDisposable
     private readonly SqlTextCaptureMode _sqlTextCaptureMode;
     private readonly TimeSpan _slowQueryThreshold;
     private readonly bool _tracingEnabled;
+    private readonly bool _historyEnabled;
     private readonly TimeProvider _timeProvider;
     private readonly QueryRuntimeDiagnostics _runtimeDiagnostics;
     private readonly QueryPlanRuntimeDiagnosticsAdapter _planRuntimeObserver;
@@ -69,6 +70,7 @@ internal sealed class QueryObservability : IDisposable
         _sqlTextCaptureMode = options.Logging.SqlText;
         _slowQueryThreshold = options.Logging.GetSlowQueryThreshold(CSharpDbOperationClass.Query);
         _tracingEnabled = runtimeState.TracingEnabled;
+        _historyEnabled = runtimeState.HistoryEnabled;
         _runtimeDiagnostics = QueryRuntimeDiagnostics.GetOrCreate(
             runtimeState,
             startLongRunningSweepTimer);
@@ -111,9 +113,13 @@ internal sealed class QueryObservability : IDisposable
         bool traceRequested =
             CSharpDbActivityOperation.ShouldStart(_tracingEnabled);
 
+        bool fingerprintRequired = _historyEnabled ||
+            traceRequested ||
+            _queryEventsEnabled ||
+            _slowQueryEventsEnabled;
         QueryFingerprint? fingerprint = suppliedFingerprint;
         string? capturedSqlText = null;
-        if (!string.IsNullOrWhiteSpace(sql))
+        if (fingerprintRequired && !string.IsNullOrWhiteSpace(sql))
         {
             try
             {
@@ -144,6 +150,7 @@ internal sealed class QueryObservability : IDisposable
         bool capturedPublishSlowQueryEvents = false;
         bool capturedPublishLongRunningQueryEvents = false;
         if (allowLeanRuntime &&
+            _historyEnabled &&
             allowDirectRuntimeObservation &&
             _sqlTextCaptureMode == SqlTextCaptureMode.None &&
             !suppressDiagnosticEvents &&
@@ -302,7 +309,9 @@ internal sealed class QueryObservability : IDisposable
                 runtimeOperation = ambientOperation;
             }
         }
-        else
+        else if (_historyEnabled ||
+                 _runtimeDiagnostics.RuntimeMetricsEnabled ||
+                 publishLongRunningQueryEvents)
         {
             // The ownership table was already claimed by a valid ambient
             // lease, so a failed/repeated adoption cannot create a second
@@ -388,6 +397,8 @@ internal sealed class QueryObservability : IDisposable
     internal QueryDetailSnapshot? GetQueryDetailSnapshot(
         OpaqueDiagnosticsId operationId)
         => _runtimeDiagnostics.GetQueryDetailSnapshot(operationId);
+
+    internal bool HistoryEnabled => _historyEnabled;
 
     internal IQueryPlanRuntimeObserver PlanRuntimeObserver =>
         _planRuntimeObserver;
@@ -496,6 +507,8 @@ internal sealed class QueryOperation : IQueryExecutionObservation
     }
 
     public IQueryPlanRuntimeObserver? ExplicitPlanObserver => null;
+
+    internal bool HasRuntimeOperationForTest => _runtimeOperation is not null;
 
     public void MarkExecuting()
         => _runtimeOperation?.SetPhase(QueryExecutionPhase.Executing);

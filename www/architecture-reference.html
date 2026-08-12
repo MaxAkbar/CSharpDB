@@ -53,6 +53,7 @@
                     <ul>
                         <li><a href="#layer-overview">Layer Overview</a></li>
                         <li><a href="#embedded-to-grpc-runtime-boundary">Embedded-to-gRPC Runtime Boundary</a></li>
+                        <li><a href="#cross-cutting-observability-plane">Cross-Cutting Observability Plane</a></li>
                         <li><a href="#layer-1-primitives-csharpdb-primitives">Layer 1: Primitives ( CSharpDB.Primitives )</a></li>
                         <li class="toc-child"><a href="#dbvalue">DbValue</a></li>
                         <li><a href="#layer-2-storage-csharpdb-storage">Layer 2: Storage ( CSharpDB.Storage )</a></li>
@@ -185,8 +186,46 @@
                 <p>Remote clients should reuse <code>ICSharpDbClient</code> instances and gRPC channels for
                 bursts of work. Direct mode remains the fastest path when the caller can safely
                 own the database file in-process.</p>
+                <h2 id="cross-cutting-observability-plane">Cross-Cutting Observability Plane</h2>
+                <p><code>CSharpDB.Observability</code> is a BCL-only contract assembly shared by SQL,
+                Engine, Client, Data, the all-in-one package, and the hosted API layer. It defines
+                one <code>DiagnosticListener</code>, <code>ActivitySource</code>, <code>Meter</code>,
+                stable structured-event catalog, safe correlation context, bounded histories,
+                host state, and immutable source-generated runtime snapshot models. It has no
+                ASP.NET Core, logging-framework, OpenTelemetry SDK, or exporter dependency.</p>
+                <div class="code-block" data-title="Mermaid"><pre><code>flowchart LR
+    Runtime["Sql / Engine / Client / Data"]
+    Contract["CSharpDB.Observability&lt;br/&gt;BCL sources + versioned models"]
+    Embedded["Embedded application listeners"]
+    Host["API / Daemon host adapters"]
+    Log["ILogger"]
+    Export["OpenTelemetry / OTLP / Prometheus"]
+    Health["HTTP + gRPC health"]
+    Wire["HTTP / gRPC diagnostics"]
+    Admin["Admin Observability workspace"]
+
+    Runtime --&gt; Contract
+    Contract --&gt; Embedded
+    Contract --&gt; Host
+    Host --&gt; Log
+    Host --&gt; Export
+    Host --&gt; Health
+    Host --&gt; Wire --&gt; Admin</code></pre></div>
+                <p>The runtime that owns an operation also owns its identity and terminal
+                accounting. Direct operations become roots only without an ambient parent;
+                REST/gRPC operations remain children of inbound server activities; sharded
+                operations use one coordinator with explicit physical-attempt children. The
+                engine adopts carried context rather than double-counting work.</p>
+                <p>Remote models preserve snapshot schema, capture time, server instance id,
+                counter epoch, scope, availability, truncation, capacity, retention, and drops.
+                Sharded topology keeps child identity and availability rather than summing
+                counters across different process lifetimes. Ordinary telemetry and snapshots
+                omit SQL, values, credentials, connection strings, paths, raw exceptions, and
+                exception messages. Exporters and public routes remain application-boundary
+                policy. See <a href="docs/observability.html">Observability and Diagnostics</a>.</p>
                 <p><strong>Dependency graph:</strong></p>
                 <div class="code-block" data-title="Code"><pre><code>Api     → Client
+                Api     → Observability
                 Daemon  → Client
                 Admin   → Client
                 Cli     → Client
@@ -196,8 +235,10 @@
                 Cli     → Pipelines
                 Mcp     → Client
                 Data    → Client
+                Data    → Observability
                 Data    → Engine            (named shared-memory host + internal session types)
                 Client  → Engine
+                Client  → Observability
                 Client  → Pipelines
                 Client  → Sql
                 Client  → Storage.Diagnostics
@@ -206,6 +247,7 @@
                                     → Storage → Primitives
                           Execution → Primitives
                 Engine  → Storage
+                Engine  → Observability
                 Engine  → Sql
                 Engine  → Primitives
                 </code></pre></div>

@@ -1,5 +1,7 @@
+using System.Collections.Concurrent;
 using System.Data.Common;
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using CSharpDB.Data;
 using CSharpDB.Engine;
 using CSharpDB.Observability;
@@ -303,6 +305,63 @@ public sealed class AdoQueryRuntimeDiagnosticsTests : IAsyncLifetime
             new DateTimeOffset(2026, 8, 10, 18, 0, 3, TimeSpan.Zero),
             recent.CompletedAtUtc);
         Assert.Empty(lateEvents.Events);
+    }
+
+    [Fact]
+    public void MetricsOnlyHistoryDisabled_PreDispatchFailureEmitsOneTerminalWithoutHistory()
+    {
+        const string alias = "ado_metrics_no_history";
+        CSharpDbObservabilityOptions options = CreateObservability(alias);
+        options.History.Enabled = false;
+        options.Prometheus.Enabled = true;
+
+        var emitted = new ConcurrentQueue<string>();
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, currentListener) =>
+        {
+            if (instrument.Meter.Name == CSharpDbDiagnostics.MeterName)
+                currentListener.EnableMeasurementEvents(instrument);
+        };
+        listener.SetMeasurementEventCallback<long>(
+            (instrument, _, tags, _) => RecordForAlias(
+                emitted,
+                instrument.Name,
+                tags,
+                alias));
+        listener.SetMeasurementEventCallback<double>(
+            (instrument, _, tags, _) => RecordForAlias(
+                emitted,
+                instrument.Name,
+                tags,
+                alias));
+        listener.Start();
+
+        using IDisposable state =
+            AdoCommandObservation.CreateRuntimeDiagnosticsStateForTest(options);
+        using AdoCommandObservation observation =
+            Assert.IsType<AdoCommandObservation>(
+                AdoCommandObservation.TryStartForTest(
+                    options,
+                    state,
+                    "SELECT @missing",
+                    OpaqueDiagnosticsId.Create()));
+        Assert.Empty(ActiveRecords(state));
+
+        observation.FailBeforeDispatch(new InvalidOperationException("first"));
+        observation.FailBeforeDispatch(new InvalidOperationException("second"));
+        observation.Dispose();
+
+        Assert.Single(
+            emitted,
+            static name => name == CSharpDbMetricInstrumentNames.Requests);
+        Assert.Single(
+            emitted,
+            static name => name == CSharpDbMetricInstrumentNames.Statements);
+        Assert.Single(
+            emitted,
+            static name => name == CSharpDbMetricInstrumentNames.QueryDuration);
+        Assert.Empty(ActiveRecords(state));
+        Assert.Empty(RecentRecords(state));
     }
 
     [Fact]
@@ -844,6 +903,23 @@ public sealed class AdoQueryRuntimeDiagnosticsTests : IAsyncLifetime
         object state)
         => Assert.IsAssignableFrom<IReadOnlyList<RecentQuerySnapshot>>(
             AdoCommandObservation.CaptureRecentQueriesForTest(state).Records);
+
+    private static void RecordForAlias(
+        ConcurrentQueue<string> emitted,
+        string instrumentName,
+        ReadOnlySpan<KeyValuePair<string, object?>> tags,
+        string alias)
+    {
+        foreach (KeyValuePair<string, object?> tag in tags)
+        {
+            if (tag.Key == CSharpDbMetricTagNames.DatabaseAlias &&
+                string.Equals(tag.Value as string, alias, StringComparison.Ordinal))
+            {
+                emitted.Enqueue(instrumentName);
+                return;
+            }
+        }
+    }
 
     private static async Task<int> ExecuteNonQueryAsync(
         CSharpDbConnection connection,

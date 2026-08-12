@@ -28,8 +28,10 @@ internal sealed partial class QueryRuntimeDiagnostics
     private void InitializeLeanRuntime()
     {
         _leanDatabaseAlias = _runtimeState.CreateOptionsSnapshot().DatabaseAlias;
-        _leanActiveSlots = new LeanActiveSlot[_activeCapacity];
-        _leanFreeSlots = new int[_activeCapacity];
+        int activeCapacity = _historyEnabled ? _activeCapacity : 0;
+        int recentCapacity = _historyEnabled ? _recentCapacity : 0;
+        _leanActiveSlots = new LeanActiveSlot[activeCapacity];
+        _leanFreeSlots = new int[activeCapacity];
         for (int index = 0; index < _leanActiveSlots.Length; index++)
         {
             _leanActiveSlots[index] = new LeanActiveSlot(index);
@@ -37,7 +39,7 @@ internal sealed partial class QueryRuntimeDiagnostics
         }
 
         _leanFreeCount = _leanFreeSlots.Length;
-        _leanRecentSlots = new LeanRecentSlot[_recentCapacity];
+        _leanRecentSlots = new LeanRecentSlot[recentCapacity];
         for (int index = 0; index < _leanRecentSlots.Length; index++)
             _leanRecentSlots[index] = new LeanRecentSlot();
 
@@ -68,7 +70,7 @@ internal sealed partial class QueryRuntimeDiagnostics
         QueryFingerprint? fingerprint,
         CSharpDbTransport transport)
     {
-        if (!_runtimeState.IsEnabled || Volatile.Read(ref _disposed) != 0)
+        if (!_historyEnabled || Volatile.Read(ref _disposed) != 0)
             return null;
 
         DateTimeOffset startedAtUtc;

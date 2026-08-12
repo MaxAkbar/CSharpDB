@@ -150,7 +150,10 @@ public sealed class GrpcHealthHostTests
                             Service = CSharpDbHealthHostExtensions
                                 .DatabaseGrpcServiceName,
                         },
-                        deadline: DateTime.UtcNow.AddSeconds(5),
+                        // The health publisher has a one-second cadence. Keep
+                        // the watch bounded while allowing for cross-project
+                        // CI contention during the full solution matrix.
+                        deadline: DateTime.UtcNow.AddSeconds(20),
                         cancellationToken: Ct);
                 Assert.True(await watch.ResponseStream.MoveNext(Ct));
                 Assert.Equal(

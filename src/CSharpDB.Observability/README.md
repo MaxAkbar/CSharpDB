@@ -33,6 +33,9 @@ second SQL parser.
 The complete hierarchy, counter, privacy, host-state, and performance contract
 is recorded in the
 [Phase 0 observability contract](https://github.com/MaxAkbar/CSharpDB/blob/main/docs/observability-phase-0-contract.md).
+For application and operator setup, hosted exporters, health routes, Admin,
+scrape security, retention guidance, and troubleshooting, use the public
+[Observability and Diagnostics guide](https://csharpdb.com/docs/observability.html).
 
 ## Key types
 
@@ -116,6 +119,26 @@ every returned record. Available collections may be empty, but still report
 their configured capacity, optional retention, dropped count, and truncation.
 `Disabled`, `Unsupported`, `Denied`, and `Unavailable` collections omit those
 bounded values instead of returning ambiguous zeroes.
+
+`History.Enabled` defaults to `true` for compatibility. Set it to `false` to
+disable bounded active/recent query and maintenance retention independently of
+metrics, tracing, and structured events. Signal-only operation does not retain
+query fingerprints, plan summaries, or query detail in runtime history.
+
+Hosted configuration keeps the compatibility default explicit:
+
+```json
+{
+  "CSharpDB": {
+    "Observability": {
+      "Enabled": true,
+      "History": {
+        "Enabled": true
+      }
+    }
+  }
+}
+```
 
 Per-shard responses always expose only a validated shard alias. An available
 child retains its own opaque server-instance id and counter epoch; an
@@ -287,12 +310,15 @@ and timeout use the standard `OTEL_EXPORTER_OTLP_*` environment variables.
 
 Logical query/transaction/database lifecycle and runtime-owned checkpoint,
 backup, restore, reindex, vacuum, and generic maintenance paths are traced.
-Automatic physical checkpoints and startup WAL recovery currently contribute
-metrics but do not create physical `Activity` spans. Ownerless path-only static
-restore validation/restore, reindex, vacuum, and foreign-key migration APIs have
-no runtime identity from which to enable or correlate telemetry; use the
-database/client-owned surfaces when telemetry is required. These limitations
-must not be presented as traced support.
+Startup WAL recovery and automatic foreground, background, and shutdown
+checkpoints create explicit-root physical `Activity` spans from the storage
+observer's captured start and completion times when tracing is enabled. Manual
+checkpoint, backup, and the checkpoint sub-step inside startup recovery reuse
+their logical parent and suppress a second physical checkpoint span. Ownerless
+path-only static restore validation/restore, reindex, vacuum, and foreign-key
+migration APIs have no runtime identity from which to enable or correlate
+telemetry; use the database/client-owned surfaces when telemetry is required.
+These limitations must not be presented as traced support.
 
 ## Phase 5 host health state contract
 

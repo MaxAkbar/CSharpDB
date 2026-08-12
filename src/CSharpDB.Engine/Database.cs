@@ -274,7 +274,10 @@ public sealed class Database : IAsyncDisposable
         _queryObservability = _runtimeDiagnosticsState?.IsEnabled != true
             ? null
             : new QueryObservability(_runtimeDiagnosticsState);
-        _queryPlanRuntimeObserver = _queryObservability?.PlanRuntimeObserver;
+        _queryPlanRuntimeObserver =
+            _queryObservability is { HistoryEnabled: true } queryObservability
+                ? queryObservability.PlanRuntimeObserver
+                : null;
         _temporaryTables = new TemporaryTableManager(temporaryStorageOptions ?? new StorageEngineOptions());
         _advisoryStatisticsPersistenceMode = advisoryStatisticsPersistenceMode;
         _functions = functions ?? DbFunctionRegistry.Empty;

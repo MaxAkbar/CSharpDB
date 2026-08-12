@@ -18,4 +18,8 @@
     <ProjectReference Include="..\..\src\CSharpDB.Sql\CSharpDB.Sql.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Include="..\Shared\DiagnosticsTransportFixture.cs" Link="Shared\DiagnosticsTransportFixture.cs" />
+  </ItemGroup>
+
 </Project>

@@ -3,12 +3,14 @@ using System.Globalization;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using CSharpDB.Client;
 using CSharpDB.Client.Grpc;
 using CSharpDB.Client.Models;
 using CSharpDB.Daemon.Configuration;
 using CSharpDB.Daemon.Grpc;
 using CSharpDB.Engine;
+using CSharpDB.Testing;
 using Observability = CSharpDB.Observability;
 using Google.Protobuf;
 using Google.Protobuf.WellKnownTypes;
@@ -180,6 +182,100 @@ public sealed class GrpcClientTests : IAsyncLifetime
                         Observability.DiagnosticsScope.Instance,
                         snapshot.Metadata.Scope);
                 });
+        }
+        finally
+        {
+            TryDelete(dbPath);
+            TryDelete(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task DiagnosticsCapability_RoundTripsFullyPopulatedAllModelTopologies()
+    {
+        const string apiKey = "grpc-populated-diagnostics-key";
+        string dbPath = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb_daemon_populated_diagnostics_{Guid.NewGuid():N}.db");
+        DiagnosticsTransportFixture fixture = DiagnosticsTransportFixture.Create();
+        IFullyPopulatedDiagnosticsClient inner = DispatchProxy.Create<
+            IFullyPopulatedDiagnosticsClient,
+            FullyPopulatedDiagnosticsProxy>();
+        ((FullyPopulatedDiagnosticsProxy)(object)inner).Fixture = fixture;
+        var configuration = new Dictionary<string, string?>
+        {
+            ["CSharpDB:Daemon:Security:Mode"] = "ApiKey",
+            ["CSharpDB:Daemon:Security:ApiKey"] = apiKey,
+            ["CSharpDB:Daemon:Security:AllowSensitiveQueryDetailAccess"] = "true",
+        };
+
+        try
+        {
+            await using var factory = new TestDaemonFactory(
+                dbPath,
+                configuration,
+                configureServices: services =>
+                {
+                    services.RemoveAll<ICSharpDbClient>();
+                    services.AddSingleton<ICSharpDbClient>(inner);
+                });
+            using HttpClient transportClient = CreateGrpcHttpClient(factory);
+            await using ICSharpDbClient client = CreateGrpcClient(
+                transportClient,
+                apiKey);
+            var diagnostics = Assert.IsAssignableFrom<
+                ICSharpDbObservabilityClient>(client);
+
+            AssertCanonicalRoundTrip(
+                fixture.Runtime,
+                await diagnostics.GetRuntimeDiagnosticsAsync(Ct),
+                Observability.CSharpDbObservabilityJsonContext.Default
+                    .DiagnosticsTopologySnapshotRuntimeDiagnosticsSnapshot);
+            AssertCanonicalRoundTrip(
+                fixture.Storage,
+                await diagnostics.GetStorageDiagnosticsAsync(Ct),
+                Observability.CSharpDbObservabilityJsonContext.Default
+                    .DiagnosticsTopologySnapshotDiagnosticsValueSnapshotStorageRuntimeDiagnosticsSnapshot);
+            AssertCanonicalRoundTrip(
+                fixture.Wal,
+                await diagnostics.GetWalDiagnosticsAsync(Ct),
+                Observability.CSharpDbObservabilityJsonContext.Default
+                    .DiagnosticsTopologySnapshotDiagnosticsValueSnapshotWalRuntimeDiagnosticsSnapshot);
+            AssertCanonicalRoundTrip(
+                fixture.ActiveQueries,
+                await diagnostics.GetActiveQueriesAsync(16, Ct),
+                Observability.CSharpDbObservabilityJsonContext.Default
+                    .DiagnosticsTopologySnapshotDiagnosticsCollectionSnapshotActiveQuerySnapshot);
+            AssertCanonicalRoundTrip(
+                fixture.RecentQueries,
+                await diagnostics.GetRecentQueriesAsync(16, Ct),
+                Observability.CSharpDbObservabilityJsonContext.Default
+                    .DiagnosticsTopologySnapshotDiagnosticsCollectionSnapshotRecentQuerySnapshot);
+            AssertCanonicalRoundTrip(
+                fixture.QueryPlan,
+                await diagnostics.GetQueryPlanDiagnosticsAsync(fixture.OperationId, Ct),
+                Observability.CSharpDbObservabilityJsonContext.Default
+                    .DiagnosticsTopologySnapshotDiagnosticsValueSnapshotQueryPlanDiagnosticsSnapshot);
+            AssertCanonicalRoundTrip(
+                fixture.Sessions,
+                await diagnostics.GetSessionsAsync(16, Ct),
+                Observability.CSharpDbObservabilityJsonContext.Default
+                    .DiagnosticsTopologySnapshotDiagnosticsCollectionSnapshotSessionDiagnosticsSnapshot);
+            AssertCanonicalRoundTrip(
+                fixture.ActiveMaintenance,
+                await diagnostics.GetActiveMaintenanceOperationsAsync(16, Ct),
+                Observability.CSharpDbObservabilityJsonContext.Default
+                    .DiagnosticsTopologySnapshotDiagnosticsCollectionSnapshotMaintenanceOperationSnapshot);
+            AssertCanonicalRoundTrip(
+                fixture.RecentMaintenance,
+                await diagnostics.GetRecentMaintenanceOperationsAsync(16, Ct),
+                Observability.CSharpDbObservabilityJsonContext.Default
+                    .DiagnosticsTopologySnapshotDiagnosticsCollectionSnapshotMaintenanceOperationSnapshot);
+            AssertCanonicalRoundTrip(
+                fixture.QueryDetail,
+                await diagnostics.GetQueryDetailAsync(fixture.OperationId, Ct),
+                Observability.CSharpDbObservabilityJsonContext.Default
+                    .DiagnosticsTopologySnapshotDiagnosticsValueSnapshotQueryDetailSnapshot);
         }
         finally
         {
@@ -2917,6 +3013,15 @@ public sealed class GrpcClientTests : IAsyncLifetime
                     null);
     }
 
+    private static void AssertCanonicalRoundTrip<T>(
+        T expected,
+        T actual,
+        JsonTypeInfo<T> typeInfo)
+        where T : class
+        => Assert.Equal(
+            JsonSerializer.Serialize(expected, typeInfo),
+            JsonSerializer.Serialize(actual, typeInfo));
+
     public interface ICancelableDiagnosticsClient :
         ICSharpDbClient,
         ICSharpDbObservabilityClient;
@@ -2928,6 +3033,39 @@ public sealed class GrpcClientTests : IAsyncLifetime
     public interface IThrowingDiagnosticsClient :
         ICSharpDbClient,
         ICSharpDbObservabilityClient;
+
+    public interface IFullyPopulatedDiagnosticsClient :
+        ICSharpDbClient,
+        ICSharpDbObservabilityClient;
+
+    public class FullyPopulatedDiagnosticsProxy : DispatchProxy
+    {
+        internal DiagnosticsTransportFixture Fixture { get; set; } = null!;
+
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+            => targetMethod?.Name switch
+            {
+                "get_DataSource" => "populated-grpc-diagnostics-client",
+                "GetInfoAsync" => Task.FromResult(new DatabaseInfo
+                {
+                    DataSource = "populated-grpc-diagnostics-client",
+                }),
+                "GetRuntimeDiagnosticsAsync" => Task.FromResult(Fixture.Runtime),
+                "GetStorageDiagnosticsAsync" => Task.FromResult(Fixture.Storage),
+                "GetWalDiagnosticsAsync" => Task.FromResult(Fixture.Wal),
+                "GetActiveQueriesAsync" => Task.FromResult(Fixture.ActiveQueries),
+                "GetRecentQueriesAsync" => Task.FromResult(Fixture.RecentQueries),
+                "GetQueryPlanDiagnosticsAsync" => Task.FromResult(Fixture.QueryPlan),
+                "GetSessionsAsync" => Task.FromResult(Fixture.Sessions),
+                "GetActiveMaintenanceOperationsAsync" =>
+                    Task.FromResult(Fixture.ActiveMaintenance),
+                "GetRecentMaintenanceOperationsAsync" =>
+                    Task.FromResult(Fixture.RecentMaintenance),
+                "GetQueryDetailAsync" => Task.FromResult(Fixture.QueryDetail),
+                "DisposeAsync" => ValueTask.CompletedTask,
+                _ => throw new NotSupportedException(targetMethod?.Name),
+            };
+    }
 
     public class UnsupportedClientProxy : DispatchProxy
     {

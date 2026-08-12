@@ -917,6 +917,146 @@ public sealed class ShardedClientObservabilityCapabilityTests
     }
 
     [Fact]
+    public async Task QueryPlan_ProjectsExactShardIdentityAndSafeMixedAvailability()
+    {
+        OpaqueDiagnosticsId operationId =
+            new("11111111111111111111111111111111");
+        (IShardTestClient available, RecordingProxy availableRecording) =
+            CreateObservedClient();
+        availableRecording.SetResult(
+            nameof(ICSharpDbObservabilityClient.GetQueryPlanDiagnosticsAsync),
+            Task.FromResult(QueryPlanTopology(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                operationId)));
+
+        await using var client = new CSharpDbShardedClient(
+            CreateOptions("unsupported", "available"),
+            new Dictionary<string, ICSharpDbClient>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["available"] = available,
+                ["unsupported"] = CreateLegacyClient(),
+            });
+
+        DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<
+            QueryPlanDiagnosticsSnapshot>> result =
+                await client.GetQueryPlanDiagnosticsAsync(operationId, Ct);
+
+        Assert.Equal(
+            DiagnosticsAvailability.Unavailable,
+            result.Aggregate.Metadata.Availability);
+        Assert.Null(result.Aggregate.Value);
+        IReadOnlyList<ShardDiagnosticsSection<DiagnosticsValueSnapshot<
+            QueryPlanDiagnosticsSnapshot>>> shards = Assert.IsAssignableFrom<
+                IReadOnlyList<ShardDiagnosticsSection<DiagnosticsValueSnapshot<
+                    QueryPlanDiagnosticsSnapshot>>>>(result.Shards);
+        Assert.Equal(["available", "unsupported"], shards.Select(
+            static item => item.ShardAlias));
+        ShardDiagnosticsSection<DiagnosticsValueSnapshot<
+            QueryPlanDiagnosticsSnapshot>> availableSection = shards[0];
+        DiagnosticsValueSnapshot<QueryPlanDiagnosticsSnapshot> availableValue =
+            Assert.IsType<DiagnosticsValueSnapshot<QueryPlanDiagnosticsSnapshot>>(
+                availableSection.Value);
+        Assert.Equal(
+            DiagnosticsAvailability.Available,
+            availableValue.Metadata.Availability);
+        QueryPlanDiagnosticsSnapshot plan = Assert.IsType<
+            QueryPlanDiagnosticsSnapshot>(availableValue.Value);
+        Assert.Equal(operationId, plan.OperationId);
+        Assert.Equal(QueryAccessPathCategory.IndexSeek, plan.AccessPath);
+        Assert.True(plan.PlanCacheHit);
+        Assert.True(plan.Reoptimized);
+        Assert.Equal(9, plan.EstimatedRows);
+        Assert.Equal(7, plan.ActualRows);
+        Assert.Equal(3, plan.PlanNodeCount);
+        Assert.True(plan.PlanTruncated);
+        Assert.Equal(DiagnosticsScope.Shard, plan.Metadata.Scope);
+        Assert.Equal("available", plan.Metadata.DatabaseAlias);
+        Assert.Equal(plan.Metadata, availableValue.Metadata);
+        Assert.Equal(
+            DiagnosticsAvailability.Unsupported,
+            shards[1].Availability);
+        Assert.Null(shards[1].Value);
+
+        Invocation invocation = Assert.Single(
+            availableRecording.Invocations,
+            static item => item.MethodName == nameof(
+                ICSharpDbObservabilityClient.GetQueryPlanDiagnosticsAsync));
+        Assert.Equal(operationId, Assert.IsType<OpaqueDiagnosticsId>(
+            invocation.Arguments[0]));
+    }
+
+    [Fact]
+    public async Task Sessions_SplitOneGlobalBudgetInStableAliasOrder()
+    {
+        string[] shardIds = ["charlie", "alpha", "bravo"];
+        var children = new Dictionary<string, ICSharpDbClient>(
+            StringComparer.OrdinalIgnoreCase);
+        var recordings = new Dictionary<string, RecordingProxy>(
+            StringComparer.OrdinalIgnoreCase);
+        for (int index = 0; index < shardIds.Length; index++)
+        {
+            (IShardTestClient child, RecordingProxy recording) =
+                CreateObservedClient();
+            recording.SetResult(
+                nameof(ICSharpDbObservabilityClient.GetSessionsAsync),
+                Task.FromResult(SessionTopology(
+                    $"{index + 1:x32}",
+                    recordCount: 4,
+                    idBase: (index + 1) * 100)));
+            children.Add(shardIds[index], child);
+            recordings.Add(shardIds[index], recording);
+        }
+
+        await using var client = new CSharpDbShardedClient(
+            CreateOptions(shardIds),
+            children);
+
+        DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<
+            SessionDiagnosticsSnapshot>> result =
+                await client.GetSessionsAsync(5, Ct);
+
+        Assert.Empty(result.Aggregate.Records!);
+        IReadOnlyList<ShardDiagnosticsSection<DiagnosticsCollectionSnapshot<
+            SessionDiagnosticsSnapshot>>> shards = Assert.IsAssignableFrom<
+                IReadOnlyList<ShardDiagnosticsSection<DiagnosticsCollectionSnapshot<
+                    SessionDiagnosticsSnapshot>>>>(result.Shards);
+        Assert.Equal(["alpha", "bravo", "charlie"], shards.Select(
+            static item => item.ShardAlias));
+        Assert.Equal([2, 2, 1], shards.Select(
+            static item => item.Value!.Records!.Count));
+        Assert.Equal(5, shards.Sum(
+            static item => item.Value!.Records!.Count));
+        Assert.All(shards, static section =>
+        {
+            Assert.Equal(DiagnosticsAvailability.Available, section.Availability);
+            Assert.Equal(DiagnosticsScope.Shard, section.Value!.Metadata.Scope);
+            Assert.Equal(section.ShardAlias, section.Value.Metadata.DatabaseAlias);
+            Assert.True(section.Value.IsTruncated);
+            Assert.True(section.Value.Metadata.RecordsTruncated);
+            Assert.All(section.Value.Records!, record =>
+                Assert.Equal(section.Value.Metadata, record.Metadata));
+        });
+        Assert.Equal(
+            2,
+            Assert.IsType<int>(Assert.Single(
+                recordings["alpha"].Invocations,
+                static item => item.MethodName == nameof(
+                    ICSharpDbObservabilityClient.GetSessionsAsync)).Arguments[0]));
+        Assert.Equal(
+            2,
+            Assert.IsType<int>(Assert.Single(
+                recordings["bravo"].Invocations,
+                static item => item.MethodName == nameof(
+                    ICSharpDbObservabilityClient.GetSessionsAsync)).Arguments[0]));
+        Assert.Equal(
+            1,
+            Assert.IsType<int>(Assert.Single(
+                recordings["charlie"].Invocations,
+                static item => item.MethodName == nameof(
+                    ICSharpDbObservabilityClient.GetSessionsAsync)).Arguments[0]));
+    }
+
+    [Fact]
     public async Task DedicatedStorageAndWal_DeepProjectExactShardMetadata()
     {
         const string serverId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -1368,6 +1508,68 @@ public sealed class ShardedClientObservabilityCapabilityTests
         };
     }
 
+    private static DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<
+        QueryPlanDiagnosticsSnapshot>> QueryPlanTopology(
+            string serverInstanceId,
+            OpaqueDiagnosticsId operationId)
+    {
+        DiagnosticsSnapshotMetadata metadata = Metadata(
+            serverInstanceId,
+            counterEpoch: 4,
+            DiagnosticsAvailability.Available,
+            fieldsTruncated: true);
+        var plan = new QueryPlanDiagnosticsSnapshot(
+            metadata,
+            operationId,
+            new QueryFingerprint(
+                $"{QueryFingerprint.Algorithm}:{new string('a', 64)}"),
+            QueryAccessPathCategory.IndexSeek,
+            PlanCacheHit: true,
+            Reoptimized: true,
+            EstimatedRows: 9,
+            ActualRows: 7,
+            PlanNodeCount: 3,
+            PlanTruncated: true);
+        return InstanceTopology(
+            new DiagnosticsValueSnapshot<QueryPlanDiagnosticsSnapshot>(
+                metadata,
+                plan));
+    }
+
+    private static DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<
+        SessionDiagnosticsSnapshot>> SessionTopology(
+            string serverInstanceId,
+            int recordCount,
+            int idBase)
+    {
+        DiagnosticsSnapshotMetadata metadata = Metadata(
+            serverInstanceId,
+            counterEpoch: 5,
+            DiagnosticsAvailability.Available);
+        SessionDiagnosticsSnapshot[] records = Enumerable.Range(0, recordCount)
+            .Select(index => new SessionDiagnosticsSnapshot(
+                metadata,
+                new OpaqueDiagnosticsId((idBase + index).ToString("x32")),
+                metadata.CapturedAtUtc.AddMinutes(-1),
+                metadata.CapturedAtUtc,
+                CurrentOperationId: null,
+                HasActiveReader: false,
+                HasActiveTransaction: false,
+                CSharpDB.Observability.CSharpDbTransport.Direct)
+            {
+                State = DiagnosticsSessionState.Idle,
+            })
+            .ToArray();
+        return InstanceTopology(
+            new DiagnosticsCollectionSnapshot<SessionDiagnosticsSnapshot>(
+                metadata,
+                records,
+                capacity: recordCount,
+                retention: null,
+                droppedCount: 0,
+                isTruncated: false));
+    }
+
     private static void AssertProjectedWalMetadata(
         WalRuntimeDiagnosticsSnapshot wal,
         string shardAlias)
@@ -1560,7 +1762,8 @@ public sealed class ShardedClientObservabilityCapabilityTests
         string serverInstanceId,
         long counterEpoch,
         DiagnosticsAvailability availability,
-        bool recordsTruncated = false)
+        bool recordsTruncated = false,
+        bool fieldsTruncated = false)
         => new(
             CSharpDbDiagnostics.SchemaVersion,
             new DateTimeOffset(2026, 8, 10, 12, 0, 0, TimeSpan.Zero),
@@ -1571,7 +1774,7 @@ public sealed class ShardedClientObservabilityCapabilityTests
             DiagnosticsSource.Engine,
             "physical",
             recordsTruncated,
-            fieldsTruncated: false);
+            fieldsTruncated);
 
     private static (IShardTestClient Client, RecordingProxy Recording)
         CreateObservedClient()

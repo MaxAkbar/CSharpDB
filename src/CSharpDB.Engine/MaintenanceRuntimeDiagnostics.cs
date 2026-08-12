@@ -100,7 +100,7 @@ internal sealed class MaintenanceRuntimeDiagnostics : IDisposable
     internal static MaintenanceRuntimeDiagnostics? GetOrCreate(
         CSharpDbRuntimeDiagnosticsState? runtimeState)
     {
-        if (runtimeState?.IsEnabled != true)
+        if (runtimeState?.HistoryEnabled != true)
             return null;
 
         try

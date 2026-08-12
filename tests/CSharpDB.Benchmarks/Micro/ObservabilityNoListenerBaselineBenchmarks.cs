@@ -15,8 +15,10 @@ namespace CSharpDB.Benchmarks.Micro;
 /// <summary>
 /// Engine-path modes for calculating observability overhead. Disabled retains
 /// the Phase 0 no-listener baseline. HistoryCapture and StructuredLogging cover
-/// the bounded runtime ledger and diagnostic logger bridge; MetricsOnly and
-/// SampledTracing attach one in-process BCL listener for their measured signal.
+/// the bounded runtime ledger and diagnostic logger bridge. MetricsOnly and
+/// SampledTracing use history-free configured compositions: metrics runtime
+/// plus a metrics listener, and metrics runtime plus a sampled tracing
+/// listener, respectively.
 /// </summary>
 [BenchmarkCategory("Observability", "Qualification", "PairedModes")]
 [MemoryDiagnoser]
@@ -424,6 +426,10 @@ internal static class ObservabilityBenchmarkConfiguration
             Enabled = true,
             DatabaseAlias = "benchmark",
             Logging = new CSharpDbLoggingOptions
+            {
+                Enabled = false,
+            },
+            History = new CSharpDbHistoryOptions
             {
                 Enabled = false,
             },

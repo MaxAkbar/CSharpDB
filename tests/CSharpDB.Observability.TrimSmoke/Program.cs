@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Diagnostics.Metrics;
 using CSharpDB.Observability;
 using CSharpDB.Sql;
+using CSharpDB.Testing;
 
 const string secret = "observability-native-aot-canary";
 
@@ -99,6 +100,57 @@ string queryDetailTopologyJson = JsonSerializer.Serialize(
     queryDetailTopology,
     CSharpDbObservabilityJsonContext.Default
         .DiagnosticsTopologySnapshotDiagnosticsValueSnapshotQueryDetailSnapshot);
+DiagnosticsTransportFixture transportFixture = DiagnosticsTransportFixture.Create();
+string runtimeTopologyJson = RoundTrip(
+    transportFixture.Runtime,
+    CSharpDbObservabilityJsonContext.Default
+        .DiagnosticsTopologySnapshotRuntimeDiagnosticsSnapshot,
+    "runtime topology");
+string storageTopologyJson = RoundTrip(
+    transportFixture.Storage,
+    CSharpDbObservabilityJsonContext.Default
+        .DiagnosticsTopologySnapshotDiagnosticsValueSnapshotStorageRuntimeDiagnosticsSnapshot,
+    "storage topology");
+string walTopologyJson = RoundTrip(
+    transportFixture.Wal,
+    CSharpDbObservabilityJsonContext.Default
+        .DiagnosticsTopologySnapshotDiagnosticsValueSnapshotWalRuntimeDiagnosticsSnapshot,
+    "WAL topology");
+string activeTopologyJson = RoundTrip(
+    transportFixture.ActiveQueries,
+    CSharpDbObservabilityJsonContext.Default
+        .DiagnosticsTopologySnapshotDiagnosticsCollectionSnapshotActiveQuerySnapshot,
+    "active-query topology");
+string recentTopologyJson = RoundTrip(
+    transportFixture.RecentQueries,
+    CSharpDbObservabilityJsonContext.Default
+        .DiagnosticsTopologySnapshotDiagnosticsCollectionSnapshotRecentQuerySnapshot,
+    "recent-query topology");
+string planTopologyJson = RoundTrip(
+    transportFixture.QueryPlan,
+    CSharpDbObservabilityJsonContext.Default
+        .DiagnosticsTopologySnapshotDiagnosticsValueSnapshotQueryPlanDiagnosticsSnapshot,
+    "query-plan topology");
+string sessionTopologyJson = RoundTrip(
+    transportFixture.Sessions,
+    CSharpDbObservabilityJsonContext.Default
+        .DiagnosticsTopologySnapshotDiagnosticsCollectionSnapshotSessionDiagnosticsSnapshot,
+    "session topology");
+string activeMaintenanceTopologyJson = RoundTrip(
+    transportFixture.ActiveMaintenance,
+    CSharpDbObservabilityJsonContext.Default
+        .DiagnosticsTopologySnapshotDiagnosticsCollectionSnapshotMaintenanceOperationSnapshot,
+    "active-maintenance topology");
+string recentMaintenanceTopologyJson = RoundTrip(
+    transportFixture.RecentMaintenance,
+    CSharpDbObservabilityJsonContext.Default
+        .DiagnosticsTopologySnapshotDiagnosticsCollectionSnapshotMaintenanceOperationSnapshot,
+    "recent-maintenance topology");
+string fullQueryDetailTopologyJson = RoundTrip(
+    transportFixture.QueryDetail,
+    CSharpDbObservabilityJsonContext.Default
+        .DiagnosticsTopologySnapshotDiagnosticsValueSnapshotQueryDetailSnapshot,
+    "query-detail topology");
 var hostState = new CSharpDbHostState();
 CSharpDbHostStateSnapshot failedHost = hostState.MarkFailed(
     SafeErrorProjector.Project(SafeErrorKind.DatabaseIo));
@@ -177,6 +229,16 @@ if (result.NormalizedText.Contains(secret, StringComparison.Ordinal) ||
     activeQueryCollectionJson.Contains(secret, StringComparison.Ordinal) ||
     planValueJson.Contains(secret, StringComparison.Ordinal) ||
     queryDetailTopologyJson.Contains(secret, StringComparison.Ordinal) ||
+    runtimeTopologyJson.Contains(secret, StringComparison.Ordinal) ||
+    storageTopologyJson.Contains(secret, StringComparison.Ordinal) ||
+    walTopologyJson.Contains(secret, StringComparison.Ordinal) ||
+    activeTopologyJson.Contains(secret, StringComparison.Ordinal) ||
+    recentTopologyJson.Contains(secret, StringComparison.Ordinal) ||
+    planTopologyJson.Contains(secret, StringComparison.Ordinal) ||
+    sessionTopologyJson.Contains(secret, StringComparison.Ordinal) ||
+    activeMaintenanceTopologyJson.Contains(secret, StringComparison.Ordinal) ||
+    recentMaintenanceTopologyJson.Contains(secret, StringComparison.Ordinal) ||
+    fullQueryDetailTopologyJson.Contains(secret, StringComparison.Ordinal) ||
     healthTransitionJson.Contains(secret, StringComparison.Ordinal) ||
     queryEventJson.Contains(secret, StringComparison.Ordinal) ||
     longRunningEventJson.Contains(secret, StringComparison.Ordinal))
@@ -342,7 +404,27 @@ if (!meterInstrumentPublished || !meterMeasurementObserved ||
         "The trimmed MeterListener and health gauge did not publish the expected measurements.");
 }
 
-Console.WriteLine("Observability JSON, SQL fingerprint, health state, and MeterListener trim/NativeAOT smoke passed.");
+Console.WriteLine("All diagnostics topologies, observability JSON, SQL fingerprint, health state, and MeterListener trim/NativeAOT smoke passed.");
+
+static string RoundTrip<T>(
+    T value,
+    System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> typeInfo,
+    string contractName)
+    where T : class
+{
+    string json = JsonSerializer.Serialize(value, typeInfo);
+    T roundTrip = JsonSerializer.Deserialize(json, typeInfo) ??
+        throw new InvalidOperationException(
+            $"The source-generated {contractName} returned null after deserialization.");
+    string roundTripJson = JsonSerializer.Serialize(roundTrip, typeInfo);
+    if (!string.Equals(json, roundTripJson, StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException(
+            $"The source-generated {contractName} changed during round-trip serialization.");
+    }
+
+    return json;
+}
 
 static bool HasTag(
     ReadOnlySpan<KeyValuePair<string, object?>> tags,

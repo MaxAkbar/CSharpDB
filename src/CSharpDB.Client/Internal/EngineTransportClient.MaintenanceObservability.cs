@@ -65,20 +65,23 @@ internal sealed partial class EngineTransportClient
                     runtimeState);
             MaintenanceRuntimeDiagnostics.MaintenanceRuntimeOperation?
                 runtimeOperation = null;
-            try
+            if (runtimeState.HistoryEnabled)
             {
-                MaintenanceRuntimeDiagnostics registry =
-                    GetOrCreateClientMaintenanceRuntimeDiagnostics(
-                        runtimeState);
-                runtimeOperation = registry.TryStart(
-                    context,
-                    kind,
-                    initialPhase);
-            }
-            catch
-            {
-                // Typed lifecycle logging remains useful if the bounded
-                // runtime-history sink cannot be created or has retired.
+                try
+                {
+                    MaintenanceRuntimeDiagnostics registry =
+                        GetOrCreateClientMaintenanceRuntimeDiagnostics(
+                            runtimeState);
+                    runtimeOperation = registry.TryStart(
+                        context,
+                        kind,
+                        initialPhase);
+                }
+                catch
+                {
+                    // Typed lifecycle logging remains useful if the bounded
+                    // runtime-history sink cannot be created or has retired.
+                }
             }
             if (runtimeOperation is null &&
                 lifecycleOperation is null &&

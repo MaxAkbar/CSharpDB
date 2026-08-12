@@ -232,19 +232,25 @@ public sealed class PrometheusHostTests
                 security.ApiKey = ApiKey;
             });
 
-        await RecordAdversarialQueriesAsync(
+        IReadOnlySet<string> observedErrorCodes = await RecordAdversarialQueriesAsync(
             app,
             secret,
             pathCanary,
-            count: 32);
+            count: 64);
         string body = await ScrapeAsync(app);
-        string[] requestSeries = GetCSharpDbSampleLines(body)
+        string[] sampleLines = GetCSharpDbSampleLines(body).ToArray();
+        string[] requestSeries = sampleLines
             .Where(static line => line.StartsWith(
                 "csharpdb_requests",
                 StringComparison.Ordinal))
             .ToArray();
 
-        Assert.Single(requestSeries);
+        Assert.Equal(2, requestSeries.Length);
+        Assert.True(
+            observedErrorCodes.Count >= 2,
+            $"Expected at least two safe engine error categories, observed: {string.Join(", ", observedErrorCodes)}");
+        const int maximumAllowedCSharpDbSeries = 128;
+        Assert.InRange(sampleLines.Length, 1, maximumAllowedCSharpDbSeries);
         Assert.DoesNotContain(secret, body, StringComparison.Ordinal);
         Assert.DoesNotContain(pathCanary, body, StringComparison.Ordinal);
         Assert.DoesNotContain(
@@ -425,7 +431,7 @@ public sealed class PrometheusHostTests
         }
     }
 
-    private static async Task RecordAdversarialQueriesAsync(
+    private static async Task<IReadOnlySet<string>> RecordAdversarialQueriesAsync(
         WebApplication app,
         string sqlCanary,
         string pathCanary,
@@ -433,9 +439,11 @@ public sealed class PrometheusHostTests
     {
         CSharpDbObservabilityOptions observabilityOptions = app.Services
             .GetRequiredService<CSharpDbObservabilityOptions>();
+        var observedErrorCodes = new HashSet<string>(StringComparer.Ordinal);
 
         for (int index = 0; index < count; index++)
         {
+            string tableName = $"private_table_{index}_{pathCanary}";
             string databasePath = Path.Combine(
                 Path.GetTempPath(),
                 $"{pathCanary}-{index}-{Guid.NewGuid():N}.db");
@@ -455,10 +463,28 @@ public sealed class PrometheusHostTests
                     CSharpDbOperationScope.EnterTransport(
                         CSharpDB.Observability.CSharpDbTransport.Direct,
                         OpaqueDiagnosticsId.Create());
+                var create = await client.ExecuteSqlAsync(
+                    $"CREATE TABLE {tableName} (id INTEGER PRIMARY KEY, value TEXT, UNIQUE (value))",
+                    Ct);
+                Assert.Null(create.Error);
+                var seed = await client.ExecuteSqlAsync(
+                    $"INSERT INTO {tableName} VALUES (1, '{sqlCanary}{index}')",
+                    Ct);
+                Assert.Null(seed.Error);
                 var result = await client.ExecuteSqlAsync(
                     $"SELECT '{sqlCanary}{index}\\{pathCanary}{index}' AS value",
                     Ct);
                 Assert.Null(result.Error);
+                string failingSql = (index % 3) switch
+                {
+                    0 => $"SELECT * FROM missing_{index}_{sqlCanary}",
+                    1 => $"INSERT INTO {tableName} VALUES (1, '{sqlCanary}-duplicate-{index}')",
+                    _ => $"SELEC '{sqlCanary}-syntax-{index}' FROM {tableName}",
+                };
+                var failed = await client.ExecuteSqlAsync(failingSql, Ct);
+                Assert.NotNull(failed.Error);
+                observedErrorCodes.Add(
+                    failed.ErrorCode?.ToString() ?? "unclassified");
             }
             finally
             {
@@ -469,6 +495,8 @@ public sealed class PrometheusHostTests
                 DeleteIfExists(databasePath + ".manifest.json");
             }
         }
+
+        return observedErrorCodes;
     }
 
     private static async Task<string> ScrapeAsync(WebApplication app)

@@ -1,0 +1,20 @@
+<Project>
+  <Import Project="$(MSBuildThisFileDirectory)../Directory.Build.targets" />
+
+  <!--
+    NuGet's default project-reference dependency syntax uses a bare version,
+    which means "this version or newer." Release packages are one coordinated
+    graph, so pin every packed CSharpDB project reference to the exact candidate
+    version before the SDK writes the nuspec.
+  -->
+  <Target Name="PinCSharpDbPackageDependencyVersions"
+          BeforeTargets="GenerateNuspec"
+          Condition="'$(IsPackable)' == 'true' and $([System.String]::Copy('$(PackageId)').StartsWith('CSharpDB'))">
+    <ItemGroup>
+      <_ProjectReferencesWithVersions Update="@(_ProjectReferencesWithVersions)"
+                                      Condition="'%(_ProjectReferencesWithVersions.ProjectVersion)' != '' and !$([System.String]::Copy('%(_ProjectReferencesWithVersions.ProjectVersion)').StartsWith('['))">
+        <ProjectVersion>[%(_ProjectReferencesWithVersions.ProjectVersion)]</ProjectVersion>
+      </_ProjectReferencesWithVersions>
+    </ItemGroup>
+  </Target>
+</Project>

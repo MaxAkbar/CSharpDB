@@ -1,9 +1,12 @@
 using System.Net;
 using System.Reflection;
+using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using CSharpDB.Api.Diagnostics;
 using CSharpDB.Api.Security;
 using CSharpDB.Client;
 using CSharpDB.Observability;
+using CSharpDB.Testing;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -81,6 +84,89 @@ public sealed class DiagnosticsHttpTransportTests
         Assert.Equal([7, 8, 9, 10, 11], capture.MaximumRecords);
         Assert.Equal([OperationId, OperationId], capture.OperationIds);
         Assert.True(capture.AllCallsWereCanceledCapable);
+        Assert.True(capture.AllCallsWereDiagnosticsSuppressed);
+    }
+
+    [Fact]
+    public async Task HttpCapability_RoundTripsFullyPopulatedAllModelTopologies()
+    {
+        DiagnosticsTransportFixture fixture = DiagnosticsTransportFixture.Create();
+        IDiagnosticsCaptureClient inner =
+            DispatchProxy.Create<IDiagnosticsCaptureClient, DiagnosticsCaptureProxy>();
+        var capture = (DiagnosticsCaptureProxy)inner;
+        capture.AvailableFixture = fixture;
+        await using WebApplication app = await StartAppAsync(
+            inner,
+            static options =>
+            {
+                options.Mode = CSharpDbRemoteSecurityMode.ApiKey;
+                options.ApiKey = ApiKey;
+                options.AllowSensitiveQueryDetailAccess = true;
+            });
+        using HttpClient httpClient = app.GetTestClient();
+        await using ICSharpDbClient client = CSharpDbClient.Create(
+            new CSharpDbClientOptions
+            {
+                Transport = ClientTransport.Http,
+                Endpoint = httpClient.BaseAddress!.ToString(),
+                HttpClient = httpClient,
+                ApiKey = ApiKey,
+            });
+        var diagnostics = Assert.IsAssignableFrom<ICSharpDbObservabilityClient>(
+            client);
+
+        AssertCanonicalRoundTrip(
+            fixture.Runtime,
+            await diagnostics.GetRuntimeDiagnosticsAsync(Ct),
+            CSharpDbObservabilityJsonContext.Default
+                .DiagnosticsTopologySnapshotRuntimeDiagnosticsSnapshot);
+        AssertCanonicalRoundTrip(
+            fixture.Storage,
+            await diagnostics.GetStorageDiagnosticsAsync(Ct),
+            CSharpDbObservabilityJsonContext.Default
+                .DiagnosticsTopologySnapshotDiagnosticsValueSnapshotStorageRuntimeDiagnosticsSnapshot);
+        AssertCanonicalRoundTrip(
+            fixture.Wal,
+            await diagnostics.GetWalDiagnosticsAsync(Ct),
+            CSharpDbObservabilityJsonContext.Default
+                .DiagnosticsTopologySnapshotDiagnosticsValueSnapshotWalRuntimeDiagnosticsSnapshot);
+        AssertCanonicalRoundTrip(
+            fixture.ActiveQueries,
+            await diagnostics.GetActiveQueriesAsync(16, Ct),
+            CSharpDbObservabilityJsonContext.Default
+                .DiagnosticsTopologySnapshotDiagnosticsCollectionSnapshotActiveQuerySnapshot);
+        AssertCanonicalRoundTrip(
+            fixture.RecentQueries,
+            await diagnostics.GetRecentQueriesAsync(16, Ct),
+            CSharpDbObservabilityJsonContext.Default
+                .DiagnosticsTopologySnapshotDiagnosticsCollectionSnapshotRecentQuerySnapshot);
+        AssertCanonicalRoundTrip(
+            fixture.QueryPlan,
+            await diagnostics.GetQueryPlanDiagnosticsAsync(fixture.OperationId, Ct),
+            CSharpDbObservabilityJsonContext.Default
+                .DiagnosticsTopologySnapshotDiagnosticsValueSnapshotQueryPlanDiagnosticsSnapshot);
+        AssertCanonicalRoundTrip(
+            fixture.Sessions,
+            await diagnostics.GetSessionsAsync(16, Ct),
+            CSharpDbObservabilityJsonContext.Default
+                .DiagnosticsTopologySnapshotDiagnosticsCollectionSnapshotSessionDiagnosticsSnapshot);
+        AssertCanonicalRoundTrip(
+            fixture.ActiveMaintenance,
+            await diagnostics.GetActiveMaintenanceOperationsAsync(16, Ct),
+            CSharpDbObservabilityJsonContext.Default
+                .DiagnosticsTopologySnapshotDiagnosticsCollectionSnapshotMaintenanceOperationSnapshot);
+        AssertCanonicalRoundTrip(
+            fixture.RecentMaintenance,
+            await diagnostics.GetRecentMaintenanceOperationsAsync(16, Ct),
+            CSharpDbObservabilityJsonContext.Default
+                .DiagnosticsTopologySnapshotDiagnosticsCollectionSnapshotMaintenanceOperationSnapshot);
+        AssertCanonicalRoundTrip(
+            fixture.QueryDetail,
+            await diagnostics.GetQueryDetailAsync(fixture.OperationId, Ct),
+            CSharpDbObservabilityJsonContext.Default
+                .DiagnosticsTopologySnapshotDiagnosticsValueSnapshotQueryDetailSnapshot);
+
+        Assert.Equal(10, capture.InvocationCount);
         Assert.True(capture.AllCallsWereDiagnosticsSuppressed);
     }
 
@@ -1017,6 +1103,15 @@ public sealed class DiagnosticsHttpTransportTests
         => (topology.Aggregate.Records?.Count ?? 0) +
            (topology.Shards?.Sum(static shard => shard.Value?.Records?.Count ?? 0) ?? 0);
 
+    private static void AssertCanonicalRoundTrip<T>(
+        T expected,
+        T actual,
+        JsonTypeInfo<T> typeInfo)
+        where T : class
+        => Assert.Equal(
+            JsonSerializer.Serialize(expected, typeInfo),
+            JsonSerializer.Serialize(actual, typeInfo));
+
     private static DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<T>>
         DisabledValue<T>()
         where T : class, IRuntimeDiagnosticsSnapshot
@@ -1040,6 +1135,7 @@ public sealed class DiagnosticsHttpTransportTests
         public IReadOnlyList<int> MaximumRecords => _maximumRecords;
         public IReadOnlyList<OpaqueDiagnosticsId> OperationIds => _operationIds;
         public bool ReturnAvailableSessions { get; set; }
+        internal DiagnosticsTransportFixture? AvailableFixture { get; set; }
         public Exception? RuntimeFailure { get; set; }
         public bool AllCallsWereCanceledCapable { get; private set; } = true;
         public bool AllCallsWereDiagnosticsSuppressed { get; private set; } = true;
@@ -1062,32 +1158,52 @@ public sealed class DiagnosticsHttpTransportTests
                 "GetRuntimeDiagnosticsAsync" when RuntimeFailure is not null =>
                     Task.FromException<DiagnosticsTopologySnapshot<
                         RuntimeDiagnosticsSnapshot>>(RuntimeFailure),
+                "GetRuntimeDiagnosticsAsync" when AvailableFixture is { } fixture =>
+                    Task.FromResult(fixture.Runtime),
                 "GetRuntimeDiagnosticsAsync" => Task.FromResult(
                     DisabledRuntime()),
+                "GetStorageDiagnosticsAsync" when AvailableFixture is { } fixture =>
+                    Task.FromResult(fixture.Storage),
                 "GetStorageDiagnosticsAsync" => Task.FromResult(
                     DisabledValue<StorageRuntimeDiagnosticsSnapshot>()),
+                "GetWalDiagnosticsAsync" when AvailableFixture is { } fixture =>
+                    Task.FromResult(fixture.Wal),
                 "GetWalDiagnosticsAsync" => Task.FromResult(
                     DisabledValue<WalRuntimeDiagnosticsSnapshot>()),
+                "GetActiveQueriesAsync" when AvailableFixture is { } fixture =>
+                    CaptureMaximum((int)args[0]!, fixture.ActiveQueries),
                 "GetActiveQueriesAsync" => CaptureMaximum(
                     (int)args[0]!,
                     DisabledCollection<ActiveQuerySnapshot>()),
+                "GetRecentQueriesAsync" when AvailableFixture is { } fixture =>
+                    CaptureMaximum((int)args[0]!, fixture.RecentQueries),
                 "GetRecentQueriesAsync" => CaptureMaximum(
                     (int)args[0]!,
                     DisabledCollection<RecentQuerySnapshot>()),
+                "GetQueryPlanDiagnosticsAsync" when AvailableFixture is { } fixture =>
+                    CaptureOperation((OpaqueDiagnosticsId)args[0]!, fixture.QueryPlan),
                 "GetQueryPlanDiagnosticsAsync" => CaptureOperation(
                     (OpaqueDiagnosticsId)args[0]!,
                     DisabledValue<QueryPlanDiagnosticsSnapshot>()),
+                "GetSessionsAsync" when AvailableFixture is { } fixture =>
+                    CaptureMaximum((int)args[0]!, fixture.Sessions),
                 "GetSessionsAsync" => CaptureMaximum(
                     (int)args[0]!,
                     ReturnAvailableSessions
                         ? AvailableSessions((int)args[0]!)
                         : DisabledCollection<SessionDiagnosticsSnapshot>()),
+                "GetActiveMaintenanceOperationsAsync" when AvailableFixture is { } fixture =>
+                    CaptureMaximum((int)args[0]!, fixture.ActiveMaintenance),
                 "GetActiveMaintenanceOperationsAsync" => CaptureMaximum(
                     (int)args[0]!,
                     DisabledCollection<MaintenanceOperationSnapshot>()),
+                "GetRecentMaintenanceOperationsAsync" when AvailableFixture is { } fixture =>
+                    CaptureMaximum((int)args[0]!, fixture.RecentMaintenance),
                 "GetRecentMaintenanceOperationsAsync" => CaptureMaximum(
                     (int)args[0]!,
                     DisabledCollection<MaintenanceOperationSnapshot>()),
+                "GetQueryDetailAsync" when AvailableFixture is { } fixture =>
+                    CaptureOperation((OpaqueDiagnosticsId)args[0]!, fixture.QueryDetail),
                 "GetQueryDetailAsync" => CaptureOperation(
                     (OpaqueDiagnosticsId)args[0]!,
                     DisabledValue<QueryDetailSnapshot>()),

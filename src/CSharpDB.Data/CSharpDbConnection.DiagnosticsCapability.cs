@@ -282,6 +282,18 @@ public sealed partial class CSharpDbConnection : ICSharpDbObservabilityClient
                         ct));
         }
 
+        if (GetEmbeddedHistoryAvailability(target) ==
+            DiagnosticsAvailability.Disabled)
+        {
+            DiagnosticsSnapshotMetadata metadata = CreateMetadata(
+                target,
+                DiagnosticsAvailability.Disabled,
+                DiagnosticsSource.Engine);
+            return Task.FromResult(CreateInstanceTopology(
+                CreateUnavailableCollection<MaintenanceOperationSnapshot>(
+                    metadata)));
+        }
+
         throw new CSharpDbObservabilityNotSupportedException();
     }
 
@@ -301,21 +313,24 @@ public sealed partial class CSharpDbConnection : ICSharpDbObservabilityClient
                         DiagnosticsSource.Client)));
         }
 
-        QueryDiagnosticsSummary querySummary;
-        try
+        QueryDiagnosticsSummary? querySummary = null;
+        if (target.RuntimeState!.HistoryEnabled)
         {
-            querySummary = QueryRuntimeDiagnostics
-                .GetOrCreate(target.RuntimeState!)
-                .GetSummary();
-        }
-        catch (ObjectDisposedException)
-        {
-            return CreateInstanceTopology(
-                CreateRuntimeWithoutValues(
-                    CreateMetadata(
-                        target,
-                        DiagnosticsAvailability.Unavailable,
-                        DiagnosticsSource.Client)));
+            try
+            {
+                querySummary = QueryRuntimeDiagnostics
+                    .GetOrCreate(target.RuntimeState)
+                    .GetSummary();
+            }
+            catch (ObjectDisposedException)
+            {
+                return CreateInstanceTopology(
+                    CreateRuntimeWithoutValues(
+                        CreateMetadata(
+                            target,
+                            DiagnosticsAvailability.Unavailable,
+                            DiagnosticsSource.Client)));
+            }
         }
 
         DataConnectionDiagnosticsRawSnapshot? raw;
@@ -340,8 +355,10 @@ public sealed partial class CSharpDbConnection : ICSharpDbObservabilityClient
             target,
             DiagnosticsAvailability.Available,
             DiagnosticsSource.Client);
-        QueryDiagnosticsSummary projectedQuerySummary =
-            querySummary with { Metadata = metadata };
+        QueryDiagnosticsSummary? projectedQuerySummary =
+            querySummary is null
+                ? null
+                : querySummary with { Metadata = metadata };
         DiagnosticsSection<ConnectionDiagnosticsSnapshot> connectionSection =
             raw is null
                 ? DiagnosticsSection<ConnectionDiagnosticsSnapshot>.WithoutValue(
@@ -350,14 +367,20 @@ public sealed partial class CSharpDbConnection : ICSharpDbObservabilityClient
                     CreateConnectionSnapshot(metadata, raw));
         var snapshot = new RuntimeDiagnosticsSnapshot(
             metadata,
-            DiagnosticsSection<QueryDiagnosticsSummary>.Available(projectedQuerySummary),
+            projectedQuerySummary is null
+                ? DiagnosticsSection<QueryDiagnosticsSummary>.WithoutValue(
+                    DiagnosticsAvailability.Disabled)
+                : DiagnosticsSection<QueryDiagnosticsSummary>.Available(
+                    projectedQuerySummary),
             connectionSection,
             DiagnosticsSection<StorageRuntimeDiagnosticsSnapshot>.WithoutValue(
                 DiagnosticsAvailability.Unavailable),
             DiagnosticsSection<WalRuntimeDiagnosticsSnapshot>.WithoutValue(
                 DiagnosticsAvailability.Unavailable),
             DiagnosticsSection<MaintenanceOperationSnapshot>.WithoutValue(
-                DiagnosticsAvailability.Unavailable),
+                target.RuntimeState.HistoryEnabled
+                    ? DiagnosticsAvailability.Unavailable
+                    : DiagnosticsAvailability.Disabled),
             DiagnosticsSection<HealthDiagnosticsSnapshot>.WithoutValue(
                 DiagnosticsAvailability.Unavailable));
         return CreateInstanceTopology(snapshot);
@@ -368,7 +391,8 @@ public sealed partial class CSharpDbConnection : ICSharpDbObservabilityClient
         Func<QueryRuntimeDiagnostics, DiagnosticsCollectionSnapshot<T>> capture)
         where T : class, IRuntimeDiagnosticsSnapshot
     {
-        DiagnosticsAvailability availability = GetEmbeddedAvailability(target);
+        DiagnosticsAvailability availability =
+            GetEmbeddedHistoryAvailability(target);
         if (availability != DiagnosticsAvailability.Available)
         {
             return CreateUnavailableCollection<T>(
@@ -397,7 +421,8 @@ public sealed partial class CSharpDbConnection : ICSharpDbObservabilityClient
         Func<QueryRuntimeDiagnostics, T?> capture)
         where T : class, IRuntimeDiagnosticsSnapshot
     {
-        DiagnosticsAvailability availability = GetEmbeddedAvailability(target);
+        DiagnosticsAvailability availability =
+            GetEmbeddedHistoryAvailability(target);
         if (availability != DiagnosticsAvailability.Available)
         {
             return new DiagnosticsValueSnapshot<T>(
@@ -677,6 +702,22 @@ public sealed partial class CSharpDbConnection : ICSharpDbObservabilityClient
         }
 
         return target.Options?.Enabled == true
+            ? DiagnosticsAvailability.Unavailable
+            : DiagnosticsAvailability.Disabled;
+    }
+
+    private static DiagnosticsAvailability GetEmbeddedHistoryAvailability(
+        DiagnosticsTarget target)
+    {
+        if (target.RuntimeState is { } state)
+        {
+            return state.HistoryEnabled
+                ? DiagnosticsAvailability.Available
+                : DiagnosticsAvailability.Disabled;
+        }
+
+        return target.Options?.Enabled == true &&
+               target.Options.History.Enabled
             ? DiagnosticsAvailability.Unavailable
             : DiagnosticsAvailability.Disabled;
     }

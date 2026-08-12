@@ -71,7 +71,7 @@ jobs:
 
   publish-nuget:
     name: Publish NuGet
-    needs: [build-and-test, migration-archives, native-aot, daemon-archives, admin-desktop-archive]
+    needs: [build-and-test, migration-archives, native-aot, api-host-observability, daemon-archives, admin-desktop-archive]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -189,6 +189,13 @@ jobs:
             -FeedPath artifacts/nuget `
             -Version "${{ steps.version.outputs.version }}"
 
+      - name: Qualify final NuGet dependency graph and manifest
+        shell: pwsh
+        run: |
+          ./scripts/Test-CSharpDbNuGetReleaseGraph.ps1 `
+            -FeedPath artifacts/nuget `
+            -Version "${{ steps.version.outputs.version }}"
+
       - name: Revalidate the immutable publication target
         shell: pwsh
         env:
@@ -218,14 +225,19 @@ jobs:
         with:
           user: ${{ secrets.NUGET_USER }}
 
+      - name: Require an unpublished NuGet candidate version
+        shell: pwsh
+        run: |
+          ./scripts/Test-CSharpDbNuGetCandidateAbsent.ps1 `
+            -ManifestPath artifacts/nuget/CSharpDB-PACKAGE-MANIFEST.json
+
       - name: Push CSharpDB.Observability to NuGet.org
         shell: bash
         run: |
           set -euo pipefail
           dotnet nuget push "artifacts/nuget/CSharpDB.Observability.${{ steps.version.outputs.package_file_version }}.nupkg" \
             --source "https://api.nuget.org/v3/index.json" \
-            --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" \
-            --skip-duplicate
+            --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}"
 
       - name: Wait for CSharpDB.Observability on NuGet.org
         shell: pwsh
@@ -234,19 +246,32 @@ jobs:
             -Version "${{ steps.version.outputs.version }}" `
             -PackageId 'CSharpDB.Observability'
 
-      - name: Push dependent packages to NuGet.org
-        shell: bash
+      - name: Push remaining packages in validated topological order
+        shell: pwsh
+        env:
+          NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
         run: |
-          set -euo pipefail
-          for package in artifacts/nuget/*.nupkg; do
-            if [[ "$(basename "$package")" == CSharpDB.Observability.* ]]; then
+          $manifest = Get-Content `
+            -Raw `
+            -LiteralPath artifacts/nuget/CSharpDB-PACKAGE-MANIFEST.json |
+              ConvertFrom-Json
+          foreach ($package in $manifest.packages) {
+            if ($package.id -ceq 'CSharpDB.Observability') {
               continue
-            fi
-            dotnet nuget push "$package" \
-              --source "https://api.nuget.org/v3/index.json" \
-              --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" \
-              --skip-duplicate
-          done
+            }
+
+            $packagePath = Join-Path artifacts/nuget $package.file
+            & dotnet nuget push $packagePath `
+              --source 'https://api.nuget.org/v3/index.json' `
+              --api-key $env:NUGET_API_KEY
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to push $($package.id)."
+            }
+
+            ./scripts/Wait-NuGetPackageVersion.ps1 `
+              -Version "${{ steps.version.outputs.version }}" `
+              -PackageId $package.id
+          }
 
       - name: Verify packages are visible on NuGet.org
         shell: pwsh
@@ -278,7 +303,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: nuget-packages
-          path: artifacts/nuget/*.nupkg
+          path: |
+            artifacts/nuget/*.nupkg
+            artifacts/nuget/CSharpDB-PACKAGE-MANIFEST.json
           if-no-files-found: error
 
   migration-archives:
@@ -387,7 +414,7 @@ jobs:
         run: dotnet publish src/CSharpDB.Native/CSharpDB.Native.csproj -c Release -r ${{ matrix.rid }}
 
       - name: Publish observability trim and NativeAOT smoke
-        run: dotnet publish tests/CSharpDB.Observability.TrimSmoke/CSharpDB.Observability.TrimSmoke.csproj -c Release -r ${{ matrix.rid }} -p:PublishAot=true -o artifacts/observability-aot/${{ matrix.rid }}
+        run: dotnet publish tests/CSharpDB.Observability.TrimSmoke/CSharpDB.Observability.TrimSmoke.csproj -c Release -r ${{ matrix.rid }} --self-contained true -p:PublishAot=true -o artifacts/observability-aot/${{ matrix.rid }}
 
       - name: Run observability trim and NativeAOT smoke
         shell: pwsh
@@ -399,6 +426,9 @@ jobs:
             'CSharpDB.Observability.TrimSmoke'
           }
           $executable = Join-Path 'artifacts/observability-aot/${{ matrix.rid }}' $executableName
+          if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
+            throw "NativeAOT executable was not produced: $executable"
+          }
           & $executable
           if ($LASTEXITCODE -ne 0) {
             throw "Observability trim and NativeAOT smoke failed with exit code $LASTEXITCODE."
@@ -444,6 +474,39 @@ jobs:
           name: native-header
           path: src/CSharpDB.Native/csharpdb.h
           if-no-files-found: error
+
+  api-host-observability:
+    name: API observability (${{ matrix.os }} ${{ matrix.rid }})
+    needs: build-and-test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: windows-latest
+            rid: win-x64
+          - os: macos-latest
+            rid: osx-arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.release_commit }}
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Publish and qualify API observability
+        shell: pwsh
+        run: |
+          ./scripts/Test-CSharpDbPublishedHostObservability.ps1 `
+            -HostName Api `
+            -Runtime '${{ matrix.rid }}'
 
   daemon-archives:
     name: Daemon Archives (${{ matrix.os }} ${{ matrix.rid }})
@@ -526,6 +589,12 @@ jobs:
           if (-not $IsWindows) {
             & chmod +x $executablePath
           }
+
+          ./scripts/Test-CSharpDbPublishedHostObservability.ps1 `
+            -HostName Daemon `
+            -Runtime '${{ matrix.rid }}' `
+            -ExecutablePath $executablePath `
+            -WorkingDirectory $extractRoot
 
           $outPath = Join-Path $env:RUNNER_TEMP "csharpdb-daemon-smoke.out.log"
           $errPath = Join-Path $env:RUNNER_TEMP "csharpdb-daemon-smoke.err.log"
@@ -827,6 +896,7 @@ jobs:
           target_commitish: ${{ inputs.release_commit }}
           files: |
             artifacts/nuget/*.nupkg
+            artifacts/nuget/CSharpDB-PACKAGE-MANIFEST.json
             artifacts/native/*
             artifacts/migration/*
             artifacts/daemon/*
@@ -842,6 +912,7 @@ jobs:
           target_commitish: ${{ inputs.release_commit }}
           files: |
             artifacts/nuget/*.nupkg
+            artifacts/nuget/CSharpDB-PACKAGE-MANIFEST.json
             artifacts/native/*
             artifacts/migration/*
             artifacts/daemon/*

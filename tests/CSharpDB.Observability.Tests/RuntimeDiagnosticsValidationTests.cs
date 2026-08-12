@@ -408,6 +408,14 @@ public sealed class RuntimeDiagnosticsValidationTests
         AssertRoundTrip(queries, CSharpDbObservabilityJsonContext.Default.QueryDiagnosticsSummary);
         AssertRoundTrip(ActiveQuery(metadata), CSharpDbObservabilityJsonContext.Default.ActiveQuerySnapshot);
         AssertRoundTrip(RecentQuery(metadata), CSharpDbObservabilityJsonContext.Default.RecentQuerySnapshot);
+        AssertRoundTrip(
+            new QueryDetailSnapshot(
+                metadata,
+                Id('1'),
+                Fingerprint: null,
+                SqlTextCaptureMode.Normalized,
+                "SELECT value FROM runtime_contract WHERE id = ?"),
+            CSharpDbObservabilityJsonContext.Default.QueryDetailSnapshot);
         AssertRoundTrip(QueryPlan(metadata), CSharpDbObservabilityJsonContext.Default.QueryPlanDiagnosticsSnapshot);
         AssertRoundTrip(connections, CSharpDbObservabilityJsonContext.Default.ConnectionDiagnosticsSnapshot);
         AssertRoundTrip(Session(metadata), CSharpDbObservabilityJsonContext.Default.SessionDiagnosticsSnapshot);

@@ -1057,7 +1057,7 @@ Status: `In progress`
 Goal: make the shared operation model consumable by standard tracing and
 metrics systems without coupling the engine to an exporter.
 
-Current implementation checkpoint (2026-08-11):
+Implementation checkpoints (2026-08-11 through 2026-08-12):
 
 - The BCL-only `CSharpDB` activity source and meter, the versioned trace/metric
   schema, hosted resource/sampling configuration, optional console/OTLP export,
@@ -1069,10 +1069,11 @@ Current implementation checkpoint (2026-08-11):
   parentage; lazy results detach from unrelated ambient work and stop exactly
   once. Runtime-owned transaction, database lifecycle, checkpoint, backup,
   restore, reindex, vacuum, and generic maintenance paths participate.
-- Automatic physical checkpoints and startup WAL recovery currently emit
-  metrics, not physical spans. Ownerless path-only static restore validation,
-  restore, reindex, vacuum, and foreign-key migration APIs have no runtime
-  telemetry identity. Those limitations keep the broad span item below open.
+- Automatic foreground, background, and shutdown checkpoints and startup WAL
+  recovery now emit explicit-root physical spans. Manual, backup, and startup
+  recovery checkpoint sub-steps suppress duplicate physical checkpoint spans.
+  Ownerless path-only static restore validation, restore, reindex, vacuum, and
+  foreign-key migration APIs still have no runtime telemetry identity.
 - Focused and hosted tests cover the BCL schema, real REST/gRPC parentage, an
   actual database query through in-memory trace and metric exporters, provider
   resource/sampling, explicit histogram views, Prometheus access and bounded
@@ -1089,10 +1090,22 @@ Current implementation checkpoint (2026-08-11):
   128-row stream; the other six paths exceeded at least one ceiling. This is a
   useful optimization signal, not formal repeated-pair evidence, so the Phase 4
   performance gate remains open. Sampled tracing still has no approved ceiling.
+- The 2026-08-12 physical-span follow-on passed `13/13` physical tracing tests,
+  `27/27` observer/runtime tests, `24/24` adjacent activity tests, and `30/30`
+  repeated start/complete/retirement race canaries. Listener callbacks remain
+  outside storage locks and the no-listener path avoids lease, context, and
+  activity allocation.
+- In-memory exporter coverage now proves parentage, status, attributes,
+  metrics, and trace/log correlation. Golden privacy/schema checks and the
+  many-statement/session/error/table/path cardinality stress coverage pass.
+- The formal performance qualifier and fail-closed policy are implemented, but
+  there is no new repeated BenchmarkDotNet attestation. `MetricsOnly` still
+  lacks the required repeated-pair evidence, and the `SampledTracing` ceiling
+  remains undecided, so the formal performance gate remains open.
 
 Work:
 
-- [ ] Emit `Activity` spans for queries, transactions, checkpoints, backup,
+- [x] Emit `Activity` spans for queries, transactions, checkpoints, backup,
   restore, and maintenance from one stable CSharpDB `ActivitySource`.
 - [x] Make remote query spans children of inbound ASP.NET Core or gRPC spans
   and avoid duplicate client/server/engine root spans.
@@ -1132,9 +1145,9 @@ Work:
   forwarded headers.
 - [x] Document authentication or network isolation requirements for the scrape
   endpoint.
-- [ ] Add in-memory exporter tests for span parentage, status, attributes,
+- [x] Add in-memory exporter tests for span parentage, status, attributes,
   metrics, and log correlation.
-- [ ] Add a cardinality stress test that uses many distinct SQL statements,
+- [x] Add a cardinality stress test that uses many distinct SQL statements,
   sessions, errors, tables, and database paths.
 - [x] Add endpoint tests proving disabled is `404`, a missing or wrong API key
   is `401`, a correct key is `200`, security mode `None` denies remote peers
@@ -1399,30 +1412,69 @@ cross-platform qualification remains Phase 7 work.
 
 ## Phase 7: Qualification, Documentation, And Release Closure
 
-Status: `Not started`
+Status: `In progress`
 
 Goal: prove the complete feature set is safe, interoperable, performant, and
 usable before closing its target release.
 
+Current implementation checkpoint (2026-08-12):
+
+- The public guide, related configuration/API/Admin/architecture pages,
+  sitemap links, supported observability-host sample, schema/deprecation
+  contract, and security, retention, outage, overhead, and troubleshooting
+  guidance are implemented. The local documentation validator passes.
+- Direct, HTTP, gRPC, and sharded model/transport contracts, concurrent
+  cleanup/snapshot/capacity/exporter/shutdown/restore stress tests, and golden
+  redaction/metric-schema tests are present. Windows, Ubuntu, and macOS
+  qualification lanes are defined; this does not claim that the final
+  multi-platform release matrix has passed.
+- The final local strict Release build passed with zero warnings and errors.
+  Focused suites and successful project results from full-solution runs include
+  Core `2,712/2,712`, CLI `415/415` with one intentional skip, Daemon
+  `235/235`, API `186/186`, Data `278/278`, Admin `483/483`, benchmark
+  contracts `150/150`, and the serial migration-files rerun `1,009/1,009`.
+  This is strong local evidence, not the final external release qualification.
+- The managed trimmed diagnostics-topology smoke passes. A local Windows
+  NativeAOT publish reached native code generation but could not link because
+  this workstation has no `link.exe`; the post-freeze NativeAOT and external
+  cross-platform qualification gate therefore remains open.
+- Self-contained single-file Windows API and daemon host smokes passed their
+  live/ready, runtime-diagnostics, metrics, work, and privacy probes. Orderly
+  host shutdown remains covered by the in-process suites because console-less
+  Windows termination cannot be signaled portably by the external smoke.
+- An 18-package local `4.5.1` exact-dependency graph rehearsal and clean
+  Observability/all-in-one consumer smokes passed. Registry preflight found
+  that 17 package IDs at `4.5.1` already exist while
+  `CSharpDB.Observability` does not, so `4.5.1` cannot form a new coordinated
+  publication; a new coordinated release-candidate version is required.
+- The performance qualifier, policy tests, and attestation format are present,
+  but no new BenchmarkDotNet attestation has been produced. `MetricsOnly`
+  repeated-pair evidence remains missing and the `SampledTracing` threshold is
+  undecided. Formal performance approval therefore remains open.
+- No package version, changelog, release notes, or public release content has
+  been updated. Those changes remain gated on the final performance,
+  NativeAOT/multi-platform, release-candidate graph, and full qualification
+  results.
+
 Work:
 
-- [ ] Add a public `www/docs/observability.html` guide covering embedded,
+- [x] Add a public `www/docs/observability.html` guide covering embedded,
   standalone API, daemon, OpenTelemetry, Prometheus, health, Admin, and
   redaction configuration.
-- [ ] Update configuration, REST API, Admin, deployment, index, sitemap, and
+- [x] Update configuration, REST API, Admin, deployment, index, sitemap, and
   relevant architecture pages.
-- [ ] Add a small supported sample showing `ILogger`, OpenTelemetry/OTLP,
+- [x] Add a small supported sample showing `ILogger`, OpenTelemetry/OTLP,
   Prometheus, readiness, and liveness configuration.
-- [ ] Document metric names, units, labels, span names, attributes, structured
+- [x] Document metric names, units, labels, span names, attributes, structured
   event ids, schema compatibility, and deprecation policy.
-- [ ] Document safe query-text opt-in, retention/capacity, scrape security,
+- [x] Document safe query-text opt-in, retention/capacity, scrape security,
   collector outages, overhead, and troubleshooting.
-- [ ] Add direct/HTTP/gRPC/sharded contract tests for every diagnostics model.
-- [ ] Add Windows, Ubuntu, and macOS integration coverage for logging,
+- [x] Add direct/HTTP/gRPC/sharded contract tests for every diagnostics model.
+- [x] Add Windows, Ubuntu, and macOS integration coverage for logging,
   telemetry, Prometheus, health, query lifecycle, WAL, backup, and restore.
-- [ ] Add concurrent stress tests for active-query cleanup, snapshot
+- [x] Add concurrent stress tests for active-query cleanup, snapshot
   consistency, registry capacity, exporter failure, shutdown, and restore.
-- [ ] Add golden tests for default redaction and metric-label cardinality.
+- [x] Add golden tests for default redaction and metric-label cardinality.
 - [ ] Add performance guardrails for disabled, metrics-only, tracing-sampled,
   and recent-history modes.
 - [ ] Verify all new public models are trim-safe and serializer/source

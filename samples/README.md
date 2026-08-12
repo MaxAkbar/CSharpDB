@@ -23,6 +23,7 @@ The SQL dataset samples use a conventional layout with `schema.sql` for setup, `
 | `efcore-provider/` | Runnable EF Core 10 embedded-provider sample | `.csproj`, `Program.cs`, `README.md` |
 | `efcore-minimal-api/` | Runnable ASP.NET Core 10 HTTP CRUD API using a scoped CSharpDB EF Core context | `.csproj`, `Program.cs`, `appsettings.json`, `sample.http`, `README.md` |
 | `aspnet-core-identity/` | Runnable ASP.NET Core 10 auth sample with a custom ADO.NET-backed user store, cookie + JWT auth, and role/policy authorization | `.csproj`, `Program.cs`, `UserStore.cs`, `AppUser.cs`, `Seed.cs`, `sample.http`, `README.md` |
+| `observability-host/` | Runnable ASP.NET Core host with safe CSharpDB ILogger, OpenTelemetry/OTLP, Prometheus, liveness, and readiness configuration | `.csproj`, `Program.cs`, `appsettings.json`, `sample.http`, `README.md` |
 | `trusted-csharp-host/` | Runnable trusted callback host sample | scalar functions, commands, validation rules, form automation metadata, `.csproj`, `Program.cs`, `README.md` |
 
 ## Tutorials
@@ -303,7 +304,20 @@ dotnet run --project samples/aspnet-core-identity/AspNetCoreIdentitySample.cspro
 
 This sample brings up an ASP.NET Core 10 web app with a custom `CSharpDB.Data` user store. On first start it seeds an admin (`admin@example.com` / `ChangeMe!2026`) and exposes minimal-API endpoints for cookie login, JWT issuance, role-based authorization, and policy-based authorization. The companion `sample.http` file walks through the full flow.
 
-### Option 12: Run the Fulfillment Hub Sample
+### Option 12: Run the Observability Host Sample
+
+```bash
+dotnet run --project samples/observability-host/ObservabilityHostSample.csproj
+```
+
+This ASP.NET Core sample uses one validated safe configuration for the standard
+`ILogger` bridge, local OpenTelemetry output, optional OTLP, loopback-only
+Prometheus, and separate cached liveness/readiness routes. Call `/work` to
+generate a real query signal, then inspect `/metrics`, `/health/live`, and
+`/health/ready`. It uses a named in-memory database and leaves no database or
+WAL file behind.
+
+### Option 13: Run the Fulfillment Hub Sample
 
 ```bash
 dotnet run --project samples/fulfillment-hub/FulfillmentHubSample.csproj

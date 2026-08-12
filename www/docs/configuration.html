@@ -6,10 +6,10 @@
     <link rel="stylesheet" href="../css/style.css">
     <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
     <title>Configuration Reference — CSharpDB</title>
-    <meta name="description" content="CSharpDB configuration reference for connection strings, storage modes, daemon hosting, Admin, CLI, and environment variables.">
+    <meta name="description" content="CSharpDB configuration reference for connection strings, storage modes, observability, OpenTelemetry, Prometheus, health, daemon hosting, Admin, CLI, and environment variables.">
     <link rel="canonical" href="https://csharpdb.com/docs/configuration.html">
     <meta property="og:title" content="Configuration Reference — CSharpDB">
-    <meta property="og:description" content="CSharpDB configuration reference for connection strings, storage modes, daemon hosting, Admin, CLI, and environment variables.">
+    <meta property="og:description" content="CSharpDB configuration reference for connection strings, storage modes, observability, OpenTelemetry, Prometheus, health, daemon hosting, Admin, CLI, and environment variables.">
     <meta property="og:url" content="https://csharpdb.com/docs/configuration.html">
     <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
     <link rel="icon" type="image/png" href="../favicon.png">
@@ -18,7 +18,7 @@
         "@context": "https://schema.org",
         "@type": "TechArticle",
         "name": "Configuration Reference",
-        "description": "CSharpDB configuration reference for connection strings, storage modes, daemon hosting, Admin, CLI, and environment variables.",
+        "description": "CSharpDB configuration reference for connection strings, storage modes, observability, OpenTelemetry, Prometheus, health, daemon hosting, Admin, CLI, and environment variables.",
         "url": "https://csharpdb.com/docs/configuration.html",
         "isPartOf": {
             "@type": "WebSite",
@@ -37,8 +37,8 @@
     window.currentPage = 'docs'; window.pagePathPrefix = '../';
     window.pageConfig = {
         title: 'Configuration Reference',
-        description: 'CSharpDB configuration reference for connection strings, storage modes, daemon hosting, Admin, CLI, and environment variables.',
-        keywords: 'CSharpDB configuration, connection strings, daemon config, admin config, storage modes',
+        description: 'CSharpDB configuration reference for connection strings, storage modes, observability, OpenTelemetry, Prometheus, health, daemon hosting, Admin, CLI, and environment variables.',
+        keywords: 'CSharpDB configuration, connection strings, observability config, OpenTelemetry, Prometheus, health checks, daemon config, admin config, storage modes',
         canonicalPath: 'docs/configuration.html',
         ogType: 'article',
     };
@@ -71,6 +71,7 @@
                         <li class="toc-child"><a href="#hybridpersistencemode">HybridPersistenceMode</a></li>
                         <li class="toc-child"><a href="#hybridpersistencetriggers-flags">HybridPersistenceTriggers (Flags)</a></li>
                         <li><a href="#fulltextindexoptions">FullTextIndexOptions</a></li>
+                        <li><a href="#observability">Observability</a></li>
                         <li><a href="#runtime-settings">Runtime Settings</a></li>
                         <li><a href="#daemon-host-configuration">Daemon Host Configuration</a></li>
                         <li><a href="#key-defaults-summary">Key Defaults Summary</a></li>
@@ -618,6 +619,102 @@ backing file.</p>
 </tr>
 </tbody>
 </table>
+<hr />
+<h2 id="observability">Observability</h2>
+<p>Embedded databases, the standalone API, the daemon, and Admin share one
+validated <code>CSharpDbObservabilityOptions</code> model. API and daemon hosts
+bind it from <code>CSharpDB:Observability</code> before database warmup. For an
+embedded database, pass the same options instance through
+<code>DatabaseOptions.ObservabilityOptions</code>.</p>
+<table class="doc-table">
+<thead>
+<tr><th>Key</th><th>Default</th><th>Description and validation</th></tr>
+</thead>
+<tbody>
+<tr><td><code>Enabled</code></td><td><code>false</code></td><td>Master switch for configured runtime diagnostics, logging, tracing, and metrics. OpenTelemetry and Prometheus cannot be enabled while this is false. Health is configured independently.</td></tr>
+<tr><td><code>DatabaseAlias</code></td><td><code>default</code></td><td>Stable low-cardinality label: 1-64 ASCII letters, digits, <code>.</code>, <code>-</code>, or <code>_</code>. Never use a path, connection string, or unbounded tenant value.</td></tr>
+<tr><td><code>Logging:Enabled</code></td><td><code>true</code></td><td>Bridges typed events to the host logging pipeline when master observability is enabled.</td></tr>
+<tr><td><code>Logging:Queries</code></td><td><code>false</code></td><td>Enables ordinary query terminal logging.</td></tr>
+<tr><td><code>Logging:SlowQueries</code></td><td><code>true</code></td><td>Enables slow-query events.</td></tr>
+<tr><td><code>Logging:SlowQueryThreshold</code></td><td><code>00:00:00.500</code></td><td>Positive duration up to one day. <code>SlowQueryThresholdOverrides</code> can set a positive threshold for each defined operation class.</td></tr>
+<tr><td><code>Logging:SqlText</code></td><td><code>None</code></td><td><code>None</code>, <code>Normalized</code>, or sensitive <code>Raw</code>. Raw mode emits startup warning event 1003.</td></tr>
+<tr><td><code>History:Enabled</code></td><td><code>true</code></td><td>Retains bounded active/recent query and maintenance history. Set false for metrics- or tracing-only operation; those signals remain independently enabled.</td></tr>
+<tr><td><code>History:ActiveQueryCapacity</code></td><td><code>1000</code></td><td>Bounded active-query registry capacity, 1-10,000.</td></tr>
+<tr><td><code>History:RecentQueryCapacity</code></td><td><code>500</code></td><td>Bounded recent-query history capacity, 1-10,000.</td></tr>
+<tr><td><code>History:RecentOperationCapacity</code></td><td><code>100</code></td><td>Bounded maintenance/operation history capacity, 1-10,000.</td></tr>
+<tr><td><code>History:Retention</code></td><td><code>00:15:00</code></td><td>Positive in-memory retention up to seven days.</td></tr>
+<tr><td><code>LongRunningQueryThreshold</code></td><td><code>00:00:05</code></td><td>Positive duration up to one day before the in-flight long-running event.</td></tr>
+<tr><td><code>SessionAbandonmentThreshold</code></td><td><code>00:30:00</code></td><td>Positive idle duration up to seven days used to classify open non-expiring sessions.</td></tr>
+<tr><td><code>OpenTelemetry:Enabled</code></td><td><code>false</code></td><td>API/daemon host adapter registers the <code>CSharpDB</code> activity source and meter.</td></tr>
+<tr><td><code>OpenTelemetry:SamplingRatio</code></td><td><code>1</code></td><td>Parent-based trace-id sampling ratio from 0 through 1.</td></tr>
+<tr><td><code>OpenTelemetry:Resource:*</code></td><td>host defaults</td><td>Optional service name, namespace, version, instance id, and deployment environment. Values are at most 128 non-control characters and cannot contain paths.</td></tr>
+<tr><td><code>OpenTelemetry:Otlp:Enabled</code></td><td><code>false</code></td><td>Enables OTLP trace and metric export. Endpoint, protocol, headers, and timeout use standard <code>OTEL_EXPORTER_OTLP_*</code> environment variables.</td></tr>
+<tr><td><code>OpenTelemetry:Console:Enabled</code></td><td><code>false</code></td><td>Enables console trace and metric export independently of OTLP.</td></tr>
+<tr><td><code>Prometheus:Enabled</code></td><td><code>false</code></td><td>Maps the protected exact scrape route and registers metrics even when tracing is disabled.</td></tr>
+<tr><td><code>Prometheus:Path</code></td><td><code>/metrics</code></td><td>Canonical absolute application path; it must not collide with REST, gRPC, OpenAPI, Scalar, or health routes.</td></tr>
+<tr><td><code>Prometheus:AllowInsecureRemoteAccess</code></td><td><code>false</code></td><td>Explicitly permits unauthenticated non-loopback scraping in security mode <code>None</code> and emits a warning. Prefer API-key mode, TLS, and private networking.</td></tr>
+<tr><td><code>Health:Enabled</code></td><td><code>true</code></td><td>Maps cached minimal liveness/readiness routes; daemon also maps standard gRPC Health.</td></tr>
+<tr><td><code>Health:LivenessPath</code></td><td><code>/health/live</code></td><td>Canonical exact process-liveness path.</td></tr>
+<tr><td><code>Health:ReadinessPath</code></td><td><code>/health/ready</code></td><td>Distinct canonical exact cached database-readiness path.</td></tr>
+<tr><td><code>Health:ReadinessTimeout</code></td><td><code>00:00:02</code></td><td>Positive bounded database verification attempt, up to one minute.</td></tr>
+</tbody>
+</table>
+<p>Representative hosted configuration:</p>
+<pre><code class="language-json">{
+  &quot;CSharpDB&quot;: {
+    &quot;Observability&quot;: {
+      &quot;Enabled&quot;: true,
+      &quot;DatabaseAlias&quot;: &quot;primary&quot;,
+      &quot;Logging&quot;: {
+        &quot;Enabled&quot;: true,
+        &quot;Queries&quot;: true,
+        &quot;SlowQueries&quot;: true,
+        &quot;SlowQueryThreshold&quot;: &quot;00:00:00.500&quot;,
+        &quot;SqlText&quot;: &quot;None&quot;
+      },
+      &quot;History&quot;: {
+        &quot;Enabled&quot;: true,
+        &quot;ActiveQueryCapacity&quot;: 1000,
+        &quot;RecentQueryCapacity&quot;: 500,
+        &quot;RecentOperationCapacity&quot;: 100,
+        &quot;Retention&quot;: &quot;00:15:00&quot;
+      },
+      &quot;LongRunningQueryThreshold&quot;: &quot;00:00:05&quot;,
+      &quot;SessionAbandonmentThreshold&quot;: &quot;00:30:00&quot;,
+      &quot;OpenTelemetry&quot;: {
+        &quot;Enabled&quot;: true,
+        &quot;SamplingRatio&quot;: 0.1,
+        &quot;Resource&quot;: {
+          &quot;ServiceName&quot;: &quot;orders-api&quot;,
+          &quot;ServiceNamespace&quot;: &quot;CSharpDB&quot;,
+          &quot;DeploymentEnvironment&quot;: &quot;production&quot;
+        },
+        &quot;Otlp&quot;: { &quot;Enabled&quot;: true },
+        &quot;Console&quot;: { &quot;Enabled&quot;: false }
+      },
+      &quot;Prometheus&quot;: {
+        &quot;Enabled&quot;: true,
+        &quot;Path&quot;: &quot;/metrics&quot;,
+        &quot;AllowInsecureRemoteAccess&quot;: false
+      },
+      &quot;Health&quot;: {
+        &quot;Enabled&quot;: true,
+        &quot;LivenessPath&quot;: &quot;/health/live&quot;,
+        &quot;ReadinessPath&quot;: &quot;/health/ready&quot;,
+        &quot;ReadinessTimeout&quot;: &quot;00:00:02&quot;
+      }
+    }
+  }
+}</code></pre>
+<p>Environment variables use the normal double-underscore form:</p>
+<pre><code class="language-powershell">$env:CSharpDB__Observability__Enabled = &quot;true&quot;
+$env:CSharpDB__Observability__DatabaseAlias = &quot;primary&quot;
+$env:CSharpDB__Observability__OpenTelemetry__Otlp__Enabled = &quot;true&quot;
+$env:OTEL_EXPORTER_OTLP_ENDPOINT = &quot;https://collector.example.internal:4317&quot;
+$env:CSharpDB__Observability__Prometheus__Enabled = &quot;true&quot;</code></pre>
+<p>See <a href="observability.html">Observability and Diagnostics</a> for the
+complete logging, span, metric, health, access-control, privacy, and
+troubleshooting contract.</p>
 <hr />
 <h2 id="runtime-settings">Runtime Settings</h2>
 <p>These properties can be changed on an open <code>Database</code> instance:</p>

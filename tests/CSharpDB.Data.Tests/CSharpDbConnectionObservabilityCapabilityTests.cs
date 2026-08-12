@@ -134,6 +134,59 @@ public sealed class CSharpDbConnectionObservabilityCapabilityTests : IAsyncLifet
     }
 
     [Fact]
+    public async Task DirectCapability_HistoryDisabled_ReportsHistorySurfacesDisabled()
+    {
+        DatabaseOptions options = CreateOptions("ado_no_history");
+        options.ObservabilityOptions!.History.Enabled = false;
+        options.ObservabilityOptions.Prometheus.Enabled = true;
+        await using var connection = new CSharpDbConnection(
+            "Data Source=:memory:;Pooling=false",
+            options);
+        await connection.OpenAsync(Ct);
+        ICSharpDbObservabilityClient diagnostics =
+            Assert.IsAssignableFrom<ICSharpDbObservabilityClient>(connection);
+
+        Assert.Equal(1L, Convert.ToInt64(
+            await ExecuteScalarAsync(connection, "SELECT 1")));
+
+        DiagnosticsTopologySnapshot<RuntimeDiagnosticsSnapshot> runtime =
+            await diagnostics.GetRuntimeDiagnosticsAsync(Ct);
+        Assert.Equal(DiagnosticsAvailability.Available, runtime.Metadata.Availability);
+        Assert.Equal(
+            DiagnosticsAvailability.Disabled,
+            runtime.Aggregate.Queries.Availability);
+
+        DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<ActiveQuerySnapshot>>
+            active = await diagnostics.GetActiveQueriesAsync(8, Ct);
+        DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<RecentQuerySnapshot>>
+            recent = await diagnostics.GetRecentQueriesAsync(8, Ct);
+        DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<QueryPlanDiagnosticsSnapshot>>
+            plan = await diagnostics.GetQueryPlanDiagnosticsAsync(
+                OpaqueDiagnosticsId.Create(),
+                Ct);
+        DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<QueryDetailSnapshot>>
+            detail = await diagnostics.GetQueryDetailAsync(
+                OpaqueDiagnosticsId.Create(),
+                Ct);
+        DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<
+            MaintenanceOperationSnapshot>> maintenance =
+                await diagnostics.GetRecentMaintenanceOperationsAsync(8, Ct);
+
+        Assert.Equal(DiagnosticsAvailability.Disabled, active.Metadata.Availability);
+        Assert.Equal(DiagnosticsAvailability.Disabled, recent.Metadata.Availability);
+        Assert.Equal(DiagnosticsAvailability.Disabled, plan.Metadata.Availability);
+        Assert.Equal(DiagnosticsAvailability.Disabled, detail.Metadata.Availability);
+        Assert.Equal(
+            DiagnosticsAvailability.Disabled,
+            maintenance.Metadata.Availability);
+        Assert.Null(active.Aggregate.Records);
+        Assert.Null(recent.Aggregate.Records);
+        Assert.Null(plan.Aggregate.Value);
+        Assert.Null(detail.Aggregate.Value);
+        Assert.Null(maintenance.Aggregate.Records);
+    }
+
+    [Fact]
     public void EmbeddedStorageProjector_ReprojectsNestedDetailMetadata()
     {
         DateTimeOffset capturedAt = new(2026, 8, 11, 12, 0, 0, TimeSpan.Zero);

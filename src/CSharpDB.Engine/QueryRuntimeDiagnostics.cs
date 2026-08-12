@@ -17,6 +17,7 @@ internal sealed partial class QueryRuntimeDiagnostics : IDisposable
     private readonly Queue<RecentQueryState> _recent;
     private readonly CSharpDbRuntimeDiagnosticsState _runtimeState;
     private readonly CSharpDbRuntimeMetrics? _runtimeMetrics;
+    private readonly bool _historyEnabled;
     private readonly int _activeCapacity;
     private readonly int _recentCapacity;
     private readonly TimeSpan _recentRetention;
@@ -45,6 +46,7 @@ internal sealed partial class QueryRuntimeDiagnostics : IDisposable
         ArgumentNullException.ThrowIfNull(runtimeState);
         _runtimeState = runtimeState;
         _runtimeMetrics = runtimeState.RuntimeMetrics;
+        _historyEnabled = runtimeState.HistoryEnabled;
         _activeCapacity = runtimeState.ActiveQueryCapacity;
         _recentCapacity = runtimeState.RecentQueryCapacity;
         _recentRetention = runtimeState.RecentQueryRetention;
@@ -76,6 +78,8 @@ internal sealed partial class QueryRuntimeDiagnostics : IDisposable
 
         return diagnostics;
     }
+
+    internal bool RuntimeMetricsEnabled => _runtimeMetrics is not null;
 
     internal QueryRuntimeOperation? TryStart(
         CSharpDbOperationContext context,
@@ -164,7 +168,9 @@ internal sealed partial class QueryRuntimeDiagnostics : IDisposable
             initialPhase,
             publicationClaim: null,
             plan: null,
-            CreateQueryDetail(captureMode, capturedSqlText),
+            _historyEnabled
+                ? CreateQueryDetail(captureMode, capturedSqlText)
+                : null,
             suppressDiagnosticEvents,
             publishLongRunningQueryEvents,
             previousOwner: null,
@@ -209,7 +215,23 @@ internal sealed partial class QueryRuntimeDiagnostics : IDisposable
             QueryRuntimeOperation operation;
             lock (_gate)
             {
-                if (_active.ContainsKey(context.OperationId))
+                bool retainActiveState = _historyEnabled ||
+                    publishLongRunningQueryEvents;
+                if (!retainActiveState)
+                {
+                    operation = new QueryRuntimeOperation(
+                        this,
+                        context,
+                        initialPhase,
+                        publicationClaim: null,
+                        plan: default,
+                        suppressDiagnosticEvents,
+                        detail: null,
+                        registered: false);
+                    operation.MetricsStarted =
+                        _runtimeMetrics?.QueryStarted(context) == true;
+                }
+                else if (_active.ContainsKey(context.OperationId))
                 {
                     // One opaque operation id has exactly one terminal owner.
                     // A duplicate start is not a capacity rejection and must
@@ -837,7 +859,7 @@ internal sealed partial class QueryRuntimeDiagnostics : IDisposable
 
     private void RecordPlanCacheLookup(QueryRuntimeOperation state, bool hit)
     {
-        if (!state.Completed)
+        if (_historyEnabled && !state.Completed)
             state.Plan.RecordPlanCacheLookup(hit);
     }
 
@@ -846,7 +868,7 @@ internal sealed partial class QueryRuntimeDiagnostics : IDisposable
         QueryPlanAccessPathCategory accessPath,
         long? estimatedRows)
     {
-        if (!state.Completed)
+        if (_historyEnabled && !state.Completed)
             state.Plan.RecordAccessPath(accessPath, estimatedRows);
     }
 
@@ -854,7 +876,7 @@ internal sealed partial class QueryRuntimeDiagnostics : IDisposable
         QueryRuntimeOperation state,
         QueryPlanChangeKind change)
     {
-        if (!state.Completed)
+        if (_historyEnabled && !state.Completed)
             state.Plan.RecordPlanChange(change);
     }
 
@@ -863,6 +885,9 @@ internal sealed partial class QueryRuntimeDiagnostics : IDisposable
         SqlTextCaptureMode captureMode,
         string? capturedSqlText)
     {
+        if (!_historyEnabled)
+            return;
+
         QueryDetailState? detail = CreateQueryDetail(
             captureMode,
             capturedSqlText);
@@ -952,9 +977,24 @@ internal sealed partial class QueryRuntimeDiagnostics : IDisposable
         bool isSlow,
         long? recordedAtTimestamp)
     {
+        TimeSpan safeDuration = NonNegative(duration);
+        long safeRowsProduced = Math.Max(0, rowsProduced);
+        long safeRowsAffected = Math.Max(0, rowsAffected);
+        if (!_historyEnabled)
+        {
+            CompleteSignalsOnly(
+                state,
+                registered,
+                outcome,
+                safeDuration,
+                safeRowsProduced,
+                safeRowsAffected,
+                isSlow);
+            return;
+        }
+
         long safeRecordedAtTimestamp =
             recordedAtTimestamp ?? GetTimestampSafely();
-        TimeSpan safeDuration = NonNegative(duration);
         TimeSpan? safeTimeToFirstResult = timeToFirstResult is null
             ? null
             : NonNegative(timeToFirstResult.Value);
@@ -970,8 +1010,8 @@ internal sealed partial class QueryRuntimeDiagnostics : IDisposable
                 ? null
                 : NonNegative(safeDuration - safeTimeToFirstResult.Value),
             outcome,
-            Math.Max(0, rowsProduced),
-            Math.Max(0, rowsAffected),
+            safeRowsProduced,
+            safeRowsAffected,
             error,
             safeRecordedAtTimestamp,
             Plan: default,
@@ -1063,6 +1103,57 @@ internal sealed partial class QueryRuntimeDiagnostics : IDisposable
                 safeDuration,
                 recentState.RowsProduced,
                 recentState.RowsAffected,
+                isSlow);
+        }
+        else
+        {
+            _runtimeMetrics?.QueryAbandoned(metricsStarted);
+        }
+    }
+
+    private void CompleteSignalsOnly(
+        QueryRuntimeOperation state,
+        bool registered,
+        CSharpDbOperationOutcome outcome,
+        TimeSpan duration,
+        long rowsProduced,
+        long rowsAffected,
+        bool isSlow)
+    {
+        bool terminalAccepted = false;
+        bool metricsStarted;
+        lock (_gate)
+        {
+            if (!state.Completed && Volatile.Read(ref _disposed) == 0)
+            {
+                if (registered &&
+                    _active.TryGetValue(
+                        state.Context.OperationId,
+                        out QueryRuntimeOperation? current) &&
+                    ReferenceEquals(current, state))
+                {
+                    _active.Remove(state.Context.OperationId);
+                }
+
+                terminalAccepted = true;
+            }
+
+            state.Completed = true;
+            state.Phase = QueryExecutionPhase.Completed;
+            state.WaitingLease = null;
+            state.Detail = null;
+            metricsStarted = state.TakeMetricsStarted();
+        }
+
+        if (terminalAccepted)
+        {
+            _runtimeMetrics?.QueryCompleted(
+                metricsStarted,
+                state.Context,
+                outcome,
+                duration,
+                rowsProduced,
+                rowsAffected,
                 isSlow);
         }
         else
@@ -1363,7 +1454,8 @@ internal sealed partial class QueryRuntimeDiagnostics : IDisposable
             return started;
         }
 
-        public IQueryPlanRuntimeObserver ExplicitPlanObserver => this;
+        public IQueryPlanRuntimeObserver? ExplicitPlanObserver =>
+            _owner._historyEnabled ? this : null;
 
         public IDisposable EnterScope()
             => CSharpDbOperationScope.Enter(Context, this);

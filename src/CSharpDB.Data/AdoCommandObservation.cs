@@ -139,12 +139,17 @@ internal sealed class AdoCommandObservation : IDisposable
             return null;
         }
 
-        bool runtimeHistoryEnabled = runtimeDiagnosticsState?.IsEnabled == true;
+        bool runtimeHistoryEnabled =
+            runtimeDiagnosticsState?.HistoryEnabled == true;
+        bool runtimeObservationEnabled = runtimeHistoryEnabled ||
+            runtimeDiagnosticsState?.MetricsEnabled == true;
         bool eventBoundaryRequired =
             QueryObservabilitySource.IsBoundaryRequired(options);
         bool traceRequested = CSharpDbActivityOperation.ShouldStart(
             runtimeDiagnosticsState?.TracingEnabled == true);
-        if (!runtimeHistoryEnabled && !eventBoundaryRequired && !traceRequested)
+        if (!runtimeObservationEnabled &&
+            !eventBoundaryRequired &&
+            !traceRequested)
             return null;
 
         IDisposable? boundaryScope = null;
@@ -185,7 +190,12 @@ internal sealed class AdoCommandObservation : IDisposable
             QueryFingerprint? fingerprint = null;
             string? capturedSqlText = null;
 
-            if (!string.IsNullOrWhiteSpace(sql))
+            bool fingerprintRequired = runtimeHistoryEnabled ||
+                publishQueryEvents ||
+                publishSlowQueryEvents ||
+                publishLongRunningQueryEvents ||
+                traceRequested;
+            if (fingerprintRequired && !string.IsNullOrWhiteSpace(sql))
             {
                 try
                 {
@@ -196,7 +206,8 @@ internal sealed class AdoCommandObservation : IDisposable
                         fingerprint = normalized.Fingerprint;
                         if (runtimeHistoryEnabled ||
                             publishQueryEvents ||
-                            publishSlowQueryEvents)
+                            publishSlowQueryEvents ||
+                            publishLongRunningQueryEvents)
                         {
                             capturedSqlText = normalized.NormalizedText;
                         }
@@ -207,7 +218,8 @@ internal sealed class AdoCommandObservation : IDisposable
                         if (logging.SqlText == SqlTextCaptureMode.Raw &&
                             (runtimeHistoryEnabled ||
                              publishQueryEvents ||
-                             publishSlowQueryEvents))
+                             publishSlowQueryEvents ||
+                             publishLongRunningQueryEvents))
                         {
                             capturedSqlText = sql;
                         }
@@ -243,7 +255,7 @@ internal sealed class AdoCommandObservation : IDisposable
                 context = contextState.CreateContext();
             }
 
-            if (runtimeHistoryEnabled)
+            if (runtimeObservationEnabled || publishLongRunningQueryEvents)
             {
                 runtimeOperation = QueryRuntimeDiagnostics
                     .GetOrCreate(runtimeDiagnosticsState!)

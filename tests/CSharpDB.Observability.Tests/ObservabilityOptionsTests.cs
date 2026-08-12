@@ -22,6 +22,7 @@ public sealed class ObservabilityOptionsTests
         Assert.False(options.Prometheus.Enabled);
         Assert.False(options.Prometheus.AllowInsecureRemoteAccess);
         Assert.True(options.Health.Enabled);
+        Assert.True(options.History.Enabled);
     }
 
     [Fact]
@@ -116,11 +117,37 @@ public sealed class ObservabilityOptionsTests
         Assert.Equal("orders-db", roundTrip.OpenTelemetry.Resource.ServiceName);
         Assert.Equal(0.25, roundTrip.OpenTelemetry.SamplingRatio);
         Assert.True(roundTrip.OpenTelemetry.Console.Enabled);
+        Assert.True(roundTrip.History.Enabled);
 
         options.OpenTelemetry.Resource.ServiceInstanceId = @"C:\private\instance";
         Assert.Contains(
             options.GetValidationErrors(),
             error => error.Contains("ServiceInstanceId", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void HistoryEnabled_RoundTripsIndependentlyFromTelemetrySignals()
+    {
+        var options = new CSharpDbObservabilityOptions
+        {
+            Enabled = true,
+            History = new CSharpDbHistoryOptions { Enabled = false },
+            OpenTelemetry = new CSharpDbOpenTelemetryOptions { Enabled = true },
+        };
+
+        options.Validate();
+        string json = System.Text.Json.JsonSerializer.Serialize(
+            options,
+            CSharpDbObservabilityJsonContext.Default.CSharpDbObservabilityOptions);
+        CSharpDbObservabilityOptions roundTrip = Assert.IsType<
+            CSharpDbObservabilityOptions>(
+            System.Text.Json.JsonSerializer.Deserialize(
+                json,
+                CSharpDbObservabilityJsonContext.Default.CSharpDbObservabilityOptions));
+
+        Assert.True(roundTrip.Enabled);
+        Assert.False(roundTrip.History.Enabled);
+        Assert.True(roundTrip.OpenTelemetry.Enabled);
     }
 
     [Fact]

@@ -40,6 +40,7 @@ internal sealed partial class CSharpDbRuntimeDiagnosticsState : IDisposable
         _identity = identity;
         _counterEpoch = identity.CounterEpoch;
         IsEnabled = snapshot.Enabled;
+        HistoryEnabled = snapshot.Enabled && snapshot.History.Enabled;
         TracingEnabled = snapshot.Enabled && snapshot.OpenTelemetry.Enabled;
         MetricsEnabled = snapshot.Enabled &&
             (snapshot.OpenTelemetry.Enabled || snapshot.Prometheus.Enabled);
@@ -62,6 +63,7 @@ internal sealed partial class CSharpDbRuntimeDiagnosticsState : IDisposable
     internal string ServerInstanceId => _identity.ServerInstanceId;
     internal TimeProvider TimeProvider => _identity.TimeProvider;
     internal bool IsEnabled { get; }
+    internal bool HistoryEnabled { get; }
     internal bool TracingEnabled { get; }
     internal bool MetricsEnabled { get; }
     internal string DatabaseAlias { get; }

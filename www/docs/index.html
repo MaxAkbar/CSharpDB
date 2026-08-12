@@ -6,10 +6,10 @@
     <link rel="stylesheet" href="../css/style.css">
     <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
     <title>Documentation — CSharpDB</title>
-    <meta name="description" content="CSharpDB documentation hub — reference guides, runnable samples, guided tutorials, storage engine docs, database modes, ETL pipelines, and ecosystem tools.">
+    <meta name="description" content="CSharpDB documentation hub — reference guides, runnable samples, observability and operations, storage engine docs, database modes, ETL pipelines, and ecosystem tools.">
     <link rel="canonical" href="https://csharpdb.com/docs/">
     <meta property="og:title" content="Documentation — CSharpDB">
-    <meta property="og:description" content="CSharpDB documentation hub — reference guides, runnable samples, guided tutorials, storage engine docs, database modes, ETL pipelines, and ecosystem tools.">
+    <meta property="og:description" content="CSharpDB documentation hub — reference guides, runnable samples, observability and operations, storage engine docs, database modes, ETL pipelines, and ecosystem tools.">
     <meta property="og:url" content="https://csharpdb.com/docs/">
     <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
     <link rel="icon" type="image/png" href="../favicon.png">
@@ -18,7 +18,7 @@
         "@context": "https://schema.org",
         "@type": "TechArticle",
         "name": "Documentation",
-        "description": "CSharpDB documentation hub — reference guides, runnable samples, guided tutorials, storage engine docs, database modes, ETL pipelines, and ecosystem tools.",
+        "description": "CSharpDB documentation hub — reference guides, runnable samples, observability and operations, storage engine docs, database modes, ETL pipelines, and ecosystem tools.",
         "url": "https://csharpdb.com/docs/",
         "isPartOf": {
             "@type": "WebSite",
@@ -33,8 +33,8 @@
         window.currentPage = 'docs'; window.pagePathPrefix = '../';
         window.pageConfig = {
             title: 'Documentation',
-            description: 'CSharpDB documentation hub \u2014 reference guides, runnable samples, guided tutorials, storage engine docs, database modes, ETL pipelines, and ecosystem tools.',
-            keywords: 'CSharpDB documentation, database docs, SQL guide, Collection API docs, tutorials, samples',
+            description: 'CSharpDB documentation hub \u2014 reference guides, runnable samples, observability and operations, storage engine docs, database modes, ETL pipelines, and ecosystem tools.',
+            keywords: 'CSharpDB documentation, database docs, observability, OpenTelemetry, Prometheus, SQL guide, Collection API docs, tutorials, samples',
             canonicalPath: 'docs/',
             ogType: 'article',
         };
@@ -140,6 +140,13 @@
                         </div>
                         <h3>Configuration</h3>
                         <p>Connection strings, storage modes, daemon settings, Admin hosting, CLI flags, and environment variables.</p>
+                    </a>
+                    <a href="observability.html" class="hub-card">
+                        <div class="hub-icon">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l2-7 4 14 2-7h6"/><circle cx="19" cy="5" r="2"/></svg>
+                        </div>
+                        <h3>Observability and Diagnostics</h3>
+                        <p>ILogger events, runtime snapshots, OpenTelemetry/OTLP, Prometheus, health probes, Admin, privacy, and troubleshooting.</p>
                     </a>
                     <a href="api-level-sharding.html" class="hub-card">
                         <div class="hub-icon">

@@ -60,6 +60,31 @@ public sealed class ActivityTracingTests
     }
 
     [Fact]
+    public void SampledTracing_HistoryDisabled_EmitsActivityWithoutRetainingHistory()
+    {
+        CSharpDbObservabilityOptions options = CreateObservabilityOptions();
+        options.History.Enabled = false;
+        using var activities = new ActivityRecorder();
+        using var state = new CSharpDbRuntimeDiagnosticsState(options);
+        using var diagnostics = new QueryObservability(
+            state,
+            startLongRunningSweepTimer: false);
+        Assert.Null(MaintenanceRuntimeDiagnostics.GetOrCreate(state));
+
+        QueryOperation operation = Assert.IsType<QueryOperation>(
+            diagnostics.Start("SELECT 'history-disabled-trace-canary'"));
+        Assert.Empty(diagnostics.GetActiveSnapshot(8).Records);
+
+        operation.OnCompleted(new QueryResultCompletion(
+            QueryResultCompletionReason.Exhausted,
+            RowsProduced: 1));
+
+        Assert.Single(activities.Stopped(CSharpDbActivityNames.Query));
+        Assert.Empty(diagnostics.GetRecentSnapshot(8).Records);
+        Assert.Equal(0, diagnostics.GetSummary().RequestCount);
+    }
+
+    [Fact]
     public async Task LazyQueryExhaustion_RestoresTheReentryParentInsteadOfStoppedCreationParent()
     {
         using var activities = new ActivityRecorder();

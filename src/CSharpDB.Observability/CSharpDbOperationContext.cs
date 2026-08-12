@@ -249,9 +249,33 @@ public sealed record CSharpDbOperationContext
         TimeProvider timeProvider,
         DateTimeOffset startedAtUtc,
         long startingTimestamp)
+        => CreateCapturedRoot(
+            operationId,
+            CSharpDbOperationClass.Query,
+            transport,
+            databaseAlias,
+            queryFingerprint,
+            timeProvider,
+            startedAtUtc,
+            startingTimestamp);
+
+    internal static CSharpDbOperationContext CreateCapturedRoot(
+        OpaqueDiagnosticsId operationId,
+        CSharpDbOperationClass operationClass,
+        CSharpDbTransport transport,
+        string databaseAlias,
+        QueryFingerprint? queryFingerprint,
+        TimeProvider timeProvider,
+        DateTimeOffset startedAtUtc,
+        long startingTimestamp)
     {
         ArgumentNullException.ThrowIfNull(operationId);
         ArgumentNullException.ThrowIfNull(timeProvider);
+        if (operationClass == CSharpDbOperationClass.Unknown ||
+            !Enum.IsDefined(operationClass))
+        {
+            throw new ArgumentOutOfRangeException(nameof(operationClass));
+        }
         if (transport == CSharpDbTransport.Unknown || !Enum.IsDefined(transport))
             throw new ArgumentOutOfRangeException(nameof(transport));
         if (!CSharpDbObservabilityOptions.IsValidDatabaseAlias(databaseAlias))
@@ -260,7 +284,7 @@ public sealed record CSharpDbOperationContext
         return new CSharpDbOperationContext(
             operationId,
             parentOperationId: null,
-            CSharpDbOperationClass.Query,
+            operationClass,
             CSharpDbOperationRole.Root,
             startedAtUtc,
             startingTimestamp,

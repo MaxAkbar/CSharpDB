@@ -384,6 +384,13 @@ public sealed class CSharpDbLoggingOptions
 
 public sealed class CSharpDbHistoryOptions
 {
+    /// <summary>
+    /// Enables bounded active/recent runtime history. Metrics, tracing, and
+    /// structured diagnostic events remain independently controlled by their
+    /// respective options.
+    /// </summary>
+    public bool Enabled { get; set; } = true;
+
     public int ActiveQueryCapacity { get; set; } = 1_000;
     public int RecentQueryCapacity { get; set; } = 500;
     public int RecentOperationCapacity { get; set; } = 100;

@@ -1,0 +1,13 @@
+@baseUrl = http://localhost:5099
+
+### Generate one traced, metered, and structured-log database operation
+GET {{baseUrl}}/work
+
+### Process liveness
+GET {{baseUrl}}/health/live
+
+### Cached database readiness
+GET {{baseUrl}}/health/ready
+
+### Loopback-only Prometheus scrape
+GET {{baseUrl}}/metrics

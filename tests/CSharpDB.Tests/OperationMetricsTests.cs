@@ -80,6 +80,43 @@ public sealed class OperationMetricsTests
             (CSharpDbMetricTagNames.Outcome, "succeeded"),
             (CSharpDbMetricTagNames.Transport, "embedded"),
             (CSharpDbMetricTagNames.DatabaseAlias, "query-metrics-exact"));
+        Assert.Single(diagnostics.GetRecentSnapshot(8).Records);
+    }
+
+    [Fact]
+    public void MetricsOnly_HistoryDisabled_EmitsOneTerminalWithoutRetainingQueryState()
+    {
+        CSharpDbObservabilityOptions options = CreateMetricsOptions(
+            "query-metrics-no-history");
+        options.History.Enabled = false;
+        using var recorder = new MetricRecorder();
+        using var state = new CSharpDbRuntimeDiagnosticsState(options);
+        using var diagnostics = new QueryObservability(
+            state,
+            startLongRunningSweepTimer: false);
+        Assert.Null(MaintenanceRuntimeDiagnostics.GetOrCreate(state));
+
+        QueryOperation operation = Assert.IsType<QueryOperation>(
+            diagnostics.Start("SELECT 'history-disabled-metrics-canary'"));
+        Assert.True(operation.HasRuntimeOperationForTest);
+        Assert.Empty(diagnostics.GetActiveSnapshot(8).Records);
+
+        operation.OnCompleted(new QueryResultCompletion(
+            QueryResultCompletionReason.Exhausted,
+            RowsProduced: 3));
+        operation.Fail(new InvalidOperationException("must-not-complete-twice"));
+
+        Assert.Single(recorder.LongEvents(CSharpDbMetricInstrumentNames.Requests));
+        Assert.Single(recorder.LongEvents(CSharpDbMetricInstrumentNames.Statements));
+        Assert.Single(recorder.LongEvents(CSharpDbMetricInstrumentNames.RowsProduced));
+        Assert.Single(recorder.DoubleEvents(
+            CSharpDbMetricInstrumentNames.QueryDuration));
+        Assert.Empty(diagnostics.GetActiveSnapshot(8).Records);
+        Assert.Empty(diagnostics.GetRecentSnapshot(8).Records);
+        Assert.Equal(0, diagnostics.GetSummary().RequestCount);
+        Assert.Equal(0, diagnostics.GetSummary().StatementExecutionCount);
+        Assert.Null(diagnostics.GetPlanSnapshot(
+            OpaqueDiagnosticsId.Create(Guid.NewGuid())));
     }
 
     [Fact]
