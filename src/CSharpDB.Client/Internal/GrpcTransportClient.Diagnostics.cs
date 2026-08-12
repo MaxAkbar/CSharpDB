@@ -195,6 +195,13 @@ internal sealed partial class GrpcTransportClient
             // Do not retain that remote text in the public safe exception.
             throw new CSharpDbObservabilityNotSupportedException();
         }
+        catch (RpcException ex) when (
+            ex.StatusCode is StatusCode.Unauthenticated or
+            StatusCode.PermissionDenied)
+        {
+            // Do not retain the server-controlled status detail or trailers.
+            throw new CSharpDbObservabilityAccessDeniedException();
+        }
         catch (RpcException ex)
         {
             throw TranslateRpcException(ex);

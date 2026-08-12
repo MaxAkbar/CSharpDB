@@ -1,8 +1,12 @@
+using System.Reflection;
 using CSharpDB.Admin.Configuration;
+using CSharpDB.Admin.Services;
 using CSharpDB.Client;
 using CSharpDB.Engine;
 using CSharpDB.Primitives;
+using CSharpDB.Observability;
 using Microsoft.Extensions.Configuration;
+using CSharpDbTransport = CSharpDB.Client.CSharpDbTransport;
 
 namespace CSharpDB.Admin.Forms.Tests.Admin;
 
@@ -164,6 +168,84 @@ public sealed class AdminClientOptionsBuilderTests
         Assert.Null(options.DirectDatabaseOptions);
     }
 
+    [Fact]
+    public async Task InternalDirectBuild_AttachesAndPreservesValidatedObservabilityOptions()
+    {
+        IConfiguration configuration = CreateConfiguration(new Dictionary<string, string?>
+        {
+            ["ConnectionStrings:CSharpDB"] = "Data Source=admin.db",
+        });
+        AdminHostDatabaseOptions hostOptions = new();
+        var observability = new CSharpDbObservabilityOptions
+        {
+            Enabled = true,
+            DatabaseAlias = "admin",
+            Logging = new CSharpDbLoggingOptions { SqlText = SqlTextCaptureMode.None },
+            History = new CSharpDbHistoryOptions
+            {
+                ActiveQueryCapacity = 100,
+                RecentQueryCapacity = 100,
+                RecentOperationCapacity = 100,
+                Retention = TimeSpan.FromMinutes(15),
+            },
+        };
+        observability.Validate();
+
+        CSharpDbClientOptions initial = AdminClientOptionsBuilder.Build(
+            configuration,
+            hostOptions,
+            CSharpDbTransport.Direct,
+            endpoint: null,
+            functions: null,
+            observability);
+        CSharpDbClientOptions switched = AdminClientOptionsBuilder.BuildDirectDataSource(
+            @"C:\data\switched.db",
+            hostOptions,
+            functions: null,
+            observability);
+
+        Assert.Same(observability, initial.DirectDatabaseOptions!.ObservabilityOptions);
+        Assert.Same(observability, switched.DirectDatabaseOptions!.ObservabilityOptions);
+        Assert.True(switched.DirectDatabaseOptions.ObservabilityOptions!.Enabled);
+        Assert.Equal(SqlTextCaptureMode.None, switched.DirectDatabaseOptions.ObservabilityOptions.Logging.SqlText);
+
+        ICSharpDbClient client = DispatchProxy.Create<ICSharpDbClient, NoOpClientProxy>();
+        await using var holder = new DatabaseClientHolder(
+            client,
+            shardAdmin: null,
+            baseClientOptions: initial,
+            hostOptions,
+            DbFunctionRegistry.Empty);
+        CSharpDbClientOptions holderSwitch = holder.BuildSwitchClientOptions(@"C:\data\holder-switched.db");
+        Assert.Same(observability, holderSwitch.DirectDatabaseOptions!.ObservabilityOptions);
+    }
+
+    [Fact]
+    public void ExistingPublicBuilderAndHolderSignaturesRemainExact()
+    {
+        Type builder = typeof(AdminClientOptionsBuilder);
+        Assert.NotNull(builder.GetMethod(
+            nameof(AdminClientOptionsBuilder.Build),
+            BindingFlags.Public | BindingFlags.Static,
+            binder: null,
+            [typeof(IConfiguration), typeof(AdminHostDatabaseOptions), typeof(CSharpDbTransport?), typeof(string), typeof(DbFunctionRegistry)],
+            modifiers: null));
+        Assert.NotNull(builder.GetMethod(
+            nameof(AdminClientOptionsBuilder.BuildDirectDataSource),
+            BindingFlags.Public | BindingFlags.Static,
+            binder: null,
+            [typeof(string), typeof(AdminHostDatabaseOptions), typeof(DbFunctionRegistry)],
+            modifiers: null));
+        Assert.NotNull(builder.GetMethod(
+            nameof(AdminClientOptionsBuilder.BuildDirectDatabaseOptions),
+            BindingFlags.Public | BindingFlags.Static,
+            binder: null,
+            [typeof(AdminHostDatabaseOptions), typeof(DbFunctionRegistry)],
+            modifiers: null));
+        Assert.NotNull(typeof(DatabaseClientHolder).GetConstructor(
+            [typeof(ICSharpDbClient), typeof(ICSharpDbShardAdminClient), typeof(CSharpDbClientOptions), typeof(AdminHostDatabaseOptions), typeof(DbFunctionRegistry)]));
+    }
+
     private static IConfiguration CreateConfiguration(Dictionary<string, string?> values)
         => new ConfigurationBuilder()
             .AddInMemoryCollection(values)
@@ -176,4 +258,17 @@ public sealed class AdminClientOptionsBuilderTests
                 1,
                 new DbScalarFunctionOptions(DbType.Integer),
                 static (_, args) => DbValue.FromInteger(args[0].AsInteger + 1)));
+
+    public class NoOpClientProxy : DispatchProxy
+    {
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+        {
+            ArgumentNullException.ThrowIfNull(targetMethod);
+            if (targetMethod.Name == "get_DataSource")
+                return "test";
+            if (targetMethod.Name == nameof(IAsyncDisposable.DisposeAsync))
+                return ValueTask.CompletedTask;
+            throw new NotSupportedException(targetMethod.Name);
+        }
+    }
 }

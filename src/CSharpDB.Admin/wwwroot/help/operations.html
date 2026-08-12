@@ -25,11 +25,21 @@
         <main class="content">
             <div class="content-inner">
                 <div class="eyebrow">Operations</div>
-                <h1>Inspect, Maintain, Import, and Export</h1>
-                <p class="lead">Studio includes operational surfaces for storage diagnostics, table archive import/export, external tables, pipelines, procedures, and host callback readiness.</p>
+                <h1>Observe, Inspect, Maintain, Import, and Export</h1>
+                <p class="lead">Studio includes a live Observability workspace alongside explicit storage inspection, table archive import/export, external tables, pipelines, procedures, and host callback readiness.</p>
+
+                <h2>Observability</h2>
+                <p>The Observability tab uses the connected server's optional runtime-diagnostics capability. It works with supported direct, HTTP, gRPC, and sharded connections without reading database files from the browser.</p>
+                <ul>
+                    <li>Use the overview for health, query activity, sessions, transactions, signed WAL change, checkpoint age, and current maintenance.</li>
+                    <li>Polling runs only while the tab is active. You can pause it, choose a refresh interval, or refresh manually.</li>
+                    <li>Short charts are bounded local samples. They reset after a server restart or counter reset and are not a telemetry archive.</li>
+                    <li>Ordinary views never show SQL text or database paths. Query text is fetched only by an explicit, separately authorized reveal action.</li>
+                    <li>The tab labels unsupported, denied, unavailable, stale, and truncated data instead of substituting zeroes.</li>
+                </ul>
 
                 <h2>Storage Inspector</h2>
-                <p>The Storage tab shows low-level database health and maintenance information. Use it when diagnosing file size, WAL behavior, page distribution, index health, or maintenance actions.</p>
+                <p>The Storage tab performs deeper physical inspection and can expose server-local paths. Open it deliberately when diagnosing file size, WAL layout, page distribution, index health, or maintenance actions; use Observability for lightweight live runtime status.</p>
                 <div class="screen">
                     <img src="images/storage-tab.png" alt="Storage inspector diagnostics">
                     <p class="caption">Storage Inspector shows database header values, WAL state, page usage, fragmentation, integrity findings, and maintenance controls.</p>

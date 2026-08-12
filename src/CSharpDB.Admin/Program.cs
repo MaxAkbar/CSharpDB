@@ -19,12 +19,22 @@ builder.Services.AddSingleton(sp =>
 builder.Services.AddSingleton(AdminHostCallbacks.CreateFunctionRegistry());
 builder.Services.AddSingleton(AdminHostCallbacks.CreateCommandRegistry());
 builder.Services.AddSingleton(AdminHostCallbacks.CreatePolicy());
+builder.Services.AddSingleton(sp =>
+{
+    CSharpDB.Observability.CSharpDbObservabilityOptions options = sp
+        .GetRequiredService<IConfiguration>()
+        .GetSection(CSharpDB.Observability.CSharpDbObservabilityOptions.ConfigurationSectionName)
+        .Get<CSharpDB.Observability.CSharpDbObservabilityOptions>() ?? new();
+    options.Validate();
+    return options;
+});
 builder.Services.AddSingleton<DatabaseClientHolder>(sp =>
 {
     var configuration = sp.GetRequiredService<IConfiguration>();
     var hostDatabaseOptions = sp.GetRequiredService<AdminHostDatabaseOptions>();
     var functions = sp.GetRequiredService<DbFunctionRegistry>();
     var readiness = sp.GetRequiredService<AdminHostReadinessService>();
+    var observability = sp.GetRequiredService<CSharpDB.Observability.CSharpDbObservabilityOptions>();
     string? endpoint = configuration["CSharpDB:Endpoint"];
     CSharpDbTransport? transport = ParseTransport(configuration["CSharpDB:Transport"]);
 
@@ -33,36 +43,35 @@ builder.Services.AddSingleton<DatabaseClientHolder>(sp =>
         hostDatabaseOptions,
         transport,
         endpoint,
-        functions);
+        functions,
+        observability);
 
     if (CSharpDbShardedClient.TryCreateFromMasterCatalog(options) is { } shardedClient)
-        return new DatabaseClientHolder(shardedClient, shardedClient, null, hostDatabaseOptions, functions, readiness);
+        return new DatabaseClientHolder(shardedClient, shardedClient, null, hostDatabaseOptions, functions, readiness, observability);
 
     ICSharpDbClient client = CSharpDbClient.Create(options);
     ICSharpDbShardAdminClient? shardAdmin = TryCreateShardAdmin(options);
-    return new DatabaseClientHolder(client, shardAdmin, options, hostDatabaseOptions, functions, readiness);
+    return new DatabaseClientHolder(client, shardAdmin, options, hostDatabaseOptions, functions, readiness, observability);
 });
 builder.Services.AddSingleton<ICSharpDbClient>(sp => sp.GetRequiredService<DatabaseClientHolder>());
+builder.Services.AddSingleton<ICSharpDbObservabilityClient>(sp => sp.GetRequiredService<DatabaseClientHolder>());
 builder.Services.AddSingleton<ICSharpDbShardAdminClient>(sp => sp.GetRequiredService<DatabaseClientHolder>());
 builder.Services.AddSingleton<ICSharpDbShardDirectoryClient>(sp => sp.GetRequiredService<DatabaseClientHolder>());
 builder.Services.AddSingleton(sp =>
-{
-    CSharpDB.Observability.CSharpDbHealthOptions options = sp
-        .GetRequiredService<IConfiguration>()
-        .GetSection(
-            CSharpDB.Observability.CSharpDbObservabilityOptions.ConfigurationSectionName +
-            ":Health")
-        .Get<CSharpDB.Observability.CSharpDbHealthOptions>() ?? new();
-    new CSharpDB.Observability.CSharpDbObservabilityOptions
-    {
-        Health = options,
-    }.Validate();
-    return options;
-});
+    sp.GetRequiredService<CSharpDB.Observability.CSharpDbObservabilityOptions>().Health);
 builder.Services.AddSingleton<CSharpDB.Observability.CSharpDbHostState>();
 builder.Services.AddSingleton<AdminHostReadinessService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AdminHostReadinessService>());
 builder.Services.AddScoped<TabManagerService>();
+builder.Services.AddSingleton(sp =>
+{
+    var options = sp.GetRequiredService<IConfiguration>()
+        .GetSection(AdminObservabilityOptions.ConfigurationSectionName)
+        .Get<AdminObservabilityOptions>() ?? new AdminObservabilityOptions();
+    options.Validate();
+    return options;
+});
+builder.Services.AddScoped<AdminObservabilityService>();
 builder.Services.AddScoped<ThemeService>();
 builder.Services.AddScoped<ToastService>();
 builder.Services.AddScoped<ModalService>();

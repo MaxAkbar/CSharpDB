@@ -1,19 +1,23 @@
 @inject ToastService ToastService
+@inject TabManagerService TabManager
 @implements IDisposable
 
-<div class="toast-container">
-    @foreach (var toast in ToastService.Toasts)
-    {
-        var level = toast.Level.ToString().ToLowerInvariant();
-        <div class="toast @level">
-            <i class="bi @GetIcon(toast.Level)"></i>
-            <span class="toast-msg">@toast.Message</span>
-            <button class="toast-dismiss" @onclick="() => ToastService.Dismiss(toast.Id)">
-                <i class="bi bi-x"></i>
-            </button>
-        </div>
-    }
-</div>
+@if (TabManager.ActiveTab?.Kind != TabKind.Observability)
+{
+    <div class="toast-container">
+        @foreach (var toast in ToastService.Toasts)
+        {
+            var level = toast.Level.ToString().ToLowerInvariant();
+            <div class="toast @level">
+                <i class="bi @GetIcon(toast.Level)"></i>
+                <span class="toast-msg">@toast.Message</span>
+                <button class="toast-dismiss" @onclick="() => ToastService.Dismiss(toast.Id)">
+                    <i class="bi bi-x"></i>
+                </button>
+            </div>
+        }
+    </div>
+}
 
 @code {
     private readonly Dictionary<string, Timer> _timers = new();
@@ -21,7 +25,10 @@
     protected override void OnInitialized()
     {
         ToastService.OnChange += OnChange;
+        TabManager.StateChanged += OnTabChanged;
     }
+
+    private void OnTabChanged() => InvokeAsync(StateHasChanged);
 
     private void OnChange()
     {
@@ -67,6 +74,7 @@
     public void Dispose()
     {
         ToastService.OnChange -= OnChange;
+        TabManager.StateChanged -= OnTabChanged;
         foreach (var timer in _timers.Values)
             timer.Dispose();
         _timers.Clear();

@@ -1,7 +1,9 @@
 @inject ModalService ModalService
+@inject TabManagerService TabManager
 @implements IDisposable
 
-@if (ModalService.IsVisible && ModalService.Current is not null)
+@if (TabManager.ActiveTab?.Kind != TabKind.Observability &&
+     ModalService.IsVisible && ModalService.Current is not null)
 {
     <div class="modal-overlay" @onclick="Cancel">
         <div class="modal" @onclick:stopPropagation="true">
@@ -40,6 +42,7 @@
     protected override void OnInitialized()
     {
         ModalService.OnChange += OnChange;
+        TabManager.StateChanged += OnTabChanged;
     }
 
     private void Confirm()
@@ -64,10 +67,32 @@
 
     private void OnChange()
     {
-        if (ModalService.Current?.ShowInput == true)
+        if (TabManager.ActiveTab?.Kind == TabKind.Observability && ModalService.IsVisible)
+        {
+            _inputValue = string.Empty;
+            ModalService.Cancel();
+            return;
+        }
+
+        if (ModalService.Current is null)
+            _inputValue = string.Empty;
+        else if (ModalService.Current.ShowInput)
             _inputValue = ModalService.Current.InputValue;
         InvokeAsync(StateHasChanged);
     }
 
-    public void Dispose() => ModalService.OnChange -= OnChange;
+    private void OnTabChanged()
+    {
+        if (TabManager.ActiveTab?.Kind == TabKind.Observability && ModalService.IsVisible)
+        {
+            _inputValue = string.Empty;
+            ModalService.Cancel();
+        }
+    }
+
+    public void Dispose()
+    {
+        ModalService.OnChange -= OnChange;
+        TabManager.StateChanged -= OnTabChanged;
+    }
 }

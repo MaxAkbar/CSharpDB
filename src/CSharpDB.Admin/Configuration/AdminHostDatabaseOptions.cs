@@ -2,6 +2,7 @@ using CSharpDB.Client;
 using CSharpDB.Engine;
 using CSharpDB.Primitives;
 using Microsoft.Extensions.Configuration;
+using CSharpDbObservabilityOptions = CSharpDB.Observability.CSharpDbObservabilityOptions;
 
 namespace CSharpDB.Admin.Configuration;
 
@@ -52,6 +53,21 @@ public static class AdminClientOptionsBuilder
         CSharpDbTransport? transport,
         string? endpoint,
         DbFunctionRegistry? functions = null)
+        => Build(
+            configuration,
+            hostDatabaseOptions,
+            transport,
+            endpoint,
+            functions,
+            observabilityOptions: null);
+
+    internal static CSharpDbClientOptions Build(
+        IConfiguration configuration,
+        AdminHostDatabaseOptions hostDatabaseOptions,
+        CSharpDbTransport? transport,
+        string? endpoint,
+        DbFunctionRegistry? functions,
+        CSharpDbObservabilityOptions? observabilityOptions)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(hostDatabaseOptions);
@@ -60,7 +76,7 @@ public static class AdminClientOptionsBuilder
         {
             if (transport == CSharpDbTransport.Direct || (transport is null && EndpointLooksLikeDirectPath(endpoint)))
             {
-                return BuildDirectEndpoint(endpoint, hostDatabaseOptions, transport, functions);
+                return BuildDirectEndpoint(endpoint, hostDatabaseOptions, transport, functions, observabilityOptions);
             }
 
             return new CSharpDbClientOptions
@@ -82,13 +98,25 @@ public static class AdminClientOptionsBuilder
             configuration.GetConnectionString("CSharpDB") ?? FallbackConnectionString,
             hostDatabaseOptions,
             transport,
-            functions);
+            functions,
+            observabilityOptions);
     }
 
     public static CSharpDbClientOptions BuildDirectDataSource(
         string dataSource,
         AdminHostDatabaseOptions hostDatabaseOptions,
         DbFunctionRegistry? functions = null)
+        => BuildDirectDataSource(
+            dataSource,
+            hostDatabaseOptions,
+            functions,
+            observabilityOptions: null);
+
+    internal static CSharpDbClientOptions BuildDirectDataSource(
+        string dataSource,
+        AdminHostDatabaseOptions hostDatabaseOptions,
+        DbFunctionRegistry? functions,
+        CSharpDbObservabilityOptions? observabilityOptions)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(dataSource);
         ArgumentNullException.ThrowIfNull(hostDatabaseOptions);
@@ -97,7 +125,7 @@ public static class AdminClientOptionsBuilder
         {
             Transport = CSharpDbTransport.Direct,
             DataSource = dataSource,
-            DirectDatabaseOptions = BuildDirectDatabaseOptions(hostDatabaseOptions, functions),
+            DirectDatabaseOptions = BuildDirectDatabaseOptions(hostDatabaseOptions, functions, observabilityOptions),
             HybridDatabaseOptions = BuildHybridDatabaseOptionsOrNull(hostDatabaseOptions),
         };
     }
@@ -105,6 +133,15 @@ public static class AdminClientOptionsBuilder
     public static DatabaseOptions BuildDirectDatabaseOptions(
         AdminHostDatabaseOptions hostDatabaseOptions,
         DbFunctionRegistry? functions = null)
+        => BuildDirectDatabaseOptions(
+            hostDatabaseOptions,
+            functions,
+            observabilityOptions: null);
+
+    internal static DatabaseOptions BuildDirectDatabaseOptions(
+        AdminHostDatabaseOptions hostDatabaseOptions,
+        DbFunctionRegistry? functions,
+        CSharpDbObservabilityOptions? observabilityOptions)
     {
         ArgumentNullException.ThrowIfNull(hostDatabaseOptions);
 
@@ -112,6 +149,7 @@ public static class AdminClientOptionsBuilder
         {
             Functions = functions ?? DbFunctionRegistry.Empty,
             ImplicitInsertExecutionMode = hostDatabaseOptions.ImplicitInsertExecutionMode,
+            ObservabilityOptions = observabilityOptions,
         };
 
         if (!hostDatabaseOptions.UseWriteOptimizedPreset)
@@ -139,13 +177,14 @@ public static class AdminClientOptionsBuilder
         string connectionString,
         AdminHostDatabaseOptions hostDatabaseOptions,
         CSharpDbTransport? transport,
-        DbFunctionRegistry? functions)
+        DbFunctionRegistry? functions,
+        CSharpDbObservabilityOptions? observabilityOptions)
     {
         return new CSharpDbClientOptions
         {
             Transport = transport,
             ConnectionString = connectionString,
-            DirectDatabaseOptions = BuildDirectDatabaseOptions(hostDatabaseOptions, functions),
+            DirectDatabaseOptions = BuildDirectDatabaseOptions(hostDatabaseOptions, functions, observabilityOptions),
             HybridDatabaseOptions = BuildHybridDatabaseOptionsOrNull(hostDatabaseOptions),
         };
     }
@@ -154,13 +193,14 @@ public static class AdminClientOptionsBuilder
         string endpoint,
         AdminHostDatabaseOptions hostDatabaseOptions,
         CSharpDbTransport? transport,
-        DbFunctionRegistry? functions)
+        DbFunctionRegistry? functions,
+        CSharpDbObservabilityOptions? observabilityOptions)
     {
         return new CSharpDbClientOptions
         {
             Transport = transport,
             Endpoint = endpoint,
-            DirectDatabaseOptions = BuildDirectDatabaseOptions(hostDatabaseOptions, functions),
+            DirectDatabaseOptions = BuildDirectDatabaseOptions(hostDatabaseOptions, functions, observabilityOptions),
             HybridDatabaseOptions = BuildHybridDatabaseOptionsOrNull(hostDatabaseOptions),
         };
     }

@@ -728,6 +728,47 @@ window.designerInterop = {
     }
 };
 
+// Tablist key handling. Blazor receives the event and performs activation;
+// this listener suppresses browser scrolling/default button behavior only for
+// keys owned by the ARIA tab pattern. Tab and Shift+Tab remain untouched.
+window.adminTabInterop = {
+    _registrations: new Map(),
+
+    register: (tabListId) => {
+        const tabList = document.getElementById(tabListId);
+        if (!tabList) return;
+
+        const existing = window.adminTabInterop._registrations.get(tabListId);
+        if (existing?.element === tabList) return;
+        window.adminTabInterop.unregister(tabListId);
+
+        const handler = (event) => {
+            if (!(event.target instanceof Element) || !event.target.closest('[role="tab"]')) return;
+
+            if (event.key === 'ArrowLeft' ||
+                event.key === 'ArrowRight' ||
+                event.key === 'Home' ||
+                event.key === 'End' ||
+                event.key === 'Delete' ||
+                event.key === ' ' ||
+                event.key === 'Spacebar') {
+                event.preventDefault();
+            }
+        };
+
+        tabList.addEventListener('keydown', handler);
+        window.adminTabInterop._registrations.set(tabListId, { element: tabList, handler });
+    },
+
+    unregister: (tabListId) => {
+        const registration = window.adminTabInterop._registrations.get(tabListId);
+        if (!registration) return;
+
+        registration.element.removeEventListener('keydown', registration.handler);
+        window.adminTabInterop._registrations.delete(tabListId);
+    }
+};
+
 // SQL editor scroll sync
 window.editorInterop = {
     _editors: new Map(),

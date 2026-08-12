@@ -1281,46 +1281,96 @@ release qualification remains Phase 7 work.
 
 ## Phase 6: Admin Metrics And Diagnostics UI
 
-Status: `Not started`
+Status: `Complete` (2026-08-12)
 
 Goal: give operators a focused Admin workspace for live metrics and diagnostic
 drill-down without requiring direct process access.
 
+Current implementation checkpoint (2026-08-12):
+
+- Admin has one deduplicated Observability workspace reachable from navigation,
+  the command palette, and the tab manager. The same component consumes only
+  `ICSharpDbObservabilityClient`; `DatabaseClientHolder` preserves that
+  capability across direct, HTTP, gRPC, and sharded clients and invalidates the
+  view immediately when a database is replaced.
+- The active-tab-only controller performs one serialized, bounded six-call
+  refresh cycle. Pause, manual refresh, interval and stale-state controls,
+  cancellation, non-cooperative late-result rejection, database/scope changes,
+  and component disposal cannot queue overlapping work or republish stale
+  sensitive state. Samples are fixed-capacity and reset on server identity,
+  counter epoch, scope, database, or monotonic-counter regression.
+- Overview, query, session, storage/WAL, maintenance, and aggregate/per-shard
+  panels preserve every diagnostics availability state. Query plan and raw
+  detail are separate authorized requests; ordinary polling never performs a
+  deep storage scan or retrieves SQL. Only a raw, non-truncated explicit reveal
+  can create an `EXPLAIN ESTIMATE` editor draft, and the draft is never executed
+  automatically.
+- HTTP `401/403` and gRPC `Unauthenticated/PermissionDenied` diagnostics
+  failures project to the fixed-message
+  `CSharpDbObservabilityAccessDeniedException`. Remote bodies, gRPC details,
+  SQL, values, paths, and exception messages are not rendered as ordinary
+  observability state. Sharded children preserve `Denied` independently.
+- The full shell uses collision-free tab/panel identifiers, keyboard tablist
+  navigation, labeled regions/tables/charts, status text, and responsive
+  stacking. Observability activation clears or suppresses path-bearing shell
+  identity, toasts, modals, palette results, and previously revealed detail.
+
+Completion ruling and qualification:
+
+- The strict Release solution build passed with `0` warnings and `0` errors;
+  the full Admin Forms suite passed `483/483`. The unchanged transport slice
+  also retained full API `184/184`, daemon `232/232`, and focused core/sharded
+  diagnostics qualification after the access-denied contract was added.
+- A real in-app browser pass exercised the running Admin host at desktop
+  (`1280x720`), tablet (`900x800`), and narrow (`390x844`) viewports. It verified
+  tab/tabpanel relationships, keyboard arrow navigation, no duplicate or
+  broken ID references, bounded high-volume rendering, responsive layouts with
+  no page overflow, empty/unavailable states, no console errors, and a
+  full-shell privacy scan containing no database filename, drive path, SQL, or
+  secret. A prerender-disposal interop defect found by this pass was fixed and
+  the open/close/shutdown flow replayed cleanly.
+- `Publish-CSharpDbAdminStorePackage.ps1 -Version 4.5.1 -OutputRoot
+  artifacts\phase6-admin-store -SkipSigning` successfully produced both the
+  unsigned `win-x64` MSIX and Store upload wrapper and verified the staged
+  desktop host, Admin host, help, and browser assets. Cross-platform,
+  trim/NativeAOT, performance-budget, and release-package closure remain Phase
+  7 work.
+
 Work:
 
-- [ ] Add an `Observability` tab and tab-manager/navigation/command-palette
+- [x] Add an `Observability` tab and tab-manager/navigation/command-palette
   entries rather than overloading the physical `Storage` inspector.
-- [ ] Add overview cards for health, query rate/latency/errors, active and slow
+- [x] Add overview cards for health, query rate/latency/errors, active and slow
   queries, sessions, transactions, WAL growth, checkpoint age, and current
   maintenance work.
-- [ ] Add bounded in-memory time-series sampling in Admin for short charts;
+- [x] Add bounded in-memory time-series sampling in Admin for short charts;
   Admin must not become a second telemetry warehouse.
-- [ ] Add configurable refresh interval, pause/resume, manual refresh, stale
+- [x] Add configurable refresh interval, pause/resume, manual refresh, stale
   data indication, and cancellation when the tab closes.
-- [ ] Poll only while Observability is the active tab. Hidden Admin tabs remain
+- [x] Poll only while Observability is the active tab. Hidden Admin tabs remain
   mounted, so visibility must stop polling even before component disposal.
-- [ ] Clear local rate and chart samples when the server instance id or counter
+- [x] Clear local rate and chart samples when the server instance id or counter
   epoch changes so restarts and resets do not create false spikes or negative
   rates.
-- [ ] Add active and recent query tables with duration, phase, outcome,
+- [x] Add active and recent query tables with duration, phase, outcome,
   fingerprint, plan summary, transport, session correlation, and trace id.
-- [ ] Add query-plan drill-down and a safe handoff to the existing
+- [x] Add query-plan drill-down and a safe handoff to the existing
   `EXPLAIN ESTIMATE` query experience.
-- [ ] Add connections/sessions, storage/WAL, and backup/restore panels.
-- [ ] Add aggregate/per-shard selection when the connected client is sharded.
-- [ ] Keep raw SQL and paths out of ordinary snapshots. An explicit reveal
+- [x] Add connections/sessions, storage/WAL, and backup/restore panels.
+- [x] Add aggregate/per-shard selection when the connected client is sharded.
+- [x] Keep raw SQL and paths out of ordinary snapshots. An explicit reveal
   action must issue the separate server-authorized detail request and work only
   when capture is enabled.
-- [ ] Show capability-not-supported and access-denied states honestly for
+- [x] Show capability-not-supported and access-denied states honestly for
   custom or restricted remote clients.
-- [ ] Link the runtime storage/WAL panel to the existing deep Storage inspector
+- [x] Link the runtime storage/WAL panel to the existing deep Storage inspector
   while explaining the cost difference.
-- [ ] Use the optional diagnostics client for direct, HTTP, and gRPC modes; do
+- [x] Use the optional diagnostics client for direct, HTTP, and gRPC modes; do
   not read direct engine internals from the component.
-- [ ] Add component/service tests for refresh, inactive-tab polling, truncation,
+- [x] Add component/service tests for refresh, inactive-tab polling, truncation,
   instance/epoch reset, unavailable hosts, database switch, reconnect, sharded
   views, detail authorization, redaction, and disposal.
-- [ ] Verify keyboard navigation, accessible status text, responsive layout,
+- [x] Verify keyboard navigation, accessible status text, responsive layout,
   empty states, and high-volume truncation messages.
 
 Deliverables:
@@ -1330,6 +1380,12 @@ Deliverables:
 - Direct/remote/sharded behavior parity.
 
 Exit gate:
+
+Status: complete. The transport-neutral workspace, database replacement and
+reconnect handoff, bounded polling lifecycle, explicit availability metadata,
+rendered privacy/responsive checks, full Admin regression suite, and desktop
+Store package smoke all pass on the frozen Windows tree. Broader release and
+cross-platform qualification remains Phase 7 work.
 
 - The same Admin component works with built-in direct, HTTP, and gRPC clients.
 - `DatabaseClientHolder` delegates observability correctly after a database

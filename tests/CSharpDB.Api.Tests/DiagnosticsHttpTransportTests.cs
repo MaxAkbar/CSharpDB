@@ -125,6 +125,44 @@ public sealed class DiagnosticsHttpTransportTests
             detailRequest,
             Ct);
         Assert.Equal(HttpStatusCode.Forbidden, detail.StatusCode);
+
+        await using ICSharpDbClient missingKeyClient = CSharpDbClient.Create(
+            new CSharpDbClientOptions
+            {
+                Transport = ClientTransport.Http,
+                Endpoint = httpClient.BaseAddress!.ToString(),
+                HttpClient = httpClient,
+            });
+        var missingKeyDiagnostics = Assert.IsAssignableFrom<
+            ICSharpDbObservabilityClient>(missingKeyClient);
+        CSharpDbObservabilityAccessDeniedException unauthenticated =
+            await Assert.ThrowsAsync<CSharpDbObservabilityAccessDeniedException>(
+                () => missingKeyDiagnostics.GetRuntimeDiagnosticsAsync(Ct));
+
+        await using ICSharpDbClient detailDeniedClient = CSharpDbClient.Create(
+            new CSharpDbClientOptions
+            {
+                Transport = ClientTransport.Http,
+                Endpoint = httpClient.BaseAddress.ToString(),
+                HttpClient = httpClient,
+                ApiKey = ApiKey,
+            });
+        var detailDeniedDiagnostics = Assert.IsAssignableFrom<
+            ICSharpDbObservabilityClient>(detailDeniedClient);
+        CSharpDbObservabilityAccessDeniedException forbidden =
+            await Assert.ThrowsAsync<CSharpDbObservabilityAccessDeniedException>(
+                () => detailDeniedDiagnostics.GetQueryDetailAsync(OperationId, Ct));
+
+        Assert.All(
+            new[] { unauthenticated, forbidden },
+            error =>
+            {
+                Assert.Equal(
+                    CSharpDbObservabilityAccessDeniedException.SafeMessage,
+                    error.Message);
+                Assert.DoesNotContain(ApiKey, error.Message, StringComparison.Ordinal);
+                Assert.Null(error.InnerException);
+            });
     }
 
     [Theory]
@@ -662,6 +700,38 @@ public sealed class DiagnosticsHttpTransportTests
             () => diagnostics.GetRuntimeDiagnosticsAsync(Ct));
     }
 
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    public async Task HttpClient_MapsOnlyDiagnosticsAccessStatusCodesToSafeDenied(
+        HttpStatusCode statusCode)
+    {
+        const string remoteCanary =
+            "remote-secret-sql-path-C:/private/diagnostics.db";
+        using var httpClient = new HttpClient(
+            new StatusHandler(statusCode, remoteCanary))
+        {
+            BaseAddress = new Uri("http://localhost/"),
+        };
+        await using ICSharpDbClient client = CSharpDbClient.Create(
+            new CSharpDbClientOptions
+            {
+                Transport = ClientTransport.Http,
+                Endpoint = httpClient.BaseAddress.ToString(),
+                HttpClient = httpClient,
+            });
+        var diagnostics = Assert.IsAssignableFrom<ICSharpDbObservabilityClient>(
+            client);
+
+        CSharpDbObservabilityAccessDeniedException error =
+            await Assert.ThrowsAsync<CSharpDbObservabilityAccessDeniedException>(
+                () => diagnostics.GetRuntimeDiagnosticsAsync(Ct));
+
+        Assert.Equal(CSharpDbObservabilityAccessDeniedException.SafeMessage, error.Message);
+        Assert.DoesNotContain(remoteCanary, error.Message, StringComparison.Ordinal);
+        Assert.Null(error.InnerException);
+    }
+
     [Fact]
     public async Task HttpClient_DoesNotMapOrdinaryNotFoundToDiagnosticsUnsupported()
     {
@@ -682,6 +752,30 @@ public sealed class DiagnosticsHttpTransportTests
             CSharpDbClientException>(() => client.GetInfoAsync(Ct));
 
         Assert.IsNotType<CSharpDbObservabilityNotSupportedException>(error);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    public async Task HttpClient_DoesNotMapOrdinaryAccessFailuresToDiagnosticsDenied(
+        HttpStatusCode statusCode)
+    {
+        using var httpClient = new HttpClient(new StatusHandler(statusCode))
+        {
+            BaseAddress = new Uri("http://localhost/"),
+        };
+        await using ICSharpDbClient client = CSharpDbClient.Create(
+            new CSharpDbClientOptions
+            {
+                Transport = ClientTransport.Http,
+                Endpoint = httpClient.BaseAddress.ToString(),
+                HttpClient = httpClient,
+            });
+
+        CSharpDbClientException error = await Assert.ThrowsAsync<
+            CSharpDbClientException>(() => client.GetInfoAsync(Ct));
+
+        Assert.IsNotType<CSharpDbObservabilityAccessDeniedException>(error);
     }
 
     private static CancellationToken Ct =>
@@ -1040,11 +1134,18 @@ public sealed class DiagnosticsHttpTransportTests
         }
     }
 
-    private sealed class StatusHandler(HttpStatusCode statusCode) : HttpMessageHandler
+    private sealed class StatusHandler(
+        HttpStatusCode statusCode,
+        string? responseBody = null) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
-            => Task.FromResult(new HttpResponseMessage(statusCode));
+        {
+            var response = new HttpResponseMessage(statusCode);
+            if (responseBody is not null)
+                response.Content = new StringContent(responseBody);
+            return Task.FromResult(response);
+        }
     }
 }

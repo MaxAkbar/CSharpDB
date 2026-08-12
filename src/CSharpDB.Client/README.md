@@ -220,7 +220,11 @@ diagnostics request and never replays SQL. Custom clients and older remote
 hosts remain compatible: capability discovery is false for an object that does
 not implement the interface, while built-in remote transports translate an
 unsupported endpoint into `CSharpDbObservabilityNotSupportedException` instead
-of returning invented data.
+of returning invented data. HTTP 401/403 and gRPC unauthenticated/permission-
+denied responses from diagnostics endpoints become
+`CSharpDbObservabilityAccessDeniedException`. Both exceptions use fixed safe
+messages and discard server-controlled response details. Ordinary client
+operations retain their existing transport error behavior.
 
 Sharded snapshots contain a coordinator aggregate plus bounded per-shard
 children. The aggregate collections are capped, while each reachable shard

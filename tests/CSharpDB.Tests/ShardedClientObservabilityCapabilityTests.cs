@@ -1104,6 +1104,29 @@ public sealed class ShardedClientObservabilityCapabilityTests
             Assert.Single(result.Shards!).Availability);
     }
 
+    [Fact]
+    public async Task DeniedShardCapability_IsProjectedWithoutFailureText()
+    {
+        (IShardTestClient child, RecordingProxy recording) = CreateObservedClient();
+        recording.SetResult(
+            nameof(ICSharpDbObservabilityClient.GetStorageDiagnosticsAsync),
+            Task.FromException<DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<
+                StorageRuntimeDiagnosticsSnapshot>>>(
+                    new CSharpDbObservabilityAccessDeniedException()));
+        await using var client = new CSharpDbShardedClient(
+            CreateOptions("alpha"),
+            new Dictionary<string, ICSharpDbClient> { ["alpha"] = child });
+
+        DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<
+            StorageRuntimeDiagnosticsSnapshot>> result =
+                await client.GetStorageDiagnosticsAsync(Ct);
+
+        ShardDiagnosticsSection<DiagnosticsValueSnapshot<
+            StorageRuntimeDiagnosticsSnapshot>> shard = Assert.Single(result.Shards!);
+        Assert.Equal(DiagnosticsAvailability.Denied, shard.Availability);
+        Assert.Null(shard.Value);
+    }
+
     private static CSharpDbShardingOptions CreateOptions(params string[] shardIds)
         => new()
         {

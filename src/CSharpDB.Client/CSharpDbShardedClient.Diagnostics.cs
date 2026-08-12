@@ -346,6 +346,12 @@ public sealed partial class CSharpDbShardedClient
                 diagnosticsAlias,
                 DiagnosticsAvailability.Unsupported);
         }
+        catch (CSharpDbObservabilityAccessDeniedException)
+        {
+            return ShardCapture<T>.WithoutValue(
+                diagnosticsAlias,
+                DiagnosticsAvailability.Denied);
+        }
         catch (NotSupportedException)
         {
             return ShardCapture<T>.WithoutValue(

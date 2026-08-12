@@ -22,6 +22,7 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbObservabili
     private CSharpDbClientOptions? _baseClientOptions;
     private readonly AdminHostDatabaseOptions _hostDatabaseOptions;
     private readonly DbFunctionRegistry _functions;
+    private readonly CSharpDbObservabilityOptions? _observabilityOptions;
     private readonly AdminHostReadinessService? _readiness;
     private readonly object _lock = new();
     private readonly Dictionary<ICSharpDbClient, int> _observabilityLeaseCounts =
@@ -44,7 +45,8 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbObservabili
             baseClientOptions,
             hostDatabaseOptions,
             functions,
-            readiness: null)
+            readiness: null,
+            observabilityOptions: baseClientOptions?.DirectDatabaseOptions?.ObservabilityOptions)
     {
     }
 
@@ -55,6 +57,25 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbObservabili
         AdminHostDatabaseOptions hostDatabaseOptions,
         DbFunctionRegistry functions,
         AdminHostReadinessService? readiness)
+        : this(
+            initial,
+            shardAdmin,
+            baseClientOptions,
+            hostDatabaseOptions,
+            functions,
+            readiness,
+            baseClientOptions?.DirectDatabaseOptions?.ObservabilityOptions)
+    {
+    }
+
+    internal DatabaseClientHolder(
+        ICSharpDbClient initial,
+        ICSharpDbShardAdminClient? shardAdmin,
+        CSharpDbClientOptions? baseClientOptions,
+        AdminHostDatabaseOptions hostDatabaseOptions,
+        DbFunctionRegistry functions,
+        AdminHostReadinessService? readiness,
+        CSharpDbObservabilityOptions? observabilityOptions)
     {
         _inner = initial;
         _shardAdmin = shardAdmin;
@@ -62,12 +83,13 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbObservabili
         _hostDatabaseOptions = hostDatabaseOptions;
         _functions = functions;
         _readiness = readiness;
+        _observabilityOptions = observabilityOptions;
     }
 
     public async Task SwitchAsync(string databasePath)
     {
         using IDisposable? readinessLease = _readiness?.EnterDatabaseSwitch();
-        CSharpDbClientOptions newOptions = AdminClientOptionsBuilder.BuildDirectDataSource(databasePath, _hostDatabaseOptions, _functions);
+        CSharpDbClientOptions newOptions = BuildSwitchClientOptions(databasePath);
         ICSharpDbClient newClient;
         ICSharpDbShardAdminClient? newShardAdmin;
         CSharpDbClientOptions? newBaseClientOptions;
@@ -89,6 +111,13 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbObservabili
 
         await ReplaceClientAsync(newClient, newShardAdmin, newBaseClientOptions);
     }
+
+    internal CSharpDbClientOptions BuildSwitchClientOptions(string databasePath)
+        => AdminClientOptionsBuilder.BuildDirectDataSource(
+            databasePath,
+            _hostDatabaseOptions,
+            _functions,
+            _observabilityOptions);
 
     // ── Delegated members ──────────────────────────────────
 
@@ -196,6 +225,12 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbObservabili
             observabilityDrain = GetObservabilityDrainTaskNoLock(old);
         }
 
+        // The replacement is authoritative as soon as the atomic swap above
+        // completes. Notify observers before waiting for calls that leased the
+        // previous client so UI state cannot display the old database while
+        // disposal drains in the background.
+        PublishDatabaseChanged();
+
         // Calls that captured the previous client may still be awaiting it.
         // The holder lock is deliberately not held while they drain.
         bool mayDisposeOldClient = await observabilityDrain.ConfigureAwait(false);
@@ -205,7 +240,6 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbObservabili
             // A saturated lease count is deliberately fail-safe. Keep the old
             // client alive until process teardown rather than risk disposing
             // it while an uncounted diagnostics call may still be using it.
-            DatabaseChanged?.Invoke();
             return;
         }
 
@@ -213,7 +247,19 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbObservabili
             await oldShardAdmin.DisposeAsync().ConfigureAwait(false);
 
         await old.DisposeAsync().ConfigureAwait(false);
-        DatabaseChanged?.Invoke();
+    }
+
+    private void PublishDatabaseChanged()
+    {
+        Action? handlers = DatabaseChanged;
+        if (handlers is null)
+            return;
+
+        foreach (Delegate handler in handlers.GetInvocationList())
+        {
+            try { ((Action)handler)(); }
+            catch { }
+        }
     }
 
     public Task<DatabaseInfo> GetInfoAsync(CancellationToken ct = default) => _inner.GetInfoAsync(ct);

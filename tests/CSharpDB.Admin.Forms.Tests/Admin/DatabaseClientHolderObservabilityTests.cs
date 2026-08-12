@@ -197,6 +197,9 @@ public sealed class DatabaseClientHolderObservabilityTests
         ConfigureCompletedObservabilityResults(secondRecording);
         await using DatabaseClientHolder holder = CreateHolder(first);
         var diagnostics = (ICSharpDbObservabilityClient)holder;
+        int databaseChangedCount = 0;
+        holder.DatabaseChanged += () => throw new InvalidOperationException("subscriber failure");
+        holder.DatabaseChanged += () => Interlocked.Increment(ref databaseChangedCount);
 
         Task<DiagnosticsTopologySnapshot<RuntimeDiagnosticsSnapshot>> capturedCall =
             diagnostics.GetRuntimeDiagnosticsAsync(Ct);
@@ -207,6 +210,7 @@ public sealed class DatabaseClientHolderObservabilityTests
 
         Assert.False(replacement.IsCompleted);
         Assert.Equal(0, firstRecording.DisposeCount);
+        Assert.Equal(1, Volatile.Read(ref databaseChangedCount));
 
         // The replacement is already visible even though disposal of the old
         // client is waiting for its captured call to finish.
@@ -218,6 +222,7 @@ public sealed class DatabaseClientHolderObservabilityTests
         await replacement;
 
         Assert.Equal(1, firstRecording.DisposeCount);
+        Assert.Equal(1, Volatile.Read(ref databaseChangedCount));
     }
 
     [Fact]

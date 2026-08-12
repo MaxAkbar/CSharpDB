@@ -12,6 +12,27 @@ public sealed class ClientObservabilityCapabilityCompatibilityTests
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     [Fact]
+    public void PublicAccessDeniedException_HasOneSafeNonRetainingShape()
+    {
+        const string remoteCanary =
+            "api-key SELECT secret FROM C:/private/diagnostics.db";
+        Type exceptionType = typeof(CSharpDbObservabilityAccessDeniedException);
+
+        var exception = new CSharpDbObservabilityAccessDeniedException();
+
+        Assert.True(exceptionType.IsPublic);
+        Assert.True(exceptionType.IsSealed);
+        Assert.Equal(
+            CSharpDbObservabilityAccessDeniedException.SafeMessage,
+            exception.Message);
+        Assert.DoesNotContain(remoteCanary, exception.Message, StringComparison.Ordinal);
+        Assert.Null(exception.InnerException);
+        ConstructorInfo constructor = Assert.Single(
+            exceptionType.GetConstructors(BindingFlags.Public | BindingFlags.Instance));
+        Assert.Empty(constructor.GetParameters());
+    }
+
+    [Fact]
     public void ExistingClientContract_HasFrozenSourceAndBinaryShape()
     {
         Type contract = typeof(ICSharpDbClient);

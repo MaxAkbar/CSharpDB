@@ -158,6 +158,14 @@ internal sealed partial class HttpTransportClient
             throw new CSharpDbObservabilityNotSupportedException();
         }
 
+        if (response.StatusCode is HttpStatusCode.Unauthorized or
+            HttpStatusCode.Forbidden)
+        {
+            // The server controls the response body. Do not retain remote
+            // problem details, credentials, SQL, or endpoint text.
+            throw new CSharpDbObservabilityAccessDeniedException();
+        }
+
         if (!response.IsSuccessStatusCode)
             throw await CreateHttpExceptionAsync(response, ct).ConfigureAwait(false);
 

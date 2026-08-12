@@ -216,13 +216,32 @@ public sealed class GrpcClientTests : IAsyncLifetime
             var operationId = new Observability.OpaqueDiagnosticsId(
                 "0123456789abcdef0123456789abcdef");
 
-            CSharpDbClientException error = await Assert.ThrowsAsync<
-                CSharpDbClientException>(
+            CSharpDbObservabilityAccessDeniedException forbidden =
+                await Assert.ThrowsAsync<CSharpDbObservabilityAccessDeniedException>(
                 () => diagnostics.GetQueryDetailAsync(operationId, Ct));
-            Assert.Contains(
-                "PermissionDenied",
-                error.Message,
-                StringComparison.Ordinal);
+
+            await using ICSharpDbClient missingKeyClient = CreateGrpcClient(
+                transportClient);
+            var missingKeyDiagnostics = Assert.IsAssignableFrom<
+                ICSharpDbObservabilityClient>(missingKeyClient);
+            CSharpDbObservabilityAccessDeniedException unauthenticated =
+                await Assert.ThrowsAsync<CSharpDbObservabilityAccessDeniedException>(
+                    () => missingKeyDiagnostics.GetRuntimeDiagnosticsAsync(Ct));
+
+            Assert.All(
+                new[] { forbidden, unauthenticated },
+                error =>
+                {
+                    Assert.Equal(
+                        CSharpDbObservabilityAccessDeniedException.SafeMessage,
+                        error.Message);
+                    Assert.DoesNotContain(
+                        "PermissionDenied",
+                        error.Message,
+                        StringComparison.Ordinal);
+                    Assert.DoesNotContain(apiKey, error.Message, StringComparison.Ordinal);
+                    Assert.Null(error.InnerException);
+                });
 
             Observability.DiagnosticsTopologySnapshot<Observability.RuntimeDiagnosticsSnapshot> runtime =
                 await diagnostics.GetRuntimeDiagnosticsAsync(Ct);
@@ -415,6 +434,28 @@ public sealed class GrpcClientTests : IAsyncLifetime
 
         Assert.IsType<CSharpDbClientConfigurationException>(translated);
         Assert.IsNotType<CSharpDbObservabilityNotSupportedException>(translated);
+    }
+
+    [Theory]
+    [InlineData(StatusCode.Unauthenticated)]
+    [InlineData(StatusCode.PermissionDenied)]
+    public void OrdinaryGrpcAccessFailures_RemainOrdinaryTransportFailures(
+        StatusCode statusCode)
+    {
+        System.Type transportType = typeof(CSharpDbClient).Assembly.GetType(
+            "CSharpDB.Client.Internal.GrpcTransportClient",
+            throwOnError: true)!;
+        MethodInfo translate = transportType.GetMethod(
+            "TranslateRpcException",
+            BindingFlags.NonPublic | BindingFlags.Static)!;
+        var rpcError = new RpcException(new Status(
+            statusCode,
+            "ordinary remote access detail"));
+
+        var translated = Assert.IsAssignableFrom<Exception>(
+            translate.Invoke(null, [rpcError]));
+
+        Assert.IsNotType<CSharpDbObservabilityAccessDeniedException>(translated);
     }
 
     [Fact]

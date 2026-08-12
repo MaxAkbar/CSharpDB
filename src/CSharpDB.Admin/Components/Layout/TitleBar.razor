@@ -20,10 +20,13 @@
     </div>
     <button class="db-switcher" @onclick="OpenDatabase" title="Switch database">
         <i class="bi bi-database"></i>
-        <span>@CurrentDatabaseName</span>
+        <span>@(IsObservabilityActive ? "Connected database" : CurrentDatabaseName)</span>
         <i class="bi bi-caret-down-fill"></i>
     </button>
-    <button class="palette-launcher" @onclick="OpenCommandPalette" title="Command Palette (Ctrl+K)">
+    <button class="palette-launcher"
+            @onclick="OpenCommandPalette"
+            disabled="@IsObservabilityActive"
+            title="@(IsObservabilityActive ? "Command palette hidden in diagnostics view" : "Command Palette (Ctrl+K)")">
         <i class="bi bi-search"></i>
         <span>Search anything...</span>
         <span class="kbd">Ctrl K</span>
@@ -49,6 +52,9 @@
         </button>
         <button class="titlebar-action-btn" @onclick="() => TabManager.OpenShardingTab()" title="Sharding">
             <i class="bi bi-hdd-network"></i> Sharding
+        </button>
+        <button class="titlebar-action-btn" @onclick="() => TabManager.OpenObservabilityTab()" title="Observability">
+            <i class="bi bi-activity"></i> Observe
         </button>
         <button class="titlebar-action-btn" @onclick="() => TabManager.OpenStorageTab()" title="Storage Inspector">
             <i class="bi bi-hdd-stack"></i> Storage
@@ -98,10 +104,14 @@
         }
     }
 
+    private bool IsObservabilityActive
+        => TabManager.ActiveTab?.Kind == TabKind.Observability;
+
     protected override void OnInitialized()
     {
         Theme.ThemeChanged += OnThemeChanged;
         DbHolder.DatabaseChanged += OnDatabaseChanged;
+        TabManager.StateChanged += OnTabChanged;
     }
 
     private async Task ToggleTheme() => await Theme.ToggleAsync();
@@ -119,7 +129,7 @@
             "Enter the path to the database file:",
             confirmText: "Open",
             placeholder: @"C:\path\to\database.db",
-            defaultValue: DbClient.DataSource);
+            defaultValue: IsObservabilityActive ? string.Empty : DbClient.DataSource);
 
         if (string.IsNullOrWhiteSpace(path))
             return;
@@ -127,12 +137,12 @@
         try
         {
             await DbHolder.SwitchAsync(path.Trim());
-            Toast.Success($"Opened database '{DbHolder.DataSource}'.");
+            Toast.Success("Database opened.");
             Changes.NotifyChanged();
         }
-        catch (Exception ex)
+        catch
         {
-            Toast.Error($"Failed to open database: {ex.Message}");
+            Toast.Error("The database could not be opened.");
         }
     }
 
@@ -155,10 +165,12 @@
 
     private void OnThemeChanged() => InvokeAsync(StateHasChanged);
     private void OnDatabaseChanged() => InvokeAsync(StateHasChanged);
+    private void OnTabChanged() => InvokeAsync(StateHasChanged);
 
     public void Dispose()
     {
         Theme.ThemeChanged -= OnThemeChanged;
         DbHolder.DatabaseChanged -= OnDatabaseChanged;
+        TabManager.StateChanged -= OnTabChanged;
     }
 }
