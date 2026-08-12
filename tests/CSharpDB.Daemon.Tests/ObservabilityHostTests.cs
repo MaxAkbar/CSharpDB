@@ -199,6 +199,16 @@ public sealed class ObservabilityHostTests
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             builder.UseEnvironment("Development");
+            builder.UseSetting("CSharpDB:Observability:Enabled", "true");
+            builder.UseSetting(
+                "CSharpDB:Observability:DatabaseAlias",
+                "daemon-test");
+            builder.UseSetting(
+                "CSharpDB:Observability:Logging:Queries",
+                "true");
+            builder.UseSetting(
+                "CSharpDB:Observability:Logging:SlowQueries",
+                "false");
             builder.ConfigureServices(services =>
             {
                 services.AddHostedService<TestDaemonClientShutdown>();

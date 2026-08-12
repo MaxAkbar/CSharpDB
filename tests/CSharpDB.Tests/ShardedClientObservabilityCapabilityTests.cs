@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Reflection;
 using System.Text.Json;
 using CSharpDB.Client;
@@ -7,6 +8,7 @@ using CSharpDB.Engine;
 
 namespace CSharpDB.Tests;
 
+[Collection(ObservabilityDiagnosticsCollection.Name)]
 public sealed class ShardedClientObservabilityCapabilityTests
 {
     private static readonly CancellationToken Ct = TestContext.Current.CancellationToken;
@@ -503,6 +505,59 @@ public sealed class ShardedClientObservabilityCapabilityTests
         Assert.Equal(recentRoot.CompletedAtUtc, loggedRoot.CompletedAtUtc);
         Assert.Equal(recentRoot.Duration, loggedRoot.TotalDuration);
         Assert.Equal(startedAt.AddSeconds(3), recent.Metadata.CapturedAtUtc);
+    }
+
+    [Fact]
+    public async Task ThrowingAttemptListenerAndClock_DoNotAbortFanoutOrStrandCoordinator()
+    {
+        (IShardTestClient child, RecordingProxy recording) = CreateObservedClient();
+        recording.SetResult(
+            nameof(ICSharpDbClient.ExecuteSqlAsync),
+            Task.FromResult(new SqlExecutionResult
+            {
+                IsQuery = true,
+                Rows = [],
+            }));
+        recording.SetResult(
+            nameof(ICSharpDbObservabilityClient.GetActiveQueriesAsync),
+            Task.FromResult(EmptyCollectionTopology<ActiveQuerySnapshot>(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")));
+        CSharpDbShardingOptions options = CreateOptions("alpha");
+        options.DirectDatabaseOptions!.ObservabilityOptions!.OpenTelemetry.Enabled = true;
+        var clock = new ThrowOnSecondUtcNowTimeProvider(
+            new DateTimeOffset(2032, 6, 7, 8, 9, 10, TimeSpan.Zero));
+        int sampleCalls = 0;
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = static source =>
+                source.Name == CSharpDbDiagnostics.ActivitySourceName,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) =>
+                Interlocked.Increment(ref sampleCalls) == 1
+                    ? ActivitySamplingResult.AllDataAndRecorded
+                    : throw new InvalidOperationException(
+                        "attempt-listener-failure"),
+            SampleUsingParentId = (ref ActivityCreationOptions<string> _) =>
+                Interlocked.Increment(ref sampleCalls) == 1
+                    ? ActivitySamplingResult.AllDataAndRecorded
+                    : throw new InvalidOperationException(
+                        "attempt-listener-failure"),
+        };
+        ActivitySource.AddActivityListener(listener);
+        await using var client = new CSharpDbShardedClient(
+            options,
+            new Dictionary<string, ICSharpDbClient> { ["alpha"] = child },
+            clock);
+
+        IReadOnlyList<CSharpDbShardSqlExecutionResult> results =
+            await client.ExecuteSqlOnAllShardsAsync("SELECT 1", Ct);
+        DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<ActiveQuerySnapshot>> active =
+            await client.GetActiveQueriesAsync(10, Ct);
+
+        Assert.Single(results);
+        Assert.Null(results[0].Error);
+        Assert.Empty(active.Aggregate.Records!);
+        Assert.Equal(2, Volatile.Read(ref sampleCalls));
+        Assert.True(clock.UtcNowCalls >= 3);
     }
 
     [Fact]
@@ -1630,5 +1685,23 @@ public sealed class ShardedClientObservabilityCapabilityTests
             _utcNow = _utcNow.Add(duration);
             Interlocked.Add(ref _timestamp, duration.Ticks);
         }
+    }
+
+    private sealed class ThrowOnSecondUtcNowTimeProvider(DateTimeOffset utcNow) :
+        TimeProvider
+    {
+        private int _utcNowCalls;
+        private long _timestamp;
+
+        internal int UtcNowCalls => Volatile.Read(ref _utcNowCalls);
+
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+        public override DateTimeOffset GetUtcNow()
+            => Interlocked.Increment(ref _utcNowCalls) == 2
+                ? throw new InvalidOperationException("attempt-clock-failure")
+                : utcNow;
+
+        public override long GetTimestamp() => Interlocked.Increment(ref _timestamp);
     }
 }

@@ -3030,6 +3030,15 @@ public sealed class GrpcClientTests : IAsyncLifetime
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             builder.UseEnvironment("Development");
+            if (extraConfig is not null)
+            {
+                foreach (KeyValuePair<string, string?> pair in extraConfig)
+                {
+                    if (pair.Value is not null)
+                        builder.UseSetting(pair.Key, pair.Value);
+                }
+            }
+
             builder.ConfigureServices(services =>
             {
                 services.AddHostedService<TestDaemonClientShutdown>();

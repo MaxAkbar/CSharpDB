@@ -13,8 +13,14 @@ internal static class LifecycleObservability
     internal static LifecycleOperation? Start(
         CSharpDbObservabilityOptions? options,
         CSharpDbLogEventDefinition<CSharpDbLifecycleCompletedEvent> definition,
-        CSharpDbOperationClass operationClass)
-        => StartCore(options, definition, operationClass, exactContext: null);
+        CSharpDbOperationClass operationClass,
+        CSharpDbRuntimeDiagnosticsState? runtimeState = null)
+        => StartCore(
+            options,
+            definition,
+            operationClass,
+            exactContext: null,
+            exactRuntimeState: runtimeState);
 
     /// <summary>
     /// Starts a lifecycle event for an already-created operation context. This
@@ -25,7 +31,9 @@ internal static class LifecycleObservability
         CSharpDbObservabilityOptions? options,
         CSharpDbLogEventDefinition<CSharpDbLifecycleCompletedEvent> definition,
         CSharpDbOperationClass operationClass,
-        CSharpDbOperationContext context)
+        CSharpDbOperationContext context,
+        CSharpDbActivityOperation? activityOperation = null,
+        CSharpDbRuntimeDiagnosticsState? runtimeState = null)
     {
         ArgumentNullException.ThrowIfNull(context);
         if (context.OperationClass != operationClass)
@@ -33,32 +41,84 @@ internal static class LifecycleObservability
                 "The lifecycle operation class must match the supplied context.",
                 nameof(context));
 
-        return StartCore(options, definition, operationClass, context);
+        return StartCore(
+            options,
+            definition,
+            operationClass,
+            context,
+            activityOperation,
+            runtimeState);
     }
 
     private static LifecycleOperation? StartCore(
         CSharpDbObservabilityOptions? options,
         CSharpDbLogEventDefinition<CSharpDbLifecycleCompletedEvent> definition,
         CSharpDbOperationClass operationClass,
-        CSharpDbOperationContext? exactContext)
+        CSharpDbOperationContext? exactContext,
+        CSharpDbActivityOperation? exactActivityOperation = null,
+        CSharpDbRuntimeDiagnosticsState? exactRuntimeState = null)
     {
         if (options is null ||
-            !options.Logging.Enabled ||
             CSharpDbOperationScope.IsDiagnosticsSuppressed)
         {
             return null;
         }
 
         CSharpDbDiagnosticEventPublisher publisher = CSharpDbDiagnostics.EventPublisher;
-        if (!publisher.IsEnabled(definition))
+        bool publishEvent = options.Logging.Enabled &&
+            publisher.IsEnabled(definition);
+        bool tracingEnabled = options.Enabled && options.OpenTelemetry.Enabled;
+        bool traceRequested =
+            CSharpDbActivityOperation.ShouldStart(tracingEnabled);
+        CSharpDbRuntimeMetrics? runtimeMetrics = exactRuntimeState?.RuntimeMetrics;
+        bool metricsRequested =
+            runtimeMetrics?.SupportsLifecycle(operationClass) == true &&
+            string.Equals(
+                exactRuntimeState!.DatabaseAlias,
+                exactContext?.DatabaseAlias ?? options.DatabaseAlias,
+                StringComparison.Ordinal);
+        if (!publishEvent && !traceRequested && exactActivityOperation is null &&
+            !metricsRequested)
             return null;
 
         try
         {
-            CSharpDbOperationContext context = exactContext ??
-                CreateContext(options, operationClass);
+            CSharpDbOperationContext context;
+            CSharpDbActivityOperation? activityOperation = exactActivityOperation;
+            if (exactContext is not null)
+            {
+                context = exactContext;
+                if (activityOperation is null &&
+                    ReferenceEquals(CSharpDbOperationScope.Current, context))
+                {
+                    activityOperation =
+                        CSharpDbOperationScope.CurrentActivityOperation;
+                }
 
-            return new LifecycleOperation(context, definition, publisher);
+                activityOperation ??=
+                    CSharpDbActivityOperation.Start(tracingEnabled, context);
+            }
+            else if (traceRequested)
+            {
+                activityOperation = CSharpDbActivityOperation.Start(
+                    operationClass,
+                    (Options: options, OperationClass: operationClass),
+                    static state => CreateContext(
+                        state.Options,
+                        state.OperationClass),
+                    out context);
+            }
+            else
+            {
+                context = CreateContext(options, operationClass);
+            }
+
+            return new LifecycleOperation(
+                context,
+                definition,
+                publishEvent ? publisher : null,
+                activityOperation,
+                runtimeMetrics);
         }
         catch
         {
@@ -89,20 +149,37 @@ internal sealed class LifecycleOperation
 {
     private readonly CSharpDbOperationContext _context;
     private readonly CSharpDbLogEventDefinition<CSharpDbLifecycleCompletedEvent> _definition;
-    private readonly CSharpDbDiagnosticEventPublisher _publisher;
+    private readonly CSharpDbDiagnosticEventPublisher? _publisher;
+    private readonly CSharpDbActivityOperation? _activityOperation;
+    private readonly CSharpDbRuntimeMetrics? _runtimeMetrics;
+    private readonly bool _metricsStarted;
     private int _completed;
 
     internal LifecycleOperation(
         CSharpDbOperationContext context,
         CSharpDbLogEventDefinition<CSharpDbLifecycleCompletedEvent> definition,
-        CSharpDbDiagnosticEventPublisher publisher)
+        CSharpDbDiagnosticEventPublisher? publisher,
+        CSharpDbActivityOperation? activityOperation,
+        CSharpDbRuntimeMetrics? runtimeMetrics)
     {
         _context = context;
         _definition = definition;
         _publisher = publisher;
+        _activityOperation = activityOperation;
+        _runtimeMetrics = runtimeMetrics;
+        _metricsStarted = runtimeMetrics?.LifecycleStarted(context) == true;
     }
 
     internal CSharpDbOperationContext Context => _context;
+    internal CSharpDbActivityOperation? ActivityOperation => _activityOperation;
+
+    internal IDisposable EnterScope()
+    {
+        IDisposable operationScope = CSharpDbOperationScope.Enter(
+            _context,
+            _activityOperation);
+        return _activityOperation?.WrapScope(operationScope) ?? operationScope;
+    }
 
     internal void Succeed()
         => Complete(CSharpDbOperationOutcome.Succeeded, error: null);
@@ -136,6 +213,37 @@ internal sealed class LifecycleOperation
         SafeErrorProjection? error)
     {
         if (Interlocked.Exchange(ref _completed, 1) != 0)
+            return;
+
+        try
+        {
+            _activityOperation?.Complete(outcome, error);
+        }
+        catch
+        {
+            // Tracing is isolated from lifecycle completion.
+        }
+
+        if (_metricsStarted)
+        {
+            TimeSpan metricDuration = TimeSpan.Zero;
+            try
+            {
+                metricDuration = _context.GetElapsedTime();
+            }
+            catch
+            {
+                // A diagnostics clock cannot retain an active metric lease.
+            }
+
+            _runtimeMetrics?.LifecycleCompleted(
+                metricsStarted: true,
+                _context,
+                outcome,
+                metricDuration);
+        }
+
+        if (_publisher is null)
             return;
 
         try

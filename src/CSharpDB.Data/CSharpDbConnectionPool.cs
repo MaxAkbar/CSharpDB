@@ -1002,7 +1002,9 @@ internal readonly record struct PoolKey(
 /// sessions over it. A logical close resets only session-scoped state; disabling
 /// the pool performs the physical database close.
 /// </summary>
-internal sealed class CSharpDbConnectionPool : IDataRuntimeDiagnosticsContributor
+internal sealed class CSharpDbConnectionPool :
+    IDataRuntimeDiagnosticsContributor,
+    ICSharpDbDataMetricsProvider
 {
     private const string BusyMessage = "Database is busy with an active transaction.";
     private const string SchemaBusyMessage =
@@ -1024,6 +1026,8 @@ internal sealed class CSharpDbConnectionPool : IDataRuntimeDiagnosticsContributo
     private readonly bool _lifecycleLoggingEnabled;
     private readonly DataSessionRuntimeDiagnostics? _runtimeDiagnostics;
     private readonly DataRuntimeDiagnosticsStateOwner? _runtimeDiagnosticsStateOwner;
+    private readonly CSharpDbRuntimeMetrics? _runtimeMetrics;
+    private IDisposable? _metricsRegistration;
     private Database? _database;
     private bool _disabled;
     private bool _poisoned;
@@ -1061,6 +1065,17 @@ internal sealed class CSharpDbConnectionPool : IDataRuntimeDiagnosticsContributo
         _maxPoolSize = maxPoolSize;
         _sessionSlots = new SemaphoreSlim(maxPoolSize, maxPoolSize);
         _openDatabaseAsync = openDatabaseAsync;
+        try
+        {
+            _runtimeMetrics = runtimeDiagnosticsStateOwner?.State.RuntimeMetrics;
+            _metricsRegistration = _runtimeMetrics?.RegisterDataProvider(
+                this,
+                CSharpDB.Observability.CSharpDbTransport.Direct);
+        }
+        catch
+        {
+            // Metrics registration is best effort and cannot prevent pool use.
+        }
     }
 
     internal PoolKey Key => _key;
@@ -1078,6 +1093,25 @@ internal sealed class CSharpDbConnectionPool : IDataRuntimeDiagnosticsContributo
     internal Task Retirement => _retirement.Task;
     internal int ActiveSnapshotReaderCountForTest => _database?.ActiveReaderCount ?? 0;
     internal int TemporaryCleanupCountForTest => Volatile.Read(ref _temporaryCleanupCountForTest);
+
+    bool ICSharpDbDataMetricsProvider.TryCaptureMetrics(
+        out CSharpDbDataMetricSnapshot snapshot)
+    {
+        try
+        {
+            snapshot = new CSharpDbDataMetricSnapshot(
+                Math.Max(0, Volatile.Read(ref _activeSessionCount)),
+                _runtimeDiagnostics?.ActiveReaderCount,
+                Math.Max(0, Volatile.Read(ref _waiterCount)),
+                Math.Clamp(_sessionSlots.CurrentCount, 0, _maxPoolSize));
+            return true;
+        }
+        catch
+        {
+            snapshot = default;
+            return false;
+        }
+    }
 
     internal int IdleCount =>
         !_disabled && _database is not null && ActiveSessionCount == 0 ? 1 : 0;
@@ -1385,14 +1419,30 @@ internal sealed class CSharpDbConnectionPool : IDataRuntimeDiagnosticsContributo
         if (acquiredImmediately)
             return;
 
+        long startingTimestamp = 0;
+        bool measureWait = _runtimeMetrics?.TryStartPoolWait(
+            out startingTimestamp) == true;
+        CSharpDbOperationOutcome outcome = CSharpDbOperationOutcome.Succeeded;
         MutateWaiterCount(1);
         try
         {
             await _sessionSlots.WaitAsync(cancellationToken);
         }
+        catch (OperationCanceledException)
+        {
+            outcome = CSharpDbOperationOutcome.Canceled;
+            throw;
+        }
+        catch
+        {
+            outcome = CSharpDbOperationOutcome.Failed;
+            throw;
+        }
         finally
         {
             MutateWaiterCount(-1);
+            if (measureWait)
+                _runtimeMetrics?.RecordPoolWait(startingTimestamp, outcome);
         }
     }
 
@@ -2030,6 +2080,7 @@ internal sealed class CSharpDbConnectionPool : IDataRuntimeDiagnosticsContributo
         }
         finally
         {
+            Interlocked.Exchange(ref _metricsRegistration, null)?.Dispose();
             _runtimeDiagnosticsStateOwner?.Dispose();
         }
     }

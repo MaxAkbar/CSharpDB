@@ -141,6 +141,15 @@ section:
 - `CSharpDB:Daemon:Security:ApiKeyHeaderName`
 - `CSharpDB:Daemon:Security:AllowInsecureRemoteDiagnostics`
 - `CSharpDB:Daemon:Security:AllowSensitiveQueryDetailAccess`
+- `CSharpDB:Observability:Enabled`
+- `CSharpDB:Observability:OpenTelemetry:Enabled`
+- `CSharpDB:Observability:OpenTelemetry:SamplingRatio`
+- `CSharpDB:Observability:OpenTelemetry:Resource:*`
+- `CSharpDB:Observability:OpenTelemetry:Otlp:Enabled`
+- `CSharpDB:Observability:OpenTelemetry:Console:Enabled`
+- `CSharpDB:Observability:Prometheus:Enabled`
+- `CSharpDB:Observability:Prometheus:Path`
+- `CSharpDB:Observability:Prometheus:AllowInsecureRemoteAccess`
 - `CSharpDB:HostDatabase:OpenMode`
 - `CSharpDB:HostDatabase:ImplicitInsertExecutionMode`
 - `CSharpDB:HostDatabase:UseWriteOptimizedPreset`
@@ -163,6 +172,28 @@ Default [`appsettings.json`](./appsettings.json):
       "Security": {
         "Mode": "None",
         "ApiKeyHeaderName": "X-CSharpDB-Api-Key"
+      }
+    },
+    "Observability": {
+      "Enabled": false,
+      "OpenTelemetry": {
+        "Enabled": false,
+        "SamplingRatio": 1.0,
+        "Resource": {
+          "ServiceName": "CSharpDB.Daemon",
+          "ServiceNamespace": "CSharpDB"
+        },
+        "Otlp": {
+          "Enabled": false
+        },
+        "Console": {
+          "Enabled": false
+        }
+      },
+      "Prometheus": {
+        "Enabled": false,
+        "Path": "/metrics",
+        "AllowInsecureRemoteAccess": false
       }
     },
     "HostDatabase": {
@@ -189,6 +220,9 @@ Current daemon defaults:
 - `Security:ApiKeyHeaderName = X-CSharpDB-Api-Key`
 - `Security:AllowInsecureRemoteDiagnostics = false`
 - `Security:AllowSensitiveQueryDetailAccess = false`
+- OpenTelemetry, OTLP, console, and Prometheus export are disabled
+- `Prometheus:Path = /metrics`
+- `Prometheus:AllowInsecureRemoteAccess = false`
 - `OpenMode = HybridIncrementalDurable`
 - `ImplicitInsertExecutionMode = ConcurrentWriteTransactions`
 - `UseWriteOptimizedPreset = true`
@@ -202,6 +236,8 @@ $env:ConnectionStrings__CSharpDB = "Data Source=C:\\data\\app.db"
 $env:CSharpDB__Daemon__EnableRestApi = "false"
 $env:CSharpDB__Daemon__Security__Mode = "ApiKey"
 $env:CSharpDB__Daemon__Security__ApiKey = "replace-with-a-secret"
+$env:CSharpDB__Observability__Enabled = "true"
+$env:CSharpDB__Observability__Prometheus__Enabled = "true"
 $env:CSharpDB__HostDatabase__OpenMode = "Direct"
 $env:CSharpDB__HostDatabase__ImplicitInsertExecutionMode = "Serialized"
 $env:CSharpDB__HostDatabase__HotTableNames__0 = "users"
@@ -216,6 +252,8 @@ export ConnectionStrings__CSharpDB="Data Source=/var/lib/csharpdb/app.db"
 export CSharpDB__Daemon__EnableRestApi="false"
 export CSharpDB__Daemon__Security__Mode="ApiKey"
 export CSharpDB__Daemon__Security__ApiKey="replace-with-a-secret"
+export CSharpDB__Observability__Enabled="true"
+export CSharpDB__Observability__Prometheus__Enabled="true"
 export CSharpDB__HostDatabase__OpenMode="Direct"
 export CSharpDB__HostDatabase__ImplicitInsertExecutionMode="Serialized"
 export CSharpDB__HostDatabase__HotTableNames__0="users"
@@ -228,7 +266,8 @@ shape. Use `Direct` only when you want the host to open the backing file
 without the lazy-resident hybrid cache. `HotTableNames` and
 `HotCollectionNames` are optional hybrid-only preload hints. Set
 `CSharpDB:Daemon:EnableRestApi=false` only when the daemon should expose gRPC
-without the REST `/api` surface.
+without the REST `/api` surface. Prometheus remains independently available
+when enabled; it does not require the REST surface.
 
 ### API-Level Sharding
 
@@ -655,6 +694,17 @@ supported keys remain the standard daemon settings:
 - `CSharpDB__Daemon__Security__ApiKeyHeaderName`
 - `CSharpDB__Daemon__Security__AllowInsecureRemoteDiagnostics`
 - `CSharpDB__Daemon__Security__AllowSensitiveQueryDetailAccess`
+- `CSharpDB__Observability__Enabled`
+- `CSharpDB__Observability__OpenTelemetry__Enabled`
+- `CSharpDB__Observability__OpenTelemetry__SamplingRatio`
+- `CSharpDB__Observability__OpenTelemetry__Otlp__Enabled`
+- `CSharpDB__Observability__OpenTelemetry__Console__Enabled`
+- `CSharpDB__Observability__Prometheus__Enabled`
+- `CSharpDB__Observability__Prometheus__Path`
+- `CSharpDB__Observability__Prometheus__AllowInsecureRemoteAccess`
+- standard OTLP exporter keys such as `OTEL_EXPORTER_OTLP_ENDPOINT`,
+  `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_EXPORTER_OTLP_HEADERS`, and
+  `OTEL_EXPORTER_OTLP_TIMEOUT`
 - `CSharpDB__HostDatabase__OpenMode`
 - `CSharpDB__HostDatabase__ImplicitInsertExecutionMode`
 - `CSharpDB__HostDatabase__UseWriteOptimizedPreset`
@@ -697,6 +747,11 @@ Current state:
 - startup fails early if the database cannot be opened
 - structured CSharpDB events are available through the standard host logging
   pipeline when observability is enabled
+- optional OpenTelemetry trace and metric export uses the `CSharpDB` source and
+  meter with parent-based ratio sampling; the daemon service-name default is
+  `CSharpDB.Daemon`
+- optional Prometheus scraping remains available in a gRPC-only daemon and is
+  served on the normal Kestrel listener selected by `ASPNETCORE_URLS`
 - `/api/info` is available when REST hosting is enabled
 - REST and gRPC expose the same optional runtime summary, capped active/recent
   queries, bounded plan summary, capped sessions, and separately authorized
@@ -719,10 +774,48 @@ Request cancellation flows into diagnostics and other async host operations,
 but it is cooperative. Parsing, planning, and synchronous fast paths may finish
 before observing cancellation. There is no query/session termination RPC.
 
+OTLP and console exporters are explicit opt-ins. Keep collector endpoints and
+credentials in standard `OTEL_EXPORTER_OTLP_ENDPOINT`,
+`OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_EXPORTER_OTLP_HEADERS`, and
+`OTEL_EXPORTER_OTLP_TIMEOUT` environment variables. Prometheus uses the daemon
+security configuration: API-key mode returns `401` for an invalid key; security
+mode `None` accepts only the actual loopback peer and ignores forwarded address
+headers. `CSharpDB:Observability:Prometheus:AllowInsecureRemoteAccess=true`
+permits unauthenticated non-loopback scrapes and emits a startup warning. A
+remote rejection returns `403`; a disabled exporter is not mapped and returns
+`404`. The exact configured path must not collide with REST, gRPC, OpenAPI,
+Scalar, or health routes, and a custom path does not leave `/metrics` mapped.
+
+The canonical span names/attributes, complete metric name/kind/unit/tag schema,
+privacy rules, and temporality/version policy are in the
+[CSharpDB.Observability contract](../CSharpDB.Observability/README.md#phase-4-trace-and-metric-schema).
+Signal enablement is exact:
+
+| Observability | OpenTelemetry | Prometheus | Daemon behavior |
+| --- | --- | --- | --- |
+| disabled | disabled | disabled | No telemetry provider, exporter, background exporter service, or scrape route is registered. |
+| enabled | disabled | disabled | Configured history/logging may run; no CSharpDB trace/metric provider is registered. |
+| enabled | enabled | either | CSharpDB tracing and metrics providers are registered; console and OTLP export still require their own flags. |
+| enabled | disabled | enabled | Metrics and the exact protected scrape route are registered without tracing, including when the REST API surface is disabled. |
+
+Enabling OpenTelemetry or Prometheus while global observability is disabled is
+invalid. Enabling OpenTelemetry without console or OTLP creates in-process
+providers but no export destination or outbound exporter loop. REST and gRPC
+server activities parent the logical database query span; the engine adopts
+that carried span rather than creating a duplicate. Prometheus exemplars are
+disabled so trace ids do not enter the scrape surface.
+
+Current support boundary: automatic physical checkpoints and startup WAL
+recovery publish metrics but not physical spans. Ownerless path-only static
+restore validation/restore, reindex, vacuum, and foreign-key migration calls
+have no runtime telemetry identity; daemon/client-owned operations are the
+observable path. The BCL libraries retain their existing trimming/NativeAOT
+contract, but the daemon does not make a NativeAOT-hosting claim; supported
+publish and package qualification remain release evidence, not an assumption.
+
 Not implemented yet in this host:
 
 - `/health`
-- `/metrics`
 - role-based or per-user authorization
 - TLS-specific configuration helpers
 - a query/session kill endpoint

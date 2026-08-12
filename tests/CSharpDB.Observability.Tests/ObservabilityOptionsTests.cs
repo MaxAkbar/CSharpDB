@@ -16,9 +16,111 @@ public sealed class ObservabilityOptionsTests
         Assert.Equal(SqlTextCaptureMode.None, options.Logging.SqlText);
         Assert.False(options.OpenTelemetry.Enabled);
         Assert.False(options.OpenTelemetry.Otlp.Enabled);
+        Assert.False(options.OpenTelemetry.Console.Enabled);
+        Assert.Equal("CSharpDB", options.OpenTelemetry.Resource.ServiceNamespace);
+        Assert.Null(options.OpenTelemetry.Resource.ServiceName);
         Assert.False(options.Prometheus.Enabled);
         Assert.False(options.Prometheus.AllowInsecureRemoteAccess);
         Assert.True(options.Health.Enabled);
+    }
+
+    [Fact]
+    public void Exporters_RequireTheOwningTelemetrySwitches()
+    {
+        var options = new CSharpDbObservabilityOptions
+        {
+            Enabled = false,
+            OpenTelemetry = new CSharpDbOpenTelemetryOptions
+            {
+                Enabled = false,
+                Otlp = new CSharpDbOtlpOptions { Enabled = true },
+                Console = new CSharpDbConsoleExporterOptions { Enabled = true },
+            },
+            Prometheus = new CSharpDbPrometheusOptions
+            {
+                Enabled = false,
+                AllowInsecureRemoteAccess = true,
+            },
+        };
+
+        IReadOnlyList<string> errors = options.GetValidationErrors();
+
+        Assert.Contains(errors, error => error.Contains("Otlp", StringComparison.Ordinal));
+        Assert.Contains(errors, error => error.Contains("Console", StringComparison.Ordinal));
+        Assert.Contains(
+            errors,
+            error => error.Contains("AllowInsecureRemoteAccess", StringComparison.Ordinal));
+
+        options.OpenTelemetry.Enabled = true;
+        options.Prometheus.Enabled = true;
+        errors = options.GetValidationErrors();
+        Assert.Contains(
+            errors,
+            error => error.Contains(
+                "OpenTelemetry cannot be enabled",
+                StringComparison.Ordinal));
+        Assert.Contains(
+            errors,
+            error => error.Contains(
+                "Prometheus cannot be enabled",
+                StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("/metrics/")]
+    [InlineData("/metrics/{name}")]
+    [InlineData("/metrics/../private")]
+    [InlineData("/metrics%2Fprivate")]
+    public void PrometheusPath_MustBeCanonicalAndLiteral(string path)
+    {
+        var options = new CSharpDbObservabilityOptions();
+        options.Prometheus.Path = path;
+
+        Assert.Contains(
+            options.GetValidationErrors(),
+            error => error.Contains("Prometheus.Path", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ResourceOptions_AreBoundedPathFreeAndSourceGeneratedSerializable()
+    {
+        var options = new CSharpDbObservabilityOptions
+        {
+            Enabled = true,
+            OpenTelemetry = new CSharpDbOpenTelemetryOptions
+            {
+                Enabled = true,
+                SamplingRatio = 0.25,
+                Resource = new CSharpDbOpenTelemetryResourceOptions
+                {
+                    ServiceName = "orders-db",
+                    ServiceNamespace = "sample",
+                    ServiceVersion = "1.2.3+build",
+                    ServiceInstanceId = "instance-1",
+                    DeploymentEnvironment = "staging",
+                },
+                Console = new CSharpDbConsoleExporterOptions { Enabled = true },
+            },
+        };
+
+        options.Validate();
+        string json = System.Text.Json.JsonSerializer.Serialize(
+            options,
+            CSharpDbObservabilityJsonContext.Default.CSharpDbObservabilityOptions);
+        CSharpDbObservabilityOptions roundTrip = Assert.IsType<
+            CSharpDbObservabilityOptions>(
+            System.Text.Json.JsonSerializer.Deserialize(
+                json,
+                CSharpDbObservabilityJsonContext.Default.CSharpDbObservabilityOptions));
+
+        Assert.Equal("orders-db", roundTrip.OpenTelemetry.Resource.ServiceName);
+        Assert.Equal(0.25, roundTrip.OpenTelemetry.SamplingRatio);
+        Assert.True(roundTrip.OpenTelemetry.Console.Enabled);
+
+        options.OpenTelemetry.Resource.ServiceInstanceId = @"C:\private\instance";
+        Assert.Contains(
+            options.GetValidationErrors(),
+            error => error.Contains("ServiceInstanceId", StringComparison.Ordinal));
     }
 
     [Fact]

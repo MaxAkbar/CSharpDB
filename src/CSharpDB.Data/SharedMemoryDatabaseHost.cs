@@ -248,7 +248,9 @@ internal static class SharedMemoryDatabaseRegistry
     }
 }
 
-internal sealed class SharedMemoryDatabaseHost : IDataRuntimeDiagnosticsContributor
+internal sealed class SharedMemoryDatabaseHost :
+    IDataRuntimeDiagnosticsContributor,
+    ICSharpDbDataMetricsProvider
 {
     private const string BusyMessage = "Database is busy with an active transaction.";
 
@@ -260,6 +262,7 @@ internal sealed class SharedMemoryDatabaseHost : IDataRuntimeDiagnosticsContribu
     private readonly bool _lifecycleLoggingEnabled;
     private readonly DataSessionRuntimeDiagnostics? _runtimeDiagnostics;
     private readonly DataRuntimeDiagnosticsStateOwner? _runtimeDiagnosticsStateOwner;
+    private IDisposable? _metricsRegistration;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly TaskCompletionSource _retirement =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -295,6 +298,21 @@ internal sealed class SharedMemoryDatabaseHost : IDataRuntimeDiagnosticsContribu
             DataConnectionOwnerKind.SharedMemory,
             runtimeDatabaseOptions.RuntimeDiagnosticsState?.TimeProvider);
         _runtimeDiagnosticsStateOwner = runtimeDiagnosticsStateOwner;
+        try
+        {
+            CSharpDbRuntimeDiagnosticsState? metricsState =
+                runtimeDiagnosticsStateOwner?.State ??
+                runtimeDatabaseOptions.RuntimeDiagnosticsState;
+            _metricsRegistration = metricsState?.RuntimeMetrics
+                ?.RegisterDataProvider(
+                    this,
+                    CSharpDB.Observability.CSharpDbTransport.Direct);
+        }
+        catch
+        {
+            // Metrics registration is best effort and cannot prevent a shared
+            // in-memory host from opening.
+        }
     }
 
     internal CSharpDbObservabilityOptions? ObservabilityOptionsSnapshot =>
@@ -305,6 +323,26 @@ internal sealed class SharedMemoryDatabaseHost : IDataRuntimeDiagnosticsContribu
     internal CSharpDbRuntimeDiagnosticsState? RuntimeDiagnosticsState =>
         _runtimeDatabaseOptions.RuntimeDiagnosticsState;
     internal Task Retirement => _retirement.Task;
+
+    bool ICSharpDbDataMetricsProvider.TryCaptureMetrics(
+        out CSharpDbDataMetricSnapshot snapshot)
+    {
+        try
+        {
+            snapshot = new CSharpDbDataMetricSnapshot(
+                Math.Max(0, Volatile.Read(ref _activeSessionCount)),
+                _runtimeDiagnostics?.ActiveReaderCount,
+                PoolWaiters: null,
+                AvailableConnections: null,
+                PoolMetricsApplicable: false);
+            return true;
+        }
+        catch
+        {
+            snapshot = default;
+            return false;
+        }
+    }
 
     public async ValueTask<DataConnectionDiagnosticsRawSnapshot?> CaptureRuntimeDiagnosticsAsync(
         int maximumSessionRecords,
@@ -1252,7 +1290,16 @@ internal sealed class SharedMemoryDatabaseHost : IDataRuntimeDiagnosticsContribu
         }
         finally
         {
-            _runtimeDiagnosticsStateOwner?.Dispose();
+            try
+            {
+                Interlocked.Exchange(
+                    ref _metricsRegistration,
+                    null)?.Dispose();
+            }
+            finally
+            {
+                _runtimeDiagnosticsStateOwner?.Dispose();
+            }
         }
     }
 

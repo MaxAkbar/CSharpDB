@@ -29,7 +29,8 @@ internal sealed partial class EngineTransportClient
                     MaintenanceOperationKind.Backup,
                     MaintenanceOperationPhase.Queued,
                     CSharpDbOperationClass.Backup,
-                    CSharpDbLogEvents.BackupCompleted);
+                    CSharpDbLogEvents.BackupCompleted,
+                    maintenanceLifetime);
                 operationScope = operation?.EnterScope();
             }
 
@@ -90,7 +91,8 @@ internal sealed partial class EngineTransportClient
                         MaintenanceOperationKind.RestoreValidation,
                         MaintenanceOperationPhase.Validating,
                         CSharpDbOperationClass.Restore,
-                        CSharpDbLogEvents.RestoreCompleted);
+                        CSharpDbLogEvents.RestoreCompleted,
+                        maintenanceLifetime);
                     operationScope = operation?.EnterScope();
                 }
                 return MapRestoreResult(
@@ -127,7 +129,8 @@ internal sealed partial class EngineTransportClient
                     MaintenanceOperationKind.Restore,
                     MaintenanceOperationPhase.Queued,
                     CSharpDbOperationClass.Restore,
-                    CSharpDbLogEvents.RestoreCompleted);
+                    CSharpDbLogEvents.RestoreCompleted,
+                    fullRestoreLifetime);
                 fullRestoreScope = fullRestoreOperation?.EnterScope();
             }
 
@@ -194,7 +197,8 @@ internal sealed partial class EngineTransportClient
                     MaintenanceOperationKind.ForeignKeyMigration,
                     MaintenanceOperationPhase.Queued,
                     CSharpDbOperationClass.Maintenance,
-                    CSharpDbLogEvents.MaintenanceCompleted);
+                    CSharpDbLogEvents.MaintenanceCompleted,
+                    maintenanceLifetime);
                 operationScope = operation?.EnterScope();
             }
 
@@ -288,7 +292,8 @@ internal sealed partial class EngineTransportClient
                     MaintenanceOperationKind.Reindex,
                     MaintenanceOperationPhase.Queued,
                     CSharpDbOperationClass.Reindex,
-                    CSharpDbLogEvents.MaintenanceCompleted);
+                    CSharpDbLogEvents.MaintenanceCompleted,
+                    maintenanceLifetime);
                 operationScope = operation?.EnterScope();
             }
 
@@ -346,7 +351,8 @@ internal sealed partial class EngineTransportClient
                     MaintenanceOperationKind.Vacuum,
                     MaintenanceOperationPhase.Queued,
                     CSharpDbOperationClass.Vacuum,
-                    CSharpDbLogEvents.MaintenanceCompleted);
+                    CSharpDbLogEvents.MaintenanceCompleted,
+                    maintenanceLifetime);
                 operationScope = operation?.EnterScope();
             }
 

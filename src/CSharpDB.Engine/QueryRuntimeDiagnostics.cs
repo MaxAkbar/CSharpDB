@@ -16,6 +16,7 @@ internal sealed partial class QueryRuntimeDiagnostics : IDisposable
     private readonly Dictionary<OpaqueDiagnosticsId, QueryRuntimeOperation> _active;
     private readonly Queue<RecentQueryState> _recent;
     private readonly CSharpDbRuntimeDiagnosticsState _runtimeState;
+    private readonly CSharpDbRuntimeMetrics? _runtimeMetrics;
     private readonly int _activeCapacity;
     private readonly int _recentCapacity;
     private readonly TimeSpan _recentRetention;
@@ -43,6 +44,7 @@ internal sealed partial class QueryRuntimeDiagnostics : IDisposable
     {
         ArgumentNullException.ThrowIfNull(runtimeState);
         _runtimeState = runtimeState;
+        _runtimeMetrics = runtimeState.RuntimeMetrics;
         _activeCapacity = runtimeState.ActiveQueryCapacity;
         _recentCapacity = runtimeState.RecentQueryCapacity;
         _recentRetention = runtimeState.RecentQueryRetention;
@@ -231,6 +233,8 @@ internal sealed partial class QueryRuntimeDiagnostics : IDisposable
                         suppressDiagnosticEvents,
                         AcceptQueryDetail(detail),
                         registered: false);
+                    operation.MetricsStarted =
+                        _runtimeMetrics?.QueryStarted(context) == true;
                 }
                 else
                 {
@@ -247,6 +251,8 @@ internal sealed partial class QueryRuntimeDiagnostics : IDisposable
                         AcceptQueryDetail(detail),
                         registered: true);
                     _active.Add(context.OperationId, operation);
+                    operation.MetricsStarted =
+                        _runtimeMetrics?.QueryStarted(context) == true;
                 }
             }
 
@@ -618,6 +624,8 @@ internal sealed partial class QueryRuntimeDiagnostics : IDisposable
                 state.Phase = QueryExecutionPhase.Completed;
                 state.WaitingLease = null;
                 state.Detail = null;
+                _runtimeMetrics?.QueryAbandoned(
+                    state.TakeMetricsStarted());
                 state.Context.ReleaseRuntimeDiagnostics(this);
             }
 
@@ -869,6 +877,7 @@ internal sealed partial class QueryRuntimeDiagnostics : IDisposable
 
     private void Abandon(QueryRuntimeOperation state, bool registered)
     {
+        bool metricsStarted;
         lock (_gate)
         {
             if (state.Completed)
@@ -888,7 +897,10 @@ internal sealed partial class QueryRuntimeDiagnostics : IDisposable
             state.Phase = QueryExecutionPhase.Completed;
             state.WaitingLease = null;
             state.Detail = null;
+            metricsStarted = state.TakeMetricsStarted();
         }
+
+        _runtimeMetrics?.QueryAbandoned(metricsStarted);
     }
 
     private bool DetachForRebind(
@@ -922,6 +934,7 @@ internal sealed partial class QueryRuntimeDiagnostics : IDisposable
             state.Completed = true;
             state.Phase = QueryExecutionPhase.Completed;
             state.WaitingLease = null;
+            _runtimeMetrics?.QueryAbandoned(state.TakeMetricsStarted());
             return true;
         }
     }
@@ -964,6 +977,8 @@ internal sealed partial class QueryRuntimeDiagnostics : IDisposable
             Plan: default,
             Detail: default);
 
+        bool terminalAccepted = false;
+        bool metricsStarted;
         lock (_gate)
         {
             if (state.Completed || Volatile.Read(ref _disposed) != 0)
@@ -972,67 +987,87 @@ internal sealed partial class QueryRuntimeDiagnostics : IDisposable
                 state.Phase = QueryExecutionPhase.Completed;
                 state.WaitingLease = null;
                 state.Detail = null;
-                return;
+            }
+            else
+            {
+                if (registered &&
+                    _active.TryGetValue(state.Context.OperationId, out QueryRuntimeOperation? current) &&
+                    ReferenceEquals(current, state))
+                {
+                    _active.Remove(state.Context.OperationId);
+                }
+
+                // Mark terminal only after removal and under the same gate. Phase
+                // updates after this point are ignored and cannot resurrect it.
+                state.Completed = true;
+                state.Phase = QueryExecutionPhase.Completed;
+                state.WaitingLease = null;
+
+                // Terminal actual rows are captured in the same atomic transfer
+                // as the rest of the active operation. A SELECT contributes rows
+                // produced; a mutation contributes rows affected.
+                recentState = recentState with
+                {
+                    Sequence = NextRecentSequenceLocked(),
+                    Plan = state.Plan.CreateCopy(
+                        state.Context,
+                        Math.Max(0, rowsProduced > 0 ? rowsProduced : rowsAffected)),
+                    Detail = state.Detail,
+                };
+                state.Detail = null;
+
+                PruneExpired(safeRecordedAtTimestamp);
+                EnsureRecentCapacityLocked();
+                _recent.Enqueue(recentState);
+                if (state.Context.CountsAsRequest)
+                    _requestCount = SaturatingIncrement(_requestCount);
+                if (state.Context.CountsAsStatement)
+                {
+                    _statementExecutionCount = SaturatingIncrement(
+                        _statementExecutionCount);
+                }
+
+                switch (outcome)
+                {
+                    case CSharpDbOperationOutcome.Succeeded:
+                        _succeededCount = SaturatingIncrement(_succeededCount);
+                        break;
+                    case CSharpDbOperationOutcome.Canceled:
+                        _canceledCount = SaturatingIncrement(_canceledCount);
+                        break;
+                    default:
+                        _failedCount = SaturatingIncrement(_failedCount);
+                        break;
+                }
+
+                if (isSlow)
+                    _slowCount = SaturatingIncrement(_slowCount);
+                _rowsProduced = SaturatingAdd(
+                    _rowsProduced,
+                    recentState.RowsProduced);
+                _rowsAffected = SaturatingAdd(
+                    _rowsAffected,
+                    recentState.RowsAffected);
+                terminalAccepted = true;
             }
 
-            if (registered &&
-                _active.TryGetValue(state.Context.OperationId, out QueryRuntimeOperation? current) &&
-                ReferenceEquals(current, state))
-            {
-                _active.Remove(state.Context.OperationId);
-            }
+            metricsStarted = state.TakeMetricsStarted();
+        }
 
-            // Mark terminal only after removal and under the same gate. Phase
-            // updates after this point are ignored and cannot resurrect it.
-            state.Completed = true;
-            state.Phase = QueryExecutionPhase.Completed;
-            state.WaitingLease = null;
-
-            // Terminal actual rows are captured in the same atomic transfer
-            // as the rest of the active operation. A SELECT contributes rows
-            // produced; a mutation contributes rows affected.
-            recentState = recentState with
-            {
-                Sequence = NextRecentSequenceLocked(),
-                Plan = state.Plan.CreateCopy(
-                    state.Context,
-                    Math.Max(0, rowsProduced > 0 ? rowsProduced : rowsAffected)),
-                Detail = state.Detail,
-            };
-            state.Detail = null;
-
-            PruneExpired(safeRecordedAtTimestamp);
-            EnsureRecentCapacityLocked();
-            _recent.Enqueue(recentState);
-            if (state.Context.CountsAsRequest)
-                _requestCount = SaturatingIncrement(_requestCount);
-            if (state.Context.CountsAsStatement)
-            {
-                _statementExecutionCount = SaturatingIncrement(
-                    _statementExecutionCount);
-            }
-
-            switch (outcome)
-            {
-                case CSharpDbOperationOutcome.Succeeded:
-                    _succeededCount = SaturatingIncrement(_succeededCount);
-                    break;
-                case CSharpDbOperationOutcome.Canceled:
-                    _canceledCount = SaturatingIncrement(_canceledCount);
-                    break;
-                default:
-                    _failedCount = SaturatingIncrement(_failedCount);
-                    break;
-            }
-
-            if (isSlow)
-                _slowCount = SaturatingIncrement(_slowCount);
-            _rowsProduced = SaturatingAdd(
-                _rowsProduced,
-                recentState.RowsProduced);
-            _rowsAffected = SaturatingAdd(
-                _rowsAffected,
-                recentState.RowsAffected);
+        if (terminalAccepted)
+        {
+            _runtimeMetrics?.QueryCompleted(
+                metricsStarted,
+                state.Context,
+                outcome,
+                safeDuration,
+                recentState.RowsProduced,
+                recentState.RowsAffected,
+                isSlow);
+        }
+        else
+        {
+            _runtimeMetrics?.QueryAbandoned(metricsStarted);
         }
     }
 
@@ -1319,6 +1354,14 @@ internal sealed partial class QueryRuntimeDiagnostics : IDisposable
         internal WaitingPhaseLease? WaitingLease { get; set; }
         internal bool Completed { get; set; }
         internal bool LongRunningMarked { get; set; }
+        internal bool MetricsStarted { get; set; }
+
+        internal bool TakeMetricsStarted()
+        {
+            bool started = MetricsStarted;
+            MetricsStarted = false;
+            return started;
+        }
 
         public IQueryPlanRuntimeObserver ExplicitPlanObserver => this;
 

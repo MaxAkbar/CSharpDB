@@ -136,6 +136,32 @@ public static class CSharpDbOperationScope
             queryRuntimeOperation: queryRuntimeOperation));
     }
 
+    internal static IDisposable Enter(
+        CSharpDbOperationContext operation,
+        object? queryRuntimeOperation,
+        CSharpDbActivityOperation? activityOperation)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+        return Push(new ScopeFrame(
+            s_current.Value,
+            operation,
+            transport: null,
+            queryRuntimeOperation: queryRuntimeOperation,
+            activityOperation: activityOperation));
+    }
+
+    internal static IDisposable Enter(
+        CSharpDbOperationContext operation,
+        CSharpDbActivityOperation? activityOperation)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+        return Push(new ScopeFrame(
+            s_current.Value,
+            operation,
+            transport: null,
+            activityOperation: activityOperation));
+    }
+
     /// <summary>
     /// Carries the listener-interest decision made by an outer serialized
     /// adapter together with the exact operation frame. Engine adoption uses
@@ -146,7 +172,8 @@ public static class CSharpDbOperationScope
         CSharpDbOperationContext operation,
         object? queryRuntimeOperation,
         CSharpDbQueryEventInterestSnapshot queryEventInterest,
-        CSharpDbDeferredDiagnosticBoundary? queryEventBoundary = null)
+        CSharpDbDeferredDiagnosticBoundary? queryEventBoundary = null,
+        CSharpDbActivityOperation? activityOperation = null)
     {
         ArgumentNullException.ThrowIfNull(operation);
         return Push(new ScopeFrame(
@@ -155,7 +182,8 @@ public static class CSharpDbOperationScope
             transport: null,
             queryRuntimeOperation: queryRuntimeOperation,
             queryEventInterest: queryEventInterest,
-            queryEventBoundary: queryEventBoundary));
+            queryEventBoundary: queryEventBoundary,
+            activityOperation: activityOperation));
     }
 
     public static IDisposable EnterTransport(CSharpDbTransport transport)
@@ -336,6 +364,20 @@ public static class CSharpDbOperationScope
         }
     }
 
+    internal static CSharpDbActivityOperation? CurrentActivityOperation
+    {
+        get
+        {
+            for (ScopeFrame? frame = s_current.Value; frame is not null; frame = frame.Parent)
+            {
+                if (frame.Operation is not null)
+                    return frame.ActivityOperation;
+            }
+
+            return null;
+        }
+    }
+
     /// <summary>
     /// Captures the ambient values needed to begin one Engine query while
     /// walking the AsyncLocal scope chain once. Individual public accessors
@@ -350,6 +392,7 @@ public static class CSharpDbOperationScope
         object? queryRuntimeOperation = null;
         CSharpDbQueryEventInterestSnapshot? queryEventInterest = null;
         CSharpDbDeferredDiagnosticBoundary? queryEventBoundary = null;
+        CSharpDbActivityOperation? activityOperation = null;
         bool operationCaptured = false;
         bool transportCaptured = false;
         bool sessionCaptured = false;
@@ -400,6 +443,7 @@ public static class CSharpDbOperationScope
                 queryRuntimeOperation = frame.QueryRuntimeOperation;
                 queryEventInterest = frame.QueryEventInterest;
                 queryEventBoundary = frame.QueryEventBoundary;
+                activityOperation = frame.ActivityOperation;
                 operationCaptured = true;
             }
         }
@@ -413,7 +457,8 @@ public static class CSharpDbOperationScope
             suppressDiagnosticEvents,
             queryRuntimeOperation,
             queryEventInterest,
-            queryEventBoundary);
+            queryEventBoundary,
+            activityOperation);
     }
 
     private static CSharpDbDiagnosticEventBuffer CreateDiagnosticEventBuffer()
@@ -465,6 +510,7 @@ public static class CSharpDbOperationScope
                 frame.QueryRuntimeOperation,
                 frame.QueryEventInterest,
                 frame.QueryEventBoundary,
+                frame.ActivityOperation,
                 frame.SuppressDiagnosticEvents,
                 frame.RemovalToken);
     }
@@ -485,6 +531,7 @@ public static class CSharpDbOperationScope
             object? queryRuntimeOperation = null,
             CSharpDbQueryEventInterestSnapshot? queryEventInterest = null,
             CSharpDbDeferredDiagnosticBoundary? queryEventBoundary = null,
+            CSharpDbActivityOperation? activityOperation = null,
             bool suppressDiagnosticEvents = false)
             : this(
                 parent,
@@ -497,6 +544,7 @@ public static class CSharpDbOperationScope
                 queryRuntimeOperation,
                 queryEventInterest,
                 queryEventBoundary,
+                activityOperation,
                 suppressDiagnosticEvents,
                 removalToken: null)
         {
@@ -513,6 +561,7 @@ public static class CSharpDbOperationScope
             object? queryRuntimeOperation,
             CSharpDbQueryEventInterestSnapshot? queryEventInterest,
             CSharpDbDeferredDiagnosticBoundary? queryEventBoundary,
+            CSharpDbActivityOperation? activityOperation,
             bool suppressDiagnosticEvents,
             ScopeFrame? removalToken)
         {
@@ -526,6 +575,7 @@ public static class CSharpDbOperationScope
             QueryRuntimeOperation = queryRuntimeOperation;
             QueryEventInterest = queryEventInterest;
             QueryEventBoundary = queryEventBoundary;
+            ActivityOperation = activityOperation;
             SuppressDiagnosticEvents = suppressDiagnosticEvents;
             RemovalToken = removalToken ?? this;
         }
@@ -540,6 +590,7 @@ public static class CSharpDbOperationScope
         public object? QueryRuntimeOperation { get; }
         public CSharpDbQueryEventInterestSnapshot? QueryEventInterest { get; }
         public CSharpDbDeferredDiagnosticBoundary? QueryEventBoundary { get; }
+        public CSharpDbActivityOperation? ActivityOperation { get; }
         public bool SuppressDiagnosticEvents { get; }
         public ScopeFrame RemovalToken { get; }
 
@@ -593,7 +644,8 @@ internal readonly record struct CSharpDbQueryScopeSnapshot(
     bool AreDiagnosticEventsSuppressed,
     object? QueryRuntimeOperation,
     CSharpDbQueryEventInterestSnapshot? QueryEventInterest,
-    CSharpDbDeferredDiagnosticBoundary? QueryEventBoundary);
+    CSharpDbDeferredDiagnosticBoundary? QueryEventBoundary,
+    CSharpDbActivityOperation? ActivityOperation);
 
 internal readonly record struct CSharpDbQueryRuntimeBinding(
     CSharpDbOperationContext? Operation,

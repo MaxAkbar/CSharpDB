@@ -23,6 +23,10 @@ internal sealed partial class EngineTransportClient
                 Volatile.Read(ref _runtimeDatabaseFamily);
             CSharpDbRuntimeDiagnosticsState? runtimeState =
                 runtimeFamily.RuntimeDiagnosticsState;
+            CSharpDbObservabilityOptions? observability =
+                runtimeFamily.DatabaseOptions.ObservabilityOptions;
+            bool traceRequested = CSharpDbActivityOperation.ShouldStart(
+                runtimeState?.TracingEnabled == true);
             CaptureQueryObservationInterest(
                 out bool queryEventsObservedAtStart,
                 out bool slowQueryEventsObservedAtStart,
@@ -45,11 +49,11 @@ internal sealed partial class EngineTransportClient
                 listenerObservationRequested = false;
             }
 
-            if (runtimeState?.IsEnabled != true && !listenerObservationRequested)
+            if (runtimeState?.IsEnabled != true &&
+                !listenerObservationRequested &&
+                !traceRequested)
                 return null;
 
-            CSharpDbObservabilityOptions? observability =
-                runtimeFamily.DatabaseOptions.ObservabilityOptions;
             CSharpDbLoggingOptions? logging = observability?.Logging;
             SqlTextCaptureMode captureMode = operationClass == CSharpDbOperationClass.Query
                 ? logging?.SqlText ?? SqlTextCaptureMode.None
@@ -82,6 +86,8 @@ internal sealed partial class EngineTransportClient
             }
 
             CSharpDbOperationContext? parent = CSharpDbOperationScope.Current;
+            CSharpDbActivityOperation? carriedActivityOperation =
+                CSharpDbOperationScope.CurrentActivityOperation;
             var transport = CSharpDbOperationScope.CurrentTransport;
             OpaqueDiagnosticsId? sessionId = CSharpDbOperationScope.CurrentSessionId;
             if (transport == CSharpDB.Observability.CSharpDbTransport.Embedded)
@@ -96,32 +102,99 @@ internal sealed partial class EngineTransportClient
                     observability?.DatabaseAlias)
                         ? observability!.DatabaseAlias
                         : _observabilityDatabaseAlias);
-            CSharpDbOperationContext context = parent switch
+            CSharpDbActivityOperation? activityOperation = null;
+            CSharpDbOperationContext context;
+            if (operationClass == CSharpDbOperationClass.Query &&
+                parent is
+                {
+                    OperationClass: CSharpDbOperationClass.Query,
+                    Role: CSharpDbOperationRole.Internal,
+                })
             {
-                null when operationClass == CSharpDbOperationClass.Query =>
-                    CSharpDbOperationContext.CreateRoot(
+                context = parent;
+                if (carriedActivityOperation is not null &&
+                    !carriedActivityOperation.IsCompleted)
+                {
+                    activityOperation = carriedActivityOperation;
+                }
+                else if (traceRequested)
+                {
+                    activityOperation = CSharpDbActivityOperation.Start(
+                        operationClass,
+                        parent,
+                        static exactContext => exactContext.WithCurrentTraceId(),
+                        out context);
+                }
+            }
+            else if (traceRequested)
+            {
+                activityOperation = CSharpDbActivityOperation.Start(
+                    operationClass,
+                    (
+                        Parent: parent,
+                        OperationClass: operationClass,
+                        Transport: transport,
+                        DatabaseAlias: databaseAlias,
+                        SessionId: sessionId,
+                        Fingerprint: fingerprint,
+                        TimeProvider: timeProvider),
+                    static state => state.Parent switch
+                    {
+                        null when state.OperationClass == CSharpDbOperationClass.Query =>
+                            CSharpDbOperationContext.CreateRoot(
+                                state.OperationClass,
+                                state.Transport,
+                                state.DatabaseAlias,
+                                state.SessionId,
+                                queryFingerprint: state.Fingerprint,
+                                timeProvider: state.TimeProvider),
+                        null => CSharpDbOperationContext.CreateRequest(
+                            state.OperationClass,
+                            state.Transport,
+                            state.DatabaseAlias,
+                            state.SessionId,
+                            timeProvider: state.TimeProvider),
+                        _ when state.OperationClass == CSharpDbOperationClass.Query =>
+                            CSharpDbOperationContext.CreateStatement(
+                                state.Parent,
+                                state.Fingerprint,
+                                state.TimeProvider),
+                        _ => CSharpDbOperationContext.CreateRequest(
+                            state.Parent,
+                            state.OperationClass,
+                            state.TimeProvider),
+                    },
+                    out context);
+            }
+            else
+            {
+                context = parent switch
+                {
+                    null when operationClass == CSharpDbOperationClass.Query =>
+                        CSharpDbOperationContext.CreateRoot(
+                            operationClass,
+                            transport,
+                            databaseAlias,
+                            sessionId,
+                            queryFingerprint: fingerprint,
+                            timeProvider: timeProvider),
+                    null => CSharpDbOperationContext.CreateRequest(
                         operationClass,
                         transport,
                         databaseAlias,
                         sessionId,
-                        queryFingerprint: fingerprint,
                         timeProvider: timeProvider),
-                null => CSharpDbOperationContext.CreateRequest(
-                    operationClass,
-                    transport,
-                    databaseAlias,
-                    sessionId,
-                    timeProvider: timeProvider),
-                _ when operationClass == CSharpDbOperationClass.Query =>
-                    CSharpDbOperationContext.CreateStatement(
+                    _ when operationClass == CSharpDbOperationClass.Query =>
+                        CSharpDbOperationContext.CreateStatement(
+                            parent,
+                            fingerprint,
+                            timeProvider),
+                    _ => CSharpDbOperationContext.CreateRequest(
                         parent,
-                        fingerprint,
+                        operationClass,
                         timeProvider),
-                _ => CSharpDbOperationContext.CreateRequest(
-                    parent,
-                    operationClass,
-                    timeProvider),
-            };
+                };
+            }
             TimeSpan slowQueryThreshold = operationClass switch
             {
                 CSharpDbOperationClass.Query => GetConfiguredSlowQueryThreshold(
@@ -155,7 +228,9 @@ internal sealed partial class EngineTransportClient
                 }
             }
 
-            if (runtimeOperation is null && !listenerObservationRequested)
+            if (runtimeOperation is null &&
+                !listenerObservationRequested &&
+                activityOperation is null)
                 return null;
 
             return new CompositeQueryOperation(
@@ -169,7 +244,8 @@ internal sealed partial class EngineTransportClient
                 slowQueryThreshold,
                 captureMode,
                 capturedSqlText,
-                suppressDiagnosticEvents);
+                suppressDiagnosticEvents,
+                activityOperation);
         }
         catch
         {
@@ -190,6 +266,7 @@ internal sealed partial class EngineTransportClient
         private readonly SqlTextCaptureMode _sqlTextCaptureMode;
         private readonly string? _capturedSqlText;
         private readonly bool _suppressDiagnosticEvents;
+        private readonly CSharpDbActivityOperation? _activityOperation;
         private TimeSpan _queueDuration;
         private CSharpDbRuntimeDiagnosticsState? _explicitRuntimeState;
         private CSharpDbRuntimeDiagnosticsState? _runtimeState;
@@ -210,7 +287,8 @@ internal sealed partial class EngineTransportClient
             TimeSpan slowQueryThreshold,
             SqlTextCaptureMode sqlTextCaptureMode,
             string? capturedSqlText,
-            bool suppressDiagnosticEvents)
+            bool suppressDiagnosticEvents,
+            CSharpDbActivityOperation? activityOperation)
         {
             _owner = owner;
             _context = context;
@@ -227,13 +305,19 @@ internal sealed partial class EngineTransportClient
             _sqlTextCaptureMode = sqlTextCaptureMode;
             _capturedSqlText = capturedSqlText;
             _suppressDiagnosticEvents = suppressDiagnosticEvents;
+            _activityOperation = activityOperation;
         }
 
         internal IDisposable EnterScope()
-            => CSharpDbOperationScope.Enter(
+        {
+            IDisposable operationScope = CSharpDbOperationScope.Enter(
                 _context,
                 _scopeRuntimeOperation,
-                _queryEventInterest);
+                _queryEventInterest,
+                activityOperation: _activityOperation);
+            return _activityOperation?.WrapScope(operationScope) ??
+                operationScope;
+        }
 
         internal TimeSpan Elapsed => _context.GetElapsedTime();
         internal OpaqueDiagnosticsId OperationId => _context.OperationId;
@@ -284,11 +368,13 @@ internal sealed partial class EngineTransportClient
                     ? CSharpDbOperationScope.Enter(
                         _context,
                         queryRuntimeOperation: null,
-                        _queryEventInterest)
+                        _queryEventInterest,
+                        activityOperation: _activityOperation)
                     : CSharpDbOperationScope.Enter(
                         _context,
                         operation,
-                        _queryEventInterest);
+                        _queryEventInterest,
+                        activityOperation: _activityOperation);
             }
 
             IDisposable queueDurationScope =
@@ -377,6 +463,25 @@ internal sealed partial class EngineTransportClient
             catch
             {
                 // Runtime history must not alter the client operation.
+            }
+
+            try
+            {
+                TimeSpan queueDuration = _queueDuration <= totalDuration
+                    ? _queueDuration
+                    : totalDuration;
+                _activityOperation?.CompleteQuery(
+                    outcome,
+                    error,
+                    rowsProduced,
+                    rowsAffected,
+                    queueDuration,
+                    timeToFirstResult: null,
+                    isSlow: totalDuration >= _slowQueryThreshold);
+            }
+            catch
+            {
+                // Tracing must not alter the client operation.
             }
 
             try

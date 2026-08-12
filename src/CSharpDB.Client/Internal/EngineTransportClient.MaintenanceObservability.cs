@@ -19,29 +19,50 @@ internal sealed partial class EngineTransportClient
         MaintenanceOperationKind kind,
         MaintenanceOperationPhase initialPhase,
         CSharpDbOperationClass operationClass,
-        CSharpDbLogEventDefinition<CSharpDbLifecycleCompletedEvent> lifecycleEvent)
+        CSharpDbLogEventDefinition<CSharpDbLifecycleCompletedEvent> lifecycleEvent,
+        ClientMaintenanceLifetimeLease maintenanceLifetime)
     {
         if (CSharpDbOperationScope.IsDiagnosticsSuppressed)
             return null;
 
         try
         {
-            RuntimeDatabaseFamily family = Volatile.Read(
-                ref _runtimeDatabaseFamily);
             CSharpDbRuntimeDiagnosticsState? runtimeState =
-                family.RuntimeDiagnosticsState;
+                maintenanceLifetime.RuntimeState;
             if (runtimeState?.IsEnabled != true)
                 return null;
 
-            CSharpDbOperationContext context = CreateMaintenanceContext(
-                runtimeState,
-                operationClass);
+            bool traceRequested = CSharpDbActivityOperation.ShouldStart(
+                runtimeState.TracingEnabled);
+            CSharpDbActivityOperation? activityOperation = null;
+            CSharpDbOperationContext context;
+            if (traceRequested)
+            {
+                activityOperation = CSharpDbActivityOperation.Start(
+                    operationClass,
+                    (
+                        Target: this,
+                        RuntimeState: runtimeState,
+                        OperationClass: operationClass),
+                    static state => state.Target.CreateMaintenanceContext(
+                        state.RuntimeState,
+                        state.OperationClass),
+                    out context);
+            }
+            else
+            {
+                context = CreateMaintenanceContext(
+                    runtimeState,
+                    operationClass);
+            }
             LifecycleOperation? lifecycleOperation =
                 LifecycleObservability.StartExact(
-                    family.DatabaseOptions.ObservabilityOptions,
+                    runtimeState.CreateOptionsSnapshot(),
                     lifecycleEvent,
                     operationClass,
-                    context);
+                    context,
+                    activityOperation,
+                    runtimeState);
             MaintenanceRuntimeDiagnostics.MaintenanceRuntimeOperation?
                 runtimeOperation = null;
             try
@@ -59,13 +80,16 @@ internal sealed partial class EngineTransportClient
                 // Typed lifecycle logging remains useful if the bounded
                 // runtime-history sink cannot be created or has retired.
             }
-            if (runtimeOperation is null && lifecycleOperation is null)
+            if (runtimeOperation is null &&
+                lifecycleOperation is null &&
+                activityOperation is null)
                 return null;
 
             return new MaintenanceObservation(
                 context,
                 runtimeOperation,
-                lifecycleOperation);
+                lifecycleOperation,
+                activityOperation);
         }
         catch
         {
@@ -130,6 +154,7 @@ internal sealed partial class EngineTransportClient
 
     private ClientMaintenanceLifetimeLease RegisterClientMaintenanceLifetime()
     {
+        CSharpDbRuntimeDiagnosticsState? runtimeState;
         lock (_disposeGate)
         {
             ObjectDisposedException.ThrowIf(_disposeTask is not null, this);
@@ -139,8 +164,17 @@ internal sealed partial class EngineTransportClient
                     TaskCreationOptions.RunContinuationsAsynchronously);
             }
 
-            return new ClientMaintenanceLifetimeLease(this);
         }
+
+        lock (_runtimeDiagnosticsLifetimeGate)
+        {
+            runtimeState = Volatile.Read(
+                ref _runtimeDatabaseFamily).RuntimeDiagnosticsState;
+            if (runtimeState is not null)
+                RetainRuntimeDiagnosticsStateLocked(runtimeState);
+        }
+
+        return new ClientMaintenanceLifetimeLease(this, runtimeState);
     }
 
     private Task? GetMaintenanceLifetimesDrainedTask()
@@ -179,12 +213,40 @@ internal sealed partial class EngineTransportClient
     private sealed class ClientMaintenanceLifetimeLease : IDisposable
     {
         private EngineTransportClient? _owner;
+        private CSharpDbRuntimeDiagnosticsState? _runtimeState;
 
-        internal ClientMaintenanceLifetimeLease(EngineTransportClient owner)
-            => _owner = owner;
+        internal ClientMaintenanceLifetimeLease(
+            EngineTransportClient owner,
+            CSharpDbRuntimeDiagnosticsState? runtimeState)
+        {
+            _owner = owner;
+            _runtimeState = runtimeState;
+        }
+
+        internal CSharpDbRuntimeDiagnosticsState? RuntimeState =>
+            Volatile.Read(ref _runtimeState);
 
         public void Dispose()
-            => Interlocked.Exchange(ref _owner, null)
-                ?.UnregisterClientMaintenanceLifetime();
+        {
+            EngineTransportClient? owner = Interlocked.Exchange(
+                ref _owner,
+                null);
+            if (owner is null)
+                return;
+
+            CSharpDbRuntimeDiagnosticsState? runtimeState =
+                Interlocked.Exchange(ref _runtimeState, null);
+            try
+            {
+                if (runtimeState is not null)
+                {
+                    owner.ReleaseRuntimeDiagnosticsStateOwnership(runtimeState);
+                }
+            }
+            finally
+            {
+                owner.UnregisterClientMaintenanceLifetime();
+            }
+        }
     }
 }

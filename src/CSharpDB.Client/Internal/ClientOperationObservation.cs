@@ -23,6 +23,7 @@ internal sealed class ClientOperationObservation
     private readonly TimeSpan _slowQueryThreshold;
     private readonly SqlTextCaptureMode _sqlTextCaptureMode;
     private readonly string? _capturedSqlText;
+    private readonly CSharpDbActivityOperation? _activityOperation;
     private int _completed;
 
     private ClientOperationObservation(
@@ -31,7 +32,8 @@ internal sealed class ClientOperationObservation
         bool slowQueryEventsEnabled,
         TimeSpan slowQueryThreshold,
         SqlTextCaptureMode sqlTextCaptureMode,
-        string? capturedSqlText)
+        string? capturedSqlText,
+        CSharpDbActivityOperation? activityOperation)
     {
         _context = context;
         _queryEventsEnabled = queryEventsEnabled;
@@ -39,6 +41,7 @@ internal sealed class ClientOperationObservation
         _slowQueryThreshold = slowQueryThreshold;
         _sqlTextCaptureMode = sqlTextCaptureMode;
         _capturedSqlText = capturedSqlText;
+        _activityOperation = activityOperation;
     }
 
     internal CSharpDbOperationContext Context => _context;
@@ -62,16 +65,20 @@ internal sealed class ClientOperationObservation
 
         return TryStart(
             provider.ObservabilityOptions,
-            settings =>
+            operationClass,
+            (Provider: provider, OperationClass: operationClass),
+            static (state, settings) =>
             {
                 CSharpDbOperationContext? parent = CSharpDbOperationScope.Current;
                 return parent is null
                     ? CSharpDbOperationContext.CreateRequest(
-                        operationClass,
-                        ResolveRootTransport(provider.ObservabilityTransport),
+                        state.OperationClass,
+                        ResolveRootTransport(state.Provider.ObservabilityTransport),
                         settings.DatabaseAlias,
                         CSharpDbOperationScope.CurrentSessionId)
-                    : CSharpDbOperationContext.CreateRequest(parent, operationClass);
+                    : CSharpDbOperationContext.CreateRequest(
+                        parent,
+                        state.OperationClass);
             },
             sql: null);
     }
@@ -84,13 +91,15 @@ internal sealed class ClientOperationObservation
 
         return TryStart(
             options,
-            settings =>
+            CSharpDbOperationClass.Query,
+            ObservabilityTransport.Sharded,
+            static (transport, settings) =>
             {
                 CSharpDbOperationContext? parent = CSharpDbOperationScope.Current;
                 return parent is null
                     ? CSharpDbOperationContext.CreateRoot(
                         CSharpDbOperationClass.Query,
-                        ResolveRootTransport(ObservabilityTransport.Sharded),
+                        ResolveRootTransport(transport),
                         settings.DatabaseAlias,
                         CSharpDbOperationScope.CurrentSessionId,
                         queryFingerprint: settings.QueryFingerprint)
@@ -108,7 +117,12 @@ internal sealed class ClientOperationObservation
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sql);
         ArgumentNullException.ThrowIfNull(context);
-        return TryStart(options, _ => context, sql);
+        return TryStart(
+            options,
+            CSharpDbOperationClass.Query,
+            context,
+            static (exactContext, _) => exactContext.WithCurrentTraceId(),
+            sql);
     }
 
     private static ObservabilityTransport ResolveRootTransport(
@@ -120,30 +134,79 @@ internal sealed class ClientOperationObservation
             : boundary;
     }
 
-    internal ClientOperationObservation StartInternalAttempt(
+    internal ClientOperationObservation? StartInternalAttempt(
         ObservabilityTransport transport,
         string databaseAlias)
     {
-        string safeAlias = CSharpDbObservabilityOptions.IsValidDatabaseAlias(databaseAlias)
-            ? databaseAlias
-            : _context.DatabaseAlias;
-        CSharpDbOperationContext context = CSharpDbOperationContext.CreateInternal(
-            _context,
-            CSharpDbOperationClass.Query,
-            transport,
-            safeAlias,
-            _context.QueryFingerprint);
-        return new ClientOperationObservation(
-            context,
-            _queryEventsEnabled,
-            _slowQueryEventsEnabled,
-            _slowQueryThreshold,
-            _sqlTextCaptureMode,
-            _capturedSqlText);
+        try
+        {
+            string safeAlias = CSharpDbObservabilityOptions.IsValidDatabaseAlias(databaseAlias)
+                ? databaseAlias
+                : _context.DatabaseAlias;
+            var state = (
+                Parent: _context,
+                Transport: transport,
+                DatabaseAlias: safeAlias);
+            CSharpDbActivityOperation? activityOperation = null;
+            CSharpDbOperationContext context;
+            if (_activityOperation is not null &&
+                !_activityOperation.IsCompleted &&
+                CSharpDbActivityOperation.ShouldStart(tracingEnabled: true))
+            {
+                try
+                {
+                    activityOperation = CSharpDbActivityOperation.Start(
+                        CSharpDbOperationClass.Query,
+                        state,
+                        static current => CreateInternalAttemptContext(current),
+                        out context);
+                }
+                catch
+                {
+                    // A sampler/listener failure must not abort shard fan-out.
+                    // Retain the attempt event/context when its clock remains
+                    // usable, otherwise omit this best-effort observation.
+                    context = CreateInternalAttemptContext(state);
+                }
+            }
+            else
+            {
+                context = CreateInternalAttemptContext(state);
+            }
+
+            return new ClientOperationObservation(
+                context,
+                _queryEventsEnabled,
+                _slowQueryEventsEnabled,
+                _slowQueryThreshold,
+                _sqlTextCaptureMode,
+                _capturedSqlText,
+                activityOperation);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
+    private static CSharpDbOperationContext CreateInternalAttemptContext(
+        (CSharpDbOperationContext Parent,
+         ObservabilityTransport Transport,
+         string DatabaseAlias) state)
+        => CSharpDbOperationContext.CreateInternal(
+            state.Parent,
+            CSharpDbOperationClass.Query,
+            state.Transport,
+            state.DatabaseAlias,
+            state.Parent.QueryFingerprint);
+
     internal IDisposable EnterScope()
-        => CSharpDbOperationScope.Enter(_context);
+    {
+        IDisposable operationScope = CSharpDbOperationScope.Enter(
+            _context,
+            _activityOperation);
+        return _activityOperation?.WrapScope(operationScope) ?? operationScope;
+    }
 
     internal void Succeed(long rowsProduced = 0, long rowsAffected = 0)
         => Complete(
@@ -181,13 +244,14 @@ internal sealed class ClientOperationObservation
             rowsAffected,
             SafeErrorProjector.Project(errorKind));
 
-    private static ClientOperationObservation? TryStart(
+    private static ClientOperationObservation? TryStart<TState>(
         CSharpDbObservabilityOptions? options,
-        Func<ObservationSettings, CSharpDbOperationContext> createContext,
+        CSharpDbOperationClass operationClass,
+        TState state,
+        Func<TState, ObservationSettings, CSharpDbOperationContext> createContext,
         string? sql)
     {
         if (CSharpDbOperationScope.IsDiagnosticsSuppressed ||
-            CSharpDbOperationScope.AreDiagnosticEventsSuppressed ||
             options?.Enabled != true)
             return null;
 
@@ -196,13 +260,21 @@ internal sealed class ClientOperationObservation
             options.Validate();
             CSharpDbLoggingOptions logging = options.Logging;
             CSharpDbDiagnosticEventPublisher publisher = CSharpDbDiagnostics.EventPublisher;
-            bool queryEventsEnabled = logging.Enabled && logging.Queries &&
+            bool suppressDiagnosticEvents =
+                CSharpDbOperationScope.AreDiagnosticEventsSuppressed;
+            bool queryEventsEnabled = !suppressDiagnosticEvents &&
+                logging.Enabled && logging.Queries &&
                 (publisher.IsEnabled(CSharpDbLogEvents.QueryCompleted) ||
                  publisher.IsEnabled(CSharpDbLogEvents.QueryFailed) ||
                  publisher.IsEnabled(CSharpDbLogEvents.QueryCanceled));
-            bool slowQueryEventsEnabled = logging.Enabled && logging.SlowQueries &&
+            bool slowQueryEventsEnabled = !suppressDiagnosticEvents &&
+                logging.Enabled && logging.SlowQueries &&
                 publisher.IsEnabled(CSharpDbLogEvents.SlowQuery);
-            if (!queryEventsEnabled && !slowQueryEventsEnabled)
+            bool traceRequested = CSharpDbActivityOperation.ShouldStart(
+                options.OpenTelemetry.Enabled);
+            if (!queryEventsEnabled &&
+                !slowQueryEventsEnabled &&
+                !traceRequested)
                 return null;
 
             QueryFingerprint? fingerprint = null;
@@ -242,13 +314,38 @@ internal sealed class ClientOperationObservation
                     sql is null
                         ? CSharpDbOperationClass.Pipeline
                         : CSharpDbOperationClass.Query));
+            CSharpDbActivityOperation? activityOperation = null;
+            CSharpDbOperationContext context;
+            if (traceRequested)
+            {
+                activityOperation = CSharpDbActivityOperation.Start(
+                    operationClass,
+                    (State: state, Settings: settings, Factory: createContext),
+                    static activityState => activityState.Factory(
+                        activityState.State,
+                        activityState.Settings),
+                    out context);
+            }
+            else
+            {
+                context = createContext(state, settings);
+            }
+
+            if (!queryEventsEnabled &&
+                !slowQueryEventsEnabled &&
+                activityOperation is null)
+            {
+                return null;
+            }
+
             return new ClientOperationObservation(
-                createContext(settings),
+                context,
                 queryEventsEnabled,
                 slowQueryEventsEnabled,
                 settings.SlowQueryThreshold,
                 captureMode,
-                capturedSqlText);
+                capturedSqlText,
+                activityOperation);
         }
         catch
         {
@@ -265,10 +362,37 @@ internal sealed class ClientOperationObservation
         if (Interlocked.Exchange(ref _completed, 1) != 0)
             return;
 
+        TimeSpan totalDuration;
+        DateTimeOffset completedAtUtc;
         try
         {
-            TimeSpan totalDuration = _context.GetElapsedTime();
-            DateTimeOffset completedAtUtc = _context.GetUtcNow();
+            totalDuration = _context.GetElapsedTime();
+            completedAtUtc = _context.GetUtcNow();
+        }
+        catch
+        {
+            totalDuration = TimeSpan.Zero;
+            completedAtUtc = _context.StartedAtUtc;
+        }
+
+        try
+        {
+            _activityOperation?.CompleteQuery(
+                outcome,
+                error,
+                rowsProduced,
+                rowsAffected,
+                queueDuration: TimeSpan.Zero,
+                timeToFirstResult: null,
+                isSlow: totalDuration >= _slowQueryThreshold);
+        }
+        catch
+        {
+            // Tracing must not alter the client operation.
+        }
+
+        try
+        {
             CSharpDbDiagnosticEventPublisher publisher = CSharpDbDiagnostics.EventPublisher;
 
             if (_queryEventsEnabled)

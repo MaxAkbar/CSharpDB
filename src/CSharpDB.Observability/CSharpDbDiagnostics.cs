@@ -10,6 +10,7 @@ namespace CSharpDB.Observability;
 public static class CSharpDbDiagnostics
 {
     public const string SchemaVersion = "1.1";
+    public const string MetricSchemaVersion = "1.0";
     public const string InstrumentationVersion = "1.0.0";
     public const string ActivitySourceName = "CSharpDB";
     public const string MeterName = "CSharpDB";
@@ -64,16 +65,51 @@ public static class CSharpDbCounterSemantics
     public static FrozenDictionary<string, CounterSemantics> Instruments { get; } =
         new Dictionary<string, CounterSemantics>(StringComparer.Ordinal)
         {
-            ["csharpdb.requests"] = CounterSemantics.Cumulative,
-            ["csharpdb.statements"] = CounterSemantics.Cumulative,
-            ["csharpdb.rows.produced"] = CounterSemantics.Cumulative,
-            ["csharpdb.rows.affected"] = CounterSemantics.Cumulative,
-            ["csharpdb.storage.bytes.read"] = CounterSemantics.Cumulative,
-            ["csharpdb.storage.bytes.written"] = CounterSemantics.Cumulative,
-            ["csharpdb.queries.active"] = CounterSemantics.Gauge,
-            ["csharpdb.connections.available"] = CounterSemantics.Gauge,
-            ["csharpdb.wal.logical_bytes"] = CounterSemantics.Gauge,
-            ["csharpdb.wal.frame_count"] = CounterSemantics.Gauge,
+            [CSharpDbMetricInstrumentNames.Requests] = CounterSemantics.Cumulative,
+            [CSharpDbMetricInstrumentNames.Statements] = CounterSemantics.Cumulative,
+            [CSharpDbMetricInstrumentNames.RowsProduced] = CounterSemantics.Cumulative,
+            [CSharpDbMetricInstrumentNames.RowsAffected] = CounterSemantics.Cumulative,
+            [CSharpDbMetricInstrumentNames.QueriesSlow] = CounterSemantics.Cumulative,
+            [CSharpDbMetricInstrumentNames.QueriesActive] = CounterSemantics.Gauge,
+            [CSharpDbMetricInstrumentNames.Transactions] = CounterSemantics.Cumulative,
+            [CSharpDbMetricInstrumentNames.TransactionsActive] = CounterSemantics.Gauge,
+            [CSharpDbMetricInstrumentNames.MaintenanceOperations] = CounterSemantics.Cumulative,
+            [CSharpDbMetricInstrumentNames.MaintenanceActive] = CounterSemantics.Gauge,
+            [CSharpDbMetricInstrumentNames.Checkpoints] = CounterSemantics.Cumulative,
+            [CSharpDbMetricInstrumentNames.CheckpointsActive] = CounterSemantics.Gauge,
+            [CSharpDbMetricInstrumentNames.CheckpointAge] = CounterSemantics.Gauge,
+            [CSharpDbMetricInstrumentNames.WalRecoveries] = CounterSemantics.Cumulative,
+            [CSharpDbMetricInstrumentNames.WalRecoveriesActive] = CounterSemantics.Gauge,
+            [CSharpDbMetricInstrumentNames.StorageLogicalBytes] = CounterSemantics.Gauge,
+            [CSharpDbMetricInstrumentNames.StorageAllocatedBytes] = CounterSemantics.Gauge,
+            [CSharpDbMetricInstrumentNames.StoragePageCount] = CounterSemantics.Gauge,
+            [CSharpDbMetricInstrumentNames.StoragePageReads] = CounterSemantics.Cumulative,
+            [CSharpDbMetricInstrumentNames.StoragePageWrites] = CounterSemantics.Cumulative,
+            [CSharpDbMetricInstrumentNames.StorageBytesRead] = CounterSemantics.Cumulative,
+            [CSharpDbMetricInstrumentNames.StorageBytesWritten] = CounterSemantics.Cumulative,
+            [CSharpDbMetricInstrumentNames.StorageCacheHits] = CounterSemantics.Cumulative,
+            [CSharpDbMetricInstrumentNames.StorageCacheMisses] = CounterSemantics.Cumulative,
+            [CSharpDbMetricInstrumentNames.StorageDirtyPages] = CounterSemantics.Gauge,
+            [CSharpDbMetricInstrumentNames.StorageReadersActive] = CounterSemantics.Gauge,
+            [CSharpDbMetricInstrumentNames.StorageWritersActive] = CounterSemantics.Gauge,
+            [CSharpDbMetricInstrumentNames.StorageCommits] = CounterSemantics.Cumulative,
+            [CSharpDbMetricInstrumentNames.StorageConflicts] = CounterSemantics.Cumulative,
+            [CSharpDbMetricInstrumentNames.WalLogicalBytes] = CounterSemantics.Gauge,
+            [CSharpDbMetricInstrumentNames.WalAllocatedBytes] = CounterSemantics.Gauge,
+            [CSharpDbMetricInstrumentNames.WalCommittedBytes] = CounterSemantics.Gauge,
+            [CSharpDbMetricInstrumentNames.WalRetainedBytes] = CounterSemantics.Gauge,
+            [CSharpDbMetricInstrumentNames.WalFrameCount] = CounterSemantics.Gauge,
+            [CSharpDbMetricInstrumentNames.WalCommitBatches] = CounterSemantics.Cumulative,
+            [CSharpDbMetricInstrumentNames.WalBytesWritten] = CounterSemantics.Cumulative,
+            [CSharpDbMetricInstrumentNames.WalPendingCommits] = CounterSemantics.Gauge,
+            [CSharpDbMetricInstrumentNames.WalFlushedCommits] = CounterSemantics.Cumulative,
+            [CSharpDbMetricInstrumentNames.WalFlushes] = CounterSemantics.Cumulative,
+            [CSharpDbMetricInstrumentNames.WalGroupCommitBatches] = CounterSemantics.Cumulative,
+            [CSharpDbMetricInstrumentNames.WalGroupCommitCommits] = CounterSemantics.Cumulative,
+            [CSharpDbMetricInstrumentNames.SessionsActive] = CounterSemantics.Gauge,
+            [CSharpDbMetricInstrumentNames.ReadersActive] = CounterSemantics.Gauge,
+            [CSharpDbMetricInstrumentNames.PoolWaiters] = CounterSemantics.Gauge,
+            [CSharpDbMetricInstrumentNames.ConnectionsAvailable] = CounterSemantics.Gauge,
         }.ToFrozenDictionary(StringComparer.Ordinal);
 }
 

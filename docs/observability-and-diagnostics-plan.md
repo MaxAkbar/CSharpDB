@@ -1052,58 +1052,91 @@ Qualification on 2026-08-11:
 
 ## Phase 4: OpenTelemetry And Prometheus
 
-Status: `Not started`
+Status: `In progress`
 
 Goal: make the shared operation model consumable by standard tracing and
 metrics systems without coupling the engine to an exporter.
+
+Current implementation checkpoint (2026-08-11):
+
+- The BCL-only `CSharpDB` activity source and meter, the versioned trace/metric
+  schema, hosted resource/sampling configuration, optional console/OTLP export,
+  and protected Prometheus mapping are implemented. The canonical names, units,
+  dimensions, enablement matrix, privacy policy, histogram/temporality policy,
+  and support boundaries are in the
+  [Observability package contract](../src/CSharpDB.Observability/README.md#phase-4-trace-and-metric-schema).
+- Logical direct, ADO.NET, REST, gRPC, and sharded queries share exact activity
+  parentage; lazy results detach from unrelated ambient work and stop exactly
+  once. Runtime-owned transaction, database lifecycle, checkpoint, backup,
+  restore, reindex, vacuum, and generic maintenance paths participate.
+- Automatic physical checkpoints and startup WAL recovery currently emit
+  metrics, not physical spans. Ownerless path-only static restore validation,
+  restore, reindex, vacuum, and foreign-key migration APIs have no runtime
+  telemetry identity. Those limitations keep the broad span item below open.
+- Focused and hosted tests cover the BCL schema, real REST/gRPC parentage, an
+  actual database query through in-memory trace and metric exporters, provider
+  resource/sampling, explicit histogram views, Prometheus access and bounded
+  labels, unavailable OTLP startup, and disabled-provider shape. The final
+  strict solution build completed with zero warnings/errors; Core `2,692/2,692`,
+  API `168/168`, Daemon `206/206`, Data `276/276`, Observability `126/126`, and
+  benchmark contracts `137/137` passed.
+- NuGet dependency-closure and consumer-package checks, managed trim smoke, and
+  framework-dependent API/daemon publish/startup smokes passed. The Windows
+  NativeAOT attempt was environment-blocked because no MSVC linker is installed,
+  so the NativeAOT/cross-platform qualification item remains open.
+- One complete 35-row BenchmarkDotNet diagnostic launch exercised all five
+  modes. `MetricsOnly` met the provisional `+10%`/`+64 B` pair only on the
+  128-row stream; the other six paths exceeded at least one ceiling. This is a
+  useful optimization signal, not formal repeated-pair evidence, so the Phase 4
+  performance gate remains open. Sampled tracing still has no approved ceiling.
 
 Work:
 
 - [ ] Emit `Activity` spans for queries, transactions, checkpoints, backup,
   restore, and maintenance from one stable CSharpDB `ActivitySource`.
-- [ ] Make remote query spans children of inbound ASP.NET Core or gRPC spans
+- [x] Make remote query spans children of inbound ASP.NET Core or gRPC spans
   and avoid duplicate client/server/engine root spans.
-- [ ] Prove that a span covering a lazy `QueryResult` does not leave an
+- [x] Prove that a span covering a lazy `QueryResult` does not leave an
   incorrect ambient `Activity.Current` after the initial execute call or across
   unrelated caller work; restore parent context deliberately where needed.
-- [ ] Apply the current stable OpenTelemetry database semantic conventions
+- [x] Apply the current stable OpenTelemetry database semantic conventions
   where they are safe, documenting any CSharpDB-specific attributes.
-- [ ] Keep statement text disabled and use fingerprints only in traces/logs,
+- [x] Keep statement text disabled and use fingerprints only in traces/logs,
   never as metric labels.
-- [ ] Emit a stable CSharpDB `Meter` with counters, histograms, up/down
+- [x] Emit a stable CSharpDB `Meter` with counters, histograms, up/down
   counters, and observable gauges for:
   - query count, duration, outcome, rows, active, and slow;
   - transactions, active sessions, pool waits, and active readers;
   - cache, page I/O, commits, conflicts, and checkpoints;
   - WAL size, writes, flushes, bytes, batches, and recovery;
   - backup, restore, and other maintenance operation count/duration/outcome.
-- [ ] Define units, histogram guidance, temporality expectations, and metric
+- [x] Define units, histogram guidance, temporality expectations, and metric
   schema-version policy.
-- [ ] Add host configuration for OpenTelemetry resources, sampling, OTLP
+- [x] Add host configuration for OpenTelemetry resources, sampling, OTLP
   export, and console export for local development.
-- [ ] Keep exporters out of the core NuGet dependency graph.
-- [ ] Add optional Prometheus export to API and daemon with an explicit enable
+- [x] Keep exporters out of the core NuGet dependency graph.
+- [x] Add optional Prometheus export to API and daemon with an explicit enable
   flag, configurable path/listener policy, and safe startup validation.
-- [ ] Make the listener contract explicit: the MVP uses the normal Kestrel
+- [x] Make the listener contract explicit: the MVP uses the normal Kestrel
   listener with peer-address/API-key filtering, or it provisions a separately
   configured metrics listener. Merely changing `/metrics` path does not create
   network isolation.
-- [ ] Map configured daemon metrics independently of its normal REST API toggle
+- [x] Map configured daemon metrics independently of its normal REST API toggle
   so gRPC-only deployments can still opt into scraping.
-- [ ] Require existing API authentication when it is configured. With security
+- [x] Require existing API authentication when it is configured. With security
   mode `None`, restrict scraping to loopback unless an explicit insecure-remote
   override is configured and logged.
-- [ ] Protect `/metrics` with dedicated middleware or an endpoint filter that
+- [x] Protect `/metrics` with dedicated middleware or an endpoint filter that
   reuses `CSharpDbApiKeyValidator`; the current API-key middleware covers only
   the `/api` branch. Evaluate loopback from the actual peer connection, not
   forwarded headers.
-- [ ] Document authentication or network isolation requirements for the scrape
+- [x] Document authentication or network isolation requirements for the scrape
   endpoint.
 - [ ] Add in-memory exporter tests for span parentage, status, attributes,
   metrics, and log correlation.
 - [ ] Add a cardinality stress test that uses many distinct SQL statements,
   sessions, errors, tables, and database paths.
-- [ ] Add endpoint tests proving disabled is `404`, a missing or wrong API key
+- [x] Add endpoint tests proving disabled is `404`, a missing or wrong API key
   is `401`, a correct key is `200`, security mode `None` denies remote peers
   but permits loopback, and gRPC-only daemon mode can still opt in.
 - [ ] Qualify the BCL instrumentation assembly and existing Native library
@@ -1402,16 +1435,19 @@ All snapshot models must:
 
 ## Initial Telemetry Families
 
-Names and units are finalized and snapshot-tested in Phase 4.
+The implemented names, kinds, units, and exact tag sets are canonical in the
+[CSharpDB.Observability README](../src/CSharpDB.Observability/README.md#phase-4-trace-and-metric-schema)
+and are covered by focused schema contracts. This summary groups that closed
+schema; it does not authorize additional dimensions.
 
 | Family | Instruments | Allowed dimensions |
 | --- | --- | --- |
-| Query | executions, duration, active, rows, errors, slow count | operation class, outcome, transport, configured alias |
-| Transaction/session | active transactions, transaction duration, sessions, pool wait duration, readers | outcome, transport, configured alias |
-| Storage | page reads/writes, bytes, cache hits/misses, dirty pages, commits, conflicts | operation class, outcome, configured alias |
-| WAL/checkpoint | WAL bytes/size, frames, flushes, batch size, checkpoint count/duration/age, recovery | outcome, configured alias |
-| Maintenance | backup, restore, validation, reindex, vacuum count/duration/active | operation class, outcome, configured alias |
-| Health | liveness and readiness state/transitions | check kind, status, configured alias |
+| Query | requests/statements, duration, active, rows produced/affected, slow count | terminal operations: operation class, outcome, transport, configured alias; active: alias |
+| Transaction/session | transaction count/duration/active, sessions/readers, pool waiters/available/duration | terminal transactions: operation class, outcome, transport, alias; data gauges: transport, alias; pool duration also outcome |
+| Storage | logical/allocated bytes, pages/read/write, cache hit/miss, dirty pages, readers/writers, commits/conflicts | configured alias |
+| WAL/checkpoint | WAL byte/frame gauges, publication/flush/group counters, pending/flushed commits, batch size, checkpoint count/duration/active/age, recovery count/duration/active | configured alias; checkpoint/recovery terminal metrics also outcome |
+| Maintenance | backup, restore, reindex, vacuum, and generic maintenance count/duration/active | terminal metrics: operation class, outcome, transport, alias; active: operation class, alias |
+| Health | Reserved tag keys only; Phase 5 instruments are not part of the Phase 4 metric schema | check kind, status, configured alias |
 
 Query fingerprint, SQL text, object name, operation id, trace id, session id,
 file path, and error message are prohibited metric dimensions.

@@ -10,7 +10,10 @@ var builder = WebApplication.CreateBuilder(args);
 // ─── Services ───────────────────────────────────────────────
 
 builder.Services.AddSingleton<ICSharpDbRouteContextAccessor, CSharpDbRouteContextAccessor>();
-builder.Services.AddCSharpDbObservability(builder.Configuration);
+builder.Services.AddCSharpDbObservability(
+    builder.Configuration,
+    defaultServiceName: "CSharpDB.Api",
+    defaultDeploymentEnvironment: builder.Environment.EnvironmentName);
 builder.Services.AddSingleton(sp =>
 {
     CSharpDbObservabilityOptions observabilityOptions =
@@ -40,6 +43,11 @@ builder.Services.AddCSharpDbRestApi(builder.Configuration.GetSection("CSharpDB:A
 var app = builder.Build();
 app.UseCSharpDbObservability(ObservabilityTransport.Direct);
 
+// ─── Middleware pipeline and endpoints ──────────────────────
+
+app.MapCSharpDbRestApi();
+app.MapCSharpDbPrometheusEndpoint();
+
 // ─── Initialize database ────────────────────────────────────
 
 await using (var scope = app.Services.CreateAsyncScope())
@@ -47,10 +55,6 @@ await using (var scope = app.Services.CreateAsyncScope())
     var dbClient = scope.ServiceProvider.GetRequiredService<ICSharpDbClient>();
     _ = await dbClient.GetInfoAsync();
 }
-
-// ─── Middleware pipeline and endpoints ──────────────────────
-
-app.MapCSharpDbRestApi();
 
 app.Run();
 

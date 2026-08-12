@@ -2,8 +2,9 @@
 
 Status: Accepted for the Phase 0 contracts. Phase 1 logging and the completed
 Phase 2 runtime-diagnostics work conform to this contract. Final Phase 2
-qualification completed on 2026-08-11; later telemetry, health, Admin UI, and
-full-release qualification remain separate phase work.
+qualification completed on 2026-08-11. Phase 4 telemetry implementation is in
+progress; its formal performance, publish, package, trimming/NativeAOT, and
+full-release qualification remain open.
 
 Date: 2026-08-09
 
@@ -59,10 +60,11 @@ a normal runtime snapshot, metrics scrape, or health check.
 
 | Contract | Value | Compatibility rule |
 | --- | --- | --- |
-| Snapshot schema | `1.0` | Additive optional fields may stay within 1.x; removed fields or changed meanings require a major version. |
+| Snapshot schema | `1.1` | Version 1.0 remains supported; additive optional fields may stay within 1.x, while removed fields or changed meanings require a major version. |
 | Instrumentation version | `1.0.0` | Version reported by both BCL diagnostics sources. |
 | `ActivitySource` | `CSharpDB` | Never derive the source name from a database, tenant, or host. |
 | `Meter` | `CSharpDB` | Instrument names added later must remain stable after release. |
+| Metric schema | `1.0` | A changed name, kind, unit, meaning, or dimension requires an explicit compatibility decision. |
 | Query fingerprint | `csharpdb-sql-v1:<sha256>` | An algorithm change receives a new prefix; values from different prefixes are not compared. |
 
 Every ordinary snapshot carries `SchemaVersion`, `CapturedAtUtc`,
@@ -195,6 +197,51 @@ may configure at most 64 aliases. A path is not an alias. SQL, object names,
 query fingerprints, operation/session/transaction/trace ids, exception types
 or messages, and user-controlled strings are prohibited metric labels.
 
+### Phase 4 BCL telemetry contract
+
+The canonical instrument list, kinds, units, and exact dimension sets are
+maintained in the
+[CSharpDB.Observability README](../src/CSharpDB.Observability/README.md#phase-4-trace-and-metric-schema).
+Both BCL sources are named `CSharpDB`; they create no exporter or background
+worker. Emission requires global observability plus the applicable signal gate
+(`OpenTelemetry.Enabled` for tracing and either OpenTelemetry or Prometheus for
+metrics) and an attached listener/provider.
+
+Every CSharpDB span is `ActivityKind.Internal` with a stable `csharpdb.*` name.
+Safe database semantic attributes identify `csharpdb`, the configured alias,
+and the bounded operation name. CSharpDB attributes carry the opaque operation
+hierarchy, bounded class/role/transport, and optional opaque session id and
+versioned fingerprint. SQL text, values, paths, connection strings, credentials,
+exception messages, and stack traces are absent. Fingerprints and correlation
+ids are trace-only and are never metric dimensions. Successful spans retain
+the standard unset status; failed, canceled, and rejected spans use `Error`
+with only reviewed error type/code attributes.
+
+Inbound ASP.NET Core REST and gRPC activities parent the logical CSharpDB span.
+Direct work becomes a root only without an ambient parent. A carried logical
+activity is adopted across client/ADO.NET/engine seams rather than duplicated.
+Sharded fan-out emits one coordinator plus explicit physical-attempt children.
+A lazy query activity remains open through result exhaustion/disposal but is
+ambient only during real query/result work.
+
+Metrics use only the closed tag allowlist above. Synchronous and observable
+counters are cumulative; observable up/down counters and gauges are current
+values. Durations use seconds, byte instruments use `By`, and the other units
+are the documented UCUM annotations. The BCL-only core does not install a
+metric reader or histogram view. The built-in API and daemon host adapters do
+install reviewed default explicit duration and batch-size buckets; custom hosts
+may replace them. Bucket layout, exporter normalization, and reader temporality
+remain host/exporter policy and are not part of metric-schema compatibility.
+Prometheus counters are cumulative, and consumers do not calculate deltas
+across a changed `service.instance.id`.
+
+This phase does not yet trace automatic physical checkpoints or startup WAL
+recovery; their counters, active state, and duration metrics are emitted where
+the physical producer is available. Ownerless path-only static restore
+validation/restore, reindex, vacuum, and foreign-key migration APIs have no
+runtime identity and therefore no tracing/metrics context. Database- and
+client-owned maintenance surfaces are the supported telemetry paths.
+
 ### Structured log event ids
 
 Each subsystem owns a range of 100 ids. Published ids are never reused for a
@@ -298,14 +345,18 @@ seven benchmark methods are preserved and parameterized by
 | `Disabled` | `DatabaseOptions.ObservabilityOptions = null` | No activity or query diagnostic listener; setup fails if one is already attached |
 | `HistoryCapture` | `Enabled = true`, alias `benchmark`; logging disabled; default bounded runtime history enabled | No activity or query diagnostic listener; runtime history is captured without a logging bridge |
 | `StructuredLogging` | `Enabled = true`, alias `benchmark`; logging enabled; query completion enabled; slow-query logging disabled; SQL capture `None` | One `CSharpDbDiagnosticLoggerBridge` subscribed to the `CSharpDB` `DiagnosticListener`, backed by an enabled allocation-free sink logger |
+| `MetricsOnly` | `Enabled = true`, alias `benchmark`; OpenTelemetry signal gate enabled; logging disabled | One in-process `MeterListener` enables the `CSharpDB` meter and consumes `long`/`double` measurements; no activity listener |
+| `SampledTracing` | Same safe OpenTelemetry-enabled options as `MetricsOnly`, with sampling ratio `1`; logging disabled | One `ActivityListener` listens only to `CSharpDB` and returns `AllDataAndRecorded`; no meter listener |
 
 Each mode uses 3 warmup iterations and 10 measured iterations under
 `MemoryDiagnoser` with a reported median. Engine seed rows remain `1,024`; the
 stream path consumes exactly `128` rows. The pool remains direct,
 write-optimized, capped at 16 physical connections, and warmed before
 measurement. The structured-logging pool has the same storage preset through
-its explicit `DatabaseOptions`. No mode enables an `ActivityListener`, meter
-listener, exporter, external history consumer, or SQL-text capture.
+its explicit `DatabaseOptions`. Telemetry listeners are attached only after
+database setup and pool warmup, remain active through measured operations, and
+are disposed during global cleanup. No mode creates an exporter, external
+history consumer, or SQL-text capture.
 
 Run the baseline from a Release build:
 
@@ -313,9 +364,11 @@ Run the baseline from a Release build:
 dotnet run -c Release --project tests/CSharpDB.Benchmarks/CSharpDB.Benchmarks.csproj -- --micro --filter *ObservabilityNoListener*
 ```
 
-BenchmarkDotNet emits 21 rows: seven `Disabled`, seven `HistoryCapture`, and
-seven `StructuredLogging` rows. A practical generated-code smoke limits the
-filter to one path and adds BenchmarkDotNet's `Dry` job:
+BenchmarkDotNet now emits 35 rows: seven each for `Disabled`, `HistoryCapture`,
+`StructuredLogging`, `MetricsOnly`, and `SampledTracing`. The two Phase 4 modes
+are present for future paired qualification; adding them is not performance
+evidence. A practical generated-code smoke limits the filter to one path and
+adds BenchmarkDotNet's `Dry` job:
 
 ```text
 dotnet run -c Release --project tests/CSharpDB.Benchmarks/CSharpDB.Benchmarks.csproj -- --micro --filter *FastPrimaryKeyLookupSqlAsync* --job Dry
@@ -325,10 +378,13 @@ The attribute-defined 3/10 job remains present alongside the added `Dry` job,
 so do not use that command for release evidence. Full qualification omits
 `--job Dry` and uses the first command above.
 
-The following are provisional Phase 0 release ceilings. They become observed
-budgets when the corresponding candidate modes exist. Compare each affected
-benchmark path individually; a fast path may not be hidden by averaging it with
-a slower path.
+The following are provisional Phase 0 release ceilings. A candidate mode and a
+formal paired run are both required before reporting a qualified result.
+Compare each affected benchmark path individually; a fast path may not be
+hidden by averaging it with a slower path. The `MetricsOnly` and
+`SampledTracing` rows have had one Phase 4 diagnostic launch, but not a formal
+repeated paired qualification, and no sampled-tracing ceiling is established
+here.
 
 The Phase 0 reference run on 2026-08-09 used .NET SDK 10.0.203 and .NET
 10.0.10 on an Intel Core i9-11900K. One BenchmarkDotNet launch (3 warmups and
@@ -477,6 +533,28 @@ reproducible calculation are preserved as repo-local release evidence under
 `work/artifacts/phase2-formal-final-perf-after-fastpaths/`; this path reference
 does not assert that the evidence is tracked or committed. An independent raw
 JSON audit found no discrepancy with the final qualification report.
+
+### Phase 4 telemetry diagnostic
+
+The first complete Phase 4 telemetry launch on 2026-08-11 produced all 35
+expected rows with 3 warmups and 10 measured iterations. It is a single-host
+diagnostic, not the required repeated paired qualification. Comparing each
+`MetricsOnly` row with its same-launch `Disabled` row by reported median gives:
+
+| Path | `Disabled` | `MetricsOnly` | Elapsed change | Allocation delta |
+| --- | ---: | ---: | ---: | ---: |
+| Pooled open/close/dispose | 451.8 ns / 256 B | 14,909.5 ns / 12,717 B | +3,200.0% | +12,461 B |
+| SQL primary-key lookup | 433.8 ns / 504 B | 1,360.0 ns / 648 B | +213.5% | +144 B |
+| Pre-parsed primary-key lookup | 554.9 ns / 976 B | 958.2 ns / 960 B | +72.7% | -16 B |
+| SQL autocommit insert | 3,703.4 ns / 1,712 B | 5,992.5 ns / 2,279 B | +61.8% | +567 B |
+| Pre-parsed autocommit insert | 3,282.1 ns / 1,127 B | 3,756.0 ns / 1,638 B | +14.4% | +511 B |
+| Explicit-transaction insert | 3,273.4 ns / 1,193 B | 4,168.7 ns / 1,927 B | +27.4% | +734 B |
+| Stream 128 rows to exhaustion | 13,128.9 ns / 22,800 B | 14,240.4 ns / 22,840 B | +8.5% | +40 B |
+
+Only the stream row meets both provisional metrics ceilings in this diagnostic.
+The result is retained as an optimization baseline and must not be reported as
+a Phase 4 performance qualification. Sampled-tracing rows were characterized,
+but no pass/fail decision is possible until a ceiling is reviewed and approved.
 
 ## Consequences
 

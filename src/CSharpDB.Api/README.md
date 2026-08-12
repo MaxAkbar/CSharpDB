@@ -119,6 +119,113 @@ that map the REST surface without registering the typed bridge use the same
 stable event id, reviewed template, and safe code/type/trace fields through a
 no-throw compatibility logger.
 
+### OpenTelemetry and Prometheus exporters
+
+Hosted exporters are disabled by default and are registered only by the API or
+daemon host. The core database, client, and observability packages do not take
+an OpenTelemetry exporter dependency. A representative production
+configuration is:
+
+```json
+{
+  "CSharpDB": {
+    "Observability": {
+      "Enabled": true,
+      "OpenTelemetry": {
+        "Enabled": true,
+        "SamplingRatio": 0.1,
+        "Resource": {
+          "ServiceName": "orders-api",
+          "ServiceNamespace": "CSharpDB",
+          "DeploymentEnvironment": "production"
+        },
+        "Otlp": {
+          "Enabled": true
+        },
+        "Console": {
+          "Enabled": false
+        }
+      },
+      "Prometheus": {
+        "Enabled": true,
+        "Path": "/metrics",
+        "AllowInsecureRemoteAccess": false
+      }
+    },
+    "Api": {
+      "Security": {
+        "Mode": "ApiKey",
+        "ApiKey": "replace-with-a-secret",
+        "ApiKeyHeaderName": "X-CSharpDB-Api-Key"
+      }
+    }
+  }
+}
+```
+
+OpenTelemetry uses the `CSharpDB` activity source and meter. Sampling is
+parent-based with the configured trace-id ratio, so a remote parent's sampling
+decision is preserved. The standalone service-name default is `CSharpDB.Api`;
+service version, process-lifetime instance id, and deployment environment are
+filled from safe host metadata unless explicitly configured. Console and OTLP
+export are separate opt-ins. Configure OTLP destinations and credentials with
+the standard `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`,
+`OTEL_EXPORTER_OTLP_HEADERS`, and `OTEL_EXPORTER_OTLP_TIMEOUT` environment
+variables rather than storing secrets in this configuration.
+
+Register observability once, after any unkeyed
+`CSharpDbObservabilityOptions` instance override; the first
+`AddCSharpDbObservability` call fixes the hosted provider shape and later calls
+are idempotent. Replacing or mutating the effective options afterward is
+rejected before provider startup. A legacy factory/type options registration remains supported
+for the pre-host logger/history bridge, but cannot be evaluated early enough to
+wire hosted OpenTelemetry or Prometheus services; Prometheus mapping therefore
+fails clearly if that legacy registration later enables scraping. Prefer normal
+configuration binding or a pre-registered options instance for hosted export.
+
+The canonical span names/attributes, complete metric name/kind/unit/tag schema,
+privacy rules, and temporality/version policy are in the
+[CSharpDB.Observability contract](../CSharpDB.Observability/README.md#phase-4-trace-and-metric-schema).
+The host enablement matrix is:
+
+| Observability | OpenTelemetry | Prometheus | Host behavior |
+| --- | --- | --- | --- |
+| disabled | disabled | disabled | No telemetry provider, exporter, background exporter service, or scrape route is registered. |
+| enabled | disabled | disabled | Configured history/logging may run; no CSharpDB trace/metric provider is registered. |
+| enabled | enabled | either | CSharpDB tracing and metrics providers are registered; console and OTLP export still require their own flags. |
+| enabled | disabled | enabled | Metrics and the exact protected scrape route are registered without a CSharpDB tracing provider. |
+
+Enabling OpenTelemetry or Prometheus while global observability is disabled is
+invalid. Enabling OpenTelemetry without console or OTLP creates in-process
+providers but no export destination or outbound exporter loop. The standalone
+REST server activity is the parent of the logical CSharpDB query span; health
+and metrics infrastructure paths are excluded from ASP.NET Core tracing.
+
+Prometheus is independent: it can be enabled while
+`OpenTelemetry:Enabled=false`. Its exact configured path is mapped on the
+ordinary Kestrel listener selected by `ASPNETCORE_URLS`; there is no separate
+management listener. When API-key mode is enabled, a missing or invalid key
+returns `401`. With security mode `None`, only the actual loopback peer is
+accepted; forwarded address headers do not grant access. Setting
+`AllowInsecureRemoteAccess=true` explicitly permits unauthenticated remote
+scrapes and emits a startup warning. A rejected remote peer receives `403`.
+When Prometheus is disabled its path is not mapped and returns `404`.
+
+Prometheus paths must be canonical exact paths and cannot collide with REST,
+gRPC, OpenAPI, Scalar, or health routes. If a custom path is configured, the
+default `/metrics` path remains unmapped. The Prometheus ASP.NET Core exporter
+is currently supplied by OpenTelemetry's prerelease exporter package; validate
+the scrape and publish gates when upgrading it.
+
+Current support boundary: automatic physical checkpoints and startup WAL
+recovery publish metrics but not physical spans. Ownerless path-only static
+restore validation/restore, reindex, vacuum, and foreign-key migration calls
+have no runtime telemetry identity; database/client-owned operations are the
+observable path. The BCL libraries retain their existing trimming/NativeAOT
+contract, but this ASP.NET Core host does not make a NativeAOT-hosting claim;
+supported publish and package qualification remain release evidence, not an
+assumption.
+
 ## Running Locally
 
 Start the API:

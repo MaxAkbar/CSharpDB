@@ -7,13 +7,17 @@ using CSharpDB.Sql;
 
 namespace CSharpDB.Data;
 
-internal sealed class DirectDatabaseSession : ICSharpDbSession, IDataRuntimeDiagnosticsContributor
+internal sealed class DirectDatabaseSession :
+    ICSharpDbSession,
+    IDataRuntimeDiagnosticsContributor,
+    ICSharpDbDataMetricsProvider
 {
     private const long DiagnosticsSessionKey = 1;
     private Database? _database;
     private readonly Func<Database, ValueTask>? _releaseAsync;
     private readonly CSharpDbObservabilityOptions? _observabilityOptionsSnapshot;
     private readonly DirectSessionDiagnostics? _diagnostics;
+    private IDisposable? _metricsRegistration;
 
     public bool SupportsStructuredExecution => true;
     public CSharpDbObservabilityOptions? ObservabilityOptionsSnapshot =>
@@ -58,6 +62,41 @@ internal sealed class DirectDatabaseSession : ICSharpDbSession, IDataRuntimeDiag
                 DiagnosticsSessionKey,
                 CSharpDbOperationScope.CurrentSessionId,
                 tracker.GetUtcNowOrLast());
+        }
+
+        try
+        {
+            CSharpDbRuntimeDiagnosticsState? metricsState =
+                runtimeDiagnosticsStateOwner?.State ?? runtimeDiagnosticsState;
+            _metricsRegistration = metricsState?.RuntimeMetrics
+                ?.RegisterDataProvider(
+                    this,
+                    CSharpDB.Observability.CSharpDbTransport.Direct);
+        }
+        catch
+        {
+            // Metrics registration is best effort and cannot prevent a session
+            // from opening.
+        }
+    }
+
+    bool ICSharpDbDataMetricsProvider.TryCaptureMetrics(
+        out CSharpDbDataMetricSnapshot snapshot)
+    {
+        try
+        {
+            snapshot = new CSharpDbDataMetricSnapshot(
+                Volatile.Read(ref _database) is null ? 0 : 1,
+                _diagnostics?.Tracker?.ActiveReaderCount,
+                PoolWaiters: null,
+                AvailableConnections: null,
+                PoolMetricsApplicable: false);
+            return true;
+        }
+        catch
+        {
+            snapshot = default;
+            return false;
         }
     }
 
@@ -462,7 +501,16 @@ internal sealed class DirectDatabaseSession : ICSharpDbSession, IDataRuntimeDiag
             }
             finally
             {
-                sidecar?.RuntimeDiagnosticsStateOwner?.Dispose();
+                try
+                {
+                    Interlocked.Exchange(
+                        ref _metricsRegistration,
+                        null)?.Dispose();
+                }
+                finally
+                {
+                    sidecar?.RuntimeDiagnosticsStateOwner?.Dispose();
+                }
             }
         }
     }

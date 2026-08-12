@@ -223,42 +223,75 @@ public static class DatabaseBackupCoordinator
 
         try
         {
-            CSharpDbOperationContext? parent = CSharpDbOperationScope.Current;
-            CSharpDbOperationContext context = parent is null
-                ? CSharpDbOperationContext.CreateRoot(
+            CSharpDbActivityOperation? activityOperation = null;
+            CSharpDbOperationContext context;
+            if (CSharpDbActivityOperation.ShouldStart(
+                    runtimeState.TracingEnabled))
+            {
+                activityOperation = CSharpDbActivityOperation.Start(
                     CSharpDbOperationClass.Backup,
-                    CSharpDbOperationScope.CurrentTransport,
-                    runtimeState.DatabaseAlias,
-                    CSharpDbOperationScope.CurrentSessionId,
-                    timeProvider: runtimeState.TimeProvider)
-                : CSharpDbOperationContext.CreateRequest(
-                    parent,
-                    CSharpDbOperationClass.Backup,
-                    runtimeState.TimeProvider);
+                    runtimeState,
+                    static state => CreateDirectBackupContext(state),
+                    out context);
+            }
+            else
+            {
+                context = CreateDirectBackupContext(runtimeState);
+            }
             MaintenanceRuntimeDiagnostics.MaintenanceRuntimeOperation?
+                runtimeOperation = null;
+            try
+            {
                 runtimeOperation = MaintenanceRuntimeDiagnostics
                     .GetOrCreate(runtimeState)
                     ?.TryStart(
                         context,
                         MaintenanceOperationKind.Backup,
                         MaintenanceOperationPhase.AcquiringAccess);
+            }
+            catch
+            {
+                // Keep tracing/lifecycle observation if the bounded runtime
+                // registry is retiring concurrently.
+            }
             LifecycleOperation? lifecycleOperation =
                 database.StartLifecycleObservabilityExact(
                     CSharpDbLogEvents.BackupCompleted,
                     CSharpDbOperationClass.Backup,
-                    context);
-            if (runtimeOperation is null && lifecycleOperation is null)
+                    context,
+                    activityOperation);
+            if (runtimeOperation is null &&
+                lifecycleOperation is null &&
+                activityOperation is null)
                 return null;
 
             return new MaintenanceObservation(
                 context,
                 runtimeOperation,
-                lifecycleOperation);
+                lifecycleOperation,
+                activityOperation);
         }
         catch
         {
             return null;
         }
+    }
+
+    private static CSharpDbOperationContext CreateDirectBackupContext(
+        CSharpDbRuntimeDiagnosticsState runtimeState)
+    {
+        CSharpDbOperationContext? parent = CSharpDbOperationScope.Current;
+        return parent is null
+            ? CSharpDbOperationContext.CreateRoot(
+                CSharpDbOperationClass.Backup,
+                CSharpDbOperationScope.CurrentTransport,
+                runtimeState.DatabaseAlias,
+                CSharpDbOperationScope.CurrentSessionId,
+                timeProvider: runtimeState.TimeProvider)
+            : CSharpDbOperationContext.CreateRequest(
+                parent,
+                CSharpDbOperationClass.Backup,
+                runtimeState.TimeProvider);
     }
 
     private sealed class BackupProgressObserver(

@@ -12,6 +12,7 @@ internal sealed partial class CSharpDbRuntimeDiagnosticsState : IDisposable
     private readonly object _componentGate = new();
     private readonly byte[] _serializedOptions;
     private readonly CSharpDbRuntimeIdentity _identity;
+    private readonly CSharpDbRuntimeMetrics? _runtimeMetrics;
     private Dictionary<Type, object>? _components;
     private long _counterEpoch;
     private int _disposed;
@@ -39,6 +40,9 @@ internal sealed partial class CSharpDbRuntimeDiagnosticsState : IDisposable
         _identity = identity;
         _counterEpoch = identity.CounterEpoch;
         IsEnabled = snapshot.Enabled;
+        TracingEnabled = snapshot.Enabled && snapshot.OpenTelemetry.Enabled;
+        MetricsEnabled = snapshot.Enabled &&
+            (snapshot.OpenTelemetry.Enabled || snapshot.Prometheus.Enabled);
         DatabaseAlias = snapshot.DatabaseAlias;
         ActiveQueryCapacity = snapshot.History.ActiveQueryCapacity;
         RecentQueryCapacity = snapshot.History.RecentQueryCapacity;
@@ -47,11 +51,19 @@ internal sealed partial class CSharpDbRuntimeDiagnosticsState : IDisposable
         RecentOperationRetention = snapshot.History.Retention;
         LongRunningQueryThreshold = snapshot.LongRunningQueryThreshold;
         SessionAbandonmentThreshold = snapshot.SessionAbandonmentThreshold;
+        if (MetricsEnabled)
+        {
+            _runtimeMetrics = CSharpDbRuntimeMetrics.TryCreate(
+                DatabaseAlias,
+                identity.TimeProvider);
+        }
     }
 
     internal string ServerInstanceId => _identity.ServerInstanceId;
     internal TimeProvider TimeProvider => _identity.TimeProvider;
     internal bool IsEnabled { get; }
+    internal bool TracingEnabled { get; }
+    internal bool MetricsEnabled { get; }
     internal string DatabaseAlias { get; }
     internal int ActiveQueryCapacity { get; }
     internal int RecentQueryCapacity { get; }
@@ -60,6 +72,8 @@ internal sealed partial class CSharpDbRuntimeDiagnosticsState : IDisposable
     internal TimeSpan RecentOperationRetention { get; }
     internal TimeSpan LongRunningQueryThreshold { get; }
     internal TimeSpan SessionAbandonmentThreshold { get; }
+    internal CSharpDbRuntimeMetrics? RuntimeMetrics =>
+        Volatile.Read(ref _disposed) == 0 ? _runtimeMetrics : null;
     internal long CounterEpoch => Interlocked.Read(ref _counterEpoch);
 
     internal long AdvanceCounterEpoch()
@@ -155,6 +169,10 @@ internal sealed partial class CSharpDbRuntimeDiagnosticsState : IDisposable
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
+
+        // Unregister the static observable source before disposing providers so
+        // a concurrent collection cannot retain or re-enter a retired runtime.
+        _runtimeMetrics?.Dispose();
 
         object[] components;
         lock (_componentGate)

@@ -1210,6 +1210,7 @@ public sealed partial class CSharpDbShardedClient
                 options,
                 sql,
                 context);
+            context = loggingObservation?.Context ?? context;
             QueryRuntimeDiagnostics diagnostics = QueryRuntimeDiagnostics.GetOrCreate(
                 runtimeState);
             QueryRuntimeDiagnostics.QueryRuntimeOperation? operation = diagnostics.TryStart(
@@ -1301,6 +1302,23 @@ public sealed partial class CSharpDbShardedClient
 
         internal IDisposable EnterScope()
             => CSharpDbOperationScope.Enter(_context);
+
+        internal IDisposable EnterInternalAttemptScope(
+            CSharpDB.Observability.CSharpDbTransport transport,
+            string databaseAlias)
+        {
+            string safeAlias = CSharpDbObservabilityOptions.IsValidDatabaseAlias(
+                databaseAlias)
+                ? databaseAlias
+                : _context.DatabaseAlias;
+            CSharpDbOperationContext attempt = CSharpDbOperationContext.CreateInternal(
+                _context,
+                CSharpDbOperationClass.Query,
+                transport,
+                safeAlias,
+                _context.QueryFingerprint);
+            return CSharpDbOperationScope.Enter(attempt);
+        }
 
         internal void MarkExecuting()
             => _operation.SetPhase(QueryExecutionPhase.Executing);

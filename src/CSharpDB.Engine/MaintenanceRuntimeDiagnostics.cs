@@ -952,15 +952,21 @@ internal sealed class MaintenanceObservation
     private readonly MaintenanceRuntimeDiagnostics.MaintenanceRuntimeOperation?
         _runtimeOperation;
     private readonly LifecycleOperation? _lifecycleOperation;
+    private readonly CSharpDbActivityOperation? _activityOperation;
     private int _completed;
 
     internal MaintenanceObservation(
         CSharpDbOperationContext context,
         MaintenanceRuntimeDiagnostics.MaintenanceRuntimeOperation? runtimeOperation,
-        LifecycleOperation? lifecycleOperation)
+        LifecycleOperation? lifecycleOperation,
+        CSharpDbActivityOperation? activityOperation = null)
     {
         ArgumentNullException.ThrowIfNull(context);
-        if (runtimeOperation is null && lifecycleOperation is null)
+        _activityOperation = activityOperation ??
+            lifecycleOperation?.ActivityOperation;
+        if (runtimeOperation is null &&
+            lifecycleOperation is null &&
+            _activityOperation is null)
         {
             throw new ArgumentException(
                 "At least one maintenance observation sink is required.",
@@ -978,7 +984,11 @@ internal sealed class MaintenanceObservation
     {
         try
         {
-            return CSharpDbOperationScope.Enter(_context);
+            IDisposable operationScope = CSharpDbOperationScope.Enter(
+                _context,
+                _activityOperation);
+            return _activityOperation?.WrapScope(operationScope) ??
+                operationScope;
         }
         catch
         {
@@ -1020,6 +1030,13 @@ internal sealed class MaintenanceObservation
             totalUnits,
             warningCount,
             errorCount);
+        _activityOperation?.CompleteMaintenance(
+            CSharpDbOperationOutcome.Succeeded,
+            error: null,
+            completedUnits,
+            totalUnits,
+            warningCount,
+            errorCount);
         _lifecycleOperation?.Succeed();
     }
 
@@ -1029,6 +1046,13 @@ internal sealed class MaintenanceObservation
             return;
 
         _runtimeOperation?.Reject(errorKind);
+        _activityOperation?.CompleteMaintenance(
+            CSharpDbOperationOutcome.Rejected,
+            SafeErrorProjector.Project(errorKind),
+            completedUnits: null,
+            totalUnits: null,
+            warningCount: 0,
+            errorCount: 1);
         _lifecycleOperation?.Reject(errorKind);
     }
 
@@ -1039,6 +1063,16 @@ internal sealed class MaintenanceObservation
             return;
 
         _runtimeOperation?.Fail(exception);
+        CSharpDbOperationOutcome outcome = exception is OperationCanceledException
+            ? CSharpDbOperationOutcome.Canceled
+            : CSharpDbOperationOutcome.Failed;
+        _activityOperation?.CompleteMaintenance(
+            outcome,
+            LifecycleOperation.ProjectError(exception),
+            completedUnits: null,
+            totalUnits: null,
+            warningCount: 0,
+            errorCount: 1);
         _lifecycleOperation?.Fail(exception);
     }
 

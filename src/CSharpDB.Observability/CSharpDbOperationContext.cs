@@ -207,6 +207,37 @@ public sealed record CSharpDbOperationContext
     internal TimeSpan GetElapsedTime(long endingTimestamp)
         => _timeProvider.GetElapsedTime(StartingTimestamp, endingTimestamp);
 
+    /// <summary>
+    /// Rebinds only trace correlation after a logical operation activity has
+    /// been started. Identity, timing, parentage, and value semantics remain
+    /// unchanged; callers must use this before any runtime registry observes
+    /// the context.
+    /// </summary>
+    internal CSharpDbOperationContext WithCurrentTraceId()
+    {
+        DiagnosticsTraceId? traceId = CaptureCurrentTraceId();
+        if (EqualityComparer<DiagnosticsTraceId?>.Default.Equals(
+                TraceId,
+                traceId))
+        {
+            return this;
+        }
+
+        return new CSharpDbOperationContext(
+            OperationId,
+            ParentOperationId,
+            OperationClass,
+            Role,
+            StartedAtUtc,
+            StartingTimestamp,
+            traceId,
+            Transport,
+            DatabaseAlias,
+            SessionId,
+            QueryFingerprint,
+            _timeProvider);
+    }
+
     public DateTimeOffset GetUtcNow()
         => _timeProvider.GetUtcNow();
 

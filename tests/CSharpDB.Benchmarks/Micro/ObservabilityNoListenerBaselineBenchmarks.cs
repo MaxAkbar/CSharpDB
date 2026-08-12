@@ -1,4 +1,6 @@
 using System.Data.Common;
+using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using BenchmarkDotNet.Attributes;
 using CSharpDB.Client;
 using CSharpDB.Data;
@@ -11,10 +13,10 @@ using Microsoft.Extensions.Logging;
 namespace CSharpDB.Benchmarks.Micro;
 
 /// <summary>
-/// Paired engine-path modes for calculating observability overhead. Disabled
-/// retains the Phase 0 no-listener baseline. HistoryCapture enables only the
-/// Phase 2 bounded runtime ledger, while StructuredLogging also enables query
-/// completion events with one active DiagnosticListener/logger bridge.
+/// Engine-path modes for calculating observability overhead. Disabled retains
+/// the Phase 0 no-listener baseline. HistoryCapture and StructuredLogging cover
+/// the bounded runtime ledger and diagnostic logger bridge; MetricsOnly and
+/// SampledTracing attach one in-process BCL listener for their measured signal.
 /// </summary>
 [BenchmarkCategory("Observability", "Qualification", "PairedModes")]
 [MemoryDiagnoser]
@@ -27,6 +29,7 @@ public class ObservabilityNoListenerEngineBenchmarks
 
     private Database _database = null!;
     private CSharpDbDiagnosticLoggerBridge? _loggerBridge;
+    private ObservabilityBenchmarkListenerSet? _telemetryListeners;
     private Statement _preparsedLookup = null!;
     private SimpleInsertSql _simpleInsert;
     private DbValue[] _simpleInsertValues = null!;
@@ -38,7 +41,9 @@ public class ObservabilityNoListenerEngineBenchmarks
     [Params(
         ObservabilityBenchmarkMode.Disabled,
         ObservabilityBenchmarkMode.HistoryCapture,
-        ObservabilityBenchmarkMode.StructuredLogging)]
+        ObservabilityBenchmarkMode.StructuredLogging,
+        ObservabilityBenchmarkMode.MetricsOnly,
+        ObservabilityBenchmarkMode.SampledTracing)]
     public ObservabilityBenchmarkMode Mode { get; set; }
 
     [GlobalSetup]
@@ -46,13 +51,11 @@ public class ObservabilityNoListenerEngineBenchmarks
     {
         ObservabilityBaselineGuard.EnsureNoListeners();
 
+        CSharpDbObservabilityOptions? observabilityOptions =
+            ObservabilityBenchmarkConfiguration.CreateOptions(Mode);
         DatabaseOptions? databaseOptions = null;
-        if (Mode != ObservabilityBenchmarkMode.Disabled)
+        if (observabilityOptions is not null)
         {
-            CSharpDbObservabilityOptions observabilityOptions =
-                Mode == ObservabilityBenchmarkMode.HistoryCapture
-                    ? ObservabilityBenchmarkConfiguration.CreateHistoryCaptureOptions()
-                    : ObservabilityBenchmarkConfiguration.CreateStructuredQueryLoggingOptions();
             if (Mode == ObservabilityBenchmarkMode.StructuredLogging)
             {
                 _loggerBridge = new CSharpDbDiagnosticLoggerBridge(
@@ -94,14 +97,32 @@ public class ObservabilityNoListenerEngineBenchmarks
         _nextSqlInsertId = SeedRowCount + 1_000_000;
         _nextSimpleInsertId = SeedRowCount + 2_000_000;
         _nextTransactionalInsertId = SeedRowCount + 3_000_000;
+
+        _telemetryListeners = ObservabilityBenchmarkListenerSet.Start(Mode);
+        ObservabilityBaselineGuard.EnsureExpectedModeListeners(Mode, _telemetryListeners);
     }
 
     [GlobalCleanup]
     public async Task GlobalCleanupAsync()
     {
-        if (_database is not null)
-            await _database.DisposeAsync();
-        _loggerBridge?.Dispose();
+        try
+        {
+            if (_database is not null)
+                await _database.DisposeAsync();
+        }
+        finally
+        {
+            try
+            {
+                _loggerBridge?.Dispose();
+                _loggerBridge = null;
+            }
+            finally
+            {
+                _telemetryListeners?.Dispose();
+                _telemetryListeners = null;
+            }
+        }
     }
 
     [Benchmark(Description = "SQL primary-key fast lookup")]
@@ -195,11 +216,14 @@ public class ObservabilityNoListenerConnectionPoolBenchmarks
     private string _connectionString = null!;
     private DatabaseOptions? _databaseOptions;
     private CSharpDbDiagnosticLoggerBridge? _loggerBridge;
+    private ObservabilityBenchmarkListenerSet? _telemetryListeners;
 
     [Params(
         ObservabilityBenchmarkMode.Disabled,
         ObservabilityBenchmarkMode.HistoryCapture,
-        ObservabilityBenchmarkMode.StructuredLogging)]
+        ObservabilityBenchmarkMode.StructuredLogging,
+        ObservabilityBenchmarkMode.MetricsOnly,
+        ObservabilityBenchmarkMode.SampledTracing)]
     public ObservabilityBenchmarkMode Mode { get; set; }
 
     [GlobalSetup]
@@ -208,12 +232,10 @@ public class ObservabilityNoListenerConnectionPoolBenchmarks
         ObservabilityBaselineGuard.EnsureNoListeners();
         await CSharpDbConnection.ClearAllPoolsAsync();
 
-        if (Mode != ObservabilityBenchmarkMode.Disabled)
+        CSharpDbObservabilityOptions? observabilityOptions =
+            ObservabilityBenchmarkConfiguration.CreateOptions(Mode);
+        if (observabilityOptions is not null)
         {
-            CSharpDbObservabilityOptions observabilityOptions =
-                Mode == ObservabilityBenchmarkMode.HistoryCapture
-                    ? ObservabilityBenchmarkConfiguration.CreateHistoryCaptureOptions()
-                    : ObservabilityBenchmarkConfiguration.CreateStructuredQueryLoggingOptions();
             if (Mode == ObservabilityBenchmarkMode.StructuredLogging)
             {
                 _loggerBridge = new CSharpDbDiagnosticLoggerBridge(
@@ -243,17 +265,35 @@ public class ObservabilityNoListenerConnectionPoolBenchmarks
         await using DbConnection warmConnection = CreateConnection();
         await warmConnection.OpenAsync();
         await warmConnection.CloseAsync();
+
+        _telemetryListeners = ObservabilityBenchmarkListenerSet.Start(Mode);
+        ObservabilityBaselineGuard.EnsureExpectedModeListeners(Mode, _telemetryListeners);
     }
 
     [GlobalCleanup]
     public async Task GlobalCleanupAsync()
     {
-        await CSharpDbConnection.ClearAllPoolsAsync();
-        _loggerBridge?.Dispose();
-        DeleteIfExists(_databasePath);
-        DeleteIfExists(_databasePath + ".wal");
-        DeleteIfExists(_databasePath + "-wal");
-        DeleteIfExists(_databasePath + "-shm");
+        try
+        {
+            await CSharpDbConnection.ClearAllPoolsAsync();
+            DeleteIfExists(_databasePath);
+            DeleteIfExists(_databasePath + ".wal");
+            DeleteIfExists(_databasePath + "-wal");
+            DeleteIfExists(_databasePath + "-shm");
+        }
+        finally
+        {
+            try
+            {
+                _loggerBridge?.Dispose();
+                _loggerBridge = null;
+            }
+            finally
+            {
+                _telemetryListeners?.Dispose();
+                _telemetryListeners = null;
+            }
+        }
     }
 
     [Benchmark(Description = "Pooled connection open/close/dispose")]
@@ -301,6 +341,34 @@ file static class ObservabilityBaselineGuard
                 "The structured-query-logging mode requires an active diagnostic logger bridge.");
         }
     }
+
+    public static void EnsureExpectedModeListeners(
+        ObservabilityBenchmarkMode mode,
+        ObservabilityBenchmarkListenerSet? listeners)
+    {
+        switch (mode)
+        {
+            case ObservabilityBenchmarkMode.MetricsOnly
+                when listeners is null ||
+                     !listeners.HasMetricsListener ||
+                     listeners.HasTracingListener:
+                throw new InvalidOperationException(
+                    "The metrics-only mode requires exactly one benchmark meter listener.");
+            case ObservabilityBenchmarkMode.SampledTracing
+                when listeners is null ||
+                     listeners.HasMetricsListener ||
+                     !listeners.HasTracingListener ||
+                     !CSharpDbDiagnostics.ActivitySource.HasListeners():
+                throw new InvalidOperationException(
+                    "The sampled-tracing mode requires exactly one benchmark activity listener.");
+            case ObservabilityBenchmarkMode.Disabled or
+                 ObservabilityBenchmarkMode.StructuredLogging or
+                 ObservabilityBenchmarkMode.HistoryCapture
+                when listeners is not null:
+                throw new InvalidOperationException(
+                    "Only the metrics and tracing benchmark modes may attach telemetry listeners.");
+        }
+    }
 }
 
 public enum ObservabilityBenchmarkMode
@@ -308,11 +376,24 @@ public enum ObservabilityBenchmarkMode
     Disabled = 0,
     StructuredLogging = 1,
     HistoryCapture = 2,
+    MetricsOnly = 3,
+    SampledTracing = 4,
 }
 
-file static class ObservabilityBenchmarkConfiguration
+internal static class ObservabilityBenchmarkConfiguration
 {
-    public static CSharpDbObservabilityOptions CreateHistoryCaptureOptions()
+    public static CSharpDbObservabilityOptions? CreateOptions(ObservabilityBenchmarkMode mode)
+        => mode switch
+        {
+            ObservabilityBenchmarkMode.Disabled => null,
+            ObservabilityBenchmarkMode.HistoryCapture => CreateHistoryCaptureOptions(),
+            ObservabilityBenchmarkMode.StructuredLogging => CreateStructuredQueryLoggingOptions(),
+            ObservabilityBenchmarkMode.MetricsOnly or
+                ObservabilityBenchmarkMode.SampledTracing => CreateOpenTelemetryOptions(),
+            _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown benchmark mode."),
+        };
+
+    private static CSharpDbObservabilityOptions CreateHistoryCaptureOptions()
         => new()
         {
             Enabled = true,
@@ -323,7 +404,7 @@ file static class ObservabilityBenchmarkConfiguration
             },
         };
 
-    public static CSharpDbObservabilityOptions CreateStructuredQueryLoggingOptions()
+    private static CSharpDbObservabilityOptions CreateStructuredQueryLoggingOptions()
         => new()
         {
             Enabled = true,
@@ -336,6 +417,119 @@ file static class ObservabilityBenchmarkConfiguration
                 SqlText = SqlTextCaptureMode.None,
             },
         };
+
+    private static CSharpDbObservabilityOptions CreateOpenTelemetryOptions()
+        => new()
+        {
+            Enabled = true,
+            DatabaseAlias = "benchmark",
+            Logging = new CSharpDbLoggingOptions
+            {
+                Enabled = false,
+            },
+            OpenTelemetry = new CSharpDbOpenTelemetryOptions
+            {
+                Enabled = true,
+                SamplingRatio = 1,
+            },
+        };
+}
+
+internal sealed class ObservabilityBenchmarkListenerSet : IDisposable
+{
+    private readonly ActivityListener? _activityListener;
+    private readonly MeterListener? _meterListener;
+    private int _disposed;
+
+    private ObservabilityBenchmarkListenerSet(
+        ActivityListener? activityListener,
+        MeterListener? meterListener)
+    {
+        _activityListener = activityListener;
+        _meterListener = meterListener;
+    }
+
+    public bool HasTracingListener => _activityListener is not null && _disposed == 0;
+
+    public bool HasMetricsListener => _meterListener is not null && _disposed == 0;
+
+    public bool IsDisposed => _disposed != 0;
+
+    public static ObservabilityBenchmarkListenerSet? Start(ObservabilityBenchmarkMode mode)
+        => mode switch
+        {
+            ObservabilityBenchmarkMode.MetricsOnly => StartMetricsListener(),
+            ObservabilityBenchmarkMode.SampledTracing => StartActivityListener(),
+            ObservabilityBenchmarkMode.Disabled or
+                ObservabilityBenchmarkMode.StructuredLogging or
+                ObservabilityBenchmarkMode.HistoryCapture => null,
+            _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown benchmark mode."),
+        };
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
+
+        _meterListener?.Dispose();
+        _activityListener?.Dispose();
+    }
+
+    private static ObservabilityBenchmarkListenerSet StartActivityListener()
+    {
+        var listener = new ActivityListener
+        {
+            ShouldListenTo = static source =>
+                source.Name == CSharpDbDiagnostics.ActivitySourceName,
+            Sample = static (ref ActivityCreationOptions<ActivityContext> _) =>
+                ActivitySamplingResult.AllDataAndRecorded,
+            SampleUsingParentId = static (ref ActivityCreationOptions<string> _) =>
+                ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStarted = static activity =>
+                ObservabilityBenchmarkTelemetrySink.ConsumeActivity(activity),
+            ActivityStopped = static activity =>
+                ObservabilityBenchmarkTelemetrySink.ConsumeActivity(activity),
+        };
+        ActivitySource.AddActivityListener(listener);
+        return new ObservabilityBenchmarkListenerSet(listener, meterListener: null);
+    }
+
+    private static ObservabilityBenchmarkListenerSet StartMetricsListener()
+    {
+        var listener = new MeterListener
+        {
+            InstrumentPublished = static (instrument, meterListener) =>
+            {
+                if (instrument.Meter.Name == CSharpDbDiagnostics.MeterName)
+                    meterListener.EnableMeasurementEvents(instrument);
+            },
+        };
+        listener.SetMeasurementEventCallback<long>(
+            static (_, measurement, tags, _) =>
+                ObservabilityBenchmarkTelemetrySink.ConsumeMeasurement(
+                    measurement,
+                    tags.Length));
+        listener.SetMeasurementEventCallback<double>(
+            static (_, measurement, tags, _) =>
+                ObservabilityBenchmarkTelemetrySink.ConsumeMeasurement(
+                    BitConverter.DoubleToInt64Bits(measurement),
+                    tags.Length));
+        listener.Start();
+        return new ObservabilityBenchmarkListenerSet(activityListener: null, listener);
+    }
+}
+
+file static class ObservabilityBenchmarkTelemetrySink
+{
+    private static long s_sink;
+
+    public static void ConsumeActivity(Activity activity)
+        => Volatile.Write(
+            ref s_sink,
+            activity.Duration.Ticks ^ activity.SpanId.GetHashCode());
+
+    public static void ConsumeMeasurement(long measurement, int tagCount)
+        => Volatile.Write(ref s_sink, measurement ^ tagCount);
 }
 
 file sealed class ObservabilityBenchmarkLoggerFactory : ILoggerFactory

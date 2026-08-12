@@ -19,12 +19,17 @@ internal readonly record struct StorageRuntimeDiagnosticsCapture(
 /// Runtime-local registry for the storage handles and opening operations that
 /// contribute to one exact diagnostics counter family.
 /// </summary>
-internal sealed class StorageRuntimeDiagnostics : IDisposable
+internal sealed class StorageRuntimeDiagnostics :
+    IDisposable,
+    ICSharpDbStorageMetricsProvider
 {
     private readonly object _gate = new();
     private readonly HashSet<Registration> _registrations = [];
+    private readonly CSharpDbRuntimeDiagnosticsState _runtimeState;
+    private readonly CSharpDbRuntimeMetrics? _runtimeMetrics;
     private readonly TimeProvider _timeProvider;
     private readonly long _timestampFrequency;
+    private IDisposable? _metricsRegistration;
     private long? _retiredLogicalCommitCount = 0;
     private long? _retiredLogicalPageWriteCount = 0;
     private long? _retiredCacheHitCount = 0;
@@ -56,13 +61,27 @@ internal sealed class StorageRuntimeDiagnostics : IDisposable
     private SafeErrorProjection? _lastError;
     private bool _disposed;
 
-    private StorageRuntimeDiagnostics(TimeProvider timeProvider)
+    internal static Action? BeforeConstructionForTest { get; set; }
+
+    private StorageRuntimeDiagnostics(CSharpDbRuntimeDiagnosticsState runtimeState)
     {
-        _timeProvider = timeProvider;
-        _timestampFrequency = timeProvider.TimestampFrequency;
+        BeforeConstructionForTest?.Invoke();
+        _runtimeState = runtimeState ?? throw new ArgumentNullException(nameof(runtimeState));
+        _runtimeMetrics = runtimeState.RuntimeMetrics;
+        _timeProvider = runtimeState.TimeProvider;
+        _timestampFrequency = _timeProvider.TimestampFrequency;
         if (_timestampFrequency <= 0)
             throw new InvalidOperationException(
                 "The diagnostics clock timestamp frequency must be positive.");
+    }
+
+    internal bool HasMetricsRegistrationForTest
+    {
+        get
+        {
+            lock (_gate)
+                return _metricsRegistration is not null;
+        }
     }
 
     internal static Registration? TryBeginBuiltInOpen(
@@ -76,7 +95,8 @@ internal sealed class StorageRuntimeDiagnostics : IDisposable
         {
             StorageRuntimeDiagnostics diagnostics = runtimeState
                 .GetOrCreateComponent(
-                    () => new StorageRuntimeDiagnostics(runtimeState.TimeProvider));
+                    () => new StorageRuntimeDiagnostics(runtimeState));
+            diagnostics.EnsureMetricsRegistered();
             return diagnostics.Register(
                 provider: null,
                 StorageRuntimeDiagnosticsProvenance.BuiltIn,
@@ -102,14 +122,15 @@ internal sealed class StorageRuntimeDiagnostics : IDisposable
 
         try
         {
-            return runtimeState
+            StorageRuntimeDiagnostics diagnostics = runtimeState
                 .GetOrCreateComponent(
-                    () => new StorageRuntimeDiagnostics(runtimeState.TimeProvider))
-                .Register(
-                    pager,
-                    provenance,
-                    observesStorage: false,
-                    recoveryApplicable: false);
+                    () => new StorageRuntimeDiagnostics(runtimeState));
+            diagnostics.EnsureMetricsRegistered();
+            return diagnostics.Register(
+                pager,
+                provenance,
+                observesStorage: false,
+                recoveryApplicable: false);
         }
         catch
         {
@@ -142,6 +163,7 @@ internal sealed class StorageRuntimeDiagnostics : IDisposable
     public void Dispose()
     {
         Registration[] registrations;
+        IDisposable? metricsRegistration;
         lock (_gate)
         {
             if (_disposed)
@@ -150,10 +172,97 @@ internal sealed class StorageRuntimeDiagnostics : IDisposable
             _disposed = true;
             registrations = _registrations.ToArray();
             _registrations.Clear();
+            metricsRegistration = _metricsRegistration;
+            _metricsRegistration = null;
         }
 
+        metricsRegistration?.Dispose();
+
         foreach (Registration registration in registrations)
+        {
+            RetireMetricLeases(registration);
             registration.DetachOwner(this);
+        }
+    }
+
+    private void EnsureMetricsRegistered()
+    {
+        lock (_gate)
+        {
+            if (_disposed || _metricsRegistration is not null)
+                return;
+
+            _metricsRegistration =
+                _runtimeState.RuntimeMetrics?.RegisterStorageProvider(this);
+        }
+    }
+
+    bool ICSharpDbStorageMetricsProvider.TryCaptureMetrics(
+        out CSharpDbStorageMetricSnapshot snapshot)
+    {
+        snapshot = default;
+        try
+        {
+            ClockReading? now = TryCaptureClock(_timeProvider);
+            DiagnosticsSnapshotMetadata metadata = _runtimeState.CreateMetadata(
+                DiagnosticsScope.Instance,
+                DiagnosticsAvailability.Available,
+                DiagnosticsSource.Storage);
+            StorageRuntimeDiagnosticsCapture capture = CaptureCore(
+                metadata,
+                now);
+            StorageRuntimeDiagnosticsSnapshot? storage =
+                capture.Storage.Availability == DiagnosticsAvailability.Available
+                    ? capture.Storage.Value
+                    : null;
+            WalRuntimeDiagnosticsSnapshot? wal =
+                capture.Wal.Availability == DiagnosticsAvailability.Available
+                    ? capture.Wal.Value
+                    : null;
+            double? checkpointAgeSeconds =
+                now is ClockReading capturedAt &&
+                wal?.LastSuccessfulCheckpointAtUtc is DateTimeOffset completedAt &&
+                capturedAt.UtcNow >= completedAt
+                    ? (capturedAt.UtcNow - completedAt).TotalSeconds
+                    : null;
+
+            snapshot = new CSharpDbStorageMetricSnapshot(
+                storage?.LogicalDatabaseBytes,
+                storage?.AllocatedDatabaseBytes,
+                storage?.PageCount,
+                storage?.PageReads,
+                storage?.PageWrites,
+                storage?.BytesRead,
+                storage?.BytesWritten,
+                storage?.CacheHits,
+                storage?.CacheMisses,
+                storage?.DirtyPages,
+                storage?.ActiveReaders,
+                storage?.ActiveWriters,
+                storage?.CommitCount,
+                storage?.ConflictCount,
+                wal?.LogicalBytes,
+                wal?.AllocatedBytes,
+                wal?.CommittedFrameBytes,
+                wal?.RetainedBytes,
+                wal?.FrameCount,
+                wal?.FlushCount,
+                wal?.BytesWritten,
+                wal?.PendingCommitCount,
+                wal?.FlushedCommitCount,
+                wal?.DurableFlushCount,
+                wal?.GroupCommitBatchCount,
+                wal?.GroupCommitCount,
+                checkpointAgeSeconds);
+            return storage is not null || wal is not null;
+        }
+        catch
+        {
+            // Observable callbacks omit unavailable providers rather than
+            // projecting a false zero or affecting storage work.
+            snapshot = default;
+            return false;
+        }
     }
 
     private Registration Register(
@@ -941,6 +1050,8 @@ internal sealed class StorageRuntimeDiagnostics : IDisposable
             }
 
             registration.Recovery = candidate;
+            candidate.MetricsStarted =
+                _runtimeMetrics?.RecoveryStarted() == true;
         }
     }
 
@@ -976,6 +1087,8 @@ internal sealed class StorageRuntimeDiagnostics : IDisposable
             if (!ReferenceEquals(current, registration.Recovery))
             {
                 registration.Recovery = current;
+                current.MetricsStarted =
+                    _runtimeMetrics?.RecoveryStarted() == true;
             }
 
             RecordRecoveryRetry(current, raw);
@@ -995,6 +1108,9 @@ internal sealed class StorageRuntimeDiagnostics : IDisposable
         StorageRecoveryRuntimeRawSnapshot raw,
         ClockReading? completedAt)
     {
+        bool metricsStarted;
+        CSharpDbOperationOutcome outcome;
+        TimeSpan duration;
         lock (_gate)
         {
             if (!CanObserve(registration))
@@ -1011,6 +1127,8 @@ internal sealed class StorageRuntimeDiagnostics : IDisposable
             if (!ReferenceEquals(current, registration.Recovery))
             {
                 registration.Recovery = current;
+                current.MetricsStarted =
+                    _runtimeMetrics?.RecoveryStarted() == true;
             }
 
             RecordRecoveryRetry(current, raw);
@@ -1034,13 +1152,21 @@ internal sealed class StorageRuntimeDiagnostics : IDisposable
                 _lastCompletedRecovery = current;
             }
 
-            CSharpDbOperationOutcome outcome = MapOutcome(raw.Outcome);
+            outcome = MapOutcome(raw.Outcome);
             if (outcome is CSharpDbOperationOutcome.Failed or
                 CSharpDbOperationOutcome.Canceled)
             {
                 SetLastError(ProjectFailure(raw.FailureKind, outcome));
             }
+
+            duration = current.Elapsed;
+            metricsStarted = current.TakeMetricsStarted();
         }
+
+        _runtimeMetrics?.RecoveryCompleted(
+            metricsStarted,
+            outcome,
+            duration);
     }
 
     private void RecordRecoveryRetry(
@@ -1069,6 +1195,8 @@ internal sealed class StorageRuntimeDiagnostics : IDisposable
             }
 
             registration.Checkpoint = candidate;
+            candidate.MetricsStarted =
+                _runtimeMetrics?.CheckpointStarted() == true;
             _checkpointAttemptCount = SaturatingIncrement(
                 _checkpointAttemptCount);
         }
@@ -1102,6 +1230,9 @@ internal sealed class StorageRuntimeDiagnostics : IDisposable
         StorageCheckpointRuntimeRawSnapshot raw,
         ClockReading? completedAt)
     {
+        bool metricsStarted;
+        CSharpDbOperationOutcome outcome;
+        TimeSpan duration;
         lock (_gate)
         {
             if (!CanObserve(registration) ||
@@ -1135,6 +1266,7 @@ internal sealed class StorageRuntimeDiagnostics : IDisposable
             switch (raw.Outcome)
             {
                 case StorageRuntimeOperationOutcomeRaw.Succeeded:
+                    outcome = CSharpDbOperationOutcome.Succeeded;
                     _checkpointSuccessCount = SaturatingIncrement(
                         _checkpointSuccessCount);
                     if (_lastSuccessfulCheckpoint is null ||
@@ -1147,6 +1279,7 @@ internal sealed class StorageRuntimeDiagnostics : IDisposable
                     }
                     break;
                 case StorageRuntimeOperationOutcomeRaw.Canceled:
+                    outcome = CSharpDbOperationOutcome.Canceled;
                     _checkpointCanceledCount = SaturatingIncrement(
                         _checkpointCanceledCount);
                     RecordLatestFailedCheckpoint(
@@ -1155,6 +1288,7 @@ internal sealed class StorageRuntimeDiagnostics : IDisposable
                         CSharpDbOperationOutcome.Canceled);
                     break;
                 default:
+                    outcome = CSharpDbOperationOutcome.Failed;
                     _checkpointFailureCount = SaturatingIncrement(
                         _checkpointFailureCount);
                     RecordLatestFailedCheckpoint(
@@ -1163,7 +1297,15 @@ internal sealed class StorageRuntimeDiagnostics : IDisposable
                         CSharpDbOperationOutcome.Failed);
                     break;
             }
+
+            duration = current.Elapsed;
+            metricsStarted = current.TakeMetricsStarted();
         }
+
+        _runtimeMetrics?.CheckpointCompleted(
+            metricsStarted,
+            outcome,
+            duration);
     }
 
     private void RecordLatestFailedCheckpoint(
@@ -1199,6 +1341,8 @@ internal sealed class StorageRuntimeDiagnostics : IDisposable
                     completedAtUtc);
             }
         }
+
+        _runtimeMetrics?.RecordWalCommitBatchSize(logicalCommitCount);
     }
 
     private void WalDurableFlushCompleted(
@@ -1381,6 +1525,16 @@ internal sealed class StorageRuntimeDiagnostics : IDisposable
             registration.Provider = null;
             registration.ProviderDrained = true;
         }
+
+        RetireMetricLeases(registration);
+    }
+
+    private void RetireMetricLeases(Registration registration)
+    {
+        _runtimeMetrics?.RecoveryAbandoned(
+            registration.Recovery?.TakeMetricsStarted() == true);
+        _runtimeMetrics?.CheckpointAbandoned(
+            registration.Checkpoint?.TakeMetricsStarted() == true);
     }
 
     private void RetireCumulativeCounters(Registration registration)
@@ -2072,6 +2226,14 @@ internal sealed class StorageRuntimeDiagnostics : IDisposable
         internal TimeSpan Elapsed { get; set; }
         internal StorageRecoveryRuntimeRawSnapshot Raw { get; set; }
         internal long LastObservedRetryCount { get; set; }
+        internal bool MetricsStarted { get; set; }
+
+        internal bool TakeMetricsStarted()
+        {
+            bool started = MetricsStarted;
+            MetricsStarted = false;
+            return started;
+        }
     }
 
     internal sealed class CheckpointOperation
@@ -2094,6 +2256,14 @@ internal sealed class StorageRuntimeDiagnostics : IDisposable
         internal DateTimeOffset? CompletedAtUtc { get; set; }
         internal TimeSpan Elapsed { get; set; }
         internal StorageCheckpointRuntimeRawSnapshot Raw { get; set; }
+        internal bool MetricsStarted { get; set; }
+
+        internal bool TakeMetricsStarted()
+        {
+            bool started = MetricsStarted;
+            MetricsStarted = false;
+            return started;
+        }
     }
 
     internal sealed class Registration :

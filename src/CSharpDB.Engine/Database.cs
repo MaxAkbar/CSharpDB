@@ -1839,17 +1839,24 @@ public sealed class Database : IAsyncDisposable
     internal LifecycleOperation? StartLifecycleObservability(
         CSharpDbLogEventDefinition<CSharpDbLifecycleCompletedEvent> definition,
         CSharpDbOperationClass operationClass)
-        => LifecycleObservability.Start(_observabilityOptions, definition, operationClass);
+        => LifecycleObservability.Start(
+            _observabilityOptions,
+            definition,
+            operationClass,
+            _runtimeDiagnosticsState);
 
     internal LifecycleOperation? StartLifecycleObservabilityExact(
         CSharpDbLogEventDefinition<CSharpDbLifecycleCompletedEvent> definition,
         CSharpDbOperationClass operationClass,
-        CSharpDbOperationContext context)
+        CSharpDbOperationContext context,
+        CSharpDbActivityOperation? activityOperation = null)
         => LifecycleObservability.StartExact(
             _observabilityOptions,
             definition,
             operationClass,
-            context);
+            context,
+            activityOperation,
+            _runtimeDiagnosticsState);
 
     internal static ValueTask<QueryResult> ObserveQueryAsync<TState>(
         IQueryExecutionObservation operation,
@@ -2344,38 +2351,52 @@ public sealed class Database : IAsyncDisposable
         {
             try
             {
-                CSharpDbOperationContext? parent =
-                    CSharpDbOperationScope.Current;
-                CSharpDbOperationContext context = parent is null
-                    ? CSharpDbOperationContext.CreateRoot(
+                CSharpDbActivityOperation? activityOperation = null;
+                CSharpDbOperationContext context;
+                if (CSharpDbActivityOperation.ShouldStart(
+                        runtimeState.TracingEnabled))
+                {
+                    activityOperation = CSharpDbActivityOperation.Start(
                         CSharpDbOperationClass.Checkpoint,
-                        CSharpDbOperationScope.CurrentTransport,
-                        runtimeState.DatabaseAlias,
-                        CSharpDbOperationScope.CurrentSessionId,
-                        timeProvider: runtimeState.TimeProvider)
-                    : CSharpDbOperationContext.CreateRequest(
-                        parent,
-                        CSharpDbOperationClass.Checkpoint,
-                        runtimeState.TimeProvider);
+                        runtimeState,
+                        static state => CreateDirectCheckpointContext(state),
+                        out context);
+                }
+                else
+                {
+                    context = CreateDirectCheckpointContext(runtimeState);
+                }
                 MaintenanceRuntimeDiagnostics.MaintenanceRuntimeOperation?
+                    runtimeOperation = null;
+                try
+                {
                     runtimeOperation = MaintenanceRuntimeDiagnostics
                         .GetOrCreate(runtimeState)
                         ?.TryStart(
                             context,
                             MaintenanceOperationKind.Checkpoint,
                             MaintenanceOperationPhase.Checkpointing);
+                }
+                catch
+                {
+                    // Tracing and lifecycle logging remain independently
+                    // useful if the bounded runtime registry is retiring.
+                }
                 LifecycleOperation? lifecycleOperation =
                     StartLifecycleObservabilityExact(
                         CSharpDbLogEvents.CheckpointCompleted,
                         CSharpDbOperationClass.Checkpoint,
-                        context);
+                        context,
+                        activityOperation);
                 if (runtimeOperation is not null ||
-                    lifecycleOperation is not null)
+                    lifecycleOperation is not null ||
+                    activityOperation is not null)
                 {
                     return new MaintenanceObservation(
                         context,
                         runtimeOperation,
-                        lifecycleOperation);
+                        lifecycleOperation,
+                        activityOperation);
                 }
             }
             catch
@@ -2395,6 +2416,23 @@ public sealed class Database : IAsyncDisposable
                 fallbackLifecycle.Context,
                 runtimeOperation: null,
                 fallbackLifecycle);
+    }
+
+    private static CSharpDbOperationContext CreateDirectCheckpointContext(
+        CSharpDbRuntimeDiagnosticsState runtimeState)
+    {
+        CSharpDbOperationContext? parent = CSharpDbOperationScope.Current;
+        return parent is null
+            ? CSharpDbOperationContext.CreateRoot(
+                CSharpDbOperationClass.Checkpoint,
+                CSharpDbOperationScope.CurrentTransport,
+                runtimeState.DatabaseAlias,
+                CSharpDbOperationScope.CurrentSessionId,
+                timeProvider: runtimeState.TimeProvider)
+            : CSharpDbOperationContext.CreateRequest(
+                parent,
+                CSharpDbOperationClass.Checkpoint,
+                runtimeState.TimeProvider);
     }
 
     /// <summary>

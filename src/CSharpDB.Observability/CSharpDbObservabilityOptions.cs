@@ -114,10 +114,45 @@ public sealed class CSharpDbObservabilityOptions
         }
         else
         {
+            if (OpenTelemetry.Enabled && !Enabled)
+            {
+                errors.Add(
+                    "OpenTelemetry cannot be enabled when CSharpDB observability is disabled.");
+            }
+
             if (OpenTelemetry.SamplingRatio is < 0 or > 1 ||
-                double.IsNaN(OpenTelemetry.SamplingRatio))
+                double.IsNaN(OpenTelemetry.SamplingRatio) ||
+                double.IsInfinity(OpenTelemetry.SamplingRatio))
             {
                 errors.Add("OpenTelemetry.SamplingRatio must be between 0 and 1.");
+            }
+
+            if (OpenTelemetry.Resource is null)
+            {
+                errors.Add("OpenTelemetry.Resource options are required.");
+            }
+            else
+            {
+                ValidateOptionalResourceValue(
+                    OpenTelemetry.Resource.ServiceName,
+                    "OpenTelemetry.Resource.ServiceName",
+                    errors);
+                ValidateOptionalResourceValue(
+                    OpenTelemetry.Resource.ServiceNamespace,
+                    "OpenTelemetry.Resource.ServiceNamespace",
+                    errors);
+                ValidateOptionalResourceValue(
+                    OpenTelemetry.Resource.ServiceVersion,
+                    "OpenTelemetry.Resource.ServiceVersion",
+                    errors);
+                ValidateOptionalResourceValue(
+                    OpenTelemetry.Resource.ServiceInstanceId,
+                    "OpenTelemetry.Resource.ServiceInstanceId",
+                    errors);
+                ValidateOptionalResourceValue(
+                    OpenTelemetry.Resource.DeploymentEnvironment,
+                    "OpenTelemetry.Resource.DeploymentEnvironment",
+                    errors);
             }
 
             if (OpenTelemetry.Otlp is null)
@@ -128,6 +163,15 @@ public sealed class CSharpDbObservabilityOptions
             {
                 errors.Add("OpenTelemetry.Otlp cannot be enabled when OpenTelemetry is disabled.");
             }
+
+            if (OpenTelemetry.Console is null)
+            {
+                errors.Add("OpenTelemetry.Console options are required.");
+            }
+            else if (OpenTelemetry.Console.Enabled && !OpenTelemetry.Enabled)
+            {
+                errors.Add("OpenTelemetry.Console cannot be enabled when OpenTelemetry is disabled.");
+            }
         }
 
         if (Prometheus is null)
@@ -137,6 +181,18 @@ public sealed class CSharpDbObservabilityOptions
         else
         {
             ValidateEndpointPath(Prometheus.Path, "Prometheus.Path", errors);
+
+            if (Prometheus.Enabled && !Enabled)
+            {
+                errors.Add(
+                    "Prometheus cannot be enabled when CSharpDB observability is disabled.");
+            }
+
+            if (Prometheus.AllowInsecureRemoteAccess && !Prometheus.Enabled)
+            {
+                errors.Add(
+                    "Prometheus.AllowInsecureRemoteAccess requires Prometheus to be enabled.");
+            }
         }
 
         if (Health is null)
@@ -269,9 +325,37 @@ public sealed class CSharpDbObservabilityOptions
             path.Contains('\\') ||
             path.Contains('?') ||
             path.Contains('#') ||
-            path.Contains("//", StringComparison.Ordinal))
+            path.Contains('%') ||
+            path.Contains("//", StringComparison.Ordinal) ||
+            path.EndsWith('/') ||
+            path.Contains('{') ||
+            path.Contains('}') ||
+            path.Any(static character =>
+                char.IsControl(character) || char.IsWhiteSpace(character)) ||
+            path.Split('/', StringSplitOptions.None).Any(
+                static segment => segment is "." or ".."))
         {
-            errors.Add($"{name} must be an absolute application path without a query, fragment, backslash, or empty segment.");
+            errors.Add(
+                $"{name} must be a canonical absolute application path without whitespace, percent escapes, a trailing slash, route parameters, dot segments, query, fragment, backslash, or empty segment.");
+        }
+    }
+
+    private static void ValidateOptionalResourceValue(
+        string? value,
+        string name,
+        List<string> errors)
+    {
+        if (value is null)
+            return;
+
+        if (string.IsNullOrWhiteSpace(value) ||
+            value.Length > 128 ||
+            !string.Equals(value, value.Trim(), StringComparison.Ordinal) ||
+            value.Any(static character =>
+                char.IsControl(character) || character is '/' or '\\'))
+        {
+            errors.Add(
+                $"{name} must be 1-128 non-control characters and cannot contain a path.");
         }
     }
 }
@@ -310,10 +394,46 @@ public sealed class CSharpDbOpenTelemetryOptions
 {
     public bool Enabled { get; set; }
     public double SamplingRatio { get; set; } = 1;
+    public CSharpDbOpenTelemetryResourceOptions Resource { get; set; } = new();
     public CSharpDbOtlpOptions Otlp { get; set; } = new();
+    public CSharpDbConsoleExporterOptions Console { get; set; } = new();
+}
+
+public sealed class CSharpDbOpenTelemetryResourceOptions
+{
+    /// <summary>
+    /// OpenTelemetry service name. Hosted products supply their application
+    /// name when this value is not configured.
+    /// </summary>
+    public string? ServiceName { get; set; }
+
+    public string? ServiceNamespace { get; set; } = "CSharpDB";
+
+    /// <summary>
+    /// Service version. Hosted products use their informational assembly
+    /// version when this value is not configured.
+    /// </summary>
+    public string? ServiceVersion { get; set; }
+
+    /// <summary>
+    /// Optional stable deployment-provided instance id. Hosted products
+    /// generate an opaque process-lifetime id when this value is not set.
+    /// </summary>
+    public string? ServiceInstanceId { get; set; }
+
+    /// <summary>
+    /// Deployment environment. Hosted products use the ASP.NET Core host
+    /// environment when this value is not configured.
+    /// </summary>
+    public string? DeploymentEnvironment { get; set; }
 }
 
 public sealed class CSharpDbOtlpOptions
+{
+    public bool Enabled { get; set; }
+}
+
+public sealed class CSharpDbConsoleExporterOptions
 {
     public bool Enabled { get; set; }
 }

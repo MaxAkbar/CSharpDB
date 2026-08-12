@@ -185,6 +185,9 @@ internal sealed class DataSessionRuntimeDiagnostics
     internal OpaqueDiagnosticsId ContributorId { get; }
     internal TimeProvider TimeProvider => _timeProvider;
     internal DataDiagnosticsConsistencyStamp Consistency { get; }
+    internal int ActiveReaderCount => Math.Max(
+        0,
+        Volatile.Read(ref _activeReaderCount));
 
     internal static DataSessionRuntimeDiagnostics? Create(
         CSharpDbObservabilityOptions? options,

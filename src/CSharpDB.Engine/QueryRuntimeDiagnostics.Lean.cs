@@ -52,6 +52,8 @@ internal sealed partial class QueryRuntimeDiagnostics
         _leanFreeCount = _leanActiveSlots.Length;
         for (int index = 0; index < _leanActiveSlots.Length; index++)
         {
+            _runtimeMetrics?.QueryAbandoned(
+                _leanActiveSlots[index].TakeMetricsStarted());
             _leanActiveSlots[index].Reset();
             _leanFreeSlots[index] = _leanActiveSlots.Length - index - 1;
         }
@@ -106,13 +108,15 @@ internal sealed partial class QueryRuntimeDiagnostics
 
             long generation = slot.Generation + 1;
             long idSequence = ++_leanIdSequence;
+            bool metricsStarted = _runtimeMetrics?.QueryStarted() == true;
             slot.Activate(
                 generation,
                 CreateLeanOperationId(_leanIdNonce, idSequence),
                 startedAtUtc,
                 startingTimestamp,
                 fingerprint,
-                transport);
+                transport,
+                metricsStarted);
             _leanActiveCount++;
             return new LeanQueryExecutionObservation(this, slot, generation);
         }
@@ -162,6 +166,7 @@ internal sealed partial class QueryRuntimeDiagnostics
                     detail: null,
                     registered: true);
                 _active.Add(operationId, operation);
+                operation.MetricsStarted = slot.TakeMetricsStarted();
                 slot.State = LeanSlotPromoted;
                 _leanActiveCount--;
                 return operation;
@@ -190,14 +195,18 @@ internal sealed partial class QueryRuntimeDiagnostics
     private void AbandonLean(LeanActiveSlot slot, long generation)
     {
         slot.SealMutations(generation);
+        bool metricsStarted;
         lock (_gate)
         {
             if (!slot.IsActive(generation))
                 return;
 
             _leanActiveCount--;
+            metricsStarted = slot.TakeMetricsStarted();
             ReleaseLeanSlotLocked(slot);
         }
+
+        _runtimeMetrics?.QueryAbandoned(metricsStarted);
     }
 
     private void CompleteLean(
@@ -257,6 +266,11 @@ internal sealed partial class QueryRuntimeDiagnostics
             recordedAtTimestamp ?? GetTimestampSafely();
 
         slot.SealMutations(generation, terminalPhase);
+        bool metricsStarted;
+        CSharpDbTransport metricTransport;
+        long safeRowsProduced;
+        long safeRowsAffected;
+        bool isSlow;
         lock (_gate)
         {
             if (!slot.IsActive(generation) || Volatile.Read(ref _disposed) != 0)
@@ -266,6 +280,8 @@ internal sealed partial class QueryRuntimeDiagnostics
             EnsureRecentCapacityLocked();
             long sequence = NextRecentSequenceLocked();
             int tail = (_leanRecentHead + _leanRecentCount) % _leanRecentSlots.Length;
+            safeRowsProduced = Math.Max(0, rowsProduced);
+            safeRowsAffected = Math.Max(0, rowsAffected);
             _leanRecentSlots[tail].Capture(
                 sequence,
                 slot,
@@ -273,8 +289,8 @@ internal sealed partial class QueryRuntimeDiagnostics
                 duration,
                 timeToFirstResult,
                 outcome,
-                Math.Max(0, rowsProduced),
-                Math.Max(0, rowsAffected),
+                safeRowsProduced,
+                safeRowsAffected,
                 error,
                 safeRecordedAtTimestamp);
             _leanRecentCount++;
@@ -294,13 +310,25 @@ internal sealed partial class QueryRuntimeDiagnostics
                     break;
             }
 
-            if (duration >= _slowQueryThreshold)
+            isSlow = duration >= _slowQueryThreshold;
+            if (isSlow)
                 _slowCount = SaturatingIncrement(_slowCount);
-            _rowsProduced = SaturatingAdd(_rowsProduced, Math.Max(0, rowsProduced));
-            _rowsAffected = SaturatingAdd(_rowsAffected, Math.Max(0, rowsAffected));
+            _rowsProduced = SaturatingAdd(_rowsProduced, safeRowsProduced);
+            _rowsAffected = SaturatingAdd(_rowsAffected, safeRowsAffected);
             _leanActiveCount--;
+            metricsStarted = slot.TakeMetricsStarted();
+            metricTransport = slot.Transport;
             ReleaseLeanSlotLocked(slot);
         }
+
+        _runtimeMetrics?.LeanQueryCompleted(
+            metricsStarted,
+            metricTransport,
+            outcome,
+            duration,
+            safeRowsProduced,
+            safeRowsAffected,
+            isSlow);
     }
 
     private void ReleaseLeanSlotLocked(LeanActiveSlot slot)
@@ -558,6 +586,7 @@ internal sealed partial class QueryRuntimeDiagnostics
         internal CSharpDbTransport Transport;
         internal QueryExecutionPhase Phase;
         internal QueryPlanState Plan;
+        internal bool MetricsStarted;
 
         internal void Activate(
             long generation,
@@ -565,7 +594,8 @@ internal sealed partial class QueryRuntimeDiagnostics
             DateTimeOffset startedAtUtc,
             long startingTimestamp,
             QueryFingerprint? fingerprint,
-            CSharpDbTransport transport)
+            CSharpDbTransport transport,
+            bool metricsStarted)
         {
             Generation = generation;
             OperationId = operationId;
@@ -573,6 +603,7 @@ internal sealed partial class QueryRuntimeDiagnostics
             StartingTimestamp = startingTimestamp;
             Fingerprint = fingerprint;
             Transport = transport;
+            MetricsStarted = metricsStarted;
             Phase = QueryExecutionPhase.Planning;
             Plan = default;
             MutationState = LeanMutationAvailable;
@@ -581,6 +612,13 @@ internal sealed partial class QueryRuntimeDiagnostics
 
         internal bool IsActive(long generation)
             => Generation == generation && Volatile.Read(ref State) == LeanSlotActive;
+
+        internal bool TakeMetricsStarted()
+        {
+            bool started = MetricsStarted;
+            MetricsStarted = false;
+            return started;
+        }
 
         internal bool TryEnterMutation(long generation)
         {
@@ -707,6 +745,7 @@ internal sealed partial class QueryRuntimeDiagnostics
             Volatile.Write(ref State, LeanSlotFree);
             MutationState = LeanMutationsSealed;
             Fingerprint = null;
+            MetricsStarted = false;
             Phase = QueryExecutionPhase.Completed;
             Plan = default;
         }

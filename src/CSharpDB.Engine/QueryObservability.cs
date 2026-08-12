@@ -19,6 +19,7 @@ internal sealed class QueryObservability : IDisposable
     private readonly bool _slowQueryEventsEnabled;
     private readonly SqlTextCaptureMode _sqlTextCaptureMode;
     private readonly TimeSpan _slowQueryThreshold;
+    private readonly bool _tracingEnabled;
     private readonly TimeProvider _timeProvider;
     private readonly QueryRuntimeDiagnostics _runtimeDiagnostics;
     private readonly QueryPlanRuntimeDiagnosticsAdapter _planRuntimeObserver;
@@ -67,6 +68,7 @@ internal sealed class QueryObservability : IDisposable
         _slowQueryEventsEnabled = options.Logging.Enabled && options.Logging.SlowQueries;
         _sqlTextCaptureMode = options.Logging.SqlText;
         _slowQueryThreshold = options.Logging.GetSlowQueryThreshold(CSharpDbOperationClass.Query);
+        _tracingEnabled = runtimeState.TracingEnabled;
         _runtimeDiagnostics = QueryRuntimeDiagnostics.GetOrCreate(
             runtimeState,
             startLongRunningSweepTimer);
@@ -106,6 +108,8 @@ internal sealed class QueryObservability : IDisposable
 
         bool suppressDiagnosticEvents =
             ambientScope.AreDiagnosticEventsSuppressed;
+        bool traceRequested =
+            CSharpDbActivityOperation.ShouldStart(_tracingEnabled);
 
         QueryFingerprint? fingerprint = suppliedFingerprint;
         string? capturedSqlText = null;
@@ -149,7 +153,8 @@ internal sealed class QueryObservability : IDisposable
             ambientScope.QueryEventBoundary is null &&
             ambientScope.SessionId is null &&
             ambientScope.Transport == CSharpDbTransport.Embedded &&
-            Activity.Current is null)
+            Activity.Current is null &&
+            !traceRequested)
         {
             CSharpDbDiagnosticEventPublisher publisher =
                 CSharpDbDiagnostics.EventPublisher;
@@ -174,9 +179,41 @@ internal sealed class QueryObservability : IDisposable
         }
 
         CSharpDbOperationContext context;
+        CSharpDbActivityOperation? activityOperation = null;
         try
         {
-            context = CreateContext(fingerprint, ambientScope);
+            if (ambientScope.Operation is CSharpDbOperationContext exactContext &&
+                exactContext.OperationClass == CSharpDbOperationClass.Query &&
+                exactContext.Role is
+                    CSharpDbOperationRole.Root or
+                    CSharpDbOperationRole.Statement or
+                    CSharpDbOperationRole.Internal)
+            {
+                context = exactContext;
+                activityOperation = ambientScope.ActivityOperation;
+                if (activityOperation is null && traceRequested)
+                {
+                    activityOperation = CSharpDbActivityOperation.Start(
+                        CSharpDbOperationClass.Query,
+                        exactContext,
+                        static context => context.WithCurrentTraceId(),
+                        out context);
+                }
+            }
+            else if (traceRequested)
+            {
+                activityOperation = CSharpDbActivityOperation.Start(
+                    CSharpDbOperationClass.Query,
+                    (Target: this, Fingerprint: fingerprint, AmbientScope: ambientScope),
+                    static state => state.Target.CreateContext(
+                        state.Fingerprint,
+                        state.AmbientScope),
+                    out context);
+            }
+            else
+            {
+                context = CreateContext(fingerprint, ambientScope);
+            }
         }
         catch
         {
@@ -253,14 +290,17 @@ internal sealed class QueryObservability : IDisposable
                     QueryRuntimeDiagnostics.QueryRuntimeOperation ambientOperation ||
                 !ambientOperation.TryAdopt(_runtimeDiagnostics, context))
             {
-                return null;
+                if (activityOperation is null)
+                    return null;
             }
-
-            ambientOperation.SetPhase(QueryExecutionPhase.Planning);
-            ambientOperation.TryRetainQueryDetail(
-                _sqlTextCaptureMode,
-                capturedSqlText);
-            runtimeOperation = ambientOperation;
+            else
+            {
+                ambientOperation.SetPhase(QueryExecutionPhase.Planning);
+                ambientOperation.TryRetainQueryDetail(
+                    _sqlTextCaptureMode,
+                    capturedSqlText);
+                runtimeOperation = ambientOperation;
+            }
         }
         else
         {
@@ -275,10 +315,13 @@ internal sealed class QueryObservability : IDisposable
                 suppressDiagnosticEvents,
                 publishLongRunningQueryEvents,
                 out bool operationAlreadyClaimed);
-            if (operationAlreadyClaimed)
+            if (operationAlreadyClaimed && activityOperation is null)
                 return null;
         }
-        if (runtimeOperation is null && !publishQueryEvents && !publishSlowQueryEvents)
+        if (runtimeOperation is null &&
+            !publishQueryEvents &&
+            !publishSlowQueryEvents &&
+            activityOperation is null)
             return null;
 
         IDisposable? eventBoundaryLifetime =
@@ -288,7 +331,9 @@ internal sealed class QueryObservability : IDisposable
             // The exact adapter boundary already flushed. Publishing outside
             // it would violate the start-time subscriber snapshot.
             runtimeOperation?.Abandon();
-            return null;
+            if (activityOperation is null)
+                return null;
+            ambientEventBoundary = null;
         }
 
         if (allowDirectRuntimeObservation &&
@@ -297,7 +342,8 @@ internal sealed class QueryObservability : IDisposable
             !publishSlowQueryEvents &&
             !publishLongRunningQueryEvents &&
             ambientEventBoundary is null &&
-            eventBoundaryLifetime is null)
+            eventBoundaryLifetime is null &&
+            activityOperation is null)
         {
             return runtimeOperation;
         }
@@ -312,7 +358,8 @@ internal sealed class QueryObservability : IDisposable
             queueDuration,
             runtimeOperation,
             ambientEventBoundary,
-            eventBoundaryLifetime);
+            eventBoundaryLifetime,
+            activityOperation);
     }
 
     internal BoundedDiagnosticsSnapshot<ActiveQuerySnapshot> GetActiveSnapshot(
@@ -406,6 +453,7 @@ internal sealed class QueryOperation : IQueryExecutionObservation
     private readonly TimeSpan _queueDuration;
     private readonly QueryRuntimeDiagnostics.QueryRuntimeOperation? _runtimeOperation;
     private readonly CSharpDbDeferredDiagnosticBoundary? _eventBoundary;
+    private readonly CSharpDbActivityOperation? _activityOperation;
     private IDisposable? _eventBoundaryLifetime;
     private TimeSpan? _timeToFirstResult;
     private int _completed;
@@ -420,7 +468,8 @@ internal sealed class QueryOperation : IQueryExecutionObservation
         TimeSpan queueDuration,
         QueryRuntimeDiagnostics.QueryRuntimeOperation? runtimeOperation = null,
         CSharpDbDeferredDiagnosticBoundary? eventBoundary = null,
-        IDisposable? eventBoundaryLifetime = null)
+        IDisposable? eventBoundaryLifetime = null,
+        CSharpDbActivityOperation? activityOperation = null)
     {
         _context = context;
         _queryEventsEnabled = queryEventsEnabled;
@@ -434,12 +483,17 @@ internal sealed class QueryOperation : IQueryExecutionObservation
         _runtimeOperation = runtimeOperation;
         _eventBoundary = eventBoundary;
         _eventBoundaryLifetime = eventBoundaryLifetime;
+        _activityOperation = activityOperation;
     }
 
     public IDisposable EnterScope()
-        => _runtimeOperation is null
-            ? CSharpDbOperationScope.Enter(_context)
-            : CSharpDbOperationScope.Enter(_context, _runtimeOperation);
+    {
+        IDisposable operationScope = CSharpDbOperationScope.Enter(
+            _context,
+            _runtimeOperation,
+            _activityOperation);
+        return _activityOperation?.WrapScope(operationScope) ?? operationScope;
+    }
 
     public IQueryPlanRuntimeObserver? ExplicitPlanObserver => null;
 
@@ -565,6 +619,25 @@ internal sealed class QueryOperation : IQueryExecutionObservation
         catch
         {
             // Registry/history failures cannot affect query completion.
+        }
+
+        try
+        {
+            TimeSpan queueDuration = _queueDuration <= totalDuration
+                ? _queueDuration
+                : totalDuration;
+            _activityOperation?.CompleteQuery(
+                outcome,
+                error,
+                rowsProduced,
+                rowsAffected,
+                queueDuration,
+                _timeToFirstResult,
+                isSlow: totalDuration >= _slowQueryThreshold);
+        }
+        catch
+        {
+            // Tracing must remain independent from query completion.
         }
 
         IDisposable? eventBoundaryScope = null;

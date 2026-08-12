@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Diagnostics.Metrics;
 using CSharpDB.Observability;
 using CSharpDB.Sql;
 
@@ -252,4 +253,45 @@ if (JsonSerializer.Deserialize(
         "The bounded query-detail topology did not round-trip through the trimmed context.");
 }
 
-Console.WriteLine("Observability source-generated JSON and SQL fingerprint trim/NativeAOT smoke passed.");
+bool meterInstrumentPublished = false;
+bool meterMeasurementObserved = false;
+using (var meterListener = new MeterListener())
+{
+    const string canaryName = "csharpdb.trim_smoke.measurements";
+    meterListener.InstrumentPublished = (instrument, listener) =>
+    {
+        if (instrument.Meter.Name == CSharpDbDiagnostics.MeterName &&
+            instrument.Name == canaryName)
+        {
+            meterInstrumentPublished = true;
+            listener.EnableMeasurementEvents(instrument);
+        }
+    };
+    meterListener.SetMeasurementEventCallback<long>(
+        (instrument, measurement, tags, _) =>
+        {
+            if (instrument.Name == canaryName &&
+                measurement == 1 &&
+                tags.Length == 1 &&
+                tags[0].Key == CSharpDbMetricTagNames.DatabaseAlias &&
+                Equals(tags[0].Value, "native-aot-smoke"))
+            {
+                meterMeasurementObserved = true;
+            }
+        });
+    meterListener.Start();
+    Counter<long> canary = CSharpDbDiagnostics.Meter.CreateCounter<long>(
+        canaryName,
+        "{measurement}",
+        "Trim and NativeAOT MeterListener canary.");
+    canary.Add(
+        1,
+        new KeyValuePair<string, object?>(
+            CSharpDbMetricTagNames.DatabaseAlias,
+            "native-aot-smoke"));
+}
+
+if (!meterInstrumentPublished || !meterMeasurementObserved)
+    throw new InvalidOperationException("The trimmed MeterListener canary did not publish and observe a measurement.");
+
+Console.WriteLine("Observability JSON, SQL fingerprint, and MeterListener trim/NativeAOT smoke passed.");

@@ -15,7 +15,10 @@ builder.Host.UseWindowsService(options =>
 });
 builder.Host.UseSystemd();
 
-builder.Services.AddCSharpDbObservability(builder.Configuration);
+builder.Services.AddCSharpDbObservability(
+    builder.Configuration,
+    defaultServiceName: "CSharpDB.Daemon",
+    defaultDeploymentEnvironment: builder.Environment.EnvironmentName);
 builder.Services.AddSingleton(sp =>
     DaemonClientOptionsBuilder.BindHostDatabaseOptions(sp.GetRequiredService<IConfiguration>()));
 builder.Services.AddSingleton(sp =>
@@ -50,12 +53,6 @@ builder.Services.AddGrpc(options =>
 var app = builder.Build();
 app.UseCSharpDbObservability(ObservabilityTransport.Direct);
 
-await using (var scope = app.Services.CreateAsyncScope())
-{
-    var dbClient = scope.ServiceProvider.GetRequiredService<ICSharpDbClient>();
-    _ = await dbClient.GetInfoAsync();
-}
-
 if (app.Configuration.GetValue("CSharpDB:Daemon:EnableRestApi", true))
 {
     app.MapCSharpDbRestApi(options =>
@@ -67,6 +64,13 @@ if (app.Configuration.GetValue("CSharpDB:Daemon:EnableRestApi", true))
 
 app.UseGrpcWeb();
 app.MapGrpcService<CSharpDbRpcService>().EnableGrpcWeb();
+app.MapCSharpDbPrometheusEndpoint();
+
+await using (var scope = app.Services.CreateAsyncScope())
+{
+    var dbClient = scope.ServiceProvider.GetRequiredService<ICSharpDbClient>();
+    _ = await dbClient.GetInfoAsync();
+}
 
 app.Run();
 

@@ -1153,7 +1153,8 @@ internal sealed partial class EngineTransportClient :
                     MaintenanceOperationKind.Checkpoint,
                     MaintenanceOperationPhase.Queued,
                     CSharpDbOperationClass.Checkpoint,
-                    CSharpDbLogEvents.CheckpointCompleted);
+                    CSharpDbLogEvents.CheckpointCompleted,
+                    maintenanceLifetime);
                 operationScope = operation?.EnterScope();
             }
 

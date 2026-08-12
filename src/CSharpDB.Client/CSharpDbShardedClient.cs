@@ -1473,7 +1473,7 @@ public sealed partial class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbSh
                 sql,
                 out ClientOperationObservation? coordinator);
         using IDisposable? coordinatorScope =
-            coordinatorRuntime?.EnterScope() ?? coordinator?.EnterScope();
+            coordinator?.EnterScope() ?? coordinatorRuntime?.EnterScope();
         coordinatorRuntime?.MarkExecuting();
         var results = new List<CSharpDbShardSqlExecutionResult>(_clients.Count);
         long rowsProduced = 0;
@@ -1486,8 +1486,11 @@ public sealed partial class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbSh
             ClientOperationObservation? attempt = coordinator?.StartInternalAttempt(
                 GetAttemptObservabilityTransport(shard),
                 shardId);
-            using IDisposable? attemptScope = attempt?.EnterScope();
-            using IDisposable? suppression = attempt is null
+            using IDisposable? attemptScope = attempt?.EnterScope() ??
+                coordinatorRuntime?.EnterInternalAttemptScope(
+                    GetAttemptObservabilityTransport(shard),
+                    shardId);
+            using IDisposable? suppression = attemptScope is null
                 ? null
                 : CSharpDB.Observability.CSharpDbOperationScope.SuppressDiagnosticEvents();
             try
