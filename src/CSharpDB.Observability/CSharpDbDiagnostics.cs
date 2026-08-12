@@ -110,6 +110,7 @@ public static class CSharpDbCounterSemantics
             [CSharpDbMetricInstrumentNames.ReadersActive] = CounterSemantics.Gauge,
             [CSharpDbMetricInstrumentNames.PoolWaiters] = CounterSemantics.Gauge,
             [CSharpDbMetricInstrumentNames.ConnectionsAvailable] = CounterSemantics.Gauge,
+            [CSharpDbMetricInstrumentNames.HealthStatus] = CounterSemantics.Gauge,
         }.ToFrozenDictionary(StringComparer.Ordinal);
 }
 

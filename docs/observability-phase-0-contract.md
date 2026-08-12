@@ -4,7 +4,9 @@ Status: Accepted for the Phase 0 contracts. Phase 1 logging and the completed
 Phase 2 runtime-diagnostics work conform to this contract. Final Phase 2
 qualification completed on 2026-08-11. Phase 4 telemetry implementation is in
 progress; its formal performance, publish, package, trimming/NativeAOT, and
-full-release qualification remain open.
+full-release qualification remain open. Phase 5 hosted health implementation is
+complete for the current product surface; its read-only policy is explicitly
+live/not-write-ready, while the current hosts expose no built-in read-only mode.
 
 Date: 2026-08-09
 
@@ -197,7 +199,21 @@ may configure at most 64 aliases. A path is not an alias. SQL, object names,
 query fingerprints, operation/session/transaction/trace ids, exception types
 or messages, and user-controlled strings are prohibited metric labels.
 
-### Phase 4 BCL telemetry contract
+Phase 5 adds the exact `csharpdb.health.status` `ObservableGauge<long>` with
+unit `{status}`. A registered host alias emits one current measurement with
+value `1` for `liveness` and one for `readiness`. The exact dimensions are
+`csharpdb.health.check`, `csharpdb.status`, and `csharpdb.database.alias`;
+current emitted values are `liveness`/`readiness` and
+`healthy`/`unhealthy`. Registration is disposable, permits at most one live
+health source per alias, and is capped at 64 sources: at most 128 measurements
+per collection and 256 possible label tuples over healthy/unhealthy transitions
+across the reviewed alias space. The reserved `degraded`, `database`, `storage`,
+and `wal` enum values are not emitted by this cached host-state source. The
+instrument is an additive member of metric schema `1.0`; changing its name,
+kind, unit, meaning, or dimensions requires the normal schema compatibility
+decision.
+
+### Phase 4/5 BCL telemetry contract
 
 The canonical instrument list, kinds, units, and exact dimension sets are
 maintained in the
@@ -254,7 +270,7 @@ different event meaning.
 | 3000-3099 | Transactions | 3000 completed |
 | 4000-4099 | Storage/WAL/recovery | 4000 checkpoint completed; 4001 recovery completed |
 | 5000-5099 | Backup/restore/maintenance | 5000 backup; 5001 restore; 5002 maintenance completed |
-| 6000-6099 | Health | 6000 transition |
+| 6000-6099 | Health | 6000 `CSharpDB.Health.Transition` for distinct host-state changes |
 | 7000-7099 | API/transport | 7000 rejected request; 7001 unhandled error |
 
 ### Capture and redaction policy
@@ -323,12 +339,56 @@ observable without pretending that a database is already available.
 | `Stopped` | no | no | `Stopping` |
 
 Database initialization failure does not make a listening process dead.
-Liveness never opens or queries the database. Readiness may perform a bounded,
-side-effect-free check. Exclusive maintenance, restore, reopen-pending, and
-bounded-check timeout keep readiness false. A restore is not ready until the
-replacement database has reopened successfully. Public unauthenticated health
-responses contain status only; safe failure details remain behind the normal
-diagnostics security boundary.
+Liveness never opens or queries the database. Hosted liveness/readiness requests
+read this cached state only and do not resolve a client or acquire its execution
+lock. API and daemon establish their diagnostics listener before a background
+initializer begins database/WAL startup after the application listener starts.
+Initialization failure enters `Failed`, remains live, and automatically retries
+through `Recovering`; successful reopen atomically enters `Running` with the
+current bounded runtime reason and without an intermediate false-ready event.
+
+The implemented readiness policy is:
+
+| Condition | Live | Ready | Policy |
+| --- | ---: | ---: | --- |
+| Startup and WAL recovery | yes | no | `Starting` or `Recovering` until the database opens successfully |
+| Initialization failure | yes | no | `InitializationFailed`; automatic retries return through `Recovering` |
+| Ordinary running database | yes | yes | `Running` with reason `None` |
+| Backup or validation-only restore/migration | yes | yes | These operations do not take the exclusive not-ready lease |
+| Full restore | yes | no | `RestoreInProgress`; success remains leased through bounded reopen verification, while failure requiring recovery persists `ReopenPending` |
+| Mutating foreign-key migration, reindex, or vacuum | yes | no | `ExclusiveMaintenance`; unavailable reopen persists `Unavailable` |
+| Graceful shutdown | yes until stopped | no | `Stopping` is published before listeners terminate; `Stopped` is non-live |
+| Configured read-only mode | yes | no | `ReadOnly`; current built-in hosts have no read-only mode, and future integrations publish this existing state |
+| Admin runtime database switch | yes | no during switch | `SwitchAsync` and `CreateShardCatalogAndReloadAsync` hold a nestable `ReopenPending` lease through replacement verification and adoption |
+
+API, daemon, and Admin initialization apply the configured hard timeout around
+their side-effect-free information check. If an Admin client ignores
+cooperative cancellation, the cached state still enters `Failed` within the
+deadline and no concurrent initialization attempt starts; the initializer
+observes the outstanding attempt before retrying.
+
+Public unauthenticated HTTP health responses contain exactly the generic
+`status` field and use `200` for healthy or `503` for unhealthy. Timestamps,
+bounded component reasons, and `SafeErrorProjection` are available only through
+the normal authenticated diagnostics boundary. Health responses and metrics
+contain no paths, SQL, credentials, exception messages, or arbitrary caller
+text.
+
+Daemon deployments map standard gRPC Health for the overall service name `""`
+and database service name `"csharpdb.database"`, even when the normal REST API
+surface is disabled. Only the exact `grpc.health.v1.Health/Check` and `/Watch`
+methods bypass API-key, route-context, and operation-scope interception, and
+they return status only. The exact method allowlist is applied across unary,
+client-streaming, server-streaming, and duplex interceptor shapes; it is not a
+prefix exemption and does not create a general readiness admission gate.
+
+Each distinct cached state publishes typed event 6000 through the BCL
+`DiagnosticListener` outside the state lock. Publication is ordered and
+best-effort; listener failures cannot roll back state. Repeating the same state
+is a no-op that preserves the transition timestamp and emits no repeated event,
+so successful health polling does not create logs. The payload is preserved by
+the source-generated JSON context and contains only the validated state plus an
+optional safe error projection.
 
 ## Performance baseline and provisional release budgets
 

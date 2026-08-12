@@ -80,15 +80,36 @@ public sealed class CSharpDbHostState
 {
     private readonly object _gate = new();
     private readonly TimeProvider _timeProvider;
+    private readonly Action<CSharpDbHostStateSnapshot> _transitionObserver;
+    private readonly Queue<CSharpDbHostStateSnapshot> _pendingNotifications = new();
     private CSharpDbHostStateSnapshot _snapshot;
+    private bool _notificationDrainActive;
 
     public CSharpDbHostState(TimeProvider? timeProvider = null)
+        : this(timeProvider, PublishHealthTransition)
+    {
+    }
+
+    /// <summary>
+    /// Creates host state with a best-effort transition observer. The observer
+    /// receives the initial <see cref="CSharpDbHostLifecyclePhase.Starting"/>
+    /// state and each distinct later transition in commit order. Observer
+    /// failures are isolated from lifecycle state changes.
+    /// </summary>
+    public CSharpDbHostState(
+        TimeProvider? timeProvider,
+        Action<CSharpDbHostStateSnapshot> transitionObserver)
     {
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _transitionObserver = transitionObserver ??
+            throw new ArgumentNullException(nameof(transitionObserver));
         _snapshot = CreateSnapshot(
             CSharpDbHostLifecyclePhase.Starting,
             CSharpDbReadinessReason.Starting,
             error: null);
+        _pendingNotifications.Enqueue(_snapshot);
+        _notificationDrainActive = true;
+        DrainNotifications();
     }
 
     public CSharpDbHostStateSnapshot Snapshot
@@ -107,23 +128,31 @@ public sealed class CSharpDbHostState
             error: null);
 
     public CSharpDbHostStateSnapshot MarkReady()
-        => Transition(
+        => MarkRunning();
+
+    /// <summary>
+    /// Enters the running phase with either ready state or one reviewed
+    /// runtime not-ready reason. This allows initialization to publish its
+    /// first running state atomically without an intermediate ready transition.
+    /// </summary>
+    public CSharpDbHostStateSnapshot MarkRunning(
+        CSharpDbReadinessReason reason = CSharpDbReadinessReason.None)
+    {
+        ValidateRunningReason(reason, nameof(reason));
+        return Transition(
             CSharpDbHostLifecyclePhase.Running,
-            CSharpDbReadinessReason.None,
+            reason,
             error: null);
+    }
 
     public CSharpDbHostStateSnapshot MarkNotReady(CSharpDbReadinessReason reason)
     {
-        if (reason is CSharpDbReadinessReason.Unknown or
-            CSharpDbReadinessReason.None or
-            CSharpDbReadinessReason.Starting or
-            CSharpDbReadinessReason.Recovering or
-            CSharpDbReadinessReason.InitializationFailed or
-            CSharpDbReadinessReason.Stopping)
-        {
+        ValidateRunningReason(reason, nameof(reason));
+        if (reason == CSharpDbReadinessReason.None)
             throw new ArgumentOutOfRangeException(nameof(reason));
-        }
 
+        bool drainNotifications;
+        CSharpDbHostStateSnapshot snapshot;
         lock (_gate)
         {
             if (_snapshot.LifecyclePhase != CSharpDbHostLifecyclePhase.Running)
@@ -132,8 +161,29 @@ public sealed class CSharpDbHostState
                     "Only a running host can transition to a runtime not-ready reason.");
             }
 
-            _snapshot = CreateSnapshot(CSharpDbHostLifecyclePhase.Running, reason, error: null);
-            return _snapshot;
+            (snapshot, drainNotifications) = SetSnapshotLocked(
+                CSharpDbHostLifecyclePhase.Running,
+                reason,
+                error: null);
+        }
+
+        if (drainNotifications)
+            DrainNotifications();
+        return snapshot;
+    }
+
+    private static void ValidateRunningReason(
+        CSharpDbReadinessReason reason,
+        string parameterName)
+    {
+        if (reason is CSharpDbReadinessReason.Unknown or
+            CSharpDbReadinessReason.Starting or
+            CSharpDbReadinessReason.Recovering or
+            CSharpDbReadinessReason.InitializationFailed or
+            CSharpDbReadinessReason.Stopping ||
+            !Enum.IsDefined(reason))
+        {
+            throw new ArgumentOutOfRangeException(parameterName);
         }
     }
 
@@ -154,6 +204,8 @@ public sealed class CSharpDbHostState
 
     public CSharpDbHostStateSnapshot MarkStopped()
     {
+        bool drainNotifications;
+        CSharpDbHostStateSnapshot snapshot;
         lock (_gate)
         {
             if (_snapshot.LifecyclePhase != CSharpDbHostLifecyclePhase.Stopping)
@@ -162,12 +214,15 @@ public sealed class CSharpDbHostState
                     "The host must enter Stopping before it can enter Stopped.");
             }
 
-            _snapshot = CreateSnapshot(
+            (snapshot, drainNotifications) = SetSnapshotLocked(
                 CSharpDbHostLifecyclePhase.Stopped,
                 CSharpDbReadinessReason.Stopping,
                 error: null);
-            return _snapshot;
         }
+
+        if (drainNotifications)
+            DrainNotifications();
+        return snapshot;
     }
 
     private CSharpDbHostStateSnapshot Transition(
@@ -175,6 +230,8 @@ public sealed class CSharpDbHostState
         CSharpDbReadinessReason reason,
         SafeErrorProjection? error)
     {
+        bool drainNotifications;
+        CSharpDbHostStateSnapshot snapshot;
         lock (_gate)
         {
             if (!CanTransition(_snapshot.LifecyclePhase, phase))
@@ -183,10 +240,73 @@ public sealed class CSharpDbHostState
                     $"The host cannot transition from {_snapshot.LifecyclePhase} to {phase}.");
             }
 
-            _snapshot = CreateSnapshot(phase, reason, error);
-            return _snapshot;
+            (snapshot, drainNotifications) = SetSnapshotLocked(
+                phase,
+                reason,
+                error);
+        }
+
+        if (drainNotifications)
+            DrainNotifications();
+        return snapshot;
+    }
+
+    private (CSharpDbHostStateSnapshot Snapshot, bool DrainNotifications)
+        SetSnapshotLocked(
+            CSharpDbHostLifecyclePhase phase,
+            CSharpDbReadinessReason reason,
+            SafeErrorProjection? error)
+    {
+        if (_snapshot.LifecyclePhase == phase &&
+            _snapshot.ReadinessReason == reason &&
+            Equals(_snapshot.Error, error))
+        {
+            return (_snapshot, false);
+        }
+
+        _snapshot = CreateSnapshot(phase, reason, error);
+        _pendingNotifications.Enqueue(_snapshot);
+        if (_notificationDrainActive)
+            return (_snapshot, false);
+
+        _notificationDrainActive = true;
+        return (_snapshot, true);
+    }
+
+    private void DrainNotifications()
+    {
+        while (true)
+        {
+            CSharpDbHostStateSnapshot notification;
+            lock (_gate)
+            {
+                if (_pendingNotifications.Count == 0)
+                {
+                    _notificationDrainActive = false;
+                    return;
+                }
+
+                notification = _pendingNotifications.Dequeue();
+            }
+
+            try
+            {
+                _transitionObserver(notification);
+            }
+            catch
+            {
+                // Health publication is best effort and cannot change host
+                // lifecycle, readiness, or shutdown behavior.
+            }
         }
     }
+
+    private static void PublishHealthTransition(
+        CSharpDbHostStateSnapshot snapshot)
+        => CSharpDbDiagnostics.EventPublisher.Publish(
+            CSharpDbLogEvents.HealthTransition,
+            snapshot,
+            static state => new CSharpDbHealthTransitionEvent(state));
 
     private CSharpDbHostStateSnapshot CreateSnapshot(
         CSharpDbHostLifecyclePhase phase,
@@ -222,7 +342,8 @@ public sealed class CSharpDbHostState
                 CSharpDbHostLifecyclePhase.Failed or
                 CSharpDbHostLifecyclePhase.Stopping,
             CSharpDbHostLifecyclePhase.Failed =>
-                next == CSharpDbHostLifecyclePhase.Stopping,
+                next is CSharpDbHostLifecyclePhase.Recovering or
+                    CSharpDbHostLifecyclePhase.Stopping,
             CSharpDbHostLifecyclePhase.Stopping =>
                 next == CSharpDbHostLifecyclePhase.Stopped,
             _ => false,

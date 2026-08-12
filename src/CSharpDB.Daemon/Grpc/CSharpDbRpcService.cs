@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
+using CSharpDB.Api;
 using CSharpDB.Api.Diagnostics;
 using CSharpDB.Api.Security;
 using CSharpDB.Client;
@@ -23,6 +24,7 @@ public sealed class CSharpDbRpcService : CSharpDbRpc.CSharpDbRpcBase
     private readonly ICSharpDbClient client;
     private readonly IOptions<CSharpDbApiSecurityOptions> securityOptions;
     private readonly IServiceProvider? services;
+    private readonly TimeSpan readinessTimeout;
 
     public CSharpDbRpcService(ICSharpDbClient client)
         : this(
@@ -44,6 +46,10 @@ public sealed class CSharpDbRpcService : CSharpDbRpc.CSharpDbRpcBase
         this.client = client;
         this.securityOptions = securityOptions;
         services = serviceProvider;
+        CSharpDbObservabilityOptions observabilityOptions = serviceProvider?
+            .GetService<CSharpDbObservabilityOptions>() ?? new();
+        observabilityOptions.Validate();
+        readinessTimeout = observabilityOptions.Health.ReadinessTimeout;
     }
 
     public override Task<DatabaseInfoMessage> GetInfo(Empty request, ServerCallContext context)
@@ -433,20 +439,57 @@ public sealed class CSharpDbRpcService : CSharpDbRpc.CSharpDbRpcBase
     public override Task<BackupResultMessage> Backup(BackupRequestMessage request, ServerCallContext context)
         => ExecuteAsync(context, ct => client.BackupAsync(GrpcModelMapper.ToModel(request), ct), GrpcModelMapper.ToMessage);
 
-    public override Task<RestoreResultMessage> Restore(RestoreRequestMessage request, ServerCallContext context)
-        => ExecuteAsync(context, ct => client.RestoreAsync(GrpcModelMapper.ToModel(request), ct), GrpcModelMapper.ToMessage);
+    public override Task<RestoreResultMessage> Restore(
+        RestoreRequestMessage request,
+        ServerCallContext context)
+    {
+        RestoreRequest model = GrpcModelMapper.ToModel(request);
+        return model.ValidateOnly
+            ? ExecuteAsync(
+                context,
+                ct => client.RestoreAsync(model, ct),
+                GrpcModelMapper.ToMessage)
+            : ExecuteRestoreAsync(
+                context,
+                ct => client.RestoreAsync(model, ct),
+                GrpcModelMapper.ToMessage);
+    }
 
-    public override Task<ForeignKeyMigrationResultMessage> MigrateForeignKeys(ForeignKeyMigrationRequestMessage request, ServerCallContext context)
-        => ExecuteAsync(context, ct => client.MigrateForeignKeysAsync(GrpcModelMapper.ToModel(request), ct), GrpcModelMapper.ToMessage);
+    public override Task<ForeignKeyMigrationResultMessage> MigrateForeignKeys(
+        ForeignKeyMigrationRequestMessage request,
+        ServerCallContext context)
+    {
+        ForeignKeyMigrationRequest model = GrpcModelMapper.ToModel(request);
+        return model.ValidateOnly
+            ? ExecuteAsync(
+                context,
+                ct => client.MigrateForeignKeysAsync(model, ct),
+                GrpcModelMapper.ToMessage)
+            : ExecuteNotReadyAsync(
+                context,
+                CSharpDbReadinessReason.ExclusiveMaintenance,
+                ct => client.MigrateForeignKeysAsync(model, ct),
+                GrpcModelMapper.ToMessage);
+    }
 
     public override Task<DatabaseMaintenanceReportMessage> GetMaintenanceReport(Empty request, ServerCallContext context)
         => ExecuteAsync(context, ct => client.GetMaintenanceReportAsync(ct), GrpcModelMapper.ToMessage);
 
-    public override Task<ReindexResultMessage> Reindex(ReindexRequestMessage request, ServerCallContext context)
-        => ExecuteAsync(context, ct => client.ReindexAsync(GrpcModelMapper.ToModel(request), ct), GrpcModelMapper.ToMessage);
+    public override Task<ReindexResultMessage> Reindex(
+        ReindexRequestMessage request,
+        ServerCallContext context)
+        => ExecuteNotReadyAsync(
+            context,
+            CSharpDbReadinessReason.ExclusiveMaintenance,
+            ct => client.ReindexAsync(GrpcModelMapper.ToModel(request), ct),
+            GrpcModelMapper.ToMessage);
 
     public override Task<VacuumResultMessage> Vacuum(Empty request, ServerCallContext context)
-        => ExecuteAsync(context, ct => client.VacuumAsync(ct), GrpcModelMapper.ToMessage);
+        => ExecuteNotReadyAsync(
+            context,
+            CSharpDbReadinessReason.ExclusiveMaintenance,
+            ct => client.VacuumAsync(ct),
+            GrpcModelMapper.ToMessage);
 
     public override Task<DatabaseInspectReportMessage> InspectStorage(InspectStorageRequest request, ServerCallContext context)
         => ExecuteAsync(context, ct => client.InspectStorageAsync(NullIfEmpty(request.DatabasePath), request.IncludePages, ct), GrpcModelMapper.ToMessage);
@@ -766,6 +809,177 @@ public sealed class CSharpDbRpcService : CSharpDbRpc.CSharpDbRpcBase
             throw TranslateException(ex);
         }
     }
+
+    private async Task<TResponse> ExecuteNotReadyAsync<TModel, TResponse>(
+        ServerCallContext context,
+        CSharpDbReadinessReason reason,
+        Func<CancellationToken, Task<TModel>> action,
+        Func<TModel, TResponse> map)
+    {
+        CSharpDbHostReadinessCoordinator? coordinator = services?
+            .GetService<CSharpDbHostReadinessCoordinator>();
+        IDisposable? lease = coordinator?.EnterNotReady(reason);
+        try
+        {
+            TResponse response;
+            try
+            {
+                response = await ExecuteAsync(context, action, map)
+                    .ConfigureAwait(false);
+            }
+            catch
+            {
+                await RequestRecoveryIfUnavailableAsync(
+                        context,
+                        coordinator,
+                        CSharpDbReadinessReason.Unavailable)
+                    .ConfigureAwait(false);
+                throw;
+            }
+
+            await VerifyReadyAsync(
+                    context,
+                    coordinator,
+                    CSharpDbReadinessReason.Unavailable)
+                .ConfigureAwait(false);
+            return response;
+        }
+        finally
+        {
+            lease?.Dispose();
+        }
+    }
+
+    private async Task<TResponse> ExecuteRestoreAsync<TModel, TResponse>(
+        ServerCallContext context,
+        Func<CancellationToken, Task<TModel>> action,
+        Func<TModel, TResponse> map)
+    {
+        CSharpDbHostReadinessCoordinator? coordinator = services?
+            .GetService<CSharpDbHostReadinessCoordinator>();
+        IDisposable? lease = coordinator?.EnterNotReady(
+            CSharpDbReadinessReason.RestoreInProgress);
+        try
+        {
+            TResponse response;
+            try
+            {
+                response = await ExecuteAsync(context, action, map)
+                    .ConfigureAwait(false);
+            }
+            catch
+            {
+                coordinator?.RequestRecovery(
+                    CSharpDbReadinessReason.ReopenPending);
+                throw;
+            }
+
+            await VerifyReadyAsync(
+                    context,
+                    coordinator,
+                    CSharpDbReadinessReason.ReopenPending)
+                .ConfigureAwait(false);
+            return response;
+        }
+        finally
+        {
+            lease?.Dispose();
+        }
+    }
+
+    private async Task VerifyReadyAsync(
+        ServerCallContext context,
+        CSharpDbHostReadinessCoordinator? coordinator,
+        CSharpDbReadinessReason failureReason)
+    {
+        if (coordinator is null)
+            return;
+
+        try
+        {
+            _ = await GetInfoForReadinessAsync(context)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (
+            context.CancellationToken.IsCancellationRequested)
+        {
+            coordinator.RequestRecovery(failureReason);
+            throw;
+        }
+        catch (Exception exception)
+        {
+            coordinator.RequestRecovery(failureReason);
+            throw TranslateException(exception);
+        }
+    }
+
+    private async Task RequestRecoveryIfUnavailableAsync(
+        ServerCallContext context,
+        CSharpDbHostReadinessCoordinator? coordinator,
+        CSharpDbReadinessReason failureReason)
+    {
+        if (coordinator is null)
+            return;
+
+        try
+        {
+            _ = await GetInfoForReadinessAsync(context)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            coordinator.RequestRecovery(failureReason);
+        }
+    }
+
+    private async Task<DatabaseInfo> GetInfoForReadinessAsync(
+        ServerCallContext context)
+    {
+        using var verificationCancellation = CancellationTokenSource
+            .CreateLinkedTokenSource(context.CancellationToken);
+        verificationCancellation.CancelAfter(readinessTimeout);
+
+        Task<DatabaseInfo> attempt = client.GetInfoAsync(
+            verificationCancellation.Token);
+        try
+        {
+            return await attempt.WaitAsync(
+                    readinessTimeout,
+                    context.CancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (TimeoutException exception)
+        {
+            verificationCancellation.Cancel();
+            ObserveReadinessAttempt(attempt);
+            throw new TimeoutException(
+                "CSharpDB post-maintenance readiness verification exceeded the configured timeout.",
+                exception);
+        }
+        catch (OperationCanceledException exception) when (
+            !context.CancellationToken.IsCancellationRequested &&
+            verificationCancellation.IsCancellationRequested)
+        {
+            ObserveReadinessAttempt(attempt);
+            throw new TimeoutException(
+                "CSharpDB post-maintenance readiness verification exceeded the configured timeout.",
+                exception);
+        }
+        catch (OperationCanceledException) when (
+            context.CancellationToken.IsCancellationRequested)
+        {
+            ObserveReadinessAttempt(attempt);
+            throw;
+        }
+    }
+
+    private static void ObserveReadinessAttempt(Task attempt)
+        => _ = attempt.ContinueWith(
+            static completed => _ = completed.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously |
+            TaskContinuationOptions.OnlyOnFaulted,
+            TaskScheduler.Default);
 
     private static bool TryCreateStatelessTemporaryTableSqlRejection(string sql, out SqlExecutionResult result)
     {

@@ -255,7 +255,8 @@ internal sealed record CSharpDbHostedTelemetryOptionsShape(
     bool AllowInsecureRemoteAccess,
     bool HealthEnabled,
     string LivenessPath,
-    string ReadinessPath)
+    string ReadinessPath,
+    TimeSpan ReadinessTimeout)
 {
     internal static CSharpDbHostedTelemetryOptionsShape Capture(
         CSharpDbObservabilityOptions options)
@@ -277,6 +278,7 @@ internal sealed record CSharpDbHostedTelemetryOptionsShape(
             options.Prometheus.AllowInsecureRemoteAccess,
             options.Health.Enabled,
             options.Health.LivenessPath,
-            options.Health.ReadinessPath);
+            options.Health.ReadinessPath,
+            options.Health.ReadinessTimeout);
     }
 }

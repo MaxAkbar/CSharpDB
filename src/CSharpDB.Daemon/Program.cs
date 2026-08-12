@@ -19,6 +19,7 @@ builder.Services.AddCSharpDbObservability(
     builder.Configuration,
     defaultServiceName: "CSharpDB.Daemon",
     defaultDeploymentEnvironment: builder.Environment.EnvironmentName);
+builder.Services.AddCSharpDbHealth(DiagnosticsSource.Daemon);
 builder.Services.AddSingleton(sp =>
     DaemonClientOptionsBuilder.BindHostDatabaseOptions(sp.GetRequiredService<IConfiguration>()));
 builder.Services.AddSingleton(sp =>
@@ -49,8 +50,28 @@ builder.Services.AddGrpc(options =>
     options.Interceptors.Add<CSharpDbApiKeyGrpcInterceptor>();
     options.Interceptors.Add<CSharpDbRouteContextGrpcInterceptor>();
 });
+builder.Services.AddGrpcHealthChecks(options =>
+{
+    options.Services.Map(
+        string.Empty,
+        static registration => registration.Tags.Contains("csharpdb-ready"));
+    options.Services.Map(
+        CSharpDbHealthHostExtensions.DatabaseGrpcServiceName,
+        static registration => registration.Tags.Contains("csharpdb-ready"));
+}).AddCheck<CSharpDbDaemonReadinessHealthCheck>(
+    "csharpdb-readiness",
+    tags: ["csharpdb-ready"]);
 
 var app = builder.Build();
+CSharpDbObservabilityOptions observabilityOptions = app.Services
+    .GetRequiredService<CSharpDbObservabilityOptions>();
+if (observabilityOptions.Health.Enabled)
+{
+    app.Services.GetRequiredService<CSharpDbHostRouteRegistry>()
+        .ReserveSubtree(
+            "/grpc.health.v1.Health",
+            "standard gRPC health service");
+}
 app.UseCSharpDbObservability(ObservabilityTransport.Direct);
 
 if (app.Configuration.GetValue("CSharpDB:Daemon:EnableRestApi", true))
@@ -64,13 +85,10 @@ if (app.Configuration.GetValue("CSharpDB:Daemon:EnableRestApi", true))
 
 app.UseGrpcWeb();
 app.MapGrpcService<CSharpDbRpcService>().EnableGrpcWeb();
+if (observabilityOptions.Health.Enabled)
+    app.MapGrpcHealthChecksService();
+app.MapCSharpDbHealthEndpoints();
 app.MapCSharpDbPrometheusEndpoint();
-
-await using (var scope = app.Services.CreateAsyncScope())
-{
-    var dbClient = scope.ServiceProvider.GetRequiredService<ICSharpDbClient>();
-    _ = await dbClient.GetInfoAsync();
-}
 
 app.Run();
 

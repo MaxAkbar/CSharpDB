@@ -105,6 +105,17 @@ CSharpDbHostStateSnapshot failedHost = hostState.MarkFailed(
 string hostJson = JsonSerializer.Serialize(
     failedHost,
     CSharpDbObservabilityJsonContext.Default.CSharpDbHostStateSnapshot);
+hostState.MarkRecovering();
+CSharpDbHostStateSnapshot readOnlyHost = hostState.MarkRunning(
+    CSharpDbReadinessReason.ReadOnly);
+using CSharpDbHealthMetricSource healthMetricSource =
+    CSharpDbHealthMetricSource.TryCreate(hostState, "native-aot-smoke") ??
+    throw new InvalidOperationException(
+        "The health metric source could not be registered.");
+var healthTransitionEvent = new CSharpDbHealthTransitionEvent(readOnlyHost);
+string healthTransitionJson = JsonSerializer.Serialize(
+    healthTransitionEvent,
+    CSharpDbObservabilityJsonContext.Default.CSharpDbHealthTransitionEvent);
 var operation = CSharpDbOperationContext.CreateRoot(
     CSharpDbOperationClass.Query,
     CSharpDbTransport.Direct,
@@ -166,6 +177,7 @@ if (result.NormalizedText.Contains(secret, StringComparison.Ordinal) ||
     activeQueryCollectionJson.Contains(secret, StringComparison.Ordinal) ||
     planValueJson.Contains(secret, StringComparison.Ordinal) ||
     queryDetailTopologyJson.Contains(secret, StringComparison.Ordinal) ||
+    healthTransitionJson.Contains(secret, StringComparison.Ordinal) ||
     queryEventJson.Contains(secret, StringComparison.Ordinal) ||
     longRunningEventJson.Contains(secret, StringComparison.Ordinal))
 {
@@ -196,6 +208,10 @@ if (JsonSerializer.Deserialize(
     JsonSerializer.Deserialize(
         hostJson,
         CSharpDbObservabilityJsonContext.Default.CSharpDbHostStateSnapshot) is null ||
+    JsonSerializer.Deserialize(
+        healthTransitionJson,
+        CSharpDbObservabilityJsonContext.Default.CSharpDbHealthTransitionEvent)?
+        .State.ReadinessReason != CSharpDbReadinessReason.ReadOnly ||
     JsonSerializer.Deserialize(
         optionsJson,
         CSharpDbObservabilityJsonContext.Default.CSharpDbObservabilityOptions)?
@@ -255,6 +271,8 @@ if (JsonSerializer.Deserialize(
 
 bool meterInstrumentPublished = false;
 bool meterMeasurementObserved = false;
+bool healthGaugePublished = false;
+bool healthGaugeObserved = false;
 using (var meterListener = new MeterListener())
 {
     const string canaryName = "csharpdb.trim_smoke.measurements";
@@ -264,6 +282,13 @@ using (var meterListener = new MeterListener())
             instrument.Name == canaryName)
         {
             meterInstrumentPublished = true;
+            listener.EnableMeasurementEvents(instrument);
+        }
+        else if (instrument.Meter.Name == CSharpDbDiagnostics.MeterName &&
+                 instrument.Name == CSharpDbMetricInstrumentNames.HealthStatus)
+        {
+            healthGaugePublished = instrument is ObservableGauge<long> &&
+                instrument.Unit == CSharpDbMetricUnits.Status;
             listener.EnableMeasurementEvents(instrument);
         }
     };
@@ -278,6 +303,24 @@ using (var meterListener = new MeterListener())
             {
                 meterMeasurementObserved = true;
             }
+
+            if (instrument.Name == CSharpDbMetricInstrumentNames.HealthStatus &&
+                measurement == 1 &&
+                HasTag(
+                    tags,
+                    CSharpDbMetricTagNames.CheckKind,
+                    "readiness") &&
+                HasTag(
+                    tags,
+                    CSharpDbMetricTagNames.Status,
+                    "unhealthy") &&
+                HasTag(
+                    tags,
+                    CSharpDbMetricTagNames.DatabaseAlias,
+                    "native-aot-smoke"))
+            {
+                healthGaugeObserved = true;
+            }
         });
     meterListener.Start();
     Counter<long> canary = CSharpDbDiagnostics.Meter.CreateCounter<long>(
@@ -289,9 +332,28 @@ using (var meterListener = new MeterListener())
         new KeyValuePair<string, object?>(
             CSharpDbMetricTagNames.DatabaseAlias,
             "native-aot-smoke"));
+    meterListener.RecordObservableInstruments();
 }
 
-if (!meterInstrumentPublished || !meterMeasurementObserved)
-    throw new InvalidOperationException("The trimmed MeterListener canary did not publish and observe a measurement.");
+if (!meterInstrumentPublished || !meterMeasurementObserved ||
+    !healthGaugePublished || !healthGaugeObserved)
+{
+    throw new InvalidOperationException(
+        "The trimmed MeterListener and health gauge did not publish the expected measurements.");
+}
 
-Console.WriteLine("Observability JSON, SQL fingerprint, and MeterListener trim/NativeAOT smoke passed.");
+Console.WriteLine("Observability JSON, SQL fingerprint, health state, and MeterListener trim/NativeAOT smoke passed.");
+
+static bool HasTag(
+    ReadOnlySpan<KeyValuePair<string, object?>> tags,
+    string name,
+    string value)
+{
+    foreach (KeyValuePair<string, object?> tag in tags)
+    {
+        if (tag.Key == name && Equals(tag.Value, value))
+            return true;
+    }
+
+    return false;
+}

@@ -48,9 +48,55 @@ public sealed class CSharpDbOperationScopeGrpcInterceptor : Interceptor
     {
         return _enabled &&
                !CSharpDbOperationScope.IsDiagnosticsSuppressed &&
-               !IsDiagnosticsMethod(context?.Method)
+               !IsInfrastructureMethod(context?.Method)
             ? InvokeWithScopeAsync(request, context!, continuation)
             : continuation(request, context!);
+    }
+
+    public override Task<TResponse> ClientStreamingServerHandler<TRequest, TResponse>(
+        IAsyncStreamReader<TRequest> requestStream,
+        ServerCallContext context,
+        ClientStreamingServerMethod<TRequest, TResponse> continuation)
+    {
+        return _enabled &&
+               !CSharpDbOperationScope.IsDiagnosticsSuppressed &&
+               !IsInfrastructureMethod(context?.Method)
+            ? InvokeWithScopeAsync(requestStream, context!, continuation)
+            : continuation(requestStream, context!);
+    }
+
+    public override Task ServerStreamingServerHandler<TRequest, TResponse>(
+        TRequest request,
+        IServerStreamWriter<TResponse> responseStream,
+        ServerCallContext context,
+        ServerStreamingServerMethod<TRequest, TResponse> continuation)
+    {
+        return _enabled &&
+               !CSharpDbOperationScope.IsDiagnosticsSuppressed &&
+               !IsInfrastructureMethod(context?.Method)
+            ? InvokeWithScopeAsync(
+                request,
+                responseStream,
+                context!,
+                continuation)
+            : continuation(request, responseStream, context!);
+    }
+
+    public override Task DuplexStreamingServerHandler<TRequest, TResponse>(
+        IAsyncStreamReader<TRequest> requestStream,
+        IServerStreamWriter<TResponse> responseStream,
+        ServerCallContext context,
+        DuplexStreamingServerMethod<TRequest, TResponse> continuation)
+    {
+        return _enabled &&
+               !CSharpDbOperationScope.IsDiagnosticsSuppressed &&
+               !IsInfrastructureMethod(context?.Method)
+            ? InvokeWithScopeAsync(
+                requestStream,
+                responseStream,
+                context!,
+                continuation)
+            : continuation(requestStream, responseStream, context!);
     }
 
     private async Task<TResponse> InvokeWithScopeAsync<TRequest, TResponse>(
@@ -59,6 +105,79 @@ public sealed class CSharpDbOperationScopeGrpcInterceptor : Interceptor
         UnaryServerMethod<TRequest, TResponse> continuation)
         where TRequest : class
         where TResponse : class
+    {
+        ScopeLease lease = TryEnterScope();
+
+        try
+        {
+            return await continuation(request, context).ConfigureAwait(false);
+        }
+        finally
+        {
+            lease.Dispose();
+        }
+    }
+
+    private async Task<TResponse> InvokeWithScopeAsync<TRequest, TResponse>(
+        IAsyncStreamReader<TRequest> requestStream,
+        ServerCallContext context,
+        ClientStreamingServerMethod<TRequest, TResponse> continuation)
+        where TRequest : class
+        where TResponse : class
+    {
+        ScopeLease lease = TryEnterScope();
+        try
+        {
+            return await continuation(requestStream, context)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            lease.Dispose();
+        }
+    }
+
+    private async Task InvokeWithScopeAsync<TRequest, TResponse>(
+        TRequest request,
+        IServerStreamWriter<TResponse> responseStream,
+        ServerCallContext context,
+        ServerStreamingServerMethod<TRequest, TResponse> continuation)
+        where TRequest : class
+        where TResponse : class
+    {
+        ScopeLease lease = TryEnterScope();
+        try
+        {
+            await continuation(request, responseStream, context)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            lease.Dispose();
+        }
+    }
+
+    private async Task InvokeWithScopeAsync<TRequest, TResponse>(
+        IAsyncStreamReader<TRequest> requestStream,
+        IServerStreamWriter<TResponse> responseStream,
+        ServerCallContext context,
+        DuplexStreamingServerMethod<TRequest, TResponse> continuation)
+        where TRequest : class
+        where TResponse : class
+    {
+        ScopeLease lease = TryEnterScope();
+        try
+        {
+            await continuation(requestStream, responseStream, context)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            lease.Dispose();
+        }
+    }
+
+    private ScopeLease TryEnterScope()
     {
         IDisposable? scope = null;
         IDisposable? requestLease = null;
@@ -78,11 +197,21 @@ public sealed class CSharpDbOperationScopeGrpcInterceptor : Interceptor
             // Diagnostics context must never affect RPC execution.
         }
 
-        try
-        {
-            return await continuation(request, context).ConfigureAwait(false);
-        }
-        finally
+        return new ScopeLease(scope, requestLease);
+    }
+
+    internal static bool IsDiagnosticsMethod(string? method)
+        => CSharpDbGrpcMethodPolicy.IsDiagnosticsMethod(method);
+
+    private static bool IsInfrastructureMethod(string? method)
+        => CSharpDbGrpcMethodPolicy.IsHealthMethod(method) ||
+           CSharpDbGrpcMethodPolicy.IsDiagnosticsMethod(method);
+
+    private readonly struct ScopeLease(
+        IDisposable? scope,
+        IDisposable? requestLease) : IDisposable
+    {
+        public void Dispose()
         {
             try
             {
@@ -102,26 +231,5 @@ public sealed class CSharpDbOperationScopeGrpcInterceptor : Interceptor
                 // Diagnostics context must never affect RPC completion.
             }
         }
-    }
-
-    internal static bool IsDiagnosticsMethod(string? method)
-    {
-        if (string.IsNullOrEmpty(method))
-            return false;
-
-        int separator = method.LastIndexOf('/');
-        ReadOnlySpan<char> name = separator >= 0
-            ? method.AsSpan(separator + 1)
-            : method.AsSpan();
-        return name.SequenceEqual("GetRuntimeDiagnostics") ||
-               name.SequenceEqual("GetStorageDiagnostics") ||
-               name.SequenceEqual("GetWalDiagnostics") ||
-               name.SequenceEqual("GetActiveQueries") ||
-               name.SequenceEqual("GetRecentQueries") ||
-               name.SequenceEqual("GetQueryPlanDiagnostics") ||
-               name.SequenceEqual("GetSessions") ||
-               name.SequenceEqual("GetActiveMaintenanceOperations") ||
-               name.SequenceEqual("GetRecentMaintenanceOperations") ||
-               name.SequenceEqual("GetQueryDetail");
     }
 }

@@ -18,6 +18,7 @@ public static class DiagnosticsEndpoints
     public static RouteGroupBuilder MapDiagnosticsEndpoints(
         this RouteGroupBuilder group)
     {
+        group.MapGet("/diagnostics/health", GetHealthDiagnostics);
         group.MapGet("/diagnostics/runtime", GetRuntimeDiagnostics);
         group.MapGet("/diagnostics/storage", GetStorageDiagnostics);
         group.MapGet("/diagnostics/wal", GetWalDiagnostics);
@@ -37,6 +38,24 @@ public static class DiagnosticsEndpoints
             "/diagnostics/queries/{operationId}/detail",
             GetQueryDetail);
         return group;
+    }
+
+    private static IResult GetHealthDiagnostics(
+        HttpContext context,
+        IOptions<CSharpDbApiSecurityOptions> security)
+    {
+        IResult? denied = Authorize(
+            context,
+            security.Value,
+            CSharpDbDiagnosticsAccessKind.Runtime);
+        if (denied is not null)
+            return denied;
+
+        CSharpDbHostReadinessCoordinator? coordinator = context.RequestServices
+            .GetService<CSharpDbHostReadinessCoordinator>();
+        return coordinator is null
+            ? Unsupported()
+            : Results.Json(coordinator.CaptureDiagnostics(), JsonTypes.Health);
     }
 
     private static async Task<IResult> GetRuntimeDiagnostics(
@@ -397,6 +416,9 @@ public static class DiagnosticsEndpoints
 
     private static class JsonTypes
     {
+        internal static readonly JsonTypeInfo<HealthDiagnosticsSnapshot> Health =
+            Get<HealthDiagnosticsSnapshot>();
+
         internal static readonly JsonTypeInfo<
             DiagnosticsTopologySnapshot<RuntimeDiagnosticsSnapshot>> Runtime =
             Get<DiagnosticsTopologySnapshot<RuntimeDiagnosticsSnapshot>>();

@@ -68,6 +68,8 @@ public static class CSharpDbMetricInstrumentNames
     public const string PoolWaiters = "csharpdb.pool.waiters";
     public const string ConnectionsAvailable = "csharpdb.connections.available";
     public const string PoolWaitDuration = "csharpdb.pool.wait.duration";
+
+    public const string HealthStatus = "csharpdb.health.status";
 }
 
 /// <summary>
@@ -95,6 +97,7 @@ public static class CSharpDbMetricUnits
     public const string Checkpoint = "{checkpoint}";
     public const string Recovery = "{recovery}";
     public const string Connection = "{connection}";
+    public const string Status = "{status}";
 }
 
 internal readonly record struct CSharpDbStorageMetricSnapshot(
@@ -2022,6 +2025,11 @@ internal static class CSharpDbMetrics
         Gauge(CSharpDbMetricInstrumentNames.ConnectionsAvailable, ObserveConnectionsAvailable,
             CSharpDbMetricUnits.Connection, "Current available connection-pool session slots.");
 
+    private static readonly ObservableGauge<long> s_healthStatus =
+        Gauge(CSharpDbMetricInstrumentNames.HealthStatus, ObserveHealthStatus,
+            CSharpDbMetricUnits.Status,
+            "Current liveness and readiness status; the one current status series per check has value 1.");
+
     internal static Histogram<double> PoolWaitDuration { get; } =
         CSharpDbDiagnostics.Meter.CreateHistogram<double>(
             CSharpDbMetricInstrumentNames.PoolWaitDuration,
@@ -2118,6 +2126,7 @@ internal static class CSharpDbMetrics
     private static IEnumerable<Measurement<long>> ObserveReadersActive() => Observe(CSharpDbMetricId.ReadersActive);
     private static IEnumerable<Measurement<long>> ObservePoolWaiters() => Observe(CSharpDbMetricId.PoolWaiters);
     private static IEnumerable<Measurement<long>> ObserveConnectionsAvailable() => Observe(CSharpDbMetricId.ConnectionsAvailable);
+    private static IEnumerable<Measurement<long>> ObserveHealthStatus() => CSharpDbHealthMetricsRegistry.Observe();
 
     private static IEnumerable<Measurement<long>> Observe(CSharpDbMetricId metric)
         => CSharpDbRuntimeMetricsRegistry.Observe(metric);
@@ -2164,6 +2173,26 @@ internal static class CSharpDbMetricTagValues
             CSharpDbOperationOutcome.Failed => "failed",
             CSharpDbOperationOutcome.Canceled => "canceled",
             CSharpDbOperationOutcome.Rejected => "rejected",
+            _ => throw new ArgumentOutOfRangeException(nameof(value)),
+        };
+
+    internal static string HealthCheckKind(CSharpDbHealthCheckKind value)
+        => value switch
+        {
+            CSharpDbHealthCheckKind.Liveness => "liveness",
+            CSharpDbHealthCheckKind.Readiness => "readiness",
+            CSharpDbHealthCheckKind.Database => "database",
+            CSharpDbHealthCheckKind.Storage => "storage",
+            CSharpDbHealthCheckKind.Wal => "wal",
+            _ => throw new ArgumentOutOfRangeException(nameof(value)),
+        };
+
+    internal static string HealthStatus(CSharpDbHealthStatus value)
+        => value switch
+        {
+            CSharpDbHealthStatus.Healthy => "healthy",
+            CSharpDbHealthStatus.Degraded => "degraded",
+            CSharpDbHealthStatus.Unhealthy => "unhealthy",
             _ => throw new ArgumentOutOfRangeException(nameof(value)),
         };
 }

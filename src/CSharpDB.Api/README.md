@@ -33,8 +33,8 @@ The API host is intentionally thin:
 - ASP.NET Core provides routing, hosting, JSON serialization, and middleware
 - `CSharpDB.Client` is the authoritative database API
 - `ICSharpDbClient` is registered at startup from configuration
-- the client is warmed up during startup with `GetInfoAsync()` so configuration
-  and database initialization failures happen early
+- the HTTP listener starts first, then a bounded background `GetInfoAsync()`
+  probe initializes the database and drives cached readiness state
 - the route/middleware setup is shared with `CSharpDB.Daemon` so both hosts
   expose the same REST API surface
 
@@ -68,6 +68,51 @@ Data Source=csharpdb.db
 ```
 
 That means a local `csharpdb.db` file is used by default.
+
+### Health and readiness
+
+Health routing is enabled by default and is independent of the master
+`CSharpDB:Observability:Enabled` switch:
+
+```json
+{
+  "CSharpDB": {
+    "Observability": {
+      "Health": {
+        "Enabled": true,
+        "LivenessPath": "/health/live",
+        "ReadinessPath": "/health/ready",
+        "ReadinessTimeout": "00:00:02"
+      }
+    }
+  }
+}
+```
+
+`GET /health/live` and `GET /health/ready` are anonymous orchestration probes.
+They read cached process state only, never resolve or call the database, and
+return only `{"status":"healthy"}` or `{"status":"unhealthy"}` with `200`
+or `503`. Liveness remains healthy when database initialization fails;
+readiness stays unhealthy while the background initializer retries. The host
+becomes not ready before listener shutdown and non-live after it stops.
+
+`GET /api/diagnostics/health` returns the detailed typed
+`HealthDiagnosticsSnapshot` and follows the same fail-closed diagnostics access
+policy as other runtime diagnostics. It is available even while the database
+is not ready and does not query the database.
+
+A full restore is not ready through replacement and reopen verification.
+Mutating foreign-key migration, reindex, and vacuum are not ready while their
+exclusive work and bounded reopen verification run. Restore validation,
+foreign-key validation, backup, and checkpoint do not change readiness. A
+failed full restore remains not ready until a later background probe verifies
+the active database; other failed exclusive work remains ready when an
+immediate bounded probe proves the database is still available.
+
+Health paths must be canonical, distinct exact paths. They cannot collide with
+REST, Prometheus, gRPC, OpenAPI, Scalar, or another mapped endpoint; startup
+rejects collisions regardless of mapping order. Disabling health leaves both
+minimal paths unmapped.
 
 ### Observability and structured logging
 
@@ -345,6 +390,7 @@ All routes are under `/api`.
 
 | Method | Route | Description |
 | --- | --- | --- |
+| `GET` | `/api/diagnostics/health` | Get cached detailed host liveness/readiness state. |
 | `GET` | `/api/diagnostics/runtime` | Get the current runtime summary. |
 | `GET` | `/api/diagnostics/queries/active?maximumRecords=100` | Get a capped active-query snapshot. |
 | `GET` | `/api/diagnostics/queries/recent?maximumRecords=100` | Get a capped recent-query snapshot. |

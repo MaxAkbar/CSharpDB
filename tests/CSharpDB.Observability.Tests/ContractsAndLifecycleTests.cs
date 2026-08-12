@@ -275,6 +275,71 @@ public sealed class ContractsAndLifecycleTests
     }
 
     [Fact]
+    public void HostState_RetriesFailedInitializationAndPublishesDistinctTransitionsInOrder()
+    {
+        var clock = new ManualTimeProvider(
+            new DateTimeOffset(2026, 8, 11, 12, 0, 0, TimeSpan.Zero));
+        var observed = new List<CSharpDbHostStateSnapshot>();
+        var state = new CSharpDbHostState(
+            clock,
+            snapshot =>
+            {
+                observed.Add(snapshot);
+                if (snapshot.LifecyclePhase ==
+                    CSharpDbHostLifecyclePhase.Recovering)
+                {
+                    throw new InvalidOperationException(
+                        "An observer cannot stop initialization recovery.");
+                }
+            });
+
+        clock.Advance(TimeSpan.FromSeconds(1));
+        state.MarkFailed(SafeErrorProjector.Project(SafeErrorKind.DatabaseIo));
+        clock.Advance(TimeSpan.FromSeconds(1));
+        state.MarkRecovering();
+        clock.Advance(TimeSpan.FromSeconds(1));
+        CSharpDbHostStateSnapshot ready = state.MarkReady();
+        clock.Advance(TimeSpan.FromSeconds(1));
+        CSharpDbHostStateSnapshot repeatedReady = state.MarkReady();
+
+        Assert.Same(ready, repeatedReady);
+        Assert.Equal(ready.ChangedAtUtc, repeatedReady.ChangedAtUtc);
+        Assert.Equal(
+            [
+                CSharpDbHostLifecyclePhase.Starting,
+                CSharpDbHostLifecyclePhase.Failed,
+                CSharpDbHostLifecyclePhase.Recovering,
+                CSharpDbHostLifecyclePhase.Running,
+            ],
+            observed.Select(static snapshot => snapshot.LifecyclePhase));
+        Assert.Null(state.Snapshot.Error);
+        Assert.True(state.Snapshot.IsReady);
+    }
+
+    [Fact]
+    public void HostState_MarkRunningPublishesInitialRuntimeReasonAtomically()
+    {
+        var observed = new List<CSharpDbHostStateSnapshot>();
+        var state = new CSharpDbHostState(
+            TimeProvider.System,
+            observed.Add);
+
+        CSharpDbHostStateSnapshot running = state.MarkRunning(
+            CSharpDbReadinessReason.ReadOnly);
+
+        Assert.True(running.IsLive);
+        Assert.False(running.IsReady);
+        Assert.Equal(CSharpDbHostLifecyclePhase.Running, running.LifecyclePhase);
+        Assert.Equal(CSharpDbReadinessReason.ReadOnly, running.ReadinessReason);
+        Assert.Equal(2, observed.Count);
+        Assert.DoesNotContain(observed, static snapshot => snapshot.IsReady);
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            state.MarkRunning(CSharpDbReadinessReason.Starting));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            state.MarkRunning((CSharpDbReadinessReason)999));
+    }
+
+    [Fact]
     public void CounterEpoch_AdvancesAtomically()
     {
         var epoch = new CSharpDbCounterEpoch();

@@ -1,10 +1,17 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Reflection;
+using System.Text.Json;
 using CSharpDB.Admin.Services;
+using CSharpDB.Client;
+using CSharpDB.Client.Models;
+using CSharpDB.Observability;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 
 namespace CSharpDB.Admin.Forms.Tests.Admin;
 
@@ -30,6 +37,200 @@ public sealed class AdminDesktopShellEndpointTests
         {
             await DeleteDatabaseFilesAsync(dbPath);
         }
+    }
+
+    [Fact]
+    public async Task Readiness_IsSeparateFromDesktopLiveness()
+    {
+        string dbPath = NewTempDbPath();
+
+        try
+        {
+            await using var factory = new TestAdminFactory(dbPath);
+            using HttpClient client = factory.CreateClient();
+
+            using HttpResponseMessage ready = await WaitForStatusAsync(
+                client,
+                "/health/ready",
+                HttpStatusCode.OK);
+            using JsonDocument body = JsonDocument.Parse(
+                await ready.Content.ReadAsStringAsync(Ct));
+
+            JsonProperty property = Assert.Single(
+                body.RootElement.EnumerateObject());
+            Assert.Equal("status", property.Name);
+            Assert.Equal("healthy", property.Value.GetString());
+
+            using HttpResponseMessage shallow = await client.GetAsync(
+                "/healthz",
+                Ct);
+            using HttpResponseMessage live = await client.GetAsync(
+                "/health/live",
+                Ct);
+            Assert.Equal(HttpStatusCode.OK, shallow.StatusCode);
+            Assert.Equal(HttpStatusCode.OK, live.StatusCode);
+        }
+        finally
+        {
+            await DeleteDatabaseFilesAsync(dbPath);
+        }
+    }
+
+    [Fact]
+    public async Task Healthz_RemainsLive_WhenDatabaseInitializationFails()
+    {
+        string dbPath = NewTempDbPath();
+        ICSharpDbClient failingClient =
+            DispatchProxy.Create<ICSharpDbClient, FailingClientProxy>();
+
+        try
+        {
+            await using var factory = new TestAdminFactory(
+                dbPath,
+                clientOverride: failingClient);
+            using HttpClient client = factory.CreateClient();
+
+            using HttpResponseMessage notReady = await WaitForStatusAsync(
+                client,
+                "/health/ready",
+                HttpStatusCode.ServiceUnavailable);
+            using HttpResponseMessage shallow = await client.GetAsync(
+                "/healthz",
+                Ct);
+
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, notReady.StatusCode);
+            Assert.Equal(HttpStatusCode.OK, shallow.StatusCode);
+            Assert.DoesNotContain(
+                "initialization failure",
+                await notReady.Content.ReadAsStringAsync(Ct),
+                StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            await failingClient.DisposeAsync();
+            await DeleteDatabaseFilesAsync(dbPath);
+        }
+    }
+
+    [Fact]
+    public async Task ReadinessTimeout_IsBoundedAndDoesNotStartConcurrentAttempts()
+    {
+        string dbPath = NewTempDbPath();
+        ICSharpDbClient blockingClient = DispatchProxy.Create<
+            ICSharpDbClient,
+            BlockingClientProxy>();
+        var proxy = (BlockingClientProxy)blockingClient;
+
+        try
+        {
+            await using var factory = new TestAdminFactory(
+                dbPath,
+                new Dictionary<string, string?>
+                {
+                    ["CSharpDB:Observability:Health:ReadinessTimeout"] =
+                        "00:00:00.050",
+                },
+                blockingClient);
+            using HttpClient client = factory.CreateClient();
+            AdminHostReadinessService readiness = factory.Services
+                .GetRequiredService<AdminHostReadinessService>();
+
+            await WaitUntilAsync(() =>
+                readiness.Snapshot.LifecyclePhase ==
+                    CSharpDbHostLifecyclePhase.Failed);
+            Assert.Equal(1, proxy.GetInfoCallCount);
+
+            await Task.Delay(150, Ct);
+            Assert.Equal(1, proxy.GetInfoCallCount);
+            using HttpResponseMessage ready = await client.GetAsync(
+                "/health/ready",
+                Ct);
+            using HttpResponseMessage live = await client.GetAsync(
+                "/healthz",
+                Ct);
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, ready.StatusCode);
+            Assert.Equal(HttpStatusCode.OK, live.StatusCode);
+
+            proxy.InfoCompletion.TrySetResult(new DatabaseInfo
+            {
+                DataSource = "recovered-health-client",
+            });
+            await WaitUntilAsync(() => readiness.Snapshot.IsReady);
+            Assert.True(proxy.GetInfoCallCount >= 2);
+        }
+        finally
+        {
+            proxy.InfoCompletion.TrySetCanceled(Ct);
+            await blockingClient.DisposeAsync();
+            await DeleteDatabaseFilesAsync(dbPath);
+        }
+    }
+
+    [Fact]
+    public async Task DatabaseSwitchLease_MakesOnlyReadinessUnavailable()
+    {
+        string dbPath = NewTempDbPath();
+
+        try
+        {
+            await using var factory = new TestAdminFactory(dbPath);
+            using HttpClient client = factory.CreateClient();
+            AdminHostReadinessService readiness = factory.Services
+                .GetRequiredService<AdminHostReadinessService>();
+            await WaitUntilAsync(() => readiness.Snapshot.IsReady);
+
+            using (readiness.EnterDatabaseSwitch())
+            {
+                Assert.True(readiness.Snapshot.IsLive);
+                Assert.False(readiness.Snapshot.IsReady);
+                Assert.Equal(
+                    CSharpDbReadinessReason.ReopenPending,
+                    readiness.Snapshot.ReadinessReason);
+            }
+
+            Assert.True(readiness.Snapshot.IsReady);
+        }
+        finally
+        {
+            await DeleteDatabaseFilesAsync(dbPath);
+        }
+    }
+
+    [Fact]
+    public async Task DatabaseSwitchLease_DoesNotHoldGateAcrossTransitionObserver()
+    {
+        AdminHostReadinessService? readiness = null;
+        int reentered = 0;
+        var state = new CSharpDbHostState(
+            timeProvider: null,
+            transitionObserver: snapshot =>
+            {
+                if (readiness is null ||
+                    !snapshot.IsReady ||
+                    Interlocked.Exchange(ref reentered, 1) != 0)
+                {
+                    return;
+                }
+
+                using IDisposable lease = readiness.EnterDatabaseSwitch();
+                Assert.Equal(
+                    CSharpDbReadinessReason.ReopenPending,
+                    readiness.Snapshot.ReadinessReason);
+            });
+        using ServiceProvider services = new ServiceCollection()
+            .BuildServiceProvider();
+        using var lifetime = new TestHostApplicationLifetime();
+        readiness = new AdminHostReadinessService(
+            services,
+            state,
+            new CSharpDbHealthOptions(),
+            lifetime);
+
+        await Task.Run(state.MarkReady, Ct)
+            .WaitAsync(TimeSpan.FromSeconds(1), Ct);
+
+        Assert.Equal(1, Volatile.Read(ref reentered));
+        Assert.True(readiness.Snapshot.IsReady);
     }
 
     [Fact]
@@ -141,11 +342,20 @@ public sealed class AdminDesktopShellEndpointTests
 
     private sealed class TestAdminFactory(
         string dbPath,
-        IReadOnlyDictionary<string, string?>? extraConfig = null) : WebApplicationFactory<Program>
+        IReadOnlyDictionary<string, string?>? extraConfig = null,
+        ICSharpDbClient? clientOverride = null) : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             builder.UseEnvironment("Development");
+            if (clientOverride is not null)
+            {
+                builder.ConfigureServices(services =>
+                {
+                    services.RemoveAll<ICSharpDbClient>();
+                    services.AddSingleton(clientOverride);
+                });
+            }
             builder.ConfigureAppConfiguration((_, config) =>
             {
                 var values = new Dictionary<string, string?>
@@ -161,6 +371,104 @@ public sealed class AdminDesktopShellEndpointTests
 
                 config.AddInMemoryCollection(values);
             });
+        }
+    }
+
+    private static async Task<HttpResponseMessage> WaitForStatusAsync(
+        HttpClient client,
+        string path,
+        HttpStatusCode expected)
+    {
+        var deadline = System.Diagnostics.Stopwatch.StartNew();
+        HttpResponseMessage? last = null;
+        while (deadline.Elapsed < TimeSpan.FromSeconds(5))
+        {
+            last?.Dispose();
+            last = await client.GetAsync(path, Ct);
+            if (last.StatusCode == expected)
+                return last;
+            await Task.Delay(25, Ct);
+        }
+
+        HttpStatusCode actual = last?.StatusCode ?? (HttpStatusCode)0;
+        last?.Dispose();
+        throw new Xunit.Sdk.XunitException(
+            $"Health endpoint '{path}' did not reach {expected}; last status was {actual}.");
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        var deadline = System.Diagnostics.Stopwatch.StartNew();
+        while (deadline.Elapsed < TimeSpan.FromSeconds(5))
+        {
+            if (condition())
+                return;
+            await Task.Delay(25, Ct);
+        }
+
+        throw new Xunit.Sdk.XunitException(
+            "The Admin readiness condition was not reached within the timeout.");
+    }
+
+    public class FailingClientProxy : DispatchProxy
+    {
+        protected override object? Invoke(
+            MethodInfo? targetMethod,
+            object?[]? args)
+            => targetMethod?.Name switch
+            {
+                "get_DataSource" => "failing-health-client",
+                "GetInfoAsync" => Task.FromException<DatabaseInfo>(
+                    new InvalidOperationException("initialization failure")),
+                "DisposeAsync" => ValueTask.CompletedTask,
+                _ => throw new NotSupportedException(targetMethod?.Name),
+            };
+    }
+
+    public class BlockingClientProxy : DispatchProxy
+    {
+        private int _getInfoCallCount;
+
+        public TaskCompletionSource<DatabaseInfo> InfoCompletion { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int GetInfoCallCount => Volatile.Read(ref _getInfoCallCount);
+
+        protected override object? Invoke(
+            MethodInfo? targetMethod,
+            object?[]? args)
+            => targetMethod?.Name switch
+            {
+                "get_DataSource" => "blocking-health-client",
+                "GetInfoAsync" => GetInfo(),
+                "DisposeAsync" => ValueTask.CompletedTask,
+                _ => throw new NotSupportedException(targetMethod?.Name),
+            };
+
+        private Task<DatabaseInfo> GetInfo()
+        {
+            Interlocked.Increment(ref _getInfoCallCount);
+            return InfoCompletion.Task;
+        }
+    }
+
+    private sealed class TestHostApplicationLifetime : IHostApplicationLifetime, IDisposable
+    {
+        private readonly CancellationTokenSource _started = new();
+        private readonly CancellationTokenSource _stopping = new();
+        private readonly CancellationTokenSource _stopped = new();
+
+        public CancellationToken ApplicationStarted => _started.Token;
+        public CancellationToken ApplicationStopping => _stopping.Token;
+        public CancellationToken ApplicationStopped => _stopped.Token;
+
+        public void StopApplication() => _stopping.Cancel();
+
+        public void Dispose()
+        {
+            _started.Dispose();
+            _stopping.Dispose();
+            _stopped.Dispose();
         }
     }
 

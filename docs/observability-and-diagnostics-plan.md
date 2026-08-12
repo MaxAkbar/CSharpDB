@@ -1161,53 +1161,100 @@ Exit gate:
 
 ## Phase 5: Health, Readiness, And Liveness
 
-Status: `Not started`
+Status: `Complete`
 
 Goal: give orchestrators and operators cheap, dependable signals that
 distinguish a running process from a database host that can accept work.
 
+Current implementation checkpoint (2026-08-11):
+
+- API and daemon share one health registration, cached host state, background
+  initializer, and automatic initialization-recovery loop. The observability
+  listener is established before initialization, and database/WAL startup work
+  runs only after the application listener has started.
+- Anonymous HTTP liveness and readiness responses contain one `status` field.
+  Liveness reads process state only; readiness reads the cached host state and
+  neither endpoint resolves, opens, queries, checkpoints, or locks a database.
+  Safe timestamps, bounded reasons, and safe error projections remain behind
+  the authenticated diagnostics route.
+- Startup and WAL recovery are live but not ready. Initialization failure stays
+  live and retries through `Failed -> Recovering -> Running`. Backup and
+  validation-only maintenance remain ready. Full restore and mutating exclusive
+  maintenance hold not-ready leases through database reopen verification, and
+  graceful shutdown changes readiness before the listener terminates.
+- The daemon maps standard gRPC health for the overall service name `""` and
+  database service name `"csharpdb.database"`, including when its normal REST
+  API is disabled. Exact `grpc.health.v1.Health/Check` and `/Watch` methods are
+  status-only API-key exemptions; the explicit method policy is applied across
+  unary, client-streaming, server-streaming, and duplex interceptor shapes.
+- Admin preserves shallow `/healthz`, adds configurable liveness/readiness
+  routes, and initializes its cached state after the listener starts. Runtime
+  `DatabaseClientHolder.SwitchAsync` and `CreateShardCatalogAndReloadAsync`
+  acquire a nestable `ReopenPending` lease through replacement verification and
+  adoption. Admin initialization applies a hard readiness timeout without
+  starting concurrent attempts when a client ignores cancellation. The full
+  Admin Forms suite passed `457/457` at this checkpoint.
+- `csharpdb.health.status` is an `ObservableGauge<long>` with unit `{status}`
+  and only bounded health-check, status, and configured-alias dimensions. Each
+  live alias emits one current liveness and one current readiness measurement.
+  Distinct state changes publish typed `CSharpDB.Health.Transition` event 6000;
+  repeated identical ready state does not update the timestamp or publish a
+  repeated event.
+
+Completion ruling and qualification:
+
+- CSharpDB has no built-in configured host/database read-only mode in this
+  release. The contract is nevertheless settled and tested: an integration
+  that enters `Running` with `CSharpDbReadinessReason.ReadOnly` remains live but
+  is not write-ready. A future read-only host mode must publish that existing
+  state rather than inventing a second readiness meaning.
+- Final qualification passed on the frozen Windows tree: strict solution build
+  `0` warnings/`0` errors; core `2692/2692`; API `180/180`; daemon `230/230`;
+  Admin Forms `457/457`; Observability `131/131`; NuGet project closure and the
+  clean standalone/metapackage observability package smoke both passed.
+
 Work:
 
-- [ ] Add reusable CSharpDB health registrations in the API host extensions so
+- [x] Add reusable CSharpDB health registrations in the API host extensions so
   the standalone API and daemon use the same checks.
-- [ ] Replace the current pre-`app.Run` database warmup with a lifecycle/
+- [x] Replace the current pre-`app.Run` database warmup with a lifecycle/
   readiness coordinator or background initializer so listeners can report
-  `starting`, `recovering`, initialization failure, and recovery. If startup is
-  intentionally kept fail-fast instead, narrow the advertised health-state
-  contract and tests accordingly.
-- [ ] Map `/health/live` to process liveness only. It must not open, query,
+  `starting`, `recovering`, initialization failure, and recovery.
+- [x] Map `/health/live` to process liveness only. It must not open, query,
   checkpoint, or inspect the database.
-- [ ] Map `/health/ready` to a bounded readiness snapshot covering host
+- [x] Map `/health/ready` to a bounded readiness snapshot covering host
   initialization, shutdown, database open/recovery, exclusive restore state,
-  and configured write readiness.
-- [ ] Use cached state plus a strict timeout for any side-effect-free readiness
-  probe.
-- [ ] Keep readiness independent of the main client execution lock so one slow
+  and configured write readiness. `ReadOnly` is the tested live/not-write-ready
+  state for future integrations; current built-in hosts are write-capable.
+- [x] Use cached state plus a strict timeout for any side-effect-free readiness
+  probe. API, daemon, and Admin hard-bound readiness state changes; Admin also
+  waits for a non-cooperative attempt to finish before starting a retry.
+- [x] Keep readiness independent of the main client execution lock so one slow
   query or queued backup does not create a false host outage.
-- [ ] Return `200` for healthy and `503` for not-ready/not-live with a stable,
+- [x] Return `200` for healthy and `503` for not-ready/not-live with a stable,
   minimal JSON schema.
-- [ ] Keep anonymous responses to the generic `status` field only. Provide
+- [x] Keep anonymous responses to the generic `status` field only. Provide
   timestamps and detailed component reasons through an authenticated
   diagnostics endpoint.
-- [ ] Add configuration for endpoint enablement and paths without allowing
+- [x] Add configuration for endpoint enablement and paths without allowing
   collisions with API, Admin, OpenAPI, gRPC, or Prometheus routes.
-- [ ] Register the new health services and routes explicitly in Admin. Preserve
+- [x] Register the new health services and routes explicitly in Admin. Preserve
   Admin's `/healthz` desktop-launcher contract as its existing shallow
   process/liveness probe; add database readiness separately.
-- [ ] Add standard gRPC health service support to the daemon, including overall
+- [x] Add standard gRPC health service support to the daemon, including overall
   and CSharpDB database service names.
-- [ ] Exempt standard gRPC Health `Check` and `Watch` from API-key
+- [x] Exempt standard gRPC Health `Check` and `Watch` from API-key
   authentication consistently and return status only. Test unary and streaming
   interceptor behavior explicitly.
-- [ ] Cover unary, client-streaming, server-streaming, and duplex interceptor
+- [x] Cover unary, client-streaming, server-streaming, and duplex interceptor
   shapes with an explicit health-method allowlist; do not rely on the current
   absence of streaming overrides as an authentication policy.
-- [ ] Map daemon health even when its normal REST API surface is disabled.
-- [ ] Define readiness during startup, WAL recovery, read-only mode, backup,
+- [x] Map daemon health even when its normal REST API surface is disabled.
+- [x] Define readiness during startup, WAL recovery, read-only mode, backup,
   restore validation, full restore, maintenance, and graceful shutdown.
-- [ ] Emit a low-cardinality health status metric and structured transition
+- [x] Emit a low-cardinality health status metric and structured transition
   events without logging repeated successful probes.
-- [ ] Add tests proving liveness remains healthy during a database readiness
+- [x] Add tests proving liveness remains healthy during a database readiness
   failure and readiness recovers after a transient condition.
 
 Deliverables:
@@ -1218,6 +1265,12 @@ Deliverables:
 - Admin compatibility health plus a separate readiness route.
 
 Exit gate:
+
+Status: complete. The read-only policy is live/not-write-ready even though this
+release has no built-in read-only host producer. The cross-host lifecycle
+matrix, strict build, affected full suites, package closure, and clean-consumer
+package smoke all pass on the frozen Windows tree; broader multi-platform
+release qualification remains Phase 7 work.
 
 - Liveness remains independent of database state and storage latency.
 - Readiness fails within its configured timeout and never mutates data.
@@ -1418,6 +1471,8 @@ The initial model set should include:
 - `WalRuntimeDiagnosticsSnapshot`
 - `MaintenanceOperationSnapshot`
 - `HealthDiagnosticsSnapshot`
+- `CSharpDbHostState` and `CSharpDbHostStateSnapshot`
+- `CSharpDbHealthMetricSource`
 - `ICSharpDbObservabilityClient`
 
 All snapshot models must:
@@ -1447,7 +1502,7 @@ schema; it does not authorize additional dimensions.
 | Storage | logical/allocated bytes, pages/read/write, cache hit/miss, dirty pages, readers/writers, commits/conflicts | configured alias |
 | WAL/checkpoint | WAL byte/frame gauges, publication/flush/group counters, pending/flushed commits, batch size, checkpoint count/duration/active/age, recovery count/duration/active | configured alias; checkpoint/recovery terminal metrics also outcome |
 | Maintenance | backup, restore, reindex, vacuum, and generic maintenance count/duration/active | terminal metrics: operation class, outcome, transport, alias; active: operation class, alias |
-| Health | Reserved tag keys only; Phase 5 instruments are not part of the Phase 4 metric schema | check kind, status, configured alias |
+| Health | `csharpdb.health.status` observable gauge (`{status}`); one current value of `1` for liveness and readiness | check kind, status, configured alias |
 
 Query fingerprint, SQL text, object name, operation id, trace id, session id,
 file path, and error message are prohibited metric dimensions.
@@ -1465,7 +1520,7 @@ file path, and error message are prohibited metric dimensions.
 | Backup/restore | Queue/acquire time, active phase, point-of-no-return cancellation, progress, success, validation failure, exclusive access, replacement rollback, reopen failure/pending, readiness, and recent history reach one terminal state. |
 | OpenTelemetry | Span parentage/status, metric units/tags, sampling, resource attributes, exporter outage, and log/trace correlation match the contract. |
 | Prometheus | Disabled, API-key, loopback, remote-denial, gRPC-only daemon, scrape format, concurrent scrape, and adversarial cardinality cases pass. |
-| Health | Live versus ready, Admin `/healthz`, listener-before-initialization startup, recovery, initialization failure, read-only, restore/reopen, timeout, graceful shutdown, REST, and authenticated unary/streaming gRPC `Check`/`Watch` behavior are deterministic. |
+| Health | Live versus ready, Admin `/healthz`, listener-before-initialization startup, recovery, initialization failure, read-only policy, Admin runtime switch, restore/reopen, timeout, graceful shutdown, REST, and authenticated unary/streaming gRPC `Check`/`Watch` behavior are deterministic. |
 | Admin | Direct/HTTP/gRPC/sharded snapshots, database switch, reconnect, active-tab polling, counter epoch reset, stale/truncated data, detail denial, and disposal render correctly. |
 | Compatibility | Existing embedded clients and third-party `ICSharpDbClient` implementations compile and behave unchanged when observability is off. |
 | Platforms | Windows, Ubuntu, and macOS tests plus existing core/NativeAOT and supported packaged-host smoke tests pass. |

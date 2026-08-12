@@ -65,10 +65,23 @@ configured data source; it is not an in-memory-only mode. Set
 `CSharpDB:HostDatabase:OpenMode` to `Direct` to use the plain direct open path
 instead of `Database.OpenHybridAsync`.
 
-The app opens the configured database during startup by calling
-`ICSharpDbClient.GetInfoAsync()`, so invalid configuration fails before the UI
-accepts requests. The same database instance is reused until the Admin app
-shuts down or the user switches to a different database.
+The web listener starts before the configured database is initialized. A
+background lifecycle service calls `ICSharpDbClient.GetInfoAsync()` with a
+bounded attempt and publishes cached readiness while retaining the same warm
+database instance for the Admin lifetime. Initialization failure leaves the
+process live and the readiness probe unhealthy while retries continue.
+
+`GET /healthz` remains the desktop launcher's shallow process/liveness probe
+and always returns the compatibility `{ "status": "ok" }` response while the
+process is serving HTTP. `GET /health/live` is the configurable standard
+liveness route. `GET /health/ready` is separate: it returns `200` with
+`{ "status": "healthy" }` only after database initialization, or `503` with
+`{ "status": "unhealthy" }` otherwise. Neither endpoint queries the database
+or exposes paths, SQL, credentials, timestamps, or exception details.
+
+Admin health routes are configured under `CSharpDB:Observability:Health` with
+`Enabled`, `LivenessPath`, `ReadinessPath`, and `ReadinessTimeout`. The two
+paths must be distinct canonical absolute paths and cannot replace `/healthz`.
 
 ## Running Locally
 

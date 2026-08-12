@@ -22,6 +22,7 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbObservabili
     private CSharpDbClientOptions? _baseClientOptions;
     private readonly AdminHostDatabaseOptions _hostDatabaseOptions;
     private readonly DbFunctionRegistry _functions;
+    private readonly AdminHostReadinessService? _readiness;
     private readonly object _lock = new();
     private readonly Dictionary<ICSharpDbClient, int> _observabilityLeaseCounts =
         new(ReferenceEqualityComparer.Instance);
@@ -37,16 +38,35 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbObservabili
         CSharpDbClientOptions? baseClientOptions,
         AdminHostDatabaseOptions hostDatabaseOptions,
         DbFunctionRegistry functions)
+        : this(
+            initial,
+            shardAdmin,
+            baseClientOptions,
+            hostDatabaseOptions,
+            functions,
+            readiness: null)
+    {
+    }
+
+    internal DatabaseClientHolder(
+        ICSharpDbClient initial,
+        ICSharpDbShardAdminClient? shardAdmin,
+        CSharpDbClientOptions? baseClientOptions,
+        AdminHostDatabaseOptions hostDatabaseOptions,
+        DbFunctionRegistry functions,
+        AdminHostReadinessService? readiness)
     {
         _inner = initial;
         _shardAdmin = shardAdmin;
         _baseClientOptions = baseClientOptions;
         _hostDatabaseOptions = hostDatabaseOptions;
         _functions = functions;
+        _readiness = readiness;
     }
 
     public async Task SwitchAsync(string databasePath)
     {
+        using IDisposable? readinessLease = _readiness?.EnterDatabaseSwitch();
         CSharpDbClientOptions newOptions = AdminClientOptionsBuilder.BuildDirectDataSource(databasePath, _hostDatabaseOptions, _functions);
         ICSharpDbClient newClient;
         ICSharpDbShardAdminClient? newShardAdmin;
@@ -128,6 +148,7 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbObservabili
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(activeMap);
+        using IDisposable? readinessLease = _readiness?.EnterDatabaseSwitch();
 
         CSharpDbClientOptions baseClientOptions;
         lock (_lock)

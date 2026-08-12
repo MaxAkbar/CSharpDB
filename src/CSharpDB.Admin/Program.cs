@@ -24,6 +24,7 @@ builder.Services.AddSingleton<DatabaseClientHolder>(sp =>
     var configuration = sp.GetRequiredService<IConfiguration>();
     var hostDatabaseOptions = sp.GetRequiredService<AdminHostDatabaseOptions>();
     var functions = sp.GetRequiredService<DbFunctionRegistry>();
+    var readiness = sp.GetRequiredService<AdminHostReadinessService>();
     string? endpoint = configuration["CSharpDB:Endpoint"];
     CSharpDbTransport? transport = ParseTransport(configuration["CSharpDB:Transport"]);
 
@@ -35,15 +36,32 @@ builder.Services.AddSingleton<DatabaseClientHolder>(sp =>
         functions);
 
     if (CSharpDbShardedClient.TryCreateFromMasterCatalog(options) is { } shardedClient)
-        return new DatabaseClientHolder(shardedClient, shardedClient, null, hostDatabaseOptions, functions);
+        return new DatabaseClientHolder(shardedClient, shardedClient, null, hostDatabaseOptions, functions, readiness);
 
     ICSharpDbClient client = CSharpDbClient.Create(options);
     ICSharpDbShardAdminClient? shardAdmin = TryCreateShardAdmin(options);
-    return new DatabaseClientHolder(client, shardAdmin, options, hostDatabaseOptions, functions);
+    return new DatabaseClientHolder(client, shardAdmin, options, hostDatabaseOptions, functions, readiness);
 });
 builder.Services.AddSingleton<ICSharpDbClient>(sp => sp.GetRequiredService<DatabaseClientHolder>());
 builder.Services.AddSingleton<ICSharpDbShardAdminClient>(sp => sp.GetRequiredService<DatabaseClientHolder>());
 builder.Services.AddSingleton<ICSharpDbShardDirectoryClient>(sp => sp.GetRequiredService<DatabaseClientHolder>());
+builder.Services.AddSingleton(sp =>
+{
+    CSharpDB.Observability.CSharpDbHealthOptions options = sp
+        .GetRequiredService<IConfiguration>()
+        .GetSection(
+            CSharpDB.Observability.CSharpDbObservabilityOptions.ConfigurationSectionName +
+            ":Health")
+        .Get<CSharpDB.Observability.CSharpDbHealthOptions>() ?? new();
+    new CSharpDB.Observability.CSharpDbObservabilityOptions
+    {
+        Health = options,
+    }.Validate();
+    return options;
+});
+builder.Services.AddSingleton<CSharpDB.Observability.CSharpDbHostState>();
+builder.Services.AddSingleton<AdminHostReadinessService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<AdminHostReadinessService>());
 builder.Services.AddScoped<TabManagerService>();
 builder.Services.AddScoped<ThemeService>();
 builder.Services.AddScoped<ToastService>();
@@ -68,13 +86,6 @@ builder.Services.AddCSharpDbAdminReports();
 
 var app = builder.Build();
 _ = app.Services.GetRequiredService<HostCallbackDiagnosticsHistoryService>();
-
-// Warm the in-process database instance before any requests arrive.
-await using (var scope = app.Services.CreateAsyncScope())
-{
-    var dbClient = scope.ServiceProvider.GetRequiredService<ICSharpDbClient>();
-    _ = await dbClient.GetInfoAsync();
-}
 
 if (!app.Environment.IsDevelopment())
 {

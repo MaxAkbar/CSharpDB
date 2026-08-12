@@ -38,6 +38,7 @@ builder.Services.AddSingleton<ICSharpDbClient>(sp =>
            ?? CSharpDbClient.Create(options);
 });
 
+builder.Services.AddCSharpDbHealth(DiagnosticsSource.Api);
 builder.Services.AddCSharpDbRestApi(builder.Configuration.GetSection("CSharpDB:Api:Security"));
 
 var app = builder.Build();
@@ -46,15 +47,8 @@ app.UseCSharpDbObservability(ObservabilityTransport.Direct);
 // ─── Middleware pipeline and endpoints ──────────────────────
 
 app.MapCSharpDbRestApi();
+app.MapCSharpDbHealthEndpoints();
 app.MapCSharpDbPrometheusEndpoint();
-
-// ─── Initialize database ────────────────────────────────────
-
-await using (var scope = app.Services.CreateAsyncScope())
-{
-    var dbClient = scope.ServiceProvider.GetRequiredService<ICSharpDbClient>();
-    _ = await dbClient.GetInfoAsync();
-}
 
 app.Run();
 

@@ -1,7 +1,9 @@
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
+using CSharpDB.Observability;
 using Microsoft.AspNetCore.Http.HttpResults;
+using Microsoft.AspNetCore.Routing;
 
 namespace CSharpDB.Admin.Services;
 
@@ -17,6 +19,28 @@ public static class DesktopShellEndpoints
         endpoints.MapGet("/healthz", () => Results.Ok(new { status = "ok" }));
 
         IConfiguration configuration = endpoints.ServiceProvider.GetRequiredService<IConfiguration>();
+        CSharpDbHealthOptions health = endpoints.ServiceProvider
+            .GetRequiredService<CSharpDbHealthOptions>();
+        if (health.Enabled)
+        {
+            ThrowIfEndpointAlreadyUsesPath(endpoints, health.LivenessPath);
+            ThrowIfEndpointAlreadyUsesPath(endpoints, health.ReadinessPath);
+            endpoints.MapGet(
+                health.LivenessPath,
+                () => Results.Json(new { status = "healthy" }));
+            endpoints.MapGet(
+                health.ReadinessPath,
+                (AdminHostReadinessService readiness) =>
+                {
+                    bool healthy = readiness.Snapshot.IsReady;
+                    return Results.Json(
+                        new { status = healthy ? "healthy" : "unhealthy" },
+                        statusCode: healthy
+                            ? StatusCodes.Status200OK
+                            : StatusCodes.Status503ServiceUnavailable);
+                });
+        }
+
         if (!configuration.GetValue<bool>(DesktopShellEnabledKey))
             return endpoints;
 
@@ -47,6 +71,34 @@ public static class DesktopShellEndpoints
             .DisableAntiforgery();
 
         return endpoints;
+    }
+
+    private static void ThrowIfEndpointAlreadyUsesPath(
+        IEndpointRouteBuilder endpoints,
+        string path)
+    {
+        string normalized = path.TrimEnd('/');
+        foreach (EndpointDataSource source in endpoints.DataSources)
+        {
+            foreach (RouteEndpoint endpoint in source.Endpoints
+                         .OfType<RouteEndpoint>())
+            {
+                string? rawText = endpoint.RoutePattern.RawText;
+                if (rawText is null)
+                    continue;
+                string existing = rawText.StartsWith('/')
+                    ? rawText.TrimEnd('/')
+                    : "/" + rawText.TrimEnd('/');
+                if (string.Equals(
+                        normalized,
+                        existing,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException(
+                        "An Admin health path collides with an existing endpoint route.");
+                }
+            }
+        }
     }
 
     private static bool IsLoopbackRequest(HttpContext context)

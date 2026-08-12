@@ -56,7 +56,8 @@ is recorded in the
 | `QueryPlanDiagnosticsSnapshot` | Bounded automatic plan summary that never replays SQL |
 | `QueryDetailSnapshot` | Separately requested captured query text, subject to capture and host policy |
 | `ConnectionDiagnosticsSnapshot`, `SessionDiagnosticsSnapshot` | Safe physical-owner and logical-session state |
-| `CSharpDbHostState` | Thread-safe startup, recovery, readiness, and shutdown state |
+| `CSharpDbHostState` | Thread-safe startup, retryable recovery, readiness, shutdown, and best-effort transition publication |
+| `CSharpDbHealthMetricSource` | Disposable binding from one validated database alias and authoritative host state to the bounded health gauge |
 | `BoundedDiagnosticHistory<T>` | Capacity- and retention-bounded in-memory history |
 
 ## Phase 1 structured event contract
@@ -221,18 +222,28 @@ exact keys `csharpdb.operation.class`, `csharpdb.operation.outcome`,
 | `csharpdb.wal.commits.pending` (observable up/down; `{commit}`) | alias |
 | `csharpdb.sessions.active` (observable up/down; `{session}`), `csharpdb.readers.active` (observable up/down; `{reader}`), `csharpdb.pool.waiters` (observable up/down; `{request}`), `csharpdb.connections.available` (observable gauge; `{connection}`) | transport, alias |
 | `csharpdb.pool.wait.duration` (histogram; `s`) | outcome, transport, alias |
+| `csharpdb.health.status` (observable gauge; `{status}`) | health check, status, alias |
 
 The closed tag-key allowlist remains `csharpdb.operation.class`,
 `csharpdb.operation.outcome`, `csharpdb.transport`,
-`csharpdb.database.alias`, `csharpdb.health.check`, and `csharpdb.status`; the
-last two are reserved for the health phase and are not added to the metrics
-above. SQL, fingerprints, operation/session/trace ids, object names, paths,
+`csharpdb.database.alias`, `csharpdb.health.check`, and `csharpdb.status`.
+SQL, fingerprints, operation/session/trace ids, object names, paths,
 exception types/messages, and arbitrary user strings are prohibited metric
 dimensions. Prometheus export disables exemplars so trace ids do not appear in
 the pull surface. The registry is capped at 64 configured aliases and 64 live
 runtime families. Sources with the same validated alias and tag tuple
 aggregate; an unavailable optional producer omits its measurement rather than
 publishing a fabricated zero.
+
+The health gauge is an explicit, disposable host binding and is therefore
+created only when the host's metric signal is enabled. It publishes one current
+value of `1` for each of `liveness` and `readiness`, with bounded `healthy` or
+`unhealthy` status and the validated database alias. There is at most one live
+health source per alias and 64 sources total, so the gauge emits at most 128
+measurements per collection. Healthy/unhealthy transitions create at most 256
+distinct label tuples across the full reviewed alias space. `degraded`,
+`database`, `storage`, and `wal` remain reviewed reserved enum values but are
+not emitted by this cached host-state source.
 
 Duration histograms report seconds and WAL batch size reports logical commits.
 The BCL-only core does not install a metric reader or bucket view. The built-in
@@ -282,6 +293,24 @@ restore validation/restore, reindex, vacuum, and foreign-key migration APIs have
 no runtime identity from which to enable or correlate telemetry; use the
 database/client-owned surfaces when telemetry is required. These limitations
 must not be presented as traced support.
+
+## Phase 5 host health state contract
+
+`CSharpDbHostState` starts live but not ready, stays live through database
+initialization failure, may retry through `Failed -> Recovering -> Running`,
+and becomes non-live only after `Stopping -> Stopped`. `MarkRunning(reason)`
+can publish the first running state atomically: `None` is ready, while one of
+the reviewed runtime reasons is live but not ready. Repeating an identical
+state is a no-op, including its timestamp and transition event, so successful
+health probes never create repeated logs.
+
+Each distinct committed state publishes the typed
+`CSharpDB.Health.Transition` event through the BCL `DiagnosticListener` outside
+the state lock. Publication is ordered and best effort; subscriber failure can
+neither roll back state nor prevent initialization, recovery, or shutdown.
+Snapshots and transition payloads remain source-generated JSON contracts and
+contain only the bounded lifecycle/reason values, UTC transition time, and an
+optional safe error projection.
 
 ## Installation
 
