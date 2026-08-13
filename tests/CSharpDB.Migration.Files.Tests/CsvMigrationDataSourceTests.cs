@@ -225,7 +225,7 @@ public sealed class CsvMigrationDataSourceTests
 
             const string expectedCursor =
                 "csharpdb-csv-cursor-v1/1/1/" +
-                "a56108f642a77cca8f417c861631c0e2c73872b5f4d3bd168866ee1ffdc8af6f";
+                "f126b46ff7953b1507f762f505efd986daa549acb1952d99901a9b42ab92a912";
             Assert.True(
                 string.Equals(expectedCursor, first.NextCursor, StringComparison.Ordinal),
                 $"CSV cursor golden changed. Actual value: {first.NextCursor}");

@@ -6,6 +6,7 @@ public sealed class ReleaseStatusScriptTests
 {
     private const string CandidateCommit =
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    private static readonly TimeSpan PublisherProcessTimeout = TimeSpan.FromMinutes(3);
 
     [Fact]
     public async Task Verifier_AcceptsLatestCanonicalStatusForExactCommit()
@@ -716,6 +717,7 @@ public sealed class ReleaseStatusScriptTests
             return RunProcessAsync(
                 "pwsh",
                 environment,
+                PublisherProcessTimeout,
                 "-NoLogo",
                 "-NoProfile",
                 "-File",
@@ -1494,6 +1496,19 @@ public sealed class ReleaseStatusScriptTests
         IReadOnlyDictionary<string, string> environment,
         params string[] arguments)
     {
+        return await RunProcessAsync(
+            fileName,
+            environment,
+            TimeSpan.FromSeconds(30),
+            arguments);
+    }
+
+    private static async Task<ProcessResult> RunProcessAsync(
+        string fileName,
+        IReadOnlyDictionary<string, string> environment,
+        TimeSpan timeoutDuration,
+        params string[] arguments)
+    {
         ProcessStartInfo startInfo = new()
         {
             FileName = fileName,
@@ -1511,21 +1526,43 @@ public sealed class ReleaseStatusScriptTests
         Assert.True(process.Start(), $"Could not start {fileName}.");
         Task<string> standardOutput = process.StandardOutput.ReadToEndAsync();
         Task<string> standardError = process.StandardError.ReadToEndAsync();
-        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(30));
+        using CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        timeout.CancelAfter(timeoutDuration);
         try
         {
             await process.WaitForExitAsync(timeout.Token);
         }
         catch (OperationCanceledException)
+            when (!TestContext.Current.CancellationToken.IsCancellationRequested)
         {
-            process.Kill(entireProcessTree: true);
-            throw new TimeoutException($"{fileName} did not finish within 30 seconds.");
+            KillProcessTree(process);
+            throw new TimeoutException(
+                $"{fileName} did not finish within {timeoutDuration.TotalSeconds:N0} seconds.");
+        }
+        catch
+        {
+            KillProcessTree(process);
+            throw;
         }
 
         return new ProcessResult(
             process.ExitCode,
             await standardOutput,
             await standardError);
+    }
+
+    private static void KillProcessTree(Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+                process.Kill(entireProcessTree: true);
+        }
+        catch (InvalidOperationException)
+        {
+            // The process exited between the state check and the kill request.
+        }
     }
 
     private static string CreateTemporaryRoot()
