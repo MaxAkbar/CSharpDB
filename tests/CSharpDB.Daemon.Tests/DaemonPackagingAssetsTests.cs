@@ -70,6 +70,8 @@ public sealed class DaemonPackagingAssetsTests
         Assert.Contains("/api/diagnostics/runtime", qualifier);
         Assert.Contains("private database path canary", qualifier);
         Assert.Contains("Stop-QualifiedHost", qualifier);
+        Assert.Contains("CSharpDbHostQualificationCleanup.ps1", qualifier);
+        Assert.Contains("Remove-CSharpDbDirectoryWithRetry", qualifier);
         Assert.Contains("orderly shutdown", qualifier, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("did not complete orderly shutdown", qualifier);
         Assert.Contains("cleanup only", qualifier, StringComparison.OrdinalIgnoreCase);
