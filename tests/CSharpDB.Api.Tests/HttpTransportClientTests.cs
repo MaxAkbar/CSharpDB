@@ -17,6 +17,10 @@ namespace CSharpDB.Api.Tests;
 
 public sealed class HttpTransportClientTests : IAsyncLifetime
 {
+    private static readonly TimeSpan FileCleanupTimeout = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan FileCleanupRetryDelay = TimeSpan.FromMilliseconds(50);
+    private static readonly TimeSpan ReadinessTimeout = TimeSpan.FromSeconds(10);
+
     private string _dbPath = null!;
     private TestApiFactory _factory = null!;
     private HttpClient _httpClient = null!;
@@ -24,7 +28,7 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    public ValueTask InitializeAsync()
+    public async ValueTask InitializeAsync()
     {
         _dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_api_http_{Guid.NewGuid():N}.db");
         _factory = new TestApiFactory(_dbPath);
@@ -36,7 +40,7 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
             HttpClient = _httpClient,
         });
 
-        return ValueTask.CompletedTask;
+        await WaitForReadinessAsync(_httpClient, Ct);
     }
 
     public async ValueTask DisposeAsync()
@@ -208,6 +212,44 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
             await captureClient.DisposeAsync();
             await DeleteIfExistsAsync(dbPath);
             await DeleteIfExistsAsync(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task DeleteIfExistsAsync_RetriesPastLegacyTwoSecondWindowsLock()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        string path = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb_api_cleanup_{Guid.NewGuid():N}.db");
+        FileStream? lockStream = null;
+        try
+        {
+            lockStream = new FileStream(
+                path,
+                FileMode.CreateNew,
+                FileAccess.ReadWrite,
+                FileShare.None);
+            Task deletion = DeleteIfExistsAsync(path).AsTask();
+
+            await Task.Delay(TimeSpan.FromMilliseconds(2250), Ct);
+            Assert.False(deletion.IsCompleted);
+
+            await lockStream.DisposeAsync();
+            lockStream = null;
+            await deletion.WaitAsync(TimeSpan.FromSeconds(5), Ct);
+
+            Assert.False(File.Exists(path));
+        }
+        finally
+        {
+            if (lockStream is not null)
+                await lockStream.DisposeAsync();
+
+            if (File.Exists(path))
+                File.Delete(path);
         }
     }
 
@@ -2409,11 +2451,11 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
                 File.Delete(path);
                 return;
             }
-            catch (IOException ex) when (sw.Elapsed < TimeSpan.FromSeconds(2))
+            catch (IOException ex)
             {
                 lastException = ex;
             }
-            catch (UnauthorizedAccessException ex) when (sw.Elapsed < TimeSpan.FromSeconds(2))
+            catch (UnauthorizedAccessException ex)
             {
                 lastException = ex;
             }
@@ -2421,12 +2463,40 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
             if (!File.Exists(path))
                 return;
 
-            if (sw.Elapsed >= TimeSpan.FromSeconds(2))
+            TimeSpan remaining = FileCleanupTimeout - sw.Elapsed;
+            if (remaining <= TimeSpan.Zero)
                 break;
 
-            await Task.Delay(25);
+            TimeSpan delay = remaining < FileCleanupRetryDelay
+                ? remaining
+                : FileCleanupRetryDelay;
+            await Task.Delay(delay, CancellationToken.None);
         }
 
         throw new IOException($"Failed to delete temporary database file '{path}' within the cleanup timeout.", lastException);
+    }
+
+    private static async Task WaitForReadinessAsync(
+        HttpClient httpClient,
+        CancellationToken cancellationToken)
+    {
+        var timeout = System.Diagnostics.Stopwatch.StartNew();
+        HttpStatusCode? lastStatus = null;
+        while (timeout.Elapsed < ReadinessTimeout)
+        {
+            using HttpResponseMessage response = await httpClient.GetAsync(
+                "/health/ready",
+                cancellationToken);
+            lastStatus = response.StatusCode;
+            if (response.StatusCode == HttpStatusCode.OK)
+                return;
+
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+            await Task.Delay(TimeSpan.FromMilliseconds(25), cancellationToken);
+        }
+
+        throw new TimeoutException(
+            $"The API test host did not become ready within {ReadinessTimeout}. " +
+            $"Last status: {lastStatus?.ToString() ?? "none"}.");
     }
 }
