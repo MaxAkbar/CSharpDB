@@ -14,6 +14,7 @@ public enum TabKind
     Procedure,
     Pipeline,
     Sharding,
+    Observability,
     Storage,
     TableDesigner,
     FormDesigner,

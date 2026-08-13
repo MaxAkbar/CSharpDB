@@ -1,5 +1,6 @@
 using CSharpDB.Api.Dtos;
 using CSharpDB.Api.Helpers;
+using CSharpDB.Api.Middleware;
 using CSharpDB.Client;
 using CSharpDB.Client.Models;
 using CSharpDB.Primitives;
@@ -76,16 +77,21 @@ public static class SqlEndpoints
         if (result.IsQuery && result.ColumnNames is not null && result.Rows is not null)
             namedRows = JsonHelper.RowsToNamedDictionaries(result.ColumnNames, result.Rows);
 
+        string? safeError = result.Error is null
+            ? null
+            : SafeApiErrorPolicy.ProjectResult(result.ErrorCode).PublicDetail;
+
         return new SqlResultResponse(
             IsQuery: result.IsQuery,
             ColumnNames: result.ColumnNames,
             ColumnTypes: result.ColumnTypes,
             Rows: namedRows,
             RowsAffected: result.RowsAffected,
-            Error: result.Error,
+            Error: safeError,
             ElapsedMs: result.Elapsed.TotalMilliseconds,
             ColumnNullability: result.ColumnNullability,
-            Columns: result.Columns?.Select(ToResponse).ToArray());
+            Columns: result.Columns?.Select(ToResponse).ToArray(),
+            ErrorCode: result.ErrorCode);
     }
 
     private static ColumnResponse ToResponse(CSharpDB.Client.Models.ColumnDefinition column) => new(

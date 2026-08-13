@@ -23,6 +23,7 @@ public sealed class CSharpDbTransaction : DbTransaction
     public override async Task CommitAsync(CancellationToken cancellationToken)
     {
         if (_completed) throw new InvalidOperationException("Transaction already completed.");
+        using IDisposable? transactionBoundary = _connection.EnterTransactionBoundary();
         try
         {
             await _connection.GetSession().CommitAsync(cancellationToken);
@@ -42,6 +43,7 @@ public sealed class CSharpDbTransaction : DbTransaction
     public override async Task RollbackAsync(CancellationToken cancellationToken)
     {
         if (_completed) throw new InvalidOperationException("Transaction already completed.");
+        using IDisposable? transactionBoundary = _connection.EnterTransactionBoundary();
         try
         {
             await _connection.GetSession().RollbackAsync(cancellationToken);

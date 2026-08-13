@@ -10,7 +10,7 @@
 @inject IJSRuntime JS
 @implements IDisposable
 
-@if (Visible)
+@if (Visible && TabManager.ActiveTab?.Kind != TabKind.Observability)
 {
     <div class="command-palette-backdrop" @onclick="CloseAsync">
         <div class="command-palette" role="dialog" aria-modal="true" aria-label="Command palette" @onclick:stopPropagation>
@@ -60,6 +60,7 @@
     private string _query = string.Empty;
     private bool _loading;
     private bool _loaded;
+    private int _loadGeneration;
 
     private IReadOnlyList<PaletteItem> FilteredItems
     {
@@ -80,13 +81,19 @@
 
     protected override async Task OnParametersSetAsync()
     {
+        if (!Visible || TabManager.ActiveTab?.Kind == TabKind.Observability)
+        {
+            DismissImmediately();
+            return;
+        }
+
         if (Visible && !_loaded && !_loading)
             await LoadItemsAsync();
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (Visible)
+        if (Visible && TabManager.ActiveTab?.Kind != TabKind.Observability)
         {
             try { await JS.InvokeVoidAsync("editorInterop.focus", "admin-command-palette-search"); }
             catch { }
@@ -95,14 +102,23 @@
 
     private async Task LoadItemsAsync()
     {
+        int generation = ++_loadGeneration;
         _loading = true;
         try
         {
             _items.Clear();
             AddCoreCommands();
             await AddCallbackCommandsAsync();
+            if (generation != _loadGeneration)
+            {
+                if (TabManager.ActiveTab?.Kind == TabKind.Observability)
+                    _items.Clear();
+                return;
+            }
 
             IReadOnlyCollection<string> tables = await DbClient.GetTableNamesAsync();
+            if (generation != _loadGeneration)
+                return;
             foreach (string tableName in tables.Where(static name => !name.StartsWith("_", StringComparison.Ordinal)).OrderBy(name => name))
             {
                 string captured = tableName;
@@ -158,6 +174,8 @@
             }
 
             IReadOnlyCollection<string> views = await DbClient.GetViewNamesAsync();
+            if (generation != _loadGeneration)
+                return;
             foreach (string viewName in views.OrderBy(name => name))
             {
                 string captured = viewName;
@@ -171,6 +189,8 @@
             }
 
             IReadOnlyCollection<string> collections = await DbClient.GetCollectionNamesAsync();
+            if (generation != _loadGeneration)
+                return;
             foreach (string collectionName in collections.OrderBy(name => name, StringComparer.OrdinalIgnoreCase))
             {
                 string captured = collectionName;
@@ -183,7 +203,10 @@
                     () => { TabManager.OpenCollectionTab(captured); return Task.CompletedTask; }));
             }
 
-            foreach (ProcedureDefinition procedure in (await DbClient.GetProceduresAsync()).OrderBy(procedure => procedure.Name))
+            IReadOnlyCollection<ProcedureDefinition> procedures = await DbClient.GetProceduresAsync();
+            if (generation != _loadGeneration)
+                return;
+            foreach (ProcedureDefinition procedure in procedures.OrderBy(procedure => procedure.Name))
             {
                 string captured = procedure.Name;
                 _items.Add(new PaletteItem(
@@ -195,7 +218,10 @@
                     () => { TabManager.OpenProcedureTab(captured); return Task.CompletedTask; }));
             }
 
-            foreach (FormDefinition form in (await FormRepository.ListAsync()).OrderBy(form => form.Name, StringComparer.OrdinalIgnoreCase))
+            IReadOnlyList<FormDefinition> forms = await FormRepository.ListAsync();
+            if (generation != _loadGeneration)
+                return;
+            foreach (FormDefinition form in forms.OrderBy(form => form.Name, StringComparer.OrdinalIgnoreCase))
             {
                 FormDefinition captured = form;
                 _items.Add(new PaletteItem(
@@ -214,7 +240,10 @@
                     () => { TabManager.OpenFormEntryTab(captured.FormId, captured.Name); return Task.CompletedTask; }));
             }
 
-            foreach (ReportDefinition report in (await ReportRepository.ListAsync()).OrderBy(report => report.Name, StringComparer.OrdinalIgnoreCase))
+            IReadOnlyList<ReportDefinition> reports = await ReportRepository.ListAsync();
+            if (generation != _loadGeneration)
+                return;
+            foreach (ReportDefinition report in reports.OrderBy(report => report.Name, StringComparer.OrdinalIgnoreCase))
             {
                 ReportDefinition captured = report;
                 _items.Add(new PaletteItem(
@@ -237,13 +266,20 @@
         }
         catch
         {
+            if (generation != _loadGeneration)
+            {
+                if (TabManager.ActiveTab?.Kind == TabKind.Observability)
+                    _items.Clear();
+                return;
+            }
             _items.Clear();
             AddCoreCommands();
             _loaded = true;
         }
         finally
         {
-            _loading = false;
+            if (generation == _loadGeneration)
+                _loading = false;
         }
     }
 
@@ -263,6 +299,7 @@
         _items.Add(new PaletteItem("Command", "Compare / Deploy", "Open schema, data, and drift compare workspace", "bi-file-earmark-diff", "icon-system", () => { TabManager.OpenCompareDeployTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "Data Hygiene", "Open data quality workspace", "bi-shield-check", "icon-system", () => { TabManager.OpenDataHygieneTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "Sharding", "Open shard topology and route resolution", "bi-hdd-network", "icon-system", () => { TabManager.OpenShardingTab(); return Task.CompletedTask; }));
+        _items.Add(new PaletteItem("Command", "Observability", "Open live metrics and runtime diagnostics", "bi-activity", "icon-system", () => { TabManager.OpenObservabilityTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "Storage Inspector", "Open storage diagnostics", "bi-hdd-stack", "icon-system", () => { TabManager.OpenStorageTab(); return Task.CompletedTask; }));
     }
 
@@ -334,8 +371,17 @@
 
     private async Task CloseAsync()
     {
-        _query = string.Empty;
+        DismissImmediately();
         await VisibleChanged.InvokeAsync(false);
+    }
+
+    internal void DismissImmediately()
+    {
+        _loadGeneration++;
+        _query = string.Empty;
+        _items.Clear();
+        _loaded = false;
+        _loading = false;
     }
 
     private void OnChanged()
@@ -353,6 +399,7 @@
     public void Dispose()
     {
         Changes.Changed -= OnChanged;
+        DismissImmediately();
     }
 
     private static string GetCallbackKindLabel(AutomationCallbackKind kind)

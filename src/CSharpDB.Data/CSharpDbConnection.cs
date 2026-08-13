@@ -5,11 +5,18 @@ using System.Runtime.CompilerServices;
 using CSharpDB.Client;
 using CSharpDB.Primitives;
 using CSharpDB.Engine;
+using CSharpDB.Observability;
+using CSharpDbTransport = CSharpDB.Client.CSharpDbTransport;
 
 namespace CSharpDB.Data;
 
-public sealed class CSharpDbConnection : DbConnection
+public sealed partial class CSharpDbConnection : DbConnection
 {
+    private static readonly ConditionalWeakTable<CSharpDbConnection, OpaqueDiagnosticsId>
+        s_diagnosticsSessionIds = new();
+    private static readonly ConditionalWeakTable<CSharpDbConnection, CSharpDbObservabilityOptions>
+        s_diagnosticsOptionsSnapshots = new();
+
     private const string PrivateMemoryDataSource = ":memory:";
     private const string MemoryDataSourcePrefix = ":memory:";
 
@@ -134,11 +141,14 @@ public sealed class CSharpDbConnection : DbConnection
         if (_state == ConnectionState.Open)
             throw new InvalidOperationException("Connection is already open.");
 
+        IDisposable? lifecycleBoundary = null;
         try
         {
             SharedPooledOpenPlan? sharedPooledPlan = GetSharedPooledOpenPlan();
             if (sharedPooledPlan is not null)
             {
+                lifecycleBoundary = EnterDatabaseOpenBoundary(
+                    sharedPooledPlan.Configuration.RuntimeDirectDatabaseOptions);
                 _session = await OpenPreparedPooledSessionAsync(
                     sharedPooledPlan,
                     cancellationToken);
@@ -147,9 +157,13 @@ public sealed class CSharpDbConnection : DbConnection
             {
                 ConnectionOpenPlan plan = GetConnectionOpenPlan();
                 TryCacheSharedPooledOpenPlan(plan);
+                lifecycleBoundary = EnterDatabaseOpenBoundary(
+                    plan.Embedded?.Configuration.RuntimeDirectDatabaseOptions);
                 _session = await OpenConfiguredSessionAsync(plan, cancellationToken);
             }
 
+            CacheCommandObservabilityOptionsSnapshot(
+                _session.ObservabilityOptionsSnapshot);
             _state = ConnectionState.Open;
         }
         catch (CSharpDbException ex)
@@ -164,6 +178,10 @@ public sealed class CSharpDbConnection : DbConnection
             _state = ConnectionState.Closed;
             throw;
         }
+        finally
+        {
+            lifecycleBoundary?.Dispose();
+        }
     }
 
     public override void Close()
@@ -173,6 +191,7 @@ public sealed class CSharpDbConnection : DbConnection
     {
         if (_state == ConnectionState.Closed) return;
 
+        using IDisposable? lifecycleBoundary = EnterDatabaseCloseBoundary();
         try
         {
             if (_currentTransaction is not null)
@@ -191,6 +210,8 @@ public sealed class CSharpDbConnection : DbConnection
         }
         finally
         {
+            s_diagnosticsSessionIds.Remove(this);
+            s_diagnosticsOptionsSnapshots.Remove(this);
             _state = ConnectionState.Closed;
         }
     }
@@ -213,6 +234,7 @@ public sealed class CSharpDbConnection : DbConnection
         if (_currentTransaction is not null)
             throw new InvalidOperationException("A transaction is already active.");
 
+        using IDisposable? transactionBoundary = EnterTransactionBoundary();
         try
         {
             await GetSession().BeginTransactionAsync(cancellationToken);
@@ -299,6 +321,104 @@ public sealed class CSharpDbConnection : DbConnection
         return _session;
     }
 
+    internal AdoCommandObservation? StartCommandObservation(string commandText)
+    {
+        if (!s_diagnosticsOptionsSnapshots.TryGetValue(
+                this,
+                out CSharpDbObservabilityOptions? options))
+        {
+            return null;
+        }
+
+        CSharpDbConnectionStringBuilder builder = GetConnectionStringBuilder();
+        if (!string.IsNullOrWhiteSpace(builder.Endpoint))
+            return null;
+
+        try
+        {
+            ICSharpDbSession session = GetSession();
+            return AdoCommandObservation.TryStart(
+                options,
+                session.RuntimeDiagnosticsState,
+                commandText,
+                GetOrCreateDiagnosticsSessionId());
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private void CacheCommandObservabilityOptionsSnapshot(
+        CSharpDbObservabilityOptions? snapshot)
+    {
+        if (snapshot is null)
+            return;
+
+        try
+        {
+            s_diagnosticsOptionsSnapshots.Remove(this);
+            s_diagnosticsOptionsSnapshots.Add(this, snapshot);
+        }
+        catch
+        {
+            // Failure to cache the optional ADO boundary snapshot must not
+            // change connection-open behavior.
+        }
+    }
+
+    private IDisposable? EnterDatabaseOpenBoundary(
+        DatabaseOptions? runtimeDatabaseOptions)
+    {
+        if (runtimeDatabaseOptions?.ObservabilityOptions?.Enabled != true)
+        {
+            return null;
+        }
+
+        OpaqueDiagnosticsId sessionId = GetOrCreateDiagnosticsSessionId();
+        return DataLifecycleDiagnosticBoundary.IsDatabaseOpenBoundaryEnabled(
+                runtimeDatabaseOptions)
+            ? DataLifecycleDiagnosticBoundary.EnterEnabledBoundary(sessionId)
+            : CSharpDbOperationScope.EnterTransport(
+                CSharpDB.Observability.CSharpDbTransport.Direct,
+                sessionId);
+    }
+
+    private IDisposable? EnterDatabaseCloseBoundary()
+    {
+        if (!s_diagnosticsOptionsSnapshots.TryGetValue(
+                this,
+                out CSharpDbObservabilityOptions? observabilityOptions) ||
+            !DataLifecycleDiagnosticBoundary.IsDatabaseCloseBoundaryEnabled(
+                observabilityOptions))
+        {
+            return null;
+        }
+
+        return DataLifecycleDiagnosticBoundary.EnterEnabledBoundary(
+            GetOrCreateDiagnosticsSessionId());
+    }
+
+    internal IDisposable? EnterTransactionBoundary()
+    {
+        if (!s_diagnosticsOptionsSnapshots.TryGetValue(
+                this,
+                out CSharpDbObservabilityOptions? observabilityOptions) ||
+            !DataLifecycleDiagnosticBoundary.IsTransactionBoundaryEnabled(
+                observabilityOptions))
+        {
+            return null;
+        }
+
+        return DataLifecycleDiagnosticBoundary.EnterEnabledBoundary(
+            GetOrCreateDiagnosticsSessionId());
+    }
+
+    private OpaqueDiagnosticsId GetOrCreateDiagnosticsSessionId()
+        => s_diagnosticsSessionIds.GetValue(
+            this,
+            static _ => OpaqueDiagnosticsId.Create());
+
     internal void ClearTransaction() => _currentTransaction = null;
 
     internal async ValueTask ExecuteTransactionControlAsync(
@@ -348,9 +468,17 @@ public sealed class CSharpDbConnection : DbConnection
             builder,
             directDatabaseOptions,
             hybridDatabaseOptions);
-
-        return CSharpDbConnectionPoolRegistry.GetIdleCountForTest(
-            CreatePoolKey(target.Key, builder.MaxPoolSize, configuration));
+        try
+        {
+            return CSharpDbConnectionPoolRegistry.GetIdleCountForTest(
+                CreatePoolKey(target.Key, builder.MaxPoolSize, configuration));
+        }
+        finally
+        {
+            // This helper resolves only a comparison key; no physical family
+            // can adopt a resolver-created diagnostics state.
+            configuration.RuntimeDiagnosticsStateOwner?.Dispose();
+        }
     }
 
     // ─── Schema introspection ─────────────────────────────────────
@@ -461,6 +589,9 @@ public sealed class CSharpDbConnection : DbConnection
             ConnectionTargetKind.NamedSharedMemory => await SharedMemoryDatabaseRegistry.OpenSessionAsync(
                 plan.Target.Key,
                 NormalizeOptionalFilePath(builder.LoadFrom),
+                plan.Configuration.ExplicitDirectDatabaseOptions,
+                plan.Configuration.RuntimeDirectDatabaseOptions,
+                plan.Configuration.RuntimeDiagnosticsStateOwner,
                 cancellationToken),
             _ => throw new InvalidOperationException("Unsupported connection target."),
         };
@@ -483,13 +614,19 @@ public sealed class CSharpDbConnection : DbConnection
             return await CSharpDbConnectionPoolRegistry.OpenPooledSessionAsync(
                 key,
                 ct => OpenEmbeddedDatabaseAsync(normalizedPath, configuration, ct),
-                cancellationToken);
+                configuration.RuntimeDirectDatabaseOptions.ObservabilityOptions,
+                cancellationToken,
+                configuration.RuntimeDirectDatabaseOptions.RuntimeDiagnosticsState?.TimeProvider,
+                configuration.RuntimeDiagnosticsStateOwner);
         }
 
         return await CSharpDbConnectionPoolRegistry.OpenDirectSessionAsync(
             normalizedPath,
             ct => OpenEmbeddedDatabaseAsync(normalizedPath, configuration, ct),
-            cancellationToken);
+            configuration.RuntimeDirectDatabaseOptions.ObservabilityOptions,
+            cancellationToken,
+            configuration.RuntimeDirectDatabaseOptions.RuntimeDiagnosticsState?.TimeProvider,
+            configuration.RuntimeDiagnosticsStateOwner);
     }
 
     private static async ValueTask<ICSharpDbSession> OpenPreparedPooledSessionAsync(
@@ -499,7 +636,10 @@ public sealed class CSharpDbConnection : DbConnection
         return await CSharpDbConnectionPoolRegistry.OpenPooledSessionAsync(
             plan.PoolKey,
             ct => OpenEmbeddedDatabaseAsync(plan.NormalizedPath, plan.Configuration, ct),
-            cancellationToken);
+            plan.Configuration.RuntimeDirectDatabaseOptions.ObservabilityOptions,
+            cancellationToken,
+            plan.Configuration.RuntimeDirectDatabaseOptions.RuntimeDiagnosticsState?.TimeProvider,
+            plan.Configuration.RuntimeDiagnosticsStateOwner);
     }
 
     private static async ValueTask<Engine.Database> OpenEmbeddedDatabaseAsync(
@@ -510,11 +650,11 @@ public sealed class CSharpDbConnection : DbConnection
         return configuration.EffectiveHybridDatabaseOptions is null
             ? await Engine.Database.OpenAsync(
                 normalizedPath,
-                configuration.EffectiveDirectDatabaseOptions,
+                configuration.RuntimeDirectDatabaseOptions,
                 cancellationToken)
             : await Engine.Database.OpenHybridAsync(
                 normalizedPath,
-                configuration.EffectiveDirectDatabaseOptions,
+                configuration.RuntimeDirectDatabaseOptions,
                 configuration.EffectiveHybridDatabaseOptions,
                 cancellationToken);
     }
@@ -524,16 +664,36 @@ public sealed class CSharpDbConnection : DbConnection
         ResolvedEmbeddedConfiguration configuration,
         CancellationToken cancellationToken)
     {
-        Engine.Database database = string.IsNullOrWhiteSpace(loadFromPath)
-            ? await Engine.Database.OpenInMemoryAsync(
-                configuration.EffectiveDirectDatabaseOptions,
-                cancellationToken)
-            : await Engine.Database.LoadIntoMemoryAsync(
-                NormalizeDataSourcePath(loadFromPath),
-                configuration.EffectiveDirectDatabaseOptions,
-                cancellationToken);
+        try
+        {
+            CSharpDbObservabilityOptions? observabilityOptionsSnapshot =
+                configuration.RuntimeDirectDatabaseOptions.ObservabilityOptions;
+            Engine.Database database = string.IsNullOrWhiteSpace(loadFromPath)
+                ? await Engine.Database.OpenInMemoryAsync(
+                    configuration.RuntimeDirectDatabaseOptions,
+                    cancellationToken)
+                : await Engine.Database.LoadIntoMemoryAsync(
+                    NormalizeDataSourcePath(loadFromPath),
+                    configuration.RuntimeDirectDatabaseOptions,
+                    cancellationToken);
 
-        return new DirectDatabaseSession(database);
+            var session = new DirectDatabaseSession(
+                database,
+                observabilityOptionsSnapshot: observabilityOptionsSnapshot,
+                diagnosticsTimeProvider:
+                    configuration.RuntimeDirectDatabaseOptions.RuntimeDiagnosticsState?.TimeProvider,
+                runtimeDiagnosticsStateOwner:
+                    configuration.RuntimeDiagnosticsStateOwner,
+                diagnosticsDisposed:
+                    CSharpDbConnectionPoolRegistry.UnregisterDirectDiagnosticsSession);
+            CSharpDbConnectionPoolRegistry.TryRegisterDirectDiagnosticsSession(session);
+            return session;
+        }
+        catch
+        {
+            configuration.RuntimeDiagnosticsStateOwner?.Dispose();
+            throw;
+        }
     }
 
     private async ValueTask<ICSharpDbSession> OpenRemoteSessionAsync(
@@ -583,7 +743,16 @@ public sealed class CSharpDbConnection : DbConnection
     private SharedPooledOpenPlan? GetSharedPooledOpenPlan()
     {
         if (_sharedPooledOpenPlan is not null)
-            return _sharedPooledOpenPlan;
+        {
+            if (_sharedPooledOpenPlan.Configuration.RuntimeDiagnosticsStateOwner
+                    is not { IsDisposed: true })
+            {
+                return _sharedPooledOpenPlan;
+            }
+
+            _sharedPooledOpenPlan = null;
+            s_sharedPooledOpenPlans.Remove(_connectionString);
+        }
 
         if (DirectDatabaseOptions is not null || HybridDatabaseOptions is not null)
             return null;
@@ -592,6 +761,12 @@ public sealed class CSharpDbConnection : DbConnection
                 _connectionString,
                 out SharedPooledOpenPlan? sharedPooledPlan))
         {
+            if (sharedPooledPlan.Configuration.RuntimeDiagnosticsStateOwner
+                    is { IsDisposed: true })
+            {
+                s_sharedPooledOpenPlans.Remove(_connectionString);
+                return null;
+            }
             _sharedPooledOpenPlan = sharedPooledPlan;
         }
 
@@ -619,13 +794,24 @@ public sealed class CSharpDbConnection : DbConnection
             embedded.Target.Key,
             embedded.Configuration,
             poolKey);
-        _sharedPooledOpenPlan = s_sharedPooledOpenPlans.GetValue(
+        SharedPooledOpenPlan adopted = s_sharedPooledOpenPlans.GetValue(
             _connectionString,
             _ => candidate);
+        _sharedPooledOpenPlan = adopted;
+        // A concurrent loser still opens with its per-connection candidate.
+        // The pool registry disposes that owner only after an existing family
+        // has successfully accepted the session (or the open definitively
+        // fails), avoiding a disposed state between resolution and adoption.
     }
 
     private ConnectionOpenPlan GetConnectionOpenPlan()
     {
+        if (_connectionOpenPlan?.Embedded?.Configuration
+                .RuntimeDiagnosticsStateOwner is { IsDisposed: true })
+        {
+            _connectionOpenPlan = null;
+        }
+
         if (_connectionOpenPlan is { CurrentDirectoryKey: null } absoluteOrNonFilePlan)
             return absoluteOrNonFilePlan;
 
@@ -657,7 +843,15 @@ public sealed class CSharpDbConnection : DbConnection
                 DirectDatabaseOptions,
                 HybridDatabaseOptions);
 
-            ValidateEmbeddedTuningSupport(target, configuration);
+            try
+            {
+                ValidateEmbeddedTuningSupport(target, configuration);
+            }
+            catch
+            {
+                configuration.RuntimeDiagnosticsStateOwner?.Dispose();
+                throw;
+            }
             PoolKey? poolKey = target.Kind == ConnectionTargetKind.File
                 && string.IsNullOrWhiteSpace(builder.LoadFrom)
                 && builder.Pooling
@@ -711,8 +905,19 @@ public sealed class CSharpDbConnection : DbConnection
             case ConnectionTargetKind.PrivateMemory:
                 return;
             case ConnectionTargetKind.NamedSharedMemory:
+                if (configuration.ExplicitDirectDatabaseOptions is not null &&
+                    configuration.EffectiveHybridDatabaseOptions is null &&
+                    configuration.EffectiveStoragePreset is null &&
+                    !configuration.EffectiveAdaptiveQueryReoptimization)
+                {
+                    // The first explicit DatabaseOptions instance establishes
+                    // a named host's immutable engine composition. The registry
+                    // accepts only that same instance on later opens.
+                    return;
+                }
+
                 throw new InvalidOperationException(
-                    "Embedded storage tuning is not supported for named shared-memory databases.");
+                    "Connection-string and hybrid embedded tuning are not supported for named shared-memory databases.");
             default:
                 throw new InvalidOperationException("Unsupported connection target.");
         }

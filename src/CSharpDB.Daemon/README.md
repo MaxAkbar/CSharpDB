@@ -35,8 +35,8 @@ It is not yet designed as:
 - a multi-tenant database server
 - a public internet-facing database endpoint
 - a multi-database host in one process
-- a hardened public production service with authorization, metrics, or health
-  endpoints
+- a hardened public production service with role-based authorization or built-in
+  TLS termination
 
 ## Current Runtime Model
 
@@ -44,8 +44,8 @@ Today the daemon does the following:
 
 1. starts an ASP.NET Core host
 2. registers a direct `ICSharpDbClient` from configuration
-3. opens and validates the configured database during startup by calling
-   `GetInfoAsync()`
+3. starts listening while a background initializer opens and validates the
+   configured database, publishing cached readiness throughout recovery
 4. exposes REST routes under `/api`, including `/api/info`
 5. exposes explicit generated gRPC methods under
    `/csharpdb.rpc.CSharpDbRpc/*` such as
@@ -139,6 +139,21 @@ section:
 - `CSharpDB:Daemon:Security:Mode`
 - `CSharpDB:Daemon:Security:ApiKey`
 - `CSharpDB:Daemon:Security:ApiKeyHeaderName`
+- `CSharpDB:Daemon:Security:AllowInsecureRemoteDiagnostics`
+- `CSharpDB:Daemon:Security:AllowSensitiveQueryDetailAccess`
+- `CSharpDB:Observability:Enabled`
+- `CSharpDB:Observability:OpenTelemetry:Enabled`
+- `CSharpDB:Observability:OpenTelemetry:SamplingRatio`
+- `CSharpDB:Observability:OpenTelemetry:Resource:*`
+- `CSharpDB:Observability:OpenTelemetry:Otlp:Enabled`
+- `CSharpDB:Observability:OpenTelemetry:Console:Enabled`
+- `CSharpDB:Observability:Prometheus:Enabled`
+- `CSharpDB:Observability:Prometheus:Path`
+- `CSharpDB:Observability:Prometheus:AllowInsecureRemoteAccess`
+- `CSharpDB:Observability:Health:Enabled`
+- `CSharpDB:Observability:Health:LivenessPath`
+- `CSharpDB:Observability:Health:ReadinessPath`
+- `CSharpDB:Observability:Health:ReadinessTimeout`
 - `CSharpDB:HostDatabase:OpenMode`
 - `CSharpDB:HostDatabase:ImplicitInsertExecutionMode`
 - `CSharpDB:HostDatabase:UseWriteOptimizedPreset`
@@ -163,6 +178,34 @@ Default [`appsettings.json`](./appsettings.json):
         "ApiKeyHeaderName": "X-CSharpDB-Api-Key"
       }
     },
+    "Observability": {
+      "Enabled": false,
+      "OpenTelemetry": {
+        "Enabled": false,
+        "SamplingRatio": 1.0,
+        "Resource": {
+          "ServiceName": "CSharpDB.Daemon",
+          "ServiceNamespace": "CSharpDB"
+        },
+        "Otlp": {
+          "Enabled": false
+        },
+        "Console": {
+          "Enabled": false
+        }
+      },
+      "Prometheus": {
+        "Enabled": false,
+        "Path": "/metrics",
+        "AllowInsecureRemoteAccess": false
+      },
+      "Health": {
+        "Enabled": true,
+        "LivenessPath": "/health/live",
+        "ReadinessPath": "/health/ready",
+        "ReadinessTimeout": "00:00:02"
+      }
+    },
     "HostDatabase": {
       "OpenMode": "HybridIncrementalDurable",
       "ImplicitInsertExecutionMode": "ConcurrentWriteTransactions",
@@ -185,6 +228,15 @@ Current daemon defaults:
 - `EnableRestApi = true`
 - `Security:Mode = None`
 - `Security:ApiKeyHeaderName = X-CSharpDB-Api-Key`
+- `Security:AllowInsecureRemoteDiagnostics = false`
+- `Security:AllowSensitiveQueryDetailAccess = false`
+- OpenTelemetry, OTLP, console, and Prometheus export are disabled
+- `Prometheus:Path = /metrics`
+- `Prometheus:AllowInsecureRemoteAccess = false`
+- `Health:Enabled = true`
+- `Health:LivenessPath = /health/live`
+- `Health:ReadinessPath = /health/ready`
+- `Health:ReadinessTimeout = 00:00:02`
 - `OpenMode = HybridIncrementalDurable`
 - `ImplicitInsertExecutionMode = ConcurrentWriteTransactions`
 - `UseWriteOptimizedPreset = true`
@@ -198,6 +250,9 @@ $env:ConnectionStrings__CSharpDB = "Data Source=C:\\data\\app.db"
 $env:CSharpDB__Daemon__EnableRestApi = "false"
 $env:CSharpDB__Daemon__Security__Mode = "ApiKey"
 $env:CSharpDB__Daemon__Security__ApiKey = "replace-with-a-secret"
+$env:CSharpDB__Observability__Enabled = "true"
+$env:CSharpDB__Observability__Prometheus__Enabled = "true"
+$env:CSharpDB__Observability__Health__ReadinessTimeout = "00:00:02"
 $env:CSharpDB__HostDatabase__OpenMode = "Direct"
 $env:CSharpDB__HostDatabase__ImplicitInsertExecutionMode = "Serialized"
 $env:CSharpDB__HostDatabase__HotTableNames__0 = "users"
@@ -212,6 +267,9 @@ export ConnectionStrings__CSharpDB="Data Source=/var/lib/csharpdb/app.db"
 export CSharpDB__Daemon__EnableRestApi="false"
 export CSharpDB__Daemon__Security__Mode="ApiKey"
 export CSharpDB__Daemon__Security__ApiKey="replace-with-a-secret"
+export CSharpDB__Observability__Enabled="true"
+export CSharpDB__Observability__Prometheus__Enabled="true"
+export CSharpDB__Observability__Health__ReadinessTimeout="00:00:02"
 export CSharpDB__HostDatabase__OpenMode="Direct"
 export CSharpDB__HostDatabase__ImplicitInsertExecutionMode="Serialized"
 export CSharpDB__HostDatabase__HotTableNames__0="users"
@@ -224,7 +282,13 @@ shape. Use `Direct` only when you want the host to open the backing file
 without the lazy-resident hybrid cache. `HotTableNames` and
 `HotCollectionNames` are optional hybrid-only preload hints. Set
 `CSharpDB:Daemon:EnableRestApi=false` only when the daemon should expose gRPC
-without the REST `/api` surface.
+without the REST `/api` surface. Prometheus remains independently available
+when enabled; it does not require the REST surface. The HTTP liveness/readiness
+routes and standard gRPC health service also remain available when REST is
+disabled. Setting `CSharpDB:Observability:Health:Enabled=false` removes both
+HTTP health routes and the standard gRPC Health service. In that mode `Check`
+and `Watch` have no routable anonymous target, while ordinary gRPC RPCs retain
+their configured authentication policy.
 
 ### API-Level Sharding
 
@@ -299,7 +363,11 @@ such as schema setup.
 
 Set `CSharpDB:Daemon:Security:Mode=ApiKey` to protect both REST `/api/*` and
 gRPC calls. Missing or wrong REST keys return `401 Unauthorized`; missing or
-wrong gRPC keys return `Unauthenticated`.
+wrong gRPC keys return `Unauthenticated`. The standard gRPC health service's
+exact `Check` and `Watch` methods are intentionally anonymous when health is
+enabled so orchestrators can probe the host; application RPCs remain protected.
+Disabling `Health:Enabled` removes the service rather than leaving those
+anonymous methods mapped.
 
 `CSharpDB.Client` sends the key for both HTTP and gRPC transports:
 
@@ -319,6 +387,15 @@ The default header is `X-CSharpDB-Api-Key`. Override it with
 This is shared-secret authentication only. It does not provide JWT, RBAC, mTLS,
 per-user auditing, or TLS termination.
 
+Diagnostics use the same policy for REST and gRPC. In `ApiKey` mode a correct
+key is required. In `None` mode diagnostics are loopback-only and fail closed
+when the remote address is null, wildcard, or non-loopback;
+`AllowInsecureRemoteDiagnostics=true` is the explicit override for
+non-loopback access. Query detail additionally requires
+`AllowSensitiveQueryDetailAccess=true` in either mode. REST reports missing or
+wrong keys as `401` and other denials as `403`; gRPC reports
+`Unauthenticated` and `PermissionDenied` respectively.
+
 ## Local Development
 
 Run directly from source:
@@ -335,8 +412,9 @@ $env:ASPNETCORE_URLS = "http://localhost:5820"
 dotnet run --project src/CSharpDB.Daemon/CSharpDB.Daemon.csproj
 ```
 
-If startup succeeds, the daemon has already opened the database and validated
-the configuration.
+The listener starts before database initialization completes. Use
+`/health/ready` or the standard gRPC health service to wait until the database
+is ready for work.
 
 If you want to start the daemon together with the admin UI, use the helper
 scripts documented in [`scripts/README.md`](../../scripts/README.md).
@@ -640,6 +718,23 @@ supported keys remain the standard daemon settings:
 - `CSharpDB__Daemon__Security__Mode`
 - `CSharpDB__Daemon__Security__ApiKey`
 - `CSharpDB__Daemon__Security__ApiKeyHeaderName`
+- `CSharpDB__Daemon__Security__AllowInsecureRemoteDiagnostics`
+- `CSharpDB__Daemon__Security__AllowSensitiveQueryDetailAccess`
+- `CSharpDB__Observability__Enabled`
+- `CSharpDB__Observability__OpenTelemetry__Enabled`
+- `CSharpDB__Observability__OpenTelemetry__SamplingRatio`
+- `CSharpDB__Observability__OpenTelemetry__Otlp__Enabled`
+- `CSharpDB__Observability__OpenTelemetry__Console__Enabled`
+- `CSharpDB__Observability__Prometheus__Enabled`
+- `CSharpDB__Observability__Prometheus__Path`
+- `CSharpDB__Observability__Prometheus__AllowInsecureRemoteAccess`
+- `CSharpDB__Observability__Health__Enabled`
+- `CSharpDB__Observability__Health__LivenessPath`
+- `CSharpDB__Observability__Health__ReadinessPath`
+- `CSharpDB__Observability__Health__ReadinessTimeout`
+- standard OTLP exporter keys such as `OTEL_EXPORTER_OTLP_ENDPOINT`,
+  `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_EXPORTER_OTLP_HEADERS`, and
+  `OTEL_EXPORTER_OTLP_TIMEOUT`
 - `CSharpDB__HostDatabase__OpenMode`
 - `CSharpDB__HostDatabase__ImplicitInsertExecutionMode`
 - `CSharpDB__HostDatabase__UseWriteOptimizedPreset`
@@ -679,17 +774,95 @@ Practical guidance:
 
 Current state:
 
-- startup fails early if the database cannot be opened
-- ASP.NET Core logging is available through the standard host logging pipeline
+- the listener starts before database initialization and cached readiness
+  reports startup, recovery, initialization failure, maintenance, and shutdown
+- structured CSharpDB events are available through the standard host logging
+  pipeline when observability is enabled
+- optional OpenTelemetry trace and metric export uses the `CSharpDB` source and
+  meter with parent-based ratio sampling; the daemon service-name default is
+  `CSharpDB.Daemon`
+- optional Prometheus scraping remains available in a gRPC-only daemon and is
+  served on the normal Kestrel listener selected by `ASPNETCORE_URLS`
+- when `Health:Enabled=true`, HTTP `/health/live` and `/health/ready` return only
+  `{ "status": "healthy" }` or `{ "status": "unhealthy" }`; liveness tracks
+  the process while readiness tracks the cached database-host state
+- the standard gRPC Health service maps both the overall empty service name and
+  `csharpdb.database` to the same cached readiness state; `Check` and `Watch`
+  remain available in API-key mode
+- `Health:Enabled=false` maps neither the HTTP routes nor the standard gRPC
+  service, so the health authentication exemptions have no routable target
+- full restore and exclusive foreign-key apply, reindex, and vacuum calls keep
+  readiness unhealthy until a `GetInfoAsync` reopen check succeeds within
+  `Health:ReadinessTimeout`; failed verification remains not-ready for
+  background recovery
 - `/api/info` is available when REST hosting is enabled
+- REST and gRPC expose the same optional runtime summary, capped active/recent
+  queries, bounded plan summary, capped sessions, and separately authorized
+  query-detail capability
+- diagnostics calls do not observe themselves; session snapshots merge
+  in-flight HTTP/gRPC host requests with underlying database sessions when
+  runtime diagnostics are enabled
+- unsupported configured clients return REST `501 Not Implemented` or gRPC
+  `Unimplemented`
+
+REST uses the six `/api/diagnostics` routes documented by `CSharpDB.Api` when
+REST hosting is enabled. gRPC exposes `GetRuntimeDiagnostics`,
+`GetActiveQueries`, `GetRecentQueries`, `GetQueryPlanDiagnostics`,
+`GetSessions`, and `GetQueryDetail`. Both transports preserve the same runtime
+identity and availability envelopes. Ordinary diagnostics never return SQL,
+values, credentials, connection strings, or paths; query detail is the only
+captured-SQL surface.
+
+Request cancellation flows into diagnostics and other async host operations,
+but it is cooperative. Parsing, planning, and synchronous fast paths may finish
+before observing cancellation. There is no query/session termination RPC.
+
+OTLP and console exporters are explicit opt-ins. Keep collector endpoints and
+credentials in standard `OTEL_EXPORTER_OTLP_ENDPOINT`,
+`OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_EXPORTER_OTLP_HEADERS`, and
+`OTEL_EXPORTER_OTLP_TIMEOUT` environment variables. Prometheus uses the daemon
+security configuration: API-key mode returns `401` for an invalid key; security
+mode `None` accepts only the actual loopback peer and ignores forwarded address
+headers. `CSharpDB:Observability:Prometheus:AllowInsecureRemoteAccess=true`
+permits unauthenticated non-loopback scrapes and emits a startup warning. A
+remote rejection returns `403`; a disabled exporter is not mapped and returns
+`404`. The exact configured path must not collide with REST, gRPC, OpenAPI,
+Scalar, or health routes, and a custom path does not leave `/metrics` mapped.
+
+The canonical span names/attributes, complete metric name/kind/unit/tag schema,
+privacy rules, and temporality/version policy are in the
+[CSharpDB.Observability contract](../CSharpDB.Observability/README.md#phase-4-trace-and-metric-schema).
+Signal enablement is exact:
+
+| Observability | OpenTelemetry | Prometheus | Daemon behavior |
+| --- | --- | --- | --- |
+| disabled | disabled | disabled | No telemetry provider, exporter, background exporter service, or scrape route is registered. |
+| enabled | disabled | disabled | Configured history/logging may run; no CSharpDB trace/metric provider is registered. |
+| enabled | enabled | either | CSharpDB tracing and metrics providers are registered; console and OTLP export still require their own flags. |
+| enabled | disabled | enabled | Metrics and the exact protected scrape route are registered without tracing, including when the REST API surface is disabled. |
+
+Enabling OpenTelemetry or Prometheus while global observability is disabled is
+invalid. Enabling OpenTelemetry without console or OTLP creates in-process
+providers but no export destination or outbound exporter loop. REST and gRPC
+server activities parent the logical database query span; the engine adopts
+that carried span rather than creating a duplicate. Prometheus exemplars are
+disabled so trace ids do not enter the scrape surface.
+
+Current support boundary: automatic physical checkpoints and startup WAL
+recovery publish metrics but not physical spans. Ownerless path-only static
+restore validation/restore, reindex, vacuum, and foreign-key migration calls
+have no runtime telemetry identity; daemon/client-owned operations are the
+observable path. The BCL libraries retain their existing trimming/NativeAOT
+contract, but the daemon does not make a NativeAOT-hosting claim; supported
+publish and package qualification remain release evidence, not an assumption.
 
 Not implemented yet in this host:
 
-- `/health`
-- `/metrics`
-- authorization
+- a single aggregate `/health` endpoint (use `/health/live` and
+  `/health/ready`)
+- role-based or per-user authorization
 - TLS-specific configuration helpers
-- admin endpoints beyond the existing database REST API
+- a query/session kill endpoint
 
 For broader future direction, see the
 [CSharpDB roadmap](https://csharpdb.com/roadmap.html).
@@ -710,7 +883,7 @@ Check:
 Check whether `CSharpDB:Daemon:EnableRestApi` or
 `CSharpDB__Daemon__EnableRestApi` has been set to `false`.
 
-### Startup fails immediately
+### Readiness stays unhealthy
 
 Check:
 
@@ -739,6 +912,7 @@ Important files:
 ## Status
 
 This README documents the current daemon implementation, service packaging,
-REST/gRPC host consolidation, and opt-in API-key security.
-Authorization, TLS/mTLS helpers, and marketplace distribution remain tracked in
-the [CSharpDB roadmap](https://csharpdb.com/roadmap.html).
+REST/gRPC host consolidation, liveness/readiness and standard gRPC health,
+opt-in API-key security, and runtime diagnostics.
+Role-based authorization, TLS/mTLS helpers, and marketplace distribution remain
+tracked in the [CSharpDB roadmap](https://csharpdb.com/roadmap.html).

@@ -1,126 +1,162 @@
 # What's New
 
-## CSharpDB 4.5.1
+## CSharpDB 4.6.0
 
-CSharpDB 4.5.1 is the first published release in the 4.5 line. The `v4.5.0`
-Git tag is retained as release-attempt history, but it was not published as a
-release. These notes therefore preserve the complete public change from
-v4.4.0 to v4.5.1.
+CSharpDB 4.6.0 adds an end-to-end observability and diagnostics platform for
+embedded databases, API and daemon hosts, sharded clients, and CSharpDB Admin.
+The release introduces safe structured events, bounded runtime diagnostics,
+OpenTelemetry traces and metrics, Prometheus export, health and readiness
+signals, and a dedicated Admin workspace while keeping exporter dependencies
+out of the database engine.
 
-This release adds a persisted logical SQL type system across the engine,
-providers, transports, migration tooling, archives, and public metadata. It
-also adds bounded XPath 1.0 querying for XML values. Declared types, coercion,
-materialization, and schema rendering now follow one contract end to end.
+### Observability Contracts and Safe Defaults
 
-### Batch Insert Performance
+- Added the BCL-only `CSharpDB.Observability` package and included it in the
+  all-in-one `CSharpDB` package without adding OpenTelemetry, ASP.NET Core, or
+  exporter dependencies to embedded applications.
+- Added one validated `CSharpDbObservabilityOptions` configuration model for
+  logging, bounded history, OpenTelemetry, OTLP, console export, Prometheus,
+  health, resource identity, retention, and capacity limits.
+- Added stable operation contexts, opaque correlation identifiers, schema and
+  instrumentation versions, safe error projections, and explicit
+  `Available`, `Disabled`, `Unsupported`, `Denied`, and `Unavailable` states.
+- SQL text capture remains disabled by default. Ordinary snapshots, metrics,
+  traces, and events exclude parameter and row values, credentials, connection
+  strings, file paths, raw exceptions, and exception messages.
+- Added tokenizer-based normalized SQL and versioned fingerprints. Raw SQL is
+  an explicit sensitive-data opt-in and produces a startup warning.
 
-- Removed an avoidable per-value allocation from successful declared-type
-  assignment coercion. Qualified type-mismatch diagnostics are now formatted
-  only on failure, preserving the same error messages and SQL semantics while
-  improving in-memory SQL batch-insert throughput.
+### Structured Events and Query Lifecycle
 
-### Complete SQL Type System
+- Added stable `ILogger` categories, event ids, names, message templates, and
+  typed payloads for host, query, transaction, storage, maintenance, health,
+  and API activity.
+- Instrumented queries, scripts, procedures, triggers, pipelines, transactions,
+  checkpoints, recovery, backup, restore, reindex, vacuum, and maintenance with
+  exact request/statement ownership and once-only terminal outcomes.
+- Streaming queries remain active until exhaustion, disposal, cancellation, or
+  failure and report total duration, time to first result, queue time, rows,
+  outcome, and safe error fields without leaving stale ambient correlation.
+- Added independently configurable query, slow-query, and long-running-query
+  events. Logging-provider and diagnostic-listener failures cannot change a
+  database operation's result.
 
-- Added 25 logical SQL type kinds plus the special generated `ROWVERSION`
-  declaration: `BOOLEAN`; `TINYINT`, `SMALLINT`, `INTEGER`, and `BIGINT`;
-  `REAL`, `DOUBLE PRECISION`, and `DECIMAL`; `CHAR`, `VARCHAR`, and `TEXT`;
-  `BINARY`, `VARBINARY`, and `BLOB`; `UUID`; `DATE`, `TIME`, `DATETIME2`, and
-  `DATETIMEOFFSET`; both `INTERVAL` families; `JSON`; `XML`; `BIT(n)`; and
-  `BIT VARYING`.
-- Persisted canonical declarations and facets independently from CSharpDB's
-  compact physical carriers. Catalogs, typed result metadata, schema scripts,
-  migration plans, and archives now retain the declared SQL type instead of
-  reducing every value to its storage carrier.
-- Enforced declared ranges, lengths, precision and scale, fractional-seconds
-  precision, UUID/document validation, exact bit lengths, assignment and cast
-  rules, comparisons, aggregates, set operations, defaults, indexes, and table
-  rewrites.
-- Added a dedicated exact `DECIMAL` carrier with deterministic arithmetic,
-  comparison, ordering, aggregation, precision/scale propagation, streaming,
-  and overflow behavior. `DECIMAL` defaults to `(18,2)`, while `DECIMAL(p)`
-  uses scale zero; assignment rejects excess fractional digits rather than
-  rounding them.
+### Runtime Diagnostics
 
-The complete aliases, facets, CLR mappings, and physical carriers are listed
-in the [SQL datatype reference](https://csharpdb.com/docs/sql-reference.html#data-types).
-`NULL` remains a value and runtime tag, not a declarable column type.
+- Added the optional `ICSharpDbObservabilityClient` capability without changing
+  `ICSharpDbClient`. Direct, ADO.NET, HTTP, gRPC, and sharded clients expose the
+  same immutable diagnostics contracts.
+- Added bounded active and recent query views, safe plan summaries, separately
+  authorized query detail, connection and session state, transaction state,
+  collection capacity, retention, dropped-record, and truncation metadata.
+- Added aggregate and capped per-shard views that preserve each shard's safe
+  alias, availability, server instance, and counter epoch without combining
+  incompatible lifetimes.
+- Diagnostics polling suppresses its own observation and never automatically
+  executes `EXPLAIN ANALYZE`, replays SQL, terminates sessions, or fabricates
+  zero values for unavailable producers.
 
-### Integer, Boolean, Temporal, and Rowversion Semantics
+### Storage, WAL, and Maintenance Visibility
 
-- `INT`/`INTEGER` are now signed 32-bit values and `BIGINT` remains signed
-  64-bit. `TINYINT` is unsigned 8-bit and `SMALLINT` is signed 16-bit. Literal
-  inference, assignments, casts, defaults, updates, identities, arithmetic,
-  aggregates, and rewrites enforce the declared range with checked overflow
-  behavior. Potentially large counts, ranks, lengths, and identifiers remain
-  64-bit.
-- `BOOLEAN`, `BOOL`, and bare `BIT` are logical Booleans and materialize as
-  `bool`. Numeric zero converts to false and any finite nonzero value converts
-  to true. `BIT(n)` and `BIT VARYING`/`VARBIT` remain distinct packed
-  bit-string types whose exact bit length survives storage and transport.
-- Character and binary facets now apply Unicode-scalar or byte limits with
-  fixed-width padding where required. UUID, temporal, interval, JSON, and XML
-  values are validated and rendered canonically; temporal precision ranges
-  from zero through seven fractional digits.
-- Bare `TIMESTAMP` now aliases the generated eight-byte `ROWVERSION`
-  concurrency token. Offset-free temporal values use `DATETIME2`/`DATETIME`;
-  offset-aware values use `DATETIMEOFFSET` or `TIMESTAMP ... WITH TIME ZONE`.
-- Rowversion allocation is database-wide and durable. Every inserted row and
-  every successful update of a row containing a rowversion receives a new
-  token, including no-op, raw-SQL, and trigger-issued updates. Allocation is
-  covered by rollback, WAL recovery, checkpoint, reopen, and concurrent-write
-  behavior.
+- Added live database-size, page, cache, logical and physical I/O, WAL size and
+  publication, commit-path, checkpoint, recovery, and durability snapshots.
+- Added bounded active and recent maintenance views for backup, restore,
+  checkpoint, reindex, vacuum, foreign-key migration, and generic maintenance,
+  including phase, elapsed time, progress, outcome, warnings, and safe errors.
+- Restore and exclusive maintenance now participate in readiness and retain
+  accurate recovery/reopen state. Backup and validation remain available when
+  they do not require exclusive ownership.
+- Deep page, index, WAL, and storage inspection remains an explicit operator
+  action rather than a normal telemetry hot path.
 
-### XML Query Support
+### OpenTelemetry and Prometheus
 
-- Added `XML_EXISTS`/`XMLEXISTS` and `XML_VALUE` with XPath 1.0 evaluation,
-  NULL propagation, optional JSON namespace-prefix maps, XPath scalar
-  conversion, and explicit diagnostics when `XML_VALUE` selects multiple
-  nodes.
-- XML parsing is bounded and secure. DTD declarations and external entities
-  are rejected, and document depth and XPath length are limited.
-- The supported surface is the documented function-style API. Standard
-  `XMLEXISTS(... PASSING ...)`, `XML_TABLE`, and XML path indexes are not part
-  of 4.5.1.
+- Added the `CSharpDB` `ActivitySource` and `Meter` with versioned,
+  low-cardinality span names, attributes, counters, histograms, gauges, units,
+  and closed tag vocabularies.
+- Added parent-aware tracing for direct, REST, gRPC, ADO.NET, and sharded work.
+  Lazy query spans detach outside active work and finish exactly once.
+- Added physical startup-recovery and automatic checkpoint spans with captured
+  timing, explicit root semantics, and suppression of duplicate logical and
+  physical checkpoint spans.
+- Added API and daemon host integration for parent-based sampling, resource
+  identity, console export, OTLP export, ASP.NET Core instrumentation, and
+  explicit histogram views. Collector outages do not prevent host startup or
+  database work.
+- Added optional Prometheus export on the normal Kestrel listener. Metrics can
+  run without tracing, use bounded labels, disable exemplars, support custom
+  paths, and remain available when the daemon's ordinary REST API is disabled.
 
-### Providers, Migration, and Interchange
+### Health, Readiness, and Liveness
 
-- Updated ADO.NET and EF Core mappings plus HTTP, gRPC, native, Node, Admin,
-  CLI, MCP, schema comparison, and import/export paths to preserve canonical
-  logical metadata and typed values. This includes CLR Booleans and integer
-  widths, exact decimals, temporal values, UUIDs, bit strings, and generated
-  rowversion tokens.
-- Added explicit SQL Server migration mappings for integer widths, `bit`,
-  temporal types, and `timestamp`/`rowversion`. Migration plans now preserve
-  the logical target SQL declaration separately from its physical carrier.
-- Added a separately digested current `4.5.1` migration capability catalog
-  while retaining the immutable 4.5.0, 4.4.0, and 4.3.0 catalogs for
-  deterministic replay.
-- Native table archive format v8 records the final 4.5 integer semantics and
-  preserves every logical facet. CSV/JSON migration manifests and streaming
-  exports retain exact decimals and logical target declarations.
-- Expanded the public reference across all supported surfaces and added a
-  regression guard that requires every logical type, accepted alias, and the
-  special `ROWVERSION` declaration to remain documented.
+- Added cached, bounded `/health/live` and `/health/ready` endpoints with
+  minimal status-only JSON and independent configuration. Probes never open,
+  query, checkpoint, or acquire the main database execution lock.
+- Added startup, recovery, failure, restore, exclusive-maintenance, reopen, and
+  shutdown readiness transitions plus a low-cardinality health gauge and
+  transition event.
+- Added standard daemon gRPC Health `Check` and `Watch` support for overall and
+  database readiness, including operation when the daemon REST API is disabled.
+- Health routes can be disabled as one unit. Exact gRPC health methods may be
+  anonymous, while ordinary RPC, diagnostics, and Prometheus access retain
+  their configured security requirements.
 
-### Upgrade and Compatibility Notes
+### Admin Observability Workspace
 
-- Applications that relied on `INTEGER` as a 64-bit declaration must use
-  `BIGINT`. Descriptor-less integer columns from older databases remain
-  `BIGINT`; preview metadata-version-10 and archive-v7 `INTEGER` declarations
-  are also exposed as `BIGINT` so existing values are never silently narrowed.
-- Bare `BIT` is Boolean. Use `BIT(n)` or `VARBIT(n)` for bit strings.
-- Bare `TIMESTAMP` is rowversion. Use `DATETIME2` for offset-free date/time or
-  `DATETIMEOFFSET` for offset-aware values. `ROWVERSION` and bare `TIMESTAMP`
-  are generated column declarations, not cast or `ALTER COLUMN TYPE` targets.
-- A table may contain one generated, nonnullable rowversion column. It cannot
-  be assigned, defaulted, collated, used as an identity, or included in a key,
-  foreign key, or index. The legacy `BLOB ROWVERSION NOT NULL` declaration
-  remains accepted.
-- On first 4.5 upgrade, legacy per-row rowversion values are regenerated and
-  outstanding concurrency tokens are intentionally invalidated; rowversion
-  values are opaque equality tokens. Keep the normal database backup before
-  upgrading.
-- Metadata version 11 records the final logical semantics without redesigning
-  existing database pages. Existing physical values remain readable; 4.5 adds
-  the declared-type metadata and exact-decimal representation needed for the
-  new contract.
+- Added an Observability workspace reachable from Admin navigation and the
+  command palette in direct, HTTP, gRPC, and sharded modes.
+- Added bounded overview sampling, health, query rate and latency, active and
+  recent queries, sessions, storage/WAL, maintenance, and aggregate/per-shard
+  panels with explicit stale, truncated, denied, unsupported, and unavailable
+  states.
+- Polling is serialized and active-tab-only. Samples reset across database,
+  server-instance, counter-epoch, scope, or monotonic-counter changes.
+- Query plans and sensitive query detail are loaded only on explicit request.
+  Revealed text is cleared when the tab hides, the scope or database changes,
+  or the workspace is disposed. Shell overlays and data-source identity are
+  suppressed while the workspace is active.
+- Improved tab keyboard behavior, deterministic ARIA relationships, responsive
+  layouts, and status text for charts and partial diagnostics failures.
+
+### Security and Access Policy
+
+- Added authenticated REST and gRPC diagnostics operations with transport-neutral
+  access-denied and capability-not-supported behavior.
+- API-key mode protects diagnostics and Prometheus. Security mode `None` permits
+  only the actual loopback peer; forwarded-address headers cannot grant access.
+- Remote unauthenticated access requires an explicit insecure override and
+  emits a warning. Sensitive query detail requires a separate host opt-in.
+- Prometheus paths, diagnostics routes, health routes, OpenAPI, Scalar, REST,
+  and gRPC reservations are validated for collisions before startup.
+
+### Documentation, Samples, and Qualification Tooling
+
+- Added a public observability guide covering embedded, API, daemon, Admin, and
+  sharded deployments; configuration; event, trace, and metric schemas;
+  security; retention; compatibility; overhead; and troubleshooting.
+- Added a supported ASP.NET Core observability-host sample with `ILogger`,
+  OpenTelemetry console output, optional OTLP, loopback Prometheus, liveness,
+  readiness, and a small database workload.
+- Added redaction and metric-schema goldens, cardinality and concurrency stress
+  tests, transport parity tests, host publish and package-graph qualification,
+  trim/source-generation smoke coverage, and a fail-closed performance
+  attestation workflow.
+- Corrected the durable SQL batching benchmark to use a `BIGINT` primary key so
+  its full randomized key permutation remains valid under strict SQL integer
+  semantics.
+
+### Compatibility and Upgrade Notes
+
+- Observability, OpenTelemetry, OTLP, console export, and Prometheus remain
+  opt-in. Health endpoints are configured independently and are enabled by
+  default in the supported API and daemon hosts.
+- `History.Enabled` defaults to `true` for compatibility and can be disabled
+  independently for metrics- or tracing-focused deployments.
+- Runtime snapshots use schema `1.1` and continue to accept supported `1.0`
+  payloads. Metric schema `1.0` and instrumentation version `1.0.0` define the
+  initial stable telemetry vocabulary.
+- Existing custom clients remain valid when they do not implement the optional
+  diagnostics interface; callers receive an explicit unsupported capability.
+- Ownerless path-only static restore validation, restore, reindex, vacuum, and
+  foreign-key migration APIs do not have a runtime telemetry identity. Use
+  database- or client-owned operations when correlation is required.

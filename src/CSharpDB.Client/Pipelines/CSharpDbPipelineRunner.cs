@@ -1,3 +1,5 @@
+using CSharpDB.Client.Internal;
+using CSharpDB.Observability;
 using CSharpDB.Pipelines.Models;
 using CSharpDB.Pipelines.Runtime;
 using CSharpDB.Pipelines.Serialization;
@@ -8,6 +10,7 @@ namespace CSharpDB.Client.Pipelines;
 public sealed class CSharpDbPipelineRunner
 {
     private readonly IPipelineOrchestrator _orchestrator;
+    private readonly ICSharpDbClient? _client;
 
     public CSharpDbPipelineRunner(
         ICSharpDbClient client,
@@ -19,17 +22,57 @@ public sealed class CSharpDbPipelineRunner
             new CSharpDbPipelineCheckpointStore(client),
             new CSharpDbPipelineRunLogger(client),
             commands,
-            callbackPolicy))
+            callbackPolicy), client)
     {
     }
 
     public CSharpDbPipelineRunner(IPipelineOrchestrator orchestrator)
+        : this(orchestrator, client: null)
     {
-        _orchestrator = orchestrator;
     }
 
-    public Task<PipelineRunResult> RunAsync(PipelineRunRequest request, CancellationToken ct = default)
-        => _orchestrator.ExecuteAsync(request, ct);
+    private CSharpDbPipelineRunner(
+        IPipelineOrchestrator orchestrator,
+        ICSharpDbClient? client)
+    {
+        _orchestrator = orchestrator ?? throw new ArgumentNullException(nameof(orchestrator));
+        _client = client;
+    }
+
+    public async Task<PipelineRunResult> RunAsync(PipelineRunRequest request, CancellationToken ct = default)
+    {
+        ClientOperationObservation? observation = _client is null
+            ? null
+            : ClientOperationObservation.StartRequest(
+                _client,
+                CSharpDbOperationClass.Pipeline);
+        using IDisposable? scope = observation?.EnterScope();
+
+        try
+        {
+            PipelineRunResult result = await _orchestrator.ExecuteAsync(request, ct);
+            if (result.Status == PipelineRunStatus.Failed)
+            {
+                observation?.Fail(
+                    SafeErrorKind.DatabaseOperation,
+                    result.Metrics.RowsRead,
+                    result.Metrics.RowsWritten);
+            }
+            else
+            {
+                observation?.Succeed(
+                    result.Metrics.RowsRead,
+                    result.Metrics.RowsWritten);
+            }
+
+            return result;
+        }
+        catch (Exception exception)
+        {
+            observation?.Fail(exception);
+            throw;
+        }
+    }
 
     public Task<PipelineRunResult> RunPackageAsync(PipelinePackageDefinition package, PipelineExecutionMode mode = PipelineExecutionMode.Run, CancellationToken ct = default)
         => RunAsync(new PipelineRunRequest

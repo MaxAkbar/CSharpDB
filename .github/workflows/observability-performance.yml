@@ -1,0 +1,209 @@
+name: Observability Performance Qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      reference_commit:
+        description: "Full immutable commit containing the detached no-instrumentation observability benchmark"
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      reference_commit:
+        description: "Full immutable detached-reference commit"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: observability-performance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    name: Dedicated Windows paired qualifier
+    runs-on: [self-hosted, Windows, X64, csharpdb-performance]
+    timeout-minutes: 180
+    env:
+      CANDIDATE_COMMIT: ${{ github.sha }}
+      CANDIDATE_REF: ${{ github.ref }}
+      REFERENCE_COMMIT: ${{ inputs.reference_commit }}
+      EVIDENCE_PATH: observability-performance-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+
+    steps:
+      - name: Validate immutable reference input
+        shell: pwsh
+        run: |
+          $reference = $env:REFERENCE_COMMIT
+          if ($reference -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'reference_commit must be a full lowercase 40-character commit id.'
+          }
+          if ($env:CANDIDATE_COMMIT -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'The candidate must resolve to a full lowercase commit id.'
+          }
+          if ($env:CANDIDATE_REF -cne 'refs/heads/main' -and
+              $env:CANDIDATE_REF -cnotmatch '^refs/tags/v[0-9]') {
+            throw 'Formal performance qualification runs only from main or an immutable version tag.'
+          }
+
+      - name: Checkout candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          path: candidate
+          fetch-depth: 1
+
+      - name: Checkout detached reference
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.reference_commit }}
+          path: reference
+          fetch-depth: 1
+
+      - name: Enforce policy-approved reference
+        shell: pwsh
+        run: |
+          $policy = Get-Content `
+            -LiteralPath ./candidate/tests/CSharpDB.Benchmarks/observability-perf-thresholds.json `
+            -Raw | ConvertFrom-Json
+          if ($policy.reference.status -cne 'approved' -or
+              $policy.reference.commit -cne $env:REFERENCE_COMMIT) {
+            throw 'reference_commit is not the reviewed reference allowlisted by the candidate policy.'
+          }
+          $actual = (git -C ./reference rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($actual -cne $env:REFERENCE_COMMIT) {
+            throw 'The detached reference checkout does not match reference_commit.'
+          }
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: candidate/global.json
+
+      - name: Run immutable three-pair qualification
+        id: qualification
+        continue-on-error: true
+        shell: pwsh
+        env:
+          CSHARPDB_PERF_RUNNER_ID: ${{ runner.name }}
+        run: |
+          pwsh ./candidate/tests/CSharpDB.Benchmarks/scripts/Test-ObservabilityPerformance.ps1 `
+            -ReferenceProjectPath ./reference/tests/CSharpDB.Benchmarks/CSharpDB.Benchmarks.csproj `
+            -CandidateProjectPath ./candidate/tests/CSharpDB.Benchmarks/CSharpDB.Benchmarks.csproj `
+            -OutputPath $env:EVIDENCE_PATH `
+            -ConfirmDedicatedPerformanceRunner
+
+      - name: Publish qualification summary
+        if: always()
+        shell: pwsh
+        run: |
+          $report = Join-Path $env:EVIDENCE_PATH 'observability-performance-report.md'
+          if (Test-Path -LiteralPath $report -PathType Leaf) {
+            Get-Content -LiteralPath $report >> $env:GITHUB_STEP_SUMMARY
+          }
+
+      - name: Upload immutable raw evidence and attestation
+        id: evidence_upload
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: observability-performance-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ env.EVIDENCE_PATH }}/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 6
+
+      - name: Enforce attestation verdict
+        if: always()
+        shell: pwsh
+        env:
+          QUALIFICATION_OUTCOME: ${{ steps.qualification.outcome }}
+        run: |
+          if ($env:QUALIFICATION_OUTCOME -cne 'success') {
+            throw 'The formal qualifier process did not complete successfully.'
+          }
+          $root = [IO.Path]::GetFullPath($env:EVIDENCE_PATH)
+          $path = Join-Path $root 'observability-performance-attestation.json'
+          if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            throw 'The formal observability attestation was not produced.'
+          }
+          $attestation = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+          if ($attestation.verdict -cne 'PASS' -or
+              $attestation.formalGateEligible -ne $true) {
+            throw 'The formal observability performance attestation did not pass.'
+          }
+          if ($attestation.subject.candidateCommit -cne $env:CANDIDATE_COMMIT -or
+              $attestation.subject.referenceCommit -cne $env:REFERENCE_COMMIT) {
+            throw 'The attestation subjects do not match the checked-out commits.'
+          }
+          $policyPath = './candidate/tests/CSharpDB.Benchmarks/observability-perf-thresholds.json'
+          $policyHash = (Get-FileHash -LiteralPath $policyPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($attestation.policy.sha256 -cne $policyHash) {
+            throw 'The attestation is not bound to the checked-out threshold policy.'
+          }
+          if ($attestation.evidence.manifestPath -cne 'observability-performance-evidence.json') {
+            throw 'The attestation names an unexpected evidence manifest.'
+          }
+          $evidencePath = Join-Path $root $attestation.evidence.manifestPath
+          $evidenceHash = (Get-FileHash -LiteralPath $evidencePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($attestation.evidence.sha256 -cne $evidenceHash) {
+            throw 'The attestation evidence digest does not match the retained manifest.'
+          }
+          $qualifierPath = './candidate/tests/CSharpDB.Benchmarks/scripts/Compare-ObservabilityPerformance.ps1'
+          $qualifierHash = (Get-FileHash -LiteralPath $qualifierPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($attestation.qualifier.sha256 -cne $qualifierHash) {
+            throw 'The attestation qualifier digest does not match the checked-out comparator.'
+          }
+
+          $manifestPath = Join-Path $root 'sha256-manifest.txt'
+          if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            throw 'The evidence SHA-256 manifest was not produced.'
+          }
+          $rootPrefix = $root.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+          $listed = [Collections.Generic.HashSet[string]]::new(
+            [StringComparer]::OrdinalIgnoreCase)
+          foreach ($line in Get-Content -LiteralPath $manifestPath) {
+            if ($line -cnotmatch '^(?<hash>[0-9a-f]{64})  (?<path>.+)$') {
+              throw "Invalid evidence manifest row: $line"
+            }
+            $fullPath = [IO.Path]::GetFullPath((Join-Path $root $matches.path))
+            if (-not $fullPath.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+                -not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+              throw "Evidence manifest path is missing or escapes its root: $($matches.path)"
+            }
+            $item = Get-Item -LiteralPath $fullPath
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+              throw "Evidence manifest path is a reparse point: $($matches.path)"
+            }
+            if (-not $listed.Add($fullPath)) {
+              throw "Evidence manifest path is duplicated: $($matches.path)"
+            }
+            $actualHash = (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actualHash -cne $matches.hash) {
+              throw "Evidence manifest hash mismatch: $($matches.path)"
+            }
+          }
+          $retainedFiles = @(Get-ChildItem -LiteralPath $root -File -Recurse |
+            Where-Object { $_.FullName -cne $manifestPath })
+          if ($listed.Count -ne $retainedFiles.Count -or
+              @($retainedFiles | Where-Object { -not $listed.Contains($_.FullName) }).Count -ne 0) {
+            throw 'The evidence manifest does not cover every retained file exactly once.'
+          }
+
+      - name: Remove uploaded runner-local evidence
+        if: always() && steps.evidence_upload.outcome == 'success'
+        shell: pwsh
+        run: |
+          $workspace = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE).TrimEnd('\', '/')
+          $target = [IO.Path]::GetFullPath($env:EVIDENCE_PATH).TrimEnd('\', '/')
+          $prefix = $workspace + [IO.Path]::DirectorySeparatorChar
+          if (-not $target.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -or
+              $target -ceq $workspace -or
+              [IO.Path]::GetFileName($target) -cnotmatch '^observability-performance-evidence-[0-9]+-[0-9]+$') {
+            throw 'Refusing to remove an evidence path outside the exact workflow-owned directory.'
+          }
+          if (Test-Path -LiteralPath $target) {
+            Remove-Item -LiteralPath $target -Recurse -Force
+          }

@@ -1,5 +1,7 @@
 using CSharpDB.Api.Dtos;
 using CSharpDB.Client;
+using CSharpDB.Observability;
+using CSharpDB.Primitives;
 
 namespace CSharpDB.Api.Endpoints;
 
@@ -77,7 +79,7 @@ public static class ShardAdminEndpoints
         return Results.Ok(results.Select(result => new ShardSqlExecutionResultResponse(
             result.ShardId,
             result.Result is null ? null : SqlEndpoints.ToResponse(result.Result),
-            result.Error)).ToList());
+            ProjectResultError(result.Error))).ToList());
     }
 
     private static async Task<IResult> ExecuteReadOnlySqlOnAllShards(
@@ -89,20 +91,23 @@ public static class ShardAdminEndpoints
         if (shardAdmin is null)
             return Unsupported();
 
+        IReadOnlyList<CSharpDbShardSqlExecutionResult> results;
         try
         {
-            IReadOnlyList<CSharpDbShardSqlExecutionResult> results =
-                await shardAdmin.ExecuteReadOnlySqlOnAllShardsAsync(request.Sql, ct);
-
-            return Results.Ok(results.Select(result => new ShardSqlExecutionResultResponse(
-                result.ShardId,
-                result.Result is null ? null : SqlEndpoints.ToResponse(result.Result),
-                result.Error)).ToList());
+            results = await shardAdmin.ExecuteReadOnlySqlOnAllShardsAsync(request.Sql, ct);
         }
         catch (CSharpDbClientException ex)
         {
-            return Results.BadRequest(new { error = ex.Message });
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                "The read-only cross-shard SQL request is invalid.",
+                ex);
         }
+
+        return Results.Ok(results.Select(result => new ShardSqlExecutionResultResponse(
+            result.ShardId,
+            result.Result is null ? null : SqlEndpoints.ToResponse(result.Result),
+            ProjectResultError(result.Error))).ToList());
     }
 
     private static async Task<IResult> GetShardCatalog(ICSharpDbClient db, CancellationToken ct)
@@ -113,6 +118,11 @@ public static class ShardAdminEndpoints
 
         return Results.Ok(await shardAdmin.GetShardCatalogAsync(ct));
     }
+
+    private static string? ProjectResultError(string? error)
+        => error is null
+            ? null
+            : SafeErrorProjector.Project(SafeErrorKind.DatabaseOperation).PublicDetail;
 
     private static async Task<IResult> ValidateShardCatalogUpdate(
         CSharpDbShardCatalogUpdateRequest request,

@@ -22,37 +22,45 @@ public sealed class ModalService
 
     public Task<bool> ConfirmAsync(string title, string message, string confirmText = "Confirm", bool isDanger = false)
     {
-        _tcs = new TaskCompletionSource<bool>();
+        var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _tcs = completion;
         Current = new ModalOptions(title, message, confirmText, IsDanger: isDanger);
         OnChange?.Invoke();
-        return _tcs.Task;
+        return completion.Task;
     }
 
     public Task<string?> PromptAsync(string title, string message, string confirmText = "OK", string placeholder = "", string defaultValue = "")
     {
-        _promptTcs = new TaskCompletionSource<string?>();
+        var completion = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _promptTcs = completion;
         Current = new ModalOptions(title, message, confirmText, ShowInput: true, InputPlaceholder: placeholder, InputValue: defaultValue);
         OnChange?.Invoke();
-        return _promptTcs.Task;
+        return completion.Task;
     }
 
     public void Respond(bool accepted)
     {
-        _tcs?.TrySetResult(accepted);
+        TaskCompletionSource<bool>? confirmation = _tcs;
+        TaskCompletionSource<string?>? prompt = _promptTcs;
         _tcs = null;
-        _promptTcs?.TrySetResult(null);
         _promptTcs = null;
         Current = null;
         OnChange?.Invoke();
+        confirmation?.TrySetResult(accepted);
+        prompt?.TrySetResult(null);
     }
 
     public void RespondWithValue(string? value)
     {
-        _promptTcs?.TrySetResult(value);
+        TaskCompletionSource<bool>? confirmation = _tcs;
+        TaskCompletionSource<string?>? prompt = _promptTcs;
         _promptTcs = null;
-        _tcs?.TrySetResult(value is not null);
         _tcs = null;
         Current = null;
         OnChange?.Invoke();
+        prompt?.TrySetResult(value);
+        confirmation?.TrySetResult(value is not null);
     }
+
+    public void Cancel() => Respond(false);
 }

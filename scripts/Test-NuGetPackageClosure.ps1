@@ -88,6 +88,28 @@ function Test-SameProjectSet {
     }
 }
 
+function Test-SameProjectOrder {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]] $Expected,
+
+        [Parameter(Mandatory = $true)]
+        [string[]] $Actual,
+
+        [Parameter(Mandatory = $true)]
+        [string] $ActualName
+    )
+
+    for ($index = 0; $index -lt $Expected.Count; $index++) {
+        if ($Expected[$index] -cne $Actual[$index]) {
+            Write-Host "NuGet pack project order in $ActualName does not match .github/workflows/release.yml."
+            Write-Host ("First mismatch at position {0}: expected {1}, found {2}." -f (
+                $index + 1), $Expected[$index], $Actual[$index])
+            exit 1
+        }
+    }
+}
+
 function Get-ProjectReferencePaths {
     param(
         [Parameter(Mandatory = $true)]
@@ -129,6 +151,7 @@ $ciWorkflow = '.github/workflows/ci.yml'
 $publishedProjectPaths = @(Get-WorkflowPackProjectPaths $releaseWorkflow)
 $ciProjectPaths = @(Get-WorkflowPackProjectPaths $ciWorkflow)
 Test-SameProjectSet -Expected $publishedProjectPaths -Actual $ciProjectPaths -ActualName $ciWorkflow
+Test-SameProjectOrder -Expected $publishedProjectPaths -Actual $ciProjectPaths -ActualName $ciWorkflow
 
 $publishedProjectFullPaths = @{}
 
@@ -166,4 +189,33 @@ if ($violations.Count -gt 0) {
     exit 1
 }
 
-Write-Host 'Published NuGet project closure is complete.'
+$publishedProjectIndexes = @{}
+for ($index = 0; $index -lt $publishedProjectPaths.Count; $index++) {
+    $fullPath = Resolve-RepoPath $publishedProjectPaths[$index]
+    $publishedProjectIndexes[$fullPath.ToUpperInvariant()] = $index
+}
+
+$orderViolations = @()
+for ($index = 0; $index -lt $publishedProjectPaths.Count; $index++) {
+    $projectPath = $publishedProjectPaths[$index]
+    $fullPath = Resolve-RepoPath $projectPath
+    foreach ($referencePath in Get-ProjectReferencePaths $fullPath) {
+        $referenceKey = $referencePath.ToUpperInvariant()
+        if ($publishedProjectIndexes[$referenceKey] -ge $index) {
+            $orderViolations += [pscustomobject]@{
+                Project = $projectPath
+                Reference = Get-NormalizedRelativePath $referencePath
+            }
+        }
+    }
+}
+
+if ($orderViolations.Count -gt 0) {
+    Write-Host 'NuGet pack order is not topological:'
+    foreach ($violation in $orderViolations) {
+        Write-Host ("- {0} must be packed after its dependency {1}." -f $violation.Project, $violation.Reference)
+    }
+    exit 1
+}
+
+Write-Host 'Published NuGet project closure and topological order are complete.'

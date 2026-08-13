@@ -103,6 +103,60 @@ storage tuning. Typical patterns are:
 Remote transports do not accept either direct-only property because those
 settings must be configured on the host process instead.
 
+## Structured query logging
+
+Embedded/direct applications opt in by sharing one validated
+`CSharpDbObservabilityOptions` instance between `DatabaseOptions` and the
+logger bridge. Keep the bridge alive for the same lifetime as the database or
+client so its `DiagnosticListener` subscription remains active:
+
+```csharp
+var observability = new CSharpDbObservabilityOptions
+{
+    Enabled = true,
+    DatabaseAlias = "primary",
+    Logging = new CSharpDbLoggingOptions
+    {
+        Enabled = true,
+        Queries = true,
+        SlowQueries = true,
+        SlowQueryThreshold = TimeSpan.FromMilliseconds(500),
+        SqlText = SqlTextCaptureMode.None,
+    },
+};
+observability.Validate();
+
+using var loggingBridge = new CSharpDbDiagnosticLoggerBridge(
+    loggerFactory,
+    observability);
+
+await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
+{
+    Transport = CSharpDbTransport.Direct,
+    ConnectionString = "Data Source=csharpdb.db",
+    DirectDatabaseOptions = new DatabaseOptions
+    {
+        ObservabilityOptions = observability,
+    },
+});
+```
+
+Operational events use logger category `CSharpDB.Operational`; query completion,
+slow-query, failure, and cancellation events use `CSharpDB.Query`. The bridge
+logs stable event ids/names and safe structured fields from the typed
+observability contract. It never attaches raw exceptions or exception messages.
+Logger/provider/filter failures are isolated from database execution.
+Listener interest is snapshotted before an owned serialization gate is entered,
+and buffered callbacks run after that gate is released. HTTP and gRPC host
+scopes carry correlation only, so long requests cannot accumulate or evict
+completion events from independent inner operations.
+
+SQL text is not captured by default. `Normalized` retains normalized SQL and
+`Raw` retains the original statement. Raw mode can expose literals and other
+sensitive data and emits the stable startup warning
+`CSharpDB.Host.RawSqlCaptureEnabled` (event id `1003`) in supported hosts.
+Parameter values and result rows are never captured by built-in query logging.
+
 Example HTTP selection:
 
 ```csharp
@@ -143,6 +197,51 @@ var client = CSharpDbClient.Create(new CSharpDbClientOptions
 
 API-key mode is shared-secret authentication only. It does not provide JWT,
 RBAC, mTLS, or TLS termination.
+
+## Runtime diagnostics capability
+
+Runtime diagnostics are additive: `ICSharpDbClient` is unchanged, and callers
+discover `ICSharpDbObservabilityClient` when the selected client supports it.
+The built-in direct, HTTP, gRPC, sharded, and routed clients implement the
+capability.
+
+```csharp
+if (client is ICSharpDbObservabilityClient diagnostics)
+{
+    var runtime = await diagnostics.GetRuntimeDiagnosticsAsync(ct);
+    var recent = await diagnostics.GetRecentQueriesAsync(100, ct);
+}
+```
+
+The optional surface provides runtime summary, capped active and recent query
+collections, bounded automatic plan diagnostics, capped sessions, and a
+separate query-detail lookup. It never opens a database merely to answer a
+diagnostics request and never replays SQL. Custom clients and older remote
+hosts remain compatible: capability discovery is false for an object that does
+not implement the interface, while built-in remote transports translate an
+unsupported endpoint into `CSharpDbObservabilityNotSupportedException` instead
+of returning invented data. HTTP 401/403 and gRPC unauthenticated/permission-
+denied responses from diagnostics endpoints become
+`CSharpDbObservabilityAccessDeniedException`. Both exceptions use fixed safe
+messages and discard server-controlled response details. Ordinary client
+operations retain their existing transport error behavior.
+
+Sharded snapshots contain a coordinator aggregate plus bounded per-shard
+children. The aggregate collections are capped, while each reachable shard
+retains its own instance id, counter epoch, and availability. Physical shard
+counters are not summed into the coordinator because their lifetimes and
+epochs may differ. A routed client delegates to its selected physical shard.
+
+Ordinary runtime, active-query, recent-query, plan, and session responses never
+contain SQL text, parameter or row values, credentials, connection strings, or
+file paths. Captured SQL is available only through the separate query-detail
+method and only when capture permits it and, for remote calls, the host also
+authorizes it.
+
+Cancellation tokens are forwarded through direct and remote diagnostics calls,
+but cancellation is cooperative. Parsing, planning, and synchronous fast paths
+may finish before observing cancellation. This visibility surface does not
+provide query or session termination.
 
 ## Direct Client Lifecycle
 
@@ -316,6 +415,12 @@ rejects DDL/DML statements. Results stay grouped by shard so callers can show
 which shard produced each row set or error. Use
 `ExecuteSqlOnAllShardsAsync(...)` only for explicit operator actions such as
 schema setup.
+
+The fan-out coordinator and per-shard attempt hierarchy is local to the
+sharded client. A remote shard host records its physical query as a separate
+runtime root correlated through the W3C trace; operation ids are not propagated
+over the Phase 1 wire contract. Treat aggregate and remote physical events as
+separate views rather than summing both.
 
 Operator-managed catalog support stores the active shard map in a CSharpDB
 master catalog database. Hosts open only the normal master database and call

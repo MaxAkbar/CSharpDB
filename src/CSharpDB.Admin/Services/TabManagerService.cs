@@ -216,6 +216,25 @@ public sealed class TabManagerService
         return _tabs.First(t => t.Id == tab.Id);
     }
 
+    public TabDescriptor OpenObservabilityTab()
+    {
+        const string tabId = "observability:runtime";
+        TabDescriptor? existing = _tabs.FirstOrDefault(t => t.Id == tabId);
+        if (existing is not null)
+        {
+            ActivateTab(existing.Id);
+            return existing;
+        }
+
+        var tab = new TabDescriptor(
+            tabId,
+            "Observability",
+            "bi-activity",
+            TabKind.Observability);
+        OpenTab(tab);
+        return _tabs.First(t => t.Id == tab.Id);
+    }
+
     public TabDescriptor OpenShardingTab()
     {
         const string tabId = "sharding:admin";

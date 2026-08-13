@@ -33,8 +33,8 @@ The API host is intentionally thin:
 - ASP.NET Core provides routing, hosting, JSON serialization, and middleware
 - `CSharpDB.Client` is the authoritative database API
 - `ICSharpDbClient` is registered at startup from configuration
-- the client is warmed up during startup with `GetInfoAsync()` so configuration
-  and database initialization failures happen early
+- the HTTP listener starts first, then a bounded background `GetInfoAsync()`
+  probe initializes the database and drives cached readiness state
 - the route/middleware setup is shared with `CSharpDB.Daemon` so both hosts
   expose the same REST API surface
 
@@ -68,6 +68,208 @@ Data Source=csharpdb.db
 ```
 
 That means a local `csharpdb.db` file is used by default.
+
+### Health and readiness
+
+Health routing is enabled by default and is independent of the master
+`CSharpDB:Observability:Enabled` switch:
+
+```json
+{
+  "CSharpDB": {
+    "Observability": {
+      "Health": {
+        "Enabled": true,
+        "LivenessPath": "/health/live",
+        "ReadinessPath": "/health/ready",
+        "ReadinessTimeout": "00:00:02"
+      }
+    }
+  }
+}
+```
+
+`GET /health/live` and `GET /health/ready` are anonymous orchestration probes.
+They read cached process state only, never resolve or call the database, and
+return only `{"status":"healthy"}` or `{"status":"unhealthy"}` with `200`
+or `503`. Liveness remains healthy when database initialization fails;
+readiness stays unhealthy while the background initializer retries. The host
+becomes not ready before listener shutdown and non-live after it stops.
+
+`GET /api/diagnostics/health` returns the detailed typed
+`HealthDiagnosticsSnapshot` and follows the same fail-closed diagnostics access
+policy as other runtime diagnostics. It is available even while the database
+is not ready and does not query the database.
+
+A full restore is not ready through replacement and reopen verification.
+Mutating foreign-key migration, reindex, and vacuum are not ready while their
+exclusive work and bounded reopen verification run. Restore validation,
+foreign-key validation, backup, and checkpoint do not change readiness. A
+failed full restore remains not ready until a later background probe verifies
+the active database; other failed exclusive work remains ready when an
+immediate bounded probe proves the database is still available.
+
+Health paths must be canonical, distinct exact paths. They cannot collide with
+REST, Prometheus, gRPC, OpenAPI, Scalar, or another mapped endpoint; startup
+rejects collisions regardless of mapping order. Disabling health leaves both
+minimal paths unmapped.
+
+### Observability and structured logging
+
+The standalone host binds `CSharpDB:Observability`, validates it before database
+warmup, gives the same options instance to the direct database, and owns a
+`CSharpDbDiagnosticLoggerBridge` for the host lifetime. HTTP requests establish
+an `Http` transport scope while preserving ASP.NET Core's inbound `Activity`.
+
+Safe query logging can be enabled as follows:
+
+```json
+{
+  "CSharpDB": {
+    "Observability": {
+      "Enabled": true,
+      "DatabaseAlias": "primary",
+      "Logging": {
+        "Enabled": true,
+        "Queries": true,
+        "SlowQueries": true,
+        "SlowQueryThreshold": "00:00:00.500",
+        "SlowQueryThresholdOverrides": {
+          "Query": "00:00:01"
+        },
+        "SqlText": "None"
+      }
+    }
+  }
+}
+```
+
+`CSharpDB.Operational` receives host/lifecycle/API events and `CSharpDB.Query`
+receives query completion, slow-query, failure, and cancellation events. Stable
+fields include opaque operation/parent ids, operation class/role/outcome,
+configured database alias, transport, optional safe session/trace/fingerprint,
+durations, row counts, and reviewed `error.code`/`error.type` values.
+
+The default `SqlText` value is `None`. Built-in logs do not include SQL,
+parameters, row values, credentials, connection strings, paths, raw exceptions,
+or exception messages. `Normalized` capture is an explicit opt-in. `Raw` can
+expose SQL literals and emits startup warning
+`CSharpDB.Host.RawSqlCaptureEnabled` (event id `1003`) exactly once after the
+logging bridge subscribes. Logging-provider failures do not prevent host
+startup or change request results.
+
+Safe API rejection/unhandled-error events retain the existing default logging
+behavior even when general observability is disabled. Embedding applications
+that map the REST surface without registering the typed bridge use the same
+stable event id, reviewed template, and safe code/type/trace fields through a
+no-throw compatibility logger.
+
+### OpenTelemetry and Prometheus exporters
+
+Hosted exporters are disabled by default and are registered only by the API or
+daemon host. The core database, client, and observability packages do not take
+an OpenTelemetry exporter dependency. A representative production
+configuration is:
+
+```json
+{
+  "CSharpDB": {
+    "Observability": {
+      "Enabled": true,
+      "OpenTelemetry": {
+        "Enabled": true,
+        "SamplingRatio": 0.1,
+        "Resource": {
+          "ServiceName": "orders-api",
+          "ServiceNamespace": "CSharpDB",
+          "DeploymentEnvironment": "production"
+        },
+        "Otlp": {
+          "Enabled": true
+        },
+        "Console": {
+          "Enabled": false
+        }
+      },
+      "Prometheus": {
+        "Enabled": true,
+        "Path": "/metrics",
+        "AllowInsecureRemoteAccess": false
+      }
+    },
+    "Api": {
+      "Security": {
+        "Mode": "ApiKey",
+        "ApiKey": "replace-with-a-secret",
+        "ApiKeyHeaderName": "X-CSharpDB-Api-Key"
+      }
+    }
+  }
+}
+```
+
+OpenTelemetry uses the `CSharpDB` activity source and meter. Sampling is
+parent-based with the configured trace-id ratio, so a remote parent's sampling
+decision is preserved. The standalone service-name default is `CSharpDB.Api`;
+service version, process-lifetime instance id, and deployment environment are
+filled from safe host metadata unless explicitly configured. Console and OTLP
+export are separate opt-ins. Configure OTLP destinations and credentials with
+the standard `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`,
+`OTEL_EXPORTER_OTLP_HEADERS`, and `OTEL_EXPORTER_OTLP_TIMEOUT` environment
+variables rather than storing secrets in this configuration.
+
+Register observability once, after any unkeyed
+`CSharpDbObservabilityOptions` instance override; the first
+`AddCSharpDbObservability` call fixes the hosted provider shape and later calls
+are idempotent. Replacing or mutating the effective options afterward is
+rejected before provider startup. A legacy factory/type options registration remains supported
+for the pre-host logger/history bridge, but cannot be evaluated early enough to
+wire hosted OpenTelemetry or Prometheus services; Prometheus mapping therefore
+fails clearly if that legacy registration later enables scraping. Prefer normal
+configuration binding or a pre-registered options instance for hosted export.
+
+The canonical span names/attributes, complete metric name/kind/unit/tag schema,
+privacy rules, and temporality/version policy are in the
+[CSharpDB.Observability contract](../CSharpDB.Observability/README.md#phase-4-trace-and-metric-schema).
+The host enablement matrix is:
+
+| Observability | OpenTelemetry | Prometheus | Host behavior |
+| --- | --- | --- | --- |
+| disabled | disabled | disabled | No telemetry provider, exporter, background exporter service, or scrape route is registered. |
+| enabled | disabled | disabled | Configured history/logging may run; no CSharpDB trace/metric provider is registered. |
+| enabled | enabled | either | CSharpDB tracing and metrics providers are registered; console and OTLP export still require their own flags. |
+| enabled | disabled | enabled | Metrics and the exact protected scrape route are registered without a CSharpDB tracing provider. |
+
+Enabling OpenTelemetry or Prometheus while global observability is disabled is
+invalid. Enabling OpenTelemetry without console or OTLP creates in-process
+providers but no export destination or outbound exporter loop. The standalone
+REST server activity is the parent of the logical CSharpDB query span; health
+and metrics infrastructure paths are excluded from ASP.NET Core tracing.
+
+Prometheus is independent: it can be enabled while
+`OpenTelemetry:Enabled=false`. Its exact configured path is mapped on the
+ordinary Kestrel listener selected by `ASPNETCORE_URLS`; there is no separate
+management listener. When API-key mode is enabled, a missing or invalid key
+returns `401`. With security mode `None`, only the actual loopback peer is
+accepted; forwarded address headers do not grant access. Setting
+`AllowInsecureRemoteAccess=true` explicitly permits unauthenticated remote
+scrapes and emits a startup warning. A rejected remote peer receives `403`.
+When Prometheus is disabled its path is not mapped and returns `404`.
+
+Prometheus paths must be canonical exact paths and cannot collide with REST,
+gRPC, OpenAPI, Scalar, or health routes. If a custom path is configured, the
+default `/metrics` path remains unmapped. The Prometheus ASP.NET Core exporter
+is currently supplied by OpenTelemetry's prerelease exporter package; validate
+the scrape and publish gates when upgrading it.
+
+Current support boundary: automatic physical checkpoints and startup WAL
+recovery publish metrics but not physical spans. Ownerless path-only static
+restore validation/restore, reindex, vacuum, and foreign-key migration calls
+have no runtime telemetry identity; database/client-owned operations are the
+observable path. The BCL libraries retain their existing trimming/NativeAOT
+contract, but this ASP.NET Core host does not make a NativeAOT-hosting claim;
+supported publish and package qualification remain release evidence, not an
+assumption.
 
 ## Running Locally
 
@@ -141,7 +343,9 @@ mode to require a shared key on every REST route under `/api`.
       "Security": {
         "Mode": "ApiKey",
         "ApiKey": "replace-with-a-secret",
-        "ApiKeyHeaderName": "X-CSharpDB-Api-Key"
+        "ApiKeyHeaderName": "X-CSharpDB-Api-Key",
+        "AllowInsecureRemoteDiagnostics": false,
+        "AllowSensitiveQueryDetailAccess": false
       }
     }
   }
@@ -163,6 +367,15 @@ Missing or wrong keys return `401 Unauthorized`. API-key mode is a simple
 shared-secret guard; it is not JWT, RBAC, mTLS, or a replacement for TLS
 termination and network access controls.
 
+Runtime diagnostics have an additional fail-closed access policy. In
+`ApiKey` mode they require the configured key. In `None` mode they are allowed
+only when the request has a proven loopback address; null, wildcard, and
+non-loopback addresses are denied unless
+`AllowInsecureRemoteDiagnostics=true` is an explicit operator choice. Query
+detail always also requires `AllowSensitiveQueryDetailAccess=true`, including
+in API-key mode. Missing or wrong keys return `401`; policy denials return
+`403`.
+
 ## Endpoint Overview
 
 All routes are under `/api`.
@@ -172,6 +385,30 @@ All routes are under `/api`.
 | Method | Route | Description |
 | --- | --- | --- |
 | `GET` | `/api/info` | Returns top-level database counts and data source information. |
+
+### Runtime Diagnostics
+
+| Method | Route | Description |
+| --- | --- | --- |
+| `GET` | `/api/diagnostics/health` | Get cached detailed host liveness/readiness state. |
+| `GET` | `/api/diagnostics/runtime` | Get the current runtime summary. |
+| `GET` | `/api/diagnostics/queries/active?maximumRecords=100` | Get a capped active-query snapshot. |
+| `GET` | `/api/diagnostics/queries/recent?maximumRecords=100` | Get a capped recent-query snapshot. |
+| `GET` | `/api/diagnostics/queries/{operationId}/plan` | Get the retained bounded plan summary without replaying SQL. |
+| `GET` | `/api/diagnostics/sessions?maximumRecords=100` | Get capped database and host-request session state. |
+| `GET` | `/api/diagnostics/queries/{operationId}/detail` | Get separately captured and authorized query detail. |
+
+Diagnostics requests are suppressed from their own query/session observation,
+so polling the endpoints does not recursively fill the ledger. Session results
+merge the host's in-flight HTTP requests with the underlying database sessions
+when runtime diagnostics are enabled. Normal summaries and lists never contain
+SQL text, values, connection strings, credentials, or file paths. A client
+without the optional diagnostics capability returns `501 Not Implemented`.
+
+`HttpContext.RequestAborted` is forwarded through diagnostics, maintenance,
+and storage inspection calls. Cancellation is cooperative: parsing, planning,
+and synchronous fast paths may complete before observing it. The API does not
+provide a query/session kill endpoint.
 
 ### Tables And Columns
 
@@ -461,6 +698,10 @@ Current status mapping:
   - SQL syntax errors
   - type mismatch errors
   - client configuration errors
+- `401 Unauthorized`
+  - missing or invalid API key when API-key mode is enabled
+- `403 Forbidden`
+  - diagnostics access denied by the loopback or sensitive-detail policy
 - `404 NotFound`
   - missing tables
   - missing columns
@@ -472,10 +713,10 @@ Current status mapping:
   - existing triggers
 - `422 UnprocessableEntity`
   - constraint violations
+- `501 NotImplemented`
+  - the configured client does not support optional runtime diagnostics
 - `503 ServiceUnavailable`
   - busy database
-- `401 Unauthorized`
-  - missing or invalid API key when API-key mode is enabled
 - `500 InternalServerError`
   - unexpected runtime failures
 

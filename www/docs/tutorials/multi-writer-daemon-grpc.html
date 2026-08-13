@@ -54,6 +54,7 @@
                         <li><a href="#configuration">Recommended daemon configuration</a></li>
                         <li><a href="#client-sdk">Use it from CSharpDB.Client</a></li>
                         <li><a href="#adonet">Use it from ADO.NET</a></li>
+                        <li><a href="#observability">Observability and health</a></li>
                         <li><a href="#operations">Operational guidance</a></li>
                         <li><a href="#limits">Limits and expectations</a></li>
                         <li><a href="#tooling">CLI inspection and querying</a></li>
@@ -264,12 +265,32 @@ await tx.CommitAsync();</code></pre>
 
                 <p>Keep remote ADO.NET connections open for bursts of work instead of reconnecting for every command.</p>
 
+                <h2 id="observability">Observability and Health</h2>
+                <p>The daemon binds the same <code>CSharpDB:Observability</code> subtree as the standalone API and gives that exact validated options instance to its direct database client. Structured events flow through <code>ILogger</code>; optional OpenTelemetry trace/metric providers, OTLP export, Prometheus scraping, HTTP health, and standard gRPC Health all observe the same warm runtime.</p>
+                <div class="code-block" data-title="Environment"><pre><code>export CSharpDB__Observability__Enabled="true"
+export CSharpDB__Observability__DatabaseAlias="primary"
+export CSharpDB__Observability__OpenTelemetry__Enabled="true"
+export CSharpDB__Observability__OpenTelemetry__SamplingRatio="0.1"
+export CSharpDB__Observability__OpenTelemetry__Otlp__Enabled="true"
+export OTEL_EXPORTER_OTLP_ENDPOINT="https://collector.example.internal:4317"
+export OTEL_EXPORTER_OTLP_PROTOCOL="grpc"
+export CSharpDB__Observability__Prometheus__Enabled="true"
+export CSharpDB__Observability__Health__Enabled="true"</code></pre></div>
+                <ul>
+                    <li><code>/health/live</code> reports cached process liveness; <code>/health/ready</code> reports cached database readiness. Both return minimal anonymous JSON and never query the database on each probe.</li>
+                    <li>The standard gRPC Health service exposes <code>Check</code> and <code>Watch</code> for the empty service name and <code>csharpdb.database</code>. Disabling health removes both HTTP routes and the gRPC service.</li>
+                    <li>Prometheus remains available in a gRPC-only daemon. In API-key mode the scrape requires the key; in security mode <code>None</code> it is actual-loopback-only unless insecure remote access is explicitly enabled.</li>
+                    <li>An unavailable OTLP collector does not prevent daemon startup or database operations. Export may be delayed or dropped, so monitor the collector/exporter and retain only the bounded local history needed for immediate diagnosis.</li>
+                    <li>REST and gRPC expose equivalent safe runtime/query/session/plan/detail contracts. Ordinary diagnostics contain no SQL, values, credentials, connection strings, paths, or exception messages.</li>
+                </ul>
+                <p>For the complete configuration, metric and span schemas, SQL-capture policy, access controls, and troubleshooting, see <a href="../observability.html">Observability and Diagnostics</a>.</p>
+
                 <h2 id="operations">Operational guidance</h2>
                 <ul>
                     <li>Run one daemon process per database file.</li>
                     <li>Treat the database directory as durable application state and keep the daemon responsible for those files while it is running.</li>
                     <li>Do not let unrelated processes mutate the same <code>.db</code> / <code>.wal</code> files directly while the daemon owns them.</li>
-                    <li>Prefer private networking and front-end TLS termination because built-in auth and authorization are not shipped in the daemon yet.</li>
+                    <li>Enable the daemon's API-key mode for remote clients and combine it with private networking and TLS termination. A shared API key is not role-based authorization or a replacement for transport security.</li>
                     <li>Make sure the full network path supports HTTP/2 correctly if the daemon sits behind infrastructure.</li>
                     <li>Reuse clients and connections so the app spends time doing useful work instead of rebuilding transport state.</li>
                 </ul>
@@ -277,7 +298,7 @@ await tx.CommitAsync();</code></pre>
                 <h2 id="limits">Limits and expectations</h2>
                 <ul>
                     <li>This is not a multi-tenant database server.</li>
-                    <li>This is not a public-internet-ready database endpoint with built-in auth, authorization, or service hardening.</li>
+                    <li>This is not a public-internet-ready multi-tenant endpoint. API-key mode is a shared-secret guard, not role-based authorization or complete service hardening.</li>
                     <li>This is not cross-process distributed write coordination across multiple daemon processes.</li>
                     <li>This does not guarantee that every write-heavy workload scales linearly with client count.</li>
                     <li>Hot insert workloads can still see limited fan-in depending on key pattern, row-id pressure, and right-edge page growth.</li>

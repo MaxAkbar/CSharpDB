@@ -1,7 +1,11 @@
+using System.Diagnostics;
 using System.Net;
+using System.Runtime.ExceptionServices;
 using CSharpDB.Client;
+using CSharpDB.Observability;
 using CSharpDB.Primitives;
 using Microsoft.AspNetCore.Mvc;
+using ObservabilityTransport = CSharpDB.Observability.CSharpDbTransport;
 
 namespace CSharpDB.Api.Middleware;
 
@@ -9,11 +13,16 @@ public sealed class ExceptionHandlingMiddleware
 {
     private readonly RequestDelegate _next;
     private readonly ILogger<ExceptionHandlingMiddleware> _logger;
+    private readonly bool _typedLoggerBridgeAvailable;
 
-    public ExceptionHandlingMiddleware(RequestDelegate next, ILogger<ExceptionHandlingMiddleware> logger)
+    public ExceptionHandlingMiddleware(
+        RequestDelegate next,
+        ILogger<ExceptionHandlingMiddleware> logger,
+        CSharpDbDiagnosticLoggerBridge? diagnosticLoggerBridge = null)
     {
-        _next = next;
-        _logger = logger;
+        _next = next ?? throw new ArgumentNullException(nameof(next));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _typedLoggerBridgeAvailable = diagnosticLoggerBridge is not null;
     }
 
     public async Task InvokeAsync(HttpContext context)
@@ -22,62 +31,113 @@ public sealed class ExceptionHandlingMiddleware
         {
             await _next(context);
         }
+        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+        {
+            // The caller is gone. Do not turn a routine disconnect into a
+            // server failure or attempt to write through a canceled request.
+        }
+        catch (OperationCanceledException ex)
+        {
+            await HandleErrorAsync(
+                context,
+                ex,
+                HttpStatusCode.RequestTimeout,
+                SafeErrorKind.OperationCanceled,
+                unexpected: false);
+        }
+        catch (TimeoutException ex)
+        {
+            await HandleErrorAsync(
+                context,
+                ex,
+                HttpStatusCode.GatewayTimeout,
+                SafeErrorKind.TimedOut,
+                unexpected: false);
+        }
         catch (BadHttpRequestException ex)
         {
-            _logger.LogWarning(ex, "Invalid HTTP request");
-            await WriteErrorResponse(
+            await HandleErrorAsync(
                 context,
+                ex,
                 (HttpStatusCode)ex.StatusCode,
-                ex.Message);
+                SafeErrorKind.InvalidHttpRequest,
+                unexpected: false);
         }
         catch (ArgumentException ex)
         {
-            _logger.LogWarning(ex, "Validation error");
-            await WriteErrorResponse(context, HttpStatusCode.BadRequest, ex.Message);
+            await HandleErrorAsync(
+                context,
+                ex,
+                HttpStatusCode.BadRequest,
+                SafeErrorKind.InvalidArgument,
+                unexpected: false);
         }
         catch (CSharpDbClientConfigurationException ex)
         {
-            _logger.LogWarning(ex, "Client configuration error");
-            await WriteErrorResponse(context, HttpStatusCode.BadRequest, ex.Message);
+            await HandleErrorAsync(
+                context,
+                ex,
+                HttpStatusCode.BadRequest,
+                SafeErrorKind.ClientConfiguration,
+                unexpected: false);
         }
         catch (CSharpDbException ex)
         {
-            _logger.LogWarning(ex, "Database error: {ErrorCode}", ex.Code);
-            await WriteErrorResponse(context, MapErrorCode(ex.Code), ex.Message);
+            SafeApiErrorDescriptor descriptor = SafeApiErrorPolicy.For(ex.Code);
+            await HandleErrorAsync(
+                context,
+                ex,
+                descriptor.Status,
+                descriptor.Kind,
+                descriptor.IsUnexpected);
         }
         catch (CSharpDbClientException ex)
         {
-            _logger.LogError(ex, "Client error");
-            await WriteErrorResponse(context, HttpStatusCode.InternalServerError, ex.Message);
+            await HandleErrorAsync(
+                context,
+                ex,
+                HttpStatusCode.InternalServerError,
+                SafeErrorKind.ClientTransport,
+                unexpected: true);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Unhandled exception");
-            var detail = context.RequestServices.GetService<IHostEnvironment>()?.IsDevelopment() == true
-                ? $"{ex.GetType().Name}: {ex.Message}"
-                : "An unexpected error occurred.";
-            await WriteErrorResponse(context, HttpStatusCode.InternalServerError, detail);
+            await HandleErrorAsync(
+                context,
+                ex,
+                HttpStatusCode.InternalServerError,
+                SafeErrorKind.Unexpected,
+                unexpected: true);
         }
     }
 
-    private static HttpStatusCode MapErrorCode(ErrorCode code) => code switch
+    private async Task HandleErrorAsync(
+        HttpContext context,
+        Exception exception,
+        HttpStatusCode status,
+        SafeErrorKind errorKind,
+        bool unexpected)
     {
-        ErrorCode.TableNotFound => HttpStatusCode.NotFound,
-        ErrorCode.ColumnNotFound => HttpStatusCode.NotFound,
-        ErrorCode.TriggerNotFound => HttpStatusCode.NotFound,
-        ErrorCode.TableAlreadyExists => HttpStatusCode.Conflict,
-        ErrorCode.TriggerAlreadyExists => HttpStatusCode.Conflict,
-        ErrorCode.DuplicateKey => HttpStatusCode.Conflict,
-        ErrorCode.ConstraintViolation => HttpStatusCode.UnprocessableEntity,
-        ErrorCode.SyntaxError => HttpStatusCode.BadRequest,
-        ErrorCode.TypeMismatch => HttpStatusCode.BadRequest,
-        ErrorCode.Busy => HttpStatusCode.ServiceUnavailable,
-        ErrorCode.ResourceLimitExceeded => HttpStatusCode.RequestEntityTooLarge,
-        _ => HttpStatusCode.InternalServerError,
-    };
+        SafeErrorProjection safeError = SafeErrorProjector.Project(exception, errorKind);
+        (string traceId, DiagnosticsTraceId? diagnosticTraceId) = GetTraceCorrelation();
+        CSharpDbLogEventDefinition<CSharpDbApiErrorEvent> definition =
+            PublishApiError(unexpected, safeError, diagnosticTraceId);
+        if (!_typedLoggerBridgeAvailable)
+            LogApiErrorFallback(definition, safeError, traceId, unexpected);
 
-    private static async Task WriteErrorResponse(HttpContext context, HttpStatusCode status, string detail)
+        if (context.Response.HasStarted)
+            ExceptionDispatchInfo.Capture(exception).Throw();
+
+        await WriteErrorResponse(context, status, safeError, traceId);
+    }
+
+    private static async Task WriteErrorResponse(
+        HttpContext context,
+        HttpStatusCode status,
+        SafeErrorProjection safeError,
+        string traceId)
     {
+        context.Response.Clear();
         context.Response.StatusCode = (int)status;
         context.Response.ContentType = "application/problem+json";
 
@@ -85,9 +145,76 @@ public sealed class ExceptionHandlingMiddleware
         {
             Status = (int)status,
             Title = status.ToString(),
-            Detail = detail,
+            Detail = safeError.PublicDetail,
         };
+        problem.Extensions["errorCode"] = safeError.Code;
+        problem.Extensions["errorType"] = safeError.ErrorType;
+        problem.Extensions["traceId"] = traceId;
 
-        await context.Response.WriteAsJsonAsync(problem);
+        await context.Response.WriteAsJsonAsync(
+            problem,
+            options: null,
+            contentType: "application/problem+json",
+            cancellationToken: CancellationToken.None);
+    }
+
+    private static CSharpDbLogEventDefinition<CSharpDbApiErrorEvent> PublishApiError(
+        bool unexpected,
+        SafeErrorProjection safeError,
+        DiagnosticsTraceId? traceId)
+    {
+        CSharpDbLogEventDefinition<CSharpDbApiErrorEvent> definition = unexpected
+            ? CSharpDbLogEvents.ApiUnhandledError
+            : CSharpDbLogEvents.ApiRequestRejected;
+        ObservabilityTransport transport = CSharpDbOperationScope.CurrentTransport;
+        if (transport is not (ObservabilityTransport.Http or ObservabilityTransport.Grpc))
+            transport = ObservabilityTransport.Http;
+
+        CSharpDbDiagnostics.EventPublisher.Publish(
+            definition,
+            () => new CSharpDbApiErrorEvent(
+                DateTimeOffset.UtcNow,
+                transport,
+                traceId,
+                safeError));
+        return definition;
+    }
+
+    private void LogApiErrorFallback(
+        CSharpDbLogEventDefinition<CSharpDbApiErrorEvent> definition,
+        SafeErrorProjection safeError,
+        string traceId,
+        bool unexpected)
+    {
+        try
+        {
+            _logger.Log(
+                unexpected ? LogLevel.Error : LogLevel.Warning,
+                new EventId(definition.EventId, definition.Name),
+                definition.MessageTemplate,
+                safeError.Code,
+                safeError.ErrorType,
+                traceId);
+        }
+        catch
+        {
+            // The compatibility fallback has the same no-throw contract as
+            // typed DiagnosticListener delivery.
+        }
+    }
+
+    private static (string ResponseTraceId, DiagnosticsTraceId? DiagnosticTraceId)
+        GetTraceCorrelation()
+    {
+        if (Activity.Current is { } activity && activity.TraceId != default)
+        {
+            DiagnosticsTraceId traceId =
+                DiagnosticsTraceId.FromActivityTraceId(activity.TraceId);
+            return (traceId.Value, traceId);
+        }
+
+        var fallback = new DiagnosticsTraceId(
+            CSharpDbDiagnostics.CreateOpaqueIdentifier());
+        return (fallback.Value, fallback);
     }
 }

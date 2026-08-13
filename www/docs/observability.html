@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>Observability and Diagnostics — CSharpDB</title>
+    <meta name="description" content="Configure CSharpDB structured logging, OpenTelemetry and OTLP, Prometheus metrics, health probes, runtime diagnostics, and Admin observability safely.">
+    <link rel="canonical" href="https://csharpdb.com/docs/observability.html">
+    <meta property="og:title" content="Observability and Diagnostics — CSharpDB">
+    <meta property="og:description" content="Structured logging, OpenTelemetry, Prometheus, health probes, runtime diagnostics, Admin, privacy, and troubleshooting for CSharpDB.">
+    <meta property="og:url" content="https://csharpdb.com/docs/observability.html">
+    <meta property="og:type" content="article">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "TechArticle",
+        "name": "CSharpDB Observability and Diagnostics",
+        "description": "Configure CSharpDB structured logging, OpenTelemetry and OTLP, Prometheus metrics, health probes, runtime diagnostics, and Admin observability safely.",
+        "url": "https://csharpdb.com/docs/observability.html",
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": "CSharpDB",
+            "url": "https://csharpdb.com"
+        }
+    }
+    </script>
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Observability and Diagnostics',
+        description: 'Structured logging, OpenTelemetry, Prometheus, health probes, runtime diagnostics, Admin, privacy, and troubleshooting for CSharpDB.',
+        keywords: 'CSharpDB observability, OpenTelemetry, OTLP, Prometheus, ILogger, health checks, runtime diagnostics, tracing, metrics',
+        canonicalPath: 'docs/observability.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#choose-a-host">Choose a Host</a></li>
+                        <li><a href="#quick-start">Runnable Sample</a></li>
+                        <li><a href="#configuration">Configuration</a></li>
+                        <li><a href="#logging">ILogger Events</a></li>
+                        <li><a href="#runtime-diagnostics">Runtime Diagnostics</a></li>
+                        <li><a href="#tracing">OpenTelemetry Tracing</a></li>
+                        <li><a href="#metrics">Metrics and Prometheus</a></li>
+                        <li><a href="#health">Health and Readiness</a></li>
+                        <li><a href="#admin">Admin Workspace</a></li>
+                        <li><a href="#privacy">Privacy and Security</a></li>
+                        <li><a href="#capacity">Capacity and Overhead</a></li>
+                        <li><a href="#compatibility">Schema Compatibility</a></li>
+                        <li><a href="#troubleshooting">Troubleshooting</a></li>
+                    </ul>
+                </nav>
+            </aside>
+
+            <div class="doc-content">
+                <h1>Observability and Diagnostics</h1>
+                <p class="lead">Use one versioned diagnostics vocabulary across embedded databases, the standalone REST API, the combined REST/gRPC daemon, sharded clients, and CSharpDB Studio&mdash;without putting SQL text, values, credentials, connection strings, or paths into ordinary telemetry.</p>
+
+                <div class="callout callout-info">
+                    <strong>Safe by default.</strong> Observability and hosted exporters are opt-in. SQL capture defaults to <code>None</code>, histories are bounded in memory, metric labels use a closed allowlist, and ordinary snapshots omit sensitive fields instead of asking a UI to hide them.
+                </div>
+
+                <h2 id="choose-a-host">Choose the Integration Boundary</h2>
+                <table class="doc-table">
+                    <thead><tr><th>Mode</th><th>What CSharpDB supplies</th><th>Operator action</th></tr></thead>
+                    <tbody>
+                        <tr><td>Embedded</td><td>BCL <code>DiagnosticListener</code>, <code>ActivitySource</code>, <code>Meter</code>, bounded runtime models, and optional <code>ILogger</code> bridge.</td><td>Pass one validated <code>CSharpDbObservabilityOptions</code> to <code>DatabaseOptions</code>. Attach your own listeners/exporters, or reuse the ASP.NET Core host adapter.</td></tr>
+                        <tr><td>Standalone API</td><td>Configuration binding, <code>ILogger</code> bridge, OTLP/console exporters, Prometheus, minimal health routes, and REST diagnostics.</td><td>Configure <code>CSharpDB:Observability</code>. The API owns exporter and route lifetime.</td></tr>
+                        <tr><td>Daemon</td><td>The API features plus REST/gRPC diagnostics and the standard gRPC Health service in one warm host.</td><td>Use this preferred remote host when HTTP and gRPC clients should observe the same database runtime.</td></tr>
+                        <tr><td>Admin</td><td>A bounded Observability workspace over <code>ICSharpDbObservabilityClient</code>.</td><td>Connect by direct, HTTP, gRPC, or sharded transport. The workspace does not inspect engine internals.</td></tr>
+                        <tr><td>Sharded</td><td>One aggregate envelope plus explicit per-shard availability and identity.</td><td>Use safe shard aliases. Do not sum counters across different instance ids or counter epochs.</td></tr>
+                    </tbody>
+                </table>
+                <p><code>CSharpDB.Observability</code> is deliberately BCL-only. It does not install an OpenTelemetry SDK, exporter, ASP.NET Core route, logging provider, or background worker. Those dependencies belong at the application or API/daemon host boundary.</p>
+
+                <h2 id="quick-start">Run the Supported Sample</h2>
+                <p>The observability host sample wires a direct database into ASP.NET Core, emits CSharpDB events through <code>ILogger</code>, writes local OpenTelemetry output, exposes a loopback Prometheus scrape, and maps separate liveness and readiness probes.</p>
+                <div class="code-block" data-title="Terminal"><pre><code>dotnet run --project samples/observability-host/ObservabilityHostSample.csproj</code></pre></div>
+                <p>Exercise the workload and inspect its surfaces:</p>
+                <div class="code-block" data-title="Terminal"><pre><code>curl http://localhost:5099/work
+curl http://localhost:5099/health/live
+curl http://localhost:5099/health/ready
+curl http://localhost:5099/metrics</code></pre></div>
+                <p>See the <a href="samples.html#observability-host">sample overview</a> and <a href="https://github.com/MaxAkbar/CSharpDB/tree/main/samples/observability-host">complete source</a>.</p>
+
+                <h2 id="configuration">Configuration</h2>
+                <p>API and daemon hosts bind and validate one <code>CSharpDB:Observability</code> subtree before database warmup. Use a safe configured alias, not a database filename or tenant-provided label.</p>
+                <div class="code-block" data-title="appsettings.json"><pre><code>{
+  "CSharpDB": {
+    "Observability": {
+      "Enabled": true,
+      "DatabaseAlias": "primary",
+      "Logging": {
+        "Enabled": true,
+        "Queries": true,
+        "SlowQueries": true,
+        "SlowQueryThreshold": "00:00:00.500",
+        "SlowQueryThresholdOverrides": {
+          "Query": "00:00:01"
+        },
+        "SqlText": "None"
+      },
+      "History": {
+        "Enabled": true,
+        "ActiveQueryCapacity": 1000,
+        "RecentQueryCapacity": 500,
+        "RecentOperationCapacity": 100,
+        "Retention": "00:15:00"
+      },
+      "LongRunningQueryThreshold": "00:00:05",
+      "SessionAbandonmentThreshold": "00:30:00",
+      "OpenTelemetry": {
+        "Enabled": true,
+        "SamplingRatio": 0.1,
+        "Resource": {
+          "ServiceName": "orders-api",
+          "ServiceNamespace": "CSharpDB",
+          "ServiceVersion": "1.0.0",
+          "DeploymentEnvironment": "production"
+        },
+        "Otlp": { "Enabled": true },
+        "Console": { "Enabled": false }
+      },
+      "Prometheus": {
+        "Enabled": true,
+        "Path": "/metrics",
+        "AllowInsecureRemoteAccess": false
+      },
+      "Health": {
+        "Enabled": true,
+        "LivenessPath": "/health/live",
+        "ReadinessPath": "/health/ready",
+        "ReadinessTimeout": "00:00:02"
+      }
+    }
+  }
+}</code></pre></div>
+                <p><code>History.Enabled</code> defaults to <code>true</code>. Set it to <code>false</code> for metrics-only or tracing-only operation without retaining recent query or maintenance history; configured telemetry signals continue to emit independently.</p>
+                <p>Keep collector destinations and credentials outside the JSON file:</p>
+                <div class="code-block" data-title="Environment"><pre><code>OTEL_EXPORTER_OTLP_ENDPOINT=https://collector.example.internal:4317
+OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+OTEL_EXPORTER_OTLP_HEADERS=authorization=Bearer%20...
+OTEL_EXPORTER_OTLP_TIMEOUT=10000</code></pre></div>
+                <p>OpenTelemetry or Prometheus cannot be enabled while the master <code>Enabled</code> switch is false. Health is independent: API and daemon health routes remain enabled by default even when general observability is disabled. Endpoint paths must be distinct canonical absolute paths and cannot collide with REST, gRPC, OpenAPI, Scalar, or each other. See the <a href="configuration.html#observability">configuration reference</a> for defaults and limits.</p>
+
+                <h2 id="logging">Structured <code>ILogger</code> Events</h2>
+                <p>The host bridge subscribes to the <code>CSharpDB</code> diagnostic listener before database warmup. Operational events use logger category <code>CSharpDB.Operational</code>; query completion, slow, failure, cancellation, and long-running events use <code>CSharpDB.Query</code>. Logging-provider failures cannot change database or request results.</p>
+                <table class="doc-table">
+                    <thead><tr><th>Event id</th><th>Stable event name</th><th>Meaning</th></tr></thead>
+                    <tbody>
+                        <tr><td>1000</td><td><code>CSharpDB.Host.Starting</code></td><td>Host observability has started.</td></tr>
+                        <tr><td>1001</td><td><code>CSharpDB.Database.Opened</code></td><td>Database became available.</td></tr>
+                        <tr><td>1002</td><td><code>CSharpDB.Database.Closed</code></td><td>Database closed.</td></tr>
+                        <tr><td>1003</td><td><code>CSharpDB.Host.RawSqlCaptureEnabled</code></td><td>One startup warning for the sensitive raw-SQL opt-in.</td></tr>
+                        <tr><td>2000</td><td><code>CSharpDB.Query.Completed</code></td><td>Successful query terminal event.</td></tr>
+                        <tr><td>2001</td><td><code>CSharpDB.Query.Slow</code></td><td>Configured slow threshold was reached.</td></tr>
+                        <tr><td>2002</td><td><code>CSharpDB.Query.Failed</code></td><td>Query failed with a safe code/type projection.</td></tr>
+                        <tr><td>2003</td><td><code>CSharpDB.Query.Canceled</code></td><td>Query observed cancellation.</td></tr>
+                        <tr><td>2004</td><td><code>CSharpDB.Query.LongRunning</code></td><td>In-flight query crossed the long-running threshold.</td></tr>
+                        <tr><td>3000</td><td><code>CSharpDB.Transaction.Completed</code></td><td>Transaction reached one terminal outcome.</td></tr>
+                        <tr><td>4000</td><td><code>CSharpDB.Checkpoint.Completed</code></td><td>Checkpoint completed.</td></tr>
+                        <tr><td>4001</td><td><code>CSharpDB.Recovery.Completed</code></td><td>WAL recovery completed.</td></tr>
+                        <tr><td>5000</td><td><code>CSharpDB.Backup.Completed</code></td><td>Backup completed.</td></tr>
+                        <tr><td>5001</td><td><code>CSharpDB.Restore.Completed</code></td><td>Restore completed.</td></tr>
+                        <tr><td>5002</td><td><code>CSharpDB.Maintenance.Completed</code></td><td>Other maintenance completed.</td></tr>
+                        <tr><td>6000</td><td><code>CSharpDB.Health.Transition</code></td><td>Cached lifecycle/readiness state changed.</td></tr>
+                        <tr><td>7000</td><td><code>CSharpDB.Api.RequestRejected</code></td><td>Host rejected a request safely.</td></tr>
+                        <tr><td>7001</td><td><code>CSharpDB.Api.UnhandledError</code></td><td>Host projected an unexpected error safely.</td></tr>
+                    </tbody>
+                </table>
+                <p>Stable fields include opaque operation and parent ids, operation class/role/outcome, configured alias, transport, optional safe session/trace/fingerprint correlation, durations, row counts, and reviewed <code>error.code</code>/<code>error.type</code>. Payloads never carry raw exceptions or exception messages.</p>
+
+                <h2 id="runtime-diagnostics">Runtime Diagnostics</h2>
+                <p>Clients discover diagnostics as the additive <code>ICSharpDbObservabilityClient</code> capability; <code>ICSharpDbClient</code> is unchanged. Direct, HTTP, gRPC, and sharded implementations use the same immutable snapshot models and preserve schema version, capture time, server instance id, counter epoch, scope, availability, truncation, capacity, retention, and dropped-count metadata.</p>
+                <table class="doc-table">
+                    <thead><tr><th>REST route</th><th>gRPC operation</th><th>Result</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>GET /api/diagnostics/runtime</code></td><td><code>GetRuntimeDiagnostics</code></td><td>Queries, connections, storage, WAL, maintenance, and health summary.</td></tr>
+                        <tr><td><code>GET /api/diagnostics/queries/active?maximumRecords=100</code></td><td><code>GetActiveQueries</code></td><td>Capped active-query collection.</td></tr>
+                        <tr><td><code>GET /api/diagnostics/queries/recent?maximumRecords=100</code></td><td><code>GetRecentQueries</code></td><td>Capped recent terminal-query collection.</td></tr>
+                        <tr><td><code>GET /api/diagnostics/queries/{operationId}/plan</code></td><td><code>GetQueryPlanDiagnostics</code></td><td>Bounded retained plan summary; never replays SQL.</td></tr>
+                        <tr><td><code>GET /api/diagnostics/sessions?maximumRecords=100</code></td><td><code>GetSessions</code></td><td>Capped database and host-request session state.</td></tr>
+                        <tr><td><code>GET /api/diagnostics/queries/{operationId}/detail</code></td><td><code>GetQueryDetail</code></td><td>Separate captured-text request subject to capture and host authorization.</td></tr>
+                    </tbody>
+                </table>
+                <p>Diagnostics calls suppress their own observation so polling does not recursively fill history. <code>Available</code>, <code>Disabled</code>, <code>Unsupported</code>, <code>Denied</code>, and <code>Unavailable</code> are different states; unavailable values are omitted rather than represented by a misleading zero. Cancellation is forwarded but cooperative, and no diagnostics route terminates a query or session.</p>
+
+                <h2 id="tracing">OpenTelemetry Tracing</h2>
+                <p>The activity source is <code>CSharpDB</code>, instrumentation version <code>1.0.0</code>. Hosted sampling is parent-based over <code>OpenTelemetry:SamplingRatio</code> from <code>0</code> through <code>1</code>. REST and gRPC server activities parent the logical database activity, and the engine adopts that context rather than creating a duplicate root.</p>
+                <p>Every activity uses <code>ActivityKind.Internal</code> and one low-cardinality name:</p>
+                <div class="code-block" data-title="Span names"><pre><code>csharpdb.query        csharpdb.script       csharpdb.procedure
+csharpdb.transaction  csharpdb.database     csharpdb.recovery
+csharpdb.checkpoint   csharpdb.backup       csharpdb.restore
+csharpdb.reindex      csharpdb.vacuum       csharpdb.maintenance
+csharpdb.pipeline     csharpdb.operation</code></pre></div>
+                <p>Hosted resources publish <code>service.name</code>, optional <code>service.namespace</code> and <code>service.version</code>, an opaque process-lifetime <code>service.instance.id</code>, and <code>deployment.environment.name</code>. Start attributes are <code>db.system.name=csharpdb</code>, <code>db.namespace</code>, <code>db.operation.name</code>, <code>csharpdb.schema.version</code>, <code>csharpdb.operation.id</code>, <code>csharpdb.operation.class</code>, <code>csharpdb.operation.role</code>, <code>csharpdb.transport</code>, and <code>csharpdb.database.alias</code>. <code>csharpdb.operation.parent_id</code>, <code>csharpdb.session.id</code>, <code>csharpdb.query.fingerprint</code>, and <code>csharpdb.maintenance.kind</code> appear only when applicable.</p>
+                <p>Completion adds <code>csharpdb.operation.outcome</code>. Query completion may add <code>csharpdb.query.rows_produced</code>, <code>csharpdb.query.rows_affected</code>, <code>csharpdb.query.queue_duration_ms</code>, <code>csharpdb.query.time_to_first_result_ms</code>, and <code>csharpdb.query.slow</code>. Maintenance completion may add <code>csharpdb.maintenance.completed_units</code>, <code>csharpdb.maintenance.total_units</code>, <code>csharpdb.maintenance.warning_count</code>, and <code>csharpdb.maintenance.error_count</code>. Failed, canceled, and rejected work uses error status with only reviewed <code>error.type</code> and <code>csharpdb.error.code</code>.</p>
+                <p>Traces never attach statement text, even when logging capture is enabled. Startup WAL recovery and automatic foreground, background, and shutdown checkpoints create explicit-root physical spans from storage-captured start and completion times when tracing is enabled. Manual checkpoint, backup, and the checkpoint sub-step inside startup recovery reuse their logical parent and suppress a second physical checkpoint span. Path-only static restore, reindex, vacuum, and foreign-key operations lack a runtime owner; use database/client-owned operations when telemetry correlation is required.</p>
+
+                <h2 id="metrics">Metrics and Prometheus</h2>
+                <p>The meter is <code>CSharpDB</code>, instrumentation version <code>1.0.0</code>. Counter means cumulative, up/down and gauge mean current value, and histogram records a distribution. Units use UCUM notation.</p>
+                <table class="doc-table">
+                    <thead><tr><th>Instruments (kind; unit)</th><th>Allowed dimensions</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>csharpdb.requests</code> (counter; <code>{request}</code>), <code>csharpdb.statements</code> (counter; <code>{statement}</code>), <code>csharpdb.query.duration</code> (histogram; <code>s</code>), <code>csharpdb.rows.produced</code>/<code>csharpdb.rows.affected</code> (counter; <code>{row}</code>), <code>csharpdb.queries.slow</code> (counter; <code>{query}</code>)</td><td>operation class, outcome, transport, alias</td></tr>
+                        <tr><td><code>csharpdb.queries.active</code> (observable up/down; <code>{query}</code>)</td><td>alias</td></tr>
+                        <tr><td><code>csharpdb.transactions</code> (counter; <code>{transaction}</code>), <code>csharpdb.transaction.duration</code> (histogram; <code>s</code>)</td><td>operation class, outcome, transport, alias</td></tr>
+                        <tr><td><code>csharpdb.transactions.active</code> (observable up/down; <code>{transaction}</code>)</td><td>alias</td></tr>
+                        <tr><td><code>csharpdb.maintenance.operations</code> (counter; <code>{operation}</code>), <code>csharpdb.maintenance.duration</code> (histogram; <code>s</code>)</td><td>operation class, outcome, transport, alias</td></tr>
+                        <tr><td><code>csharpdb.maintenance.active</code> (observable up/down; <code>{operation}</code>)</td><td>operation class, alias</td></tr>
+                        <tr><td><code>csharpdb.checkpoints</code> (counter; <code>{checkpoint}</code>), <code>csharpdb.checkpoint.duration</code> (histogram; <code>s</code>)</td><td>outcome, alias</td></tr>
+                        <tr><td><code>csharpdb.checkpoints.active</code> (observable up/down; <code>{checkpoint}</code>), <code>csharpdb.checkpoint.age</code> (observable gauge; <code>s</code>)</td><td>alias</td></tr>
+                        <tr><td><code>csharpdb.wal.recoveries</code> (counter; <code>{recovery}</code>), <code>csharpdb.wal.recovery.duration</code> (histogram; <code>s</code>)</td><td>outcome, alias</td></tr>
+                        <tr><td><code>csharpdb.wal.recoveries.active</code> (observable up/down; <code>{recovery}</code>)</td><td>alias</td></tr>
+                        <tr><td><code>csharpdb.wal.commit.batch.size</code> (histogram; <code>{commit}</code>)</td><td>alias</td></tr>
+                        <tr><td><code>csharpdb.storage.logical_bytes</code>, <code>csharpdb.storage.allocated_bytes</code> (observable gauge; <code>By</code>), <code>csharpdb.storage.page_count</code>, <code>csharpdb.storage.dirty_pages</code> (observable gauge; <code>{page}</code>)</td><td>alias</td></tr>
+                        <tr><td><code>csharpdb.storage.page.reads</code>, <code>csharpdb.storage.page.writes</code>, <code>csharpdb.storage.cache.hits</code>, <code>csharpdb.storage.cache.misses</code> (observable counter; <code>{page}</code>)</td><td>alias</td></tr>
+                        <tr><td><code>csharpdb.storage.bytes.read</code>, <code>csharpdb.storage.bytes.written</code> (observable counter; <code>By</code>)</td><td>alias</td></tr>
+                        <tr><td><code>csharpdb.storage.readers.active</code> (observable up/down; <code>{reader}</code>), <code>csharpdb.storage.writers.active</code> (observable up/down; <code>{writer}</code>)</td><td>alias</td></tr>
+                        <tr><td><code>csharpdb.storage.commits</code> (observable counter; <code>{commit}</code>), <code>csharpdb.storage.conflicts</code> (observable counter; <code>{conflict}</code>)</td><td>alias</td></tr>
+                        <tr><td><code>csharpdb.wal.logical_bytes</code>, <code>csharpdb.wal.allocated_bytes</code>, <code>csharpdb.wal.committed_bytes</code>, <code>csharpdb.wal.retained_bytes</code> (observable gauge; <code>By</code>), <code>csharpdb.wal.frame_count</code> (observable gauge; <code>{frame}</code>)</td><td>alias</td></tr>
+                        <tr><td><code>csharpdb.wal.commit_batches</code> (observable counter; <code>{batch}</code>), <code>csharpdb.wal.bytes.written</code> (observable counter; <code>By</code>), <code>csharpdb.wal.commits.flushed</code> (observable counter; <code>{commit}</code>), <code>csharpdb.wal.flushes</code> (observable counter; <code>{flush}</code>), <code>csharpdb.wal.group_commit.batches</code> (observable counter; <code>{batch}</code>), <code>csharpdb.wal.group_commit.commits</code> (observable counter; <code>{commit}</code>)</td><td>alias</td></tr>
+                        <tr><td><code>csharpdb.wal.commits.pending</code> (observable up/down; <code>{commit}</code>)</td><td>alias</td></tr>
+                        <tr><td><code>csharpdb.sessions.active</code> (observable up/down; <code>{session}</code>), <code>csharpdb.readers.active</code> (observable up/down; <code>{reader}</code>), <code>csharpdb.pool.waiters</code> (observable up/down; <code>{request}</code>), <code>csharpdb.connections.available</code> (observable gauge; <code>{connection}</code>)</td><td>transport, alias</td></tr>
+                        <tr><td><code>csharpdb.pool.wait.duration</code> (histogram; <code>s</code>)</td><td>outcome, transport, alias</td></tr>
+                        <tr><td><code>csharpdb.health.status</code> (observable gauge; <code>{status}</code>)</td><td>health check, status, alias</td></tr>
+                    </tbody>
+                </table>
+                <p>The exact metric tag-key allowlist is <code>csharpdb.operation.class</code>, <code>csharpdb.operation.outcome</code>, <code>csharpdb.transport</code>, <code>csharpdb.database.alias</code>, <code>csharpdb.health.check</code>, and <code>csharpdb.status</code>. SQL, fingerprints, operation/session/trace ids, object names, paths, exception data, and arbitrary user strings are prohibited dimensions.</p>
+                <p>Prometheus can be enabled without tracing. It uses the exact configured path on the normal Kestrel listener, emits cumulative counters, and disables exemplars so trace ids do not enter the pull surface. A custom path does not leave <code>/metrics</code> mapped.</p>
+
+                <h2 id="health">Liveness and Readiness</h2>
+                <p><code>GET /health/live</code> answers whether the host process is serving. <code>GET /health/ready</code> answers whether the cached database-host state is ready for work. Both return only <code>{"status":"healthy"}</code> or <code>{"status":"unhealthy"}</code> with <code>200</code> or <code>503</code>; they never query the database on each probe.</p>
+                <ul>
+                    <li>Liveness remains healthy through database initialization failure and recovery retries.</li>
+                    <li>Readiness is unhealthy during startup, replacement/restore reopen verification, retryable recovery, and graceful shutdown.</li>
+                    <li>Readiness work respects <code>ReadinessTimeout</code> and never mutates data.</li>
+                    <li>The daemon also exposes standard gRPC Health <code>Check</code>/<code>Watch</code> for the empty service name and <code>csharpdb.database</code>.</li>
+                    <li>Admin retains <code>/healthz</code> as a shallow desktop-launch compatibility probe; use the separate readiness route for orchestration.</li>
+                </ul>
+                <p>The detailed <code>/api/diagnostics/health</code> snapshot is not an anonymous orchestration probe and follows diagnostics access policy.</p>
+
+                <h2 id="admin">Admin Observability Workspace</h2>
+                <p>Open <strong>Observability</strong> from Studio navigation or the command palette. The same component consumes the optional diagnostics client in direct, HTTP, gRPC, and sharded modes. It shows bounded overview samples, active/recent queries, sessions, storage/WAL, maintenance, health, and aggregate/per-shard availability.</p>
+                <p>Polling is serialized and runs only while the tab is active. Pause, manual refresh, snapshot age, stale state, truncation, dropped counts, and unavailable/denied/unsupported states remain visible. Samples reset when the database scope, server instance id, counter epoch, or a monotonic counter changes unexpectedly.</p>
+                <p>Raw SQL and server paths are absent from ordinary views. Query text requires a separate authorized reveal and is cleared when the tab hides, the database or scope changes, or the component is disposed. Deep physical Storage inspection is a separate explicit operation because it has different cost and privacy boundaries. See the <a href="admin-ui.html#observability-workspace">Admin UI guide</a>.</p>
+
+                <h2 id="privacy">Privacy and Security</h2>
+                <h3>Query-text modes</h3>
+                <table class="doc-table">
+                    <thead><tr><th>Mode</th><th>Behavior</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>None</code> (default)</td><td>No statement text is captured. Fingerprints and bounded plan summaries remain non-SQL identifiers/shape metadata.</td></tr>
+                        <tr><td><code>Normalized</code></td><td>Tokenizer-normalized SQL is an explicit opt-in. Treat it as potentially sensitive object/shape metadata; it is not a runnable Admin explain draft.</td></tr>
+                        <tr><td><code>Raw</code></td><td>May expose literals and identifiers. Hosts emit event 1003 at startup. Query detail still requires separate host authorization.</td></tr>
+                    </tbody>
+                </table>
+                <p>Parameter values, row values, credentials, connection strings, file paths, raw exceptions, and exception messages are never built-in structured fields. Ordinary runtime, plan, session, storage, and WAL snapshots omit raw SQL and paths.</p>
+                <h3>Remote access</h3>
+                <ul>
+                    <li>In API-key mode, diagnostics and Prometheus require the configured key. A missing or wrong key returns <code>401</code>.</li>
+                    <li>With security mode <code>None</code>, diagnostics and Prometheus accept only the actual loopback peer. Forwarded-address headers do not grant access.</li>
+                    <li><code>AllowInsecureRemoteDiagnostics</code> and <code>Prometheus:AllowInsecureRemoteAccess</code> are explicit remote exceptions. Do not use them as substitutes for TLS, private networking, and authentication.</li>
+                    <li>Sensitive query detail additionally requires <code>AllowSensitiveQueryDetailAccess=true</code>. Policy denial returns <code>403</code>.</li>
+                    <li>Keep OTLP headers and collector credentials in a protected environment or secret provider.</li>
+                </ul>
+
+                <h2 id="capacity">Retention, Capacity, and Overhead</h2>
+                <table class="doc-table">
+                    <thead><tr><th>Bound</th><th>Default</th><th>Maximum</th></tr></thead>
+                    <tbody>
+                        <tr><td>Active queries</td><td>1,000</td><td>10,000</td></tr>
+                        <tr><td>Recent queries</td><td>500</td><td>10,000</td></tr>
+                        <tr><td>Recent operations</td><td>100</td><td>10,000</td></tr>
+                        <tr><td>History retention</td><td>15 minutes</td><td>7 days</td></tr>
+                        <tr><td>Configured database/shard aliases</td><td>deployment-defined</td><td>64</td></tr>
+                        <tr><td>Live runtime metric families</td><td>listener-driven</td><td>64</td></tr>
+                    </tbody>
+                </table>
+                <p>Histories are process-local, bounded, and reset on restart. Capacity limits memory; retention removes old records. Drops and truncation are reported explicitly. Keep production capacities close to the operator question you need to answer rather than treating the host as a telemetry warehouse.</p>
+                <p>Disabled observability avoids runtime history and hosted signal setup. Enabled metrics-only mode does not install tracing. Tracing cost follows sampling and listener interest. Exporter failure is isolated from database results, but export delivery is not guaranteed during a collector outage; rely on bounded local diagnostics and the exporter/collector's own retry and queue telemetry.</p>
+
+                <h2 id="compatibility">Schema Compatibility and Deprecation</h2>
+                <ul>
+                    <li>Runtime snapshot schema: <code>1.1</code>; built-in serializers and transports continue to accept supported <code>1.0</code> payloads.</li>
+                    <li>Metric schema: <code>1.0</code>; activity/meter instrumentation version: <code>1.0.0</code>.</li>
+                    <li>Adding a new instrument or optional snapshot field is additive. Changing an existing metric name, kind, unit, meaning, or allowed dimensions requires an explicit schema-version and compatibility decision.</li>
+                    <li>Deprecations must be announced in release notes before removal. Consumers should ignore unknown additive fields and use explicit availability metadata rather than inferring support from missing or zero values.</li>
+                    <li>Never calculate a counter delta across a changed server instance id or counter epoch.</li>
+                </ul>
+
+                <h2 id="troubleshooting">Troubleshooting</h2>
+                <h3>No traces or OTLP data</h3>
+                <p>Verify master observability and <code>OpenTelemetry:Enabled</code>, a nonzero sampling ratio, and either <code>Console:Enabled</code> or <code>Otlp:Enabled</code>. Check the standard OTLP endpoint/protocol/header variables and collector reachability. An unavailable collector does not prevent host startup or database work, but it may delay or drop export.</p>
+                <h3><code>/metrics</code> returns 404, 401, or 403</h3>
+                <p><code>404</code> means Prometheus is disabled or you requested the old path after configuring a custom one. <code>401</code> means API-key authentication failed. <code>403</code> means a non-loopback peer was rejected in security mode <code>None</code>. Prefer API-key mode plus TLS/private networking rather than insecure remote access.</p>
+                <h3>Readiness remains unhealthy</h3>
+                <p>Check the connection string, database-directory permissions, startup/recovery logs, active restore or exclusive maintenance, and the configured readiness timeout. Liveness can stay healthy while readiness correctly remains unhealthy.</p>
+                <h3>Admin says unsupported, denied, unavailable, or stale</h3>
+                <p><code>Unsupported</code> means the selected client/host lacks the optional diagnostics capability. <code>Denied</code> means remote authorization rejected it. <code>Unavailable</code> means a supported producer could not provide that section. Stale data reports the last successful capture; refresh the active tab and verify connectivity. A database switch or reconnect intentionally clears old samples and revealed detail.</p>
+                <h3>Raw SQL is missing</h3>
+                <p>This is the safe default. Enable <code>Logging:SqlText</code> only after a data-handling review, then separately authorize query detail on the host. Normal polling and traces never return raw SQL.</p>
+
+                <div class="next-steps">
+                    <h2>Next Steps</h2>
+                    <div class="next-steps-grid">
+                        <a href="configuration.html#observability" class="next-step-card"><h4>Configuration Reference</h4><p>All keys, defaults, limits, and environment-variable forms</p></a>
+                        <a href="rest-api.html#runtime-diagnostics" class="next-step-card"><h4>REST Diagnostics</h4><p>Routes, access policy, health, and Prometheus behavior</p></a>
+                        <a href="admin-ui.html#observability-workspace" class="next-step-card"><h4>Admin Workspace</h4><p>Bounded live views and explicit diagnostic drill-down</p></a>
+                        <a href="tutorials/multi-writer-daemon-grpc.html#observability" class="next-step-card"><h4>Daemon Deployment</h4><p>Operate REST, gRPC, health, metrics, and OTLP together</p></a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

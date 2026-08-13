@@ -1,35 +1,144 @@
 @inject TabManagerService TabManager
-@implements IDisposable
+@inject IJSRuntime JS
+@implements IAsyncDisposable
 
-<div class="tab-bar">
+<div id="admin-tab-list" class="tab-bar" role="tablist" aria-label="Open workspaces">
     @foreach (var tab in TabManager.Tabs)
     {
         var isActive = TabManager.ActiveTab?.Id == tab.Id;
-        <div class="tab @(isActive ? "active" : "")" @onclick="() => TabManager.ActivateTab(tab.Id)">
-            <i class="bi @tab.Icon"></i>
-            <span class="tab-label">@tab.Title</span>
+        <div class="tab @(isActive ? "active" : "")" role="presentation">
+            <button id="@AdminTabDomIds.TabButtonId(tab.Id)"
+                    class="tab-activate"
+                    type="button"
+                    role="tab"
+                    aria-selected="@isActive"
+                    aria-controls="@AdminTabDomIds.PanelId(tab.Id)"
+                    tabindex="@(isActive ? 0 : -1)"
+                    @onclick="() => TabManager.ActivateTab(tab.Id)"
+                    @onkeydown="e => HandleTabKeyDownAsync(e, tab.Id)"
+                    aria-keyshortcuts="@(tab.Closable ? "Delete" : null)">
+                <i class="bi @tab.Icon" aria-hidden="true"></i>
+                <span class="tab-label">@tab.Title</span>
+            </button>
             @if (tab.Closable)
             {
-                <span class="tab-close" @onclick="() => CloseTab(tab.Id)" @onclick:stopPropagation="true" title="Close">
-                    <i class="bi bi-x"></i>
-                </span>
+                <button class="tab-close"
+                        type="button"
+                        tabindex="-1"
+                        @onclick="() => CloseTabAndFocusAsync(tab.Id)"
+                        title="Close @tab.Title"
+                        aria-label="Close @tab.Title tab">
+                    <i class="bi bi-x" aria-hidden="true"></i>
+                </button>
             }
         </div>
     }
-    <button class="tab-new" title="New Query (Ctrl+N)" @onclick="NewQuery">
-        <i class="bi bi-plus"></i>
+    <button class="tab-new" type="button" title="New Query (Ctrl+N)" aria-label="Open new query tab" @onclick="NewQuery">
+        <i class="bi bi-plus" aria-hidden="true"></i>
     </button>
 </div>
 
 @code {
+    private bool _interopRegistered;
+
     protected override void OnInitialized()
     {
         TabManager.StateChanged += OnStateChanged;
     }
 
-    private void CloseTab(string tabId) => TabManager.CloseTab(tabId);
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("adminTabInterop.register", "admin-tab-list");
+            _interopRegistered = true;
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
+
     private void NewQuery() => TabManager.OpenQueryTab();
     private void OnStateChanged() => InvokeAsync(StateHasChanged);
 
-    public void Dispose() => TabManager.StateChanged -= OnStateChanged;
+    private async Task HandleTabKeyDownAsync(KeyboardEventArgs e, string tabId)
+    {
+        IReadOnlyList<TabDescriptor> tabs = TabManager.Tabs;
+        int currentIndex = tabs.ToList().FindIndex(tab => tab.Id == tabId);
+        if (currentIndex < 0)
+            return;
+
+        if (e.Key is "Enter" or " ")
+        {
+            TabManager.ActivateTab(tabId);
+            return;
+        }
+
+        if (e.Key == "Delete" && tabs[currentIndex].Closable)
+        {
+            await CloseTabAndFocusAsync(tabId);
+            return;
+        }
+
+        int targetIndex = e.Key switch
+        {
+            "ArrowLeft" => (currentIndex - 1 + tabs.Count) % tabs.Count,
+            "ArrowRight" => (currentIndex + 1) % tabs.Count,
+            "Home" => 0,
+            "End" => tabs.Count - 1,
+            _ => -1,
+        };
+        if (targetIndex < 0)
+            return;
+
+        TabDescriptor target = tabs[targetIndex];
+        TabManager.ActivateTab(target.Id);
+        try
+        {
+            // Despite its historic name, this helper focuses any element id.
+            await JS.InvokeVoidAsync("editorInterop.focus", AdminTabDomIds.TabButtonId(target.Id));
+        }
+        catch
+        {
+            // The circuit may disconnect between keyboard input and focus.
+        }
+    }
+
+    private async Task CloseTabAndFocusAsync(string tabId)
+    {
+        TabManager.CloseTab(tabId);
+        string? activeId = TabManager.ActiveTab?.Id;
+        if (activeId is null)
+            return;
+
+        try
+        {
+            await JS.InvokeVoidAsync("editorInterop.focus", AdminTabDomIds.TabButtonId(activeId));
+        }
+        catch
+        {
+            // The circuit may disconnect between close and focus.
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        TabManager.StateChanged -= OnStateChanged;
+        if (!_interopRegistered)
+            return;
+
+        try
+        {
+            await JS.InvokeVoidAsync("adminTabInterop.unregister", "admin-tab-list");
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
 }

@@ -15,38 +15,42 @@ public static class InspectEndpoints
 
     private static async Task<IResult> InspectStorage(
         ICSharpDbClient db,
+        HttpContext context,
         bool includePages = false,
         string? path = null)
     {
-        var report = await db.InspectStorageAsync(path, includePages);
+        var report = await db.InspectStorageAsync(path, includePages, context.RequestAborted);
         return Results.Ok(report);
     }
 
     private static async Task<IResult> InspectWal(
         ICSharpDbClient db,
+        HttpContext context,
         string? path = null)
     {
-        var report = await db.CheckWalAsync(path);
+        var report = await db.CheckWalAsync(path, context.RequestAborted);
         return Results.Ok(report);
     }
 
     private static async Task<IResult> InspectPage(
         uint id,
         ICSharpDbClient db,
+        HttpContext context,
         bool hex = false,
         string? path = null)
     {
-        var report = await db.InspectPageAsync(id, hex, path);
+        var report = await db.InspectPageAsync(id, hex, path, context.RequestAborted);
         return Results.Ok(report);
     }
 
     private static async Task<IResult> CheckIndexes(
         ICSharpDbClient db,
+        HttpContext context,
         string? index = null,
         int? sample = null,
         string? path = null)
     {
-        var report = await db.CheckIndexesAsync(path, index, sample);
+        var report = await db.CheckIndexesAsync(path, index, sample, context.RequestAborted);
         return Results.Ok(report);
     }
 }

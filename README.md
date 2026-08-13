@@ -140,7 +140,7 @@ await foreach (var row in result.GetRowsAsync())
 - **No moving parts** — single `.db` file, no server process, no native binaries, no external dependencies
 - **SQL + NoSQL in one engine** — the documented CSharpDB SQL subset includes JOINs, CTEs, subqueries, views, and triggers, alongside a typed `Collection<T>` API that bypasses SQL entirely for sub-microsecond reads
 - **ACID by default** — WAL-based crash recovery with fsync-on-commit and concurrent snapshot-isolated readers
-- **Ships with tooling** — Admin UI, VS Code extension, CLI REPL, REST API, gRPC daemon, pipeline tooling, integrated forms and reports designers, and MCP server for AI agents
+- **Ships with tooling** — Admin UI, VS Code extension, CLI REPL, REST API, gRPC daemon, structured logging, OpenTelemetry/Prometheus observability, health probes, pipeline tooling, integrated forms and reports designers, and MCP server for AI agents
 - **Use from any language** — NativeAOT compiles to a standalone C library; call from Python, Node.js, Go, Rust, Swift, Kotlin, Dart, Android, and iOS
 
 ---
@@ -151,7 +151,7 @@ await foreach (var row in result.GetRowsAsync())
 |:-:|:-:|:-:|
 | ![Query tab](docs/images/QuerySytemTable.png) | ![Data browser](docs/images/TableDetails.png) | ![Schema view](docs/images/TableSchema.png) |
 
-Blazor Server dashboard with query execution, visual [Query Designer](https://csharpdb.com/docs/admin-ui.html#query-editor), data browser CRUD, schema editing, stored procedures, visual pipeline design, integrated forms and reports designers, backup and maintenance flows, and storage diagnostics.
+Blazor Server dashboard with query execution, visual [Query Designer](https://csharpdb.com/docs/admin-ui.html#query-editor), data browser CRUD, schema editing, stored procedures, visual pipeline design, integrated forms and reports designers, backup and maintenance flows, bounded [runtime observability](https://csharpdb.com/docs/admin-ui.html#observability-workspace), and explicit deep storage diagnostics.
 
 ---
 
@@ -167,6 +167,7 @@ CSharpDB is more than an embedded SQL engine. The same database can be used thro
 | **Client SDK** | One C# API across transports | Direct, HTTP, and gRPC transports plus maintenance and diagnostics |
 | **REST API** | HTTP integration and automation | 30+ endpoints with OpenAPI and Scalar for SQL, schema, data, collections, and maintenance |
 | **gRPC Daemon** | Long-running remote host | Strongly typed RPC surface for SQL, schema, procedures, collections, and maintenance |
+| **Observability** | Production operations and diagnosis | Stable ILogger events, runtime snapshots, OpenTelemetry/OTLP, Prometheus, liveness/readiness, and Admin views with safe defaults |
 | **CLI REPL** | Terminal-first workflows | Interactive SQL shell, schema inspection, backup/restore, and migration commands |
 | **MCP Server** | AI assistant integration | Tool-based schema inspection, query execution, and row operations for MCP-compatible clients |
 | **Admin UI** | Browser-based database studio | Query editor, visual query designer, CRUD, schema editing, procedures, and storage diagnostics |
@@ -337,6 +338,7 @@ The native library exports 20 C functions. See the [Native Library Reference](ht
 | [Getting Started](https://csharpdb.com/docs/getting-started.html) | Step-by-step walkthrough |
 | [Architecture Guide](https://csharpdb.com/architecture.html) | Engine design deep dive |
 | [Tools & Ecosystem](https://csharpdb.com/docs/ecosystem.html) | APIs, hosts, designers, and integrations |
+| [Observability and Diagnostics](https://csharpdb.com/docs/observability.html) | ILogger, runtime models, OpenTelemetry/OTLP, Prometheus, health, Admin, privacy, and troubleshooting |
 | [EF Core Provider](https://csharpdb.com/docs/entity-framework-core.html) | Embedded EF Core 10 provider guide |
 | [Trusted C# Callbacks](https://csharpdb.com/docs/trusted-csharp-functions.html) | Register in-process C# functions, commands, and validation rules for SQL, forms, reports, and pipelines |
 | [Trusted C# Host Sample](samples/trusted-csharp-host/README.md) | VS Code-ready C# host project for trusted functions, commands, validation rules, and form actions |

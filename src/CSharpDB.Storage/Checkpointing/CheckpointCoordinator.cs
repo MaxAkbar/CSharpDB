@@ -1,3 +1,4 @@
+using CSharpDB.Storage.Diagnostics;
 using CSharpDB.Storage.Wal;
 
 namespace CSharpDB.Storage.Checkpointing;
@@ -12,12 +13,36 @@ internal sealed class CheckpointCoordinator : IDisposable
     private readonly Dictionary<WalSnapshot, byte> _activeSnapshots = new();
     private int _activeReaderCount;
     private int _deferredCheckpointRequested;
+    private int _runtimePhase = (int)StorageCheckpointPhaseRaw.Idle;
     private long _minimumRetainedWalOffset = long.MaxValue;
     private Task? _backgroundCheckpointTask;
     private bool _backgroundCheckpointStartsStopped;
 
     public int ActiveReaderCount => Volatile.Read(ref _activeReaderCount);
     public bool HasPendingCheckpointRequest => Volatile.Read(ref _deferredCheckpointRequested) != 0;
+    internal StorageCheckpointPhaseRaw RuntimePhase =>
+        (StorageCheckpointPhaseRaw)Volatile.Read(ref _runtimePhase);
+
+    internal void SetRuntimePhase(StorageCheckpointPhaseRaw phase)
+    {
+        Volatile.Write(ref _runtimePhase, (int)phase);
+    }
+
+    internal void SetRuntimePhaseUnlessFaulted(StorageCheckpointPhaseRaw phase)
+    {
+        while (true)
+        {
+            int current = Volatile.Read(ref _runtimePhase);
+            if (current == (int)StorageCheckpointPhaseRaw.Faulted ||
+                current == (int)phase)
+            {
+                return;
+            }
+
+            if (Interlocked.CompareExchange(ref _runtimePhase, (int)phase, current) == current)
+                return;
+        }
+    }
 
     public WalSnapshot AcquireReaderSnapshot(WalIndex index, long? minimumWalOffset = null)
     {
@@ -87,7 +112,11 @@ internal sealed class CheckpointCoordinator : IDisposable
             policy is FrameCountCheckpointPolicy &&
             context.CommittedFrameCount >= legacyThreshold)
         {
-            Volatile.Write(ref _deferredCheckpointRequested, 1);
+            RequestDeferredCheckpoint();
+        }
+        else if (shouldCheckpoint)
+        {
+            MarkRuntimePhaseRequested();
         }
 
         return shouldCheckpoint;
@@ -96,6 +125,7 @@ internal sealed class CheckpointCoordinator : IDisposable
     public void RequestDeferredCheckpoint()
     {
         Volatile.Write(ref _deferredCheckpointRequested, 1);
+        MarkRuntimePhaseRequested();
     }
 
     public bool TryConsumeDeferredCheckpointRequest()
@@ -109,6 +139,35 @@ internal sealed class CheckpointCoordinator : IDisposable
     public void ClearDeferredCheckpointRequest()
     {
         Interlocked.Exchange(ref _deferredCheckpointRequested, 0);
+        Interlocked.CompareExchange(
+            ref _runtimePhase,
+            (int)StorageCheckpointPhaseRaw.Idle,
+            (int)StorageCheckpointPhaseRaw.Requested);
+    }
+
+    private void MarkRuntimePhaseRequested()
+    {
+        while (true)
+        {
+            int current = Volatile.Read(ref _runtimePhase);
+            var phase = (StorageCheckpointPhaseRaw)current;
+            if (phase is StorageCheckpointPhaseRaw.Requested or
+                StorageCheckpointPhaseRaw.Copying or
+                StorageCheckpointPhaseRaw.CopyCompleteAwaitingReaders or
+                StorageCheckpointPhaseRaw.Finalizing or
+                StorageCheckpointPhaseRaw.Faulted)
+            {
+                return;
+            }
+
+            if (Interlocked.CompareExchange(
+                    ref _runtimePhase,
+                    (int)StorageCheckpointPhaseRaw.Requested,
+                    current) == current)
+            {
+                return;
+            }
+        }
     }
 
     public bool TryGetMinimumRetainedWalOffset(out long walOffset)
@@ -129,7 +188,7 @@ internal sealed class CheckpointCoordinator : IDisposable
         try
         {
             if (TryGetMinimumRetainedWalOffset(out _))
-                Volatile.Write(ref _deferredCheckpointRequested, 1);
+                RequestDeferredCheckpoint();
 
             await checkpointAction(ct);
         }
@@ -182,6 +241,45 @@ internal sealed class CheckpointCoordinator : IDisposable
                 }
             }
         }
+    }
+
+    internal async ValueTask<bool> WaitForBackgroundCheckpointWithProgressAsync(
+        IPagerSaveToFileProgressObserver observer,
+        CancellationToken ct = default)
+    {
+        Task? backgroundCheckpointTask;
+        lock (_backgroundCheckpointGate)
+        {
+            backgroundCheckpointTask = _backgroundCheckpointTask;
+        }
+
+        if (backgroundCheckpointTask is null)
+            return false;
+
+        bool reportedCheckpointing = !backgroundCheckpointTask.IsCompleted;
+        if (reportedCheckpointing)
+        {
+            // Never invoke diagnostics while holding the coordinator gate.
+            observer.TryReportPhase(PagerSaveToFilePhase.Checkpointing);
+        }
+
+        try
+        {
+            await backgroundCheckpointTask.WaitAsync(ct);
+        }
+        finally
+        {
+            lock (_backgroundCheckpointGate)
+            {
+                if (ReferenceEquals(_backgroundCheckpointTask, backgroundCheckpointTask) &&
+                    backgroundCheckpointTask.IsCompleted)
+                {
+                    _backgroundCheckpointTask = null;
+                }
+            }
+        }
+
+        return reportedCheckpointing;
     }
 
     public async ValueTask StopAndWaitForBackgroundCheckpointAsync()

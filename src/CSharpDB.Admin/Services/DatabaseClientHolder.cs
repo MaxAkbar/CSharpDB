@@ -4,6 +4,7 @@ using System.Globalization;
 using CSharpDB.Admin.Configuration;
 using CSharpDB.Client;
 using CSharpDB.Client.Models;
+using CSharpDB.Observability;
 using CSharpDB.Storage.Diagnostics;
 using DbFunctionRegistry = CSharpDB.Primitives.DbFunctionRegistry;
 
@@ -14,14 +15,21 @@ namespace CSharpDB.Admin.Services;
 /// at runtime (e.g. when the user opens a different database file).
 /// Registered as a singleton; all Blazor circuits share the same instance.
 /// </summary>
-public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiveProgressExporter, ICSharpDbTransactionalSnapshotReader, ICSharpDbShardAdminClient, ICSharpDbShardDirectoryClient
+public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbObservabilityClient, ICSharpDbTableArchiveProgressExporter, ICSharpDbTransactionalSnapshotReader, ICSharpDbShardAdminClient, ICSharpDbShardDirectoryClient
 {
     private ICSharpDbClient _inner;
     private ICSharpDbShardAdminClient? _shardAdmin;
     private CSharpDbClientOptions? _baseClientOptions;
     private readonly AdminHostDatabaseOptions _hostDatabaseOptions;
     private readonly DbFunctionRegistry _functions;
+    private readonly CSharpDbObservabilityOptions? _observabilityOptions;
+    private readonly AdminHostReadinessService? _readiness;
     private readonly object _lock = new();
+    private readonly Dictionary<ICSharpDbClient, int> _observabilityLeaseCounts =
+        new(ReferenceEqualityComparer.Instance);
+    private readonly Dictionary<ICSharpDbClient, TaskCompletionSource<bool>> _observabilityDrainSignals =
+        new(ReferenceEqualityComparer.Instance);
+    private Task? _disposeTask;
 
     public event Action? DatabaseChanged;
 
@@ -31,17 +39,57 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiv
         CSharpDbClientOptions? baseClientOptions,
         AdminHostDatabaseOptions hostDatabaseOptions,
         DbFunctionRegistry functions)
+        : this(
+            initial,
+            shardAdmin,
+            baseClientOptions,
+            hostDatabaseOptions,
+            functions,
+            readiness: null,
+            observabilityOptions: baseClientOptions?.DirectDatabaseOptions?.ObservabilityOptions)
+    {
+    }
+
+    internal DatabaseClientHolder(
+        ICSharpDbClient initial,
+        ICSharpDbShardAdminClient? shardAdmin,
+        CSharpDbClientOptions? baseClientOptions,
+        AdminHostDatabaseOptions hostDatabaseOptions,
+        DbFunctionRegistry functions,
+        AdminHostReadinessService? readiness)
+        : this(
+            initial,
+            shardAdmin,
+            baseClientOptions,
+            hostDatabaseOptions,
+            functions,
+            readiness,
+            baseClientOptions?.DirectDatabaseOptions?.ObservabilityOptions)
+    {
+    }
+
+    internal DatabaseClientHolder(
+        ICSharpDbClient initial,
+        ICSharpDbShardAdminClient? shardAdmin,
+        CSharpDbClientOptions? baseClientOptions,
+        AdminHostDatabaseOptions hostDatabaseOptions,
+        DbFunctionRegistry functions,
+        AdminHostReadinessService? readiness,
+        CSharpDbObservabilityOptions? observabilityOptions)
     {
         _inner = initial;
         _shardAdmin = shardAdmin;
         _baseClientOptions = baseClientOptions;
         _hostDatabaseOptions = hostDatabaseOptions;
         _functions = functions;
+        _readiness = readiness;
+        _observabilityOptions = observabilityOptions;
     }
 
     public async Task SwitchAsync(string databasePath)
     {
-        CSharpDbClientOptions newOptions = AdminClientOptionsBuilder.BuildDirectDataSource(databasePath, _hostDatabaseOptions, _functions);
+        using IDisposable? readinessLease = _readiness?.EnterDatabaseSwitch();
+        CSharpDbClientOptions newOptions = BuildSwitchClientOptions(databasePath);
         ICSharpDbClient newClient;
         ICSharpDbShardAdminClient? newShardAdmin;
         CSharpDbClientOptions? newBaseClientOptions;
@@ -61,23 +109,15 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiv
         // Verify the new database is accessible before swapping.
         await newClient.GetInfoAsync();
 
-        ICSharpDbClient old;
-        ICSharpDbShardAdminClient? oldShardAdmin;
-        lock (_lock)
-        {
-            old = _inner;
-            oldShardAdmin = _shardAdmin;
-            _inner = newClient;
-            _shardAdmin = newShardAdmin;
-            _baseClientOptions = newBaseClientOptions;
-        }
-
-        if (oldShardAdmin is not null && !ReferenceEquals(oldShardAdmin, old))
-            await oldShardAdmin.DisposeAsync();
-
-        await old.DisposeAsync();
-        DatabaseChanged?.Invoke();
+        await ReplaceClientAsync(newClient, newShardAdmin, newBaseClientOptions);
     }
+
+    internal CSharpDbClientOptions BuildSwitchClientOptions(string databasePath)
+        => AdminClientOptionsBuilder.BuildDirectDataSource(
+            databasePath,
+            _hostDatabaseOptions,
+            _functions,
+            _observabilityOptions);
 
     // ── Delegated members ──────────────────────────────────
 
@@ -137,6 +177,7 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiv
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(activeMap);
+        using IDisposable? readinessLease = _readiness?.EnterDatabaseSwitch();
 
         CSharpDbClientOptions baseClientOptions;
         lock (_lock)
@@ -159,22 +200,66 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiv
 
         await shardedClient.GetInfoAsync(ct);
 
+        await ReplaceClientAsync(shardedClient, shardedClient, newBaseClientOptions: null);
+    }
+
+    internal async Task ReplaceClientAsync(
+        ICSharpDbClient newClient,
+        ICSharpDbShardAdminClient? newShardAdmin,
+        CSharpDbClientOptions? newBaseClientOptions)
+    {
+        ArgumentNullException.ThrowIfNull(newClient);
+
         ICSharpDbClient old;
         ICSharpDbShardAdminClient? oldShardAdmin;
+        Task<bool> observabilityDrain;
         lock (_lock)
         {
+            ObjectDisposedException.ThrowIf(_disposeTask is not null, this);
+
             old = _inner;
             oldShardAdmin = _shardAdmin;
-            _inner = shardedClient;
-            _shardAdmin = shardedClient;
-            _baseClientOptions = null;
+            _inner = newClient;
+            _shardAdmin = newShardAdmin;
+            _baseClientOptions = newBaseClientOptions;
+            observabilityDrain = GetObservabilityDrainTaskNoLock(old);
+        }
+
+        // The replacement is authoritative as soon as the atomic swap above
+        // completes. Notify observers before waiting for calls that leased the
+        // previous client so UI state cannot display the old database while
+        // disposal drains in the background.
+        PublishDatabaseChanged();
+
+        // Calls that captured the previous client may still be awaiting it.
+        // The holder lock is deliberately not held while they drain.
+        bool mayDisposeOldClient = await observabilityDrain.ConfigureAwait(false);
+
+        if (!mayDisposeOldClient)
+        {
+            // A saturated lease count is deliberately fail-safe. Keep the old
+            // client alive until process teardown rather than risk disposing
+            // it while an uncounted diagnostics call may still be using it.
+            return;
         }
 
         if (oldShardAdmin is not null && !ReferenceEquals(oldShardAdmin, old))
-            await oldShardAdmin.DisposeAsync();
+            await oldShardAdmin.DisposeAsync().ConfigureAwait(false);
 
-        await old.DisposeAsync();
-        DatabaseChanged?.Invoke();
+        await old.DisposeAsync().ConfigureAwait(false);
+    }
+
+    private void PublishDatabaseChanged()
+    {
+        Action? handlers = DatabaseChanged;
+        if (handlers is null)
+            return;
+
+        foreach (Delegate handler in handlers.GetInvocationList())
+        {
+            try { ((Action)handler)(); }
+            catch { }
+        }
     }
 
     public Task<DatabaseInfo> GetInfoAsync(CancellationToken ct = default) => _inner.GetInfoAsync(ct);
@@ -255,6 +340,47 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiv
     public Task<WalInspectReport> CheckWalAsync(string? databasePath = null, CancellationToken ct = default) => _inner.CheckWalAsync(databasePath, ct);
     public Task<PageInspectReport> InspectPageAsync(uint pageId, bool includeHex = false, string? databasePath = null, CancellationToken ct = default) => _inner.InspectPageAsync(pageId, includeHex, databasePath, ct);
     public Task<IndexInspectReport> CheckIndexesAsync(string? databasePath = null, string? indexName = null, int? sampleSize = null, CancellationToken ct = default) => _inner.CheckIndexesAsync(databasePath, indexName, sampleSize, ct);
+
+    public Task<DiagnosticsTopologySnapshot<RuntimeDiagnosticsSnapshot>>
+        GetRuntimeDiagnosticsAsync(CancellationToken ct = default)
+        => DelegateObservabilityAsync(client => client.GetRuntimeDiagnosticsAsync(ct));
+
+    public Task<DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<StorageRuntimeDiagnosticsSnapshot>>>
+        GetStorageDiagnosticsAsync(CancellationToken ct = default)
+        => DelegateObservabilityAsync(client => client.GetStorageDiagnosticsAsync(ct));
+
+    public Task<DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<WalRuntimeDiagnosticsSnapshot>>>
+        GetWalDiagnosticsAsync(CancellationToken ct = default)
+        => DelegateObservabilityAsync(client => client.GetWalDiagnosticsAsync(ct));
+
+    public Task<DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<ActiveQuerySnapshot>>>
+        GetActiveQueriesAsync(int maximumRecords, CancellationToken ct = default)
+        => DelegateObservabilityAsync(client => client.GetActiveQueriesAsync(maximumRecords, ct));
+
+    public Task<DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<RecentQuerySnapshot>>>
+        GetRecentQueriesAsync(int maximumRecords, CancellationToken ct = default)
+        => DelegateObservabilityAsync(client => client.GetRecentQueriesAsync(maximumRecords, ct));
+
+    public Task<DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<QueryPlanDiagnosticsSnapshot>>>
+        GetQueryPlanDiagnosticsAsync(OpaqueDiagnosticsId operationId, CancellationToken ct = default)
+        => DelegateObservabilityAsync(client => client.GetQueryPlanDiagnosticsAsync(operationId, ct));
+
+    public Task<DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<SessionDiagnosticsSnapshot>>>
+        GetSessionsAsync(int maximumRecords, CancellationToken ct = default)
+        => DelegateObservabilityAsync(client => client.GetSessionsAsync(maximumRecords, ct));
+
+    public Task<DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>
+        GetActiveMaintenanceOperationsAsync(int maximumRecords, CancellationToken ct = default)
+        => DelegateObservabilityAsync(client => client.GetActiveMaintenanceOperationsAsync(maximumRecords, ct));
+
+    public Task<DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>
+        GetRecentMaintenanceOperationsAsync(int maximumRecords, CancellationToken ct = default)
+        => DelegateObservabilityAsync(client => client.GetRecentMaintenanceOperationsAsync(maximumRecords, ct));
+
+    public Task<DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<QueryDetailSnapshot>>>
+        GetQueryDetailAsync(OpaqueDiagnosticsId operationId, CancellationToken ct = default)
+        => DelegateObservabilityAsync(client => client.GetQueryDetailAsync(operationId, ct));
+
     public Task<TableArchiveExportResult> ExportTableArchiveAsync(string tableName, string path, CancellationToken ct = default)
         => _inner is ICSharpDbTableArchiveExporter exporter && exporter.SupportsTableArchiveExport
             ? exporter.ExportTableArchiveAsync(tableName, path, ct)
@@ -343,6 +469,131 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiv
         => _shardAdmin as ICSharpDbShardDirectoryClient
            ?? throw new CSharpDbClientConfigurationException("The current CSharpDB connection does not expose shard-directory APIs.");
 
+    private Task<TResult> DelegateObservabilityAsync<TResult>(
+        Func<ICSharpDbObservabilityClient, Task<TResult>> operation)
+    {
+        ObservabilityClientLease lease = CaptureObservabilityClient();
+        Task<TResult> task;
+        try
+        {
+            // Invoke outside the holder lock so synchronous validation and
+            // cancellation behavior come directly from the captured client.
+            task = operation(lease.Client)
+                ?? throw new InvalidOperationException("The observability client returned no operation task.");
+        }
+        catch
+        {
+            lease.Dispose();
+            throw;
+        }
+
+        if (task.IsCompleted)
+        {
+            lease.Dispose();
+            return task;
+        }
+
+        return AwaitObservabilityAsync(task, lease);
+    }
+
+    private static async Task<TResult> AwaitObservabilityAsync<TResult>(
+        Task<TResult> task,
+        ObservabilityClientLease lease)
+    {
+        try
+        {
+            return await task.ConfigureAwait(false);
+        }
+        finally
+        {
+            lease.Dispose();
+        }
+    }
+
+    private ObservabilityClientLease CaptureObservabilityClient()
+    {
+        lock (_lock)
+        {
+            ObjectDisposedException.ThrowIf(_disposeTask is not null, this);
+
+            ICSharpDbClient inner = _inner;
+            if (inner is not ICSharpDbObservabilityClient observabilityClient)
+                throw new CSharpDbObservabilityNotSupportedException();
+
+            _observabilityLeaseCounts.TryGetValue(inner, out int leaseCount);
+            _observabilityLeaseCounts[inner] = SaturatingIncrementLeaseCount(leaseCount);
+            return new ObservabilityClientLease(this, inner, observabilityClient);
+        }
+    }
+
+    internal static int SaturatingIncrementLeaseCount(int leaseCount)
+    {
+        if (leaseCount < 0)
+            throw new ArgumentOutOfRangeException(nameof(leaseCount));
+
+        return leaseCount == int.MaxValue ? int.MaxValue : leaseCount + 1;
+    }
+
+    private Task<bool> GetObservabilityDrainTaskNoLock(ICSharpDbClient client)
+    {
+        if (!_observabilityLeaseCounts.TryGetValue(client, out int leaseCount))
+            return Task.FromResult(true);
+        if (leaseCount == int.MaxValue)
+            return Task.FromResult(false);
+
+        if (!_observabilityDrainSignals.TryGetValue(client, out TaskCompletionSource<bool>? signal))
+        {
+            signal = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _observabilityDrainSignals.Add(client, signal);
+        }
+
+        return signal.Task;
+    }
+
+    private void ReleaseObservabilityClient(ICSharpDbClient client)
+    {
+        TaskCompletionSource<bool>? signal = null;
+        lock (_lock)
+        {
+            if (!_observabilityLeaseCounts.TryGetValue(client, out int leaseCount))
+                return;
+
+            if (leaseCount == int.MaxValue)
+            {
+                // Saturation retains the client until process teardown.
+                return;
+            }
+
+            if (leaseCount > 1)
+            {
+                _observabilityLeaseCounts[client] = leaseCount - 1;
+                return;
+            }
+
+            _observabilityLeaseCounts.Remove(client);
+            if (_observabilityDrainSignals.Remove(client, out TaskCompletionSource<bool>? removed))
+                signal = removed;
+        }
+
+        signal?.TrySetResult(true);
+    }
+
+    private sealed class ObservabilityClientLease(
+        DatabaseClientHolder owner,
+        ICSharpDbClient inner,
+        ICSharpDbObservabilityClient client) : IDisposable
+    {
+        private DatabaseClientHolder? _owner = owner;
+
+        public ICSharpDbObservabilityClient Client { get; } = client;
+
+        public void Dispose()
+        {
+            DatabaseClientHolder? capturedOwner = Interlocked.Exchange(ref _owner, null);
+            capturedOwner?.ReleaseObservabilityClient(inner);
+        }
+    }
+
     private static CSharpDbClientOptions CloneOptionsWithRoute(
         CSharpDbClientOptions options,
         CSharpDbRouteContext routeContext)
@@ -375,7 +626,7 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiv
     {
         if (options is null)
             return null;
-        if (options.Transport is not null && options.Transport != CSharpDbTransport.Direct)
+        if (options.Transport is not null && options.Transport != CSharpDB.Client.CSharpDbTransport.Direct)
             return null;
 
         string? endpoint = NormalizeOptional(options.Endpoint);
@@ -419,13 +670,35 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiv
     private static string? NormalizeOptional(string? value)
         => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        ICSharpDbClient inner = _inner;
-        ICSharpDbShardAdminClient? shardAdmin = _shardAdmin;
-        if (shardAdmin is not null && !ReferenceEquals(shardAdmin, inner))
-            await shardAdmin.DisposeAsync();
+        lock (_lock)
+        {
+            if (_disposeTask is not null)
+                return new ValueTask(_disposeTask);
 
-        await inner.DisposeAsync();
+            ICSharpDbClient inner = _inner;
+            ICSharpDbShardAdminClient? shardAdmin = _shardAdmin;
+            Task<bool> observabilityDrain = GetObservabilityDrainTaskNoLock(inner);
+            _disposeTask = DisposeAsyncCore(inner, shardAdmin, observabilityDrain);
+            return new ValueTask(_disposeTask);
+        }
+    }
+
+    private static async Task DisposeAsyncCore(
+        ICSharpDbClient inner,
+        ICSharpDbShardAdminClient? shardAdmin,
+        Task<bool> observabilityDrain)
+    {
+        // Ensure no external disposal work can run while the caller still owns
+        // the holder lock used to install this task.
+        await Task.Yield();
+        if (!await observabilityDrain.ConfigureAwait(false))
+            return;
+
+        if (shardAdmin is not null && !ReferenceEquals(shardAdmin, inner))
+            await shardAdmin.DisposeAsync().ConfigureAwait(false);
+
+        await inner.DisposeAsync().ConfigureAwait(false);
     }
 }

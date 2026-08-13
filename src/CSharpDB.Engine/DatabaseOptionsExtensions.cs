@@ -6,6 +6,30 @@ namespace CSharpDB.Engine;
 public static class DatabaseOptionsExtensions
 {
     /// <summary>
+    /// Creates the next per-database configuration for the same client/host
+    /// runtime. The replacement may change observability options and alias
+    /// while retaining the internal runtime identity seed.
+    /// </summary>
+    internal static DatabaseOptions CreateRuntimeReplacement(
+        this DatabaseOptions options,
+        CSharpDB.Observability.CSharpDbObservabilityOptions? observabilityOptions)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
+        return new DatabaseOptions
+        {
+            AdaptiveQueryReoptimization = options.AdaptiveQueryReoptimization,
+            Functions = options.Functions,
+            ImplicitInsertExecutionMode = options.ImplicitInsertExecutionMode,
+            ObservabilityOptions = observabilityOptions,
+            RuntimeDiagnosticsState = options.RuntimeDiagnosticsState,
+            StorageEngineFactory = options.StorageEngineFactory,
+            StorageEngineOptions = options.StorageEngineOptions,
+            WindowExecution = options.WindowExecution,
+        };
+    }
+
+    /// <summary>
     /// Applies storage-engine provider registrations and returns a new DatabaseOptions instance.
     /// </summary>
     public static DatabaseOptions ConfigureStorageEngine(
@@ -20,6 +44,8 @@ public static class DatabaseOptionsExtensions
             AdaptiveQueryReoptimization = options.AdaptiveQueryReoptimization,
             Functions = options.Functions,
             ImplicitInsertExecutionMode = options.ImplicitInsertExecutionMode,
+            ObservabilityOptions = options.ObservabilityOptions,
+            RuntimeDiagnosticsState = options.RuntimeDiagnosticsState,
             StorageEngineFactory = options.StorageEngineFactory,
             StorageEngineOptions = options.StorageEngineOptions.Configure(configure),
             WindowExecution = options.WindowExecution,
@@ -41,6 +67,8 @@ public static class DatabaseOptionsExtensions
             AdaptiveQueryReoptimization = options.AdaptiveQueryReoptimization,
             Functions = DbFunctionRegistry.Create(configure),
             ImplicitInsertExecutionMode = options.ImplicitInsertExecutionMode,
+            ObservabilityOptions = options.ObservabilityOptions,
+            RuntimeDiagnosticsState = options.RuntimeDiagnosticsState,
             StorageEngineFactory = options.StorageEngineFactory,
             StorageEngineOptions = options.StorageEngineOptions,
             WindowExecution = options.WindowExecution,
@@ -64,6 +92,8 @@ public static class DatabaseOptionsExtensions
             AdaptiveQueryReoptimization = builder.Build(enabled: true),
             Functions = options.Functions,
             ImplicitInsertExecutionMode = options.ImplicitInsertExecutionMode,
+            ObservabilityOptions = options.ObservabilityOptions,
+            RuntimeDiagnosticsState = options.RuntimeDiagnosticsState,
             StorageEngineFactory = options.StorageEngineFactory,
             StorageEngineOptions = options.StorageEngineOptions,
             WindowExecution = options.WindowExecution,

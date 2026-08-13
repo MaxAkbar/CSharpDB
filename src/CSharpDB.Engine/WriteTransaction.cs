@@ -17,6 +17,7 @@ public sealed class WriteTransaction : IAsyncDisposable
     private readonly QueryPlanner _planner;
     private readonly long _initialSchemaVersion;
     private readonly ulong _initialRowVersionHighWater;
+    private readonly LifecycleOperation? _lifecycleOperation;
     private bool _completed;
     private bool _writeFailed;
 
@@ -26,7 +27,8 @@ public sealed class WriteTransaction : IAsyncDisposable
         SchemaCatalog catalog,
         QueryPlanner planner,
         long initialSchemaVersion,
-        ulong initialRowVersionHighWater)
+        ulong initialRowVersionHighWater,
+        LifecycleOperation? lifecycleOperation)
     {
         _database = database ?? throw new ArgumentNullException(nameof(database));
         _storageTransaction = storageTransaction ?? throw new ArgumentNullException(nameof(storageTransaction));
@@ -34,12 +36,27 @@ public sealed class WriteTransaction : IAsyncDisposable
         _planner = planner ?? throw new ArgumentNullException(nameof(planner));
         _initialSchemaVersion = initialSchemaVersion;
         _initialRowVersionHighWater = initialRowVersionHighWater;
+        _lifecycleOperation = lifecycleOperation;
     }
 
     /// <summary>
     /// Execute SQL within this transaction.
     /// </summary>
-    public async ValueTask<QueryResult> ExecuteAsync(string sql, CancellationToken ct = default)
+    public ValueTask<QueryResult> ExecuteAsync(string sql, CancellationToken ct = default)
+    {
+        IQueryExecutionObservation? operation =
+            _database.StartQueryObservability(sql);
+        return operation is null
+            ? ExecuteSqlCoreAsync(sql, ct)
+            : Database.ObserveQueryAsync(
+                operation,
+                (Target: this, Sql: sql, CancellationToken: ct),
+                static state => state.Target.ExecuteSqlCoreAsync(
+                    state.Sql,
+                    state.CancellationToken));
+    }
+
+    private async ValueTask<QueryResult> ExecuteSqlCoreAsync(string sql, CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sql);
         EnsureActive();
@@ -53,7 +70,23 @@ public sealed class WriteTransaction : IAsyncDisposable
     /// <summary>
     /// Execute a parsed statement within this transaction.
     /// </summary>
-    public async ValueTask<QueryResult> ExecuteAsync(Statement statement, CancellationToken ct = default)
+    public ValueTask<QueryResult> ExecuteAsync(Statement statement, CancellationToken ct = default)
+    {
+        IQueryExecutionObservation? operation =
+            _database.StartQueryObservability(sql: null);
+        return operation is null
+            ? ExecuteStatementRootCoreAsync(statement, ct)
+            : Database.ObserveQueryAsync(
+                operation,
+                (Target: this, Statement: statement, CancellationToken: ct),
+                static state => state.Target.ExecuteStatementRootCoreAsync(
+                    state.Statement,
+                    state.CancellationToken));
+    }
+
+    private async ValueTask<QueryResult> ExecuteStatementRootCoreAsync(
+        Statement statement,
+        CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(statement);
         EnsureActive();
@@ -80,7 +113,23 @@ public sealed class WriteTransaction : IAsyncDisposable
     /// Execute a read-only query within this transaction without contributing logical read conflict ranges.
     /// This weakens serializable conflict tracking for the specific query only.
     /// </summary>
-    public async ValueTask<QueryResult> ExecuteSnapshotReadAsync(string sql, CancellationToken ct = default)
+    public ValueTask<QueryResult> ExecuteSnapshotReadAsync(string sql, CancellationToken ct = default)
+    {
+        IQueryExecutionObservation? operation =
+            _database.StartQueryObservability(sql);
+        return operation is null
+            ? ExecuteSnapshotReadSqlCoreAsync(sql, ct)
+            : Database.ObserveQueryAsync(
+                operation,
+                (Target: this, Sql: sql, CancellationToken: ct),
+                static state => state.Target.ExecuteSnapshotReadSqlCoreAsync(
+                    state.Sql,
+                    state.CancellationToken));
+    }
+
+    private async ValueTask<QueryResult> ExecuteSnapshotReadSqlCoreAsync(
+        string sql,
+        CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sql);
         EnsureActive();
@@ -96,7 +145,23 @@ public sealed class WriteTransaction : IAsyncDisposable
     /// Execute a read-only query within this transaction without contributing logical read conflict ranges.
     /// This weakens serializable conflict tracking for the specific query only.
     /// </summary>
-    public async ValueTask<QueryResult> ExecuteSnapshotReadAsync(Statement statement, CancellationToken ct = default)
+    public ValueTask<QueryResult> ExecuteSnapshotReadAsync(Statement statement, CancellationToken ct = default)
+    {
+        IQueryExecutionObservation? operation =
+            _database.StartQueryObservability(sql: null);
+        return operation is null
+            ? ExecuteSnapshotReadStatementCoreAsync(statement, ct)
+            : Database.ObserveQueryAsync(
+                operation,
+                (Target: this, Statement: statement, CancellationToken: ct),
+                static state => state.Target.ExecuteSnapshotReadStatementCoreAsync(
+                    state.Statement,
+                    state.CancellationToken));
+    }
+
+    private async ValueTask<QueryResult> ExecuteSnapshotReadStatementCoreAsync(
+        Statement statement,
+        CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(statement);
         EnsureActive();
@@ -113,9 +178,24 @@ public sealed class WriteTransaction : IAsyncDisposable
     public async ValueTask CommitAsync(CancellationToken ct = default)
     {
         EnsureActive();
+        try
+        {
+            await CommitCoreAsync(ct);
+            _lifecycleOperation?.Succeed();
+        }
+        catch (Exception exception)
+        {
+            if (_completed)
+                _lifecycleOperation?.Fail(exception);
+            throw;
+        }
+    }
+
+    private async ValueTask CommitCoreAsync(CancellationToken ct)
+    {
         if (_writeFailed)
         {
-            await RollbackAsync(CancellationToken.None);
+            await RollbackCoreAsync(CancellationToken.None);
             throw new CSharpDbException(
                 ErrorCode.Unknown,
                 "The transaction was rolled back because an earlier write failed.");
@@ -194,6 +274,21 @@ public sealed class WriteTransaction : IAsyncDisposable
         if (_completed)
             return;
 
+        try
+        {
+            await RollbackCoreAsync(ct);
+            _lifecycleOperation?.Succeed();
+        }
+        catch (Exception exception)
+        {
+            if (_completed)
+                _lifecycleOperation?.Fail(exception);
+            throw;
+        }
+    }
+
+    private async ValueTask RollbackCoreAsync(CancellationToken ct)
+    {
         using var binding = _storageTransaction.Bind();
         await _storageTransaction.RollbackAsync(ct);
         _completed = true;

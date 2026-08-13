@@ -1,13 +1,23 @@
+using CSharpDB.Storage.Diagnostics;
+
 namespace CSharpDB.Storage.Caching;
 
 /// <summary>
 /// Default in-memory page cache backed by a dictionary.
 /// Maintains current behavior (unbounded, no eviction).
 /// </summary>
-public sealed class DictionaryPageCache : IPageCache, IPageCacheEvictionEvents
+public sealed class DictionaryPageCache :
+    IPageCache,
+    IPageCacheEvictionEvents,
+    IPageCacheRuntimeDiagnosticsProvider
 {
     private readonly Dictionary<uint, byte[]> _pages = new();
     public event Action<uint, byte[]>? PageEvicted;
+
+    long IPageCacheRuntimeDiagnosticsProvider.RuntimeResidentPageCount =>
+        _pages.Count;
+
+    long? IPageCacheRuntimeDiagnosticsProvider.RuntimeCapacityPageCount => null;
 
     public bool TryGet(uint pageId, out byte[] page) =>
         _pages.TryGetValue(pageId, out page!);

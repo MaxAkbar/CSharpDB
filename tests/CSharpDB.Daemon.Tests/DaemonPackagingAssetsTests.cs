@@ -24,7 +24,163 @@ public sealed class DaemonPackagingAssetsTests
         string workflow = File.ReadAllText(Path.Combine(repoRoot, ".github", "workflows", "ci.yml"));
 
         Assert.Contains("src/CSharpDB/README.md", workflow);
+        Assert.Contains("src/CSharpDB.Observability/README.md", workflow);
+        Assert.Contains("dotnet pack src/CSharpDB.Observability/CSharpDB.Observability.csproj", workflow);
         Assert.Contains("dotnet pack src/CSharpDB/CSharpDB.csproj", workflow);
+        Assert.Contains("Test-ObservabilityNuGetPackage.ps1", workflow);
+        Assert.Contains("Test-CSharpDbNuGetReleaseGraph.ps1", workflow);
+        Assert.Contains("CSharpDB-PACKAGE-MANIFEST.json", workflow);
+    }
+
+    [Fact]
+    public void CiAndRelease_QualifyPublishedApiAndDaemonObservabilityOnEverySupportedHost()
+    {
+        string repoRoot = FindRepoRoot();
+        string ci = File.ReadAllText(Path.Combine(
+            repoRoot,
+            ".github",
+            "workflows",
+            "ci.yml"));
+        string release = File.ReadAllText(Path.Combine(
+            repoRoot,
+            ".github",
+            "workflows",
+            "release.yml"));
+        string qualifier = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "scripts",
+            "Test-CSharpDbPublishedHostObservability.ps1"));
+
+        foreach (string runtime in new[] { "win-x64", "linux-x64", "osx-arm64" })
+        {
+            Assert.Contains(runtime, ci);
+            Assert.Contains(runtime, release);
+            Assert.Contains(runtime, qualifier);
+        }
+
+        Assert.Contains("published-host-observability:", ci);
+        Assert.Contains("host: Api", ci);
+        Assert.Contains("host: Daemon", ci);
+        Assert.Contains("api-host-observability:", release);
+        Assert.Contains("-HostName Api", release);
+        Assert.Contains("-HostName Daemon", release);
+        Assert.Contains("/health/live", qualifier);
+        Assert.Contains("/health/ready", qualifier);
+        Assert.Contains("/metrics", qualifier);
+        Assert.Contains("/api/diagnostics/runtime", qualifier);
+        Assert.Contains("private database path canary", qualifier);
+        Assert.Contains("Stop-QualifiedHost", qualifier);
+        Assert.Contains("orderly shutdown", qualifier, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("did not complete orderly shutdown", qualifier);
+        Assert.Contains("cleanup only", qualifier, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("return $false", qualifier);
+        Assert.Contains("--self-contained true", ci);
+        Assert.Contains("--self-contained true", release);
+        Assert.Contains("NativeAOT executable was not produced", ci);
+        Assert.Contains("NativeAOT executable was not produced", release);
+    }
+
+    [Fact]
+    public void NuGetReleaseGraph_RequiresExactClosedTopologicalHashedCandidates()
+    {
+        string repoRoot = FindRepoRoot();
+        string script = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "scripts",
+            "Test-CSharpDbNuGetReleaseGraph.ps1"));
+        string ci = File.ReadAllText(Path.Combine(
+            repoRoot,
+            ".github",
+            "workflows",
+            "ci.yml"));
+        string release = File.ReadAllText(Path.Combine(
+            repoRoot,
+            ".github",
+            "workflows",
+            "release.yml"));
+
+        Assert.Contains("Test-ExactCandidateRange", script);
+        Assert.Contains("$normalized -ceq \"[$CandidateVersion]\"", script);
+        Assert.Contains("references in-release dependency", script);
+        Assert.Contains("Release package order is not topological", script);
+        Assert.Contains("dependency graph contains a cycle", script);
+        Assert.Contains("uses floating dependency", script);
+        Assert.Contains("contains unreviewed prerelease dependency", script);
+        Assert.Contains("required package metadata", script);
+        Assert.Contains("Get-FileHash", script);
+        Assert.Contains("Sort-Object", script);
+        Assert.Contains("CSharpDB-PACKAGE-MANIFEST.json", script);
+        Assert.Contains("Test-CSharpDbNuGetReleaseGraph.ps1", ci);
+        Assert.Contains("Test-CSharpDbNuGetReleaseGraph.ps1", release);
+        Assert.Contains("CSharpDB-PACKAGE-MANIFEST.json", ci);
+        Assert.Contains("CSharpDB-PACKAGE-MANIFEST.json", release);
+        Assert.Contains("Test-CSharpDbNuGetCandidateAbsent.ps1", release);
+        Assert.DoesNotContain("--skip-duplicate", release);
+        Assert.Contains(
+            "Push remaining packages in validated topological order",
+            release);
+        Assert.Contains("foreach ($package in $manifest.packages)", release);
+        Assert.DoesNotContain(
+            "for package in artifacts/nuget/*.nupkg",
+            release);
+
+        string candidateAbsence = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "scripts",
+            "Test-CSharpDbNuGetCandidateAbsent.ps1"));
+        Assert.Contains("Invoke-WebRequest", candidateAbsence);
+        Assert.Contains("-Method Head", candidateAbsence);
+        Assert.Contains("is already published", candidateAbsence);
+        Assert.Contains("$statusCode -eq 404", candidateAbsence);
+    }
+
+    [Fact]
+    public void ReleaseWorkflow_PublishesObservabilityBeforeDependentPackages()
+    {
+        string repoRoot = FindRepoRoot();
+        string workflow = File.ReadAllText(Path.Combine(repoRoot, ".github", "workflows", "release.yml"));
+
+        int observabilityPushIndex = workflow.IndexOf(
+            "- name: Push CSharpDB.Observability to NuGet.org",
+            StringComparison.Ordinal);
+        int observabilityWaitIndex = workflow.IndexOf(
+            "- name: Wait for CSharpDB.Observability on NuGet.org",
+            StringComparison.Ordinal);
+        int dependentPushIndex = workflow.IndexOf(
+            "- name: Push remaining packages in validated topological order",
+            StringComparison.Ordinal);
+
+        Assert.True(observabilityPushIndex >= 0, "The observability package must be pushed explicitly.");
+        Assert.True(
+            observabilityWaitIndex > observabilityPushIndex,
+            "NuGet visibility must be confirmed after pushing observability.");
+        Assert.True(
+            dependentPushIndex > observabilityWaitIndex,
+            "Dependent packages must not be pushed until observability is visible.");
+        Assert.Contains(
+            "CSharpDB.Observability.${{ steps.version.outputs.package_file_version }}.nupkg",
+            workflow);
+        Assert.Contains(
+            "foreach ($package in $manifest.packages)",
+            workflow);
+        Assert.Contains("-PackageId $package.id", workflow);
+
+        string versionResolver = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "scripts",
+            "Get-NuGetPackageIdentityVersion.ps1"));
+        string packageSmoke = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "scripts",
+            "Test-ObservabilityNuGetPackage.ps1"));
+        string packageWait = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "scripts",
+            "Wait-NuGetPackageVersion.ps1"));
+
+        Assert.Contains("IndexOf('+')", versionResolver);
+        Assert.Contains("Get-NuGetPackageIdentityVersion.ps1", packageSmoke);
+        Assert.Contains("Get-NuGetPackageIdentityVersion.ps1", packageWait);
     }
 
     [Fact]
@@ -33,15 +189,26 @@ public sealed class DaemonPackagingAssetsTests
         string repoRoot = FindRepoRoot();
         string workflow = File.ReadAllText(Path.Combine(repoRoot, ".github", "workflows", "release.yml"));
 
-        int verifyIndex = workflow.IndexOf("Wait-NuGetPackageVersion.ps1", StringComparison.Ordinal);
+        int verifyStepIndex = workflow.IndexOf(
+            "- name: Verify packages are visible on NuGet.org",
+            StringComparison.Ordinal);
+        int verifyIndex = verifyStepIndex < 0
+            ? -1
+            : workflow.IndexOf(
+                "Wait-NuGetPackageVersion.ps1",
+                verifyStepIndex,
+                StringComparison.Ordinal);
         int releaseIndex = workflow.IndexOf("softprops/action-gh-release", StringComparison.Ordinal);
 
-        Assert.True(verifyIndex >= 0, "Release workflow must call the NuGet visibility verification script.");
+        Assert.True(
+            verifyIndex > verifyStepIndex,
+            "The final package-visibility step must call the NuGet verification script.");
         Assert.True(releaseIndex > verifyIndex, "NuGet verification must run before the GitHub Release is created.");
 
         string[] packageIds =
         [
             "CSharpDB",
+            "CSharpDB.Observability",
             "CSharpDB.Primitives",
             "CSharpDB.Sql",
             "CSharpDB.Storage",
@@ -295,17 +462,17 @@ public sealed class DaemonPackagingAssetsTests
         Assert.DoesNotContain("github.ref_name", normalized);
         Assert.DoesNotContain("github.sha", normalized);
         Assert.Equal(
-            7,
+            8,
             System.Text.RegularExpressions.Regex.Matches(
                 normalized,
                 @"(?m)^          ref: \$\{\{ inputs\.release_commit \}\}$").Count);
         Assert.Equal(
-            4,
+            5,
             System.Text.RegularExpressions.Regex.Matches(
                 normalized,
                 @"(?m)^    needs: build-and-test$").Count);
         Assert.Contains(
-            "needs: [build-and-test, migration-archives, native-aot, daemon-archives, admin-desktop-archive]",
+            "needs: [build-and-test, migration-archives, native-aot, api-host-observability, daemon-archives, admin-desktop-archive]",
             normalized);
         Assert.Contains(
             "needs: [publish-nuget, migration-archives, native-aot, daemon-archives, admin-desktop-archive]",

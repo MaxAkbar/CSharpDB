@@ -5,11 +5,13 @@ using System.Text;
 using System.Text.Json;
 using CSharpDB.Client;
 using CSharpDB.Client.Models;
+using CSharpDB.Storage.Diagnostics;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using ErrorCode = CSharpDB.Primitives.ErrorCode;
 
 namespace CSharpDB.Api.Tests;
 
@@ -93,13 +95,59 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
             Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
             using JsonDocument problem = JsonDocument.Parse(
                 await response.Content.ReadAsStringAsync(Ct));
-            Assert.Contains(
+            Assert.Equal(
+                "csharpdb.resource_limit",
+                problem.RootElement.GetProperty("errorCode").GetString());
+            Assert.DoesNotContain(
                 "partition",
                 problem.RootElement.GetProperty("detail").GetString(),
                 StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
+            await DeleteIfExistsAsync(dbPath);
+            await DeleteIfExistsAsync(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task ShardReadOnlyFanOut_ValidationFailure_ReturnsSafeBadRequest()
+    {
+        const string canary =
+            "Password=FanOutSecret;Data Source=C:\\private\\shard.db;INSERT INTO secret_table VALUES (1)";
+        string dbPath = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb_api_shard_validation_{Guid.NewGuid():N}.db");
+        IRejectingShardClient shardClient =
+            DispatchProxy.Create<IRejectingShardClient, RejectingShardClientProxy>();
+        ((RejectingShardClientProxy)shardClient).FailureMessage = canary;
+
+        try
+        {
+            await using var factory = new TestApiFactory(
+                dbPath,
+                clientOverride: shardClient);
+            using HttpClient httpClient = factory.CreateClient();
+
+            using HttpResponseMessage response = await httpClient.PostAsJsonAsync(
+                "/api/sharding/sql/read-all",
+                new { Sql = "INSERT INTO secret_table VALUES (1);" },
+                Ct);
+
+            string payload = await response.Content.ReadAsStringAsync(Ct);
+            using JsonDocument problem = JsonDocument.Parse(payload);
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
+            Assert.Equal("csharpdb.syntax", problem.RootElement.GetProperty("errorCode").GetString());
+            Assert.Equal("The SQL request is invalid.", problem.RootElement.GetProperty("detail").GetString());
+            Assert.DoesNotContain("FanOutSecret", payload, StringComparison.Ordinal);
+            Assert.DoesNotContain("private", payload, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("INSERT", payload, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            await shardClient.DisposeAsync();
             await DeleteIfExistsAsync(dbPath);
             await DeleteIfExistsAsync(dbPath + ".wal");
         }
@@ -154,6 +202,96 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
             Assert.True(capture.ExecuteInTransactionCancellationToken.CanBeCanceled);
             Assert.True(capture.CommitTransactionCancellationToken.CanBeCanceled);
             Assert.True(capture.RollbackTransactionCancellationToken.CanBeCanceled);
+        }
+        finally
+        {
+            await captureClient.DisposeAsync();
+            await DeleteIfExistsAsync(dbPath);
+            await DeleteIfExistsAsync(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task InspectAndMaintenanceEndpoints_ForwardRequestCancellationTokens()
+    {
+        string dbPath = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb_api_diagnostics_cancellation_{Guid.NewGuid():N}.db");
+        ICSharpDbClient captureClient =
+            DispatchProxy.Create<ICSharpDbClient, CancellationCaptureClientProxy>();
+        var capture = (CancellationCaptureClientProxy)captureClient;
+
+        try
+        {
+            await using var factory = new TestApiFactory(
+                dbPath,
+                clientOverride: captureClient);
+            using HttpClient httpClient = factory.CreateClient();
+            using var requestCancellation = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+
+            using HttpResponseMessage inspectStorage = await httpClient.GetAsync(
+                "/api/inspect",
+                requestCancellation.Token);
+            using HttpResponseMessage inspectWal = await httpClient.GetAsync(
+                "/api/inspect/wal",
+                requestCancellation.Token);
+            using HttpResponseMessage inspectPage = await httpClient.GetAsync(
+                "/api/inspect/page/0",
+                requestCancellation.Token);
+            using HttpResponseMessage inspectIndexes = await httpClient.GetAsync(
+                "/api/inspect/indexes",
+                requestCancellation.Token);
+            using HttpResponseMessage checkpoint = await httpClient.PostAsync(
+                "/api/maintenance/checkpoint",
+                content: null,
+                requestCancellation.Token);
+            using HttpResponseMessage backup = await httpClient.PostAsJsonAsync(
+                "/api/maintenance/backup",
+                new { DestinationPath = "backup.db" },
+                requestCancellation.Token);
+            using HttpResponseMessage restore = await httpClient.PostAsJsonAsync(
+                "/api/maintenance/restore",
+                new { SourcePath = "backup.db", ValidateOnly = true },
+                requestCancellation.Token);
+            using HttpResponseMessage migrate = await httpClient.PostAsJsonAsync(
+                "/api/maintenance/migrate-foreign-keys",
+                new { ValidateOnly = true, Constraints = Array.Empty<object>() },
+                requestCancellation.Token);
+            using HttpResponseMessage report = await httpClient.GetAsync(
+                "/api/maintenance/report",
+                requestCancellation.Token);
+            using HttpResponseMessage reindex = await httpClient.PostAsJsonAsync(
+                "/api/maintenance/reindex",
+                new { },
+                requestCancellation.Token);
+            using HttpResponseMessage vacuum = await httpClient.PostAsync(
+                "/api/maintenance/vacuum",
+                content: null,
+                requestCancellation.Token);
+
+            Assert.True(inspectStorage.IsSuccessStatusCode);
+            Assert.True(inspectWal.IsSuccessStatusCode);
+            Assert.True(inspectPage.IsSuccessStatusCode);
+            Assert.True(inspectIndexes.IsSuccessStatusCode);
+            Assert.True(checkpoint.IsSuccessStatusCode);
+            Assert.True(backup.IsSuccessStatusCode);
+            Assert.True(restore.IsSuccessStatusCode);
+            Assert.True(migrate.IsSuccessStatusCode);
+            Assert.True(report.IsSuccessStatusCode);
+            Assert.True(reindex.IsSuccessStatusCode);
+            Assert.True(vacuum.IsSuccessStatusCode);
+
+            Assert.True(capture.InspectStorageCancellationToken.CanBeCanceled);
+            Assert.True(capture.CheckWalCancellationToken.CanBeCanceled);
+            Assert.True(capture.InspectPageCancellationToken.CanBeCanceled);
+            Assert.True(capture.CheckIndexesCancellationToken.CanBeCanceled);
+            Assert.True(capture.CheckpointCancellationToken.CanBeCanceled);
+            Assert.True(capture.BackupCancellationToken.CanBeCanceled);
+            Assert.True(capture.RestoreCancellationToken.CanBeCanceled);
+            Assert.True(capture.MigrateForeignKeysCancellationToken.CanBeCanceled);
+            Assert.True(capture.GetMaintenanceReportCancellationToken.CanBeCanceled);
+            Assert.True(capture.ReindexCancellationToken.CanBeCanceled);
+            Assert.True(capture.VacuumCancellationToken.CanBeCanceled);
         }
         finally
         {
@@ -632,10 +770,13 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
             new Dictionary<string, object?> { ["id"] = "bad" },
             Ct);
         Assert.False(failedExecution.Succeeded);
-        Assert.Contains("expects INTEGER", failedExecution.Error ?? string.Empty);
+        Assert.Equal("The database could not complete the request.", failedExecution.Error);
+        Assert.DoesNotContain("expects INTEGER", failedExecution.Error, StringComparison.OrdinalIgnoreCase);
 
         var sqlError = await _client.ExecuteSqlAsync("SELECT FROM", Ct);
-        Assert.NotNull(sqlError.Error);
+        Assert.Equal(ErrorCode.SyntaxError, sqlError.ErrorCode);
+        Assert.Equal("The SQL request is invalid.", sqlError.Error);
+        Assert.DoesNotContain("SELECT FROM", sqlError.Error, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -2033,6 +2174,17 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
         public CancellationToken ExecuteInTransactionCancellationToken { get; private set; }
         public CancellationToken CommitTransactionCancellationToken { get; private set; }
         public CancellationToken RollbackTransactionCancellationToken { get; private set; }
+        public CancellationToken CheckpointCancellationToken { get; private set; }
+        public CancellationToken BackupCancellationToken { get; private set; }
+        public CancellationToken RestoreCancellationToken { get; private set; }
+        public CancellationToken MigrateForeignKeysCancellationToken { get; private set; }
+        public CancellationToken GetMaintenanceReportCancellationToken { get; private set; }
+        public CancellationToken ReindexCancellationToken { get; private set; }
+        public CancellationToken VacuumCancellationToken { get; private set; }
+        public CancellationToken InspectStorageCancellationToken { get; private set; }
+        public CancellationToken CheckWalCancellationToken { get; private set; }
+        public CancellationToken InspectPageCancellationToken { get; private set; }
+        public CancellationToken CheckIndexesCancellationToken { get; private set; }
 
         protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
             => targetMethod?.Name switch
@@ -2050,6 +2202,21 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
                     CaptureCommitTransaction((CancellationToken)args![1]!),
                 "RollbackTransactionAsync" =>
                     CaptureRollbackTransaction((CancellationToken)args![1]!),
+                "CheckpointAsync" => CaptureCheckpoint((CancellationToken)args![0]!),
+                "BackupAsync" => CaptureBackup((CancellationToken)args![1]!),
+                "RestoreAsync" => CaptureRestore((CancellationToken)args![1]!),
+                "MigrateForeignKeysAsync" =>
+                    CaptureMigrateForeignKeys((CancellationToken)args![1]!),
+                "GetMaintenanceReportAsync" =>
+                    CaptureGetMaintenanceReport((CancellationToken)args![0]!),
+                "ReindexAsync" => CaptureReindex((CancellationToken)args![1]!),
+                "VacuumAsync" => CaptureVacuum((CancellationToken)args![0]!),
+                "InspectStorageAsync" =>
+                    CaptureInspectStorage((CancellationToken)args![2]!),
+                "CheckWalAsync" => CaptureCheckWal((CancellationToken)args![1]!),
+                "InspectPageAsync" => CaptureInspectPage((CancellationToken)args![3]!),
+                "CheckIndexesAsync" =>
+                    CaptureCheckIndexes((CancellationToken)args![3]!),
                 "DisposeAsync" => ValueTask.CompletedTask,
                 _ => throw new NotSupportedException(targetMethod?.Name),
             };
@@ -2089,6 +2256,131 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
             RollbackTransactionCancellationToken = cancellationToken;
             return Task.CompletedTask;
         }
+
+        private Task CaptureCheckpoint(CancellationToken cancellationToken)
+        {
+            CheckpointCancellationToken = cancellationToken;
+            return Task.CompletedTask;
+        }
+
+        private Task<BackupResult> CaptureBackup(CancellationToken cancellationToken)
+        {
+            BackupCancellationToken = cancellationToken;
+            return Task.FromResult(new BackupResult
+            {
+                SourcePath = "source.db",
+                DestinationPath = "backup.db",
+                Sha256 = string.Empty,
+            });
+        }
+
+        private Task<RestoreResult> CaptureRestore(CancellationToken cancellationToken)
+        {
+            RestoreCancellationToken = cancellationToken;
+            return Task.FromResult(new RestoreResult { SourcePath = "backup.db" });
+        }
+
+        private Task<ForeignKeyMigrationResult> CaptureMigrateForeignKeys(
+            CancellationToken cancellationToken)
+        {
+            MigrateForeignKeysCancellationToken = cancellationToken;
+            return Task.FromResult(new ForeignKeyMigrationResult { Succeeded = true });
+        }
+
+        private Task<DatabaseMaintenanceReport> CaptureGetMaintenanceReport(
+            CancellationToken cancellationToken)
+        {
+            GetMaintenanceReportCancellationToken = cancellationToken;
+            return Task.FromResult(new DatabaseMaintenanceReport
+            {
+                DatabasePath = "database.db",
+                SpaceUsage = new SpaceUsageReport(),
+                Fragmentation = new FragmentationReport(),
+                PageTypeHistogram = [],
+            });
+        }
+
+        private Task<ReindexResult> CaptureReindex(CancellationToken cancellationToken)
+        {
+            ReindexCancellationToken = cancellationToken;
+            return Task.FromResult(new ReindexResult { Scope = ReindexScope.All });
+        }
+
+        private Task<VacuumResult> CaptureVacuum(CancellationToken cancellationToken)
+        {
+            VacuumCancellationToken = cancellationToken;
+            return Task.FromResult(new VacuumResult());
+        }
+
+        private Task<DatabaseInspectReport> CaptureInspectStorage(
+            CancellationToken cancellationToken)
+        {
+            InspectStorageCancellationToken = cancellationToken;
+            return Task.FromResult(new DatabaseInspectReport
+            {
+                DatabasePath = "database.db",
+                Header = new FileHeaderReport(),
+                PageTypeHistogram = [],
+                Issues = [],
+            });
+        }
+
+        private Task<WalInspectReport> CaptureCheckWal(CancellationToken cancellationToken)
+        {
+            CheckWalCancellationToken = cancellationToken;
+            return Task.FromResult(new WalInspectReport
+            {
+                DatabasePath = "database.db",
+                WalPath = "database.db.wal",
+                Issues = [],
+            });
+        }
+
+        private Task<PageInspectReport> CaptureInspectPage(CancellationToken cancellationToken)
+        {
+            InspectPageCancellationToken = cancellationToken;
+            return Task.FromResult(new PageInspectReport
+            {
+                DatabasePath = "database.db",
+                PageId = 0,
+                Exists = false,
+                Issues = [],
+            });
+        }
+
+        private Task<IndexInspectReport> CaptureCheckIndexes(
+            CancellationToken cancellationToken)
+        {
+            CheckIndexesCancellationToken = cancellationToken;
+            return Task.FromResult(new IndexInspectReport
+            {
+                DatabasePath = "database.db",
+                Indexes = [],
+                Issues = [],
+            });
+        }
+    }
+
+    public interface IRejectingShardClient : ICSharpDbClient, ICSharpDbShardAdminClient;
+
+    public class RejectingShardClientProxy : DispatchProxy
+    {
+        public string FailureMessage { get; set; } = "Rejected shard request.";
+
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+            => targetMethod?.Name switch
+            {
+                "get_DataSource" => "rejecting-shard-client",
+                "GetInfoAsync" => Task.FromResult(new DatabaseInfo
+                {
+                    DataSource = "rejecting-shard-client",
+                }),
+                "ExecuteReadOnlySqlOnAllShardsAsync" =>
+                    Task.FromException<IReadOnlyList<CSharpDbShardSqlExecutionResult>>(
+                        new CSharpDbClientException(FailureMessage)),
+                "DisposeAsync" => ValueTask.CompletedTask,
+                _ => throw new NotSupportedException(targetMethod?.Name),
+            };
     }
 
     private sealed class StaticJsonHandler(string payload) : HttpMessageHandler

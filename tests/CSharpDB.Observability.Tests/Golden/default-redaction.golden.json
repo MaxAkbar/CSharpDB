@@ -1,0 +1,32 @@
+{
+  "context": {
+    "operationId": "\u003Copaque-operation-id\u003E",
+    "parentOperationId": null,
+    "operationClass": "Query",
+    "role": "Root",
+    "startedAtUtc": "2026-08-12T12:00:00\u002B00:00",
+    "startingTimestamp": 123,
+    "traceId": null,
+    "transport": "Direct",
+    "databaseAlias": "golden-primary",
+    "sessionId": null,
+    "queryFingerprint": null,
+    "countsAsRequest": true,
+    "countsAsStatement": true
+  },
+  "completedAtUtc": "2026-08-12T12:00:02\u002B00:00",
+  "totalDuration": "00:00:02",
+  "timeToFirstResult": null,
+  "queueDuration": "00:00:00.0050000",
+  "executionAndConsumptionDuration": "00:00:00.0100000",
+  "rowsProduced": 0,
+  "rowsAffected": 0,
+  "outcome": "Failed",
+  "error": {
+    "code": "unexpected_error",
+    "errorType": "unexpected",
+    "publicDetail": "An unexpected error occurred."
+  },
+  "sqlTextCaptureMode": "None",
+  "capturedSqlText": null
+}

@@ -21,7 +21,13 @@
                 {
                     bool isActive = TabManager.ActiveTab?.Id == tab.Id;
 
-                    <div class="tab-content-panel" hidden="@(!isActive)" aria-hidden="@(!isActive)" @key="tab.Id">
+                    <div id="@AdminTabDomIds.PanelId(tab.Id)"
+                         class="tab-content-panel"
+                         role="tabpanel"
+                         aria-labelledby="@AdminTabDomIds.TabButtonId(tab.Id)"
+                         hidden="@(!isActive)"
+                         aria-hidden="@(!isActive)"
+                         @key="tab.Id">
                         @switch (tab.Kind)
                         {
                             case TabKind.Welcome:
@@ -65,6 +71,9 @@
                                 break;
                             case TabKind.Sharding:
                                 <ShardingTab @key="tab.Id" />
+                                break;
+                            case TabKind.Observability:
+                                <ObservabilityTab @key="tab.Id" IsActive="isActive" />
                                 break;
                             case TabKind.Storage:
                                 <StorageTab @key="tab.Id" />
@@ -116,11 +125,12 @@
 
 <ToastContainer />
 <ConfirmModal />
-<CommandPalette @bind-Visible="_commandPaletteVisible" />
+<CommandPalette @ref="_commandPalette" @bind-Visible="_commandPaletteVisible" />
 
 @code {
     private bool _sidebarVisible = true;
     private bool _commandPaletteVisible;
+    private CommandPalette? _commandPalette;
     private DotNetObjectReference<MainLayout>? _dotNetRef;
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -159,6 +169,9 @@
                 // Handled by SqlEditor component directly
                 break;
         }
+        if (IsObservabilityActive)
+            DismissShellOverlays();
+
         await InvokeAsync(StateHasChanged);
     }
 
@@ -170,6 +183,12 @@
 
     private void OpenCommandPalette()
     {
+        if (IsObservabilityActive)
+        {
+            DismissShellOverlays();
+            return;
+        }
+
         _commandPaletteVisible = true;
         StateHasChanged();
     }
@@ -182,7 +201,25 @@
             "OK");
     }
 
-    private void OnTabChanged() => InvokeAsync(StateHasChanged);
+    private bool IsObservabilityActive
+        => TabManager.ActiveTab?.Kind == TabKind.Observability;
+
+    private void OnTabChanged()
+    {
+        if (IsObservabilityActive)
+            DismissShellOverlays();
+
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private void DismissShellOverlays()
+    {
+        if (Modal.IsVisible)
+            Modal.Cancel();
+
+        _commandPaletteVisible = false;
+        _commandPalette?.DismissImmediately();
+    }
 
     public void Dispose()
     {

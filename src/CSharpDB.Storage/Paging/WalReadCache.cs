@@ -26,6 +26,10 @@ internal sealed class WalReadCache
         _entries = new Dictionary<long, CacheEntry>(capacity);
     }
 
+    internal int Count => _entries.Count;
+
+    internal int Capacity => _capacity;
+
     public bool TryGet(long walOffset, out PageReadBuffer page)
     {
         if (_entries.TryGetValue(walOffset, out var entry))

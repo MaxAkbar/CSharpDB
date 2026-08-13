@@ -129,13 +129,16 @@ var options = new DbContextOptionsBuilder&lt;BloggingContext&gt;()
                         <tr><td><code>/api/schema</code></td><td>Full schema export</td></tr>
                         <tr><td><code>/api/inspect</code></td><td>Storage diagnostics</td></tr>
                         <tr><td><code>/api/maintenance</code></td><td>Vacuum, analyze, checkpoint, backup</td></tr>
+                        <tr><td><code>/api/diagnostics</code></td><td>Safe bounded runtime, query, session, plan, detail, and health diagnostics</td></tr>
                     </tbody>
                 </table>
+                <p>The host can also expose minimal liveness/readiness routes, protected Prometheus metrics, OpenTelemetry/OTLP export, and structured CSharpDB logging. See <a href="observability.html">Observability and Diagnostics</a>.</p>
 
                 <h3>gRPC Daemon</h3>
                 <p>A standalone gRPC service host (<code>CSharpDB.Daemon</code>) for remote client access. Enables multi-machine architectures with the same Client SDK interface used locally.</p>
                 <p>For the embedded-to-gRPC runtime boundary and deployment scenarios, see the <a href="../architecture.html#embedded-to-grpc">Architecture guide</a>.</p>
                 <p>For the current remote-host concurrency model, recommended defaults, and application usage patterns, see the <a href="tutorials/multi-writer-daemon-grpc.html">Multi-Writer gRPC Daemon tutorial</a>.</p>
+                <p>REST/gRPC runtime diagnostics, standard gRPC Health, <code>ILogger</code>, OpenTelemetry/OTLP, and Prometheus share one safe host contract documented in <a href="observability.html">Observability and Diagnostics</a>.</p>
 
                 <h2>Developer Tools</h2>
 
@@ -178,12 +181,14 @@ csharpdb> .quit</code></pre>
                         <tr><td><strong>Forms</strong></td><td>Visual forms designer and runtime data-entry/editing flows backed by database metadata</td></tr>
                         <tr><td><strong>Pipeline Designer</strong></td><td>Visual ETL editor with nodes, connections, properties panel, and execution controls</td></tr>
                         <tr><td><strong>Storage</strong></td><td>Disk inspection, page layout, and integrity analysis</td></tr>
+                        <tr><td><strong>Observability</strong></td><td>Bounded live runtime, query, session, storage/WAL, maintenance, health, and per-shard diagnostics</td></tr>
                         <tr><td><strong>Reports</strong></td><td>Visual report designer with banded layouts, grouping, aggregates, and printable preview</td></tr>
                         <tr><td><strong>Maintenance</strong></td><td>Backup/restore, reindex, vacuum, and foreign-key retrofit workflows</td></tr>
                         <tr><td><strong>Data Hygiene</strong></td><td>Guided duplicate detection, deduplication preview, validation rule audits, and orphan checks</td></tr>
                         <tr><td><strong>Compare / Deploy</strong></td><td>Schema compare, table data compare, drift review, object scripting, and deployment script previews</td></tr>
                     </tbody>
                 </table>
+                <p>The Admin Observability workspace uses the same optional client capability in direct, HTTP, gRPC, and sharded modes. See the <a href="admin-ui.html#observability-workspace">Admin guide</a> and <a href="observability.html#admin">privacy and polling contract</a>.</p>
 
                 <h3>VS Code Extension</h3>
                 <p>A NativeAOT-backed extension for Visual Studio Code with deep CSharpDB integration.</p>

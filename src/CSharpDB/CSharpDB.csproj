@@ -11,6 +11,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\CSharpDB.Observability\CSharpDB.Observability.csproj" />
     <ProjectReference Include="..\CSharpDB.Primitives\CSharpDB.Primitives.csproj" />
     <ProjectReference Include="..\CSharpDB.Sql\CSharpDB.Sql.csproj" />
     <ProjectReference Include="..\CSharpDB.Storage\CSharpDB.Storage.csproj" />

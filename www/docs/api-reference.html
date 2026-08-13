@@ -501,6 +501,26 @@
                             <div class="api-member"><code>BackupAsync(BackupRequest request)</code> <span class="api-return">&rarr; Task&lt;BackupResult&gt;</span></div>
                         </div>
                     </div>
+                    <div class="api-class">
+                        <div class="api-class-header">
+                            <span class="api-badge api-badge-interface">interface</span>
+                            <h3>ICSharpDbObservabilityClient</h3>
+                        </div>
+                        <p>Optional additive runtime-diagnostics capability. Discover it separately from <code>ICSharpDbClient</code> so custom and older client implementations remain source and binary compatible. Results use versioned topology envelopes with explicit availability and bounded collection metadata.</p>
+                        <div class="api-members">
+                            <div class="api-member"><code>GetRuntimeDiagnosticsAsync()</code> <span class="api-return">&rarr; Task&lt;DiagnosticsTopologySnapshot&lt;RuntimeDiagnosticsSnapshot&gt;&gt;</span></div>
+                            <div class="api-member"><code>GetStorageDiagnosticsAsync()</code> <span class="api-return">&rarr; Task&lt;DiagnosticsTopologySnapshot&lt;DiagnosticsValueSnapshot&lt;StorageRuntimeDiagnosticsSnapshot&gt;&gt;&gt;</span></div>
+                            <div class="api-member"><code>GetWalDiagnosticsAsync()</code> <span class="api-return">&rarr; Task&lt;DiagnosticsTopologySnapshot&lt;DiagnosticsValueSnapshot&lt;WalRuntimeDiagnosticsSnapshot&gt;&gt;&gt;</span></div>
+                            <div class="api-member"><code>GetActiveQueriesAsync(int maximumRecords)</code> <span class="api-return">&rarr; Task&lt;DiagnosticsTopologySnapshot&lt;DiagnosticsCollectionSnapshot&lt;ActiveQuerySnapshot&gt;&gt;&gt;</span></div>
+                            <div class="api-member"><code>GetRecentQueriesAsync(int maximumRecords)</code> <span class="api-return">&rarr; Task&lt;DiagnosticsTopologySnapshot&lt;DiagnosticsCollectionSnapshot&lt;RecentQuerySnapshot&gt;&gt;&gt;</span></div>
+                            <div class="api-member"><code>GetQueryPlanDiagnosticsAsync(OpaqueDiagnosticsId operationId)</code> <span class="api-return">&rarr; bounded plan snapshot without query replay</span></div>
+                            <div class="api-member"><code>GetSessionsAsync(int maximumRecords)</code> <span class="api-return">&rarr; capped safe session snapshot</span></div>
+                            <div class="api-member"><code>GetActiveMaintenanceOperationsAsync(int maximumRecords)</code> <span class="api-return">&rarr; capped active maintenance snapshot</span></div>
+                            <div class="api-member"><code>GetRecentMaintenanceOperationsAsync(int maximumRecords)</code> <span class="api-return">&rarr; capped terminal maintenance snapshot</span></div>
+                            <div class="api-member"><code>GetQueryDetailAsync(OpaqueDiagnosticsId operationId)</code> <span class="api-return">&rarr; separately authorized captured detail</span></div>
+                        </div>
+                        <p>Ordinary summaries never contain SQL, values, credentials, connection strings, or paths. See <a href="observability.html#runtime-diagnostics">Observability and Diagnostics</a> for transport behavior, privacy, and availability states.</p>
+                    </div>
                 </div>
 
                 <!-- Pipelines -->

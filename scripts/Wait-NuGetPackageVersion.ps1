@@ -13,9 +13,13 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$versionResolver = Join-Path $PSScriptRoot 'Get-NuGetPackageIdentityVersion.ps1'
 
 if ([string]::IsNullOrWhiteSpace($Version)) {
     throw "Version is required."
+}
+if (-not (Test-Path -LiteralPath $versionResolver -PathType Leaf)) {
+    throw "The NuGet package-version resolver was not found: $versionResolver"
 }
 
 if ($PackageId.Count -eq 0) {
@@ -30,7 +34,11 @@ if ($PollSeconds -le 0) {
     throw "PollSeconds must be greater than zero."
 }
 
-$normalizedVersion = $Version.Trim().ToLowerInvariant()
+$packageIdentityVersion = (& $versionResolver -Version $Version | Select-Object -Last 1)
+if ([string]::IsNullOrWhiteSpace($packageIdentityVersion)) {
+    throw "Could not resolve the NuGet package identity version for $Version."
+}
+$normalizedVersion = $packageIdentityVersion.Trim().ToLowerInvariant()
 $pending = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 foreach ($id in $PackageId) {
     if (-not [string]::IsNullOrWhiteSpace($id)) {

@@ -1,5 +1,4 @@
 using CSharpDB.Storage.Device;
-using Microsoft.Win32.SafeHandles;
 
 namespace CSharpDB.Storage.Paging;
 
@@ -30,31 +29,9 @@ internal sealed class StorageDevicePageReadProvider : IPageReadProvider
         byte[] buffer = GC.AllocateUninitializedArray<byte>(PageConstants.PageSize);
         long offset = (long)pageId * PageConstants.PageSize;
         if (_useSequentialAccessHint && _fileDevice is not null)
-            await ReadFromHandleAsync(_fileDevice.SequentialReadHandle, offset, buffer, ct);
+            await _fileDevice.ReadSequentialAsync(offset, buffer, ct);
         else
             await _device.ReadAsync(offset, buffer, ct);
         return buffer;
-    }
-
-    private static async ValueTask<int> ReadFromHandleAsync(
-        SafeFileHandle handle,
-        long offset,
-        Memory<byte> buffer,
-        CancellationToken ct)
-    {
-        int totalRead = 0;
-        while (totalRead < buffer.Length)
-        {
-            int read = await RandomAccess.ReadAsync(handle, buffer[totalRead..], offset + totalRead, ct);
-            if (read == 0)
-                break;
-
-            totalRead += read;
-        }
-
-        if (totalRead < buffer.Length)
-            buffer[totalRead..].Span.Clear();
-
-        return totalRead;
     }
 }

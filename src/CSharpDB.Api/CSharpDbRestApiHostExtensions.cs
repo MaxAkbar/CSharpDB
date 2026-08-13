@@ -47,6 +47,7 @@ public static class CSharpDbRestApiHostExtensions
         services.AddOpenApi();
         services.AddOptions<CSharpDbApiSecurityOptions>();
         services.TryAddSingleton<ICSharpDbRouteContextAccessor, CSharpDbRouteContextAccessor>();
+        services.TryAddSingleton<CSharpDbHostRouteRegistry>();
 
         if (configureSecurity is not null)
             services.Configure(configureSecurity);
@@ -83,7 +84,11 @@ public static class CSharpDbRestApiHostExtensions
         configure?.Invoke(options);
 
         string routePrefix = NormalizeRoutePrefix(options.RoutePrefix);
+        string diagnosticsPath = CombineDiagnosticsPath(routePrefix);
         var apiPath = new PathString(routePrefix);
+        CSharpDbHostRouteRegistry? routeRegistry =
+            app.Services.GetService<CSharpDbHostRouteRegistry>();
+        routeRegistry?.ReserveSubtree(routePrefix, "REST API");
 
         if (options.ApplyMiddlewareToApiOnly)
         {
@@ -91,6 +96,8 @@ public static class CSharpDbRestApiHostExtensions
                 context => context.Request.Path.StartsWithSegments(apiPath),
                 branch =>
                 {
+                    branch.UseMiddleware<CSharpDbOperationScopeMiddleware>(
+                        diagnosticsPath);
                     branch.UseCors();
                     branch.UseMiddleware<ExceptionHandlingMiddleware>();
                     branch.UseMiddleware<ApiKeyAuthenticationMiddleware>();
@@ -105,6 +112,8 @@ public static class CSharpDbRestApiHostExtensions
                 context => context.Request.Path.StartsWithSegments(apiPath),
                 branch =>
                 {
+                    branch.UseMiddleware<CSharpDbOperationScopeMiddleware>(
+                        diagnosticsPath);
                     branch.UseMiddleware<ApiKeyAuthenticationMiddleware>();
                     branch.UseMiddleware<RouteContextMiddleware>();
                 });
@@ -112,6 +121,8 @@ public static class CSharpDbRestApiHostExtensions
 
         if (options.MapDevelopmentOpenApi && app.Environment.IsDevelopment())
         {
+            routeRegistry?.ReserveSubtree("/openapi", "OpenAPI");
+            routeRegistry?.ReserveSubtree("/scalar", "Scalar API reference");
             app.MapOpenApi();
             app.MapScalarApiReference(scalar =>
             {
@@ -137,6 +148,7 @@ public static class CSharpDbRestApiHostExtensions
         api.MapInspectEndpoints();
         api.MapMaintenanceEndpoints();
         api.MapShardAdminEndpoints();
+        api.MapDiagnosticsEndpoints();
 
         return app;
     }
@@ -151,4 +163,7 @@ public static class CSharpDbRestApiHostExtensions
             ? routePrefix
             : "/" + routePrefix;
     }
+
+    private static string CombineDiagnosticsPath(string routePrefix)
+        => routePrefix.TrimEnd('/') + "/diagnostics";
 }

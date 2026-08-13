@@ -108,14 +108,19 @@ public sealed class CSharpDbCommand : DbCommand
         var connection = (CSharpDbConnection)(DbConnection
             ?? throw new InvalidOperationException("Connection is not set."));
         var session = connection.GetSession();
+        string normalizedCommand = CommandText.Trim().TrimEnd(';').Trim();
+        bool isTransactionControl =
+            normalizedCommand.Equals("START TRANSACTION", StringComparison.OrdinalIgnoreCase)
+            || normalizedCommand.Equals("BEGIN TRANSACTION", StringComparison.OrdinalIgnoreCase)
+            || normalizedCommand.Equals("COMMIT", StringComparison.OrdinalIgnoreCase)
+            || normalizedCommand.Equals("ROLLBACK", StringComparison.OrdinalIgnoreCase);
+        using AdoCommandObservation? observation = isTransactionControl
+            ? null
+            : connection.StartCommandObservation(CommandText);
 
         try
         {
-            string normalizedCommand = CommandText.Trim().TrimEnd(';').Trim();
-            if (normalizedCommand.Equals("START TRANSACTION", StringComparison.OrdinalIgnoreCase)
-                || normalizedCommand.Equals("BEGIN TRANSACTION", StringComparison.OrdinalIgnoreCase)
-                || normalizedCommand.Equals("COMMIT", StringComparison.OrdinalIgnoreCase)
-                || normalizedCommand.Equals("ROLLBACK", StringComparison.OrdinalIgnoreCase))
+            if (isTransactionControl)
             {
                 await connection.ExecuteTransactionControlAsync(normalizedCommand, cancellationToken);
                 return new QueryResult(0);
@@ -133,19 +138,36 @@ public sealed class CSharpDbCommand : DbCommand
                 if (!TryGetAutoPreparedTemplate(out preparedTemplate) || preparedTemplate == null)
                 {
                     string sql = SqlParameterBinder.Bind(CommandText, _parameters);
-                    return await session.ExecuteAsync(sql, cancellationToken);
+                    return await session.ExecuteAsync(
+                        sql,
+                        CommandText,
+                        observation,
+                        cancellationToken);
                 }
             }
 
             if (preparedTemplate.TryBindSimpleInsert(_parameters, out var simpleInsert))
-                return await session.ExecuteAsync(simpleInsert, cancellationToken);
+            {
+                return await session.ExecuteAsync(
+                    simpleInsert,
+                    CommandText,
+                    observation,
+                    cancellationToken);
+            }
 
             var preparedStatement = preparedTemplate.Bind(_parameters);
-            return await session.ExecuteAsync(preparedStatement, cancellationToken);
+            return await session.ExecuteAsync(
+                preparedStatement,
+                CommandText,
+                observation,
+                cancellationToken);
         }
-        catch (CSharpDbException ex)
+        catch (Exception ex)
         {
-            throw new CSharpDbDataException(ex);
+            observation?.FailBeforeDispatch(ex);
+            if (ex is CSharpDbException databaseException)
+                throw new CSharpDbDataException(databaseException);
+            throw;
         }
     }
 

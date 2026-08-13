@@ -45,6 +45,30 @@
                     <strong>Looking for explanation-first guides?</strong> Use <a href="tutorials/index.html">Tutorials</a> for step-by-step walkthroughs. This page is for runnable samples, example apps, and companion code you can adapt directly.
                 </div>
 
+                <h2 id="observability-host">Observability Host</h2>
+                <p>The observability host sample is the quickest supported path for running CSharpDB with standard <code>ILogger</code> events, OpenTelemetry traces and metrics, optional OTLP export, a loopback-only Prometheus scrape, and separate cached liveness/readiness routes. Its small workload endpoint generates a real query signal while SQL capture remains off.</p>
+
+                <div class="code-block" data-title="Bash">
+                    <pre><code>dotnet run --project samples/observability-host/ObservabilityHostSample.csproj
+curl http://localhost:5099/work
+curl http://localhost:5099/health/live
+curl http://localhost:5099/health/ready
+curl http://localhost:5099/metrics</code></pre>
+                </div>
+
+                <p>The safe default uses a named in-memory database, console telemetry, bounded history, <code>SqlText=None</code>, and no OTLP connection. The sample README shows how to opt into OTLP through standard <code>OTEL_EXPORTER_OTLP_*</code> environment variables and how to harden a remote Prometheus deployment.</p>
+
+                <div class="next-steps-grid" style="margin-bottom: 40px;">
+                    <a href="observability.html" class="next-step-card">
+                        <h4>Observability Guide</h4>
+                        <p>Configuration, event/span/metric schemas, runtime diagnostics, privacy, and troubleshooting</p>
+                    </a>
+                    <a href="https://github.com/maxakbar/csharpdb/tree/main/samples/observability-host" class="next-step-card">
+                        <h4>Sample Source</h4>
+                        <p>ASP.NET Core host wiring, safe appsettings, HTTP requests, and operator notes</p>
+                    </a>
+                </div>
+
                 <h2>EF Core and ASP.NET Core</h2>
                 <p>The EF Core minimal API sample is the quickest application-level example for the provider. It registers a scoped <code>DbContext</code> with <code>AddDbContext</code> and <code>UseCSharpDb</code>, creates a file-backed database at startup, and exposes cancellation-aware Todo CRUD endpoints. Integration tests drive the real HTTP surface and verify that data survives a host restart.</p>
 

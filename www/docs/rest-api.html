@@ -6,10 +6,10 @@
     <link rel="stylesheet" href="../css/style.css">
     <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
     <title>REST API Reference — CSharpDB</title>
-    <meta name="description" content="CSharpDB daemon-hosted REST API reference — all HTTP endpoints for database info, storage inspection, tables, rows, indexes, views, triggers, SQL execution, and procedures.">
+    <meta name="description" content="CSharpDB daemon-hosted REST API reference — HTTP database operations, runtime diagnostics, health, Prometheus, access policy, and error behavior.">
     <link rel="canonical" href="https://csharpdb.com/docs/rest-api.html">
     <meta property="og:title" content="REST API Reference — CSharpDB">
-    <meta property="og:description" content="CSharpDB daemon-hosted REST API reference — all HTTP endpoints for database info, storage inspection, tables, rows, indexes, views, triggers, SQL execution, and procedures.">
+    <meta property="og:description" content="CSharpDB daemon-hosted REST API reference — HTTP database operations, runtime diagnostics, health, Prometheus, access policy, and error behavior.">
     <meta property="og:url" content="https://csharpdb.com/docs/rest-api.html">
     <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
     <link rel="icon" type="image/png" href="../favicon.png">
@@ -18,7 +18,7 @@
         "@context": "https://schema.org",
         "@type": "TechArticle",
         "name": "REST API Reference",
-        "description": "CSharpDB daemon-hosted REST API reference — all HTTP endpoints for database info, storage inspection, tables, rows, indexes, views, triggers, SQL execution, and procedures.",
+        "description": "CSharpDB daemon-hosted REST API reference — HTTP database operations, runtime diagnostics, health, Prometheus, access policy, and error behavior.",
         "url": "https://csharpdb.com/docs/rest-api.html",
         "isPartOf": {
             "@type": "WebSite",
@@ -33,7 +33,7 @@
     window.currentPage = 'docs'; window.pagePathPrefix = '../';
     window.pageConfig = {
         title: 'REST API Reference',
-        description: 'CSharpDB daemon-hosted REST API reference — all HTTP endpoints for database info, storage inspection, tables, rows, indexes, views, triggers, SQL execution, and procedures.',
+        description: 'CSharpDB daemon-hosted REST API reference — HTTP database operations, runtime diagnostics, health, Prometheus, access policy, and error behavior.',
         keywords: 'CSharpDB REST API, CSharpDB Daemon, HTTP endpoints, tables, rows, indexes, views, triggers, SQL execution, procedures',
         canonicalPath: 'docs/rest-api.html',
         ogType: 'article',
@@ -49,8 +49,10 @@
                     <ul>
                         <li><a href="#running-the-api">Running the API</a></li>
                         <li><a href="#configuration">Configuration</a></li>
+                        <li><a href="#health-and-metrics">Health and Metrics</a></li>
                         <li><a href="#endpoints">Endpoints</a>
                             <ul>
+                                <li><a href="#runtime-diagnostics">Runtime Diagnostics</a></li>
                                 <li><a href="#database-info">Database Info</a></li>
                                 <li><a href="#storage-inspection">Storage Inspection</a></li>
                                 <li><a href="#maintenance">Maintenance</a></li>
@@ -107,9 +109,37 @@ dotnet run --project src/CSharpDB.Daemon/CSharpDB.Daemon.csproj</code></pre></di
                 <p><code>CSharpDB:Daemon:EnableRestApi</code> controls whether the daemon maps the REST <code>/api</code> surface. The default is <code>true</code>. Set it to <code>false</code> only when the daemon should expose gRPC without REST.</p>
                 <p>CORS is enabled for all origins by default (development convenience). JSON responses use camelCase naming and omit null values.</p>
                 <p>The standalone <code>CSharpDB.Api</code> project remains available for REST-only hosting, but the recommended remote host is <code>CSharpDB.Daemon</code> so REST and gRPC clients share the same warm database process.</p>
+                <p>Structured logging, bounded histories, OpenTelemetry/OTLP, Prometheus, and health are configured under <code>CSharpDB:Observability</code>. Exporters are disabled by default; minimal health routes are enabled independently. See the <a href="configuration.html#observability">configuration reference</a> and <a href="observability.html">Observability and Diagnostics guide</a>.</p>
+
+                <h2 id="health-and-metrics">Health and Metrics</h2>
+                <table class="doc-table">
+                    <thead><tr><th>Route</th><th>Default</th><th>Behavior</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>GET /health/live</code></td><td>Mapped</td><td>Cached process liveness. Returns only <code>{"status":"healthy"}</code> or <code>{"status":"unhealthy"}</code> with <code>200</code> or <code>503</code>.</td></tr>
+                        <tr><td><code>GET /health/ready</code></td><td>Mapped</td><td>Cached database readiness. It does not query or mutate the database on each probe.</td></tr>
+                        <tr><td><code>GET /metrics</code></td><td>Not mapped</td><td>Exact Prometheus scrape route when explicitly enabled; a custom configured path replaces <code>/metrics</code>.</td></tr>
+                    </tbody>
+                </table>
+                <p>Health probes are intentionally anonymous and minimal. Prometheus follows host security: API-key mode requires the configured key; security mode <code>None</code> accepts only the actual loopback peer unless <code>Prometheus:AllowInsecureRemoteAccess=true</code> is an explicit operator choice. Forwarded-address headers do not grant loopback access.</p>
 
                 <h2 id="endpoints">Endpoints</h2>
                 <p>All endpoints are prefixed with <code>/api</code>.</p>
+
+                <h3 id="runtime-diagnostics">Runtime Diagnostics</h3>
+                <p>Runtime diagnostics are an optional additive client capability. Their polling requests suppress their own observation, and ordinary responses omit SQL text, values, credentials, connection strings, paths, exception messages, and raw exceptions.</p>
+                <table class="doc-table">
+                    <thead><tr><th>Method</th><th>Route</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>GET</code></td><td><code>/api/diagnostics/health</code></td><td>Detailed cached typed host-health snapshot under diagnostics access policy.</td></tr>
+                        <tr><td><code>GET</code></td><td><code>/api/diagnostics/runtime</code></td><td>Runtime query, connection, storage, WAL, maintenance, and health summary.</td></tr>
+                        <tr><td><code>GET</code></td><td><code>/api/diagnostics/queries/active?maximumRecords=100</code></td><td>Capped active-query snapshot.</td></tr>
+                        <tr><td><code>GET</code></td><td><code>/api/diagnostics/queries/recent?maximumRecords=100</code></td><td>Capped recent-query snapshot.</td></tr>
+                        <tr><td><code>GET</code></td><td><code>/api/diagnostics/queries/{operationId}/plan</code></td><td>Retained bounded plan summary; never replays SQL.</td></tr>
+                        <tr><td><code>GET</code></td><td><code>/api/diagnostics/sessions?maximumRecords=100</code></td><td>Capped database and in-flight host session state.</td></tr>
+                        <tr><td><code>GET</code></td><td><code>/api/diagnostics/queries/{operationId}/detail</code></td><td>Separate captured-text request requiring configured capture and sensitive-detail authorization.</td></tr>
+                    </tbody>
+                </table>
+                <p>In API-key mode diagnostics require the configured key. In security mode <code>None</code>, only a proven loopback peer is accepted unless <code>AllowInsecureRemoteDiagnostics=true</code>. Query detail additionally requires <code>AllowSensitiveQueryDetailAccess=true</code>. Authentication failures return <code>401</code>, policy denials return <code>403</code>, and clients without the optional diagnostics capability return <code>501</code>. Cancellation is cooperative; there is no query/session kill route.</p>
 
                 <h3 id="database-info">Database Info</h3>
                 <h4><code>GET /api/info</code></h4>
@@ -610,10 +640,13 @@ dotnet run --project src/CSharpDB.Daemon/CSharpDB.Daemon.csproj</code></pre></di
                     </thead>
                     <tbody>
                         <tr><td>400</td><td><code>SyntaxError</code>, <code>TypeMismatch</code></td><td>Bad request — invalid SQL or type mismatch</td></tr>
+                        <tr><td>401</td><td>(host authentication)</td><td>Missing or invalid API key</td></tr>
+                        <tr><td>403</td><td>(host policy)</td><td>Diagnostics, query-detail, or Prometheus access denied</td></tr>
                         <tr><td>404</td><td><code>TableNotFound</code>, <code>ColumnNotFound</code></td><td>Resource not found</td></tr>
                         <tr><td>409</td><td><code>DuplicateKey</code>, <code>TableAlreadyExists</code></td><td>Conflict — duplicate resource</td></tr>
                         <tr><td>422</td><td><code>ConstraintViolation</code></td><td>Constraint violated (NOT NULL, UNIQUE)</td></tr>
                         <tr><td>503</td><td><code>Busy</code></td><td>Database is busy (another writer is active)</td></tr>
+                        <tr><td>501</td><td>(capability)</td><td>The configured client does not support optional runtime diagnostics</td></tr>
                         <tr><td>500</td><td>(other)</td><td>Unexpected server error</td></tr>
                     </tbody>
                 </table>
@@ -628,6 +661,7 @@ dotnet run --project src/CSharpDB.Daemon/CSharpDB.Daemon.csproj</code></pre></di
                 <ul>
                     <li><a href="getting-started.html">Getting Started Tutorial</a> — Engine API walkthrough</li>
                     <li><a href="tutorials/multi-writer-daemon-grpc.html">Multi-Writer gRPC Daemon</a> — Daemon runtime model and remote-host guidance</li>
+                    <li><a href="observability.html">Observability and Diagnostics</a> — Logging, runtime models, OpenTelemetry, Prometheus, health, privacy, and troubleshooting</li>
                     <li><a href="storage-architecture.html">Storage Architecture Deep Dive</a> — How the engine works internally</li>
                     <li><a href="cli.html">CLI Reference</a> — Interactive REPL commands</li>
                     <li><a href="samples.html">Sample Datasets</a> — Ready-to-run SQL scripts</li>

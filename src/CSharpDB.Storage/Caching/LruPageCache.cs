@@ -1,14 +1,25 @@
+using CSharpDB.Storage.Diagnostics;
+
 namespace CSharpDB.Storage.Caching;
 
 /// <summary>
 /// Bounded page cache with LRU eviction semantics.
 /// </summary>
-public sealed class LruPageCache : IPageCache, IPageCacheEvictionEvents
+public sealed class LruPageCache :
+    IPageCache,
+    IPageCacheEvictionEvents,
+    IPageCacheRuntimeDiagnosticsProvider
 {
     private readonly int _capacity;
     private readonly Dictionary<uint, CacheEntry> _entries;
     private readonly LinkedList<uint> _usageOrder = new();
     public event Action<uint, byte[]>? PageEvicted;
+
+    long IPageCacheRuntimeDiagnosticsProvider.RuntimeResidentPageCount =>
+        _entries.Count;
+
+    long? IPageCacheRuntimeDiagnosticsProvider.RuntimeCapacityPageCount =>
+        _capacity;
 
     private sealed class CacheEntry
     {

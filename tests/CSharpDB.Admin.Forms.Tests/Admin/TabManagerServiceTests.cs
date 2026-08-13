@@ -306,6 +306,24 @@ public class TabManagerServiceTests
     }
 
     [Fact]
+    public void OpenObservabilityTab_DeduplicatesAndActivatesExistingTab()
+    {
+        var manager = new TabManagerService();
+
+        TabDescriptor first = manager.OpenObservabilityTab();
+        manager.OpenQueryTab();
+        TabDescriptor second = manager.OpenObservabilityTab();
+
+        Assert.Same(first, second);
+        Assert.Equal("observability:runtime", second.Id);
+        Assert.Equal("Observability", second.Title);
+        Assert.Equal("bi-activity", second.Icon);
+        Assert.Equal(TabKind.Observability, second.Kind);
+        Assert.Equal(3, manager.Tabs.Count);
+        Assert.Equal(second, manager.ActiveTab);
+    }
+
+    [Fact]
     public void CloseTabsForObject_ClosesCollectionTab()
     {
         var manager = new TabManagerService();

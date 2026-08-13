@@ -90,6 +90,7 @@ jobs:
             tests/CSharpDB.Migration.MySql.Tests/CSharpDB.Migration.MySql.Tests.csproj
             tests/CSharpDB.Migration.SqlServer.Tests/CSharpDB.Migration.SqlServer.Tests.csproj
             tests/CSharpDB.Migration.Tests/CSharpDB.Migration.Tests.csproj
+            tests/CSharpDB.Observability.Tests/CSharpDB.Observability.Tests.csproj
             tests/CSharpDB.Pipelines.Tests/CSharpDB.Pipelines.Tests.csproj
           )
 
@@ -141,6 +142,48 @@ jobs:
               xUnit.ReporterSwitch=verbose
           fi
 
+  published-host-observability:
+    name: Published ${{ matrix.host }} observability (${{ matrix.rid }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+            host: Api
+          - os: ubuntu-latest
+            rid: linux-x64
+            host: Daemon
+          - os: windows-latest
+            rid: win-x64
+            host: Api
+          - os: windows-latest
+            rid: win-x64
+            host: Daemon
+          - os: macos-latest
+            rid: osx-arm64
+            host: Api
+          - os: macos-latest
+            rid: osx-arm64
+            host: Daemon
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Publish and qualify host observability
+        shell: pwsh
+        run: |
+          ./scripts/Test-CSharpDbPublishedHostObservability.ps1 `
+            -HostName '${{ matrix.host }}' `
+            -Runtime '${{ matrix.rid }}'
+
   native-aot:
     name: NativeAOT (${{ matrix.os }} ${{ matrix.rid }})
     runs-on: ${{ matrix.os }}
@@ -173,6 +216,27 @@ jobs:
 
       - name: Publish NativeAOT library
         run: dotnet publish src/CSharpDB.Native/CSharpDB.Native.csproj -c Release -r ${{ matrix.rid }}
+
+      - name: Publish observability trim and NativeAOT smoke
+        run: dotnet publish tests/CSharpDB.Observability.TrimSmoke/CSharpDB.Observability.TrimSmoke.csproj -c Release -r ${{ matrix.rid }} --self-contained true -p:PublishAot=true -o artifacts/observability-aot/${{ matrix.rid }}
+
+      - name: Run observability trim and NativeAOT smoke
+        shell: pwsh
+        run: |
+          $executableName = if ($IsWindows) {
+            'CSharpDB.Observability.TrimSmoke.exe'
+          }
+          else {
+            'CSharpDB.Observability.TrimSmoke'
+          }
+          $executable = Join-Path 'artifacts/observability-aot/${{ matrix.rid }}' $executableName
+          if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
+            throw "NativeAOT executable was not produced: $executable"
+          }
+          & $executable
+          if ($LASTEXITCODE -ne 0) {
+            throw "Observability trim and NativeAOT smoke failed with exit code $LASTEXITCODE."
+          }
 
       - name: Verify exported symbols (Linux)
         if: runner.os == 'Linux'
@@ -236,6 +300,7 @@ jobs:
           chmod +x scripts/fix-nuget-readme-links.sh
           scripts/fix-nuget-readme-links.sh main \
             src/CSharpDB/README.md \
+            src/CSharpDB.Observability/README.md \
             src/CSharpDB.Primitives/README.md \
             src/CSharpDB.Sql/README.md \
             src/CSharpDB.Storage/README.md \
@@ -258,6 +323,7 @@ jobs:
           set -euo pipefail
           mkdir -p artifacts/nuget
           dotnet pack src/CSharpDB.Primitives/CSharpDB.Primitives.csproj -c Release -o artifacts/nuget
+          dotnet pack src/CSharpDB.Observability/CSharpDB.Observability.csproj -c Release -o artifacts/nuget
           dotnet pack src/CSharpDB.Sql/CSharpDB.Sql.csproj -c Release -o artifacts/nuget
           dotnet pack src/CSharpDB.Storage/CSharpDB.Storage.csproj -c Release -o artifacts/nuget
           dotnet pack src/CSharpDB.ImportExport/CSharpDB.ImportExport.csproj -c Release -o artifacts/nuget
@@ -274,6 +340,10 @@ jobs:
           dotnet pack src/CSharpDB.EntityFrameworkCore/CSharpDB.EntityFrameworkCore.csproj -c Release -o artifacts/nuget
           dotnet pack src/CSharpDB/CSharpDB.csproj -c Release -o artifacts/nuget
 
+      - name: Qualify observability package surfaces
+        shell: pwsh
+        run: ./scripts/Test-ObservabilityNuGetPackage.ps1 -FeedPath artifacts/nuget
+
       - name: Qualify packed EF Core provider
         shell: pwsh
         run: ./scripts/Test-EfCoreNuGetPackage.ps1 -FeedPath artifacts/nuget
@@ -281,9 +351,15 @@ jobs:
       - name: Pack EF Core migration analyzer
         run: dotnet pack src/CSharpDB.EntityFrameworkCore.Tools/CSharpDB.EntityFrameworkCore.Tools.csproj -c Release -o artifacts/nuget
 
+      - name: Qualify final NuGet dependency graph and manifest
+        shell: pwsh
+        run: ./scripts/Test-CSharpDbNuGetReleaseGraph.ps1 -FeedPath artifacts/nuget
+
       - name: Upload NuGet artifacts
         uses: actions/upload-artifact@v7
         with:
           name: nuget-packages
-          path: artifacts/nuget/*.nupkg
+          path: |
+            artifacts/nuget/*.nupkg
+            artifacts/nuget/CSharpDB-PACKAGE-MANIFEST.json
           if-no-files-found: error

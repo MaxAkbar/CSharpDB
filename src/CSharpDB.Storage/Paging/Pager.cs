@@ -1,5 +1,6 @@
 using CSharpDB.Primitives;
 using CSharpDB.Storage.Caching;
+using CSharpDB.Storage.Diagnostics;
 using CSharpDB.Storage.Internal;
 using System.Buffers;
 using System.Collections.Concurrent;
@@ -13,6 +14,7 @@ namespace CSharpDB.Storage.Paging;
 /// </summary>
 public sealed class Pager : IAsyncDisposable, IDisposable
 {
+    private const int RuntimeDiagnosticsSnapshotMaxAttempts = 3;
     private static readonly LogicalConflictKey SchemaConflictKey = new("schema:global", 0);
     private static readonly ConcurrentDictionary<string, string> LogicalIndexResourceNames = new();
     private static readonly ConcurrentDictionary<string, string> LogicalTableRowResourceNames = new();
@@ -30,24 +32,53 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         public long RootSplitCount;
     }
 
+    private enum RuntimeCheckpointDiagnosticsEventKind
+    {
+        Started,
+        Changed,
+        Completed,
+    }
+
+    private readonly record struct RuntimeCheckpointDiagnosticsEvent(
+        RuntimeCheckpointDiagnosticsEventKind Kind,
+        StorageCheckpointRuntimeRawSnapshot Snapshot,
+        object? Correlation);
+
     private readonly IStorageDevice _device;
     private readonly IPageReadProvider _pageReads;
     private readonly IPageReadProvider _speculativePageReads;
     private readonly bool _ownsPageReadProviders;
     private readonly IWriteAheadLog _wal;
     private readonly WalIndex _walIndex;
+    private readonly IStorageRuntimeDiagnosticsObserver? _runtimeDiagnosticsObserver;
+    private readonly StorageIoRuntimeDiagnostics? _storageIoRuntimeDiagnostics;
+    private readonly object? _runtimeCheckpointDiagnosticsGate;
+    private readonly Queue<RuntimeCheckpointDiagnosticsEvent>?
+        _runtimeCheckpointDiagnosticsEvents;
+    private readonly AsyncLocal<bool>? _runtimeCheckpointDiagnosticsDrainContext;
     private readonly IPageOperationInterceptor _interceptor;
     private readonly bool _hasInterceptor;
     private readonly PageBufferManager _buffers;
     private readonly IPageAllocator _allocator;
     private readonly TransactionCoordinator? _transactions;
     private readonly CheckpointCoordinator? _checkpoints;
-    private readonly Func<CancellationToken, ValueTask>? _checkpointAction;
+    private readonly Func<StorageCheckpointOriginRaw, CancellationToken, ValueTask>? _checkpointAction;
     private readonly AsyncLocal<PagerTransactionState?> _ambientTransaction = new();
     private readonly AsyncLocal<int> _suppressedLogicalReadTrackingDepth = new();
     private readonly object _legacyLogicalWriteGate = new();
     private readonly HashSet<LogicalConflictKey> _legacyLogicalWriteKeys = [];
     private int _disposeRequested;
+    private bool _runtimeCheckpointActive;
+    private StorageCheckpointOriginRaw _runtimeCheckpointOrigin;
+    private long? _runtimeCheckpointCompletedPageCount;
+    private long? _runtimeCheckpointTotalPageCount;
+    private bool _runtimeCheckpointDiagnosticsDrainScheduled;
+    private TaskCompletionSource? _runtimeCheckpointDiagnosticsDrainCompletion;
+
+    // Internal deterministic interleaving seam; production never assigns it.
+    internal Action? RuntimeDiagnosticsBetweenSnapshotSamplesForTests { get; set; }
+    internal Action? RuntimeDiagnosticsAfterDirtyPageReadForTests { get; set; }
+    internal Func<ValueTask>? DisposeRollbackForTests { get; set; }
 
     // Non-null for read-only snapshot pager instances
     private readonly WalSnapshot? _readerSnapshot;
@@ -60,6 +91,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     private long _explicitCommitLockHoldTicks;
     private long _explicitConflictResolutionCount;
     private long _explicitConflictResolutionTicks;
+    private long _terminalExplicitConflictCount;
     private long _explicitLeafRebaseAttemptCount;
     private long _explicitLeafRebaseSuccessCount;
     private long _explicitLeafRebaseStructuralRejectCount;
@@ -196,6 +228,147 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         }
     }
     public int ActiveReaderCount => _checkpoints?.ActiveReaderCount ?? 0;
+
+    internal bool TryGetRuntimeDiagnosticsSnapshot(out PagerRuntimeRawSnapshot snapshot)
+    {
+        snapshot = default;
+        if (_isSnapshotReader ||
+            Volatile.Read(ref _disposeRequested) != 0 ||
+            _transactions is null ||
+            _checkpoints is null ||
+            _wal is not ILiveWalRuntimeSnapshotProvider walDiagnostics)
+        {
+            return false;
+        }
+
+        for (int attempt = 0; attempt < RuntimeDiagnosticsSnapshotMaxAttempts; attempt++)
+        {
+            if (!TryCaptureRuntimeDiagnosticsCandidate(
+                    walDiagnostics,
+                    _transactions,
+                    _checkpoints,
+                    out PagerRuntimeRawSnapshot first))
+            {
+                continue;
+            }
+
+            RuntimeDiagnosticsBetweenSnapshotSamplesForTests?.Invoke();
+
+            if (TryCaptureRuntimeDiagnosticsCandidate(
+                    walDiagnostics,
+                    _transactions,
+                    _checkpoints,
+                    out PagerRuntimeRawSnapshot second) &&
+                first == second)
+            {
+                snapshot = second;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    internal bool TryGetStorageIoRuntimeDiagnosticsSnapshot(
+        out StorageIoRuntimeRawSnapshot snapshot)
+    {
+        snapshot = default;
+        StorageIoRuntimeDiagnostics? diagnostics = _storageIoRuntimeDiagnostics;
+        if (_isSnapshotReader ||
+            Volatile.Read(ref _disposeRequested) != 0 ||
+            diagnostics is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            snapshot = diagnostics.Capture();
+            return true;
+        }
+        catch
+        {
+            snapshot = default;
+            return false;
+        }
+    }
+
+    private bool TryCaptureRuntimeDiagnosticsCandidate(
+        ILiveWalRuntimeSnapshotProvider walDiagnostics,
+        TransactionCoordinator transactions,
+        CheckpointCoordinator checkpoints,
+        out PagerRuntimeRawSnapshot snapshot)
+    {
+        snapshot = default;
+        if (Volatile.Read(ref _disposeRequested) != 0)
+            return false;
+
+        StorageCheckpointPhaseRaw phaseBefore = checkpoints.RuntimePhase;
+        if (!walDiagnostics.TryGetLiveRuntimeDiagnosticsSnapshot(
+                out WalRuntimeRawSnapshot walSnapshot))
+        {
+            return false;
+        }
+
+        var transactionState = transactions.GetRuntimeStateSnapshot();
+        int? dirtyPageCount = null;
+        if (!transactionState.HasActiveExplicitWriters)
+        {
+            int sharedDirtyPageCount = _buffers.DirtyPageCount;
+            RuntimeDiagnosticsAfterDirtyPageReadForTests?.Invoke();
+            var verifiedTransactionState = transactions.GetRuntimeStateSnapshot();
+            if (!verifiedTransactionState.HasActiveExplicitWriters &&
+                verifiedTransactionState.ExplicitTransactionGeneration ==
+                    transactionState.ExplicitTransactionGeneration &&
+                verifiedTransactionState.ActiveWriterCount ==
+                    transactionState.ActiveWriterCount &&
+                verifiedTransactionState.LegacyTransactionId ==
+                    transactionState.LegacyTransactionId)
+            {
+                dirtyPageCount = sharedDirtyPageCount;
+            }
+
+            transactionState = verifiedTransactionState;
+        }
+
+        long? allocatedBytes = null;
+        if (_device is FileStorageDevice fileDevice)
+        {
+            try
+            {
+                allocatedBytes = Math.Max(0, fileDevice.Length);
+            }
+            catch (Exception ex) when (ex is ObjectDisposedException or IOException)
+            {
+                return false;
+            }
+        }
+
+        long pageCount = Volatile.Read(ref _pageCount);
+        int activeReaderCount = checkpoints.ActiveReaderCount;
+        StorageCheckpointPhaseRaw phaseAfter = checkpoints.RuntimePhase;
+        if (phaseBefore != phaseAfter ||
+            Volatile.Read(ref _disposeRequested) != 0)
+        {
+            return false;
+        }
+
+        snapshot = new PagerRuntimeRawSnapshot(
+            new StorageRuntimeRawSnapshot(
+                PageSize: PageConstants.PageSize,
+                PageCount: pageCount,
+                LogicalBytes: pageCount * PageConstants.PageSize,
+                AllocatedBytes: allocatedBytes,
+                DirtyPageCount: dirtyPageCount,
+                ActiveReaderCount: activeReaderCount,
+                ActiveWriterCount: transactionState.ActiveWriterCount)
+            {
+                TerminalConflictCount = Interlocked.Read(
+                    ref _terminalExplicitConflictCount),
+            },
+            walSnapshot with { CheckpointPhase = phaseAfter });
+        return true;
+    }
 
     internal bool IsExplicitWriteTransactionActive => GetCurrentTransaction() is not null;
 
@@ -393,16 +566,35 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     public ICheckpointPolicy CheckpointPolicy { get; set; }
 
     /// <summary>Primary constructor for writer pager.</summary>
-    private Pager(IStorageDevice device, IWriteAheadLog wal, WalIndex walIndex, PagerOptions? options = null)
+    private Pager(
+        IStorageDevice device,
+        IWriteAheadLog wal,
+        WalIndex walIndex,
+        PagerOptions? options = null,
+        IStorageRuntimeDiagnosticsObserver? runtimeDiagnosticsObserver = null)
     {
         _device = device;
         _options = options ?? new PagerOptions();
         ValidateOptions(_options);
+        _storageIoRuntimeDiagnostics = runtimeDiagnosticsObserver is null
+            ? null
+            : StorageIoRuntimeDiagnostics.Create(device);
         _pageReads = CreatePageReadProvider(device, _options);
         _speculativePageReads = CreateSpeculativePageReadProvider(device, _options, _pageReads);
         _ownsPageReadProviders = true;
         _wal = wal;
         _walIndex = walIndex;
+        _runtimeDiagnosticsObserver = runtimeDiagnosticsObserver;
+        _runtimeCheckpointDiagnosticsGate = runtimeDiagnosticsObserver is null
+            ? null
+            : new object();
+        _runtimeCheckpointDiagnosticsEvents = runtimeDiagnosticsObserver is null
+            ? null
+            : new Queue<RuntimeCheckpointDiagnosticsEvent>(capacity: 8);
+        _runtimeCheckpointDiagnosticsDrainContext =
+            runtimeDiagnosticsObserver is null
+                ? null
+                : new AsyncLocal<bool>();
         _interceptor = _options.CreateInterceptor();
         _hasInterceptor = _interceptor is not NoOpPageOperationInterceptor;
         var cache = _options.CreatePageCache();
@@ -417,7 +609,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             _walIndex,
             readerSnapshot: null,
             isSnapshotReader: false,
-            _interceptor);
+            _interceptor,
+            _storageIoRuntimeDiagnostics);
         _transactions = new TransactionCoordinator();
         _checkpoints = new CheckpointCoordinator();
         _allocator = new PageAllocator(
@@ -445,6 +638,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         WalIndex walIndex,
         WalSnapshot snapshot,
         bool ownsPageReadProviders,
+        StorageIoRuntimeDiagnostics? storageIoRuntimeDiagnostics,
         PagerOptions? options = null)
     {
         _device = device;
@@ -453,6 +647,11 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         _ownsPageReadProviders = ownsPageReadProviders;
         _wal = wal;
         _walIndex = walIndex;
+        _runtimeDiagnosticsObserver = null;
+        _storageIoRuntimeDiagnostics = storageIoRuntimeDiagnostics;
+        _runtimeCheckpointDiagnosticsGate = null;
+        _runtimeCheckpointDiagnosticsEvents = null;
+        _runtimeCheckpointDiagnosticsDrainContext = null;
         _options = options ?? new PagerOptions();
         ValidateOptions(_options);
         _interceptor = _options.CreateInterceptor();
@@ -471,7 +670,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             _walIndex,
             _readerSnapshot,
             _isSnapshotReader,
-            _interceptor);
+            _interceptor,
+            _storageIoRuntimeDiagnostics);
         _allocator = new PageAllocator(
             _buffers,
             () => FreelistHead,
@@ -490,8 +690,26 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
     public static async ValueTask<Pager> CreateAsync(IStorageDevice device, IWriteAheadLog wal,
         WalIndex walIndex, PagerOptions? options = null, CancellationToken ct = default)
+        => await CreateCoreAsync(device, wal, walIndex, options, runtimeDiagnosticsObserver: null, ct);
+
+    internal static ValueTask<Pager> CreateAsync(
+        IStorageDevice device,
+        IWriteAheadLog wal,
+        WalIndex walIndex,
+        PagerOptions? options,
+        IStorageRuntimeDiagnosticsObserver? runtimeDiagnosticsObserver,
+        CancellationToken ct = default)
+        => CreateCoreAsync(device, wal, walIndex, options, runtimeDiagnosticsObserver, ct);
+
+    private static async ValueTask<Pager> CreateCoreAsync(
+        IStorageDevice device,
+        IWriteAheadLog wal,
+        WalIndex walIndex,
+        PagerOptions? options,
+        IStorageRuntimeDiagnosticsObserver? runtimeDiagnosticsObserver,
+        CancellationToken ct)
     {
-        var pager = new Pager(device, wal, walIndex, options);
+        var pager = new Pager(device, wal, walIndex, options, runtimeDiagnosticsObserver);
         if (device.Length >= PageConstants.PageSize)
             await pager.ReadFileHeaderAsync(ct);
         return pager;
@@ -523,6 +741,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             _walIndex,
             snapshot,
             needsDedicatedProviders,
+            _storageIoRuntimeDiagnostics,
             _options);
         // Copy header state so schema catalog can be loaded
         reader.PageCount = PageCount;
@@ -632,7 +851,10 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                 return true;
             }
 
-            return _buffers.TryGetSnapshotCachedPageReadBuffer(pageId, tx.Snapshot, out page);
+            return _buffers.TryGetSnapshotCachedPageReadBuffer(
+                pageId,
+                tx.Snapshot,
+                out page);
         }
 
         return _buffers.TryGetCachedPageReadBuffer(pageId, out page);
@@ -648,7 +870,10 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                 return true;
             }
 
-            return _buffers.TryGetSnapshotCachedPageReadBuffer(pageId, tx.Snapshot, out page);
+            return _buffers.TryGetSnapshotCachedPageReadBufferAndRecordRead(
+                pageId,
+                tx.Snapshot,
+                out page);
         }
 
         return _buffers.TryGetCachedPageReadBufferAndRecordRead(pageId, out page);
@@ -697,6 +922,17 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         out PageReadBuffer page)
     {
         return _buffers.TryGetSnapshotCachedPageReadBuffer(pageId, snapshot, out page);
+    }
+
+    internal bool TryGetSnapshotCachedPageReadBufferAndRecordRead(
+        uint pageId,
+        WalSnapshot snapshot,
+        out PageReadBuffer page)
+    {
+        return _buffers.TryGetSnapshotCachedPageReadBufferAndRecordRead(
+            pageId,
+            snapshot,
+            out page);
     }
 
     internal bool CanSpeculativePageReads =>
@@ -1740,7 +1976,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     {
         try
         {
-            await CheckpointAsync(ct);
+            await CheckpointAsync(StorageCheckpointOriginRaw.ForegroundAuto, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -1836,7 +2072,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                                     continue;
                                 }
 
-                                throw new CSharpDbConflictException(
+                                throw CreateTerminalExplicitConflictException(
                                     $"Transaction conflict detected while committing page {conflictPageId}. The transaction must be retried.");
                             }
 
@@ -2186,7 +2422,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
         try
         {
-            await CheckpointAsync(ct);
+            await CheckpointAsync(StorageCheckpointOriginRaw.ForegroundAuto, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -2320,13 +2556,60 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     /// </summary>
     public async ValueTask RecoverAsync(CancellationToken ct = default)
     {
+        if (_runtimeDiagnosticsObserver is null)
+        {
+            await RecoverWithInterceptorsAsync(ct, reportRuntimeDiagnostics: false);
+            return;
+        }
+
+        _runtimeDiagnosticsObserver.TryRecoveryStarted();
+        try
+        {
+            await RecoverWithInterceptorsAsync(ct, reportRuntimeDiagnostics: true);
+            StorageRecoveryRuntimeRawSnapshot completed =
+                GetRecoveryRuntimeSnapshotOrDefault() with
+                {
+                    Phase = StorageRecoveryPhaseRaw.Completed,
+                    Outcome = StorageRuntimeOperationOutcomeRaw.Succeeded,
+                    FailureKind = StorageRuntimeFailureKindRaw.None,
+                };
+            _runtimeDiagnosticsObserver.TryRecoveryCompleted(in completed);
+        }
+        catch (Exception ex)
+        {
+            StorageRecoveryRuntimeRawSnapshot current =
+                GetRecoveryRuntimeSnapshotOrDefault();
+            StorageRuntimeFailureKindRaw failureKind = current.FailureKind is
+                StorageRuntimeFailureKindRaw.None or
+                StorageRuntimeFailureKindRaw.Unknown
+                    ? StorageRuntimeDiagnosticsObserverExtensions
+                        .ClassifyRuntimeFailure(ex)
+                    : current.FailureKind;
+            StorageRuntimeOperationOutcomeRaw outcome = ex is OperationCanceledException
+                ? StorageRuntimeOperationOutcomeRaw.Canceled
+                : StorageRuntimeOperationOutcomeRaw.Failed;
+            StorageRecoveryRuntimeRawSnapshot completed = current with
+            {
+                Phase = StorageRecoveryPhaseRaw.Completed,
+                Outcome = outcome,
+                FailureKind = failureKind,
+            };
+            _runtimeDiagnosticsObserver.TryRecoveryCompleted(in completed);
+            throw;
+        }
+    }
+
+    private async ValueTask RecoverWithInterceptorsAsync(
+        CancellationToken ct,
+        bool reportRuntimeDiagnostics)
+    {
         if (_hasInterceptor)
         {
             bool recoverySucceeded = false;
             await _interceptor.OnRecoveryStartAsync(ct);
             try
             {
-                await RecoverCoreAsync(ct);
+                await RecoverCoreAsync(ct, reportRuntimeDiagnostics);
                 recoverySucceeded = true;
             }
             finally
@@ -2336,18 +2619,36 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         }
         else
         {
-            await RecoverCoreAsync(ct);
+            await RecoverCoreAsync(ct, reportRuntimeDiagnostics);
         }
     }
 
-    private async ValueTask RecoverCoreAsync(CancellationToken ct)
+    private async ValueTask RecoverCoreAsync(
+        CancellationToken ct,
+        bool reportRuntimeDiagnostics)
     {
         // WAL recovery: open/scan the WAL file, rebuild index
         await _wal.OpenAsync(PageCount, ct);
 
+        StorageRecoveryRuntimeRawSnapshot recoverySnapshot =
+            GetRecoveryRuntimeSnapshotOrDefault();
+        if (reportRuntimeDiagnostics)
+            _runtimeDiagnosticsObserver.TryRecoveryChanged(in recoverySnapshot);
+
         // If WAL has committed data, checkpoint to bring DB file up to date
         if (_walIndex.FrameCount > 0)
         {
+            if (reportRuntimeDiagnostics)
+            {
+                recoverySnapshot = recoverySnapshot with
+                {
+                    Phase = StorageRecoveryPhaseRaw.Checkpointing,
+                    Outcome = StorageRuntimeOperationOutcomeRaw.Running,
+                    FailureKind = StorageRuntimeFailureKindRaw.None,
+                };
+                _runtimeDiagnosticsObserver.TryRecoveryChanged(in recoverySnapshot);
+            }
+
             // Read the latest header from WAL if page 0 was committed
             if (_walIndex.TryGetLatest(0, out long walOffset))
             {
@@ -2355,27 +2656,59 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                 ReadFileHeaderFrom(_walHeaderPageBuffer);
             }
 
-            await CheckpointAsync(ct);
+            await CheckpointAsync(StorageCheckpointOriginRaw.StartupRecovery, ct);
             await ReadFileHeaderAsync(ct);
         }
+    }
+
+    private StorageRecoveryRuntimeRawSnapshot GetRecoveryRuntimeSnapshotOrDefault()
+    {
+        if (_wal is IWalRecoveryRuntimeSnapshotProvider recoveryProvider &&
+            recoveryProvider.TryGetRecoveryRuntimeSnapshot(
+                out StorageRecoveryRuntimeRawSnapshot snapshot))
+        {
+            return snapshot;
+        }
+
+        return new StorageRecoveryRuntimeRawSnapshot(
+            Phase: StorageRecoveryPhaseRaw.Scanning,
+            ScannedFrameCount: 0,
+            ScannedBytes: 0,
+            RecoveredFrameCount: 0,
+            RecoveredBytes: 0,
+            DiscardedFrameCount: 0,
+            DiscardedBytes: 0,
+            TruncationReason: StorageRecoveryTruncationReasonRaw.None,
+            AttemptCount: 1,
+            RetryCount: 0,
+            LastRetryFailureKind: StorageRuntimeFailureKindRaw.None,
+            Outcome: StorageRuntimeOperationOutcomeRaw.Running,
+            FailureKind: StorageRuntimeFailureKindRaw.None);
     }
 
     /// <summary>
     /// Checkpoint: copy committed WAL pages to the DB file, then reset the WAL.
     /// </summary>
-    public async ValueTask CheckpointAsync(CancellationToken ct = default)
+    public ValueTask CheckpointAsync(CancellationToken ct = default)
+        => CheckpointAsync(StorageCheckpointOriginRaw.Manual, ct);
+
+    internal async ValueTask CheckpointAsync(
+        StorageCheckpointOriginRaw origin,
+        CancellationToken ct = default)
     {
         if (_isSnapshotReader)
             throw new InvalidOperationException("Cannot checkpoint on a read-only snapshot pager.");
 
         await WaitForBackgroundCheckpointAsync(ct);
 
-        await RunCheckpointWithInterceptorsAsync(ct);
+        await RunCheckpointWithInterceptorsAsync(origin, ct);
         if (!HasCheckpointWorkPending())
             _checkpoints?.ClearDeferredCheckpointRequest();
     }
 
-    private async ValueTask<bool> RunCheckpointWithInterceptorsAsync(CancellationToken ct)
+    private async ValueTask<bool> RunCheckpointWithInterceptorsAsync(
+        StorageCheckpointOriginRaw origin,
+        CancellationToken ct)
     {
         if (_checkpoints is null || _checkpointAction is null)
             return false;
@@ -2394,10 +2727,10 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                     async innerCt =>
                     {
                         checkpointRan = true;
-                        await _checkpointAction(innerCt);
+                        await _checkpointAction(origin, innerCt);
                     },
                     ct);
-                if (await TryFinalizeCheckpointAsync(ct))
+                if (await TryFinalizeCheckpointAsync(origin, ct))
                     checkpointRan = true;
                 checkpointSucceeded = checkpointRan;
             }
@@ -2413,10 +2746,10 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                 async innerCt =>
                 {
                     checkpointRan = true;
-                    await _checkpointAction(innerCt);
+                    await _checkpointAction(origin, innerCt);
                 },
                 ct);
-            if (await TryFinalizeCheckpointAsync(ct))
+            if (await TryFinalizeCheckpointAsync(origin, ct))
                 checkpointRan = true;
         }
 
@@ -2446,8 +2779,11 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                 return;
             }
 
-            if (_checkpoints.TryGetMinimumRetainedWalOffset(out _) && _wal.IsCheckpointCopyComplete)
+            if (_checkpoints.TryGetMinimumRetainedWalOffset(out _) &&
+                _wal.IsCheckpointCopyComplete)
+            {
                 return;
+            }
         }
     }
 
@@ -2471,10 +2807,14 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                     frameCount,
                     async innerCt =>
                     {
-                        checkpointRan = await RunCheckpointStepCoreAsync(innerCt);
+                        checkpointRan = await RunCheckpointStepCoreAsync(
+                            StorageCheckpointOriginRaw.BackgroundAuto,
+                            innerCt);
                     },
                     ct);
-                if (await TryFinalizeCheckpointAsync(ct))
+                if (await TryFinalizeCheckpointAsync(
+                        StorageCheckpointOriginRaw.BackgroundAuto,
+                        ct))
                     checkpointRan = true;
                 checkpointSucceeded = checkpointRan;
             }
@@ -2489,68 +2829,137 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                 frameCount,
                 async innerCt =>
                 {
-                    checkpointRan = await RunCheckpointStepCoreAsync(innerCt);
+                    checkpointRan = await RunCheckpointStepCoreAsync(
+                        StorageCheckpointOriginRaw.BackgroundAuto,
+                        innerCt);
                 },
                 ct);
-            if (await TryFinalizeCheckpointAsync(ct))
+            if (await TryFinalizeCheckpointAsync(
+                    StorageCheckpointOriginRaw.BackgroundAuto,
+                    ct))
                 checkpointRan = true;
         }
 
         return checkpointRan;
     }
 
-    private async ValueTask RunCheckpointCoreAsync(CancellationToken ct)
+    private async ValueTask RunCheckpointCoreAsync(
+        StorageCheckpointOriginRaw origin,
+        CancellationToken ct)
     {
         if (_walIndex.FrameCount == 0 && !_wal.HasPendingCheckpoint)
+        {
+            _checkpoints?.SetRuntimePhaseUnlessFaulted(StorageCheckpointPhaseRaw.Idle);
             return;
+        }
 
         bool wasCopyComplete = _wal.IsCheckpointCopyComplete;
         if (!wasCopyComplete)
         {
-            await _wal.CheckpointAsync(_device, PageCount, ct, allowFinalize: false);
-            if (_wal.IsCheckpointCopyComplete)
-                await RefreshStateAfterCheckpointCompletionAsync(ct);
+            ReportRuntimeCheckpointWorkStartedOrChanged(
+                origin,
+                StorageCheckpointPhaseRaw.Copying);
+            _checkpoints?.SetRuntimePhase(StorageCheckpointPhaseRaw.Copying);
+            try
+            {
+                await _wal.CheckpointAsync(_device, PageCount, ct, allowFinalize: false);
+                if (_wal.IsCheckpointCopyComplete)
+                    await RefreshStateAfterCheckpointCompletionAsync(ct);
+                UpdateCheckpointRuntimePhaseAfterCopy();
+            }
+            catch (Exception ex)
+            {
+                CompleteRuntimeCheckpoint(ex);
+                _checkpoints?.SetRuntimePhase(StorageCheckpointPhaseRaw.Faulted);
+                throw;
+            }
+        }
+        else
+        {
+            UpdateCheckpointRuntimePhaseAfterCopy();
         }
     }
 
-    private async ValueTask<bool> RunCheckpointStepCoreAsync(CancellationToken ct)
+    private async ValueTask<bool> RunCheckpointStepCoreAsync(
+        StorageCheckpointOriginRaw origin,
+        CancellationToken ct)
     {
         if (_walIndex.FrameCount == 0 && !_wal.HasPendingCheckpoint)
+        {
+            _checkpoints?.SetRuntimePhaseUnlessFaulted(StorageCheckpointPhaseRaw.Idle);
             return false;
+        }
 
         bool wasCopyComplete = _wal.IsCheckpointCopyComplete;
         if (wasCopyComplete)
-            return false;
-
-        bool completed = await _wal.CheckpointStepAsync(
-            _device,
-            PageCount,
-            _options.AutoCheckpointMaxPagesPerStep,
-            ct,
-            allowFinalize: false);
-
-        if (completed || _wal.IsCheckpointCopyComplete)
-            await RefreshStateAfterCheckpointCompletionAsync(ct);
-
-        return true;
-    }
-
-    private async ValueTask<bool> TryFinalizeCheckpointAsync(CancellationToken ct)
-    {
-        if (_checkpoints is null ||
-            _checkpoints.TryGetMinimumRetainedWalOffset(out _) ||
-            !_wal.HasPendingCheckpoint ||
-            !_wal.IsCheckpointCopyComplete)
         {
+            UpdateCheckpointRuntimePhaseAfterCopy();
             return false;
         }
 
-        IDisposable? checkpointBarrier = _transactions is not null
-            ? await _transactions.AcquireCheckpointBarrierAsync(ct)
-            : null;
+        ReportRuntimeCheckpointWorkStartedOrChanged(
+            origin,
+            StorageCheckpointPhaseRaw.Copying);
+        _checkpoints?.SetRuntimePhase(StorageCheckpointPhaseRaw.Copying);
+        try
+        {
+            bool completed = await _wal.CheckpointStepAsync(
+                _device,
+                PageCount,
+                _options.AutoCheckpointMaxPagesPerStep,
+                ct,
+                allowFinalize: false);
+
+            if (completed || _wal.IsCheckpointCopyComplete)
+                await RefreshStateAfterCheckpointCompletionAsync(ct);
+
+            UpdateCheckpointRuntimePhaseAfterCopy();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            CompleteRuntimeCheckpoint(ex);
+            _checkpoints?.SetRuntimePhase(StorageCheckpointPhaseRaw.Faulted);
+            throw;
+        }
+    }
+
+    private async ValueTask<bool> TryFinalizeCheckpointAsync(
+        StorageCheckpointOriginRaw origin,
+        CancellationToken ct)
+    {
+        if (_checkpoints is null)
+            return false;
+        if (!_wal.HasPendingCheckpoint)
+        {
+            PublishRuntimeCheckpointChanged(StorageCheckpointPhaseRaw.Idle);
+            _checkpoints.SetRuntimePhaseUnlessFaulted(StorageCheckpointPhaseRaw.Idle);
+            return false;
+        }
+        if (!_wal.IsCheckpointCopyComplete)
+        {
+            PublishRuntimeCheckpointChanged(StorageCheckpointPhaseRaw.Copying);
+            _checkpoints.SetRuntimePhaseUnlessFaulted(StorageCheckpointPhaseRaw.Copying);
+            return false;
+        }
+        if (_checkpoints.TryGetMinimumRetainedWalOffset(out _))
+        {
+            PublishRuntimeCheckpointChanged(
+                StorageCheckpointPhaseRaw.CopyCompleteAwaitingReaders);
+            _checkpoints.SetRuntimePhaseUnlessFaulted(
+                StorageCheckpointPhaseRaw.CopyCompleteAwaitingReaders);
+            return false;
+        }
+
+        PublishRuntimeCheckpointChanged(StorageCheckpointPhaseRaw.Requested);
+        _checkpoints.SetRuntimePhaseUnlessFaulted(StorageCheckpointPhaseRaw.Requested);
+        IDisposable? checkpointBarrier = null;
 
         try
         {
+            checkpointBarrier = _transactions is not null
+                ? await _transactions.AcquireCheckpointBarrierAsync(ct)
+                : null;
             bool finalized = false;
             int frameCount = _walIndex.FrameCount;
             await _checkpoints.RunCheckpointAsync(
@@ -2561,34 +2970,371 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                         !_wal.HasPendingCheckpoint ||
                         !_wal.IsCheckpointCopyComplete)
                     {
+                        UpdateCheckpointRuntimePhaseAfterCopy();
                         return;
                     }
 
+                    ReportRuntimeCheckpointWorkStartedOrChanged(
+                        origin,
+                        StorageCheckpointPhaseRaw.Finalizing);
+                    _checkpoints.SetRuntimePhase(StorageCheckpointPhaseRaw.Finalizing);
                     await _wal.CheckpointAsync(_device, PageCount, innerCt, allowFinalize: true);
                     ProcessCrashInjector.TripIfRequested(
                         "checkpoint-after-wal-finalize",
                         "checkpoint-after-wal-finalize");
 
                     if (!_wal.HasPendingCheckpoint)
+                    {
                         await RefreshStateAfterCheckpointCompletionAsync(innerCt);
+                        CompleteRuntimeCheckpoint(exception: null);
+                        _checkpoints.SetRuntimePhase(StorageCheckpointPhaseRaw.Idle);
+                    }
+                    else
+                    {
+                        UpdateCheckpointRuntimePhaseAfterCopy();
+                    }
 
                     finalized = true;
                 },
                 ct);
 
-            if (_checkpoints.TryGetMinimumRetainedWalOffset(out _) ||
-                !_wal.HasPendingCheckpoint ||
-                !_wal.IsCheckpointCopyComplete)
-            {
-                return finalized;
-            }
-
+            if (!finalized)
+                UpdateCheckpointRuntimePhaseAfterCopy();
             return finalized;
+        }
+        catch (Exception ex)
+        {
+            CompleteRuntimeCheckpoint(ex);
+            _checkpoints.SetRuntimePhase(StorageCheckpointPhaseRaw.Faulted);
+            throw;
         }
         finally
         {
             checkpointBarrier?.Dispose();
         }
+    }
+
+    private void UpdateCheckpointRuntimePhaseAfterCopy()
+    {
+        if (_checkpoints is null)
+            return;
+
+        StorageCheckpointPhaseRaw phase = !_wal.HasPendingCheckpoint
+            ? StorageCheckpointPhaseRaw.Idle
+            : !_wal.IsCheckpointCopyComplete
+                ? StorageCheckpointPhaseRaw.Copying
+                : _checkpoints.TryGetMinimumRetainedWalOffset(out _)
+                    ? StorageCheckpointPhaseRaw.CopyCompleteAwaitingReaders
+                    : StorageCheckpointPhaseRaw.Requested;
+
+        PublishRuntimeCheckpointChanged(phase);
+        _checkpoints.SetRuntimePhaseUnlessFaulted(phase);
+    }
+
+    private void ReportRuntimeCheckpointWorkStartedOrChanged(
+        StorageCheckpointOriginRaw origin,
+        StorageCheckpointPhaseRaw phase)
+    {
+        IStorageRuntimeDiagnosticsObserver? observer =
+            _runtimeDiagnosticsObserver;
+        object? gate = _runtimeCheckpointDiagnosticsGate;
+        if (observer is null || gate is null)
+            return;
+
+        object? capturedCorrelation = observer.TryCaptureCheckpointCorrelation(
+            origin);
+        bool drainEvents;
+        lock (gate)
+        {
+            StorageCheckpointRuntimeRawSnapshot snapshot;
+            RuntimeCheckpointDiagnosticsEventKind eventKind;
+            if (!_runtimeCheckpointActive)
+            {
+                _runtimeCheckpointActive = true;
+                _runtimeCheckpointOrigin = origin;
+                _runtimeCheckpointCompletedPageCount = null;
+                _runtimeCheckpointTotalPageCount = null;
+                UpdateRuntimeCheckpointProgress();
+                snapshot = CreateRuntimeCheckpointSnapshot(
+                    phase,
+                    StorageRuntimeOperationOutcomeRaw.Running,
+                    StorageRuntimeFailureKindRaw.None);
+                eventKind = RuntimeCheckpointDiagnosticsEventKind.Started;
+            }
+            else
+            {
+                UpdateRuntimeCheckpointProgress();
+                snapshot = CreateRuntimeCheckpointSnapshot(
+                    phase,
+                    StorageRuntimeOperationOutcomeRaw.Running,
+                    StorageRuntimeFailureKindRaw.None);
+                eventKind = RuntimeCheckpointDiagnosticsEventKind.Changed;
+            }
+
+            drainEvents = EnqueueRuntimeCheckpointDiagnosticsEventNoLock(
+                new RuntimeCheckpointDiagnosticsEvent(
+                    eventKind,
+                    snapshot,
+                    eventKind == RuntimeCheckpointDiagnosticsEventKind.Started
+                        ? capturedCorrelation
+                        : null));
+        }
+
+        if (drainEvents)
+            DrainRuntimeCheckpointDiagnosticsEvents();
+    }
+
+    private void PublishRuntimeCheckpointChanged(
+        StorageCheckpointPhaseRaw phase)
+    {
+        IStorageRuntimeDiagnosticsObserver? observer =
+            _runtimeDiagnosticsObserver;
+        object? gate = _runtimeCheckpointDiagnosticsGate;
+        if (observer is null || gate is null)
+            return;
+
+        bool drainEvents;
+        lock (gate)
+        {
+            if (!_runtimeCheckpointActive)
+                return;
+
+            UpdateRuntimeCheckpointProgress();
+            StorageCheckpointRuntimeRawSnapshot changed =
+                CreateRuntimeCheckpointSnapshot(
+                    phase,
+                    StorageRuntimeOperationOutcomeRaw.Running,
+                    StorageRuntimeFailureKindRaw.None);
+            drainEvents = EnqueueRuntimeCheckpointDiagnosticsEventNoLock(
+                new RuntimeCheckpointDiagnosticsEvent(
+                    RuntimeCheckpointDiagnosticsEventKind.Changed,
+                    changed,
+                    Correlation: null));
+        }
+
+        if (drainEvents)
+            DrainRuntimeCheckpointDiagnosticsEvents();
+    }
+
+    private void CompleteRuntimeCheckpoint(Exception? exception)
+    {
+        IStorageRuntimeDiagnosticsObserver? observer =
+            _runtimeDiagnosticsObserver;
+        object? gate = _runtimeCheckpointDiagnosticsGate;
+        if (observer is null || gate is null)
+            return;
+
+        object? capturedCorrelation = observer
+            .TryCaptureCheckpointCompletionCorrelation();
+        bool drainEvents;
+        lock (gate)
+        {
+            if (!_runtimeCheckpointActive)
+                return;
+
+            UpdateRuntimeCheckpointProgress();
+            bool canceled = exception is OperationCanceledException;
+            StorageRuntimeOperationOutcomeRaw outcome = exception is null
+                ? StorageRuntimeOperationOutcomeRaw.Succeeded
+                : canceled
+                    ? StorageRuntimeOperationOutcomeRaw.Canceled
+                    : StorageRuntimeOperationOutcomeRaw.Failed;
+            StorageRuntimeFailureKindRaw failureKind = exception is null
+                ? StorageRuntimeFailureKindRaw.None
+                : StorageRuntimeDiagnosticsObserverExtensions
+                    .ClassifyRuntimeFailure(exception);
+            StorageCheckpointPhaseRaw phase = exception is null
+                ? StorageCheckpointPhaseRaw.Idle
+                : StorageCheckpointPhaseRaw.Faulted;
+            StorageCheckpointRuntimeRawSnapshot completed =
+                CreateRuntimeCheckpointSnapshot(phase, outcome, failureKind);
+
+            _runtimeCheckpointActive = false;
+            _runtimeCheckpointOrigin = StorageCheckpointOriginRaw.Unknown;
+            _runtimeCheckpointCompletedPageCount = null;
+            _runtimeCheckpointTotalPageCount = null;
+            drainEvents = EnqueueRuntimeCheckpointDiagnosticsEventNoLock(
+                new RuntimeCheckpointDiagnosticsEvent(
+                    RuntimeCheckpointDiagnosticsEventKind.Completed,
+                    completed,
+                    capturedCorrelation));
+        }
+
+        if (drainEvents)
+            DrainRuntimeCheckpointDiagnosticsEvents();
+    }
+
+    private bool EnqueueRuntimeCheckpointDiagnosticsEventNoLock(
+        RuntimeCheckpointDiagnosticsEvent diagnosticEvent)
+    {
+        Queue<RuntimeCheckpointDiagnosticsEvent>? events =
+            _runtimeCheckpointDiagnosticsEvents;
+        if (events is null)
+            return false;
+
+        events.Enqueue(diagnosticEvent);
+        if (_runtimeCheckpointDiagnosticsDrainScheduled)
+            return false;
+
+        _runtimeCheckpointDiagnosticsDrainScheduled = true;
+        _runtimeCheckpointDiagnosticsDrainCompletion =
+            new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+        return true;
+    }
+
+    private void DrainRuntimeCheckpointDiagnosticsEvents()
+    {
+        object? gate = _runtimeCheckpointDiagnosticsGate;
+        Queue<RuntimeCheckpointDiagnosticsEvent>? events =
+            _runtimeCheckpointDiagnosticsEvents;
+        IStorageRuntimeDiagnosticsObserver? observer =
+            _runtimeDiagnosticsObserver;
+        AsyncLocal<bool>? drainContext =
+            _runtimeCheckpointDiagnosticsDrainContext;
+        if (gate is null || events is null ||
+            observer is null || drainContext is null)
+        {
+            CompleteFailedRuntimeCheckpointDiagnosticsDrain();
+            return;
+        }
+
+        bool previousDrainContext = drainContext.Value;
+        drainContext.Value = true;
+        TaskCompletionSource? completion = null;
+        try
+        {
+            while (true)
+            {
+                RuntimeCheckpointDiagnosticsEvent diagnosticEvent;
+                lock (gate)
+                {
+                    if (events.Count == 0)
+                    {
+                        _runtimeCheckpointDiagnosticsDrainScheduled = false;
+                        completion =
+                            _runtimeCheckpointDiagnosticsDrainCompletion;
+                        _runtimeCheckpointDiagnosticsDrainCompletion = null;
+                        break;
+                    }
+
+                    diagnosticEvent = events.Dequeue();
+                }
+
+                StorageCheckpointRuntimeRawSnapshot snapshot =
+                    diagnosticEvent.Snapshot;
+                switch (diagnosticEvent.Kind)
+                {
+                    case RuntimeCheckpointDiagnosticsEventKind.Started:
+                        observer.TryCheckpointStarted(
+                            in snapshot,
+                            diagnosticEvent.Correlation);
+                        break;
+                    case RuntimeCheckpointDiagnosticsEventKind.Changed:
+                        observer.TryCheckpointChanged(in snapshot);
+                        break;
+                    case RuntimeCheckpointDiagnosticsEventKind.Completed:
+                        observer.TryCheckpointCompleted(
+                            in snapshot,
+                            diagnosticEvent.Correlation);
+                        break;
+                }
+            }
+        }
+        catch
+        {
+            CompleteFailedRuntimeCheckpointDiagnosticsDrain();
+        }
+        finally
+        {
+            drainContext.Value = previousDrainContext;
+            completion?.TrySetResult();
+        }
+    }
+
+    private void CompleteFailedRuntimeCheckpointDiagnosticsDrain()
+    {
+        object? gate = _runtimeCheckpointDiagnosticsGate;
+        Queue<RuntimeCheckpointDiagnosticsEvent>? events =
+            _runtimeCheckpointDiagnosticsEvents;
+        if (gate is null || events is null)
+            return;
+
+        TaskCompletionSource? completion;
+        lock (gate)
+        {
+            events.Clear();
+            _runtimeCheckpointDiagnosticsDrainScheduled = false;
+            completion = _runtimeCheckpointDiagnosticsDrainCompletion;
+            _runtimeCheckpointDiagnosticsDrainCompletion = null;
+        }
+
+        completion?.TrySetResult();
+    }
+
+    private ValueTask WaitForRuntimeCheckpointDiagnosticsDrainAsync()
+    {
+        object? gate = _runtimeCheckpointDiagnosticsGate;
+        if (gate is null ||
+            _runtimeCheckpointDiagnosticsDrainContext?.Value == true)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        lock (gate)
+        {
+            Task? pending =
+                _runtimeCheckpointDiagnosticsDrainCompletion?.Task;
+            return pending is null
+                ? ValueTask.CompletedTask
+                : new ValueTask(pending);
+        }
+    }
+
+    private void UpdateRuntimeCheckpointProgress()
+    {
+        if (_wal is not IWalCheckpointRuntimeSnapshotProvider provider ||
+            !provider.TryGetCheckpointProgressSnapshot(
+                out WalCheckpointProgressRawSnapshot progress))
+        {
+            return;
+        }
+
+        _runtimeCheckpointCompletedPageCount = progress.CompletedPageCount;
+        _runtimeCheckpointTotalPageCount = progress.TotalPageCount;
+    }
+
+    private StorageCheckpointRuntimeRawSnapshot CreateRuntimeCheckpointSnapshot(
+        StorageCheckpointPhaseRaw phase,
+        StorageRuntimeOperationOutcomeRaw outcome,
+        StorageRuntimeFailureKindRaw failureKind)
+    {
+        bool activeReaders = phase ==
+                StorageCheckpointPhaseRaw.CopyCompleteAwaitingReaders ||
+            (_wal.IsCheckpointCopyComplete &&
+             _checkpoints?.TryGetMinimumRetainedWalOffset(out _) == true);
+        bool newerCommits = _wal is IWalCheckpointRuntimeSnapshotProvider provider &&
+            provider.TryGetCheckpointProgressSnapshot(
+                out WalCheckpointProgressRawSnapshot progress) &&
+            progress.HasNewerCommits;
+        StorageCheckpointRetentionReasonRaw retentionReason =
+            (activeReaders, newerCommits) switch
+            {
+                (true, true) =>
+                    StorageCheckpointRetentionReasonRaw.ActiveReadersAndNewerCommits,
+                (true, false) => StorageCheckpointRetentionReasonRaw.ActiveReaders,
+                (false, true) => StorageCheckpointRetentionReasonRaw.NewerCommits,
+                _ => StorageCheckpointRetentionReasonRaw.None,
+            };
+
+        return new StorageCheckpointRuntimeRawSnapshot(
+            phase,
+            _runtimeCheckpointOrigin,
+            _runtimeCheckpointCompletedPageCount,
+            _runtimeCheckpointTotalPageCount,
+            retentionReason,
+            outcome,
+            failureKind);
     }
 
     private async ValueTask RefreshStateAfterCheckpointCompletionAsync(CancellationToken ct)
@@ -2646,42 +3392,85 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
         if (_isSnapshotReader)
         {
-            if (_ownsPageReadProviders)
-                await DisposePageReadProviderAsync();
+            try
+            {
+                if (_ownsPageReadProviders)
+                    await DisposePageReadProviderAsync();
+            }
+            finally
+            {
+                _buffers.DisposeRuntimeDiagnostics();
+            }
             return; // Snapshot readers don't own resources
         }
 
-        ValueTask backgroundCheckpointShutdown = _checkpoints is not null
-            ? _checkpoints.StopAndWaitForBackgroundCheckpointAsync()
-            : ValueTask.CompletedTask;
-
-        if (GetCurrentTransaction() is not null || _transactions?.InTransaction == true)
-            await RollbackAsync();
-
-        await backgroundCheckpointShutdown;
-
-        // Final checkpoint before close
-        if (_walIndex.FrameCount > 0)
+        try
         {
-            try { await CheckpointAsync(); } catch { }
+            ValueTask backgroundCheckpointShutdown = _checkpoints is not null
+                ? _checkpoints.StopAndWaitForBackgroundCheckpointAsync()
+                : ValueTask.CompletedTask;
+            await RollbackAndWaitForBackgroundCheckpointShutdownAsync(
+                backgroundCheckpointShutdown);
+
+            // Final checkpoint before close
+            if (_walIndex.FrameCount > 0)
+            {
+                try
+                {
+                    await CheckpointAsync(StorageCheckpointOriginRaw.Shutdown);
+                }
+                catch
+                {
+                }
+            }
+
+            // Delete WAL file on clean close
+            await _wal.CloseAndDeleteAsync();
+
+            if (_ownsPageReadProviders)
+                await DisposePageReadProviderAsync();
+
+            if (_device is IAsyncDisposable asyncDisposable)
+                await asyncDisposable.DisposeAsync();
+            else
+                _device.Dispose();
+
+            _checkpoints?.Dispose();
+            _transactions?.Dispose();
         }
-
-        // Delete WAL file on clean close
-        await _wal.CloseAndDeleteAsync();
-
-        if (_ownsPageReadProviders)
-            await DisposePageReadProviderAsync();
-
-        if (_device is IAsyncDisposable asyncDisposable)
-            await asyncDisposable.DisposeAsync();
-        else
-            _device.Dispose();
-
-        _checkpoints?.Dispose();
-        _transactions?.Dispose();
+        finally
+        {
+            try
+            {
+                await WaitForRuntimeCheckpointDiagnosticsDrainAsync();
+            }
+            finally
+            {
+                try
+                {
+                    TryReportSealedStorageDeviceIo();
+                }
+                finally
+                {
+                    _buffers.DisposeRuntimeDiagnostics();
+                }
+            }
+        }
     }
 
-    public async ValueTask SaveToFileAsync(string filePath, CancellationToken ct = default)
+    public ValueTask SaveToFileAsync(string filePath, CancellationToken ct = default)
+        => SaveToFileCoreAsync(filePath, ct, observer: null);
+
+    internal ValueTask SaveToFileAsync(
+        string filePath,
+        CancellationToken ct,
+        IPagerSaveToFileProgressObserver? observer)
+        => SaveToFileCoreAsync(filePath, ct, observer);
+
+    private async ValueTask SaveToFileCoreAsync(
+        string filePath,
+        CancellationToken ct,
+        IPagerSaveToFileProgressObserver? observer)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
 
@@ -2692,10 +3481,17 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         if (ActiveReaderCount > 0)
             throw new InvalidOperationException("Cannot save while reader snapshots are active.");
 
-        await WaitForBackgroundCheckpointAsync(ct);
+        bool checkpointingReported = observer is not null &&
+            await WaitForBackgroundCheckpointWithProgressAsync(observer, ct);
+        if (observer is null)
+            await WaitForBackgroundCheckpointAsync(ct);
 
         if (_walIndex.FrameCount > 0)
-            await CheckpointAsync(ct);
+        {
+            if (!checkpointingReported)
+                observer.TryReportPhase(PagerSaveToFilePhase.Checkpointing);
+            await CheckpointAsync(StorageCheckpointOriginRaw.Backup, ct);
+        }
 
         long logicalLength = Math.Max((long)PageCount * PageConstants.PageSize, PageConstants.PageSize);
         string destinationPath = Path.GetFullPath(filePath);
@@ -2716,6 +3512,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                              bufferSize: buffer.Length,
                              useAsync: true))
             {
+                observer.TryReportPhase(PagerSaveToFilePhase.Copying);
                 await StorageDeviceCopyBatcher.CopyDeviceRangeToStreamAsync(
                     _device,
                     sourceOffset: 0,
@@ -2727,6 +3524,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
                 await stream.FlushAsync(ct);
             }
 
+            observer.TryReportPhase(PagerSaveToFilePhase.Staging);
             File.Move(tempPath, destinationPath, overwrite: true);
         }
         catch
@@ -2751,22 +3549,112 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
         if (_isSnapshotReader)
         {
-            if (_ownsPageReadProviders)
-                DisposePageReadProvider();
+            try
+            {
+                if (_ownsPageReadProviders)
+                    DisposePageReadProvider();
+            }
+            finally
+            {
+                _buffers.DisposeRuntimeDiagnostics();
+            }
             return;
         }
 
-        Task? backgroundCheckpointShutdown =
-            _checkpoints?.StopAndWaitForBackgroundCheckpointAsync().AsTask();
+        try
+        {
+            Task? backgroundCheckpointShutdown =
+                _checkpoints?.StopAndWaitForBackgroundCheckpointAsync().AsTask();
+            RollbackAndWaitForBackgroundCheckpointShutdownAsync(
+                    backgroundCheckpointShutdown is null
+                        ? ValueTask.CompletedTask
+                        : new ValueTask(backgroundCheckpointShutdown))
+                .AsTask()
+                .GetAwaiter()
+                .GetResult();
+            if (_ownsPageReadProviders)
+                DisposePageReadProvider();
+            _device.Dispose();
+            _checkpoints?.Dispose();
+            _transactions?.Dispose();
+        }
+        finally
+        {
+            try
+            {
+                WaitForRuntimeCheckpointDiagnosticsDrainAsync()
+                    .AsTask()
+                    .GetAwaiter()
+                    .GetResult();
+            }
+            finally
+            {
+                try
+                {
+                    TryReportSealedStorageDeviceIo();
+                }
+                finally
+                {
+                    _buffers.DisposeRuntimeDiagnostics();
+                }
+            }
+        }
+    }
 
-        if (GetCurrentTransaction() is not null || _transactions?.InTransaction == true)
-            RollbackAsync().AsTask().GetAwaiter().GetResult();
-        backgroundCheckpointShutdown?.GetAwaiter().GetResult();
-        if (_ownsPageReadProviders)
-            DisposePageReadProvider();
-        _device.Dispose();
-        _checkpoints?.Dispose();
-        _transactions?.Dispose();
+    private void TryReportSealedStorageDeviceIo()
+    {
+        try
+        {
+            if (_storageIoRuntimeDiagnostics?.TrySealPhysicalIo(
+                    out StorageDeviceIoRuntimeRawSnapshot snapshot) == true)
+            {
+                _runtimeDiagnosticsObserver.TryStorageDeviceIoSealed(in snapshot);
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private async ValueTask RollbackAndWaitForBackgroundCheckpointShutdownAsync(
+        ValueTask backgroundCheckpointShutdown)
+    {
+        Exception? rollbackFailure = null;
+        try
+        {
+            if (GetCurrentTransaction() is not null ||
+                _transactions?.InTransaction == true)
+            {
+                Func<ValueTask>? rollbackForTests = DisposeRollbackForTests;
+                if (rollbackForTests is null)
+                    await RollbackAsync();
+                else
+                    await rollbackForTests();
+            }
+        }
+        catch (Exception ex)
+        {
+            rollbackFailure = ex;
+        }
+
+        Exception? shutdownFailure = null;
+        try
+        {
+            await backgroundCheckpointShutdown;
+        }
+        catch (Exception ex)
+        {
+            shutdownFailure = ex;
+        }
+
+        if (rollbackFailure is not null)
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo
+                .Capture(rollbackFailure)
+                .Throw();
+        if (shutdownFailure is not null)
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo
+                .Capture(shutdownFailure)
+                .Throw();
     }
 
     private void ScheduleBackgroundCheckpointIfNeeded()
@@ -2798,6 +3686,20 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         return _checkpoints.WaitForBackgroundCheckpointAsync(ct);
     }
 
+    private ValueTask<bool> WaitForBackgroundCheckpointWithProgressAsync(
+        IPagerSaveToFileProgressObserver observer,
+        CancellationToken ct)
+    {
+        if (_isSnapshotReader ||
+            _checkpoints is null ||
+            _options.AutoCheckpointExecutionMode != AutoCheckpointExecutionMode.Background)
+        {
+            return new ValueTask<bool>(false);
+        }
+
+        return _checkpoints.WaitForBackgroundCheckpointWithProgressAsync(observer, ct);
+    }
+
     private static long EstimateCommittedWalBytes(int frameCount)
     {
         if (frameCount <= 0)
@@ -2815,14 +3717,37 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
         if (_transactions.HasLogicalConflict(tx.LogicalReadKeys, tx.StartVersion, out LogicalConflictKey conflictKey))
         {
-            throw new CSharpDbConflictException(
+            throw CreateTerminalExplicitConflictException(
                 $"Transaction conflict detected while validating logical key {conflictKey}. The transaction must be retried.");
         }
 
         if (_transactions.HasLogicalRangeConflict(tx.LogicalReadRanges, tx.StartVersion, out conflictKey))
         {
-            throw new CSharpDbConflictException(
+            throw CreateTerminalExplicitConflictException(
                 $"Transaction conflict detected while validating logical range containing {conflictKey}. The transaction must be retried.");
+        }
+    }
+
+    private CSharpDbConflictException CreateTerminalExplicitConflictException(
+        string message)
+    {
+        SaturatingIncrementRuntimeCounter(ref _terminalExplicitConflictCount);
+        return new CSharpDbConflictException(message);
+    }
+
+    private static void SaturatingIncrementRuntimeCounter(ref long counter)
+    {
+        while (true)
+        {
+            long current = Interlocked.Read(ref counter);
+            if (current == long.MaxValue)
+                return;
+
+            if (Interlocked.CompareExchange(ref counter, current + 1, current) ==
+                current)
+            {
+                return;
+            }
         }
     }
 

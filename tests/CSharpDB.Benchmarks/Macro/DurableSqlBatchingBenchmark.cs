@@ -14,6 +14,8 @@ namespace CSharpDB.Benchmarks.Macro;
 /// </summary>
 public static class DurableSqlBatchingBenchmark
 {
+    private const string CreateBenchTableSql =
+        "CREATE TABLE bench (id BIGINT PRIMARY KEY, value INTEGER, text_col TEXT, category TEXT)";
     private const string CreateValueIndexSql = "CREATE INDEX idx_bench_value ON bench(value)";
     private const string CreateCategoryIndexSql = "CREATE INDEX idx_bench_category ON bench(category)";
     private const string CreateTextColIndexSql = "CREATE INDEX idx_bench_text_col ON bench(text_col)";
@@ -344,7 +346,7 @@ public static class DurableSqlBatchingBenchmark
         DatabaseOptions options = CreateOptions(scenario.Preset);
 
         await using var bench = await BenchmarkDatabase.CreateWithSchemaAsync(
-            "CREATE TABLE bench (id INTEGER PRIMARY KEY, value INTEGER, text_col TEXT, category TEXT)",
+            CreateBenchTableSql,
             options);
 
         foreach (string createIndexSql in scenario.Indexes.CreateStatements)

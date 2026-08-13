@@ -1,4 +1,5 @@
 using CSharpDB.Execution;
+using CSharpDB.Observability;
 using CSharpDB.Primitives;
 using System.Runtime.ExceptionServices;
 using SqlBitString = CSharpDB.Client.Models.SqlBitString;
@@ -12,12 +13,18 @@ public sealed class ForwardOnlyQueryCursor : IAsyncDisposable
 {
     private readonly QueryResult _result;
     private readonly Func<ValueTask>? _onDispose;
+    private readonly CSharpDbDeferredDiagnosticBoundary? _deferredBoundary;
+    private int _released;
     private int _disposed;
 
-    internal ForwardOnlyQueryCursor(QueryResult result, Func<ValueTask>? onDispose = null)
+    internal ForwardOnlyQueryCursor(
+        QueryResult result,
+        Func<ValueTask>? onDispose = null,
+        CSharpDbDeferredDiagnosticBoundary? deferredBoundary = null)
     {
         _result = result;
         _onDispose = onDispose;
+        _deferredBoundary = deferredBoundary;
         ColumnNames = result.Schema.Select(column => column.Name).ToArray();
     }
 
@@ -29,10 +36,49 @@ public sealed class ForwardOnlyQueryCursor : IAsyncDisposable
         ThrowIfDisposed();
 
         var rows = new List<object?[]>(maxRows);
-        while (rows.Count < maxRows && await _result.MoveNextAsync(ct))
-            rows.Add(ToObjects(_result.Schema, _result.Current));
+        bool terminal = false;
+        IDisposable? boundaryScope = Volatile.Read(ref _released) == 0
+            ? _deferredBoundary?.Enter()
+            : null;
+        try
+        {
+            while (rows.Count < maxRows)
+            {
+                if (!await _result.MoveNextAsync(ct))
+                {
+                    terminal = true;
+                    break;
+                }
 
-        return rows;
+                rows.Add(ToObjects(_result.Schema, _result.Current));
+            }
+
+            return rows;
+        }
+        catch
+        {
+            terminal = true;
+            throw;
+        }
+        finally
+        {
+            if (terminal)
+            {
+                try
+                {
+                    await ReleaseAsync();
+                }
+                finally
+                {
+                    boundaryScope?.Dispose();
+                    _deferredBoundary?.Dispose();
+                }
+            }
+            else
+            {
+                boundaryScope?.Dispose();
+            }
+        }
     }
 
     public async ValueTask DisposeAsync()
@@ -40,6 +86,9 @@ public sealed class ForwardOnlyQueryCursor : IAsyncDisposable
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
+        IDisposable? boundaryScope = Volatile.Read(ref _released) == 0
+            ? _deferredBoundary?.Enter()
+            : null;
         Exception? resultDisposeException = null;
         try
         {
@@ -52,16 +101,29 @@ public sealed class ForwardOnlyQueryCursor : IAsyncDisposable
 
         try
         {
-            if (_onDispose is not null)
-                await _onDispose();
+            await ReleaseAsync();
         }
         catch (Exception releaseException) when (resultDisposeException is not null)
         {
             throw new AggregateException(resultDisposeException, releaseException);
         }
+        finally
+        {
+            boundaryScope?.Dispose();
+            _deferredBoundary?.Dispose();
+        }
 
         if (resultDisposeException is not null)
             ExceptionDispatchInfo.Capture(resultDisposeException).Throw();
+    }
+
+    private async ValueTask ReleaseAsync()
+    {
+        if (Interlocked.Exchange(ref _released, 1) != 0)
+            return;
+
+        if (_onDispose is not null)
+            await _onDispose();
     }
 
     private void ThrowIfDisposed()

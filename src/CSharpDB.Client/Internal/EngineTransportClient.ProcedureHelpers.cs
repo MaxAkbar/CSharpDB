@@ -106,7 +106,7 @@ internal sealed partial class EngineTransportClient
         return bound;
     }
 
-    private static async Task<ProcedureStatementExecutionResult> ExecuteSingleStatementWithArgumentsAsync(
+    private async Task<ProcedureStatementExecutionResult> ExecuteSingleStatementWithArgumentsAsync(
         Database db,
         int statementIndex,
         string sql,
@@ -115,7 +115,7 @@ internal sealed partial class EngineTransportClient
     {
         var stopwatch = Stopwatch.StartNew();
         string resolvedSql = SubstituteSqlParameters(sql, args);
-        var result = await ExecuteQueryAsync(db, resolvedSql, ct);
+        var result = await ExecuteQueryAsync(db, resolvedSql, ct, observabilitySql: sql);
         stopwatch.Stop();
 
         return new ProcedureStatementExecutionResult

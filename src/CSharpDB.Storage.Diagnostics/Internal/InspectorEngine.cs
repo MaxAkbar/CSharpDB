@@ -85,6 +85,8 @@ internal static class InspectorEngine
         bool captureLeafPayload,
         CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
+
         if (!File.Exists(databasePath))
             throw new FileNotFoundException($"Database file '{databasePath}' not found.", databasePath);
 
@@ -204,6 +206,8 @@ internal static class InspectorEngine
 
         for (uint pageId = 0; pageId < physicalPageCount; pageId++)
         {
+            ct.ThrowIfCancellationRequested();
+
             byte[]? pageBytes = null;
             if (walOverlay is not null &&
                 walOverlay.Pages.TryGetValue(pageId, out byte[]? walPageBytes))
@@ -240,12 +244,12 @@ internal static class InspectorEngine
                 continue;
             }
 
-            ParsePageResult parsed = ParsePage(pageId, pageBytes, captureLeafPayload);
+            ParsePageResult parsed = ParsePage(pageId, pageBytes, captureLeafPayload, ct);
             pages[pageId] = parsed.Page;
             issues.AddRange(parsed.Issues);
         }
 
-        ValidateOverflowReferences(pages, physicalPageCount, issues);
+        ValidateOverflowReferences(pages, physicalPageCount, issues, ct);
 
         return new DatabaseSnapshot
         {
@@ -259,7 +263,11 @@ internal static class InspectorEngine
 
     internal static async ValueTask<byte[]?> ReadPageBytesAsync(string databasePath, uint pageId, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
+
         CommittedWalOverlay? walOverlay = await TryReadCommittedWalOverlayAsync(databasePath, ct);
+        ct.ThrowIfCancellationRequested();
+
         if (walOverlay is { CommittedPageCount: > 0 })
         {
             if (pageId >= walOverlay.CommittedPageCount)
@@ -291,8 +299,39 @@ internal static class InspectorEngine
 
     internal readonly record struct ParsePageResult(ParsedPage Page, List<IntegrityIssue> Issues);
 
-    internal static ParsePageResult ParsePage(uint pageId, byte[] pageBytes, bool captureLeafPayload)
+    internal static List<IntegrityIssue> CopyIssues(
+        IReadOnlyList<IntegrityIssue> source,
+        CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
+
+        var copy = new List<IntegrityIssue>(source.Count);
+        for (int i = 0; i < source.Count; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            copy.Add(source[i]);
+        }
+
+        return copy;
+    }
+
+    internal static Dictionary<uint, byte[]> ResetPendingWalPages(
+        Dictionary<uint, byte[]> pendingPages,
+        CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        ArgumentNullException.ThrowIfNull(pendingPages);
+        return [];
+    }
+
+    internal static ParsePageResult ParsePage(
+        uint pageId,
+        byte[] pageBytes,
+        bool captureLeafPayload,
+        CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+
         var issues = new List<IntegrityIssue>();
         int baseOffset = PageConstants.ContentOffset(pageId);
 
@@ -463,6 +502,8 @@ internal static class InspectorEngine
 
         for (int i = 0; i < parseableCellCount; i++)
         {
+            ct.ThrowIfCancellationRequested();
+
             int ptrOffset = pointerStart + i * PageConstants.CellPointerSize;
             ushort cellOffset = BinaryPrimitives.ReadUInt16LittleEndian(pageBytes.AsSpan(ptrOffset, 2));
             cellOffsets.Add(cellOffset);
@@ -498,6 +539,8 @@ internal static class InspectorEngine
 
         for (int i = 0; i < parseableCellCount; i++)
         {
+            ct.ThrowIfCancellationRequested();
+
             ushort cellOffset = cellOffsets[i];
             if (cellOffset < baseOffset || cellOffset >= PageConstants.PageSize)
                 continue;
@@ -674,6 +717,8 @@ internal static class InspectorEngine
         {
             for (int i = 1; i < leafCells.Count; i++)
             {
+                ct.ThrowIfCancellationRequested();
+
                 long? prev = leafCells[i - 1].Key;
                 long? curr = leafCells[i].Key;
                 if (prev.HasValue && curr.HasValue && prev.Value > curr.Value)
@@ -715,14 +760,20 @@ internal static class InspectorEngine
         return new ParsePageResult(parsedPage, issues);
     }
 
-    private static void ValidateOverflowReferences(
+    internal static void ValidateOverflowReferences(
         IReadOnlyDictionary<uint, ParsedPage> pages,
         int physicalPageCount,
-        List<IntegrityIssue> issues)
+        List<IntegrityIssue> issues,
+        CancellationToken ct)
     {
-        foreach (ParsedPage overflowPage in pages.Values.Where(
-                     static page => page.PageType == PageConstants.PageTypeOverflow))
+        ct.ThrowIfCancellationRequested();
+
+        foreach (ParsedPage overflowPage in pages.Values)
         {
+            ct.ThrowIfCancellationRequested();
+            if (overflowPage.PageType != PageConstants.PageTypeOverflow)
+                continue;
+
             uint nextPageId = overflowPage.RightChildOrNextLeaf;
             if (nextPageId != PageConstants.NullPageId && nextPageId >= physicalPageCount)
             {
@@ -737,12 +788,18 @@ internal static class InspectorEngine
             }
         }
 
-        foreach (ParsedPage leafPage in pages.Values.Where(
-                     static page => page.PageType == PageConstants.PageTypeLeaf))
+        foreach (ParsedPage leafPage in pages.Values)
         {
-            foreach (ParsedLeafCell cell in leafPage.LeafCells.Where(
-                         static cell => cell.IsOverflowPayload))
+            ct.ThrowIfCancellationRequested();
+            if (leafPage.PageType != PageConstants.PageTypeLeaf)
+                continue;
+
+            foreach (ParsedLeafCell cell in leafPage.LeafCells)
             {
+                ct.ThrowIfCancellationRequested();
+                if (!cell.IsOverflowPayload)
+                    continue;
+
                 if (cell.Payload is null)
                     continue;
 
@@ -784,6 +841,8 @@ internal static class InspectorEngine
 
                 while (pageId != PageConstants.NullPageId)
                 {
+                    ct.ThrowIfCancellationRequested();
+
                     if (pageId >= physicalPageCount)
                     {
                         issues.Add(new IntegrityIssue
@@ -868,8 +927,11 @@ internal static class InspectorEngine
         IReadOnlyDictionary<uint, ParsedPage> pages,
         int physicalPageCount,
         List<IntegrityIssue> issues,
-        string scope)
+        string scope,
+        CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
+
         var visited = new HashSet<uint>();
         if (rootPageId == PageConstants.NullPageId)
             return visited;
@@ -879,6 +941,8 @@ internal static class InspectorEngine
 
         while (stack.Count > 0)
         {
+            ct.ThrowIfCancellationRequested();
+
             uint pageId = stack.Pop();
             if (!visited.Add(pageId))
                 continue;
@@ -923,6 +987,8 @@ internal static class InspectorEngine
             {
                 foreach (uint childPage in page.ChildPageReferences)
                 {
+                    ct.ThrowIfCancellationRequested();
+
                     if (childPage == PageConstants.NullPageId)
                     {
                         issues.Add(new IntegrityIssue
@@ -952,12 +1018,16 @@ internal static class InspectorEngine
         _ => "unknown",
     };
 
-    internal static string BuildHexDump(ReadOnlySpan<byte> bytes)
+    internal static string BuildHexDump(ReadOnlySpan<byte> bytes, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
+
         var sb = new System.Text.StringBuilder(bytes.Length * 4);
         const int width = 16;
         for (int i = 0; i < bytes.Length; i += width)
         {
+            ct.ThrowIfCancellationRequested();
+
             int lineLen = Math.Min(width, bytes.Length - i);
             sb.Append(i.ToString("X4"));
             sb.Append(": ");
@@ -986,12 +1056,19 @@ internal static class InspectorEngine
         return sb.ToString();
     }
 
-    internal static uint Checksum(ReadOnlySpan<byte> data)
+    internal static uint Checksum(ReadOnlySpan<byte> data, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
+
         uint sum = 0;
         int i = 0;
         for (; i + 3 < data.Length; i += 4)
+        {
+            if ((i & 0xFF) == 0)
+                ct.ThrowIfCancellationRequested();
+
             sum += BitConverter.ToUInt32(data[i..]);
+        }
         for (; i < data.Length; i++)
             sum += data[i];
         return sum;
@@ -1061,6 +1138,8 @@ internal static class InspectorEngine
         string databasePath,
         CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
+
         string walPath = databasePath + ".wal";
         if (!File.Exists(walPath))
             return null;
@@ -1105,6 +1184,8 @@ internal static class InspectorEngine
 
         for (int i = 0; i < fullFrameCount; i++)
         {
+            ct.ThrowIfCancellationRequested();
+
             long frameOffset = PageConstants.WalHeaderSize + (long)i * PageConstants.WalFrameSize;
             int frameHeaderRead = await ReadAtAsync(stream, frameOffset, frameHeader, ct);
             int framePageRead = await ReadAtAsync(stream, frameOffset + PageConstants.WalFrameHeaderSize, pageData, ct);
@@ -1122,8 +1203,8 @@ internal static class InspectorEngine
 
             uint expectedHeaderChecksum = BinaryPrimitives.ReadUInt32LittleEndian(frameHeader.AsSpan(16, 4));
             uint expectedDataChecksum = BinaryPrimitives.ReadUInt32LittleEndian(frameHeader.AsSpan(20, 4));
-            uint actualHeaderChecksum = Checksum(frameHeader.AsSpan(0, 16));
-            uint actualDataChecksum = Checksum(pageData);
+            uint actualHeaderChecksum = Checksum(frameHeader.AsSpan(0, 16), ct);
+            uint actualDataChecksum = Checksum(pageData, ct);
 
             if (actualHeaderChecksum != expectedHeaderChecksum ||
                 actualDataChecksum != expectedDataChecksum)
@@ -1139,9 +1220,12 @@ internal static class InspectorEngine
                 continue;
 
             foreach (var pending in pendingPages)
+            {
+                ct.ThrowIfCancellationRequested();
                 visiblePages[pending.Key] = pending.Value;
+            }
 
-            pendingPages.Clear();
+            pendingPages = ResetPendingWalPages(pendingPages, ct);
             committedPageCount = dbPageCount;
         }
 

@@ -1,0 +1,941 @@
+@using CSharpDB.Observability
+@using Microsoft.AspNetCore.Components.Rendering
+@inject AdminObservabilityService Observability
+@inject TabManagerService TabManager
+@implements IAsyncDisposable
+
+<div class="observability-tab">
+    <div class="toolbar observability-toolbar" aria-label="Observability refresh controls">
+        <button type="button"
+                class="toolbar-btn"
+                @onclick="RefreshAsync"
+                disabled="@State.IsRefreshing"
+                aria-label="Refresh diagnostics now">
+            <i class="bi bi-arrow-clockwise @(State.IsRefreshing ? "spin" : "")" aria-hidden="true"></i>
+            Refresh
+        </button>
+        <button type="button"
+                class="toolbar-btn @(State.IsPaused ? "primary" : "")"
+                @onclick="TogglePaused"
+                aria-pressed="@State.IsPaused">
+            <i class="bi @(State.IsPaused ? "bi-play-fill" : "bi-pause-fill")" aria-hidden="true"></i>
+            @(State.IsPaused ? "Resume" : "Pause")
+        </button>
+        <label class="observability-control">
+            <span>Refresh every</span>
+            <select value="@State.RefreshInterval.Ticks"
+                    @onchange="ChangeRefreshInterval"
+                    aria-label="Automatic refresh interval">
+                @foreach (TimeSpan interval in RefreshIntervalOptions)
+                {
+                    <option value="@interval.Ticks">@FormatRefreshInterval(interval)</option>
+                }
+            </select>
+        </label>
+        @if (State.ScopeOptions.Count > 1)
+        {
+            <label class="observability-control">
+                <span>View</span>
+                <select value="@(State.SelectedScope ?? string.Empty)"
+                        @onchange="ChangeScope"
+                        aria-label="Diagnostics aggregate or shard view">
+                    @foreach (AdminObservabilityScopeOption option in State.ScopeOptions)
+                    {
+                        <option value="@(option.Value ?? string.Empty)">
+                            @option.Label (@FormatAvailability(option.Availability))
+                        </option>
+                    }
+                </select>
+            </label>
+            @if (State.ScopeOptions.Any(static option => option.Availability != DiagnosticsAvailability.Available))
+            {
+                <span class="observability-warning">Some shard views are unavailable.</span>
+            }
+        }
+        @if (State.ShardsTruncated)
+        {
+            <span class="observability-warning" role="status">
+                <text>@(State.Runtime.StatusText).</text>
+                @if (State.ShardCapacity is int shardCapacity)
+                {
+                    <text> The selector is limited to @shardCapacity shard entries.</text>
+                }
+                @if (State.DroppedShardCount > 0)
+                {
+                    <text> @State.DroppedShardCount additional shard entries were omitted.</text>
+                }
+            </span>
+        }
+        @if (SelectedScopeMissing)
+        {
+            <span class="observability-warning" role="status">
+                The selected shard is not present in this topology response. Its previous data was cleared; aggregate data was not substituted.
+            </span>
+        }
+        @if (State.ScopeNotice is { } scopeNotice)
+        {
+            <span class="observability-warning" role="status">@scopeNotice</span>
+        }
+        <div class="toolbar-spacer"></div>
+        <div class="observability-age @GetAgeClass()" role="status" aria-live="polite" aria-atomic="true">
+            @SnapshotAgeText
+        </div>
+    </div>
+
+    <div class="observability-live-status @GetStatusClass()" role="status" aria-live="polite">
+        <i class="bi @GetStatusIcon()" aria-hidden="true"></i>
+        <span>@State.StatusText</span>
+        @if (State.IsPaused)
+        {
+            <strong>Automatic refresh paused.</strong>
+        }
+        @if (State.IsStale)
+        {
+            <strong>Displayed data is stale.</strong>
+        }
+    </div>
+
+    @if (State.IsLoading && State.Runtime.Value is null)
+    {
+        <div class="observability-empty" role="status">
+            <span class="spinner" aria-hidden="true"></span>
+            Loading runtime diagnostics…
+        </div>
+    }
+    else
+    {
+        <div class="observability-layout">
+            <nav class="observability-rail" aria-label="Observability sections">
+                <a href="#observability-overview"><i class="bi bi-speedometer2" aria-hidden="true"></i> Overview</a>
+                <a href="#observability-queries"><i class="bi bi-terminal" aria-hidden="true"></i> Queries</a>
+                <a href="#observability-sessions"><i class="bi bi-people" aria-hidden="true"></i> Sessions</a>
+                <a href="#observability-storage"><i class="bi bi-device-hdd" aria-hidden="true"></i> Storage / WAL</a>
+                <a href="#observability-maintenance"><i class="bi bi-tools" aria-hidden="true"></i> Maintenance</a>
+            </nav>
+
+            <main class="observability-content">
+                <section id="observability-overview" aria-labelledby="observability-overview-title">
+                    <header class="observability-section-heading">
+                        <div>
+                            <span class="observability-eyebrow">Live overview</span>
+                            <h2 id="observability-overview-title">Runtime health and activity</h2>
+                        </div>
+                        <span class="observability-availability">@FormatAvailability(State.Runtime.Availability)</span>
+                    </header>
+
+                    @if (State.Runtime.Value is RuntimeDiagnosticsSnapshot runtime)
+                    {
+                        QueryDiagnosticsSummary? query = runtime.Queries.Value;
+                        ConnectionDiagnosticsSnapshot? connections = runtime.Connections.Value;
+                        HealthDiagnosticsSnapshot? health = runtime.Health.Value;
+                        WalRuntimeDiagnosticsSnapshot? overviewWal = State.Wal.Value ?? runtime.Wal.Value;
+                        AdminObservabilityMetricSample? latest = State.Samples.LastOrDefault();
+
+                        <div class="observability-card-grid">
+                            <article class="observability-card">
+                                <span>Health</span>
+                                <strong>@(health?.Readiness.ToString() ?? FormatAvailability(runtime.Health.Availability))</strong>
+                                <small>@(health is null ? "No health payload" : $"Live {health.Liveness} · {health.ReadinessReason}")</small>
+                            </article>
+                            <article class="observability-card">
+                                <span>Query rate</span>
+                                <strong>@FormatRate(latest?.QueryRatePerSecond)</strong>
+                                <small>@(query is null ? FormatAvailability(runtime.Queries.Availability) : $"{FormatCount(query.RequestCount)} total requests")</small>
+                            </article>
+                            <article class="observability-card">
+                                <span>Recent latency</span>
+                                <strong>@FormatMilliseconds(latest?.AverageLatencyMilliseconds)</strong>
+                                <small>@(State.RecentQueries.Availability == DiagnosticsAvailability.Available ? "Average of the bounded recent sample" : FormatAvailability(State.RecentQueries.Availability))</small>
+                            </article>
+                            <article class="observability-card">
+                                <span>Query errors</span>
+                                <strong>@FormatRate(latest?.ErrorRatePerSecond)</strong>
+                                <small>@(query is null ? FormatAvailability(runtime.Queries.Availability) : $"{FormatCount(query.FailedCount)} total failures")</small>
+                            </article>
+                            <article class="observability-card">
+                                <span>Active / slow</span>
+                                <strong>@(query is null ? "—" : $"{query.ActiveCount} / {query.SlowCount}")</strong>
+                                <small>@(query is null ? FormatAvailability(runtime.Queries.Availability) : "Active now / cumulative slow queries")</small>
+                            </article>
+                            <article class="observability-card">
+                                <span>Sessions / transactions</span>
+                                <strong>@FormatPair(connections?.ActiveLogicalSessions, connections?.ActiveTransactions)</strong>
+                                <small>@(connections is null ? FormatAvailability(runtime.Connections.Availability) : "Logical sessions / active transactions")</small>
+                            </article>
+                            <article class="observability-card">
+                                <span>WAL change</span>
+                                <strong>@FormatSignedByteRate(latest?.WalGrowthBytesPerSecond)</strong>
+                                <small>@(overviewWal is null ? FormatAvailability(State.Wal.Availability) : $"{FormatBytes(overviewWal.LogicalBytes)} logical WAL")</small>
+                            </article>
+                            <article class="observability-card">
+                                <span>Checkpoint age</span>
+                                <strong>@FormatAge(overviewWal?.LastSuccessfulCheckpointAtUtc)</strong>
+                                <small>@(overviewWal is null ? FormatAvailability(State.Wal.Availability) : overviewWal.CheckpointPhase.ToString())</small>
+                            </article>
+                            <article class="observability-card">
+                                <span>Maintenance</span>
+                                <strong>@(State.ActiveMaintenance.Availability == DiagnosticsAvailability.Available
+                                    ? State.ActiveMaintenance.Records.Count.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                                    : "—")</strong>
+                                <small>@ActiveMaintenanceSummary</small>
+                            </article>
+                        </div>
+
+                        <div class="observability-chart-grid">
+                            @RenderChart(
+                                "Query rate",
+                                "queries / second",
+                                State.Samples,
+                                SelectQueryRate)
+                            @RenderChart(
+                                "Recent latency",
+                                "milliseconds",
+                                State.Samples,
+                                SelectAverageLatency)
+                            @RenderChart(
+                                "Error rate",
+                                "errors / second",
+                                State.Samples,
+                                SelectErrorRate)
+                        </div>
+                        <p class="observability-footnote">
+                            Charts retain only a bounded set of short-lived Admin samples. A server restart or counter reset clears them.
+                        </p>
+                        @if (State.Runtime.FieldsTruncated)
+                        {
+                            <p class="observability-warning">Some runtime overview fields were truncated by the server.</p>
+                        }
+                    }
+                    else
+                    {
+                        @RenderUnavailable(State.Runtime.Availability, State.Runtime.StatusText)
+                    }
+                </section>
+
+                <section id="observability-queries" aria-labelledby="observability-queries-title">
+                    <header class="observability-section-heading">
+                        <div>
+                            <span class="observability-eyebrow">Queries</span>
+                            <h2 id="observability-queries-title">Active and recent work</h2>
+                        </div>
+                    </header>
+
+                    @RenderCollectionNotice(
+                        "Active queries",
+                        State.ActiveQueries.Availability,
+                        State.ActiveQueries.IsTruncated,
+                        State.ActiveQueries.FieldsTruncated,
+                        State.ActiveQueries.DroppedCount,
+                        State.ActiveQueries.StatusText)
+                    @if (State.ActiveQueries.Availability == DiagnosticsAvailability.Available)
+                    {
+                        <div class="observability-table-wrap">
+                            <table class="observability-table">
+                                <caption>Active queries. SQL text is not included.</caption>
+                                <thead>
+                                    <tr><th>Duration</th><th>Phase</th><th>Outcome</th><th>Fingerprint</th><th>Plan</th><th>Transport</th><th>Session</th><th>Trace</th><th>Detail</th></tr>
+                                </thead>
+                                <tbody>
+                                    @if (State.ActiveQueries.Records.Count == 0)
+                                    {
+                                        <tr><td colspan="9" class="observability-empty-cell">No active queries.</td></tr>
+                                    }
+                                    @foreach (ActiveQuerySnapshot item in State.ActiveQueries.Records)
+                                    {
+                                        <tr>
+                                            <td>@FormatDuration(item.Elapsed)</td>
+                                            <td>@item.Phase</td>
+                                            <td>Running</td>
+                                            <td class="mono-cell">@FormatFingerprint(item.Fingerprint)</td>
+                                            <td><button type="button" class="observability-link" @onclick="() => LoadPlanAsync(item.OperationId)">Load plan</button></td>
+                                            <td>@item.Transport</td>
+                                            <td class="mono-cell">@FormatOpaqueId(item.SessionId)</td>
+                                            <td class="mono-cell">@FormatTraceId(item.TraceId)</td>
+                                            <td><button type="button" class="observability-link sensitive" @onclick="() => RevealDetailAsync(item.OperationId)">Reveal query text</button></td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+
+                    @RenderCollectionNotice(
+                        "Recent queries",
+                        State.RecentQueries.Availability,
+                        State.RecentQueries.IsTruncated,
+                        State.RecentQueries.FieldsTruncated,
+                        State.RecentQueries.DroppedCount,
+                        State.RecentQueries.StatusText)
+                    @if (State.RecentQueries.Availability == DiagnosticsAvailability.Available)
+                    {
+                        <div class="observability-table-wrap">
+                            <table class="observability-table">
+                                <caption>Recent query outcomes. SQL text is not included.</caption>
+                                <thead>
+                                    <tr><th>Duration</th><th>Phase</th><th>Outcome</th><th>Fingerprint</th><th>Plan</th><th>Transport</th><th>Session</th><th>Trace</th><th>Detail</th></tr>
+                                </thead>
+                                <tbody>
+                                    @if (State.RecentQueries.Records.Count == 0)
+                                    {
+                                        <tr><td colspan="9" class="observability-empty-cell">No recent queries.</td></tr>
+                                    }
+                                    @foreach (RecentQuerySnapshot item in State.RecentQueries.Records)
+                                    {
+                                        <tr>
+                                            <td>@FormatDuration(item.Duration)</td>
+                                            <td>Completed</td>
+                                            <td>@item.Outcome</td>
+                                            <td class="mono-cell">@FormatFingerprint(item.Fingerprint)</td>
+                                            <td><button type="button" class="observability-link" @onclick="() => LoadPlanAsync(item.OperationId)">Load plan</button></td>
+                                            <td>@item.Transport</td>
+                                            <td class="mono-cell">@FormatOpaqueId(item.SessionId)</td>
+                                            <td class="mono-cell">@FormatTraceId(item.TraceId)</td>
+                                            <td><button type="button" class="observability-link sensitive" @onclick="() => RevealDetailAsync(item.OperationId)">Reveal query text</button></td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+
+                    @if (State.SelectedPlan.Availability == DiagnosticsAvailability.Available &&
+                         State.SelectedPlan.Value is QueryPlanDiagnosticsSnapshot plan)
+                    {
+                        <article class="observability-detail-panel" aria-labelledby="observability-plan-title">
+                            <h3 id="observability-plan-title">Selected plan summary</h3>
+                            <dl class="observability-definition-grid">
+                                <div><dt>Access path</dt><dd>@plan.AccessPath</dd></div>
+                                <div><dt>Cache hit</dt><dd>@FormatOptionalBool(plan.PlanCacheHit)</dd></div>
+                                <div><dt>Reoptimized</dt><dd>@FormatOptionalBool(plan.Reoptimized)</dd></div>
+                                <div><dt>Estimated rows</dt><dd>@FormatNullable(plan.EstimatedRows)</dd></div>
+                                <div><dt>Actual rows</dt><dd>@FormatNullable(plan.ActualRows)</dd></div>
+                                <div><dt>Plan nodes</dt><dd>@FormatNullable(plan.PlanNodeCount)</dd></div>
+                            </dl>
+                            @if (plan.PlanTruncated || State.SelectedPlan.FieldsTruncated)
+                            {
+                                <p class="observability-warning">The plan summary was truncated by the server.</p>
+                            }
+                        </article>
+                    }
+                    else if (State.HasPlanRequest &&
+                             State.SelectedPlan.Availability != DiagnosticsAvailability.Available)
+                    {
+                        @RenderUnavailable(State.SelectedPlan.Availability, State.SelectedPlan.StatusText)
+                    }
+
+                    @if (State.RevealedDetail.Availability == DiagnosticsAvailability.Available &&
+                         State.RevealedDetail.Value is QueryDetailSnapshot detail)
+                    {
+                        <article class="observability-detail-panel sensitive" aria-labelledby="observability-detail-title">
+                            <div class="observability-detail-heading">
+                                <div>
+                                    <span class="observability-eyebrow">Separately authorized</span>
+                                    <h3 id="observability-detail-title">Revealed query text</h3>
+                                </div>
+                                <button type="button" class="toolbar-btn" @onclick="ClearSensitiveDetail">Hide query text</button>
+                            </div>
+                            <p>
+                                @(detail.CaptureMode == SqlTextCaptureMode.Raw
+                                    ? "Raw captured SQL. Treat it as sensitive data."
+                                    : "Normalized diagnostic template. Literals and parameters are replaced; this is not runnable SQL.")
+                            </p>
+                            <pre class="observability-sql"><code>@detail.CapturedSqlText</code></pre>
+                            @if (detail.CaptureMode == SqlTextCaptureMode.Raw &&
+                                 !State.RevealedDetail.FieldsTruncated &&
+                                 !string.IsNullOrWhiteSpace(detail.CapturedSqlText))
+                            {
+                                <button type="button" class="toolbar-btn" @onclick="() => OpenExplainDraft(detail.CapturedSqlText!)">
+                                    <i class="bi bi-box-arrow-up-right" aria-hidden="true"></i>
+                                    Open EXPLAIN ESTIMATE draft
+                                </button>
+                                <small>The editor opens a draft only; it does not execute the query.</small>
+                            }
+                            else if (State.RevealedDetail.FieldsTruncated)
+                            {
+                                <p class="observability-warning">Truncated text cannot be handed to the query editor.</p>
+                            }
+                        </article>
+                    }
+                    else if (State.HasDetailRequest &&
+                             State.RevealedDetail.Availability != DiagnosticsAvailability.Available)
+                    {
+                        @RenderUnavailable(State.RevealedDetail.Availability, State.RevealedDetail.StatusText)
+                    }
+                </section>
+
+                <section id="observability-sessions" aria-labelledby="observability-sessions-title">
+                    <header class="observability-section-heading">
+                        <div>
+                            <span class="observability-eyebrow">Connections</span>
+                            <h2 id="observability-sessions-title">Sessions and transactions</h2>
+                        </div>
+                    </header>
+                    @RenderCollectionNotice(
+                        "Sessions",
+                        State.Sessions.Availability,
+                        State.Sessions.IsTruncated,
+                        State.Sessions.FieldsTruncated,
+                        State.Sessions.DroppedCount,
+                        State.Sessions.StatusText)
+                    @if (State.Sessions.Availability == DiagnosticsAvailability.Available)
+                    {
+                        <div class="observability-table-wrap">
+                            <table class="observability-table">
+                                <caption>Logical sessions. Client transaction bearer ids are never shown.</caption>
+                                <thead><tr><th>Session</th><th>State</th><th>Transport</th><th>Reader</th><th>Transaction</th><th>Last active</th><th>Operation</th></tr></thead>
+                                <tbody>
+                                    @if (State.Sessions.Records.Count == 0)
+                                    {
+                                        <tr><td colspan="7" class="observability-empty-cell">No sessions are currently reported.</td></tr>
+                                    }
+                                    @foreach (SessionDiagnosticsSnapshot item in State.Sessions.Records)
+                                    {
+                                        <tr>
+                                            <td class="mono-cell">@FormatOpaqueId(item.SessionId)</td>
+                                            <td>@item.State</td>
+                                            <td>@item.Transport</td>
+                                            <td>@FormatBool(item.HasActiveReader)</td>
+                                            <td>@FormatBool(item.HasActiveTransaction)</td>
+                                            <td>@FormatTimestamp(item.LastActiveAtUtc)</td>
+                                            <td class="mono-cell">@FormatOpaqueId(item.CurrentOperationId)</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                </section>
+
+                <section id="observability-storage" aria-labelledby="observability-storage-title">
+                    <header class="observability-section-heading">
+                        <div>
+                            <span class="observability-eyebrow">Runtime counters</span>
+                            <h2 id="observability-storage-title">Storage and WAL</h2>
+                        </div>
+                    </header>
+                    <div class="observability-panel-grid">
+                        <article class="observability-detail-panel">
+                            <h3>Storage</h3>
+                            @if (State.Storage.Value is StorageRuntimeDiagnosticsSnapshot storage)
+                            {
+                                <dl class="observability-definition-grid">
+                                    <div><dt>Logical size</dt><dd>@FormatBytes(storage.LogicalDatabaseBytes)</dd></div>
+                                    <div><dt>Allocated size</dt><dd>@FormatBytes(storage.AllocatedDatabaseBytes)</dd></div>
+                                    <div><dt>Page reads / writes</dt><dd>@FormatPair(storage.PageReads, storage.PageWrites)</dd></div>
+                                    <div><dt>Cache hits / misses</dt><dd>@FormatPair(storage.CacheHits, storage.CacheMisses)</dd></div>
+                                    <div><dt>Active readers / writers</dt><dd>@FormatPair(storage.ActiveReaders, storage.ActiveWriters)</dd></div>
+                                    <div><dt>Commits / conflicts</dt><dd>@FormatPair(storage.CommitCount, storage.ConflictCount)</dd></div>
+                                </dl>
+                            }
+                            else
+                            {
+                                @RenderUnavailable(State.Storage.Availability, State.Storage.StatusText)
+                            }
+                        </article>
+                        <article class="observability-detail-panel">
+                            <h3>Write-ahead log</h3>
+                            @if (State.Wal.Value is WalRuntimeDiagnosticsSnapshot wal)
+                            {
+                                <dl class="observability-definition-grid">
+                                    <div><dt>Logical / retained</dt><dd>@FormatPair(FormatBytes(wal.LogicalBytes), FormatBytes(wal.RetainedBytes))</dd></div>
+                                    <div><dt>Frames / flushes</dt><dd>@FormatPair(wal.FrameCount, wal.FlushCount)</dd></div>
+                                    <div><dt>Bytes written</dt><dd>@FormatBytes(wal.BytesWritten)</dd></div>
+                                    <div><dt>Pending commits</dt><dd>@FormatNullable(wal.PendingCommitCount)</dd></div>
+                                    <div><dt>Checkpoint</dt><dd>@wal.CheckpointPhase</dd></div>
+                                    <div><dt>Last checkpoint</dt><dd>@FormatAge(wal.LastSuccessfulCheckpointAtUtc)</dd></div>
+                                </dl>
+                            }
+                            else
+                            {
+                                @RenderUnavailable(State.Wal.Availability, State.Wal.StatusText)
+                            }
+                        </article>
+                    </div>
+                    @if (State.Storage.FieldsTruncated || State.Wal.FieldsTruncated)
+                    {
+                        <p class="observability-warning">One or more runtime storage fields were truncated by the server.</p>
+                    }
+                    <aside class="observability-cost-warning">
+                        <i class="bi bi-exclamation-triangle" aria-hidden="true"></i>
+                        <div>
+                            <strong>Need physical detail?</strong>
+                            <p>The Storage Inspector can scan database pages and expose server-local paths. It is more expensive and less private than these live counters.</p>
+                        </div>
+                        <button type="button" class="toolbar-btn" @onclick="OpenStorageInspector">Open deep Storage Inspector</button>
+                    </aside>
+                </section>
+
+                <section id="observability-maintenance" aria-labelledby="observability-maintenance-title">
+                    <header class="observability-section-heading">
+                        <div>
+                            <span class="observability-eyebrow">Operations</span>
+                            <h2 id="observability-maintenance-title">Maintenance, backup, and restore</h2>
+                        </div>
+                    </header>
+                    @RenderCollectionNotice(
+                        "Active maintenance",
+                        State.ActiveMaintenance.Availability,
+                        State.ActiveMaintenance.IsTruncated,
+                        State.ActiveMaintenance.FieldsTruncated,
+                        State.ActiveMaintenance.DroppedCount,
+                        State.ActiveMaintenance.StatusText)
+                    @if (State.ActiveMaintenance.Availability == DiagnosticsAvailability.Available)
+                    {
+                        @RenderMaintenanceTable("Active maintenance operations", State.ActiveMaintenance.Records)
+                    }
+                    @RenderCollectionNotice(
+                        "Recent maintenance",
+                        State.RecentMaintenance.Availability,
+                        State.RecentMaintenance.IsTruncated,
+                        State.RecentMaintenance.FieldsTruncated,
+                        State.RecentMaintenance.DroppedCount,
+                        State.RecentMaintenance.StatusText)
+                    @if (State.RecentMaintenance.Availability == DiagnosticsAvailability.Available)
+                    {
+                        @RenderMaintenanceTable("Recent maintenance operations", State.RecentMaintenance.Records)
+                    }
+                </section>
+            </main>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter] public bool IsActive { get; set; }
+
+    private bool _activationKnown;
+    private bool _lastActive;
+    private bool _disposed;
+
+    private static readonly TimeSpan[] StandardRefreshIntervals =
+    [
+        TimeSpan.FromMilliseconds(250),
+        TimeSpan.FromMilliseconds(500),
+        TimeSpan.FromSeconds(1),
+        TimeSpan.FromSeconds(2),
+        TimeSpan.FromSeconds(5),
+        TimeSpan.FromSeconds(10),
+        TimeSpan.FromSeconds(30),
+        TimeSpan.FromSeconds(60),
+    ];
+
+    private AdminObservabilityViewState State => Observability.Current;
+
+    private IReadOnlyList<TimeSpan> RefreshIntervalOptions
+        => StandardRefreshIntervals
+            .Where(interval => interval <= State.MaximumRefreshInterval)
+            .Append(State.RefreshInterval)
+            .Distinct()
+            .Order()
+            .ToArray();
+
+    private bool SelectedScopeMissing
+        => State.SelectedScope is not null &&
+           !State.ScopeOptions.Any(option => string.Equals(
+               option.Value,
+               State.SelectedScope,
+               StringComparison.Ordinal));
+
+    private string SnapshotAgeText
+        => State.LastSuccessfulRefreshUtc is null
+            ? "No successful snapshot"
+            : $"Snapshot age {FormatDuration(State.SnapshotAge ?? TimeSpan.Zero)}";
+
+    private string ActiveMaintenanceSummary
+        => State.ActiveMaintenance.Availability != DiagnosticsAvailability.Available
+            ? State.ActiveMaintenance.StatusText
+            : State.ActiveMaintenance.Records.FirstOrDefault() is { } operation
+            ? $"{operation.Kind} · {operation.Phase}"
+            : "No current operation";
+
+    protected override void OnInitialized()
+    {
+        Observability.StateChanged += OnObservabilityChanged;
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_activationKnown && _lastActive == IsActive)
+            return;
+
+        _activationKnown = true;
+        _lastActive = IsActive;
+        if (!IsActive)
+            Observability.ClearSensitiveDetail();
+
+        try
+        {
+            await Observability.SetActiveAsync(IsActive);
+        }
+        catch (OperationCanceledException) when (!IsActive || _disposed)
+        {
+        }
+    }
+
+    private async Task RefreshAsync()
+    {
+        try { await Observability.RefreshAsync(); }
+        catch (OperationCanceledException) when (!IsActive || _disposed) { }
+    }
+
+    private void TogglePaused() => Observability.SetPaused(!State.IsPaused);
+
+    private void ChangeRefreshInterval(ChangeEventArgs e)
+    {
+        if (long.TryParse(
+                e.Value?.ToString(),
+                System.Globalization.NumberStyles.Integer,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out long ticks))
+        {
+            Observability.SetRefreshInterval(TimeSpan.FromTicks(ticks));
+        }
+    }
+
+    private void ChangeScope(ChangeEventArgs e)
+    {
+        string? value = e.Value?.ToString();
+        value = string.IsNullOrEmpty(value) ? null : value;
+        Observability.ClearSensitiveDetail();
+        Observability.SetScope(value);
+    }
+
+    private async Task LoadPlanAsync(OpaqueDiagnosticsId operationId)
+    {
+        try { await Observability.LoadPlanAsync(operationId); }
+        catch (OperationCanceledException) when (!IsActive || _disposed) { }
+    }
+
+    private async Task RevealDetailAsync(OpaqueDiagnosticsId operationId)
+    {
+        try { await Observability.RevealQueryDetailAsync(operationId); }
+        catch (OperationCanceledException) when (!IsActive || _disposed) { }
+    }
+
+    private void ClearSensitiveDetail() => Observability.ClearSensitiveDetail();
+
+    private void OpenExplainDraft(string sql)
+        => TabManager.OpenQueryTab(BuildExplainEstimateDraft(sql));
+
+    internal static string BuildExplainEstimateDraft(string rawSql)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(rawSql);
+        return $"EXPLAIN ESTIMATE FOR {rawSql}";
+    }
+
+    private void OpenStorageInspector() => TabManager.OpenStorageTab();
+
+    private void OnObservabilityChanged()
+    {
+        if (_disposed)
+            return;
+
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private RenderFragment RenderChart(
+        string title,
+        string unit,
+        IReadOnlyList<AdminObservabilityMetricSample> samples,
+        Func<AdminObservabilityMetricSample, double?> selectValue) => builder =>
+    {
+        int sequence = 0;
+        (DateTimeOffset CapturedAtUtc, double Value)[] knownSamples = samples
+            .Select(sample => (sample.CapturedAtUtc, Value: selectValue(sample)))
+            .Where(static sample => sample.Value.HasValue)
+            .Select(static sample => (sample.CapturedAtUtc, sample.Value!.Value))
+            .ToArray();
+        double maximum = knownSamples.Length == 0 ? 0 : knownSamples.Max(static sample => sample.Value);
+        builder.OpenElement(sequence++, "figure");
+        builder.AddAttribute(sequence++, "class", "observability-chart");
+        builder.OpenElement(sequence++, "div");
+        builder.AddAttribute(sequence++, "class", "observability-chart-heading");
+        builder.OpenElement(sequence++, "strong");
+        builder.AddContent(sequence++, title);
+        builder.CloseElement();
+        builder.OpenElement(sequence++, "span");
+        builder.AddContent(sequence++, knownSamples.Length == 0 ? "No known samples" : $"{knownSamples[^1].Value:0.##} {unit}");
+        builder.CloseElement();
+        builder.CloseElement();
+        builder.OpenElement(sequence++, "div");
+        builder.AddAttribute(sequence++, "class", "observability-bars");
+        builder.AddAttribute(sequence++, "aria-hidden", "true");
+        foreach (var sample in knownSamples)
+        {
+            builder.OpenElement(sequence++, "span");
+            builder.AddAttribute(sequence++, "style", $"height:{GetBarPercent(sample.Value, maximum):0.#}%");
+            builder.CloseElement();
+        }
+        builder.CloseElement();
+        builder.OpenElement(sequence++, "figcaption");
+        builder.AddContent(sequence++, knownSamples.Length == 0
+            ? $"No known {title.ToLowerInvariant()} samples have been captured."
+            : $"{title}: {knownSamples[^1].Value:0.##} {unit}; {knownSamples.Length} known bounded samples, minimum {knownSamples.Min(static sample => sample.Value):0.##}, maximum {maximum:0.##}.");
+        builder.CloseElement();
+        builder.OpenElement(sequence++, "details");
+        builder.OpenElement(sequence++, "summary");
+        builder.AddContent(sequence++, "Chart data");
+        builder.CloseElement();
+        builder.OpenElement(sequence++, "table");
+        builder.AddAttribute(sequence++, "class", "observability-chart-data");
+        builder.OpenElement(sequence++, "thead");
+        builder.AddMarkupContent(sequence++, "<tr><th>Captured</th><th>Value</th></tr>");
+        builder.CloseElement();
+        builder.OpenElement(sequence++, "tbody");
+        foreach (var sample in knownSamples)
+        {
+            builder.OpenElement(sequence++, "tr");
+            builder.OpenElement(sequence++, "td");
+            builder.AddContent(sequence++, FormatTimestamp(sample.CapturedAtUtc));
+            builder.CloseElement();
+            builder.OpenElement(sequence++, "td");
+            builder.AddContent(sequence++, $"{sample.Value:0.##} {unit}");
+            builder.CloseElement();
+            builder.CloseElement();
+        }
+        builder.CloseElement();
+        builder.CloseElement();
+        builder.CloseElement();
+        builder.CloseElement();
+    };
+
+    private static RenderFragment RenderUnavailable(
+        DiagnosticsAvailability availability,
+        string statusText) => builder =>
+    {
+        builder.OpenElement(0, "div");
+        builder.AddAttribute(1, "class", "observability-empty");
+        builder.AddAttribute(2, "role", "status");
+        builder.OpenElement(3, "strong");
+        builder.AddContent(4, FormatAvailability(availability));
+        builder.CloseElement();
+        builder.AddContent(5, string.IsNullOrWhiteSpace(statusText)
+            ? " Runtime diagnostics are not available for this view."
+            : $" {statusText}");
+        builder.CloseElement();
+    };
+
+    private static RenderFragment RenderCollectionNotice(
+        string title,
+        DiagnosticsAvailability availability,
+        bool truncated,
+        bool fieldsTruncated,
+        long droppedCount,
+        string statusText) => builder =>
+    {
+        int sequence = 0;
+        builder.OpenElement(sequence++, "div");
+        builder.AddAttribute(sequence++, "class", "observability-collection-heading");
+        builder.OpenElement(sequence++, "h3");
+        builder.AddContent(sequence++, title);
+        builder.CloseElement();
+        builder.OpenElement(sequence++, "span");
+        builder.AddAttribute(sequence++, "class", "observability-availability");
+        builder.AddContent(sequence++, FormatAvailability(availability));
+        builder.CloseElement();
+        builder.CloseElement();
+        if (truncated)
+        {
+            builder.OpenElement(sequence++, "p");
+            builder.AddAttribute(sequence++, "class", "observability-warning");
+            builder.AddContent(sequence++, "The response record list was truncated.");
+            builder.CloseElement();
+        }
+        if (fieldsTruncated)
+        {
+            builder.OpenElement(sequence++, "p");
+            builder.AddAttribute(sequence++, "class", "observability-warning");
+            builder.AddContent(sequence++, "Some fields in the returned records were truncated.");
+            builder.CloseElement();
+        }
+        if (droppedCount > 0)
+        {
+            builder.OpenElement(sequence++, "p");
+            builder.AddAttribute(sequence++, "class", "observability-warning");
+            builder.AddContent(sequence++, $"Bounded retained history dropped {droppedCount:N0} older records before this response.");
+            builder.CloseElement();
+        }
+        if (availability != DiagnosticsAvailability.Available)
+            builder.AddContent(sequence++, RenderUnavailable(availability, statusText));
+    };
+
+    private static RenderFragment RenderMaintenanceTable(
+        string caption,
+        IReadOnlyList<MaintenanceOperationSnapshot> records) => builder =>
+    {
+        int sequence = 0;
+        builder.OpenElement(sequence++, "div");
+        builder.AddAttribute(sequence++, "class", "observability-table-wrap");
+        builder.OpenElement(sequence++, "table");
+        builder.AddAttribute(sequence++, "class", "observability-table");
+        builder.OpenElement(sequence++, "caption");
+        builder.AddContent(sequence++, caption);
+        builder.CloseElement();
+        builder.OpenElement(sequence++, "thead");
+        builder.AddMarkupContent(sequence++, "<tr><th>Kind</th><th>Phase</th><th>Elapsed</th><th>Progress</th><th>Outcome</th><th>Warnings</th><th>Errors</th></tr>");
+        builder.CloseElement();
+        builder.OpenElement(sequence++, "tbody");
+        if (records.Count == 0)
+        {
+            builder.AddMarkupContent(sequence++, "<tr><td colspan=\"7\" class=\"observability-empty-cell\">No operations reported.</td></tr>");
+        }
+        foreach (MaintenanceOperationSnapshot item in records)
+        {
+            builder.OpenElement(sequence++, "tr");
+            AddCell(builder, ref sequence, item.Kind.ToString());
+            AddCell(builder, ref sequence, item.Phase.ToString());
+            AddCell(builder, ref sequence, FormatDuration(item.Elapsed));
+            AddCell(builder, ref sequence, FormatProgress(item.CompletedUnits, item.TotalUnits));
+            AddCell(builder, ref sequence, item.Outcome.ToString());
+            AddCell(builder, ref sequence, item.WarningCount.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddCell(builder, ref sequence, item.ErrorCount.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            builder.CloseElement();
+        }
+        builder.CloseElement();
+        builder.CloseElement();
+        builder.CloseElement();
+    };
+
+    private static void AddCell(RenderTreeBuilder builder, ref int sequence, string value)
+    {
+        builder.OpenElement(sequence++, "td");
+        builder.AddContent(sequence++, value);
+        builder.CloseElement();
+    }
+
+    private static double GetBarPercent(double value, double maximum)
+        => maximum <= 0 ? 4 : Math.Clamp((value / maximum) * 100, 4, 100);
+
+    private static double? SelectQueryRate(AdminObservabilityMetricSample sample)
+        => sample.QueryRatePerSecond;
+
+    private static double? SelectAverageLatency(AdminObservabilityMetricSample sample)
+        => sample.AverageLatencyMilliseconds;
+
+    private static double? SelectErrorRate(AdminObservabilityMetricSample sample)
+        => sample.ErrorRatePerSecond;
+
+    private string GetAgeClass() => State.IsStale ? "stale" : State.IsPaused ? "paused" : string.Empty;
+    private string GetStatusClass() => State.IsStale ? "stale" : !State.HasUnavailableSections && State.Runtime.Availability == DiagnosticsAvailability.Available ? "available" : "unavailable";
+    private string GetStatusIcon() => State.IsStale ? "bi-clock-history" : !State.HasUnavailableSections && State.Runtime.Availability == DiagnosticsAvailability.Available ? "bi-check-circle" : "bi-exclamation-circle";
+
+    private static string FormatRefreshInterval(TimeSpan interval)
+        => interval.TotalSeconds < 1
+            ? $"{interval.TotalMilliseconds:0.###} ms"
+            : interval == TimeSpan.FromSeconds(1)
+                ? "1 second"
+                : $"{interval.TotalSeconds:0.###} seconds";
+
+    private static string FormatAvailability(DiagnosticsAvailability availability)
+        => availability switch
+        {
+            DiagnosticsAvailability.Available => "Available",
+            DiagnosticsAvailability.Unsupported => "Not supported",
+            DiagnosticsAvailability.Disabled => "Disabled",
+            DiagnosticsAvailability.Denied => "Access denied",
+            DiagnosticsAvailability.Unavailable => "Unavailable",
+            DiagnosticsAvailability.NotApplicable => "Not applicable",
+            _ => "Pending",
+        };
+
+    private static string FormatRate(double? value)
+        => value is null ? "—" : $"{value.Value:0.##}/s";
+
+    private static string FormatMilliseconds(double? value)
+        => value is null ? "—" : $"{value.Value:0.##} ms";
+
+    private static string FormatSignedByteRate(double? value)
+    {
+        if (value is null)
+            return "—";
+
+        string sign = value.Value > 0 ? "+" : value.Value < 0 ? "−" : string.Empty;
+        long magnitude = (long)Math.Round(Math.Abs(value.Value));
+        return $"{sign}{FormatBytes(magnitude)}/s";
+    }
+
+    private static string FormatCount(long? value)
+        => value?.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) ?? "—";
+
+    private static string FormatNullable<T>(T? value) where T : struct
+        => value.HasValue ? value.Value.ToString() ?? "—" : "—";
+
+    private static string FormatOptionalBool(bool? value)
+        => value is null ? "—" : value.Value ? "Yes" : "No";
+
+    private static string FormatBool(bool value) => value ? "Yes" : "No";
+
+    private static string FormatPair<T>(T? left, T? right)
+        where T : struct
+        => $"{(left.HasValue ? left.Value.ToString() : "—")} / {(right.HasValue ? right.Value.ToString() : "—")}";
+
+    private static string FormatPair(string left, string right) => $"{left} / {right}";
+
+    private static string FormatBytes(long? bytes)
+    {
+        if (bytes is null)
+            return "—";
+        string[] units = ["B", "KiB", "MiB", "GiB", "TiB"];
+        double value = bytes.Value;
+        int unit = 0;
+        while (value >= 1024 && unit < units.Length - 1)
+        {
+            value /= 1024;
+            unit++;
+        }
+        return $"{value:0.##} {units[unit]}";
+    }
+
+    private static string FormatDuration(TimeSpan value)
+        => value.TotalHours >= 1
+            ? $"{(int)value.TotalHours}:{value.Minutes:00}:{value.Seconds:00}"
+            : value.TotalMinutes >= 1
+                ? $"{(int)value.TotalMinutes}:{value.Seconds:00}"
+                : $"{value.TotalSeconds:0.##}s";
+
+    private static string FormatAge(DateTimeOffset? timestamp)
+    {
+        if (timestamp is null)
+            return "—";
+        TimeSpan age = DateTimeOffset.UtcNow - timestamp.Value;
+        return age < TimeSpan.Zero ? "just now" : FormatDuration(age);
+    }
+
+    private static string FormatTimestamp(DateTimeOffset value)
+        => value.ToLocalTime().ToString("HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture);
+
+    private static string FormatOpaqueId(OpaqueDiagnosticsId? value)
+        => value is null ? "—" : Shorten(value.Value);
+
+    private static string FormatTraceId(DiagnosticsTraceId? value)
+        => value is null ? "—" : Shorten(value.Value);
+
+    private static string FormatFingerprint(QueryFingerprint? value)
+        => value is null ? "—" : Shorten(value.Value, 22);
+
+    private static string Shorten(string value, int maximum = 12)
+        => value.Length <= maximum ? value : value[..maximum] + "…";
+
+    private static string FormatProgress(long? completed, long? total)
+        => completed is null
+            ? "—"
+            : total is null or 0
+                ? completed.Value.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)
+                : $"{completed.Value:N0} / {total.Value:N0}";
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed)
+            return;
+
+        _disposed = true;
+        Observability.StateChanged -= OnObservabilityChanged;
+        try
+        {
+            Observability.ClearSensitiveDetail();
+            await Observability.SetActiveAsync(false);
+        }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) { }
+    }
+}

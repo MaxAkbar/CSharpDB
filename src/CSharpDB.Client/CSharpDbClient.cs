@@ -1,13 +1,17 @@
 using CSharpDB.Client.Internal;
 using CSharpDB.Client.Models;
 using CSharpDB.Engine;
+using CSharpDB.Observability;
 using CSharpDB.Storage.Diagnostics;
+using ObservabilityTransport = CSharpDB.Observability.CSharpDbTransport;
 
 namespace CSharpDB.Client;
 
 public sealed class CSharpDbClient :
     ICSharpDbClient,
+    ICSharpDbObservabilityClient,
     IEngineBackedClient,
+    IClientObservabilitySettingsProvider,
     ICSharpDbTableArchiveProgressExporter,
     ICSharpDbTransactionalSnapshotReader,
     ICSharpDbTransactionalSchemaIdentityWriter
@@ -59,6 +63,11 @@ public sealed class CSharpDbClient :
     public bool SupportsTransactionalSchemaIdentityWrites
         => _inner is ICSharpDbTransactionalSchemaIdentityWriter writer &&
            writer.SupportsTransactionalSchemaIdentityWrites;
+    CSharpDbObservabilityOptions? IClientObservabilitySettingsProvider.ObservabilityOptions
+        => (_inner as IClientObservabilitySettingsProvider)?.ObservabilityOptions;
+    ObservabilityTransport IClientObservabilitySettingsProvider.ObservabilityTransport
+        => (_inner as IClientObservabilitySettingsProvider)?.ObservabilityTransport
+           ?? ObservabilityTransport.Embedded;
 
     public Task<DatabaseInfo> GetInfoAsync(CancellationToken ct = default) => _inner.GetInfoAsync(ct);
     public Task<IReadOnlyList<string>> GetTableNamesAsync(CancellationToken ct = default) => _inner.GetTableNamesAsync(ct);
@@ -179,28 +188,7 @@ public sealed class CSharpDbClient :
         if (_inner is not IEngineBackedClient engineBacked)
             return null;
 
-        Database? db = await engineBacked.TryGetDatabaseAsync(ct);
-        if (db is null)
-            return null;
-
-        CSharpDB.Execution.QueryResult? result = null;
-        try
-        {
-            result = await db.ExecuteAsync(sql, ct);
-            if (!result.IsQuery)
-            {
-                await result.DisposeAsync();
-                return null;
-            }
-
-            return new ForwardOnlyQueryCursor(result);
-        }
-        catch
-        {
-            if (result is not null)
-                await result.DisposeAsync();
-            throw;
-        }
+        return await engineBacked.TryOpenForwardOnlyQueryCursorAsync(sql, ct);
     }
 
     public ValueTask<Database?> TryGetDatabaseAsync(CancellationToken ct = default)
@@ -211,4 +199,64 @@ public sealed class CSharpDbClient :
         => _inner is IEngineBackedClient engineBacked
             ? engineBacked.ReleaseCachedDatabaseAsync(ct)
             : ValueTask.CompletedTask;
+
+    public Task<DiagnosticsTopologySnapshot<RuntimeDiagnosticsSnapshot>>
+        GetRuntimeDiagnosticsAsync(CancellationToken ct = default)
+        => GetObservabilityClient().GetRuntimeDiagnosticsAsync(ct);
+
+    public Task<DiagnosticsTopologySnapshot<
+        DiagnosticsValueSnapshot<StorageRuntimeDiagnosticsSnapshot>>>
+        GetStorageDiagnosticsAsync(CancellationToken ct = default)
+        => GetObservabilityClient().GetStorageDiagnosticsAsync(ct);
+
+    public Task<DiagnosticsTopologySnapshot<
+        DiagnosticsValueSnapshot<WalRuntimeDiagnosticsSnapshot>>>
+        GetWalDiagnosticsAsync(CancellationToken ct = default)
+        => GetObservabilityClient().GetWalDiagnosticsAsync(ct);
+
+    public Task<DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<ActiveQuerySnapshot>>>
+        GetActiveQueriesAsync(int maximumRecords, CancellationToken ct = default)
+        => GetObservabilityClient().GetActiveQueriesAsync(maximumRecords, ct);
+
+    public Task<DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<RecentQuerySnapshot>>>
+        GetRecentQueriesAsync(int maximumRecords, CancellationToken ct = default)
+        => GetObservabilityClient().GetRecentQueriesAsync(maximumRecords, ct);
+
+    public Task<DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<QueryPlanDiagnosticsSnapshot>>>
+        GetQueryPlanDiagnosticsAsync(
+            OpaqueDiagnosticsId operationId,
+            CancellationToken ct = default)
+        => GetObservabilityClient().GetQueryPlanDiagnosticsAsync(operationId, ct);
+
+    public Task<DiagnosticsTopologySnapshot<DiagnosticsCollectionSnapshot<SessionDiagnosticsSnapshot>>>
+        GetSessionsAsync(int maximumRecords, CancellationToken ct = default)
+        => GetObservabilityClient().GetSessionsAsync(maximumRecords, ct);
+
+    public Task<DiagnosticsTopologySnapshot<
+        DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>
+        GetActiveMaintenanceOperationsAsync(
+            int maximumRecords,
+            CancellationToken ct = default)
+        => GetObservabilityClient().GetActiveMaintenanceOperationsAsync(
+            maximumRecords,
+            ct);
+
+    public Task<DiagnosticsTopologySnapshot<
+        DiagnosticsCollectionSnapshot<MaintenanceOperationSnapshot>>>
+        GetRecentMaintenanceOperationsAsync(
+            int maximumRecords,
+            CancellationToken ct = default)
+        => GetObservabilityClient().GetRecentMaintenanceOperationsAsync(
+            maximumRecords,
+            ct);
+
+    public Task<DiagnosticsTopologySnapshot<DiagnosticsValueSnapshot<QueryDetailSnapshot>>>
+        GetQueryDetailAsync(
+            OpaqueDiagnosticsId operationId,
+            CancellationToken ct = default)
+        => GetObservabilityClient().GetQueryDetailAsync(operationId, ct);
+
+    private ICSharpDbObservabilityClient GetObservabilityClient()
+        => _inner as ICSharpDbObservabilityClient ??
+           throw new CSharpDbObservabilityNotSupportedException();
 }

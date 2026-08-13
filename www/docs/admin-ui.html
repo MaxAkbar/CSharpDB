@@ -12,7 +12,7 @@
         "@context": "https://schema.org",
         "@type": "TechArticle",
         "name": "Admin UI Guide",
-        "description": "CSharpDB Studio — a Blazor-based admin interface for browsing data, writing SQL, managing schemas, building pipelines, and inspecting storage.",
+        "description": "CSharpDB Studio — a Blazor-based admin interface for browsing data, writing SQL, managing schemas, observing runtime health, building pipelines, and inspecting storage.",
         "url": "https://csharpdb.com/docs/admin-ui.html",
         "isPartOf": {
             "@type": "WebSite",
@@ -90,8 +90,8 @@
     window.currentPage = 'docs'; window.pagePathPrefix = '../';
     window.pageConfig = {
         title: 'Admin UI Guide',
-        description: 'CSharpDB Studio — a Blazor-based admin interface for browsing data, writing SQL, managing schemas, building pipelines, and inspecting storage.',
-        keywords: 'CSharpDB Admin, Studio, admin UI, database browser, SQL editor, pipeline designer, storage diagnostics',
+        description: 'CSharpDB Studio — a Blazor-based admin interface for browsing data, writing SQL, managing schemas, observing runtime health, building pipelines, and inspecting storage.',
+        keywords: 'CSharpDB Admin, Studio, admin UI, database browser, SQL editor, observability, runtime diagnostics, pipeline designer, storage diagnostics',
         canonicalPath: 'docs/admin-ui.html',
         ogType: 'article',
     };
@@ -102,7 +102,7 @@
         <div class="container doc-container">
             <div class="doc-content full-width">
                 <h1>Admin UI Guide</h1>
-                <p class="lead">CSharpDB Studio is a full-featured, browser-based admin interface built with Blazor Server. Connect to any CSharpDB instance &mdash; local or remote &mdash; to browse data, run queries, manage schemas, design ETL pipelines, and inspect low-level storage.</p>
+                <p class="lead">CSharpDB Studio is a full-featured, browser-based admin interface built with Blazor Server. Connect to any CSharpDB instance &mdash; local or remote &mdash; to browse data, run queries, manage schemas, observe runtime health, design ETL pipelines, and inspect low-level storage.</p>
 
                 <img src="../images/admin/welcome.png" alt="CSharpDB Studio welcome screen" class="screenshot" loading="lazy">
                 <p class="screenshot-caption">The welcome screen shows the Object Explorer, keyboard shortcuts, and connection status.</p>
@@ -180,7 +180,44 @@ dotnet run</code></pre>
                         <i class="bi bi-collection"></i>
                         <div><strong>Collections</strong><span>Browse and edit JSON document collections from the Admin workspace. See <a href="admin-collections.html">Admin Collections</a>.</span></div>
                     </li>
+                    <li>
+                        <i class="bi bi-activity"></i>
+                        <div><strong>Observability</strong><span>Monitor bounded runtime, query, session, storage/WAL, maintenance, health, and per-shard diagnostics without reaching into embedded engine internals.</span></div>
+                    </li>
                 </ul>
+
+                <!-- ───────── Observability Workspace ───────── -->
+                <h2 id="observability-workspace">Observability Workspace</h2>
+                <p>Open <strong>Observability</strong> from Tools navigation or the command palette. The same workspace consumes the optional <code>ICSharpDbObservabilityClient</code> capability in direct, HTTP, gRPC, and sharded modes. Custom or older clients that do not implement that capability are shown as unsupported instead of being treated as empty.</p>
+
+                <h3>Bounded live views</h3>
+                <ul>
+                    <li><strong>Overview</strong> &mdash; Health, query rate/latency/errors, active and slow queries, sessions, transactions, WAL growth, checkpoint age, and current maintenance.</li>
+                    <li><strong>Queries and sessions</strong> &mdash; Capped active/recent records, safe fingerprints and plan summaries, transport/session/trace correlation, and explicit dropped/truncated metadata.</li>
+                    <li><strong>Storage and WAL</strong> &mdash; Cheap runtime counters and gauges. The physical Storage inspector remains a separate explicit action because it scans deeper and can expose server-local paths.</li>
+                    <li><strong>Maintenance and shards</strong> &mdash; Backup/restore and other active/recent operations, plus aggregate or per-shard availability and identity.</li>
+                </ul>
+
+                <p>Automatic refresh runs only while Observability is the active tab. Refresh calls are serialized and canceled on hide, database switch, reconnect, or disposal. Pause stops automatic polling while preserving manual refresh and stale-state updates. Local chart samples have fixed capacity and reset when the database scope, server instance id, counter epoch, or a monotonic counter changes.</p>
+
+                <h3>Availability and sensitive detail</h3>
+                <p>The workspace distinguishes <code>Disabled</code>, <code>Unsupported</code>, <code>Access denied</code>, and <code>Unavailable</code>, including per-shard failures. It also shows snapshot age, stale state, bounded-history drops, collection truncation, and field truncation rather than fabricating zeroes.</p>
+                <p>Ordinary snapshots contain no raw SQL or database paths. Query text is a separate explicit server-authorized reveal and is cleared when the tab hides, scope or database changes, or the component is disposed. Only a complete raw-text reveal can create an <code>EXPLAIN ESTIMATE</code> editor draft; normalized text is displayed as a non-runnable template and nothing is executed automatically.</p>
+
+                <p>Admin-only polling bounds are configured separately from server retention:</p>
+                <div class="code-block" data-title="appsettings.json"><pre><code>{
+  "CSharpDB": {
+    "Admin": {
+      "Observability": {
+        "RefreshInterval": "00:00:02",
+        "MaximumRecords": 100,
+        "SampleCapacity": 60,
+        "StaleAfter": "00:00:10"
+      }
+    }
+  }
+}</code></pre></div>
+                <p>The refresh interval must not exceed the stale threshold. When Observability is active, Studio suppresses path-bearing shell identity, status summaries, toast/modal content, and command-palette results. For server configuration, schemas, exporters, access policy, and troubleshooting, see <a href="observability.html">Observability and Diagnostics</a>.</p>
 
                 <!-- ───────── Query Editor ───────── -->
                 <h2 id="query-editor">Query Editor</h2>
@@ -408,7 +445,7 @@ dotnet run</code></pre>
 
                 <!-- ───────── Storage Diagnostics ───────── -->
                 <h2 id="storage-diagnostics">Storage Diagnostics</h2>
-                <p>The Storage tab gives you a deep look into the physical database file, WAL state, and B+tree internals.</p>
+                <p>The Storage tab gives you a deep look into the physical database file, WAL state, and B+tree internals. Unlike the low-cost runtime counters in <a href="#observability-workspace">Observability</a>, opening or refreshing this inspector is an explicit physical diagnostic action.</p>
 
                 <img src="../images/admin/storage-tab.png" alt="CSharpDB Studio storage diagnostics" class="screenshot" loading="lazy">
                 <p class="screenshot-caption">Storage diagnostics showing database header, WAL status, space usage, and fragmentation metrics.</p>
@@ -454,6 +491,10 @@ dotnet run</code></pre>
                         <a href="storage.html" class="next-step-card">
                             <h4>Storage Internals</h4>
                             <p>B+tree pages, WAL, and file format details</p>
+                        </a>
+                        <a href="observability.html" class="next-step-card">
+                            <h4>Observability and Diagnostics</h4>
+                            <p>Logging, telemetry, health, privacy, and troubleshooting</p>
                         </a>
                         <a href="#forms-designer" class="next-step-card">
                             <h4>Forms Designer</h4>

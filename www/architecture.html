@@ -155,6 +155,25 @@
                     </tbody>
                 </table>
 
+                <h2 id="observability-plane">Cross-Cutting Observability Plane</h2>
+                <p>Observability follows the same runtime ownership boundary as database work. Engine, client, data-provider, and storage paths emit through the BCL-only <code>CSharpDB.Observability</code> vocabulary. Embedded applications may attach listeners directly; API and daemon hosts adapt the same sources into <code>ILogger</code>, OpenTelemetry/OTLP, Prometheus, health routes, and remote diagnostics. Exporter packages and ASP.NET Core routes do not flow back into the engine dependency graph.</p>
+                <div class="code-block" data-title="Mermaid"><pre><code>flowchart LR
+    Runtime["Engine / Client / Data / Storage"]
+    Contract["CSharpDB.Observability&lt;br/&gt;DiagnosticListener + ActivitySource + Meter&lt;br/&gt;versioned runtime snapshots"]
+    Host["Application, API, or Daemon host"]
+    Logging["ILogger"]
+    OTel["OpenTelemetry / OTLP"]
+    Prom["Prometheus"]
+    Remote["HTTP / gRPC diagnostics"]
+    Admin["Admin Observability workspace"]
+
+    Runtime --&gt; Contract --&gt; Host
+    Host --&gt; Logging
+    Host --&gt; OTel
+    Host --&gt; Prom
+    Host --&gt; Remote --&gt; Admin</code></pre></div>
+                <p>Direct, HTTP, gRPC, and sharded clients preserve the same schema version, capture time, server instance id, counter epoch, scope, availability, and truncation metadata. A sharded coordinator retains per-shard identity instead of combining counters across unrelated process lifetimes. Ordinary telemetry omits SQL, values, credentials, connection strings, paths, and exception messages. See <a href="docs/observability.html">Observability and Diagnostics</a>.</p>
+
                 <h2>Page Format (4096 bytes)</h2>
                 <p>Every page uses a slotted format with a fixed header, cell pointer array growing forward, and cell data growing backward from the end of the page.</p>
                 <div class="format-diagram">
@@ -248,6 +267,7 @@
                         <tr><td><code>CSharpDB.Primitives</code></td><td>Shared types: DbValue, DbType, Schema, ErrorCodes</td></tr>
                         <tr><td><code>CSharpDB.Storage</code></td><td>B+tree, Pager, WAL, page cache, serialization</td></tr>
                         <tr><td><code>CSharpDB.Storage.Diagnostics</code></td><td>Database/WAL/Index inspection</td></tr>
+                        <tr><td><code>CSharpDB.Observability</code></td><td>BCL telemetry contracts, bounded runtime models, source-generated wire schema</td></tr>
                         <tr><td><code>CSharpDB.Sql</code></td><td>SQL tokenizer, parser, AST</td></tr>
                         <tr><td><code>CSharpDB.Execution</code></td><td>Query planner, operators, expression evaluator</td></tr>
                         <tr><td><code>CSharpDB.Engine</code></td><td>Database class, Collection&lt;T&gt;, top-level API</td></tr>

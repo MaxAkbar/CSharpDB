@@ -275,24 +275,13 @@ internal static class ClientTransportResolver
                 directTarget.Key,
                 resolution.DirectDatabaseOptions,
                 resolution.HybridDatabaseOptions),
-            DirectTargetKind.PrivateMemory => new EngineTransportClient(
+            DirectTargetKind.PrivateMemory => EngineTransportClient.CreatePrivateMemory(
                 directTarget.DisplayName,
-                CreatePrivateMemoryOpenDatabaseAsync(directTarget.LoadFromPath, resolution.DirectDatabaseOptions),
-                resolution.DirectDatabaseOptions,
-                hybridDatabaseOptions: null),
+                directTarget.LoadFromPath,
+                resolution.DirectDatabaseOptions),
             _ => throw new CSharpDbClientConfigurationException(
                 $"Direct target kind '{directTarget.Kind}' is not implemented in CSharpDB.Client yet."),
         };
-    }
-
-    private static Func<string, CancellationToken, Task<Database>> CreatePrivateMemoryOpenDatabaseAsync(
-        string? loadFromPath,
-        DatabaseOptions? directDatabaseOptions)
-    {
-        var options = directDatabaseOptions ?? new DatabaseOptions();
-        return string.IsNullOrWhiteSpace(loadFromPath)
-            ? (_, ct) => Database.OpenInMemoryAsync(options, ct).AsTask()
-            : (_, ct) => Database.LoadIntoMemoryAsync(loadFromPath, options, ct).AsTask();
     }
 
     private static DirectTarget ParseDirectTarget(string dataSource, string? loadFromPath)

@@ -7,7 +7,7 @@ using CSharpDB.Storage.Diagnostics;
 
 namespace CSharpDB.Client.Internal;
 
-internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbShardAdminClient, ICSharpDbShardDirectoryClient
+internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbShardAdminClient, ICSharpDbShardDirectoryClient, ICSharpDbObservabilityClient
 {
     private static readonly JsonSerializerOptions s_jsonOptions = CreateJsonOptions();
 
@@ -1421,6 +1421,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
                 : MapRows(payload.ColumnNames, payload.Rows, payload.ColumnTypes),
             RowsAffected = payload.RowsAffected,
             Error = payload.Error,
+            ErrorCode = payload.ErrorCode,
             Elapsed = TimeSpan.FromMilliseconds(payload.ElapsedMs),
         };
 
@@ -1678,7 +1679,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
     private sealed record ApiIndexResponse(string IndexName, string TableName, IReadOnlyList<string> Columns, bool IsUnique, IReadOnlyList<string?> ColumnCollations);
     private sealed record ApiViewResponse(string ViewName, string Sql);
     private sealed record ApiTriggerResponse(string TriggerName, string TableName, string Timing, string Event, string BodySql);
-    private sealed record ApiSqlResultResponse(bool IsQuery, string[]? ColumnNames, string[]? ColumnTypes, bool[]? ColumnNullability, IReadOnlyList<Dictionary<string, object?>>? Rows, int RowsAffected, string? Error, double ElapsedMs, IReadOnlyList<ApiColumnResponse>? Columns = null);
+    private sealed record ApiSqlResultResponse(bool IsQuery, string[]? ColumnNames, string[]? ColumnTypes, bool[]? ColumnNullability, IReadOnlyList<Dictionary<string, object?>>? Rows, int RowsAffected, string? Error, double ElapsedMs, IReadOnlyList<ApiColumnResponse>? Columns = null, CSharpDB.Primitives.ErrorCode? ErrorCode = null);
     private sealed record ApiShardSqlExecutionResultResponse(string ShardId, ApiSqlResultResponse? Result, string? Error);
     private sealed record ApiProcedureDetailResponse(string Name, string BodySql, IReadOnlyList<ApiProcedureParameterResponse> Parameters, string? Description, bool IsEnabled, DateTime CreatedUtc, DateTime UpdatedUtc);
     private sealed record ApiProcedureParameterResponse(string Name, string Type, bool Required, object? Default, string? Description);

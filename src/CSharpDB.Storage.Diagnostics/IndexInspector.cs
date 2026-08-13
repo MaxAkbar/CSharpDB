@@ -18,6 +18,8 @@ public static class IndexInspector
         int? sampleSize = null,
         CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
+
         int effectiveSampleSize = sampleSize.GetValueOrDefault(1000);
         if (effectiveSampleSize <= 0)
             effectiveSampleSize = 1000;
@@ -27,7 +29,7 @@ public static class IndexInspector
             captureLeafPayload: true,
             ct);
 
-        var issues = new List<IntegrityIssue>(snapshot.Issues);
+        List<IntegrityIssue> issues = InspectorEngine.CopyIssues(snapshot.Issues, ct);
         var tableSchemas = new Dictionary<string, TableSchema>(StringComparer.OrdinalIgnoreCase);
         var indexEntries = new List<IndexEntry>();
 
@@ -49,16 +51,21 @@ public static class IndexInspector
                 snapshot.Pages,
                 snapshot.PhysicalPageCount,
                 issues,
-                scope: "schema-catalog");
+                scope: "schema-catalog",
+                ct: ct);
 
             uint indexCatalogRoot = 0;
             foreach (uint pageId in schemaTreePages)
             {
+                ct.ThrowIfCancellationRequested();
+
                 if (!snapshot.Pages.TryGetValue(pageId, out var page) || page.PageType != PageConstants.PageTypeLeaf)
                     continue;
 
                 foreach (var cell in page.LeafCells)
                 {
+                    ct.ThrowIfCancellationRequested();
+
                     if (!cell.Key.HasValue || cell.Payload is null)
                         continue;
 
@@ -126,15 +133,20 @@ public static class IndexInspector
                     snapshot.Pages,
                     snapshot.PhysicalPageCount,
                     issues,
-                    scope: "index-catalog");
+                    scope: "index-catalog",
+                    ct: ct);
 
                 foreach (uint pageId in indexCatalogPages)
                 {
+                    ct.ThrowIfCancellationRequested();
+
                     if (!snapshot.Pages.TryGetValue(pageId, out var page) || page.PageType != PageConstants.PageTypeLeaf)
                         continue;
 
                     foreach (var cell in page.LeafCells)
                     {
+                        ct.ThrowIfCancellationRequested();
+
                         if (cell.Payload is null || cell.Payload.Length < 4)
                         {
                             issues.Add(new IntegrityIssue
@@ -176,9 +188,15 @@ public static class IndexInspector
 
         if (!string.IsNullOrWhiteSpace(indexName))
         {
-            indexEntries = indexEntries
-                .Where(e => e.Schema.IndexName.Equals(indexName, StringComparison.OrdinalIgnoreCase))
-                .ToList();
+            var filteredEntries = new List<IndexEntry>();
+            foreach (IndexEntry entry in indexEntries)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (entry.Schema.IndexName.Equals(indexName, StringComparison.OrdinalIgnoreCase))
+                    filteredEntries.Add(entry);
+            }
+
+            indexEntries = filteredEntries;
 
             if (indexEntries.Count == 0)
             {
@@ -192,9 +210,12 @@ public static class IndexInspector
         }
 
         var items = new List<IndexCheckItem>(indexEntries.Count);
+        List<IndexEntry> orderedEntries = OrderIndexEntries(indexEntries, ct);
 
-        foreach (var entry in indexEntries.OrderBy(e => e.Schema.IndexName, StringComparer.OrdinalIgnoreCase))
+        foreach (IndexEntry entry in orderedEntries)
         {
+            ct.ThrowIfCancellationRequested();
+
             bool rootPageValid = false;
             if (entry.RootPage >= snapshot.PhysicalPageCount)
             {
@@ -242,7 +263,16 @@ public static class IndexInspector
                 });
             }
 
-            bool columnsExist = tableExists && entry.Schema.Columns.All(c => tableSchema!.GetColumnIndex(c) >= 0);
+            bool columnsExist = tableExists;
+            var columns = new List<string>(entry.Schema.Columns.Count);
+            foreach (string column in entry.Schema.Columns)
+            {
+                ct.ThrowIfCancellationRequested();
+                columns.Add(column);
+                if (tableExists && tableSchema!.GetColumnIndex(column) < 0)
+                    columnsExist = false;
+            }
+
             if (tableExists && !columnsExist)
             {
                 issues.Add(new IntegrityIssue
@@ -261,7 +291,8 @@ public static class IndexInspector
                     snapshot.Pages,
                     snapshot.PhysicalPageCount,
                     issues,
-                    scope: $"index:{entry.Schema.IndexName}");
+                    scope: $"index:{entry.Schema.IndexName}",
+                    ct: ct);
                 rootReachable = visited.Count > 0 && visited.Contains(entry.RootPage);
             }
 
@@ -269,7 +300,7 @@ public static class IndexInspector
             {
                 IndexName = entry.Schema.IndexName,
                 TableName = entry.Schema.TableName,
-                Columns = entry.Schema.Columns.ToList(),
+                Columns = columns,
                 RootPage = entry.RootPage,
                 RootPageValid = rootPageValid,
                 TableExists = tableExists,
@@ -286,5 +317,36 @@ public static class IndexInspector
             Indexes = items,
             Issues = issues,
         };
+    }
+
+    private static List<IndexEntry> OrderIndexEntries(
+        IReadOnlyList<IndexEntry> entries,
+        CancellationToken ct)
+    {
+        var buckets = new SortedDictionary<string, List<IndexEntry>>(StringComparer.OrdinalIgnoreCase);
+        foreach (IndexEntry entry in entries)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!buckets.TryGetValue(entry.Schema.IndexName, out List<IndexEntry>? bucket))
+            {
+                bucket = [];
+                buckets.Add(entry.Schema.IndexName, bucket);
+            }
+
+            bucket.Add(entry);
+        }
+
+        var ordered = new List<IndexEntry>(entries.Count);
+        foreach (List<IndexEntry> bucket in buckets.Values)
+        {
+            ct.ThrowIfCancellationRequested();
+            foreach (IndexEntry entry in bucket)
+            {
+                ct.ThrowIfCancellationRequested();
+                ordered.Add(entry);
+            }
+        }
+
+        return ordered;
     }
 }

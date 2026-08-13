@@ -8,9 +8,18 @@
         <span class="status-dot connected"></span>
         Connected
     </div>
-    <div class="status-item">
-        <i class="bi bi-database"></i> @DbClient.DataSource
-    </div>
+    @if (TabManager.ActiveTab?.Kind == TabKind.Observability)
+    {
+        <div class="status-item">
+            <i class="bi bi-shield-lock"></i> Data source hidden in diagnostics view
+        </div>
+    }
+    else
+    {
+        <div class="status-item">
+            <i class="bi bi-database"></i> @DbClient.DataSource
+        </div>
+    }
     <div class="status-item">
         @_tableCount tables, @_viewCount views, @_procedureCount procedures
     </div>
@@ -31,8 +40,11 @@
     protected override async Task OnInitializedAsync()
     {
         Changes.Changed += OnChanged;
+        TabManager.StateChanged += OnTabChanged;
         await LoadCounts();
     }
+
+    private void OnTabChanged() => InvokeAsync(StateHasChanged);
 
     private async void OnChanged()
     {
@@ -55,5 +67,6 @@
     public void Dispose()
     {
         Changes.Changed -= OnChanged;
+        TabManager.StateChanged -= OnTabChanged;
     }
 }

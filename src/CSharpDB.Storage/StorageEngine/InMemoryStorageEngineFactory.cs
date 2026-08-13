@@ -23,8 +23,18 @@ internal static class InMemoryStorageEngineFactory
         {
             device = new MemoryStorageDevice(databaseBytes);
             var walIndex = new WalIndex();
-            var wal = new MemoryWriteAheadLog(walIndex, options.ChecksumProvider, walBytes);
-            pager = await Pager.CreateAsync(device, wal, walIndex, options.PagerOptions, ct);
+            var wal = new MemoryWriteAheadLog(
+                walIndex,
+                options.ChecksumProvider,
+                walBytes,
+                options.RuntimeDiagnosticsObserver);
+            pager = await Pager.CreateAsync(
+                device,
+                wal,
+                walIndex,
+                options.PagerOptions,
+                options.RuntimeDiagnosticsObserver,
+                ct);
 
             if (databaseBytes.Length >= PageConstants.PageSize)
             {

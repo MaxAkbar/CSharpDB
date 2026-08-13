@@ -1,3 +1,5 @@
+using CSharpDB.Storage.Diagnostics;
+
 namespace CSharpDB.Storage.StorageEngine;
 
 /// <summary>
@@ -15,6 +17,7 @@ public sealed class StorageEngineOptionsBuilder
     private IIndexProvider _indexProvider;
     private ICatalogStore _catalogStore;
     private IPageChecksumProvider _checksumProvider;
+    private IStorageRuntimeDiagnosticsObserver? _runtimeDiagnosticsObserver;
 
     public StorageEngineOptionsBuilder()
         : this(new StorageEngineOptions())
@@ -35,6 +38,7 @@ public sealed class StorageEngineOptionsBuilder
         _indexProvider = options.IndexProvider;
         _catalogStore = options.CatalogStore;
         _checksumProvider = options.ChecksumProvider;
+        _runtimeDiagnosticsObserver = options.RuntimeDiagnosticsObserver;
     }
 
     public StorageEngineOptionsBuilder UsePagerOptions(PagerOptions pagerOptions)
@@ -357,6 +361,7 @@ public sealed class StorageEngineOptionsBuilder
             IndexProvider = _indexProvider,
             CatalogStore = _catalogStore,
             ChecksumProvider = _checksumProvider,
+            RuntimeDiagnosticsObserver = _runtimeDiagnosticsObserver,
         };
     }
 }

@@ -17,6 +17,8 @@ database objects.
 - table designer for creating tables
 - SQL query tabs with paged results and guided SQL completions
 - procedure editor and execution surface
+- an Observability workspace for bounded live runtime, query, session,
+  storage/WAL, and maintenance diagnostics
 - storage inspection and maintenance views
 - Compare / Deploy workspace for schema compare, data compare, drift reports,
   independent source/target selection, object-level schema script-out with
@@ -65,10 +67,70 @@ configured data source; it is not an in-memory-only mode. Set
 `CSharpDB:HostDatabase:OpenMode` to `Direct` to use the plain direct open path
 instead of `Database.OpenHybridAsync`.
 
-The app opens the configured database during startup by calling
-`ICSharpDbClient.GetInfoAsync()`, so invalid configuration fails before the UI
-accepts requests. The same database instance is reused until the Admin app
-shuts down or the user switches to a different database.
+The web listener starts before the configured database is initialized. A
+background lifecycle service calls `ICSharpDbClient.GetInfoAsync()` with a
+bounded attempt and publishes cached readiness while retaining the same warm
+database instance for the Admin lifetime. Initialization failure leaves the
+process live and the readiness probe unhealthy while retries continue.
+
+`GET /healthz` remains the desktop launcher's shallow process/liveness probe
+and always returns the compatibility `{ "status": "ok" }` response while the
+process is serving HTTP. `GET /health/live` is the configurable standard
+liveness route. `GET /health/ready` is separate: it returns `200` with
+`{ "status": "healthy" }` only after database initialization, or `503` with
+`{ "status": "unhealthy" }` otherwise. Neither endpoint queries the database
+or exposes paths, SQL, credentials, timestamps, or exception details.
+
+Admin health routes are configured under `CSharpDB:Observability:Health` with
+`Enabled`, `LivenessPath`, `ReadinessPath`, and `ReadinessTimeout`. The two
+paths must be distinct canonical absolute paths and cannot replace `/healthz`.
+
+## Observability Workspace
+
+Open **Observability** from the Tools navigation or command palette. The same
+workspace uses the optional `ICSharpDbObservabilityClient` capability in
+direct, HTTP, gRPC, and sharded modes; it does not reach into embedded engine
+internals.
+
+Automatic refresh runs only while the workspace is the active tab. Refreshes
+are serialized, canceled on hide, database switch, or disposal, and retain a
+fixed number of local numeric samples. Pause stops server polling while still
+allowing manual refresh and stale-state updates. A new server instance,
+database identity, counter epoch, or monotonic-counter reset clears the local
+rate history.
+
+Configure the Admin-only polling bounds under
+`CSharpDB:Admin:Observability`:
+
+```json
+{
+  "CSharpDB": {
+    "Admin": {
+      "Observability": {
+        "RefreshInterval": "00:00:02",
+        "MaximumRecords": 100,
+        "SampleCapacity": 60,
+        "StaleAfter": "00:00:10"
+      }
+    }
+  }
+}
+```
+
+Ordinary snapshots do not contain raw SQL or database paths. Query text is a
+separate, explicit server-authorized reveal and is cleared when the workspace
+is hidden, its scope changes, the database changes, or the component is
+disposed. Only a complete raw-text reveal can create an editor draft for
+`EXPLAIN ESTIMATE`; normalized text is shown as a non-runnable template. The
+deep Storage Inspector is also an explicit action because it performs physical
+inspection and may expose server-local paths.
+
+The workspace reports `Disabled`, `Unsupported`, `Access denied`, and
+`Unavailable` separately, including per-shard availability and bounded-history
+or field truncation. Remote HTTP `401`/`403` and gRPC
+`Unauthenticated`/`PermissionDenied` diagnostics failures are projected using
+the safe typed observability-denied contract; remote response text is never
+rendered.
 
 ## Running Locally
 

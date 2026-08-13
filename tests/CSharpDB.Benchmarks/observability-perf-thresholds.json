@@ -1,0 +1,146 @@
+{
+  "schemaVersion": 1,
+  "policyId": "csharpdb-observability-phase-0-v1",
+  "reference": {
+    "status": "approved",
+    "commit": "4f9457fb829d746b6cf6c767b1a32513262ab222",
+    "rationale": "Documented Phase 0 no-instrumentation reference. The full commit is an execution allowlist for the dedicated runner."
+  },
+  "qualification": {
+    "requiredPairCount": 3,
+    "maximumLaunchSpreadPercent": 5.0,
+    "maximumReferenceToCandidateGapSeconds": 120,
+    "warmupCount": 3,
+    "iterationCount": 10,
+    "benchmarkLaunchCount": 1,
+    "referenceMode": "DetachedReference",
+    "candidateModeOrder": [
+      "Disabled",
+      "HistoryCapture",
+      "StructuredLogging",
+      "MetricsOnly",
+      "SampledTracing"
+    ]
+  },
+  "modes": {
+    "Disabled": {
+      "status": "approved",
+      "comparison": "detachedReference",
+      "appliesToSuites": [
+        "engine",
+        "pool"
+      ],
+      "elapsedAllowance": "relative",
+      "maxElapsedPercent": 3.0,
+      "maxAdditionalAllocatedBytes": 0.0,
+      "rationale": "Documented Phase 0 disabled/no-listener release ceiling."
+    },
+    "HistoryCapture": {
+      "status": "approved",
+      "configurationStatus": "resolved",
+      "measurementComposition": [
+        "boundedRuntimeHistory"
+      ],
+      "comparison": "sameLaunchDisabled",
+      "appliesToSuites": [
+        "engine"
+      ],
+      "elapsedAllowance": "maximumOfRelativeAndFixed",
+      "maxElapsedPercent": 20.0,
+      "maxElapsedNanoseconds": 1500.0,
+      "maxAdditionalAllocatedBytes": 1024.0,
+      "rationale": "Documented bounded query-history ceiling; the pool creates no logical query history and is characterized separately."
+    },
+    "StructuredLogging": {
+      "status": "characterization",
+      "configurationStatus": "resolved",
+      "measurementComposition": [
+        "boundedRuntimeHistory",
+        "structuredLoggingListener"
+      ],
+      "comparison": "sameLaunchDisabled",
+      "appliesToSuites": [],
+      "rationale": "No release ceiling is approved for structured logging."
+    },
+    "MetricsOnly": {
+      "status": "approved",
+      "configurationStatus": "resolved",
+      "measurementComposition": [
+        "metricsRuntime",
+        "metricsListener"
+      ],
+      "comparison": "sameLaunchDisabled",
+      "appliesToSuites": [
+        "engine"
+      ],
+      "elapsedAllowance": "relative",
+      "maxElapsedPercent": 10.0,
+      "maxAdditionalAllocatedBytes": 64.0,
+      "rationale": "The documented provisional +10%/+64 B comparison applies to the metrics runtime and attached listener with bounded runtime history explicitly disabled. The pool remains a separate lifecycle characterization."
+    },
+    "SampledTracing": {
+      "status": "decisionRequired",
+      "configurationStatus": "resolved",
+      "measurementComposition": [
+        "metricsRuntime",
+        "sampledTracingListener"
+      ],
+      "comparison": "sameLaunchDisabled",
+      "appliesToSuites": [
+        "engine"
+      ],
+      "rationale": "No sampled-tracing release ceiling has been reviewed or approved. This row measures the configured OpenTelemetry metrics runtime plus sampled tracing while bounded runtime history is explicitly disabled; formal qualification must still fail closed until numeric ceilings are approved."
+    }
+  },
+  "paths": [
+    {
+      "id": "engine.sql-primary-key-fast-lookup",
+      "suite": "engine",
+      "method": "SQL primary-key fast lookup",
+      "referenceMethod": "No listeners: SQL primary-key fast lookup",
+      "logicalQueriesPerOperation": 1
+    },
+    {
+      "id": "engine.preparsed-primary-key-lookup",
+      "suite": "engine",
+      "method": "Pre-parsed primary-key lookup",
+      "referenceMethod": "No listeners: pre-parsed primary-key lookup",
+      "logicalQueriesPerOperation": 1
+    },
+    {
+      "id": "engine.sql-simple-insert-autocommit",
+      "suite": "engine",
+      "method": "SQL simple insert (autocommit)",
+      "referenceMethod": "No listeners: SQL simple insert (autocommit)",
+      "logicalQueriesPerOperation": 1
+    },
+    {
+      "id": "engine.preparsed-simple-insert-autocommit",
+      "suite": "engine",
+      "method": "Pre-parsed simple insert (autocommit)",
+      "referenceMethod": "No listeners: pre-parsed simple insert (autocommit)",
+      "logicalQueriesPerOperation": 1
+    },
+    {
+      "id": "engine.explicit-transaction-simple-insert",
+      "suite": "engine",
+      "method": "Explicit transaction simple insert",
+      "referenceMethod": "No listeners: explicit transaction simple insert",
+      "logicalQueriesPerOperation": 1
+    },
+    {
+      "id": "engine.stream-128-rows",
+      "suite": "engine",
+      "method": "Stream 128 rows to exhaustion",
+      "referenceMethod": "No listeners: stream 128 rows to exhaustion",
+      "logicalQueriesPerOperation": 1
+    },
+    {
+      "id": "pool.open-close-dispose",
+      "suite": "pool",
+      "method": "Pooled connection open/close/dispose",
+      "referenceMethod": "No listeners: pooled connection open/close/dispose",
+      "logicalQueriesPerOperation": 0
+    }
+  ]
+}

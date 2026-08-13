@@ -37,8 +37,15 @@ public sealed class DefaultStorageEngineFactory : IStorageEngineFactory
                 options.ChecksumProvider,
                 options.DurabilityMode,
                 options.DurableGroupCommit.BatchWindow,
-                options.WalPreallocationChunkBytes);
-            pager = await Pager.CreateAsync(device, wal, walIndex, options.PagerOptions, ct);
+                options.WalPreallocationChunkBytes,
+                options.RuntimeDiagnosticsObserver);
+            pager = await Pager.CreateAsync(
+                device,
+                wal,
+                walIndex,
+                options.PagerOptions,
+                options.RuntimeDiagnosticsObserver,
+                ct);
 
             if (isNew)
             {
