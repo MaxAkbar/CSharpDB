@@ -1,0 +1,376 @@
+{
+  "format": "csharpdb-target-capabilities/v1",
+  "targetCSharpDbVersion": "4.6.1",
+  "surface": "local-typed-engine",
+  "maxIdentifierLength": 128,
+  "identifiersCaseInsensitive": true,
+  "quotedIdentifiers": true,
+  "engineEnforcesMappedColumnType": true,
+  "valueTypes": [
+    {
+      "type": "null",
+      "isRuntimeValue": true,
+      "isColumnType": false,
+      "representation": "Runtime null tag; not a declarable persistent SQL column type."
+    },
+    {
+      "type": "integer",
+      "isRuntimeValue": true,
+      "isColumnType": true,
+      "representation": "Shared signed 64-bit physical carrier. Logical INTEGER is signed 32-bit, BIGINT is signed 64-bit, and BOOLEAN is canonical 0/1."
+    },
+    {
+      "type": "real",
+      "isRuntimeValue": true,
+      "isColumnType": true,
+      "representation": "IEEE 754 binary64 floating-point value."
+    },
+    {
+      "type": "text",
+      "isRuntimeValue": true,
+      "isColumnType": true,
+      "representation": "Persisted UTF-8 text."
+    },
+    {
+      "type": "blob",
+      "isRuntimeValue": true,
+      "isColumnType": true,
+      "representation": "Raw byte sequence."
+    },
+    {
+      "type": "decimal",
+      "isRuntimeValue": true,
+      "isColumnType": true,
+      "representation": "Exact base-10 decimal with an Int64 coefficient and scale up to 18 digits of precision."
+    }
+  ],
+  "rules": [
+    {
+      "ruleId": "CSDB-OBJ-DATABASE-001",
+      "objectKind": "database",
+      "feature": "object",
+      "status": "compatible",
+      "evidenceId": "EVID-CATALOG",
+      "notes": "A migration target is one local CSharpDB database."
+    },
+    {
+      "ruleId": "CSDB-OBJ-NAMESPACE-001",
+      "objectKind": "namespace",
+      "feature": "object",
+      "status": "compatibleWithRewrite",
+      "evidenceId": "EVID-CATALOG",
+      "notes": "CSharpDB has no source-style namespace catalog; names must be flattened deterministically."
+    },
+    {
+      "ruleId": "CSDB-OBJ-TABLE-001",
+      "objectKind": "table",
+      "feature": "object",
+      "status": "compatible",
+      "evidenceId": "EVID-CATALOG",
+      "notes": "Typed SQL tables are supported."
+    },
+    {
+      "ruleId": "CSDB-OBJ-COLLECTION-001",
+      "objectKind": "collection",
+      "feature": "object",
+      "status": "conditional",
+      "evidenceId": "EVID-COLLECTION",
+      "notes": "Collections use the collection API and serialized document storage rather than SQL DDL."
+    },
+    {
+      "ruleId": "CSDB-OBJ-COLUMN-001",
+      "objectKind": "column",
+      "feature": "object",
+      "status": "compatible",
+      "evidenceId": "EVID-COLUMN",
+      "notes": "Persistent columns retain a logical SQL type descriptor over INTEGER, REAL, TEXT, BLOB, or DECIMAL storage."
+    },
+    {
+      "ruleId": "CSDB-OBJ-KEY-001",
+      "objectKind": "key",
+      "feature": "object",
+      "status": "compatible",
+      "evidenceId": "EVID-KEYS",
+      "notes": "Primary and unique keys are supported subject to key type and collation rules."
+    },
+    {
+      "ruleId": "CSDB-OBJ-FOREIGNKEY-001",
+      "objectKind": "foreignKey",
+      "feature": "object",
+      "status": "compatible",
+      "evidenceId": "EVID-FOREIGN-KEYS",
+      "notes": "Single and composite immediate foreign keys are supported with bounded actions."
+    },
+    {
+      "ruleId": "CSDB-OBJ-CHECK-001",
+      "objectKind": "checkConstraint",
+      "feature": "object",
+      "status": "compatible",
+      "evidenceId": "EVID-CHECKS",
+      "notes": "Deterministic row-local check expressions are supported."
+    },
+    {
+      "ruleId": "CSDB-OBJ-INDEX-001",
+      "objectKind": "index",
+      "feature": "object",
+      "status": "compatible",
+      "evidenceId": "EVID-INDEXES",
+      "notes": "Ordinary column indexes are supported subject to type restrictions."
+    },
+    {
+      "ruleId": "CSDB-OBJ-SEQUENCE-001",
+      "objectKind": "sequence",
+      "feature": "object",
+      "status": "unsupported",
+      "evidenceId": "EVID-CATALOG",
+      "notes": "There is no standalone sequence catalog object."
+    },
+    {
+      "ruleId": "CSDB-OBJ-VIEW-001",
+      "objectKind": "view",
+      "feature": "object",
+      "status": "conditional",
+      "evidenceId": "EVID-VIEWS-TRIGGERS",
+      "notes": "A view body must parse, bind, and pass scratch execution before it is executable evidence."
+    },
+    {
+      "ruleId": "CSDB-OBJ-TRIGGER-001",
+      "objectKind": "trigger",
+      "feature": "object",
+      "status": "conditional",
+      "evidenceId": "EVID-VIEWS-TRIGGERS",
+      "notes": "Trigger timing, event, and body must be checked; WHEN is rejected with SyntaxError before catalog persistence."
+    },
+    {
+      "ruleId": "CSDB-OBJ-ROUTINE-001",
+      "objectKind": "routine",
+      "feature": "object",
+      "status": "unsupported",
+      "evidenceId": "EVID-CATALOG",
+      "notes": "Source database routines do not have a general automatic CSharpDB lowering contract."
+    },
+    {
+      "ruleId": "CSDB-OBJ-OTHER-001",
+      "objectKind": "other",
+      "feature": "object",
+      "status": "unknown",
+      "evidenceId": "EVID-CATALOG",
+      "notes": "Provider-specific objects require an explicit capability rule."
+    },
+    {
+      "ruleId": "CSDB-IDENTIFIER-001",
+      "objectKind": "database",
+      "feature": "identifier",
+      "status": "compatible",
+      "maxCount": 128,
+      "evidenceId": "EVID-IDENTIFIERS",
+      "notes": "Identifiers are quoted when rendered, limited to 128 UTF-16 code units, and compared case-insensitively by catalogs."
+    },
+    {
+      "ruleId": "CSDB-COLUMN-TYPE-001",
+      "objectKind": "column",
+      "feature": "columnType",
+      "status": "compatible",
+      "allowedTypes": ["integer", "real", "text", "blob", "decimal"],
+      "evidenceId": "EVID-COLUMN",
+      "notes": "Logical SQL declarations map to these persistent storage types; declared facets are retained and enforced."
+    },
+    {
+      "ruleId": "CSDB-COLUMN-NULLABLE-001",
+      "objectKind": "column",
+      "feature": "nullable",
+      "status": "compatible",
+      "evidenceId": "EVID-COLUMN",
+      "notes": "Nullable and NOT NULL columns are supported."
+    },
+    {
+      "ruleId": "CSDB-COLUMN-DEFAULT-001",
+      "objectKind": "column",
+      "feature": "defaultValue",
+      "status": "conditional",
+      "allowedValues": ["null", "typed-literal"],
+      "evidenceId": "EVID-COLUMN",
+      "notes": "Defaults must be NULL or compatible typed literals; arbitrary source expressions require analysis."
+    },
+    {
+      "ruleId": "CSDB-COLUMN-IDENTITY-001",
+      "objectKind": "column",
+      "feature": "identity",
+      "status": "conditional",
+      "allowedTypes": ["integer"],
+      "maxCount": 1,
+      "evidenceId": "EVID-COLUMN",
+      "notes": "IDENTITY is limited to logical INTEGER or BIGINT and implies a primary key. INTEGER generation stops at 2147483647; BIGINT generation stops at 9223372036854775807."
+    },
+    {
+      "ruleId": "CSDB-COLUMN-ROWVERSION-001",
+      "objectKind": "column",
+      "feature": "rowVersion",
+      "status": "conditional",
+      "allowedTypes": ["blob"],
+      "maxCount": 1,
+      "evidenceId": "EVID-ROWVERSION",
+      "notes": "At most one generated ROWVERSION column is permitted per table. Tokens come from a durable database-wide counter and the column cannot participate in keys, foreign keys, or indexes."
+    },
+    {
+      "ruleId": "CSDB-KEY-PRIMARY-001",
+      "objectKind": "key",
+      "feature": "primaryKey",
+      "status": "conditional",
+      "allowedTypes": ["integer", "text"],
+      "evidenceId": "EVID-KEYS",
+      "notes": "Single or composite INTEGER/TEXT primary keys are supported."
+    },
+    {
+      "ruleId": "CSDB-KEY-UNIQUE-001",
+      "objectKind": "key",
+      "feature": "uniqueConstraint",
+      "status": "conditional",
+      "allowedTypes": ["integer", "text"],
+      "evidenceId": "EVID-KEYS",
+      "notes": "Single or composite INTEGER/TEXT unique keys are supported; tuples containing NULL do not conflict."
+    },
+    {
+      "ruleId": "CSDB-FOREIGNKEY-001",
+      "objectKind": "foreignKey",
+      "feature": "foreignKey",
+      "status": "conditional",
+      "allowedTypes": ["integer", "text"],
+      "allowedValues": [
+        "immediate",
+        "match-simple",
+        "on-delete-cascade",
+        "on-delete-no-action",
+        "on-delete-restrict",
+        "on-delete-set-null",
+        "on-delete-set-default",
+        "on-update-cascade",
+        "on-update-no-action",
+        "on-update-restrict",
+        "on-update-set-null",
+        "on-update-set-default"
+      ],
+      "evidenceId": "EVID-FOREIGN-KEYS",
+      "notes": "Child and ordered parent key types/collations must match. SET NULL requires every child column to be nullable and outside the primary key. SET DEFAULT requires a proven compatible literal default, or proven no/NULL default on a nullable non-key child column. Deferred matching remains unsupported."
+    },
+    {
+      "ruleId": "CSDB-CHECK-001",
+      "objectKind": "checkConstraint",
+      "feature": "checkConstraint",
+      "status": "conditional",
+      "allowedValues": ["deterministic", "row-local"],
+      "evidenceId": "EVID-CHECKS",
+      "notes": "Functions, subqueries, and parameters are not accepted in check expressions."
+    },
+    {
+      "ruleId": "CSDB-INDEX-001",
+      "objectKind": "index",
+      "feature": "index",
+      "status": "conditional",
+      "allowedTypes": ["integer", "real", "text"],
+      "allowedValues": ["column-only", "composite", "equality", "nonunique", "unique"],
+      "evidenceId": "EVID-INDEXES",
+      "notes": "Column-only INTEGER/TEXT/REAL equality indexes are supported. REAL components use hashed equality and do not provide ordered or range scans. BLOB/rowversion, expression, partial, included-column, and sort-direction indexes are unsupported."
+    },
+    {
+      "ruleId": "CSDB-VIEW-BODY-001",
+      "objectKind": "view",
+      "feature": "viewBody",
+      "status": "conditional",
+      "evidenceId": "EVID-VIEWS-TRIGGERS",
+      "notes": "The body must parse, bind, scratch-apply, and catalog-compare."
+    },
+    {
+      "ruleId": "CSDB-TRIGGER-BODY-001",
+      "objectKind": "trigger",
+      "feature": "triggerBody",
+      "status": "conditional",
+      "allowedValues": ["after-delete", "after-insert", "after-update", "before-delete", "before-insert", "before-update"],
+      "evidenceId": "EVID-VIEWS-TRIGGERS",
+      "notes": "Trigger bodies are bounded to INSERT, UPDATE, and DELETE statements."
+    },
+    {
+      "ruleId": "CSDB-TRIGGER-WHEN-001",
+      "objectKind": "trigger",
+      "feature": "triggerWhen",
+      "status": "unsupported",
+      "evidenceId": "EVID-VIEWS-TRIGGERS",
+      "notes": "WHEN is represented by the parser and rejected with SyntaxError before catalog persistence."
+    },
+    {
+      "ruleId": "CSDB-COLLECTION-INDEX-001",
+      "objectKind": "collection",
+      "feature": "collectionIndex",
+      "status": "conditional",
+      "allowedTypes": ["integer", "text"],
+      "allowedValues": ["array-element-path", "nested-path", "nonunique", "scalar-path"],
+      "evidenceId": "EVID-COLLECTION",
+      "notes": "Collection indexes are nonunique; range scans exclude array-element paths."
+    },
+    {
+      "ruleId": "CSDB-TARGET-TYPE-ENFORCEMENT-001",
+      "objectKind": "column",
+      "feature": "targetTypeEnforcement",
+      "status": "compatible",
+      "evidenceId": "EVID-INSERT-BATCH",
+      "notes": "Every row assignment is coerced and validated against the column's logical SQL type descriptor before persistence."
+    }
+  ],
+  "evidence": [
+    {
+      "evidenceId": "EVID-CATALOG",
+      "source": "CSharpDB.Engine catalog implementations and CSharpDB.Sql.Parser",
+      "assertion": "The installed source defines the target object catalog and supported SQL DDL forms."
+    },
+    {
+      "evidenceId": "EVID-CHECKS",
+      "source": "CSharpDB.Engine.RowConstraintValidator and DefaultCheckConstraintTests",
+      "assertion": "Check expressions are deterministic and row-local with bounded syntax."
+    },
+    {
+      "evidenceId": "EVID-COLLECTION",
+      "source": "CSharpDB.Engine.Collection and CollectionIndexBinding; CollectionIndexTests",
+      "assertion": "Collections use document storage with bounded scalar, nested, and array-element index behavior."
+    },
+    {
+      "evidenceId": "EVID-COLUMN",
+      "source": "CSharpDB.Primitives.DbType, CSharpDB.Sql.Parser, and CSharpDB.Storage.Serialization.RecordEncoder",
+      "assertion": "Runtime tags include Null, Integer, Real, Text, Blob, and exact Decimal; persistent columns retain validated logical SQL type descriptors, including signed 32-bit INTEGER, BIGINT, BOOLEAN, temporal, and bit-string distinctions."
+    },
+    {
+      "evidenceId": "EVID-FOREIGN-KEYS",
+      "source": "CSharpDB.Engine.QueryPlanner and ForeignKeyIntegrationTests",
+      "assertion": "Foreign keys require compatible ordered parent keys and support immediate MATCH SIMPLE with RESTRICT, NO ACTION, CASCADE, eligible-child SET NULL, or proven-literal SET DEFAULT behavior for delete and update actions."
+    },
+    {
+      "evidenceId": "EVID-IDENTIFIERS",
+      "source": "CSharpDB.Primitives.SqlIdentifierRules",
+      "assertion": "Quoted identifiers support embedded quotes, reject NUL, and are limited to 128 UTF-16 code units."
+    },
+    {
+      "evidenceId": "EVID-INDEXES",
+      "source": "CSharpDB.Engine.QueryPlanner and CSharpDB.Sql.Ast.CreateIndexStatement",
+      "assertion": "Indexes are column-only and constrained to INTEGER/TEXT/REAL key components with supported collations; REAL components use equality-only hashed keys while ordered and range access remains limited to supported INTEGER/TEXT shapes."
+    },
+    {
+      "evidenceId": "EVID-INSERT-BATCH",
+      "source": "CSharpDB.Execution.RowConstraintValidator and SqlTypeCoercion",
+      "assertion": "All write paths validate and normalize values against the persisted logical SQL type descriptor before storage."
+    },
+    {
+      "evidenceId": "EVID-KEYS",
+      "source": "CSharpDB.Engine.QueryPlanner and LogicalKeyConstraintTests",
+      "assertion": "INTEGER/TEXT primary and unique keys support single and composite forms with documented NULL tuple semantics."
+    },
+    {
+      "evidenceId": "EVID-ROWVERSION",
+      "source": "CSharpDB.Engine.RowConstraintValidator, QueryPlanner, and RowVersionIntegrationTests",
+      "assertion": "A table may contain one generated ROWVERSION excluded from keys, foreign keys, and indexes; inserts and updates allocate durable database-wide tokens."
+    },
+    {
+      "evidenceId": "EVID-VIEWS-TRIGGERS",
+      "source": "CSharpDB.Sql.Parser, CSharpDB.Execution.QueryPlanner, and UnsupportedSqlFeatureDiagnosticTests",
+      "assertion": "Views and bounded triggers exist, while trigger WHEN is rejected with SyntaxError before catalog persistence."
+    }
+  ]
+}

@@ -65,9 +65,10 @@ jobs:
     with:
       release_version: ${{ inputs.release_tag }}
       release_commit: ${{ inputs.release_commit }}
-      # v4.5.0 was tagged but never published, so v4.5.1 must measure the
-      # cumulative public delta from the last published release, v4.4.0.
-      previous_release_ref: ${{ inputs.release_tag == 'v4.5.1' && '86e25435f3c64f47afe2a776c6b03cbe84e56858' || '' }}
+      # v4.6.0 was tagged but never published, so v4.6.1 must measure from the
+      # published v4.5.1 commit. v4.5.0 was also tagged but never published, so
+      # retain the equivalent v4.5.1-to-v4.4.0 case.
+      previous_release_ref: ${{ inputs.release_tag == 'v4.6.1' && '2f141433298bcd3137e2bcaa2930c796c4222092' || inputs.release_tag == 'v4.5.1' && '86e25435f3c64f47afe2a776c6b03cbe84e56858' || '' }}
 
   publish-nuget:
     name: Publish NuGet

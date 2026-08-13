@@ -173,8 +173,10 @@ verifies that the existing tag resolves to the supplied exact commit. It then
 runs one clean functional qualification on each supported operating system and
 one balanced paired hosted-stable performance comparison on Windows. The
 performance job uses `RepeatCount 3`, which covers both previous/candidate
-execution orders in one job. For v4.5.1, the hosted comparison is pinned to the
-last published v4.4.0 commit because v4.5.0 was tagged but not published.
+execution orders in one job. Recovery tags use the last published release as
+their explicit baseline: v4.6.1 is pinned to the exact published v4.5.1 commit
+because v4.6.0 was tagged but not published, while the existing v4.5.1
+exception remains pinned to v4.4.0 because v4.5.0 was likewise not published.
 
 Publication starts only after the hosted gates and all release-archive jobs
 succeed. The workflow publishes the NuGet packages, daemon archives for

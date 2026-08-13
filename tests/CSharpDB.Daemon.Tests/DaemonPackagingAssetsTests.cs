@@ -445,7 +445,8 @@ public sealed class DaemonPackagingAssetsTests
             "release_commit: ${{ inputs.release_commit }}",
             normalized);
         Assert.Contains(
-            "previous_release_ref: ${{ inputs.release_tag == 'v4.5.1' && '86e25435f3c64f47afe2a776c6b03cbe84e56858' || '' }}",
+            "previous_release_ref: ${{ inputs.release_tag == 'v4.6.1' && '2f141433298bcd3137e2bcaa2930c796c4222092' || " +
+            "inputs.release_tag == 'v4.5.1' && '86e25435f3c64f47afe2a776c6b03cbe84e56858' || '' }}",
             normalized);
         Assert.Contains("verify-release-target:", normalized);
         Assert.Contains("name: Verify exact release target", normalized);
@@ -486,7 +487,7 @@ public sealed class DaemonPackagingAssetsTests
     }
 
     [Fact]
-    public void ReleaseWorkflow_V451HostedBaselineUsesLastPublishedV440Only()
+    public void ReleaseWorkflow_RecoveryTagsUseTheirLastPublishedBaselinesOnly()
     {
         string repoRoot = FindRepoRoot();
         string implementation = File.ReadAllText(Path.Combine(
@@ -496,10 +497,15 @@ public sealed class DaemonPackagingAssetsTests
             "release.yml")).ReplaceLineEndings("\n");
 
         const string expectedBaselineInput =
-            "previous_release_ref: ${{ inputs.release_tag == 'v4.5.1' && " +
+            "previous_release_ref: ${{ inputs.release_tag == 'v4.6.1' && " +
+            "'2f141433298bcd3137e2bcaa2930c796c4222092' || " +
+            "inputs.release_tag == 'v4.5.1' && " +
             "'86e25435f3c64f47afe2a776c6b03cbe84e56858' || '' }}";
 
-        Assert.Contains("v4.5.0 was tagged but never published", implementation);
+        Assert.Contains("v4.6.0 was tagged but never published", implementation);
+        Assert.Contains("published v4.5.1 commit", implementation);
+        Assert.Contains("v4.5.1-to-v4.4.0", implementation);
+        Assert.Contains("v4.5.0 was also tagged but never published", implementation);
         Assert.Contains(expectedBaselineInput, implementation);
         Assert.Single(
             System.Text.RegularExpressions.Regex.Matches(
