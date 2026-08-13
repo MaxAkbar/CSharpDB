@@ -442,7 +442,7 @@ dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.
 ```
 
 After the release pull request is merged, update local `main` and use the
-canonical publisher to validate and publish the exact release tag:
+canonical publisher to run and wait for the complete hosted release:
 
 ```powershell
 git switch main
@@ -453,18 +453,15 @@ $Version = (Read-Host 'Release version without the v prefix').Trim()
 ```
 
 Do not create a release tag in the GitHub UI or with raw `git tag` / `git push`
-commands. Those unsupported paths bypass the clean-main, version, and tag
-preflight. `Publish-ReleaseTag.ps1` requires a clean, checked-out `main`, fetches
-`origin/main`, requires local `HEAD` to equal that remote commit, validates the
-package version, and rejects a same-named local or remote tag at another commit.
-It does not run or require a local benchmark or commit status.
-
-The publisher is idempotent for the same version and exact commit. The `v*` tag
-push starts the fail-closed Release workflow, which runs one clean functional
-qualification on each of Windows, Linux, and macOS and one balanced paired
-hosted-stable comparison on Windows. That comparison uses `RepeatCount 3`, so
-one job records three pairs per previous/candidate execution order. Publication
-begins only after those hosted gates and all archive jobs succeed.
+commands. `Publish-ReleaseTag.ps1` requires clean exact `main`, validates the
+package version and unused release identity, dispatches the fail-closed
+qualification workflow, and waits for completion. The workflow runs
+cross-platform functional qualification, the real previous-release
+compatibility build, a balanced paired hosted-stable comparison,
+NativeAOT/host/archive checks, and builds the final release bundle before any
+tag exists. A failed gate therefore leaves the version untagged and retryable.
+The command then creates the protected tag with the maintainer's authenticated
+Git identity and starts a resumable hosted publication of that exact bundle.
 
 ### Optional local durable-write diagnostics
 

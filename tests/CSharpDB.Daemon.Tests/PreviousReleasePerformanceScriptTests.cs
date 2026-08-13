@@ -1926,7 +1926,21 @@ public sealed class PreviousReleasePerformanceScriptTests
             Assert.False(Directory.Exists(Path.Combine(evidence, "candidate-source")));
 
             string[] invocations = File.ReadAllLines(invocationLog);
-            Assert.Equal(2, invocations.Count(line => line.Contains("|build", StringComparison.Ordinal)));
+            string[] builds = invocations
+                .Where(line => line.Contains("|build|", StringComparison.Ordinal))
+                .ToArray();
+            Assert.Collection(
+                builds,
+                line =>
+                {
+                    Assert.Contains("candidate-source|build|", line);
+                    Assert.Contains("-p CSharpDbReleaseCoreOnly=true", line);
+                },
+                line =>
+                {
+                    Assert.Contains("baseline-source|build|", line);
+                    Assert.Contains("-p CSharpDbReleaseCoreOnly=true", line);
+                });
             string[] runs = invocations
                 .Where(line => line.Contains("|run|", StringComparison.Ordinal))
                 .ToArray();
@@ -2006,6 +2020,53 @@ public sealed class PreviousReleasePerformanceScriptTests
                 line => Assert.Contains(
                     "candidate-source|run|hybrid-cold-open|repeat=3",
                     line));
+
+            string buildOnlyEvidence = Path.Combine(temporaryRoot, "build-only-evidence");
+            string buildOnlyInvocationLog = Path.Combine(
+                temporaryRoot,
+                "build-only-fake-dotnet.log");
+            var buildOnlyEnvironment = new Dictionary<string, string>(environment)
+            {
+                ["FAKE_DOTNET_LOG"] = buildOnlyInvocationLog,
+            };
+            ProcessResult buildOnly = await RunProcessWithEnvironmentAsync(
+                "pwsh",
+                buildOnlyEnvironment,
+                "-NoLogo",
+                "-NoProfile",
+                "-File",
+                Path.Combine(scriptRoot, "Test-PreviousReleasePerformance.ps1"),
+                "-PreviousRef",
+                "v4.3.0",
+                "-CandidateRef",
+                "HEAD",
+                "-OutputPath",
+                buildOnlyEvidence,
+                "-BuildOnly");
+
+            Assert.True(buildOnly.ExitCode == 0, buildOnly.CombinedOutput);
+            string[] buildOnlyInvocations = File.ReadAllLines(buildOnlyInvocationLog);
+            Assert.Equal(2, buildOnlyInvocations.Length);
+            Assert.All(
+                buildOnlyInvocations,
+                line => Assert.Contains("-p CSharpDbReleaseCoreOnly=true", line));
+            Assert.DoesNotContain(
+                buildOnlyInvocations,
+                line => line.Contains("|run|", StringComparison.Ordinal));
+            string buildOnlyReport = File.ReadAllText(Path.Combine(
+                buildOnlyEvidence,
+                "previous-release-performance.md"));
+            Assert.Contains("- Result: **PASS**", buildOnlyReport);
+            Assert.Contains(
+                "- Mode: build-only; benchmark measurements were not executed",
+                buildOnlyReport);
+            Assert.Contains("CSharpDbReleaseCoreOnly=true", buildOnlyReport);
+            Assert.False(Directory.Exists(Path.Combine(
+                buildOnlyEvidence,
+                "baseline-source")));
+            Assert.False(Directory.Exists(Path.Combine(
+                buildOnlyEvidence,
+                "candidate-source")));
 
             string duplicateEvidence = Path.Combine(temporaryRoot, "duplicate-evidence");
             environment["FAKE_DOTNET_DUPLICATE_SUITE"] = "master-table";
@@ -2179,7 +2240,19 @@ public sealed class PreviousReleasePerformanceScriptTests
             $command = $CommandArgs[0]
             $sourceName = Split-Path -Leaf (Get-Location).Path
             if ($command -eq 'build') {
-                Add-Content -LiteralPath $env:FAKE_DOTNET_LOG -Value "$sourceName|build"
+                $propertySwitchIndex = [Array]::IndexOf($CommandArgs, '-p')
+                if ($propertySwitchIndex -lt 0 -or
+                    $propertySwitchIndex + 1 -ge $CommandArgs.Count -or
+                    $CommandArgs[$propertySwitchIndex + 1] -cne
+                        'CSharpDbReleaseCoreOnly=true') {
+                    Write-Error (
+                        'Release-core MSBuild property is missing. Arguments: ' +
+                        ($CommandArgs -join ' '))
+                    exit 1
+                }
+                Add-Content `
+                    -LiteralPath $env:FAKE_DOTNET_LOG `
+                    -Value "$sourceName|build|$($CommandArgs -join ' ')"
                 Write-Output "Fake build: $sourceName"
                 exit 0
             }

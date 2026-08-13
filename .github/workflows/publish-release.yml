@@ -1,26 +1,314 @@
-name: Release
+name: Publish qualified release
+
+run-name: Publish ${{ inputs.release_tag }} from qualification ${{ inputs.qualification_run_id }} (${{ inputs.preflight_only && 'preflight' || 'release' }})
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Exact immutable release tag
+        required: true
+        type: string
+      release_commit:
+        description: Exact commit targeted by release_tag
+        required: true
+        type: string
+      qualification_run_id:
+        description: Successful Release qualification run containing release-bundle
+        required: true
+        type: string
+      preflight_only:
+        description: Verify publication credentials and qualified bundle without publishing
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: publish-${{ inputs.release_tag }}
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  actions: read
+  contents: write
+  id-token: write
 
 jobs:
-  publish-tag:
-    name: Publish exact release tag
-    permissions:
-      contents: write
-      id-token: write
-    uses: ./.github/workflows/release.yml
-    with:
-      release_tag: ${{ github.ref_name }}
-      release_commit: ${{ github.sha }}
-    secrets:
-      NUGET_USER: ${{ secrets.NUGET_USER }}
+  publish:
+    name: Publish exact qualified bundle
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      RELEASE_COMMIT: ${{ inputs.release_commit }}
+      QUALIFICATION_RUN_ID: ${{ inputs.qualification_run_id }}
+
+    steps:
+      - name: Checkout exact tagged source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.release_commit }}
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Require exact tag and successful qualification run
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RELEASE_TAG -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') {
+            throw "Release tag is not a supported semantic version: $env:RELEASE_TAG"
+          }
+          if ($env:RELEASE_COMMIT -notmatch '^[0-9a-f]{40}$') {
+            throw "Release commit is not a full lowercase SHA: $env:RELEASE_COMMIT"
+          }
+          if ($env:QUALIFICATION_RUN_ID -notmatch '^[1-9][0-9]*$') {
+            throw "Qualification run ID is invalid: $env:QUALIFICATION_RUN_ID"
+          }
+
+          if ('${{ inputs.preflight_only }}' -ceq 'false') {
+            $tagCommit = (& gh api "repos/$env:GITHUB_REPOSITORY/commits/$env:RELEASE_TAG" --jq .sha).Trim()
+            if ($LASTEXITCODE -ne 0 -or $tagCommit -cne $env:RELEASE_COMMIT) {
+              throw "$env:RELEASE_TAG does not resolve to exact commit $env:RELEASE_COMMIT."
+            }
+          }
+          else {
+            $remoteMain = (& gh api "repos/$env:GITHUB_REPOSITORY/commits/main" --jq .sha).Trim()
+            if ($LASTEXITCODE -ne 0 -or $remoteMain -cne $env:RELEASE_COMMIT) {
+              throw "$env:RELEASE_COMMIT is not exact current main $remoteMain."
+            }
+            $tagRef = @(& git ls-remote --tags origin "refs/tags/$env:RELEASE_TAG" "refs/tags/$env:RELEASE_TAG^{}")
+            if ($LASTEXITCODE -ne 0 -or $tagRef.Count -ne 0) {
+              throw "Preflight requires absent release tag $env:RELEASE_TAG."
+            }
+          }
+
+          $run = & gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:QUALIFICATION_RUN_ID"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not inspect qualification run $env:QUALIFICATION_RUN_ID."
+          }
+          $run = $run | ConvertFrom-Json
+          $expectedTitle = "Qualify release $env:RELEASE_TAG at $env:RELEASE_COMMIT"
+          $workflow = & gh api "repos/$env:GITHUB_REPOSITORY/actions/workflows/$($run.workflow_id)"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not inspect workflow $($run.workflow_id) for qualification run."
+          }
+          $workflow = $workflow | ConvertFrom-Json
+          if ($run.event -cne 'workflow_dispatch' -or
+              $workflow.path -cne '.github/workflows/release.yml' -or
+              $run.head_sha -cne $env:RELEASE_COMMIT -or
+              $run.display_title -cne $expectedTitle -or
+              $run.status -cne 'completed' -or
+              $run.conclusion -cne 'success') {
+            throw "Run $env:QUALIFICATION_RUN_ID is not the successful exact qualification for $env:RELEASE_TAG."
+          }
+
+      - name: Download immutable qualified bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: release-bundle
+          path: artifacts/release-bundle
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.qualification_run_id }}
+
+      - name: Verify downloaded release bundle
+        id: bundle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = $env:RELEASE_TAG.Substring(1)
+          ./scripts/Test-CSharpDbNuGetReleaseGraph.ps1 `
+            -FeedPath artifacts/release-bundle/nuget `
+            -Version $version `
+            -ValidateExistingManifest
+          $notesPath = Resolve-Path 'artifacts/release-bundle/release-notes-current.md'
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "notes_path=$notesPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Fail when NUGET_USER is missing
+        env:
+          NUGET_USER: ${{ secrets.NUGET_USER }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$NUGET_USER" ]]; then
+            echo "Repository secret NUGET_USER is not set." >&2
+            exit 1
+          fi
+
+      - name: Create or refresh draft GitHub Release
+        id: release-stage
+        if: inputs.preflight_only == false
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_NOTES_PATH: ${{ steps.bundle.outputs.notes_path }}
+          RELEASE_VERSION: ${{ steps.bundle.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $assets = @(Get-ChildItem -LiteralPath artifacts/release-bundle -Recurse -File |
+            Where-Object { $_.Name -cne 'release-notes-current.md' })
+          if ($assets.Count -eq 0) { throw 'The release bundle contains no assets.' }
+          $duplicateNames = @($assets | Group-Object Name | Where-Object Count -gt 1)
+          if ($duplicateNames.Count -ne 0) {
+            throw "Release asset basenames must be unique: $($duplicateNames.Name -join ', ')"
+          }
+
+          function Assert-ExactReleaseAssets {
+            $releaseView = @(& gh release view $env:RELEASE_TAG --json databaseId 2>$null)
+            if ($LASTEXITCODE -ne 0) {
+              throw "Could not resolve GitHub Release $env:RELEASE_TAG."
+            }
+            $releaseId = [long] ((($releaseView -join [Environment]::NewLine) | ConvertFrom-Json).databaseId)
+            if ($releaseId -le 0) {
+              throw "GitHub Release $env:RELEASE_TAG did not have a valid database ID."
+            }
+            $release = & gh api "repos/$env:GITHUB_REPOSITORY/releases/$releaseId"
+            if ($LASTEXITCODE -ne 0) {
+              throw "Could not inspect GitHub Release $env:RELEASE_TAG by database ID."
+            }
+            $release = $release | ConvertFrom-Json
+            $assetPages = & gh api --paginate --slurp `
+              "repos/$env:GITHUB_REPOSITORY/releases/$releaseId/assets?per_page=100"
+            if ($LASTEXITCODE -ne 0) {
+              throw "Could not inspect assets for GitHub Release $env:RELEASE_TAG."
+            }
+            $expectedBody = (Get-Content -Raw -LiteralPath $env:RELEASE_NOTES_PATH).TrimEnd()
+            if ($release.tag_name -cne $env:RELEASE_TAG -or
+                $release.target_commitish -cne 'main' -or
+                $release.name -cne "CSharpDB v$env:RELEASE_VERSION" -or
+                ([string] $release.body).TrimEnd() -cne $expectedBody) {
+              throw "GitHub Release $env:RELEASE_TAG metadata does not match the exact qualified notes."
+            }
+            $remoteAssets = @(
+              foreach ($page in @(($assetPages | ConvertFrom-Json))) {
+                foreach ($asset in @($page)) { $asset }
+              }
+            )
+            if ($remoteAssets.Count -ne $assets.Count) {
+              throw "GitHub Release $env:RELEASE_TAG has $($remoteAssets.Count) assets; expected $($assets.Count)."
+            }
+            foreach ($asset in $assets) {
+              $matches = @($remoteAssets | Where-Object name -CEQ $asset.Name)
+              if ($matches.Count -ne 1) {
+                throw "GitHub Release $env:RELEASE_TAG does not contain exactly one $($asset.Name)."
+              }
+              $expectedDigest = "sha256:$((Get-FileHash -LiteralPath $asset.FullName -Algorithm SHA256).Hash.ToLowerInvariant())"
+              if ($matches[0].state -cne 'uploaded' -or
+                  [long] $matches[0].size -ne $asset.Length -or
+                  ([string] $matches[0].digest).ToLowerInvariant() -cne $expectedDigest) {
+                throw "GitHub Release asset $($asset.Name) does not match the exact qualified file."
+              }
+            }
+            return $release
+          }
+
+          $releaseJson = @(& gh release view $env:RELEASE_TAG --json isDraft,tagName,url 2>$null)
+          if ($LASTEXITCODE -eq 0) {
+            $release = ($releaseJson -join [Environment]::NewLine) | ConvertFrom-Json
+            if (-not $release.isDraft) {
+              Assert-ExactReleaseAssets | Out-Null
+              $manifest = Get-Content -Raw -LiteralPath `
+                artifacts/release-bundle/nuget/CSharpDB-PACKAGE-MANIFEST.json |
+                ConvertFrom-Json
+              ./scripts/Wait-NuGetPackageVersion.ps1 `
+                -Version $env:RELEASE_VERSION `
+                -PackageId @($manifest.packages.id)
+              "already_published=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+              Write-Host "Exact GitHub Release $env:RELEASE_TAG and every package are already published."
+              exit 0
+            }
+            & gh release edit $env:RELEASE_TAG `
+              --title "CSharpDB v$env:RELEASE_VERSION" `
+              --notes-file $env:RELEASE_NOTES_PATH `
+              --draft
+          }
+          else {
+            & gh release create $env:RELEASE_TAG `
+              --verify-tag `
+              --target main `
+              --title "CSharpDB v$env:RELEASE_VERSION" `
+              --notes-file $env:RELEASE_NOTES_PATH `
+              --draft
+          }
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not create or refresh draft GitHub Release $env:RELEASE_TAG."
+          }
+
+          & gh release upload $env:RELEASE_TAG @($assets.FullName) --clobber
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not upload the complete asset bundle for $env:RELEASE_TAG."
+          }
+          Assert-ExactReleaseAssets | Out-Null
+          "already_published=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: NuGet login through Trusted Publishing
+        id: nuget-login
+        if: inputs.preflight_only == true || steps.release-stage.outputs.already_published != 'true'
+        uses: NuGet/login@v1
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
+      - name: Require packages to remain absent before tagging
+        if: inputs.preflight_only == true
+        shell: pwsh
+        run: |
+          ./scripts/Test-CSharpDbNuGetCandidateAbsent.ps1 `
+            -ManifestPath artifacts/release-bundle/nuget/CSharpDB-PACKAGE-MANIFEST.json
+
+      - name: Publication preflight complete
+        if: inputs.preflight_only == true
+        run: echo "Qualified bundle and publication credentials are ready; no tag or package was created."
+
+      - name: Publish packages in validated topological order
+        if: inputs.preflight_only == false && steps.release-stage.outputs.already_published != 'true'
+        shell: pwsh
+        env:
+          NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
+          RELEASE_VERSION: ${{ steps.bundle.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $manifest = Get-Content -Raw -LiteralPath `
+            artifacts/release-bundle/nuget/CSharpDB-PACKAGE-MANIFEST.json |
+            ConvertFrom-Json
+          $ordered = @($manifest.packages | Where-Object { $_.id -ceq 'CSharpDB.Observability' }) +
+            @($manifest.packages | Where-Object { $_.id -cne 'CSharpDB.Observability' })
+          foreach ($package in $ordered) {
+            $packagePath = Join-Path artifacts/release-bundle/nuget $package.file
+            & dotnet nuget push $packagePath `
+              --source 'https://api.nuget.org/v3/index.json' `
+              --api-key $env:NUGET_API_KEY `
+              --skip-duplicate
+            if ($LASTEXITCODE -ne 0) { throw "Failed to publish $($package.id)." }
+            ./scripts/Wait-NuGetPackageVersion.ps1 `
+              -Version $env:RELEASE_VERSION `
+              -PackageId $package.id
+          }
+
+      - name: Verify every package is visible
+        if: inputs.preflight_only == false && steps.release-stage.outputs.already_published != 'true'
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.bundle.outputs.version }}
+        run: |
+          $manifest = Get-Content -Raw -LiteralPath `
+            artifacts/release-bundle/nuget/CSharpDB-PACKAGE-MANIFEST.json |
+            ConvertFrom-Json
+          ./scripts/Wait-NuGetPackageVersion.ps1 `
+            -Version $env:RELEASE_VERSION `
+            -PackageId @($manifest.packages.id)
+
+      - name: Publish the staged GitHub Release
+        if: inputs.preflight_only == false && steps.release-stage.outputs.already_published != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & gh release edit $env:RELEASE_TAG --draft=false --latest
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not publish GitHub Release $env:RELEASE_TAG."
+          }

@@ -110,8 +110,8 @@ transport-specific security stacks:
   mode, or clearly identify and audit a single service principal for trusted
   local mode.
 - Apply installer hardening under `deploy/daemon`, and release trust changes in
-  `.github/workflows/publish-release.yml`, the reusable
-  `.github/workflows/release.yml` implementation, and the existing packaging scripts.
+  the manually dispatched, tag-last `.github/workflows/release.yml` and the
+  existing packaging scripts.
 
 ## Trust Boundaries And Deployment Profiles
 

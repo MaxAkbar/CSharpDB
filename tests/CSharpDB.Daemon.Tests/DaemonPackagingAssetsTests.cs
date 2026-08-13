@@ -33,6 +33,25 @@ public sealed class DaemonPackagingAssetsTests
     }
 
     [Fact]
+    public void Ci_BuildsTheSynchronizedReleaseHarnessAgainstThePublishedBaseline()
+    {
+        string repoRoot = FindRepoRoot();
+        string workflow = File.ReadAllText(Path.Combine(
+            repoRoot,
+            ".github",
+            "workflows",
+            "ci.yml"));
+
+        Assert.Contains("release-baseline-compatibility:", workflow);
+        Assert.Contains("fetch-depth: 0", workflow);
+        Assert.Contains("Test-PreviousReleasePerformance.ps1", workflow);
+        Assert.Contains("-PreviousRef 2f141433298bcd3137e2bcaa2930c796c4222092", workflow);
+        Assert.Contains("-CandidateRef $env:CANDIDATE_REF", workflow);
+        Assert.Contains("-BuildOnly", workflow);
+        Assert.Contains("previous-release-performance.md", workflow);
+    }
+
+    [Fact]
     public void CiAndRelease_QualifyPublishedApiAndDaemonObservabilityOnEverySupportedHost()
     {
         string repoRoot = FindRepoRoot();
@@ -46,6 +65,11 @@ public sealed class DaemonPackagingAssetsTests
             ".github",
             "workflows",
             "release.yml"));
+        string publisher = File.ReadAllText(Path.Combine(
+            repoRoot,
+            ".github",
+            "workflows",
+            "publish-release.yml"));
         string qualifier = File.ReadAllText(Path.Combine(
             repoRoot,
             "scripts",
@@ -100,6 +124,11 @@ public sealed class DaemonPackagingAssetsTests
             ".github",
             "workflows",
             "release.yml"));
+        string publisher = File.ReadAllText(Path.Combine(
+            repoRoot,
+            ".github",
+            "workflows",
+            "publish-release.yml"));
 
         Assert.Contains("Test-ExactCandidateRange", script);
         Assert.Contains("$normalized -ceq \"[$CandidateVersion]\"", script);
@@ -117,11 +146,17 @@ public sealed class DaemonPackagingAssetsTests
         Assert.Contains("CSharpDB-PACKAGE-MANIFEST.json", ci);
         Assert.Contains("CSharpDB-PACKAGE-MANIFEST.json", release);
         Assert.Contains("Test-CSharpDbNuGetCandidateAbsent.ps1", release);
-        Assert.DoesNotContain("--skip-duplicate", release);
+        Assert.Contains("-ValidateExistingManifest", release);
+        Assert.Contains("--skip-duplicate", publisher);
+        Assert.Contains("--target main", publisher);
+        Assert.Contains("$release.target_commitish -cne 'main'", publisher);
+        Assert.Contains("--json databaseId", publisher);
+        Assert.Contains("releases/$releaseId/assets?per_page=100", publisher);
+        Assert.DoesNotContain("releases/tags/$env:RELEASE_TAG", publisher);
         Assert.Contains(
-            "Push remaining packages in validated topological order",
-            release);
-        Assert.Contains("foreach ($package in $manifest.packages)", release);
+            "Publish packages in validated topological order",
+            publisher);
+        Assert.Contains("foreach ($package in $ordered)", publisher);
         Assert.DoesNotContain(
             "for package in artifacts/nuget/*.nupkg",
             release);
@@ -137,34 +172,30 @@ public sealed class DaemonPackagingAssetsTests
     }
 
     [Fact]
-    public void ReleaseWorkflow_PublishesObservabilityBeforeDependentPackages()
+    public void PublicationWorkflow_PublishesObservabilityBeforeDependentPackages()
     {
         string repoRoot = FindRepoRoot();
-        string workflow = File.ReadAllText(Path.Combine(repoRoot, ".github", "workflows", "release.yml"));
+        string workflow = File.ReadAllText(Path.Combine(repoRoot, ".github", "workflows", "publish-release.yml"));
 
         int observabilityPushIndex = workflow.IndexOf(
-            "- name: Push CSharpDB.Observability to NuGet.org",
-            StringComparison.Ordinal);
-        int observabilityWaitIndex = workflow.IndexOf(
-            "- name: Wait for CSharpDB.Observability on NuGet.org",
+            "@($manifest.packages | Where-Object { $_.id -ceq 'CSharpDB.Observability' })",
             StringComparison.Ordinal);
         int dependentPushIndex = workflow.IndexOf(
-            "- name: Push remaining packages in validated topological order",
+            "@($manifest.packages | Where-Object { $_.id -cne 'CSharpDB.Observability' })",
+            StringComparison.Ordinal);
+        int observabilityWaitIndex = workflow.IndexOf(
+            "Wait-NuGetPackageVersion.ps1",
+            dependentPushIndex,
             StringComparison.Ordinal);
 
-        Assert.True(observabilityPushIndex >= 0, "The observability package must be pushed explicitly.");
+        Assert.True(observabilityPushIndex >= 0, "Observability must be first in the release order.");
+        Assert.True(
+            dependentPushIndex > observabilityPushIndex,
+            "Dependent packages must be ordered after observability.");
         Assert.True(
             observabilityWaitIndex > observabilityPushIndex,
-            "NuGet visibility must be confirmed after pushing observability.");
-        Assert.True(
-            dependentPushIndex > observabilityWaitIndex,
-            "Dependent packages must not be pushed until observability is visible.");
-        Assert.Contains(
-            "CSharpDB.Observability.${{ steps.version.outputs.package_file_version }}.nupkg",
-            workflow);
-        Assert.Contains(
-            "foreach ($package in $manifest.packages)",
-            workflow);
+            "The ordered publication loop must verify package visibility.");
+        Assert.Contains("foreach ($package in $ordered)", workflow);
         Assert.Contains("-PackageId $package.id", workflow);
 
         string versionResolver = File.ReadAllText(Path.Combine(
@@ -186,13 +217,17 @@ public sealed class DaemonPackagingAssetsTests
     }
 
     [Fact]
-    public void ReleaseWorkflow_VerifiesNuGetPackagesBeforeCreatingGitHubRelease()
+    public void PublicationWorkflow_StagesAssetsThenVerifiesPackagesBeforeFinalizingRelease()
     {
         string repoRoot = FindRepoRoot();
-        string workflow = File.ReadAllText(Path.Combine(repoRoot, ".github", "workflows", "release.yml"));
+        string workflow = File.ReadAllText(Path.Combine(repoRoot, ".github", "workflows", "publish-release.yml"));
+
+        int draftIndex = workflow.IndexOf(
+            "- name: Create or refresh draft GitHub Release",
+            StringComparison.Ordinal);
 
         int verifyStepIndex = workflow.IndexOf(
-            "- name: Verify packages are visible on NuGet.org",
+            "- name: Verify every package is visible",
             StringComparison.Ordinal);
         int verifyIndex = verifyStepIndex < 0
             ? -1
@@ -200,64 +235,48 @@ public sealed class DaemonPackagingAssetsTests
                 "Wait-NuGetPackageVersion.ps1",
                 verifyStepIndex,
                 StringComparison.Ordinal);
-        int releaseIndex = workflow.IndexOf("softprops/action-gh-release", StringComparison.Ordinal);
+        int releaseIndex = workflow.IndexOf(
+            "- name: Publish the staged GitHub Release",
+            StringComparison.Ordinal);
 
+        Assert.True(draftIndex >= 0);
         Assert.True(
             verifyIndex > verifyStepIndex,
             "The final package-visibility step must call the NuGet verification script.");
         Assert.True(releaseIndex > verifyIndex, "NuGet verification must run before the GitHub Release is created.");
 
-        string[] packageIds =
-        [
-            "CSharpDB",
-            "CSharpDB.Observability",
-            "CSharpDB.Primitives",
-            "CSharpDB.Sql",
-            "CSharpDB.Storage",
-            "CSharpDB.Execution",
-            "CSharpDB.Engine",
-            "CSharpDB.Pipelines",
-            "CSharpDB.Data",
-            "CSharpDB.EntityFrameworkCore",
-            "CSharpDB.Storage.Diagnostics",
-            "CSharpDB.Client",
-        ];
-
-        foreach (string packageId in packageIds)
-            Assert.Contains($"'{packageId}'", workflow);
+        Assert.Contains("-PackageId @($manifest.packages.id)", workflow);
     }
 
     [Fact]
-    public void ReleaseTrigger_UsesFreshRegistrationAndTrustedPublishingImplementation()
+    public void ReleaseWorkflows_AreManualTagLastAndUseTrustedPublishing()
     {
         string repoRoot = FindRepoRoot();
-        string trigger = File.ReadAllText(Path.Combine(
-            repoRoot,
-            ".github",
-            "workflows",
-            "publish-release.yml")).ReplaceLineEndings("\n");
         string implementation = File.ReadAllText(Path.Combine(
             repoRoot,
             ".github",
             "workflows",
             "release.yml")).ReplaceLineEndings("\n");
+        string publication = File.ReadAllText(Path.Combine(
+            repoRoot,
+            ".github",
+            "workflows",
+            "publish-release.yml")).ReplaceLineEndings("\n");
 
-        Assert.Contains("name: Release\n", trigger);
-        Assert.Contains("      - \"v*\"", trigger);
-        Assert.DoesNotContain("workflow_dispatch:", trigger);
-        Assert.Contains("group: release-${{ github.ref }}", trigger);
-        Assert.Contains("uses: ./.github/workflows/release.yml", trigger);
-        Assert.Contains("NUGET_USER: ${{ secrets.NUGET_USER }}", trigger);
-        Assert.DoesNotContain("secrets: inherit", trigger);
-        Assert.DoesNotContain("waive_local_durable", trigger);
-        Assert.Contains("contents: write", trigger);
-        Assert.DoesNotContain("statuses:", trigger);
-        Assert.Contains("id-token: write", trigger);
-        Assert.Contains("cancel-in-progress: false", trigger);
-
-        Assert.Contains("workflow_call:", implementation);
-        Assert.DoesNotContain("tags:", implementation);
-        Assert.Contains("uses: NuGet/login@v1", implementation);
+        Assert.Contains("name: Release qualification\n", implementation);
+        Assert.Contains("workflow_dispatch:", implementation);
+        Assert.Contains("run-name: Qualify release ${{ inputs.release_tag }} at ${{ inputs.release_commit }}", implementation);
+        Assert.Contains("group: release-${{ inputs.release_tag }}", implementation);
+        Assert.DoesNotContain("push:\n    tags:", implementation);
+        Assert.DoesNotContain("workflow_call:", implementation);
+        Assert.DoesNotContain("git/refs", implementation);
+        Assert.Contains("cancel-in-progress: false", implementation);
+        Assert.Contains("name: Publish qualified release\n", publication);
+        Assert.Contains("workflow_dispatch:", publication);
+        Assert.Contains("preflight_only:", publication);
+        Assert.Contains("uses: NuGet/login@v1", publication);
+        Assert.Contains("id-token: write", publication);
+        Assert.DoesNotContain("push:\n    tags:", publication);
     }
 
     [Fact]
@@ -445,21 +464,17 @@ public sealed class DaemonPackagingAssetsTests
             "release_commit: ${{ inputs.release_commit }}",
             normalized);
         Assert.Contains(
-            "previous_release_ref: ${{ inputs.release_tag == 'v4.6.1' && '2f141433298bcd3137e2bcaa2930c796c4222092' || " +
+            "previous_release_ref: ${{ inputs.release_tag == 'v4.6.2' && '2f141433298bcd3137e2bcaa2930c796c4222092' || " +
+            "inputs.release_tag == 'v4.6.1' && '2f141433298bcd3137e2bcaa2930c796c4222092' || " +
             "inputs.release_tag == 'v4.5.1' && '86e25435f3c64f47afe2a776c6b03cbe84e56858' || '' }}",
             normalized);
-        Assert.Contains("verify-release-target:", normalized);
-        Assert.Contains("name: Verify exact release target", normalized);
+        Assert.Contains("verify-release-candidate:", normalized);
+        Assert.Contains("name: Verify exact release candidate", normalized);
         Assert.DoesNotContain("statuses:", normalized);
         Assert.DoesNotContain("LOCAL_DURABLE_ATTESTOR", normalized);
         Assert.Contains("- name: Checkout exact release source", normalized);
         Assert.Contains("uses: actions/checkout@v7", normalized);
-        Assert.Contains(
-            """
-                  - name: Require the exact existing release tag and commit
-                    shell: pwsh
-            """.ReplaceLineEndings("\n"),
-            normalized);
+        Assert.Contains("- name: Require exact untagged main and matching package version", normalized);
         Assert.DoesNotContain("Test-LocalDurableStatus.ps1", normalized);
         Assert.DoesNotContain("waive_local_durable", normalized);
         Assert.DoesNotContain("github.ref_name", normalized);
@@ -470,20 +485,20 @@ public sealed class DaemonPackagingAssetsTests
                 normalized,
                 @"(?m)^          ref: \$\{\{ inputs\.release_commit \}\}$").Count);
         Assert.Equal(
-            5,
+            6,
             System.Text.RegularExpressions.Regex.Matches(
                 normalized,
                 @"(?m)^    needs: build-and-test$").Count);
         Assert.Contains(
-            "needs: [build-and-test, migration-archives, native-aot, api-host-observability, daemon-archives, admin-desktop-archive]",
+            "needs: [prepare-nuget, migration-archives, native-aot, api-host-observability, daemon-archives, admin-desktop-archive]",
             normalized);
         Assert.Contains(
-            "needs: [publish-nuget, migration-archives, native-aot, daemon-archives, admin-desktop-archive]",
+            "needs: [prepare-nuget, migration-archives, native-aot, api-host-observability, daemon-archives, admin-desktop-archive]",
             normalized);
         Assert.Single(
             System.Text.RegularExpressions.Regex.Matches(
                 normalized,
-                @"(?m)^    needs: verify-release-target$"));
+                @"(?m)^    needs: verify-release-candidate$"));
     }
 
     [Fact]
@@ -497,15 +512,15 @@ public sealed class DaemonPackagingAssetsTests
             "release.yml")).ReplaceLineEndings("\n");
 
         const string expectedBaselineInput =
-            "previous_release_ref: ${{ inputs.release_tag == 'v4.6.1' && " +
+            "previous_release_ref: ${{ inputs.release_tag == 'v4.6.2' && " +
+            "'2f141433298bcd3137e2bcaa2930c796c4222092' || " +
+            "inputs.release_tag == 'v4.6.1' && " +
             "'2f141433298bcd3137e2bcaa2930c796c4222092' || " +
             "inputs.release_tag == 'v4.5.1' && " +
             "'86e25435f3c64f47afe2a776c6b03cbe84e56858' || '' }}";
 
-        Assert.Contains("v4.6.0 was tagged but never published", implementation);
+        Assert.Contains("v4.6.0 and v4.6.1 were tagged but never published", implementation);
         Assert.Contains("published v4.5.1 commit", implementation);
-        Assert.Contains("v4.5.1-to-v4.4.0", implementation);
-        Assert.Contains("v4.5.0 was also tagged but never published", implementation);
         Assert.Contains(expectedBaselineInput, implementation);
         Assert.Single(
             System.Text.RegularExpressions.Regex.Matches(
@@ -515,54 +530,33 @@ public sealed class DaemonPackagingAssetsTests
     }
 
     [Fact]
-    public void ReleaseWorkflow_IsTagOnlyAndHasNoManualRecoveryOrDurableWaiver()
+    public void ReleaseWorkflow_IsTagLastAndHasNoManualTagTriggerOrWaiver()
     {
         string repoRoot = FindRepoRoot();
-        string trigger = File.ReadAllText(Path.Combine(
-            repoRoot,
-            ".github",
-            "workflows",
-            "publish-release.yml")).ReplaceLineEndings("\n");
         string implementation = File.ReadAllText(Path.Combine(
             repoRoot,
             ".github",
             "workflows",
             "release.yml")).ReplaceLineEndings("\n");
 
-        Assert.Contains("      - \"v*\"", trigger);
-        Assert.Contains("group: release-${{ github.ref }}", trigger);
-        Assert.Contains("release_tag: ${{ github.ref_name }}", trigger);
-        Assert.Contains("release_commit: ${{ github.sha }}", trigger);
-        Assert.Contains("NUGET_USER: ${{ secrets.NUGET_USER }}", trigger);
-        Assert.DoesNotContain("workflow_dispatch:", trigger);
-        Assert.DoesNotContain("recovery", trigger, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("waive", trigger, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("v4.5.0", trigger);
-        Assert.DoesNotContain("statuses: write", trigger);
-        Assert.DoesNotContain("secrets: inherit", trigger);
-
-        Assert.Contains("- name: Require the exact existing release tag and commit", implementation);
+        Assert.Contains("workflow_dispatch:", implementation);
+        Assert.DoesNotContain("push:\n    tags:", implementation);
+        Assert.Contains("- name: Require exact untagged main and matching package version", implementation);
+        Assert.Contains("prepare-release-bundle:", implementation);
+        Assert.Contains("name: Prepare final release bundle", implementation);
+        Assert.Contains("needs: [prepare-nuget, migration-archives, native-aot, api-host-observability, daemon-archives, admin-desktop-archive]", implementation);
+        Assert.Contains("- name: Verify complete immutable release bundle", implementation);
+        Assert.Contains("-ValidateExistingManifest", implementation);
+        Assert.Contains("$expectedHeading = \"## CSharpDB ${{ needs.prepare-nuget.outputs.version }}\"", implementation);
         Assert.DoesNotContain("matching-commit local performance status", implementation);
         Assert.DoesNotContain("Test-LocalDurableStatus.ps1", implementation);
-        Assert.DoesNotContain("workflow_dispatch", implementation);
         Assert.DoesNotContain("waive", implementation, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("7aeb66031237283c3643e73849618bf299729ed6", implementation);
-        Assert.Contains("- name: Revalidate the immutable publication target", implementation);
-        Assert.Contains("- name: Require the immutable target and absent release before creation", implementation);
-        Assert.Contains("packages will not be published", implementation);
-        Assert.Contains("publication will not update it", implementation);
         Assert.DoesNotContain("Publish-DurableCarryForwardStatus.ps1", implementation);
         Assert.DoesNotContain("statuses: write", implementation);
-        Assert.Equal(
-            2,
-            System.Text.RegularExpressions.Regex.Matches(
-                implementation,
-                @"(?m)^          tag_name: \$\{\{ inputs\.release_tag \}\}$").Count);
-        Assert.Equal(
-            2,
-            System.Text.RegularExpressions.Regex.Matches(
-                implementation,
-                @"(?m)^          target_commitish: \$\{\{ inputs\.release_commit \}\}$").Count);
+        Assert.DoesNotContain("git/refs", implementation);
+        Assert.DoesNotContain("dotnet nuget push", implementation);
+        Assert.DoesNotContain("softprops/action-gh-release", implementation);
     }
 
     [Fact]

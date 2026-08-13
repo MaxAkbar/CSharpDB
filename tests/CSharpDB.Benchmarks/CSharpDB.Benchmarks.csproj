@@ -6,6 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
+    <CSharpDbReleaseCoreOnly Condition="'$(CSharpDbReleaseCoreOnly)' == ''">false</CSharpDbReleaseCoreOnly>
   </PropertyGroup>
 
   <ItemGroup>
@@ -27,10 +28,19 @@
     <ProjectReference Include="..\..\src\CSharpDB.Migration\CSharpDB.Migration.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Migration.CSharpDb\CSharpDB.Migration.CSharpDb.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Migration.Files\CSharpDB.Migration.Files.csproj" />
-    <ProjectReference Include="..\..\src\CSharpDB.Observability\CSharpDB.Observability.csproj" />
+    <ProjectReference Include="..\..\src\CSharpDB.Observability\CSharpDB.Observability.csproj"
+                      Condition="'$(CSharpDbReleaseCoreOnly)' != 'true'" />
     <ProjectReference Include="..\..\src\CSharpDB.Sql\CSharpDB.Sql.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Storage\CSharpDB.Storage.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Storage.Diagnostics\CSharpDB.Storage.Diagnostics.csproj" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(CSharpDbReleaseCoreOnly)' == 'true'">
+    <Compile Remove="Micro\ObservabilityNoListenerBaselineBenchmarks.cs" />
+    <Reference Include="CSharpDB.Observability"
+               Condition="Exists('..\..\src\CSharpDB.Observability\CSharpDB.Observability.csproj')"
+               HintPath="..\..\src\CSharpDB.Observability\bin\$(Configuration)\$(TargetFramework)\CSharpDB.Observability.dll"
+               Private="true" />
   </ItemGroup>
 
   <ItemGroup>

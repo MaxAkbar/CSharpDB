@@ -4,7 +4,9 @@ param(
 
     [string]$Version,
 
-    [string]$ManifestPath
+    [string]$ManifestPath,
+
+    [switch]$ValidateExistingManifest
 )
 
 Set-StrictMode -Version Latest
@@ -319,9 +321,23 @@ if ([string]::IsNullOrWhiteSpace($ManifestPath)) {
 else {
     $ManifestPath = Resolve-RepoPath $ManifestPath
 }
-$manifestDirectory = Split-Path -Parent $ManifestPath
-New-Item -ItemType Directory -Path $manifestDirectory -Force | Out-Null
-$manifest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $ManifestPath -Encoding utf8
+$manifestJson = $manifest | ConvertTo-Json -Depth 10
+if ($ValidateExistingManifest) {
+    if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
+        throw "The existing package manifest was not found: $ManifestPath"
+    }
+    $existingJson = (Get-Content -Raw -LiteralPath $ManifestPath | ConvertFrom-Json) |
+        ConvertTo-Json -Depth 10
+    if ($existingJson -cne $manifestJson) {
+        throw "The existing package manifest does not match the qualified package graph: $ManifestPath"
+    }
+}
+else {
+    $manifestDirectory = Split-Path -Parent $ManifestPath
+    New-Item -ItemType Directory -Path $manifestDirectory -Force | Out-Null
+    $manifestJson | Set-Content -LiteralPath $ManifestPath -Encoding utf8
+}
 
 Write-Host "Candidate package graph, metadata, dependency policy, and hashes passed for $($candidatePackages.Count) packages."
-Write-Host "Deterministic package manifest: $ManifestPath"
+$manifestAction = if ($ValidateExistingManifest) { 'Validated' } else { 'Wrote' }
+Write-Host "$manifestAction deterministic package manifest: $ManifestPath"

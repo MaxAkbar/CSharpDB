@@ -11,7 +11,7 @@ public sealed class MigrationPlannerTests
     {
         CSharpDbCapabilityCatalog capabilities = CSharpDbCapabilityCatalogLoader.LoadEmbedded();
 
-        Assert.Equal("4.6.1", capabilities.TargetCSharpDbVersion);
+        Assert.Equal("4.6.2", capabilities.TargetCSharpDbVersion);
         Assert.Equal("local-typed-engine", capabilities.Surface);
         Assert.Equal(SqlIdentifierRules.MaxLength, capabilities.MaxIdentifierLength);
         Assert.Equal(64, capabilities.Digest.Length);
@@ -49,9 +49,9 @@ public sealed class MigrationPlannerTests
     }
 
     [Fact]
-    public void EmbeddedCapabilities_AreBoundToThe461ReleaseAssembliesAndResource()
+    public void EmbeddedCapabilities_AreBoundToThe462ReleaseAssembliesAndResource()
     {
-        const string expectedVersion = "4.6.1";
+        const string expectedVersion = "4.6.2";
         Assembly migrationAssembly = typeof(CSharpDbCapabilityCatalogLoader).Assembly;
         Assembly primitivesAssembly = typeof(DbType).Assembly;
 
@@ -74,32 +74,38 @@ public sealed class MigrationPlannerTests
             CSharpDbCapabilityCatalogLoader.LoadEmbedded("4.5.0");
         CSharpDbCapabilityCatalog previousRelease =
             CSharpDbCapabilityCatalogLoader.LoadEmbedded("4.5.1");
+        CSharpDbCapabilityCatalog previousAttempt =
+            CSharpDbCapabilityCatalogLoader.LoadEmbedded("4.6.1");
         CSharpDbCapabilityCatalog current =
             CSharpDbCapabilityCatalogLoader.LoadEmbedded();
 
         Assert.Equal(
-            ["4.3.0", "4.4.0", "4.5.0", "4.5.1", "4.6.1"],
+            ["4.3.0", "4.4.0", "4.5.0", "4.5.1", "4.6.1", "4.6.2"],
             CSharpDbCapabilityCatalogLoader.SupportedTargetVersions);
         Assert.Equal("4.3.0", oldest.TargetCSharpDbVersion);
         Assert.Equal("4.4.0", previous.TargetCSharpDbVersion);
         Assert.Equal("4.5.0", tagged.TargetCSharpDbVersion);
         Assert.Equal("4.5.1", previousRelease.TargetCSharpDbVersion);
-        Assert.Equal("4.6.1", current.TargetCSharpDbVersion);
+        Assert.Equal("4.6.1", previousAttempt.TargetCSharpDbVersion);
+        Assert.Equal("4.6.2", current.TargetCSharpDbVersion);
         Assert.False(oldest.IsColumnType(DbType.Decimal));
         Assert.False(previous.IsColumnType(DbType.Decimal));
         Assert.True(tagged.IsColumnType(DbType.Decimal));
         Assert.True(previousRelease.IsColumnType(DbType.Decimal));
+        Assert.True(previousAttempt.IsColumnType(DbType.Decimal));
         Assert.True(current.IsColumnType(DbType.Decimal));
         Assert.False(oldest.EngineEnforcesMappedColumnType);
         Assert.False(previous.EngineEnforcesMappedColumnType);
         Assert.True(tagged.EngineEnforcesMappedColumnType);
         Assert.True(previousRelease.EngineEnforcesMappedColumnType);
+        Assert.True(previousAttempt.EngineEnforcesMappedColumnType);
         Assert.True(current.EngineEnforcesMappedColumnType);
         Assert.NotEqual(previous.Digest, current.Digest);
         Assert.NotEqual(tagged.Digest, current.Digest);
         Assert.NotEqual(previousRelease.Digest, current.Digest);
+        Assert.NotEqual(previousAttempt.Digest, current.Digest);
         Assert.Equal(
-            JsonSerializer.Serialize(previousRelease with
+            JsonSerializer.Serialize(previousAttempt with
             {
                 TargetCSharpDbVersion = current.TargetCSharpDbVersion,
             }),

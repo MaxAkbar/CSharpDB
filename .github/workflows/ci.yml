@@ -142,6 +142,44 @@ jobs:
               xUnit.ReporterSwitch=verbose
           fi
 
+  release-baseline-compatibility:
+    name: Release baseline compatibility build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout full release history
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Build synchronized harness against published baseline and candidate
+        shell: pwsh
+        env:
+          COMPATIBILITY_OUTPUT: ${{ runner.temp }}/csharpdb-release-baseline/${{ github.sha }}
+          CANDIDATE_REF: ${{ github.sha }}
+        run: |
+          ./tests/CSharpDB.Benchmarks/scripts/Test-PreviousReleasePerformance.ps1 `
+            -PreviousRef 2f141433298bcd3137e2bcaa2930c796c4222092 `
+            -CandidateRef $env:CANDIDATE_REF `
+            -OutputPath $env:COMPATIBILITY_OUTPUT `
+            -BuildOnly
+
+      - name: Upload compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-baseline-compatibility-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/csharpdb-release-baseline/${{ github.sha }}/previous-release-performance.md
+            ${{ runner.temp }}/csharpdb-release-baseline/${{ github.sha }}/logs
+          if-no-files-found: warn
+          retention-days: 14
+
   published-host-observability:
     name: Published ${{ matrix.host }} observability (${{ matrix.rid }})
     runs-on: ${{ matrix.os }}

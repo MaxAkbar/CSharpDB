@@ -1,18 +1,26 @@
 # What's New
 
-## CSharpDB 4.6.1
+## CSharpDB 4.6.2
 
-CSharpDB 4.6.1 adds an end-to-end observability and diagnostics platform for
+CSharpDB 4.6.2 adds an end-to-end observability and diagnostics platform for
 embedded databases, API and daemon hosts, sharded clients, and CSharpDB Admin.
 The release introduces safe structured events, bounded runtime diagnostics,
 OpenTelemetry traces and metrics, Prometheus export, health and readiness
 signals, and a dedicated Admin workspace while keeping exporter dependencies
 out of the database engine.
 
-The `v4.6.0` tag is retained as release-attempt history, but its workflow
-stopped before any NuGet package or GitHub Release was published because the
-tagged source still declared package version 4.5.1. Version 4.6.1 carries the
-intended 4.6 release contents from a new, correctly versioned tag.
+The `v4.6.0` and `v4.6.1` tags are retained as immutable release-attempt
+history. The first attempt stopped because the tagged source still declared
+package version 4.5.1. The second stopped during previous-release performance
+qualification because the comparison harness referenced an observability
+project that is absent from the published v4.5.1 source. Neither attempt
+published a NuGet package or GitHub Release. Version 4.6.2 carries the intended
+4.6 release contents from a new version.
+
+The recovery uses a tag-last release process: one supported command completes
+release qualification for the exact commit, including its previous-release
+comparison and final bundle, before creating the immutable release tag. It
+then publishes that exact qualified bundle through a resumable hosted step.
 
 ### Observability Contracts and Safe Defaults
 

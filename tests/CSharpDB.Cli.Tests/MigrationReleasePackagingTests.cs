@@ -154,7 +154,7 @@ public sealed class MigrationReleasePackagingTests
             "Publish-CSharpDbMigrationRelease.ps1");
 
         Assert.Contains(
-            "[string] $Version = '4.6.1'",
+            "[string] $Version = '4.6.2'",
             script,
             StringComparison.Ordinal);
         Assert.Contains("win-x64", script, StringComparison.Ordinal);
@@ -339,7 +339,7 @@ public sealed class MigrationReleasePackagingTests
             workflow,
             StringComparison.Ordinal);
         Assert.Contains(
-            "needs: [publish-nuget, migration-archives,",
+            "needs: [prepare-nuget, migration-archives, native-aot, api-host-observability, daemon-archives, admin-desktop-archive]",
             workflow,
             StringComparison.Ordinal);
         Assert.Contains("pattern: migration-*", workflow, StringComparison.Ordinal);
@@ -348,7 +348,7 @@ public sealed class MigrationReleasePackagingTests
             workflow,
             StringComparison.Ordinal);
         Assert.Contains(
-            "artifacts/migration/*",
+            "artifacts/release-bundle/migration",
             workflow,
             StringComparison.Ordinal);
 
@@ -359,7 +359,7 @@ public sealed class MigrationReleasePackagingTests
             "name: migration-${{ matrix.rid }}",
             StringComparison.Ordinal);
         int releaseIndex = workflow.IndexOf(
-            "artifacts/migration/*",
+            "artifacts/release-bundle/migration",
             StringComparison.Ordinal);
         Assert.True(
             publishIndex >= 0 &&
