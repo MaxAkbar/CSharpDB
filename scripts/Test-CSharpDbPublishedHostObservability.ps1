@@ -26,6 +26,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+. (Join-Path $PSScriptRoot 'CSharpDbHostQualificationCleanup.ps1')
 $projectPath = Join-Path $repoRoot "src/CSharpDB.$HostName/CSharpDB.$HostName.csproj"
 $executableName = if ($Runtime -eq 'win-x64') {
     "CSharpDB.$HostName.exe"
@@ -267,7 +268,7 @@ catch {
     }
     if (-not $KeepWorkingDirectory -and
         (Test-Path -LiteralPath $qualificationRoot)) {
-        Remove-Item -LiteralPath $qualificationRoot -Recurse -Force
+        Remove-CSharpDbDirectoryWithRetry -LiteralPath $qualificationRoot
     }
     throw
 }
@@ -376,13 +377,13 @@ finally {
         Write-Host "Host qualification working directory retained at $qualificationRoot"
     }
     elseif (Test-Path -LiteralPath $qualificationRoot) {
-        Remove-Item -LiteralPath $qualificationRoot -Recurse -Force
+        Remove-CSharpDbDirectoryWithRetry -LiteralPath $qualificationRoot
     }
 
     if (-not $KeepWorkingDirectory -and
         $createdPublishRoot -and
         -not [string]::IsNullOrWhiteSpace($publishRoot) -and
         (Test-Path -LiteralPath $publishRoot)) {
-        Remove-Item -LiteralPath $publishRoot -Recurse -Force
+        Remove-CSharpDbDirectoryWithRetry -LiteralPath $publishRoot
     }
 }
