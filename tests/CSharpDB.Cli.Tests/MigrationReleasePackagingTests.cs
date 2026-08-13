@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 using System.Xml.Linq;
+using CSharpDB.Migration;
 
 namespace CSharpDB.Cli.Tests;
 
@@ -152,7 +154,7 @@ public sealed class MigrationReleasePackagingTests
             "Publish-CSharpDbMigrationRelease.ps1");
 
         Assert.Contains(
-            "[string] $Version = '4.5.1'",
+            "[string] $Version = '4.6.1'",
             script,
             StringComparison.Ordinal);
         Assert.Contains("win-x64", script, StringComparison.Ordinal);
@@ -262,6 +264,47 @@ public sealed class MigrationReleasePackagingTests
             tarModeCheckIndex > tarCreateIndex &&
             archiveRegistrationIndex > tarModeCheckIndex,
             "A POSIX tarball must pass its exact mode check before checksum registration.");
+    }
+
+    [Fact]
+    public void ReleaseVersionSurfaces_AreAlignedBeforeTagging()
+    {
+        string repoRoot = FindRepoRoot();
+        XDocument buildProps = XDocument.Load(Path.Combine(
+            repoRoot,
+            "src",
+            "Directory.Build.props"));
+        string packageVersion = Assert.Single(
+            buildProps.Descendants("Version")).Value.Trim();
+        string releaseNotes = Read(repoRoot, "RELEASE_NOTES.md");
+        Match releaseHeading = Assert.Single(Regex.Matches(
+            releaseNotes,
+            @"(?m)^## CSharpDB (?<version>[^\r\n]+)$",
+            RegexOptions.CultureInvariant));
+        string migrationReleaseScript = Read(
+            repoRoot,
+            "scripts",
+            "Publish-CSharpDbMigrationRelease.ps1");
+        string capabilityCatalogPath = Path.Combine(
+            repoRoot,
+            "src",
+            "CSharpDB.Migration",
+            "Capabilities",
+            $"csharpdb-{packageVersion}.json");
+
+        Assert.Equal(packageVersion, releaseHeading.Groups["version"].Value);
+        Assert.Equal(CSharpDbCapabilityCatalogLoader.CurrentTargetVersion, packageVersion);
+        Assert.Contains(
+            $"[string] $Version = '{packageVersion}'",
+            migrationReleaseScript,
+            StringComparison.Ordinal);
+        Assert.True(
+            File.Exists(capabilityCatalogPath),
+            $"The current migration capability catalog is missing: {capabilityCatalogPath}");
+        Assert.Contains(
+            $"\"targetCSharpDbVersion\": \"{packageVersion}\"",
+            File.ReadAllText(capabilityCatalogPath),
+            StringComparison.Ordinal);
     }
 
     [Fact]
