@@ -15,6 +15,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using CSharpDbHealthHostExtensions =
     CSharpDbApi::CSharpDB.Api.CSharpDbHealthHostExtensions;
 using CSharpDbHostReadinessCoordinator =
@@ -124,7 +125,9 @@ public sealed class GrpcHealthHostTests
         string dbPath = NewTempDbPath();
         try
         {
-            await using var factory = new HealthDaemonFactory(dbPath);
+            await using var factory = new HealthDaemonFactory(
+                dbPath,
+                publishHealthManually: true);
             using HttpClient client = factory.CreateDefaultClient();
             await WaitUntilReadyAsync(client);
             CSharpDbHostReadinessCoordinator readiness = factory.Services
@@ -137,24 +140,34 @@ public sealed class GrpcHealthHostTests
                     DisposeHttpClient = false,
                 });
             var health = new Health.HealthClient(channel);
+            HealthCheckService healthChecks = factory.Services
+                .GetRequiredService<HealthCheckService>();
+            IHealthCheckPublisher healthPublisher = Assert.Single(
+                factory.Services.GetServices<IHealthCheckPublisher>());
+
+            await PublishHealthAsync(healthChecks, healthPublisher);
+            using AsyncServerStreamingCall<HealthCheckResponse> watch =
+                health.Watch(
+                    new HealthCheckRequest
+                    {
+                        Service = CSharpDbHealthHostExtensions
+                            .DatabaseGrpcServiceName,
+                    },
+                    // Keep the streaming call bounded if a transition is
+                    // ever lost or the publisher fails to notify watchers.
+                    deadline: DateTime.UtcNow.AddSeconds(20),
+                    cancellationToken: Ct);
+            Assert.True(await watch.ResponseStream.MoveNext(Ct));
+            Assert.Equal(
+                HealthCheckResponse.Types.ServingStatus.Serving,
+                watch.ResponseStream.Current.Status);
 
             IDisposable lease = readiness.EnterNotReady(
                 CSharpDB.Observability.CSharpDbReadinessReason
                     .ExclusiveMaintenance);
             try
             {
-                using AsyncServerStreamingCall<HealthCheckResponse> watch =
-                    health.Watch(
-                        new HealthCheckRequest
-                        {
-                            Service = CSharpDbHealthHostExtensions
-                                .DatabaseGrpcServiceName,
-                        },
-                        // The health publisher has a one-second cadence. Keep
-                        // the watch bounded while allowing for cross-project
-                        // CI contention during the full solution matrix.
-                        deadline: DateTime.UtcNow.AddSeconds(20),
-                        cancellationToken: Ct);
+                await PublishHealthAsync(healthChecks, healthPublisher);
                 Assert.True(await watch.ResponseStream.MoveNext(Ct));
                 Assert.Equal(
                     HealthCheckResponse.Types.ServingStatus.NotServing,
@@ -183,6 +196,7 @@ public sealed class GrpcHealthHostTests
                     database.Status);
 
                 lease.Dispose();
+                await PublishHealthAsync(healthChecks, healthPublisher);
                 Assert.True(await watch.ResponseStream.MoveNext(Ct));
                 Assert.Equal(
                     HealthCheckResponse.Types.ServingStatus.Serving,
@@ -290,6 +304,14 @@ public sealed class GrpcHealthHostTests
         throw new TimeoutException("The daemon did not become ready.");
     }
 
+    private static async Task PublishHealthAsync(
+        HealthCheckService healthChecks,
+        IHealthCheckPublisher publisher)
+    {
+        HealthReport report = await healthChecks.CheckHealthAsync(Ct);
+        await publisher.PublishAsync(report, Ct);
+    }
+
     private static async Task AssertMinimalStatusOnlyAsync(
         HttpResponseMessage response,
         string expected)
@@ -309,12 +331,15 @@ public sealed class GrpcHealthHostTests
 
     private sealed class HealthDaemonFactory(
         string dbPath,
-        IReadOnlyDictionary<string, string?>? extraConfig = null) :
+        IReadOnlyDictionary<string, string?>? extraConfig = null,
+        bool publishHealthManually = false) :
         WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             builder.UseEnvironment("Development");
+            if (publishHealthManually)
+                builder.ConfigureLogging(logging => logging.ClearProviders());
             if (extraConfig is not null)
             {
                 foreach (KeyValuePair<string, string?> pair in extraConfig)
@@ -336,8 +361,18 @@ public sealed class GrpcHealthHostTests
                 services.AddHostedService<TestDaemonClientShutdown>();
                 services.Configure<HealthCheckPublisherOptions>(options =>
                 {
-                    options.Delay = TimeSpan.Zero;
-                    options.Period = TimeSpan.FromSeconds(1);
+                    if (publishHealthManually)
+                    {
+                        // Keep the hosted publisher from racing explicit
+                        // transition publications in the streaming test.
+                        options.Delay = TimeSpan.FromHours(1);
+                        options.Period = TimeSpan.FromHours(1);
+                    }
+                    else
+                    {
+                        options.Delay = TimeSpan.Zero;
+                        options.Period = TimeSpan.FromSeconds(1);
+                    }
                 });
             });
             builder.ConfigureAppConfiguration((_, configuration) =>
