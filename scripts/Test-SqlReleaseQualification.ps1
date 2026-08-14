@@ -200,7 +200,7 @@ try {
 
     if ($hasReleaseVersion) {
         Invoke-QualificationCommand `
-            -StepName 'release-tag' `
+            -StepName 'release-candidate' `
             -FilePath 'pwsh' `
             -ArgumentList @(
                 '-NoLogo',
@@ -210,7 +210,8 @@ try {
                 '-Version',
                 $ReleaseVersion,
                 '-TagCommit',
-                $ReleaseCommit)
+                $ReleaseCommit,
+                '-AllowMissingTag')
     }
 
     Invoke-QualificationCommand `

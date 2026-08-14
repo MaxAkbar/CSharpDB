@@ -6,7 +6,7 @@ namespace CSharpDB.Migration.MySql.Tests;
 public sealed class MySqlCatalogBuilderTests
 {
     private const string GoldenCatalogDigest =
-        "4d49a3557299cbf4551e823c4f5d1c5677c1bff252079cd8aea11b745bfbadf5";
+        "dc68e460923a62eebcd3b2ea76d618aa9ba57d5b118dc38d770ab76e1d3de887";
     private const string GoldenSourceFingerprint =
         "sha256:3e8b79eed8a2f36c0962a6e252404180d715dbbaab46d1fec4f1af61b75e383c";
 

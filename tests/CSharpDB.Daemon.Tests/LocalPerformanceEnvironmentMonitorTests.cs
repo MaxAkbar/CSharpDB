@@ -2,6 +2,7 @@ using System.Diagnostics;
 
 namespace CSharpDB.Daemon.Tests;
 
+[Collection("LocalPerformanceEnvironmentMonitor")]
 public sealed class LocalPerformanceEnvironmentMonitorTests
 {
     [Fact]

@@ -12,12 +12,12 @@ and are included in daemon release archives.
 
 The release and local workflow notes are grouped by audience:
 
-- Release maintainers use `scripts/Publish-ReleaseTag.ps1` to validate the exact
-  merged `main` commit and publish its release tag. The tag push starts the
-  hosted release qualification and publication workflow. Maintainers can use
+- Release maintainers use `scripts/Publish-ReleaseTag.ps1` as one command to
+  validate the exact merged `main` commit, run hosted qualification, create the
+  protected tag only after every reversible gate passes, and drive resumable
+  hosted publication. Maintainers can use
   `scripts/Publish-CSharpDbDaemonRelease.ps1` directly for local packaging
-  checks. The GitHub Release workflow also uses the daemon publisher after the
-  guarded `v*` tag is pushed.
+  checks. The hosted release workflows also use the daemon publisher.
 - Store release maintainers use
   `scripts/Publish-CSharpDbAdminStorePackage.ps1` on Windows to produce the
   CSharpDB Studio MSIX and `.msixupload` artifacts for Partner Center.
@@ -154,35 +154,45 @@ if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za
 .\scripts\Publish-ReleaseTag.ps1 -Version $Version
 ```
 
-`Publish-ReleaseTag.ps1` is the only supported way to create a release tag. Do
-not create release tags in the GitHub UI or with raw `git tag` / `git push`
-commands; those unsupported paths bypass the clean-main, version, and tag
-preflight. The publisher requires a clean, checked-out `main`, fetches
-`origin/main`, and requires local `HEAD` to equal that remote commit. It
-also validates that the requested version matches the package version and that
-the local or remote tag is absent or already points to that exact commit. It
-rechecks `main` before validating and pushing the tag. It does not build, test,
-benchmark, inspect a commit status, or accept a local-performance waiver.
+`Publish-ReleaseTag.ps1` is the only supported release command. Do not create
+release tags in the GitHub UI or with raw `git tag` / `git push` commands. The
+publisher requires a clean, checked-out `main`, requires local `HEAD` to equal
+`origin/main`, validates the package version, and waits for both hosted stages.
+Those branch requirements apply before tag creation. After the exact qualified
+tag exists, the command binds recovery to that immutable tag and its original
+qualification bundle, so publication can resume without rebuilding even if
+`main` has advanced.
 
-The command is idempotent for the same version and exact commit. It safely
-reuses an existing local or remote tag at that commit and rejects a same-named
-tag that points elsewhere.
-
-The `v*` tag push starts the fail-closed Release workflow. The workflow first
-verifies that the existing tag resolves to the supplied exact commit. It then
-runs one clean functional qualification on each supported operating system and
-one balanced paired hosted-stable performance comparison on Windows. The
+The qualification workflow runs every reversible gate before creating a tag:
+clean functional qualification on each supported operating system, the real previous-release
+compatibility build and balanced hosted-stable comparison, NativeAOT and host
+smokes, all archives, the final NuGet graph, the complete release bundle, a
+NuGet Trusted Publishing preflight, and the 18-package absence check. If any
+check fails, the version remains untagged and the same command can be retried
+after a fix is merged. Only after they all pass does the command create the
+protected immutable tag with the maintainer's authenticated Git identity and
+start a resumable hosted publication of the exact qualified bundle. The
 performance job uses `RepeatCount 3`, which covers both previous/candidate
 execution orders in one job. Recovery tags use the last published release as
-their explicit baseline: v4.6.1 is pinned to the exact published v4.5.1 commit
-because v4.6.0 was tagged but not published, while the existing v4.5.1
+their explicit baseline: v4.6.2 is pinned to the exact published v4.5.1 commit
+because v4.6.0 and v4.6.1 were tagged but not published, while the existing v4.5.1
 exception remains pinned to v4.4.0 because v4.5.0 was likewise not published.
 
 Publication starts only after the hosted gates and all release-archive jobs
-succeed. The workflow publishes the NuGet packages, daemon archives for
-`win-x64`, `linux-x64`, and `osx-arm64`, migration and NativeAOT artifacts, and
-the Admin desktop archive, then creates the GitHub Release with the combined
-checksums and smoke-tested assets.
+succeed. It creates or refreshes a draft GitHub Release and uploads the exact
+qualified assets first, then publishes the NuGet packages in validated order,
+verifies all versions are visible, and finally makes the draft public. A
+retry reuses the original qualification bundle, the exact tag, and the draft.
+Package pushes use NuGet's duplicate-safe mode so an interrupted publication
+can resume. The exact bound bundle is proven wholly absent immediately before
+tag creation, and the workflow is serialized per tag; under this supported
+single-publisher path, a duplicate can only be a package already accepted by an
+earlier partial attempt for that tag. Do not upload release candidates outside
+this command.
+The GitHub Release commands verify the existing remote tag and store `main` as
+the Release target (GitHub does not move an already-existing tag). Recovery
+therefore remains tied to the immutable tag and qualified bundle while Release
+updates continue to use the default-branch workflow authorization context.
 
 ### Optional local durable diagnostics
 
@@ -458,7 +468,8 @@ The check validates public documentation, NuGet package closure, EF Core
 version consistency, the full solution restore/build/test sequence, SQL Server
 and MySQL provider isolation, the Windows-only Access isolation boundary, and
 the packaged EF migration tool. Supplying both `-ReleaseVersion` and
-`-ReleaseCommit` additionally validates an existing release tag.
+`-ReleaseCommit` additionally validates the exact release candidate; the tag
+may still be absent in the tag-last workflow.
 
 ```powershell
 $OutputPath = Join-Path `

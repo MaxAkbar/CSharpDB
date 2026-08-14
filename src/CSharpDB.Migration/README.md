@@ -26,10 +26,10 @@ core:
 - source-neutral catalog objects with explicit containment, set-like
   dependencies, ordered role-qualified schema members, and safe source identity;
 - stable compatibility, evidence, diagnostic, and mapping states;
-- an embedded, digested CSharpDB 4.6.1 capability catalog tied to the installed
-  Migration and Primitives binaries, plus immutable 4.5.1, 4.5.0, 4.4.0, and
-  4.3.0 catalogs for independently replaying plans created against those
-  versions;
+- an embedded, digested CSharpDB 4.6.2 capability catalog tied to the installed
+  Migration and Primitives binaries, plus immutable 4.6.1, 4.5.1, 4.5.0,
+  4.4.0, and 4.3.0 catalogs for independently replaying plans created against
+  those versions;
 - target plans bound to the source-catalog digest, capability digest, naming
   algorithm, and versioned mapping policy;
 - detailed target-capability evaluation for columns, keys, foreign keys,

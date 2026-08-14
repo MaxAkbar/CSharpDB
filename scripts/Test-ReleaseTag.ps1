@@ -6,7 +6,9 @@ param(
 
     [Parameter(Mandatory)]
     [ValidatePattern('^[0-9a-f]{40}$')]
-    [string]$TagCommit
+    [string]$TagCommit,
+
+    [switch]$AllowMissingTag
 )
 
 Set-StrictMode -Version Latest
@@ -47,9 +49,14 @@ if ($LASTEXITCODE -ne 0 -or $headCommit -cne $resolvedTagCommit) {
 
 $releaseTagName = "v$releaseVersion"
 $resolvedReleaseTagCommit = (& git -C $repoRoot rev-parse "$releaseTagName^{commit}" 2>$null)
-if ($LASTEXITCODE -ne 0 -or
-    [string]::IsNullOrWhiteSpace($resolvedReleaseTagCommit) -or
-    $resolvedReleaseTagCommit.Trim() -cne $resolvedTagCommit) {
+$tagExists = $LASTEXITCODE -eq 0 -and
+    -not [string]::IsNullOrWhiteSpace($resolvedReleaseTagCommit)
+if ($tagExists) {
+    if ($resolvedReleaseTagCommit.Trim() -cne $resolvedTagCommit) {
+        throw "Release tag '$releaseTagName' must point to tag commit '$resolvedTagCommit'."
+    }
+}
+elseif (-not $AllowMissingTag) {
     throw "Release tag '$releaseTagName' must point to tag commit '$resolvedTagCommit'."
 }
 
@@ -105,4 +112,5 @@ if (-not [string]::IsNullOrWhiteSpace($previousTag)) {
     }
 }
 
-Write-Host "Release tag validation passed for v$releaseVersion at $resolvedTagCommit."
+$validationKind = if ($tagExists) { 'tag' } else { 'untagged candidate' }
+Write-Host "Release $validationKind validation passed for v$releaseVersion at $resolvedTagCommit."

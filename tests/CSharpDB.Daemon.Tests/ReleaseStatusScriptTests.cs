@@ -6,6 +6,7 @@ public sealed class ReleaseStatusScriptTests
 {
     private const string CandidateCommit =
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    private static readonly TimeSpan PublisherProcessTimeout = TimeSpan.FromMinutes(3);
 
     [Fact]
     public async Task Verifier_AcceptsLatestCanonicalStatusForExactCommit()
@@ -226,17 +227,13 @@ public sealed class ReleaseStatusScriptTests
     }
 
     [Fact]
-    public void PublishReleaseTag_RequiresExactCleanMainAndVersionBeforeExactTagPush()
+    public void PublishReleaseTag_QualifiesThenTagsAndRunsResumablePublication()
     {
         string repoRoot = FindRepoRoot();
         string publisher = File.ReadAllText(Path.Combine(
             repoRoot,
             "scripts",
             "Publish-ReleaseTag.ps1"));
-        string tagValidator = File.ReadAllText(Path.Combine(
-            repoRoot,
-            "scripts",
-            "Test-ReleaseTag.ps1"));
         Assert.Contains(
             "status', '--porcelain=v1', '--untracked-files=all",
             publisher);
@@ -245,13 +242,18 @@ public sealed class ReleaseStatusScriptTests
         Assert.Contains("refs/heads/main:refs/remotes/origin/main", publisher);
         Assert.Contains("origin/main^{commit}", publisher);
         Assert.Contains("local main to equal origin/main exactly", publisher);
-        Assert.Contains("$packageVersion -cne $releaseVersion", publisher);
-        Assert.Contains("$currentMainCommit -cne $headCommit", publisher);
-        Assert.Contains("Test-ReleaseTag.ps1", publisher);
-        Assert.Contains(
-            "& $tagValidator -Version $releaseTag -TagCommit $headCommit",
-            publisher);
+        Assert.Contains("$versionNodes[0].InnerText.Trim() -cne $releaseVersion", publisher);
+        Assert.Contains("(Get-ExactCurrentMainCommit) -cne $headCommit", publisher);
+        Assert.Contains("$qualificationWorkflow = 'release.yml'", publisher);
+        Assert.Contains("$publicationWorkflow = 'publish-release.yml'", publisher);
+        Assert.Contains("-PreflightOnly $true", publisher);
+        Assert.Contains("-PreflightOnly $false", publisher);
+        Assert.Contains("'tag', $releaseTag, $headCommit", publisher);
         Assert.Contains("refs/tags/$releaseTag`:refs/tags/$releaseTag", publisher);
+        Assert.Contains("& gh run watch", publisher);
+        Assert.Contains("--exit-status", publisher);
+        Assert.Contains("Successful publication did not create a published GitHub Release", publisher);
+        Assert.Contains("Every reversible gate runs before tag creation", publisher);
         Assert.DoesNotContain("--force", publisher, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("Test-LocalDurableStatus.ps1", publisher);
         Assert.DoesNotContain("Test-LocalDurablePerformance.ps1", publisher);
@@ -259,23 +261,30 @@ public sealed class ReleaseStatusScriptTests
         Assert.DoesNotContain("ConfirmDedicatedFixedSsd", publisher);
         Assert.DoesNotContain("ApproveDurableV2CarryForward", publisher);
         Assert.DoesNotContain("csharpdb/local-durable-performance", publisher);
-        Assert.DoesNotContain("Test-Documentation.ps1", tagValidator);
 
         int exactMainValidation = publisher.IndexOf(
             "$headCommit = Get-ExactCurrentMainCommit",
             StringComparison.Ordinal);
         int versionValidation = publisher.IndexOf(
-            "$packageVersion -cne $releaseVersion",
+            "$versionNodes[0].InnerText.Trim() -cne $releaseVersion",
             StringComparison.Ordinal);
-        int localTagMutation = publisher.IndexOf(
-            "'tag', $releaseTag, $headCommit",
+        int workflowDispatch = publisher.IndexOf(
+            "$qualificationRun = Find-OrDispatchRun",
             StringComparison.Ordinal);
-        int tagValidation = publisher.IndexOf(
-            "& $tagValidator -Version $releaseTag -TagCommit $headCommit",
+        int qualificationWatch = publisher.IndexOf(
+            "Wait-HostedRun -Run $qualificationRun",
             StringComparison.Ordinal);
-        int exactTagPush = publisher.IndexOf(
-            "refs/tags/$releaseTag`:refs/tags/$releaseTag",
-            localTagMutation,
+        int publicationPreflight = publisher.IndexOf(
+            "-PreflightOnly $true",
+            qualificationWatch,
+            StringComparison.Ordinal);
+        int localTagCreation = publisher.IndexOf(
+            "@('tag', $releaseTag, $headCommit)",
+            publicationPreflight,
+            StringComparison.Ordinal);
+        int publication = publisher.IndexOf(
+            "-PreflightOnly $false",
+            localTagCreation,
             StringComparison.Ordinal);
 
         Assert.True(exactMainValidation >= 0, "The exact main commit must be validated.");
@@ -283,14 +292,204 @@ public sealed class ReleaseStatusScriptTests
             versionValidation > exactMainValidation,
             "The package version must be validated after resolving exact main.");
         Assert.True(
-            localTagMutation > versionValidation,
-            "The package version must be validated before a local tag is created.");
+            workflowDispatch > versionValidation,
+            "The package version must be validated before the hosted release is dispatched.");
         Assert.True(
-            tagValidation > localTagMutation,
-            "The exact local tag must be validated before it is pushed.");
+            qualificationWatch > workflowDispatch,
+            "The publisher must wait for hosted qualification after dispatch.");
         Assert.True(
-            exactTagPush > tagValidation,
-            "Only the exact validated tag may be pushed after local validation.");
+            publicationPreflight > qualificationWatch,
+            "Publication credentials must be preflighted after qualification.");
+        Assert.True(
+            localTagCreation > publicationPreflight,
+            "The tag must be created only after qualification and publication preflight.");
+        Assert.True(
+            publication > localTagCreation,
+            "Resumable publication must start only after the exact tag exists.");
+    }
+
+    [Fact]
+    public async Task Publisher_HappyPath_QualifiesPreflightsTagsAndPublishesInOrder()
+    {
+        using PublisherFixture fixture = new("happy");
+
+        ProcessResult result = await fixture.RunAsync();
+
+        Assert.True(result.ExitCode == 0, result.CombinedOutput);
+        AssertDiagnosticContains($"Published {fixture.ReleaseTag} at exact commit {CandidateCommit}", result.CombinedOutput);
+        Assert.True(fixture.RemoteTagExists);
+        Assert.True(fixture.ReleaseExists);
+        AssertAuditOrder(
+            fixture.AuditLines,
+            "gh|workflow|run|release.yml|",
+            "gh|run|watch|301|",
+            "gh|workflow|run|publish-release.yml|*preflight_only=true",
+            "gh|run|watch|302|",
+            $"git|*|tag|{fixture.ReleaseTag}|{CandidateCommit}",
+            $"git|*|push|origin|refs/tags/{fixture.ReleaseTag}:refs/tags/{fixture.ReleaseTag}",
+            "gh|workflow|run|publish-release.yml|*preflight_only=false",
+            "gh|run|watch|303|");
+    }
+
+    [Fact]
+    public async Task Publisher_QualificationFailure_DoesNotCreateOrPushTag()
+    {
+        using PublisherFixture fixture = new("qualification-failure");
+
+        ProcessResult result = await fixture.RunAsync();
+
+        Assert.NotEqual(0, result.ExitCode);
+        AssertDiagnosticContains("Release qualification failed", result.CombinedOutput);
+        Assert.False(fixture.RemoteTagExists);
+        Assert.False(fixture.ReleaseExists);
+        Assert.DoesNotContain(fixture.GitLines, IsTagMutation);
+        Assert.DoesNotContain(
+            fixture.GitHubLines,
+            line => line.Contains("preflight_only=", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Publisher_PublicationPreflightFailure_DoesNotCreateOrPushTag()
+    {
+        using PublisherFixture fixture = new("preflight-failure");
+
+        ProcessResult result = await fixture.RunAsync();
+
+        Assert.NotEqual(0, result.ExitCode);
+        AssertDiagnosticContains("Release preflight failed", result.CombinedOutput);
+        Assert.False(fixture.RemoteTagExists);
+        Assert.False(fixture.ReleaseExists);
+        Assert.DoesNotContain(fixture.GitLines, IsTagMutation);
+        Assert.Contains(
+            fixture.GitHubLines,
+            line => line.Contains("preflight_only=true", StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            fixture.GitHubLines,
+            line => line.Contains("preflight_only=false", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Publisher_ReusesSuccessfulExactQualificationWithLiveArtifactAfterInterruption()
+    {
+        using PublisherFixture fixture = new("reuse-qualification");
+
+        ProcessResult result = await fixture.RunAsync();
+
+        Assert.True(result.ExitCode == 0, result.CombinedOutput);
+        Assert.Contains(
+            fixture.GitHubLines,
+            line => line.Contains("actions/runs/201/artifacts", StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            fixture.GitHubLines,
+            line => line.Contains("workflow|run|release.yml|", StringComparison.Ordinal));
+        Assert.Contains(
+            fixture.GitHubLines,
+            line => line.Contains("qualification_run_id=201", StringComparison.Ordinal));
+        Assert.True(fixture.RemoteTagExists);
+        Assert.True(fixture.ReleaseExists);
+    }
+
+    [Fact]
+    public async Task Publisher_ExistingExactTag_ResumesOriginalBindingAfterMainAdvances()
+    {
+        using PublisherFixture fixture = new(
+            "existing-binding",
+            exactTagExists: true,
+            originMainCommit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+
+        ProcessResult result = await fixture.RunAsync();
+
+        Assert.True(result.ExitCode == 0, result.CombinedOutput);
+        Assert.DoesNotContain(
+            fixture.GitHubLines,
+            line => line.Contains("workflow|run|release.yml|", StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            fixture.GitHubLines,
+            line => line.Contains("preflight_only=true", StringComparison.Ordinal));
+        Assert.Contains(
+            fixture.GitHubLines,
+            line => line.Contains("qualification_run_id=201", StringComparison.Ordinal) &&
+                line.Contains("preflight_only=false", StringComparison.Ordinal));
+        Assert.DoesNotContain(fixture.GitLines, IsTagMutation);
+        Assert.DoesNotContain(
+            fixture.GitLines,
+            line => line.Contains("origin/main", StringComparison.Ordinal));
+        Assert.True(fixture.ReleaseExists);
+    }
+
+    [Fact]
+    public async Task Publisher_ExistingTag_IgnoresFailedPreflightForUnrelatedQualification()
+    {
+        using PublisherFixture fixture = new("failed-unrelated-preflight", exactTagExists: true);
+
+        ProcessResult result = await fixture.RunAsync();
+
+        Assert.True(result.ExitCode == 0, result.CombinedOutput);
+        Assert.Contains(
+            fixture.GitHubLines,
+            line => line.Contains("qualification_run_id=201", StringComparison.Ordinal) &&
+                line.Contains("preflight_only=false", StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            fixture.GitHubLines,
+            line => line.Contains("qualification_run_id=999", StringComparison.Ordinal) &&
+                line.Contains("workflow|run|", StringComparison.Ordinal));
+        Assert.DoesNotContain(fixture.GitLines, IsTagMutation);
+    }
+
+    [Fact]
+    public async Task Publisher_ExistingTag_RejectsMultipleSuccessfulPreflightBindings()
+    {
+        using PublisherFixture fixture = new("multiple-successful-preflights", exactTagExists: true);
+
+        ProcessResult result = await fixture.RunAsync();
+
+        Assert.NotEqual(0, result.ExitCode);
+        AssertDiagnosticContains(
+            $"Existing tag '{fixture.ReleaseTag}' is not bound to exactly one qualification run",
+            result.CombinedOutput);
+        Assert.DoesNotContain(
+            fixture.GitHubLines,
+            line => line.Contains("workflow|run|", StringComparison.Ordinal));
+        Assert.DoesNotContain(fixture.GitLines, IsTagMutation);
+        Assert.False(fixture.ReleaseExists);
+    }
+
+    [Fact]
+    public async Task Publisher_FailedPublication_RetriesWithSameBoundQualificationId()
+    {
+        using PublisherFixture fixture = new("publication-retry");
+
+        ProcessResult first = await fixture.RunAsync();
+        int firstGitLineCount = fixture.GitLines.Length;
+        int firstGitHubLineCount = fixture.GitHubLines.Length;
+
+        Assert.NotEqual(0, first.ExitCode);
+        AssertDiagnosticContains("Release publication failed", first.CombinedOutput);
+        Assert.True(fixture.RemoteTagExists);
+        Assert.False(fixture.ReleaseExists);
+
+        ProcessResult second = await fixture.RunAsync();
+
+        Assert.True(second.ExitCode == 0, second.CombinedOutput);
+        Assert.True(fixture.ReleaseExists);
+        string[] secondGitLines = fixture.GitLines[firstGitLineCount..];
+        string[] secondGitHubLines = fixture.GitHubLines[firstGitHubLineCount..];
+        Assert.DoesNotContain(secondGitLines, IsTagMutation);
+        Assert.DoesNotContain(
+            secondGitHubLines,
+            line => line.Contains("workflow|run|release.yml|", StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            secondGitHubLines,
+            line => line.Contains("preflight_only=true", StringComparison.Ordinal));
+        Assert.Contains(
+            secondGitHubLines,
+            line => line.Contains("qualification_run_id=301", StringComparison.Ordinal) &&
+                line.Contains("preflight_only=false", StringComparison.Ordinal));
+        Assert.Equal(
+            2,
+            fixture.GitHubLines.Count(line =>
+                line.Contains("qualification_run_id=301", StringComparison.Ordinal) &&
+                line.Contains("preflight_only=false", StringComparison.Ordinal)));
     }
 
     [Fact]
@@ -385,6 +584,517 @@ public sealed class ReleaseStatusScriptTests
             "Installer contamination after a pass must stop the second pass.");
     }
 
+    private static bool IsTagMutation(string line) =>
+        System.Text.RegularExpressions.Regex.IsMatch(
+            line,
+            "\\|tag\\|v[0-9]",
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant) ||
+        line.Contains("|push|origin|refs/tags/", StringComparison.Ordinal);
+
+    private static void AssertAuditOrder(
+        IReadOnlyList<string> auditLines,
+        params string[] orderedPatterns)
+    {
+        int previousIndex = -1;
+        foreach (string pattern in orderedPatterns)
+        {
+            int foundIndex = -1;
+            for (int index = previousIndex + 1; index < auditLines.Count; index++)
+            {
+                if (MatchesAuditPattern(auditLines[index], pattern))
+                {
+                    foundIndex = index;
+                    break;
+                }
+            }
+
+            Assert.True(
+                foundIndex >= 0,
+                $"Could not find audit pattern '{pattern}' after line {previousIndex}." +
+                Environment.NewLine + string.Join(Environment.NewLine, auditLines));
+            previousIndex = foundIndex;
+        }
+    }
+
+    private static bool MatchesAuditPattern(string value, string pattern)
+    {
+        int offset = 0;
+        foreach (string part in pattern.Split('*'))
+        {
+            if (part.Length == 0)
+                continue;
+            int match = value.IndexOf(part, offset, StringComparison.Ordinal);
+            if (match < 0)
+                return false;
+            offset = match + part.Length;
+        }
+        return true;
+    }
+
+    private sealed class PublisherFixture : IDisposable
+    {
+        private readonly string temporaryRoot;
+        private readonly string toolRoot;
+        private readonly string auditLog;
+        private readonly string gitLog;
+        private readonly string gitHubLog;
+        private readonly string eventLog;
+        private readonly string localTagMarker;
+        private readonly string remoteTagMarker;
+        private readonly string releaseMarker;
+        private readonly string scenario;
+        private readonly string originMainCommit;
+
+        public PublisherFixture(
+            string scenario,
+            bool exactTagExists = false,
+            string? originMainCommit = null)
+        {
+            this.scenario = scenario;
+            this.originMainCommit = originMainCommit ?? CandidateCommit;
+            temporaryRoot = CreateTemporaryRoot();
+            toolRoot = Directory.CreateDirectory(
+                Path.Combine(temporaryRoot, "fake-release-tools")).FullName;
+            auditLog = Path.Combine(temporaryRoot, "audit.log");
+            gitLog = Path.Combine(temporaryRoot, "git.log");
+            gitHubLog = Path.Combine(temporaryRoot, "gh.log");
+            eventLog = Path.Combine(temporaryRoot, "events.log");
+            localTagMarker = Path.Combine(temporaryRoot, "local-tag.txt");
+            remoteTagMarker = Path.Combine(temporaryRoot, "remote-tag.txt");
+            releaseMarker = Path.Combine(temporaryRoot, "release.txt");
+            File.WriteAllText(auditLog, string.Empty);
+            File.WriteAllText(gitLog, string.Empty);
+            File.WriteAllText(gitHubLog, string.Empty);
+            File.WriteAllText(eventLog, string.Empty);
+
+            string propsPath = Path.Combine(FindRepoRoot(), "src", "Directory.Build.props");
+            System.Xml.Linq.XDocument props = System.Xml.Linq.XDocument.Load(propsPath);
+            ReleaseVersion = props.Descendants("Version").Single().Value.Trim();
+            ReleaseTag = "v" + ReleaseVersion;
+
+            if (exactTagExists)
+            {
+                File.WriteAllText(localTagMarker, CandidateCommit);
+                File.WriteAllText(remoteTagMarker, CandidateCommit);
+            }
+
+            CreateFakeReleaseGit();
+            CreateFakeReleaseGitHubCli();
+        }
+
+        public string ReleaseVersion { get; }
+
+        public string ReleaseTag { get; }
+
+        public bool RemoteTagExists => File.Exists(remoteTagMarker);
+
+        public bool ReleaseExists => File.Exists(releaseMarker);
+
+        public string[] AuditLines => File.ReadAllLines(auditLog);
+
+        public string[] GitLines => File.ReadAllLines(gitLog);
+
+        public string[] GitHubLines => File.ReadAllLines(gitHubLog);
+
+        public Task<ProcessResult> RunAsync()
+        {
+            Dictionary<string, string> environment = new()
+            {
+                ["FAKE_RELEASE_AUDIT_LOG"] = auditLog,
+                ["FAKE_RELEASE_COMMIT"] = CandidateCommit,
+                ["FAKE_RELEASE_EVENT_LOG"] = eventLog,
+                ["FAKE_RELEASE_GH_LOG"] = gitHubLog,
+                ["FAKE_RELEASE_GIT_LOG"] = gitLog,
+                ["FAKE_RELEASE_LOCAL_TAG"] = localTagMarker,
+                ["FAKE_RELEASE_ORIGIN_MAIN_COMMIT"] = originMainCommit,
+                ["FAKE_RELEASE_RELEASE"] = releaseMarker,
+                ["FAKE_RELEASE_REMOTE_TAG"] = remoteTagMarker,
+                ["FAKE_RELEASE_SCENARIO"] = scenario,
+                ["FAKE_RELEASE_TAG"] = ReleaseTag,
+                ["PATH"] = toolRoot + Path.PathSeparator +
+                    (Environment.GetEnvironmentVariable("PATH") ?? string.Empty),
+            };
+            return RunProcessAsync(
+                "pwsh",
+                environment,
+                PublisherProcessTimeout,
+                "-NoLogo",
+                "-NoProfile",
+                "-File",
+                Path.Combine(FindRepoRoot(), "scripts", "Publish-ReleaseTag.ps1"),
+                "-Version",
+                ReleaseVersion);
+        }
+
+        public void Dispose() => DeleteTemporaryRoot(temporaryRoot);
+
+        private void CreateFakeReleaseGit()
+        {
+            File.WriteAllText(
+                Path.Combine(toolRoot, "fake-release-git.ps1"),
+                """
+                param(
+                    [Alias('C')]
+                    [string] $RepositoryRoot,
+
+                    [Alias('e')]
+                    [switch] $ObjectExists,
+
+                    [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
+                    [string[]] $RemainingArguments)
+
+                $ErrorActionPreference = 'Stop'
+                if ($ObjectExists -and $RemainingArguments.Count -ge 1) {
+                    $RemainingArguments = @($RemainingArguments[0], '-e') +
+                        @($RemainingArguments[1..($RemainingArguments.Count - 1)])
+                }
+                $CliArguments = if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
+                    @($RemainingArguments)
+                }
+                else {
+                    @('-C', $RepositoryRoot) + @($RemainingArguments)
+                }
+                $raw = $CliArguments -join '|'
+                Add-Content -LiteralPath $env:FAKE_RELEASE_GIT_LOG -Value $raw
+                Add-Content -LiteralPath $env:FAKE_RELEASE_AUDIT_LOG -Value "git|$raw"
+
+                $effective = @($CliArguments)
+                if ($effective.Count -ge 3 -and $effective[0] -ceq '-C') {
+                    $effective = @($effective[2..($effective.Count - 1)])
+                }
+                if ($effective.Count -eq 0) {
+                    Write-Error 'Fake git received no command.'
+                    exit 1
+                }
+
+                $command = $effective[0]
+                $commit = $env:FAKE_RELEASE_COMMIT
+                $tag = $env:FAKE_RELEASE_TAG
+                switch ($command) {
+                    'status' { exit 0 }
+                    'branch' {
+                        if ($effective -contains '--show-current') {
+                            'main'
+                            exit 0
+                        }
+                    }
+                    'fetch' { exit 0 }
+                    'cat-file' {
+                        if ($effective.Count -eq 3 -and
+                            $effective[1] -ceq '-e' -and
+                            $effective[2] -in @("$commit`^{commit}", "$commit{commit}")) {
+                            exit 0
+                        }
+                    }
+                    'rev-parse' {
+                        $ref = $effective[-1]
+                        if ($ref -in @(
+                            'HEAD^{commit}',
+                            'HEAD{commit}',
+                            "$commit`^{commit}",
+                            "$commit{commit}")) {
+                            $commit
+                            exit 0
+                        }
+                        if ($ref -in @('origin/main^{commit}', 'origin/main{commit}')) {
+                            $env:FAKE_RELEASE_ORIGIN_MAIN_COMMIT
+                            exit 0
+                        }
+                        if ($ref -in @(
+                            "refs/tags/$tag`^{commit}",
+                            "refs/tags/$tag{commit}",
+                            "$tag`^{commit}",
+                            "$tag{commit}")) {
+                            if (Test-Path -LiteralPath $env:FAKE_RELEASE_LOCAL_TAG) {
+                                $commit
+                                exit 0
+                            }
+                            exit 1
+                        }
+                    }
+                    'tag' {
+                        if ($effective -contains '--list' -or
+                            $effective -contains '--points-at') {
+                            exit 0
+                        }
+                        if ($effective.Count -eq 3 -and
+                            $effective[1] -ceq $tag -and
+                            $effective[2] -ceq $commit) {
+                            Set-Content -LiteralPath $env:FAKE_RELEASE_LOCAL_TAG -Value $commit
+                            exit 0
+                        }
+                    }
+                    'describe' { exit 1 }
+                    'ls-remote' {
+                        if (Test-Path -LiteralPath $env:FAKE_RELEASE_REMOTE_TAG) {
+                            "$commit`trefs/tags/$tag"
+                        }
+                        exit 0
+                    }
+                    'push' {
+                        if (-not (Test-Path -LiteralPath $env:FAKE_RELEASE_LOCAL_TAG)) {
+                            Write-Error 'Cannot push a tag that does not exist locally.'
+                            exit 1
+                        }
+                        Set-Content -LiteralPath $env:FAKE_RELEASE_REMOTE_TAG -Value $commit
+                        exit 0
+                    }
+                }
+
+                Write-Error "Unexpected fake git invocation: $($CliArguments -join ' ')"
+                exit 1
+                """);
+            CreateToolLauncher(toolRoot, "git", "fake-release-git.ps1");
+        }
+
+        private void CreateFakeReleaseGitHubCli()
+        {
+            File.WriteAllText(
+                Path.Combine(toolRoot, "fake-release-gh.ps1"),
+                """
+                param(
+                    [Parameter(ValueFromRemainingArguments = $true)]
+                    [string[]] $CliArguments)
+
+                $ErrorActionPreference = 'Stop'
+                $raw = $CliArguments -join '|'
+                Add-Content -LiteralPath $env:FAKE_RELEASE_GH_LOG -Value $raw
+                Add-Content -LiteralPath $env:FAKE_RELEASE_AUDIT_LOG -Value "gh|$raw"
+
+                function New-FakeRecord {
+                    param(
+                        [long] $Id,
+                        [string] $Workflow,
+                        [string] $Kind,
+                        [long] $QualificationId,
+                        [string] $Conclusion,
+                        [bool] $Artifact = $false)
+
+                    [pscustomobject]@{
+                        Id = $Id
+                        Workflow = $Workflow
+                        Kind = $Kind
+                        QualificationId = $QualificationId
+                        Conclusion = $Conclusion
+                        Artifact = $Artifact
+                    }
+                }
+
+                function Get-SeedRecords {
+                    switch ($env:FAKE_RELEASE_SCENARIO) {
+                        'reuse-qualification' {
+                            New-FakeRecord 201 'release.yml' 'qualification' 0 'success' $true
+                        }
+                        'existing-binding' {
+                            New-FakeRecord 201 'release.yml' 'qualification' 0 'success' $true
+                            New-FakeRecord 202 'publish-release.yml' 'preflight' 201 'success'
+                        }
+                        'failed-unrelated-preflight' {
+                            New-FakeRecord 201 'release.yml' 'qualification' 0 'success' $true
+                            New-FakeRecord 202 'publish-release.yml' 'preflight' 999 'failure'
+                            New-FakeRecord 203 'publish-release.yml' 'preflight' 201 'success'
+                        }
+                        'multiple-successful-preflights' {
+                            New-FakeRecord 201 'release.yml' 'qualification' 0 'success' $true
+                            New-FakeRecord 202 'release.yml' 'qualification' 0 'success' $true
+                            New-FakeRecord 203 'publish-release.yml' 'preflight' 201 'success'
+                            New-FakeRecord 204 'publish-release.yml' 'preflight' 202 'success'
+                        }
+                    }
+                }
+
+                function Get-EventRecords {
+                    foreach ($line in @(Get-Content -LiteralPath $env:FAKE_RELEASE_EVENT_LOG)) {
+                        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+                        $fields = $line -split '\|', 6
+                        New-FakeRecord `
+                            ([long] $fields[0]) `
+                            $fields[1] `
+                            $fields[2] `
+                            ([long] $fields[3]) `
+                            $fields[4] `
+                            ([bool]::Parse($fields[5]))
+                    }
+                }
+
+                function Get-AllRecords {
+                    $records = [Collections.Generic.List[object]]::new()
+                    foreach ($record in @(Get-SeedRecords)) { $records.Add($record) | Out-Null }
+                    foreach ($record in @(Get-EventRecords)) { $records.Add($record) | Out-Null }
+                    return @($records)
+                }
+
+                function ConvertTo-FakeRun {
+                    param([Parameter(Mandatory)] $Record)
+
+                    $title = switch ($Record.Kind) {
+                        'qualification' {
+                            "Qualify release $($env:FAKE_RELEASE_TAG) at $($env:FAKE_RELEASE_COMMIT)"
+                        }
+                        'preflight' {
+                            "Publish $($env:FAKE_RELEASE_TAG) from qualification $($Record.QualificationId) (preflight)"
+                        }
+                        'publication' {
+                            "Publish $($env:FAKE_RELEASE_TAG) from qualification $($Record.QualificationId) (release)"
+                        }
+                    }
+                    [pscustomobject]@{
+                        databaseId = $Record.Id
+                        displayTitle = $title
+                        event = 'workflow_dispatch'
+                        headSha = $env:FAKE_RELEASE_COMMIT
+                        status = 'completed'
+                        conclusion = $Record.Conclusion
+                        url = "https://example.invalid/actions/runs/$($Record.Id)"
+                    }
+                }
+
+                function Get-ArgumentValue {
+                    param([string] $Name)
+                    $index = [Array]::IndexOf($CliArguments, $Name)
+                    if ($index -lt 0 -or $index + 1 -ge $CliArguments.Count) { return $null }
+                    return $CliArguments[$index + 1]
+                }
+
+                if ($CliArguments.Count -ge 2 -and
+                    $CliArguments[0] -ceq 'auth' -and
+                    $CliArguments[1] -ceq 'status') {
+                    exit 0
+                }
+
+                if ($CliArguments.Count -ge 2 -and
+                    $CliArguments[0] -ceq 'repo' -and
+                    $CliArguments[1] -ceq 'view') {
+                    'example/csharpdb'
+                    exit 0
+                }
+
+                if ($CliArguments.Count -ge 2 -and
+                    $CliArguments[0] -ceq 'run' -and
+                    $CliArguments[1] -ceq 'list') {
+                    $workflow = Get-ArgumentValue '--workflow'
+                    $runs = @(
+                        Get-AllRecords |
+                            Where-Object { $_.Workflow -ceq $workflow } |
+                            ForEach-Object { ConvertTo-FakeRun $_ }
+                    )
+                    ConvertTo-Json -InputObject @($runs) -Depth 10 -Compress
+                    exit 0
+                }
+
+                if ($CliArguments.Count -ge 3 -and
+                    $CliArguments[0] -ceq 'workflow' -and
+                    $CliArguments[1] -ceq 'run') {
+                    $workflow = $CliArguments[2]
+                    $fields = @{}
+                    for ($index = 3; $index -lt $CliArguments.Count - 1; $index++) {
+                        if ($CliArguments[$index] -cne '--raw-field') { continue }
+                        $pair = $CliArguments[$index + 1] -split '=', 2
+                        $fields[$pair[0]] = $pair[1]
+                        $index++
+                    }
+
+                    if ($workflow -ceq 'release.yml') {
+                        $kind = 'qualification'
+                        $qualificationId = 0
+                    }
+                    elseif ($workflow -ceq 'publish-release.yml' -and
+                        $fields.preflight_only -ceq 'true') {
+                        $kind = 'preflight'
+                        $qualificationId = [long] $fields.qualification_run_id
+                    }
+                    elseif ($workflow -ceq 'publish-release.yml' -and
+                        $fields.preflight_only -ceq 'false') {
+                        $kind = 'publication'
+                        $qualificationId = [long] $fields.qualification_run_id
+                    }
+                    else {
+                        Write-Error "Unexpected fake workflow dispatch: $raw"
+                        exit 1
+                    }
+
+                    $eventRecords = @(Get-EventRecords)
+                    $id = 301 + $eventRecords.Count
+                    $conclusion = 'success'
+                    if ($env:FAKE_RELEASE_SCENARIO -ceq 'qualification-failure' -and
+                        $kind -ceq 'qualification') {
+                        $conclusion = 'failure'
+                    }
+                    elseif ($env:FAKE_RELEASE_SCENARIO -ceq 'preflight-failure' -and
+                        $kind -ceq 'preflight') {
+                        $conclusion = 'failure'
+                    }
+                    elseif ($env:FAKE_RELEASE_SCENARIO -ceq 'publication-retry' -and
+                        $kind -ceq 'publication' -and
+                        @($eventRecords | Where-Object Kind -ceq 'publication').Count -eq 0) {
+                        $conclusion = 'failure'
+                    }
+                    $artifact = $kind -ceq 'qualification' -and $conclusion -ceq 'success'
+                    Add-Content `
+                        -LiteralPath $env:FAKE_RELEASE_EVENT_LOG `
+                        -Value "$id|$workflow|$kind|$qualificationId|$conclusion|$artifact"
+                    exit 0
+                }
+
+                if ($CliArguments.Count -ge 3 -and
+                    $CliArguments[0] -ceq 'run' -and
+                    $CliArguments[1] -ceq 'watch') {
+                    $id = [long] $CliArguments[2]
+                    $record = @(Get-AllRecords | Where-Object Id -eq $id) | Select-Object -First 1
+                    if ($null -eq $record) {
+                        Write-Error "Unknown fake run $id."
+                        exit 1
+                    }
+                    if ($record.Conclusion -cne 'success') {
+                        Write-Error "Simulated $($record.Kind) failure for run $id."
+                        exit 1
+                    }
+                    if ($record.Kind -ceq 'publication') {
+                        Set-Content -LiteralPath $env:FAKE_RELEASE_RELEASE -Value $env:FAKE_RELEASE_TAG
+                    }
+                    exit 0
+                }
+
+                if ($CliArguments.Count -ge 2 -and $CliArguments[0] -ceq 'api') {
+                    $apiPath = @($CliArguments | Where-Object { $_ -like 'repos/*' }) |
+                        Select-Object -First 1
+                    if ($apiPath -match '/actions/runs/(?<id>[0-9]+)/artifacts$') {
+                        $id = [long] $Matches.id
+                        $record = @(Get-AllRecords | Where-Object Id -eq $id) |
+                            Select-Object -First 1
+                        if ($null -ne $record -and $record.Artifact) { '1' } else { '0' }
+                        exit 0
+                    }
+                    if ($apiPath -ceq 'repos/example/csharpdb/releases') {
+                        if (Test-Path -LiteralPath $env:FAKE_RELEASE_RELEASE) {
+                            $env:FAKE_RELEASE_TAG
+                        }
+                        exit 0
+                    }
+                }
+
+                if ($CliArguments.Count -ge 3 -and
+                    $CliArguments[0] -ceq 'release' -and
+                    $CliArguments[1] -ceq 'view') {
+                    if (-not (Test-Path -LiteralPath $env:FAKE_RELEASE_RELEASE)) {
+                        Write-Error 'Fake release does not exist.'
+                        exit 1
+                    }
+                    [pscustomobject]@{
+                        isDraft = $false
+                        tagName = $env:FAKE_RELEASE_TAG
+                        url = "https://example.invalid/releases/$($env:FAKE_RELEASE_TAG)"
+                    } | ConvertTo-Json -Compress
+                    exit 0
+                }
+
+                Write-Error "Unexpected fake gh invocation: $($CliArguments -join ' ')"
+                exit 1
+                """);
+            CreateToolLauncher(toolRoot, "gh", "fake-release-gh.ps1");
+        }
+    }
+
     private static Task<ProcessResult> RunVerifierAsync(
         string fakeGhRoot,
         string ghLog,
@@ -417,6 +1127,38 @@ public sealed class ReleaseStatusScriptTests
             arguments.Add(releaseVersion);
         }
         return RunProcessAsync("pwsh", environment, [.. arguments]);
+    }
+
+    private static void CreateToolLauncher(
+        string toolRoot,
+        string commandName,
+        string scriptName)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            File.WriteAllText(
+                Path.Combine(toolRoot, commandName + ".cmd"),
+                $"@echo off{Environment.NewLine}" +
+                $"pwsh -NoLogo -NoProfile -File \"%~dp0{scriptName}\" %*{Environment.NewLine}" +
+                $"exit /b %ERRORLEVEL%{Environment.NewLine}");
+            return;
+        }
+
+        string launcher = Path.Combine(toolRoot, commandName);
+        File.WriteAllText(
+            launcher,
+            "#!/usr/bin/env sh\n" +
+            "script_dir=\"$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\"\n" +
+            $"exec pwsh -NoLogo -NoProfile -File \"${{script_dir}}/{scriptName}\" \"$@\"\n");
+        File.SetUnixFileMode(
+            launcher,
+            UnixFileMode.UserRead |
+            UnixFileMode.UserWrite |
+            UnixFileMode.UserExecute |
+            UnixFileMode.GroupRead |
+            UnixFileMode.GroupExecute |
+            UnixFileMode.OtherRead |
+            UnixFileMode.OtherExecute);
     }
 
     private static string CreateFakeGitHubCli(string temporaryRoot)
@@ -754,6 +1496,19 @@ public sealed class ReleaseStatusScriptTests
         IReadOnlyDictionary<string, string> environment,
         params string[] arguments)
     {
+        return await RunProcessAsync(
+            fileName,
+            environment,
+            TimeSpan.FromSeconds(30),
+            arguments);
+    }
+
+    private static async Task<ProcessResult> RunProcessAsync(
+        string fileName,
+        IReadOnlyDictionary<string, string> environment,
+        TimeSpan timeoutDuration,
+        params string[] arguments)
+    {
         ProcessStartInfo startInfo = new()
         {
             FileName = fileName,
@@ -771,21 +1526,43 @@ public sealed class ReleaseStatusScriptTests
         Assert.True(process.Start(), $"Could not start {fileName}.");
         Task<string> standardOutput = process.StandardOutput.ReadToEndAsync();
         Task<string> standardError = process.StandardError.ReadToEndAsync();
-        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(30));
+        using CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        timeout.CancelAfter(timeoutDuration);
         try
         {
             await process.WaitForExitAsync(timeout.Token);
         }
         catch (OperationCanceledException)
+            when (!TestContext.Current.CancellationToken.IsCancellationRequested)
         {
-            process.Kill(entireProcessTree: true);
-            throw new TimeoutException($"{fileName} did not finish within 30 seconds.");
+            KillProcessTree(process);
+            throw new TimeoutException(
+                $"{fileName} did not finish within {timeoutDuration.TotalSeconds:N0} seconds.");
+        }
+        catch
+        {
+            KillProcessTree(process);
+            throw;
         }
 
         return new ProcessResult(
             process.ExitCode,
             await standardOutput,
             await standardError);
+    }
+
+    private static void KillProcessTree(Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+                process.Kill(entireProcessTree: true);
+        }
+        catch (InvalidOperationException)
+        {
+            // The process exited between the state check and the kill request.
+        }
     }
 
     private static string CreateTemporaryRoot()

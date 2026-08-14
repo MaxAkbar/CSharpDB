@@ -1,27 +1,29 @@
-name: Release implementation
+name: Release qualification
+
+run-name: Qualify release ${{ inputs.release_tag }} at ${{ inputs.release_commit }}
 
 on:
-  workflow_call:
+  workflow_dispatch:
     inputs:
       release_tag:
-        description: Exact existing release tag to publish
+        description: New semantic release tag to create after qualification
         required: true
         type: string
       release_commit:
-        description: Exact commit targeted by release_tag
+        description: Exact main commit to qualify and release
         required: true
         type: string
-    secrets:
-      NUGET_USER:
-        description: NuGet profile name used by Trusted Publishing
-        required: true
+
+concurrency:
+  group: release-${{ inputs.release_tag }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
-  verify-release-target:
-    name: Verify exact release target
+  verify-release-candidate:
+    name: Verify exact release candidate
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -33,9 +35,10 @@ jobs:
           fetch-depth: 0
           ref: ${{ inputs.release_commit }}
 
-      - name: Require the exact existing release tag and commit
+      - name: Require exact untagged main and matching package version
         shell: pwsh
         env:
+          GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           RELEASE_COMMIT: ${{ inputs.release_commit }}
         run: |
@@ -53,30 +56,55 @@ jobs:
             throw "Checked-out HEAD $head does not match $env:RELEASE_COMMIT."
           }
 
-          $tagCommit = (& git rev-parse "refs/tags/$($env:RELEASE_TAG)^{commit}").Trim()
-          if ($LASTEXITCODE -ne 0 -or $tagCommit -cne $env:RELEASE_COMMIT) {
-            throw "$env:RELEASE_TAG does not resolve to $env:RELEASE_COMMIT."
+          [xml] $buildProps = Get-Content -Raw -LiteralPath 'src/Directory.Build.props'
+          $versionNodes = @($buildProps.SelectNodes('/Project/PropertyGroup/Version'))
+          if ($versionNodes.Count -ne 1) {
+            throw "Expected exactly one package Version; found $($versionNodes.Count)."
+          }
+          $releaseVersion = $env:RELEASE_TAG.Substring(1)
+          if ($versionNodes[0].InnerText.Trim() -cne $releaseVersion) {
+            throw "Release tag $env:RELEASE_TAG does not match package version $($versionNodes[0].InnerText.Trim())."
+          }
+
+          $remoteMain = (& gh api "repos/$env:GITHUB_REPOSITORY/commits/main" --jq .sha).Trim()
+          if ($LASTEXITCODE -ne 0 -or $remoteMain -cne $env:RELEASE_COMMIT) {
+            throw "Release commit $env:RELEASE_COMMIT is not exact current main $remoteMain."
+          }
+
+          $remoteTag = @(& git ls-remote --tags origin "refs/tags/$($env:RELEASE_TAG)" "refs/tags/$($env:RELEASE_TAG)^{}")
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not inspect remote release tag $env:RELEASE_TAG."
+          }
+          if ($remoteTag.Count -ne 0) {
+            throw "Release tag $env:RELEASE_TAG already exists; qualification requires an untagged version."
+          }
+
+          $releaseTags = @(& gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases" --jq '.[].tag_name')
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not inspect existing GitHub Releases."
+          }
+          if ($releaseTags -ccontains $env:RELEASE_TAG) {
+            throw "A $env:RELEASE_TAG GitHub Release already exists."
           }
 
   build-and-test:
     name: Qualify release source
-    needs: verify-release-target
+    needs: verify-release-candidate
     uses: ./.github/workflows/sql-release-qualification.yml
     with:
       release_version: ${{ inputs.release_tag }}
       release_commit: ${{ inputs.release_commit }}
-      # v4.6.0 was tagged but never published, so v4.6.1 must measure from the
-      # published v4.5.1 commit. v4.5.0 was also tagged but never published, so
-      # retain the equivalent v4.5.1-to-v4.4.0 case.
-      previous_release_ref: ${{ inputs.release_tag == 'v4.6.1' && '2f141433298bcd3137e2bcaa2930c796c4222092' || inputs.release_tag == 'v4.5.1' && '86e25435f3c64f47afe2a776c6b03cbe84e56858' || '' }}
+      # v4.6.0 and v4.6.1 were tagged but never published, so v4.6.2 must
+      # measure from the published v4.5.1 commit. Retain historical recovery
+      # mappings for auditability.
+      previous_release_ref: ${{ inputs.release_tag == 'v4.6.2' && '2f141433298bcd3137e2bcaa2930c796c4222092' || inputs.release_tag == 'v4.6.1' && '2f141433298bcd3137e2bcaa2930c796c4222092' || inputs.release_tag == 'v4.5.1' && '86e25435f3c64f47afe2a776c6b03cbe84e56858' || '' }}
 
-  publish-nuget:
-    name: Publish NuGet
-    needs: [build-and-test, migration-archives, native-aot, api-host-observability, daemon-archives, admin-desktop-archive]
+  prepare-nuget:
+    name: Prepare NuGet candidate
+    needs: build-and-test
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write
     outputs:
       version: ${{ steps.version.outputs.version }}
     env:
@@ -106,17 +134,6 @@ jobs:
           $packageFileVersion = ./scripts/Get-NuGetPackageIdentityVersion.ps1 -Version $version
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "package_file_version=$packageFileVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-
-      - name: Fail when NUGET_USER is missing
-        env:
-          NUGET_USER: ${{ secrets.NUGET_USER }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ -z "$NUGET_USER" ]]; then
-            echo "Repository secret NUGET_USER is not set. Set it to the nuget.org username/profile name used by the Trusted Publishing policy." >&2
-            exit 1
-          fi
 
       - name: Rewrite README links for NuGet
         shell: bash
@@ -197,113 +214,16 @@ jobs:
             -FeedPath artifacts/nuget `
             -Version "${{ steps.version.outputs.version }}"
 
-      - name: Revalidate the immutable publication target
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_COMMIT: ${{ inputs.release_commit }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          $resolved = & gh api "repos/$env:GITHUB_REPOSITORY/commits/$env:RELEASE_TAG" --jq .sha
-          if ($LASTEXITCODE -ne 0 -or $resolved.Trim() -cne $env:RELEASE_COMMIT) {
-            throw "$env:RELEASE_TAG no longer resolves to $env:RELEASE_COMMIT."
-          }
-
-          $releaseTags = @(
-            & gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases" --jq '.[].tag_name'
-          )
-          if ($LASTEXITCODE -ne 0) {
-            throw "Could not check for an existing $env:RELEASE_TAG GitHub Release."
-          }
-          if ($releaseTags -ccontains $env:RELEASE_TAG) {
-            throw "A $env:RELEASE_TAG GitHub Release already exists; packages will not be published."
-          }
-
-      - name: NuGet login through Trusted Publishing
-        id: nuget-login
-        uses: NuGet/login@v1
-        with:
-          user: ${{ secrets.NUGET_USER }}
-
       - name: Require an unpublished NuGet candidate version
         shell: pwsh
         run: |
           ./scripts/Test-CSharpDbNuGetCandidateAbsent.ps1 `
             -ManifestPath artifacts/nuget/CSharpDB-PACKAGE-MANIFEST.json
 
-      - name: Push CSharpDB.Observability to NuGet.org
-        shell: bash
-        run: |
-          set -euo pipefail
-          dotnet nuget push "artifacts/nuget/CSharpDB.Observability.${{ steps.version.outputs.package_file_version }}.nupkg" \
-            --source "https://api.nuget.org/v3/index.json" \
-            --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}"
-
-      - name: Wait for CSharpDB.Observability on NuGet.org
-        shell: pwsh
-        run: |
-          ./scripts/Wait-NuGetPackageVersion.ps1 `
-            -Version "${{ steps.version.outputs.version }}" `
-            -PackageId 'CSharpDB.Observability'
-
-      - name: Push remaining packages in validated topological order
-        shell: pwsh
-        env:
-          NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
-        run: |
-          $manifest = Get-Content `
-            -Raw `
-            -LiteralPath artifacts/nuget/CSharpDB-PACKAGE-MANIFEST.json |
-              ConvertFrom-Json
-          foreach ($package in $manifest.packages) {
-            if ($package.id -ceq 'CSharpDB.Observability') {
-              continue
-            }
-
-            $packagePath = Join-Path artifacts/nuget $package.file
-            & dotnet nuget push $packagePath `
-              --source 'https://api.nuget.org/v3/index.json' `
-              --api-key $env:NUGET_API_KEY
-            if ($LASTEXITCODE -ne 0) {
-              throw "Failed to push $($package.id)."
-            }
-
-            ./scripts/Wait-NuGetPackageVersion.ps1 `
-              -Version "${{ steps.version.outputs.version }}" `
-              -PackageId $package.id
-          }
-
-      - name: Verify packages are visible on NuGet.org
-        shell: pwsh
-        run: |
-          ./scripts/Wait-NuGetPackageVersion.ps1 `
-            -Version "${{ steps.version.outputs.version }}" `
-            -PackageId @(
-              'CSharpDB.Primitives',
-              'CSharpDB.Observability',
-              'CSharpDB.Sql',
-              'CSharpDB.Storage',
-              'CSharpDB.ImportExport',
-              'CSharpDB.Execution',
-              'CSharpDB.Storage.Diagnostics',
-              'CSharpDB.Engine',
-              'CSharpDB.Pipelines',
-              'CSharpDB.Generators',
-              'CSharpDB.Client',
-              'CSharpDB.CodeModules',
-              'CSharpDB.Data',
-              'CSharpDB.Migration',
-              'CSharpDB.Migration.DualRun',
-              'CSharpDB.EntityFrameworkCore',
-              'CSharpDB.EntityFrameworkCore.Tools',
-              'CSharpDB'
-            )
-
-      - name: Upload NuGet artifacts
+      - name: Upload qualified NuGet candidate
         uses: actions/upload-artifact@v7
         with:
-          name: nuget-packages
+          name: nuget-candidate
           path: |
             artifacts/nuget/*.nupkg
             artifacts/nuget/CSharpDB-PACKAGE-MANIFEST.json
@@ -764,12 +684,12 @@ jobs:
             artifacts/admin-release/archives/ADMIN-SHA256SUMS.txt
           if-no-files-found: error
 
-  create-release:
-    name: Create GitHub Release
-    needs: [publish-nuget, migration-archives, native-aot, daemon-archives, admin-desktop-archive]
+  prepare-release-bundle:
+    name: Prepare final release bundle
+    needs: [prepare-nuget, migration-archives, native-aot, api-host-observability, daemon-archives, admin-desktop-archive]
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - name: Checkout
@@ -781,62 +701,49 @@ jobs:
       - name: Download NuGet artifacts
         uses: actions/download-artifact@v8
         with:
-          name: nuget-packages
-          path: artifacts/nuget
+          name: nuget-candidate
+          path: artifacts/release-bundle/nuget
 
       - name: Download native artifacts
         uses: actions/download-artifact@v8
         with:
           pattern: native-*
-          path: artifacts/native
+          path: artifacts/release-bundle/native
           merge-multiple: true
 
       - name: Download migration artifacts
         uses: actions/download-artifact@v8
         with:
           pattern: migration-*
-          path: artifacts/migration
+          path: artifacts/release-bundle/migration
           merge-multiple: true
 
       - name: Download daemon artifacts
         uses: actions/download-artifact@v8
         with:
           pattern: daemon-*
-          path: artifacts/daemon
+          path: artifacts/release-bundle/daemon
           merge-multiple: true
 
       - name: Download Admin desktop artifacts
         uses: actions/download-artifact@v8
         with:
           name: admin-desktop-win-x64
-          path: artifacts/admin-desktop
+          path: artifacts/release-bundle/admin-desktop
 
       - name: Generate daemon checksums
         shell: bash
         run: |
           set -euo pipefail
-          cd artifacts/daemon
+          cd artifacts/release-bundle/daemon
           sha256sum csharpdb-daemon-v* > SHA256SUMS.txt
 
       - name: Generate migration checksums
         shell: bash
         run: |
           set -euo pipefail
-          cd artifacts/migration
+          cd artifacts/release-bundle/migration
           sha256sum csharpdb-migration-tool-v* > MIGRATION-SHA256SUMS.txt
-
-      - name: Revalidate the immutable release target
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          RELEASE_COMMIT: ${{ inputs.release_commit }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $resolved = & gh api "repos/$env:GITHUB_REPOSITORY/commits/$env:RELEASE_TAG" --jq .sha
-          if ($LASTEXITCODE -ne 0 -or $resolved.Trim() -cne $env:RELEASE_COMMIT) {
-            throw "$env:RELEASE_TAG no longer resolves to $env:RELEASE_COMMIT."
-          }
 
       - name: Resolve release notes
         id: notes
@@ -844,7 +751,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -f RELEASE_NOTES.md ]]; then
-            notes_file="release-notes-current.md"
+            notes_file="artifacts/release-bundle/release-notes-current.md"
             awk '
               /^## / {
                 if (started) exit
@@ -863,58 +770,48 @@ jobs:
             echo "has_notes=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Require the immutable target and absent release before creation
+      - name: Verify complete immutable release bundle
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          RELEASE_COMMIT: ${{ inputs.release_commit }}
         run: |
           $ErrorActionPreference = 'Stop'
-
-          $resolved = & gh api "repos/$env:GITHUB_REPOSITORY/commits/$env:RELEASE_TAG" --jq .sha
-          if ($LASTEXITCODE -ne 0 -or $resolved.Trim() -cne $env:RELEASE_COMMIT) {
-            throw "$env:RELEASE_TAG no longer resolves to $env:RELEASE_COMMIT."
+          if ('${{ steps.notes.outputs.has_notes }}' -cne 'true') {
+            throw 'RELEASE_NOTES.md must contain a current release section.'
           }
-
-          $releaseTags = @(
-            & gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases" --jq '.[].tag_name'
+          $expectedHeading = "## CSharpDB ${{ needs.prepare-nuget.outputs.version }}"
+          $actualHeading = Get-Content -LiteralPath `
+            artifacts/release-bundle/release-notes-current.md |
+            Select-Object -First 1
+          if ($actualHeading -cne $expectedHeading) {
+            throw "Release notes begin with '$actualHeading'; expected '$expectedHeading'."
+          }
+          $requiredPatterns = @(
+            'nuget/*.nupkg',
+            'nuget/CSharpDB-PACKAGE-MANIFEST.json',
+            'native/*',
+            'migration/csharpdb-migration-tool-v*',
+            'migration/MIGRATION-SHA256SUMS.txt',
+            'daemon/csharpdb-daemon-v*',
+            'daemon/SHA256SUMS.txt',
+            'admin-desktop/*.zip',
+            'admin-desktop/ADMIN-SHA256SUMS.txt',
+            'release-notes-current.md'
           )
-          if ($LASTEXITCODE -ne 0) {
-            throw "Could not check for an existing $env:RELEASE_TAG GitHub Release."
+          foreach ($pattern in $requiredPatterns) {
+            if (@(Get-ChildItem -Path (Join-Path 'artifacts/release-bundle' $pattern) -File).Count -eq 0) {
+              throw "Release bundle is missing required content: $pattern"
+            }
           }
-          if ($releaseTags -ccontains $env:RELEASE_TAG) {
-            throw "A $env:RELEASE_TAG GitHub Release already exists; publication will not update it."
-          }
+          ./scripts/Test-CSharpDbNuGetReleaseGraph.ps1 `
+            -FeedPath artifacts/release-bundle/nuget `
+            -Version '${{ needs.prepare-nuget.outputs.version }}' `
+            -ValidateExistingManifest
+          ./scripts/Test-CSharpDbNuGetCandidateAbsent.ps1 `
+            -ManifestPath artifacts/release-bundle/nuget/CSharpDB-PACKAGE-MANIFEST.json
 
-      - name: Create release (custom notes)
-        if: steps.notes.outputs.has_notes == 'true'
-        uses: softprops/action-gh-release@v2
+      - name: Upload final release bundle
+        uses: actions/upload-artifact@v7
         with:
-          name: CSharpDB v${{ needs.publish-nuget.outputs.version }}
-          body_path: ${{ steps.notes.outputs.path }}
-          tag_name: ${{ inputs.release_tag }}
-          target_commitish: ${{ inputs.release_commit }}
-          files: |
-            artifacts/nuget/*.nupkg
-            artifacts/nuget/CSharpDB-PACKAGE-MANIFEST.json
-            artifacts/native/*
-            artifacts/migration/*
-            artifacts/daemon/*
-            artifacts/admin-desktop/*
-
-      - name: Create release (auto-generated notes)
-        if: steps.notes.outputs.has_notes == 'false'
-        uses: softprops/action-gh-release@v2
-        with:
-          name: CSharpDB v${{ needs.publish-nuget.outputs.version }}
-          generate_release_notes: true
-          tag_name: ${{ inputs.release_tag }}
-          target_commitish: ${{ inputs.release_commit }}
-          files: |
-            artifacts/nuget/*.nupkg
-            artifacts/nuget/CSharpDB-PACKAGE-MANIFEST.json
-            artifacts/native/*
-            artifacts/migration/*
-            artifacts/daemon/*
-            artifacts/admin-desktop/*
+          name: release-bundle
+          path: artifacts/release-bundle
+          if-no-files-found: error
+          retention-days: 90

@@ -66,11 +66,20 @@ param(
         'devenv;msbuild;vbcscompiler;testhost;vstest.console;msiexec;' +
         'trustedinstaller;tiworker;mousocoreworker;usoclient;winget;nuget',
 
-    [switch] $PreflightOnly
+    [switch] $PreflightOnly,
+
+    [switch] $BuildOnly
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if ($PreflightOnly -and $BuildOnly) {
+    throw 'PreflightOnly and BuildOnly cannot be combined.'
+}
+if ($BuildOnly -and $ShareSameRevisionArtifact) {
+    throw 'BuildOnly must compile both the previous and candidate revisions.'
+}
 
 [string[]] $supportedHybridStorageScenarioNames = @(
     foreach ($prefix in @(
@@ -118,6 +127,7 @@ if ($ShareSameRevisionArtifact -and -not $AllowSameRevision) {
 }
 
 $scriptDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
+$releaseCoreBuildProperty = 'CSharpDbReleaseCoreOnly=true'
 $repositoryRoot = [IO.Path]::GetFullPath(
     [IO.Path]::Combine($scriptDirectory, '..', '..', '..'))
 $temporaryParent = if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
@@ -802,6 +812,10 @@ $preflight = @(
             '- Blocking latency percentile: P95. P99 remains recorded as a non-blocking diagnostic.'
         }),
     '- Benchmark source harness: candidate benchmark-project files synchronized to both engines; revision-specific effective build inputs are recorded separately during execution',
+    '- Release-core build profile: ``CSharpDbReleaseCoreOnly=true`` excludes candidate-only benchmark dependencies symmetrically',
+    $(if ($BuildOnly) {
+            '- Mode: build-only cross-version compatibility; benchmark measurements are skipped'
+        }),
     "- Previous ref: ``$PreviousRef`` (``$previousCommit``)",
     "- Candidate ref: ``$CandidateRef`` (``$candidateCommit``)",
     "- Planned execution log: ``$executionLogPath``",
@@ -1156,6 +1170,14 @@ function Invoke-BenchmarkBuild {
     )
 
     $project = Get-BenchmarkProject -SourceRoot $SourceRoot
+    [string[]] $buildArguments = @(
+        'build',
+        $project,
+        '-c',
+        'Release',
+        '--nologo',
+        '-p',
+        $releaseCoreBuildProperty)
     $logPath = Join-Path $logRoot "$RunName.log"
     [IO.File]::WriteAllLines(
         $logPath,
@@ -1166,11 +1188,13 @@ function Invoke-BenchmarkBuild {
             "Benchmark source harness manifest: $harnessManifestPath",
             "Revision effective build inputs: $BuildInputsIdentity",
             "Revision effective build inputs manifest: $BuildInputsManifestPath",
+            "MSBuild property: $releaseCoreBuildProperty",
+            "Command: dotnet $($buildArguments -join ' ')",
             ''
         ))
     Push-Location $SourceRoot
     try {
-        & dotnet build $project -c Release --nologo 2>&1 |
+        & dotnet @buildArguments 2>&1 |
             Tee-Object -FilePath $logPath -Append |
             Write-Host
         $buildExitCode = $LASTEXITCODE
@@ -3504,7 +3528,7 @@ try {
                     -HarnessIdentity $candidateHarnessIdentity `
                     -BuildInputsIdentity $previousBuildInputsIdentity `
                     -BuildInputsManifestPath $previousBuildInputsManifestPath
-                if ($Paired) {
+                if ($Paired -and -not $BuildOnly) {
                     $pairedArtifacts['previous'] = Get-BenchmarkArtifactIdentity `
                         -SourceRoot $baselineWorktree
                 }
@@ -3516,13 +3540,30 @@ try {
                     -HarnessIdentity $candidateHarnessIdentity `
                     -BuildInputsIdentity $candidateBuildInputsIdentity `
                     -BuildInputsManifestPath $candidateBuildInputsManifestPath
-                if ($Paired) {
+                if ($Paired -and -not $BuildOnly) {
                     $pairedArtifacts['candidate'] = Get-BenchmarkArtifactIdentity `
                         -SourceRoot $candidateWorktree
                 }
             }
         }
     }
+    if ($BuildOnly) {
+        [IO.File]::WriteAllLines(
+            $reportPath,
+            @(
+                '# Previous-release benchmark compatibility',
+                '',
+                '- Result: **PASS**',
+                '- Mode: build-only; benchmark measurements were not executed',
+                '- MSBuild release-core profile: ``CSharpDbReleaseCoreOnly=true``',
+                "- Previous ref: ``$PreviousRef`` (``$previousCommit``)",
+                "- Candidate ref: ``$CandidateRef`` (``$candidateCommit``)",
+                "- Candidate benchmark harness SHA-256: ``$candidateHarnessIdentity``",
+                "- Previous build log: ``$(Join-Path $logRoot 'previous-release.log')``",
+                "- Candidate build log: ``$(Join-Path $logRoot 'candidate.log')``"
+            ))
+    }
+    else {
     if ($Paired) {
         if ($pairedArtifacts.Count -ne 2 -or
             -not $pairedArtifacts.ContainsKey('previous') -or
@@ -4071,6 +4112,7 @@ try {
             Add-Content -LiteralPath $reportPath -Value $metadata
         }
     }
+    }
 }
 catch {
     $primaryFailure = $_
@@ -4317,5 +4359,10 @@ if ($cleanupFailures.Count -gt 0) {
 }
 
 Assert-CleanRepository
-Write-Host "Previous-release performance qualification passed."
+if ($BuildOnly) {
+    Write-Host 'Previous-release benchmark compatibility builds passed.'
+}
+else {
+    Write-Host 'Previous-release performance qualification passed.'
+}
 Write-Host "Evidence: $reportPath"
