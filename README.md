@@ -12,7 +12,7 @@
 <p align="center">
   <a href="https://www.nuget.org/packages/CSharpDB"><img src="https://img.shields.io/nuget/v/CSharpDB" alt="NuGet"></a>
   <a href="https://www.nuget.org/packages/CSharpDB"><img src="https://img.shields.io/nuget/dt/CSharpDB?label=Downloads" alt="NuGet downloads"></a>
-  <a href="https://github.com/MaxAkbar/CSharpDB/actions/workflows/ci.yml"><img src="https://github.com/MaxAkbar/CSharpDB/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/MaxAkbar/CSharpDB/actions/workflows/perf-guardrails.yml"><img src="https://github.com/MaxAkbar/CSharpDB/actions/workflows/perf-guardrails.yml/badge.svg" alt="Perf Guardrails"></a>
   <a href="https://github.com/MaxAkbar/CSharpDB/stargazers"><img src="https://img.shields.io/github/stars/MaxAkbar/CSharpDB?label=Stars" alt="GitHub stars"></a>
   <a href="https://dotnet.microsoft.com/download/dotnet/10.0"><img src="https://img.shields.io/badge/.NET-10-512bd4" alt=".NET 10"></a>
   <a href="https://github.com/MaxAkbar/CSharpDB"><img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-0f766e" alt="Platform: Windows, Linux, macOS"></a>
