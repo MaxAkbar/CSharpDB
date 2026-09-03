@@ -7,6 +7,7 @@ using CSharpDB.ImportExport.TableArchives;
 using CSharpDB.Sql;
 using ArchiveColumn = CSharpDB.ImportExport.Models.TableArchiveColumn;
 using ArchiveForeignKey = CSharpDB.ImportExport.Models.TableArchiveForeignKey;
+using InternalTableRegistry = CSharpDB.Primitives.DbInternalTableRegistry;
 using PrimitiveForeignKeyOnDeleteAction = CSharpDB.Primitives.ForeignKeyOnDeleteAction;
 
 namespace CSharpDB.Admin.Services;
@@ -763,7 +764,7 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
     };
 
     private static bool IsSystemTableName(string name) =>
-        name.StartsWith("_", StringComparison.Ordinal)
+        InternalTableRegistry.IsInternalTable(name)
         || name.StartsWith("sys.", StringComparison.OrdinalIgnoreCase);
 
     private static string FormatIdentifier(string identifier)

@@ -12,9 +12,6 @@ namespace CSharpDB.Engine;
 internal static class DatabaseForeignKeyMigrationCoordinator
 {
     private const string CollectionPrefix = "_col_";
-    private const string InternalTablePrefix = "__";
-    private const string SystemTablePrefix = "sys.";
-    private const string SystemAliasPrefix = "sys_";
     private const string MissingReferencedParentReason = "MissingReferencedParent";
 
     public static ValueTask<DatabaseForeignKeyMigrationResult> MigrateAsync(
@@ -564,10 +561,9 @@ internal static class DatabaseForeignKeyMigrationCoordinator
     }
 
     private static bool IsInternalTableName(string tableName)
-        => tableName.StartsWith(CollectionPrefix, StringComparison.OrdinalIgnoreCase) ||
-           tableName.StartsWith(InternalTablePrefix, StringComparison.OrdinalIgnoreCase) ||
-           tableName.StartsWith(SystemTablePrefix, StringComparison.OrdinalIgnoreCase) ||
-           tableName.StartsWith(SystemAliasPrefix, StringComparison.OrdinalIgnoreCase);
+        => DbInternalTableRegistry.IsInternalTable(tableName)
+           || DbInternalTableRegistry.IsReservedInternalTableName(tableName)
+           || DbSystemCatalogRegistry.TryNormalize(tableName, out _);
 
     private static string BuildSpecKey(
         string tableName,

@@ -356,6 +356,18 @@ public sealed partial class QueryPlanner
         new ColumnDefinition { Name = "schema_id", Type = DbType.Text, Nullable = true },
     ];
 
+    private static readonly ColumnDefinition[] SystemInternalTablesColumns =
+    [
+        new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "column_count", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "primary_key_column", Type = DbType.Text, Nullable = true },
+        new ColumnDefinition { Name = "owning_feature", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "logical_replacement", Type = DbType.Text, Nullable = true },
+        new ColumnDefinition { Name = "hidden_from_client_metadata", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "hidden_from_system_catalog", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "schema_id", Type = DbType.Text, Nullable = true },
+    ];
+
     private static readonly ColumnDefinition[] SystemColumnsColumns =
     [
         new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
@@ -685,6 +697,7 @@ public sealed partial class QueryPlanner
     private readonly Dictionary<TableRef, TableSchema> _correlationTableRefSchemaCache = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<QueryStatement, ColumnDefinition[]> _correlationQueryOutputSchemaCache = new(ReferenceEqualityComparer.Instance);
     private List<DbValue[]>? _systemTablesRowsCache;
+    private List<DbValue[]>? _systemInternalTablesRowsCache;
     private List<DbValue[]>? _systemColumnsRowsCache;
     private List<DbValue[]>? _systemIndexesRowsCache;
     private List<DbValue[]>? _systemForeignKeysRowsCache;
@@ -1403,6 +1416,7 @@ public sealed partial class QueryPlanner
         _resolvedInsertIndexPlanCache.Clear();
         _requiresQualifiedMappingCache.Clear();
         _systemTablesRowsCache = null;
+        _systemInternalTablesRowsCache = null;
         _systemColumnsRowsCache = null;
         _systemIndexesRowsCache = null;
         _systemForeignKeysRowsCache = null;
@@ -4319,7 +4333,7 @@ public sealed partial class QueryPlanner
 
         if (TryBuildSystemCatalogSource(simple, out var systemSource))
         {
-            long systemRowCount = TryNormalizeSystemCatalogTableName(simple.TableName, out string normalizedSystemName)
+            long systemRowCount = DbSystemCatalogRegistry.TryNormalize(simple.TableName, out string normalizedSystemName)
                 ? CountSystemCatalogRows(normalizedSystemName)
                 : 0;
             diagnostics.Add(parentNode, "source", target, "system-catalog", systemRowCount, systemRowCount, "sys.catalog", "exact");
@@ -9789,7 +9803,7 @@ public sealed partial class QueryPlanner
 
         if (stmt.From is not SimpleTableRef simpleRef)
             return false;
-        if (!TryNormalizeSystemCatalogTableName(simpleRef.TableName, out string normalized))
+        if (!DbSystemCatalogRegistry.TryNormalize(simpleRef.TableName, out string normalized))
             return false;
 
         // Backed by row data, not static metadata; use the normal aggregate pipeline for correctness.
@@ -9817,30 +9831,7 @@ public sealed partial class QueryPlanner
         if (!string.Equals(func.FunctionName, "COUNT", StringComparison.OrdinalIgnoreCase))
             return false;
 
-        long count = normalized switch
-        {
-            "sys.tables" => CountVisibleUserTables(),
-            "sys.columns" => CountSystemColumns(),
-            "sys.indexes" => CountSystemIndexes(),
-            "sys.foreign_keys" => CountSystemForeignKeys(),
-            "sys.key_constraints" => CountSystemKeyConstraintColumns(),
-            "sys.check_constraints" => CountSystemCheckConstraints(),
-            "sys.functions" => CountSystemFunctions(),
-            "sys.views" => _catalog.GetViewNames().Count,
-            "sys.triggers" => _catalog.GetTriggers().Count,
-            "sys.objects" => CountSystemObjects(),
-            "sys.external_tables" => GetExternalTableRegistrations().Count,
-            "sys.diagrams" => CountSystemDiagrams(),
-            "sys.validation_rules" => CountSystemValidationRules(),
-            "sys.temp_tables" => _temporaryTables?.GetTableNames().Count ?? 0,
-            "sys.temp_columns" => CountSystemTempColumns(),
-            "sys.table_stats" => _catalog.GetTableStatistics().Count,
-            "sys.column_stats" => _catalog.GetColumnStatistics().Count,
-            "sys.planner_histograms" => CountPlannerHistogramRows(),
-            "sys.planner_heavy_hitters" => CountPlannerHeavyHitterRows(),
-            "sys.planner_index_prefix_stats" => CountPlannerIndexPrefixRows(),
-            _ => 0,
-        };
+        long count = CountSystemCatalogRows(normalized);
 
         var outputSchema = stmt.Columns[0].Alias is { Length: > 0 } alias
             ? new[]
@@ -9880,6 +9871,18 @@ public sealed partial class QueryPlanner
 
     private long CountVisibleUserTables() =>
         _catalog.GetTableNames().LongCount(tableName => !IsHiddenInternalCatalogTable(tableName));
+
+    private long CountVisibleSystemTriggers() =>
+        _catalog.GetTriggers().LongCount(trigger => !IsHiddenInternalCatalogTable(trigger.TableName));
+
+    private long CountVisibleTableStatistics() =>
+        _catalog.GetTableStatistics().LongCount(stats => !IsHiddenInternalCatalogTable(stats.TableName));
+
+    private long CountVisibleColumnStatistics() =>
+        _catalog.GetColumnStatistics().LongCount(stats => !IsHiddenInternalCatalogTable(stats.TableName));
+
+    private long CountInternalTables() =>
+        _catalog.GetTableNames().LongCount(DbInternalTableRegistry.IsInternalTable);
 
     private long CountSystemDiagrams() =>
         TryGetTableRowCount(InternalDataModelDiagramsTableName, out long diagramRows) ? diagramRows : 0;
@@ -9989,7 +9992,7 @@ public sealed partial class QueryPlanner
             !IsHiddenInternalCatalogTable(index.TableName))
         + CountSystemForeignKeyConstraints()
         + _catalog.GetViewNames().Count
-        + _catalog.GetTriggers().Count
+        + CountVisibleSystemTriggers()
         + GetExternalTableRegistrations().Count
         + CountSystemDiagrams();
 
@@ -21435,170 +21438,15 @@ public sealed partial class QueryPlanner
     }
 
     private static bool IsSystemCatalogTable(string tableName) =>
-        TryNormalizeSystemCatalogTableName(tableName, out _);
+        DbSystemCatalogRegistry.TryNormalize(tableName, out _);
 
     private static bool IsHiddenInternalCatalogTable(string tableName) =>
-        string.Equals(tableName, InternalExternalTablesTableName, StringComparison.OrdinalIgnoreCase)
-        || string.Equals(tableName, InternalDataModelDiagramsTableName, StringComparison.OrdinalIgnoreCase)
-        || string.Equals(tableName, InternalValidationRulesTableName, StringComparison.OrdinalIgnoreCase);
-
-    private static bool TryNormalizeSystemCatalogTableName(string tableName, out string normalized)
-    {
-        if (string.Equals(tableName, "sys.tables", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_tables", StringComparison.OrdinalIgnoreCase))
-        {
-            normalized = "sys.tables";
-            return true;
-        }
-
-        if (string.Equals(tableName, "sys.columns", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_columns", StringComparison.OrdinalIgnoreCase))
-        {
-            normalized = "sys.columns";
-            return true;
-        }
-
-        if (string.Equals(tableName, "sys.indexes", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_indexes", StringComparison.OrdinalIgnoreCase))
-        {
-            normalized = "sys.indexes";
-            return true;
-        }
-
-        if (string.Equals(tableName, "sys.foreign_keys", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_foreign_keys", StringComparison.OrdinalIgnoreCase))
-        {
-            normalized = "sys.foreign_keys";
-            return true;
-        }
-
-        if (string.Equals(tableName, "sys.key_constraints", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_key_constraints", StringComparison.OrdinalIgnoreCase))
-        {
-            normalized = "sys.key_constraints";
-            return true;
-        }
-
-        if (string.Equals(tableName, "sys.check_constraints", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_check_constraints", StringComparison.OrdinalIgnoreCase))
-        {
-            normalized = "sys.check_constraints";
-            return true;
-        }
-
-        if (string.Equals(tableName, "sys.functions", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_functions", StringComparison.OrdinalIgnoreCase))
-        {
-            normalized = "sys.functions";
-            return true;
-        }
-
-        if (string.Equals(tableName, "sys.views", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_views", StringComparison.OrdinalIgnoreCase))
-        {
-            normalized = "sys.views";
-            return true;
-        }
-
-        if (string.Equals(tableName, "sys.triggers", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_triggers", StringComparison.OrdinalIgnoreCase))
-        {
-            normalized = "sys.triggers";
-            return true;
-        }
-
-        if (string.Equals(tableName, "sys.objects", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_objects", StringComparison.OrdinalIgnoreCase))
-        {
-            normalized = "sys.objects";
-            return true;
-        }
-
-        if (string.Equals(tableName, "sys.saved_queries", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_saved_queries", StringComparison.OrdinalIgnoreCase))
-        {
-            normalized = "sys.saved_queries";
-            return true;
-        }
-
-        if (string.Equals(tableName, "sys.external_tables", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_external_tables", StringComparison.OrdinalIgnoreCase))
-        {
-            normalized = "sys.external_tables";
-            return true;
-        }
-
-        if (string.Equals(tableName, "sys.diagrams", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_diagrams", StringComparison.OrdinalIgnoreCase))
-        {
-            normalized = "sys.diagrams";
-            return true;
-        }
-
-        if (string.Equals(tableName, "sys.validation_rules", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_validation_rules", StringComparison.OrdinalIgnoreCase))
-        {
-            normalized = "sys.validation_rules";
-            return true;
-        }
-
-        if (string.Equals(tableName, "sys.temp_tables", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_temp_tables", StringComparison.OrdinalIgnoreCase))
-        {
-            normalized = "sys.temp_tables";
-            return true;
-        }
-
-        if (string.Equals(tableName, "sys.temp_columns", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_temp_columns", StringComparison.OrdinalIgnoreCase))
-        {
-            normalized = "sys.temp_columns";
-            return true;
-        }
-
-        if (string.Equals(tableName, "sys.table_stats", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_table_stats", StringComparison.OrdinalIgnoreCase))
-        {
-            normalized = "sys.table_stats";
-            return true;
-        }
-
-        if (string.Equals(tableName, "sys.column_stats", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_column_stats", StringComparison.OrdinalIgnoreCase))
-        {
-            normalized = "sys.column_stats";
-            return true;
-        }
-
-        if (string.Equals(tableName, "sys.planner_histograms", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_planner_histograms", StringComparison.OrdinalIgnoreCase))
-        {
-            normalized = "sys.planner_histograms";
-            return true;
-        }
-
-        if (string.Equals(tableName, "sys.planner_heavy_hitters", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_planner_heavy_hitters", StringComparison.OrdinalIgnoreCase))
-        {
-            normalized = "sys.planner_heavy_hitters";
-            return true;
-        }
-
-        if (string.Equals(tableName, "sys.planner_index_prefix_stats", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_planner_index_prefix_stats", StringComparison.OrdinalIgnoreCase))
-        {
-            normalized = "sys.planner_index_prefix_stats";
-            return true;
-        }
-
-        normalized = string.Empty;
-        return false;
-    }
+        DbInternalTableRegistry.IsHiddenFromSystemCatalog(tableName);
 
     private bool TryBuildSystemCatalogSource(SimpleTableRef tableRef, out (IOperator op, TableSchema schema) source)
     {
         source = default;
-        if (!TryNormalizeSystemCatalogTableName(tableRef.TableName, out string normalized))
+        if (!DbSystemCatalogRegistry.TryNormalize(tableRef.TableName, out string normalized))
             return false;
 
         ColumnDefinition[] columns;
@@ -21609,6 +21457,11 @@ public sealed partial class QueryPlanner
             case "sys.tables":
                 columns = SystemTablesColumns;
                 rows = BuildSystemTablesRows();
+                break;
+
+            case "sys.internal_tables":
+                columns = SystemInternalTablesColumns;
+                rows = BuildSystemInternalTablesRows();
                 break;
 
             case "sys.columns":
@@ -21795,6 +21648,44 @@ public sealed partial class QueryPlanner
         }
 
         _systemTablesRowsCache = rows;
+        return rows;
+    }
+
+    private List<DbValue[]> BuildSystemInternalTablesRows()
+    {
+        if (_systemInternalTablesRowsCache != null)
+            return _systemInternalTablesRowsCache;
+
+        var tableNames = _catalog.GetTableNames();
+        var rows = new List<DbValue[]>(tableNames.Count);
+        foreach (string tableName in tableNames.OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
+        {
+            if (!DbInternalTableRegistry.TryGet(tableName, out var descriptor))
+                continue;
+
+            TableSchema? schema = _catalog.GetTable(tableName);
+            if (schema is null)
+                continue;
+
+            string? pkName = schema.PrimaryKeyColumnIndex >= 0
+                ? schema.Columns[schema.PrimaryKeyColumnIndex].Name
+                : null;
+            string? logicalReplacement = DbInternalTableRegistry.ResolveLogicalReplacement(tableName);
+
+            rows.Add(
+            [
+                DbValue.FromText(tableName),
+                DbValue.FromInteger(schema.Columns.Count),
+                pkName is null ? DbValue.Null : DbValue.FromText(pkName),
+                DbValue.FromText(descriptor.Owner),
+                logicalReplacement is null ? DbValue.Null : DbValue.FromText(logicalReplacement),
+                DbValue.FromInteger(descriptor.HideFromClientMetadata ? 1 : 0),
+                DbValue.FromInteger(descriptor.HideFromSystemCatalog ? 1 : 0),
+                SchemaIdValue(schema.SchemaId),
+            ]);
+        }
+
+        _systemInternalTablesRowsCache = rows;
         return rows;
     }
 
@@ -22180,8 +22071,10 @@ public sealed partial class QueryPlanner
             return _systemTriggersRowsCache;
 
         var triggers = _catalog.GetTriggers();
-        var rows = new List<DbValue[]>(triggers.Count);
-        foreach (var trigger in triggers.OrderBy(t => t.TriggerName, StringComparer.OrdinalIgnoreCase))
+        var rows = new List<DbValue[]>((int)Math.Min(CountVisibleSystemTriggers(), int.MaxValue));
+        foreach (var trigger in triggers
+                     .Where(trigger => !IsHiddenInternalCatalogTable(trigger.TableName))
+                     .OrderBy(t => t.TriggerName, StringComparer.OrdinalIgnoreCase))
         {
             rows.Add(
             [
@@ -22208,7 +22101,7 @@ public sealed partial class QueryPlanner
                 !IsHiddenInternalCatalogTable(index.TableName))
             + (int)Math.Min(CountSystemForeignKeyConstraints(), int.MaxValue)
             + _catalog.GetViewNames().Count
-            + _catalog.GetTriggers().Count
+            + (int)Math.Min(CountVisibleSystemTriggers(), int.MaxValue)
             + GetExternalTableRegistrations().Count
             + (int)Math.Min(CountSystemDiagrams(), int.MaxValue);
 
@@ -22231,7 +22124,8 @@ public sealed partial class QueryPlanner
                      .OrderBy(i => i.TableName, StringComparer.OrdinalIgnoreCase)
                      .ThenBy(i => i.IndexName, StringComparer.OrdinalIgnoreCase))
         {
-            if (index.Kind is IndexKind.ForeignKeyInternal or IndexKind.ConstraintInternal)
+            if (index.Kind is IndexKind.ForeignKeyInternal or IndexKind.ConstraintInternal ||
+                IsHiddenInternalCatalogTable(index.TableName))
                 continue;
 
             rows.Add(
@@ -22272,7 +22166,9 @@ public sealed partial class QueryPlanner
             ]);
         }
 
-        foreach (var trigger in _catalog.GetTriggers().OrderBy(t => t.TriggerName, StringComparer.OrdinalIgnoreCase))
+        foreach (var trigger in _catalog.GetTriggers()
+                     .Where(trigger => !IsHiddenInternalCatalogTable(trigger.TableName))
+                     .OrderBy(t => t.TriggerName, StringComparer.OrdinalIgnoreCase))
         {
             rows.Add(
             [
@@ -22467,8 +22363,10 @@ public sealed partial class QueryPlanner
     private List<DbValue[]> BuildSystemTableStatsRows()
     {
         var tableStats = _catalog.GetTableStatistics();
-        var rows = new List<DbValue[]>(tableStats.Count);
-        foreach (var stats in tableStats.OrderBy(item => item.TableName, StringComparer.OrdinalIgnoreCase))
+        var rows = new List<DbValue[]>((int)Math.Min(CountVisibleTableStatistics(), int.MaxValue));
+        foreach (var stats in tableStats
+                     .Where(item => !IsHiddenInternalCatalogTable(item.TableName))
+                     .OrderBy(item => item.TableName, StringComparer.OrdinalIgnoreCase))
         {
             rows.Add(
             [
@@ -22485,8 +22383,9 @@ public sealed partial class QueryPlanner
     private List<DbValue[]> BuildSystemColumnStatsRows()
     {
         var columnStats = _catalog.GetColumnStatistics();
-        var rows = new List<DbValue[]>(columnStats.Count);
+        var rows = new List<DbValue[]>((int)Math.Min(CountVisibleColumnStatistics(), int.MaxValue));
         foreach (var stats in columnStats
+                     .Where(item => !IsHiddenInternalCatalogTable(item.TableName))
                      .OrderBy(item => item.TableName, StringComparer.OrdinalIgnoreCase)
                      .ThenBy(item => GetColumnOrdinal(item.TableName, item.ColumnName))
                      .ThenBy(item => item.ColumnName, StringComparer.OrdinalIgnoreCase))
@@ -22511,7 +22410,12 @@ public sealed partial class QueryPlanner
     {
         long count = 0;
         foreach (var distribution in _catalog.GetColumnDistributionStatistics())
+        {
+            if (IsHiddenInternalCatalogTable(distribution.TableName))
+                continue;
+
             count += distribution.HistogramBuckets.Count;
+        }
         return count;
     }
 
@@ -22523,6 +22427,7 @@ public sealed partial class QueryPlanner
         return normalized switch
         {
             "sys.tables" => CountVisibleUserTables(),
+            "sys.internal_tables" => CountInternalTables(),
             "sys.columns" => CountSystemColumns(),
             "sys.indexes" => CountSystemIndexes(),
             "sys.foreign_keys" => CountSystemForeignKeys(),
@@ -22530,15 +22435,15 @@ public sealed partial class QueryPlanner
             "sys.check_constraints" => CountSystemCheckConstraints(),
             "sys.functions" => CountSystemFunctions(),
             "sys.views" => _catalog.GetViewNames().Count,
-            "sys.triggers" => _catalog.GetTriggers().Count,
+            "sys.triggers" => CountVisibleSystemTriggers(),
             "sys.objects" => CountSystemObjects(),
             "sys.external_tables" => GetExternalTableRegistrations().Count,
             "sys.diagrams" => CountSystemDiagrams(),
             "sys.validation_rules" => CountSystemValidationRules(),
             "sys.temp_tables" => _temporaryTables?.GetTableNames().Count ?? 0,
             "sys.temp_columns" => CountSystemTempColumns(),
-            "sys.table_stats" => _catalog.GetTableStatistics().Count,
-            "sys.column_stats" => _catalog.GetColumnStatistics().Count,
+            "sys.table_stats" => CountVisibleTableStatistics(),
+            "sys.column_stats" => CountVisibleColumnStatistics(),
             "sys.planner_histograms" => CountPlannerHistogramRows(),
             "sys.planner_heavy_hitters" => CountPlannerHeavyHitterRows(),
             "sys.planner_index_prefix_stats" => CountPlannerIndexPrefixRows(),
@@ -22568,7 +22473,12 @@ public sealed partial class QueryPlanner
     {
         long count = 0;
         foreach (var distribution in _catalog.GetColumnDistributionStatistics())
+        {
+            if (IsHiddenInternalCatalogTable(distribution.TableName))
+                continue;
+
             count += distribution.FrequentValues.Count;
+        }
         return count;
     }
 
@@ -22576,7 +22486,12 @@ public sealed partial class QueryPlanner
     {
         long count = 0;
         foreach (var stats in _catalog.GetIndexPrefixStatistics())
+        {
+            if (IsHiddenInternalCatalogTable(stats.TableName))
+                continue;
+
             count += stats.PrefixDistinctCounts.Count;
+        }
         return count;
     }
 
@@ -22586,6 +22501,7 @@ public sealed partial class QueryPlanner
         var rows = new List<DbValue[]>((int)Math.Min(CountPlannerHistogramRows(), int.MaxValue));
 
         foreach (var distribution in distributions
+                     .Where(item => !IsHiddenInternalCatalogTable(item.TableName))
                      .OrderBy(item => item.TableName, StringComparer.OrdinalIgnoreCase)
                      .ThenBy(item => GetColumnOrdinal(item.TableName, item.ColumnName))
                      .ThenBy(item => item.ColumnName, StringComparer.OrdinalIgnoreCase))
@@ -22622,6 +22538,7 @@ public sealed partial class QueryPlanner
         var rows = new List<DbValue[]>((int)Math.Min(CountPlannerHeavyHitterRows(), int.MaxValue));
 
         foreach (var distribution in distributions
+                     .Where(item => !IsHiddenInternalCatalogTable(item.TableName))
                      .OrderBy(item => item.TableName, StringComparer.OrdinalIgnoreCase)
                      .ThenBy(item => GetColumnOrdinal(item.TableName, item.ColumnName))
                      .ThenBy(item => item.ColumnName, StringComparer.OrdinalIgnoreCase))
@@ -22661,6 +22578,7 @@ public sealed partial class QueryPlanner
         var rows = new List<DbValue[]>((int)Math.Min(CountPlannerIndexPrefixRows(), int.MaxValue));
 
         foreach (var stats in prefixStats
+                     .Where(item => !IsHiddenInternalCatalogTable(item.TableName))
                      .OrderBy(item => item.TableName, StringComparer.OrdinalIgnoreCase)
                      .ThenBy(item => item.IndexName, StringComparer.OrdinalIgnoreCase))
         {

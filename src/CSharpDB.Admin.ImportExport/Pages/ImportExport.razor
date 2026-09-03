@@ -281,7 +281,7 @@
         await RunAsync(async ct =>
         {
             _tables = (await ActiveClient.GetTableNamesAsync(ct))
-                .Where(static name => !name.StartsWith("_", StringComparison.Ordinal))
+                .Where(static name => !CSharpDB.Primitives.DbInternalTableRegistry.IsInternalTable(name))
                 .OrderBy(static name => name, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
             _externalTables = await ActiveImportExportService.GetExternalTablesAsync(ct);

@@ -987,6 +987,73 @@ public sealed class RetainedDatabaseSnapshotTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task OpenTableReader_RejectsEveryRegisteredInternalSourceName()
+    {
+        RetainedDatabaseSnapshotReceipt receipt =
+            await CaptureSimpleSnapshotAsync("registered-internal-reader-rejections");
+        await using RetainedDatabaseSnapshotSession session =
+            await RetainedDatabaseSnapshot.OpenAsync(
+                receipt.SnapshotPath,
+                receipt.Identity,
+                databaseOptions: null,
+                SnapshotOptions(CreateDirectory("registered-internal-reader-open-workspace")),
+                Cancellation);
+
+        foreach (DbInternalTableDescriptor descriptor in DbInternalTableRegistry.Descriptors)
+        {
+            string sourceName = descriptor.MatchKind == DbInternalTableMatchKind.Prefix
+                ? descriptor.Pattern + "retained_snapshot_probe"
+                : descriptor.Pattern;
+            Assert.True(DbInternalTableRegistry.IsInternalTable(sourceName));
+
+            InvalidOperationException error = Assert.Throws<InvalidOperationException>(
+                () => session.OpenTableReader(sourceName));
+            Assert.Contains("system or internal tables", error.Message, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task OpenTableReader_RetainsReservedNamespaceProtection_WithoutBlockingUserUnderscores()
+    {
+        RetainedDatabaseSnapshotReceipt receipt = await CaptureConfiguredSnapshotAsync(
+            "reserved-reader-rejections",
+            async database =>
+            {
+                await database.ExecuteAsync(
+                    "CREATE TABLE _application_items (id INTEGER PRIMARY KEY, value TEXT NOT NULL)",
+                    Cancellation);
+                await database.ExecuteAsync(
+                    "INSERT INTO _application_items VALUES (1, 'user-owned')",
+                    Cancellation);
+            });
+        await using RetainedDatabaseSnapshotSession session =
+            await RetainedDatabaseSnapshot.OpenAsync(
+                receipt.SnapshotPath,
+                receipt.Identity,
+                databaseOptions: null,
+                SnapshotOptions(CreateDirectory("reserved-reader-open-workspace")),
+                Cancellation);
+
+        string[] reservedSourceNames =
+        [
+            "sys.retained_snapshot_probe",
+            "SYS_RETAINED_SNAPSHOT_PROBE",
+            "__retained_snapshot_probe",
+        ];
+        foreach (string sourceName in reservedSourceNames)
+        {
+            Assert.False(DbInternalTableRegistry.IsInternalTable(sourceName));
+            Assert.Throws<InvalidOperationException>(
+                () => session.OpenTableReader(sourceName));
+        }
+
+        await using RetainedDatabaseSnapshotTableReader reader =
+            session.OpenTableReader("_application_items");
+        Assert.True(await reader.MoveNextAsync(Cancellation));
+        Assert.Equal("user-owned", reader.Current.Span[1].AsText);
+    }
+
+    [Fact]
     public async Task OpenTableReader_RejectsNonLocalPhysicalSources_BeforeExternalArchiveRead()
     {
         string sourcePath = PathInRoot("reader-rejections-source.db");

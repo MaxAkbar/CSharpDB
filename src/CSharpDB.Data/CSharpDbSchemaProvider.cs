@@ -716,7 +716,7 @@ internal static class CSharpDbSchemaProvider
     }
 
     private static bool IsUserVisibleTableName(string tableName)
-        => !tableName.StartsWith("_", StringComparison.Ordinal);
+        => !DbInternalTableRegistry.IsInternalTable(tableName);
 
     private static bool IsUserVisibleIndex(IndexSchema index)
         => IsUserVisibleTableName(index.TableName) &&

@@ -3,6 +3,7 @@ using CSharpDB.Admin.Reports.Contracts;
 using CSharpDB.Admin.Reports.Models;
 using CSharpDB.Client;
 using CSharpDB.Client.Models;
+using InternalTableRegistry = CSharpDB.Primitives.DbInternalTableRegistry;
 
 namespace CSharpDB.Admin.Reports.Services;
 
@@ -114,7 +115,7 @@ public sealed class DbReportSourceProvider(ICSharpDbClient dbClient) : IReportSo
     }
 
     private static bool IsUserTableName(string name)
-        => !name.StartsWith("_", StringComparison.Ordinal);
+        => !InternalTableRegistry.IsInternalTable(name);
 
     private static ReportFieldDefinition MapField(ColumnDefinition column)
         => new(

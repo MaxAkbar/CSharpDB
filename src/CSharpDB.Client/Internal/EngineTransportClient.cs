@@ -14,6 +14,7 @@ using CoreDbType = CSharpDB.Primitives.DbType;
 using CoreForeignKeyDefinition = CSharpDB.Primitives.ForeignKeyDefinition;
 using CoreForeignKeyOnDeleteAction = CSharpDB.Primitives.ForeignKeyOnDeleteAction;
 using CoreIndexSchema = CSharpDB.Primitives.IndexSchema;
+using CoreInternalTableRegistry = CSharpDB.Primitives.DbInternalTableRegistry;
 using CoreKeyConstraintDefinition = CSharpDB.Primitives.KeyConstraintDefinition;
 using CoreKeyConstraintKind = CSharpDB.Primitives.KeyConstraintKind;
 using CoreSqlIdentifierRules = CSharpDB.Primitives.SqlIdentifierRules;
@@ -37,11 +38,8 @@ internal sealed partial class EngineTransportClient :
     ICSharpDbTransactionalSnapshotReader,
     ICSharpDbTransactionalSchemaIdentityWriter
 {
-    private const string CollectionPrefix = "_col_";
     private const string ProcedureTableName = "__procedures";
     private const string SavedQueryTableName = "__saved_queries";
-    private const string ExternalTablesTableName = "__external_tables";
-    private const string DataModelDiagramsTableName = "__data_model_diagrams";
     private static readonly Regex s_identifierPattern = new("^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.Compiled);
     private static readonly AsyncLocal<DisposeFlushToken?> s_disposeFlushToken = new();
     internal static Func<Database, ValueTask>?
@@ -3330,12 +3328,8 @@ internal sealed partial class EngineTransportClient :
         CoreSqlIdentifierRules.Quote(
             RequireCatalogIdentifier(value, paramName));
 
-    private static bool IsInternalTable(string tableName)
-        => tableName.StartsWith(CollectionPrefix, StringComparison.Ordinal)
-           || string.Equals(tableName, ProcedureTableName, StringComparison.OrdinalIgnoreCase)
-           || string.Equals(tableName, SavedQueryTableName, StringComparison.OrdinalIgnoreCase)
-           || string.Equals(tableName, ExternalTablesTableName, StringComparison.OrdinalIgnoreCase)
-           || string.Equals(tableName, DataModelDiagramsTableName, StringComparison.OrdinalIgnoreCase);
+    private static bool IsInternalTable(string tableName) =>
+        CoreInternalTableRegistry.IsHiddenFromClientMetadata(tableName);
 
     private static int NormalizePage(int page) => page < 1 ? 1 : page;
 

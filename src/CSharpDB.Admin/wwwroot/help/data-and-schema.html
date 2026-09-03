@@ -41,6 +41,23 @@
                     <li>Use page size and pager controls for large tables.</li>
                 </ul>
 
+                <h2>System Catalog and Internal Storage</h2>
+                <p><strong>System Catalog</strong> contains the supported read-only <code>sys.*</code> views for tables, columns, relationships, constraints, functions, temporary objects, statistics, and feature metadata. Open an entry to inspect its current rows with the suggested query.</p>
+                <p><strong>Internal Storage</strong> shows the physical tables maintained by CSharpDB and Studio features. These backing tables are shown for troubleshooting and inventory only. Select one to open its filtered <code>sys.internal_tables</code> record; use the logical replacement shown beside it for normal work.</p>
+                <table>
+                    <thead><tr><th>Backing table</th><th>Use instead</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>__data_model_diagrams</code></td><td><code>sys.diagrams</code> and the Data Model workspace</td></tr>
+                        <tr><td><code>__external_tables</code></td><td><code>sys.external_tables</code> and External Tables</td></tr>
+                        <tr><td><code>__saved_queries</code></td><td><code>sys.saved_queries</code> and saved queries</td></tr>
+                        <tr><td><code>_col_*</code></td><td>The corresponding collection in Object Explorer</td></tr>
+                    </tbody>
+                </table>
+                <div class="callout warning">
+                    <strong>Do not treat backing tables as application tables.</strong>
+                    Their shape and lifecycle belong to the owning feature. Use the listed logical catalog or workspace so validation and metadata stay consistent.
+                </div>
+
                 <h2>Collections</h2>
                 <p>Collections contain JSON documents keyed by document id. Collection tabs show document keys, JSON kind, compact previews, and a formatted JSON detail panel.</p>
                 <ul>

@@ -21,6 +21,7 @@ using ClientTriggerTiming = CSharpDB.Client.Models.TriggerTiming;
 using PrimitiveDbValue = CSharpDB.Primitives.DbValue;
 using PrimitiveDbType = CSharpDB.Primitives.DbType;
 using PrimitiveForeignKeyOnDeleteAction = CSharpDB.Primitives.ForeignKeyOnDeleteAction;
+using PrimitiveInternalTableRegistry = CSharpDB.Primitives.DbInternalTableRegistry;
 
 namespace CSharpDB.DevOps;
 
@@ -47,9 +48,13 @@ public sealed class ClientSchemaCompareTarget : ISchemaCompareTarget
         if (directSnapshot is not null)
             return directSnapshot;
 
-        IReadOnlyList<string> tableNames = await _client.GetTableNamesAsync(ct);
-        var tables = new List<ClientTableSchema>(tableNames.Count);
-        foreach (string tableName in tableNames.OrderBy(name => name, StringComparer.OrdinalIgnoreCase))
+        string[] tableNames = (await _client.GetTableNamesAsync(ct))
+            .Where(name => !IsInternalTable(name))
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var visibleTableNames = tableNames.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var tables = new List<ClientTableSchema>(tableNames.Length);
+        foreach (string tableName in tableNames)
         {
             ClientTableSchema? schema = await _client.GetTableSchemaAsync(tableName, ct);
             if (schema is not null)
@@ -60,9 +65,13 @@ public sealed class ClientSchemaCompareTarget : ISchemaCompareTarget
         {
             Target = Descriptor,
             Tables = tables,
-            Indexes = await _client.GetIndexesAsync(ct),
+            Indexes = (await _client.GetIndexesAsync(ct))
+                .Where(index => visibleTableNames.Contains(index.TableName))
+                .ToArray(),
             Views = await _client.GetViewsAsync(ct),
-            Triggers = await _client.GetTriggersAsync(ct),
+            Triggers = (await _client.GetTriggersAsync(ct))
+                .Where(trigger => visibleTableNames.Contains(trigger.TableName))
+                .ToArray(),
             Procedures = await LoadProceduresWithoutInitializingCatalogAsync(ct),
         };
     }
@@ -80,6 +89,7 @@ public sealed class ClientSchemaCompareTarget : ISchemaCompareTarget
             .Where(name => !IsInternalTable(name))
             .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
             .ToArray();
+        var visibleTableNames = tableNames.ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         var tables = new List<ClientTableSchema>(tableNames.Length);
         foreach (string tableName in tableNames)
@@ -107,6 +117,7 @@ public sealed class ClientSchemaCompareTarget : ISchemaCompareTarget
                 .Select(name => new ViewDefinition { Name = name, Sql = db.GetViewSql(name) ?? string.Empty })
                 .ToArray(),
             Triggers = db.GetTriggers()
+                .Where(trigger => visibleTableNames.Contains(trigger.TableName))
                 .Select(MapTriggerSchema)
                 .OrderBy(trigger => trigger.TriggerName, StringComparer.OrdinalIgnoreCase)
                 .ToArray(),
@@ -355,8 +366,8 @@ public sealed class ClientSchemaCompareTarget : ISchemaCompareTarget
         };
 
     private static bool IsInternalTable(string name)
-        => name.StartsWith("__", StringComparison.Ordinal)
-           || name.StartsWith("_col_", StringComparison.Ordinal);
+        => PrimitiveInternalTableRegistry.IsInternalTable(name)
+           || PrimitiveInternalTableRegistry.IsReservedInternalTableName(name);
 
     private static string ReadText(PrimitiveDbValue value)
         => value.IsNull ? string.Empty : value.AsText;
