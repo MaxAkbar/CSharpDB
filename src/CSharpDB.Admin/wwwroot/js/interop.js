@@ -728,6 +728,548 @@ window.designerInterop = {
     }
 };
 
+// Data Model canvas — scoped pointer drag, pan, zoom, and viewport persistence.
+window.schemaCanvasInterop = {
+    _registrations: new Map(),
+
+    init: (canvasId, dotNetRef, viewportX, viewportY) => {
+        window.schemaCanvasInterop.dispose(canvasId);
+        const canvas = document.getElementById(canvasId);
+        if (!canvas) return;
+
+        const registration = {
+            canvas,
+            dotNetRef,
+            draggingNode: null,
+            panning: false,
+            pointerId: null,
+            tableName: '',
+            startX: 0,
+            startY: 0,
+            originalLeft: 0,
+            originalTop: 0,
+            originalScrollLeft: 0,
+            originalScrollTop: 0,
+            pointerMoved: false,
+            dragStarted: false,
+            suppressClick: false,
+            captureElement: null,
+            viewportTimer: 0,
+            frame: 0,
+            pendingEdgeTable: null
+        };
+
+        const nodeForTable = (tableName) => Array.from(canvas.querySelectorAll('.schema-node'))
+            .find(node => node.dataset.table === tableName);
+
+        const anchor = (tableName, columnName, towardRight, laneFraction) => {
+            const node = nodeForTable(tableName);
+            if (!node) return null;
+            const left = parseFloat(node.style.left) || 0;
+            const top = parseFloat(node.style.top) || 0;
+            const row = Array.from(node.querySelectorAll('[data-column]'))
+                .find(candidate => candidate.dataset.column === columnName);
+            const header = node.querySelector('.designer-table-node-header');
+            const y = top + (row
+                ? row.offsetTop + row.offsetHeight / 2
+                : (header?.offsetHeight || 36) * (parseFloat(laneFraction || '0.5') || 0.5));
+            return {
+                x: towardRight ? left + node.offsetWidth : left,
+                y,
+                left,
+                width: node.offsetWidth
+            };
+        };
+
+        const connectorRoute = (start, end, nodeObstacles) => {
+            const clearance = 18;
+            const endpointStub = 24;
+            const bendPenalty = 48;
+            const outerLaneGap = 24;
+            const epsilon = 0.001;
+            const horizontal = 1;
+            const vertical = 2;
+            const expanded = nodeObstacles.map(obstacle => ({
+                left: obstacle.left - clearance,
+                top: obstacle.top - clearance,
+                right: obstacle.right + clearance,
+                bottom: obstacle.bottom + clearance
+            }));
+            const departure = {
+                x: start.x + (start.side === 'right' ? endpointStub : -endpointStub),
+                y: start.y
+            };
+            const approach = {
+                x: end.x + (end.side === 'right' ? endpointStub : -endpointStub),
+                y: end.y
+            };
+            const insideAny = point => expanded.some(obstacle =>
+                point.x > obstacle.left + epsilon && point.x < obstacle.right - epsilon &&
+                point.y > obstacle.top + epsilon && point.y < obstacle.bottom - epsilon);
+            const segmentIsClear = (first, second) => {
+                if (Math.abs(first.y - second.y) < epsilon) {
+                    const left = Math.min(first.x, second.x);
+                    const right = Math.max(first.x, second.x);
+                    return expanded.every(obstacle =>
+                        first.y <= obstacle.top + epsilon || first.y >= obstacle.bottom - epsilon ||
+                        right <= obstacle.left + epsilon || left >= obstacle.right - epsilon);
+                }
+                if (Math.abs(first.x - second.x) < epsilon) {
+                    const top = Math.min(first.y, second.y);
+                    const bottom = Math.max(first.y, second.y);
+                    return expanded.every(obstacle =>
+                        first.x <= obstacle.left + epsilon || first.x >= obstacle.right - epsilon ||
+                        bottom <= obstacle.top + epsilon || top >= obstacle.bottom - epsilon);
+                }
+                return false;
+            };
+            const simplify = rawPoints => {
+                const result = [];
+                rawPoints.forEach(point => {
+                    const prior = result[result.length - 1];
+                    if (prior && Math.abs(prior.x - point.x) < epsilon && Math.abs(prior.y - point.y) < epsilon)
+                        return;
+                    while (result.length >= 2) {
+                        const first = result[result.length - 2];
+                        const second = result[result.length - 1];
+                        const collinear = Math.abs(first.x - second.x) < epsilon && Math.abs(second.x - point.x) < epsilon ||
+                            Math.abs(first.y - second.y) < epsilon && Math.abs(second.y - point.y) < epsilon;
+                        if (!collinear) break;
+                        result.pop();
+                    }
+                    result.push(point);
+                });
+                return result;
+            };
+            const fallback = () => {
+                const minTop = expanded.reduce((value, obstacle) => Math.min(value, obstacle.top), Math.min(departure.y, approach.y));
+                const maxBottom = expanded.reduce((value, obstacle) => Math.max(value, obstacle.bottom), Math.max(departure.y, approach.y));
+                const top = Math.max(4, minTop - outerLaneGap);
+                const bottom = maxBottom + outerLaneGap;
+                const routeY = Math.abs(departure.y - top) + Math.abs(approach.y - top) <=
+                    Math.abs(departure.y - bottom) + Math.abs(approach.y - bottom) ? top : bottom;
+                return [departure, { x: departure.x, y: routeY }, { x: approach.x, y: routeY }, approach];
+            };
+
+            let interior = null;
+            if (!insideAny(departure) && !insideAny(approach)) {
+                const xValues = [departure.x, approach.x, (departure.x + approach.x) / 2];
+                const yValues = [departure.y, approach.y, (departure.y + approach.y) / 2];
+                expanded.forEach(obstacle => {
+                    xValues.push(obstacle.left, obstacle.right);
+                    yValues.push(obstacle.top, obstacle.bottom);
+                });
+                const minX = Math.min(departure.x, approach.x, ...expanded.map(obstacle => obstacle.left));
+                const maxX = Math.max(departure.x, approach.x, ...expanded.map(obstacle => obstacle.right));
+                const minY = Math.min(departure.y, approach.y, ...expanded.map(obstacle => obstacle.top));
+                const maxY = Math.max(departure.y, approach.y, ...expanded.map(obstacle => obstacle.bottom));
+                xValues.push(Math.max(4, minX - outerLaneGap), maxX + outerLaneGap);
+                yValues.push(Math.max(4, minY - outerLaneGap), maxY + outerLaneGap);
+                const uniqueSorted = values => Array.from(new Set(values.map(value => Math.round(value * 1000) / 1000)))
+                    .sort((left, right) => left - right);
+                const xs = uniqueSorted(xValues);
+                const ys = uniqueSorted(yValues);
+                const points = [];
+                const pointIndex = new Map();
+                const pointKey = (x, y) => `${x}|${y}`;
+                ys.forEach(y => xs.forEach(x => {
+                    const point = { x, y };
+                    if (insideAny(point)) return;
+                    pointIndex.set(pointKey(x, y), points.length);
+                    points.push(point);
+                }));
+                const startIndex = pointIndex.get(pointKey(departure.x, departure.y));
+                const endIndex = pointIndex.get(pointKey(approach.x, approach.y));
+                if (startIndex !== undefined && endIndex !== undefined) {
+                    const adjacency = points.map(() => []);
+                    const connect = (indices, direction) => {
+                        indices.sort((left, right) => direction === horizontal
+                            ? points[left].x - points[right].x
+                            : points[left].y - points[right].y);
+                        for (let index = 1; index < indices.length; index++) {
+                            const prior = indices[index - 1];
+                            const current = indices[index];
+                            if (!segmentIsClear(points[prior], points[current])) continue;
+                            const length = Math.abs(points[current].x - points[prior].x) + Math.abs(points[current].y - points[prior].y);
+                            adjacency[prior].push({ target: current, direction, length });
+                            adjacency[current].push({ target: prior, direction, length });
+                        }
+                    };
+                    ys.forEach(y => connect(points.map((point, index) => point.y === y ? index : -1).filter(index => index >= 0), horizontal));
+                    xs.forEach(x => connect(points.map((point, index) => point.x === x ? index : -1).filter(index => index >= 0), vertical));
+
+                    const directionCount = 3;
+                    const distance = new Array(points.length * directionCount).fill(Number.POSITIVE_INFINITY);
+                    const previous = new Array(points.length * directionCount).fill(-1);
+                    const heap = [];
+                    let sequence = 0;
+                    const heapPush = item => {
+                        heap.push(item);
+                        let index = heap.length - 1;
+                        while (index > 0) {
+                            const parent = Math.floor((index - 1) / 2);
+                            const prior = heap[parent];
+                            if (prior.cost < item.cost || prior.cost === item.cost && prior.sequence <= item.sequence) break;
+                            heap[index] = prior;
+                            index = parent;
+                        }
+                        heap[index] = item;
+                    };
+                    const heapPop = () => {
+                        if (heap.length === 0) return null;
+                        const result = heap[0];
+                        const tail = heap.pop();
+                        if (heap.length > 0) {
+                            let index = 0;
+                            while (true) {
+                                let child = index * 2 + 1;
+                                if (child >= heap.length) break;
+                                if (child + 1 < heap.length) {
+                                    const left = heap[child];
+                                    const right = heap[child + 1];
+                                    if (right.cost < left.cost || right.cost === left.cost && right.sequence < left.sequence)
+                                        child++;
+                                }
+                                const candidate = heap[child];
+                                if (candidate.cost > tail.cost || candidate.cost === tail.cost && candidate.sequence >= tail.sequence) break;
+                                heap[index] = candidate;
+                                index = child;
+                            }
+                            heap[index] = tail;
+                        }
+                        return result;
+                    };
+                    const startState = startIndex * directionCount + horizontal;
+                    distance[startState] = 0;
+                    heapPush({ state: startState, cost: 0, sequence: sequence++ });
+                    while (heap.length > 0) {
+                        const item = heapPop();
+                        if (item.cost > distance[item.state] + epsilon) continue;
+                        const currentPoint = Math.floor(item.state / directionCount);
+                        const priorDirection = item.state % directionCount;
+                        adjacency[currentPoint]
+                            .sort((left, right) => left.direction - right.direction ||
+                                points[left.target].x - points[right.target].x || points[left.target].y - points[right.target].y)
+                            .forEach(edge => {
+                                const candidate = item.cost + edge.length + (priorDirection === edge.direction ? 0 : bendPenalty);
+                                const nextState = edge.target * directionCount + edge.direction;
+                                if (candidate >= distance[nextState] - epsilon) return;
+                                distance[nextState] = candidate;
+                                previous[nextState] = item.state;
+                                heapPush({ state: nextState, cost: candidate, sequence: sequence++ });
+                            });
+                    }
+                    const horizontalEnd = endIndex * directionCount + horizontal;
+                    const verticalEnd = endIndex * directionCount + vertical;
+                    let endState = distance[horizontalEnd] <= distance[verticalEnd] + bendPenalty ? horizontalEnd : verticalEnd;
+                    if (Number.isFinite(distance[endState])) {
+                        const reversed = [];
+                        for (let state = endState; state >= 0; state = previous[state]) {
+                            reversed.push(points[Math.floor(state / directionCount)]);
+                            if (state === startState) break;
+                        }
+                        interior = reversed.reverse();
+                    }
+                }
+            }
+
+            const points = simplify([{ x: start.x, y: start.y }, ...(interior || fallback()), { x: end.x, y: end.y }]);
+            let longest = -1;
+            let labelX = (start.x + end.x) / 2;
+            let labelY = (start.y + end.y) / 2;
+            for (let index = 1; index < points.length; index++) {
+                const length = Math.abs(points[index].x - points[index - 1].x) + Math.abs(points[index].y - points[index - 1].y);
+                if (length <= longest) continue;
+                longest = length;
+                labelX = (points[index].x + points[index - 1].x) / 2;
+                labelY = (points[index].y + points[index - 1].y) / 2;
+            }
+            return { points, labelX, labelY };
+        };
+
+        const updateEdges = (tableName = null) => {
+            registration.frame = 0;
+            registration.pendingEdgeTable = null;
+            const nodeObstacles = Array.from(canvas.querySelectorAll('.schema-node')).map(node => {
+                const left = parseFloat(node.style.left) || 0;
+                const top = parseFloat(node.style.top) || 0;
+                return { left, top, right: left + node.offsetWidth, bottom: top + node.offsetHeight };
+            });
+            const visibleEdges = canvas.querySelectorAll('path[data-model-edge="visible"]');
+            visibleEdges.forEach(edge => {
+                if (tableName && edge.dataset.parentTable !== tableName && edge.dataset.childTable !== tableName) return;
+                const parentNode = nodeForTable(edge.dataset.parentTable);
+                const childNode = nodeForTable(edge.dataset.childTable);
+                if (!parentNode || !childNode) return;
+                const parentLeft = parseFloat(parentNode.style.left) || 0;
+                const childLeft = parseFloat(childNode.style.left) || 0;
+                const leftToRight = parentLeft + parentNode.offsetWidth / 2 <= childLeft + childNode.offsetWidth / 2;
+                const parent = anchor(edge.dataset.parentTable, edge.dataset.parentColumn, leftToRight, edge.dataset.parentLane);
+                const child = anchor(edge.dataset.childTable, edge.dataset.childColumn, !leftToRight, edge.dataset.childLane);
+                if (!parent || !child) return;
+                const route = connectorRoute(
+                    { x: parent.x, y: parent.y, side: leftToRight ? 'right' : 'left' },
+                    { x: child.x, y: child.y, side: leftToRight ? 'left' : 'right' },
+                    nodeObstacles);
+                let path = `M ${route.points[0].x.toFixed(1)},${route.points[0].y.toFixed(1)}`;
+                for (let index = 1; index < route.points.length; index++) {
+                    const previous = route.points[index - 1];
+                    const current = route.points[index];
+                    path += Math.abs(previous.y - current.y) < 0.001
+                        ? ` H ${current.x.toFixed(1)}`
+                        : ` V ${current.y.toFixed(1)}`;
+                }
+                edge.setAttribute('d', path);
+                const hit = edge.parentElement?.querySelector('path[data-model-edge="hit"]');
+                if (hit) hit.setAttribute('d', path);
+                const labelBox = edge.parentElement?.querySelector('[data-model-label="box"]');
+                const labelText = edge.parentElement?.querySelector('[data-model-label="text"]');
+                if (labelBox) {
+                    labelBox.setAttribute('x', (route.labelX - 111).toFixed(1));
+                    labelBox.setAttribute('y', (route.labelY - 11).toFixed(1));
+                }
+                if (labelText) {
+                    labelText.setAttribute('x', (route.labelX - 109).toFixed(1));
+                    labelText.setAttribute('y', (route.labelY - 9).toFixed(1));
+                }
+            });
+        };
+
+        const scheduleEdgeUpdate = (tableName) => {
+            registration.pendingEdgeTable = tableName;
+            if (!registration.frame)
+                registration.frame = requestAnimationFrame(() => updateEdges(registration.pendingEdgeTable));
+        };
+
+        const notifyViewport = () => {
+            clearTimeout(registration.viewportTimer);
+            registration.viewportTimer = setTimeout(() => {
+                const scale = parseFloat(canvas.dataset.canvasScale || '1') || 1;
+                registration.dotNetRef?.invokeMethodAsync(
+                    'OnCanvasViewportChanged',
+                    canvas.scrollLeft,
+                    canvas.scrollTop,
+                    scale);
+            }, 250);
+        };
+
+        const setScale = (newScale, clientX, clientY) => {
+            const stage = canvas.querySelector('.schema-canvas-stage');
+            const viewport = canvas.querySelector('.schema-canvas-viewport');
+            if (!stage || !viewport) return;
+            const oldScale = parseFloat(canvas.dataset.canvasScale || '1') || 1;
+            const bounded = Math.max(0.5, Math.min(2, newScale));
+            const rect = canvas.getBoundingClientRect();
+            const localX = clientX == null ? canvas.clientWidth / 2 : clientX - rect.left;
+            const localY = clientY == null ? canvas.clientHeight / 2 : clientY - rect.top;
+            const worldX = (canvas.scrollLeft + localX) / oldScale;
+            const worldY = (canvas.scrollTop + localY) / oldScale;
+
+            canvas.dataset.canvasScale = bounded.toString();
+            stage.style.transform = `scale(${bounded})`;
+            viewport.style.width = `${stage.offsetWidth * bounded}px`;
+            viewport.style.height = `${stage.offsetHeight * bounded}px`;
+            canvas.scrollLeft = Math.max(0, worldX * bounded - localX);
+            canvas.scrollTop = Math.max(0, worldY * bounded - localY);
+            notifyViewport();
+        };
+
+        registration.onPointerDown = (event) => {
+            if (event.button !== 0) return;
+            if (!(event.target instanceof Element)) return;
+            const node = event.target.closest('.schema-node');
+            const interactive = event.target.closest('button, a, input, select, textarea, [contenteditable="true"]');
+            if (node && !interactive) {
+                registration.draggingNode = node;
+                registration.pointerId = event.pointerId;
+                registration.tableName = node.dataset.table || '';
+                registration.startX = event.clientX;
+                registration.startY = event.clientY;
+                registration.originalLeft = parseFloat(node.style.left) || 0;
+                registration.originalTop = parseFloat(node.style.top) || 0;
+                registration.pointerMoved = false;
+                registration.dragStarted = false;
+                registration.captureElement = null;
+                return;
+            }
+
+            if (event.target.closest('.schema-node') || event.target.closest('[data-model-edge]')) return;
+            event.preventDefault();
+            canvas.focus({ preventScroll: true });
+            registration.panning = true;
+            registration.pointerId = event.pointerId;
+            registration.startX = event.clientX;
+            registration.startY = event.clientY;
+            registration.pointerMoved = false;
+            registration.originalScrollLeft = canvas.scrollLeft;
+            registration.originalScrollTop = canvas.scrollTop;
+            registration.captureElement = canvas;
+            canvas.classList.add('is-panning');
+            canvas.setPointerCapture?.(event.pointerId);
+        };
+
+        registration.onPointerMove = (event) => {
+            if (registration.pointerId !== event.pointerId) return;
+            if (Math.abs(event.clientX - registration.startX) > 4 || Math.abs(event.clientY - registration.startY) > 4)
+                registration.pointerMoved = true;
+            if (registration.draggingNode) {
+                if (!registration.pointerMoved) return;
+                event.preventDefault();
+                if (!registration.dragStarted) {
+                    registration.dragStarted = true;
+                    registration.draggingNode.classList.add('is-dragging');
+                    registration.captureElement = registration.draggingNode;
+                    registration.draggingNode.setPointerCapture?.(event.pointerId);
+                }
+                const scale = parseFloat(canvas.dataset.canvasScale || '1') || 1;
+                registration.draggingNode.style.left = Math.max(0, registration.originalLeft + (event.clientX - registration.startX) / scale) + 'px';
+                registration.draggingNode.style.top = Math.max(0, registration.originalTop + (event.clientY - registration.startY) / scale) + 'px';
+                scheduleEdgeUpdate(registration.tableName);
+            } else if (registration.panning) {
+                canvas.scrollLeft = registration.originalScrollLeft - (event.clientX - registration.startX);
+                canvas.scrollTop = registration.originalScrollTop - (event.clientY - registration.startY);
+            }
+        };
+
+        registration.onPointerUp = (event) => {
+            if (registration.pointerId !== event.pointerId) return;
+            if (registration.draggingNode) {
+                const node = registration.draggingNode;
+                const name = registration.tableName;
+                const left = parseFloat(node.style.left) || 0;
+                const top = parseFloat(node.style.top) || 0;
+                registration.draggingNode = null;
+                node.classList.remove('is-dragging');
+                if (registration.dragStarted) {
+                    registration.suppressClick = true;
+                    setTimeout(() => { registration.suppressClick = false; }, 0);
+                    registration.dotNetRef?.invokeMethodAsync('OnTableMoved', name, left, top);
+                }
+            }
+            if (registration.panning) {
+                registration.panning = false;
+                canvas.classList.remove('is-panning');
+                if (!registration.pointerMoved)
+                    registration.dotNetRef?.invokeMethodAsync('OnCanvasSelectionCleared');
+                notifyViewport();
+            }
+            const captureElement = registration.captureElement;
+            registration.pointerId = null;
+            registration.captureElement = null;
+            registration.dragStarted = false;
+            try { captureElement?.releasePointerCapture?.(event.pointerId); } catch { }
+        };
+
+        registration.onClickCapture = (event) => {
+            if (!registration.suppressClick) return;
+            registration.suppressClick = false;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+        };
+
+        registration.onWheel = (event) => {
+            event.preventDefault();
+            const scale = parseFloat(canvas.dataset.canvasScale || '1') || 1;
+            setScale(scale + (event.deltaY < 0 ? 0.1 : -0.1), event.clientX, event.clientY);
+        };
+
+        registration.onScroll = () => notifyViewport();
+        registration.onKeyDown = (event) => {
+            if (event.key !== 'Escape') return;
+            event.preventDefault();
+            event.stopPropagation();
+            registration.dotNetRef?.invokeMethodAsync('OnCanvasSelectionCleared');
+            canvas.focus({ preventScroll: true });
+        };
+        registration.setScale = setScale;
+        registration.updateEdges = updateEdges;
+
+        canvas.addEventListener('pointerdown', registration.onPointerDown);
+        canvas.addEventListener('pointermove', registration.onPointerMove);
+        canvas.addEventListener('pointerup', registration.onPointerUp);
+        canvas.addEventListener('pointercancel', registration.onPointerUp);
+        canvas.addEventListener('click', registration.onClickCapture, true);
+        canvas.addEventListener('wheel', registration.onWheel, { passive: false });
+        canvas.addEventListener('scroll', registration.onScroll, { passive: true });
+        canvas.addEventListener('keydown', registration.onKeyDown);
+        window.schemaCanvasInterop._registrations.set(canvasId, registration);
+
+        requestAnimationFrame(() => {
+            canvas.scrollLeft = Math.max(0, viewportX || 0);
+            canvas.scrollTop = Math.max(0, viewportY || 0);
+            updateEdges();
+        });
+    },
+
+    fit: (canvasId) => {
+        const registration = window.schemaCanvasInterop._registrations.get(canvasId);
+        if (!registration) return;
+        const { canvas } = registration;
+        const stage = canvas.querySelector('.schema-canvas-stage');
+        const nodes = Array.from(canvas.querySelectorAll('.schema-node'));
+        if (!stage || nodes.length === 0) return;
+        const bounds = nodes.reduce((current, node) => {
+            const left = parseFloat(node.style.left) || 0;
+            const top = parseFloat(node.style.top) || 0;
+            return {
+                minX: Math.min(current.minX, left),
+                minY: Math.min(current.minY, top),
+                maxX: Math.max(current.maxX, left + node.offsetWidth),
+                maxY: Math.max(current.maxY, top + node.offsetHeight)
+            };
+        }, { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity });
+        const availableWidth = Math.max(1, canvas.clientWidth - 40);
+        const availableHeight = Math.max(1, canvas.clientHeight - 60);
+        const modelWidth = Math.max(1, bounds.maxX - bounds.minX);
+        const modelHeight = Math.max(1, bounds.maxY - bounds.minY);
+        const scale = Math.max(0.5, Math.min(2, Math.min(availableWidth / modelWidth, availableHeight / modelHeight)));
+        registration.setScale(scale, null, null);
+        const modelCenterX = (bounds.minX + bounds.maxX) / 2;
+        const modelCenterY = (bounds.minY + bounds.maxY) / 2;
+        canvas.scrollLeft = Math.max(0, modelCenterX * scale - canvas.clientWidth / 2);
+        canvas.scrollTop = Math.max(0, modelCenterY * scale - canvas.clientHeight / 2);
+        return registration.dotNetRef?.invokeMethodAsync(
+            'OnCanvasViewportChanged',
+            canvas.scrollLeft,
+            canvas.scrollTop,
+            scale);
+    },
+
+    sync: (canvasId, viewportX, viewportY, scale) => {
+        const registration = window.schemaCanvasInterop._registrations.get(canvasId);
+        if (!registration) return;
+        const { canvas } = registration;
+        const stage = canvas.querySelector('.schema-canvas-stage');
+        const viewport = canvas.querySelector('.schema-canvas-viewport');
+        if (!stage || !viewport) return;
+        const bounded = Math.max(0.5, Math.min(2, scale || 1));
+        canvas.dataset.canvasScale = bounded.toString();
+        stage.style.transform = `scale(${bounded})`;
+        viewport.style.width = `${stage.offsetWidth * bounded}px`;
+        viewport.style.height = `${stage.offsetHeight * bounded}px`;
+        canvas.scrollLeft = Math.max(0, viewportX || 0);
+        canvas.scrollTop = Math.max(0, viewportY || 0);
+        registration.updateEdges();
+    },
+
+    dispose: (canvasId) => {
+        const registration = window.schemaCanvasInterop._registrations.get(canvasId);
+        if (!registration) return;
+        const { canvas } = registration;
+        canvas.removeEventListener('pointerdown', registration.onPointerDown);
+        canvas.removeEventListener('pointermove', registration.onPointerMove);
+        canvas.removeEventListener('pointerup', registration.onPointerUp);
+        canvas.removeEventListener('pointercancel', registration.onPointerUp);
+        canvas.removeEventListener('click', registration.onClickCapture, true);
+        canvas.removeEventListener('wheel', registration.onWheel);
+        canvas.removeEventListener('scroll', registration.onScroll);
+        canvas.removeEventListener('keydown', registration.onKeyDown);
+        clearTimeout(registration.viewportTimer);
+        if (registration.frame) cancelAnimationFrame(registration.frame);
+        window.schemaCanvasInterop._registrations.delete(canvasId);
+    }
+};
+
 // Tablist key handling. Blazor receives the event and performs activation;
 // this listener suppresses browser scrolling/default button behavior only for
 // keys owned by the ARIA tab pattern. Tab and Shift+Tab remain untouched.

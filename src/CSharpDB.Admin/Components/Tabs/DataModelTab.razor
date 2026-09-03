@@ -18,35 +18,18 @@
             }
             <i class="bi bi-diagram-3"></i> Load All
         </button>
-        <div class="designer-dropdown-wrap">
-            <button class="toolbar-btn"
-                    @onclick="ToggleAddSourcePanel"
-                    disabled="@_loading"
-                    title="Add table or external table">
-                <i class="bi bi-plus-square"></i> Add Source <i class="bi bi-chevron-down" style="font-size:10px"></i>
-            </button>
-            @if (_showAddSource)
-            {
-                <div class="designer-dropdown-panel data-model-source-menu">
-                    @foreach (DataModelSourceOption option in AvailableSourceOptions)
-                    {
-                        var source = option;
-                        <button class="designer-dropdown-item" @onclick="() => AddSourceAsync(source.Name)">
-                            <i class="bi @(source.Kind == DataModelNodeKind.ExternalTable ? "bi-box-arrow-up-right" : "bi-table")"></i>
-                            <span>@source.Name</span>
-                            @if (source.Kind == DataModelNodeKind.ExternalTable && !string.IsNullOrWhiteSpace(source.SourceTableName))
-                            {
-                                <small>@source.SourceTableName</small>
-                            }
-                        </button>
-                    }
-                    @if (!AvailableSourceOptions.Any())
-                    {
-                        <div class="designer-dropdown-empty">No remaining sources</div>
-                    }
-                </div>
-            }
-        </div>
+        <button class="toolbar-btn @( _showSourcesPane ? "active" : "")"
+                @onclick="ToggleSourcesPane"
+                disabled="@_loading"
+                title="Show searchable model sources">
+            <i class="bi bi-layout-sidebar-inset"></i> Sources
+        </button>
+        <button class="toolbar-btn @(_showInspectorPane ? "active" : "")"
+                @onclick="ToggleInspectorPane"
+                disabled="@_loading"
+                title="Show model details, relationships, and pending changes">
+            <i class="bi bi-layout-sidebar-inset-reverse"></i> Details
+        </button>
         <button class="toolbar-btn"
                 @onclick="ToggleNewTablePanel"
                 disabled="@_loading"
@@ -56,8 +39,28 @@
         <button class="toolbar-btn" @onclick="RefreshAsync" disabled="@_loading" title="Reload metadata">
             <i class="bi bi-arrow-clockwise"></i> Refresh
         </button>
-        <button class="toolbar-btn" @onclick="ClearCanvas" disabled="@_loading || _state.Nodes.Count == 0" title="Clear canvas">
+        <button class="toolbar-btn" @onclick="ClearCanvas" disabled="@(_loading || _state.Nodes.Count == 0)" title="Clear canvas">
             <i class="bi bi-eraser"></i> Clear
+        </button>
+
+        <div class="toolbar-separator"></div>
+        <button class="toolbar-btn" @onclick="AutoArrangeAsync" disabled="@(_loading || _state.Nodes.Count == 0)" title="Arrange parents left of dependent tables">
+            <i class="bi bi-distribute-horizontal"></i> Auto Arrange
+        </button>
+        <button class="toolbar-btn" @onclick="TidyModelAsync" disabled="@(_loading || _state.Nodes.Count == 0)" title="Use Keys First, arrange relationships, and fit the complete model">
+            <i class="bi bi-stars"></i> Tidy Model
+        </button>
+        <button class="toolbar-btn" @onclick="FitModelAsync" disabled="@(_loading || _state.Nodes.Count == 0)" title="Fit the complete model in the canvas">
+            <i class="bi bi-arrows-fullscreen"></i> Fit Model
+        </button>
+        <button class="toolbar-btn" @onclick="() => SetAllDetailLevelsAsync(DataModelNodeDetailLevel.Keys)" disabled="@(_loading || _state.Nodes.Count == 0)" title="Show keys and relationship columns">
+            <i class="bi bi-key"></i> Keys First
+        </button>
+        <button class="toolbar-btn icon-only" @onclick="() => SetAllDetailLevelsAsync(DataModelNodeDetailLevel.All)" disabled="@(_loading || _state.Nodes.Count == 0)" title="Expand all tables" aria-label="Expand all tables">
+            <i class="bi bi-arrows-expand"></i>
+        </button>
+        <button class="toolbar-btn icon-only" @onclick="() => SetAllDetailLevelsAsync(DataModelNodeDetailLevel.Collapsed)" disabled="@(_loading || _state.Nodes.Count == 0)" title="Collapse all tables" aria-label="Collapse all tables">
+            <i class="bi bi-arrows-collapse"></i>
         </button>
 
         <div class="toolbar-separator"></div>
@@ -120,7 +123,7 @@
         </div>
         <button class="toolbar-btn danger"
                 @onclick="DeleteActiveDiagramAsync"
-                disabled="@(_loading || string.IsNullOrWhiteSpace(_state.DiagramName))"
+                disabled="@(_loading || !HasPersistedActiveDiagram)"
                 title="Delete the saved diagram record">
             <i class="bi bi-trash"></i> Delete
         </button>
@@ -193,17 +196,77 @@
         <div class="query-error"><i class="bi bi-exclamation-triangle"></i> @_error</div>
     }
 
-    <div class="data-model-workspace">
+    @if (LayoutOverlapCount > 0)
+    {
+        <div class="data-model-layout-notice">
+            <i class="bi bi-exclamation-triangle"></i>
+            <span>This saved layout has @LayoutOverlapCount overlapping table pair@(LayoutOverlapCount == 1 ? "" : "s").</span>
+            <button class="toolbar-btn" @onclick="TidyModelAsync"><i class="bi bi-stars"></i> Tidy Model</button>
+        </div>
+    }
+
+    <div class="data-model-workspace @(_showSourcesPane ? "with-sources" : null) @(_showInspectorPane ? "with-inspector" : null)">
+        @if (_showSourcesPane)
+        {
+            <aside class="data-model-sources">
+                <div class="data-model-sources-header">
+                    <div>
+                        <strong>Sources</strong>
+                        <small>@AvailableSourceOptions.Count() available</small>
+                    </div>
+                    <button class="designer-node-close" title="Close Sources" @onclick="ToggleSourcesPane">
+                        <i class="bi bi-x"></i>
+                    </button>
+                </div>
+                <label class="data-model-source-search">
+                    <i class="bi bi-search"></i>
+                    <input value="@_sourceSearch"
+                           @oninput="eventArgs => _sourceSearch = eventArgs.Value?.ToString() ?? string.Empty"
+                           placeholder="Search tables..."
+                           aria-label="Search model sources" />
+                </label>
+                <div class="data-model-source-list">
+                    @foreach (DataModelSourceOption option in FilteredSourceOptions)
+                    {
+                        var source = option;
+                        <div class="data-model-source-row">
+                            <i class="bi @(source.Kind == DataModelNodeKind.ExternalTable ? "bi-box-arrow-up-right" : "bi-table")"></i>
+                            <span title="@source.Name">@source.Name</span>
+                            <button class="toolbar-btn" @onclick="() => AddSourceAsync(source.Name, includeRelated: false)" title="Add only @source.Name">Add</button>
+                            <button class="toolbar-btn icon-only" @onclick="() => AddSourceAsync(source.Name, includeRelated: true)" title="Add @source.Name with directly related tables" aria-label="Add @source.Name with related tables">
+                                <i class="bi bi-diagram-2"></i>
+                            </button>
+                        </div>
+                    }
+                    @if (!FilteredSourceOptions.Any())
+                    {
+                        <div class="designer-dropdown-empty">No matching sources</div>
+                    }
+                </div>
+            </aside>
+        }
         <section class="data-model-canvas-panel">
-            <SchemaCanvas State="_state"
-                          SelectedNodeName="_selectedNodeName"
-                          SelectedRelationshipId="_selectedRelationshipId"
+            <SchemaCanvas @ref="_schemaCanvas"
+                          State="_state"
+                          SelectedNodeName="@_selectedNodeName"
+                          SelectedRelationshipId="@_selectedRelationshipId"
                           OnNodeSelected="SelectNode"
                           OnNodeRemoved="RemoveNode"
                           OnRelationshipSelected="SelectRelationship"
-                          OnNodeMoved="OnNodeMoved" />
+                          OnSelectionCleared="ClearSelection"
+                          OnNodeMoved="OnNodeMoved"
+                          OnNodeDetailChanged="OnNodeDetailChangedAsync"
+                          OnViewportChanged="OnViewportChangedAsync" />
         </section>
+        @if (_showInspectorPane)
+        {
         <aside class="data-model-inspector">
+            <div class="data-model-inspector-header">
+                <strong>Model details</strong>
+                <button class="designer-node-close" title="Close model details" aria-label="Close model details" @onclick="ToggleInspectorPane">
+                    <i class="bi bi-x"></i>
+                </button>
+            </div>
             <div class="data-model-inspector-section">
                 <h3>Selection</h3>
                 @if (SelectedNode is not null)
@@ -460,6 +523,7 @@
                 <pre>@PendingPreviewSql</pre>
             </div>
         </aside>
+        }
     </div>
     }
 </div>
@@ -492,16 +556,27 @@
     private string _relationshipRightColumn = "";
     private string _relationshipOnDelete = "RESTRICT";
     private string _relationshipOnUpdate = "RESTRICT";
-    private bool _showAddSource;
+    private SchemaCanvas? _schemaCanvas;
+    private bool _showSourcesPane;
+    private bool _showInspectorPane;
     private bool _showLoadPanel;
     private bool _showNewTablePanel;
+    private bool _hasDiagramMutation;
     private bool _loading;
+    private bool _fitAfterRender;
+    private string _sourceSearch = "";
     private string? _error;
+    private CancellationTokenSource? _viewportPersistCts;
     private AdminRouteClientLease? _routeLease;
     private DataModelService? _routeDataModelService;
 
     private IEnumerable<DataModelSourceOption> AvailableSourceOptions =>
         _sourceOptions.Where(option => !_state.Nodes.Any(node => string.Equals(node.Name, option.Name, StringComparison.OrdinalIgnoreCase)));
+
+    private IEnumerable<DataModelSourceOption> FilteredSourceOptions =>
+        AvailableSourceOptions.Where(option =>
+            string.IsNullOrWhiteSpace(_sourceSearch) ||
+            option.Name.Contains(_sourceSearch.Trim(), StringComparison.OrdinalIgnoreCase));
 
     private DataModelNode? SelectedNode =>
         string.IsNullOrWhiteSpace(_selectedNodeName)
@@ -623,6 +698,12 @@
     private bool UsesDefaultDiagram =>
         string.IsNullOrWhiteSpace(Tab?.InitialDataModelSourceName);
 
+    private bool HasPersistedActiveDiagram =>
+        !string.IsNullOrWhiteSpace(_state.DiagramName) &&
+        _savedDiagrams.Any(diagram => string.Equals(diagram.Name, _state.DiagramName, StringComparison.OrdinalIgnoreCase));
+
+    private int LayoutOverlapCount => DataModelLayoutEngine.CountOverlaps(_state);
+
     protected override async Task OnInitializedAsync()
     {
         await RouteLease.UpdateAsync(Tab);
@@ -645,12 +726,22 @@
                     NormalizeZoom();
                     EnsureDefaultDiagramName();
                     _diagramName = _state.DiagramName ?? _state.SavedLayoutName ?? "";
+                    _hasDiagramMutation = _state.Nodes.Count > 0 || _state.PendingOperations.Count > 0;
                 }
             }
             catch
             {
             }
         }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_fitAfterRender || _schemaCanvas is null)
+            return;
+
+        _fitAfterRender = false;
+        await _schemaCanvas.FitModelAsync();
     }
 
     private async Task OnRouteChangedAsync(CSharpDbRouteContext? routeContext)
@@ -678,9 +769,12 @@
         _selectedNodeName = null;
         _selectedRelationshipId = null;
         _diagramName = "";
-        _showAddSource = false;
+        _showSourcesPane = false;
+        _showInspectorPane = false;
         _showLoadPanel = false;
         _showNewTablePanel = false;
+        _hasDiagramMutation = false;
+        _sourceSearch = "";
         _error = null;
     }
 
@@ -701,8 +795,8 @@
                     NormalizeZoom();
                     EnsureDefaultDiagramName();
                     _diagramName = _state.DiagramName ?? _state.SavedLayoutName ?? "";
+                    _hasDiagramMutation = _state.Nodes.Count > 0 || _state.PendingOperations.Count > 0;
                     SaveState();
-                    await PersistActiveDiagramAsync();
                 }
             }
             else
@@ -710,12 +804,34 @@
                 DataModelState? defaultDiagram = UsesDefaultDiagram
                     ? await ActiveDiagrams.LoadDiagramAsync(DefaultDiagramName)
                     : null;
-                _state = defaultDiagram ?? await ActiveDataModels.BuildModelAsync(Tab?.InitialDataModelSourceName);
+                if (defaultDiagram is not null)
+                {
+                    _state = defaultDiagram;
+                    _hasDiagramMutation = true;
+                }
+                else if (!string.IsNullOrWhiteSpace(Tab?.InitialDataModelSourceName))
+                {
+                    _state = await ActiveDataModels.BuildSelectionAsync(
+                        [Tab.InitialDataModelSourceName],
+                        DataModelSelectionMode.IncludeDirectlyRelated);
+                    DataModelLayoutEngine.ArrangeAll(_state);
+                    _hasDiagramMutation = _state.Nodes.Count > 0;
+                }
+                else
+                {
+                    _state = new DataModelState
+                    {
+                        DiagramName = DefaultDiagramName,
+                        SavedLayoutName = DefaultDiagramName,
+                    };
+                    _showSourcesPane = true;
+                    _hasDiagramMutation = false;
+                }
+
                 NormalizeZoom();
                 EnsureDefaultDiagramName();
                 _diagramName = _state.DiagramName ?? "";
                 SaveState();
-                await PersistActiveDiagramAsync();
             }
         }
         catch (Exception ex)
@@ -741,19 +857,33 @@
                 if (saved is not null)
                 {
                     _state = saved;
+                    NormalizeZoom();
                     _diagramName = saved.DiagramName ?? _diagramName;
                     _selectedNodeName = null;
                     _selectedRelationshipId = null;
+                    _showInspectorPane = false;
+                    _hasDiagramMutation = true;
                     SaveState();
                     return;
                 }
             }
 
-            DataModelState refreshed = await ActiveDataModels.BuildModelAsync(Tab?.InitialDataModelSourceName);
+            DataModelState previous = _state;
+            string[] sourceNames = previous.Nodes
+                .Where(static node => !node.IsDraft)
+                .Select(static node => node.Name)
+                .ToArray();
+            DataModelState refreshed = sourceNames.Length == 0
+                ? new DataModelState()
+                : await ActiveDataModels.BuildSelectionAsync(sourceNames, DataModelSelectionMode.Exact);
             PreservePositions(refreshed);
-            refreshed.DiagramName = _state.DiagramName;
-            refreshed.SavedLayoutName = _state.SavedLayoutName;
-            refreshed.PendingOperations = _state.PendingOperations;
+            foreach (DataModelNode draftNode in previous.Nodes.Where(static node => node.IsDraft))
+                refreshed.Nodes.Add(draftNode);
+            foreach (DataModelRelationship draftRelationship in previous.Relationships.Where(static relationship => relationship.Kind == DataModelRelationshipKind.Draft))
+                refreshed.Relationships.Add(draftRelationship);
+            refreshed.DiagramName = previous.DiagramName;
+            refreshed.SavedLayoutName = previous.SavedLayoutName;
+            refreshed.PendingOperations = previous.PendingOperations;
             _state = refreshed;
             EnsureDefaultDiagramName();
             SaveState();
@@ -775,15 +905,12 @@
         _error = null;
         try
         {
-            double currentScale = CurrentScale;
-            _state = await ActiveDataModels.BuildModelAsync(autoLayoutLimit: int.MaxValue);
-            _state.Scale = currentScale;
-            _state.DiagramName = UsesDefaultDiagram && string.IsNullOrWhiteSpace(_diagramName)
-                ? DefaultDiagramName
-                : string.IsNullOrWhiteSpace(_diagramName) ? null : _diagramName.Trim();
-            _state.SavedLayoutName = _state.DiagramName;
-            _selectedNodeName = null;
-            _selectedRelationshipId = null;
+            var existingNames = _state.Nodes
+                .Select(static node => node.Name)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            DataModelState addition = await ActiveDataModels.BuildModelAsync(autoLayoutLimit: int.MaxValue);
+            Merge(addition);
+            DataModelLayoutEngine.PlaceNewNodes(_state, existingNames);
             SaveState();
             await PersistActiveDiagramAsync();
         }
@@ -797,15 +924,20 @@
         }
     }
 
-    private async Task AddSourceAsync(string sourceName)
+    private async Task AddSourceAsync(string sourceName, bool includeRelated)
     {
-        _showAddSource = false;
         _loading = true;
         _error = null;
         try
         {
-            DataModelState addition = await ActiveDataModels.BuildModelAsync(sourceName);
+            var existingNames = _state.Nodes
+                .Select(static node => node.Name)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            DataModelState addition = await ActiveDataModels.BuildSelectionAsync(
+                [sourceName],
+                includeRelated ? DataModelSelectionMode.IncludeDirectlyRelated : DataModelSelectionMode.Exact);
             Merge(addition);
+            DataModelLayoutEngine.PlaceNewNodes(_state, existingNames);
             _selectedNodeName = sourceName;
             _selectedRelationshipId = null;
             SaveState();
@@ -823,21 +955,29 @@
 
     private void Merge(DataModelState addition)
     {
-        double offsetX = _state.Nodes.Count == 0 ? 0 : _state.Nodes.Max(static node => node.X) + 250;
         foreach (DataModelNode node in addition.Nodes)
         {
             if (_state.Nodes.Any(existing => string.Equals(existing.Name, node.Name, StringComparison.OrdinalIgnoreCase)))
                 continue;
 
-            if (offsetX > 0)
-                node.X += offsetX;
             _state.Nodes.Add(node);
         }
 
         foreach (DataModelRelationship relationship in addition.Relationships)
         {
-            if (!_state.Relationships.Any(existing => string.Equals(existing.Id, relationship.Id, StringComparison.Ordinal)))
+            int existingIndex = _state.Relationships.FindIndex(existing => string.Equals(existing.Id, relationship.Id, StringComparison.Ordinal));
+            if (existingIndex < 0)
                 _state.Relationships.Add(relationship);
+            else if (relationship.IsResolved || !_state.Relationships[existingIndex].IsResolved)
+            {
+                DataModelRelationship existing = _state.Relationships[existingIndex];
+                if (relationship.IsResolved && !existing.IsResolved && !string.IsNullOrWhiteSpace(existing.Warning))
+                {
+                    string obsoleteWarning = $"{existing.LeftTable}.{existing.LeftColumn}: {existing.Warning}";
+                    _state.Warnings.RemoveAll(warning => string.Equals(warning, obsoleteWarning, StringComparison.OrdinalIgnoreCase));
+                }
+                _state.Relationships[existingIndex] = relationship;
+            }
         }
 
         foreach (string warning in addition.Warnings)
@@ -861,7 +1001,8 @@
 
             node.X = existing.X;
             node.Y = existing.Y;
-            node.IsCollapsed = existing.IsCollapsed;
+            node.DetailLevel = existing.DetailLevel;
+            node.IsCollapsed = existing.DetailLevel == DataModelNodeDetailLevel.Collapsed;
         }
     }
 
@@ -875,6 +1016,8 @@
         };
         _selectedNodeName = null;
         _selectedRelationshipId = null;
+        _showInspectorPane = false;
+        _hasDiagramMutation = true;
         SaveState();
         await PersistActiveDiagramAsync();
     }
@@ -883,6 +1026,7 @@
     {
         _selectedNodeName = name;
         _selectedRelationshipId = null;
+        _showInspectorPane = true;
         _renameTableName = "";
         _newColumnName = "";
     }
@@ -891,6 +1035,16 @@
     {
         _selectedRelationshipId = id;
         _selectedNodeName = null;
+        _showInspectorPane = true;
+    }
+
+    private void ClearSelection()
+    {
+        _selectedNodeName = null;
+        _selectedRelationshipId = null;
+        _showInspectorPane = false;
+        _renameTableName = "";
+        _newColumnName = "";
     }
 
     private DataModelNode? FindNode(string? name) =>
@@ -966,10 +1120,94 @@
         await PersistActiveDiagramAsync();
     }
 
+    private async Task AutoArrangeAsync()
+    {
+        DataModelLayoutEngine.ArrangeAll(_state);
+        _fitAfterRender = true;
+        SaveState();
+        await PersistActiveDiagramAsync();
+    }
+
+    private async Task TidyModelAsync()
+    {
+        foreach (DataModelNode node in _state.Nodes)
+        {
+            node.DetailLevel = DataModelNodeDetailLevel.Keys;
+            node.IsCollapsed = false;
+        }
+
+        DataModelLayoutEngine.ArrangeAll(_state);
+        _fitAfterRender = true;
+        SaveState();
+        await PersistActiveDiagramAsync();
+    }
+
+    private async Task FitModelAsync()
+    {
+        if (_schemaCanvas is not null)
+            await _schemaCanvas.FitModelAsync();
+    }
+
+    private async Task SetAllDetailLevelsAsync(DataModelNodeDetailLevel detailLevel)
+    {
+        foreach (DataModelNode node in _state.Nodes)
+        {
+            node.DetailLevel = detailLevel;
+            node.IsCollapsed = detailLevel == DataModelNodeDetailLevel.Collapsed;
+        }
+
+        SaveState();
+        await PersistActiveDiagramAsync();
+    }
+
+    private async Task OnNodeDetailChangedAsync(DataModelNodeDetailChange change)
+    {
+        DataModelNode? node = FindNode(change.NodeName);
+        if (node is null)
+            return;
+
+        node.DetailLevel = change.DetailLevel;
+        node.IsCollapsed = change.DetailLevel == DataModelNodeDetailLevel.Collapsed;
+        SaveState();
+        await PersistActiveDiagramAsync();
+    }
+
+    private Task OnViewportChangedAsync(DataModelViewportChange change)
+    {
+        _state.ViewportX = Math.Max(0, change.X);
+        _state.ViewportY = Math.Max(0, change.Y);
+        _state.Scale = Math.Round(NormalizeScale(change.Scale), 2);
+        _hasDiagramMutation = true;
+        SaveState();
+
+        _viewportPersistCts?.Cancel();
+        _viewportPersistCts?.Dispose();
+        _viewportPersistCts = new CancellationTokenSource();
+        _ = PersistViewportAfterDelayAsync(_viewportPersistCts);
+        return Task.CompletedTask;
+    }
+
+    private async Task PersistViewportAfterDelayAsync(CancellationTokenSource source)
+    {
+        try
+        {
+            await Task.Delay(350, source.Token);
+            await InvokeAsync(async () =>
+            {
+                if (ReferenceEquals(_viewportPersistCts, source))
+                    await PersistActiveDiagramAsync();
+            });
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
     private async Task SaveDiagramAsync()
     {
         try
         {
+            _hasDiagramMutation = true;
             await ActiveDiagrams.SaveDiagramAsync(_diagramName, _state);
             _diagramName = _state.DiagramName ?? _diagramName.Trim();
             await RefreshSavedDiagramsAsync();
@@ -997,8 +1235,10 @@
             _state = loaded;
             NormalizeZoom();
             _diagramName = loaded.DiagramName ?? name;
+            _hasDiagramMutation = true;
             _selectedNodeName = null;
             _selectedRelationshipId = null;
+            _showInspectorPane = false;
             SaveState();
             Toast.Info($"Data model diagram '{_diagramName}' loaded.");
         }
@@ -1056,9 +1296,16 @@
             ParentColumnName: SelectedRelationship.RightColumn));
     }
 
-    private void ToggleAddSourcePanel()
+    private void ToggleSourcesPane()
     {
-        _showAddSource = !_showAddSource;
+        _showSourcesPane = !_showSourcesPane;
+        _showLoadPanel = false;
+        _showNewTablePanel = false;
+    }
+
+    private void ToggleInspectorPane()
+    {
+        _showInspectorPane = !_showInspectorPane;
         _showLoadPanel = false;
         _showNewTablePanel = false;
     }
@@ -1066,14 +1313,12 @@
     private void ToggleLoadPanel()
     {
         _showLoadPanel = !_showLoadPanel;
-        _showAddSource = false;
         _showNewTablePanel = false;
     }
 
     private void ToggleNewTablePanel()
     {
         _showNewTablePanel = !_showNewTablePanel;
-        _showAddSource = false;
         _showLoadPanel = false;
     }
 
@@ -1117,6 +1362,7 @@
 
         _selectedNodeName = tableName;
         _selectedRelationshipId = null;
+        _showInspectorPane = true;
         _newTableName = "";
         _newTablePrimaryKeyName = "Id";
         _newTablePrimaryKeyType = "INTEGER";
@@ -1226,6 +1472,9 @@
             return;
 
         string relationshipId = Guid.NewGuid().ToString("N");
+        DataModelColumn? childColumn = FindNode(_relationshipLeftTable)?.Columns.FirstOrDefault(column =>
+            string.Equals(column.Name, _relationshipLeftColumn, StringComparison.OrdinalIgnoreCase));
+        bool childColumnIsUnique = childColumn?.IsPrimaryKey == true || childColumn?.IsUnique == true;
         var relationship = new DataModelRelationship
         {
             Id = relationshipId,
@@ -1236,6 +1485,13 @@
             Kind = DataModelRelationshipKind.Draft,
             OnDelete = _relationshipOnDelete,
             OnUpdate = _relationshipOnUpdate,
+            ReferencedEndCardinality = childColumn?.Nullable == true
+                ? DataModelCardinality.ZeroOrOne
+                : DataModelCardinality.One,
+            ReferencingEndCardinality = childColumnIsUnique
+                ? DataModelCardinality.ZeroOrOne
+                : DataModelCardinality.ZeroOrMany,
+            ChildColumnIsUnique = childColumnIsUnique,
         };
 
         _state.Relationships.Add(relationship);
@@ -1254,6 +1510,7 @@
 
         _selectedRelationshipId = relationshipId;
         _selectedNodeName = null;
+        _showInspectorPane = true;
         _relationshipLeftTable = "";
         _relationshipLeftColumn = "";
         _relationshipRightTable = "";
@@ -1365,10 +1622,14 @@
             Tab.DataModelStateJson = DataModelGraphBuilder.SerializeState(_state);
     }
 
-    private async Task PersistActiveDiagramAsync()
+    private async Task PersistActiveDiagramAsync(bool markMutation = true)
     {
+        if (markMutation)
+            _hasDiagramMutation = true;
+
         EnsureDefaultDiagramName();
-        if (string.IsNullOrWhiteSpace(_state.DiagramName))
+        if (string.IsNullOrWhiteSpace(_state.DiagramName) ||
+            (!_hasDiagramMutation && _state.Nodes.Count == 0 && _state.PendingOperations.Count == 0))
             return;
 
         try
@@ -1409,6 +1670,9 @@
 
     public async ValueTask DisposeAsync()
     {
+        _viewportPersistCts?.Cancel();
+        _viewportPersistCts?.Dispose();
+        _viewportPersistCts = null;
         if (_routeLease is not null)
             await _routeLease.DisposeAsync();
     }

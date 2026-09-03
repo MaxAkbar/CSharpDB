@@ -2,7 +2,7 @@ namespace CSharpDB.Admin.Models;
 
 public sealed class DataModelState
 {
-    public int Version { get; set; } = 1;
+    public int Version { get; set; } = 2;
     public string? DiagramName { get; set; }
     public List<DataModelNode> Nodes { get; set; } = [];
     public List<DataModelRelationship> Relationships { get; set; } = [];
@@ -22,6 +22,7 @@ public sealed class DataModelNode
     public double X { get; set; } = 20;
     public double Y { get; set; } = 20;
     public bool IsCollapsed { get; set; }
+    public DataModelNodeDetailLevel DetailLevel { get; set; } = DataModelNodeDetailLevel.Keys;
     public bool IsDraft { get; set; }
     public List<DataModelColumn> Columns { get; set; } = [];
     public string? SourceTableName { get; set; }
@@ -39,6 +40,13 @@ public enum DataModelNodeKind
     ExternalTable,
 }
 
+public enum DataModelNodeDetailLevel
+{
+    Keys,
+    All,
+    Collapsed,
+}
+
 public sealed class DataModelColumn
 {
     public string Name { get; set; } = "";
@@ -51,6 +59,7 @@ public sealed class DataModelColumn
     public string? DefaultSql { get; set; }
     public bool IsForeignKey { get; set; }
     public bool IsIndexed { get; set; }
+    public bool IsUnique { get; set; }
 }
 
 public sealed class DataModelRelationship
@@ -66,6 +75,9 @@ public sealed class DataModelRelationship
     public string? OnDelete { get; set; }
     public string? OnUpdate { get; set; }
     public string? Warning { get; set; }
+    public DataModelCardinality ReferencedEndCardinality { get; set; } = DataModelCardinality.One;
+    public DataModelCardinality ReferencingEndCardinality { get; set; } = DataModelCardinality.ZeroOrMany;
+    public bool ChildColumnIsUnique { get; set; }
 }
 
 public enum DataModelRelationshipKind
@@ -73,6 +85,19 @@ public enum DataModelRelationshipKind
     PhysicalForeignKey,
     ExternalArchiveForeignKey,
     Draft,
+}
+
+public enum DataModelCardinality
+{
+    One,
+    ZeroOrOne,
+    ZeroOrMany,
+}
+
+public enum DataModelSelectionMode
+{
+    Exact,
+    IncludeDirectlyRelated,
 }
 
 public sealed class DataModelPendingOperation
@@ -174,6 +199,10 @@ public sealed class DataModelSourceOption
 }
 
 public sealed record DataModelNodeMove(string NodeName, double X, double Y);
+
+public sealed record DataModelNodeDetailChange(string NodeName, DataModelNodeDetailLevel DetailLevel);
+
+public sealed record DataModelViewportChange(double X, double Y, double Scale);
 
 public sealed class DataModelSourceMetadata
 {

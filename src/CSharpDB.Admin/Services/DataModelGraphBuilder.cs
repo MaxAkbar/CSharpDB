@@ -17,13 +17,54 @@ public static class DataModelGraphBuilder
             .ThenBy(static source => source.TableName, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
+        var warnings = new List<string>();
+        IReadOnlySet<string> selectedNames = SelectSourceNames(orderedSources, seedSourceName, autoLayoutLimit, warnings);
+        DataModelState state = BuildSelection(orderedSources, selectedNames, DataModelSelectionMode.Exact);
+        state.Warnings.AddRange(warnings);
+        return state;
+    }
+
+    public static DataModelState BuildSelection(
+        IReadOnlyList<DataModelSourceMetadata> sources,
+        IReadOnlyCollection<string> sourceNames,
+        DataModelSelectionMode selectionMode = DataModelSelectionMode.Exact)
+    {
+        var orderedSources = sources
+            .OrderBy(static source => source.Kind)
+            .ThenBy(static source => source.TableName, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var selectedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (string requestedName in sourceNames.Where(static name => !string.IsNullOrWhiteSpace(name)))
+        {
+            DataModelSourceMetadata? source = FindSource(orderedSources, requestedName);
+            if (source is not null)
+                selectedNames.Add(source.TableName);
+        }
+
+        if (selectionMode == DataModelSelectionMode.IncludeDirectlyRelated)
+        {
+            foreach (DataModelSourceMetadata selected in orderedSources.Where(source => selectedNames.Contains(source.TableName)).ToArray())
+            {
+                foreach (DataModelForeignKeyMetadata foreignKey in selected.ForeignKeys)
+                {
+                    DataModelSourceMetadata? parent = FindSource(orderedSources, foreignKey.ReferencedTableName);
+                    if (parent is not null)
+                        selectedNames.Add(parent.TableName);
+                }
+
+                foreach (DataModelSourceMetadata candidate in orderedSources)
+                {
+                    if (candidate.ForeignKeys.Any(foreignKey => SourceMatches(selected, foreignKey.ReferencedTableName)))
+                        selectedNames.Add(candidate.TableName);
+                }
+            }
+        }
+
         var state = new DataModelState();
-        IReadOnlySet<string> selectedNames = SelectSourceNames(orderedSources, seedSourceName, autoLayoutLimit, state.Warnings);
         int index = 0;
         foreach (DataModelSourceMetadata source in orderedSources.Where(source => selectedNames.Contains(source.TableName)))
-        {
             state.Nodes.Add(CreateNode(source, index++));
-        }
 
         AddRelationships(orderedSources, state, selectedNames);
         return state;
@@ -40,7 +81,7 @@ public static class DataModelGraphBuilder
 
         var state = new DataModelState
         {
-            Version = savedState.Version <= 0 ? 1 : savedState.Version,
+            Version = 2,
             DiagramName = savedState.DiagramName ?? savedState.SavedLayoutName,
             SavedLayoutName = savedState.SavedLayoutName,
             SchemaSnapshotUtc = savedState.SchemaSnapshotUtc,
@@ -77,7 +118,12 @@ public static class DataModelGraphBuilder
             DataModelNode node = CreateNode(source, index++);
             node.X = savedNode.X;
             node.Y = savedNode.Y;
-            node.IsCollapsed = savedNode.IsCollapsed;
+            node.DetailLevel = savedState.Version <= 1
+                ? (savedNode.IsCollapsed ? DataModelNodeDetailLevel.Collapsed : DataModelNodeDetailLevel.All)
+                : savedNode.IsCollapsed
+                    ? DataModelNodeDetailLevel.Collapsed
+                    : savedNode.DetailLevel;
+            node.IsCollapsed = node.DetailLevel == DataModelNodeDetailLevel.Collapsed;
             state.Nodes.Add(node);
         }
 
@@ -156,11 +202,39 @@ public static class DataModelGraphBuilder
         return designer;
     }
 
-    public static string SerializeState(DataModelState state) =>
-        JsonSerializer.Serialize(state);
+    public static string SerializeState(DataModelState state)
+    {
+        state.Version = 2;
+        foreach (DataModelNode node in state.Nodes)
+        {
+            if (node.IsCollapsed)
+                node.DetailLevel = DataModelNodeDetailLevel.Collapsed;
+            node.IsCollapsed = node.DetailLevel == DataModelNodeDetailLevel.Collapsed;
+        }
+        return JsonSerializer.Serialize(state);
+    }
 
-    public static DataModelState? DeserializeState(string json) =>
-        JsonSerializer.Deserialize<DataModelState>(json);
+    public static DataModelState? DeserializeState(string json)
+    {
+        DataModelState? state = JsonSerializer.Deserialize<DataModelState>(json);
+        if (state is null)
+            return null;
+
+        if (state.Version <= 1)
+        {
+            foreach (DataModelNode node in state.Nodes)
+            {
+                node.DetailLevel = node.IsCollapsed
+                    ? DataModelNodeDetailLevel.Collapsed
+                    : DataModelNodeDetailLevel.All;
+            }
+        }
+
+        state.Version = 2;
+        foreach (DataModelNode node in state.Nodes)
+            node.IsCollapsed = node.DetailLevel == DataModelNodeDetailLevel.Collapsed;
+        return state;
+    }
 
     private static IReadOnlySet<string> SelectSourceNames(
         IReadOnlyList<DataModelSourceMetadata> sources,
@@ -211,6 +285,10 @@ public static class DataModelGraphBuilder
         var indexedColumns = source.Indexes
             .SelectMany(static indexMetadata => indexMetadata.Columns)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var uniqueColumns = source.Indexes
+            .Where(static indexMetadata => indexMetadata.IsUnique && indexMetadata.Columns.Count == 1)
+            .Select(static indexMetadata => indexMetadata.Columns[0])
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         return new DataModelNode
         {
@@ -237,6 +315,7 @@ public static class DataModelGraphBuilder
                 DefaultSql = columnMetadata.DefaultSql,
                 IsForeignKey = foreignKeyColumns.Contains(columnMetadata.Name),
                 IsIndexed = indexedColumns.Contains(columnMetadata.Name),
+                IsUnique = columnMetadata.IsPrimaryKey || uniqueColumns.Contains(columnMetadata.Name),
             }).ToList(),
         };
     }
@@ -256,6 +335,12 @@ public static class DataModelGraphBuilder
             {
                 DataModelSourceMetadata? referenced = FindSource(selectedSources, foreignKey.ReferencedTableName);
                 bool resolved = referenced is not null;
+                DataModelColumnMetadata? childColumn = source.Columns.FirstOrDefault(column =>
+                    string.Equals(column.Name, foreignKey.ColumnName, StringComparison.OrdinalIgnoreCase));
+                bool childColumnIsUnique = childColumn?.IsPrimaryKey == true || source.Indexes.Any(index =>
+                    index.IsUnique &&
+                    index.Columns.Count == 1 &&
+                    string.Equals(index.Columns[0], foreignKey.ColumnName, StringComparison.OrdinalIgnoreCase));
                 string rightTable = referenced?.TableName ?? foreignKey.ReferencedTableName;
                 string id = $"{source.TableName}:{foreignKey.ColumnName}->{rightTable}:{foreignKey.ReferencedColumnName}";
                 var relationship = new DataModelRelationship
@@ -275,6 +360,13 @@ public static class DataModelGraphBuilder
                     Warning = resolved
                         ? null
                         : $"Relationship target '{foreignKey.ReferencedTableName}' is not on the canvas.",
+                    ReferencedEndCardinality = childColumn?.Nullable == true
+                        ? DataModelCardinality.ZeroOrOne
+                        : DataModelCardinality.One,
+                    ReferencingEndCardinality = childColumnIsUnique
+                        ? DataModelCardinality.ZeroOrOne
+                        : DataModelCardinality.ZeroOrMany,
+                    ChildColumnIsUnique = childColumnIsUnique,
                 };
 
                 state.Relationships.Add(relationship);
@@ -305,6 +397,7 @@ public static class DataModelGraphBuilder
         X = node.X,
         Y = node.Y,
         IsCollapsed = node.IsCollapsed,
+        DetailLevel = node.DetailLevel,
         IsDraft = node.IsDraft,
         SourceTableName = node.SourceTableName,
         ArchivePath = node.ArchivePath,
@@ -325,6 +418,7 @@ public static class DataModelGraphBuilder
             DefaultSql = column.DefaultSql,
             IsForeignKey = column.IsForeignKey,
             IsIndexed = column.IsIndexed,
+            IsUnique = column.IsUnique,
         }).ToList(),
     };
 
@@ -341,6 +435,9 @@ public static class DataModelGraphBuilder
         OnDelete = relationship.OnDelete,
         OnUpdate = relationship.OnUpdate,
         Warning = relationship.Warning,
+        ReferencedEndCardinality = relationship.ReferencedEndCardinality,
+        ReferencingEndCardinality = relationship.ReferencingEndCardinality,
+        ChildColumnIsUnique = relationship.ChildColumnIsUnique,
     };
 
     private static DataModelPendingOperation CloneOperation(DataModelPendingOperation operation) => new()
@@ -365,6 +462,7 @@ public static class DataModelGraphBuilder
             DefaultSql = column.DefaultSql,
             IsForeignKey = column.IsForeignKey,
             IsIndexed = column.IsIndexed,
+            IsUnique = column.IsUnique,
         }).ToList(),
         ReferencedTableName = operation.ReferencedTableName,
         ReferencedColumnName = operation.ReferencedColumnName,

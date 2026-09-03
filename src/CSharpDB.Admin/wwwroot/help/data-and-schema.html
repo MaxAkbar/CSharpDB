@@ -67,6 +67,26 @@
                     </tbody>
                 </table>
 
+                <h2>Data Modeler</h2>
+                <p>The Data Model workspace starts as a curated canvas. Open <strong>Sources</strong>, search for a table, and choose <strong>Add</strong> for that table only or the relationship action to add it with its immediate parent and child tables. <strong>Load All</strong> remains available when you need the complete schema.</p>
+                <table>
+                    <thead><tr><th>Control</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td>Auto Arrange</td><td>Places referenced tables to the left of dependent tables. It is the only action that reflows every visible table.</td></tr>
+                        <tr><td>Tidy Model</td><td>Switches tables to Keys First, arranges the complete relationship graph, and fits it into the canvas. Use it to recover a crowded or overlapping saved layout.</td></tr>
+                        <tr><td>Fit Model</td><td>Centers and scales the visible model without changing table positions.</td></tr>
+                        <tr><td>Keys First</td><td>Shows primary keys, foreign keys, and columns used by visible relationships.</td></tr>
+                        <tr><td>Expand All / Collapse All</td><td>Shows every column or table headers only. Each table also has its own detail control.</td></tr>
+                        <tr><td>Pan and zoom</td><td>Drag the canvas background to pan and use the mouse wheel to zoom around the pointer.</td></tr>
+                        <tr><td>Details</td><td>Opens or closes the model inspector without reducing the normal canvas width.</td></tr>
+                    </tbody>
+                </table>
+                <p>Relationship lines use crow's-foot markers: the referenced end is one or optional-one according to child-column nullability; the child end is many unless that foreign-key column is uniquely constrained. Physical, pending, and archive relationships retain separate solid, dotted, and dashed styles. Select a table to emphasize its immediate neighborhood, or select a relationship to highlight both participating columns and display its name and column mapping. Click empty canvas space or press <strong>Escape</strong> to clear the selection.</p>
+                <div class="callout warning">
+                    <strong>Know which action changes what.</strong>
+                    Removing a table only removes it from the current canvas. Deleting a diagram removes the saved layout record. Applying staged changes executes the schema operations shown in the pending-change preview.
+                </div>
+
                 <h2>Query Editor</h2>
                 <p>Use query tabs for ad hoc SQL, saved queries, query plans, table stats, column stats, and result review.</p>
                 <table>

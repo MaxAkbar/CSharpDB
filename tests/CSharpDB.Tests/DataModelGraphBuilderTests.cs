@@ -119,6 +119,95 @@ public sealed class DataModelGraphBuilderTests
         Assert.Equal("Orders", relationship.LeftTable);
         Assert.Equal("Customers", relationship.RightTable);
         Assert.True(relationship.IsResolved);
+        Assert.Equal(DataModelCardinality.One, relationship.ReferencedEndCardinality);
+        Assert.Equal(DataModelCardinality.ZeroOrMany, relationship.ReferencingEndCardinality);
+        Assert.False(relationship.ChildColumnIsUnique);
+    }
+
+    [Fact]
+    public void BuildSelection_ExactAndOneHopHaveCuratedMembership()
+    {
+        DataModelSourceMetadata orderLines = new()
+        {
+            TableName = "OrderLines",
+            Columns =
+            [
+                new DataModelColumnMetadata { Name = "Id", TypeLabel = "INTEGER", IsPrimaryKey = true, Nullable = false },
+                new DataModelColumnMetadata { Name = "OrderId", TypeLabel = "INTEGER", Nullable = false },
+            ],
+            ForeignKeys =
+            [
+                new DataModelForeignKeyMetadata
+                {
+                    ConstraintName = "fk_lines_orders",
+                    ColumnName = "OrderId",
+                    ReferencedTableName = "Orders",
+                    ReferencedColumnName = "Id",
+                },
+            ],
+        };
+        DataModelSourceMetadata unrelated = new()
+        {
+            TableName = "AuditLog",
+            Columns = [new DataModelColumnMetadata { Name = "Id", TypeLabel = "INTEGER", IsPrimaryKey = true }],
+        };
+        DataModelSourceMetadata[] sources = [unrelated, orderLines, Customers(), Orders()];
+
+        DataModelState exact = DataModelGraphBuilder.BuildSelection(
+            sources,
+            ["Orders"],
+            DataModelSelectionMode.Exact);
+        DataModelState related = DataModelGraphBuilder.BuildSelection(
+            sources,
+            ["Orders"],
+            DataModelSelectionMode.IncludeDirectlyRelated);
+
+        Assert.Equal(["Orders"], exact.Nodes.Select(node => node.Name));
+        Assert.Equal(
+            ["Customers", "OrderLines", "Orders"],
+            related.Nodes.Select(node => node.Name).OrderBy(name => name, StringComparer.OrdinalIgnoreCase));
+        Assert.DoesNotContain(related.Nodes, node => node.Name == "AuditLog");
+    }
+
+    [Fact]
+    public void Build_UniqueNullableChildInfersOptionalOneAtBothEnds()
+    {
+        DataModelSourceMetadata profile = new()
+        {
+            TableName = "CustomerProfiles",
+            Columns =
+            [
+                new DataModelColumnMetadata { Name = "Id", TypeLabel = "INTEGER", IsPrimaryKey = true, Nullable = false },
+                new DataModelColumnMetadata { Name = "CustomerId", TypeLabel = "INTEGER", Nullable = true },
+            ],
+            ForeignKeys =
+            [
+                new DataModelForeignKeyMetadata
+                {
+                    ConstraintName = "fk_profiles_customers",
+                    ColumnName = "CustomerId",
+                    ReferencedTableName = "Customers",
+                    ReferencedColumnName = "Id",
+                },
+            ],
+            Indexes =
+            [
+                new DataModelIndexMetadata
+                {
+                    IndexName = "uq_profiles_customer",
+                    Columns = ["CustomerId"],
+                    IsUnique = true,
+                },
+            ],
+        };
+
+        DataModelState state = DataModelGraphBuilder.Build([Customers(), profile]);
+
+        DataModelRelationship relationship = Assert.Single(state.Relationships);
+        Assert.Equal(DataModelCardinality.ZeroOrOne, relationship.ReferencedEndCardinality);
+        Assert.Equal(DataModelCardinality.ZeroOrOne, relationship.ReferencingEndCardinality);
+        Assert.True(relationship.ChildColumnIsUnique);
+        Assert.True(Assert.Single(state.Nodes, node => node.Name == "CustomerProfiles").Columns.Single(column => column.Name == "CustomerId").IsUnique);
     }
 
     [Fact]
@@ -265,6 +354,63 @@ public sealed class DataModelGraphBuilderTests
 
         Assert.NotNull(roundTripped);
         Assert.Equal(1.4, roundTripped.Scale);
+    }
+
+    [Fact]
+    public void DeserializeState_MigratesVersionOneDetailWithoutLosingState()
+    {
+        const string json =
+            """
+            {
+              "Version": 1,
+              "DiagramName": "Legacy",
+              "SavedLayoutName": "Legacy",
+              "ViewportX": 41,
+              "ViewportY": 73,
+              "Scale": 1.35,
+              "Warnings": ["legacy warning"],
+              "Nodes": [
+                { "Name": "Collapsed", "X": 12, "Y": 34, "IsCollapsed": true, "Columns": [] },
+                { "Name": "Expanded", "X": 56, "Y": 78, "IsCollapsed": false, "Columns": [] }
+              ],
+              "Relationships": [],
+              "PendingOperations": [
+                { "Id": "pending", "Kind": 1, "TableName": "Expanded", "Description": "Drop table Expanded" }
+              ]
+            }
+            """;
+
+        DataModelState state = Assert.IsType<DataModelState>(DataModelGraphBuilder.DeserializeState(json));
+
+        Assert.Equal(2, state.Version);
+        Assert.Equal(DataModelNodeDetailLevel.Collapsed, Assert.Single(state.Nodes, node => node.Name == "Collapsed").DetailLevel);
+        Assert.Equal(DataModelNodeDetailLevel.All, Assert.Single(state.Nodes, node => node.Name == "Expanded").DetailLevel);
+        Assert.Equal((41d, 73d, 1.35d), (state.ViewportX, state.ViewportY, state.Scale));
+        Assert.Equal((12d, 34d), (state.Nodes[0].X, state.Nodes[0].Y));
+        Assert.Single(state.PendingOperations);
+        Assert.Equal("legacy warning", Assert.Single(state.Warnings));
+    }
+
+    [Fact]
+    public void SerializeState_RoundTripsVersionTwoDetailCardinalityAndViewport()
+    {
+        DataModelState state = DataModelGraphBuilder.Build([Customers(), Orders()]);
+        state.Nodes[0].DetailLevel = DataModelNodeDetailLevel.Collapsed;
+        state.Nodes[1].DetailLevel = DataModelNodeDetailLevel.All;
+        state.ViewportX = 115;
+        state.ViewportY = 225;
+        state.Scale = 0.8;
+
+        DataModelState restored = Assert.IsType<DataModelState>(
+            DataModelGraphBuilder.DeserializeState(DataModelGraphBuilder.SerializeState(state)));
+
+        Assert.Equal(2, restored.Version);
+        Assert.Equal(DataModelNodeDetailLevel.Collapsed, restored.Nodes[0].DetailLevel);
+        Assert.Equal(DataModelNodeDetailLevel.All, restored.Nodes[1].DetailLevel);
+        Assert.Equal((115d, 225d, 0.8d), (restored.ViewportX, restored.ViewportY, restored.Scale));
+        DataModelRelationship relationship = Assert.Single(restored.Relationships);
+        Assert.Equal(DataModelCardinality.One, relationship.ReferencedEndCardinality);
+        Assert.Equal(DataModelCardinality.ZeroOrMany, relationship.ReferencingEndCardinality);
     }
 
     [Fact]

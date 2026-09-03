@@ -14,6 +14,7 @@ namespace CSharpDB.Admin.Services;
 public interface IDataModelService
 {
     Task<DataModelState> BuildModelAsync(string? seedSourceName = null, int autoLayoutLimit = DataModelGraphBuilder.DefaultAutoLayoutLimit, CancellationToken ct = default);
+    Task<DataModelState> BuildSelectionAsync(IReadOnlyCollection<string> sourceNames, DataModelSelectionMode selectionMode = DataModelSelectionMode.Exact, CancellationToken ct = default);
     Task<IReadOnlyList<DataModelSourceOption>> GetSourceOptionsAsync(CancellationToken ct = default);
     string BuildPreviewSql(DataModelState state);
     string BuildPendingOperationsPreview(DataModelState state);
@@ -42,6 +43,17 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
     {
         IReadOnlyList<DataModelSourceMetadata> sources = await LoadSourcesAsync(ct);
         DataModelState state = DataModelGraphBuilder.Build(sources, seedSourceName, autoLayoutLimit);
+        state.SchemaSnapshotUtc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+        return state;
+    }
+
+    public async Task<DataModelState> BuildSelectionAsync(
+        IReadOnlyCollection<string> sourceNames,
+        DataModelSelectionMode selectionMode = DataModelSelectionMode.Exact,
+        CancellationToken ct = default)
+    {
+        IReadOnlyList<DataModelSourceMetadata> sources = await LoadSourcesAsync(ct);
+        DataModelState state = DataModelGraphBuilder.BuildSelection(sources, sourceNames, selectionMode);
         state.SchemaSnapshotUtc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
         return state;
     }
@@ -143,7 +155,7 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
     {
         await EnsureDiagramCatalogAsync(ct);
         string normalized = NormalizeDiagramName(name);
-        state.Version = 1;
+        state.Version = 2;
         state.DiagramName = normalized;
         state.SavedLayoutName = normalized;
         state.SchemaSnapshotUtc ??= DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
