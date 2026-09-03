@@ -211,6 +211,225 @@ public sealed class DataModelLayoutEngineTests
         Assert.Equal(new DataModelConnectorPoint(520, 340), route.Points[^1]);
     }
 
+    [Fact]
+    public void ConnectorRouter_VisitsOrderedManualWaypointsAndAvoidsTables()
+    {
+        DataModelConnectorObstacle[] obstacles =
+        [
+            new(24, 100, 220, 160),
+            new(400, 100, 220, 300),
+            new(800, 100, 220, 160),
+        ];
+        DataModelConnectorLayout layout = CustomRoute((300, 60), (680, 60), (680, 320));
+
+        DataModelConnectorRoute route = DataModelConnectorRouter.Route(
+            new(244, 174, DataModelConnectorSide.Right),
+            new(800, 202, DataModelConnectorSide.Left), obstacles, layout);
+
+        Assert.False(route.UsedAutomaticFallback);
+        AssertOrthogonalAndClear(route, obstacles);
+        int previous = -1;
+        foreach (DataModelConnectorWaypoint waypoint in layout.Waypoints)
+        {
+            int index = route.Points.ToList().FindIndex(previous + 1, point => point == new DataModelConnectorPoint(waypoint.X, waypoint.Y));
+            Assert.True(index > previous, "Manual waypoints must occur in their saved order.");
+            previous = index;
+        }
+    }
+
+    [Fact]
+    public void ConnectorRouter_PreservesCollinearGuideAndDeliberateReversal()
+    {
+        DataModelConnectorLayout layout = CustomRoute((200, 40), (320, 40), (260, 40), (260, 160));
+        DataModelConnectorRoute route = DataModelConnectorRouter.Route(
+            new(40, 40, DataModelConnectorSide.Right),
+            new(500, 160, DataModelConnectorSide.Left), [], layout);
+
+        Assert.False(route.UsedAutomaticFallback);
+        int last = -1;
+        foreach (DataModelConnectorWaypoint guide in layout.Waypoints)
+        {
+            int index = route.Points.ToList().FindIndex(last + 1, point => point == new DataModelConnectorPoint(guide.X, guide.Y));
+            Assert.True(index > last);
+            last = index;
+        }
+    }
+
+    [Fact]
+    public void ConnectorRouter_ManualRoutesAreDeterministicRegardlessOfObstacleOrder()
+    {
+        DataModelConnectorObstacle[] obstacles =
+        [new(24, 100, 220, 160), new(400, 100, 220, 300), new(800, 100, 220, 160)];
+        DataModelConnectorLayout layout = CustomRoute((300, 60), (680, 60));
+        var start = new DataModelConnectorEndpoint(244, 174, DataModelConnectorSide.Right);
+        var end = new DataModelConnectorEndpoint(800, 202, DataModelConnectorSide.Left);
+
+        DataModelConnectorRoute first = DataModelConnectorRouter.Route(start, end, obstacles, layout);
+        DataModelConnectorRoute second = DataModelConnectorRouter.Route(start, end, obstacles.Reverse().ToArray(), layout);
+
+        Assert.Equal(first.Points, second.Points);
+        Assert.Equal((first.LabelX, first.LabelY), (second.LabelX, second.LabelY));
+    }
+
+    [Theory]
+    [InlineData(400, 200)]
+    [InlineData(390, 90)] // Inside the clearance gutter, although outside the card itself.
+    [InlineData(0, 40)]
+    [InlineData(40, -1)]
+    [InlineData(double.NaN, 40)]
+    [InlineData(40, double.PositiveInfinity)]
+    public void ConnectorRouter_InvalidSavedWaypointFallsBackWithoutChangingTheLayout(double x, double y)
+    {
+        DataModelConnectorObstacle[] obstacles =
+        [new(24, 100, 220, 160), new(400, 100, 220, 300), new(800, 100, 220, 160)];
+        DataModelConnectorLayout layout = CustomRoute((x, y));
+        var start = new DataModelConnectorEndpoint(244, 174, DataModelConnectorSide.Right);
+        var end = new DataModelConnectorEndpoint(800, 202, DataModelConnectorSide.Left);
+
+        DataModelConnectorRoute route = DataModelConnectorRouter.Route(start, end, obstacles, layout);
+        DataModelConnectorRoute automatic = DataModelConnectorRouter.Route(start, end, obstacles);
+
+        Assert.True(route.UsedAutomaticFallback);
+        Assert.Equal(automatic.Points, route.Points);
+        Assert.Equal(x, layout.Waypoints[0].X);
+        Assert.Equal(y, layout.Waypoints[0].Y);
+        AssertOrthogonalAndClear(route, obstacles);
+    }
+
+    [Fact]
+    public void ConnectorRouter_UnreachableWaypointUsesSafeAutomaticFallback()
+    {
+        DataModelConnectorObstacle[] obstacles =
+        [
+            new(24, 100, 220, 160), new(800, 100, 220, 160),
+            // An enclosed cavity whose guide is valid but cannot be reached.
+            new(350, 350, 300, 40), new(350, 610, 300, 40),
+            new(350, 350, 40, 300), new(610, 350, 40, 300),
+        ];
+        DataModelConnectorLayout layout = CustomRoute((500, 500));
+
+        DataModelConnectorRoute route = DataModelConnectorRouter.Route(
+            new(244, 174, DataModelConnectorSide.Right),
+            new(800, 202, DataModelConnectorSide.Left), obstacles, layout);
+
+        Assert.True(DataModelConnectorRouter.IsValidWaypoint(new(500, 500), obstacles));
+        Assert.True(route.UsedAutomaticFallback);
+        AssertOrthogonalAndClear(route, obstacles);
+    }
+
+    [Fact]
+    public void ConnectorRouter_TableMovementKeepsTheManualCorridorFixed()
+    {
+        DataModelConnectorLayout layout = CustomRoute((300, 60), (680, 60));
+        DataModelConnectorObstacle[] before = [new(24, 100, 220, 160), new(800, 100, 220, 160)];
+        DataModelConnectorObstacle[] after = [new(24, 300, 220, 160), new(800, 400, 220, 160)];
+
+        DataModelConnectorRoute first = DataModelConnectorRouter.Route(
+            new(244, 174, DataModelConnectorSide.Right), new(800, 202, DataModelConnectorSide.Left), before, layout);
+        DataModelConnectorRoute second = DataModelConnectorRouter.Route(
+            new(244, 374, DataModelConnectorSide.Right), new(800, 502, DataModelConnectorSide.Left), after, layout);
+
+        Assert.False(first.UsedAutomaticFallback);
+        Assert.False(second.UsedAutomaticFallback);
+        foreach (DataModelConnectorWaypoint guide in layout.Waypoints)
+        {
+            Assert.Contains(new(guide.X, guide.Y), first.Points);
+            Assert.Contains(new(guide.X, guide.Y), second.Points);
+        }
+        AssertOrthogonalAndClear(second, after);
+    }
+
+    [Theory]
+    [InlineData(DataModelConnectorSide.Left)]
+    [InlineData(DataModelConnectorSide.Right)]
+    public void ConnectorRouter_CustomSelfRelationshipStaysOutsideItsTable(DataModelConnectorSide side)
+    {
+        DataModelConnectorObstacle[] obstacles = [new(300, 100, 220, 300)];
+        double edgeX = side == DataModelConnectorSide.Left ? 300 : 520;
+        double guideX = side == DataModelConnectorSide.Left ? 240 : 580;
+        DataModelConnectorLayout layout = CustomRoute((guideX, 174), (guideX, 230));
+
+        DataModelConnectorRoute route = DataModelConnectorRouter.Route(
+            new(edgeX, 174, side), new(edgeX, 230, side), obstacles, layout);
+
+        Assert.False(route.UsedAutomaticFallback);
+        AssertOrthogonalAndClear(route, obstacles);
+        Assert.Equal(174, route.Points[1].Y);
+        Assert.Equal(230, route.Points[^2].Y);
+    }
+
+    [Fact]
+    public void ConnectorRouter_ReversedTablesKeepSavedAttachmentSides()
+    {
+        DataModelConnectorObstacle[] obstacles = [new(700, 100, 220, 160), new(200, 100, 220, 160)];
+        DataModelConnectorLayout layout = CustomRoute((980, 50), (140, 50));
+
+        DataModelConnectorRoute route = DataModelConnectorRouter.Route(
+            new(920, 174, DataModelConnectorSide.Right), new(200, 202, DataModelConnectorSide.Left), obstacles, layout);
+
+        Assert.False(route.UsedAutomaticFallback);
+        Assert.True(route.Points[1].X >= 944);
+        Assert.True(route.Points[^2].X <= 176);
+        AssertOrthogonalAndClear(route, obstacles);
+    }
+
+    [Fact]
+    public void ConnectorRouter_TightManualTableGapDoesNotRouteThroughCards()
+    {
+        DataModelConnectorObstacle[] obstacles = [new(24, 100, 220, 200), new(254, 100, 220, 200)];
+
+        DataModelConnectorRoute route = DataModelConnectorRouter.Route(
+            new(244, 174, DataModelConnectorSide.Right), new(254, 230, DataModelConnectorSide.Left), obstacles);
+
+        Assert.False(route.UsedAutomaticFallback);
+        AssertOrthogonalAndClear(route, obstacles);
+    }
+
+    [Fact]
+    public void ConnectorRouter_ParallelRelationshipsCanUseDistinctManualCorridors()
+    {
+        DataModelConnectorObstacle[] obstacles = [new(24, 100, 220, 160), new(800, 100, 220, 160)];
+        var start = new DataModelConnectorEndpoint(244, 174, DataModelConnectorSide.Right);
+        var end = new DataModelConnectorEndpoint(800, 202, DataModelConnectorSide.Left);
+
+        DataModelConnectorRoute upper = DataModelConnectorRouter.Route(start, end, obstacles, CustomRoute((300, 60), (680, 60)));
+        DataModelConnectorRoute lower = DataModelConnectorRouter.Route(start, end, obstacles, CustomRoute((300, 320), (680, 320)));
+
+        Assert.NotEqual(upper.Points, lower.Points);
+        AssertOrthogonalAndClear(upper, obstacles);
+        AssertOrthogonalAndClear(lower, obstacles);
+    }
+
+    [Fact]
+    public void ConnectorRouter_ExcessiveWaypointCountUsesAutomaticFallback()
+    {
+        DataModelConnectorLayout layout = CustomRoute(Enumerable.Range(0, DataModelConnectorRouter.MaximumWaypoints + 1)
+            .Select(index => (200d + index, 60d)).ToArray());
+
+        DataModelConnectorRoute route = DataModelConnectorRouter.Route(
+            new(40, 40, DataModelConnectorSide.Right), new(500, 160, DataModelConnectorSide.Left), [], layout);
+
+        Assert.True(route.UsedAutomaticFallback);
+        Assert.Equal(DataModelConnectorRouter.MaximumWaypoints + 1, layout.Waypoints.Count);
+    }
+
+    private static DataModelConnectorLayout CustomRoute(params (double X, double Y)[] points) => new()
+    {
+        ParentSide = DataModelConnectorSide.Right,
+        ChildSide = DataModelConnectorSide.Left,
+        Waypoints = points.Select((point, index) => new DataModelConnectorWaypoint
+        {
+            Id = $"guide-{index}", X = point.X, Y = point.Y,
+        }).ToList(),
+    };
+
+    private static void AssertOrthogonalAndClear(DataModelConnectorRoute route, IReadOnlyList<DataModelConnectorObstacle> obstacles)
+    {
+        Assert.All(route.Points.Zip(route.Points.Skip(1)), pair =>
+            Assert.True(pair.First.X == pair.Second.X || pair.First.Y == pair.Second.Y));
+        Assert.All(obstacles, obstacle => Assert.False(DataModelConnectorRouter.IntersectsObstacleInterior(route, obstacle)));
+    }
+
     private static DataModelState Model(List<DataModelNode> nodes, List<DataModelRelationship> relationships) => new()
     {
         Nodes = nodes,

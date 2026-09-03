@@ -382,7 +382,7 @@ public sealed class DataModelGraphBuilderTests
 
         DataModelState state = Assert.IsType<DataModelState>(DataModelGraphBuilder.DeserializeState(json));
 
-        Assert.Equal(2, state.Version);
+        Assert.Equal(3, state.Version);
         Assert.Equal(DataModelNodeDetailLevel.Collapsed, Assert.Single(state.Nodes, node => node.Name == "Collapsed").DetailLevel);
         Assert.Equal(DataModelNodeDetailLevel.All, Assert.Single(state.Nodes, node => node.Name == "Expanded").DetailLevel);
         Assert.Equal((41d, 73d, 1.35d), (state.ViewportX, state.ViewportY, state.Scale));
@@ -392,7 +392,7 @@ public sealed class DataModelGraphBuilderTests
     }
 
     [Fact]
-    public void SerializeState_RoundTripsVersionTwoDetailCardinalityAndViewport()
+    public void SerializeState_RoundTripsVersionThreeDetailCardinalityViewportAndConnectorLayout()
     {
         DataModelState state = DataModelGraphBuilder.Build([Customers(), Orders()]);
         state.Nodes[0].DetailLevel = DataModelNodeDetailLevel.Collapsed;
@@ -400,17 +400,209 @@ public sealed class DataModelGraphBuilderTests
         state.ViewportX = 115;
         state.ViewportY = 225;
         state.Scale = 0.8;
+        Assert.Single(state.Relationships).ConnectorLayout = CustomLayout();
 
         DataModelState restored = Assert.IsType<DataModelState>(
             DataModelGraphBuilder.DeserializeState(DataModelGraphBuilder.SerializeState(state)));
 
-        Assert.Equal(2, restored.Version);
+        Assert.Equal(3, restored.Version);
         Assert.Equal(DataModelNodeDetailLevel.Collapsed, restored.Nodes[0].DetailLevel);
         Assert.Equal(DataModelNodeDetailLevel.All, restored.Nodes[1].DetailLevel);
         Assert.Equal((115d, 225d, 0.8d), (restored.ViewportX, restored.ViewportY, restored.Scale));
         DataModelRelationship relationship = Assert.Single(restored.Relationships);
         Assert.Equal(DataModelCardinality.One, relationship.ReferencedEndCardinality);
         Assert.Equal(DataModelCardinality.ZeroOrMany, relationship.ReferencingEndCardinality);
+        AssertCustomLayout(relationship.ConnectorLayout);
+    }
+
+    [Fact]
+    public void DeserializeState_VersionTwoMigratesWithAutomaticRoutes()
+    {
+        const string json = """
+            { "Version": 2, "Nodes": [{ "Name": "Orders", "X": 70, "Y": 90, "DetailLevel": 0 }],
+              "Relationships": [{ "Id": "old-fk", "LeftTable": "Orders", "RightTable": "Customers" }],
+              "ViewportX": 23, "ViewportY": 45, "Scale": 0.65 }
+            """;
+
+        DataModelState restored = Assert.IsType<DataModelState>(DataModelGraphBuilder.DeserializeState(json));
+
+        Assert.Equal(3, restored.Version);
+        Assert.Null(Assert.Single(restored.Relationships).ConnectorLayout);
+        Assert.Equal((70d, 90d, DataModelNodeDetailLevel.Keys),
+            (restored.Nodes[0].X, restored.Nodes[0].Y, restored.Nodes[0].DetailLevel));
+        Assert.Equal((23d, 45d, 0.65d), (restored.ViewportX, restored.ViewportY, restored.Scale));
+    }
+
+    [Theory]
+    [InlineData(DataModelRelationshipKind.PhysicalForeignKey)]
+    [InlineData(DataModelRelationshipKind.ExternalArchiveForeignKey)]
+    [InlineData(DataModelRelationshipKind.Draft)]
+    public void BuildFromDiagramState_RestoresCustomLayoutsOntoRebuiltRelationships(DataModelRelationshipKind kind)
+    {
+        DataModelSourceMetadata child = kind == DataModelRelationshipKind.ExternalArchiveForeignKey ? ArchivedOrders() : Orders();
+        DataModelState saved = DataModelGraphBuilder.Build([Customers(), child]);
+        DataModelRelationship original = Assert.Single(saved.Relationships);
+        original.ConnectorLayout = CustomLayout();
+        if (kind == DataModelRelationshipKind.Draft)
+        {
+            original.Kind = kind;
+            original.Id = "draft-relationship";
+            child = new DataModelSourceMetadata { TableName = "Orders", Columns = Orders().Columns };
+        }
+
+        DataModelState restored = DataModelGraphBuilder.BuildFromDiagramState([Customers(), child], saved);
+
+        DataModelRelationship relationship = Assert.Single(restored.Relationships);
+        Assert.Equal(kind, relationship.Kind);
+        AssertCustomLayout(relationship.ConnectorLayout);
+        Assert.NotSame(original.ConnectorLayout, relationship.ConnectorLayout);
+        Assert.NotSame(original.ConnectorLayout.Waypoints[0], relationship.ConnectorLayout!.Waypoints[0]);
+    }
+
+    [Theory]
+    [InlineData("id")]
+    [InlineData("constraint")]
+    [InlineData("endpoints")]
+    public void PreserveConnectorLayouts_UsesStableIdentityFallbacks(string identity)
+    {
+        DataModelRelationship original = Assert.Single(DataModelGraphBuilder.Build([Customers(), Orders()]).Relationships);
+        original.ConnectorLayout = CustomLayout();
+        DataModelRelationship target = Assert.Single(DataModelGraphBuilder.Build([Customers(), Orders()]).Relationships);
+        if (identity != "id")
+            target.Id = "rebuilt-id";
+        if (identity == "constraint")
+            target.LeftColumn = "RenamedCustomerId";
+        if (identity == "endpoints")
+            target.ConstraintName = "generated_fk_name";
+
+        IReadOnlyList<string> warnings = DataModelGraphBuilder.PreserveConnectorLayouts([original], [target]);
+
+        Assert.Empty(warnings);
+        AssertCustomLayout(target.ConnectorLayout);
+        target.ConnectorLayout!.Waypoints[0].X = 999;
+        Assert.Equal(400.25, original.ConnectorLayout.Waypoints[0].X);
+    }
+
+    [Fact]
+    public void PreserveConnectorLayouts_AmbiguousMatchRevertsToAutomaticWithWarning()
+    {
+        DataModelRelationship original = Assert.Single(DataModelGraphBuilder.Build([Customers(), Orders()]).Relationships);
+        original.Id = "old-id";
+        original.ConnectorLayout = CustomLayout();
+        DataModelRelationship first = Assert.Single(DataModelGraphBuilder.Build([Customers(), Orders()]).Relationships);
+        DataModelRelationship second = Assert.Single(DataModelGraphBuilder.Build([Customers(), Orders()]).Relationships);
+        second.Id = "parallel-fk";
+
+        IReadOnlyList<string> warnings = DataModelGraphBuilder.PreserveConnectorLayouts([original], [first, second]);
+
+        Assert.Null(first.ConnectorLayout);
+        Assert.Null(second.ConnectorLayout);
+        Assert.Contains("ambiguous", Assert.Single(warnings));
+    }
+
+    [Fact]
+    public void PreserveConnectorLayouts_MultipleSavedRoutesCannotOverwriteOneRelationship()
+    {
+        DataModelRelationship first = Assert.Single(DataModelGraphBuilder.Build([Customers(), Orders()]).Relationships);
+        DataModelRelationship second = Assert.Single(DataModelGraphBuilder.Build([Customers(), Orders()]).Relationships);
+        first.ConnectorLayout = CustomLayout();
+        second.ConnectorLayout = CustomLayout();
+        second.Id = "another-saved-id";
+        DataModelRelationship target = Assert.Single(DataModelGraphBuilder.Build([Customers(), Orders()]).Relationships);
+
+        IReadOnlyList<string> warnings = DataModelGraphBuilder.PreserveConnectorLayouts([first, second], [target]);
+
+        Assert.Null(target.ConnectorLayout);
+        Assert.Contains(warnings, warning => warning.Contains("ambiguous", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PreserveConnectorLayouts_AmbiguityDoesNotDependOnInputOrdering(bool reverse)
+    {
+        DataModelRelationship exact = Assert.Single(DataModelGraphBuilder.Build([Customers(), Orders()]).Relationships);
+        DataModelRelationship ambiguous = Assert.Single(DataModelGraphBuilder.Build([Customers(), Orders()]).Relationships);
+        exact.ConnectorLayout = CustomLayout();
+        ambiguous.ConnectorLayout = CustomLayout();
+        ambiguous.Id = "old-id";
+        DataModelRelationship first = Assert.Single(DataModelGraphBuilder.Build([Customers(), Orders()]).Relationships);
+        DataModelRelationship second = Assert.Single(DataModelGraphBuilder.Build([Customers(), Orders()]).Relationships);
+        second.Id = "duplicate-constraint";
+
+        IReadOnlyList<string> warnings = DataModelGraphBuilder.PreserveConnectorLayouts(
+            reverse ? [ambiguous, exact] : [exact, ambiguous], [first, second]);
+
+        Assert.Null(first.ConnectorLayout);
+        Assert.Null(second.ConnectorLayout);
+        Assert.Contains(warnings, warning => warning.Contains("ambiguous", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void IsValidConnectorLayout_RejectsNonFiniteCoordinatesInvalidSidesAndExcessiveWaypoints()
+    {
+        DataModelConnectorLayout layout = CustomLayout();
+        layout.Waypoints[0].X = double.NaN;
+        Assert.False(DataModelGraphBuilder.IsValidConnectorLayout(layout));
+        Assert.Null(DataModelGraphBuilder.CloneConnectorLayout(layout));
+        layout.Waypoints[0].X = 100;
+        layout.ParentSide = (DataModelConnectorSide)42;
+        Assert.False(DataModelGraphBuilder.IsValidConnectorLayout(layout));
+        layout.ParentSide = DataModelConnectorSide.Left;
+        layout.Waypoints = Enumerable.Range(0, 129)
+            .Select(index => new DataModelConnectorWaypoint { Id = index.ToString(), X = 100, Y = 100 })
+            .ToList();
+        Assert.False(DataModelGraphBuilder.IsValidConnectorLayout(layout));
+    }
+
+    [Fact]
+    public void BuildFromDiagramState_StaleCustomRouteWarnsWithoutBreakingLoad()
+    {
+        DataModelState saved = DataModelGraphBuilder.Build([Customers(), Orders()]);
+        Assert.Single(saved.Relationships).ConnectorLayout = CustomLayout();
+        var childWithoutForeignKey = new DataModelSourceMetadata { TableName = "Orders", Columns = Orders().Columns };
+
+        DataModelState restored = DataModelGraphBuilder.BuildFromDiagramState([Customers(), childWithoutForeignKey], saved);
+
+        Assert.Equal(2, restored.Nodes.Count);
+        Assert.Empty(restored.Relationships);
+        Assert.Contains("relationship no longer exists", Assert.Single(restored.Warnings));
+    }
+
+    [Theory]
+    [InlineData("null")]
+    [InlineData("[null]")]
+    [InlineData("[{\"Id\":\"same\",\"X\":10,\"Y\":10},{\"Id\":\"same\",\"X\":20,\"Y\":20}]")]
+    [InlineData("[{\"Id\":\"bad\",\"X\":-4,\"Y\":10}]")]
+    public void DeserializeState_InvalidCustomRouteUsesAutomaticRouting(string waypoints)
+    {
+        string json = "{\"Version\":3,\"Relationships\":[{\"Id\":\"fk\",\"ConnectorLayout\":{\"Waypoints\":" + waypoints + "}}]}";
+
+        DataModelState restored = Assert.IsType<DataModelState>(DataModelGraphBuilder.DeserializeState(json));
+
+        Assert.Null(Assert.Single(restored.Relationships).ConnectorLayout);
+        Assert.Contains("invalid layout data", Assert.Single(restored.Warnings));
+    }
+
+    private static DataModelConnectorLayout CustomLayout() => new()
+    {
+        ParentSide = DataModelConnectorSide.Left,
+        ChildSide = DataModelConnectorSide.Right,
+        Waypoints =
+        [
+            new DataModelConnectorWaypoint { Id = "bend-one", X = 400.25, Y = 85.5 },
+            new DataModelConnectorWaypoint { Id = "bend-two", X = 400.25, Y = 300.125 },
+        ],
+    };
+
+    private static void AssertCustomLayout(DataModelConnectorLayout? layout)
+    {
+        Assert.NotNull(layout);
+        Assert.Equal(DataModelConnectorSide.Left, layout.ParentSide);
+        Assert.Equal(DataModelConnectorSide.Right, layout.ChildSide);
+        Assert.Equal(2, layout.Waypoints.Count);
+        Assert.Equal(("bend-one", 400.25, 85.5), (layout.Waypoints[0].Id, layout.Waypoints[0].X, layout.Waypoints[0].Y));
+        Assert.Equal(("bend-two", 400.25, 300.125), (layout.Waypoints[1].Id, layout.Waypoints[1].X, layout.Waypoints[1].Y));
     }
 
     [Fact]

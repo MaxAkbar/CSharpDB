@@ -81,7 +81,7 @@ public static class DataModelGraphBuilder
 
         var state = new DataModelState
         {
-            Version = 2,
+            Version = 3,
             DiagramName = savedState.DiagramName ?? savedState.SavedLayoutName,
             SavedLayoutName = savedState.SavedLayoutName,
             SchemaSnapshotUtc = savedState.SchemaSnapshotUtc,
@@ -133,6 +133,12 @@ public static class DataModelGraphBuilder
             if (!state.Relationships.Any(existing => string.Equals(existing.Id, relationship.Id, StringComparison.Ordinal)))
                 state.Relationships.Add(CloneRelationship(relationship));
         }
+
+        if (savedState.Version >= 3)
+            state.Warnings.AddRange(PreserveConnectorLayouts(savedState.Relationships, state.Relationships));
+        else
+            foreach (DataModelRelationship relationship in state.Relationships)
+                relationship.ConnectorLayout = null;
 
         foreach (string warning in savedState.Warnings)
         {
@@ -204,7 +210,8 @@ public static class DataModelGraphBuilder
 
     public static string SerializeState(DataModelState state)
     {
-        state.Version = 2;
+        state.Version = 3;
+        NormalizeConnectorLayouts(state);
         foreach (DataModelNode node in state.Nodes)
         {
             if (node.IsCollapsed)
@@ -230,11 +237,124 @@ public static class DataModelGraphBuilder
             }
         }
 
-        state.Version = 2;
+        if (state.Version <= 2)
+            foreach (DataModelRelationship relationship in state.Relationships)
+                relationship.ConnectorLayout = null;
+
+        state.Version = 3;
+        NormalizeConnectorLayouts(state);
         foreach (DataModelNode node in state.Nodes)
             node.IsCollapsed = node.DetailLevel == DataModelNodeDetailLevel.Collapsed;
         return state;
     }
+
+    /// <summary>
+    /// Restores visual routes after live metadata replaces relationship instances. Matches must be
+    /// one-to-one: an ambiguous identity never silently assigns a route to a different foreign key.
+    /// </summary>
+    public static IReadOnlyList<string> PreserveConnectorLayouts(
+        IEnumerable<DataModelRelationship> previousRelationships,
+        IEnumerable<DataModelRelationship> targetRelationships)
+    {
+        DataModelRelationship[] previous = previousRelationships
+            .Where(static relationship => relationship.ConnectorLayout is not null)
+            .Select(CloneRelationship)
+            .ToArray();
+        DataModelRelationship[] targets = targetRelationships.ToArray();
+        var warnings = new List<string>();
+        var assignments = new List<(DataModelRelationship Previous, DataModelRelationship Target)>();
+        var ambiguousTargets = new HashSet<DataModelRelationship>();
+
+        foreach (DataModelRelationship relationship in previous)
+        {
+            DataModelRelationship[] matches = string.IsNullOrWhiteSpace(relationship.Id)
+                ? []
+                : targets.Where(target => string.Equals(target.Id, relationship.Id, StringComparison.Ordinal)).ToArray();
+            if (matches.Length == 0 && !string.IsNullOrWhiteSpace(relationship.ConstraintName))
+                matches = targets.Where(target =>
+                    SameName(target.LeftTable, relationship.LeftTable) &&
+                    SameName(target.ConstraintName, relationship.ConstraintName)).ToArray();
+            if (matches.Length == 0)
+                matches = targets.Where(target =>
+                    SameName(target.LeftTable, relationship.LeftTable) &&
+                    SameName(target.LeftColumn, relationship.LeftColumn) &&
+                    SameName(target.RightTable, relationship.RightTable) &&
+                    SameName(target.RightColumn, relationship.RightColumn)).ToArray();
+
+            if (matches.Length == 1)
+                assignments.Add((relationship, matches[0]));
+            else
+            {
+                foreach (DataModelRelationship target in matches)
+                {
+                    target.ConnectorLayout = null;
+                    ambiguousTargets.Add(target);
+                }
+                warnings.Add(ConnectorRestoreWarning(relationship, matches.Length > 1));
+            }
+        }
+
+        foreach (var group in assignments.GroupBy(static assignment => assignment.Target))
+        {
+            if (group.Count() == 1 && !ambiguousTargets.Contains(group.Key))
+                group.Key.ConnectorLayout = CloneConnectorLayout(group.First().Previous.ConnectorLayout);
+            else
+            {
+                group.Key.ConnectorLayout = null;
+                foreach (var assignment in group)
+                    warnings.Add(ConnectorRestoreWarning(assignment.Previous, ambiguous: true));
+            }
+        }
+
+        return warnings.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+    }
+
+    public static DataModelConnectorLayout? CloneConnectorLayout(DataModelConnectorLayout? layout) =>
+        layout is null || !IsValidConnectorLayout(layout) ? null : new DataModelConnectorLayout
+        {
+            ParentSide = layout.ParentSide,
+            ChildSide = layout.ChildSide,
+            Waypoints = layout.Waypoints.Select(static waypoint => new DataModelConnectorWaypoint
+            {
+                Id = waypoint.Id,
+                X = waypoint.X,
+                Y = waypoint.Y,
+            }).ToList(),
+        };
+
+    public static bool IsValidConnectorLayout(DataModelConnectorLayout? layout)
+    {
+        if (layout is null)
+            return true;
+        if (!Enum.IsDefined(layout.ParentSide) || !Enum.IsDefined(layout.ChildSide) ||
+            layout.Waypoints is null || layout.Waypoints.Count is < 1 or > 128)
+            return false;
+
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        return layout.Waypoints.All(waypoint => waypoint is not null &&
+            !string.IsNullOrWhiteSpace(waypoint.Id) && ids.Add(waypoint.Id) &&
+            double.IsFinite(waypoint.X) && double.IsFinite(waypoint.Y) && waypoint.X >= 4 && waypoint.Y >= 4);
+    }
+
+    private static void NormalizeConnectorLayouts(DataModelState state)
+    {
+        foreach (DataModelRelationship relationship in state.Relationships.Where(static relationship =>
+                     !IsValidConnectorLayout(relationship.ConnectorLayout)))
+        {
+            relationship.ConnectorLayout = null;
+            string warning = $"Custom connector route for '{relationship.LeftTable}.{relationship.LeftColumn}' contains invalid layout data; automatic routing is used.";
+            if (!state.Warnings.Contains(warning, StringComparer.OrdinalIgnoreCase))
+                state.Warnings.Add(warning);
+        }
+    }
+
+    private static bool SameName(string? left, string? right) =>
+        string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+
+    private static string ConnectorRestoreWarning(DataModelRelationship relationship, bool ambiguous) =>
+        $"Custom connector route for '{relationship.LeftTable}.{relationship.LeftColumn} → {relationship.RightTable}.{relationship.RightColumn}' " +
+        (ambiguous ? "could not be restored because the relationship match is ambiguous; automatic routing is used."
+            : "could not be restored because the relationship no longer exists; automatic routing is used.");
 
     private static IReadOnlySet<string> SelectSourceNames(
         IReadOnlyList<DataModelSourceMetadata> sources,
@@ -438,6 +558,7 @@ public static class DataModelGraphBuilder
         ReferencedEndCardinality = relationship.ReferencedEndCardinality,
         ReferencingEndCardinality = relationship.ReferencingEndCardinality,
         ChildColumnIsUnique = relationship.ChildColumnIsUnique,
+        ConnectorLayout = CloneConnectorLayout(relationship.ConnectorLayout),
     };
 
     private static DataModelPendingOperation CloneOperation(DataModelPendingOperation operation) => new()

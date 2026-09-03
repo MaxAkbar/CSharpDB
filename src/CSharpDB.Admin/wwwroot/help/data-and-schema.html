@@ -89,9 +89,9 @@
                 <table>
                     <thead><tr><th>Control</th><th>Description</th></tr></thead>
                     <tbody>
-                        <tr><td>Auto Arrange</td><td>Places referenced tables to the left of dependent tables. It is the only action that reflows every visible table.</td></tr>
-                        <tr><td>Tidy Model</td><td>Switches tables to Keys First, arranges the complete relationship graph, and fits it into the canvas. Use it to recover a crowded or overlapping saved layout.</td></tr>
-                        <tr><td>Fit Model</td><td>Centers and scales the visible model without changing table positions.</td></tr>
+                        <tr><td>Auto Arrange</td><td>Places referenced tables to the left of dependent tables while preserving custom connector bends.</td></tr>
+                        <tr><td>Tidy Model</td><td>Resets custom connector routes, switches tables to Keys First, arranges the complete graph, and fits it into the canvas. It asks for confirmation when custom routes exist.</td></tr>
+                        <tr><td>Fit Model</td><td>Centers and scales the visible tables and connectors without changing their saved positions.</td></tr>
                         <tr><td>Keys First</td><td>Shows primary keys, foreign keys, and columns used by visible relationships.</td></tr>
                         <tr><td>Expand All / Collapse All</td><td>Shows every column or table headers only. Each table also has its own detail control.</td></tr>
                         <tr><td>Pan and zoom</td><td>Drag the canvas background to pan and use the mouse wheel to zoom around the pointer.</td></tr>
@@ -99,9 +99,13 @@
                     </tbody>
                 </table>
                 <p>Relationship lines use crow's-foot markers: the referenced end is one or optional-one according to child-column nullability; the child end is many unless that foreign-key column is uniquely constrained. Physical, pending, and archive relationships retain separate solid, dotted, and dashed styles. Select a table to emphasize its immediate neighborhood, or select a relationship to highlight both participating columns and display its name and column mapping. Click empty canvas space or press <strong>Escape</strong> to clear the selection.</p>
+                <h3>Arrange connector bends</h3>
+                <p>Select a relationship to show its bend handles and segment grips. Drag a bend to move its routing guide, or drag a segment grip sideways to introduce a right-angle detour. Double-clicking a segment adds a bend at that point. The <strong>Connector route</strong> section in Details provides <strong>Add Bend</strong>, <strong>Remove Bend</strong>, and <strong>Reset to Automatic</strong>. Add Bend focuses a new guide on the longest segment so you can move it.</p>
+                <p>With a bend focused, use arrow keys to move it by 8 canvas units, or Shift+Arrow for 24 units. Enter on a segment grip creates a bend. Delete or Backspace removes the focused bend, never the foreign key. Removing the last bend restores automatic routing. Escape cancels an active drag; otherwise it clears selection.</p>
+                <p>Table positions, custom bend coordinates, attachment sides, and the viewport are saved with the diagram. Bend edits save when released, and are also included in explicit Save. Reopening or refreshing preserves these positions. Moving a table keeps its connector guides fixed while the endpoint legs follow the participating columns. If a table covers a saved bend, a safe automatic route is shown temporarily; the saved guide is retained. Move the table away or reset the route in Details.</p>
                 <div class="callout warning">
                     <strong>Know which action changes what.</strong>
-                    Removing a table only removes it from the current canvas. Deleting a diagram removes the saved layout record. Applying staged changes executes the schema operations shown in the pending-change preview.
+                    Moving or resetting connectors changes only the diagram layout. Removing a table only removes it and its connectors from the current canvas. Deleting a diagram removes the saved layout record. Applying staged changes executes the schema operations shown in the pending-change preview.
                 </div>
 
                 <h2>Query Editor</h2>

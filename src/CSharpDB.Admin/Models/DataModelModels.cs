@@ -2,7 +2,7 @@ namespace CSharpDB.Admin.Models;
 
 public sealed class DataModelState
 {
-    public int Version { get; set; } = 2;
+    public int Version { get; set; } = 3;
     public string? DiagramName { get; set; }
     public List<DataModelNode> Nodes { get; set; } = [];
     public List<DataModelRelationship> Relationships { get; set; } = [];
@@ -78,6 +78,28 @@ public sealed class DataModelRelationship
     public DataModelCardinality ReferencedEndCardinality { get; set; } = DataModelCardinality.One;
     public DataModelCardinality ReferencingEndCardinality { get; set; } = DataModelCardinality.ZeroOrMany;
     public bool ChildColumnIsUnique { get; set; }
+    public DataModelConnectorLayout? ConnectorLayout { get; set; }
+}
+
+public enum DataModelConnectorSide
+{
+    Left,
+    Right,
+}
+
+/// <summary>Visual routing constraints in unscaled canvas coordinates; never schema metadata.</summary>
+public sealed class DataModelConnectorLayout
+{
+    public DataModelConnectorSide ParentSide { get; set; } = DataModelConnectorSide.Right;
+    public DataModelConnectorSide ChildSide { get; set; } = DataModelConnectorSide.Left;
+    public List<DataModelConnectorWaypoint> Waypoints { get; set; } = [];
+}
+
+public sealed class DataModelConnectorWaypoint
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public double X { get; set; }
+    public double Y { get; set; }
 }
 
 public enum DataModelRelationshipKind
@@ -203,6 +225,8 @@ public sealed record DataModelNodeMove(string NodeName, double X, double Y);
 public sealed record DataModelNodeDetailChange(string NodeName, DataModelNodeDetailLevel DetailLevel);
 
 public sealed record DataModelViewportChange(double X, double Y, double Scale);
+
+public sealed record DataModelConnectorLayoutChange(string RelationshipId, DataModelConnectorLayout? Layout);
 
 public sealed class DataModelSourceMetadata
 {

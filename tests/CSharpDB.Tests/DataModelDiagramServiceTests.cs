@@ -29,6 +29,121 @@ public sealed class DataModelDiagramServiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SaveLoadDiagram_RestoresConnectorLayoutWithoutChangingSchemaOrPendingOperations()
+    {
+        DataModelState state = await _service.BuildModelAsync("customers", ct: TestContext.Current.CancellationToken);
+        string schemaPreview = _service.BuildPreviewSql(state);
+        string pendingPreview = _service.BuildPendingOperationsPreview(state);
+        Assert.Single(state.Relationships).ConnectorLayout = CustomLayout();
+        state.ViewportX = 147;
+        state.ViewportY = 235;
+        state.Scale = 1.25;
+
+        await _service.SaveDiagramAsync("Custom connectors", state, TestContext.Current.CancellationToken);
+        DataModelState loaded = Assert.IsType<DataModelState>(
+            await _service.LoadDiagramAsync("Custom connectors", TestContext.Current.CancellationToken));
+
+        Assert.Equal(3, loaded.Version);
+        AssertCustomLayout(Assert.Single(loaded.Relationships).ConnectorLayout);
+        Assert.Equal((147d, 235d, 1.25d), (loaded.ViewportX, loaded.ViewportY, loaded.Scale));
+        Assert.Equal(schemaPreview, _service.BuildPreviewSql(loaded));
+        Assert.Equal(pendingPreview, _service.BuildPendingOperationsPreview(loaded));
+        Assert.Empty(loaded.PendingOperations);
+    }
+
+    [Fact]
+    public async Task ApplyPendingOperations_TransfersDraftConnectorRouteToAppliedPhysicalForeignKey()
+    {
+        Assert.Null((await _client.ExecuteSqlAsync(
+            "CREATE TABLE shipments (id INTEGER PRIMARY KEY, customer_id INTEGER);",
+            TestContext.Current.CancellationToken)).Error);
+        DataModelState state = await _service.BuildSelectionAsync(["customers", "shipments"], ct: TestContext.Current.CancellationToken);
+        state.DiagramName = "Draft routes";
+        var operation = new DataModelPendingOperation
+        {
+            Kind = DataModelPendingOperationKind.AddForeignKey,
+            TableName = "shipments",
+            ColumnName = "customer_id",
+            ReferencedTableName = "customers",
+            ReferencedColumnName = "id",
+        };
+        state.PendingOperations.Add(operation);
+        state.Relationships.Add(new DataModelRelationship
+        {
+            Id = operation.Id,
+            Kind = DataModelRelationshipKind.Draft,
+            LeftTable = "shipments",
+            LeftColumn = "customer_id",
+            RightTable = "customers",
+            RightColumn = "id",
+            ConnectorLayout = CustomLayout(),
+        });
+
+        DataModelApplyResult result = await _service.ApplyPendingOperationsAsync(state, TestContext.Current.CancellationToken);
+        DataModelRelationship applied = Assert.Single(state.Relationships);
+        Assert.True(result.Succeeded);
+        Assert.Equal(DataModelRelationshipKind.PhysicalForeignKey, applied.Kind);
+        Assert.NotEqual(operation.Id, applied.Id);
+        Assert.False(string.IsNullOrWhiteSpace(applied.ConstraintName));
+        AssertCustomLayout(applied.ConnectorLayout);
+        Assert.Empty(state.PendingOperations);
+
+        DataModelState loaded = Assert.IsType<DataModelState>(
+            await _service.LoadDiagramAsync("Draft routes", TestContext.Current.CancellationToken));
+        DataModelRelationship restored = Assert.Single(loaded.Relationships);
+        Assert.Equal(applied.ConstraintName, restored.ConstraintName);
+        Assert.Equal(DataModelRelationshipKind.PhysicalForeignKey, restored.Kind);
+        AssertCustomLayout(restored.ConnectorLayout);
+    }
+
+    [Fact]
+    public async Task ApplyPendingOperations_RenamesPreserveCustomConnectorLayoutAfterReload()
+    {
+        DataModelState state = await _service.BuildModelAsync("customers", ct: TestContext.Current.CancellationToken);
+        state.DiagramName = "Renamed routes";
+        Assert.Single(state.Relationships).ConnectorLayout = CustomLayout();
+        state.PendingOperations.Add(new DataModelPendingOperation
+        {
+            Kind = DataModelPendingOperationKind.RenameTable,
+            TableName = "orders",
+            NewTableName = "purchases",
+        });
+        state.PendingOperations.Add(new DataModelPendingOperation
+        {
+            Kind = DataModelPendingOperationKind.RenameColumn,
+            TableName = "purchases",
+            ColumnName = "customer_id",
+            NewColumnName = "buyer_id",
+        });
+
+        await _service.ApplyPendingOperationsAsync(state, TestContext.Current.CancellationToken);
+        DataModelState loaded = Assert.IsType<DataModelState>(
+            await _service.LoadDiagramAsync("Renamed routes", TestContext.Current.CancellationToken));
+
+        DataModelRelationship restored = Assert.Single(loaded.Relationships);
+        Assert.Equal("purchases", restored.LeftTable);
+        Assert.Equal("buyer_id", restored.LeftColumn);
+        AssertCustomLayout(restored.ConnectorLayout);
+        Assert.Empty(loaded.Warnings);
+    }
+
+    private static DataModelConnectorLayout CustomLayout() => new()
+    {
+        ParentSide = DataModelConnectorSide.Right,
+        ChildSide = DataModelConnectorSide.Left,
+        Waypoints = [new DataModelConnectorWaypoint { Id = "saved-bend", X = 700.25, Y = 345.5 }],
+    };
+
+    private static void AssertCustomLayout(DataModelConnectorLayout? layout)
+    {
+        Assert.NotNull(layout);
+        Assert.Equal(DataModelConnectorSide.Right, layout.ParentSide);
+        Assert.Equal(DataModelConnectorSide.Left, layout.ChildSide);
+        DataModelConnectorWaypoint waypoint = Assert.Single(layout.Waypoints);
+        Assert.Equal(("saved-bend", 700.25, 345.5), (waypoint.Id, waypoint.X, waypoint.Y));
+    }
+
+    [Fact]
     public async Task SaveLoadDiagram_RoundTripsTableMembershipAndPlacement()
     {
         DataModelState state = await _service.BuildModelAsync("customers", ct: TestContext.Current.CancellationToken);

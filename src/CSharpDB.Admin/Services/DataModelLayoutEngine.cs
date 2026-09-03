@@ -59,12 +59,6 @@ public static class DataModelCanvasMetrics
     }
 }
 
-public enum DataModelConnectorSide
-{
-    Left,
-    Right,
-}
-
 public readonly record struct DataModelConnectorPoint(double X, double Y);
 
 public readonly record struct DataModelConnectorEndpoint(
@@ -81,7 +75,8 @@ public readonly record struct DataModelConnectorObstacle(
 public sealed record DataModelConnectorRoute(
     IReadOnlyList<DataModelConnectorPoint> Points,
     double LabelX,
-    double LabelY);
+    double LabelY,
+    bool UsedAutomaticFallback = false);
 
 /// <summary>
 /// Produces deterministic orthogonal connector paths that stay outside table cards.
@@ -92,6 +87,7 @@ public static class DataModelConnectorRouter
 {
     public const double Clearance = 18;
     public const double EndpointStub = 24;
+    public const int MaximumWaypoints = 128;
     private const double BendPenalty = 48;
     private const double OuterLaneGap = 24;
     private const double EqualityTolerance = 0.001;
@@ -99,36 +95,91 @@ public static class DataModelConnectorRouter
     public static DataModelConnectorRoute Route(
         DataModelConnectorEndpoint start,
         DataModelConnectorEndpoint end,
-        IReadOnlyList<DataModelConnectorObstacle> obstacles)
+        IReadOnlyList<DataModelConnectorObstacle> obstacles,
+        DataModelConnectorLayout? layout = null)
     {
         DataModelConnectorPoint startPoint = new(start.X, start.Y);
         DataModelConnectorPoint endPoint = new(end.X, end.Y);
-        DataModelConnectorPoint departure = new(
-            start.X + (start.Side == DataModelConnectorSide.Right ? EndpointStub : -EndpointStub),
-            start.Y);
-        DataModelConnectorPoint approach = new(
-            end.X + (end.Side == DataModelConnectorSide.Right ? EndpointStub : -EndpointStub),
-            end.Y);
-
-        List<RoutingRect> expanded = obstacles
-            .Select(obstacle => new RoutingRect(
-                obstacle.X - Clearance,
-                obstacle.Y - Clearance,
-                obstacle.X + obstacle.Width + Clearance,
-                obstacle.Y + obstacle.Height + Clearance))
-            .ToList();
-
-        List<DataModelConnectorPoint>? interior = FindPath(departure, approach, expanded);
+        List<RoutingRect> physical = ExpandObstacles(obstacles, 0);
+        List<RoutingRect> expanded = ExpandObstacles(obstacles, Clearance);
+        DataModelConnectorPoint departure = EndpointDeparture(start, physical);
+        DataModelConnectorPoint approach = EndpointDeparture(end, physical);
+        List<DataModelConnectorPoint> waypoints = layout?.Waypoints
+            .Select(static waypoint => new DataModelConnectorPoint(waypoint.X, waypoint.Y))
+            .ToList() ?? [];
+        bool custom = layout is not null && waypoints.Count > 0;
+        List<DataModelConnectorPoint>? interior = null;
+        if (custom && waypoints.Count <= MaximumWaypoints && waypoints.All(point => IsValidWaypoint(point, expanded)))
+            interior = FindWaypointPath(departure, approach, waypoints, expanded);
+        bool usedAutomaticFallback = custom && interior is null;
         if (interior is null)
-            interior = FallbackPath(departure, approach, expanded);
+        {
+            interior = FindPath(departure, approach, expanded)
+                // Tight manually positioned cards can leave less than the preferred clearance.
+                // Relax the gutter before accepting any path through a physical card.
+                ?? FindPath(departure, approach, physical)
+                ?? FallbackPath(departure, approach, physical);
+        }
 
         var points = new List<DataModelConnectorPoint>(interior.Count + 2) { startPoint };
         points.AddRange(interior);
         points.Add(endPoint);
-        points = Simplify(points);
+        points = Simplify(points, custom && !usedAutomaticFallback ? waypoints : []);
 
         (double labelX, double labelY) = LabelPoint(points);
-        return new DataModelConnectorRoute(points, labelX, labelY);
+        return new DataModelConnectorRoute(points, labelX, labelY, usedAutomaticFallback);
+    }
+
+    public static bool IsValidWaypoint(
+        DataModelConnectorPoint point,
+        IReadOnlyList<DataModelConnectorObstacle> obstacles) =>
+        IsValidWaypoint(point, ExpandObstacles(obstacles, Clearance));
+
+    private static bool IsValidWaypoint(DataModelConnectorPoint point, IReadOnlyList<RoutingRect> obstacles) =>
+        double.IsFinite(point.X) && double.IsFinite(point.Y)
+        && point.X >= 4 && point.Y >= 4 && !InsideAny(point, obstacles);
+
+    private static List<RoutingRect> ExpandObstacles(IReadOnlyList<DataModelConnectorObstacle> obstacles, double clearance) =>
+        obstacles.Select(obstacle => new RoutingRect(
+            obstacle.X - clearance,
+            obstacle.Y - clearance,
+            obstacle.X + obstacle.Width + clearance,
+            obstacle.Y + obstacle.Height + clearance)).ToList();
+
+    private static DataModelConnectorPoint EndpointDeparture(
+        DataModelConnectorEndpoint endpoint,
+        IReadOnlyList<RoutingRect> obstacles)
+    {
+        double nearestObstacle = double.PositiveInfinity;
+        foreach (RoutingRect obstacle in obstacles)
+        {
+            if (endpoint.Y <= obstacle.Top + EqualityTolerance || endpoint.Y >= obstacle.Bottom - EqualityTolerance)
+                continue;
+            double gap = endpoint.Side == DataModelConnectorSide.Right
+                ? obstacle.Left - endpoint.X
+                : endpoint.X - obstacle.Right;
+            if (gap > EqualityTolerance)
+                nearestObstacle = Math.Min(nearestObstacle, gap);
+        }
+        double distance = nearestObstacle < EndpointStub ? nearestObstacle / 2 : EndpointStub;
+        return new(endpoint.X + (endpoint.Side == DataModelConnectorSide.Right ? distance : -distance), endpoint.Y);
+    }
+
+    private static List<DataModelConnectorPoint>? FindWaypointPath(
+        DataModelConnectorPoint start,
+        DataModelConnectorPoint end,
+        IReadOnlyList<DataModelConnectorPoint> waypoints,
+        IReadOnlyList<RoutingRect> obstacles)
+    {
+        var result = new List<DataModelConnectorPoint> { start };
+        foreach (DataModelConnectorPoint target in waypoints.Append(end))
+        {
+            List<DataModelConnectorPoint>? leg = FindPath(result[^1], target, obstacles);
+            if (leg is null)
+                return null;
+            result.AddRange(leg.Skip(1));
+        }
+        return result;
     }
 
     public static bool IntersectsObstacleInterior(
@@ -279,14 +330,19 @@ public static class DataModelConnectorRouter
         return [start, new(start.X, routeY), new(end.X, routeY), end];
     }
 
-    private static List<DataModelConnectorPoint> Simplify(IReadOnlyList<DataModelConnectorPoint> points)
+    private static List<DataModelConnectorPoint> Simplify(
+        IReadOnlyList<DataModelConnectorPoint> points,
+        IReadOnlyList<DataModelConnectorPoint> protectedPoints)
     {
         var result = new List<DataModelConnectorPoint>();
         foreach (DataModelConnectorPoint point in points)
         {
             if (result.Count > 0 && SamePoint(result[^1], point))
                 continue;
-            while (result.Count >= 2 && Collinear(result[^2], result[^1], point))
+            while (result.Count >= 2
+                   && !protectedPoints.Any(guide => SamePoint(guide, result[^1]))
+                   && Collinear(result[^2], result[^1], point)
+                   && Between(result[^2], result[^1], point))
                 result.RemoveAt(result.Count - 1);
             result.Add(point);
         }
@@ -352,6 +408,12 @@ public static class DataModelConnectorRouter
     private static bool Collinear(DataModelConnectorPoint first, DataModelConnectorPoint second, DataModelConnectorPoint third) =>
         Math.Abs(first.X - second.X) < EqualityTolerance && Math.Abs(second.X - third.X) < EqualityTolerance
         || Math.Abs(first.Y - second.Y) < EqualityTolerance && Math.Abs(second.Y - third.Y) < EqualityTolerance;
+
+    private static bool Between(DataModelConnectorPoint first, DataModelConnectorPoint middle, DataModelConnectorPoint last) =>
+        middle.X >= Math.Min(first.X, last.X) - EqualityTolerance
+        && middle.X <= Math.Max(first.X, last.X) + EqualityTolerance
+        && middle.Y >= Math.Min(first.Y, last.Y) - EqualityTolerance
+        && middle.Y <= Math.Max(first.Y, last.Y) + EqualityTolerance;
 
     private readonly record struct RoutingRect(double Left, double Top, double Right, double Bottom);
     private readonly record struct RouteEdge(int Target, RouteDirection Direction, double Length);

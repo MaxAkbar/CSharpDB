@@ -156,7 +156,7 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
     {
         await EnsureDiagramCatalogAsync(ct);
         string normalized = NormalizeDiagramName(name);
-        state.Version = 2;
+        state.Version = 3;
         state.DiagramName = normalized;
         state.SavedLayoutName = normalized;
         state.SchemaSnapshotUtc ??= DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
@@ -323,8 +323,8 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
         var messages = new List<string>();
         foreach (DataModelPendingOperation operation in state.PendingOperations.ToArray())
         {
-            await ApplyOperationAsync(operation, ct);
-            ApplyOperationToState(state, operation);
+            ForeignKeyMigrationResult? migration = await ApplyOperationAsync(operation, ct);
+            ApplyOperationToState(state, operation, migration);
             messages.Add(DescribeOperation(operation));
         }
 
@@ -340,7 +340,10 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
         };
     }
 
-    private static void ApplyOperationToState(DataModelState state, DataModelPendingOperation operation)
+    private static void ApplyOperationToState(
+        DataModelState state,
+        DataModelPendingOperation operation,
+        ForeignKeyMigrationResult? migration)
     {
         switch (operation.Kind)
         {
@@ -420,7 +423,34 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
                 break;
 
             case DataModelPendingOperationKind.AddForeignKey:
-                state.Relationships.RemoveAll(relationship => string.Equals(relationship.Id, operation.Id, StringComparison.Ordinal));
+                DataModelRelationship? draft = state.Relationships.FirstOrDefault(relationship =>
+                    string.Equals(relationship.Id, operation.Id, StringComparison.Ordinal));
+                ForeignKeyMigrationAppliedConstraint[] applied = migration?.AppliedConstraints.Where(constraint =>
+                    string.Equals(constraint.TableName, operation.TableName, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(constraint.ColumnName, operation.ColumnName, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(constraint.ReferencedTableName, operation.ReferencedTableName, StringComparison.OrdinalIgnoreCase) &&
+                    (string.IsNullOrWhiteSpace(operation.ReferencedColumnName) ||
+                     string.Equals(constraint.ReferencedColumnName, operation.ReferencedColumnName, StringComparison.OrdinalIgnoreCase)))
+                    .ToArray() ?? [];
+                if (draft is not null && applied.Length == 1)
+                {
+                    // Retain the visual route while replacing the staging identity with the real FK.
+                    ForeignKeyMigrationAppliedConstraint constraint = applied[0];
+                    draft.Id = $"{constraint.TableName}:{constraint.ColumnName}->{constraint.ReferencedTableName}:{constraint.ReferencedColumnName}";
+                    draft.LeftTable = constraint.TableName;
+                    draft.LeftColumn = constraint.ColumnName;
+                    draft.RightTable = constraint.ReferencedTableName;
+                    draft.RightColumn = constraint.ReferencedColumnName;
+                    draft.ConstraintName = constraint.ConstraintName;
+                    draft.Kind = DataModelRelationshipKind.PhysicalForeignKey;
+                    draft.Warning = null;
+                }
+                else
+                {
+                    if (draft?.ConnectorLayout is not null)
+                        state.Warnings.Add($"Custom connector route for '{draft.LeftTable}.{draft.LeftColumn}' could not be matched to the applied foreign key; automatic routing is used.");
+                    state.Relationships.RemoveAll(relationship => string.Equals(relationship.Id, operation.Id, StringComparison.Ordinal));
+                }
                 break;
 
             case DataModelPendingOperationKind.DropForeignKey:
@@ -434,7 +464,7 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
     private static DataModelNode? FindStateNode(DataModelState state, string tableName) =>
         state.Nodes.FirstOrDefault(node => string.Equals(node.Name, tableName, StringComparison.OrdinalIgnoreCase));
 
-    private async Task ApplyOperationAsync(DataModelPendingOperation operation, CancellationToken ct)
+    private async Task<ForeignKeyMigrationResult?> ApplyOperationAsync(DataModelPendingOperation operation, CancellationToken ct)
     {
         switch (operation.Kind)
         {
@@ -487,7 +517,7 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
                     ct);
                 if (!migration.Succeeded)
                     throw new InvalidOperationException($"Foreign key migration failed with {migration.ViolationCount} violation(s).");
-                break;
+                return migration;
 
             case DataModelPendingOperationKind.DropForeignKey:
                 ThrowIfSqlError(await client.ExecuteSqlAsync(BuildOperationSql(operation), ct));
@@ -496,6 +526,8 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
             default:
                 throw new InvalidOperationException($"Unsupported diagram operation '{operation.Kind}'.");
         }
+
+        return null;
     }
 
     private static string BuildOperationSql(DataModelPendingOperation operation) => operation.Kind switch

@@ -3649,6 +3649,7 @@ html:not(.desktop-shell-bridge) .native-path-picker > button {
 .schema-canvas-wrap {
     height: 100%;
     min-height: 0;
+    position: relative;
 }
 
 .schema-canvas {
@@ -3676,6 +3677,10 @@ html:not(.desktop-shell-bridge) .native-path-picker > button {
 .schema-canvas-stage {
     position: relative;
     transform-origin: 0 0;
+}
+
+.schema-canvas-stage > .designer-canvas-svg {
+    overflow: visible;
 }
 
 .schema-node {
@@ -3855,6 +3860,90 @@ html:not(.desktop-shell-bridge) .native-path-picker > button {
 .schema-relationship path[data-model-edge="hit"]:focus-visible + path {
     filter: drop-shadow(0 0 4px color-mix(in srgb, var(--accent-blue) 60%, transparent));
     stroke-width: 2.4px;
+}
+
+.schema-route-handle {
+    pointer-events: all;
+    touch-action: none;
+    cursor: move;
+    outline: none;
+}
+
+.schema-route-handle-hit {
+    fill: transparent;
+    stroke: none;
+}
+
+.schema-route-handle-dot {
+    fill: var(--bg-elevated);
+    stroke: var(--accent-blue);
+    stroke-width: 1.5;
+    vector-effect: non-scaling-stroke;
+}
+
+.schema-route-waypoint .schema-route-handle-dot,
+.schema-route-handle.selected .schema-route-handle-dot {
+    fill: var(--accent-blue);
+    stroke: var(--bg-primary);
+}
+
+.schema-route-handle:focus-visible .schema-route-handle-dot {
+    stroke: var(--text-primary);
+    stroke-width: 3;
+}
+
+.schema-route-handle.invalid .schema-route-handle-dot {
+    fill: var(--accent-red);
+    stroke: var(--text-primary);
+}
+
+.schema-route-warning {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    right: 8px;
+    z-index: 21;
+    pointer-events: none;
+    padding: 6px 10px;
+    background: var(--bg-elevated);
+    color: var(--accent-yellow);
+    font-size: 12px;
+}
+
+.schema-route-announcement {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+
+.data-model-connector-actions {
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border-light);
+}
+
+.data-model-connector-actions h4 {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    margin: 0 0 8px;
+    font-size: 12px;
+}
+
+.data-model-connector-actions h4 small {
+    color: var(--text-muted);
+    font-weight: normal;
+}
+
+.data-model-connector-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 8px;
 }
 
 .schema-canvas-legend {

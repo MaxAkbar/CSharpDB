@@ -47,7 +47,7 @@
         <button class="toolbar-btn" @onclick="AutoArrangeAsync" disabled="@(_loading || _state.Nodes.Count == 0)" title="Arrange parents left of dependent tables">
             <i class="bi bi-distribute-horizontal"></i> Auto Arrange
         </button>
-        <button class="toolbar-btn" @onclick="TidyModelAsync" disabled="@(_loading || _state.Nodes.Count == 0)" title="Use Keys First, arrange relationships, and fit the complete model">
+        <button class="toolbar-btn" @onclick="TidyModelAsync" disabled="@(_loading || _state.Nodes.Count == 0)" title="Reset custom connector routes, use Keys First, arrange tables, and fit the complete model">
             <i class="bi bi-stars"></i> Tidy Model
         </button>
         <button class="toolbar-btn" @onclick="FitModelAsync" disabled="@(_loading || _state.Nodes.Count == 0)" title="Fit the complete model in the canvas">
@@ -193,7 +193,20 @@
 
     @if (_error is not null)
     {
-        <div class="query-error"><i class="bi bi-exclamation-triangle"></i> @_error</div>
+        <div class="query-error" role="alert"><i class="bi bi-exclamation-triangle"></i> @_error</div>
+    }
+    @if (_diagramSaveError is not null)
+    {
+        <div class="query-error" role="alert">@_diagramSaveError Your layout is still open in this tab. Use Save to retry before closing.</div>
+    }
+
+    @if (_confirmTidyRoutes)
+    {
+        <div class="data-model-layout-notice" role="alert">
+            <span>Tidy Model will reset all custom connector routes and rearrange the tables. Continue?</span>
+            <button class="toolbar-btn primary" @onclick="ApplyTidyModelAsync">Tidy and reset routes</button>
+            <button class="toolbar-btn" @onclick="() => _confirmTidyRoutes = false">Cancel</button>
+        </div>
     }
 
     @if (LayoutOverlapCount > 0)
@@ -256,6 +269,8 @@
                           OnSelectionCleared="ClearSelection"
                           OnNodeMoved="OnNodeMoved"
                           OnNodeDetailChanged="OnNodeDetailChangedAsync"
+                          OnConnectorRouteChanged="OnConnectorRouteChangedAsync"
+                          OnConnectorWaypointSelected="OnConnectorWaypointSelected"
                           OnViewportChanged="OnViewportChangedAsync" />
         </section>
         @if (_showInspectorPane)
@@ -387,6 +402,16 @@
                         <strong>@SelectedRelationship.LeftTable.@SelectedRelationship.LeftColumn</strong>
                         <span>references @SelectedRelationship.RightTable.@SelectedRelationship.RightColumn</span>
                         <small>@RelationshipKindLabel(SelectedRelationship.Kind)</small>
+                    </div>
+                    <div class="data-model-connector-actions">
+                        <h4>Connector route <small>@(SelectedRelationship.ConnectorLayout is null ? "Automatic" : "Custom")</small></h4>
+                        <p class="data-model-muted">Layout only; does not change the foreign key.</p>
+                        <div class="data-model-connector-buttons">
+                            <button class="toolbar-btn" disabled="@(!CanEditSelectedConnector)" @onclick="AddConnectorBendAsync">Add Bend</button>
+                            <button class="toolbar-btn" disabled="@(!CanRemoveSelectedBend)" @onclick="RemoveConnectorBendAsync">Remove Bend</button>
+                            <button class="toolbar-btn" disabled="@(SelectedRelationship.ConnectorLayout is null)" @onclick="ResetConnectorRouteAsync">Reset to Automatic</button>
+                        </div>
+                        <p class="data-model-muted">Drag a bend or segment grip. Arrow keys move the focused bend; Shift moves farther. Delete removes only a bend. Escape cancels a drag or clears selection.</p>
                     </div>
                     @if (SelectedRelationship.Kind != DataModelRelationshipKind.ExternalArchiveForeignKey)
                     {
@@ -541,6 +566,8 @@
     private IReadOnlyList<DataModelDiagramSummary> _savedDiagrams = [];
     private string? _selectedNodeName;
     private string? _selectedRelationshipId;
+    private string? _selectedWaypointId;
+    private bool _confirmTidyRoutes;
     private string _diagramName = "";
     private string _newTableName = "";
     private string _newTablePrimaryKeyName = "Id";
@@ -566,6 +593,7 @@
     private bool _fitAfterRender;
     private string _sourceSearch = "";
     private string? _error;
+    private string? _diagramSaveError;
     private CancellationTokenSource? _viewportPersistCts;
     private AdminRouteClientLease? _routeLease;
     private DataModelService? _routeDataModelService;
@@ -587,6 +615,12 @@
         string.IsNullOrWhiteSpace(_selectedRelationshipId)
             ? null
             : _state.Relationships.FirstOrDefault(relationship => string.Equals(relationship.Id, _selectedRelationshipId, StringComparison.Ordinal));
+
+    private bool CanEditSelectedConnector => SelectedRelationship is { IsResolved: true } relationship &&
+        FindNode(relationship.LeftTable) is not null && FindNode(relationship.RightTable) is not null;
+
+    private bool CanRemoveSelectedBend => CanEditSelectedConnector && _selectedWaypointId is not null &&
+        SelectedRelationship?.ConnectorLayout?.Waypoints.Any(point => point.Id == _selectedWaypointId) == true;
 
     private IReadOnlyList<DataModelNode> MutableTableNodes =>
         _state.Nodes
@@ -763,6 +797,9 @@
 
     private void ResetRouteScopedState()
     {
+        _confirmTidyRoutes = false;
+        _selectedWaypointId = null;
+        _diagramSaveError = null;
         _state = new DataModelState();
         _sourceOptions = [];
         _savedDiagrams = [];
@@ -780,6 +817,8 @@
 
     private async Task LoadInitialAsync()
     {
+        _confirmTidyRoutes = false;
+        _selectedWaypointId = null;
         _loading = true;
         _error = null;
         try
@@ -846,6 +885,8 @@
 
     private async Task RefreshAsync()
     {
+        _confirmTidyRoutes = false;
+        _selectedWaypointId = null;
         _loading = true;
         _error = null;
         try
@@ -857,6 +898,7 @@
                 if (saved is not null)
                 {
                     _state = saved;
+                    _diagramSaveError = null;
                     NormalizeZoom();
                     _diagramName = saved.DiagramName ?? _diagramName;
                     _selectedNodeName = null;
@@ -881,6 +923,8 @@
                 refreshed.Nodes.Add(draftNode);
             foreach (DataModelRelationship draftRelationship in previous.Relationships.Where(static relationship => relationship.Kind == DataModelRelationshipKind.Draft))
                 refreshed.Relationships.Add(draftRelationship);
+            foreach (string warning in DataModelGraphBuilder.PreserveConnectorLayouts(previous.Relationships, refreshed.Relationships))
+                if (!refreshed.Warnings.Contains(warning, StringComparer.OrdinalIgnoreCase)) refreshed.Warnings.Add(warning);
             refreshed.DiagramName = previous.DiagramName;
             refreshed.SavedLayoutName = previous.SavedLayoutName;
             refreshed.PendingOperations = previous.PendingOperations;
@@ -971,6 +1015,7 @@
             else if (relationship.IsResolved || !_state.Relationships[existingIndex].IsResolved)
             {
                 DataModelRelationship existing = _state.Relationships[existingIndex];
+                DataModelGraphBuilder.PreserveConnectorLayouts([existing], [relationship]);
                 if (relationship.IsResolved && !existing.IsResolved && !string.IsNullOrWhiteSpace(existing.Warning))
                 {
                     string obsoleteWarning = $"{existing.LeftTable}.{existing.LeftColumn}: {existing.Warning}";
@@ -1008,6 +1053,8 @@
 
     private async Task ClearCanvas()
     {
+        _confirmTidyRoutes = false;
+        _selectedWaypointId = null;
         string? diagramName = _state.DiagramName;
         _state = new DataModelState
         {
@@ -1024,6 +1071,7 @@
 
     private void SelectNode(string name)
     {
+        _selectedWaypointId = null;
         _selectedNodeName = name;
         _selectedRelationshipId = null;
         _showInspectorPane = true;
@@ -1033,6 +1081,7 @@
 
     private void SelectRelationship(string id)
     {
+        if (_selectedRelationshipId != id) _selectedWaypointId = null;
         _selectedRelationshipId = id;
         _selectedNodeName = null;
         _showInspectorPane = true;
@@ -1040,6 +1089,7 @@
 
     private void ClearSelection()
     {
+        _selectedWaypointId = null;
         _selectedNodeName = null;
         _selectedRelationshipId = null;
         _showInspectorPane = false;
@@ -1130,6 +1180,20 @@
 
     private async Task TidyModelAsync()
     {
+        if (_state.Relationships.Any(static relationship => relationship.ConnectorLayout is not null))
+        {
+            _confirmTidyRoutes = true;
+            return;
+        }
+        await ApplyTidyModelAsync();
+    }
+
+    private async Task ApplyTidyModelAsync()
+    {
+        _confirmTidyRoutes = false;
+        _selectedWaypointId = null;
+        foreach (DataModelRelationship relationship in _state.Relationships)
+            relationship.ConnectorLayout = null;
         foreach (DataModelNode node in _state.Nodes)
         {
             node.DetailLevel = DataModelNodeDetailLevel.Keys;
@@ -1140,6 +1204,42 @@
         _fitAfterRender = true;
         SaveState();
         await PersistActiveDiagramAsync();
+    }
+
+    private void OnConnectorWaypointSelected(string? waypointId) => _selectedWaypointId = waypointId;
+
+    private async Task OnConnectorRouteChangedAsync(DataModelConnectorLayoutChange change)
+    {
+        DataModelRelationship? relationship = _state.Relationships.FirstOrDefault(item => item.Id == change.RelationshipId);
+        if (relationship is null) return;
+        relationship.ConnectorLayout = DataModelGraphBuilder.CloneConnectorLayout(change.Layout);
+        if (relationship.ConnectorLayout?.Waypoints.Any(point => point.Id == _selectedWaypointId) != true)
+            _selectedWaypointId = null;
+        SaveState();
+        await PersistActiveDiagramAsync();
+    }
+
+    private async Task AddConnectorBendAsync()
+    {
+        if (_schemaCanvas is not null && CanEditSelectedConnector && SelectedRelationship is not null)
+            await _schemaCanvas.AddConnectorBendAsync(SelectedRelationship.Id);
+    }
+
+    private async Task RemoveConnectorBendAsync()
+    {
+        if (_schemaCanvas is not null && CanRemoveSelectedBend && SelectedRelationship is not null)
+            await _schemaCanvas.RemoveConnectorBendAsync(SelectedRelationship.Id);
+    }
+
+    private async Task ResetConnectorRouteAsync()
+    {
+        if (SelectedRelationship is not { } relationship) return;
+        await OnConnectorRouteChangedAsync(new DataModelConnectorLayoutChange(relationship.Id, null));
+        if (_schemaCanvas is not null)
+        {
+            await _schemaCanvas.OnConnectorAnnouncement("Connector route reset to automatic.");
+            await _schemaCanvas.FocusConnectorAsync(relationship.Id);
+        }
     }
 
     private async Task FitModelAsync()
@@ -1209,6 +1309,7 @@
         {
             _hasDiagramMutation = true;
             await ActiveDiagrams.SaveDiagramAsync(_diagramName, _state);
+            _diagramSaveError = null;
             _diagramName = _state.DiagramName ?? _diagramName.Trim();
             await RefreshSavedDiagramsAsync();
             SaveState();
@@ -1216,12 +1317,15 @@
         }
         catch (Exception ex)
         {
-            Toast.Error($"Failed to save data model diagram: {ex.Message}");
+            _diagramSaveError = $"Diagram changes were not saved: {ex.Message}";
+            Toast.Error(_diagramSaveError);
         }
     }
 
     private async Task LoadDiagramAsync(string name)
     {
+        _confirmTidyRoutes = false;
+        _selectedWaypointId = null;
         _showLoadPanel = false;
         try
         {
@@ -1233,6 +1337,7 @@
             }
 
             _state = loaded;
+            _diagramSaveError = null;
             NormalizeZoom();
             _diagramName = loaded.DiagramName ?? name;
             _hasDiagramMutation = true;
@@ -1250,6 +1355,7 @@
 
     private async Task DeleteActiveDiagramAsync()
     {
+        _confirmTidyRoutes = false;
         if (string.IsNullOrWhiteSpace(_state.DiagramName))
             return;
 
@@ -1635,11 +1741,13 @@
         try
         {
             await ActiveDiagrams.SaveDiagramAsync(_state.DiagramName, _state);
+            _diagramSaveError = null;
             await RefreshSavedDiagramsAsync();
         }
         catch (Exception ex)
         {
-            Toast.Warning($"Diagram changes were not saved: {ex.Message}");
+            _diagramSaveError = $"Diagram changes were not saved: {ex.Message}";
+            Toast.Warning(_diagramSaveError);
         }
     }
 
