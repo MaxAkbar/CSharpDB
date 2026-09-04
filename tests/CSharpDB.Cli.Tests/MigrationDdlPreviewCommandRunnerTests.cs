@@ -38,7 +38,12 @@ public sealed class MigrationDdlPreviewCommandRunnerTests
             Assert.Equal(InspectorCommandRunner.ExitWarn, firstCode);
             Assert.Equal(firstCode, repeatedCode);
             Assert.Equal(first, repeated);
-            string jsonDigest = Sha256(first);
+            // Keep the published preview fingerprint stable across release-version
+            // bumps, while asserting the current target separately below.
+            string jsonDigest = Sha256(first.Replace(
+                $"\"targetCSharpDbVersion\": \"{CSharpDbCapabilityCatalogLoader.CurrentTargetVersion}\"",
+                "\"targetCSharpDbVersion\": \"4.6.2\"",
+                StringComparison.Ordinal));
             Assert.True(
                 string.Equals(
                     "57f2843182b70b695fb311c6a8574b13648e49d8f277d8c22798c98ca05c3cec",
@@ -50,6 +55,9 @@ public sealed class MigrationDdlPreviewCommandRunnerTests
 
             using JsonDocument document = JsonDocument.Parse(first);
             JsonElement root = document.RootElement;
+            Assert.Equal(
+                CSharpDbCapabilityCatalogLoader.CurrentTargetVersion,
+                root.GetProperty("targetCSharpDbVersion").GetString());
             Assert.Equal(
                 "csharpdb-migration-preview/v1",
                 root.GetProperty("format").GetString());
@@ -89,7 +97,13 @@ public sealed class MigrationDdlPreviewCommandRunnerTests
                     [],
                     ct);
             Assert.Equal(InspectorCommandRunner.ExitWarn, textCode);
-            string textDigest = Sha256(text);
+            string targetHeader =
+                $"Target CSharpDB: {CSharpDbCapabilityCatalogLoader.CurrentTargetVersion}";
+            Assert.Contains(targetHeader, text, StringComparison.Ordinal);
+            string textDigest = Sha256(text.Replace(
+                targetHeader,
+                "Target CSharpDB: 4.6.2",
+                StringComparison.Ordinal));
             Assert.True(
                 string.Equals(
                     "3d5f424dc0cd24d9f55f9cbe17e4f4cc9a417592b5f3f0a183f893576c9555c9",

@@ -213,7 +213,7 @@ public sealed class CsvMigrationDataSourceTests
         await using (CsvMigrationDataSource source = await CsvMigrationDataSource.CreateAsync(
                          schema,
                          snapshot,
-                         Catalog(schema),
+                         schema.CreateCatalog("4.6.2"), // The cursor fixture includes its original target identity.
                          Cancellation))
         {
             MigrationDataBatch first = (await CollectAsync(source.ReadAsync(

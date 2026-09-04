@@ -212,7 +212,7 @@ public sealed class MigrationWebsiteDocumentationTests
                 "www",
                 "downloads.html"));
         Assert.Contains(
-            "<code>MIGRATION-SHA256SUMS.txt</code>",
+            "/MIGRATION-SHA256SUMS.txt\">CLI checksums</a>",
             downloads,
             StringComparison.Ordinal);
         Assert.Contains(

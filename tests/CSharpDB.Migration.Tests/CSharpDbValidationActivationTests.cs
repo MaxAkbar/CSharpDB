@@ -218,7 +218,8 @@ public sealed class CSharpDbValidationActivationTests
     public async Task ValidationSnapshot_OutcomeDigestMatchesGoldenVector()
     {
         using var files = new TemporaryTargetDirectory();
-        (MigrationCatalog catalog, MigrationPlan plan) = await ArtifactsAsync();
+        // Preserve the published target/outcome identity across version bumps.
+        (MigrationCatalog catalog, MigrationPlan plan) = await ArtifactsAsync("4.6.2");
         string originalTargetIdentity;
 
         await using (var source = new SyntheticMigrationDataSource(catalog))
@@ -635,7 +636,8 @@ public sealed class CSharpDbValidationActivationTests
         Assert.Contains("refuse", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static async Task<(MigrationCatalog Catalog, MigrationPlan Plan)> ArtifactsAsync()
+    private static async Task<(MigrationCatalog Catalog, MigrationPlan Plan)> ArtifactsAsync(
+        string targetVersion = CSharpDbCapabilityCatalogLoader.CurrentTargetVersion)
     {
         MigrationCatalog catalog = await new SyntheticMigrationSourceInspector().InspectAsync(
             new MigrationInspectionRequest
@@ -645,7 +647,9 @@ public sealed class CSharpDbValidationActivationTests
                 ProfileSampleSize = 5,
             },
             Ct);
-        MigrationPlan plan = new MigrationPlanner().CreatePlan(
+        catalog = catalog with { TargetCSharpDbVersion = targetVersion };
+        MigrationPlan plan = new MigrationPlanner(
+            CSharpDbCapabilityCatalogLoader.LoadEmbedded(targetVersion)).CreatePlan(
             catalog,
             new MigrationPlanningOptions { AcceptAllExclusions = true });
         return (catalog, plan with { Load = plan.Load with { BatchSize = 2 } });
