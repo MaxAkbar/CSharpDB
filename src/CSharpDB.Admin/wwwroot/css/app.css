@@ -3274,6 +3274,21 @@ html:not(.desktop-shell-bridge) .native-path-picker > button {
     flex-wrap: wrap;
 }
 
+.data-model-diagram-toolbar {
+    flex-shrink: 0;
+    flex-wrap: wrap;
+    height: auto;
+    min-height: var(--toolbar-height);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.data-model-diagram-toolbar select { width: 240px; max-width: 100%; }
+.data-model-diagram-toolbar [role="status"] { margin-left: auto; color: var(--text-secondary); font-size: 12px; }
+.data-model-diagram-panel { flex-shrink: 0; padding: 12px 16px; background: var(--bg-secondary); border-bottom: 1px solid var(--border-color); }
+.data-model-diagram-panel p { margin: 6px 0; font-size: 13px; }
+.data-model-diagram-panel input { width: 240px; max-width: 100%; margin: 0 8px; }
+.data-model-diagram-panel [role="alert"] { color: var(--accent-red); }
+
 /* Data hygiene workspace */
 .data-hygiene-tab {
     height: 100%;
@@ -3880,32 +3895,74 @@ html:not(.desktop-shell-bridge) .native-path-picker > button {
     transition: opacity 140ms ease;
 }
 
+.schema-relationship-label-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 30;
+    pointer-events: none;
+}
+
 .schema-relationship-label {
-    width: 100%;
+    position: absolute;
+    visibility: hidden;
+    width: max-content;
+    max-width: 220px;
+    pointer-events: none;
+}
+
+.schema-relationship-label.is-visible { visibility: visible; }
+
+.schema-relationship-label-button {
+    display: block;
+    max-width: 100%;
+    padding: 3px 7px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--bg-elevated);
     overflow: hidden;
     color: var(--text-primary);
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     line-height: 16px;
-    text-align: center;
     text-overflow: ellipsis;
     white-space: nowrap;
+    cursor: pointer;
+    pointer-events: auto;
 }
 
-.schema-relationship-label-box {
-    opacity: 0;
-    transition: opacity 120ms ease;
+.schema-relationship-label-button:focus-visible {
+    outline: 2px solid var(--accent-blue);
+    outline-offset: 2px;
 }
 
-.schema-relationship:hover .schema-relationship-label-box,
-.schema-relationship.selected .schema-relationship-label-box {
-    opacity: 1;
+.schema-relationship-tooltip {
+    position: absolute;
+    visibility: hidden;
+    box-sizing: border-box;
+    width: 300px;
+    padding: 8px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    box-shadow: var(--shadow-elevated);
+    font: 11px/1.5 var(--font-mono);
+    overflow-wrap: anywhere;
+    white-space: normal;
+    pointer-events: none;
 }
+
+.schema-relationship-tooltip strong { display: block; margin-bottom: 4px; }
+.schema-relationship-label.is-expanded .schema-relationship-tooltip { visibility: visible; pointer-events: auto; }
 
 .schema-relationship path[data-model-edge="hit"]:focus-visible + path {
     filter: drop-shadow(0 0 4px color-mix(in srgb, var(--accent-blue) 60%, transparent));
     stroke-width: 2.4px;
 }
+
+/* The visible path supplies the focus glow. A browser outline on the wide SVG
+   hit target produces a misleading rectangle through the endpoint cards. */
+.schema-relationship path[data-model-edge="hit"]:focus { outline: none; }
 
 .schema-route-handle {
     pointer-events: all;

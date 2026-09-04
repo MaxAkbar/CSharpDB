@@ -112,19 +112,6 @@ public partial class DataModelTab
         finally { _loading = false; }
     }
 
-    private async Task SaveAsAsync()
-    {
-        string name = _diagramName.Trim();
-        if (string.IsNullOrWhiteSpace(name)) return;
-        if ((await ActiveDiagrams.GetDiagramsAsync()).Any(diagram => diagram.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
-        { _error = "Choose a new diagram name for Save As. An existing diagram will not be overwritten."; return; }
-        string? originalName = _state.DiagramName;
-        string? originalLayout = _state.SavedLayoutName;
-        try { _savingDiagram = true; await ActiveDiagrams.SaveDiagramAsync(name, _state); _hasDiagramMutation = true; _diagramSaveError = null; SaveState(); await RefreshSavedDiagramsAsync(); }
-        catch (Exception ex) { _state.DiagramName = originalName; _state.SavedLayoutName = originalLayout; _diagramSaveError = ex.Message; }
-        finally { _savingDiagram = false; }
-    }
-
     private Task LocateAsync(string name)
     {
         var node = FindNode(name); if (node is null) return Task.CompletedTask;

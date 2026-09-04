@@ -104,6 +104,7 @@ public static class DataModelConnectorRouter
         List<RoutingRect> expanded = ExpandObstacles(obstacles, Clearance);
         DataModelConnectorPoint departure = EndpointDeparture(start, physical);
         DataModelConnectorPoint approach = EndpointDeparture(end, physical);
+        layout = ResolveEndpointLane(layout, start, end, departure, approach);
         List<DataModelConnectorPoint> waypoints = layout?.Waypoints
             .Select(static waypoint => new DataModelConnectorPoint(waypoint.X, waypoint.Y))
             .ToList() ?? [];
@@ -128,6 +129,44 @@ public static class DataModelConnectorRouter
 
         (double labelX, double labelY) = LabelPoint(points);
         return new DataModelConnectorRoute(points, labelX, labelY, usedAutomaticFallback);
+    }
+
+    // Resolve display geometry without changing the requested lane or saved guides.
+    // Keep this rule in sync with schemaCanvasInterop's live pointer preview.
+    private static DataModelConnectorLayout? ResolveEndpointLane(
+        DataModelConnectorLayout? layout, DataModelConnectorEndpoint start, DataModelConnectorEndpoint end,
+        DataModelConnectorPoint departure, DataModelConnectorPoint approach)
+    {
+        if (layout is null || !FollowsEndpointRows(layout, start.X, end.X))
+            return layout;
+        double x = layout.Waypoints[0].X;
+        bool forward = start.Side == DataModelConnectorSide.Right && end.Side == DataModelConnectorSide.Left;
+        bool backward = start.Side == DataModelConnectorSide.Left && end.Side == DataModelConnectorSide.Right;
+        double low = forward ? departure.X : approach.X;
+        double high = forward ? approach.X : departure.X;
+        if ((forward || backward) && low <= high)
+            x = Math.Clamp(x, low, high);
+        return new DataModelConnectorLayout
+        {
+            ParentSide = layout.ParentSide, ChildSide = layout.ChildSide, FollowEndpointRows = true,
+            Waypoints =
+            [
+                new() { Id = layout.Waypoints[0].Id, X = x, Y = start.Y },
+                new() { Id = layout.Waypoints[1].Id, X = x, Y = end.Y },
+            ],
+        };
+    }
+
+    public static bool FollowsEndpointRows(DataModelConnectorLayout layout, double parentX, double childX)
+    {
+        if (layout.FollowEndpointRows == false || layout.Waypoints.Count != 2 ||
+            Math.Abs(layout.Waypoints[0].X - layout.Waypoints[1].X) >= EqualityTolerance)
+            return false;
+        if (layout.FollowEndpointRows == true) return true;
+        // Older slides saved two absolute corners. Recognize only a middle lane between facing endpoints.
+        double x = layout.Waypoints[0].X;
+        return layout.ParentSide == DataModelConnectorSide.Right && layout.ChildSide == DataModelConnectorSide.Left && parentX <= x && x <= childX ||
+            layout.ParentSide == DataModelConnectorSide.Left && layout.ChildSide == DataModelConnectorSide.Right && childX <= x && x <= parentX;
     }
 
     public static bool IsValidWaypoint(

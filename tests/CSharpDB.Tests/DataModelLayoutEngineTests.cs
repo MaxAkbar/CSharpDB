@@ -413,6 +413,103 @@ public sealed class DataModelLayoutEngineTests
         Assert.Equal(DataModelConnectorRouter.MaximumWaypoints + 1, layout.Waypoints.Count);
     }
 
+    [Theory]
+    [InlineData(100, 100, 500, 260, 350)]
+    [InlineData(132, 160, 500, 260, 350)]
+    [InlineData(100, 100, 532, 320, 350)]
+    [InlineData(270, 140, 500, 260, 394)]
+    [InlineData(100, 100, 350, 260, 326)]
+    public void ConnectorRouter_SlidLaneFollowsMovedEndpointsWithoutExtraCorners(
+        double parentX, double parentY, double childX, double childY, double expectedX)
+    {
+        var layout = CustomRoute((350, 118), (350, 278));
+        layout.FollowEndpointRows = true;
+        DataModelConnectorObstacle[] obstacles = [new(parentX, parentY, 100, 80), new(childX, childY, 100, 80)];
+        var route = DataModelConnectorRouter.Route(new(parentX + 100, parentY + 18, DataModelConnectorSide.Right),
+            new(childX, childY + 18, DataModelConnectorSide.Left), obstacles, layout);
+        Assert.Equal(new DataModelConnectorPoint[] { new(parentX + 100, parentY + 18), new(expectedX, parentY + 18),
+            new(expectedX, childY + 18), new(childX, childY + 18) }, route.Points);
+        Assert.False(route.UsedAutomaticFallback);
+        AssertOrthogonalAndClear(route, obstacles);
+        Assert.Equal(350, layout.Waypoints[0].X);
+        Assert.Equal(118, layout.Waypoints[0].Y);
+        Assert.Equal(278, layout.Waypoints[1].Y);
+    }
+
+    [Fact]
+    public void ConnectorRouter_LegacyMiddleLaneRecoversButExplicitGuidesStayFixed()
+    {
+        var layout = CustomRoute((350, 90), (350, 320));
+        layout.FollowEndpointRows = null;
+        var start = new DataModelConnectorEndpoint(200, 118, DataModelConnectorSide.Right);
+        var end = new DataModelConnectorEndpoint(500, 278, DataModelConnectorSide.Left);
+        Assert.Equal(4, DataModelConnectorRouter.Route(start, end, [], layout).Points.Count);
+        layout.FollowEndpointRows = false;
+        var fixedRoute = DataModelConnectorRouter.Route(start, end, [], layout);
+        Assert.Contains(new DataModelConnectorPoint(350, 90), fixedRoute.Points);
+        Assert.Contains(new DataModelConnectorPoint(350, 320), fixedRoute.Points);
+        Assert.True(fixedRoute.Points.Count > 4);
+    }
+
+    [Fact]
+    public void ConnectorRouter_SlidLaneSupportsReverseDirectionAndObstructionFallback()
+    {
+        var layout = CustomRoute((350, 118), (350, 278));
+        layout.FollowEndpointRows = true;
+        layout.ParentSide = DataModelConnectorSide.Left; layout.ChildSide = DataModelConnectorSide.Right;
+        DataModelConnectorObstacle[] obstacles = [new(500, 300, 100, 80), new(100, 100, 100, 80)];
+        var start = new DataModelConnectorEndpoint(500, 318, DataModelConnectorSide.Left);
+        var end = new DataModelConnectorEndpoint(200, 118, DataModelConnectorSide.Right);
+        var route = DataModelConnectorRouter.Route(start, end, obstacles, layout);
+        Assert.Equal(new DataModelConnectorPoint[] { new(500, 318), new(350, 318), new(350, 118), new(200, 118) }, route.Points);
+        DataModelConnectorObstacle[] blocked = [.. obstacles, new(320, 280, 60, 80)];
+        route = DataModelConnectorRouter.Route(start, end, blocked, layout);
+        Assert.True(route.UsedAutomaticFallback);
+        AssertOrthogonalAndClear(route, blocked);
+        Assert.Equal(350, layout.Waypoints[0].X);
+    }
+
+    [Fact]
+    public void SlidLane_MetadataClonesAndRejectsMalformedLaneShapes()
+    {
+        var layout = CustomRoute((350, 118), (350, 278)); layout.FollowEndpointRows = true;
+        Assert.True(DataModelGraphBuilder.CloneConnectorLayout(layout)!.FollowEndpointRows);
+        layout.Waypoints[1].X = 400;
+        Assert.False(DataModelGraphBuilder.IsValidConnectorLayout(layout));
+        layout.FollowEndpointRows = false;
+        Assert.True(DataModelGraphBuilder.IsValidConnectorLayout(layout));
+    }
+
+    [Theory]
+    [InlineData(3)]
+    [InlineData(4)]
+    [InlineData(5)]
+    public void LegacySlide_LoadRecordsEndpointFollowingBeforeATablePassesItsOldLane(int version)
+    {
+        var parent = Node("Parent"); parent.X = 24; parent.Y = 40;
+        var child = Node("Child"); child.X = 600; child.Y = 240;
+        var layout = CustomRoute((350, 118), (350, 278));
+        var state = new DataModelState
+        {
+            Version = version, Nodes = [parent, child],
+            Relationships = [new() { LeftTable = "Child", RightTable = "Parent", ConnectorLayout = layout }],
+        };
+        string legacyJson = System.Text.Json.JsonSerializer.Serialize(state);
+        var loaded = DataModelGraphBuilder.DeserializeState(legacyJson)!;
+        var migrated = loaded.Relationships[0].ConnectorLayout!;
+        Assert.True(migrated.FollowEndpointRows);
+        Assert.Equal(layout.Waypoints.Select(point => (point.Id, point.X, point.Y)),
+            migrated.Waypoints.Select(point => (point.Id, point.X, point.Y)));
+        loaded.Nodes[0].X = 170;
+        var route = DataModelConnectorRouter.Route(new(390, 160, DataModelConnectorSide.Right),
+            new(600, 318, DataModelConnectorSide.Left), [new(170, 100, 220, 100), new(600, 260, 220, 100)], migrated);
+        Assert.Equal(4, route.Points.Count);
+        Assert.Equal(414, route.Points[1].X);
+        var reopened = DataModelGraphBuilder.DeserializeState(DataModelGraphBuilder.SerializeState(loaded))!;
+        Assert.True(reopened.Relationships[0].ConnectorLayout!.FollowEndpointRows);
+        Assert.Empty(reopened.PendingOperations);
+    }
+
     private static DataModelConnectorLayout CustomRoute(params (double X, double Y)[] points) => new()
     {
         ParentSide = DataModelConnectorSide.Right,

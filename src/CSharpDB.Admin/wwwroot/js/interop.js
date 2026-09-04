@@ -732,6 +732,57 @@ window.designerInterop = {
 window.schemaCanvasInterop = {
     _registrations: new Map(),
 
+    // Pure placement in model coordinates. Never move a table/bend to make room
+    // for transient UI, and never cover a card, title, connector, or another label.
+    placeRelationshipLabel: (points, width, height, obstacles, segments, view, preferred = null) => {
+        if (!points.length || width <= 0 || height <= 0 || width > view.right - view.left || height > view.bottom - view.top)
+            return null;
+        const overlaps = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+        const blocked = [
+            ...obstacles.map(rect => ({ left: rect.left - 6, top: rect.top - 6, right: rect.right + 6, bottom: rect.bottom + 6 })),
+            ...segments.map(([a, b]) => ({ left: Math.min(a.x, b.x) - 8, right: Math.max(a.x, b.x) + 8,
+                top: Math.min(a.y, b.y) - 8, bottom: Math.max(a.y, b.y) + 8 }))
+        ];
+        const centers = [];
+        for (let index = 1; index < points.length; index++) {
+            const a = points[index - 1], b = points[index];
+            centers.push({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, length: Math.abs(a.x - b.x) + Math.abs(a.y - b.y) });
+        }
+        centers.sort((a, b) => b.length - a.length || a.x - b.x || a.y - b.y);
+        const origin = preferred || centers[0] || points[0];
+        const candidates = [];
+        const add = (left, top) => {
+            left = Math.max(view.left, Math.min(view.right - width, left));
+            top = Math.max(view.top, Math.min(view.bottom - height, top));
+            candidates.push({ left, top, right: left + width, bottom: top + height });
+        };
+        for (const center of [origin, ...centers]) {
+            for (const gap of [12, 28, 48]) {
+                add(center.x - width / 2, center.y - gap - height);
+                add(center.x - width / 2, center.y + gap);
+                add(center.x - gap - width, center.y - height / 2);
+                add(center.x + gap, center.y - height / 2);
+            }
+        }
+        // Card edges offer useful clear lanes when the gap between endpoints is
+        // too narrow. A bounded candidate set keeps drag-time placement cheap.
+        const nearby = [...obstacles].sort((a, b) =>
+            Math.hypot((a.left + a.right) / 2 - origin.x, (a.top + a.bottom) / 2 - origin.y) -
+            Math.hypot((b.left + b.right) / 2 - origin.x, (b.top + b.bottom) / 2 - origin.y)).slice(0, 24);
+        for (const rect of nearby) {
+            for (const x of [origin.x - width / 2, rect.left, rect.right - width]) {
+                add(x, rect.top - height - 12); add(x, rect.bottom + 12);
+            }
+            add(rect.left - width - 12, origin.y - height / 2);
+            add(rect.right + 12, origin.y - height / 2);
+        }
+        candidates.sort((a, b) => {
+            const distance = rect => Math.hypot((rect.left + rect.right) / 2 - origin.x, (rect.top + rect.bottom) / 2 - origin.y);
+            return distance(a) - distance(b) || a.top - b.top || a.left - b.left;
+        });
+        return candidates.find(candidate => !blocked.some(rect => overlaps(candidate, rect))) || null;
+    },
+
     init: (canvasId, dotNetRef, viewportX, viewportY) => {
         window.schemaCanvasInterop.dispose(canvasId);
         const canvas = document.getElementById(canvasId);
@@ -765,12 +816,17 @@ window.schemaCanvasInterop = {
             committingRoute: false,
             pendingSync: null,
             focusHandle: false,
+            hoveredLabelId: null,
+            dismissedLabelId: null,
+            labelTimer: 0,
+            labelFocusTimer: 0,
             disposed: false
         };
 
         const cloneLayout = layout => layout == null ? null : ({
             ParentSide: layout.ParentSide,
             ChildSide: layout.ChildSide,
+            FollowEndpointRows: layout.FollowEndpointRows ?? null,
             Waypoints: (layout.Waypoints || []).map(point => ({ Id: point.Id, X: point.X, Y: point.Y }))
         });
         const readLayout = group => {
@@ -781,6 +837,7 @@ window.schemaCanvasInterop = {
                 return value == null ? null : {
                     ParentSide: value.ParentSide ?? value.parentSide,
                     ChildSide: value.ChildSide ?? value.childSide,
+                    FollowEndpointRows: value.FollowEndpointRows ?? value.followEndpointRows ?? null,
                     Waypoints: (value.Waypoints ?? value.waypoints ?? []).map(point => ({
                         Id: point.Id ?? point.id, X: point.X ?? point.x, Y: point.Y ?? point.y
                     }))
@@ -861,6 +918,23 @@ window.schemaCanvasInterop = {
                 x: end.x + (end.side === 'right' ? stubDistance(end) : -stubDistance(end)),
                 y: end.y
             };
+            // Match the server router: a slid middle lane keeps its X, not its old endpoint row Ys.
+            if (!interiorOnly && layout?.FollowEndpointRows !== false && layout?.Waypoints?.length === 2 &&
+                Math.abs(layout.Waypoints[0].X - layout.Waypoints[1].X) < epsilon) {
+                let x = layout.Waypoints[0].X;
+                const forward = start.side === 'right' && end.side === 'left';
+                const backward = start.side === 'left' && end.side === 'right';
+                const legacyLane = forward && start.x <= x && x <= end.x || backward && end.x <= x && x <= start.x;
+                if (layout.FollowEndpointRows === true || legacyLane) {
+                    const low = forward ? departure.x : approach.x, high = forward ? approach.x : departure.x;
+                    if ((forward || backward) && low <= high) x = Math.max(low, Math.min(high, x));
+                    layout = cloneLayout(layout);
+                    layout.FollowEndpointRows = true;
+                    layout.Waypoints[0].X = layout.Waypoints[1].X = x;
+                    layout.Waypoints[0].Y = start.y;
+                    layout.Waypoints[1].Y = end.y;
+                }
+            }
             const insideAny = point => expanded.some(obstacle =>
                 point.x > obstacle.left + epsilon && point.x < obstacle.right - epsilon &&
                 point.y > obstacle.top + epsilon && point.y < obstacle.bottom - epsilon);
@@ -931,7 +1005,7 @@ window.schemaCanvasInterop = {
                 }
                 if (!customInterior) {
                     const automatic = connectorRoute(start, end, nodeObstacles);
-                    return { ...automatic, usedAutomaticFallback: true };
+                    return { ...automatic, resolvedLayout: layout, usedAutomaticFallback: true };
                 }
             }
 
@@ -1071,7 +1145,7 @@ window.schemaCanvasInterop = {
                 labelX = (points[index].x + points[index - 1].x) / 2;
                 labelY = (points[index].y + points[index - 1].y) / 2;
             }
-            return { points, labelX, labelY, pathFound: interior !== null, usedAutomaticFallback: false };
+            return { points, labelX, labelY, departure, approach, resolvedLayout: layout, pathFound: interior !== null, usedAutomaticFallback: false };
         };
 
         const updateGroupFrames = () => {
@@ -1126,7 +1200,7 @@ window.schemaCanvasInterop = {
                 const end = { x: child.x, y: child.y, side: childRight ? 'right' : 'left' };
                 const route = connectorRoute(
                     start, end, nodeObstacles, layout);
-                registration.routes.set(group.dataset.relationshipId, { ...route, start, end, layout, obstacles: nodeObstacles });
+                registration.routes.set(group.dataset.relationshipId, { ...route, start, end, layout: route.resolvedLayout ?? layout, obstacles: nodeObstacles });
                 group.classList.toggle('invalid', route.usedAutomaticFallback);
                 let path = `M ${route.points[0].x.toFixed(1)},${route.points[0].y.toFixed(1)}`;
                 for (let index = 1; index < route.points.length; index++) {
@@ -1139,19 +1213,62 @@ window.schemaCanvasInterop = {
                 edge.setAttribute('d', path);
                 const hit = edge.parentElement?.querySelector('path[data-model-edge="hit"]');
                 if (hit) hit.setAttribute('d', path);
-                const labelBox = edge.parentElement?.querySelector('[data-model-label="box"]');
-                const labelText = edge.parentElement?.querySelector('[data-model-label="text"]');
-                if (labelBox) {
-                    labelBox.setAttribute('x', (route.labelX - 111).toFixed(1));
-                    labelBox.setAttribute('y', (route.labelY - 11).toFixed(1));
-                }
-                if (labelText) {
-                    labelText.setAttribute('x', (route.labelX - 109).toFixed(1));
-                    labelText.setAttribute('y', (route.labelY - 9).toFixed(1));
-                }
             });
             updateBounds();
             renderHandles();
+            updateLabels();
+        };
+
+        const labelIdFor = target => target?.closest?.('[data-model-label-id]')?.dataset.modelLabelId
+            || target?.closest?.('.schema-relationship')?.dataset.relationshipId;
+        const updateLabels = () => {
+            if (registration.disposed) return;
+            const scale = parseFloat(canvas.dataset.canvasScale || '1') || 1;
+            const inset = canvasInset();
+            const view = { left: canvas.scrollLeft / scale - inset + 8, top: canvas.scrollTop / scale - inset + 8,
+                right: (canvas.scrollLeft + canvas.clientWidth) / scale - inset - 8,
+                bottom: (canvas.scrollTop + canvas.clientHeight) / scale - inset - 40 };
+            const obstacles = Array.from(canvas.querySelectorAll('.schema-node, .schema-table-group')).map(node => {
+                const left = parseFloat(node.style.left) || 0, top = parseFloat(node.style.top) || 0;
+                return { left, top, right: left + node.offsetWidth,
+                    bottom: top + (node.matches('.schema-table-group') ? 28 : node.offsetHeight) };
+            });
+            const segments = [];
+            registration.routes.forEach(route => {
+                for (let index = 1; index < route.points.length; index++) segments.push([route.points[index - 1], route.points[index]]);
+                // Keep the grab area around custom guides unobscured as well.
+                route.layout?.Waypoints.forEach(point => obstacles.push({ left: point.X - 10, right: point.X + 10, top: point.Y - 10, bottom: point.Y + 10 }));
+            });
+            const focusedId = labelIdFor(document.activeElement);
+            const interactingId = registration.hoveredLabelId || focusedId;
+            const groups = new Map(Array.from(canvas.querySelectorAll('.schema-relationship')).map(group => [group.dataset.relationshipId, group]));
+            const labels = Array.from(canvas.querySelectorAll('[data-model-label-id]'));
+            // Give the actively inspected relationship first choice of free space.
+            labels.sort((a, b) => Number(b.dataset.modelLabelId === interactingId) - Number(a.dataset.modelLabelId === interactingId)
+                || a.dataset.modelLabelId.localeCompare(b.dataset.modelLabelId));
+            for (const label of labels) {
+                const id = label.dataset.modelLabelId, group = groups.get(id), route = registration.routes.get(id);
+                label.classList.remove('is-expanded');
+                if (!route || !(group?.classList.contains('selected') || id === interactingId)) {
+                    label.classList.remove('is-visible'); continue;
+                }
+                label.style.maxWidth = `${Math.max(1, Math.min(220, view.right - view.left))}px`;
+                const placement = window.schemaCanvasInterop.placeRelationshipLabel(route.points, label.offsetWidth, label.offsetHeight, obstacles, segments, view);
+                label.classList.toggle('is-visible', placement !== null);
+                if (!placement) continue; // Dense schemas still expose the full mappings through Details / the accessible edge name.
+                label.style.left = `${placement.left}px`; label.style.top = `${placement.top}px`;
+                obstacles.push(placement);
+                const tooltip = label.querySelector('.schema-relationship-tooltip');
+                const editing = registration.draggingNode || registration.groupEdit || registration.routeEdit
+                    || document.activeElement?.closest?.('[data-route-handle]');
+                if (!tooltip || editing || id !== interactingId || id === registration.dismissedLabelId) continue;
+                tooltip.style.width = `${Math.max(1, Math.min(300, view.right - view.left))}px`;
+                const popup = window.schemaCanvasInterop.placeRelationshipLabel(route.points, tooltip.offsetWidth, tooltip.offsetHeight,
+                    obstacles, segments, view, { x: (placement.left + placement.right) / 2, y: (placement.top + placement.bottom) / 2 });
+                if (!popup) continue;
+                tooltip.style.left = `${popup.left - placement.left}px`; tooltip.style.top = `${popup.top - placement.top}px`;
+                label.classList.add('is-expanded'); obstacles.push(popup);
+            }
         };
 
         const updateBounds = () => {
@@ -1169,8 +1286,6 @@ window.schemaCanvasInterop = {
             registration.routes.forEach(route => {
                 route.points.forEach(point => include(point.x, point.y));
                 route.layout?.Waypoints.forEach(point => include(point.X, point.Y));
-                include(route.labelX - 111, route.labelY - 11);
-                include(route.labelX + 111, route.labelY + 11);
             });
             registration.modelBounds = bounds;
             const width = Math.max(1200, Number.isFinite(bounds.maxX) ? bounds.maxX + 80 : 0);
@@ -1191,18 +1306,31 @@ window.schemaCanvasInterop = {
             if (svg) { svg.setAttribute('width', width); svg.setAttribute('height', height); }
         };
 
-        const segmentHandles = route => {
+        const routeSegments = route => {
             const segments = [];
             for (let index = 0; index < route.points.length - 1; index++) {
                 const first = route.points[index], second = route.points[index + 1];
                 const length = Math.abs(first.x - second.x) + Math.abs(first.y - second.y);
                 if (length < 1) continue;
-                segments.push({ index, x: (first.x + second.x) / 2, y: (first.y + second.y) / 2,
-                    horizontal: Math.abs(first.y - second.y) < 0.001, length });
+                const horizontal = Math.abs(first.y - second.y) < 0.001;
+                const direction = Math.sign(horizontal ? second.x - first.x : second.y - first.y);
+                const prior = segments[segments.length - 1];
+                // Collinear saved guides do not split a visible straight segment.
+                // Keep deliberate reversals as separate segments, however.
+                if (prior?.horizontal === horizontal && prior.direction === direction && prior.endIndex === index) {
+                    prior.endIndex = index + 1;
+                    prior.length += length;
+                    prior.x = (route.points[prior.index].x + second.x) / 2;
+                    prior.y = (route.points[prior.index].y + second.y) / 2;
+                } else segments.push({ index, endIndex: index + 1, x: (first.x + second.x) / 2,
+                    y: (first.y + second.y) / 2, horizontal, direction, length });
             }
-            const interior = segments.filter(segment => segment.index > 0 && segment.index < route.points.length - 2 && segment.length >= 24);
-            return interior.length ? interior : segments.sort((left, right) => right.length - left.length).slice(0, 1);
+            return segments;
         };
+        // Endpoint legs remain attached to their column rows. Add Bend / double
+        // click can still create a detour when a connector has no interior run.
+        const segmentHandles = route => routeSegments(route)
+            .filter(segment => segment.index > 0 && segment.endIndex < route.points.length - 1 && segment.length >= 24);
 
         const renderHandles = () => {
             const active = document.activeElement?.closest?.('[data-route-handle]');
@@ -1231,7 +1359,7 @@ window.schemaCanvasInterop = {
                     handle.setAttribute('role', 'button');
                     handle.setAttribute('aria-label', kind === 'waypoint'
                         ? `Connector bend. Use arrow keys to move, Shift for larger steps, Delete to remove, Escape to cancel.`
-                        : `Connector segment. Drag ${point.horizontal ? 'up or down' : 'left or right'} to add a bend, or use arrow keys.`);
+                        : `Connector segment. Drag ${point.horizontal ? 'up or down' : 'left or right'} to slide the whole segment, or use arrow keys. Enter adds a bend. Escape cancels.`);
                     handle.style.cursor = kind === 'waypoint' ? 'move' : point.horizontal ? 'ns-resize' : 'ew-resize';
                     handle.style.pointerEvents = 'all';
                     const hit = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
@@ -1253,7 +1381,14 @@ window.schemaCanvasInterop = {
                         registration.focusHandle = false;
                     }
                 };
-                segmentHandles(route).forEach(segment => createHandle('segment', segment, segment.index));
+                segmentHandles(route).forEach(segment => {
+                    const first = route.points[segment.index], last = route.points[segment.endIndex];
+                    // Do not put the segment grip on top of an explicit bend grip.
+                    const position = [0.5, 0.3, 0.7].map(fraction => ({
+                        x: first.x + (last.x - first.x) * fraction, y: first.y + (last.y - first.y) * fraction
+                    })).find(point => !route.layout?.Waypoints.some(guide => Math.hypot(guide.X - point.x, guide.Y - point.y) < 22 / scale));
+                    if (position) createHandle('segment', { ...segment, ...position }, segment.index);
+                });
                 route.layout?.Waypoints.forEach(point => {
                     if (Number.isFinite(point.X) && Number.isFinite(point.Y))
                         createHandle('waypoint', { x: point.X, y: point.Y }, point.Id, route.usedAutomaticFallback);
@@ -1261,7 +1396,7 @@ window.schemaCanvasInterop = {
             });
         };
 
-        const editableLayout = (group, route) => readLayout(group) || {
+        const editableLayout = (group, route) => cloneLayout(route.layout) || readLayout(group) || {
             ParentSide: route.start.side === 'right' ? 1 : 0,
             ChildSide: route.end.side === 'right' ? 1 : 0,
             Waypoints: []
@@ -1284,6 +1419,51 @@ window.schemaCanvasInterop = {
             Number.isFinite(point.X) && Number.isFinite(point.Y) && point.X >= 4 && point.Y >= 4 &&
             !obstacles.some(obstacle => point.X > obstacle.left - 18 + 0.001 && point.X < obstacle.right + 18 - 0.001 &&
                 point.Y > obstacle.top - 18 + 0.001 && point.Y < obstacle.bottom + 18 - 0.001));
+        const slidingSegment = (route, layout, segment) => {
+            if (route.usedAutomaticFallback) return null;
+            const first = route.points[segment.index], last = route.points[segment.endIndex];
+            const axis = segment.horizontal ? 'y' : 'x', along = segment.horizontal ? 'x' : 'y';
+            const original = first[axis];
+            let minimum = 4, maximum = Infinity;
+            const neighbors = [segment.index === 1 ? route.departure : route.points[segment.index - 1],
+                segment.endIndex === route.points.length - 2 ? route.approach : route.points[segment.endIndex + 1]];
+            for (const neighbor of neighbors) {
+                if (!neighbor) return null;
+                const distance = original - neighbor[axis], gap = Math.min(8, Math.abs(distance));
+                if (distance > 0) minimum = Math.max(minimum, neighbor[axis] + gap);
+                else if (distance < 0) maximum = Math.min(maximum, neighbor[axis] - gap);
+            }
+            // Restrict movement to this clear lane instead of letting the router
+            // split a segment around an obstacle or jump to its opposite side.
+            for (const obstacle of route.obstacles) {
+                const low = (segment.horizontal ? obstacle.top : obstacle.left) - 18;
+                const high = (segment.horizontal ? obstacle.bottom : obstacle.right) + 18;
+                const near = (segment.horizontal ? obstacle.left : obstacle.top) - 18;
+                const far = (segment.horizontal ? obstacle.right : obstacle.bottom) + 18;
+                if (Math.max(first[along], last[along]) < near + 0.001 || Math.min(first[along], last[along]) > far - 0.001) continue;
+                if (original <= low + 0.001) maximum = Math.min(maximum, low);
+                else if (original >= high - 0.001) minimum = Math.max(minimum, high);
+                else return null;
+            }
+            if (minimum > maximum) return null;
+            const same = (point, guide) => guide && Math.abs(point.x - guide.X) < 0.001 && Math.abs(point.y - guide.Y) < 0.001;
+            let cursor = 0;
+            const locations = layout.Waypoints.map(guide => {
+                while (cursor < route.points.length && !same(route.points[cursor], guide)) cursor++;
+                return cursor;
+            });
+            if (locations.some(index => index >= route.points.length)) return null;
+            let from = 0, to = 0;
+            while (from < locations.length && locations[from] < segment.index) from++;
+            to = from;
+            while (to < locations.length && locations[to] <= segment.endIndex) to++;
+            const guides = layout.Waypoints.slice(from, to).map(point => ({ ...point }));
+            if (!same(first, guides[0])) guides.unshift({ Id: waypointId(), X: first.x, Y: first.y });
+            if (!same(last, guides[guides.length - 1])) guides.push({ Id: waypointId(), X: last.x, Y: last.y });
+            if (layout.Waypoints.length - (to - from) + guides.length > 128) return null;
+            return { axis, original, minimum, maximum, from, count: to - from, guides,
+                followEndpointRows: !segment.horizontal && segment.index === 1 && segment.endIndex === route.points.length - 2 };
+        };
         const completePendingSync = () => {
             if (registration.disposed) return;
             const pending = registration.pendingSync;
@@ -1348,10 +1528,14 @@ window.schemaCanvasInterop = {
             const segmentIndex = handle.dataset.routeHandle === 'segment' ? Number(handle.dataset.segmentIndex) : null;
             const segment = segmentIndex == null ? null : segmentHandles(route).find(item => item.index === segmentIndex);
             const layout = editableLayout(group, route);
+            const slide = segment && slidingSegment(route, layout, segment);
+            if (segmentIndex !== null && !slide) {
+                announce('This segment has no clear sliding lane. Move its bends or use Reset to Automatic in Details.');
+                return false;
+            }
             registration.routeEdit = { relationshipId, input, pointerId: event.pointerId, sourceLayout: cloneLayout(layout),
-                layout, origin: input === 'pointer' ? modelPoint(event) : null, segment, segmentIndex,
+                layout, origin: input === 'pointer' ? modelPoint(event) : null, segment, segmentIndex, slide,
                 waypointId: handle.dataset.waypointId || null, sourceWaypointId: handle.dataset.waypointId || null,
-                insertionIndex: segmentIndex == null ? 0 : insertionIndex(route, layout, segmentIndex),
                 changed: false };
             selectHandle(relationshipId, handle.dataset.waypointId || null, segmentIndex);
             return true;
@@ -1362,25 +1546,25 @@ window.schemaCanvasInterop = {
             const layout = cloneLayout(edit.sourceLayout);
             let point;
             if (edit.segment) {
-                if (layout.Waypoints.length >= 128) return;
-                const movement = edit.segment.horizontal ? dy : dx;
-                if (Math.abs(movement) < 0.001) return;
-                if (!edit.waypointId) {
-                    edit.waypointId = waypointId();
-                    selectHandle(edit.relationshipId, edit.waypointId);
-                }
-                point = { Id: edit.waypointId, X: edit.segment.x + (edit.segment.horizontal ? 0 : dx),
-                    Y: edit.segment.y + (edit.segment.horizontal ? dy : 0) };
-                layout.Waypoints.splice(edit.insertionIndex, 0, point);
+                const slide = edit.slide;
+                const position = Math.max(slide.minimum, Math.min(slide.maximum, slide.original + (edit.segment.horizontal ? dy : dx)));
+                edit.changed = Math.abs(position - slide.original) >= 0.001;
+                if (edit.changed) {
+                    const guides = slide.guides.map(guide => ({ ...guide, [slide.axis === 'x' ? 'X' : 'Y']: position }));
+                    layout.Waypoints.splice(slide.from, slide.count, ...guides);
+                    layout.FollowEndpointRows = slide.followEndpointRows && layout.Waypoints.length === 2;
+                    registration.previewLayouts.set(edit.relationshipId, layout);
+                } else registration.previewLayouts.delete(edit.relationshipId);
             } else {
                 point = layout.Waypoints.find(item => item.Id === edit.waypointId);
                 if (!point) return;
+                layout.FollowEndpointRows = false;
                 point.X += dx; point.Y += dy;
+                point.X = Math.max(4, point.X); point.Y = Math.max(4, point.Y);
+                edit.changed = true;
+                registration.previewLayouts.set(edit.relationshipId, layout);
             }
-            point.X = Math.max(4, point.X); point.Y = Math.max(4, point.Y);
             edit.layout = layout;
-            edit.changed = true;
-            registration.previewLayouts.set(edit.relationshipId, layout);
             scheduleEdgeUpdate(null);
         };
         const finishRouteEdit = () => {
@@ -1399,21 +1583,24 @@ window.schemaCanvasInterop = {
             if (!group || !route) return;
             const layout = editableLayout(group, route);
             if (layout.Waypoints.length >= 128) { announce('A connector can have at most 128 bends.'); return; }
-            const segments = segmentHandles(route);
+            const interior = segmentHandles(route);
+            const segments = interior.length ? interior : routeSegments(route);
             let segment = segments.slice().sort((left, right) => right.length - left.length)[0];
             let point = segment;
-            if (location) {
+            const targetLocation = location || point;
+            if (targetLocation) {
                 let bestDistance = Infinity;
                 for (let index = 0; index < route.points.length - 1; index++) {
                     const first = route.points[index], second = route.points[index + 1];
-                    const candidate = { x: Math.max(Math.min(first.x, second.x), Math.min(Math.max(first.x, second.x), location.x)),
-                        y: Math.max(Math.min(first.y, second.y), Math.min(Math.max(first.y, second.y), location.y)) };
-                    const distance = Math.abs(candidate.x - location.x) + Math.abs(candidate.y - location.y);
+                    const candidate = { x: Math.max(Math.min(first.x, second.x), Math.min(Math.max(first.x, second.x), targetLocation.x)),
+                        y: Math.max(Math.min(first.y, second.y), Math.min(Math.max(first.y, second.y), targetLocation.y)) };
+                    const distance = Math.abs(candidate.x - targetLocation.x) + Math.abs(candidate.y - targetLocation.y);
                     if (distance < bestDistance) { bestDistance = distance; segment = { index }; point = candidate; }
                 }
             }
             if (!segment || !point) return;
             const id = waypointId();
+            layout.FollowEndpointRows = false;
             layout.Waypoints.splice(insertionIndex(route, layout, segment.index), 0, { Id: id, X: Math.max(4, point.x), Y: Math.max(4, point.y) });
             registration.previewLayouts.set(relationshipId, layout);
             selectHandle(relationshipId, id);
@@ -1424,8 +1611,10 @@ window.schemaCanvasInterop = {
         const removeBend = relationshipId => {
             if (registration.routeEdit || registration.groupEdit || registration.committingRoute) return;
             const group = edgeGroup(relationshipId);
-            const layout = group && readLayout(group);
+            const route = registration.routes.get(relationshipId);
+            const layout = group && route && editableLayout(group, route);
             if (!layout?.Waypoints.length) return;
+            layout.FollowEndpointRows = false;
             const selected = registration.selectedHandle;
             let index = selected?.relationshipId === relationshipId
                 ? layout.Waypoints.findIndex(point => point.Id === selected.waypointId) : -1;
@@ -1479,6 +1668,7 @@ window.schemaCanvasInterop = {
             canvas.scrollLeft = Math.max(0, (worldX + inset) * bounded - localX);
             canvas.scrollTop = Math.max(0, (worldY + inset) * bounded - localY);
             renderHandles();
+            updateLabels();
             notifyViewport();
         };
 
@@ -1558,6 +1748,7 @@ window.schemaCanvasInterop = {
             if (event.button !== 0) return;
             if (registration.pointerId != null || registration.routeEdit || registration.groupEdit || registration.committingRoute) return;
             if (!(event.target instanceof Element)) return;
+            if (event.target.closest('[data-model-label-id]')) return;
             const title = event.target.closest('[data-group-title]');
             if (title && beginGroupEdit(title, 'pointer', event)) {
                 registration.pointerId = event.pointerId;
@@ -1738,7 +1929,21 @@ window.schemaCanvasInterop = {
             setScale(scale + (event.deltaY < 0 ? 0.1 : -0.1), event.clientX, event.clientY);
         };
 
-        registration.onScroll = () => notifyViewport();
+        registration.onScroll = () => { updateLabels(); notifyViewport(); };
+        registration.onPointerOver = event => {
+            const id = labelIdFor(event.target);
+            if (!id) return;
+            clearTimeout(registration.labelTimer);
+            registration.hoveredLabelId = id;
+            registration.dismissedLabelId = null;
+            updateLabels();
+        };
+        registration.onPointerOut = event => {
+            if (!labelIdFor(event.target) || labelIdFor(event.target) === labelIdFor(event.relatedTarget)) return;
+            clearTimeout(registration.labelTimer);
+            // Allow crossing the small gap from the connector to its label/popup.
+            registration.labelTimer = setTimeout(() => { registration.hoveredLabelId = null; updateLabels(); }, 400);
+        };
         registration.onKeyDown = (event) => {
             if (event.key === 'Escape') {
                 event.preventDefault();
@@ -1748,6 +1953,9 @@ window.schemaCanvasInterop = {
                     registration.onPointerCancel({ pointerId: registration.pointerId });
                     return;
                 }
+                registration.dismissedLabelId = registration.hoveredLabelId || labelIdFor(document.activeElement);
+                registration.hoveredLabelId = null;
+                updateLabels();
                 registration.selectedHandle = null;
                 registration.dotNetRef?.invokeMethodAsync('OnCanvasSelectionCleared');
                 canvas.focus({ preventScroll: true });
@@ -1771,7 +1979,8 @@ window.schemaCanvasInterop = {
                 event.preventDefault(); event.stopPropagation();
                 const route = registration.routes.get(handle.dataset.relationshipId);
                 const index = Number(handle.dataset.segmentIndex);
-                const first = route?.points[index], second = route?.points[index + 1];
+                const run = route && segmentHandles(route).find(segment => segment.index === index);
+                const first = route?.points[index], second = run && route.points[run.endIndex];
                 if (first && second) addBend(handle.dataset.relationshipId, { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 });
                 return;
             }
@@ -1801,10 +2010,19 @@ window.schemaCanvasInterop = {
             finishRouteEdit();
         };
         registration.onFocusIn = event => {
+            registration.dismissedLabelId = null;
+            updateLabels();
             const handle = event.target.closest?.('[data-route-handle]');
             if (!handle) return;
             selectHandle(handle.dataset.relationshipId, handle.dataset.waypointId || null,
                 handle.dataset.segmentIndex == null ? null : Number(handle.dataset.segmentIndex));
+        };
+        registration.onFocusOut = () => {
+            // Focusout precedes the browser updating activeElement.
+            // Keep the independent hover-exit timer: clicking another table must
+            // not leave the previous relationship's popup permanently hovered.
+            clearTimeout(registration.labelFocusTimer);
+            registration.labelFocusTimer = setTimeout(updateLabels, 0);
         };
         registration.onDoubleClick = event => {
             const group = event.target.closest?.('.schema-relationship');
@@ -1814,6 +2032,7 @@ window.schemaCanvasInterop = {
         };
         registration.setScale = setScale;
         registration.updateEdges = updateEdges;
+        registration.updateLabels = updateLabels;
         registration.addBend = addBend;
         registration.removeBend = removeBend;
         registration.connectorRoute = connectorRoute;
@@ -1824,14 +2043,21 @@ window.schemaCanvasInterop = {
         canvas.addEventListener('pointermove', registration.onPointerMove);
         canvas.addEventListener('pointerup', registration.onPointerUp);
         canvas.addEventListener('pointercancel', registration.onPointerCancel);
+        canvas.addEventListener('pointerover', registration.onPointerOver);
+        canvas.addEventListener('pointerout', registration.onPointerOut);
         canvas.addEventListener('click', registration.onClickCapture, true);
         canvas.addEventListener('wheel', registration.onWheel, { passive: false });
         canvas.addEventListener('scroll', registration.onScroll, { passive: true });
         canvas.addEventListener('keydown', registration.onKeyDown, true);
         canvas.addEventListener('keyup', registration.onKeyUp, true);
         canvas.addEventListener('focusin', registration.onFocusIn);
+        canvas.addEventListener('focusout', registration.onFocusOut);
         canvas.addEventListener('dblclick', registration.onDoubleClick);
         window.schemaCanvasInterop._registrations.set(canvasId, registration);
+        if (typeof ResizeObserver !== 'undefined') {
+            registration.labelResizeObserver = new ResizeObserver(updateLabels);
+            registration.labelResizeObserver.observe(canvas);
+        }
 
         requestAnimationFrame(() => {
             if (registration.disposed) return;
@@ -1912,16 +2138,22 @@ window.schemaCanvasInterop = {
         canvas.removeEventListener('pointermove', registration.onPointerMove);
         canvas.removeEventListener('pointerup', registration.onPointerUp);
         canvas.removeEventListener('pointercancel', registration.onPointerCancel);
+        canvas.removeEventListener('pointerover', registration.onPointerOver);
+        canvas.removeEventListener('pointerout', registration.onPointerOut);
         canvas.removeEventListener('click', registration.onClickCapture, true);
         canvas.removeEventListener('wheel', registration.onWheel);
         canvas.removeEventListener('scroll', registration.onScroll);
         canvas.removeEventListener('keydown', registration.onKeyDown, true);
         canvas.removeEventListener('keyup', registration.onKeyUp, true);
         canvas.removeEventListener('focusin', registration.onFocusIn);
+        canvas.removeEventListener('focusout', registration.onFocusOut);
         canvas.removeEventListener('dblclick', registration.onDoubleClick);
         canvas.querySelectorAll('[data-model-route-handles]').forEach(container => container.replaceChildren());
         try { registration.captureElement?.releasePointerCapture?.(registration.pointerId); } catch { }
         clearTimeout(registration.viewportTimer);
+        clearTimeout(registration.labelTimer);
+        clearTimeout(registration.labelFocusTimer);
+        registration.labelResizeObserver?.disconnect();
         if (registration.frame) cancelAnimationFrame(registration.frame);
         window.schemaCanvasInterop._registrations.delete(canvasId);
     }

@@ -355,6 +355,7 @@ public static class DataModelGraphBuilder
         {
             ParentSide = layout.ParentSide,
             ChildSide = layout.ChildSide,
+            FollowEndpointRows = layout.FollowEndpointRows,
             Waypoints = layout.Waypoints.Select(static waypoint => new DataModelConnectorWaypoint
             {
                 Id = waypoint.Id,
@@ -374,7 +375,9 @@ public static class DataModelGraphBuilder
         var ids = new HashSet<string>(StringComparer.Ordinal);
         return layout.Waypoints.All(waypoint => waypoint is not null &&
             !string.IsNullOrWhiteSpace(waypoint.Id) && ids.Add(waypoint.Id) &&
-            double.IsFinite(waypoint.X) && double.IsFinite(waypoint.Y) && waypoint.X >= 4 && waypoint.Y >= 4);
+            double.IsFinite(waypoint.X) && double.IsFinite(waypoint.Y) && waypoint.X >= 4 && waypoint.Y >= 4)
+            && (layout.FollowEndpointRows != true || layout.Waypoints.Count == 2 &&
+                Math.Abs(layout.Waypoints[0].X - layout.Waypoints[1].X) < 0.001);
     }
 
     private static void NormalizeConnectorLayouts(DataModelState state)
@@ -386,6 +389,18 @@ public static class DataModelGraphBuilder
             string warning = $"Custom connector route for '{relationship.LeftTable}.{relationship.LeftColumn}' contains invalid layout data; automatic routing is used.";
             if (!state.Warnings.Contains(warning, StringComparer.OrdinalIgnoreCase))
                 state.Warnings.Add(warning);
+        }
+        foreach (var relationship in state.Relationships)
+        {
+            var layout = relationship.ConnectorLayout;
+            if (layout is null || layout.FollowEndpointRows is not null) continue;
+            var parent = state.Nodes.FirstOrDefault(node => SameName(node.Name, relationship.RightTable));
+            var child = state.Nodes.FirstOrDefault(node => SameName(node.Name, relationship.LeftTable));
+            if (parent is null || child is null) continue;
+            double parentX = parent.X + (layout.ParentSide == DataModelConnectorSide.Right ? DataModelCanvasMetrics.NodeWidth : 0);
+            double childX = child.X + (layout.ChildSide == DataModelConnectorSide.Right ? DataModelCanvasMetrics.NodeWidth : 0);
+            // Record legacy intent before later table movements can take the table past the saved lane.
+            layout.FollowEndpointRows = DataModelConnectorRouter.FollowsEndpointRows(layout, parentX, childX);
         }
     }
 

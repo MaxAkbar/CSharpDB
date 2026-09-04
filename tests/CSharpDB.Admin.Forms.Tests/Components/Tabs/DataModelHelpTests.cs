@@ -46,6 +46,10 @@ public sealed class DataModelHelpTests
         Assert.Contains("not guaranteed exhaustive", html, StringComparison.Ordinal);
         Assert.Contains("not as passing", html, StringComparison.Ordinal);
         Assert.Contains("sys.diagrams", html, StringComparison.Ordinal);
+        Assert.Contains("<strong>New Diagram:</strong>", html, StringComparison.Ordinal);
+        Assert.Contains("<strong>Diagram selector:</strong>", html, StringComparison.Ordinal);
+        Assert.Contains("Further edits do not recreate the deleted record", html, StringComparison.Ordinal);
+        Assert.Contains("<strong>Clear is different:</strong>", html, StringComparison.Ordinal);
     }
 
     [Fact]

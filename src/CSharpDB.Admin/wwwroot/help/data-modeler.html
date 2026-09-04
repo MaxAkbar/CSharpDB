@@ -76,7 +76,7 @@
                     <li>The global workspace loads its saved <strong>Default Diagram</strong> if one exists. Otherwise it starts empty. Open <strong>Sources</strong> and search by table name.</li>
                     <li>Choose <strong>Add</strong> for only that source, or its <strong>Add with related tables</strong> icon for the source plus its immediate incoming and outgoing foreign-key neighbors. This is one hop, not the entire connected schema.</li>
                     <li>Choose <strong>Keys First</strong> to keep cards compact. Drag table headers into a useful arrangement, or choose <strong>Auto Arrange</strong>, then <strong>Fit Model</strong>.</li>
-                    <li>Enter a descriptive diagram name, such as <code>Order fulfillment</code>, and choose <strong>Save As</strong> to create a separate copy. Wait for the saved status. Use <strong>Load</strong> to reopen that named diagram later.</li>
+                    <li>Choose <strong>Save As</strong>, enter a descriptive name such as <code>Order fulfillment</code>, and choose <strong>Save Copy</strong>. Wait for the saved status. Use the <strong>Diagram</strong> selector to reopen that named diagram later.</li>
                 </ol>
                 <p>For example, start with an orders table and its direct relationships, then add shipment or product tables only when you need them. Choose <strong>Load All</strong> for a complete overview; it adds missing sources without moving cards already on the canvas.</p>
                 <p>Only tables and external tables are canvas nodes. Views, triggers, and other objects remain in their existing tools or appear as known dependencies in Details.</p>
@@ -104,7 +104,7 @@
                         <tr><td><code>○&lt;</code> — zero or many</td><td>A parent may have no children or several.</td><td>Child end when the complete FK column set is not uniquely constrained. An ordinary index does not make it unique.</td></tr>
                     </tbody>
                 </table>
-                <p>Solid lines are physical foreign keys, dotted lines are draft relationships, and dashed lines are archive relationships. Names and mappings appear on hover or selection to avoid permanent label clutter.</p>
+                <p>Solid lines are physical foreign keys, dotted lines are draft relationships, and dashed lines are archive relationships. A compact relationship name appears beside the connector on hover, keyboard focus, or selection. Labels avoid table cards, group titles, and connector lines, and follow moves without changing your saved layout. Hover or focus the connector or its label to read the full, wrapped column mappings; Escape dismisses the popup. If the visible canvas is too crowded for a popup, select the relationship and read its mappings in <strong>Details</strong>.</p>
                 <p>A composite foreign key has <strong>one connector per constraint</strong>, not one unrelated line per column. Selection highlights all participating columns; Details shows their ordered mappings. A column's membership in a composite primary key does not make that column individually unique.</p>
 
                 <h2 id="layout">5. Arrange and navigate the canvas</h2>
@@ -138,7 +138,9 @@
                 <h2 id="connectors">7. Adjust connector bends</h2>
                 <ol>
                     <li>Select a relationship line to reveal its bend handles and segment grips.</li>
-                    <li>Drag a bend to move its routing guide. Drag a segment grip sideways to make a right-angle detour. Double-click a segment to add a bend at that point.</li>
+                    <li>Drag a bend to move that routing guide. Drag an interior segment grip to slide the whole straight section: vertical sections move left/right, horizontal sections move up/down, and the adjacent sections adjust without adding a split. Movement stays in the available lane outside tables and group titles. The endpoint sections stay attached to their column rows.</li>
+                    <li>A slid middle vertical section keeps its horizontal position when either table moves; its corners follow the current column rows without adding a detour. If a table moves into that lane, the lane stays outside the table. Obstructions can still require automatic routing.</li>
+                    <li>To deliberately add a detour, use <strong>Add Bend</strong>, press <kbd>Enter</kbd> on a segment grip, or double-click a segment. Adding or moving an individual bend keeps explicit guides fixed on the canvas instead. Segment positions and this behavior are restored when you reopen the diagram. <kbd>Escape</kbd> cancels an active move.</li>
                     <li>For explicit controls, open <strong>Details → Connector route</strong>. <strong>Add Bend</strong> creates and focuses a guide on the longest segment. <strong>Remove Bend</strong> removes the selected guide.</li>
                     <li>Release to finish and save the adjustment on a saved diagram. Press Escape during a move to cancel it. Use <strong>Reset to Automatic</strong> to discard the route guides; removing the last bend also restores automatic routing.</li>
                 </ol>
@@ -146,13 +148,16 @@
                 <div class="callout"><strong>Connector editing changes appearance only.</strong> It does not add, remove, or modify a foreign key. To change the actual relationship, use the schema inspector and review the staged SQL.</div>
 
                 <h2 id="saving">8. Save, reopen, and undo</h2>
-                <p>Named diagrams save completed table/group moves, connector adjustments, and explicit layout/detail commands. Pan and zoom saving is debounced briefly. A new global Default Diagram begins saving after a change; merely opening an untouched empty workspace does not create a record. For an unnamed table-context diagram, enter a name and choose <strong>Save</strong> first.</p>
+                <p>The <strong>Diagram</strong> selector at the top shows the active diagram and other diagrams saved in this database and route. Named diagrams save completed table/group moves, connector adjustments, and explicit layout/detail commands. Pan and zoom saving is debounced briefly. A new global Default Diagram begins saving after a change; merely opening an untouched empty workspace does not create a record.</p>
                 <ul>
-                    <li><strong>Save:</strong> stores the current diagram under the name entered. Check the status for saving, saved, or save-failed feedback before closing.</li>
-                    <li><strong>Save As:</strong> enter a new, unused name, then choose Save As. It creates a copy and refuses to overwrite an existing named diagram.</li>
-                    <li><strong>Load:</strong> choose the saved name in the same database and route. Loading restores its positions, groups, connector bends and attachment sides, detail levels, viewport, and pending changes.</li>
+                    <li><strong>New Diagram:</strong> opens a naming panel. Enter a new, unused name and choose <strong>Create Diagram</strong>. This saves and opens an empty canvas with no pending database changes. The previous diagram is kept; its tables, layout, and pending edits are not copied.</li>
+                    <li><strong>Save:</strong> saves the active named diagram. For an unnamed canvas, it opens the naming panel. Check the saving, saved, or save-failed status before closing.</li>
+                    <li><strong>Save As:</strong> opens a naming panel. Enter a new, unused name and choose <strong>Save Copy</strong>. It copies the current layout and pending edits, activates the copy, and refuses to overwrite an existing diagram.</li>
+                    <li><strong>Diagram selector:</strong> choose a saved name to switch diagrams. Loading restores its positions, groups, connector bends and attachment sides, detail levels, viewport, and pending changes. Creating or opening another diagram is blocked if the current canvas is unnamed and has changes, or cannot be saved. Save it first, then retry.</li>
+                    <li><strong>Delete Diagram:</strong> asks you to confirm the active diagram's name. Confirmation deletes only its saved record, never database tables. The canvas and pending changes remain open but unsaved. Further edits do not recreate the deleted record; choose Save As to keep this canvas under a name. Cancel or Escape dismisses the confirmation.</li>
                     <li><strong>Undo / Redo:</strong> use the toolbar to reverse or restore diagram edits and unapplied schema edits. A completed drag is one history action. History is session-local and resets after refresh, diagram load, or successful schema application.</li>
                 </ul>
+                <p><strong>Clear is different:</strong> it removes cards and groups from the active canvas and saves that empty layout, while retaining pending database changes. Use <strong>New Diagram</strong> for a separate blank workspace, or <strong>Save As</strong> before clearing if you want to keep the original layout. Removing a card, clearing a canvas, and deleting a diagram never drop database tables; schema changes require review and application.</p>
                 <p>Save an unnamed diagram before switching routes or loading another one. Undo does not reverse committed database changes, and its history is not restored when you reopen a saved diagram.</p>
                 <p>Diagrams are stored as JSON in the database-local <code>__data_model_diagrams</code> backing table. Current version-5 records retain the layout and pending intent; earlier versions are migrated on load. Use <strong>System Catalog → sys.diagrams</strong> to inspect saved diagrams, or Internal Storage to see the backing-table inventory. Do not edit backing records directly.</p>
 
@@ -244,7 +249,7 @@
                         <tr><td>A foreign-key line is missing</td><td>Both endpoint cards must be visible. Use Known relationships or Show Direct Relationships to add the missing endpoint. Check metadata warnings for a source that no longer exists.</td></tr>
                         <tr><td>A saved bend is not being followed</td><td>A card may obstruct it. Move the card away, adjust the bend, or Reset to Automatic. The fallback does not erase the saved guide.</td></tr>
                         <tr><td>Schema editing controls are missing</td><td>Select one writable physical or draft table, not a group, multiple tables, or an external table. Open Details.</td></tr>
-                        <tr><td>My saved arrangement is missing</td><td>Check the database, route, and diagram name. Use Load to open the named diagram; the global entry loads Default Diagram. Look for a save-failed message.</td></tr>
+                        <tr><td>My saved arrangement is missing</td><td>Check the database, route, and Diagram selector. Select the named diagram; the global entry loads Default Diagram. Look for a save-failed message.</td></tr>
                         <tr><td>A table disappeared after refresh or load</td><td>Read missing-source warnings and verify live metadata. Removed sources cannot keep active group membership; other saved positions are retained.</td></tr>
                         <tr><td>Changes are saved but the database is unchanged</td><td>Diagram saving preserves pending intent. Database changes require Review Changes and Apply reviewed changes.</td></tr>
                     </tbody>

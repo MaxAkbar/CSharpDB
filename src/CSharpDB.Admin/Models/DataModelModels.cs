@@ -121,6 +121,8 @@ public sealed class DataModelConnectorLayout
 {
     public DataModelConnectorSide ParentSide { get; set; } = DataModelConnectorSide.Right;
     public DataModelConnectorSide ChildSide { get; set; } = DataModelConnectorSide.Left;
+    /// <summary>A slid middle lane follows its endpoint rows; false keeps explicit bends fixed. Null supports older diagrams.</summary>
+    public bool? FollowEndpointRows { get; set; }
     public List<DataModelConnectorWaypoint> Waypoints { get; set; } = [];
 }
 

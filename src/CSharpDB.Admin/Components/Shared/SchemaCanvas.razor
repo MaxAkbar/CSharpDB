@@ -61,6 +61,7 @@
                                   data-child-table="@current.LeftTable" data-child-column="@current.LeftColumn"
                                   data-child-lane="@Px(CollapsedLaneFraction(current.LeftTable, current.Id))"
                                   tabindex="0" role="button" aria-label="@RelationshipSelectionLabel(current)"
+                                  aria-describedby="@RelationshipTooltipId(current)"
                                   @onclick:stopPropagation="true"
                                   @onclick="() => OnRelationshipSelected.InvokeAsync(current.Id)"
                                   @onkeydown="eventArgs => SelectRelationshipFromKeyboardAsync(eventArgs, current.Id)" />
@@ -75,15 +76,6 @@
                                   data-child-table="@current.LeftTable" data-child-column="@current.LeftColumn"
                                   data-child-lane="@Px(CollapsedLaneFraction(current.LeftTable, current.Id))"
                                   style="pointer-events:none" />
-                            <rect class="schema-relationship-label-box" data-model-label="box"
-                                  x="@Px(geometry.LabelX - 111)" y="@Px(geometry.LabelY - 11)" width="222" height="20"
-                                  rx="3" fill="var(--bg-elevated)" stroke="var(--border-color)" stroke-width="1"
-                                  style="pointer-events:none" />
-                            <foreignObject class="schema-relationship-label-box" data-model-label="text"
-                                           x="@Px(geometry.LabelX - 109)" y="@Px(geometry.LabelY - 9)" width="218" height="16"
-                                           style="pointer-events:none">
-                                <div class="schema-relationship-label">@RelationshipSelectionLabel(current)</div>
-                            </foreignObject>
                             @* This container's children are owned by the pointer interop, not Blazor. *@
                             <g data-model-route-handles></g>
                         </g>
@@ -173,6 +165,28 @@
                         }
                     </div>
                 }
+                @* Labels are transient UI, above cards but separate from connector geometry.
+                   Interop measures and positions them without changing saved coordinates. *@
+                <div class="schema-relationship-label-layer">
+                    @foreach (var relationship in State.Relationships.Where(ShouldRenderRelationship))
+                    {
+                        var current = relationship;
+                        <div @key="current.Id" class="schema-relationship-label" data-model-label-id="@current.Id">
+                            <button class="schema-relationship-label-button" aria-label="@RelationshipSelectionLabel(current)"
+                                    aria-describedby="@RelationshipTooltipId(current)"
+                                    @onclick:stopPropagation="true" @onclick="() => OnRelationshipSelected.InvokeAsync(current.Id)">
+                                @RelationshipShortLabel(current)
+                            </button>
+                            <div class="schema-relationship-tooltip" id="@RelationshipTooltipId(current)" role="tooltip">
+                                <strong>@RelationshipShortLabel(current)</strong>
+                                @foreach (var pair in current.EffectiveColumnPairs)
+                                {
+                                    <div>@current.LeftTable.@pair.ChildColumn → @current.RightTable.@pair.ParentColumn</div>
+                                }
+                            </div>
+                        </div>
+                    }
+                </div>
             </div>
         </div>
 
@@ -463,6 +477,11 @@
 
     private string MarkerId(DataModelCardinality cardinality) => $"{CanvasId}-cardinality-{cardinality}";
     private string MarkerUrl(DataModelCardinality cardinality) => $"url(#{MarkerId(cardinality)})";
+    private string RelationshipTooltipId(DataModelRelationship relationship) => $"{CanvasId}-relationship-{Uri.EscapeDataString(relationship.Id)}-tooltip";
+    private static string RelationshipShortLabel(DataModelRelationship relationship) =>
+        string.IsNullOrWhiteSpace(relationship.ConstraintName)
+            ? $"{relationship.LeftTable} → {relationship.RightTable}"
+            : relationship.ConstraintName;
     private static string RelationshipSelectionLabel(DataModelRelationship relationship)
     {
         string columns = string.Join(", ", relationship.EffectiveColumnPairs.Select(pair => $"{relationship.LeftTable}.{pair.ChildColumn} → {relationship.RightTable}.{pair.ParentColumn}"));

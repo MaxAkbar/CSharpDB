@@ -785,7 +785,11 @@ public sealed class Database : IAsyncDisposable
             }
 
             TableStatistics? existing = _catalog.GetTableStatistics(stats.TableName);
-            if (existing is null || !existing.RowCountIsExact)
+            // A legacy/stale shared count may be marked exact even when it is
+            // too small for this deletion. The write transaction has already
+            // recounted its tree; do not reintroduce an impossible count while
+            // publishing the successfully committed mutation to the shared cache.
+            if (existing is null || !existing.RowCountIsExact || checked(existing.RowCount + rowCountDelta) < 0)
             {
                 merged.Add(
                     new TableStatistics

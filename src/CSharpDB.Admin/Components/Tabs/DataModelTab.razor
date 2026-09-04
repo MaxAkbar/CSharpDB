@@ -8,17 +8,64 @@
 @implements IAsyncDisposable
 
 <div class="data-model-tab">
+    <div class="toolbar data-model-diagram-toolbar" aria-label="Saved diagrams">
+        <label for="model-diagram-@Tab?.Id">Diagram</label>
+        <select id="model-diagram-@Tab?.Id" class="schema-input" aria-label="Active diagram"
+                @key="_diagramSelectorVersion" value="@(HasPersistedActiveDiagram ? _state.DiagramName : "")"
+                disabled="@(_loading || _savingDiagram || RequiresRouteContext)" @onchange="SelectDiagramAsync">
+            @if (!HasPersistedActiveDiagram)
+            {
+                <option value="">@(_state.DiagramName is null ? "Unsaved diagram" : $"{_state.DiagramName} (not saved)")</option>
+            }
+            @foreach (var diagram in _savedDiagrams)
+            {
+                <option value="@diagram.Name">@diagram.Name (@diagram.SourceCount sources)</option>
+            }
+        </select>
+        <button class="toolbar-btn" disabled="@(_loading || _savingDiagram || RequiresRouteContext)" @onclick="() => OpenDiagramNamePanel(true)">
+            <i class="bi bi-plus-lg"></i> New Diagram
+        </button>
+        <button class="toolbar-btn" disabled="@(_loading || _savingDiagram || RequiresRouteContext)" @onclick="SaveCurrentDiagramAsync">
+            <i class="bi bi-save"></i> Save
+        </button>
+        <button class="toolbar-btn" disabled="@(_loading || _savingDiagram || RequiresRouteContext)" @onclick="() => OpenDiagramNamePanel(false)">Save As</button>
+        <button class="toolbar-btn danger" disabled="@(_loading || _savingDiagram || !HasPersistedActiveDiagram || RequiresRouteContext)"
+                @onclick="RequestDeleteDiagram" title="Delete only the active saved diagram, not database tables">
+            <i class="bi bi-trash"></i> Delete Diagram
+        </button>
+        <span role="status">@SaveStatus · @_state.PendingOperations.Count pending database changes</span>
+    </div>
+    @if (_showDiagramNamePanel)
+    {
+        <form class="data-model-diagram-panel" aria-label="@(_creatingNewDiagram ? "New Diagram" : "Save As")"
+              @onsubmit="SubmitDiagramNameAsync" @onsubmit:preventDefault @onkeydown="OnDiagramPanelKeyDown">
+            <strong>@(_creatingNewDiagram ? "New Diagram" : "Save As")</strong>
+            <p>@(_creatingNewDiagram ? "Create a named, empty canvas with no pending database changes. Your current diagram is kept." : "Save a separate copy of this canvas, including its layout and pending database changes.")</p>
+            <label>Diagram name <input class="schema-input" aria-label="Diagram name" @ref="_diagramNameInput" @bind="_diagramName" @bind:event="oninput" disabled="@_loading" /></label>
+            <button type="submit" class="toolbar-btn primary" disabled="@(_loading || string.IsNullOrWhiteSpace(_diagramName))">@(_creatingNewDiagram ? "Create Diagram" : "Save Copy")</button>
+            <button type="button" class="toolbar-btn" disabled="@_loading" @onclick="CloseDiagramPanels">Cancel</button>
+            @if (_diagramCommandError is not null) { <p role="alert">@_diagramCommandError</p> }
+        </form>
+    }
+    @if (_diagramToDelete is not null)
+    {
+        <section class="data-model-diagram-panel" aria-label="Confirm diagram deletion" @onkeydown="OnDiagramPanelKeyDown">
+            <strong>Delete diagram “@_diagramToDelete”?</strong>
+            <p>This removes only the saved diagram. Database tables are not deleted. The current canvas and pending changes stay open, unsaved; use Save As to keep them.</p>
+            <button class="toolbar-btn danger" disabled="@_loading" @onclick="DeleteActiveDiagramAsync">Confirm Delete Diagram</button>
+            <button class="toolbar-btn" disabled="@_loading" @ref="_deleteCancelButton" @onclick="CloseDiagramPanels">Cancel</button>
+            @if (_diagramCommandError is not null) { <p role="alert">@_diagramCommandError</p> }
+        </section>
+    }
     <div class="toolbar data-model-tools">
         <button class="toolbar-btn" disabled="@(_loading || !_history.CanUndo)" @onclick="() => RestoreHistoryAsync(false)">Undo</button>
         <button class="toolbar-btn" disabled="@(_loading || !_history.CanRedo)" @onclick="() => RestoreHistoryAsync(true)">Redo</button>
         <input class="schema-input" style="max-width:190px" placeholder="Locate table…" aria-label="Search canvas tables" @bind="_canvasSearch" @bind:event="oninput" />
         @if (!string.IsNullOrWhiteSpace(_canvasSearch))
         { <select class="schema-input" style="max-width:190px" aria-label="Locate table" value="" @onchange="e => LocateAsync(e.Value?.ToString() ?? string.Empty)"><option value="">Choose match</option>@foreach(var node in LocatedNodes) { <option>@node.Name</option> }</select> }
-        <button class="toolbar-btn" disabled="@_loading" @onclick="SaveAsAsync">Save As</button>
         <button class="toolbar-btn" disabled="@(_loading || _state.Nodes.Count == 0)" @onclick='() => ExportModelAsync("svg")'>Export SVG</button>
         <button class="toolbar-btn" disabled="@(_loading || _state.Nodes.Count == 0)" @onclick='() => ExportModelAsync("png")'>Export PNG</button>
         <button class="toolbar-btn" disabled="@(_loading || _state.PendingOperations.Count == 0)" @onclick='() => ExportModelAsync("sql")'>Export pending SQL</button>
-        <span role="status">@SaveStatus · @_state.PendingOperations.Count pending database changes</span>
     </div>
     @if (_showReview)
     {
@@ -115,51 +162,6 @@
                 disabled="@(_loading || CurrentScale >= MaxZoom)"
                 title="Zoom in">
             <i class="bi bi-zoom-in"></i>
-        </button>
-
-        <div class="toolbar-separator"></div>
-        <input class="query-saved-input"
-               style="width:130px"
-               @bind="_diagramName"
-               @bind:event="oninput"
-               placeholder="Diagram name..." />
-        <button class="toolbar-btn"
-                @onclick="SaveDiagramAsync"
-                disabled="@(_loading || string.IsNullOrWhiteSpace(_diagramName))"
-                title="Save diagram">
-            <i class="bi bi-save"></i> Save
-        </button>
-        <div class="designer-dropdown-wrap">
-            <button class="toolbar-btn" @onclick="ToggleLoadPanel" disabled="@_loading" title="Open a saved diagram">
-                <i class="bi bi-folder2-open"></i> Load <i class="bi bi-chevron-down" style="font-size:10px"></i>
-            </button>
-            @if (_showLoadPanel)
-            {
-                <div class="designer-dropdown-panel">
-                    @if (!_savedDiagrams.Any())
-                    {
-                        <div class="designer-dropdown-empty">No saved diagrams</div>
-                    }
-                    else
-                    {
-                        @foreach (DataModelDiagramSummary diagram in _savedDiagrams)
-                        {
-                            var saved = diagram;
-                            <button class="designer-dropdown-item" @onclick="() => LoadDiagramAsync(saved.Name)">
-                                <i class="bi bi-diagram-3"></i>
-                                <span>@saved.Name</span>
-                                <small>@saved.SourceCount source@(saved.SourceCount == 1 ? "" : "s")</small>
-                            </button>
-                        }
-                    }
-                </div>
-            }
-        </div>
-        <button class="toolbar-btn danger"
-                @onclick="DeleteActiveDiagramAsync"
-                disabled="@(_loading || !HasPersistedActiveDiagram)"
-                title="Delete the saved diagram record">
-            <i class="bi bi-trash"></i> Delete
         </button>
 
         <div class="toolbar-separator"></div>
@@ -615,7 +617,6 @@
     private SchemaCanvas? _schemaCanvas;
     private bool _showSourcesPane;
     private bool _showInspectorPane;
-    private bool _showLoadPanel;
     private bool _showNewTablePanel;
     private bool _hasDiagramMutation;
     private bool _loading;
@@ -801,6 +802,16 @@
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        if (_focusDiagramName)
+        {
+            _focusDiagramName = false;
+            await _diagramNameInput.FocusAsync();
+        }
+        if (_focusDeleteCancel)
+        {
+            _focusDeleteCancel = false;
+            await _deleteCancelButton.FocusAsync();
+        }
         if (!_fitAfterRender || _schemaCanvas is null)
             return;
 
@@ -810,12 +821,18 @@
 
     private async Task OnRouteChangedAsync(CSharpDbRouteContext? routeContext)
     {
-        await RouteLease.UpdateAsync(Tab);
-        RebuildRouteServices();
-        ResetRouteScopedState();
-
-        if (!RequiresRouteContext)
-            await LoadInitialAsync();
+        _loading = true;
+        CancelViewportPersistence();
+        await _diagramSaveGate.WaitAsync();
+        try
+        {
+            await RouteLease.UpdateAsync(Tab);
+            RebuildRouteServices();
+            ResetRouteScopedState();
+            if (!RequiresRouteContext)
+                await LoadInitialAsync();
+        }
+        finally { _loading = false; _diagramSaveGate.Release(); }
     }
 
     private void RebuildRouteServices()
@@ -827,6 +844,8 @@
 
     private void ResetRouteScopedState()
     {
+        CancelViewportPersistence();
+        CloseDiagramPanels();
         ClearGroupSelection();
         _confirmTidyRoutes = false;
         _selectedWaypointId = null;
@@ -839,7 +858,6 @@
         _diagramName = "";
         _showSourcesPane = false;
         _showInspectorPane = false;
-        _showLoadPanel = false;
         _showNewTablePanel = false;
         _hasDiagramMutation = false;
         _sourceSearch = "";
@@ -1448,15 +1466,12 @@
 
     private async Task SaveDiagramAsync()
     {
+        CancelViewportPersistence();
+        await _diagramSaveGate.WaitAsync();
         try
         {
             _savingDiagram = true;
-            _hasDiagramMutation = true;
-            await ActiveDiagrams.SaveDiagramAsync(_diagramName, _state);
-            _diagramSaveError = null;
-            _diagramName = _state.DiagramName ?? _diagramName.Trim();
-            await RefreshSavedDiagramsAsync();
-            SaveState();
+            await SaveActiveDiagramCoreAsync();
             Toast.Success($"Data model diagram '{_diagramName}' saved.");
         }
         catch (Exception ex)
@@ -1464,17 +1479,18 @@
             _diagramSaveError = $"Diagram changes were not saved: {ex.Message}";
             Toast.Error(_diagramSaveError);
         }
-        finally { _savingDiagram = false; }
+        finally { _savingDiagram = false; _diagramSaveGate.Release(); }
     }
 
     private async Task LoadDiagramAsync(string name)
     {
-        ClearGroupSelection();
-        _confirmTidyRoutes = false;
-        _selectedWaypointId = null;
-        _showLoadPanel = false;
+        if (_loading || string.IsNullOrWhiteSpace(name)) return;
+        _loading = true;
+        CancelViewportPersistence();
+        await _diagramSaveGate.WaitAsync();
         try
         {
+            await PreserveDiagramBeforeSwitchAsync();
             DataModelState? loaded = await ActiveDiagrams.LoadDiagramAsync(name);
             if (loaded is null)
             {
@@ -1483,6 +1499,7 @@
             }
 
             _state = loaded;
+            ResetDiagramInteraction();
             ResetHistory();
             _diagramSaveError = null;
             NormalizeZoom();
@@ -1496,37 +1513,44 @@
         }
         catch (Exception ex)
         {
+            _error = $"Failed to load data model diagram: {ex.Message}";
             Toast.Error($"Failed to load data model diagram: {ex.Message}");
         }
+        finally { _loading = false; _diagramSelectorVersion++; _diagramSaveGate.Release(); }
     }
 
     private async Task DeleteActiveDiagramAsync()
     {
-        _confirmTidyRoutes = false;
-        if (string.IsNullOrWhiteSpace(_state.DiagramName))
+        string? name = _diagramToDelete;
+        if (_loading || name is null || !string.Equals(name, _state.DiagramName, StringComparison.Ordinal))
             return;
-
-        string name = _state.DiagramName;
+        _loading = true;
+        CancelViewportPersistence();
+        await _diagramSaveGate.WaitAsync();
         try
         {
             await ActiveDiagrams.DeleteDiagramAsync(name);
-            await RefreshSavedDiagramsAsync();
             _state.DiagramName = null;
             _state.SavedLayoutName = null;
             _diagramName = "";
+            _diagramSaveError = null;
+            CloseDiagramPanels();
+            _savedDiagrams = _savedDiagrams.Where(diagram => !string.Equals(diagram.Name, name, StringComparison.OrdinalIgnoreCase)).ToArray();
             SaveState();
             Toast.Info($"Data model diagram '{name}' deleted.");
         }
         catch (Exception ex)
         {
+            _diagramCommandError = $"Failed to delete data model diagram: {ex.Message}";
             Toast.Error($"Failed to delete data model diagram: {ex.Message}");
         }
+        finally { _loading = false; _diagramSelectorVersion++; _diagramSaveGate.Release(); }
     }
 
     private async Task RefreshSavedDiagramsAsync()
     {
         try { _savedDiagrams = await ActiveDiagrams.GetDiagramsAsync(); }
-        catch { _savedDiagrams = []; }
+        catch { /* Retain the last known diagram list if refreshing it fails. */ }
     }
 
     private void OpenInQueryDesigner()
@@ -1552,27 +1576,18 @@
     private void ToggleSourcesPane()
     {
         _showSourcesPane = !_showSourcesPane;
-        _showLoadPanel = false;
         _showNewTablePanel = false;
     }
 
     private void ToggleInspectorPane()
     {
         _showInspectorPane = !_showInspectorPane;
-        _showLoadPanel = false;
-        _showNewTablePanel = false;
-    }
-
-    private void ToggleLoadPanel()
-    {
-        _showLoadPanel = !_showLoadPanel;
         _showNewTablePanel = false;
     }
 
     private void ToggleNewTablePanel()
     {
         _showNewTablePanel = !_showNewTablePanel;
-        _showLoadPanel = false;
     }
 
     private async Task StageNewTableAsync()
@@ -1867,34 +1882,29 @@
         if (markMutation)
             _hasDiagramMutation = true;
 
-        EnsureDefaultDiagramName();
-        if (string.IsNullOrWhiteSpace(_state.DiagramName) ||
-            (!_hasDiagramMutation && _state.Nodes.Count == 0 && _state.PendingOperations.Count == 0))
-            return;
-
+        var state = _state;
+        await _diagramSaveGate.WaitAsync();
         try
         {
+            if (!ReferenceEquals(state, _state) || string.IsNullOrWhiteSpace(_state.DiagramName) ||
+                (!_hasDiagramMutation && _state.Nodes.Count == 0 && _state.PendingOperations.Count == 0))
+                return;
             _savingDiagram = true;
-            await ActiveDiagrams.SaveDiagramAsync(_state.DiagramName, _state);
-            _diagramSaveError = null;
-            await RefreshSavedDiagramsAsync();
+            await SaveActiveDiagramCoreAsync();
         }
         catch (Exception ex)
         {
             _diagramSaveError = $"Diagram changes were not saved: {ex.Message}";
             Toast.Warning(_diagramSaveError);
         }
-        finally { _savingDiagram = false; }
+        finally { _savingDiagram = false; _diagramSaveGate.Release(); }
     }
 
     private void EnsureDefaultDiagramName()
     {
-        if (!UsesDefaultDiagram || !string.IsNullOrWhiteSpace(_state.DiagramName))
-            return;
-
-        _state.DiagramName = DefaultDiagramName;
-        _state.SavedLayoutName = DefaultDiagramName;
-        _diagramName = DefaultDiagramName;
+        // Only initial creation assigns Default Diagram. In particular, deleting
+        // a saved diagram must not implicitly recreate it on the next edit.
+        _state.DiagramName ??= _state.SavedLayoutName;
     }
 
     private static string RelationshipKindLabel(DataModelRelationshipKind kind) => kind switch

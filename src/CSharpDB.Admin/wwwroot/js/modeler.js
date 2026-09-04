@@ -44,8 +44,8 @@ window.modelerFiles = {
             }
             targets[i].style.opacity = '1';
         }
-        // Transient hover labels use foreignObject in the live canvas. Exclude them and
-        // interaction grips so the standalone SVG/PNG contains only portable SVG geometry.
+        // Transient labels live in a separate HTML overlay and are not exported.
+        // Exclude interaction grips (and legacy labels) from portable SVG geometry.
         edges.querySelectorAll('[data-model-edge="hit"], [data-model-route-handles], [data-model-label]').forEach(element => element.remove());
         scene.append(edges);
         for (const node of stage.querySelectorAll('.schema-node')) {

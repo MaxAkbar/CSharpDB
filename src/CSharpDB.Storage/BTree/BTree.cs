@@ -33,6 +33,7 @@ public sealed class BTree
     private uint _rootPageId;
     private long? _cachedEntryCount;
     private readonly Dictionary<uint, CachedInteriorRouting> _interiorRoutingCache = new();
+    private uint _readRoutingChangeCounter;
     private readonly List<uint> _ownedTraversalPath = new(capacity: 8);
     private readonly HashSet<uint> _ownedTraversalSet = new();
 
@@ -64,6 +65,7 @@ public sealed class BTree
         string? logicalResourceName = null)
     {
         _pager = pager;
+        _readRoutingChangeCounter = pager.ChangeCounter;
         _rootPageId = rootPageId;
         _logicalTableName = logicalTableName;
         _logicalResourceName = logicalResourceName ??
@@ -144,6 +146,7 @@ public sealed class BTree
         bool populateReadRoutingCache,
         CancellationToken ct = default)
     {
+        EnsureReadRoutingCacheCurrent();
         RecordLogicalPointRead(key);
 
         if (!_pager.UsesReadOnlyPageViews)
@@ -425,6 +428,7 @@ public sealed class BTree
     /// </summary>
     public bool TryFindCachedMemory(long key, out ReadOnlyMemory<byte>? payload)
     {
+        EnsureReadRoutingCacheCurrent();
         payload = null;
 
         if (!_pager.UsesReadOnlyPageViews)
@@ -998,6 +1002,19 @@ public sealed class BTree
     {
         ArgumentOutOfRangeException.ThrowIfNegative(count);
         _cachedEntryCount = count;
+    }
+
+    private void EnsureReadRoutingCacheCurrent()
+    {
+        uint changeCounter = _pager.ChangeCounter;
+        if (_readRoutingChangeCounter == changeCounter)
+            return;
+
+        // A separate write-transaction tree can redistribute leaves without
+        // changing this tree's root. Its commit invalidates cached separators
+        // and leaf hints even though this reader did not perform the mutation.
+        InvalidateReadRoutingCaches();
+        _readRoutingChangeCounter = changeCounter;
     }
 
     private void InvalidateReadRoutingCaches()

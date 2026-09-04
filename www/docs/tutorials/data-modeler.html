@@ -156,6 +156,7 @@ dotnet run --project .\src\CSharpDB.Admin\CSharpDB.Admin.csproj --no-launch-prof
 
                 <h2 id="read-relationships">3. Read the relationship, not just the line</h2>
                 <p>Select the connector between customers and orders. If it is hard to target, select orders, open <strong>Details</strong>, and choose <strong>fk_orders_customer</strong> under Known relationships.</p>
+                <p>The relationship name appears beside the line, clear of the table cards and connector. Hover or keyboard-focus the line or its label for the full, wrapped mappings. If there is no clear space for the popup, use <strong>Details</strong>. Labels reposition automatically without altering saved table positions or connector bends.</p>
                 <p>The inspector shows two ordered mappings:</p>
                 <pre><code class="language-text">orders.tenant_id   → customers.tenant_id
 orders.customer_id → customers.id</code></pre>
@@ -201,7 +202,9 @@ orders.customer_id → customers.id</code></pre>
                     <li>Select <code>fk_orders_customer</code> again. Open <strong>Details → Connector route</strong>.</li>
                     <li>Choose <strong>Add Bend</strong>. A new guide is focused on the longest segment.</li>
                     <li>Move it with the arrow keys. Each press moves 8 canvas units; Shift+Arrow moves 24. The example uses Shift+Up to move the guide above its original position.</li>
-                    <li>Alternatively, drag a bend handle or drag a segment grip sideways to make an orthogonal detour. Double-click a segment to add another guide.</li>
+                    <li>Drag a bend handle to move one guide, or drag an interior segment grip to slide the whole straight section without splitting it. Vertical sections slide left/right; horizontal sections slide up/down. Movement stops at the limits of the clear lane, while endpoint sections remain attached to their columns.</li>
+                    <li>After sliding the middle vertical section, move either table: the section keeps its horizontal lane while its ends follow the column rows. The lane stays outside a table moved toward it; other obstructions may require automatic routing.</li>
+                    <li>Use <strong>Add Bend</strong>, <kbd>Enter</kbd> on a segment grip, or double-click when you want another guide or detour. Adding or moving individual bends makes those guides fixed canvas positions instead. The lane and its behavior are saved with the diagram; <kbd>Escape</kbd> cancels a move in progress.</li>
                 </ol>
                 <figure>
                     <a href="../../images/admin/data-modeler/connector.webp"><img src="../../images/admin/data-modeler/connector.webp" width="1320" height="951" loading="lazy" alt="Custom connector route with a focused bend handle and Add Bend, Remove Bend, and Reset to Automatic controls"></a>
@@ -212,12 +215,20 @@ orders.customer_id → customers.id</code></pre>
 
                 <h2 id="save-reopen">7. Save a diagram you can come back to</h2>
                 <ol>
-                    <li>Enter <strong>Order fulfillment</strong> in Diagram name and choose <strong>Save As</strong>. The new name must not already exist.</li>
+                    <li>Choose <strong>Save As</strong> in the diagram toolbar. In the naming panel, enter <strong>Order fulfillment</strong> and choose <strong>Save Copy</strong>. The new name must not already exist.</li>
                     <li>Wait for <strong>Saved diagram</strong>. Named diagrams also save completed moves and layout edits automatically; pan and zoom saving is briefly debounced.</li>
-                    <li>Close the Data Model tab, open it again from Tools, then choose <strong>Load → Order fulfillment</strong>. The global entry initially opens Default Diagram, so select your named copy explicitly.</li>
+                    <li>Close the Data Model tab, open it again from Tools, then select <strong>Order fulfillment</strong> in the <strong>Diagram</strong> selector at the top. The global entry initially opens Default Diagram, so select your named copy explicitly.</li>
                     <li>Confirm the five tables, Fulfillment group, table positions, and custom bend are restored. Select the connector to see that its route is still Custom.</li>
                 </ol>
                 <p>Diagram JSON stores membership, positions, groups, detail levels, connector guides and attachment sides, viewport, and pending schema intent. Storage is local to the database and active route. Inspect it through <strong>System Catalog → sys.diagrams</strong>; do not edit the <code>__data_model_diagrams</code> backing table directly.</p>
+                <h3>Keep several focused diagrams</h3>
+                <ul>
+                    <li><strong>New Diagram</strong> opens a naming panel. Enter a unique name and choose <strong>Create Diagram</strong> for a separate, empty canvas with no pending database changes. Your existing diagram stays saved.</li>
+                    <li><strong>Save As</strong> creates and activates a copy of the current diagram, including pending schema edits. Use the <strong>Diagram</strong> selector to switch between your saved views.</li>
+                    <li><strong>Delete Diagram</strong> asks you to confirm the active name. It deletes only that saved record, not database tables. The canvas and pending changes remain open but unsaved; editing it does not recreate the deleted record. Use Save As to keep it again.</li>
+                    <li><strong>Clear</strong> empties and saves the active canvas while retaining pending schema changes. Use New Diagram for a fresh workspace, or Save As before Clear to preserve the original layout.</li>
+                </ul>
+                <p>If the current canvas is unnamed or cannot be saved, save it successfully before creating or opening another diagram. Cancel or Escape closes a naming or deletion panel without changing anything.</p>
                 <p><strong>Undo / Redo</strong> covers diagram edits and unapplied schema changes, with each completed drag treated as one action. History is session-local and resets after load, refresh, or successful Apply. It cannot undo committed database changes.</p>
                 <p class="step-result"><strong>Checkpoint:</strong> closing and loading the named diagram restores the arrangement, without rebuilding it through Auto Arrange.</p>
 

@@ -1393,16 +1393,14 @@ internal sealed class CatalogService
             }
             else
             {
-                long actualRowCount = await GetTableTree(tableName).CountEntriesExactAsync(ct);
-                rowCount = checked(actualRowCount + delta);
+                // Callers have already mutated the tree. A physical recount
+                // includes that mutation; only a pre-mutation cache needs delta.
+                rowCount = await GetTableTree(tableName).CountEntriesExactAsync(ct);
             }
 
             if (rowCount < 0)
             {
-                long actualRowCount = await GetTableTree(tableName).CountEntriesExactAsync(ct);
-                rowCount = checked(actualRowCount + delta);
-                if (rowCount < 0)
-                    throw new InvalidOperationException($"Table '{tableName}' row count would become negative.");
+                rowCount = await GetTableTree(tableName).CountEntriesExactAsync(ct);
             }
             hasStaleColumns = existing.HasStaleColumns;
         }

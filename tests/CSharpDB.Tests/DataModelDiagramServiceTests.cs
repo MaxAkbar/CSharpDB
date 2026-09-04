@@ -1,4 +1,5 @@
 using CSharpDB.Admin.Models;
+using CSharpDB.Admin.Configuration;
 using CSharpDB.Admin.Services;
 using CSharpDB.Client;
 using CSharpDB.Client.Models;
@@ -7,6 +8,55 @@ namespace CSharpDB.Tests;
 
 public sealed class DataModelDiagramServiceTests : IAsyncLifetime
 {
+    [Theory]
+    [InlineData(AdminHostOpenMode.Direct, false)]
+    [InlineData(AdminHostOpenMode.Direct, true)]
+    [InlineData(AdminHostOpenMode.HybridIncrementalDurable, false)]
+    [InlineData(AdminHostOpenMode.HybridIncrementalDurable, true)]
+    public async Task DeleteDiagram_AfterLoadAllAndCopy_DeletesOnlySelectedRecordIncludingLast(AdminHostOpenMode mode, bool reopen)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _client.DisposeAsync();
+        var options = AdminClientOptionsBuilder.BuildDirectDataSource(_dbPath, new AdminHostDatabaseOptions { OpenMode = mode });
+        _client = CSharpDbClient.Create(options);
+        _service = new DataModelService(_client);
+        var all = await _service.BuildModelAsync(autoLayoutLimit: int.MaxValue, ct: ct);
+        all.Nodes[0].X = 123;
+        await _service.SaveDiagramAsync("Default Diagram", all, ct);
+        await _service.SaveDiagramAsync("Fulfillment", all, ct);
+        await _service.SaveDiagramAsync("Empty workspace", await _service.BuildSelectionAsync([], ct: ct), ct);
+        if (reopen)
+        {
+            await _client.DisposeAsync();
+            _client = CSharpDbClient.Create(options);
+            _service = new DataModelService(_client);
+        }
+
+        Assert.Equal(3, (await _service.GetDiagramsAsync(ct)).Count);
+        Assert.NotNull(await _service.LoadDiagramAsync("Fulfillment", ct));
+        await _service.LoadDiagramAsync("Default Diagram", ct);
+        await _service.DeleteDiagramAsync("Default Diagram", ct);
+        Assert.Null(await _service.LoadDiagramAsync("Default Diagram", ct));
+        Assert.Equal(new[] { "Empty workspace", "Fulfillment" }, (await _service.GetDiagramsAsync(ct)).Select(diagram => diagram.Name).ToArray());
+        var copy = await _service.LoadDiagramAsync("Fulfillment", ct);
+        Assert.NotNull(copy);
+        Assert.Equal(123, copy.Nodes[0].X);
+        await _service.DeleteDiagramAsync("Empty workspace", ct);
+        await _service.DeleteDiagramAsync("Fulfillment", ct);
+        Assert.Empty(await _service.GetDiagramsAsync(ct));
+        // An already-deleted name is a no-op, not another count decrement.
+        await _service.DeleteDiagramAsync("Fulfillment", ct);
+        Assert.NotNull(await _client.GetTableSchemaAsync("customers", ct));
+        Assert.NotNull(await _client.GetTableSchemaAsync("orders", ct));
+        var stats = await _client.ExecuteSqlAsync("SELECT COUNT(*) FROM __data_model_diagrams", ct);
+        Assert.Null(stats.Error);
+        Assert.Equal(0L, Convert.ToInt64(Assert.Single(stats.Rows!)[0]));
+        await _client.DisposeAsync();
+        _client = CSharpDbClient.Create(options);
+        _service = new DataModelService(_client);
+        Assert.Empty(await _service.GetDiagramsAsync(ct));
+    }
+
     private readonly string _dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_diagram_{Guid.NewGuid():N}.db");
     private ICSharpDbClient _client = null!;
     private DataModelService _service = null!;
@@ -48,6 +98,52 @@ public sealed class DataModelDiagramServiceTests : IAsyncLifetime
         Assert.Equal((147d, 235d, 1.25d), (loaded.ViewportX, loaded.ViewportY, loaded.Scale));
         Assert.Equal(schemaPreview, _service.BuildPreviewSql(loaded));
         Assert.Equal(pendingPreview, _service.BuildPendingOperationsPreview(loaded));
+        Assert.Empty(loaded.PendingOperations);
+    }
+
+    [Theory]
+    [InlineData(300)]
+    [InlineData(380.5)]
+    [InlineData(480)]
+    public async Task SlidSegment_RestoresOneStraightMiddleRunAfterDatabaseReopen(double x)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var state = await _service.BuildModelAsync("customers", ct: ct);
+        var parent = state.Nodes.Single(node => node.Name == "customers");
+        var child = state.Nodes.Single(node => node.Name == "orders");
+        parent.X = 24; parent.Y = 40; child.X = 520; child.Y = 160;
+        var relationship = Assert.Single(state.Relationships);
+        double parentY = DataModelCanvasMetrics.ColumnCenterY(state, parent, relationship.RightColumn);
+        double childY = DataModelCanvasMetrics.ColumnCenterY(state, child, relationship.LeftColumn);
+        relationship.ConnectorLayout = new DataModelConnectorLayout
+        {
+            ParentSide = DataModelConnectorSide.Right, ChildSide = DataModelConnectorSide.Left,
+            FollowEndpointRows = true,
+            Waypoints = [new() { Id = "upper-corner", X = x, Y = parentY }, new() { Id = "lower-corner", X = x, Y = childY }]
+        };
+        // Reproduce slide -> move both tables -> save. Do not rewrite the saved corner Ys.
+        parent.Y += 50; child.Y += 80;
+        parentY += 50; childY += 80;
+        string schema = _service.BuildPreviewSql(state);
+        await _service.SaveDiagramAsync("Sliding segment", state, ct);
+        await _client.DisposeAsync();
+        _client = CSharpDbClient.Create(new CSharpDbClientOptions { DataSource = _dbPath });
+        _service = new DataModelService(_client);
+        var loaded = Assert.IsType<DataModelState>(await _service.LoadDiagramAsync("Sliding segment", ct));
+        var layout = Assert.IsType<DataModelConnectorLayout>(Assert.Single(loaded.Relationships).ConnectorLayout);
+        Assert.True(layout.FollowEndpointRows);
+        Assert.Equal(parentY - 50, layout.Waypoints[0].Y);
+        Assert.Equal(childY - 80, layout.Waypoints[1].Y);
+        Assert.Equal(new[] { "upper-corner", "lower-corner" }, layout.Waypoints.Select(point => point.Id));
+        Assert.All(layout.Waypoints, point => Assert.Equal(x, point.X));
+        var route = DataModelConnectorRouter.Route(new(244, parentY, DataModelConnectorSide.Right),
+            new(520, childY, DataModelConnectorSide.Left),
+            loaded.Nodes.Select(node => new DataModelConnectorObstacle(node.X, node.Y, DataModelCanvasMetrics.NodeWidth,
+                DataModelCanvasMetrics.NodeHeight(loaded, node))).ToArray(), layout);
+        Assert.False(route.UsedAutomaticFallback);
+        Assert.Equal(new DataModelConnectorPoint[] { new(244, parentY), new(x, parentY), new(x, childY), new(520, childY) }, route.Points);
+        Assert.Equal(state.Nodes.Select(node => (node.Name, node.X, node.Y)), loaded.Nodes.Select(node => (node.Name, node.X, node.Y)));
+        Assert.Equal(schema, _service.BuildPreviewSql(loaded));
         Assert.Empty(loaded.PendingOperations);
     }
 

@@ -21252,9 +21252,9 @@ public sealed partial class QueryPlanner
         if (rowIds.Count == 0)
             return 0;
 
-        await _catalog.AdjustTableRowCountAsync(InternalExternalTablesTableName, -rowIds.Count, ct);
         foreach (long rowId in rowIds)
             await tableTree.DeleteAsync(rowId, ct);
+        await _catalog.AdjustTableRowCountAsync(InternalExternalTablesTableName, -rowIds.Count, ct);
 
         await _catalog.PersistRootPageChangesAsync(InternalExternalTablesTableName, ct);
         return rowIds.Count;

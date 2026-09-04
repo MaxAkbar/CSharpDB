@@ -9,6 +9,44 @@ namespace CSharpDB.Tests;
 
 public sealed class BTreeDeleteRebalancingTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DeleteLargeFirstRow_BorrowedSiblingRemainsSearchable(bool cacheOnly)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_btree_diagrams_{Guid.NewGuid():N}.db");
+        try
+        {
+            await using var pager = await OpenPagerAsync(dbPath, new PagerOptions(), createNew: true, ct);
+            await pager.BeginTransactionAsync(ct);
+            var tree = new BTree(pager, await BTree.CreateNewAsync(pager, ct));
+            await tree.InsertAsync(1, new byte[3100], ct);
+            await tree.InsertAsync(2, new byte[3100], ct);
+            await tree.InsertAsync(3, new byte[400], ct);
+            await pager.CommitAsync(ct);
+            var reader = new BTree(pager, tree.RootPageId);
+            Assert.NotNull(await reader.FindAsync(2, ct));
+            await pager.BeginTransactionAsync(ct);
+            Assert.True(await tree.DeleteAsync(1, ct));
+            await pager.CommitAsync(ct);
+            Assert.Equal(reader.RootPageId, tree.RootPageId);
+            if (cacheOnly)
+            {
+                Assert.True(reader.TryFindCachedMemory(1, out var removed)); Assert.Null(removed);
+                Assert.True(reader.TryFindCachedMemory(2, out var borrowed)); Assert.NotNull(borrowed);
+                Assert.True(reader.TryFindCachedMemory(3, out var remaining)); Assert.NotNull(remaining);
+            }
+            else
+            {
+                Assert.Null(await reader.FindAsync(1, ct));
+                Assert.NotNull(await reader.FindAsync(2, ct));
+                Assert.NotNull(await reader.FindAsync(3, ct));
+            }
+        }
+        finally { DeleteIfExists(dbPath); DeleteIfExists(dbPath + ".wal"); }
+    }
+
     [Fact]
     public async Task DeleteAndReinsert_HotKeysWithGrowingPayload_RemainSearchable()
     {

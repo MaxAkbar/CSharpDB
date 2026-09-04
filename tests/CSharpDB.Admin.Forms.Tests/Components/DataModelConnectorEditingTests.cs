@@ -16,6 +16,150 @@ namespace CSharpDB.Admin.Forms.Tests.Components;
 public sealed class DataModelConnectorEditingTests
 {
     [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Workspace_NewDiagramStartsEmpty_SaveAsCopiesWithoutChangingOriginal(bool createNew)
+    {
+        var original = Model(); original.DiagramName = "Original";
+        original.Relationships[0].ConnectorLayout = Layout();
+        original.PendingOperations.Add(new() { Kind = DataModelPendingOperationKind.AddColumn, TableName = "Child", ColumnName = "Note" });
+        var diagrams = new DiagramServiceFake();
+        var tab = CreateTab(original, diagrams);
+        SetProperty(tab, "DataModels", new ModelServiceFake(new() { SchemaFingerprint = "live-baseline" }));
+        Invoke(tab, "ResetHistory");
+        Invoke(tab, "OpenDiagramNamePanel", createNew);
+        SetField(tab, "_diagramName", "Purchasing");
+        await InvokeAsync(tab, "SubmitDiagramNameAsync");
+
+        var current = GetField<DataModelState>(tab, "_state");
+        Assert.Equal("Purchasing", current.DiagramName);
+        Assert.Equal("Original", original.DiagramName);
+        Assert.Equal(2, diagrams.Records.Count);
+        Assert.Equal(2, diagrams.Records["Original"].Nodes.Count);
+        Assert.Single(diagrams.Records["Original"].PendingOperations);
+        Assert.False(GetField<bool>(tab, "_showDiagramNamePanel"));
+        Assert.False(GetField<DataModelHistory>(tab, "_history").CanUndo);
+        if (createNew)
+        {
+            Assert.Empty(current.Nodes); Assert.Empty(current.Groups); Assert.Empty(current.Relationships);
+            Assert.Empty(current.PendingOperations); Assert.Equal("live-baseline", current.SchemaFingerprint);
+            Assert.True(GetField<bool>(tab, "_showSourcesPane"));
+        }
+        else
+        {
+            Assert.Equal(2, current.Nodes.Count); Assert.Single(current.PendingOperations);
+            Assert.Equal(430, current.Relationships[0].ConnectorLayout!.Waypoints[0].X);
+            Assert.NotSame(original.Nodes[0], current.Nodes[0]);
+        }
+    }
+
+    [Theory]
+    [InlineData("duplicate")]
+    [InlineData("save-failure")]
+    [InlineData("list-failure")]
+    public async Task Workspace_NewDiagramFailureKeepsCurrentCanvasAndName(string failure)
+    {
+        var state = Model(); state.DiagramName = "Original";
+        var diagrams = new DiagramServiceFake();
+        if (failure == "duplicate") diagrams.Records["taken"] = Model();
+        if (failure == "save-failure") diagrams.SaveFailureForName = "Taken";
+        if (failure == "list-failure") diagrams.ListFailure = new InvalidOperationException("offline");
+        var tab = CreateTab(state, diagrams);
+        SetProperty(tab, "DataModels", new ModelServiceFake(new()));
+        Invoke(tab, "OpenDiagramNamePanel", true);
+        SetField(tab, "_diagramName", "Taken");
+        await InvokeAsync(tab, "SubmitDiagramNameAsync");
+        Assert.Same(state, GetField<DataModelState>(tab, "_state"));
+        Assert.Equal("Original", state.DiagramName);
+        Assert.NotNull(GetField<string?>(tab, "_diagramCommandError"));
+        Assert.True(GetField<bool>(tab, "_showDiagramNamePanel"));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Workspace_SwitchCannotDiscardUnsavedOrFailedDiagram(bool unnamed)
+    {
+        var state = Model(); state.DiagramName = unnamed ? null : "Original";
+        var diagrams = new DiagramServiceFake { Loaded = new() { DiagramName = "Other" } };
+        if (!unnamed) diagrams.SaveFailure = new InvalidOperationException("read-only");
+        var tab = CreateTab(state, diagrams);
+        await InvokeAsync(tab, "LoadDiagramAsync", "Other");
+        Assert.Same(state, GetField<DataModelState>(tab, "_state"));
+        Assert.Contains(unnamed ? "Save As" : "could not be saved", GetField<string>(tab, "_error"));
+        Assert.False(GetField<bool>(tab, "_loading"));
+    }
+
+    [Fact]
+    public async Task Workspace_DeleteRequiresConfirmationAndDoesNotRecreateDefaultOnEdit()
+    {
+        var state = Model(); state.DiagramName = "Default Diagram"; state.SavedLayoutName = state.DiagramName;
+        state.PendingOperations.Add(new() { TableName = "Child", Kind = DataModelPendingOperationKind.DropTable });
+        var diagrams = new DiagramServiceFake(); diagrams.Records[state.DiagramName] = state;
+        var tab = CreateTab(state, diagrams);
+        GetProperty<TabDescriptor>(tab, nameof(DataModelTab.Tab)).InitialDataModelSourceName = null;
+        await InvokeAsync(tab, "RefreshSavedDiagramsAsync");
+        await InvokeAsync(tab, "DeleteActiveDiagramAsync");
+        Assert.Empty(diagrams.Deleted);
+        Invoke(tab, "RequestDeleteDiagram");
+        Invoke(tab, "OnDiagramPanelKeyDown", new KeyboardEventArgs { Key = "Escape" });
+        await InvokeAsync(tab, "DeleteActiveDiagramAsync");
+        Assert.Empty(diagrams.Deleted);
+        Invoke(tab, "RequestDeleteDiagram");
+        await InvokeAsync(tab, "DeleteActiveDiagramAsync");
+        Assert.Equal("Default Diagram", Assert.Single(diagrams.Deleted));
+        Assert.Null(state.DiagramName); Assert.Null(state.SavedLayoutName);
+        Assert.Equal(2, state.Nodes.Count); Assert.Single(state.PendingOperations);
+        await InvokeAsync(tab, "SetZoom", 1.25d);
+        Invoke(tab, "OnParametersSet");
+        await InvokeAsync(tab, "PersistActiveDiagramAsync", true);
+        Assert.Empty(diagrams.Records); Assert.Empty(diagrams.Saved);
+        Assert.Null(GetField<DataModelState>(tab, "_state").DiagramName);
+    }
+
+    [Fact]
+    public async Task Workspace_DeleteFailureRetainsActiveRecordAndAllowsRetry()
+    {
+        var state = Model(); state.DiagramName = "Original";
+        var diagrams = new DiagramServiceFake { DeleteFailure = new InvalidOperationException("offline") };
+        diagrams.Records["Original"] = state;
+        var tab = CreateTab(state, diagrams);
+        await InvokeAsync(tab, "RefreshSavedDiagramsAsync");
+        Invoke(tab, "RequestDeleteDiagram");
+        await InvokeAsync(tab, "DeleteActiveDiagramAsync");
+        Assert.Equal("Original", state.DiagramName);
+        Assert.Contains("offline", GetField<string>(tab, "_diagramCommandError"));
+        Assert.Equal("Original", GetField<string>(tab, "_diagramToDelete"));
+        diagrams.DeleteFailure = null;
+        await InvokeAsync(tab, "DeleteActiveDiagramAsync");
+        Assert.Null(state.DiagramName); Assert.Empty(diagrams.Records);
+    }
+
+    [Fact]
+    public async Task Workspace_DeleteWaitsForInflightSaveAndCancelsDelayedViewportSave()
+    {
+        var state = Model(); state.DiagramName = "Original";
+        var diagrams = new DiagramServiceFake { SaveStarted = new(), ContinueSave = new() };
+        diagrams.Records["Original"] = state;
+        var tab = CreateTab(state, diagrams);
+        await InvokeAsync(tab, "RefreshSavedDiagramsAsync");
+        using var viewport = new CancellationTokenSource();
+        SetField(tab, "_viewportPersistCts", viewport);
+        var token = viewport.Token;
+        var save = InvokeAsync(tab, "PersistActiveDiagramAsync", true);
+        await diagrams.SaveStarted.Task;
+        Invoke(tab, "RequestDeleteDiagram");
+        var delete = InvokeAsync(tab, "DeleteActiveDiagramAsync");
+        Assert.True(token.IsCancellationRequested);
+        Assert.Empty(diagrams.Deleted);
+        diagrams.ContinueSave.SetResult();
+        await Task.WhenAll(save, delete);
+        Assert.Empty(diagrams.Records); Assert.Null(state.DiagramName);
+        await InvokeAsync(tab, "PersistActiveDiagramAsync", true);
+        Assert.Equal(1, diagrams.SaveAttempts);
+    }
+
+    [Theory]
     [InlineData(DataModelNodeDetailLevel.Keys)]
     [InlineData(DataModelNodeDetailLevel.All)]
     public async Task Canvas_CompositeSelectionHighlightsEveryMappedColumn(DataModelNodeDetailLevel detail)
@@ -29,6 +173,32 @@ public sealed class DataModelConnectorEditingTests
             Assert.Equal(4, System.Text.RegularExpressions.Regex.Matches(markup, "schema-node-col relationship-endpoint").Count);
             Assert.Contains("Child.Tenant → Parent.Tenant", markup);
             Assert.Single(System.Text.RegularExpressions.Regex.Matches(markup, "class=\"designer-join-line schema-relationship"));
+            return Task.CompletedTask;
+        });
+    }
+
+    [Theory]
+    [InlineData("fk_orders_customer")]
+    [InlineData(null)]
+    public async Task Canvas_RelationshipLabelsAreOutsideSvgWithAccessibleFullCompositeMappings(string? constraintName)
+    {
+        var state = Model();
+        state.Relationships[0].ConstraintName = constraintName;
+        state.Relationships[0].ColumnPairs = [new("ParentId", "Id"), new("Tenant", "Tenant")];
+        string before = DataModelGraphBuilder.SerializeState(state);
+        await WithRenderedCanvasAsync(state, (_, _, html) =>
+        {
+            string markup = System.Net.WebUtility.HtmlDecode(html());
+            Assert.DoesNotContain("<foreignObject", markup);
+            Assert.DoesNotContain("schema-relationship-label-box", markup);
+            Assert.True(markup.IndexOf("schema-relationship-label-layer", StringComparison.Ordinal) > markup.IndexOf("</svg>", StringComparison.Ordinal));
+            Assert.Contains("class=\"schema-relationship-label-button\"", markup);
+            Assert.Contains("role=\"tooltip\"", markup);
+            Assert.Contains("aria-describedby=\"connector-test-relationship-", markup);
+            Assert.Contains("Child.ParentId → Parent.Id", markup);
+            Assert.Contains("Child.Tenant → Parent.Tenant", markup);
+            Assert.Contains(constraintName ?? "Child → Parent", markup);
+            Assert.Equal(before, DataModelGraphBuilder.SerializeState(state));
             return Task.CompletedTask;
         });
     }
@@ -157,7 +327,7 @@ public sealed class DataModelConnectorEditingTests
         await WithRenderedCanvasAsync(state, (renderer, canvas, html) =>
         {
             string markup = System.Net.WebUtility.HtmlDecode(html());
-            Assert.Contains("data-connector-layout=\"{\"ParentSide\":1,\"ChildSide\":0,\"Waypoints\":[{\"Id\":\"bend\",\"X\":430,\"Y\":350}]}", markup);
+            Assert.Contains($"data-connector-layout=\"{JsonSerializer.Serialize(state.Relationships[0].ConnectorLayout)}", markup);
             Assert.Contains("schema-relationship selected", markup);
             Assert.Contains("data-model-route-handles", markup);
             Assert.Contains("data-parent-column=\"Id\"", markup);
@@ -167,6 +337,36 @@ public sealed class DataModelConnectorEditingTests
             Assert.Equal(5, state.Version);
             return Task.CompletedTask;
         });
+    }
+
+    [Theory]
+    [InlineData(DataModelNodeDetailLevel.Keys)]
+    [InlineData(DataModelNodeDetailLevel.All)]
+    [InlineData(DataModelNodeDetailLevel.Collapsed)]
+    public async Task Canvas_SlidLaneFollowsTableMoveWithoutChangingItsSavedGuides(DataModelNodeDetailLevel level)
+    {
+        var state = Model();
+        foreach (var node in state.Nodes) node.DetailLevel = level;
+        var canvas = new SchemaCanvas(); SetProperty(canvas, nameof(SchemaCanvas.State), state);
+        var relationship = state.Relationships[0];
+        var original = GeometryPoints(canvas, relationship);
+        var layout = new DataModelConnectorLayout
+        {
+            FollowEndpointRows = true,
+            Waypoints = [new() { Id = "upper", X = 430, Y = original[0].Y }, new() { Id = "lower", X = 430, Y = original[^1].Y }],
+        };
+        Assert.True(await canvas.OnConnectorLayoutChanged(relationship.Id, layout));
+        var saved = JsonSerializer.Serialize(relationship.ConnectorLayout);
+        await canvas.OnTableMoved(state.Nodes[0].Name, state.Nodes[0].X + 16, state.Nodes[0].Y + 40);
+        await canvas.OnTableMoved(state.Nodes[1].Name, state.Nodes[1].X + 24, state.Nodes[1].Y + 80);
+        var moved = GeometryPoints(canvas, relationship);
+        Assert.Equal(4, moved.Count);
+        Assert.Equal(430, moved[1].X); Assert.Equal(430, moved[2].X);
+        Assert.Equal(original[0].Y + 40, moved[1].Y);
+        Assert.Equal(original[^1].Y + 80, moved[2].Y);
+        Assert.Equal(saved, JsonSerializer.Serialize(relationship.ConnectorLayout));
+        Assert.True(relationship.ConnectorLayout!.FollowEndpointRows);
+        Assert.Empty(state.PendingOperations);
     }
 
     [Theory]
@@ -713,21 +913,40 @@ public sealed class DataModelConnectorEditingTests
     private sealed class DiagramServiceFake : IDataModelDiagramService
     {
         public List<DataModelState> Saved { get; } = [];
+        public Dictionary<string, DataModelState> Records { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public List<string> Deleted { get; } = [];
         public DataModelState? Loaded { get; set; }
         public Exception? SaveFailure { get; set; }
+        public Exception? DeleteFailure { get; set; }
+        public Exception? ListFailure { get; set; }
+        public string? SaveFailureForName { get; set; }
+        public TaskCompletionSource? SaveStarted { get; set; }
+        public TaskCompletionSource? ContinueSave { get; set; }
         public int SaveAttempts { get; private set; }
-        public Task<IReadOnlyList<DataModelDiagramSummary>> GetDiagramsAsync(CancellationToken ct = default) => Task.FromResult<IReadOnlyList<DataModelDiagramSummary>>([]);
+        public Task<IReadOnlyList<DataModelDiagramSummary>> GetDiagramsAsync(CancellationToken ct = default) => ListFailure is not null
+            ? Task.FromException<IReadOnlyList<DataModelDiagramSummary>>(ListFailure)
+            : Task.FromResult<IReadOnlyList<DataModelDiagramSummary>>(Records.Select(pair => new DataModelDiagramSummary
+            { Name = pair.Key, CreatedUtc = "", UpdatedUtc = "", SourceCount = pair.Value.Nodes.Count }).ToArray());
         public Task<DataModelState?> LoadDiagramAsync(string name, CancellationToken ct = default) => Task.FromResult(Loaded);
-        public Task SaveDiagramAsync(string name, DataModelState state, CancellationToken ct = default)
+        public async Task SaveDiagramAsync(string name, DataModelState state, CancellationToken ct = default)
         {
             SaveAttempts++;
+            state.DiagramName = name; state.SavedLayoutName = name;
+            SaveStarted?.TrySetResult();
+            if (ContinueSave is not null) await ContinueSave.Task;
             if (SaveFailure is not null)
-                return Task.FromException(SaveFailure);
-            Saved.Add(DataModelGraphBuilder.DeserializeState(DataModelGraphBuilder.SerializeState(state))!);
-            return Task.CompletedTask;
+                throw SaveFailure;
+            if (name == SaveFailureForName) throw new InvalidOperationException("save failed");
+            var copy = DataModelGraphBuilder.DeserializeState(DataModelGraphBuilder.SerializeState(state))!;
+            Saved.Add(copy);
+            Records[name] = copy;
         }
         public Task RenameDiagramAsync(string existingName, string newName, DataModelState state, CancellationToken ct = default) => throw new NotSupportedException();
-        public Task DeleteDiagramAsync(string name, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task DeleteDiagramAsync(string name, CancellationToken ct = default)
+        {
+            if (DeleteFailure is not null) return Task.FromException(DeleteFailure);
+            Deleted.Add(name); Records.Remove(name); return Task.CompletedTask;
+        }
         public Task<DataModelApplyResult> ApplyPendingOperationsAsync(DataModelState state, CancellationToken ct = default) => throw new NotSupportedException();
     }
 

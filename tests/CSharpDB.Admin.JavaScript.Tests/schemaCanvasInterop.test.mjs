@@ -99,6 +99,15 @@ function harness(layout = null, options = {}) {
         value.append(header); stage.append(value); return value;
     };
     const parent = node('parent', 100, 100), child = node('child', 500, 260);
+    let label, tooltip, labelButton;
+    if (options.labels) {
+        const layer = new Element('div', 'schema-relationship-label-layer');
+        label = new Element('div', 'schema-relationship-label'); label.dataset.modelLabelId = 'r1';
+        label.fixedWidth = 160; label.fixedHeight = 24;
+        labelButton = new Element('button', 'schema-relationship-label-button');
+        tooltip = new Element('div', 'schema-relationship-tooltip'); tooltip.fixedWidth = 300; tooltip.fixedHeight = 80;
+        label.append(labelButton, tooltip); layer.append(label); stage.append(layer);
+    }
     let tableGroup, groupTitle;
     if (options.grouped) {
         parent.dataset.groupId = 'g1';
@@ -108,11 +117,12 @@ function harness(layout = null, options = {}) {
         tableGroup.append(groupTitle); stage.append(tableGroup);
     }
     document = { activeElement: canvas, getElementById: id => id === 'canvas' ? canvas : null, createElementNS: (_, tag) => new Element(tag) };
-    const frames = new Map(); let nextFrame = 1;
+    const frames = new Map(), timers = new Map(); let nextFrame = 1;
     const calls = [];
     const context = vm.createContext({ window: { crypto: { randomUUID: () => `point-${nextFrame++}` } }, document, Element,
         requestAnimationFrame: callback => { const id = nextFrame++; frames.set(id, callback); return id; },
-        cancelAnimationFrame: id => frames.delete(id), setTimeout: () => 1, clearTimeout: () => {}, console });
+        cancelAnimationFrame: id => frames.delete(id),
+        setTimeout: callback => { const id = nextFrame++; timers.set(id, callback); return id; }, clearTimeout: id => timers.delete(id), console });
     vm.runInContext(canvasSource, context);
     const interop = context.window.schemaCanvasInterop;
     const dotNetRef = { invokeMethodAsync: async (method, ...args) => {
@@ -136,6 +146,7 @@ function harness(layout = null, options = {}) {
         return undefined;
     } };
     const flush = () => { const queued = [...frames.values()]; frames.clear(); queued.forEach(callback => callback()); };
+    const flushTimers = () => { const queued = [...timers.values()]; timers.clear(); queued.forEach(callback => callback()); };
     interop.init('canvas', dotNetRef, 0, 0); flush();
     const registration = interop._registrations.get('canvas');
     const event = (target, values = {}) => ({ target, button: 0, pointerId: 1, clientX: 0, clientY: 0,
@@ -150,10 +161,183 @@ function harness(layout = null, options = {}) {
             clientY: 20 + (y + inset) * scale - canvas.scrollTop };
     };
     return { interop, registration, canvas, group, handles, hit, visible, parent, child, stage, viewport, svg,
-        calls, commits, event, flush, frames, waypoint, segment, settle, screenPoint, document, tableGroup, groupTitle };
+        calls, commits, event, flush, flushTimers, frames, waypoint, segment, settle, screenPoint, document, tableGroup, groupTitle, label, tooltip, labelButton };
 }
 
-const manual = (points = [{ Id: 'bend-1', X: 300, Y: 50 }]) => ({ ParentSide: 1, ChildSide: 0, Waypoints: points });
+const manual = (points = [{ Id: 'bend-1', X: 300, Y: 50 }]) => ({ ParentSide: 1, ChildSide: 0, FollowEndpointRows: false, Waypoints: points });
+
+const middleLane = () => ({ ...manual([{ Id: 'upper', X: 350, Y: 118 }, { Id: 'lower', X: 350, Y: 278 }]), FollowEndpointRows: true });
+
+for (const table of ['parent', 'child']) {
+    test(`sliding then moving the ${table} keeps one middle segment through save, reopen, and another slide`, async () => {
+        const h = harness(null, { scale: 1.25 });
+        const grip = h.segment();
+        h.registration.onPointerDown(h.event(grip));
+        h.registration.onPointerMove(h.event(grip, { clientX: 25 })); h.flush();
+        h.registration.onPointerUp(h.event(grip)); await h.settle();
+        const saved = JSON.parse(h.group.dataset.connectorLayout), lane = saved.Waypoints[0].X;
+        assert.equal(saved.FollowEndpointRows, true);
+        const target = h[table].children[0];
+        h.registration.onPointerDown(h.event(target));
+        h.registration.onPointerMove(h.event(target, { clientX: 40, clientY: 75 })); h.flush();
+        const route = copy(h.registration.routes.get('r1'));
+        assert.equal(route.points.length, 4, 'Moving a table must not add a dogleg');
+        assert.deepEqual(route.points, [{ x: route.start.x, y: route.start.y }, { x: lane, y: route.start.y },
+            { x: lane, y: route.end.y }, { x: route.end.x, y: route.end.y }]);
+        h.registration.onPointerUp(h.event(target)); await h.settle();
+        assert.equal(h.calls.filter(call => call.method === 'OnTableMoved').length, 1);
+        assert.equal(h.commits().length, 1, 'Table movement needs no separate connector save');
+        assert.deepEqual(JSON.parse(h.group.dataset.connectorLayout), saved, 'Requested lane stays unchanged');
+        const reopened = harness(saved);
+        Object.assign(reopened[table].style, h[table].style); reopened.registration.updateEdges();
+        assert.deepEqual(copy(reopened.registration.routes.get('r1').points), route.points);
+        reopened.registration.onKeyDown(reopened.event(reopened.segment(), { key: 'ArrowRight' }));
+        reopened.registration.onKeyUp(reopened.event(reopened.segment(), { key: 'ArrowRight' })); await reopened.settle();
+        assert.equal(reopened.registration.routes.get('r1').points.length, 4);
+        assert.equal(reopened.commits().at(-1).args[1].FollowEndpointRows, true);
+    });
+}
+
+test('middle lanes follow row anchors, clamp at a moved table, and restore on canceled moves', () => {
+    const h = harness(middleLane());
+    const original = copy(h.registration.routes.get('r1').points);
+    h.registration.onPointerDown(h.event(h.parent.children[0]));
+    h.registration.onPointerMove(h.event(h.parent, { clientX: 170, clientY: 40 })); h.flush();
+    const moved = h.registration.routes.get('r1');
+    assert.equal(moved.points.length, 4);
+    assert.equal(moved.points[1].x, moved.departure.x, 'Lane must stay outside the moved table');
+    assert.equal(moved.layout.Waypoints[0].Y, moved.start.y, 'Bend handles follow the effective route');
+    h.registration.onPointerCancel(h.event(h.parent));
+    assert.deepEqual(copy(h.registration.routes.get('r1').points), original);
+    assert.equal(h.calls.filter(call => call.method === 'OnTableMoved').length, 0);
+    // Header lane changes simulate collapsed/detail-mode anchors.
+    h.visible.dataset.parentLane = '0.75'; h.registration.updateEdges();
+    assert.equal(h.registration.routes.get('r1').points[1].y, 127);
+    assert.equal(h.registration.routes.get('r1').points.length, 4);
+});
+
+test('legacy two-corner slides recover from old row coordinates but explicit bends remain fixed', () => {
+    const legacy = middleLane(); delete legacy.FollowEndpointRows;
+    legacy.Waypoints[0].Y = 90; legacy.Waypoints[1].Y = 320;
+    const h = harness(legacy);
+    assert.equal(h.registration.routes.get('r1').points.length, 4);
+    const fixed = harness({ ...legacy, FollowEndpointRows: false });
+    assert.deepEqual(copy(fixed.registration.routes.get('r1').layout.Waypoints), legacy.Waypoints);
+    assert.ok(fixed.registration.routes.get('r1').points.length > 4);
+});
+
+test('explicit bend editing starts at the moved endpoint rows and opts out of lane following', async () => {
+    for (const action of ['add', 'remove', 'move']) {
+        const h = harness(middleLane()); h.parent.style.top = '140px'; h.registration.updateEdges();
+        if (action === 'add') await h.interop.addBend('canvas', 'r1');
+        else if (action === 'remove') await h.interop.removeBend('canvas', 'r1');
+        else {
+            const grip = h.waypoint(); h.registration.onPointerDown(h.event(grip));
+            h.registration.onPointerMove(h.event(grip, { clientX: 16 })); h.flush();
+            h.registration.onPointerUp(h.event(grip)); await h.settle();
+        }
+        const saved = h.commits().at(-1).args[1];
+        assert.equal(saved.FollowEndpointRows, false);
+        assert.equal(saved.Waypoints[0].Y, 158);
+    }
+});
+
+for (const grouped of [true, 'parent-only']) {
+    test(`group moves retain a simple lane (${grouped})`, async () => {
+        const h = harness(middleLane(), { grouped });
+        h.registration.onPointerDown(h.event(h.groupTitle));
+        h.registration.onPointerMove(h.event(h.groupTitle, { clientX: 40, clientY: 50 })); h.flush();
+        assert.equal(h.registration.routes.get('r1').points.length, 4);
+        assert.equal(h.registration.routes.get('r1').points[1].x, grouped === true ? 390 : 350);
+        h.registration.onPointerUp(h.event(h.groupTitle)); await h.settle();
+        assert.equal(h.registration.routes.get('r1').points.length, 4);
+        assert.equal(JSON.parse(h.group.dataset.connectorLayout).FollowEndpointRows, true);
+    });
+}
+
+const intersects = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+const labelBounds = label => ({ left: parseFloat(label.style.left), top: parseFloat(label.style.top),
+    right: parseFloat(label.style.left) + label.offsetWidth, bottom: parseFloat(label.style.top) + label.offsetHeight });
+
+test('relationship labels avoid both endpoint cards, group titles, and every connector segment in a tight gap', () => {
+    const h = harness();
+    const points = [{ x: 220, y: 74 }, { x: 302, y: 74 }, { x: 302, y: 160 }, { x: 380, y: 160 }];
+    const cards = [{ left: 0, top: 0, right: 220, bottom: 116 }, { left: 380, top: 60, right: 600, bottom: 206 }];
+    const title = { left: 0, top: -40, right: 600, bottom: -12 };
+    const segments = points.slice(1).map((point, index) => [points[index], point]);
+    segments.push([{ x: 230, y: 245 }, { x: 600, y: 245 }]);
+    const view = { left: -48, top: -48, right: 800, bottom: 460 };
+    const obstacles = [...cards, title];
+    const before = copy({ points, obstacles });
+    for (const [width, height] of [[160, 24], [300, 90]]) {
+        const result = h.interop.placeRelationshipLabel(points, width, height, obstacles, segments, view);
+        assert.ok(result, 'A clear placement should be found');
+        for (const rect of obstacles) assert.ok(!intersects(result, rect));
+        for (const [a, b] of segments) assert.ok(!intersects(result, {
+            left: Math.min(a.x, b.x) - 2, top: Math.min(a.y, b.y) - 2,
+            right: Math.max(a.x, b.x) + 2, bottom: Math.max(a.y, b.y) + 2 }));
+        assert.deepEqual(copy(result), copy(h.interop.placeRelationshipLabel(points, width, height, [...obstacles].reverse(), segments, view)));
+    }
+    assert.deepEqual(copy({ points, obstacles }), before);
+});
+
+test('label placement stays in fractional-zoom viewports and declines a fully occupied viewport', () => {
+    const h = harness();
+    const points = [{ x: 200, y: 130 }, { x: 500, y: 130 }];
+    for (const scale of [0.5, 1, 1.25, 2]) {
+        const view = { left: 50, top: 20, right: 50 + 800 / scale, bottom: 20 + 500 / scale };
+        const result = h.interop.placeRelationshipLabel(points, 160, 24, [], [[points[0], points[1]]], view);
+        assert.ok(result);
+        assert.ok(result.left >= view.left && result.right <= view.right && result.top >= view.top && result.bottom <= view.bottom);
+        assert.equal(h.interop.placeRelationshipLabel(points, 160, 24, [view], [], view), null);
+    }
+});
+
+test('foreground labels expose a full popup on hover/focus, accept clicks without panning, and dismiss with Escape', () => {
+    const h = harness(null, { labels: true });
+    assert.ok(h.label.classList.contains('is-visible'));
+    assert.ok(!h.label.classList.contains('is-expanded'));
+    h.registration.onPointerOver(h.event(h.hit));
+    assert.ok(h.label.classList.contains('is-expanded'));
+    const before = copy(h.registration.modelBounds);
+    h.registration.onPointerDown(h.event(h.labelButton));
+    assert.equal(h.registration.panning, false);
+    assert.equal(h.registration.pointerId, null);
+    h.registration.onPointerOut(h.event(h.hit, { relatedTarget: h.canvas }));
+    h.registration.onPointerOver(h.event(h.tooltip)); h.flushTimers();
+    assert.ok(h.label.classList.contains('is-expanded'), 'Popup stays available while the pointer crosses the gap');
+    h.registration.onPointerOut(h.event(h.tooltip, { relatedTarget: h.canvas })); h.flushTimers();
+    assert.ok(!h.label.classList.contains('is-expanded'));
+    h.registration.onPointerOver(h.event(h.hit));
+    h.registration.onPointerOut(h.event(h.hit, { relatedTarget: h.parent }));
+    h.parent.focus(); h.registration.onFocusOut(); h.flushTimers();
+    assert.ok(!h.label.classList.contains('is-expanded'), 'Focus leaving the connector must not cancel hover dismissal');
+    h.hit.focus(); h.registration.onFocusIn(h.event(h.hit));
+    assert.ok(h.label.classList.contains('is-expanded'));
+    h.registration.onKeyDown(h.event(h.hit, { key: 'Escape' }));
+    assert.ok(!h.label.classList.contains('is-expanded'));
+    assert.deepEqual(copy(h.registration.modelBounds), before, 'Transient labels never change Fit Model extents');
+    h.group.classList.remove('selected'); h.canvas.focus(); h.registration.onFocusOut(); h.flushTimers();
+    assert.ok(!h.label.classList.contains('is-visible'));
+    assert.equal(h.commits().length, 0);
+    h.interop.dispose('canvas');
+    assert.ok(!h.canvas.listeners.has('pointerover') && !h.canvas.listeners.has('focusout'));
+});
+
+test('labels track drag previews and canceled moves without changing stored connector guides', () => {
+    const h = harness(manual(), { labels: true, grouped: true, scale: 1.25 });
+    const original = copy(labelBounds(h.label)), saved = h.group.dataset.connectorLayout;
+    h.registration.onPointerDown(h.event(h.parent.children[0]));
+    h.registration.onPointerMove(h.event(h.parent.children[0], { clientX: 120, clientY: 50 })); h.flush();
+    if (h.label.classList.contains('is-visible')) {
+        assert.ok(!intersects(labelBounds(h.label), labelBounds(h.parent)));
+        assert.ok(!intersects(labelBounds(h.label), labelBounds(h.child)));
+    }
+    assert.equal(h.group.dataset.connectorLayout, saved);
+    h.registration.onPointerCancel(h.event(h.parent));
+    assert.deepEqual(copy(labelBounds(h.label)), original);
+    assert.equal(h.commits().length, 0);
+});
 
 for (const pointerType of ['touch', 'pen']) {
     test(`${pointerType} moves a table, group, and connector once and cancellation restores geometry`, async () => {
@@ -315,7 +499,7 @@ test('pointer edits use model coordinates, coalesce routing, defer sync, and pub
     assert.equal(h.canvas.captured.size, 0);
 });
 
-test('segment dragging creates one pinned-side waypoint perpendicular to the segment', async () => {
+test('segment dragging slides both corners without splitting the line and repeated moves reuse saved guides', async () => {
     const h = harness();
     const handle = h.segment();
     const route = h.registration.routes.get('r1');
@@ -326,12 +510,128 @@ test('segment dragging creates one pinned-side waypoint perpendicular to the seg
     h.registration.onPointerMove(h.event(handle, { clientX: 370, clientY: 170 })); h.flush();
     const preview = copy(h.registration.routeEdit.layout);
     assert.equal(preview.ParentSide, 1); assert.equal(preview.ChildSide, 0);
-    assert.equal(preview.Waypoints.length, 1);
-    assert.equal(preview.Waypoints[0].X, (first.x + second.x) / 2 + (horizontal ? 0 : 20));
-    assert.equal(preview.Waypoints[0].Y, (first.y + second.y) / 2 + (horizontal ? 20 : 0));
+    assert.equal(preview.Waypoints.length, 2);
+    assert.deepEqual(preview.Waypoints.map(point => [point.X, point.Y]),
+        [first, second].map(point => [point.x + (horizontal ? 0 : 20), point.y + (horizontal ? 20 : 0)]));
+    assert.deepEqual(copy(h.registration.routes.get('r1').points), [copy(route.points[0]),
+        ...preview.Waypoints.map(point => ({ x: point.X, y: point.Y })), copy(route.points.at(-1))]);
     h.registration.onPointerUp(h.event(handle)); await h.settle();
     assert.equal(h.commits().length, 1);
     assert.equal(h.commits()[0].args[1].Waypoints[0].Id, preview.Waypoints[0].Id);
+    const savedIds = preview.Waypoints.map(point => point.Id);
+    const next = h.segment();
+    h.registration.onPointerDown(h.event(next));
+    h.registration.onPointerMove(h.event(next, { clientX: -12 })); h.flush();
+    h.registration.onPointerUp(h.event(next)); await h.settle();
+    const saved = h.commits().at(-1).args[1];
+    assert.deepEqual(saved.Waypoints.map(point => point.Id), savedIds);
+    assert.equal(h.registration.routes.get('r1').points.length, 4);
+    const reopened = harness(saved);
+    assert.deepEqual(copy(reopened.registration.routes.get('r1').points), copy(h.registration.routes.get('r1').points));
+});
+
+test('horizontal segment slides preserve unrelated guides and both adjacent vertical legs', async () => {
+    const h = harness(manual([{ Id: 'before', X: 240, Y: 118 }, { Id: 'first', X: 240, Y: 60 },
+        { Id: 'last', X: 460, Y: 60 }, { Id: 'after', X: 460, Y: 278 }]));
+    const handle = h.handles.querySelectorAll('[data-route-handle="segment"]').find(handle => {
+        const index = Number(handle.dataset.segmentIndex), points = h.registration.routes.get('r1').points;
+        return points[index].y === 60 && points[index + 1].y === 60;
+    });
+    assert.ok(handle);
+    h.registration.onPointerDown(h.event(handle));
+    h.registration.onPointerMove(h.event(handle, { clientY: 10 })); h.flush();
+    h.registration.onPointerUp(h.event(handle)); await h.settle();
+    const guides = h.commits()[0].args[1].Waypoints;
+    assert.deepEqual(guides, [{ Id: 'before', X: 240, Y: 118 }, { Id: 'first', X: 240, Y: 70 },
+        { Id: 'last', X: 460, Y: 70 }, { Id: 'after', X: 460, Y: 278 }]);
+    assert.ok(!h.registration.routes.get('r1').usedAutomaticFallback);
+});
+
+test('a straight run with a saved midpoint remains one sliding segment', async () => {
+    const h = harness(manual([{ Id: 'top', X: 350, Y: 118 }, { Id: 'middle', X: 350, Y: 198 }, { Id: 'bottom', X: 350, Y: 278 }]));
+    assert.equal(h.handles.querySelectorAll('[data-route-handle="segment"]').length, 1);
+    const handle = h.segment();
+    assert.notEqual(handle.getAttribute('transform'), h.handles.querySelectorAll('[data-route-handle="waypoint"]')[1].getAttribute('transform'));
+    h.registration.onKeyDown(h.event(handle, { key: 'ArrowRight', shiftKey: true })); h.flush();
+    assert.equal(h.commits().length, 0);
+    h.registration.onKeyUp(h.event(handle, { key: 'ArrowRight' })); await h.settle();
+    assert.deepEqual(h.commits()[0].args[1].Waypoints, [
+        { Id: 'top', X: 374, Y: 118 }, { Id: 'middle', X: 374, Y: 198 }, { Id: 'bottom', X: 374, Y: 278 }]);
+    assert.equal(h.handles.querySelectorAll('[data-route-handle="segment"]').length, 1);
+});
+
+for (const pointerType of ['mouse', 'touch', 'pen']) {
+    test(`${pointerType} segment movement clamps to its lane, cancels cleanly, and returning to origin does not save`, async () => {
+        const h = harness(null, { scale: 1.25 });
+        const original = h.visible.getAttribute('d');
+        const event = (handle, extra = {}) => h.event(handle, { pointerType, ...extra });
+        let handle = h.segment();
+        h.registration.onPointerDown(event(handle));
+        h.registration.onPointerMove(event(handle, { clientX: -1000 })); h.flush();
+        const points = h.registration.routes.get('r1').points;
+        assert.equal(points.length, 4, 'Obstacle limits should not create detours');
+        assert.ok(points[1].x > points[0].x && points[2].x < points[3].x);
+        h.registration.onKeyDown(event(handle, { key: 'Escape' }));
+        assert.equal(h.visible.getAttribute('d'), original); assert.equal(h.commits().length, 0);
+        handle = h.segment();
+        h.registration.onPointerDown(event(handle));
+        h.registration.onPointerMove(event(handle, { clientX: 40 })); h.flush();
+        h.registration.onPointerCancel(event(handle));
+        assert.equal(h.visible.getAttribute('d'), original); assert.equal(h.commits().length, 0);
+        handle = h.segment();
+        h.registration.onPointerDown(event(handle));
+        h.registration.onPointerMove(event(handle, { clientX: 40 })); h.flush();
+        h.registration.onPointerMove(event(handle)); h.flush();
+        h.registration.onPointerUp(event(handle)); await h.settle();
+        assert.equal(h.visible.getAttribute('d'), original); assert.equal(h.commits().length, 0);
+        assert.equal(h.canvas.captured.size, 0);
+    });
+}
+
+test('straight endpoint-attached lines use explicit Add Bend rather than a sliding endpoint grip', async () => {
+    const h = harness();
+    h.child.style.top = h.parent.style.top; h.registration.updateEdges();
+    assert.equal(h.segment(), null);
+    await h.interop.addBend('canvas', 'r1');
+    assert.equal(h.commits()[0].args[1].Waypoints.length, 1);
+});
+
+test('Add Bend inserts in route order even when an entire straight run contains existing guides', async () => {
+    const h = harness(manual([{ Id: 'top', X: 350, Y: 118 }, { Id: 'early', X: 350, Y: 158 }, { Id: 'bottom', X: 350, Y: 278 }]));
+    await h.interop.addBend('canvas', 'r1');
+    const guides = h.commits()[0].args[1].Waypoints;
+    assert.deepEqual(guides.map(point => point.Y), [118, 158, 198, 278]);
+    assert.equal(guides[1].Id, 'early');
+});
+
+test('segment slides stop before an intervening table instead of routing a split around it', async () => {
+    const h = harness(manual([{ Id: 'top', X: 350, Y: 118 }, { Id: 'bottom', X: 350, Y: 278 }]));
+    const blocker = new h.parent.constructor('div', 'schema-node');
+    blocker.dataset.table = 'blocker'; blocker.style.left = '420px'; blocker.style.top = '180px';
+    blocker.fixedWidth = 40; blocker.fixedHeight = 40; h.stage.append(blocker); h.registration.updateEdges();
+    const handle = h.segment();
+    h.registration.onPointerDown(h.event(handle));
+    h.registration.onPointerMove(h.event(handle, { clientX: 1000 })); h.flush();
+    const points = h.registration.routes.get('r1').points;
+    assert.equal(points.length, 4);
+    assert.ok(points[1].x <= 402 && points[1].x === points[2].x);
+    h.registration.onPointerUp(h.event(handle)); await h.settle();
+    assert.equal(h.commits().length, 1);
+});
+
+test('rejected segment saves restore the route and keyboard movement along the segment is a no-op', async () => {
+    const h = harness(null, { commit: async () => false });
+    const path = h.visible.getAttribute('d');
+    let handle = h.segment();
+    h.registration.onKeyDown(h.event(handle, { key: 'ArrowUp' })); h.flush();
+    h.registration.onKeyUp(h.event(handle, { key: 'ArrowUp' })); await h.settle();
+    assert.equal(h.commits().length, 0);
+    handle = h.segment();
+    h.registration.onPointerDown(h.event(handle));
+    h.registration.onPointerMove(h.event(handle, { clientX: 20 })); h.flush();
+    h.registration.onPointerUp(h.event(handle)); await h.settle();
+    assert.equal(h.commits().length, 1); assert.equal(h.visible.getAttribute('d'), path);
+    assert.equal(h.group.dataset.connectorLayout, 'null');
 });
 
 test('Escape and pointercancel restore previews without notifying the model', () => {
