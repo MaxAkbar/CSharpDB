@@ -39,6 +39,8 @@ Use this path before tagging or when validating release packaging locally.
 
 - Update `src/Directory.Build.props` to the release version.
 - Update the public documentation and release notes.
+- Review the website changelog using the [changelog maintenance guide](../docs/releases/changelog-maintenance.md). Keep candidate work labelled Unreleased until publication is verified.
+- Keep the downloads page and its publication inventory in sync with that verified release. Run `./scripts/Test-Downloads.ps1 -VerifyPublishedDownloads` to check asset URLs and NuGet coverage; the normal documentation check also runs offline downloads guardrail tests. See [downloads maintenance](../docs/releases/changelog-maintenance.md#maintaining-downloads-alongside-the-changelog).
 - Validate EF Core package alignment and public documentation.
 
 ```powershell

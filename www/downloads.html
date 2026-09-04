@@ -6,10 +6,10 @@
     <link rel="stylesheet" href="css/style.css">
     <link rel="preload" href="js/csharpdb.bundle.js" as="script">
     <title>Downloads — CSharpDB</title>
-    <meta name="description" content="Download CSharpDB — NuGet packages, native libraries for cross-language FFI, and the C header file. Available for Windows, Linux, and macOS.">
+    <meta name="description" content="Download CSharpDB Admin, .NET packages, the database server, CLI and migration tools, and native libraries for Windows, Linux, and macOS.">
     <link rel="canonical" href="https://csharpdb.com/downloads.html">
     <meta property="og:title" content="Downloads — CSharpDB">
-    <meta property="og:description" content="Download CSharpDB — NuGet packages, native libraries for cross-language FFI, and the C header file.">
+    <meta property="og:description" content="Choose CSharpDB Admin, .NET packages, the database server, CLI and migration tools, or native libraries.">
     <meta property="og:url" content="https://csharpdb.com/downloads.html">
     <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
     <link rel="icon" type="image/png" href="favicon.png">
@@ -18,216 +18,64 @@
         "@context": "https://schema.org",
         "@type": "WebPage",
         "name": "Downloads",
-        "description": "Download CSharpDB — NuGet packages, native libraries, and the C header file.",
+        "description": "CSharpDB applications, .NET packages, server, CLI and native library downloads.",
         "url": "https://csharpdb.com/downloads.html",
-        "isPartOf": {
-            "@type": "WebSite",
-            "name": "CSharpDB",
-            "url": "https://csharpdb.com"
-        }
+        "isPartOf": { "@type": "WebSite", "name": "CSharpDB", "url": "https://csharpdb.com" }
     }
     </script>
     <style>
-        .dl-hero {
-            text-align: center;
-            padding: 3rem 0 2rem;
+        .dl-page { padding-bottom: 3rem; }
+        .dl-hero { max-width: 760px; padding: 3rem 0 2rem; }
+        .dl-hero h1 { font-size: clamp(2rem, 4vw, 3rem); margin: 0 0 .75rem; }
+        .dl-hero > p { color: var(--text-secondary); font-size: 1.1rem; }
+        .dl-release { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem 1rem; margin-top: 1.25rem; font-size: .9rem; color: var(--text-secondary); }
+        .dl-badge { display: inline-block; color: var(--accent); border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 999px; padding: .35rem .85rem; font-weight: 600; text-decoration: none; }
+        .dl-choices { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: .75rem; margin-bottom: 2.5rem; }
+        .dl-choice { display: flex; flex-direction: column; gap: .4rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 1rem; color: var(--text-primary); text-decoration: none; }
+        .dl-choice:hover { border-color: var(--accent); }
+        .dl-choice span { font-size: .85rem; color: var(--text-secondary); }
+        .dl-section { margin-bottom: 3rem; scroll-margin-top: 6rem; }
+        .dl-section h2 { font-size: 1.5rem; margin: 0 0 .65rem; }
+        .dl-section > p { color: var(--text-secondary); margin: 0 0 1.25rem; }
+        .dl-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
+        .dl-grid-packages { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+        .dl-card { min-width: 0; padding: 1.4rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+        .dl-grid .dl-card { display: flex; flex-direction: column; }
+        .dl-grid .dl-card > .dl-btn { align-self: flex-start; margin-top: auto; }
+        .dl-card h3 { font-size: 1.05rem; margin: 0 0 .5rem; overflow-wrap: anywhere; }
+        .dl-card p { font-size: .9rem; color: var(--text-secondary); margin: .6rem 0 1rem; }
+        .dl-card code, .dl-note code, .dl-package-list code { overflow-wrap: anywhere; }
+        .dl-platform { font-size: .8rem; color: var(--text-muted); }
+        .dl-admin { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 2rem; border-color: var(--accent); }
+        .dl-admin ol { margin: .5rem 0; padding-left: 1.3rem; color: var(--text-secondary); font-size: .9rem; }
+        .dl-admin li { margin-bottom: .55rem; }
+        .dl-links { display: flex; flex-wrap: wrap; gap: .65rem 1rem; align-items: center; }
+        .dl-btn { display: inline-flex; align-items: center; justify-content: center; padding: .6rem 1rem; min-height: 44px; border: 1px solid var(--accent); border-radius: var(--radius-md); font-size: .88rem; font-weight: 600; text-decoration: none; background: var(--accent); color: #fff; }
+        .dl-btn:hover { filter: brightness(1.1); }
+        .dl-note { padding: 1.1rem 1.25rem; margin-top: 1rem; background: var(--bg-tertiary); border-left: 3px solid var(--accent); border-radius: var(--radius-sm); color: var(--text-secondary); font-size: .9rem; }
+        .dl-note p { margin: 0 0 .75rem; }
+        .dl-note p:last-child { margin-bottom: 0; }
+        .dl-section details { margin-top: 1.25rem; }
+        .dl-section summary { cursor: pointer; font-weight: 600; padding: .75rem 0; }
+        .dl-section details > p { color: var(--text-secondary); }
+        .dl-package-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 2rem; list-style: none; padding: 0; margin: .5rem 0 0; }
+        .dl-package-list li { min-width: 0; padding: 1rem 0; border-bottom: 1px solid var(--border); }
+        .dl-package-list p { color: var(--text-secondary); font-size: .88rem; margin: .4rem 0 0; }
+        .dl-install { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; padding: 1rem; margin: 1rem 0 1.5rem; background: var(--bg-code); border: 1px solid var(--border); border-radius: var(--radius-md); }
+        .dl-install code { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+        .dl-copy { cursor: pointer; background: var(--bg-card); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: .55rem .8rem; min-height: 44px; }
+        .dl-copy-status { font-size: .85rem; color: var(--text-secondary); }
+        .dl-copy-status:empty { display: none; }
+        .dl-page a:focus-visible, .dl-page button:focus-visible, .dl-page summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; }
+        @media (max-width: 960px) {
+            .dl-choices { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+            .dl-grid-packages { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         }
-        .dl-hero h1 {
-            font-size: clamp(2rem, 4vw, 3rem);
-            font-weight: 800;
-            margin-bottom: 0.75rem;
-        }
-        .dl-hero p {
-            color: var(--text-secondary);
-            font-size: 1.1rem;
-            max-width: 600px;
-            margin: 0 auto 1.5rem;
-        }
-        .dl-version-badge {
-            display: inline-block;
-            padding: 0.3rem 1rem;
-            font-size: 0.85rem;
-            font-weight: 600;
-            text-decoration: none;
-            color: var(--accent);
-            border: 1px solid var(--accent);
-            border-radius: 999px;
-            background: var(--accent-soft);
-        }
-
-        /* ─── Category Sections ─── */
-        .dl-section {
-            margin-bottom: 3rem;
-        }
-        .dl-section h2 {
-            font-size: 1.5rem;
-            font-weight: 700;
-            margin-bottom: 0.5rem;
-        }
-        .dl-section > p {
-            color: var(--text-secondary);
-            margin-bottom: 1.5rem;
-            font-size: 0.95rem;
-        }
-
-        /* ─── Download Cards ─── */
-        .dl-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-            gap: 1rem;
-        }
-        .dl-card {
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: var(--radius-lg);
-            padding: 1.5rem;
-            transition: border-color 0.25s, box-shadow 0.25s;
-        }
-        .dl-card:hover {
-            border-color: var(--accent);
-            box-shadow: 0 0 30px var(--accent-glow);
-        }
-        .dl-card-header {
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-            margin-bottom: 0.75rem;
-        }
-        .dl-card-icon {
-            width: 40px;
-            height: 40px;
-            border-radius: var(--radius-sm);
-            background: var(--accent-soft);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: var(--accent);
-            flex-shrink: 0;
-        }
-        .dl-card h3 {
-            font-size: 1rem;
-            font-weight: 700;
-            margin: 0;
-        }
-        .dl-card .dl-desc {
-            color: var(--text-secondary);
-            font-size: 0.88rem;
-            line-height: 1.6;
-            margin-bottom: 1rem;
-        }
-        .dl-card .dl-meta {
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-            flex-wrap: wrap;
-        }
-        .dl-btn {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.4rem;
-            padding: 0.4rem 1rem;
-            font-size: 0.82rem;
-            font-weight: 600;
-            border-radius: var(--radius-md);
-            text-decoration: none;
-            transition: all 0.2s;
-        }
-        .dl-btn-primary {
-            background: var(--accent);
-            color: #fff;
-            border: 1px solid var(--accent);
-        }
-        .dl-btn-primary:hover {
-            filter: brightness(1.15);
-        }
-        .dl-btn-ghost {
-            background: transparent;
-            color: var(--text-secondary);
-            border: 1px solid var(--border);
-        }
-        .dl-btn-ghost:hover {
-            border-color: var(--accent);
-            color: var(--text-primary);
-        }
-
-        /* ─── NuGet Install Block ─── */
-        .dl-install {
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-            padding: 0.75rem 1.25rem;
-            background: var(--bg-code);
-            border: 1px solid var(--border);
-            border-radius: var(--radius-md);
-            font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
-            font-size: 0.88rem;
-            color: var(--text-primary);
-            margin-bottom: 1.5rem;
-            max-width: 480px;
-        }
-        .dl-install .copy-btn {
-            background: none;
-            border: none;
-            color: var(--text-muted);
-            cursor: pointer;
-            padding: 2px;
-            transition: color 0.2s;
-            flex-shrink: 0;
-        }
-        .dl-install .copy-btn:hover {
-            color: var(--accent);
-        }
-
-        /* ─── Platform Table ─── */
-        .dl-platform-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 0.9rem;
-        }
-        .dl-platform-table thead th {
-            text-align: left;
-            padding: 0.75rem 1rem;
-            border-bottom: 2px solid var(--border);
-            color: var(--text-muted);
-            font-size: 0.8rem;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        .dl-platform-table tbody td {
-            padding: 0.75rem 1rem;
-            border-bottom: 1px solid var(--border);
-            color: var(--text-secondary);
-        }
-        .dl-platform-table tbody tr:hover td {
-            background: var(--bg-tertiary);
-        }
-        .dl-platform-table code {
-            font-size: 0.82rem;
-        }
-
-        /* ─── CLI Build Instructions ─── */
-        .dl-cli-note {
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: var(--radius-lg);
-            padding: 1.5rem;
-            margin-top: 1.5rem;
-        }
-        .dl-cli-note h4 {
-            margin: 0 0 0.5rem;
-            font-size: 0.95rem;
-        }
-        .dl-cli-note p {
-            color: var(--text-secondary);
-            font-size: 0.88rem;
-            line-height: 1.6;
-            margin: 0 0 1rem;
-        }
-
-        @media (max-width: 768px) {
-            .dl-grid {
-                grid-template-columns: 1fr;
-            }
+        @media (max-width: 640px) {
+            .dl-choices { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .dl-grid, .dl-grid-packages, .dl-admin, .dl-package-list { grid-template-columns: minmax(0, 1fr); }
+            .dl-admin { gap: 1rem; }
+            .dl-hero { padding-top: 2rem; }
         }
     </style>
 </head>
@@ -236,266 +84,185 @@
     window.currentPage = 'downloads';
     window.pageConfig = {
         title: 'Downloads',
-        description: 'Download CSharpDB — NuGet packages, native libraries for cross-language FFI, and the C header file.',
-        keywords: 'CSharpDB download, NuGet, native library, DLL, shared object, dylib, C FFI, cross-platform',
+        description: 'Download CSharpDB Admin, .NET packages, the database server, CLI and migration tools, and native libraries.',
+        keywords: 'CSharpDB download, Admin, NuGet, database server, CLI, migration, native library',
         canonicalPath: 'downloads.html',
     };
     </script>
     <div id="site-nav"></div>
-
-    <main class="page">
+    <!-- Release facts are checked against docs/releases/downloads-publication.json. -->
+    <main class="page dl-page" data-download-version="4.6.2">
         <div class="container">
+            <header class="dl-hero">
+                <h1>Get CSharpDB</h1>
+                <p>Explore a database, build an application, or run a server. Choose the download that fits what you want to do.</p>
+                <div class="dl-release">
+                    <a class="dl-badge" href="https://github.com/MaxAkbar/CSharpDB/releases/tag/v4.6.2">Latest stable: v4.6.2</a>
+                    <span>Released <time datetime="2026-08-14">August 14, 2026</time></span>
+                    <a href="changelog.html#v4.6.2">What changed &amp; upgrade notes</a>
+                </div>
+            </header>
+            <nav class="dl-choices" aria-label="Choose a download">
+                <a class="dl-choice" href="#admin"><strong>Admin app</strong><span>Explore and manage visually</span></a>
+                <a class="dl-choice" href="#nuget"><strong>.NET packages</strong><span>Embed in your application</span></a>
+                <a class="dl-choice" href="#server"><strong>Database server</strong><span>Connect over HTTP or gRPC</span></a>
+                <a class="dl-choice" href="#cli"><strong>CLI &amp; migration</strong><span>Query and move data</span></a>
+                <a class="dl-choice" href="#native"><strong>Native libraries</strong><span>Use C-compatible language bindings</span></a>
+            </nav>
 
-            <!-- ───────── Hero ───────── -->
-            <div class="dl-hero">
-                <h1>Downloads</h1>
-                <p>NuGet packages for .NET, pre-built native libraries for cross-language interop, and the C header file.</p>
-                <a class="dl-version-badge" href="#all-releases">View latest release</a>
-            </div>
+            <section class="dl-section" id="admin" aria-labelledby="admin-title">
+                <h2 id="admin-title">Use the Admin app</h2>
+                <p>A visual workspace for browsing data, running queries, and managing your CSharpDB databases.</p>
+                <div class="dl-card dl-admin">
+                    <div>
+                        <h3>CSharpDB Admin Desktop</h3>
+                        <span class="dl-platform">v4.6.2 · Windows x64 · Portable ZIP</span>
+                        <p>Includes the Admin host and desktop launcher. No separate .NET installation is needed.</p>
+                        <div class="dl-links">
+                            <a class="dl-btn" href="https://github.com/MaxAkbar/CSharpDB/releases/download/v4.6.2/csharpdb-admin-desktop-v4.6.2-win-x64.zip">Download Admin for Windows</a>
+                            <a href="https://github.com/MaxAkbar/CSharpDB/releases/download/v4.6.2/ADMIN-SHA256SUMS.txt">Admin checksums</a>
+                        </div>
+                    </div>
+                    <div>
+                        <h3>Download, extract, open</h3>
+                        <ol>
+                            <li><a href="#verify">Verify the archive</a>, then extract the entire ZIP into a writable folder.</li>
+                            <li>Keep the included <code>admin/</code> folder next to the launcher.</li>
+                            <li>Open <code>CSharpDB.Admin.Desktop.exe</code>.</li>
+                        </ol>
+                        <p>Requires the <a href="https://developer.microsoft.com/en-us/microsoft-edge/webview2/">Microsoft Edge WebView2 Runtime</a>; install it if it is missing.</p>
+                        <a href="docs/admin-ui.html">Admin UI guide</a>
+                    </div>
+                </div>
+                <div class="dl-note">
+                    <p><strong>Looking for the new Data Modeler?</strong> The <a href="docs/tutorials/data-modeler.html">Data Modeler tutorial</a> covers the current source build. Its latest enhancements are <a href="changelog.html#unreleased">unreleased</a> and are not included in this v4.6.2 download.</p>
+                    <p>The packaged desktop app is currently Windows-only. To run the browser-based Admin from source on another platform, see the <a href="docs/admin-ui.html">Admin guide</a>; this requires the .NET 10 SDK.</p>
+                </div>
+            </section>
 
-            <!-- ───────── NuGet Packages ───────── -->
-            <div class="dl-section" id="nuget">
-                <h2>NuGet Packages</h2>
-                <p>The fastest way to add CSharpDB to a .NET project. Requires <a href="https://dotnet.microsoft.com/download/dotnet/10.0">.NET 10 SDK</a>.</p>
-
+            <section class="dl-section" id="nuget" aria-labelledby="nuget-title">
+                <h2 id="nuget-title">Add CSharpDB to a .NET application</h2>
+                <p>Use the <a href="https://dotnet.microsoft.com/download/dotnet/10.0">.NET 10 SDK</a> to build your application. These links and the install command select v4.6.2.</p>
                 <div class="dl-install">
-                    <code>dotnet add package CSharpDB</code>
-                    <button type="button" class="copy-btn" title="Copy" onclick="navigator.clipboard.writeText('dotnet add package CSharpDB')">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-                    </button>
+                    <code id="nuget-command">dotnet add package CSharpDB --version 4.6.2</code>
+                    <button class="dl-copy" type="button" data-copy-target="nuget-command" aria-label="Copy NuGet install command">Copy</button>
+                    <span class="dl-copy-status" role="status" aria-live="polite"></span>
                 </div>
-
-                <div class="dl-grid">
-                    <div class="dl-card">
-                        <div class="dl-card-header">
-                            <div class="dl-card-icon">
-                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
-                            </div>
-                            <h3>CSharpDB</h3>
-                        </div>
-                        <div class="dl-desc">All-in-one meta-package. Includes the engine, SQL, storage, and execution layers. This is the recommended entry point.</div>
-                        <div class="dl-meta">
-                            <a href="https://www.nuget.org/packages/CSharpDB" class="dl-btn dl-btn-primary" target="_blank" rel="noopener">NuGet</a>
-                            <a href="https://www.nuget.org/packages/CSharpDB#versions-body-tab" class="dl-btn dl-btn-ghost" target="_blank" rel="noopener">Versions</a>
-                        </div>
-                    </div>
-
-                    <div class="dl-card">
-                        <div class="dl-card-header">
-                            <div class="dl-card-icon">
-                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-                            </div>
-                            <h3>CSharpDB.Client</h3>
-                        </div>
-                        <div class="dl-desc">Unified client SDK with pluggable transports (Direct, HTTP, gRPC). Single API for in-process and remote access.</div>
-                        <div class="dl-meta">
-                            <a href="https://www.nuget.org/packages/CSharpDB.Client" class="dl-btn dl-btn-primary" target="_blank" rel="noopener">NuGet</a>
-                            <a href="https://www.nuget.org/packages/CSharpDB.Client#versions-body-tab" class="dl-btn dl-btn-ghost" target="_blank" rel="noopener">Versions</a>
-                        </div>
-                    </div>
-
-                    <div class="dl-card">
-                        <div class="dl-card-header">
-                            <div class="dl-card-icon">
-                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
-                            </div>
-                            <h3>CSharpDB.Data</h3>
-                        </div>
-                        <div class="dl-desc">ADO.NET provider. Standard <code>DbConnection</code> / <code>DbCommand</code> / <code>DbDataReader</code> for ORM and data library compatibility.</div>
-                        <div class="dl-meta">
-                            <a href="https://www.nuget.org/packages/CSharpDB.Data" class="dl-btn dl-btn-primary" target="_blank" rel="noopener">NuGet</a>
-                            <a href="https://www.nuget.org/packages/CSharpDB.Data#versions-body-tab" class="dl-btn dl-btn-ghost" target="_blank" rel="noopener">Versions</a>
-                        </div>
-                    </div>
-
-                    <div class="dl-card">
-                        <div class="dl-card-header">
-                            <div class="dl-card-icon">
-                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
-                            </div>
-                            <h3>CSharpDB.Primitives</h3>
-                        </div>
-                        <div class="dl-desc">Shared types (<code>DbValue</code>, <code>Schema</code>, <code>ErrorCodes</code>). Reference this for low-level or shared-type usage.</div>
-                        <div class="dl-meta">
-                            <a href="https://www.nuget.org/packages/CSharpDB.Primitives" class="dl-btn dl-btn-primary" target="_blank" rel="noopener">NuGet</a>
-                            <a href="https://www.nuget.org/packages/CSharpDB.Primitives#versions-body-tab" class="dl-btn dl-btn-ghost" target="_blank" rel="noopener">Versions</a>
-                        </div>
-                    </div>
+                <div class="dl-grid dl-grid-packages">
+                    <div class="dl-card"><h3>CSharpDB</h3><p>Recommended starting point. The all-in-one package includes the engine, unified client, ADO.NET provider, pipelines, and diagnostics.</p><a class="dl-btn" href="https://www.nuget.org/packages/CSharpDB/4.6.2">Get CSharpDB</a></div>
+                    <div class="dl-card"><h3>CSharpDB.Client</h3><p>One client API for direct, ADO.NET, HTTP, and gRPC access, including route-aware connections.</p><a class="dl-btn" href="https://www.nuget.org/packages/CSharpDB.Client/4.6.2">Get Client</a></div>
+                    <div class="dl-card"><h3>CSharpDB.Data</h3><p>The ADO.NET provider for standard connection, command, and data-reader APIs.</p><a class="dl-btn" href="https://www.nuget.org/packages/CSharpDB.Data/4.6.2">Get ADO.NET</a></div>
+                    <div class="dl-card"><h3>CSharpDB.<wbr>EntityFrameworkCore</h3><p>The EF Core provider for applications using a DbContext and supported LINQ queries.</p><a class="dl-btn" href="https://www.nuget.org/packages/CSharpDB.EntityFrameworkCore/4.6.2">Get EF Core</a></div>
                 </div>
-
-                <details style="margin-top: 1rem;">
-                    <summary style="cursor: pointer; color: var(--text-secondary); font-size: 0.9rem;">Show all NuGet packages</summary>
-                    <table class="dl-platform-table" style="margin-top: 1rem;">
-                        <thead>
-                            <tr><th>Package</th><th>Description</th><th></th></tr>
-                        </thead>
-                        <tbody>
-                            <tr>
-                                <td><code>CSharpDB.Migration</code></td>
-                                <td>Provider-neutral migration catalogs, plans, mappings, canonicalization, and validation contracts</td>
-                                <td><a href="https://www.nuget.org/packages/CSharpDB.Migration" class="dl-btn dl-btn-primary" target="_blank" rel="noopener">NuGet</a></td>
-                            </tr>
-                            <tr>
-                                <td><code>CSharpDB.Migration.DualRun</code></td>
-                                <td>Bounded read-only source-to-CSharpDB query result validation for migration cutovers</td>
-                                <td><a href="https://www.nuget.org/packages/CSharpDB.Migration.DualRun" class="dl-btn dl-btn-primary" target="_blank" rel="noopener">NuGet</a></td>
-                            </tr>
-                            <tr>
-                                <td><code>CSharpDB.Engine</code></td>
-                                <td>Top-level Database API and Collection&lt;T&gt; (NoSQL)</td>
-                                <td><a href="https://www.nuget.org/packages/CSharpDB.Engine" class="dl-btn dl-btn-primary" target="_blank" rel="noopener">NuGet</a></td>
-                            </tr>
-                            <tr>
-                                <td><code>CSharpDB.Execution</code></td>
-                                <td>Query planner, operators, and expression evaluator</td>
-                                <td><a href="https://www.nuget.org/packages/CSharpDB.Execution" class="dl-btn dl-btn-primary" target="_blank" rel="noopener">NuGet</a></td>
-                            </tr>
-                            <tr>
-                                <td><code>CSharpDB.Sql</code></td>
-                                <td>Tokenizer, parser, AST, and script splitter</td>
-                                <td><a href="https://www.nuget.org/packages/CSharpDB.Sql" class="dl-btn dl-btn-primary" target="_blank" rel="noopener">NuGet</a></td>
-                            </tr>
-                            <tr>
-                                <td><code>CSharpDB.Storage</code></td>
-                                <td>Pager, B+tree, WAL, and file I/O</td>
-                                <td><a href="https://www.nuget.org/packages/CSharpDB.Storage" class="dl-btn dl-btn-primary" target="_blank" rel="noopener">NuGet</a></td>
-                            </tr>
-                            <tr>
-                                <td><code>CSharpDB.Storage.Diagnostics</code></td>
-                                <td>Storage diagnostics and integrity checking</td>
-                                <td><a href="https://www.nuget.org/packages/CSharpDB.Storage.Diagnostics" class="dl-btn dl-btn-primary" target="_blank" rel="noopener">NuGet</a></td>
-                            </tr>
-                            <tr>
-                                <td><code>CSharpDB.Pipelines</code></td>
-                                <td>ETL pipeline engine</td>
-                                <td><a href="https://www.nuget.org/packages/CSharpDB.Pipelines" class="dl-btn dl-btn-primary" target="_blank" rel="noopener">NuGet</a></td>
-                            </tr>
-                        </tbody>
-                    </table>
+                <details id="all-packages">
+                    <summary>Show the remaining 14 NuGet packages</summary>
+                    <p>All 18 published packages are listed on this page, including the four above. Most applications do not need to install each component separately.</p>
+                    <ul class="dl-package-list">
+                        <li><a href="https://www.nuget.org/packages/CSharpDB.CodeModules/4.6.2"><code>CSharpDB.CodeModules</code></a><p>Contracts for C# code modules and stored procedure integration.</p></li>
+                        <li><a href="https://www.nuget.org/packages/CSharpDB.Engine/4.6.2"><code>CSharpDB.Engine</code></a><p>The Database API and typed document collections.</p></li>
+                        <li><a href="https://www.nuget.org/packages/CSharpDB.EntityFrameworkCore.Tools/4.6.2"><code>CSharpDB.EntityFrameworkCore.Tools</code></a><p>Companion tooling for the EF Core provider.</p></li>
+                        <li><a href="https://www.nuget.org/packages/CSharpDB.Execution/4.6.2"><code>CSharpDB.Execution</code></a><p>Query planning, execution operators, and expression evaluation.</p></li>
+                        <li><a href="https://www.nuget.org/packages/CSharpDB.Generators/4.6.2"><code>CSharpDB.Generators</code></a><p>Source generators for typed collection serialization.</p></li>
+                        <li><a href="https://www.nuget.org/packages/CSharpDB.ImportExport/4.6.2"><code>CSharpDB.ImportExport</code></a><p>Import/export workflows and shared data-transfer services.</p></li>
+                        <li><a href="https://www.nuget.org/packages/CSharpDB.Migration/4.6.2"><code>CSharpDB.Migration</code></a><p>Migration catalogs, plans, mappings, and validation contracts.</p></li>
+                        <li><a href="https://www.nuget.org/packages/CSharpDB.Migration.DualRun/4.6.2"><code>CSharpDB.Migration.DualRun</code></a><p>Bounded read-only query-result comparisons for migration cutovers.</p></li>
+                        <li><a href="https://www.nuget.org/packages/CSharpDB.Observability/4.6.2"><code>CSharpDB.Observability</code></a><p>Structured events, diagnostics, tracing, and metrics contracts.</p></li>
+                        <li><a href="https://www.nuget.org/packages/CSharpDB.Pipelines/4.6.2"><code>CSharpDB.Pipelines</code></a><p>The ETL pipeline engine.</p></li>
+                        <li><a href="https://www.nuget.org/packages/CSharpDB.Primitives/4.6.2"><code>CSharpDB.Primitives</code></a><p>Shared values, schema metadata, and error codes.</p></li>
+                        <li><a href="https://www.nuget.org/packages/CSharpDB.Sql/4.6.2"><code>CSharpDB.Sql</code></a><p>The SQL tokenizer, parser, syntax tree, and script splitter.</p></li>
+                        <li><a href="https://www.nuget.org/packages/CSharpDB.Storage/4.6.2"><code>CSharpDB.Storage</code></a><p>Page storage, B+trees, write-ahead logging, and file I/O.</p></li>
+                        <li><a href="https://www.nuget.org/packages/CSharpDB.Storage.Diagnostics/4.6.2"><code>CSharpDB.Storage.Diagnostics</code></a><p>Storage inspection and integrity checking.</p></li>
+                    </ul>
                 </details>
-            </div>
+                <div class="dl-note"><a href="docs/getting-started.html">.NET getting started</a> · <a href="docs/entity-framework-core.html">EF Core guide and limitations</a></div>
+            </section>
 
-            <!-- ───────── Native Libraries ───────── -->
-            <div class="dl-section" id="native">
-                <h2>Native Libraries (NativeAOT)</h2>
-                <p>Pre-built shared libraries compiled via NativeAOT. No .NET runtime required at the call site. Use from Python, Node.js, Go, Rust, Swift, Kotlin, Dart, or any language with C FFI support.</p>
-
+            <section class="dl-section" id="server" aria-labelledby="server-title">
+                <h2 id="server-title">Run the database server</h2>
+                <p>CSharpDB Daemon owns the database file and lets applications connect over HTTP or gRPC. These v4.6.2 archives are self-contained: no separate .NET installation is needed.</p>
                 <div class="dl-grid">
-                    <div class="dl-card">
-                        <div class="dl-card-header">
-                            <div class="dl-card-icon">
-                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-                            </div>
-                            <h3>Windows (x64)</h3>
-                        </div>
-                        <div class="dl-desc"><code>CSharpDB.Native.dll</code> &mdash; Windows shared library for x64.</div>
-                        <div class="dl-meta">
-                            <a href="https://github.com/MaxAkbar/CSharpDB/releases/latest/download/CSharpDB.Native.dll" class="dl-btn dl-btn-primary">Download .dll</a>
-                        </div>
-                    </div>
-
-                    <div class="dl-card">
-                        <div class="dl-card-header">
-                            <div class="dl-card-icon">
-                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-                            </div>
-                            <h3>Linux (x64)</h3>
-                        </div>
-                        <div class="dl-desc"><code>CSharpDB.Native.so</code> &mdash; Linux shared library for x64.</div>
-                        <div class="dl-meta">
-                            <a href="https://github.com/MaxAkbar/CSharpDB/releases/latest/download/CSharpDB.Native.so" class="dl-btn dl-btn-primary">Download .so</a>
-                        </div>
-                    </div>
-
-                    <div class="dl-card">
-                        <div class="dl-card-header">
-                            <div class="dl-card-icon">
-                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-                            </div>
-                            <h3>macOS (arm64)</h3>
-                        </div>
-                        <div class="dl-desc"><code>CSharpDB.Native.dylib</code> &mdash; macOS shared library for Apple Silicon.</div>
-                        <div class="dl-meta">
-                            <a href="https://github.com/MaxAkbar/CSharpDB/releases/latest/download/CSharpDB.Native.dylib" class="dl-btn dl-btn-primary">Download .dylib</a>
-                        </div>
-                    </div>
-
-                    <div class="dl-card">
-                        <div class="dl-card-header">
-                            <div class="dl-card-icon">
-                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-                            </div>
-                            <h3>C Header</h3>
-                        </div>
-                        <div class="dl-desc"><code>csharpdb.h</code> &mdash; C header file for the public native function declarations.</div>
-                        <div class="dl-meta">
-                            <a href="https://github.com/MaxAkbar/CSharpDB/releases/latest/download/csharpdb.h" class="dl-btn dl-btn-primary">Download .h</a>
-                        </div>
-                    </div>
+                    <div class="dl-card"><h3>Windows x64</h3><p>ZIP archive with Windows service scripts.</p><a class="dl-btn" href="https://github.com/MaxAkbar/CSharpDB/releases/download/v4.6.2/csharpdb-daemon-v4.6.2-win-x64.zip">Download Windows server</a></div>
+                    <div class="dl-card"><h3>Linux x64</h3><p>Tar archive with systemd service scripts.</p><a class="dl-btn" href="https://github.com/MaxAkbar/CSharpDB/releases/download/v4.6.2/csharpdb-daemon-v4.6.2-linux-x64.tar.gz">Download Linux server</a></div>
+                    <div class="dl-card"><h3>macOS Apple silicon</h3><p>ARM64 tar archive with launchd service scripts.</p><a class="dl-btn" href="https://github.com/MaxAkbar/CSharpDB/releases/download/v4.6.2/csharpdb-daemon-v4.6.2-osx-arm64.tar.gz">Download macOS server</a></div>
                 </div>
-
-                <p style="margin-top: 1rem; font-size: 0.88rem; color: var(--text-muted);">See the <a href="docs/tutorials/native-ffi.html">Native FFI tutorial</a> for API documentation and examples for C, Python, Node.js, Go, Rust, Swift, Kotlin, and Dart.</p>
-            </div>
-
-            <!-- ───────── CLI ───────── -->
-            <div class="dl-section" id="cli">
-                <h2>CLI Tool</h2>
-                <p>The <code>csharpdb</code> CLI is an interactive REPL with SQL execution, meta-commands, storage diagnostics, ETL pipeline management, retained import/export workflows, mapping and query reports, and explicitly gated Access and SQL Server candidate capture lanes.</p>
-
-                <div class="dl-cli-note">
-                    <h4>Migration release archives</h4>
-                    <p>The current migration release produces framework-dependent archives for Windows x64, Linux x64, and macOS Apple silicon. Each archive requires the .NET 10 runtime and keeps its applicable fixed optional adapters, notices, licenses, and installers together. The Access adapter is Windows-only. Verify the downloaded archive against <code>MIGRATION-SHA256SUMS.txt</code> from the same GitHub release and preserve its directory layout.</p>
-                    <p>Find published assets on <a href="#all-releases">the releases page</a>, then follow the <a href="docs/database-migration.html">database migration guide</a>.</p>
+                <div class="dl-note">
+                    <p>Verify and extract the archive, then use its matching service installer. Service installation requires administrator privileges. Configure authentication and network access before allowing remote connections.</p>
+                    <div class="dl-links"><a href="https://github.com/MaxAkbar/CSharpDB/releases/download/v4.6.2/SHA256SUMS.txt">Server checksums</a><a href="https://github.com/MaxAkbar/CSharpDB/blob/v4.6.2/scripts/README.md#operator-walkthrough">Install the server</a><a href="docs/tutorials/multi-writer-daemon-grpc.html">Connect and configure</a></div>
                 </div>
+            </section>
 
-                <div class="dl-cli-note">
-                    <h4>Build from source</h4>
-                    <p>Requires <a href="https://dotnet.microsoft.com/download/dotnet/10.0">.NET 10 SDK</a>.</p>
-                    <div class="code-block" data-title="Bash"><pre><code># Framework-dependent (requires .NET 10 runtime on target)
-dotnet publish src/CSharpDB.Cli -c Release -o ./publish
-
-# Self-contained (no runtime needed)
-dotnet publish src/CSharpDB.Cli -c Release -r win-x64 --self-contained -o ./publish
-dotnet publish src/CSharpDB.Cli -c Release -r linux-x64 --self-contained -o ./publish
-dotnet publish src/CSharpDB.Cli -c Release -r osx-arm64 --self-contained -o ./publish</code></pre></div>
-                    <p>Those direct commands publish the base CLI only. They do not produce the optional Access, SQL Server, or MySQL worker layout required by provider-specific commands. To build the reviewed framework-dependent migration archives and their applicable workers, use the repository release publisher:</p>
-                    <div class="code-block" data-title="PowerShell"><pre><code>$Version = (Read-Host 'Release version without the v prefix').Trim()
-.\scripts\Publish-CSharpDbMigrationRelease.ps1 `
-  -Version $Version</code></pre></div>
+            <section class="dl-section" id="cli" aria-labelledby="cli-title">
+                <h2 id="cli-title">Use CLI and migration tools</h2>
+                <p>Run SQL interactively, inspect storage, and use retained import/export and migration workflows. The v4.6.2 migration archives include the CLI and its applicable optional adapters.</p>
+                <div class="dl-grid">
+                    <div class="dl-card"><h3>Windows x64</h3><p>ZIP · Requires .NET 10 Runtime.</p><a class="dl-btn" href="https://github.com/MaxAkbar/CSharpDB/releases/download/v4.6.2/csharpdb-migration-tool-v4.6.2-win-x64.zip">Download Windows CLI</a></div>
+                    <div class="dl-card"><h3>Linux x64</h3><p>Tar archive · Requires .NET 10 Runtime.</p><a class="dl-btn" href="https://github.com/MaxAkbar/CSharpDB/releases/download/v4.6.2/csharpdb-migration-tool-v4.6.2-linux-x64.tar.gz">Download Linux CLI</a></div>
+                    <div class="dl-card"><h3>macOS Apple silicon</h3><p>ARM64 tar archive · Requires .NET 10 Runtime.</p><a class="dl-btn" href="https://github.com/MaxAkbar/CSharpDB/releases/download/v4.6.2/csharpdb-migration-tool-v4.6.2-osx-arm64.tar.gz">Download macOS CLI</a></div>
                 </div>
-
-                <p style="margin-top: 1rem; font-size: 0.88rem; color: var(--text-muted);">See the <a href="docs/cli.html">CLI Reference</a> for general command documentation or <a href="docs/database-migration.html">Move Data into CSharpDB</a> for the end-to-end migration workflow.</p>
-            </div>
-
-            <!-- ───────── Node.js ───────── -->
-            <div class="dl-section" id="nodejs">
-                <h2>Node.js Package</h2>
-                <p>TypeScript/JavaScript client wrapping the native library via koffi.</p>
-
-                <div class="dl-install">
-                    <code>npm install csharpdb</code>
-                    <button type="button" class="copy-btn" title="Copy" onclick="navigator.clipboard.writeText('npm install csharpdb')">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-                    </button>
+                <div class="dl-note">
+                    <p>Install the <a href="https://dotnet.microsoft.com/download/dotnet/10.0">.NET 10 Runtime</a> for your OS and architecture. Verify the archive and extract it without changing its directory layout. Run <code>csharpdb</code> from the extracted folder, or follow the included installer instructions.</p>
+                    <p>Keep the <code>adapters/</code> folders, notices, and licenses together. Access is Windows-only and needs a separately installed, bitness-compatible ACE provider. Shipping an adapter does not establish broad live-provider qualification; review the migration guide's restrictions before using production data.</p>
+                    <div class="dl-links"><a href="https://github.com/MaxAkbar/CSharpDB/releases/download/v4.6.2/MIGRATION-SHA256SUMS.txt">CLI checksums</a><a href="https://github.com/MaxAkbar/CSharpDB/blob/v4.6.2/deploy/migration-tool/README.md">Install the CLI</a><a href="docs/database-migration.html">Migration guide</a><a href="docs/cli.html">CLI reference</a></div>
                 </div>
+                <details>
+                    <summary>Build the base CLI from source</summary>
+                    <p>From a repository checkout, use the .NET 10 SDK. This builds the base CLI, not the optional Access, SQL Server, or MySQL worker layout.</p>
+                    <div class="code-block" data-title="Shell"><pre><code>dotnet publish src/CSharpDB.Cli -c Release -o ./publish</code></pre></div>
+                    <p>The output requires .NET 10 Runtime. For the complete migration archive build process, see the <a href="https://github.com/MaxAkbar/CSharpDB/blob/v4.6.2/scripts/README.md#publish-csharpdbmigrationreleaseps1">migration packaging instructions</a>.</p>
+                </details>
+            </section>
 
-                <p style="font-size: 0.88rem; color: var(--text-muted);">Requires a platform-specific native library (<code>.dll</code> / <code>.so</code> / <code>.dylib</code>) in the working directory or on the library path. See the <a href="docs/tutorials/native-ffi-javascript.html">Node.js native FFI tutorial</a>.</p>
-            </div>
+            <section class="dl-section" id="native" aria-labelledby="native-title">
+                <h2 id="native-title">Use native libraries</h2>
+                <p>NativeAOT shared libraries for C-compatible language bindings, including Python, JavaScript, Go, and Rust. These v4.6.2 libraries do not require .NET at the call site; your language runtime and OS dependencies still apply.</p>
+                <div class="dl-grid">
+                    <div class="dl-card"><h3>Windows x64</h3><p><code>CSharpDB.Native.dll</code></p><a class="dl-btn" href="https://github.com/MaxAkbar/CSharpDB/releases/download/v4.6.2/CSharpDB.Native.dll">Download DLL</a></div>
+                    <div class="dl-card"><h3>Linux x64</h3><p><code>CSharpDB.Native.so</code></p><a class="dl-btn" href="https://github.com/MaxAkbar/CSharpDB/releases/download/v4.6.2/CSharpDB.Native.so">Download shared object</a></div>
+                    <div class="dl-card"><h3>macOS Apple silicon</h3><p><code>CSharpDB.Native.dylib</code> · ARM64</p><a class="dl-btn" href="https://github.com/MaxAkbar/CSharpDB/releases/download/v4.6.2/CSharpDB.Native.dylib">Download dylib</a></div>
+                </div>
+                <div class="dl-note">
+                    <p>Use the header and library from the same release. Place the library where your binding expects it; the native FFI tutorials describe each language's setup.</p>
+                    <div class="dl-links"><a href="https://github.com/MaxAkbar/CSharpDB/releases/download/v4.6.2/csharpdb.h">Download C header</a><a href="docs/tutorials/native-ffi.html">Native FFI setup and examples</a></div>
+                </div>
+                <details id="nodejs">
+                    <summary>JavaScript / TypeScript: build the client from source</summary>
+                    <p>The Node client is available in the repository, but there is currently no published <code>csharpdb</code> npm package. Use a source build instead. The wrapper declares Node.js 18 or newer; use a maintained Node.js release.</p>
+                    <p>For a build matching the downloads above, start with a fresh v4.6.2 checkout, then install the build dependencies and compile the wrapper:</p>
+                    <div class="code-block" data-title="Shell"><pre><code>git clone --branch v4.6.2 --depth 1 https://github.com/MaxAkbar/CSharpDB.git CSharpDB-v4.6.2
+cd CSharpDB-v4.6.2/clients/node
+npm install
+node node_modules/typescript/bin/tsc
+npm pack</code></pre></div>
+                    <p>Install the resulting local <code>.tgz</code> into your own project with <code>npm install /path/to/csharpdb-1.0.0.tgz</code>. The wrapper has its own version; it is not the database release version.</p>
+                    <p>Download the matching native library above. Set <code>CSHARPDB_NATIVE_PATH</code> to its absolute path, or put the library in your application's <code>native/</code> directory. You do not need the .NET SDK when using a prebuilt native library.</p>
+                    <p><a href="docs/tutorials/native-ffi-javascript.html">JavaScript examples</a> · <a href="https://github.com/MaxAkbar/CSharpDB/blob/v4.6.2/clients/node/README.md">Wrapper API and type limitations</a></p>
+                </details>
+            </section>
 
-            <!-- ───────── All Releases ───────── -->
-            <div class="dl-section" id="all-releases">
-                <h2>All Releases</h2>
-                <p>Browse the complete release history on GitHub, including changelogs and older versions.</p>
-                <a href="https://github.com/MaxAkbar/CSharpDB/releases" class="dl-btn dl-btn-primary" target="_blank" rel="noopener" style="font-size: 0.95rem; padding: 0.6rem 1.5rem;">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2C6.48 2 2 6.48 2 12c0 4.42 2.87 8.17 6.84 9.49.5.09.66-.22.66-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.89 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02A9.56 9.56 0 0112 6.8c.85.004 1.7.115 2.5.337 1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.75c0 .27.16.58.67.48A10.01 10.01 0 0022 12c0-5.52-4.48-10-10-10z"/></svg>
-                    View all releases on GitHub
-                </a>
-            </div>
+            <section class="dl-section" id="verify" aria-labelledby="verify-title">
+                <h2 id="verify-title">Verify your download</h2>
+                <p>Before extracting an archive, compare its SHA-256 hash with the matching checksum file linked above. Use the file from the same release: Admin, server, and migration archives have separate checksum lists.</p>
+                <details>
+                    <summary>Show checksum commands</summary>
+                    <p>Replace the example filename with the archive you downloaded. On Windows, use PowerShell:</p>
+                    <div class="code-block" data-title="PowerShell"><pre><code>Get-FileHash -Algorithm SHA256 -LiteralPath .\csharpdb-admin-desktop-v4.6.2-win-x64.zip</code></pre></div>
+                    <p>On Linux, place the checksum file next to the downloaded archive:</p>
+                    <div class="code-block" data-title="Shell"><pre><code>sha256sum --check --ignore-missing SHA256SUMS.txt</code></pre></div>
+                    <p>On macOS, compute the hash and compare it with the checksum list:</p>
+                    <div class="code-block" data-title="Shell"><pre><code>shasum -a 256 csharpdb-daemon-v4.6.2-osx-arm64.tar.gz</code></pre></div>
+                </details>
+                <div class="dl-note"><p>The native libraries and C header do not have a separate checksum-list asset in this release; do not use the server checksum list for those files. The <a href="https://github.com/MaxAkbar/CSharpDB/releases/download/v4.6.2/CSharpDB-PACKAGE-MANIFEST.json">package manifest</a> describes the NuGet package set, not native-library checksums.</p></div>
+            </section>
 
+            <section class="dl-section" id="all-releases" aria-labelledby="releases-title">
+                <h2 id="releases-title">Release notes and older versions</h2>
+                <p>These downloads are pinned to the verified stable release. Source builds may contain newer, unreleased features.</p>
+                <div class="dl-links"><a class="dl-btn" href="https://github.com/MaxAkbar/CSharpDB/releases/tag/v4.6.2">View v4.6.2 release</a><a href="https://github.com/MaxAkbar/CSharpDB/releases">All GitHub releases</a><a href="changelog.html">Changelog</a></div>
+            </section>
         </div>
     </main>
-
     <div id="site-footer"></div>
     <script src="js/csharpdb.bundle.js" defer></script>
+    <script src="js/downloads.js" defer></script>
 </body>
 </html>

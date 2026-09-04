@@ -1,0 +1,67 @@
+{
+  "coverageFrom": "3.8.0",
+  "verifiedOn": "2026-09-04",
+  "source": "https://api.github.com/repos/MaxAkbar/CSharpDB/releases",
+  "notesReview": {
+    "version": "4.6.2",
+    "sha256": "07b4534a4e49c409c2bba94818c20785820495ddacff7bddcf29b36210d99417"
+  },
+  "releases": [
+    {
+      "version": "4.6.2",
+      "publishedDate": "2026-08-14"
+    },
+    {
+      "version": "4.5.1",
+      "publishedDate": "2026-08-10"
+    },
+    {
+      "version": "4.4.0",
+      "publishedDate": "2026-08-05"
+    },
+    {
+      "version": "4.3.0",
+      "publishedDate": "2026-07-27"
+    },
+    {
+      "version": "4.2.0",
+      "publishedDate": "2026-07-21"
+    },
+    {
+      "version": "4.1.0",
+      "publishedDate": "2026-07-18"
+    },
+    {
+      "version": "4.0.4",
+      "publishedDate": "2026-07-17"
+    },
+    {
+      "version": "4.0.3",
+      "publishedDate": "2026-07-15"
+    },
+    {
+      "version": "4.0.2",
+      "publishedDate": "2026-07-09"
+    },
+    {
+      "version": "4.0.1",
+      "publishedDate": "2026-07-05"
+    },
+    {
+      "version": "4.0.0",
+      "publishedDate": "2026-06-25"
+    },
+    {
+      "version": "3.9.1",
+      "publishedDate": "2026-06-11"
+    },
+    {
+      "version": "3.9.0",
+      "publishedDate": "2026-05-31"
+    },
+    {
+      "version": "3.8.0",
+      "publishedDate": "2026-05-17"
+    }
+  ]
+}
