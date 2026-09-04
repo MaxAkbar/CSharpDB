@@ -155,6 +155,31 @@ function harness(layout = null, options = {}) {
 
 const manual = (points = [{ Id: 'bend-1', X: 300, Y: 50 }]) => ({ ParentSide: 1, ChildSide: 0, Waypoints: points });
 
+for (const pointerType of ['touch', 'pen']) {
+    test(`${pointerType} moves a table, group, and connector once and cancellation restores geometry`, async () => {
+        for (const targetKind of ['table', 'group', 'connector']) {
+            const h = harness(manual(), { grouped: true, scale: 1.25 });
+            let target = targetKind === 'table' ? h.parent.children[0] : targetKind === 'group' ? h.groupTitle : h.waypoint();
+            const start = h.screenPoint(300, 50);
+            const event = values => h.event(target, { pointerType, isPrimary: true, ...start, ...values });
+            const moved = { clientX: start.clientX + 50, clientY: start.clientY + (targetKind === 'connector' ? -25 : 25) };
+            const before = [h.parent.style.left, h.child.style.left, h.group.dataset.connectorLayout];
+            h.registration.onPointerDown(event());
+            h.registration.onPointerMove(event(moved)); h.flush();
+            h.registration.onPointerCancel(event());
+            assert.deepEqual([h.parent.style.left, h.child.style.left, h.group.dataset.connectorLayout], before);
+            assert.equal(h.canvas.captured.size, 0);
+            if (targetKind === 'connector') target = h.waypoint();
+            h.registration.onPointerDown(event());
+            h.registration.onPointerMove(event(moved)); h.flush();
+            h.registration.onPointerUp(event()); await h.settle();
+            const method = targetKind === 'table' ? 'OnTableMoved' : targetKind === 'group' ? 'OnTableGroupMoved' : 'OnConnectorLayoutChanged';
+            assert.equal(h.calls.filter(call => call.method === method).length, 1, `${pointerType}: ${targetKind}`);
+            assert.equal(h.canvas.captured.size, 0);
+        }
+    });
+}
+
 test('group drag translates members and internal guides at fractional zoom, persists once and defers sync', async () => {
     const h = harness(manual(), { grouped: true, inset: 64, scale: 1.25 });
     const start = h.screenPoint(100, 65);

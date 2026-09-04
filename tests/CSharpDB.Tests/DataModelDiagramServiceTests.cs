@@ -43,7 +43,7 @@ public sealed class DataModelDiagramServiceTests : IAsyncLifetime
         DataModelState loaded = Assert.IsType<DataModelState>(
             await _service.LoadDiagramAsync("Custom connectors", TestContext.Current.CancellationToken));
 
-        Assert.Equal(4, loaded.Version);
+        Assert.Equal(5, loaded.Version);
         AssertCustomLayout(Assert.Single(loaded.Relationships).ConnectorLayout);
         Assert.Equal((147d, 235d, 1.25d), (loaded.ViewportX, loaded.ViewportY, loaded.Scale));
         Assert.Equal(schemaPreview, _service.BuildPreviewSql(loaded));
@@ -260,6 +260,7 @@ public sealed class DataModelDiagramServiceTests : IAsyncLifetime
     {
         var state = new DataModelState
         {
+            SchemaFingerprint = (await _service.BuildSelectionAsync([], ct: TestContext.Current.CancellationToken)).SchemaFingerprint,
             DiagramName = "Pending",
             Nodes =
             [

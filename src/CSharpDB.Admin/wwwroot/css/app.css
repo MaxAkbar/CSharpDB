@@ -7976,3 +7976,17 @@ html:not(.desktop-shell-bridge) .native-path-picker > button {
         grid-template-columns: minmax(0, 1fr);
     }
 }
+/* Focused modeler inspection and review surfaces. */
+.model-schema-inspector details { margin: 10px 0; border-bottom: 1px solid var(--border-color); padding-bottom: 8px; }
+.model-schema-inspector summary { cursor: pointer; font-weight: 600; margin-bottom: 8px; }
+.model-schema-definition { display: flex; flex-direction: column; gap: 4px; padding: 8px 0; overflow-wrap: anywhere; }
+.model-schema-definition code { white-space: pre-wrap; }
+.model-schema-inspector fieldset { border: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.model-column-picker > div { display: flex; align-items: center; gap: 4px; }
+.model-column-picker > div > span { flex: 1; }
+.model-change-review { padding: 14px 20px; max-height: 42vh; overflow: auto; flex-shrink: 0; border-bottom: 1px solid var(--border-color); }
+.model-change-review pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 8px; background: var(--bg-tertiary); }
+.data-model-context-actions { display: flex; flex-wrap: wrap; gap: 5px; margin: 10px 0; }
+.data-model-context-actions small, .data-model-context-actions p { flex-basis: 100%; }
+.data-model-tools { flex-shrink: 0; flex-wrap: wrap; }
+.schema-column-facets { display: flex; flex-direction: column; gap: 8px; min-width: 0; }

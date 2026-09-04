@@ -15,6 +15,50 @@ namespace CSharpDB.Admin.Forms.Tests.Components;
 
 public sealed class DataModelConnectorEditingTests
 {
+    [Theory]
+    [InlineData(DataModelNodeDetailLevel.Keys)]
+    [InlineData(DataModelNodeDetailLevel.All)]
+    public async Task Canvas_CompositeSelectionHighlightsEveryMappedColumn(DataModelNodeDetailLevel detail)
+    {
+        var state = Model();
+        foreach (var node in state.Nodes) { node.DetailLevel = detail; node.Columns.Add(new() { Name = "Tenant", TypeLabel = "INTEGER" }); }
+        state.Relationships[0].ColumnPairs = [new("ParentId", "Id"), new("Tenant", "Tenant")];
+        await WithRenderedCanvasAsync(state, (_, _, html) =>
+        {
+            string markup = System.Net.WebUtility.HtmlDecode(html());
+            Assert.Equal(4, System.Text.RegularExpressions.Regex.Matches(markup, "schema-node-col relationship-endpoint").Count);
+            Assert.Contains("Child.Tenant → Parent.Tenant", markup);
+            Assert.Single(System.Text.RegularExpressions.Regex.Matches(markup, "class=\"designer-join-line schema-relationship"));
+            return Task.CompletedTask;
+        });
+    }
+
+    [Fact]
+    public async Task Workspace_DraftColumnStageDoesNotDoubleAddSharedColumnsAndCanUndo()
+    {
+        var state = new DataModelState { DiagramName = "Draft" };
+        var columns = new List<DataModelColumn> { new() { Name = "Id", TypeLabel = "INTEGER", IsPrimaryKey = true } };
+        state.Nodes.Add(new() { Name = "Draft", IsDraft = true, Columns = columns });
+        state.PendingOperations.Add(new() { Kind = DataModelPendingOperationKind.CreateTable, TableName = "Draft", Columns = columns });
+        var tab = CreateTab(state, new DiagramServiceFake()); Invoke(tab, "ResetHistory");
+        await InvokeAsync(tab, "StageAdvancedAsync", (object)new DataModelPendingOperation[]
+        { new() { Kind = DataModelPendingOperationKind.AddColumn, TableName = "Draft", ColumnName = "Amount", ColumnType = "DECIMAL(12,2)" } });
+        Assert.Equal(2, state.Nodes[0].Columns.Count); Assert.Equal(2, Assert.Single(state.PendingOperations).Columns.Count);
+        await InvokeAsync(tab, "RestoreHistoryAsync", false);
+        Assert.Single(GetField<DataModelState>(tab, "_state").Nodes[0].Columns);
+    }
+
+    [Fact]
+    public async Task Workspace_ClearCanvasKeepsPendingDatabaseChanges()
+    {
+        var state = Model(); state.SchemaFingerprint = "baseline";
+        state.PendingOperations.Add(new() { Kind = DataModelPendingOperationKind.SetNotNull, TableName = "Child", ColumnName = "ParentId" });
+        var tab = CreateTab(state, new DiagramServiceFake());
+        await InvokeAsync(tab, "ClearCanvas");
+        var cleared = GetField<DataModelState>(tab, "_state");
+        Assert.Empty(cleared.Nodes); Assert.Single(cleared.PendingOperations); Assert.Equal("baseline", cleared.SchemaFingerprint);
+    }
+
     [Fact]
     public async Task Canvas_FinalConnectorEventDeepClonesLayoutWithoutSchemaOperations()
     {
@@ -120,7 +164,7 @@ public sealed class DataModelConnectorEditingTests
             Assert.Contains("data-child-column=\"ParentId\"", markup);
             Assert.Contains("relationship-endpoint", markup);
             Assert.Contains("aria-live=\"polite\"", markup);
-            Assert.Equal(4, state.Version);
+            Assert.Equal(5, state.Version);
             return Task.CompletedTask;
         });
     }
@@ -350,7 +394,7 @@ public sealed class DataModelConnectorEditingTests
         Assert.NotNull(Assert.Single(diagrams.Saved).Relationships[0].ConnectorLayout);
         string json = GetProperty<TabDescriptor>(tab, nameof(DataModelTab.Tab)).DataModelStateJson!;
         DataModelState restored = Assert.IsType<DataModelState>(DataModelGraphBuilder.DeserializeState(json));
-        Assert.Equal(4, restored.Version);
+        Assert.Equal(5, restored.Version);
         Assert.Equal(430, restored.Relationships[0].ConnectorLayout!.Waypoints[0].X);
 
         await InvokeAsync(tab, "ResetConnectorRouteAsync");
@@ -397,7 +441,7 @@ public sealed class DataModelConnectorEditingTests
         Assert.Null(GetField<string?>(tab, "_error"));
         DataModelState current = GetField<DataModelState>(tab, "_state");
         Assert.NotSame(previous, current);
-        if (replacement is "load" or "saved-refresh")
+        if (replacement is "load")
         {
             Assert.Same(loaded, current);
             Assert.Equal("new-diagram-bend", current.Relationships[0].ConnectorLayout!.Waypoints[0].Id);
@@ -444,7 +488,7 @@ public sealed class DataModelConnectorEditingTests
         TabDescriptor descriptor = GetProperty<TabDescriptor>(tab, nameof(DataModelTab.Tab));
         DataModelState locallySaved = Assert.IsType<DataModelState>(DataModelGraphBuilder.DeserializeState(descriptor.DataModelStateJson!));
         Assert.Equal(430, locallySaved.Relationships[0].ConnectorLayout!.Waypoints[0].X);
-        Assert.Equal(4, locallySaved.Version);
+        Assert.Equal(5, locallySaved.Version);
         Assert.Empty(state.PendingOperations);
 
         // Selecting another table must not erase the durable save-failure message.
@@ -534,6 +578,59 @@ public sealed class DataModelConnectorEditingTests
         Invoke(tab, "ClearSelection");
         Assert.Empty(GetProperty<HashSet<string>>(tab, "SelectedTableNames"));
         Assert.Null(GetField<string?>(tab, "_selectedGroupId"));
+    }
+
+    [Fact]
+    public async Task DependentInspectorEditsAndHistoryKeepRouteContextAndCanvasPositions()
+    {
+        var state = Model(); state.SchemaContext = Model();
+        state.Nodes.RemoveAt(0); state.Relationships.Clear();
+        var tab = CreateTab(state);
+        SetField(tab, "_selectedNodeName", "Child"); Invoke(tab, "ResetHistory");
+        await InvokeAsync(tab, "StageAdvancedAsync", (object)new DataModelPendingOperation[] { new() { Kind = DataModelPendingOperationKind.AddColumn, TableName = "Child", ColumnName = "Caption", ColumnType = "VARCHAR(40)" } });
+        await InvokeAsync(tab, "StageAdvancedAsync", (object)new DataModelPendingOperation[] { new() { Kind = DataModelPendingOperationKind.CreateIndex, TableName = "Child", IndexName = "idx_caption", ColumnNames = ["Caption"] } });
+        Assert.Equal(2, state.PendingOperations.Count); Assert.Equal(600, state.Nodes[0].X);
+        Assert.Contains(GetProperty<DataModelNode>(tab, "EditingNode").Columns, column => column.Name == "Caption");
+        Assert.Single(GetProperty<IEnumerable<DataModelRelationship>>(tab, "InspectorRelationships"));
+        await InvokeAsync(tab, "RestoreHistoryAsync", false);
+        var undone = GetField<DataModelState>(tab, "_state");
+        Assert.Single(undone.PendingOperations); Assert.Same(state.SchemaContext, undone.SchemaContext);
+        await InvokeAsync(tab, "RestoreHistoryAsync", true);
+        Assert.Equal(2, GetField<DataModelState>(tab, "_state").PendingOperations.Count);
+    }
+
+    [Fact]
+    public async Task DraftColumnFacetsAreFoldedIntoCreateButDependentColumnsStayOrdered()
+    {
+        var state = Model();
+        var draft = new DataModelNode { Name = "Draft", IsDraft = true, Columns = [new() { Name = "Id", TypeLabel = "INTEGER", IsPrimaryKey = true }] };
+        state.Nodes.Add(draft);
+        state.PendingOperations.Add(new() { Kind = DataModelPendingOperationKind.CreateTable, TableName = "Draft", Columns = draft.Columns });
+        var tab = CreateTab(state);
+        await InvokeAsync(tab, "StageAdvancedAsync", (object)new DataModelPendingOperation[] { new() { Kind = DataModelPendingOperationKind.AddColumn, TableName = "Draft", ColumnName = "Caption", ColumnType = "VARCHAR(40)", Collation = "NOCASE", ExpressionSql = "'new'", ConstraintName = "ck_caption", CheckExpressionSql = "Caption <> ''" } });
+        Assert.Single(state.PendingOperations); Assert.Equal(2, draft.Columns.Count);
+        Assert.Equal("NOCASE", state.PendingOperations[0].Columns[1].Collation); Assert.Single(state.PendingOperations[0].Columns[1].Checks);
+        await InvokeAsync(tab, "StageAdvancedAsync", (object)new DataModelPendingOperation[] { new() { Kind = DataModelPendingOperationKind.CreateIndex, TableName = "Draft", IndexName = "idx_caption", ColumnNames = ["Caption"] } });
+        await InvokeAsync(tab, "StageAdvancedAsync", (object)new DataModelPendingOperation[] { new() { Kind = DataModelPendingOperationKind.AddColumn, TableName = "Draft", ColumnName = "Notes", ColumnType = "TEXT" } });
+        Assert.Equal(3, state.PendingOperations.Count); Assert.Equal(DataModelPendingOperationKind.AddColumn, state.PendingOperations[2].Kind);
+    }
+
+    [Theory]
+    [InlineData(true)] [InlineData(false)]
+    public void ExactSourceMergingResolvesConnectorsWhicheverEndpointArrivesFirst(bool parentFirst)
+    {
+        var all = Model(); var relation = all.Relationships[0];
+        relation.IsResolved = false; relation.Warning = "Relationship target 'Parent' is not on the canvas.";
+        string warning = $"Child.ParentId: {relation.Warning}";
+        var parent = new DataModelState { Nodes = [all.Nodes[0]] };
+        var child = new DataModelState { Nodes = [all.Nodes[1]], Relationships = [relation], Warnings = [warning] };
+        var state = parentFirst ? parent : child;
+        var tab = CreateTab(state);
+        Invoke(tab, "Merge", parentFirst ? child : parent);
+        Assert.True(Assert.Single(state.Relationships).IsResolved);
+        Assert.Null(state.Relationships[0].Warning); Assert.DoesNotContain(warning, state.Warnings);
+        Assert.Equal(50, state.Nodes.Single(node => node.Name == "Parent").X);
+        Assert.Equal(600, state.Nodes.Single(node => node.Name == "Child").X);
     }
 
     private static DataModelState Model() => new()

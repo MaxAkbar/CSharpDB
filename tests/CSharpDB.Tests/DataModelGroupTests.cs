@@ -107,7 +107,7 @@ public sealed class DataModelGroupTests
         state.Version = version;
         state.ViewportX = 23; state.ViewportY = 47; state.Scale = 1.25;
         var loaded = DataModelGraphBuilder.DeserializeState(JsonSerializer.Serialize(state))!;
-        Assert.Equal(4, loaded.Version);
+        Assert.Equal(5, loaded.Version);
         Assert.Empty(loaded.Groups);
         Assert.All(loaded.Nodes, node => Assert.Null(node.GroupId));
         Assert.Equal(100, loaded.Nodes[0].X);

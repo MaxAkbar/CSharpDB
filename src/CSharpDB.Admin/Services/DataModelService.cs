@@ -14,6 +14,10 @@ namespace CSharpDB.Admin.Services;
 
 public interface IDataModelService
 {
+    Task<DataModelState?> RefreshModelAsync(DataModelState state, CancellationToken ct = default) => Task.FromResult<DataModelState?>(null);
+    Task<DataModelChangePlan> ReviewChangesAsync(DataModelState state, CancellationToken ct = default) => throw new NotSupportedException("Schema review is unavailable for this client.");
+    Task<DataModelApplyResult> ApplyReviewedChangesAsync(DataModelState state, DataModelChangePlan plan, CancellationToken ct = default) => throw new NotSupportedException("Transactional schema application is unavailable for this client.");
+    Task<IReadOnlyList<DataModelDataCheckResult>> CheckDataAsync(DataModelState state, string tableName, CancellationToken ct = default) => throw new NotSupportedException("Data checks are unavailable for this client.");
     Task<DataModelState> BuildModelAsync(string? seedSourceName = null, int autoLayoutLimit = DataModelGraphBuilder.DefaultAutoLayoutLimit, CancellationToken ct = default);
     Task<DataModelState> BuildSelectionAsync(IReadOnlyCollection<string> sourceNames, DataModelSelectionMode selectionMode = DataModelSelectionMode.Exact, CancellationToken ct = default);
     Task<IReadOnlyList<DataModelSourceOption>> GetSourceOptionsAsync(CancellationToken ct = default);
@@ -32,7 +36,7 @@ public interface IDataModelDiagramService
     Task<DataModelApplyResult> ApplyPendingOperationsAsync(DataModelState state, CancellationToken ct = default);
 }
 
-public sealed class DataModelService(ICSharpDbClient client) : IDataModelService, IDataModelDiagramService
+public sealed partial class DataModelService(ICSharpDbClient client) : IDataModelService, IDataModelDiagramService
 {
     private const string DiagramTableName = "__data_model_diagrams";
     private const string DiagramNameIndexName = "idx___data_model_diagrams_name";
@@ -42,9 +46,12 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
         int autoLayoutLimit = DataModelGraphBuilder.DefaultAutoLayoutLimit,
         CancellationToken ct = default)
     {
+        string fingerprintBeforeLoad = await ReadSchemaFingerprintAsync(null, ct);
         IReadOnlyList<DataModelSourceMetadata> sources = await LoadSourcesAsync(ct);
         DataModelState state = DataModelGraphBuilder.Build(sources, seedSourceName, autoLayoutLimit);
         state.SchemaSnapshotUtc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+        state.SchemaFingerprint = await ReadSchemaFingerprintAsync(null, ct);
+        if (state.SchemaFingerprint != fingerprintBeforeLoad) throw new InvalidOperationException("Schema changed while loading. Refresh the model.");
         return state;
     }
 
@@ -53,9 +60,12 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
         DataModelSelectionMode selectionMode = DataModelSelectionMode.Exact,
         CancellationToken ct = default)
     {
+        string fingerprintBeforeLoad = await ReadSchemaFingerprintAsync(null, ct);
         IReadOnlyList<DataModelSourceMetadata> sources = await LoadSourcesAsync(ct);
         DataModelState state = DataModelGraphBuilder.BuildSelection(sources, sourceNames, selectionMode);
         state.SchemaSnapshotUtc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+        state.SchemaFingerprint = await ReadSchemaFingerprintAsync(null, ct);
+        if (state.SchemaFingerprint != fingerprintBeforeLoad) throw new InvalidOperationException("Schema changed while loading. Refresh the model.");
         return state;
     }
 
@@ -148,15 +158,27 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
 
         saved.DiagramName = normalized;
         saved.SavedLayoutName = normalized;
-        IReadOnlyList<DataModelSourceMetadata> sources = await LoadSourcesAsync(ct);
-        return DataModelGraphBuilder.BuildFromDiagramState(sources, saved);
+        var restored = (await RefreshModelAsync(saved, ct))!;
+        if (restored.PendingOperations.Count > 0) restored.SchemaFingerprint = saved.SchemaFingerprint;
+        return restored;
+    }
+
+    public async Task<DataModelState?> RefreshModelAsync(DataModelState state, CancellationToken ct = default)
+    {
+        string baseline = await ReadSchemaFingerprintAsync(null, ct);
+        var refreshed = DataModelGraphBuilder.BuildFromDiagramState(await LoadSourcesAsync(ct), state);
+        if (await ReadSchemaFingerprintAsync(null, ct) != baseline)
+            throw new InvalidOperationException("Schema changed while refreshing. Try again.");
+        refreshed.SchemaFingerprint = baseline;
+        refreshed.SchemaSnapshotUtc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+        return refreshed;
     }
 
     public async Task SaveDiagramAsync(string name, DataModelState state, CancellationToken ct = default)
     {
         await EnsureDiagramCatalogAsync(ct);
         string normalized = NormalizeDiagramName(name);
-        state.Version = 3;
+        state.Version = 5;
         state.DiagramName = normalized;
         state.SavedLayoutName = normalized;
         state.SchemaSnapshotUtc ??= DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
@@ -222,80 +244,41 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
 
     public string BuildPreviewSql(DataModelState state)
     {
-        if (state.Nodes.Count == 0)
-            return "-- Add model sources to preview schema DDL.";
-
-        var sb = new StringBuilder();
-        sb.AppendLine("-- Preview only. Review before running in a query tab.");
-        foreach (DataModelNode node in state.Nodes.OrderBy(static node => node.Kind).ThenBy(static node => node.Name, StringComparer.OrdinalIgnoreCase))
+        if (state.Nodes.Count == 0) return "-- Add model sources to preview schema DDL.";
+        var sql = new StringBuilder("-- Preview only. Review before running in a query tab.\n");
+        foreach (var node in state.Nodes.OrderBy(node => node.Name, StringComparer.OrdinalIgnoreCase))
         {
-            sb.AppendLine();
             if (node.Kind == DataModelNodeKind.ExternalTable)
             {
-                sb.Append("CREATE EXTERNAL TABLE ")
-                    .Append(FormatIdentifier(node.Name))
-                    .Append(" FROM ")
-                    .Append(FormatSqlStringLiteral(node.ArchivePath ?? string.Empty))
-                    .AppendLine(";");
+                sql.AppendLine($"-- Read-only external table: {node.Name}");
                 continue;
             }
-
-            sb.Append("CREATE TABLE ").Append(FormatIdentifier(node.Name)).AppendLine(" (");
-            for (int i = 0; i < node.Columns.Count; i++)
-            {
-                DataModelColumn column = node.Columns[i];
-                sb.Append("    ")
-                    .Append(FormatIdentifier(column.Name))
-                    .Append(' ')
-                    .Append(column.IsRowVersion ? "ROWVERSION" : column.TypeLabel);
-                if (column.IsPrimaryKey)
-                    sb.Append(" PRIMARY KEY");
-                if (column.IsIdentity)
-                    sb.Append(" IDENTITY");
-                if (!column.Nullable && !column.IsPrimaryKey)
-                    sb.Append(" NOT NULL");
-                if (!string.IsNullOrWhiteSpace(column.Collation))
-                    sb.Append(" COLLATE ").Append(column.Collation);
-                if (!string.IsNullOrWhiteSpace(column.DefaultSql))
-                    sb.Append(" DEFAULT ").Append(column.DefaultSql);
-
-                if (i < node.Columns.Count - 1)
-                    sb.Append(',');
-                sb.AppendLine();
-            }
-
-            sb.AppendLine(");");
+            var schema = new TableSchema { TableName = node.Name, SchemaId = node.SchemaId,
+                Columns = node.Columns.Select(ToColumnDefinition).ToArray(), KeyConstraints = node.Keys, CheckConstraints = node.Checks };
+            sql.AppendLine(CSharpDB.DevOps.SchemaScriptRenderer.RenderCreateTable(schema));
+            foreach (var index in node.Indexes.Where(index => !index.IsEngineManaged))
+                sql.AppendLine(CSharpDB.DevOps.SchemaScriptRenderer.RenderCreateIndex(new IndexSchema
+                { IndexName = index.IndexName, TableName = node.Name, Columns = index.Columns, IsUnique = index.IsUnique, ColumnCollations = index.ColumnCollations }));
         }
+        foreach (var relationship in state.Relationships.Where(relationship => relationship.Kind != DataModelRelationshipKind.ExternalArchiveForeignKey && relationship.IsResolved))
+            sql.AppendLine(BuildForeignKeySql(new DataModelPendingOperation { Id = relationship.Id, TableName = relationship.LeftTable,
+                ConstraintName = relationship.ConstraintName, ColumnNames = relationship.EffectiveColumnPairs.Select(pair => pair.ChildColumn).ToList(),
+                ReferencedTableName = relationship.RightTable, ReferencedColumnNames = relationship.EffectiveColumnPairs.Select(pair => pair.ParentColumn).ToList(),
+                OnDelete = relationship.OnDelete ?? "RESTRICT", OnUpdate = relationship.OnUpdate ?? "RESTRICT" }));
+        return sql.ToString().TrimEnd();
+    }
 
-        IReadOnlyList<DataModelRelationship> resolvedRelationships = state.Relationships
-            .Where(static relationship => relationship.IsResolved)
-            .OrderBy(static relationship => relationship.LeftTable, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(static relationship => relationship.LeftColumn, StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-
-        if (resolvedRelationships.Count > 0)
-        {
-            sb.AppendLine();
-            sb.AppendLine("-- Relationships");
-            foreach (DataModelRelationship relationship in resolvedRelationships)
-            {
-                sb.Append("-- ")
-                    .Append(relationship.LeftTable)
-                    .Append('.')
-                    .Append(relationship.LeftColumn)
-                    .Append(" -> ")
-                    .Append(relationship.RightTable)
-                    .Append('.')
-                    .Append(relationship.RightColumn);
-                if (!string.IsNullOrWhiteSpace(relationship.OnDelete))
-                    sb.Append(" ON DELETE ").Append(relationship.OnDelete);
-                if (!string.IsNullOrWhiteSpace(relationship.OnUpdate))
-                    sb.Append(" ON UPDATE ").Append(relationship.OnUpdate);
-                sb.AppendLine();
-            }
-        }
-
-        return sb.ToString().TrimEnd();
+    private static ColumnDefinition ToColumnDefinition(DataModelColumn column)
+    {
+        var parsed = ((CreateTableStatement)Parser.Parse($"CREATE TABLE probe (value {NormalizeTypeLabel(column.TypeLabel)});")).Columns[0];
+        var type = parsed.DeclaredType;
+        return new ColumnDefinition { SchemaId = column.SchemaId, Name = column.Name, Type = type.StorageType switch
+            { CSharpDB.Primitives.DbType.Integer => DbType.Integer, CSharpDB.Primitives.DbType.Real => DbType.Real,
+                CSharpDB.Primitives.DbType.Text => DbType.Text, CSharpDB.Primitives.DbType.Blob => DbType.Blob, _ => DbType.Decimal },
+            DeclaredType = new SqlTypeDescriptor { Kind = (SqlTypeKind)(int)type.Kind, Length = type.Length, Precision = type.Precision,
+                Scale = type.Scale, FractionalSecondsPrecision = type.FractionalSecondsPrecision },
+            IsPrimaryKey = column.IsPrimaryKey, IsIdentity = column.IsIdentity, IsRowVersion = column.IsRowVersion,
+            Nullable = column.Nullable, DefaultSql = column.DefaultSql, Collation = column.Collation };
     }
 
     public string BuildPendingOperationsPreview(DataModelState state)
@@ -320,30 +303,12 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
         if (state.PendingOperations.Count == 0)
             return new DataModelApplyResult { Succeeded = true, Messages = ["No pending schema changes."] };
 
-        var messages = new List<string>();
-        foreach (DataModelPendingOperation operation in state.PendingOperations.ToArray())
-        {
-            ForeignKeyMigrationResult? migration = await ApplyOperationAsync(operation, ct);
-            ApplyOperationToState(state, operation, migration);
-            messages.Add(DescribeOperation(operation));
-        }
-
-        state.PendingOperations.Clear();
-        state.SchemaSnapshotUtc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
-        if (!string.IsNullOrWhiteSpace(state.DiagramName))
-            await SaveDiagramAsync(state.DiagramName, state, ct);
-
-        return new DataModelApplyResult
-        {
-            Succeeded = true,
-            Messages = messages,
-        };
+        return await ApplyReviewedChangesAsync(state, await ReviewChangesAsync(state, ct), ct);
     }
 
     private static void ApplyOperationToState(
         DataModelState state,
-        DataModelPendingOperation operation,
-        ForeignKeyMigrationResult? migration)
+        DataModelPendingOperation operation)
     {
         switch (operation.Kind)
         {
@@ -423,36 +388,6 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
                 }
                 break;
 
-            case DataModelPendingOperationKind.AddForeignKey:
-                DataModelRelationship? draft = state.Relationships.FirstOrDefault(relationship =>
-                    string.Equals(relationship.Id, operation.Id, StringComparison.Ordinal));
-                ForeignKeyMigrationAppliedConstraint[] applied = migration?.AppliedConstraints.Where(constraint =>
-                    string.Equals(constraint.TableName, operation.TableName, StringComparison.OrdinalIgnoreCase) &&
-                    string.Equals(constraint.ColumnName, operation.ColumnName, StringComparison.OrdinalIgnoreCase) &&
-                    string.Equals(constraint.ReferencedTableName, operation.ReferencedTableName, StringComparison.OrdinalIgnoreCase) &&
-                    (string.IsNullOrWhiteSpace(operation.ReferencedColumnName) ||
-                     string.Equals(constraint.ReferencedColumnName, operation.ReferencedColumnName, StringComparison.OrdinalIgnoreCase)))
-                    .ToArray() ?? [];
-                if (draft is not null && applied.Length == 1)
-                {
-                    // Retain the visual route while replacing the staging identity with the real FK.
-                    ForeignKeyMigrationAppliedConstraint constraint = applied[0];
-                    draft.Id = $"{constraint.TableName}:{constraint.ColumnName}->{constraint.ReferencedTableName}:{constraint.ReferencedColumnName}";
-                    draft.LeftTable = constraint.TableName;
-                    draft.LeftColumn = constraint.ColumnName;
-                    draft.RightTable = constraint.ReferencedTableName;
-                    draft.RightColumn = constraint.ReferencedColumnName;
-                    draft.ConstraintName = constraint.ConstraintName;
-                    draft.Kind = DataModelRelationshipKind.PhysicalForeignKey;
-                    draft.Warning = null;
-                }
-                else
-                {
-                    if (draft?.ConnectorLayout is not null)
-                        state.Warnings.Add($"Custom connector route for '{draft.LeftTable}.{draft.LeftColumn}' could not be matched to the applied foreign key; automatic routing is used.");
-                    state.Relationships.RemoveAll(relationship => string.Equals(relationship.Id, operation.Id, StringComparison.Ordinal));
-                }
-                break;
 
             case DataModelPendingOperationKind.DropForeignKey:
                 state.Relationships.RemoveAll(relationship =>
@@ -465,71 +400,6 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
     private static DataModelNode? FindStateNode(DataModelState state, string tableName) =>
         state.Nodes.FirstOrDefault(node => string.Equals(node.Name, tableName, StringComparison.OrdinalIgnoreCase));
 
-    private async Task<ForeignKeyMigrationResult?> ApplyOperationAsync(DataModelPendingOperation operation, CancellationToken ct)
-    {
-        switch (operation.Kind)
-        {
-            case DataModelPendingOperationKind.CreateTable:
-                ThrowIfSqlError(await client.ExecuteSqlAsync(BuildOperationSql(operation), ct));
-                break;
-
-            case DataModelPendingOperationKind.DropTable:
-                await client.DropTableAsync(operation.TableName, ct);
-                break;
-
-            case DataModelPendingOperationKind.RenameTable:
-                await client.RenameTableAsync(operation.TableName, RequireValue(operation.NewTableName, "new table name"), ct);
-                break;
-
-            case DataModelPendingOperationKind.AddColumn:
-                ThrowIfSqlError(await client.ExecuteSqlAsync(BuildOperationSql(operation), ct));
-                break;
-
-            case DataModelPendingOperationKind.DropColumn:
-                await client.DropColumnAsync(operation.TableName, RequireValue(operation.ColumnName, "column name"), ct);
-                break;
-
-            case DataModelPendingOperationKind.RenameColumn:
-                await client.RenameColumnAsync(
-                    operation.TableName,
-                    RequireValue(operation.ColumnName, "column name"),
-                    RequireValue(operation.NewColumnName, "new column name"),
-                    ct);
-                break;
-
-            case DataModelPendingOperationKind.AddForeignKey:
-                ForeignKeyMigrationResult migration = await client.MigrateForeignKeysAsync(
-                    new ForeignKeyMigrationRequest
-                    {
-                        ValidateOnly = false,
-                        Constraints =
-                        [
-                            new ForeignKeyMigrationConstraintSpec
-                            {
-                                TableName = operation.TableName,
-                                ColumnName = RequireValue(operation.ColumnName, "column name"),
-                                ReferencedTableName = RequireValue(operation.ReferencedTableName, "referenced table"),
-                                ReferencedColumnName = operation.ReferencedColumnName,
-                                OnDelete = ParseOnDeleteAction(operation.OnDelete),
-                                OnUpdate = ParseReferentialAction(operation.OnUpdate),
-                            },
-                        ],
-                    },
-                    ct);
-                if (!migration.Succeeded)
-                    throw new InvalidOperationException($"Foreign key migration failed with {migration.ViolationCount} violation(s).");
-                return migration;
-
-            case DataModelPendingOperationKind.DropForeignKey:
-                ThrowIfSqlError(await client.ExecuteSqlAsync(BuildOperationSql(operation), ct));
-                break;
-
-            default:
-                throw new InvalidOperationException($"Unsupported diagram operation '{operation.Kind}'.");
-        }
-
-        return null;
-    }
 
     private static string BuildOperationSql(DataModelPendingOperation operation) => operation.Kind switch
     {
@@ -539,9 +409,9 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
         DataModelPendingOperationKind.AddColumn => $"ALTER TABLE {FormatIdentifier(operation.TableName)} ADD COLUMN {BuildColumnSql(operation)};",
         DataModelPendingOperationKind.DropColumn => $"ALTER TABLE {FormatIdentifier(operation.TableName)} DROP COLUMN {FormatIdentifier(RequireValue(operation.ColumnName, "column name"))};",
         DataModelPendingOperationKind.RenameColumn => $"ALTER TABLE {FormatIdentifier(operation.TableName)} RENAME COLUMN {FormatIdentifier(RequireValue(operation.ColumnName, "column name"))} TO {FormatIdentifier(RequireValue(operation.NewColumnName, "new column name"))};",
-        DataModelPendingOperationKind.AddForeignKey => $"-- Uses validated foreign-key migration: {FormatIdentifier(operation.TableName)}.{FormatIdentifier(RequireValue(operation.ColumnName, "column name"))} -> {FormatIdentifier(RequireValue(operation.ReferencedTableName, "referenced table"))}.{FormatIdentifier(RequireValue(operation.ReferencedColumnName, "referenced column"))}",
+        DataModelPendingOperationKind.AddForeignKey => BuildForeignKeySql(operation),
         DataModelPendingOperationKind.DropForeignKey => $"ALTER TABLE {FormatIdentifier(operation.TableName)} DROP CONSTRAINT {FormatIdentifier(RequireValue(operation.ConstraintName, "constraint name"))};",
-        _ => "-- Unsupported diagram operation.",
+        _ => BuildExtendedOperationSql(operation),
     };
 
     private static string BuildCreateTableSql(DataModelPendingOperation operation)
@@ -560,43 +430,11 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
                 },
             ];
 
-        var sb = new StringBuilder()
-            .Append("CREATE TABLE ")
-            .Append(FormatIdentifier(operation.TableName))
-            .AppendLine(" (");
-        for (int i = 0; i < columns.Count; i++)
-        {
-            DataModelColumn column = columns[i];
-            sb.Append("    ")
-                .Append(FormatIdentifier(column.Name))
-                .Append(' ')
-                .Append(column.IsRowVersion
-                    ? "ROWVERSION"
-                    : NormalizeTypeLabel(column.TypeLabel));
-            if (column.IsPrimaryKey)
-                sb.Append(" PRIMARY KEY");
-            if (column.IsIdentity)
-                sb.Append(" IDENTITY");
-            if (!column.Nullable && !column.IsPrimaryKey)
-                sb.Append(" NOT NULL");
-            if (!string.IsNullOrWhiteSpace(column.Collation))
-                sb.Append(" COLLATE ").Append(column.Collation);
-            if (!string.IsNullOrWhiteSpace(column.DefaultSql))
-                sb.Append(" DEFAULT ").Append(column.DefaultSql);
-            if (i < columns.Count - 1)
-                sb.Append(',');
-            sb.AppendLine();
-        }
-
-        sb.Append(");");
-        return sb.ToString();
+        return SchemaColumnRules.RenderCreateTable(operation.TableName, columns);
     }
 
-    private static string BuildColumnSql(DataModelPendingOperation operation)
-    {
-        string column = $"{FormatIdentifier(RequireValue(operation.ColumnName, "column name"))} {NormalizeTypeLabel(operation.ColumnType)}";
-        return operation.NotNull ? column + " NOT NULL" : column;
-    }
+    private static string BuildColumnSql(DataModelPendingOperation operation) =>
+        SchemaColumnRules.RenderColumn(DataModelSchemaProjection.ColumnFromOperation(operation));
 
     private static string DescribeOperation(DataModelPendingOperation operation)
     {
@@ -623,6 +461,7 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
         IReadOnlyList<string> tableNames = await client.GetTableNamesAsync(ct);
         IReadOnlyList<IndexSchema> indexes = await client.GetIndexesAsync(ct);
         IReadOnlyList<TriggerSchema> triggers = await client.GetTriggersAsync(ct);
+        IReadOnlyList<ViewDefinition> views = await client.GetViewsAsync(ct);
 
         foreach (string tableName in tableNames.Where(static name => !IsSystemTableName(name)).OrderBy(static name => name, StringComparer.OrdinalIgnoreCase))
         {
@@ -632,14 +471,24 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
 
             sources.Add(new DataModelSourceMetadata
             {
+                SchemaId = schema.SchemaId,
+                Keys = EffectiveKeys(schema),
+                Checks = schema.CheckConstraints,
+                Dependencies = views.Where(view => ReferencesIdentifier(view.Sql, schema.TableName)).Select(view => new DataModelDependency("View", view.Name, view.Sql))
+                    .Concat(triggers.Where(trigger => string.Equals(trigger.TableName, schema.TableName, StringComparison.OrdinalIgnoreCase) || ReferencesIdentifier(trigger.BodySql, schema.TableName))
+                        .Select(trigger => new DataModelDependency("Trigger", trigger.TriggerName, trigger.BodySql))).ToArray(),
                 TableName = schema.TableName,
                 Kind = DataModelNodeKind.Table,
                 Columns = schema.Columns.Select(MapColumn).ToArray(),
                 ForeignKeys = schema.ForeignKeys.Select(MapForeignKey).ToArray(),
                 Indexes = indexes
                     .Where(index => string.Equals(index.TableName, schema.TableName, StringComparison.OrdinalIgnoreCase))
-                    .Select(MapIndex)
-                    .ToArray(),
+                    .Select(index => MapIndex(index, schema))
+                    .Concat(schema.ForeignKeys.Where(key => !string.IsNullOrWhiteSpace(key.SupportingIndexName)).Select(key => new DataModelIndexMetadata
+                    { IndexName = key.SupportingIndexName, Columns = key.ColumnNames.Count > 0 ? key.ColumnNames : [key.ColumnName], IsEngineManaged = true }))
+                    .Concat(schema.KeyConstraints.Where(key => !string.IsNullOrWhiteSpace(key.BackingIndexName)).Select(key => new DataModelIndexMetadata
+                    { IndexName = key.BackingIndexName!, Columns = key.Columns, IsUnique = true, IsEngineManaged = true }))
+                    .DistinctBy(index => index.IndexName, StringComparer.OrdinalIgnoreCase).ToArray(),
                 TriggerCount = triggers.Count(trigger => string.Equals(trigger.TableName, schema.TableName, StringComparison.OrdinalIgnoreCase)),
             });
         }
@@ -650,6 +499,14 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
         }
 
         return sources;
+    }
+
+    private static IReadOnlyList<KeyConstraintDefinition> EffectiveKeys(TableSchema schema)
+    {
+        if (schema.KeyConstraints.Any(key => key.Kind == KeyConstraintKind.PrimaryKey)) return schema.KeyConstraints;
+        string[] primary = schema.Columns.Where(column => column.IsPrimaryKey).Select(column => column.Name).ToArray();
+        return primary.Length == 0 ? schema.KeyConstraints : schema.KeyConstraints.Concat([new KeyConstraintDefinition
+        { Kind = KeyConstraintKind.PrimaryKey, Columns = primary }]).ToArray();
     }
 
     private async Task<DataModelSourceMetadata> LoadExternalSourceAsync(
@@ -663,6 +520,11 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
             var (schema, manifest) = await TableArchiveReader.ReadMetadataAsync(resolvedPath, ct);
             return new DataModelSourceMetadata
             {
+                // Archive identities belong to the source database, not this registration.
+                Keys = schema.KeyConstraints.Select(key => new KeyConstraintDefinition { ConstraintName = key.ConstraintName,
+                    Kind = (KeyConstraintKind)(int)key.Kind, Columns = key.Columns }).ToArray(),
+                Checks = schema.CheckConstraints.Select(check => new CheckConstraintDefinition { ConstraintName = check.ConstraintName,
+                    ColumnName = check.ColumnName, ExpressionSql = check.ExpressionSql }).ToArray(),
                 TableName = registration.TableName,
                 Kind = DataModelNodeKind.ExternalTable,
                 SourceTableName = string.IsNullOrWhiteSpace(registration.SourceTableName) ? schema.TableName : registration.SourceTableName,
@@ -732,6 +594,7 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
 
     private static DataModelColumnMetadata MapColumn(ColumnDefinition column) => new()
     {
+        SchemaId = column.SchemaId,
         Name = column.Name,
         TypeLabel = column.IsRowVersion ? "ROWVERSION" : column.EffectiveType.ToSql(),
         IsPrimaryKey = column.IsPrimaryKey,
@@ -759,6 +622,7 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
 
     private static DataModelForeignKeyMetadata MapForeignKey(ForeignKeyDefinition foreignKey) => new()
     {
+        SchemaId = foreignKey.SchemaId,
         ConstraintName = foreignKey.ConstraintName,
         ColumnName = foreignKey.ColumnName,
         ColumnNames = foreignKey.ColumnNames.Count > 0
@@ -789,8 +653,10 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
         OnUpdate = FormatReferentialAction(foreignKey.OnUpdate),
     };
 
-    private static DataModelIndexMetadata MapIndex(IndexSchema index) => new()
+    private static DataModelIndexMetadata MapIndex(IndexSchema index, TableSchema schema) => new()
     {
+        ColumnCollations = index.ColumnCollations,
+        IsEngineManaged = schema.ForeignKeys.Any(key => key.SupportingIndexName == index.IndexName) || schema.KeyConstraints.Any(key => key.BackingIndexName == index.IndexName),
         IndexName = index.IndexName,
         Columns = index.Columns,
         IsUnique = index.IsUnique,
@@ -868,51 +734,7 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
         return value.Trim();
     }
 
-    private static string NormalizeTypeLabel(string value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-            throw new InvalidOperationException("A column SQL type is required.");
-
-        try
-        {
-            Statement statement = Parser.Parse(
-                $"CREATE TABLE __csharpdb_type_probe (__value {value.Trim()});");
-            if (statement is not CreateTableStatement { Columns.Count: 1 } create ||
-                create.CheckConstraints.Count != 0 ||
-                create.KeyConstraints.Count != 0 ||
-                create.ForeignKeys.Count != 0)
-            {
-                throw new InvalidOperationException($"Invalid column SQL type '{value}'.");
-            }
-
-            ColumnDef column = create.Columns[0];
-            if (column.IsRowVersion &&
-                !column.IsPrimaryKey &&
-                !column.IsIdentity &&
-                column.Collation is null &&
-                column.ForeignKey is null &&
-                column.DefaultExpression is null &&
-                column.CheckConstraints.Count == 0)
-            {
-                return "ROWVERSION";
-            }
-
-            if (column.IsPrimaryKey || column.IsIdentity || column.IsRowVersion ||
-                !column.IsNullable || column.Collation is not null ||
-                column.ForeignKey is not null || column.DefaultExpression is not null ||
-                column.CheckConstraints.Count != 0)
-            {
-                throw new InvalidOperationException(
-                    $"Column type '{value}' contains unsupported column modifiers.");
-            }
-
-            return column.DeclaredType.ToSql();
-        }
-        catch (CSharpDB.Primitives.CSharpDbException error)
-        {
-            throw new InvalidOperationException($"Invalid column SQL type '{value}'.", error);
-        }
-    }
+    private static string NormalizeTypeLabel(string value) => SchemaColumnRules.NormalizeType(value);
 
     private static ForeignKeyOnDeleteAction ParseOnDeleteAction(string? value)
         => ParseReferentialAction(value);

@@ -414,8 +414,9 @@
     {
         DataModelRelationship? relationship = State.Relationships.FirstOrDefault(item => item.Id == SelectedRelationshipId);
         return relationship is not null &&
-               ((string.Equals(relationship.LeftTable, node.Name, StringComparison.OrdinalIgnoreCase) && string.Equals(relationship.LeftColumn, column.Name, StringComparison.OrdinalIgnoreCase)) ||
-                (string.Equals(relationship.RightTable, node.Name, StringComparison.OrdinalIgnoreCase) && string.Equals(relationship.RightColumn, column.Name, StringComparison.OrdinalIgnoreCase)));
+               relationship.EffectiveColumnPairs.Any(pair =>
+                (string.Equals(relationship.LeftTable, node.Name, StringComparison.OrdinalIgnoreCase) && string.Equals(pair.ChildColumn, column.Name, StringComparison.OrdinalIgnoreCase)) ||
+                (string.Equals(relationship.RightTable, node.Name, StringComparison.OrdinalIgnoreCase) && string.Equals(pair.ParentColumn, column.Name, StringComparison.OrdinalIgnoreCase)));
     }
 
     private async Task ToggleNodeDetailAsync(DataModelNode node)
@@ -464,7 +465,7 @@
     private string MarkerUrl(DataModelCardinality cardinality) => $"url(#{MarkerId(cardinality)})";
     private static string RelationshipSelectionLabel(DataModelRelationship relationship)
     {
-        string columns = $"{relationship.LeftTable}.{relationship.LeftColumn} → {relationship.RightTable}.{relationship.RightColumn}";
+        string columns = string.Join(", ", relationship.EffectiveColumnPairs.Select(pair => $"{relationship.LeftTable}.{pair.ChildColumn} → {relationship.RightTable}.{pair.ParentColumn}"));
         return string.IsNullOrWhiteSpace(relationship.ConstraintName)
             ? columns
             : $"{relationship.ConstraintName}: {columns}";

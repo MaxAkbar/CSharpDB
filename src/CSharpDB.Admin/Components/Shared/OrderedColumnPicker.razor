@@ -1,0 +1,22 @@
+<div class="model-column-picker">
+    <label>@Label</label>
+    <select class="schema-input" aria-label="Add @Label" value="" @onchange="Add">
+        <option value="">Add column…</option>
+        @foreach (var name in Available.Where(name => !Selection.Contains(name))) { <option value="@name">@name</option> }
+    </select>
+    @for (int i = 0; i < Selection.Count; i++)
+    {
+        int index = i;
+        <div><span>@(index + 1). @Selection[index]</span>
+            <button type="button" class="toolbar-btn" aria-label="Move @Selection[index] up" disabled="@(index == 0)" @onclick="() => Move(index)">↑</button>
+            <button type="button" class="toolbar-btn" aria-label="Remove @Selection[index]" @onclick="() => Selection.RemoveAt(index)">×</button>
+        </div>
+    }
+</div>
+@code {
+    [Parameter] public string Label { get; set; } = "Columns in order";
+    [Parameter] public IEnumerable<string> Available { get; set; } = [];
+    [Parameter] public List<string> Selection { get; set; } = [];
+    private void Add(ChangeEventArgs args) { string value = args.Value?.ToString() ?? ""; if (Available.Contains(value) && !Selection.Contains(value)) Selection.Add(value); }
+    private void Move(int index) => (Selection[index - 1], Selection[index]) = (Selection[index], Selection[index - 1]);
+}

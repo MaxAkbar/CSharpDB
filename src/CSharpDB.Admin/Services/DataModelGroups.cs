@@ -51,7 +51,8 @@ public static class DataModelGroups
         target.Groups = previous.Groups.Select(group => new DataModelGroup
             { Id = group.Id, Name = group.Name, Color = group.Color }).ToList();
         var membership = previous.Nodes.ToDictionary(node => node.Name, node => node.GroupId, StringComparer.OrdinalIgnoreCase);
-        foreach (var node in target.Nodes) node.GroupId = membership.GetValueOrDefault(node.Name);
+        foreach (var node in target.Nodes) node.GroupId = (node.SchemaId != Guid.Empty
+            ? previous.Nodes.FirstOrDefault(old => old.SchemaId == node.SchemaId)?.GroupId : null) ?? membership.GetValueOrDefault(node.Name);
         Normalize(target);
     }
 

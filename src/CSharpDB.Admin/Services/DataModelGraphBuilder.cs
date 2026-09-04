@@ -67,7 +67,15 @@ public static class DataModelGraphBuilder
             state.Nodes.Add(CreateNode(source, index++));
 
         AddRelationships(orderedSources, state, selectedNames);
+        state.SchemaContext = BuildSchemaContext(orderedSources);
         return state;
+    }
+
+    private static DataModelState BuildSchemaContext(IReadOnlyList<DataModelSourceMetadata> sources)
+    {
+        var context = new DataModelState { Nodes = sources.Select((source, index) => CreateNode(source, index)).ToList() };
+        AddRelationships(sources, context, sources.Select(source => source.TableName).ToHashSet(StringComparer.OrdinalIgnoreCase));
+        return context;
     }
 
     public static DataModelState BuildFromDiagramState(
@@ -81,7 +89,9 @@ public static class DataModelGraphBuilder
 
         var state = new DataModelState
         {
-            Version = 4,
+            SchemaContext = BuildSchemaContext(orderedSources),
+            Version = 5,
+            SchemaFingerprint = savedState.SchemaFingerprint,
             DiagramName = savedState.DiagramName ?? savedState.SavedLayoutName,
             SavedLayoutName = savedState.SavedLayoutName,
             SchemaSnapshotUtc = savedState.SchemaSnapshotUtc,
@@ -98,7 +108,9 @@ public static class DataModelGraphBuilder
         int index = 0;
         foreach (DataModelNode savedNode in savedState.Nodes)
         {
-            DataModelSourceMetadata? source = FindSource(orderedSources, savedNode.Name);
+            DataModelSourceMetadata? source = savedNode.SchemaId != Guid.Empty
+                ? orderedSources.FirstOrDefault(item => item.SchemaId == savedNode.SchemaId)
+                : FindSource(orderedSources, savedNode.Name);
             if (source is null)
             {
                 if (savedNode.IsDraft || state.PendingOperations.Any(operation =>
@@ -118,6 +130,7 @@ public static class DataModelGraphBuilder
             DataModelNode node = CreateNode(source, index++);
             node.X = savedNode.X;
             node.Y = savedNode.Y;
+            node.GroupId = savedNode.GroupId;
             node.DetailLevel = savedState.Version <= 1
                 ? (savedNode.IsCollapsed ? DataModelNodeDetailLevel.Collapsed : DataModelNodeDetailLevel.All)
                 : savedNode.IsCollapsed
@@ -127,7 +140,7 @@ public static class DataModelGraphBuilder
             state.Nodes.Add(node);
         }
 
-        AddRelationships(orderedSources, state, selectedNames);
+        AddRelationships(orderedSources, state, state.Nodes.Select(node => node.Name).ToHashSet(StringComparer.OrdinalIgnoreCase));
         foreach (DataModelRelationship relationship in savedState.Relationships.Where(static relationship => relationship.Kind == DataModelRelationshipKind.Draft))
         {
             if (!state.Relationships.Any(existing => string.Equals(existing.Id, relationship.Id, StringComparison.Ordinal)))
@@ -147,7 +160,25 @@ public static class DataModelGraphBuilder
         }
 
         if (savedState.Version >= 4) DataModelGroups.Preserve(savedState, state);
+        UpdateDraftCardinalities(state);
         return state;
+    }
+
+    public static void UpdateDraftCardinalities(DataModelState state)
+    {
+        foreach (var relationship in state.Relationships.Where(relationship => relationship.Kind == DataModelRelationshipKind.Draft))
+        {
+            var child = state.Nodes.FirstOrDefault(node => node.Name.Equals(relationship.LeftTable, StringComparison.OrdinalIgnoreCase));
+            if (child is null) continue;
+            var columns = relationship.EffectiveColumnPairs.Select(pair => pair.ChildColumn).ToArray();
+            bool unique = child.Keys.Any(key => SameColumns(key.Columns, columns)) || child.Indexes.Any(index => index.IsUnique && SameColumns(index.Columns, columns)) ||
+                SameColumns(child.Columns.Where(column => column.IsPrimaryKey).Select(column => column.Name).ToArray(), columns) ||
+                columns.Length == 1 && child.Columns.Any(column => column.Name.Equals(columns[0], StringComparison.OrdinalIgnoreCase) && column.IsUnique);
+            bool optional = child.Columns.Any(column => columns.Contains(column.Name, StringComparer.OrdinalIgnoreCase) && column.Nullable && !column.IsPrimaryKey);
+            relationship.ChildColumnIsUnique = unique;
+            relationship.ReferencedEndCardinality = optional ? DataModelCardinality.ZeroOrOne : DataModelCardinality.One;
+            relationship.ReferencingEndCardinality = unique ? DataModelCardinality.ZeroOrOne : DataModelCardinality.ZeroOrMany;
+        }
     }
 
     public static QueryDesignerState ToQueryDesignerState(DataModelState state)
@@ -182,14 +213,14 @@ public static class DataModelGraphBuilder
                     selectedNames.Contains(relationship.RightTable) &&
                     !string.IsNullOrWhiteSpace(relationship.LeftColumn) &&
                     !string.IsNullOrWhiteSpace(relationship.RightColumn))
-                .Select(static relationship => new DesignerJoin
+                .SelectMany(static relationship => relationship.EffectiveColumnPairs.Select(pair => new DesignerJoin
                 {
                     LeftTable = relationship.RightTable,
-                    LeftColumn = relationship.RightColumn,
+                    LeftColumn = pair.ParentColumn,
                     RightTable = relationship.LeftTable,
-                    RightColumn = relationship.LeftColumn,
+                    RightColumn = pair.ChildColumn,
                     JoinType = DesignerJoinType.Inner,
-                })
+                }))
                 .ToList(),
         };
 
@@ -211,7 +242,7 @@ public static class DataModelGraphBuilder
 
     public static string SerializeState(DataModelState state)
     {
-        state.Version = 4;
+        state.Version = 5;
         DataModelGroups.Normalize(state);
         NormalizeConnectorLayouts(state);
         foreach (DataModelNode node in state.Nodes)
@@ -248,7 +279,7 @@ public static class DataModelGraphBuilder
             state.Groups = [];
             foreach (var node in state.Nodes) node.GroupId = null;
         }
-        state.Version = 4;
+        state.Version = 5;
         DataModelGroups.Normalize(state);
         NormalizeConnectorLayouts(state);
         foreach (DataModelNode node in state.Nodes)
@@ -275,7 +306,9 @@ public static class DataModelGraphBuilder
 
         foreach (DataModelRelationship relationship in previous)
         {
-            DataModelRelationship[] matches = string.IsNullOrWhiteSpace(relationship.Id)
+            DataModelRelationship[] matches = relationship.SchemaId != Guid.Empty
+                ? targets.Where(target => target.SchemaId == relationship.SchemaId).ToArray()
+                : string.IsNullOrWhiteSpace(relationship.Id)
                 ? []
                 : targets.Where(target => string.Equals(target.Id, relationship.Id, StringComparison.Ordinal)).ToArray();
             if (matches.Length == 0 && !string.IsNullOrWhiteSpace(relationship.ConstraintName))
@@ -408,7 +441,7 @@ public static class DataModelGraphBuilder
         int column = index % 4;
         int row = index / 4;
         var foreignKeyColumns = source.ForeignKeys
-            .Select(static foreignKey => foreignKey.ColumnName)
+            .SelectMany(static foreignKey => foreignKey.ColumnNames.Count > 0 ? foreignKey.ColumnNames : [foreignKey.ColumnName])
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var indexedColumns = source.Indexes
             .SelectMany(static indexMetadata => indexMetadata.Columns)
@@ -418,8 +451,18 @@ public static class DataModelGraphBuilder
             .Select(static indexMetadata => indexMetadata.Columns[0])
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
+        uniqueColumns.UnionWith(source.Keys.Where(key => key.Columns.Count == 1).Select(key => key.Columns[0]));
+        if (source.Keys.Count == 0 && source.Columns.Count(column => column.IsPrimaryKey) == 1)
+            uniqueColumns.UnionWith(source.Columns.Where(column => column.IsPrimaryKey).Select(column => column.Name));
+        var primaryColumns = source.Keys.Where(key => key.Kind == CSharpDB.Client.Models.KeyConstraintKind.PrimaryKey)
+            .SelectMany(key => key.Columns).ToHashSet(StringComparer.OrdinalIgnoreCase);
         return new DataModelNode
         {
+            SchemaId = source.SchemaId,
+            Keys = source.Keys.ToList(),
+            Checks = source.Checks.ToList(),
+            Indexes = source.Indexes.ToList(),
+            Dependencies = source.Dependencies.ToList(),
             Name = source.TableName,
             Kind = source.Kind,
             X = 20 + column * 250,
@@ -433,17 +476,18 @@ public static class DataModelGraphBuilder
             Warnings = source.Warnings.ToList(),
             Columns = source.Columns.Select(columnMetadata => new DataModelColumn
             {
+                SchemaId = columnMetadata.SchemaId,
                 Name = columnMetadata.Name,
                 TypeLabel = columnMetadata.TypeLabel,
-                IsPrimaryKey = columnMetadata.IsPrimaryKey,
+                IsPrimaryKey = columnMetadata.IsPrimaryKey || primaryColumns.Contains(columnMetadata.Name),
                 IsIdentity = columnMetadata.IsIdentity,
                 IsRowVersion = columnMetadata.IsRowVersion,
-                Nullable = columnMetadata.Nullable,
+                Nullable = columnMetadata.Nullable && !columnMetadata.IsPrimaryKey && !primaryColumns.Contains(columnMetadata.Name),
                 Collation = columnMetadata.Collation,
                 DefaultSql = columnMetadata.DefaultSql,
                 IsForeignKey = foreignKeyColumns.Contains(columnMetadata.Name),
                 IsIndexed = indexedColumns.Contains(columnMetadata.Name),
-                IsUnique = columnMetadata.IsPrimaryKey || uniqueColumns.Contains(columnMetadata.Name),
+                IsUnique = uniqueColumns.Contains(columnMetadata.Name),
             }).ToList(),
         };
     }
@@ -463,17 +507,21 @@ public static class DataModelGraphBuilder
             {
                 DataModelSourceMetadata? referenced = FindSource(selectedSources, foreignKey.ReferencedTableName);
                 bool resolved = referenced is not null;
-                DataModelColumnMetadata? childColumn = source.Columns.FirstOrDefault(column =>
-                    string.Equals(column.Name, foreignKey.ColumnName, StringComparison.OrdinalIgnoreCase));
-                bool childColumnIsUnique = childColumn?.IsPrimaryKey == true || source.Indexes.Any(index =>
-                    index.IsUnique &&
-                    index.Columns.Count == 1 &&
-                    string.Equals(index.Columns[0], foreignKey.ColumnName, StringComparison.OrdinalIgnoreCase));
+                var childColumns = foreignKey.ColumnNames.Count > 0 ? foreignKey.ColumnNames : [foreignKey.ColumnName];
+                var parentColumns = foreignKey.ReferencedColumnNames.Count > 0 ? foreignKey.ReferencedColumnNames : [foreignKey.ReferencedColumnName];
+                bool childColumnIsUnique = source.Keys.Any(key => SameColumns(key.Columns, childColumns)) || source.Indexes.Any(index =>
+                    index.IsUnique && SameColumns(index.Columns, childColumns)) ||
+                    (source.Keys.Count == 0 && SameColumns(source.Columns.Where(column => column.IsPrimaryKey).Select(column => column.Name).ToArray(), childColumns));
+                bool optional = source.Columns.Any(column => childColumns.Contains(column.Name, StringComparer.OrdinalIgnoreCase) && column.Nullable && !column.IsPrimaryKey &&
+                    !source.Keys.Any(key => key.Kind == CSharpDB.Client.Models.KeyConstraintKind.PrimaryKey && key.Columns.Contains(column.Name, StringComparer.OrdinalIgnoreCase)));
                 string rightTable = referenced?.TableName ?? foreignKey.ReferencedTableName;
-                string id = $"{source.TableName}:{foreignKey.ColumnName}->{rightTable}:{foreignKey.ReferencedColumnName}";
+                string id = foreignKey.SchemaId != Guid.Empty ? foreignKey.SchemaId.ToString("N") :
+                    $"{source.TableName}:{foreignKey.ConstraintName}:{string.Join(',', childColumns)}->{rightTable}:{string.Join(',', parentColumns)}";
                 var relationship = new DataModelRelationship
                 {
                     Id = id,
+                    SchemaId = foreignKey.SchemaId,
+                    ColumnPairs = childColumns.Zip(parentColumns, (child, parent) => new DataModelColumnPair(child, parent)).ToList(),
                     LeftTable = source.TableName,
                     LeftColumn = foreignKey.ColumnName,
                     RightTable = rightTable,
@@ -488,7 +536,7 @@ public static class DataModelGraphBuilder
                     Warning = resolved
                         ? null
                         : $"Relationship target '{foreignKey.ReferencedTableName}' is not on the canvas.",
-                    ReferencedEndCardinality = childColumn?.Nullable == true
+                    ReferencedEndCardinality = optional
                         ? DataModelCardinality.ZeroOrOne
                         : DataModelCardinality.One,
                     ReferencingEndCardinality = childColumnIsUnique
@@ -511,6 +559,9 @@ public static class DataModelGraphBuilder
         return sources.FirstOrDefault(source => SourceMatches(source, sourceName));
     }
 
+    private static bool SameColumns(IReadOnlyList<string> left, IReadOnlyList<string> right) =>
+        left.Count > 0 && left.Count == right.Count && left.ToHashSet(StringComparer.OrdinalIgnoreCase).SetEquals(right);
+
     private static bool SourceMatches(DataModelSourceMetadata source, string sourceName)
     {
         return string.Equals(source.TableName, sourceName, StringComparison.OrdinalIgnoreCase)
@@ -520,6 +571,8 @@ public static class DataModelGraphBuilder
 
     private static DataModelNode CloneNode(DataModelNode node) => new()
     {
+        SchemaId = node.SchemaId,
+        Keys = node.Keys.ToList(), Checks = node.Checks.ToList(), Indexes = node.Indexes.ToList(), Dependencies = node.Dependencies.ToList(),
         Name = node.Name,
         GroupId = node.GroupId,
         Kind = node.Kind,
@@ -537,6 +590,8 @@ public static class DataModelGraphBuilder
         Warnings = node.Warnings.ToList(),
         Columns = node.Columns.Select(static column => new DataModelColumn
         {
+            Checks = column.Checks.ToList(),
+            SchemaId = column.SchemaId,
             Name = column.Name,
             TypeLabel = column.TypeLabel,
             IsPrimaryKey = column.IsPrimaryKey,
@@ -553,6 +608,8 @@ public static class DataModelGraphBuilder
 
     private static DataModelRelationship CloneRelationship(DataModelRelationship relationship) => new()
     {
+        SchemaId = relationship.SchemaId,
+        ColumnPairs = relationship.ColumnPairs.ToList(),
         Id = relationship.Id,
         LeftTable = relationship.LeftTable,
         LeftColumn = relationship.LeftColumn,
@@ -572,6 +629,10 @@ public static class DataModelGraphBuilder
 
     private static DataModelPendingOperation CloneOperation(DataModelPendingOperation operation) => new()
     {
+        ColumnNames = operation.ColumnNames.ToList(), ReferencedColumnNames = operation.ReferencedColumnNames.ToList(),
+        ColumnCollations = operation.ColumnCollations.ToList(), ExpressionSql = operation.ExpressionSql,
+        CheckExpressionSql = operation.CheckExpressionSql,
+        Collation = operation.Collation, IndexName = operation.IndexName, IsUnique = operation.IsUnique,
         Id = operation.Id,
         Kind = operation.Kind,
         TableName = operation.TableName,
@@ -582,6 +643,8 @@ public static class DataModelGraphBuilder
         NotNull = operation.NotNull,
         Columns = operation.Columns.Select(static column => new DataModelColumn
         {
+            Checks = column.Checks.ToList(),
+            SchemaId = column.SchemaId,
             Name = column.Name,
             TypeLabel = column.TypeLabel,
             IsPrimaryKey = column.IsPrimaryKey,

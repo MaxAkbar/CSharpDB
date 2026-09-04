@@ -20,9 +20,9 @@ public static class DataModelCanvasMetrics
             .Where(relationship =>
                 string.Equals(relationship.LeftTable, node.Name, StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(relationship.RightTable, node.Name, StringComparison.OrdinalIgnoreCase))
-            .Select(relationship => string.Equals(relationship.LeftTable, node.Name, StringComparison.OrdinalIgnoreCase)
-                ? relationship.LeftColumn
-                : relationship.RightColumn)
+            .SelectMany(relationship => relationship.EffectiveColumnPairs.Select(pair => string.Equals(relationship.LeftTable, node.Name, StringComparison.OrdinalIgnoreCase)
+                ? pair.ChildColumn
+                : pair.ParentColumn))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         return node.Columns

@@ -1,8 +1,14 @@
+using CSharpDB.Client.Models;
+using System.Text.Json.Serialization;
+
 namespace CSharpDB.Admin.Models;
 
 public sealed class DataModelState
 {
-    public int Version { get; set; } = 4;
+    // Live, route-local inspection metadata, not diagram membership or persisted layout.
+    [JsonIgnore] public DataModelState? SchemaContext { get; set; }
+    public int Version { get; set; } = 5;
+    public string? SchemaFingerprint { get; set; }
     public string? DiagramName { get; set; }
     public List<DataModelNode> Nodes { get; set; } = [];
     public List<DataModelGroup> Groups { get; set; } = [];
@@ -18,6 +24,11 @@ public sealed class DataModelState
 
 public sealed class DataModelNode
 {
+    public Guid SchemaId { get; set; }
+    public List<KeyConstraintDefinition> Keys { get; set; } = [];
+    public List<CheckConstraintDefinition> Checks { get; set; } = [];
+    public List<DataModelIndexMetadata> Indexes { get; set; } = [];
+    public List<DataModelDependency> Dependencies { get; set; } = [];
     public string Name { get; set; } = "";
     public string? GroupId { get; set; }
     public DataModelNodeKind Kind { get; set; } = DataModelNodeKind.Table;
@@ -62,6 +73,8 @@ public enum DataModelNodeDetailLevel
 
 public sealed class DataModelColumn
 {
+    public List<CheckConstraintDefinition> Checks { get; set; } = [];
+    public Guid SchemaId { get; set; }
     public string Name { get; set; } = "";
     public string TypeLabel { get; set; } = "";
     public bool IsPrimaryKey { get; set; }
@@ -77,6 +90,9 @@ public sealed class DataModelColumn
 
 public sealed class DataModelRelationship
 {
+    public Guid SchemaId { get; set; }
+    public List<DataModelColumnPair> ColumnPairs { get; set; } = [];
+    [JsonIgnore] public IReadOnlyList<DataModelColumnPair> EffectiveColumnPairs => ColumnPairs.Count > 0 ? ColumnPairs : [new(LeftColumn, RightColumn)];
     public string Id { get; set; } = "";
     public string LeftTable { get; set; } = "";
     public string LeftColumn { get; set; } = "";
@@ -137,6 +153,14 @@ public enum DataModelSelectionMode
 
 public sealed class DataModelPendingOperation
 {
+    public List<string> ColumnNames { get; set; } = [];
+    public List<string> ReferencedColumnNames { get; set; } = [];
+    public List<string?> ColumnCollations { get; set; } = [];
+    public string? ExpressionSql { get; set; }
+    public string? CheckExpressionSql { get; set; }
+    public string? Collation { get; set; }
+    public string? IndexName { get; set; }
+    public bool IsUnique { get; set; }
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public DataModelPendingOperationKind Kind { get; set; }
     public string TableName { get; set; } = "";
@@ -208,6 +232,20 @@ public enum DataModelPendingOperationKind
     RenameColumn,
     AddForeignKey,
     DropForeignKey,
+    AlterColumnType,
+    SetDefault,
+    DropDefault,
+    SetNotNull,
+    DropNotNull,
+    SetCollation,
+    DropCollation,
+    AddPrimaryKey,
+    AddUniqueKey,
+    AddCheck,
+    DropConstraint,
+    DropPrimaryKey,
+    CreateIndex,
+    DropIndex,
 }
 
 public sealed class DataModelDiagramSummary
@@ -222,6 +260,8 @@ public sealed class DataModelDiagramSummary
 
 public sealed class DataModelApplyResult
 {
+    public bool DiagramSaved { get; init; } = true;
+    public bool RequiresRefresh { get; init; }
     public bool Succeeded { get; init; }
     public IReadOnlyList<string> Messages { get; init; } = [];
 }
@@ -243,6 +283,10 @@ public sealed record DataModelConnectorLayoutChange(string RelationshipId, DataM
 
 public sealed class DataModelSourceMetadata
 {
+    public Guid SchemaId { get; init; }
+    public IReadOnlyList<KeyConstraintDefinition> Keys { get; init; } = [];
+    public IReadOnlyList<CheckConstraintDefinition> Checks { get; init; } = [];
+    public IReadOnlyList<DataModelDependency> Dependencies { get; init; } = [];
     public required string TableName { get; init; }
     public DataModelNodeKind Kind { get; init; } = DataModelNodeKind.Table;
     public IReadOnlyList<DataModelColumnMetadata> Columns { get; init; } = [];
@@ -258,6 +302,7 @@ public sealed class DataModelSourceMetadata
 
 public sealed class DataModelColumnMetadata
 {
+    public Guid SchemaId { get; init; }
     public required string Name { get; init; }
     public required string TypeLabel { get; init; }
     public bool IsPrimaryKey { get; init; }
@@ -270,6 +315,7 @@ public sealed class DataModelColumnMetadata
 
 public sealed class DataModelForeignKeyMetadata
 {
+    public Guid SchemaId { get; init; }
     public required string ConstraintName { get; init; }
     public required string ColumnName { get; init; }
     public IReadOnlyList<string> ColumnNames { get; init; } = [];
@@ -282,7 +328,19 @@ public sealed class DataModelForeignKeyMetadata
 
 public sealed class DataModelIndexMetadata
 {
+    public bool IsEngineManaged { get; init; }
+    public IReadOnlyList<string?> ColumnCollations { get; init; } = [];
     public required string IndexName { get; init; }
     public IReadOnlyList<string> Columns { get; init; } = [];
     public bool IsUnique { get; init; }
 }
+
+public sealed record DataModelColumnPair(string ChildColumn, string ParentColumn);
+public sealed record DataModelDependency(string Kind, string Name, string Definition);
+public sealed record DataModelChangeStep(string OperationId, string TableName, string Sql, bool IsDestructive);
+public sealed record DataModelChangePlan(string SchemaFingerprint, string OperationFingerprint,
+    IReadOnlyList<DataModelChangeStep> Steps, IReadOnlyList<string> Errors, IReadOnlyList<string> Warnings)
+{
+    public bool CanApply => Errors.Count == 0 && Steps.Count > 0;
+}
+public sealed record DataModelDataCheckResult(string Description, long Violations, string? SkippedReason = null);

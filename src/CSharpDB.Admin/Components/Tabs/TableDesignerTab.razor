@@ -55,41 +55,11 @@
                                 <input class="designer-cell-input mono"
                                        value="@col.Name"
                                        placeholder="column_name"
-                                       @onchange="e => col.Name = e.Value?.ToString() ?? string.Empty"
+                                       @oninput="e => col.Name = e.Value?.ToString() ?? string.Empty"
                                        @onfocus="() => _selectedIndex = idx" />
                             </td>
                             <td>
-                                <select class="designer-cell-select"
-                                        value="@col.DataType"
-                                        @onchange="e => OnDataTypeChanged(idx, e.Value?.ToString() ?? string.Empty)"
-                                        @onfocus="() => _selectedIndex = idx">
-                                    <option value="INTEGER">INTEGER</option>
-                                    <option value="BOOLEAN">BOOLEAN</option>
-                                    <option value="TINYINT">TINYINT</option>
-                                    <option value="SMALLINT">SMALLINT</option>
-                                    <option value="BIGINT">BIGINT</option>
-                                    <option value="REAL">REAL</option>
-                                    <option value="DOUBLE PRECISION">DOUBLE PRECISION</option>
-                                    <option value="DECIMAL">DECIMAL</option>
-                                    <option value="CHAR">CHAR</option>
-                                    <option value="VARCHAR">VARCHAR</option>
-                                    <option value="TEXT">TEXT</option>
-                                    <option value="BINARY">BINARY</option>
-                                    <option value="VARBINARY">VARBINARY</option>
-                                    <option value="BLOB">BLOB</option>
-                                    <option value="UUID">UUID</option>
-                                    <option value="DATE">DATE</option>
-                                    <option value="TIME">TIME</option>
-                                    <option value="DATETIME2">DATETIME2</option>
-                                    <option value="DATETIMEOFFSET">DATETIMEOFFSET</option>
-                                    <option value="ROWVERSION">ROWVERSION</option>
-                                    <option value="INTERVAL YEAR TO MONTH">INTERVAL YEAR TO MONTH</option>
-                                    <option value="INTERVAL DAY TO SECOND">INTERVAL DAY TO SECOND</option>
-                                    <option value="JSON">JSON</option>
-                                    <option value="XML">XML</option>
-                                    <option value="BIT">BIT</option>
-                                    <option value="BIT VARYING">BIT VARYING</option>
-                                </select>
+                                <SchemaTypeInput Value="@col.DataType" ValueChanged="value => OnDataTypeChanged(idx, value)" Label="Column SQL type" />
                             </td>
                             <td class="center-cell">
                                 <input type="checkbox" checked="@col.IsPrimaryKey"
@@ -127,6 +97,9 @@
         {
             <div class="table-designer-properties">
                 <h3>Column Properties</h3>
+                <SchemaColumnFacets ShowType="false" ShowNullability="false"
+                    @bind-DefaultSql="_columns[_selectedIndex].DefaultSql" @bind-Collation="_columns[_selectedIndex].Collation"
+                    @bind-CheckName="_columns[_selectedIndex].CheckName" @bind-CheckExpression="_columns[_selectedIndex].CheckExpression" />
                 <div class="properties-grid">
                     <div class="property-row">
                         <span class="property-label">Name</span>
@@ -170,7 +143,10 @@
     private int _selectedIndex = -1;
     private bool _submitting;
 
-    private string? _previewSql => BuildCreateTableSql();
+    private string? _previewSql
+    {
+        get { try { return BuildCreateTableSql(); } catch (Exception ex) { return "-- Definition incomplete: " + ex.Message; } }
+    }
 
     protected override void OnInitialized()
     {
@@ -232,22 +208,16 @@
         if (validCols.Count == 0)
             return null;
 
-        var lines = new List<string>();
-        foreach (var col in validCols)
+        var columns = validCols.Select(col =>
         {
-            var parts = new List<string> { $"    {col.Name}", col.DataType };
-            if (col.IsPrimaryKey)
-                parts.Add("PRIMARY KEY");
-            if (col.IsIdentity &&
-                col.IsPrimaryKey &&
-                col.DataType is "INTEGER" or "BIGINT")
-                parts.Add("IDENTITY");
-            if (!col.AllowNulls && !col.IsPrimaryKey)
-                parts.Add("NOT NULL");
-            lines.Add(string.Join(" ", parts));
-        }
-
-        return $"CREATE TABLE {_tableName} (\n{string.Join(",\n", lines)}\n);";
+            var column = new DataModelColumn { Name = col.Name, TypeLabel = col.DataType, IsPrimaryKey = col.IsPrimaryKey,
+                IsIdentity = col.IsIdentity, IsRowVersion = col.DataType == "ROWVERSION", Nullable = col.AllowNulls,
+                DefaultSql = col.DefaultSql, Collation = col.Collation };
+            if (!string.IsNullOrWhiteSpace(col.CheckExpression))
+                column.Checks.Add(new() { ConstraintName = col.CheckName, ColumnName = col.Name, ExpressionSql = col.CheckExpression });
+            return column;
+        }).ToList();
+        return SchemaColumnRules.RenderCreateTable(_tableName, columns);
     }
 
     private async Task CreateTableAsync()
@@ -265,13 +235,16 @@
             return;
         }
 
-        var sql = BuildCreateTableSql();
+        string? sql;
+        try { sql = BuildCreateTableSql(); }
+        catch (Exception ex) { Toast.Error(ex.Message); return; }
         if (sql is null) return;
 
         _submitting = true;
         try
         {
-            await DbClient.ExecuteSqlAsync(sql);
+            var result = await DbClient.ExecuteSqlAsync(sql);
+            if (!string.IsNullOrWhiteSpace(result.Error)) throw new InvalidOperationException(result.Error);
             Toast.Success($"Table '{_tableName}' created successfully.");
             Changes.NotifyChanged();
 
@@ -294,6 +267,10 @@
 
     private sealed class DesignerColumn
     {
+        public string DefaultSql { get; set; } = "";
+        public string Collation { get; set; } = "";
+        public string CheckName { get; set; } = "";
+        public string CheckExpression { get; set; } = "";
         public string Name { get; set; } = string.Empty;
         public string DataType { get; set; } = "TEXT";
         public bool IsPrimaryKey { get; set; }
