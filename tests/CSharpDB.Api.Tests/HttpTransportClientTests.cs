@@ -17,8 +17,6 @@ namespace CSharpDB.Api.Tests;
 
 public sealed class HttpTransportClientTests : IAsyncLifetime
 {
-    private static readonly TimeSpan FileCleanupTimeout = TimeSpan.FromSeconds(10);
-    private static readonly TimeSpan FileCleanupRetryDelay = TimeSpan.FromMilliseconds(50);
     private static readonly TimeSpan ReadinessTimeout = TimeSpan.FromSeconds(10);
 
     private string _dbPath = null!;
@@ -2437,44 +2435,8 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
             });
     }
 
-    private static async ValueTask DeleteIfExistsAsync(string path)
-    {
-        if (!File.Exists(path))
-            return;
-
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        Exception? lastException = null;
-        while (true)
-        {
-            try
-            {
-                File.Delete(path);
-                return;
-            }
-            catch (IOException ex)
-            {
-                lastException = ex;
-            }
-            catch (UnauthorizedAccessException ex)
-            {
-                lastException = ex;
-            }
-
-            if (!File.Exists(path))
-                return;
-
-            TimeSpan remaining = FileCleanupTimeout - sw.Elapsed;
-            if (remaining <= TimeSpan.Zero)
-                break;
-
-            TimeSpan delay = remaining < FileCleanupRetryDelay
-                ? remaining
-                : FileCleanupRetryDelay;
-            await Task.Delay(delay, CancellationToken.None);
-        }
-
-        throw new IOException($"Failed to delete temporary database file '{path}' within the cleanup timeout.", lastException);
-    }
+    private static ValueTask DeleteIfExistsAsync(string path) =>
+        ApiTestFileCleanup.DeleteIfExistsAsync(path);
 
     private static async Task WaitForReadinessAsync(
         HttpClient httpClient,
