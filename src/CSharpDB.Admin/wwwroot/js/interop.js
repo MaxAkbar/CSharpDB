@@ -758,6 +758,7 @@ window.schemaCanvasInterop = {
             frame: 0,
             pendingEdgeTable: null,
             routeEdit: null,
+            groupEdit: null,
             selectedHandle: null,
             previewLayouts: new Map(),
             routes: new Map(),
@@ -1073,8 +1074,23 @@ window.schemaCanvasInterop = {
             return { points, labelX, labelY, pathFound: interior !== null, usedAutomaticFallback: false };
         };
 
+        const updateGroupFrames = () => {
+            const nodes = Array.from(canvas.querySelectorAll('.schema-node'));
+            canvas.querySelectorAll('.schema-table-group').forEach(frame => {
+                const members = nodes.filter(node => node.dataset.groupId === frame.dataset.groupId);
+                if (!members.length) return;
+                const left = Math.min(...members.map(node => parseFloat(node.style.left) || 0)) - 16;
+                const top = Math.min(...members.map(node => parseFloat(node.style.top) || 0)) - 44;
+                const right = Math.max(...members.map(node => (parseFloat(node.style.left) || 0) + node.offsetWidth)) + 16;
+                const bottom = Math.max(...members.map(node => (parseFloat(node.style.top) || 0) + node.offsetHeight)) + 16;
+                frame.style.left = `${left}px`; frame.style.top = `${top}px`;
+                frame.style.width = `${right - left}px`; frame.style.height = `${bottom - top}px`;
+            });
+        };
+
         const updateEdges = (tableName = null) => {
             if (registration.disposed) return;
+            updateGroupFrames();
             if (registration.frame) cancelAnimationFrame(registration.frame);
             registration.frame = 0;
             registration.pendingEdgeTable = null;
@@ -1086,6 +1102,10 @@ window.schemaCanvasInterop = {
                 return { left, top, right: left + node.offsetWidth, bottom: top + node.offsetHeight };
             });
             const visibleEdges = canvas.querySelectorAll('path[data-model-edge="visible"]');
+            canvas.querySelectorAll('.schema-table-group').forEach(frame => {
+                const left = parseFloat(frame.style.left) || 0, top = parseFloat(frame.style.top) || 0;
+                nodeObstacles.push({ left, top, right: left + frame.offsetWidth, bottom: top + 28 });
+            });
             visibleEdges.forEach(edge => {
                 const group = edge.closest('.schema-relationship');
                 if (!group) return;
@@ -1141,7 +1161,7 @@ window.schemaCanvasInterop = {
                 bounds.minX = Math.min(bounds.minX, x); bounds.minY = Math.min(bounds.minY, y);
                 bounds.maxX = Math.max(bounds.maxX, x); bounds.maxY = Math.max(bounds.maxY, y);
             };
-            canvas.querySelectorAll('.schema-node').forEach(node => {
+            canvas.querySelectorAll('.schema-node, .schema-table-group').forEach(node => {
                 const left = parseFloat(node.style.left) || 0;
                 const top = parseFloat(node.style.top) || 0;
                 include(left, top); include(left + node.offsetWidth, top + node.offsetHeight);
@@ -1321,7 +1341,7 @@ window.schemaCanvasInterop = {
             return true;
         };
         const beginRouteEdit = (group, handle, input, event) => {
-            if (registration.committingRoute || registration.routeEdit) return false;
+            if (registration.committingRoute || registration.routeEdit || registration.groupEdit) return false;
             const relationshipId = group.dataset.relationshipId;
             const route = registration.routes.get(relationshipId);
             if (!route) return false;
@@ -1374,7 +1394,7 @@ window.schemaCanvasInterop = {
             completePendingSync();
         };
         const addBend = (relationshipId, location = null) => {
-            if (registration.routeEdit || registration.committingRoute) return;
+            if (registration.routeEdit || registration.groupEdit || registration.committingRoute) return;
             const group = edgeGroup(relationshipId), route = registration.routes.get(relationshipId);
             if (!group || !route) return;
             const layout = editableLayout(group, route);
@@ -1402,7 +1422,7 @@ window.schemaCanvasInterop = {
             return commitLayout(relationshipId, layout);
         };
         const removeBend = relationshipId => {
-            if (registration.routeEdit || registration.committingRoute) return;
+            if (registration.routeEdit || registration.groupEdit || registration.committingRoute) return;
             const group = edgeGroup(relationshipId);
             const layout = group && readLayout(group);
             if (!layout?.Waypoints.length) return;
@@ -1439,7 +1459,7 @@ window.schemaCanvasInterop = {
         };
 
         const setScale = (newScale, clientX, clientY) => {
-            if (registration.routeEdit || registration.committingRoute) return;
+            if (registration.routeEdit || registration.groupEdit || registration.committingRoute) return;
             const stage = canvas.querySelector('.schema-canvas-stage');
             const viewport = canvas.querySelector('.schema-canvas-viewport');
             if (!stage || !viewport) return;
@@ -1462,10 +1482,89 @@ window.schemaCanvasInterop = {
             notifyViewport();
         };
 
+        const beginGroupEdit = (title, input, event) => {
+            if (registration.groupEdit || registration.routeEdit || registration.committingRoute || registration.pointerId != null) return false;
+            const id = title.dataset.groupTitle;
+            const members = Array.from(canvas.querySelectorAll('.schema-node')).filter(node => node.dataset.groupId === id);
+            if (!members.length) return false;
+            const names = new Set(members.map(node => node.dataset.table.toLowerCase()));
+            const layouts = new Map();
+            canvas.querySelectorAll('.schema-relationship').forEach(edge => {
+                const hit = edge.querySelector('[data-model-edge="hit"]');
+                if (!hit || !names.has(hit.dataset.parentTable.toLowerCase()) || !names.has(hit.dataset.childTable.toLowerCase())) return;
+                const layout = readLayout(edge);
+                if (layout) layouts.set(edge.dataset.relationshipId, layout);
+            });
+            registration.groupEdit = { id, title, input, pointerId: event.pointerId, dx: 0, dy: 0,
+                origin: input === 'pointer' ? modelPoint(event) : null, layouts,
+                members: members.map(node => ({ node, x: parseFloat(node.style.left) || 0, y: parseFloat(node.style.top) || 0 })) };
+            return true;
+        };
+        const moveGroupEdit = (dx, dy) => {
+            const edit = registration.groupEdit;
+            if (!edit) return;
+            const guides = Array.from(edit.layouts.values()).flatMap(layout => layout.Waypoints);
+            edit.dx = Math.max(dx, ...edit.members.map(item => -item.x), ...guides.map(point => 4 - point.X));
+            edit.dy = Math.max(dy, ...edit.members.map(item => -item.y), ...guides.map(point => 4 - point.Y));
+            edit.members.forEach(item => {
+                item.node.style.left = `${item.x + edit.dx}px`; item.node.style.top = `${item.y + edit.dy}px`;
+            });
+            edit.layouts.forEach((original, id) => {
+                const layout = cloneLayout(original);
+                layout.Waypoints.forEach(point => { point.X += edit.dx; point.Y += edit.dy; });
+                registration.previewLayouts.set(id, layout);
+            });
+            scheduleEdgeUpdate(null);
+        };
+        const restoreGroupEdit = edit => {
+            edit.members.forEach(item => { item.node.style.left = `${item.x}px`; item.node.style.top = `${item.y}px`; });
+        };
+        const releaseGroupPointer = edit => {
+            try { canvas.releasePointerCapture?.(edit.pointerId); } catch { }
+            registration.pointerId = null; registration.captureElement = null;
+        };
+        const cancelGroupEdit = () => {
+            const edit = registration.groupEdit;
+            if (!edit) return false;
+            restoreGroupEdit(edit);
+            edit.layouts.forEach((_, id) => registration.previewLayouts.delete(id));
+            registration.groupEdit = null;
+            releaseGroupPointer(edit);
+            completePendingSync();
+            announce('Group move canceled. Previous positions restored.');
+            return true;
+        };
+        const finishGroupEdit = async () => {
+            const edit = registration.groupEdit;
+            if (!edit) return;
+            registration.groupEdit = null;
+            releaseGroupPointer(edit);
+            if (edit.dx === 0 && edit.dy === 0) { completePendingSync(); return; }
+            registration.committingRoute = true;
+            let accepted = false;
+            try {
+                accepted = await registration.dotNetRef?.invokeMethodAsync('OnTableGroupMoved', edit.id, edit.dx, edit.dy) === true;
+            } catch { /* Restore all preview coordinates together on a rejected callback. */ }
+            finally {
+                if (!accepted) restoreGroupEdit(edit);
+                edit.layouts.forEach((_, id) => registration.previewLayouts.delete(id));
+                registration.committingRoute = false;
+                completePendingSync();
+            }
+            if (!registration.disposed) announce(accepted ? 'Group positions updated.' : 'Group move could not be applied. Previous positions restored.');
+        };
+
         registration.onPointerDown = (event) => {
             if (event.button !== 0) return;
-            if (registration.pointerId != null || registration.routeEdit || registration.committingRoute) return;
+            if (registration.pointerId != null || registration.routeEdit || registration.groupEdit || registration.committingRoute) return;
             if (!(event.target instanceof Element)) return;
+            const title = event.target.closest('[data-group-title]');
+            if (title && beginGroupEdit(title, 'pointer', event)) {
+                registration.pointerId = event.pointerId;
+                registration.startX = event.clientX; registration.startY = event.clientY;
+                registration.pointerMoved = false;
+                return;
+            }
             const handle = event.target.closest('[data-route-handle]');
             if (handle) {
                 event.preventDefault();
@@ -1516,6 +1615,15 @@ window.schemaCanvasInterop = {
             if (registration.pointerId !== event.pointerId) return;
             if (Math.abs(event.clientX - registration.startX) > 4 || Math.abs(event.clientY - registration.startY) > 4)
                 registration.pointerMoved = true;
+            if (registration.groupEdit?.input === 'pointer') {
+                if (!registration.pointerMoved) return;
+                event.preventDefault(); event.stopPropagation();
+                registration.captureElement = canvas;
+                canvas.setPointerCapture?.(event.pointerId);
+                const point = modelPoint(event);
+                moveGroupEdit(point.x - registration.groupEdit.origin.x, point.y - registration.groupEdit.origin.y);
+                return;
+            }
             if (registration.routeEdit?.input === 'pointer') {
                 if (!registration.pointerMoved) return;
                 event.preventDefault();
@@ -1545,6 +1653,15 @@ window.schemaCanvasInterop = {
 
         registration.onPointerUp = (event) => {
             if (registration.pointerId !== event.pointerId) return;
+            if (registration.groupEdit?.input === 'pointer') {
+                if (registration.pointerMoved) {
+                    event.preventDefault(); event.stopPropagation();
+                    registration.suppressClick = true;
+                    setTimeout(() => { registration.suppressClick = false; }, 0);
+                }
+                finishGroupEdit();
+                return;
+            }
             if (registration.routeEdit?.input === 'pointer') {
                 event.preventDefault();
                 event.stopPropagation();
@@ -1587,6 +1704,7 @@ window.schemaCanvasInterop = {
 
         registration.onPointerCancel = event => {
             if (registration.pointerId !== event.pointerId) return;
+            if (cancelGroupEdit()) return;
             if (cancelRouteEdit()) return;
             if (registration.draggingNode) {
                 registration.draggingNode.style.left = `${registration.originalLeft}px`;
@@ -1625,7 +1743,7 @@ window.schemaCanvasInterop = {
             if (event.key === 'Escape') {
                 event.preventDefault();
                 event.stopPropagation();
-                if (cancelRouteEdit()) return;
+                if (cancelGroupEdit() || cancelRouteEdit()) return;
                 if (registration.pointerId != null) {
                     registration.onPointerCancel({ pointerId: registration.pointerId });
                     return;
@@ -1635,6 +1753,18 @@ window.schemaCanvasInterop = {
                 canvas.focus({ preventScroll: true });
                 return;
             }
+            const title = event.target.closest?.('[data-group-title]');
+            const groupDelta = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
+            if (title && groupDelta) {
+                event.preventDefault(); event.stopPropagation();
+                if (!registration.groupEdit && !beginGroupEdit(title, 'keyboard', event)) return;
+                const edit = registration.groupEdit;
+                if (edit?.input !== 'keyboard') return;
+                const step = event.shiftKey ? 24 : 8;
+                moveGroupEdit(edit.dx + groupDelta[0] * step, edit.dy + groupDelta[1] * step);
+                return;
+            }
+            if (registration.groupEdit) return;
             const handle = event.target.closest?.('[data-route-handle]');
             if (!handle) return;
             if (event.key === 'Enter' && handle.dataset.routeHandle === 'segment') {
@@ -1663,6 +1793,9 @@ window.schemaCanvasInterop = {
             moveRouteEdit(edit.keyboardX, edit.keyboardY);
         };
         registration.onKeyUp = event => {
+            if (registration.groupEdit?.input === 'keyboard' && event.key.startsWith('Arrow')) {
+                event.preventDefault(); event.stopPropagation(); finishGroupEdit(); return;
+            }
             if (registration.routeEdit?.input !== 'keyboard' || !event.key.startsWith('Arrow')) return;
             event.preventDefault(); event.stopPropagation();
             finishRouteEdit();
@@ -1712,7 +1845,7 @@ window.schemaCanvasInterop = {
         const registration = window.schemaCanvasInterop._registrations.get(canvasId);
         if (!registration) return;
         const { canvas } = registration;
-        if (registration.routeEdit || registration.committingRoute) return;
+        if (registration.routeEdit || registration.groupEdit || registration.committingRoute) return;
         registration.updateEdges();
         const bounds = registration.modelBounds;
         if (!bounds || !Number.isFinite(bounds.minX)) return;
@@ -1750,7 +1883,7 @@ window.schemaCanvasInterop = {
     sync: (canvasId, viewportX, viewportY, scale) => {
         const registration = window.schemaCanvasInterop._registrations.get(canvasId);
         if (!registration) return;
-        if (registration.routeEdit || registration.committingRoute) {
+        if (registration.routeEdit || registration.groupEdit || registration.committingRoute) {
             registration.pendingSync = [viewportX, viewportY, scale];
             return;
         }

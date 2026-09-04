@@ -43,7 +43,7 @@ public sealed class DataModelDiagramServiceTests : IAsyncLifetime
         DataModelState loaded = Assert.IsType<DataModelState>(
             await _service.LoadDiagramAsync("Custom connectors", TestContext.Current.CancellationToken));
 
-        Assert.Equal(3, loaded.Version);
+        Assert.Equal(4, loaded.Version);
         AssertCustomLayout(Assert.Single(loaded.Relationships).ConnectorLayout);
         Assert.Equal((147d, 235d, 1.25d), (loaded.ViewportX, loaded.ViewportY, loaded.Scale));
         Assert.Equal(schemaPreview, _service.BuildPreviewSql(loaded));
@@ -125,6 +125,70 @@ public sealed class DataModelDiagramServiceTests : IAsyncLifetime
         Assert.Equal("buyer_id", restored.LeftColumn);
         AssertCustomLayout(restored.ConnectorLayout);
         Assert.Empty(loaded.Warnings);
+    }
+
+    [Fact]
+    public async Task GroupsSaveLoadAndAppliedRenameKeepMembershipAndDiagramOnlyMetadata()
+    {
+        var state = await _service.BuildModelAsync("customers", ct: TestContext.Current.CancellationToken);
+        string ddl = _service.BuildPreviewSql(state);
+        var group = DataModelGroups.Create(state, ["customers", "orders"])!;
+        group.Name = "Customer Orders"; group.Color = DataModelGroupColor.Green;
+        state.DiagramName = "Grouped";
+        Assert.Single(state.Relationships).ConnectorLayout = CustomLayout();
+        DataModelGroups.Move(state, group.Id, 75, 50);
+        var positions = state.Nodes.ToDictionary(node => node.Name, node => (node.X, node.Y));
+        await _service.SaveDiagramAsync("Grouped", state, TestContext.Current.CancellationToken);
+        var loaded = (await _service.LoadDiagramAsync("Grouped", TestContext.Current.CancellationToken))!;
+        Assert.Equal(group.Name, Assert.Single(loaded.Groups).Name);
+        Assert.Equal(group.Color, loaded.Groups[0].Color);
+        Assert.All(loaded.Nodes, node => { Assert.Equal(group.Id, node.GroupId); Assert.Equal(positions[node.Name], (node.X, node.Y)); });
+        Assert.Equal(ddl, _service.BuildPreviewSql(loaded));
+        Assert.Empty(loaded.PendingOperations);
+        loaded.PendingOperations.Add(new() { Kind = DataModelPendingOperationKind.RenameTable, TableName = "orders", NewTableName = "purchases" });
+        await _service.ApplyPendingOperationsAsync(loaded, TestContext.Current.CancellationToken);
+        var renamed = (await _service.LoadDiagramAsync("Grouped", TestContext.Current.CancellationToken))!;
+        Assert.Equal(group.Id, renamed.Nodes.Single(node => node.Name == "purchases").GroupId);
+        Assert.Equal(positions["orders"], (renamed.Nodes.Single(node => node.Name == "purchases").X, renamed.Nodes.Single(node => node.Name == "purchases").Y));
+        Assert.Empty(renamed.PendingOperations);
+    }
+
+    [Fact]
+    public async Task MissingSourcesPruneGroupMembershipButKeepRemainingSingletonAndWarnings()
+    {
+        var state = await _service.BuildModelAsync("customers", ct: TestContext.Current.CancellationToken);
+        var group = DataModelGroups.Create(state, ["customers", "orders"])!;
+        await _service.SaveDiagramAsync("Missing group member", state, TestContext.Current.CancellationToken);
+        Assert.Null((await _client.ExecuteSqlAsync("DROP TABLE orders", TestContext.Current.CancellationToken)).Error);
+        var loaded = (await _service.LoadDiagramAsync("Missing group member", TestContext.Current.CancellationToken))!;
+        Assert.Single(loaded.Groups);
+        Assert.Equal(group.Id, Assert.Single(loaded.Nodes).GroupId);
+        Assert.Contains(loaded.Warnings, warning => warning.Contains("orders"));
+    }
+
+    [Fact]
+    public async Task GroupedDiagramsWithSameNameStayIsolatedBetweenRouteClients()
+    {
+        string otherPath = Path.Combine(Path.GetTempPath(), $"csharpdb_group_route_{Guid.NewGuid():N}.db");
+        try
+        {
+            await using var otherClient = CSharpDbClient.Create(new CSharpDbClientOptions { DataSource = otherPath });
+            Assert.Null((await otherClient.ExecuteSqlAsync("CREATE TABLE customers (id INTEGER PRIMARY KEY); CREATE TABLE orders (id INTEGER PRIMARY KEY);", TestContext.Current.CancellationToken)).Error);
+            var otherService = new DataModelService(otherClient);
+            var first = await _service.BuildSelectionAsync(["customers", "orders"], ct: TestContext.Current.CancellationToken);
+            var second = await otherService.BuildSelectionAsync(["customers", "orders"], ct: TestContext.Current.CancellationToken);
+            DataModelGroups.Create(first, ["customers", "orders"])!.Name = "Route A";
+            DataModelGroups.Create(second, ["customers", "orders"])!.Name = "Route B";
+            await _service.SaveDiagramAsync("Same diagram name", first, TestContext.Current.CancellationToken);
+            await otherService.SaveDiagramAsync("Same diagram name", second, TestContext.Current.CancellationToken);
+            Assert.Equal("Route A", Assert.Single((await _service.LoadDiagramAsync("Same diagram name", TestContext.Current.CancellationToken))!.Groups).Name);
+            Assert.Equal("Route B", Assert.Single((await otherService.LoadDiagramAsync("Same diagram name", TestContext.Current.CancellationToken))!.Groups).Name);
+        }
+        finally
+        {
+            if (File.Exists(otherPath)) File.Delete(otherPath);
+            if (File.Exists(otherPath + ".wal")) File.Delete(otherPath + ".wal");
+        }
     }
 
     private static DataModelConnectorLayout CustomLayout() => new()

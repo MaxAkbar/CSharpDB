@@ -357,6 +357,7 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
 
             case DataModelPendingOperationKind.DropTable:
                 state.Nodes.RemoveAll(node => string.Equals(node.Name, operation.TableName, StringComparison.OrdinalIgnoreCase));
+                DataModelGroups.Normalize(state);
                 state.Relationships.RemoveAll(relationship =>
                     string.Equals(relationship.LeftTable, operation.TableName, StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(relationship.RightTable, operation.TableName, StringComparison.OrdinalIgnoreCase));

@@ -99,6 +99,14 @@ function harness(layout = null, options = {}) {
         value.append(header); stage.append(value); return value;
     };
     const parent = node('parent', 100, 100), child = node('child', 500, 260);
+    let tableGroup, groupTitle;
+    if (options.grouped) {
+        parent.dataset.groupId = 'g1';
+        if (options.grouped !== 'parent-only') child.dataset.groupId = 'g1';
+        tableGroup = new Element('div', 'schema-table-group'); tableGroup.dataset.groupId = 'g1';
+        groupTitle = new Element('button', 'schema-group-title'); groupTitle.dataset.groupTitle = 'g1';
+        tableGroup.append(groupTitle); stage.append(tableGroup);
+    }
     document = { activeElement: canvas, getElementById: id => id === 'canvas' ? canvas : null, createElementNS: (_, tag) => new Element(tag) };
     const frames = new Map(); let nextFrame = 1;
     const calls = [];
@@ -109,6 +117,16 @@ function harness(layout = null, options = {}) {
     const interop = context.window.schemaCanvasInterop;
     const dotNetRef = { invokeMethodAsync: async (method, ...args) => {
         calls.push({ method, args: copy(args) });
+        if (method === 'OnTableGroupMoved') {
+            if (options.groupCommit === false) return false;
+            const saved = JSON.parse(group.dataset.connectorLayout);
+            if (saved && parent.dataset.groupId === args[0] && child.dataset.groupId === args[0]) {
+                saved.Waypoints.forEach(point => { point.X += args[1]; point.Y += args[2]; });
+                group.dataset.connectorLayout = JSON.stringify(saved);
+            }
+            interop.sync('canvas', canvas.scrollLeft, canvas.scrollTop, Number(canvas.dataset.canvasScale));
+            return true;
+        }
         if (method === 'OnConnectorLayoutChanged') {
             if (options.commit) return options.commit(args[1], { group, interop, canvas });
             group.dataset.connectorLayout = JSON.stringify(args[1]);
@@ -132,10 +150,90 @@ function harness(layout = null, options = {}) {
             clientY: 20 + (y + inset) * scale - canvas.scrollTop };
     };
     return { interop, registration, canvas, group, handles, hit, visible, parent, child, stage, viewport, svg,
-        calls, commits, event, flush, frames, waypoint, segment, settle, screenPoint, document };
+        calls, commits, event, flush, frames, waypoint, segment, settle, screenPoint, document, tableGroup, groupTitle };
 }
 
 const manual = (points = [{ Id: 'bend-1', X: 300, Y: 50 }]) => ({ ParentSide: 1, ChildSide: 0, Waypoints: points });
+
+test('group drag translates members and internal guides at fractional zoom, persists once and defers sync', async () => {
+    const h = harness(manual(), { grouped: true, inset: 64, scale: 1.25 });
+    const start = h.screenPoint(100, 65);
+    h.registration.onPointerDown(h.event(h.groupTitle, start));
+    h.registration.onPointerMove(h.event(h.groupTitle, { clientX: start.clientX + 50, clientY: start.clientY + 25 }));
+    h.registration.onPointerMove(h.event(h.groupTitle, { clientX: start.clientX + 100, clientY: start.clientY + 50 }));
+    assert.equal(h.frames.size, 1);
+    assert.equal(h.calls.filter(call => call.method === 'OnTableGroupMoved').length, 0);
+    assert.equal(h.parent.style.left, '180px'); assert.equal(h.child.style.left, '580px');
+    assert.equal(h.registration.previewLayouts.get('r1').Waypoints[0].X, 380);
+    assert.equal(JSON.parse(h.group.dataset.connectorLayout).Waypoints[0].X, 300);
+    h.interop.sync('canvas', 0, 0, 0.5);
+    assert.equal(h.canvas.dataset.canvasScale, '1.25');
+    h.flush();
+    assert.equal(h.tableGroup.style.left, '164px');
+    h.registration.onPointerUp(h.event(h.groupTitle)); await h.settle();
+    assert.deepEqual(h.calls.filter(call => call.method === 'OnTableGroupMoved')[0].args, ['g1', 80, 40]);
+    assert.equal(h.calls.filter(call => call.method === 'OnTableGroupMoved').length, 1);
+    assert.equal(JSON.parse(h.group.dataset.connectorLayout).Waypoints[0].X, 380);
+    assert.equal(h.canvas.captured.size, 0);
+});
+
+test('group drag keeps crossing connector bends fixed and does not infer membership', async () => {
+    const h = harness(manual(), { grouped: 'parent-only' });
+    h.registration.onPointerDown(h.event(h.groupTitle));
+    h.registration.onPointerMove(h.event(h.groupTitle, { clientX: 40, clientY: 40 })); h.flush();
+    assert.equal(h.registration.previewLayouts.size, 0);
+    h.registration.onPointerUp(h.event(h.groupTitle)); await h.settle();
+    assert.equal(h.parent.style.left, '140px'); assert.equal(h.child.style.left, '500px');
+    assert.equal(JSON.parse(h.group.dataset.connectorLayout).Waypoints[0].X, 300);
+    assert.equal(h.child.dataset.groupId, undefined);
+});
+
+test('group Escape, pointercancel and rejected callbacks restore all coordinates and guides', async () => {
+    for (const action of ['escape', 'cancel', 'reject']) {
+        const h = harness(manual(), { grouped: true, groupCommit: action !== 'reject' });
+        h.registration.onPointerDown(h.event(h.groupTitle));
+        h.registration.onPointerMove(h.event(h.groupTitle, { clientX: 40, clientY: 40 })); h.flush();
+        if (action === 'escape') h.registration.onKeyDown(h.event(h.groupTitle, { key: 'Escape' }));
+        else if (action === 'cancel') h.registration.onPointerCancel(h.event(h.groupTitle));
+        else { h.registration.onPointerUp(h.event(h.groupTitle)); await h.settle(); }
+        assert.equal(h.parent.style.left, '100px'); assert.equal(h.child.style.left, '500px');
+        assert.equal(JSON.parse(h.group.dataset.connectorLayout).Waypoints[0].X, 300);
+        assert.equal(h.registration.previewLayouts.size, 0);
+        assert.equal(h.registration.groupEdit, null);
+        assert.equal(h.canvas.captured.size, 0);
+        assert.equal(h.calls.filter(call => call.method === 'OnTableGroupMoved').length, action === 'reject' ? 1 : 0);
+    }
+});
+
+test('group keyboard moves use 8 or Shift-24 and clamp the whole group at zero', async () => {
+    const h = harness(null, { grouped: true, inset: 64 });
+    h.registration.onKeyDown(h.event(h.groupTitle, { key: 'ArrowRight' }));
+    h.registration.onKeyDown(h.event(h.groupTitle, { key: 'ArrowRight', shiftKey: true }));
+    assert.equal(h.parent.style.left, '132px'); assert.equal(h.child.style.left, '532px');
+    assert.equal(h.calls.filter(call => call.method === 'OnTableGroupMoved').length, 0);
+    h.registration.onKeyUp(h.event(h.groupTitle, { key: 'ArrowRight' })); await h.settle();
+    assert.deepEqual(h.calls.filter(call => call.method === 'OnTableGroupMoved')[0].args, ['g1', 32, 0]);
+    h.registration.onPointerDown(h.event(h.groupTitle));
+    h.registration.onPointerMove(h.event(h.groupTitle, { clientX: -1000, clientY: -1000 })); h.flush();
+    assert.equal(h.parent.style.left, '0px'); assert.equal(h.child.style.left, '400px');
+    assert.equal(h.tableGroup.style.top, '-44px');
+    assert.ok((parseFloat(h.tableGroup.style.top) + 64) >= 0);
+});
+
+test('group frames follow individual nodes, contribute to Fit, and only headers are routing obstacles', () => {
+    const h = harness(null, { grouped: true, inset: 64 });
+    const route = h.registration.routes.get('r1');
+    assert.equal(route.obstacles.length, 3);
+    const header = route.obstacles[2];
+    assert.equal(header.bottom - header.top, 28);
+    assert.equal(parseFloat(h.tableGroup.style.height), 300);
+    h.child.style.left = '700px'; h.registration.updateEdges();
+    assert.equal(parseFloat(h.tableGroup.style.width), 732);
+    assert.ok(h.registration.modelBounds.maxX >= 816);
+    const original = h.child.style.left;
+    h.interop.fit('canvas');
+    assert.equal(h.child.style.left, original);
+});
 
 test('custom routing visits ordered guides, preserves reversals, and falls back for invalid saved guides', () => {
     const { registration } = harness();

@@ -120,7 +120,7 @@ public sealed class DataModelConnectorEditingTests
             Assert.Contains("data-child-column=\"ParentId\"", markup);
             Assert.Contains("relationship-endpoint", markup);
             Assert.Contains("aria-live=\"polite\"", markup);
-            Assert.Equal(3, state.Version);
+            Assert.Equal(4, state.Version);
             return Task.CompletedTask;
         });
     }
@@ -232,14 +232,14 @@ public sealed class DataModelConnectorEditingTests
         await WithRenderedCanvasAsync(state, (renderer, canvas, html) =>
         {
             string markup = html();
-            Assert.Contains("data-canvas-inset=\"32\"", markup);
+            Assert.Contains("data-canvas-inset=\"64\"", markup);
             string scaleText = scale.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
-            Assert.Contains($"transform:scale({scaleText}) translate(32px,32px)", markup);
-            Assert.Equal((GetProperty<double>(canvas, "SvgWidth") + 64) * scale, GetProperty<double>(canvas, "ScaledSvgWidth"));
-            Assert.Equal((GetProperty<double>(canvas, "SvgHeight") + 64) * scale, GetProperty<double>(canvas, "ScaledSvgHeight"));
+            Assert.Contains($"transform:scale({scaleText}) translate(64px,64px)", markup);
+            Assert.Equal((GetProperty<double>(canvas, "SvgWidth") + 128) * scale, GetProperty<double>(canvas, "ScaledSvgWidth"));
+            Assert.Equal((GetProperty<double>(canvas, "SvgHeight") + 128) * scale, GetProperty<double>(canvas, "ScaledSvgHeight"));
             IReadOnlyList<DataModelConnectorPoint> points = GeometryPoints(canvas, state.Relationships[0]);
             Assert.Contains(points, point => point.X < 0);
-            Assert.All(points, point => Assert.True((point.X + 32) * scale >= 0));
+            Assert.All(points, point => Assert.True((point.X + 64) * scale >= 0));
             Assert.Equal(0, state.Nodes[0].X);
             Assert.Equal(430, state.Relationships[0].ConnectorLayout!.Waypoints[0].X);
             return Task.CompletedTask;
@@ -350,7 +350,7 @@ public sealed class DataModelConnectorEditingTests
         Assert.NotNull(Assert.Single(diagrams.Saved).Relationships[0].ConnectorLayout);
         string json = GetProperty<TabDescriptor>(tab, nameof(DataModelTab.Tab)).DataModelStateJson!;
         DataModelState restored = Assert.IsType<DataModelState>(DataModelGraphBuilder.DeserializeState(json));
-        Assert.Equal(3, restored.Version);
+        Assert.Equal(4, restored.Version);
         Assert.Equal(430, restored.Relationships[0].ConnectorLayout!.Waypoints[0].X);
 
         await InvokeAsync(tab, "ResetConnectorRouteAsync");
@@ -444,7 +444,7 @@ public sealed class DataModelConnectorEditingTests
         TabDescriptor descriptor = GetProperty<TabDescriptor>(tab, nameof(DataModelTab.Tab));
         DataModelState locallySaved = Assert.IsType<DataModelState>(DataModelGraphBuilder.DeserializeState(descriptor.DataModelStateJson!));
         Assert.Equal(430, locallySaved.Relationships[0].ConnectorLayout!.Waypoints[0].X);
-        Assert.Equal(3, locallySaved.Version);
+        Assert.Equal(4, locallySaved.Version);
         Assert.Empty(state.PendingOperations);
 
         // Selecting another table must not erase the durable save-failure message.
@@ -459,6 +459,81 @@ public sealed class DataModelConnectorEditingTests
         Assert.Equal(430, Assert.Single(diagrams.Saved).Relationships[0].ConnectorLayout!.Waypoints[0].X);
         Assert.Equal(430, state.Relationships[0].ConnectorLayout!.Waypoints[0].X);
         Assert.NotNull(descriptor.DataModelStateJson);
+    }
+
+    [Fact]
+    public async Task Workspace_GroupCommandsPreservePositionsAndSaveEachExplicitMutation()
+    {
+        var state = Model();
+        state.DiagramName = "Groups";
+        var diagrams = new DiagramServiceFake();
+        var tab = CreateTab(state, diagrams);
+        Invoke(tab, "SelectNode", "Parent");
+        Invoke(tab, "SelectTables", new DataModelNodeSelection("Child", true));
+        Assert.Equal(2, GetProperty<HashSet<string>>(tab, "SelectedTableNames").Count);
+        Assert.Null(GetField<string?>(tab, "_selectedNodeName"));
+        await InvokeAsync(tab, "CreateGroupAsync");
+        var group = Assert.Single(state.Groups);
+        Assert.All(state.Nodes, node => Assert.Equal(group.Id, node.GroupId));
+        Assert.Equal(1, diagrams.SaveAttempts);
+        Assert.Equal(50, state.Nodes[0].X);
+        SetField(tab, "_groupName", "Order Domain");
+        await InvokeAsync(tab, "RenameGroupAsync");
+        await InvokeAsync(tab, "ChangeGroupColorAsync", new ChangeEventArgs { Value = "Amber" });
+        Assert.Equal("Order Domain", group.Name);
+        Assert.Equal(DataModelGroupColor.Amber, group.Color);
+        await InvokeAsync(tab, "RemoveGroupMemberAsync", "Child");
+        Assert.Single(state.Groups);
+        Assert.Null(state.Nodes[1].GroupId);
+        await InvokeAsync(tab, "UngroupAsync");
+        Assert.Empty(state.Groups);
+        Assert.All(state.Nodes, node => Assert.Null(node.GroupId));
+        Assert.Empty(state.PendingOperations);
+        Assert.Equal(5, diagrams.SaveAttempts);
+    }
+
+    [Fact]
+    public async Task Canvas_GroupMarkupAndMoveCallbackApplyOneAtomicMutation()
+    {
+        var state = Model();
+        var group = DataModelGroups.Create(state, ["Parent", "Child"])!;
+        state.Relationships[0].ConnectorLayout = Layout();
+        int calls = 0;
+        await WithRenderedCanvasAsync(state, async (renderer, canvas, html) =>
+        {
+            Assert.Contains("schema-table-group group-blue", html());
+            Assert.Contains("aria-pressed=\"true\"", html());
+            Assert.Contains($"data-group-title=\"{group.Id}\"", html());
+            SetProperty(canvas, nameof(SchemaCanvas.OnGroupMoved), EventCallback.Factory.Create<DataModelGroupMove>(new object(), _ => calls++));
+            Assert.False(await canvas.OnTableGroupMoved("missing", 20, 30));
+            Assert.True(await canvas.OnTableGroupMoved(group.Id, 20, 30));
+            Assert.Equal(1, calls);
+            Assert.Equal(70, state.Nodes[0].X);
+            Assert.Equal(620, state.Nodes[1].X);
+            Assert.Equal(450, state.Relationships[0].ConnectorLayout!.Waypoints[0].X);
+            Assert.Empty(state.PendingOperations);
+        });
+    }
+
+    [Fact]
+    public async Task Workspace_RefreshArrangeAndTidyPreserveGroupMembershipAndRelativePositions()
+    {
+        var state = Model();
+        var group = DataModelGroups.Create(state, ["Parent", "Child"])!;
+        var diagrams = new DiagramServiceFake();
+        var tab = CreateTab(state, diagrams);
+        SetProperty(tab, "DataModels", new ModelServiceFake(Model()));
+        await InvokeAsync(tab, "RefreshAsync");
+        var refreshed = GetField<DataModelState>(tab, "_state");
+        Assert.Equal(group.Id, Assert.Single(refreshed.Groups).Id);
+        await InvokeAsync(tab, "AutoArrangeAsync");
+        Assert.Equal((550d, 80d), (refreshed.Nodes[1].X - refreshed.Nodes[0].X, refreshed.Nodes[1].Y - refreshed.Nodes[0].Y));
+        await InvokeAsync(tab, "ApplyTidyModelAsync");
+        Assert.Single(refreshed.Groups);
+        Assert.Equal((550d, 80d), (refreshed.Nodes[1].X - refreshed.Nodes[0].X, refreshed.Nodes[1].Y - refreshed.Nodes[0].Y));
+        Invoke(tab, "ClearSelection");
+        Assert.Empty(GetProperty<HashSet<string>>(tab, "SelectedTableNames"));
+        Assert.Null(GetField<string?>(tab, "_selectedGroupId"));
     }
 
     private static DataModelState Model() => new()
@@ -526,7 +601,8 @@ public sealed class DataModelConnectorEditingTests
             builder.AddAttribute(1, nameof(SchemaCanvas.State), State);
             builder.AddAttribute(2, nameof(SchemaCanvas.CanvasId), "connector-test");
             builder.AddAttribute(3, nameof(SchemaCanvas.SelectedRelationshipId), State.Relationships.FirstOrDefault()?.Id);
-            builder.AddComponentReferenceCapture(4, component => Capture?.Invoke((SchemaCanvas)component));
+            builder.AddAttribute(4, nameof(SchemaCanvas.SelectedGroupId), State.Groups.FirstOrDefault()?.Id);
+            builder.AddComponentReferenceCapture(5, component => Capture?.Invoke((SchemaCanvas)component));
             builder.CloseComponent();
         }
     }

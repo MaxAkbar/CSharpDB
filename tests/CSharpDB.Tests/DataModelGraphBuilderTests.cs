@@ -382,7 +382,7 @@ public sealed class DataModelGraphBuilderTests
 
         DataModelState state = Assert.IsType<DataModelState>(DataModelGraphBuilder.DeserializeState(json));
 
-        Assert.Equal(3, state.Version);
+        Assert.Equal(4, state.Version);
         Assert.Equal(DataModelNodeDetailLevel.Collapsed, Assert.Single(state.Nodes, node => node.Name == "Collapsed").DetailLevel);
         Assert.Equal(DataModelNodeDetailLevel.All, Assert.Single(state.Nodes, node => node.Name == "Expanded").DetailLevel);
         Assert.Equal((41d, 73d, 1.35d), (state.ViewportX, state.ViewportY, state.Scale));
@@ -405,7 +405,7 @@ public sealed class DataModelGraphBuilderTests
         DataModelState restored = Assert.IsType<DataModelState>(
             DataModelGraphBuilder.DeserializeState(DataModelGraphBuilder.SerializeState(state)));
 
-        Assert.Equal(3, restored.Version);
+        Assert.Equal(4, restored.Version);
         Assert.Equal(DataModelNodeDetailLevel.Collapsed, restored.Nodes[0].DetailLevel);
         Assert.Equal(DataModelNodeDetailLevel.All, restored.Nodes[1].DetailLevel);
         Assert.Equal((115d, 225d, 0.8d), (restored.ViewportX, restored.ViewportY, restored.Scale));
@@ -426,7 +426,7 @@ public sealed class DataModelGraphBuilderTests
 
         DataModelState restored = Assert.IsType<DataModelState>(DataModelGraphBuilder.DeserializeState(json));
 
-        Assert.Equal(3, restored.Version);
+        Assert.Equal(4, restored.Version);
         Assert.Null(Assert.Single(restored.Relationships).ConnectorLayout);
         Assert.Equal((70d, 90d, DataModelNodeDetailLevel.Keys),
             (restored.Nodes[0].X, restored.Nodes[0].Y, restored.Nodes[0].DetailLevel));

@@ -3683,6 +3683,51 @@ html:not(.desktop-shell-bridge) .native-path-picker > button {
     overflow: visible;
 }
 
+.schema-table-group {
+    --group-color: var(--accent-blue);
+    position: absolute;
+    box-sizing: border-box;
+    border: 1px solid color-mix(in srgb, var(--group-color) 65%, var(--border-color));
+    border-radius: 7px;
+    background: color-mix(in srgb, var(--group-color) 7%, transparent);
+    pointer-events: none;
+}
+.schema-table-group.group-green { --group-color: var(--accent-green); }
+.schema-table-group.group-amber { --group-color: var(--accent-yellow); }
+.schema-table-group.group-violet { --group-color: #a78bfa; }
+.schema-table-group.group-slate { --group-color: var(--text-secondary); }
+.schema-table-group.selected { box-shadow: 0 0 0 2px var(--group-color); }
+.schema-table-group.dimmed { opacity: 0.4; }
+.schema-group-title {
+    position: absolute;
+    top: -1px;
+    left: -1px;
+    width: calc(100% + 2px);
+    height: 28px;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 6px 6px 0 0;
+    background: color-mix(in srgb, var(--group-color) 18%, var(--bg-elevated));
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 12px;
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+    pointer-events: auto;
+}
+.schema-group-title span { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.schema-group-title small { flex-shrink: 0; color: var(--text-secondary); }
+.schema-group-title:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 2px; }
+.data-model-group-actions { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.data-model-group-actions small { color: var(--text-secondary); }
+.data-model-group-member { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.data-model-group-member > span { overflow-wrap: anywhere; }
+
 .schema-node {
     width: 220px;
     cursor: grab;

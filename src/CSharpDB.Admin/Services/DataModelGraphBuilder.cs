@@ -81,7 +81,7 @@ public static class DataModelGraphBuilder
 
         var state = new DataModelState
         {
-            Version = 3,
+            Version = 4,
             DiagramName = savedState.DiagramName ?? savedState.SavedLayoutName,
             SavedLayoutName = savedState.SavedLayoutName,
             SchemaSnapshotUtc = savedState.SchemaSnapshotUtc,
@@ -146,6 +146,7 @@ public static class DataModelGraphBuilder
                 state.Warnings.Add(warning);
         }
 
+        if (savedState.Version >= 4) DataModelGroups.Preserve(savedState, state);
         return state;
     }
 
@@ -210,7 +211,8 @@ public static class DataModelGraphBuilder
 
     public static string SerializeState(DataModelState state)
     {
-        state.Version = 3;
+        state.Version = 4;
+        DataModelGroups.Normalize(state);
         NormalizeConnectorLayouts(state);
         foreach (DataModelNode node in state.Nodes)
         {
@@ -241,7 +243,13 @@ public static class DataModelGraphBuilder
             foreach (DataModelRelationship relationship in state.Relationships)
                 relationship.ConnectorLayout = null;
 
-        state.Version = 3;
+        if (state.Version <= 3)
+        {
+            state.Groups = [];
+            foreach (var node in state.Nodes) node.GroupId = null;
+        }
+        state.Version = 4;
+        DataModelGroups.Normalize(state);
         NormalizeConnectorLayouts(state);
         foreach (DataModelNode node in state.Nodes)
             node.IsCollapsed = node.DetailLevel == DataModelNodeDetailLevel.Collapsed;
@@ -513,6 +521,7 @@ public static class DataModelGraphBuilder
     private static DataModelNode CloneNode(DataModelNode node) => new()
     {
         Name = node.Name,
+        GroupId = node.GroupId,
         Kind = node.Kind,
         X = node.X,
         Y = node.Y,

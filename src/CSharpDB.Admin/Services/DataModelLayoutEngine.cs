@@ -464,18 +464,23 @@ public static class DataModelLayoutEngine
         if (state.Nodes.Count == 0)
             return;
 
-        Dictionary<string, DataModelNode> nodes = state.Nodes.ToDictionary(node => node.Name, StringComparer.OrdinalIgnoreCase);
+        DataModelGroups.Normalize(state);
+        Dictionary<string, LayoutUnit> nodes = CreateLayoutUnits(state);
+        var unitByTable = nodes.Values.SelectMany(unit => unit.Members.Select(member => (member.Name, Unit: unit.Name)))
+            .ToDictionary(pair => pair.Name, pair => pair.Unit, StringComparer.OrdinalIgnoreCase);
         Dictionary<string, HashSet<string>> directed = CreateAdjacency(nodes.Keys);
         Dictionary<string, HashSet<string>> undirected = CreateAdjacency(nodes.Keys);
         foreach (DataModelRelationship relationship in state.Relationships.Where(static relationship => relationship.IsResolved))
         {
-            if (!nodes.ContainsKey(relationship.LeftTable) || !nodes.ContainsKey(relationship.RightTable))
+            if (!unitByTable.TryGetValue(relationship.LeftTable, out string? child) ||
+                !unitByTable.TryGetValue(relationship.RightTable, out string? parent))
                 continue;
 
             // Relationships are stored child -> parent; layout flows parent -> child.
-            directed[relationship.RightTable].Add(relationship.LeftTable);
-            undirected[relationship.RightTable].Add(relationship.LeftTable);
-            undirected[relationship.LeftTable].Add(relationship.RightTable);
+            if (parent == child && nodes[parent].GroupId is not null) continue;
+            directed[parent].Add(child);
+            undirected[parent].Add(child);
+            undirected[child].Add(parent);
         }
 
         List<List<string>> components = FindComponents(nodes.Keys, undirected);
@@ -492,7 +497,7 @@ public static class DataModelLayoutEngine
         double nextY = Margin;
         foreach (List<string> component in connected)
         {
-            double height = LayoutComponent(state, nodes, directed, component, Margin, nextY);
+            double height = LayoutComponent(nodes, directed, component, Margin, nextY);
             nextY += height + ComponentGap;
         }
 
@@ -500,19 +505,29 @@ public static class DataModelLayoutEngine
             nextY += ComponentGap / 2;
 
         double isolatedRowHeight = 0;
+        double isolatedX = Margin;
         for (int i = 0; i < isolated.Count; i++)
         {
-            DataModelNode node = nodes[isolated[i]];
+            LayoutUnit node = nodes[isolated[i]];
             int column = i % IsolatedColumns;
             if (column == 0 && i > 0)
             {
                 nextY += isolatedRowHeight + NodeGap;
                 isolatedRowHeight = 0;
+                isolatedX = Margin;
             }
 
-            node.X = Margin + column * (DataModelCanvasMetrics.NodeWidth + IsolatedColumnGap);
+            node.X = isolatedX;
             node.Y = nextY;
-            isolatedRowHeight = Math.Max(isolatedRowHeight, DataModelCanvasMetrics.NodeHeight(state, node));
+            isolatedX += node.Width + IsolatedColumnGap;
+            isolatedRowHeight = Math.Max(isolatedRowHeight, node.Height);
+        }
+
+        foreach (var unit in nodes.Values)
+        {
+            if (unit.GroupId is not null)
+                DataModelGroups.Move(state, unit.GroupId, unit.X - unit.OriginalX, unit.Y - unit.OriginalY);
+            else { unit.Members[0].X = unit.X; unit.Members[0].Y = unit.Y; }
         }
     }
 
@@ -535,6 +550,8 @@ public static class DataModelLayoutEngine
             .Select(node => RectFor(state, node))
             .ToList();
         var placedNames = existingNodeNames.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        occupied.AddRange(state.Groups.Select(group => DataModelGroups.Bounds(state, group.Id))
+            .Where(bounds => bounds.HasValue).Select(bounds => new ModelRect(bounds!.Value.X, bounds.Value.Y, bounds.Value.Width, bounds.Value.Height)));
         double defaultX = occupied.Max(static rect => rect.Right) + RankGap;
 
         foreach (DataModelNode node in additions)
@@ -567,8 +584,7 @@ public static class DataModelLayoutEngine
     }
 
     private static double LayoutComponent(
-        DataModelState state,
-        IReadOnlyDictionary<string, DataModelNode> nodes,
+        IReadOnlyDictionary<string, LayoutUnit> nodes,
         IReadOnlyDictionary<string, HashSet<string>> directed,
         IReadOnlyCollection<string> component,
         double originX,
@@ -632,18 +648,20 @@ public static class DataModelLayoutEngine
                 group => group.OrderBy(static name => name, StringComparer.OrdinalIgnoreCase).ToList());
         MinimizeCrossings(ranks, directed, included);
 
-        double componentHeight = ranks.Values.Max(rank => RankHeight(state, nodes, rank));
+        double componentHeight = ranks.Values.Max(rank => RankHeight(nodes, rank));
+        double x = originX;
         foreach ((int rankIndex, List<string> rank) in ranks)
         {
-            double rankHeight = RankHeight(state, nodes, rank);
+            double rankHeight = RankHeight(nodes, rank);
             double y = originY + (componentHeight - rankHeight) / 2;
             foreach (string name in rank)
             {
-                DataModelNode node = nodes[name];
-                node.X = originX + rankIndex * (DataModelCanvasMetrics.NodeWidth + RankGap);
+                LayoutUnit node = nodes[name];
+                node.X = x;
                 node.Y = y;
-                y += DataModelCanvasMetrics.NodeHeight(state, node) + NodeGap;
+                y += node.Height + NodeGap;
             }
+            x += rank.Max(name => nodes[name].Width) + RankGap;
         }
 
         return componentHeight;
@@ -783,10 +801,48 @@ public static class DataModelLayoutEngine
         names.ToDictionary(static name => name, _ => new HashSet<string>(StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase);
 
     private static double RankHeight(
-        DataModelState state,
-        IReadOnlyDictionary<string, DataModelNode> nodes,
+        IReadOnlyDictionary<string, LayoutUnit> nodes,
         IReadOnlyList<string> rank) =>
-        rank.Sum(name => DataModelCanvasMetrics.NodeHeight(state, nodes[name])) + Math.Max(0, rank.Count - 1) * NodeGap;
+        rank.Sum(name => nodes[name].Height) + Math.Max(0, rank.Count - 1) * NodeGap;
+
+    private static Dictionary<string, LayoutUnit> CreateLayoutUnits(DataModelState state)
+    {
+        var result = new Dictionary<string, LayoutUnit>(StringComparer.OrdinalIgnoreCase);
+        foreach (var node in state.Nodes.Where(node => node.GroupId is null))
+        {
+            string key = node.Name + "\0table";
+            result[key] = new LayoutUnit(key, null, [node], node.X, node.Y,
+                DataModelCanvasMetrics.NodeWidth, DataModelCanvasMetrics.NodeHeight(state, node));
+        }
+        foreach (var group in state.Groups)
+        {
+            var bounds = DataModelGroups.Bounds(state, group.Id)!.Value;
+            var guides = DataModelGroups.InternalRelationships(state, group.Id)
+                .SelectMany(edge => edge.ConnectorLayout?.Waypoints ?? []).ToArray();
+            // Include internal guide extents so translating a unit never clamps only part of its intended delta.
+            double x = Math.Min(bounds.X, guides.Select(point => point.X - 4).DefaultIfEmpty(bounds.X).Min());
+            double y = Math.Min(bounds.Y, guides.Select(point => point.Y - 4).DefaultIfEmpty(bounds.Y).Min());
+            double right = Math.Max(bounds.Right, guides.Select(point => point.X + 4).DefaultIfEmpty(bounds.Right).Max());
+            double bottom = Math.Max(bounds.Bottom, guides.Select(point => point.Y + 4).DefaultIfEmpty(bounds.Bottom).Max());
+            string key = group.Name + "\0group:" + group.Id;
+            result[key] = new LayoutUnit(key, group.Id, DataModelGroups.Members(state, group.Id), x, y, right - x, bottom - y);
+        }
+        return result;
+    }
+
+    private sealed class LayoutUnit(string name, string? groupId, List<DataModelNode> members,
+        double x, double y, double width, double height)
+    {
+        public string Name { get; } = name;
+        public string? GroupId { get; } = groupId;
+        public List<DataModelNode> Members { get; } = members;
+        public double OriginalX { get; } = x;
+        public double OriginalY { get; } = y;
+        public double X { get; set; } = x;
+        public double Y { get; set; } = y;
+        public double Width { get; } = width;
+        public double Height { get; } = height;
+    }
 
     private static DataModelNode? FindPlacedNode(
         DataModelState state,

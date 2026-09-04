@@ -15,6 +15,18 @@
          @ref="_canvasRef">
         <div class="schema-canvas-viewport" style="width:@Px(ScaledSvgWidth)px;height:@Px(ScaledSvgHeight)px">
             <div class="schema-canvas-stage" style="width:@Px(SvgWidth)px;height:@Px(SvgHeight)px;transform:scale(@ScaleText) translate(@(CanvasInset)px,@(CanvasInset)px)">
+                @foreach (var group in State.Groups)
+                {
+                    if (DataModelGroups.Bounds(State, group.Id) is not { } bounds) continue;
+                    <div @key="group.Id" class="schema-table-group group-@group.Color.ToString().ToLowerInvariant() @(SelectedGroupId == group.Id ? "selected" : "") @(DataModelGroups.Members(State, group.Id).All(IsNodeDimmed) ? "dimmed" : "")"
+                         data-group-id="@group.Id" style="left:@Px(bounds.X)px;top:@Px(bounds.Y)px;width:@Px(bounds.Width)px;height:@Px(bounds.Height)px">
+                        <button class="schema-group-title" data-group-title="@group.Id" aria-pressed="@((SelectedGroupId == group.Id).ToString().ToLowerInvariant())"
+                                aria-label="Group @group.Name, @DataModelGroups.Members(State, group.Id).Count tables"
+                                @onclick:stopPropagation="true" @onclick="() => OnGroupSelected.InvokeAsync(group.Id)">
+                            <span>@group.Name</span><small>@DataModelGroups.Members(State, group.Id).Count tables</small>
+                        </button>
+                    </div>
+                }
                 <svg class="designer-canvas-svg" width="@SvgWidth" height="@SvgHeight"
                      xmlns="http://www.w3.org/2000/svg" aria-label="Database relationship diagram">
                     <defs>
@@ -89,16 +101,16 @@
                 @foreach (DataModelNode node in State.Nodes)
                 {
                     var current = node;
-                    bool selected = string.Equals(SelectedNodeName, current.Name, StringComparison.OrdinalIgnoreCase);
+                    bool selected = SelectedNodeNames.Contains(current.Name) || string.Equals(SelectedNodeName, current.Name, StringComparison.OrdinalIgnoreCase);
                     bool dimmed = IsNodeDimmed(current);
                     IReadOnlyList<DataModelColumn> visibleColumns = VisibleColumns(current);
                     <div class="designer-table-node schema-node @(selected ? "selected" : "") @(dimmed ? "dimmed" : "") @(current.Kind == DataModelNodeKind.ExternalTable ? "external" : "physical") @(current.IsDraft ? "draft" : "") @(current.DetailLevel == DataModelNodeDetailLevel.Collapsed ? "collapsed" : "")"
                          id="@($"{CanvasId}-node-{current.Name}")"
                          style="left:@Px(current.X)px;top:@Px(current.Y)px"
-                         data-table="@current.Name" data-detail-level="@current.DetailLevel"
+                         data-table="@current.Name" data-group-id="@current.GroupId" data-detail-level="@current.DetailLevel" aria-pressed="@selected.ToString().ToLowerInvariant()"
                          tabindex="0" role="button" aria-label="Table @current.Name"
                          @onclick:stopPropagation="true"
-                         @onclick="() => OnNodeSelected.InvokeAsync(current.Name)"
+                         @onclick="args => SelectNodeAsync(current.Name, args.CtrlKey || args.MetaKey || args.ShiftKey)"
                          @onkeydown="eventArgs => SelectNodeFromKeyboardAsync(eventArgs, current.Name)">
                         <div class="designer-table-node-header">
                             <i class="bi @(current.Kind == DataModelNodeKind.ExternalTable ? "bi-box-arrow-up-right" : "bi-table")"></i>
@@ -184,6 +196,11 @@
     [Parameter] public string CanvasId { get; set; } = $"schema-canvas-{Guid.NewGuid():N}";
     [Parameter] public int HeightPx { get; set; }
     [Parameter] public string? SelectedNodeName { get; set; }
+    [Parameter] public IReadOnlySet<string> SelectedNodeNames { get; set; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    [Parameter] public string? SelectedGroupId { get; set; }
+    [Parameter] public EventCallback<DataModelNodeSelection> OnNodeSelectionChanged { get; set; }
+    [Parameter] public EventCallback<string> OnGroupSelected { get; set; }
+    [Parameter] public EventCallback<DataModelGroupMove> OnGroupMoved { get; set; }
     [Parameter] public string? SelectedRelationshipId { get; set; }
     [Parameter] public EventCallback<string> OnNodeSelected { get; set; }
     [Parameter] public EventCallback<string> OnNodeRemoved { get; set; }
@@ -199,7 +216,7 @@
     private ElementReference _canvasRef;
     private readonly Dictionary<string, RelationshipGeometry> _geometry = new(StringComparer.Ordinal);
     // Leave room for pinned outward-facing connectors at a table's zero coordinate.
-    private const int CanvasInset = 32;
+    private const int CanvasInset = DataModelGroups.CanvasInset;
     private string _connectorAnnouncement = "";
     private long _connectorAnnouncementSequence;
 
@@ -248,6 +265,15 @@
     public Task OnCanvasSelectionCleared() => OnSelectionCleared.InvokeAsync();
 
     [JSInvokable]
+    public async Task<bool> OnTableGroupMoved(string groupId, double dx, double dy)
+    {
+        if (!DataModelGroups.Move(State, groupId, dx, dy)) return false;
+        await OnGroupMoved.InvokeAsync(new(groupId, dx, dy));
+        await InvokeAsync(StateHasChanged);
+        return true;
+    }
+
+    [JSInvokable]
     public async Task<bool> OnConnectorLayoutChanged(string relationshipId, DataModelConnectorLayout? layout)
     {
         DataModelRelationship? relationship = State.Relationships.FirstOrDefault(item => item.Id == relationshipId);
@@ -289,7 +315,9 @@
     private IEnumerable<DataModelConnectorPoint> ConnectorExtentPoints => _geometry.Values.SelectMany(static geometry => geometry.Points)
         .Concat(State.Relationships.Where(ShouldRenderRelationship).SelectMany(static relationship => relationship.ConnectorLayout?.Waypoints ?? [])
             .Where(static point => double.IsFinite(point.X) && double.IsFinite(point.Y))
-            .Select(static point => new DataModelConnectorPoint(point.X, point.Y)));
+            .Select(static point => new DataModelConnectorPoint(point.X, point.Y)))
+        .Concat(State.Groups.Select(group => DataModelGroups.Bounds(State, group.Id)).Where(bounds => bounds.HasValue)
+            .Select(bounds => new DataModelConnectorPoint(bounds!.Value.Right, bounds.Value.Bottom)));
     private double SvgWidth => Math.Max(1200, Math.Max(State.Nodes.Select(static node => node.X + DataModelCanvasMetrics.NodeWidth + 80).DefaultIfEmpty(1200).Max(), ConnectorExtentPoints.Select(static point => point.X + 80).DefaultIfEmpty(0).Max()));
     private double SvgHeight => Math.Max(600, Math.Max(State.Nodes.Select(node => node.Y + DataModelCanvasMetrics.NodeHeight(State, node) + 80).DefaultIfEmpty(600).Max(), ConnectorExtentPoints.Select(static point => point.Y + 80).DefaultIfEmpty(0).Max()));
     private double CanvasScale => NormalizeScale(State.Scale);
@@ -307,7 +335,9 @@
         _geometry.TryGetValue(relationship.Id, out RelationshipGeometry? geometry) ? geometry : RelationshipPoints(relationship);
 
     private DataModelConnectorObstacle[] NodeObstacles() => State.Nodes.Select(node => new DataModelConnectorObstacle(
-        node.X, node.Y, DataModelCanvasMetrics.NodeWidth, DataModelCanvasMetrics.NodeHeight(State, node))).ToArray();
+        node.X, node.Y, DataModelCanvasMetrics.NodeWidth, DataModelCanvasMetrics.NodeHeight(State, node)))
+        .Concat(State.Groups.Select(group => DataModelGroups.Bounds(State, group.Id)).Where(bounds => bounds.HasValue)
+            .Select(bounds => new DataModelConnectorObstacle(bounds!.Value.X, bounds.Value.Y, bounds.Value.Width, DataModelGroups.TitleHeight))).ToArray();
 
     private RelationshipGeometry RelationshipPoints(DataModelRelationship relationship)
     {
@@ -354,19 +384,31 @@
                 && !string.Equals(selected.LeftTable, node.Name, StringComparison.OrdinalIgnoreCase)
                 && !string.Equals(selected.RightTable, node.Name, StringComparison.OrdinalIgnoreCase);
         }
-        if (string.IsNullOrWhiteSpace(SelectedNodeName) || string.Equals(SelectedNodeName, node.Name, StringComparison.OrdinalIgnoreCase)) return false;
+        var selectedNames = FocusedTables();
+        if (selectedNames.Count == 0 || selectedNames.Contains(node.Name)) return false;
         return !State.Relationships.Any(relationship =>
-            (string.Equals(relationship.LeftTable, SelectedNodeName, StringComparison.OrdinalIgnoreCase) && string.Equals(relationship.RightTable, node.Name, StringComparison.OrdinalIgnoreCase)) ||
-            (string.Equals(relationship.RightTable, SelectedNodeName, StringComparison.OrdinalIgnoreCase) && string.Equals(relationship.LeftTable, node.Name, StringComparison.OrdinalIgnoreCase)));
+            (selectedNames.Contains(relationship.LeftTable) && string.Equals(relationship.RightTable, node.Name, StringComparison.OrdinalIgnoreCase)) ||
+            (selectedNames.Contains(relationship.RightTable) && string.Equals(relationship.LeftTable, node.Name, StringComparison.OrdinalIgnoreCase)));
     }
 
     private bool IsRelationshipDimmed(DataModelRelationship relationship)
     {
         if (!string.IsNullOrWhiteSpace(SelectedRelationshipId)) return !string.Equals(SelectedRelationshipId, relationship.Id, StringComparison.Ordinal);
-        if (string.IsNullOrWhiteSpace(SelectedNodeName)) return false;
-        return !string.Equals(relationship.LeftTable, SelectedNodeName, StringComparison.OrdinalIgnoreCase)
-               && !string.Equals(relationship.RightTable, SelectedNodeName, StringComparison.OrdinalIgnoreCase);
+        var selectedNames = FocusedTables();
+        return selectedNames.Count > 0 && !selectedNames.Contains(relationship.LeftTable) && !selectedNames.Contains(relationship.RightTable);
     }
+
+    private HashSet<string> FocusedTables()
+    {
+        var names = SelectedNodeNames.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (SelectedNodeName is not null) names.Add(SelectedNodeName);
+        if (SelectedGroupId is not null)
+            names.UnionWith(DataModelGroups.Members(State, SelectedGroupId).Select(node => node.Name));
+        return names;
+    }
+
+    private Task SelectNodeAsync(string name, bool toggle) => OnNodeSelectionChanged.HasDelegate
+        ? OnNodeSelectionChanged.InvokeAsync(new(name, toggle)) : OnNodeSelected.InvokeAsync(name);
 
     private bool IsSelectedRelationshipEndpoint(DataModelNode node, DataModelColumn column)
     {
@@ -410,7 +452,7 @@
 
     private Task SelectNodeFromKeyboardAsync(KeyboardEventArgs eventArgs, string nodeName) =>
         eventArgs.Key is "Enter" or " "
-            ? OnNodeSelected.InvokeAsync(nodeName)
+            ? SelectNodeAsync(nodeName, eventArgs.CtrlKey || eventArgs.MetaKey || eventArgs.ShiftKey)
             : Task.CompletedTask;
 
     private Task SelectRelationshipFromKeyboardAsync(KeyboardEventArgs eventArgs, string relationshipId) =>

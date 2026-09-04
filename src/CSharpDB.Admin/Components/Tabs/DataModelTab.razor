@@ -44,7 +44,10 @@
         </button>
 
         <div class="toolbar-separator"></div>
-        <button class="toolbar-btn" @onclick="AutoArrangeAsync" disabled="@(_loading || _state.Nodes.Count == 0)" title="Arrange parents left of dependent tables">
+        <button class="toolbar-btn" @onclick="CreateGroupAsync" disabled="@(_loading || SelectedTableNames.Count < 2)" title="Ctrl/Cmd-click or Shift-click tables, then group them">
+            <i class="bi bi-bounding-box"></i> Group Selected
+        </button>
+        <button class="toolbar-btn" @onclick="AutoArrangeAsync" disabled="@(_loading || _state.Nodes.Count == 0)" title="Arrange parents left of dependent tables; keep groups intact">
             <i class="bi bi-distribute-horizontal"></i> Auto Arrange
         </button>
         <button class="toolbar-btn" @onclick="TidyModelAsync" disabled="@(_loading || _state.Nodes.Count == 0)" title="Reset custom connector routes, use Keys First, arrange tables, and fit the complete model">
@@ -218,6 +221,13 @@
         </div>
     }
 
+    @if (DataModelGroups.CountOverlaps(_state) is var groupOverlaps && groupOverlaps > 0)
+    {
+        <div class="data-model-layout-notice" role="status">
+            <span>@groupOverlaps group overlap(s). Overlapping tables are not automatically group members.</span>
+            <button class="toolbar-btn" @onclick="AutoArrangeAsync">Auto Arrange</button>
+        </div>
+    }
     <div class="data-model-workspace @(_showSourcesPane ? "with-sources" : null) @(_showInspectorPane ? "with-inspector" : null)">
         @if (_showSourcesPane)
         {
@@ -264,6 +274,11 @@
                           SelectedNodeName="@_selectedNodeName"
                           SelectedRelationshipId="@_selectedRelationshipId"
                           OnNodeSelected="SelectNode"
+                          SelectedNodeNames="SelectedTableNames"
+                          SelectedGroupId="@_selectedGroupId"
+                          OnNodeSelectionChanged="SelectTables"
+                          OnGroupSelected="SelectGroup"
+                          OnGroupMoved="OnGroupMovedAsync"
                           OnNodeRemoved="RemoveNode"
                           OnRelationshipSelected="SelectRelationship"
                           OnSelectionCleared="ClearSelection"
@@ -284,7 +299,47 @@
             </div>
             <div class="data-model-inspector-section">
                 <h3>Selection</h3>
-                @if (SelectedNode is not null)
+                @if (SelectedTableNames.Count > 0 && SelectedGroup is null)
+                {
+                    <div class="data-model-group-actions">
+                        <strong>@SelectedTableNames.Count table(s) selected</strong>
+                        <small>Ctrl/Cmd-click or Shift-click to select more tables. Drag a table to move only that table.</small>
+                        <select class="schema-input" aria-label="Target group" @bind="_membershipTarget">
+                            <option value="">Choose group</option>
+                            @foreach (var group in _state.Groups) { <option value="@group.Id">@group.Name</option> }
+                        </select>
+                        <button class="toolbar-btn" disabled="@(!_state.Groups.Any(group => group.Id == _membershipTarget))" @onclick="() => AssignSelectedAsync(_membershipTarget)">Add/Move Selected Tables Here</button>
+                        <button class="toolbar-btn" disabled="@(!_state.Nodes.Any(node => SelectedTableNames.Contains(node.Name) && node.GroupId is not null))" @onclick="() => AssignSelectedAsync(null)">Remove from Group</button>
+                    </div>
+                }
+                @if (SelectedGroup is not null)
+                {
+                    <div class="data-model-group-actions">
+                        <strong>Group: @SelectedGroup.Name</strong>
+                        <p class="data-model-muted">Drag the title to move all members. The frame fits its tables automatically.</p>
+                        <small>@SelectedTableNames.Count table(s) selected for membership changes. Ctrl/Cmd-click or Shift-click tables to select them.</small>
+                        <input class="schema-input" aria-label="Group name" @bind="_groupName" @bind:event="oninput" />
+                        <button class="toolbar-btn" disabled="@string.IsNullOrWhiteSpace(_groupName)" @onclick="RenameGroupAsync">Rename Group</button>
+                        <label>Color
+                            <select class="schema-input" value="@SelectedGroup.Color" @onchange="ChangeGroupColorAsync">
+                                @foreach (var color in Enum.GetValues<DataModelGroupColor>()) { <option value="@color">@color</option> }
+                            </select>
+                        </label>
+                        <button class="toolbar-btn" disabled="@(SelectedTableNames.Count == 0)" @onclick="() => AssignSelectedAsync(SelectedGroup.Id)">Add/Move Selected Tables Here</button>
+                        @foreach (var member in DataModelGroups.Members(_state, SelectedGroup.Id))
+                        {
+                            <div class="data-model-group-member"><span>@member.Name</span>
+                                <button class="toolbar-btn" aria-label="Remove @member.Name from group" @onclick="() => RemoveGroupMemberAsync(member.Name)">Remove from Group</button>
+                            </div>
+                        }
+                        <button class="toolbar-btn" @onclick="UngroupAsync">Ungroup</button>
+                    </div>
+                }
+                else if (SelectedTableNames.Count > 1)
+                {
+                    <p class="data-model-muted">Use Group Selected to enclose these tables. Schema editing is available when one table is selected.</p>
+                }
+                else if (SelectedNode is not null)
                 {
                     <div class="data-model-selection-card">
                         <strong>@SelectedNode.Name</strong>
@@ -565,6 +620,14 @@
     private IReadOnlyList<DataModelSourceOption> _sourceOptions = [];
     private IReadOnlyList<DataModelDiagramSummary> _savedDiagrams = [];
     private string? _selectedNodeName;
+    private readonly HashSet<string> _selectedNodeNames = new(StringComparer.OrdinalIgnoreCase);
+    private string? _selectedGroupId;
+    private string _groupName = "";
+    private string _membershipTarget = "";
+    private DataModelGroup? SelectedGroup => _state.Groups.FirstOrDefault(group => group.Id == _selectedGroupId);
+    private HashSet<string> SelectedTableNames => _state.Nodes
+        .Where(node => _selectedNodeNames.Contains(node.Name) || string.Equals(node.Name, _selectedNodeName, StringComparison.OrdinalIgnoreCase))
+        .Select(node => node.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
     private string? _selectedRelationshipId;
     private string? _selectedWaypointId;
     private bool _confirmTidyRoutes;
@@ -797,6 +860,7 @@
 
     private void ResetRouteScopedState()
     {
+        ClearGroupSelection();
         _confirmTidyRoutes = false;
         _selectedWaypointId = null;
         _diagramSaveError = null;
@@ -817,6 +881,7 @@
 
     private async Task LoadInitialAsync()
     {
+        ClearGroupSelection();
         _confirmTidyRoutes = false;
         _selectedWaypointId = null;
         _loading = true;
@@ -885,6 +950,7 @@
 
     private async Task RefreshAsync()
     {
+        ClearGroupSelection();
         _confirmTidyRoutes = false;
         _selectedWaypointId = null;
         _loading = true;
@@ -928,6 +994,7 @@
             refreshed.DiagramName = previous.DiagramName;
             refreshed.SavedLayoutName = previous.SavedLayoutName;
             refreshed.PendingOperations = previous.PendingOperations;
+            DataModelGroups.Preserve(previous, refreshed);
             _state = refreshed;
             EnsureDefaultDiagramName();
             SaveState();
@@ -983,6 +1050,7 @@
             Merge(addition);
             DataModelLayoutEngine.PlaceNewNodes(_state, existingNames);
             _selectedNodeName = sourceName;
+            ClearGroupSelection();
             _selectedRelationshipId = null;
             SaveState();
             await PersistActiveDiagramAsync();
@@ -1053,6 +1121,7 @@
 
     private async Task ClearCanvas()
     {
+        ClearGroupSelection();
         _confirmTidyRoutes = false;
         _selectedWaypointId = null;
         string? diagramName = _state.DiagramName;
@@ -1069,8 +1138,97 @@
         await PersistActiveDiagramAsync();
     }
 
+    private void ClearGroupSelection()
+    {
+        _selectedNodeNames.Clear();
+        _selectedGroupId = null;
+        _membershipTarget = "";
+        _groupName = "";
+    }
+
+    private void SelectTables(DataModelNodeSelection selection)
+    {
+        if (!selection.Toggle) { SelectNode(selection.NodeName); return; }
+        if (_selectedNodeName is not null) _selectedNodeNames.Add(_selectedNodeName);
+        if (!_selectedNodeNames.Add(selection.NodeName)) _selectedNodeNames.Remove(selection.NodeName);
+        _selectedNodeName = _selectedNodeNames.Count == 1 ? _selectedNodeNames.First() : null;
+        _selectedRelationshipId = null;
+        _selectedWaypointId = null;
+        _showInspectorPane = true;
+    }
+
+    private void SelectGroup(string id)
+    {
+        var group = _state.Groups.FirstOrDefault(group => group.Id == id);
+        if (group is null) return;
+        // Keep selected tables available for the explicit move-to-group command.
+        if (_selectedNodeName is not null) _selectedNodeNames.Add(_selectedNodeName);
+        _selectedNodeName = null;
+        _selectedGroupId = id;
+        _membershipTarget = id;
+        _groupName = group.Name;
+        _selectedRelationshipId = null;
+        _selectedWaypointId = null;
+        _showInspectorPane = true;
+    }
+
+    private async Task CreateGroupAsync()
+    {
+        var group = DataModelGroups.Create(_state, SelectedTableNames);
+        if (group is null) return;
+        _selectedNodeName = null;
+        _selectedNodeNames.Clear();
+        SelectGroup(group.Id);
+        await PersistGroupChangeAsync();
+    }
+
+    private async Task AssignSelectedAsync(string? id)
+    {
+        DataModelGroups.Assign(_state, SelectedTableNames, id);
+        if (SelectedGroup is null) _selectedGroupId = null;
+        await PersistGroupChangeAsync();
+    }
+
+    private async Task RemoveGroupMemberAsync(string name)
+    {
+        DataModelGroups.Assign(_state, [name], null);
+        if (SelectedGroup is null) _selectedGroupId = null;
+        await PersistGroupChangeAsync();
+    }
+
+    private async Task UngroupAsync()
+    {
+        if (SelectedGroup is null) return;
+        DataModelGroups.Ungroup(_state, SelectedGroup.Id);
+        _selectedGroupId = null;
+        await PersistGroupChangeAsync();
+    }
+
+    private async Task RenameGroupAsync()
+    {
+        if (SelectedGroup is null || string.IsNullOrWhiteSpace(_groupName)) return;
+        SelectedGroup.Name = _groupName.Trim();
+        await PersistGroupChangeAsync();
+    }
+
+    private async Task ChangeGroupColorAsync(ChangeEventArgs args)
+    {
+        if (SelectedGroup is null || !Enum.TryParse<DataModelGroupColor>(args.Value?.ToString(), out var color) || !Enum.IsDefined(color)) return;
+        SelectedGroup.Color = color;
+        await PersistGroupChangeAsync();
+    }
+
+    private Task OnGroupMovedAsync(DataModelGroupMove move) => PersistGroupChangeAsync();
+
+    private async Task PersistGroupChangeAsync()
+    {
+        SaveState();
+        await PersistActiveDiagramAsync();
+    }
+
     private void SelectNode(string name)
     {
+        ClearGroupSelection();
         _selectedWaypointId = null;
         _selectedNodeName = name;
         _selectedRelationshipId = null;
@@ -1081,6 +1239,7 @@
 
     private void SelectRelationship(string id)
     {
+        ClearGroupSelection();
         if (_selectedRelationshipId != id) _selectedWaypointId = null;
         _selectedRelationshipId = id;
         _selectedNodeName = null;
@@ -1089,6 +1248,7 @@
 
     private void ClearSelection()
     {
+        ClearGroupSelection();
         _selectedWaypointId = null;
         _selectedNodeName = null;
         _selectedRelationshipId = null;
@@ -1143,6 +1303,8 @@
     private async Task RemoveNode(string name)
     {
         _state.Nodes.RemoveAll(node => string.Equals(node.Name, name, StringComparison.OrdinalIgnoreCase));
+        _selectedNodeNames.Remove(name);
+        DataModelGroups.Normalize(_state);
         _state.Relationships.RemoveAll(relationship =>
             string.Equals(relationship.LeftTable, name, StringComparison.OrdinalIgnoreCase)
             || string.Equals(relationship.RightTable, name, StringComparison.OrdinalIgnoreCase));
@@ -1324,6 +1486,7 @@
 
     private async Task LoadDiagramAsync(string name)
     {
+        ClearGroupSelection();
         _confirmTidyRoutes = false;
         _selectedWaypointId = null;
         _showLoadPanel = false;
@@ -1467,6 +1630,7 @@
         });
 
         _selectedNodeName = tableName;
+        ClearGroupSelection();
         _selectedRelationshipId = null;
         _showInspectorPane = true;
         _newTableName = "";
@@ -1615,6 +1779,7 @@
         });
 
         _selectedRelationshipId = relationshipId;
+        ClearGroupSelection();
         _selectedNodeName = null;
         _showInspectorPane = true;
         _relationshipLeftTable = "";

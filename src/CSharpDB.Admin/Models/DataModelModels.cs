@@ -2,9 +2,10 @@ namespace CSharpDB.Admin.Models;
 
 public sealed class DataModelState
 {
-    public int Version { get; set; } = 3;
+    public int Version { get; set; } = 4;
     public string? DiagramName { get; set; }
     public List<DataModelNode> Nodes { get; set; } = [];
+    public List<DataModelGroup> Groups { get; set; } = [];
     public List<DataModelRelationship> Relationships { get; set; } = [];
     public List<DataModelPendingOperation> PendingOperations { get; set; } = [];
     public List<string> Warnings { get; set; } = [];
@@ -18,6 +19,7 @@ public sealed class DataModelState
 public sealed class DataModelNode
 {
     public string Name { get; set; } = "";
+    public string? GroupId { get; set; }
     public DataModelNodeKind Kind { get; set; } = DataModelNodeKind.Table;
     public double X { get; set; } = 20;
     public double Y { get; set; } = 20;
@@ -33,6 +35,17 @@ public sealed class DataModelNode
     public int TriggerCount { get; set; }
     public List<string> Warnings { get; set; } = [];
 }
+
+public sealed class DataModelGroup
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public string Name { get; set; } = "Group";
+    public DataModelGroupColor Color { get; set; } = DataModelGroupColor.Blue;
+}
+
+public enum DataModelGroupColor { Blue, Green, Amber, Violet, Slate }
+public sealed record DataModelNodeSelection(string NodeName, bool Toggle);
+public sealed record DataModelGroupMove(string GroupId, double DeltaX, double DeltaY);
 
 public enum DataModelNodeKind
 {
