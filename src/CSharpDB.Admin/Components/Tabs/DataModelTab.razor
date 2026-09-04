@@ -4,9 +4,86 @@
 @inject DatabaseClientHolder DbHolder
 @inject TabManagerService TabManager
 @inject ToastService Toast
+@inject DatabaseChangeService Changes
 @implements IAsyncDisposable
 
 <div class="data-model-tab">
+    <div class="toolbar data-model-diagram-toolbar" aria-label="Saved diagrams">
+        <label for="model-diagram-@Tab?.Id">Diagram</label>
+        <select id="model-diagram-@Tab?.Id" class="schema-input" aria-label="Active diagram"
+                @key="_diagramSelectorVersion" value="@(HasPersistedActiveDiagram ? _state.DiagramName : "")"
+                disabled="@(_loading || _savingDiagram || RequiresRouteContext)" @onchange="SelectDiagramAsync">
+            @if (!HasPersistedActiveDiagram)
+            {
+                <option value="">@(_state.DiagramName is null ? "Unsaved diagram" : $"{_state.DiagramName} (not saved)")</option>
+            }
+            @foreach (var diagram in _savedDiagrams)
+            {
+                <option value="@diagram.Name">@diagram.Name (@diagram.SourceCount sources)</option>
+            }
+        </select>
+        <button class="toolbar-btn" disabled="@(_loading || _savingDiagram || RequiresRouteContext)" @onclick="() => OpenDiagramNamePanel(true)">
+            <i class="bi bi-plus-lg"></i> New Diagram
+        </button>
+        <button class="toolbar-btn" disabled="@(_loading || _savingDiagram || RequiresRouteContext)" @onclick="SaveCurrentDiagramAsync">
+            <i class="bi bi-save"></i> Save
+        </button>
+        <button class="toolbar-btn" disabled="@(_loading || _savingDiagram || RequiresRouteContext)" @onclick="() => OpenDiagramNamePanel(false)">Save As</button>
+        <button class="toolbar-btn danger" disabled="@(_loading || _savingDiagram || !HasPersistedActiveDiagram || RequiresRouteContext)"
+                @onclick="RequestDeleteDiagram" title="Delete only the active saved diagram, not database tables">
+            <i class="bi bi-trash"></i> Delete Diagram
+        </button>
+        <span role="status">@SaveStatus · @_state.PendingOperations.Count pending database changes</span>
+    </div>
+    @if (_showDiagramNamePanel)
+    {
+        <form class="data-model-diagram-panel" aria-label="@(_creatingNewDiagram ? "New Diagram" : "Save As")"
+              @onsubmit="SubmitDiagramNameAsync" @onsubmit:preventDefault @onkeydown="OnDiagramPanelKeyDown">
+            <strong>@(_creatingNewDiagram ? "New Diagram" : "Save As")</strong>
+            <p>@(_creatingNewDiagram ? "Create a named, empty canvas with no pending database changes. Your current diagram is kept." : "Save a separate copy of this canvas, including its layout and pending database changes.")</p>
+            <label>Diagram name <input class="schema-input" aria-label="Diagram name" @ref="_diagramNameInput" @bind="_diagramName" @bind:event="oninput" disabled="@_loading" /></label>
+            <button type="submit" class="toolbar-btn primary" disabled="@(_loading || string.IsNullOrWhiteSpace(_diagramName))">@(_creatingNewDiagram ? "Create Diagram" : "Save Copy")</button>
+            <button type="button" class="toolbar-btn" disabled="@_loading" @onclick="CloseDiagramPanels">Cancel</button>
+            @if (_diagramCommandError is not null) { <p role="alert">@_diagramCommandError</p> }
+        </form>
+    }
+    @if (_diagramToDelete is not null)
+    {
+        <section class="data-model-diagram-panel" aria-label="Confirm diagram deletion" @onkeydown="OnDiagramPanelKeyDown">
+            <strong>Delete diagram “@_diagramToDelete”?</strong>
+            <p>This removes only the saved diagram. Database tables are not deleted. The current canvas and pending changes stay open, unsaved; use Save As to keep them.</p>
+            <button class="toolbar-btn danger" disabled="@_loading" @onclick="DeleteActiveDiagramAsync">Confirm Delete Diagram</button>
+            <button class="toolbar-btn" disabled="@_loading" @ref="_deleteCancelButton" @onclick="CloseDiagramPanels">Cancel</button>
+            @if (_diagramCommandError is not null) { <p role="alert">@_diagramCommandError</p> }
+        </section>
+    }
+    <div class="toolbar data-model-tools">
+        <button class="toolbar-btn" disabled="@(_loading || !_history.CanUndo)" @onclick="() => RestoreHistoryAsync(false)">Undo</button>
+        <button class="toolbar-btn" disabled="@(_loading || !_history.CanRedo)" @onclick="() => RestoreHistoryAsync(true)">Redo</button>
+        <input class="schema-input" style="max-width:190px" placeholder="Locate table…" aria-label="Search canvas tables" @bind="_canvasSearch" @bind:event="oninput" />
+        @if (!string.IsNullOrWhiteSpace(_canvasSearch))
+        { <select class="schema-input" style="max-width:190px" aria-label="Locate table" value="" @onchange="e => LocateAsync(e.Value?.ToString() ?? string.Empty)"><option value="">Choose match</option>@foreach(var node in LocatedNodes) { <option>@node.Name</option> }</select> }
+        <button class="toolbar-btn" disabled="@(_loading || _state.Nodes.Count == 0)" @onclick='() => ExportModelAsync("svg")'>Export SVG</button>
+        <button class="toolbar-btn" disabled="@(_loading || _state.Nodes.Count == 0)" @onclick='() => ExportModelAsync("png")'>Export PNG</button>
+        <button class="toolbar-btn" disabled="@(_loading || _state.PendingOperations.Count == 0)" @onclick='() => ExportModelAsync("sql")'>Export pending SQL</button>
+    </div>
+    @if (_showReview)
+    {
+        <section class="model-change-review" aria-label="Review database changes">
+            <h3>Review database changes</h3>
+            <p>Saving a diagram does not apply schema changes. Applying runs the exact SQL below in one transaction.</p>
+            @if (_reviewedPlan is not null)
+            {
+                @foreach (var error in _reviewedPlan.Errors) { <p role="alert">@error</p> }
+                @foreach (var warning in _reviewedPlan.Warnings) { <p class="data-model-muted">@warning</p> }
+                @foreach (var step in _reviewedPlan.Steps)
+                { <div><strong>@step.TableName @(step.IsDestructive ? "— destructive change" : "")</strong><pre>@step.Sql</pre></div> }
+            }
+            else if (!_loading) { <p>Pending changes have changed. Choose Review Changes again before applying.</p> }
+            <button class="toolbar-btn primary" disabled="@(_loading || _reviewedPlan?.CanApply != true)" @onclick="ApplyReviewAsync">Apply reviewed changes</button>
+            <button class="toolbar-btn" disabled="@_loading" @onclick="() => _showReview = false">Close review</button>
+        </section>
+    }
     <div class="toolbar data-model-toolbar">
         <button class="toolbar-btn primary"
                 @onclick="LoadAllAsync"
@@ -18,35 +95,18 @@
             }
             <i class="bi bi-diagram-3"></i> Load All
         </button>
-        <div class="designer-dropdown-wrap">
-            <button class="toolbar-btn"
-                    @onclick="ToggleAddSourcePanel"
-                    disabled="@_loading"
-                    title="Add table or external table">
-                <i class="bi bi-plus-square"></i> Add Source <i class="bi bi-chevron-down" style="font-size:10px"></i>
-            </button>
-            @if (_showAddSource)
-            {
-                <div class="designer-dropdown-panel data-model-source-menu">
-                    @foreach (DataModelSourceOption option in AvailableSourceOptions)
-                    {
-                        var source = option;
-                        <button class="designer-dropdown-item" @onclick="() => AddSourceAsync(source.Name)">
-                            <i class="bi @(source.Kind == DataModelNodeKind.ExternalTable ? "bi-box-arrow-up-right" : "bi-table")"></i>
-                            <span>@source.Name</span>
-                            @if (source.Kind == DataModelNodeKind.ExternalTable && !string.IsNullOrWhiteSpace(source.SourceTableName))
-                            {
-                                <small>@source.SourceTableName</small>
-                            }
-                        </button>
-                    }
-                    @if (!AvailableSourceOptions.Any())
-                    {
-                        <div class="designer-dropdown-empty">No remaining sources</div>
-                    }
-                </div>
-            }
-        </div>
+        <button class="toolbar-btn @( _showSourcesPane ? "active" : "")"
+                @onclick="ToggleSourcesPane"
+                disabled="@_loading"
+                title="Show searchable model sources">
+            <i class="bi bi-layout-sidebar-inset"></i> Sources
+        </button>
+        <button class="toolbar-btn @(_showInspectorPane ? "active" : "")"
+                @onclick="ToggleInspectorPane"
+                disabled="@_loading"
+                title="Show model details, relationships, and pending changes">
+            <i class="bi bi-layout-sidebar-inset-reverse"></i> Details
+        </button>
         <button class="toolbar-btn"
                 @onclick="ToggleNewTablePanel"
                 disabled="@_loading"
@@ -56,8 +116,31 @@
         <button class="toolbar-btn" @onclick="RefreshAsync" disabled="@_loading" title="Reload metadata">
             <i class="bi bi-arrow-clockwise"></i> Refresh
         </button>
-        <button class="toolbar-btn" @onclick="ClearCanvas" disabled="@_loading || _state.Nodes.Count == 0" title="Clear canvas">
+        <button class="toolbar-btn" @onclick="ClearCanvas" disabled="@(_loading || _state.Nodes.Count == 0)" title="Clear canvas">
             <i class="bi bi-eraser"></i> Clear
+        </button>
+
+        <div class="toolbar-separator"></div>
+        <button class="toolbar-btn" @onclick="CreateGroupAsync" disabled="@(_loading || SelectedTableNames.Count < 2)" title="Ctrl/Cmd-click or Shift-click tables, then group them">
+            <i class="bi bi-bounding-box"></i> Group Selected
+        </button>
+        <button class="toolbar-btn" @onclick="AutoArrangeAsync" disabled="@(_loading || _state.Nodes.Count == 0)" title="Arrange parents left of dependent tables; keep groups intact">
+            <i class="bi bi-distribute-horizontal"></i> Auto Arrange
+        </button>
+        <button class="toolbar-btn" @onclick="TidyModelAsync" disabled="@(_loading || _state.Nodes.Count == 0)" title="Reset custom connector routes, use Keys First, arrange tables, and fit the complete model">
+            <i class="bi bi-stars"></i> Tidy Model
+        </button>
+        <button class="toolbar-btn" @onclick="FitModelAsync" disabled="@(_loading || _state.Nodes.Count == 0)" title="Fit the complete model in the canvas">
+            <i class="bi bi-arrows-fullscreen"></i> Fit Model
+        </button>
+        <button class="toolbar-btn" @onclick="() => SetAllDetailLevelsAsync(DataModelNodeDetailLevel.Keys)" disabled="@(_loading || _state.Nodes.Count == 0)" title="Show keys and relationship columns">
+            <i class="bi bi-key"></i> Keys First
+        </button>
+        <button class="toolbar-btn icon-only" @onclick="() => SetAllDetailLevelsAsync(DataModelNodeDetailLevel.All)" disabled="@(_loading || _state.Nodes.Count == 0)" title="Expand all tables" aria-label="Expand all tables">
+            <i class="bi bi-arrows-expand"></i>
+        </button>
+        <button class="toolbar-btn icon-only" @onclick="() => SetAllDetailLevelsAsync(DataModelNodeDetailLevel.Collapsed)" disabled="@(_loading || _state.Nodes.Count == 0)" title="Collapse all tables" aria-label="Collapse all tables">
+            <i class="bi bi-arrows-collapse"></i>
         </button>
 
         <div class="toolbar-separator"></div>
@@ -82,55 +165,11 @@
         </button>
 
         <div class="toolbar-separator"></div>
-        <input class="query-saved-input"
-               style="width:130px"
-               @bind="_diagramName"
-               placeholder="Diagram name..." />
-        <button class="toolbar-btn"
-                @onclick="SaveDiagramAsync"
-                disabled="@(_loading || string.IsNullOrWhiteSpace(_diagramName))"
-                title="Save diagram">
-            <i class="bi bi-save"></i> Save
-        </button>
-        <div class="designer-dropdown-wrap">
-            <button class="toolbar-btn" @onclick="ToggleLoadPanel" disabled="@_loading" title="Open a saved diagram">
-                <i class="bi bi-folder2-open"></i> Load <i class="bi bi-chevron-down" style="font-size:10px"></i>
-            </button>
-            @if (_showLoadPanel)
-            {
-                <div class="designer-dropdown-panel">
-                    @if (!_savedDiagrams.Any())
-                    {
-                        <div class="designer-dropdown-empty">No saved diagrams</div>
-                    }
-                    else
-                    {
-                        @foreach (DataModelDiagramSummary diagram in _savedDiagrams)
-                        {
-                            var saved = diagram;
-                            <button class="designer-dropdown-item" @onclick="() => LoadDiagramAsync(saved.Name)">
-                                <i class="bi bi-diagram-3"></i>
-                                <span>@saved.Name</span>
-                                <small>@saved.SourceCount source@(saved.SourceCount == 1 ? "" : "s")</small>
-                            </button>
-                        }
-                    }
-                </div>
-            }
-        </div>
-        <button class="toolbar-btn danger"
-                @onclick="DeleteActiveDiagramAsync"
-                disabled="@(_loading || string.IsNullOrWhiteSpace(_state.DiagramName))"
-                title="Delete the saved diagram record">
-            <i class="bi bi-trash"></i> Delete
-        </button>
-
-        <div class="toolbar-separator"></div>
         <button class="toolbar-btn primary"
-                @onclick="ApplyPendingChangesAsync"
+                @onclick="ReviewChangesAsync"
                 disabled="@(_loading || _state.PendingOperations.Count == 0)"
                 title="Apply staged schema changes">
-            <i class="bi bi-check2-circle"></i> Apply Changes
+            <i class="bi bi-check2-circle"></i> Review Changes
         </button>
         <button class="toolbar-btn"
                 @onclick="OpenInQueryDesigner"
@@ -162,11 +201,14 @@
             <input class="schema-input"
                    style="width:160px"
                    @bind="_newTableName"
+                   @bind:event="oninput"
                    placeholder="Table name" />
             <input class="schema-input"
                    style="width:120px"
                    @bind="_newTablePrimaryKeyName"
-                   placeholder="PK column" />
+                   @bind:event="oninput"
+                   placeholder="First column" />
+            <label class="schema-check"><input type="checkbox" @bind="_newTableIncludePrimaryKey" /> Primary key</label>
             <select class="schema-input" style="width:110px" @bind="_newTablePrimaryKeyType">
                 <option>INTEGER</option>
                 <option>BIGINT</option>
@@ -190,23 +232,150 @@
 
     @if (_error is not null)
     {
-        <div class="query-error"><i class="bi bi-exclamation-triangle"></i> @_error</div>
+        <div class="query-error" role="alert"><i class="bi bi-exclamation-triangle"></i> @_error</div>
+    }
+    @if (_diagramSaveError is not null)
+    {
+        <div class="query-error" role="alert">@_diagramSaveError Your layout is still open in this tab. Use Save to retry before closing.</div>
     }
 
-    <div class="data-model-workspace">
+    @if (_confirmTidyRoutes)
+    {
+        <div class="data-model-layout-notice" role="alert">
+            <span>Tidy Model will reset all custom connector routes and rearrange the tables. Continue?</span>
+            <button class="toolbar-btn primary" @onclick="ApplyTidyModelAsync">Tidy and reset routes</button>
+            <button class="toolbar-btn" @onclick="() => _confirmTidyRoutes = false">Cancel</button>
+        </div>
+    }
+
+    @if (LayoutOverlapCount > 0)
+    {
+        <div class="data-model-layout-notice">
+            <i class="bi bi-exclamation-triangle"></i>
+            <span>This saved layout has @LayoutOverlapCount overlapping table pair@(LayoutOverlapCount == 1 ? "" : "s").</span>
+            <button class="toolbar-btn" @onclick="TidyModelAsync"><i class="bi bi-stars"></i> Tidy Model</button>
+        </div>
+    }
+
+    @if (DataModelGroups.CountOverlaps(_state) is var groupOverlaps && groupOverlaps > 0)
+    {
+        <div class="data-model-layout-notice" role="status">
+            <span>@groupOverlaps group overlap(s). Overlapping tables are not automatically group members.</span>
+            <button class="toolbar-btn" @onclick="AutoArrangeAsync">Auto Arrange</button>
+        </div>
+    }
+    <div class="data-model-workspace @(_showSourcesPane ? "with-sources" : null) @(_showInspectorPane ? "with-inspector" : null)" inert="@(_loading ? true : (bool?)null)">
+        @if (_showSourcesPane)
+        {
+            <aside class="data-model-sources">
+                <div class="data-model-sources-header">
+                    <div>
+                        <strong>Sources</strong>
+                        <small>@AvailableSourceOptions.Count() available</small>
+                    </div>
+                    <button class="designer-node-close" title="Close Sources" @onclick="ToggleSourcesPane">
+                        <i class="bi bi-x"></i>
+                    </button>
+                </div>
+                <label class="data-model-source-search">
+                    <i class="bi bi-search"></i>
+                    <input value="@_sourceSearch"
+                           @oninput="eventArgs => _sourceSearch = eventArgs.Value?.ToString() ?? string.Empty"
+                           placeholder="Search tables..."
+                           aria-label="Search model sources" />
+                </label>
+                <div class="data-model-source-list">
+                    @foreach (DataModelSourceOption option in FilteredSourceOptions)
+                    {
+                        var source = option;
+                        <div class="data-model-source-row">
+                            <i class="bi @(source.Kind == DataModelNodeKind.ExternalTable ? "bi-box-arrow-up-right" : "bi-table")"></i>
+                            <span title="@source.Name">@source.Name</span>
+                            <button class="toolbar-btn" @onclick="() => AddSourceAsync(source.Name, includeRelated: false)" title="Add only @source.Name">Add</button>
+                            <button class="toolbar-btn icon-only" @onclick="() => AddSourceAsync(source.Name, includeRelated: true)" title="Add @source.Name with directly related tables" aria-label="Add @source.Name with related tables">
+                                <i class="bi bi-diagram-2"></i>
+                            </button>
+                        </div>
+                    }
+                    @if (!FilteredSourceOptions.Any())
+                    {
+                        <div class="designer-dropdown-empty">No matching sources</div>
+                    }
+                </div>
+            </aside>
+        }
         <section class="data-model-canvas-panel">
-            <SchemaCanvas State="_state"
-                          SelectedNodeName="_selectedNodeName"
-                          SelectedRelationshipId="_selectedRelationshipId"
+            <SchemaCanvas @ref="_schemaCanvas"
+                          State="_state"
+                          SelectedNodeName="@_selectedNodeName"
+                          SelectedRelationshipId="@_selectedRelationshipId"
                           OnNodeSelected="SelectNode"
+                          SelectedNodeNames="SelectedTableNames"
+                          SelectedGroupId="@_selectedGroupId"
+                          OnNodeSelectionChanged="SelectTables"
+                          OnGroupSelected="SelectGroup"
+                          OnGroupMoved="OnGroupMovedAsync"
                           OnNodeRemoved="RemoveNode"
                           OnRelationshipSelected="SelectRelationship"
-                          OnNodeMoved="OnNodeMoved" />
+                          OnSelectionCleared="ClearSelection"
+                          OnNodeMoved="OnNodeMoved"
+                          OnNodeDetailChanged="OnNodeDetailChangedAsync"
+                          OnConnectorRouteChanged="OnConnectorRouteChangedAsync"
+                          OnConnectorWaypointSelected="OnConnectorWaypointSelected"
+                          OnViewportChanged="OnViewportChangedAsync" />
         </section>
+        @if (_showInspectorPane)
+        {
         <aside class="data-model-inspector">
+            <div class="data-model-inspector-header">
+                <strong>Model details</strong>
+                <button class="designer-node-close" title="Close model details" aria-label="Close model details" @onclick="ToggleInspectorPane">
+                    <i class="bi bi-x"></i>
+                </button>
+            </div>
             <div class="data-model-inspector-section">
                 <h3>Selection</h3>
-                @if (SelectedNode is not null)
+                @if (SelectedTableNames.Count > 0 && SelectedGroup is null)
+                {
+                    <div class="data-model-group-actions">
+                        <strong>@SelectedTableNames.Count table(s) selected</strong>
+                        <small>Ctrl/Cmd-click or Shift-click to select more tables. Drag a table to move only that table.</small>
+                        <select class="schema-input" aria-label="Target group" @bind="_membershipTarget">
+                            <option value="">Choose group</option>
+                            @foreach (var group in _state.Groups) { <option value="@group.Id">@group.Name</option> }
+                        </select>
+                        <button class="toolbar-btn" disabled="@(!_state.Groups.Any(group => group.Id == _membershipTarget))" @onclick="() => AssignSelectedAsync(_membershipTarget)">Add/Move Selected Tables Here</button>
+                        <button class="toolbar-btn" disabled="@(!_state.Nodes.Any(node => SelectedTableNames.Contains(node.Name) && node.GroupId is not null))" @onclick="() => AssignSelectedAsync(null)">Remove from Group</button>
+                    </div>
+                }
+                @if (SelectedGroup is not null)
+                {
+                    <div class="data-model-group-actions">
+                        <strong>Group: @SelectedGroup.Name</strong>
+                        <p class="data-model-muted">Drag the title to move all members. The frame fits its tables automatically.</p>
+                        <small>@SelectedTableNames.Count table(s) selected for membership changes. Ctrl/Cmd-click or Shift-click tables to select them.</small>
+                        <input class="schema-input" aria-label="Group name" @bind="_groupName" @bind:event="oninput" />
+                        <button class="toolbar-btn" disabled="@string.IsNullOrWhiteSpace(_groupName)" @onclick="RenameGroupAsync">Rename Group</button>
+                        <label>Color
+                            <select class="schema-input" value="@SelectedGroup.Color" @onchange="ChangeGroupColorAsync">
+                                @foreach (var color in Enum.GetValues<DataModelGroupColor>()) { <option value="@color">@color</option> }
+                            </select>
+                        </label>
+                        <button class="toolbar-btn" disabled="@(SelectedTableNames.Count == 0)" @onclick="() => AssignSelectedAsync(SelectedGroup.Id)">Add/Move Selected Tables Here</button>
+                        @foreach (var member in DataModelGroups.Members(_state, SelectedGroup.Id))
+                        {
+                            <div class="data-model-group-member"><span>@member.Name</span>
+                                <button class="toolbar-btn" aria-label="Remove @member.Name from group" @onclick="() => RemoveGroupMemberAsync(member.Name)">Remove from Group</button>
+                            </div>
+                        }
+                        <button class="toolbar-btn" @onclick="UngroupAsync">Ungroup</button>
+                    </div>
+                }
+                else if (SelectedTableNames.Count > 1)
+                {
+                    <p class="data-model-muted">Use Group Selected to enclose these tables. Schema editing is available when one table is selected.</p>
+                }
+                else if (SelectedNode is not null)
                 {
                     <div class="data-model-selection-card">
                         <strong>@SelectedNode.Name</strong>
@@ -225,98 +394,25 @@
                         }
                     </div>
 
-                    @if (SelectedNode.Kind == DataModelNodeKind.Table && !SelectedNode.IsDraft)
-                    {
-                        <div class="data-model-schema-actions">
-                            <div class="data-model-inline-action">
-                                <input class="schema-input"
-                                       value="@_renameTableName"
-                                       @oninput="eventArgs => _renameTableName = eventArgs.Value?.ToString() ?? string.Empty"
-                                       placeholder="New table name" />
-                                <button class="toolbar-btn"
-                                        disabled="@(!CanStageRenameSelectedTable)"
-                                        @onclick="StageRenameSelectedTableAsync"
-                                        title="Stage a table rename">
-                                    <i class="bi bi-pencil"></i> Rename Table
-                                </button>
-                            </div>
-                            <div class="data-model-inline-action">
-                                <input class="schema-input"
-                                       value="@_newColumnName"
-                                       @oninput="eventArgs => _newColumnName = eventArgs.Value?.ToString() ?? string.Empty"
-                                       placeholder="Column name" />
-                                <select class="schema-input" @bind="_newColumnType">
-                                    <option>TEXT</option>
-                                    <option>BOOLEAN</option>
-                                    <option>TINYINT</option>
-                                    <option>SMALLINT</option>
-                                    <option>INTEGER</option>
-                                    <option>BIGINT</option>
-                                    <option>REAL</option>
-                                    <option>DOUBLE PRECISION</option>
-                                    <option>DECIMAL</option>
-                                    <option>CHAR</option>
-                                    <option>VARCHAR</option>
-                                    <option>BINARY</option>
-                                    <option>VARBINARY</option>
-                                    <option>BLOB</option>
-                                    <option>UUID</option>
-                                    <option>DATE</option>
-                                    <option>TIME</option>
-                                    <option>DATETIME2</option>
-                                    <option>DATETIMEOFFSET</option>
-                                    <option>INTERVAL YEAR TO MONTH</option>
-                                    <option>INTERVAL DAY TO SECOND</option>
-                                    <option>JSON</option>
-                                    <option>XML</option>
-                                    <option>BIT</option>
-                                    <option>BIT VARYING</option>
-                                </select>
-                                <label class="schema-check">
-                                    <input type="checkbox" @bind="_newColumnNotNull" />
-                                    <span>Not null</span>
-                                </label>
-                                <button class="toolbar-btn"
-                                        disabled="@(!CanStageAddColumn)"
-                                        @onclick="StageAddColumnAsync"
-                                        title="Stage an ADD COLUMN operation">
-                                    <i class="bi bi-plus"></i> Add Column
-                                </button>
-                            </div>
-                            <div class="data-model-column-action-list">
-                                @foreach (DataModelColumn column in SelectedNode.Columns)
-                                {
-                                    var currentColumn = column;
-                                    <div class="data-model-column-action-row">
-                                        <span>
-                                            <strong>@currentColumn.Name</strong>
-                                            <small>@currentColumn.TypeLabel</small>
-                                        </span>
-                                        <input class="schema-input"
-                                               value="@GetColumnRenameValue(SelectedNode.Name, currentColumn.Name)"
-                                               @oninput="eventArgs => SetColumnRenameValue(SelectedNode.Name, currentColumn.Name, eventArgs.Value?.ToString())"
-                                               placeholder="Rename to" />
-                                        <button class="toolbar-btn"
-                                                disabled="@(!CanStageRenameColumn(SelectedNode, currentColumn))"
-                                                @onclick="() => StageRenameColumnAsync(SelectedNode.Name, currentColumn.Name)">
-                                            <i class="bi bi-pencil"></i>
-                                        </button>
-                                        <button class="toolbar-btn danger"
-                                                disabled="@(currentColumn.IsPrimaryKey || HasPendingTableRename(SelectedNode.Name) || HasPendingColumnDrop(SelectedNode.Name, currentColumn.Name))"
-                                                @onclick="() => StageDropColumnAsync(SelectedNode.Name, currentColumn.Name)">
-                                            <i class="bi bi-trash"></i>
-                                        </button>
-                                    </div>
-                                }
-                            </div>
-                            <button class="toolbar-btn danger"
-                                    disabled="@HasPendingDropForSelectedNode"
-                                    @onclick="StageDropSelectedTableAsync"
-                                    title="Stage a DROP TABLE operation">
-                                <i class="bi bi-trash"></i> Drop Table...
-                            </button>
-                        </div>
-                    }
+                    @if (EditingProjection.Errors.Count > 0)
+                    { <div class="error-banner">Fix or remove invalid pending changes: @string.Join(" ", EditingProjection.Errors)</div> }
+                    @if (EditingNode is not null)
+                    { <DataModelSchemaInspector @key="SelectedNode.Name" Baseline="_state" State="EditingProjection.State" Node="EditingNode" Disabled="_loading" OnStage="StageAdvancedAsync" /> }
+                    else { <p>This table is staged for removal. Undo or remove that pending change to edit it.</p> }
+                    <div class="data-model-context-actions">
+                        <button class="toolbar-btn" @onclick="() => AddSourceAsync(SelectedNode.Name, true)">Show Direct Relationships</button>
+                        @if (!SelectedNode.IsDraft)
+                        {
+                            <button class="toolbar-btn" @onclick="() => TabManager.OpenTableTab(SelectedNode.Name)">Open table data</button>
+                            <button class="toolbar-btn" @onclick="() => TabManager.OpenDataHygieneTab(new DataHygieneSeed(TableName: SelectedNode.Name))">Data Hygiene</button>
+                            <button class="toolbar-btn" @onclick="() => TabManager.OpenTableScriptTab(SelectedNode.Name)">Compare / Deploy</button>
+                            <button class="toolbar-btn" @onclick="OpenSelectedCatalog">System Catalog</button>
+                            @if (SelectedNode.Kind == DataModelNodeKind.Table) { <button class="toolbar-btn" disabled="@(_dataCheckCancellation is not null)" @onclick="CheckSelectedDataAsync">Check existing data</button> }
+                        }
+                        @if (_dataCheckCancellation is not null) { <button class="toolbar-btn" @onclick="() => _dataCheckCancellation.Cancel()">Cancel checks</button> }
+                        @if (_dataCheckMessage is not null) { <p role="status">@_dataCheckMessage</p> }
+                        @foreach (var check in _dataChecks) { <small>@check.Description: @(check.SkippedReason ?? $"{check.Violations} violation(s)")</small> }
+                    </div>
                 }
                 else if (SelectedRelationship is not null)
                 {
@@ -324,6 +420,19 @@
                         <strong>@SelectedRelationship.LeftTable.@SelectedRelationship.LeftColumn</strong>
                         <span>references @SelectedRelationship.RightTable.@SelectedRelationship.RightColumn</span>
                         <small>@RelationshipKindLabel(SelectedRelationship.Kind)</small>
+                        @foreach (var pair in SelectedRelationship.EffectiveColumnPairs) { <code>@pair.ChildColumn → @pair.ParentColumn</code> }
+                        <button class="toolbar-btn" @onclick="() => LocateAsync(SelectedRelationship.LeftTable)">Locate child</button>
+                        <button class="toolbar-btn" @onclick="() => LocateAsync(SelectedRelationship.RightTable)">Locate parent</button>
+                    </div>
+                    <div class="data-model-connector-actions">
+                        <h4>Connector route <small>@(SelectedRelationship.ConnectorLayout is null ? "Automatic" : "Custom")</small></h4>
+                        <p class="data-model-muted">Layout only; does not change the foreign key.</p>
+                        <div class="data-model-connector-buttons">
+                            <button class="toolbar-btn" disabled="@(!CanEditSelectedConnector)" @onclick="AddConnectorBendAsync">Add Bend</button>
+                            <button class="toolbar-btn" disabled="@(!CanRemoveSelectedBend)" @onclick="RemoveConnectorBendAsync">Remove Bend</button>
+                            <button class="toolbar-btn" disabled="@(SelectedRelationship.ConnectorLayout is null)" @onclick="ResetConnectorRouteAsync">Reset to Automatic</button>
+                        </div>
+                        <p class="data-model-muted">Drag a bend or segment grip. Arrow keys move the focused bend; Shift moves farther. Delete removes only a bend. Escape cancels a drag or clears selection.</p>
                     </div>
                     @if (SelectedRelationship.Kind != DataModelRelationshipKind.ExternalArchiveForeignKey)
                     {
@@ -349,21 +458,22 @@
             </div>
 
             <div class="data-model-inspector-section">
-                <h3>Relationships</h3>
-                @if (_state.Relationships.Count == 0)
+                <h3>Known relationships</h3>
+                <p class="data-model-muted">Includes off-canvas endpoints. Select a relationship to show its tables.</p>
+                @if (!InspectorRelationships.Any())
                 {
-                    <p class="data-model-muted">No relationships on the canvas.</p>
+                    <p class="data-model-muted">No known relationships for this selection.</p>
                 }
                 else
                 {
-                    @foreach (DataModelRelationship relationship in _state.Relationships)
+                    @foreach (DataModelRelationship relationship in InspectorRelationships)
                     {
                         var current = relationship;
                         <button class="data-model-relationship-row @(string.Equals(_selectedRelationshipId, current.Id, StringComparison.Ordinal) ? "active" : "")"
-                                @onclick="() => SelectRelationship(current.Id)">
+                                @onclick="() => InspectKnownRelationshipAsync(current)">
                             <i class="bi @(current.Kind == DataModelRelationshipKind.ExternalArchiveForeignKey ? "bi-box-arrow-up-right" : "bi-link-45deg")"></i>
-                            <span>@current.LeftTable.@current.LeftColumn</span>
-                            <small>@current.RightTable.@current.RightColumn</small>
+                            <span>@current.ConstraintName @(EditingNode is null ? "" : current.LeftTable == EditingNode.Name ? "(outgoing)" : "(incoming)")</span>
+                            <small>@current.LeftTable (@string.Join(", ", current.EffectiveColumnPairs.Select(pair => pair.ChildColumn))) → @current.RightTable (@string.Join(", ", current.EffectiveColumnPairs.Select(pair => pair.ParentColumn)))</small>
                         </button>
                     }
                 }
@@ -444,7 +554,7 @@
                     {
                         var current = operation;
                         <div class="data-model-pending-row">
-                            <span>@current.Description</span>
+                            <span>@(string.IsNullOrEmpty(current.Description) ? $"{current.Kind}: {current.TableName}" : current.Description)</span>
                             <button class="designer-node-close"
                                     title="Remove pending change"
                                     @onclick="() => RemovePendingOperationAsync(current.Id)">
@@ -460,6 +570,7 @@
                 <pre>@PendingPreviewSql</pre>
             </div>
         </aside>
+        }
     </div>
     }
 </div>
@@ -476,10 +587,21 @@
     private IReadOnlyList<DataModelSourceOption> _sourceOptions = [];
     private IReadOnlyList<DataModelDiagramSummary> _savedDiagrams = [];
     private string? _selectedNodeName;
+    private readonly HashSet<string> _selectedNodeNames = new(StringComparer.OrdinalIgnoreCase);
+    private string? _selectedGroupId;
+    private string _groupName = "";
+    private string _membershipTarget = "";
+    private DataModelGroup? SelectedGroup => _state.Groups.FirstOrDefault(group => group.Id == _selectedGroupId);
+    private HashSet<string> SelectedTableNames => _state.Nodes
+        .Where(node => _selectedNodeNames.Contains(node.Name) || string.Equals(node.Name, _selectedNodeName, StringComparison.OrdinalIgnoreCase))
+        .Select(node => node.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
     private string? _selectedRelationshipId;
+    private string? _selectedWaypointId;
+    private bool _confirmTidyRoutes;
     private string _diagramName = "";
     private string _newTableName = "";
     private string _newTablePrimaryKeyName = "Id";
+    private bool _newTableIncludePrimaryKey = true;
     private string _newTablePrimaryKeyType = "INTEGER";
     private string _renameTableName = "";
     private string _newColumnName = "";
@@ -492,16 +614,27 @@
     private string _relationshipRightColumn = "";
     private string _relationshipOnDelete = "RESTRICT";
     private string _relationshipOnUpdate = "RESTRICT";
-    private bool _showAddSource;
-    private bool _showLoadPanel;
+    private SchemaCanvas? _schemaCanvas;
+    private bool _showSourcesPane;
+    private bool _showInspectorPane;
     private bool _showNewTablePanel;
+    private bool _hasDiagramMutation;
     private bool _loading;
+    private bool _fitAfterRender;
+    private string _sourceSearch = "";
     private string? _error;
+    private string? _diagramSaveError;
+    private CancellationTokenSource? _viewportPersistCts;
     private AdminRouteClientLease? _routeLease;
     private DataModelService? _routeDataModelService;
 
     private IEnumerable<DataModelSourceOption> AvailableSourceOptions =>
         _sourceOptions.Where(option => !_state.Nodes.Any(node => string.Equals(node.Name, option.Name, StringComparison.OrdinalIgnoreCase)));
+
+    private IEnumerable<DataModelSourceOption> FilteredSourceOptions =>
+        AvailableSourceOptions.Where(option =>
+            string.IsNullOrWhiteSpace(_sourceSearch) ||
+            option.Name.Contains(_sourceSearch.Trim(), StringComparison.OrdinalIgnoreCase));
 
     private DataModelNode? SelectedNode =>
         string.IsNullOrWhiteSpace(_selectedNodeName)
@@ -512,6 +645,12 @@
         string.IsNullOrWhiteSpace(_selectedRelationshipId)
             ? null
             : _state.Relationships.FirstOrDefault(relationship => string.Equals(relationship.Id, _selectedRelationshipId, StringComparison.Ordinal));
+
+    private bool CanEditSelectedConnector => SelectedRelationship is { IsResolved: true } relationship &&
+        FindNode(relationship.LeftTable) is not null && FindNode(relationship.RightTable) is not null;
+
+    private bool CanRemoveSelectedBend => CanEditSelectedConnector && _selectedWaypointId is not null &&
+        SelectedRelationship?.ConnectorLayout?.Waypoints.Any(point => point.Id == _selectedWaypointId) == true;
 
     private IReadOnlyList<DataModelNode> MutableTableNodes =>
         _state.Nodes
@@ -623,6 +762,12 @@
     private bool UsesDefaultDiagram =>
         string.IsNullOrWhiteSpace(Tab?.InitialDataModelSourceName);
 
+    private bool HasPersistedActiveDiagram =>
+        !string.IsNullOrWhiteSpace(_state.DiagramName) &&
+        _savedDiagrams.Any(diagram => string.Equals(diagram.Name, _state.DiagramName, StringComparison.OrdinalIgnoreCase));
+
+    private int LayoutOverlapCount => DataModelLayoutEngine.CountOverlaps(_state);
+
     protected override async Task OnInitializedAsync()
     {
         await RouteLease.UpdateAsync(Tab);
@@ -641,10 +786,12 @@
                 DataModelState? saved = DataModelGraphBuilder.DeserializeState(Tab.DataModelStateJson);
                 if (saved is not null)
                 {
+                    saved.SchemaContext = _state.SchemaContext;
                     _state = saved;
                     NormalizeZoom();
                     EnsureDefaultDiagramName();
                     _diagramName = _state.DiagramName ?? _state.SavedLayoutName ?? "";
+                    _hasDiagramMutation = _state.Nodes.Count > 0 || _state.PendingOperations.Count > 0;
                 }
             }
             catch
@@ -653,14 +800,39 @@
         }
     }
 
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_focusDiagramName)
+        {
+            _focusDiagramName = false;
+            await _diagramNameInput.FocusAsync();
+        }
+        if (_focusDeleteCancel)
+        {
+            _focusDeleteCancel = false;
+            await _deleteCancelButton.FocusAsync();
+        }
+        if (!_fitAfterRender || _schemaCanvas is null)
+            return;
+
+        _fitAfterRender = false;
+        await _schemaCanvas.FitModelAsync();
+    }
+
     private async Task OnRouteChangedAsync(CSharpDbRouteContext? routeContext)
     {
-        await RouteLease.UpdateAsync(Tab);
-        RebuildRouteServices();
-        ResetRouteScopedState();
-
-        if (!RequiresRouteContext)
-            await LoadInitialAsync();
+        _loading = true;
+        CancelViewportPersistence();
+        await _diagramSaveGate.WaitAsync();
+        try
+        {
+            await RouteLease.UpdateAsync(Tab);
+            RebuildRouteServices();
+            ResetRouteScopedState();
+            if (!RequiresRouteContext)
+                await LoadInitialAsync();
+        }
+        finally { _loading = false; _diagramSaveGate.Release(); }
     }
 
     private void RebuildRouteServices()
@@ -672,20 +844,31 @@
 
     private void ResetRouteScopedState()
     {
+        CancelViewportPersistence();
+        CloseDiagramPanels();
+        ClearGroupSelection();
+        _confirmTidyRoutes = false;
+        _selectedWaypointId = null;
+        _diagramSaveError = null;
         _state = new DataModelState();
         _sourceOptions = [];
         _savedDiagrams = [];
         _selectedNodeName = null;
         _selectedRelationshipId = null;
         _diagramName = "";
-        _showAddSource = false;
-        _showLoadPanel = false;
+        _showSourcesPane = false;
+        _showInspectorPane = false;
         _showNewTablePanel = false;
+        _hasDiagramMutation = false;
+        _sourceSearch = "";
         _error = null;
     }
 
     private async Task LoadInitialAsync()
     {
+        ClearGroupSelection();
+        _confirmTidyRoutes = false;
+        _selectedWaypointId = null;
         _loading = true;
         _error = null;
         try
@@ -701,8 +884,10 @@
                     NormalizeZoom();
                     EnsureDefaultDiagramName();
                     _diagramName = _state.DiagramName ?? _state.SavedLayoutName ?? "";
+                    _hasDiagramMutation = _state.Nodes.Count > 0 || _state.PendingOperations.Count > 0;
+                    // Reload route-wide inspection metadata without silently rebasing saved pending DDL.
+                    _state.SchemaContext = (await ActiveDataModels.BuildSelectionAsync([])).SchemaContext;
                     SaveState();
-                    await PersistActiveDiagramAsync();
                 }
             }
             else
@@ -710,12 +895,32 @@
                 DataModelState? defaultDiagram = UsesDefaultDiagram
                     ? await ActiveDiagrams.LoadDiagramAsync(DefaultDiagramName)
                     : null;
-                _state = defaultDiagram ?? await ActiveDataModels.BuildModelAsync(Tab?.InitialDataModelSourceName);
+                if (defaultDiagram is not null)
+                {
+                    _state = defaultDiagram;
+                    _hasDiagramMutation = true;
+                }
+                else if (!string.IsNullOrWhiteSpace(Tab?.InitialDataModelSourceName))
+                {
+                    _state = await ActiveDataModels.BuildSelectionAsync(
+                        [Tab.InitialDataModelSourceName],
+                        DataModelSelectionMode.IncludeDirectlyRelated);
+                    DataModelLayoutEngine.ArrangeAll(_state);
+                    _hasDiagramMutation = _state.Nodes.Count > 0;
+                }
+                else
+                {
+                    _state = await ActiveDataModels.BuildSelectionAsync([]);
+                    _state.DiagramName = DefaultDiagramName;
+                    _state.SavedLayoutName = DefaultDiagramName;
+                    _showSourcesPane = true;
+                    _hasDiagramMutation = false;
+                }
+
                 NormalizeZoom();
                 EnsureDefaultDiagramName();
                 _diagramName = _state.DiagramName ?? "";
                 SaveState();
-                await PersistActiveDiagramAsync();
             }
         }
         catch (Exception ex)
@@ -725,35 +930,48 @@
         finally
         {
             _loading = false;
+            ResetHistory();
         }
     }
 
     private async Task RefreshAsync()
     {
+        ClearGroupSelection();
+        _confirmTidyRoutes = false;
+        _selectedWaypointId = null;
         _loading = true;
         _error = null;
         try
         {
             _sourceOptions = await ActiveDataModels.GetSourceOptionsAsync();
-            if (!string.IsNullOrWhiteSpace(_state.DiagramName))
+            DataModelState? live = await ActiveDataModels.RefreshModelAsync(_state);
+            if (live is not null)
             {
-                DataModelState? saved = await ActiveDiagrams.LoadDiagramAsync(_state.DiagramName);
-                if (saved is not null)
-                {
-                    _state = saved;
-                    _diagramName = saved.DiagramName ?? _diagramName;
-                    _selectedNodeName = null;
-                    _selectedRelationshipId = null;
-                    SaveState();
-                    return;
-                }
+                _state = live;
+                _selectedNodeName = null; _selectedRelationshipId = null;
+                EnsureDefaultDiagramName();
+                SaveState();
+                await PersistActiveDiagramAsync(markMutation: false);
+                return;
             }
 
-            DataModelState refreshed = await ActiveDataModels.BuildModelAsync(Tab?.InitialDataModelSourceName);
+            DataModelState previous = _state;
+            string[] sourceNames = previous.Nodes
+                .Where(static node => !node.IsDraft)
+                .Select(static node => node.Name)
+                .ToArray();
+            DataModelState refreshed = await ActiveDataModels.BuildSelectionAsync(sourceNames, DataModelSelectionMode.Exact);
             PreservePositions(refreshed);
-            refreshed.DiagramName = _state.DiagramName;
-            refreshed.SavedLayoutName = _state.SavedLayoutName;
-            refreshed.PendingOperations = _state.PendingOperations;
+            foreach (DataModelNode draftNode in previous.Nodes.Where(static node => node.IsDraft))
+                refreshed.Nodes.Add(draftNode);
+            foreach (DataModelRelationship draftRelationship in previous.Relationships.Where(static relationship => relationship.Kind == DataModelRelationshipKind.Draft))
+                refreshed.Relationships.Add(draftRelationship);
+            foreach (string warning in DataModelGraphBuilder.PreserveConnectorLayouts(previous.Relationships, refreshed.Relationships))
+                if (!refreshed.Warnings.Contains(warning, StringComparer.OrdinalIgnoreCase)) refreshed.Warnings.Add(warning);
+            refreshed.DiagramName = previous.DiagramName;
+            refreshed.SavedLayoutName = previous.SavedLayoutName;
+            refreshed.PendingOperations = previous.PendingOperations;
+            DataModelGroups.Preserve(previous, refreshed);
             _state = refreshed;
             EnsureDefaultDiagramName();
             SaveState();
@@ -766,6 +984,7 @@
         finally
         {
             _loading = false;
+            ResetHistory();
         }
     }
 
@@ -775,15 +994,12 @@
         _error = null;
         try
         {
-            double currentScale = CurrentScale;
-            _state = await ActiveDataModels.BuildModelAsync(autoLayoutLimit: int.MaxValue);
-            _state.Scale = currentScale;
-            _state.DiagramName = UsesDefaultDiagram && string.IsNullOrWhiteSpace(_diagramName)
-                ? DefaultDiagramName
-                : string.IsNullOrWhiteSpace(_diagramName) ? null : _diagramName.Trim();
-            _state.SavedLayoutName = _state.DiagramName;
-            _selectedNodeName = null;
-            _selectedRelationshipId = null;
+            var existingNames = _state.Nodes
+                .Select(static node => node.Name)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            DataModelState addition = await ActiveDataModels.BuildModelAsync(autoLayoutLimit: int.MaxValue);
+            Merge(addition);
+            DataModelLayoutEngine.PlaceNewNodes(_state, existingNames);
             SaveState();
             await PersistActiveDiagramAsync();
         }
@@ -797,16 +1013,22 @@
         }
     }
 
-    private async Task AddSourceAsync(string sourceName)
+    private async Task AddSourceAsync(string sourceName, bool includeRelated)
     {
-        _showAddSource = false;
         _loading = true;
         _error = null;
         try
         {
-            DataModelState addition = await ActiveDataModels.BuildModelAsync(sourceName);
+            var existingNames = _state.Nodes
+                .Select(static node => node.Name)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            DataModelState addition = await ActiveDataModels.BuildSelectionAsync(
+                [sourceName],
+                includeRelated ? DataModelSelectionMode.IncludeDirectlyRelated : DataModelSelectionMode.Exact);
             Merge(addition);
+            DataModelLayoutEngine.PlaceNewNodes(_state, existingNames);
             _selectedNodeName = sourceName;
+            ClearGroupSelection();
             _selectedRelationshipId = null;
             SaveState();
             await PersistActiveDiagramAsync();
@@ -823,27 +1045,51 @@
 
     private void Merge(DataModelState addition)
     {
-        double offsetX = _state.Nodes.Count == 0 ? 0 : _state.Nodes.Max(static node => node.X) + 250;
+        _state.SchemaContext = addition.SchemaContext ?? _state.SchemaContext;
+        if (_state.SchemaFingerprint is null && _state.PendingOperations.Count == 0) _state.SchemaFingerprint = addition.SchemaFingerprint;
         foreach (DataModelNode node in addition.Nodes)
         {
             if (_state.Nodes.Any(existing => string.Equals(existing.Name, node.Name, StringComparison.OrdinalIgnoreCase)))
                 continue;
 
-            if (offsetX > 0)
-                node.X += offsetX;
             _state.Nodes.Add(node);
         }
 
         foreach (DataModelRelationship relationship in addition.Relationships)
         {
-            if (!_state.Relationships.Any(existing => string.Equals(existing.Id, relationship.Id, StringComparison.Ordinal)))
+            int existingIndex = _state.Relationships.FindIndex(existing => string.Equals(existing.Id, relationship.Id, StringComparison.Ordinal));
+            if (existingIndex < 0)
                 _state.Relationships.Add(relationship);
+            else if (relationship.IsResolved || !_state.Relationships[existingIndex].IsResolved)
+            {
+                DataModelRelationship existing = _state.Relationships[existingIndex];
+                DataModelGraphBuilder.PreserveConnectorLayouts([existing], [relationship]);
+                if (relationship.IsResolved && !existing.IsResolved && !string.IsNullOrWhiteSpace(existing.Warning))
+                {
+                    string obsoleteWarning = $"{existing.LeftTable}.{existing.LeftColumn}: {existing.Warning}";
+                    _state.Warnings.RemoveAll(warning => string.Equals(warning, obsoleteWarning, StringComparison.OrdinalIgnoreCase));
+                }
+                _state.Relationships[existingIndex] = relationship;
+            }
         }
 
         foreach (string warning in addition.Warnings)
         {
             if (!_state.Warnings.Contains(warning, StringComparer.OrdinalIgnoreCase))
                 _state.Warnings.Add(warning);
+        }
+        // Exact Add may resolve an earlier off-canvas endpoint in either direction.
+        // Resolution belongs to the merged canvas, not the one-table selection used to add it.
+        foreach (var relationship in _state.Relationships.Where(relationship => !relationship.IsResolved))
+        {
+            var child = FindNode(relationship.LeftTable); var parent = FindNode(relationship.RightTable);
+            if (child is null || parent is null || !relationship.EffectiveColumnPairs.All(pair =>
+                    child.Columns.Any(column => column.Name.Equals(pair.ChildColumn, StringComparison.OrdinalIgnoreCase)) &&
+                    parent.Columns.Any(column => column.Name.Equals(pair.ParentColumn, StringComparison.OrdinalIgnoreCase)))) continue;
+            if (relationship.Warning is not null)
+                _state.Warnings.RemoveAll(warning => warning.Equals($"{relationship.LeftTable}.{relationship.LeftColumn}: {relationship.Warning}", StringComparison.OrdinalIgnoreCase));
+            relationship.IsResolved = true;
+            relationship.Warning = null;
         }
     }
 
@@ -861,36 +1107,153 @@
 
             node.X = existing.X;
             node.Y = existing.Y;
-            node.IsCollapsed = existing.IsCollapsed;
+            node.DetailLevel = existing.DetailLevel;
+            node.IsCollapsed = existing.DetailLevel == DataModelNodeDetailLevel.Collapsed;
         }
     }
 
     private async Task ClearCanvas()
     {
+        ClearGroupSelection();
+        _confirmTidyRoutes = false;
+        _selectedWaypointId = null;
         string? diagramName = _state.DiagramName;
+        var baseline = _state.SchemaFingerprint;
+        var pending = _state.PendingOperations;
+        var context = _state.SchemaContext;
         _state = new DataModelState
         {
+            SchemaContext = context,
+            SchemaFingerprint = baseline,
+            PendingOperations = pending,
             DiagramName = diagramName,
             SavedLayoutName = diagramName,
         };
         _selectedNodeName = null;
         _selectedRelationshipId = null;
+        _showInspectorPane = false;
+        _hasDiagramMutation = true;
+        SaveState();
+        await PersistActiveDiagramAsync();
+    }
+
+    private void ClearGroupSelection()
+    {
+        _selectedNodeNames.Clear();
+        _selectedGroupId = null;
+        _membershipTarget = "";
+        _groupName = "";
+    }
+
+    private void SelectTables(DataModelNodeSelection selection)
+    {
+        if (!selection.Toggle) { SelectNode(selection.NodeName); return; }
+        if (_selectedNodeName is not null) _selectedNodeNames.Add(_selectedNodeName);
+        if (!_selectedNodeNames.Add(selection.NodeName)) _selectedNodeNames.Remove(selection.NodeName);
+        _selectedNodeName = _selectedNodeNames.Count == 1 ? _selectedNodeNames.First() : null;
+        _selectedRelationshipId = null;
+        _selectedWaypointId = null;
+        _showInspectorPane = true;
+    }
+
+    private void SelectGroup(string id)
+    {
+        var group = _state.Groups.FirstOrDefault(group => group.Id == id);
+        if (group is null) return;
+        // Keep selected tables available for the explicit move-to-group command.
+        if (_selectedNodeName is not null) _selectedNodeNames.Add(_selectedNodeName);
+        _selectedNodeName = null;
+        _selectedGroupId = id;
+        _membershipTarget = id;
+        _groupName = group.Name;
+        _selectedRelationshipId = null;
+        _selectedWaypointId = null;
+        _showInspectorPane = true;
+    }
+
+    private async Task CreateGroupAsync()
+    {
+        var group = DataModelGroups.Create(_state, SelectedTableNames);
+        if (group is null) return;
+        _selectedNodeName = null;
+        _selectedNodeNames.Clear();
+        SelectGroup(group.Id);
+        await PersistGroupChangeAsync();
+    }
+
+    private async Task AssignSelectedAsync(string? id)
+    {
+        DataModelGroups.Assign(_state, SelectedTableNames, id);
+        if (SelectedGroup is null) _selectedGroupId = null;
+        await PersistGroupChangeAsync();
+    }
+
+    private async Task RemoveGroupMemberAsync(string name)
+    {
+        DataModelGroups.Assign(_state, [name], null);
+        if (SelectedGroup is null) _selectedGroupId = null;
+        await PersistGroupChangeAsync();
+    }
+
+    private async Task UngroupAsync()
+    {
+        if (SelectedGroup is null) return;
+        DataModelGroups.Ungroup(_state, SelectedGroup.Id);
+        _selectedGroupId = null;
+        await PersistGroupChangeAsync();
+    }
+
+    private async Task RenameGroupAsync()
+    {
+        if (SelectedGroup is null || string.IsNullOrWhiteSpace(_groupName)) return;
+        SelectedGroup.Name = _groupName.Trim();
+        await PersistGroupChangeAsync();
+    }
+
+    private async Task ChangeGroupColorAsync(ChangeEventArgs args)
+    {
+        if (SelectedGroup is null || !Enum.TryParse<DataModelGroupColor>(args.Value?.ToString(), out var color) || !Enum.IsDefined(color)) return;
+        SelectedGroup.Color = color;
+        await PersistGroupChangeAsync();
+    }
+
+    private Task OnGroupMovedAsync(DataModelGroupMove move) => PersistGroupChangeAsync();
+
+    private async Task PersistGroupChangeAsync()
+    {
         SaveState();
         await PersistActiveDiagramAsync();
     }
 
     private void SelectNode(string name)
     {
+        ClearGroupSelection();
+        _selectedWaypointId = null;
         _selectedNodeName = name;
         _selectedRelationshipId = null;
+        _showInspectorPane = true;
         _renameTableName = "";
         _newColumnName = "";
     }
 
     private void SelectRelationship(string id)
     {
+        ClearGroupSelection();
+        if (_selectedRelationshipId != id) _selectedWaypointId = null;
         _selectedRelationshipId = id;
         _selectedNodeName = null;
+        _showInspectorPane = true;
+    }
+
+    private void ClearSelection()
+    {
+        ClearGroupSelection();
+        _selectedWaypointId = null;
+        _selectedNodeName = null;
+        _selectedRelationshipId = null;
+        _showInspectorPane = false;
+        _renameTableName = "";
+        _newColumnName = "";
     }
 
     private DataModelNode? FindNode(string? name) =>
@@ -939,6 +1302,8 @@
     private async Task RemoveNode(string name)
     {
         _state.Nodes.RemoveAll(node => string.Equals(node.Name, name, StringComparison.OrdinalIgnoreCase));
+        _selectedNodeNames.Remove(name);
+        DataModelGroups.Normalize(_state);
         _state.Relationships.RemoveAll(relationship =>
             string.Equals(relationship.LeftTable, name, StringComparison.OrdinalIgnoreCase)
             || string.Equals(relationship.RightTable, name, StringComparison.OrdinalIgnoreCase));
@@ -966,27 +1331,166 @@
         await PersistActiveDiagramAsync();
     }
 
-    private async Task SaveDiagramAsync()
+    private async Task AutoArrangeAsync()
+    {
+        DataModelLayoutEngine.ArrangeAll(_state);
+        _fitAfterRender = true;
+        SaveState();
+        await PersistActiveDiagramAsync();
+    }
+
+    private async Task TidyModelAsync()
+    {
+        if (_state.Relationships.Any(static relationship => relationship.ConnectorLayout is not null))
+        {
+            _confirmTidyRoutes = true;
+            return;
+        }
+        await ApplyTidyModelAsync();
+    }
+
+    private async Task ApplyTidyModelAsync()
+    {
+        _confirmTidyRoutes = false;
+        _selectedWaypointId = null;
+        foreach (DataModelRelationship relationship in _state.Relationships)
+            relationship.ConnectorLayout = null;
+        foreach (DataModelNode node in _state.Nodes)
+        {
+            node.DetailLevel = DataModelNodeDetailLevel.Keys;
+            node.IsCollapsed = false;
+        }
+
+        DataModelLayoutEngine.ArrangeAll(_state);
+        _fitAfterRender = true;
+        SaveState();
+        await PersistActiveDiagramAsync();
+    }
+
+    private void OnConnectorWaypointSelected(string? waypointId) => _selectedWaypointId = waypointId;
+
+    private async Task OnConnectorRouteChangedAsync(DataModelConnectorLayoutChange change)
+    {
+        DataModelRelationship? relationship = _state.Relationships.FirstOrDefault(item => item.Id == change.RelationshipId);
+        if (relationship is null) return;
+        relationship.ConnectorLayout = DataModelGraphBuilder.CloneConnectorLayout(change.Layout);
+        if (relationship.ConnectorLayout?.Waypoints.Any(point => point.Id == _selectedWaypointId) != true)
+            _selectedWaypointId = null;
+        SaveState();
+        await PersistActiveDiagramAsync();
+    }
+
+    private async Task AddConnectorBendAsync()
+    {
+        if (_schemaCanvas is not null && CanEditSelectedConnector && SelectedRelationship is not null)
+            await _schemaCanvas.AddConnectorBendAsync(SelectedRelationship.Id);
+    }
+
+    private async Task RemoveConnectorBendAsync()
+    {
+        if (_schemaCanvas is not null && CanRemoveSelectedBend && SelectedRelationship is not null)
+            await _schemaCanvas.RemoveConnectorBendAsync(SelectedRelationship.Id);
+    }
+
+    private async Task ResetConnectorRouteAsync()
+    {
+        if (SelectedRelationship is not { } relationship) return;
+        await OnConnectorRouteChangedAsync(new DataModelConnectorLayoutChange(relationship.Id, null));
+        if (_schemaCanvas is not null)
+        {
+            await _schemaCanvas.OnConnectorAnnouncement("Connector route reset to automatic.");
+            await _schemaCanvas.FocusConnectorAsync(relationship.Id);
+        }
+    }
+
+    private async Task FitModelAsync()
+    {
+        if (_schemaCanvas is not null)
+            await _schemaCanvas.FitModelAsync();
+    }
+
+    private async Task SetAllDetailLevelsAsync(DataModelNodeDetailLevel detailLevel)
+    {
+        foreach (DataModelNode node in _state.Nodes)
+        {
+            node.DetailLevel = detailLevel;
+            node.IsCollapsed = detailLevel == DataModelNodeDetailLevel.Collapsed;
+        }
+
+        SaveState();
+        await PersistActiveDiagramAsync();
+    }
+
+    private async Task OnNodeDetailChangedAsync(DataModelNodeDetailChange change)
+    {
+        DataModelNode? node = FindNode(change.NodeName);
+        if (node is null)
+            return;
+
+        node.DetailLevel = change.DetailLevel;
+        node.IsCollapsed = change.DetailLevel == DataModelNodeDetailLevel.Collapsed;
+        SaveState();
+        await PersistActiveDiagramAsync();
+    }
+
+    private Task OnViewportChangedAsync(DataModelViewportChange change)
+    {
+        _state.ViewportX = Math.Max(0, change.X);
+        _state.ViewportY = Math.Max(0, change.Y);
+        _state.Scale = Math.Round(NormalizeScale(change.Scale), 2);
+        _hasDiagramMutation = true;
+        SaveState();
+
+        _viewportPersistCts?.Cancel();
+        _viewportPersistCts?.Dispose();
+        _viewportPersistCts = new CancellationTokenSource();
+        _ = PersistViewportAfterDelayAsync(_viewportPersistCts);
+        return Task.CompletedTask;
+    }
+
+    private async Task PersistViewportAfterDelayAsync(CancellationTokenSource source)
     {
         try
         {
-            await ActiveDiagrams.SaveDiagramAsync(_diagramName, _state);
-            _diagramName = _state.DiagramName ?? _diagramName.Trim();
-            await RefreshSavedDiagramsAsync();
-            SaveState();
+            await Task.Delay(350, source.Token);
+            await InvokeAsync(async () =>
+            {
+                if (ReferenceEquals(_viewportPersistCts, source))
+                    await PersistActiveDiagramAsync();
+            });
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private async Task SaveDiagramAsync()
+    {
+        CancelViewportPersistence();
+        await _diagramSaveGate.WaitAsync();
+        try
+        {
+            _savingDiagram = true;
+            await SaveActiveDiagramCoreAsync();
             Toast.Success($"Data model diagram '{_diagramName}' saved.");
         }
         catch (Exception ex)
         {
-            Toast.Error($"Failed to save data model diagram: {ex.Message}");
+            _diagramSaveError = $"Diagram changes were not saved: {ex.Message}";
+            Toast.Error(_diagramSaveError);
         }
+        finally { _savingDiagram = false; _diagramSaveGate.Release(); }
     }
 
     private async Task LoadDiagramAsync(string name)
     {
-        _showLoadPanel = false;
+        if (_loading || string.IsNullOrWhiteSpace(name)) return;
+        _loading = true;
+        CancelViewportPersistence();
+        await _diagramSaveGate.WaitAsync();
         try
         {
+            await PreserveDiagramBeforeSwitchAsync();
             DataModelState? loaded = await ActiveDiagrams.LoadDiagramAsync(name);
             if (loaded is null)
             {
@@ -995,45 +1499,58 @@
             }
 
             _state = loaded;
+            ResetDiagramInteraction();
+            ResetHistory();
+            _diagramSaveError = null;
             NormalizeZoom();
             _diagramName = loaded.DiagramName ?? name;
+            _hasDiagramMutation = true;
             _selectedNodeName = null;
             _selectedRelationshipId = null;
+            _showInspectorPane = false;
             SaveState();
             Toast.Info($"Data model diagram '{_diagramName}' loaded.");
         }
         catch (Exception ex)
         {
+            _error = $"Failed to load data model diagram: {ex.Message}";
             Toast.Error($"Failed to load data model diagram: {ex.Message}");
         }
+        finally { _loading = false; _diagramSelectorVersion++; _diagramSaveGate.Release(); }
     }
 
     private async Task DeleteActiveDiagramAsync()
     {
-        if (string.IsNullOrWhiteSpace(_state.DiagramName))
+        string? name = _diagramToDelete;
+        if (_loading || name is null || !string.Equals(name, _state.DiagramName, StringComparison.Ordinal))
             return;
-
-        string name = _state.DiagramName;
+        _loading = true;
+        CancelViewportPersistence();
+        await _diagramSaveGate.WaitAsync();
         try
         {
             await ActiveDiagrams.DeleteDiagramAsync(name);
-            await RefreshSavedDiagramsAsync();
             _state.DiagramName = null;
             _state.SavedLayoutName = null;
             _diagramName = "";
+            _diagramSaveError = null;
+            CloseDiagramPanels();
+            _savedDiagrams = _savedDiagrams.Where(diagram => !string.Equals(diagram.Name, name, StringComparison.OrdinalIgnoreCase)).ToArray();
             SaveState();
             Toast.Info($"Data model diagram '{name}' deleted.");
         }
         catch (Exception ex)
         {
+            _diagramCommandError = $"Failed to delete data model diagram: {ex.Message}";
             Toast.Error($"Failed to delete data model diagram: {ex.Message}");
         }
+        finally { _loading = false; _diagramSelectorVersion++; _diagramSaveGate.Release(); }
     }
 
     private async Task RefreshSavedDiagramsAsync()
     {
         try { _savedDiagrams = await ActiveDiagrams.GetDiagramsAsync(); }
-        catch { _savedDiagrams = []; }
+        catch { /* Retain the last known diagram list if refreshing it fails. */ }
     }
 
     private void OpenInQueryDesigner()
@@ -1056,25 +1573,21 @@
             ParentColumnName: SelectedRelationship.RightColumn));
     }
 
-    private void ToggleAddSourcePanel()
+    private void ToggleSourcesPane()
     {
-        _showAddSource = !_showAddSource;
-        _showLoadPanel = false;
+        _showSourcesPane = !_showSourcesPane;
         _showNewTablePanel = false;
     }
 
-    private void ToggleLoadPanel()
+    private void ToggleInspectorPane()
     {
-        _showLoadPanel = !_showLoadPanel;
-        _showAddSource = false;
+        _showInspectorPane = !_showInspectorPane;
         _showNewTablePanel = false;
     }
 
     private void ToggleNewTablePanel()
     {
         _showNewTablePanel = !_showNewTablePanel;
-        _showAddSource = false;
-        _showLoadPanel = false;
     }
 
     private async Task StageNewTableAsync()
@@ -1087,11 +1600,11 @@
             {
                 Name = pkName,
                 TypeLabel = _newTablePrimaryKeyType,
-                IsPrimaryKey = true,
-                IsIdentity =
+                IsPrimaryKey = _newTableIncludePrimaryKey,
+                IsIdentity = _newTableIncludePrimaryKey && (
                     string.Equals(_newTablePrimaryKeyType, "INTEGER", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(_newTablePrimaryKeyType, "BIGINT", StringComparison.OrdinalIgnoreCase),
-                Nullable = false,
+                    string.Equals(_newTablePrimaryKeyType, "BIGINT", StringComparison.OrdinalIgnoreCase)),
+                Nullable = !_newTableIncludePrimaryKey,
             },
         };
 
@@ -1116,10 +1629,13 @@
         });
 
         _selectedNodeName = tableName;
+        ClearGroupSelection();
         _selectedRelationshipId = null;
+        _showInspectorPane = true;
         _newTableName = "";
         _newTablePrimaryKeyName = "Id";
         _newTablePrimaryKeyType = "INTEGER";
+        _newTableIncludePrimaryKey = true;
         _showNewTablePanel = false;
         SaveState();
         await PersistActiveDiagramAsync();
@@ -1226,6 +1742,9 @@
             return;
 
         string relationshipId = Guid.NewGuid().ToString("N");
+        DataModelColumn? childColumn = FindNode(_relationshipLeftTable)?.Columns.FirstOrDefault(column =>
+            string.Equals(column.Name, _relationshipLeftColumn, StringComparison.OrdinalIgnoreCase));
+        bool childColumnIsUnique = childColumn?.IsPrimaryKey == true || childColumn?.IsUnique == true;
         var relationship = new DataModelRelationship
         {
             Id = relationshipId,
@@ -1236,6 +1755,13 @@
             Kind = DataModelRelationshipKind.Draft,
             OnDelete = _relationshipOnDelete,
             OnUpdate = _relationshipOnUpdate,
+            ReferencedEndCardinality = childColumn?.Nullable == true
+                ? DataModelCardinality.ZeroOrOne
+                : DataModelCardinality.One,
+            ReferencingEndCardinality = childColumnIsUnique
+                ? DataModelCardinality.ZeroOrOne
+                : DataModelCardinality.ZeroOrMany,
+            ChildColumnIsUnique = childColumnIsUnique,
         };
 
         _state.Relationships.Add(relationship);
@@ -1253,7 +1779,9 @@
         });
 
         _selectedRelationshipId = relationshipId;
+        ClearGroupSelection();
         _selectedNodeName = null;
+        _showInspectorPane = true;
         _relationshipLeftTable = "";
         _relationshipLeftColumn = "";
         _relationshipRightTable = "";
@@ -1319,26 +1847,6 @@
         await PersistActiveDiagramAsync();
     }
 
-    private async Task ApplyPendingChangesAsync()
-    {
-        _loading = true;
-        _error = null;
-        try
-        {
-            DataModelApplyResult result = await ActiveDiagrams.ApplyPendingOperationsAsync(_state);
-            Toast.Success($"Applied {result.Messages.Count} diagram change{(result.Messages.Count == 1 ? "" : "s")}.");
-            await RefreshAsync();
-        }
-        catch (Exception ex)
-        {
-            _error = $"Failed to apply diagram changes: {ex.Message}";
-            Toast.Error(_error);
-        }
-        finally
-        {
-            _loading = false;
-        }
-    }
 
     private Task ZoomIn() => SetZoom(CurrentScale + ZoomStep);
 
@@ -1360,36 +1868,43 @@
 
     private void SaveState()
     {
+        _projection = null;
         NormalizeZoom();
+        DataModelGraphBuilder.UpdateDraftCardinalities(_state);
+        if (_reviewedPlan is not null && !DataModelService.MatchesReview(_state, _reviewedPlan)) _reviewedPlan = null;
+        if (_historyReady && !_restoringHistory) _history.Record(_state);
         if (Tab is not null)
             Tab.DataModelStateJson = DataModelGraphBuilder.SerializeState(_state);
     }
 
-    private async Task PersistActiveDiagramAsync()
+    private async Task PersistActiveDiagramAsync(bool markMutation = true)
     {
-        EnsureDefaultDiagramName();
-        if (string.IsNullOrWhiteSpace(_state.DiagramName))
-            return;
+        if (markMutation)
+            _hasDiagramMutation = true;
 
+        var state = _state;
+        await _diagramSaveGate.WaitAsync();
         try
         {
-            await ActiveDiagrams.SaveDiagramAsync(_state.DiagramName, _state);
-            await RefreshSavedDiagramsAsync();
+            if (!ReferenceEquals(state, _state) || string.IsNullOrWhiteSpace(_state.DiagramName) ||
+                (!_hasDiagramMutation && _state.Nodes.Count == 0 && _state.PendingOperations.Count == 0))
+                return;
+            _savingDiagram = true;
+            await SaveActiveDiagramCoreAsync();
         }
         catch (Exception ex)
         {
-            Toast.Warning($"Diagram changes were not saved: {ex.Message}");
+            _diagramSaveError = $"Diagram changes were not saved: {ex.Message}";
+            Toast.Warning(_diagramSaveError);
         }
+        finally { _savingDiagram = false; _diagramSaveGate.Release(); }
     }
 
     private void EnsureDefaultDiagramName()
     {
-        if (!UsesDefaultDiagram || !string.IsNullOrWhiteSpace(_state.DiagramName))
-            return;
-
-        _state.DiagramName = DefaultDiagramName;
-        _state.SavedLayoutName = DefaultDiagramName;
-        _diagramName = DefaultDiagramName;
+        // Only initial creation assigns Default Diagram. In particular, deleting
+        // a saved diagram must not implicitly recreate it on the next edit.
+        _state.DiagramName ??= _state.SavedLayoutName;
     }
 
     private static string RelationshipKindLabel(DataModelRelationshipKind kind) => kind switch
@@ -1409,6 +1924,10 @@
 
     public async ValueTask DisposeAsync()
     {
+        _dataCheckCancellation?.Cancel();
+        _viewportPersistCts?.Cancel();
+        _viewportPersistCts?.Dispose();
+        _viewportPersistCts = null;
         if (_routeLease is not null)
             await _routeLease.DisposeAsync();
     }

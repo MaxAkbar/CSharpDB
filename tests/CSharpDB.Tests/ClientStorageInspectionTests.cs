@@ -87,6 +87,32 @@ public sealed class ClientStorageInspectionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GetTableNamesAsync_UsesRegisteredClientVisibilityWithoutHidingUnknownUnderscoreTables()
+    {
+        var result = await ExecuteSqlAsync(
+            """
+            CREATE TABLE _custom (id INTEGER PRIMARY KEY);
+            CREATE TABLE __custom (id INTEGER PRIMARY KEY);
+            CREATE TABLE _etl_pipeline_runs (id INTEGER PRIMARY KEY);
+            CREATE TABLE _shard_catalog_active_maps (id INTEGER PRIMARY KEY);
+            CREATE TABLE __migrate_orders_a1b2c3d4 (id INTEGER PRIMARY KEY);
+            CREATE TABLE _col_orders (_key TEXT PRIMARY KEY, _doc TEXT NOT NULL);
+            CREATE TABLE __data_model_diagrams (id INTEGER PRIMARY KEY);
+            """);
+        Assert.Null(result.Error);
+
+        IReadOnlyList<string> tables = await GetTableNamesAsync();
+
+        Assert.Contains("_custom", tables);
+        Assert.Contains("__custom", tables);
+        Assert.Contains("_etl_pipeline_runs", tables);
+        Assert.Contains("_shard_catalog_active_maps", tables);
+        Assert.Contains("__migrate_orders_a1b2c3d4", tables);
+        Assert.DoesNotContain("_col_orders", tables);
+        Assert.DoesNotContain("__data_model_diagrams", tables);
+    }
+
+    [Fact]
     public async Task InspectStorageAsync_ReturnsHeaderAndHistogram()
     {
         await ExecuteSqlAsync("CREATE TABLE inspect_service (id INTEGER PRIMARY KEY, n INTEGER);");

@@ -8,6 +8,22 @@ $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $wwwRoot = Join-Path $repoRoot 'www'
 $errors = [Collections.Generic.List[string]]::new()
 
+try {
+    & (Join-Path $PSScriptRoot 'Test-Changelog.ps1')
+    & (Join-Path $PSScriptRoot 'Test-ChangelogGuardrails.ps1')
+}
+catch {
+    $errors.Add($_.Exception.Message)
+}
+
+try {
+    & (Join-Path $PSScriptRoot 'Test-Downloads.ps1')
+    & (Join-Path $PSScriptRoot 'Test-DownloadsGuardrails.ps1')
+}
+catch {
+    $errors.Add($_.Exception.Message)
+}
+
 function Add-DocumentationError {
     param([Parameter(Mandatory)][string]$Message)
 

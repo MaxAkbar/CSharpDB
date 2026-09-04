@@ -11,7 +11,7 @@ public sealed class MigrationPlannerTests
     {
         CSharpDbCapabilityCatalog capabilities = CSharpDbCapabilityCatalogLoader.LoadEmbedded();
 
-        Assert.Equal("4.6.2", capabilities.TargetCSharpDbVersion);
+        Assert.Equal("4.6.3", capabilities.TargetCSharpDbVersion);
         Assert.Equal("local-typed-engine", capabilities.Surface);
         Assert.Equal(SqlIdentifierRules.MaxLength, capabilities.MaxIdentifierLength);
         Assert.Equal(64, capabilities.Digest.Length);
@@ -49,9 +49,9 @@ public sealed class MigrationPlannerTests
     }
 
     [Fact]
-    public void EmbeddedCapabilities_AreBoundToThe462ReleaseAssembliesAndResource()
+    public void EmbeddedCapabilities_AreBoundToThe463ReleaseAssembliesAndResource()
     {
-        const string expectedVersion = "4.6.2";
+        const string expectedVersion = "4.6.3";
         Assembly migrationAssembly = typeof(CSharpDbCapabilityCatalogLoader).Assembly;
         Assembly primitivesAssembly = typeof(DbType).Assembly;
 
@@ -76,36 +76,42 @@ public sealed class MigrationPlannerTests
             CSharpDbCapabilityCatalogLoader.LoadEmbedded("4.5.1");
         CSharpDbCapabilityCatalog previousAttempt =
             CSharpDbCapabilityCatalogLoader.LoadEmbedded("4.6.1");
+        CSharpDbCapabilityCatalog latestPublished =
+            CSharpDbCapabilityCatalogLoader.LoadEmbedded("4.6.2");
         CSharpDbCapabilityCatalog current =
             CSharpDbCapabilityCatalogLoader.LoadEmbedded();
 
         Assert.Equal(
-            ["4.3.0", "4.4.0", "4.5.0", "4.5.1", "4.6.1", "4.6.2"],
+            ["4.3.0", "4.4.0", "4.5.0", "4.5.1", "4.6.1", "4.6.2", "4.6.3"],
             CSharpDbCapabilityCatalogLoader.SupportedTargetVersions);
         Assert.Equal("4.3.0", oldest.TargetCSharpDbVersion);
         Assert.Equal("4.4.0", previous.TargetCSharpDbVersion);
         Assert.Equal("4.5.0", tagged.TargetCSharpDbVersion);
         Assert.Equal("4.5.1", previousRelease.TargetCSharpDbVersion);
         Assert.Equal("4.6.1", previousAttempt.TargetCSharpDbVersion);
-        Assert.Equal("4.6.2", current.TargetCSharpDbVersion);
+        Assert.Equal("4.6.2", latestPublished.TargetCSharpDbVersion);
+        Assert.Equal("4.6.3", current.TargetCSharpDbVersion);
         Assert.False(oldest.IsColumnType(DbType.Decimal));
         Assert.False(previous.IsColumnType(DbType.Decimal));
         Assert.True(tagged.IsColumnType(DbType.Decimal));
         Assert.True(previousRelease.IsColumnType(DbType.Decimal));
         Assert.True(previousAttempt.IsColumnType(DbType.Decimal));
+        Assert.True(latestPublished.IsColumnType(DbType.Decimal));
         Assert.True(current.IsColumnType(DbType.Decimal));
         Assert.False(oldest.EngineEnforcesMappedColumnType);
         Assert.False(previous.EngineEnforcesMappedColumnType);
         Assert.True(tagged.EngineEnforcesMappedColumnType);
         Assert.True(previousRelease.EngineEnforcesMappedColumnType);
         Assert.True(previousAttempt.EngineEnforcesMappedColumnType);
+        Assert.True(latestPublished.EngineEnforcesMappedColumnType);
         Assert.True(current.EngineEnforcesMappedColumnType);
         Assert.NotEqual(previous.Digest, current.Digest);
         Assert.NotEqual(tagged.Digest, current.Digest);
         Assert.NotEqual(previousRelease.Digest, current.Digest);
         Assert.NotEqual(previousAttempt.Digest, current.Digest);
+        Assert.NotEqual(latestPublished.Digest, current.Digest);
         Assert.Equal(
-            JsonSerializer.Serialize(previousAttempt with
+            JsonSerializer.Serialize(latestPublished with
             {
                 TargetCSharpDbVersion = current.TargetCSharpDbVersion,
             }),
@@ -555,8 +561,9 @@ public sealed class MigrationPlannerTests
     [Fact]
     public async Task SyntheticPlanningArtifacts_MatchGoldenDigestVectors()
     {
-        MigrationCatalog catalog = await InspectAsync();
-        var planner = new MigrationPlanner();
+        // Published golden artifacts retain their original target identity.
+        MigrationCatalog catalog = await InspectAsync("4.6.2");
+        var planner = new MigrationPlanner(CSharpDbCapabilityCatalogLoader.LoadEmbedded("4.6.2"));
         MigrationPlan preserve = planner.CreatePlan(catalog);
         MigrationPlan queryable = planner.CreatePlan(
             catalog,
@@ -697,14 +704,15 @@ public sealed class MigrationPlannerTests
         Assert.Contains("not supported", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static async Task<MigrationCatalog> InspectAsync() =>
-        await new SyntheticMigrationSourceInspector().InspectAsync(
+    private static async Task<MigrationCatalog> InspectAsync(
+        string targetVersion = CSharpDbCapabilityCatalogLoader.CurrentTargetVersion) =>
+        (await new SyntheticMigrationSourceInspector().InspectAsync(
             new MigrationInspectionRequest
             {
                 TargetCSharpDbVersion = CSharpDbCapabilityCatalogLoader.CurrentTargetVersion,
                 IncludeProfile = true,
                 ProfileSampleSize = 5,
-            });
+            })) with { TargetCSharpDbVersion = targetVersion };
 
     private static MigrationPlanObject Object(MigrationPlan plan, string objectId) =>
         plan.Objects.Single(item => item.SourceObjectId == objectId);

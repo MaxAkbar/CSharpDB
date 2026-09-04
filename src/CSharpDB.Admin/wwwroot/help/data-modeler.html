@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Data Modeler - CSharpDB Studio Help</title>
+    <link rel="icon" type="image/png" href="../icon2.png">
+    <link rel="stylesheet" href="css/help.css">
+</head>
+<body>
+    <div class="shell">
+        <aside class="sidebar">
+            <div class="brand"><img src="../icon2.png" alt=""><div><strong>CSharpDB Studio</strong><span>Offline help</span></div></div>
+            <nav class="nav" aria-label="Help topics">
+                <div class="nav-label">Start</div>
+                <a href="index.html">Overview</a>
+                <a href="workspace.html">Workspace</a>
+                <a href="data-and-schema.html">Data and schema</a>
+                <a class="active" aria-current="page" href="data-modeler.html">Data Modeler</a>
+                <a href="forms-and-reports.html">Forms and reports</a>
+                <a href="operations.html">Operations</a>
+                <a href="shortcuts.html">Shortcuts</a>
+            </nav>
+        </aside>
+
+        <main class="content">
+            <div class="content-inner modeler-guide">
+                <div class="eyebrow">Data Modeler user guide</div>
+                <h1 id="top">Build and Use a Data Model</h1>
+                <p class="lead">Choose the tables you want to understand, arrange their relationships, and save a readable diagram. When you need to change the database, stage supported edits in Details, review their SQL, and apply them deliberately.</p>
+                <div class="hero-actions">
+                    <a class="button primary" href="#first-diagram">Create your first diagram</a>
+                    <a class="button" href="#review-apply">Review and apply changes</a>
+                    <a class="button" href="#troubleshooting">Solve a canvas problem</a>
+                </div>
+
+                <nav class="modeler-toc card" aria-label="On this page">
+                    <h2>On this page</h2>
+                    <ol>
+                        <li><a href="#diagram-or-database">Diagram or database change?</a></li>
+                        <li><a href="#first-diagram">Open and build a first diagram</a></li>
+                        <li><a href="#selection">Select, deselect, and find tables</a></li>
+                        <li><a href="#relationships">Read cards and relationships</a></li>
+                        <li><a href="#layout">Arrange and navigate the canvas</a></li>
+                        <li><a href="#groups">Group tables</a></li>
+                        <li><a href="#connectors">Adjust connector bends</a></li>
+                        <li><a href="#saving">Save, reopen, and undo</a></li>
+                        <li><a href="#schema-edits">Stage schema edits</a></li>
+                        <li><a href="#review-apply">Validate, review, and apply</a></li>
+                        <li><a href="#export-tools">Export and open related tools</a></li>
+                        <li><a href="#keyboard">Keyboard reference</a></li>
+                        <li><a href="#troubleshooting">Troubleshooting</a></li>
+                    </ol>
+                </nav>
+
+                <h2 id="diagram-or-database">1. Know what changes the database</h2>
+                <p>A diagram is a saved view of part of your schema, not a separate database. The toolbar reports diagram saving status and the number of pending database changes separately.</p>
+                <table>
+                    <thead><tr><th scope="col">Action</th><th scope="col">What changes</th></tr></thead>
+                    <tbody>
+                        <tr><td>Add sources, move tables, group, adjust connectors, or change detail level</td><td>Diagram membership and appearance only. No schema SQL runs.</td></tr>
+                        <tr><td>Remove a table from the canvas</td><td>Removes its card and visible connectors, not the database table.</td></tr>
+                        <tr><td>Ungroup</td><td>Removes the frame and membership, leaving tables and connectors in place.</td></tr>
+                        <tr><td>Save / Save As</td><td>Stores the diagram, including pending edits. Does not apply them.</td></tr>
+                        <tr><td>Delete diagram</td><td>Deletes the saved diagram record, not the modeled tables.</td></tr>
+                        <tr><td>Stage change</td><td>Adds an unapplied database operation to the pending list.</td></tr>
+                        <tr><td>Apply reviewed changes</td><td>Executes the reviewed schema SQL against the active database route.</td></tr>
+                    </tbody>
+                </table>
+                <div class="callout"><strong>For layout-only work:</strong> you do not need Review Changes or Apply. Saving your diagram is enough.</div>
+
+                <h2 id="first-diagram">2. Open and build a first diagram</h2>
+                <ol>
+                    <li>Open your database. In Object Explorer, choose <strong>Tools → Data Model</strong>. Alternatively, right-click a table and choose <strong>Show in Data Model</strong> to start with that table and its immediate relationships.</li>
+                    <li>For a sharded connection, set the <strong>Route</strong> keyspace and route key, then use the checkmark to resolve the route. Confirm the displayed shard before continuing. Diagrams and schema changes belong to that route, not to every shard.</li>
+                    <li>The global workspace loads its saved <strong>Default Diagram</strong> if one exists. Otherwise it starts empty. Open <strong>Sources</strong> and search by table name.</li>
+                    <li>Choose <strong>Add</strong> for only that source, or its <strong>Add with related tables</strong> icon for the source plus its immediate incoming and outgoing foreign-key neighbors. This is one hop, not the entire connected schema.</li>
+                    <li>Choose <strong>Keys First</strong> to keep cards compact. Drag table headers into a useful arrangement, or choose <strong>Auto Arrange</strong>, then <strong>Fit Model</strong>.</li>
+                    <li>Choose <strong>Save As</strong>, enter a descriptive name such as <code>Order fulfillment</code>, and choose <strong>Save Copy</strong>. Wait for the saved status. Use the <strong>Diagram</strong> selector to reopen that named diagram later.</li>
+                </ol>
+                <p>For example, start with an orders table and its direct relationships, then add shipment or product tables only when you need them. Choose <strong>Load All</strong> for a complete overview; it adds missing sources without moving cards already on the canvas.</p>
+                <p>Only tables and external tables are canvas nodes. Views, triggers, and other objects remain in their existing tools or appear as known dependencies in Details.</p>
+
+                <h2 id="selection">3. Select, deselect, and find tables</h2>
+                <ul>
+                    <li><strong>Select one table:</strong> click its card. It, its direct neighbors, and relevant relationships stay prominent; unrelated elements dim. Open <strong>Details</strong> to inspect it.</li>
+                    <li><strong>Select several:</strong> Ctrl-click on Windows, Cmd-click on macOS, or Shift-click to toggle individual tables. Multiple selection shows grouping controls instead of single-table schema controls.</li>
+                    <li><strong>Deselect:</strong> click an empty part of the canvas without dragging, or press <kbd>Escape</kbd> while the canvas has focus. During an active move, Escape first cancels that move.</li>
+                    <li><strong>Find a visible table:</strong> type into <strong>Locate table…</strong>, then choose a match. This navigates to an existing card; use Sources to add a table that is not yet visible.</li>
+                    <li><strong>Explore neighbors:</strong> select a table and use <strong>Show Direct Relationships</strong>. In Details, <strong>Known relationships</strong> also lists incoming and outgoing relationships outside the canvas; selecting one adds missing endpoint cards.</li>
+                </ul>
+                <p>Select a connector to inspect its constraint and ordered column mappings. Its participating columns are highlighted. Relationship details also let you locate either endpoint.</p>
+
+                <h2 id="relationships">4. Read table cards and relationships</h2>
+                <p>Cards show column types and indicators for primary keys, foreign keys, uniqueness, indexes, nullability, and rowversion. For complete definitions, select one table and open <strong>Columns and declared properties</strong> or <strong>Keys, checks, and indexes</strong> in Details. Declared types include length, precision, and scale; properties include defaults, collation, and identity.</p>
+                <p>Primary/unique constraints, checks, and indexes are distinct objects. An engine-maintained supporting index is read-only: change its owning constraint instead. External tables and archive relationships can be arranged but cannot be schema-edited here.</p>
+                <h3>Crow's-foot legend</h3>
+                <p>The parent is the referenced table; the child contains the foreign key. Automatic layout generally places parents to the left of children, but moving a card does not change the relationship's meaning.</p>
+                <table>
+                    <thead><tr><th scope="col">Marker</th><th scope="col">Meaning</th><th scope="col">When shown</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>||</code> — exactly one</td><td>A child row requires one parent.</td><td>Parent end when all participating child columns are required.</td></tr>
+                        <tr><td><code>○|</code> — zero or one</td><td>The reference is optional, or there is at most one matching child.</td><td>Parent end when a child FK column is nullable; child end when the complete FK column set has a matching primary/unique key or unique index.</td></tr>
+                        <tr><td><code>○&lt;</code> — zero or many</td><td>A parent may have no children or several.</td><td>Child end when the complete FK column set is not uniquely constrained. An ordinary index does not make it unique.</td></tr>
+                    </tbody>
+                </table>
+                <p>Solid lines are physical foreign keys, dotted lines are draft relationships, and dashed lines are archive relationships. A compact relationship name appears beside the connector on hover, keyboard focus, or selection. Labels avoid table cards, group titles, and connector lines, and follow moves without changing your saved layout. Hover or focus the connector or its label to read the full, wrapped column mappings; Escape dismisses the popup. If the visible canvas is too crowded for a popup, select the relationship and read its mappings in <strong>Details</strong>.</p>
+                <p>A composite foreign key has <strong>one connector per constraint</strong>, not one unrelated line per column. Selection highlights all participating columns; Details shows their ordered mappings. A column's membership in a composite primary key does not make that column individually unique.</p>
+
+                <h2 id="layout">5. Arrange and navigate the canvas</h2>
+                <table>
+                    <thead><tr><th scope="col">Control</th><th scope="col">How to use it</th></tr></thead>
+                    <tbody>
+                        <tr><td>Move a table</td><td>Drag its header, away from the detail and remove buttons. Release to finish the move. Dragging a grouped table moves only that table.</td></tr>
+                        <tr><td>Auto Arrange</td><td>Repositions visible tables and groups into a repeatable relationship-aware layout. Groups remain intact. Custom bend guides are retained; bends internal to a moved group translate with it.</td></tr>
+                        <tr><td>Tidy Model</td><td>Switches to Keys First, resets custom routes, arranges, and fits the model. Confirms before discarding custom routes. Keeps each group's internal table arrangement.</td></tr>
+                        <tr><td>Fit Model</td><td>Centers and scales the model without changing table positions. Use it to recover an off-screen diagram.</td></tr>
+                        <tr><td>Keys First</td><td>Shows primary keys, foreign keys, and visible relationship-endpoint columns. This is the default for newly added cards.</td></tr>
+                        <tr><td>Expand All / Collapse All</td><td>Use the toolbar icons to show every column or only headers. A card's own detail button cycles its visibility independently.</td></tr>
+                        <tr><td>Pan and zoom</td><td>Drag empty background to pan. Use the wheel to zoom around the pointer, or the zoom controls. Reset returns zoom to 100%.</td></tr>
+                        <tr><td>Refresh</td><td>Updates metadata and the schema baseline, preserving current positions, groups, routes, and pending intent. It does not reload an older saved layout or globally rearrange cards.</td></tr>
+                    </tbody>
+                </table>
+                <p>New sources are placed around existing content without moving it. Disconnected components are separated during arrangement; unrelated tables get their own lane in a full model. Cycles cannot all point left-to-right, so those tables are arranged together.</p>
+                <p>Existing diagrams retain their saved detail visibility. Hide Sources or Details when you want more unobstructed canvas space.</p>
+
+                <h2 id="groups">6. Group tables into named areas</h2>
+                <ol>
+                    <li>Ctrl/Cmd-click or Shift-click at least two tables, then choose <strong>Group Selected</strong>.</li>
+                    <li>In Details, enter a <strong>Group name</strong> and choose <strong>Rename Group</strong>. Choose a palette color. The frame fits the members automatically without moving them.</li>
+                    <li>Drag the group's title to move every member together. Drag an individual table header to change its position within the group; the frame follows.</li>
+                    <li>To change membership, select the relevant tables, choose a <strong>Target group</strong>, and use <strong>Add/Move Selected Tables Here</strong>. Each table belongs to at most one group.</li>
+                    <li>Use <strong>Remove from Group</strong> to detach a member, or select the group and choose <strong>Ungroup</strong> to remove its frame. Neither action drops database tables.</li>
+                </ol>
+                <p>Membership is explicit: dragging across a boundary does not add or remove a table. Single-table groups remain; empty groups are pruned. Groups may include physical, draft, and external tables. There are no nested, collapsed, or manually resized groups.</p>
+                <p>Group movement translates custom bends only when both endpoints are members. Bends on connections to outside tables stay fixed while their endpoint legs follow the moved cards. New sources avoid occupied group bounds. Manual overlaps are allowed but produce warnings; Auto Arrange can separate groups and ungrouped tables.</p>
+
+                <h2 id="connectors">7. Adjust connector bends</h2>
+                <ol>
+                    <li>Select a relationship line to reveal its bend handles and segment grips.</li>
+                    <li>Drag a bend to move that routing guide. Drag an interior segment grip to slide the whole straight section: vertical sections move left/right, horizontal sections move up/down, and the adjacent sections adjust without adding a split. Movement stays in the available lane outside tables and group titles. The endpoint sections stay attached to their column rows.</li>
+                    <li>A slid middle vertical section keeps its horizontal position when either table moves; its corners follow the current column rows without adding a detour. If a table moves into that lane, the lane stays outside the table. Obstructions can still require automatic routing.</li>
+                    <li>To deliberately add a detour, use <strong>Add Bend</strong>, press <kbd>Enter</kbd> on a segment grip, or double-click a segment. Adding or moving an individual bend keeps explicit guides fixed on the canvas instead. Segment positions and this behavior are restored when you reopen the diagram. <kbd>Escape</kbd> cancels an active move.</li>
+                    <li>For explicit controls, open <strong>Details → Connector route</strong>. <strong>Add Bend</strong> creates and focuses a guide on the longest segment. <strong>Remove Bend</strong> removes the selected guide.</li>
+                    <li>Release to finish and save the adjustment on a saved diagram. Press Escape during a move to cancel it. Use <strong>Reset to Automatic</strong> to discard the route guides; removing the last bend also restores automatic routing.</li>
+                </ol>
+                <p>Moving a single table keeps its saved guides fixed while the endpoint legs follow the column rows. Collapsed cards use separate header-side attachment lanes. If a table obstructs a saved guide, the canvas temporarily shows a safe automatic route and a warning. The guide is retained: move the table away, reposition the guide, or reset the route.</p>
+                <div class="callout"><strong>Connector editing changes appearance only.</strong> It does not add, remove, or modify a foreign key. To change the actual relationship, use the schema inspector and review the staged SQL.</div>
+
+                <h2 id="saving">8. Save, reopen, and undo</h2>
+                <p>The <strong>Diagram</strong> selector at the top shows the active diagram and other diagrams saved in this database and route. Named diagrams save completed table/group moves, connector adjustments, and explicit layout/detail commands. Pan and zoom saving is debounced briefly. A new global Default Diagram begins saving after a change; merely opening an untouched empty workspace does not create a record.</p>
+                <ul>
+                    <li><strong>New Diagram:</strong> opens a naming panel. Enter a new, unused name and choose <strong>Create Diagram</strong>. This saves and opens an empty canvas with no pending database changes. The previous diagram is kept; its tables, layout, and pending edits are not copied.</li>
+                    <li><strong>Save:</strong> saves the active named diagram. For an unnamed canvas, it opens the naming panel. Check the saving, saved, or save-failed status before closing.</li>
+                    <li><strong>Save As:</strong> opens a naming panel. Enter a new, unused name and choose <strong>Save Copy</strong>. It copies the current layout and pending edits, activates the copy, and refuses to overwrite an existing diagram.</li>
+                    <li><strong>Diagram selector:</strong> choose a saved name to switch diagrams. Loading restores its positions, groups, connector bends and attachment sides, detail levels, viewport, and pending changes. Creating or opening another diagram is blocked if the current canvas is unnamed and has changes, or cannot be saved. Save it first, then retry.</li>
+                    <li><strong>Delete Diagram:</strong> asks you to confirm the active diagram's name. Confirmation deletes only its saved record, never database tables. The canvas and pending changes remain open but unsaved. Further edits do not recreate the deleted record; choose Save As to keep this canvas under a name. Cancel or Escape dismisses the confirmation.</li>
+                    <li><strong>Undo / Redo:</strong> use the toolbar to reverse or restore diagram edits and unapplied schema edits. A completed drag is one history action. History is session-local and resets after refresh, diagram load, or successful schema application.</li>
+                </ul>
+                <p><strong>Clear is different:</strong> it removes cards and groups from the active canvas and saves that empty layout, while retaining pending database changes. Use <strong>New Diagram</strong> for a separate blank workspace, or <strong>Save As</strong> before clearing if you want to keep the original layout. Removing a card, clearing a canvas, and deleting a diagram never drop database tables; schema changes require review and application.</p>
+                <p>Save an unnamed diagram before switching routes or loading another one. Undo does not reverse committed database changes, and its history is not restored when you reopen a saved diagram.</p>
+                <p>Diagrams are stored as JSON in the database-local <code>__data_model_diagrams</code> backing table. Current version-5 records retain the layout and pending intent; earlier versions are migrated on load. Use <strong>System Catalog → sys.diagrams</strong> to inspect saved diagrams, or Internal Storage to see the backing-table inventory. Do not edit backing records directly.</p>
+
+                <h2 id="schema-edits">9. Stage supported schema edits</h2>
+                <p>Select exactly one writable table, open <strong>Details → Stage schema change</strong>, choose the change type, fill in its fields, and choose <strong>Stage change</strong>. The inspector previews pending edits in order. This does not execute SQL.</p>
+                <h3>Example: add a column and index it</h3>
+                <ol>
+                    <li>On an existing writable table, choose <strong>Add Column</strong>. Use an unused name such as <code>caption</code>, declared type <code>VARCHAR(60)</code>, and optional literal default <code>'new'</code>. Stage the change.</li>
+                    <li>Choose <strong>Create Index</strong>. Enter an unused index name and select <code>caption</code> in the ordered column picker. Stage this second change.</li>
+                    <li>Inspect both pending operations. If you rename the new column before creating the index, use its new preview name in later operations.</li>
+                    <li>Continue with <a href="#review-apply">validation and review</a>. Saving the diagram alone leaves both edits unapplied.</li>
+                </ol>
+                <h3>Tables, columns, checks, and indexes</h3>
+                <p><strong>New Table</strong> creates a draft. Add its initial columns before staging other edits on it so they can be included in CREATE TABLE. For a composite primary key, clear <strong>Primary key</strong> on the initial column, add the remaining columns, and then stage an ordered primary-key constraint.</p>
+                <p>The inspector supports table/column rename and drop, supported type facets, nullability, literal defaults, collation, primary/unique keys, checks, foreign keys, and ordinary/unique indexes. Use <strong>Stage removal</strong> beside an existing supported constraint or user-managed index to remove it through review.</p>
+                <ul>
+                    <li>Defaults are literal values, including supported typed literals or NULL, not arbitrary function expressions.</li>
+                    <li>ROWVERSION can be declared during initial draft-table creation, not added to an existing table. Add it before other edits turn subsequent draft column additions into ALTER operations.</li>
+                    <li>A new column can have a named column CHECK. For an existing column, add a named table CHECK with a row-local SQL expression referring to it; there is no ALTER operation to attach a column-scoped CHECK.</li>
+                    <li>Index pickers retain column order and optional collations. ASC/DESC index direction options are not supported. Engine-maintained supporting indexes cannot be edited independently.</li>
+                </ul>
+                <p>Controls share validation with Table Designer. Unsupported combinations are blocked with an explanation; the modeler does not silently rebuild tables to simulate unavailable engine features.</p>
+                <h3>Composite keys and foreign keys</h3>
+                <ol>
+                    <li>Stage the referenced primary/unique key first if it does not exist. In the ordered picker, add each key column and use the move-up controls to put them in the intended order.</li>
+                    <li>Select the child table and choose <strong>Add Foreign Key</strong>. Enter the constraint name and choose its child columns.</li>
+                    <li>Choose <strong>Referenced table</strong> and the same number of <strong>Parent columns (matching order)</strong>. Each position is one mapping, for example:</li>
+                </ol>
+                <table>
+                    <thead><tr><th scope="col">Position</th><th scope="col">Child: orders</th><th scope="col">Parent: customers</th></tr></thead>
+                    <tbody>
+                        <tr><td>1</td><td><code>tenant_id</code></td><td><code>tenant_id</code></td></tr>
+                        <tr><td>2</td><td><code>customer_id</code></td><td><code>id</code></td></tr>
+                    </tbody>
+                </table>
+                <p>Choose supported <strong>On delete</strong> and <strong>On update</strong> actions. RESTRICT, NO ACTION, CASCADE, SET NULL, and SET DEFAULT are subject to column and engine restrictions. To replace an existing FK, choose it under <strong>Relationship to replace</strong>; otherwise leave <strong>Create new relationship</strong>. Stage the change and review the resulting statements.</p>
+                <p>Later operations depend on earlier staged names and definitions. If you remove an earlier pending change, inspect and correct later dependent operations before applying.</p>
+
+                <h2 id="review-apply">10. Validate, review, and apply safely</h2>
+                <ol>
+                    <li><strong>Inspect the pending list and dependencies.</strong> Known view and trigger dependencies help assess destructive changes but are not guaranteed exhaustive. Check external consumers before dropping or renaming objects.</li>
+                    <li><strong>Optionally choose Check existing data.</strong> It explicitly checks relevant NULLs, duplicate candidate keys with their collations, and orphaned foreign keys. It can scan related tables outside the canvas. Use Cancel to stop remaining work.</li>
+                    <li><strong>Choose Review Changes.</strong> Read the exact SQL, affected tables, validation errors, warnings, and destructive-change labels. Correct errors before proceeding. Changes to the pending list require a new review.</li>
+                    <li><strong>Choose Apply reviewed changes only when ready.</strong> The modeler verifies the live schema baseline, then applies the reviewed batch, including native foreign-key DDL, in one transaction on the current database route.</li>
+                    <li><strong>Read the result.</strong> On success the schema baseline updates and applied intent is cleared. Confirm the separate diagram-save status before closing.</li>
+                </ol>
+                <p>Data checks are opt-in and may be expensive; opening or reviewing a diagram does not run them. New or converted columns that cannot be checked against live data are reported as <strong>skipped</strong>, not as passing. The engine still validates constraints during Apply; a prior successful check is not a guarantee that data has remained unchanged.</p>
+                <table>
+                    <thead><tr><th scope="col">Result</th><th scope="col">What to do</th></tr></thead>
+                    <tbody>
+                        <tr><td>Schema changed outside the modeler</td><td>The stale plan is blocked. Refresh, inspect how pending intent fits the new baseline, and review again. It is not silently replayed.</td></tr>
+                        <tr><td>A statement fails</td><td>The transaction is rolled back and pending changes remain. Correct the cause, then review again before retrying.</td></tr>
+                        <tr><td>Client lacks transactional review support</td><td>Apply is unavailable. Do not assume the modeler will apply a partially committed sequence; use a connection that supports the required transaction behavior.</td></tr>
+                        <tr><td>Schema applied, but diagram save failed</td><td>The database commit succeeded. Do not reapply the old SQL. Refresh to reconcile the schema, inspect the diagram, and retry saving it.</td></tr>
+                    </tbody>
+                </table>
+
+                <h2 id="export-tools">11. Export and open related tools</h2>
+                <ul>
+                    <li><strong>Export SVG / Export PNG:</strong> downloads the current model as an image without changing layout or executing SQL. Large PNGs are scaled down; SVG is useful when you need scalable output.</li>
+                    <li><strong>Export pending SQL:</strong> reviews the pending plan and exports its transaction script without executing it. Inspect it before running it anywhere; an exported file is not a live schema-drift check.</li>
+                    <li><strong>Open in Query Designer:</strong> takes the model into the existing query-building workflow.</li>
+                    <li><strong>Table data, Data Hygiene, System Catalog, and Compare / Deploy:</strong> use the contextual actions for records, deeper data-quality work, catalog inspection, or schema comparison. These remain separate tools.</li>
+                </ul>
+
+                <h2 id="keyboard">12. Keyboard reference</h2>
+                <p>These commands apply when the relevant canvas element has focus, not while typing in an inspector field.</p>
+                <table>
+                    <thead><tr><th scope="col">Input</th><th scope="col">Action</th></tr></thead>
+                    <tbody>
+                        <tr><td>Tab, then Enter / Space</td><td>Focus and select a table, relationship, or group title.</td></tr>
+                        <tr><td>Ctrl/Cmd-click or Shift-click</td><td>Toggle a table in the current selection.</td></tr>
+                        <tr><td>Escape</td><td>Cancel an active move; otherwise clear canvas selection.</td></tr>
+                        <tr><td>Arrow key on a group title or bend</td><td>Move it by 8 canvas units.</td></tr>
+                        <tr><td>Shift + Arrow on a group title or bend</td><td>Move it by 24 canvas units.</td></tr>
+                        <tr><td>Enter on a segment grip</td><td>Create a bend for that segment.</td></tr>
+                        <tr><td>Delete / Backspace on a bend</td><td>Remove only that bend, never the foreign key.</td></tr>
+                    </tbody>
+                </table>
+                <p>Use the <strong>Undo</strong> and <strong>Redo</strong> toolbar buttons for editing history. See <a href="shortcuts.html">Shortcuts</a> for application-wide navigation commands.</p>
+
+                <h2 id="troubleshooting">13. Troubleshooting</h2>
+                <table>
+                    <thead><tr><th scope="col">Symptom</th><th scope="col">Try this</th></tr></thead>
+                    <tbody>
+                        <tr><td>Most tables look dark or dimmed</td><td>A table, group, or relationship is selected. Click empty canvas or focus the canvas and press Escape.</td></tr>
+                        <tr><td>I cannot move a table</td><td>Drag the table header rather than a connector, column, or header button. Drag the group title only when you want to move all members.</td></tr>
+                        <tr><td>The diagram is crowded or off-screen</td><td>Use Keys First and Fit Model first. Auto Arrange repositions content; Tidy Model also resets custom routes. Prefer a smaller source selection for detailed work.</td></tr>
+                        <tr><td>A foreign-key line is missing</td><td>Both endpoint cards must be visible. Use Known relationships or Show Direct Relationships to add the missing endpoint. Check metadata warnings for a source that no longer exists.</td></tr>
+                        <tr><td>A saved bend is not being followed</td><td>A card may obstruct it. Move the card away, adjust the bend, or Reset to Automatic. The fallback does not erase the saved guide.</td></tr>
+                        <tr><td>Schema editing controls are missing</td><td>Select one writable physical or draft table, not a group, multiple tables, or an external table. Open Details.</td></tr>
+                        <tr><td>My saved arrangement is missing</td><td>Check the database, route, and Diagram selector. Select the named diagram; the global entry loads Default Diagram. Look for a save-failed message.</td></tr>
+                        <tr><td>A table disappeared after refresh or load</td><td>Read missing-source warnings and verify live metadata. Removed sources cannot keep active group membership; other saved positions are retained.</td></tr>
+                        <tr><td>Changes are saved but the database is unchanged</td><td>Diagram saving preserves pending intent. Database changes require Review Changes and Apply reviewed changes.</td></tr>
+                    </tbody>
+                </table>
+                <div class="next">
+                    <a class="button" href="data-and-schema.html">Back: Data and schema</a>
+                    <a class="button" href="#top">Back to top</a>
+                    <a class="button primary" href="forms-and-reports.html">Next: Forms and reports</a>
+                </div>
+            </div>
+        </main>
+    </div>
+</body>
+</html>

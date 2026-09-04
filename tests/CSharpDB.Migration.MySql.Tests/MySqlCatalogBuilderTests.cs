@@ -27,7 +27,10 @@ public sealed class MySqlCatalogBuilderTests
         Assert.Equal(
             MigrationArtifactSerializer.ComputeCatalogDigest(first),
             MigrationArtifactSerializer.ComputeCatalogDigest(second));
-        string goldenDigest = MigrationArtifactSerializer.ComputeCatalogDigest(first);
+        Assert.Equal(CSharpDbCapabilityCatalogLoader.CurrentTargetVersion, first.TargetCSharpDbVersion);
+        // Compare the published fingerprint without rewriting its release identity.
+        string goldenDigest = MigrationArtifactSerializer.ComputeCatalogDigest(
+            first with { TargetCSharpDbVersion = "4.6.2" });
         Assert.True(
             string.Equals(GoldenCatalogDigest, goldenDigest, StringComparison.Ordinal),
             $"MySQL catalog golden digest changed. Actual value: {goldenDigest}");

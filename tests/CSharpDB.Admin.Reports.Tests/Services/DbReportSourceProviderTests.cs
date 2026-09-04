@@ -136,7 +136,7 @@ public class DbReportSourceProviderTests
     }
 
     [Fact]
-    public async Task ListSourceReferencesAsync_FiltersUnsupportedSavedQueriesAndSystemTables()
+    public async Task ListSourceReferencesAsync_FiltersRegisteredStorageAndKeepsUnknownUnderscoreTable()
     {
         await using var db = await TestDatabaseScope.CreateAsync();
         await CreateSchemaAsync(db);
@@ -151,9 +151,9 @@ public class DbReportSourceProviderTests
         IReadOnlyList<ReportSourceReferenceItem> sources = await provider.ListSourceReferencesAsync();
 
         Assert.Contains(sources, item => item.Kind == ReportSourceKind.Table && item.Name == "Customers");
+        Assert.Contains(sources, item => item.Kind == ReportSourceKind.Table && item.Name == "_internal_metrics");
         Assert.Contains(sources, item => item.Kind == ReportSourceKind.View && item.Name == "CustomerTotals");
         Assert.Contains(sources, item => item.Kind == ReportSourceKind.SavedQuery && item.Name == "west_customers");
-        Assert.DoesNotContain(sources, item => item.Name == "_internal_metrics");
         Assert.DoesNotContain(sources, item => item.Name == "cleanup_customers");
         Assert.DoesNotContain(sources, item => item.Name == "customer_by_id");
         Assert.DoesNotContain(sources, item => item.Name == "__designer_layout:customers");

@@ -411,26 +411,6 @@
     private const int DefaultEditorHeightPx = 220;
     private const int MinEditorHeightPx = 120;
     private const int MaxEditorHeightPx = 560;
-    private static readonly string[] s_systemCatalogSourceNames =
-    [
-        "sys.tables",
-        "sys.columns",
-        "sys.indexes",
-        "sys.table_stats",
-        "sys.column_stats",
-        "sys.planner_histograms",
-        "sys.planner_heavy_hitters",
-        "sys.planner_index_prefix_stats",
-        "sys.views",
-        "sys.triggers",
-        "sys.objects",
-        "sys.validation_rules",
-        "sys_validation_rules",
-        "sys.saved_queries",
-        "sys.external_tables",
-        "sys.diagrams",
-    ];
-
     [Parameter] public TabDescriptor? Tab { get; set; }
 
     private SqlEditor? _editor;
@@ -827,34 +807,28 @@
 
             await Task.WhenAll(tableNamesTask, viewNamesTask, proceduresTask);
 
-            var sourceByName = new Dictionary<string, SqlCompletionSource>(StringComparer.OrdinalIgnoreCase);
-            foreach (string tableName in tableNamesTask.Result)
-                sourceByName.TryAdd(tableName, new SqlCompletionSource(tableName, SqlCompletionSourceKind.Table));
-
-            foreach (string viewName in viewNamesTask.Result)
-                sourceByName.TryAdd(viewName, new SqlCompletionSource(viewName, SqlCompletionSourceKind.View));
-
-            foreach (string systemCatalogName in s_systemCatalogSourceNames)
-                sourceByName.TryAdd(systemCatalogName, new SqlCompletionSource(systemCatalogName, SqlCompletionSourceKind.SystemCatalog));
+            IReadOnlyList<SqlCompletionSource> sources = BuildCompletionSources(
+                tableNamesTask.Result,
+                viewNamesTask.Result);
 
             var columnsBySource = new Dictionary<string, IReadOnlyList<SqlCompletionColumn>>(StringComparer.OrdinalIgnoreCase);
-            foreach (string tableName in tableNamesTask.Result)
+            foreach (SqlCompletionSource source in sources)
             {
-                var schema = await ActiveClient.GetTableSchemaAsync(tableName);
+                if (source.Kind != SqlCompletionSourceKind.Table)
+                    continue;
+
+                var schema = await ActiveClient.GetTableSchemaAsync(source.Name);
                 if (schema is null)
                     continue;
 
-                columnsBySource[tableName] = schema.Columns
-                    .Select(column => new SqlCompletionColumn(column.Name, column.EffectiveType.ToSql(), tableName))
+                columnsBySource[source.Name] = schema.Columns
+                    .Select(column => new SqlCompletionColumn(column.Name, column.EffectiveType.ToSql(), source.Name))
                     .ToArray();
             }
 
             _completionCatalog = new SqlCompletionCatalog
             {
-                Sources = sourceByName.Values
-                    .OrderBy(source => source.Kind)
-                    .ThenBy(source => source.Name, StringComparer.OrdinalIgnoreCase)
-                    .ToArray(),
+                Sources = sources,
                 ColumnsBySource = columnsBySource,
                 Procedures = proceduresTask.Result
                     .Select(procedure => procedure.Name)
@@ -877,6 +851,39 @@
         {
             _completionCatalog = SqlCompletionCatalog.Empty;
         }
+    }
+
+    internal static IReadOnlyList<SqlCompletionSource> BuildCompletionSources(
+        IEnumerable<string> tableNames,
+        IEnumerable<string> viewNames)
+    {
+        ArgumentNullException.ThrowIfNull(tableNames);
+        ArgumentNullException.ThrowIfNull(viewNames);
+
+        var sourceByName = new Dictionary<string, SqlCompletionSource>(StringComparer.OrdinalIgnoreCase);
+
+        // Seed the virtual catalogs first so a physical object cannot mask either
+        // the canonical dotted name or its supported underscored alias.
+        foreach (DbSystemCatalogDescriptor catalog in DbSystemCatalogRegistry.Catalogs)
+            sourceByName.Add(catalog.Name, new SqlCompletionSource(catalog.Name, SqlCompletionSourceKind.SystemCatalog));
+        foreach (string alias in DbSystemCatalogRegistry.UnderscoredAliases.Keys)
+            sourceByName.Add(alias, new SqlCompletionSource(alias, SqlCompletionSourceKind.SystemCatalog));
+
+        foreach (string tableName in tableNames)
+        {
+            if (DbInternalTableRegistry.IsInternalTable(tableName))
+                continue;
+
+            sourceByName.TryAdd(tableName, new SqlCompletionSource(tableName, SqlCompletionSourceKind.Table));
+        }
+
+        foreach (string viewName in viewNames)
+            sourceByName.TryAdd(viewName, new SqlCompletionSource(viewName, SqlCompletionSourceKind.View));
+
+        return sourceByName.Values
+            .OrderBy(source => source.Kind)
+            .ThenBy(source => source.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
     }
 
     private async Task RunExecuteCommandAsync(

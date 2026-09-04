@@ -144,7 +144,7 @@ public class DbSchemaProviderTests
     }
 
     [Fact]
-    public async Task ListTableNamesAsync_FiltersMetadataTable()
+    public async Task ListTableNamesAsync_FiltersRegisteredMetadataAndKeepsUnknownUnderscoreTable()
     {
         await using var db = await TestDatabaseScope.CreateAsync();
         await CreateSchemaAsync(db);
@@ -158,8 +158,8 @@ public class DbSchemaProviderTests
 
         Assert.Contains("Customers", tableNames);
         Assert.Contains("Orders", tableNames);
+        Assert.Contains("_internal_metrics", tableNames);
         Assert.DoesNotContain(MetadataTableName, tableNames);
-        Assert.DoesNotContain("_internal_metrics", tableNames);
     }
 
     [Fact]

@@ -99,6 +99,19 @@ public sealed class SystemCatalogTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SystemCatalog_RegisteredDefaultQueriesExecuteAgainstEmptyDatabase()
+    {
+        var ct = TestContext.Current.CancellationToken;
+
+        foreach (DbSystemCatalogDescriptor descriptor in DbSystemCatalogRegistry.Descriptors)
+        {
+            await using var result = await _db.ExecuteAsync(descriptor.DefaultSql, ct);
+            Assert.True(result.IsQuery, descriptor.Name);
+            _ = await result.ToListAsync(ct);
+        }
+    }
+
+    [Fact]
     public async Task SystemCatalog_ColumnsExposeRowVersionMetadata()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -364,6 +377,63 @@ public sealed class SystemCatalogTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SystemCatalog_HidesTableOwnedObjectsAndTriggersForCatalogHiddenTables()
+    {
+        var ct = TestContext.Current.CancellationToken;
+
+        await _db.ExecuteAsync("CREATE TABLE catalog_audit (id INTEGER PRIMARY KEY)", ct);
+        await _db.ExecuteAsync("CREATE TABLE catalog_visible (id INTEGER PRIMARY KEY, value INTEGER)", ct);
+        await _db.ExecuteAsync(
+            """
+            CREATE TABLE __validation_rules (
+                id INTEGER PRIMARY KEY,
+                audit_id INTEGER,
+                value INTEGER,
+                FOREIGN KEY (audit_id) REFERENCES catalog_audit(id)
+            )
+            """,
+            ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_catalog_visible_value ON catalog_visible(value)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_catalog_hidden_value ON __validation_rules(value)", ct);
+        await _db.ExecuteAsync(
+            "CREATE TRIGGER trg_catalog_visible AFTER INSERT ON catalog_visible " +
+            "BEGIN INSERT INTO catalog_audit VALUES (NEW.id); END",
+            ct);
+        await _db.ExecuteAsync(
+            "CREATE TRIGGER trg_catalog_hidden AFTER INSERT ON __validation_rules " +
+            "BEGIN INSERT INTO catalog_audit VALUES (NEW.id); END",
+            ct);
+
+        await using var objects = await _db.ExecuteAsync(
+            "SELECT object_name, object_type, parent_table_name FROM sys.objects ORDER BY object_type, object_name",
+            ct);
+        var objectRows = await objects.ToListAsync(ct);
+
+        Assert.Contains(objectRows, row => row[0].AsText == "catalog_visible" && row[1].AsText == "TABLE");
+        Assert.Contains(objectRows, row => row[0].AsText == "idx_catalog_visible_value" && row[1].AsText == "INDEX");
+        Assert.Contains(objectRows, row => row[0].AsText == "trg_catalog_visible" && row[1].AsText == "TRIGGER");
+        Assert.DoesNotContain(
+            objectRows,
+            row => row[0].AsText == "__validation_rules" ||
+                   (!row[2].IsNull && row[2].AsText == "__validation_rules"));
+
+        await using var objectCount = await _db.ExecuteAsync("SELECT COUNT(*) FROM sys_objects", ct);
+        Assert.Equal(
+            (long)objectRows.Count,
+            Assert.Single(await objectCount.ToListAsync(ct))[0].AsInteger);
+
+        await using var triggers = await _db.ExecuteAsync(
+            "SELECT trigger_name, table_name FROM sys.triggers ORDER BY trigger_name",
+            ct);
+        var triggerRow = Assert.Single(await triggers.ToListAsync(ct));
+        Assert.Equal("trg_catalog_visible", triggerRow[0].AsText);
+        Assert.Equal("catalog_visible", triggerRow[1].AsText);
+
+        await using var triggerCount = await _db.ExecuteAsync("SELECT COUNT(*) FROM sys_triggers", ct);
+        Assert.Equal(1L, Assert.Single(await triggerCount.ToListAsync(ct))[0].AsInteger);
+    }
+
+    [Fact]
     public async Task SystemCatalog_AllowsUnderscoredAliases()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -471,6 +541,99 @@ public sealed class SystemCatalogTests : IAsyncLifetime
             "SELECT COUNT(*) FROM sys.tables WHERE table_name = '__data_model_diagrams'",
             ct);
         Assert.Equal(0L, Assert.Single(await hidden.ToListAsync(ct))[0].AsInteger);
+    }
+
+    [Fact]
+    public async Task SystemCatalog_InternalTables_InventoryIncludesMappingsPoliciesAndAlias()
+    {
+        var ct = TestContext.Current.CancellationToken;
+
+        await _db.ExecuteAsync(
+            "CREATE TABLE application_data (id INTEGER PRIMARY KEY, value TEXT)",
+            ct);
+        await _db.ExecuteAsync(
+            "CREATE TABLE __data_model_diagrams (id INTEGER PRIMARY KEY, diagram_json TEXT NOT NULL)",
+            ct);
+        await _db.ExecuteAsync(
+            "CREATE TABLE _col_scanner_sessions (_key TEXT PRIMARY KEY, _doc TEXT NOT NULL)",
+            ct);
+        await _db.ExecuteAsync(
+            "CREATE TABLE __migrate_orders_a1b2c3d4 (id INTEGER PRIMARY KEY)",
+            ct);
+        await _db.ExecuteAsync(
+            "CREATE TABLE _custom_user_table (id INTEGER PRIMARY KEY)",
+            ct);
+        await _db.ExecuteAsync(
+            "CREATE TABLE __custom_user_table (id INTEGER PRIMARY KEY)",
+            ct);
+
+        await using var inventory = await _db.ExecuteAsync(
+            """
+            SELECT table_name, column_count, primary_key_column, owning_feature,
+                   logical_replacement, hidden_from_client_metadata,
+                   hidden_from_system_catalog, schema_id
+            FROM sys.internal_tables
+            ORDER BY table_name
+            """,
+            ct);
+        var rows = await inventory.ToListAsync(ct);
+
+        Assert.Equal(3, rows.Count);
+        Assert.Equal(
+            [
+                "table_name",
+                "column_count",
+                "primary_key_column",
+                "owning_feature",
+                "logical_replacement",
+                "hidden_from_client_metadata",
+                "hidden_from_system_catalog",
+                "schema_id",
+            ],
+            inventory.Schema.Select(static column => column.Name));
+
+        DbValue[] diagrams = Assert.Single(rows, row => row[0].AsText == "__data_model_diagrams");
+        Assert.Equal(2L, diagrams[1].AsInteger);
+        Assert.Equal("id", diagrams[2].AsText);
+        Assert.Equal("Data Modeler", diagrams[3].AsText);
+        Assert.Equal("sys.diagrams", diagrams[4].AsText);
+        Assert.Equal(1L, diagrams[5].AsInteger);
+        Assert.Equal(1L, diagrams[6].AsInteger);
+        Assert.True(Guid.TryParse(diagrams[7].AsText, out _));
+
+        DbValue[] collection = Assert.Single(rows, row => row[0].AsText == "_col_scanner_sessions");
+        Assert.Equal("Collections", collection[3].AsText);
+        Assert.Equal("collection:scanner_sessions", collection[4].AsText);
+        Assert.Equal(1L, collection[5].AsInteger);
+        Assert.Equal(0L, collection[6].AsInteger);
+
+        DbValue[] migration = Assert.Single(rows, row => row[0].AsText == "__migrate_orders_a1b2c3d4");
+        Assert.Equal("Foreign Key Migration", migration[3].AsText);
+        Assert.True(migration[4].IsNull);
+        Assert.Equal(0L, migration[5].AsInteger);
+        Assert.Equal(0L, migration[6].AsInteger);
+
+        Assert.DoesNotContain(rows, row => row[0].AsText == "_custom_user_table");
+        Assert.DoesNotContain(rows, row => row[0].AsText == "__custom_user_table");
+
+        await using var aliasCount = await _db.ExecuteAsync("SELECT COUNT(*) FROM sys_internal_tables", ct);
+        Assert.Equal(3L, Assert.Single(await aliasCount.ToListAsync(ct))[0].AsInteger);
+
+        await using var customTables = await _db.ExecuteAsync(
+            "SELECT COUNT(*) FROM sys.tables WHERE table_name IN ('_custom_user_table', '__custom_user_table')",
+            ct);
+        Assert.Equal(2L, Assert.Single(await customTables.ToListAsync(ct))[0].AsInteger);
+
+        await using var visibleMigration = await _db.ExecuteAsync(
+            "SELECT COUNT(*) FROM sys.tables WHERE table_name = '__migrate_orders_a1b2c3d4'",
+            ct);
+        Assert.Equal(1L, Assert.Single(await visibleMigration.ToListAsync(ct))[0].AsInteger);
+
+        await Assert.ThrowsAsync<CSharpDbException>(
+            () => _db.ExecuteAsync(
+                "INSERT INTO sys.internal_tables (table_name) VALUES ('not_allowed')",
+                ct).AsTask());
+        Assert.DoesNotContain("not_allowed", _db.GetTableNames(), StringComparer.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -604,6 +767,67 @@ public sealed class SystemCatalogTests : IAsyncLifetime
 
         await using var tableStatsCount = await _db.ExecuteAsync("SELECT COUNT(*) FROM sys.table_stats", ct);
         Assert.Equal(1L, Assert.Single(await tableStatsCount.ToListAsync(ct))[0].AsInteger);
+    }
+
+    [Fact]
+    public async Task SystemCatalog_PlannerStatsHideCatalogHiddenPhysicalTablesInRowsAndCounts()
+    {
+        var ct = TestContext.Current.CancellationToken;
+
+        await _db.ExecuteAsync(
+            "CREATE TABLE stats_visible (id INTEGER PRIMARY KEY, category TEXT, score INTEGER)",
+            ct);
+        await _db.ExecuteAsync(
+            "CREATE TABLE __validation_rules (id INTEGER PRIMARY KEY, category TEXT, score INTEGER)",
+            ct);
+        await _db.ExecuteAsync(
+            "CREATE INDEX idx_stats_visible_category_score ON stats_visible(category, score)",
+            ct);
+        await _db.ExecuteAsync(
+            "CREATE INDEX idx_stats_hidden_category_score ON __validation_rules(category, score)",
+            ct);
+
+        await _db.ExecuteAsync("INSERT INTO stats_visible VALUES (1, 'repeat', 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO stats_visible VALUES (2, 'repeat', 20)", ct);
+        await _db.ExecuteAsync("INSERT INTO stats_visible VALUES (3, 'other', 30)", ct);
+        await _db.ExecuteAsync("INSERT INTO __validation_rules VALUES (1, 'hidden', 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO __validation_rules VALUES (2, 'hidden', 20)", ct);
+        await _db.ExecuteAsync("INSERT INTO __validation_rules VALUES (3, 'other', 30)", ct);
+        await _db.ExecuteAsync("ANALYZE stats_visible", ct);
+        await _db.ExecuteAsync("ANALYZE __validation_rules", ct);
+
+        string[] catalogNames =
+        [
+            "sys.table_stats",
+            "sys.column_stats",
+            "sys.planner_histograms",
+            "sys.planner_heavy_hitters",
+            "sys.planner_index_prefix_stats",
+        ];
+
+        foreach (string catalogName in catalogNames)
+        {
+            await using var materialized = await _db.ExecuteAsync(
+                $"SELECT table_name FROM {catalogName} ORDER BY table_name",
+                ct);
+            var rows = await materialized.ToListAsync(ct);
+            Assert.NotEmpty(rows);
+            Assert.All(rows, row => Assert.Equal("stats_visible", row[0].AsText));
+
+            await using var optimizedCount = await _db.ExecuteAsync($"SELECT COUNT(*) FROM {catalogName}", ct);
+            Assert.Equal(
+                (long)rows.Count,
+                Assert.Single(await optimizedCount.ToListAsync(ct))[0].AsInteger);
+
+            await using var estimate = await _db.ExecuteAsync(
+                $"EXPLAIN ESTIMATE FOR SELECT * FROM {catalogName}",
+                ct);
+            Assert.Contains(
+                await estimate.ToListAsync(ct),
+                row => row[2].AsText == "source" &&
+                       row[4].AsText == "system-catalog" &&
+                       row[5].AsInteger == rows.Count);
+        }
     }
 
     [Fact]

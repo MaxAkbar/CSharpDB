@@ -3,6 +3,7 @@ using CSharpDB.Admin.Models;
 using CSharpDB.Client;
 using CSharpDB.Client.Models;
 using CSharpDB.DevOps;
+using InternalTableRegistry = CSharpDB.Primitives.DbInternalTableRegistry;
 
 namespace CSharpDB.Admin.Services;
 
@@ -342,7 +343,7 @@ public sealed class CompareDeployAdminService(ICSharpDbClient client)
     }
 
     private static bool IsSystemTableName(string name)
-        => name.StartsWith("_", StringComparison.Ordinal)
+        => InternalTableRegistry.IsInternalTable(name)
            || name.StartsWith("sys.", StringComparison.OrdinalIgnoreCase);
 
     private sealed class CompareDeployTargetHandle(

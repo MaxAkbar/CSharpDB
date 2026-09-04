@@ -785,7 +785,11 @@ public sealed class Database : IAsyncDisposable
             }
 
             TableStatistics? existing = _catalog.GetTableStatistics(stats.TableName);
-            if (existing is null || !existing.RowCountIsExact)
+            // A legacy/stale shared count may be marked exact even when it is
+            // too small for this deletion. The write transaction has already
+            // recounted its tree; do not reintroduce an impossible count while
+            // publishing the successfully committed mutation to the shared cache.
+            if (existing is null || !existing.RowCountIsExact || checked(existing.RowCount + rowCountDelta) < 0)
             {
                 merged.Add(
                     new TableStatistics
@@ -4244,39 +4248,14 @@ public sealed class Database : IAsyncDisposable
             return true;
         }
 
-        private static bool IsSystemCatalogTable(string tableName) =>
-            string.Equals(tableName, "sys.tables", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_tables", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys.columns", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_columns", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys.indexes", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_indexes", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys.functions", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_functions", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys.views", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_views", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys.triggers", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_triggers", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys.objects", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_objects", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys.table_stats", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_table_stats", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys.column_stats", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_column_stats", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys.planner_histograms", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_planner_histograms", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys.planner_heavy_hitters", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_planner_heavy_hitters", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys.planner_index_prefix_stats", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_planner_index_prefix_stats", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys.validation_rules", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_validation_rules", StringComparison.OrdinalIgnoreCase);
+        internal static bool IsSystemCatalogTable(string tableName) =>
+            DbSystemCatalogRegistry.TryNormalize(tableName, out _);
 
         private static bool IsReservedPhysicalTableName(string tableName) =>
             tableName.StartsWith("sys.", StringComparison.OrdinalIgnoreCase) ||
             tableName.StartsWith("sys_", StringComparison.OrdinalIgnoreCase) ||
-            tableName.StartsWith("__", StringComparison.Ordinal) ||
-            tableName.StartsWith("_col_", StringComparison.OrdinalIgnoreCase);
+            DbInternalTableRegistry.IsReservedInternalTableName(tableName) ||
+            DbInternalTableRegistry.IsInternalTable(tableName);
     }
 
     /// <summary>

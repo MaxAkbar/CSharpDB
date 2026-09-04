@@ -324,6 +324,44 @@ kbd {
     border-top: 1px solid var(--border);
 }
 
+.modeler-toc h2 {
+    margin: 0 0 12px;
+    padding: 0;
+    border: 0;
+    font-size: 18px;
+}
+
+.modeler-toc ol {
+    columns: 2;
+    column-gap: 36px;
+    margin-bottom: 0;
+    padding-left: 0;
+}
+
+.modeler-toc li {
+    break-inside: avoid;
+}
+
+.modeler-guide :is(h1, h2, h3)[id] {
+    scroll-margin-top: 20px;
+}
+
+.modeler-guide td,
+.modeler-guide code {
+    overflow-wrap: anywhere;
+}
+
+.modeler-guide a:focus-visible {
+    outline: 2px solid var(--accent-2);
+    outline-offset: 3px;
+}
+
+@media (max-width: 600px) {
+    .modeler-toc ol {
+        columns: 1;
+    }
+}
+
 @media (max-width: 900px) {
     .shell {
         grid-template-columns: 1fr;

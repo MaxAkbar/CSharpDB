@@ -1,0 +1,10 @@
+<input class="schema-input mono" aria-label="@Label" value="@Value" @oninput="Changed" list="@_listId" placeholder="e.g. VARCHAR(80), DECIMAL(12,2)" />
+<datalist id="@_listId">@foreach (var type in Types) { <option value="@type"></option> }</datalist>
+@code {
+    private readonly string _listId = "schema-types-" + Guid.NewGuid().ToString("N");
+    private static readonly string[] Types = ["INTEGER", "BIGINT", "BOOLEAN", "TINYINT", "SMALLINT", "REAL", "DOUBLE PRECISION", "DECIMAL(12,2)", "VARCHAR(80)", "CHAR(10)", "TEXT", "BINARY(16)", "VARBINARY(256)", "BLOB", "UUID", "DATE", "TIME", "DATETIME2", "DATETIMEOFFSET", "ROWVERSION", "JSON", "XML", "BIT", "BIT VARYING", "INTERVAL YEAR TO MONTH", "INTERVAL DAY TO SECOND"];
+    [Parameter] public string Value { get; set; } = "TEXT";
+    [Parameter] public EventCallback<string> ValueChanged { get; set; }
+    [Parameter] public string Label { get; set; } = "Declared SQL type";
+    private Task Changed(ChangeEventArgs args) => ValueChanged.InvokeAsync(args.Value?.ToString() ?? "");
+}

@@ -28,88 +28,30 @@
     }
     </script>
     <style>
-        .news-timeline {
-            margin-top: 40px;
-            position: relative;
-            padding-left: 32px;
-        }
-        .news-timeline::before {
-            content: '';
-            position: absolute;
-            left: 7px;
-            top: 8px;
-            bottom: 8px;
-            width: 2px;
-            background: var(--border);
-        }
-        .news-entry {
-            position: relative;
-            margin-bottom: 40px;
-            padding: 24px 28px;
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: var(--radius-md);
-            transition: border-color 0.2s;
-        }
-        .news-entry:hover {
-            border-color: var(--accent);
-        }
-        .news-entry::before {
-            content: '';
-            position: absolute;
-            left: -29px;
-            top: 30px;
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            background: var(--accent);
-            border: 2px solid var(--bg-primary);
-        }
-        .news-entry-header {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            margin-bottom: 12px;
-            flex-wrap: wrap;
-        }
-        .news-date {
-            font-size: 0.82rem;
-            color: var(--text-muted);
-        }
-        .news-badge {
-            display: inline-block;
-            font-size: 0.7rem;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            padding: 2px 10px;
-            border-radius: 100px;
-        }
-        .news-badge-release { background: rgba(34, 197, 94, 0.15); color: var(--success); }
-        .news-entry h3 {
-            margin: 0 0 10px;
-            font-size: 1.1rem;
-            font-weight: 600;
-            color: var(--text-primary);
-        }
-        .news-entry p {
-            margin: 0 0 8px;
-            font-size: 0.9rem;
-            color: var(--text-secondary);
-            line-height: 1.65;
-        }
-        .news-entry ul {
-            margin: 8px 0 0;
-            padding-left: 20px;
-            font-size: 0.88rem;
-            color: var(--text-secondary);
-            line-height: 1.7;
-        }
-        .news-entry li { margin-bottom: 4px; }
-
-        @media (max-width: 768px) {
-            .news-timeline { padding-left: 24px; }
-            .news-entry::before { left: -21px; width: 10px; height: 10px; }
+        .changelog-content { max-width: 860px; margin: 0 auto; }
+        .changelog-links { display: flex; gap: 12px 24px; flex-wrap: wrap; margin: 24px 0 32px; }
+        .news-entry { margin: 20px 0 28px; padding: 24px 28px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); scroll-margin-top: 88px; }
+        .news-entry-header { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
+        .news-date { font-size: .82rem; color: var(--text-muted); }
+        .news-badge { display: inline-block; padding: 3px 10px; border-radius: 100px; font-size: .72rem; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; }
+        .news-badge-release { background: rgba(34,197,94,.12); color: var(--success); }
+        .news-badge-unreleased { background: var(--accent-glow); color: var(--accent); }
+        .news-entry.unreleased { border-color: var(--accent); }
+        .news-entry h3 { margin: 0 0 12px; font-size: 1.2rem; line-height: 1.4; }
+        .news-entry h2 { margin: 12px 0; padding-bottom: 12px; font-size: 1.35rem; line-height: 1.4; }
+        .news-entry p, .news-entry ul { font-size: .94rem; color: var(--text-secondary); line-height: 1.7; }
+        .news-entry ul { margin: 12px 0 16px; padding-left: 22px; }
+        .news-entry li { margin-bottom: 7px; }
+        .news-entry p:last-child { margin-bottom: 0; }
+        .release-note { padding: 12px 0 0; border-top: 1px solid var(--border); }
+        .release-archive { margin: 32px 0; scroll-margin-top: 88px; }
+        .release-archive > summary { cursor: pointer; padding: 16px 0; font-size: 1.1rem; font-weight: 600; color: var(--text-primary); }
+        .release-archive summary:focus-visible, .changelog-content a:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+        .older-releases { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 24px; padding-left: 22px; }
+        .older-releases li { color: var(--text-secondary); font-size: .9rem; }
+        @media (max-width: 600px) {
+            .news-entry { padding: 20px 18px; }
+            .older-releases { grid-template-columns: 1fr; }
         }
     </style>
 </head>
@@ -118,292 +60,230 @@
     window.currentPage = 'changelog';
     window.pageConfig = {
         title: 'Changelog',
-        description: 'CSharpDB changelog — release announcements and project updates.',
+        description: 'CSharpDB release highlights, upgrade notes, and clearly marked unreleased work.',
         keywords: 'CSharpDB changelog, releases, updates, version history',
         canonicalPath: 'changelog.html',
         ogType: 'website',
     };
     </script>
     <div id="site-nav"></div>
-
     <main class="page">
         <div class="container doc-container">
-            <div class="doc-content full-width" style="max-width: 860px; margin: 0 auto;">
+            <div class="doc-content full-width changelog-content">
                 <h1>Changelog</h1>
-                <p class="lead">Release announcements and project updates. For planned work, see the <a href="roadmap.html">roadmap</a>.</p>
-
-                <div class="news-timeline">
-                    <div class="news-entry">
-                        <div class="news-entry-header">
-                            <span class="news-badge news-badge-release">Release</span>
-                            <span class="news-date">July 2026</span>
-                        </div>
-                        <h3>v4.3.0 — Migration Tooling for External Data Sources</h3>
-                        <p>Adds a review-first, recoverable workflow for moving schemas and rows from file and database sources into a new staged CSharpDB database, plus compatibility and cutover-assurance tools:</p>
+                <p class="lead">What shipped, what changed, and what to know before upgrading.</p>
+                <p>Short highlights from the published release notes. Dates use UTC publication dates; development work is listed separately below.</p>
+                <nav class="changelog-links" aria-label="Changelog sections">
+                    <a href="#unreleased">Unreleased</a>
+                    <a href="#v4.6.2">Latest release</a>
+                    <a href="#release-history">Earlier releases</a>
+                    <a href="https://github.com/MaxAkbar/CSharpDB/releases">All GitHub releases ↗</a>
+                </nav>
+                <article class="news-entry unreleased" id="unreleased" data-release-status="unreleased" data-release-version="4.6.3">
+                    <div class="news-entry-header"><span class="news-badge news-badge-unreleased">Unreleased</span><span class="news-date">Development work · not in a published package</span></div>
+                    <h2>Data Modeler and Admin improvements</h2>
+                    <p>Prepared for v4.6.3, based on changes since v4.6.2. This candidate is not yet published; stable downloads remain on v4.6.2.</p>
+                    <ul>
+                        <li><strong>Readable diagrams:</strong> searchable Sources, relationship-aware arrangement, key-focused cards, composite foreign-key mappings, and crow’s-foot cardinality.</li>
+                        <li><strong>Control your layout:</strong> named table groups, editable connectors, and middle segments that follow moved tables without unwanted splits. Positions, groups, routes, and viewport are saved with the diagram.</li>
+                        <li><strong>Review schema changes:</strong> richer inspection and editing, SQL review and validation, stale-plan protection, and transactional application where the client supports it.</li>
+                        <li><strong>Everyday modeling:</strong> diagram history, search, exports, clearer New / Save As / Delete Diagram actions, and relationship labels that avoid tables and connectors.</li>
+                        <li><strong>Catalog visibility and reliability:</strong> a read-only Internal Storage view, logical-catalog mappings, and fixes for diagram deletion and persistence.</li>
+                    </ul>
+                    <p class="release-note">Removing a table from the canvas or deleting a diagram does not drop database tables. Schema changes require a separate review and apply action.</p>
+                    <p><a href="docs/tutorials/data-modeler.html">Follow the Data Modeler tutorial →</a></p>
+                </article>
+                <h2 id="published-releases">Published releases</h2>
+                    <article class="news-entry" id="v4.6.2" data-release-version="4.6.2" data-release-status="published">
+                        <div class="news-entry-header"><span class="news-badge news-badge-release">Latest release</span><time class="news-date" datetime="2026-08-14">August 14, 2026</time></div>
+                        <h3>v4.6.2 — Observability and diagnostics</h3>
                         <ul>
-                            <li><strong>Retained source packages</strong> — Captures source data into digest-pinned packages with bounded readers, deterministic ordering, provider-specific catalog bindings, and explicit diagnostics for unsupported objects.</li>
-                            <li><strong>Plan before apply</strong> — New inspect, plan, preview, DDL, and isolated scratch-schema steps keep rewrites and exclusions visible before a target is created.</li>
-                            <li><strong>Resumable staged targets</strong> — Apply commits rows with target receipts; an interrupted run can resume the exact package and plan binding without trusting an orphaned workspace or report.</li>
-                            <li><strong>Checksum validation</strong> — Schema, 64-bit row counts, and partitioned canonical SHA-256 evidence must pass before the staged target is activated.</li>
-                            <li><strong>CSV and JSON export</strong> — Offline retained CSharpDB snapshots can be published as resumable lossless CSV, JSON, or NDJSON with source-bound manifests.</li>
-                            <li><strong>Access candidate capture</strong> — A Windows-only ACE worker inventories supported local <code>.mdb</code>/<code>.accdb</code> tables and retains deterministic rows; its non-overrideable VM-qualification diagnostic keeps planning disabled in v4.3.0.</li>
-                            <li><strong>Mapping and query reports</strong> — New type-map and bounded read-only query-check commands expose planner conversions and parse-level CSharpDB/T-SQL evidence without silently approving or applying rewrites.</li>
-                            <li><strong>Read-only dual-run SDK</strong> — Query packs can compare coherent source and staged-target snapshots with typed parameters, ordered or multiset semantics, bounded resources, canonical digests, and fail-closed report validation.</li>
-                            <li><strong>Published migration contracts</strong> — The provider-neutral <code>CSharpDB.Migration</code> and <code>CSharpDB.Migration.DualRun</code> packages expose the durable artifact contracts and dual-run SDK through NuGet.</li>
-                            <li><strong>Isolated database adapters</strong> — Access, SQL Server, and MySQL provider dependencies remain inside fixed optional worker processes. Server credentials are accepted only through named environment variables. Retained packages are treated as plaintext-sensitive source data.</li>
-                            <li><strong>SQL Server candidate boundary</strong> — The strict non-<code>sysadmin</code> metadata proof passes a SQL Server 2019 Express LocalDB fixture and fails closed on object-level denial. The broader release matrix remains a non-overrideable planning blocker.</li>
-                            <li><strong>Installable migration release</strong> — Framework-dependent .NET 10 archives for Windows x64, Linux x64, and macOS Apple silicon preserve the applicable optional adapters, third-party notices/licenses, and safe user-directory installers; a checksum manifest is produced alongside the archives.</li>
-                            <li><strong>New migration guide</strong> — The <a href="docs/database-migration.html">Move Data into CSharpDB</a> guide covers installation, source recipes, review, recovery, validation, security, troubleshooting, and current provider limits.</li>
-                            <li><strong>Qualification remains bounded</strong> — Broad live Access/ACE, SQL Server/MySQL server, authentication, TLS, restricted-account, published-runtime, platform, and disposable-Windows-VM qualification remains deferred and is not claimed by this release.</li>
+                            <li>Inspect active and recent queries, sessions, storage, WAL, maintenance, and per-shard status in the Admin Observability workspace.</li>
+                            <li>Connect structured events, OpenTelemetry traces and metrics, and optional Prometheus export without adding exporter dependencies to the engine.</li>
+                            <li>Use API and daemon liveness/readiness endpoints, including standard gRPC health checks.</li>
                         </ul>
-                    </div>
+                        <p class="release-note"><strong>Before upgrading:</strong> Most telemetry and exporters are opt-in; supported host health endpoints are configured separately. SQL text capture is off by default. The failed v4.6.0 and v4.6.1 attempts are not separate published releases.</p>
+                        <p><a href="https://github.com/MaxAkbar/CSharpDB/releases/tag/v4.6.2">Full v4.6.2 release notes &amp; downloads →</a></p>
+                    </article>
 
-                    <div class="news-entry">
-                        <div class="news-entry-header">
-                            <span class="news-badge news-badge-release">Release</span>
-                            <span class="news-date">May 2026</span>
-                        </div>
-                        <h3>v3.8.0 — Native Table Archives &amp; External Tables</h3>
-                        <p>Adds a real table-archive and external-table workflow: native <code>.csdbtable</code> files, fast snapshot exports, Admin Import / Export tooling, and read-only SQL access to archived tables:</p>
+                    <article class="news-entry" id="v4.5.1" data-release-version="4.5.1" data-release-status="published">
+                        <div class="news-entry-header"><span class="news-badge news-badge-release">Release</span><time class="news-date" datetime="2026-08-10">August 10, 2026</time></div>
+                        <h3>v4.5.1 — Logical SQL types and XML queries</h3>
                         <ul>
-                            <li><strong>Native table archives</strong> — New <code>CSharpDB.ImportExport</code> project with native <code>.csdbtable</code> schema, manifest, row stream, BLOB/null/type metadata, and optional integer primary-key index sections.</li>
-                            <li><strong>Fast snapshot exports</strong> — Embedded client transport can export directly from a reader snapshot instead of paging through the UI, with progress callbacks and cancellation support for large tables.</li>
-                            <li><strong>Admin Import / Export</strong> — New Admin project area with export, register external table, restore table, one-time download endpoint, server-path exports, progress UI, cancellation, and Object Explorer access from both Tools and table context menus.</li>
-                            <li><strong>External table SQL</strong> — Added <code>CREATE EXTERNAL TABLE ... FROM 'path.csdbtable'</code> and <code>DROP EXTERNAL TABLE</code>, plus <code>sys.external_tables</code> metadata and relative-path resolution from the database folder.</li>
-                            <li><strong>Query planner integration</strong> — Registered archives are resolved as read-only table sources through <code>ExternalTableScanOperator</code>, can participate in normal <code>SELECT</code> queries and joins, use metadata fast paths for <code>COUNT(*)</code>, and use embedded primary-key indexes for eligible point lookups.</li>
-                            <li><strong>Read-only safety</strong> — Writes, schema mutation, index creation, and trigger target usage against external tables are rejected with clear errors.</li>
-                            <li><strong>Changelog and blog docs</strong> — Added a <a href="blog/table-archives.html">table archives blog post</a> and ignored generated <code>*.csdbtable</code> files so local exports do not become source artifacts.</li>
+                            <li>Preserve declared types, lengths, precision, and scale through storage, providers, transports, migration plans, and archives.</li>
+                            <li>Use exact DECIMAL values, logical Boolean and integer types, temporal values, UUIDs, bit strings, and generated ROWVERSION tokens.</li>
+                            <li>Query XML values with bounded XML_EXISTS / XMLEXISTS and XML_VALUE functions.</li>
                         </ul>
-                    </div>
+                        <p class="release-note"><strong>Before upgrading:</strong> INTEGER is now 32-bit; use BIGINT for 64-bit values. Bare BIT is Boolean, and bare TIMESTAMP means ROWVERSION. Back up before upgrading: legacy rowversion tokens are regenerated. v4.5.0 was an unpublished release attempt.</p>
+                        <p><a href="https://github.com/MaxAkbar/CSharpDB/releases/tag/v4.5.1">Full v4.5.1 release notes &amp; downloads →</a></p>
+                    </article>
 
-                    <div class="news-entry">
-                        <div class="news-entry-header">
-                            <span class="news-badge news-badge-release">Release</span>
-                            <span class="news-date">May 2026</span>
-                        </div>
-                        <h3>v3.7.0 — Planner Observability, Adaptive Reoptimization &amp; View Paging</h3>
-                        <p>Completes the optimizer and async I/O close-out work, exposes planner diagnostics publicly, and fixes the view/query paths found during the customer-filtered fulfillment investigation:</p>
+                    <article class="news-entry" id="v4.4.0" data-release-version="4.4.0" data-release-status="published">
+                        <div class="news-entry-header"><span class="news-badge news-badge-release">Release</span><time class="news-date" datetime="2026-08-05">August 5, 2026</time></div>
+                        <h3>v4.4.0 — SQL and schema coverage</h3>
                         <ul>
-                            <li><strong>Planner diagnostics</strong> — Added <code>EXPLAIN ESTIMATE FOR SELECT</code> coverage for select, WITH, and compound queries, plus <code>sys.planner_*</code> virtual catalogs for histograms, heavy hitters, and composite index prefix statistics.</li>
-                            <li><strong>Admin plan visibility</strong> — Query tabs can run estimates and show planner output in the Plan tab so users can inspect row estimates and plan choices without leaving Admin.</li>
-                            <li><strong>Opt-in adaptive reoptimization</strong> — New <code>DatabaseOptions</code>, embedded ADO.NET connection-string support, diagnostics, and fail-closed handling let eligible join plans correct bad cardinality assumptions before rows are emitted.</li>
-                            <li><strong>View/query fixes</strong> — Paged view browsing now issues bounded <code>LIMIT</code>/<code>OFFSET</code> SQL, simple view row-goal planning can reorder eligible join chains, and Query tab grids preserve scroll/pager layout.</li>
-                            <li><strong>Lookup join and result metadata polish</strong> — Improved indexed local predicate planning, residual right-side filters, index scan capacity hints, and SQL <code>ColumnTypes</code> propagation through engine, API, client, and Admin surfaces.</li>
-                            <li><strong>Benchmarks and DataGen</strong> — Closed the current generated collection fast-path and DataGen direct-load phase, refreshed release benchmark scorecards, added optimizer/async I/O close-out suites, and added a WAL point-read benchmark with latency-column guardrail support.</li>
+                            <li>Use named windows and explicit ROWS frames within the documented in-memory window-function limits.</li>
+                            <li>Apply composite keys and foreign keys with the full supported immediate update/delete action matrix.</li>
+                            <li>Use supported transactional column rewrites and inspect physical plans with EXPLAIN and EXPLAIN ANALYZE.</li>
+                            <li>Expanded provider, transport, historical-database, and failure-recovery qualification covers the supported SQL surface.</li>
                         </ul>
-                    </div>
+                        <p class="release-note"><strong>Before upgrading:</strong> Support remains bounded: consult the SQL reference for supported rewrite shapes, key types, and resource limits. Unsupported forms fail with explicit diagnostics.</p>
+                        <p><a href="https://github.com/MaxAkbar/CSharpDB/releases/tag/v4.4.0">Full v4.4.0 release notes &amp; downloads →</a></p>
+                    </article>
+                <details class="release-archive" id="release-history">
+                    <summary>Earlier releases · v3.8.0–v4.3.0</summary>
+                    <article class="news-entry" id="v4.3.0" data-release-version="4.3.0" data-release-status="published">
+                        <div class="news-entry-header"><span class="news-badge news-badge-release">Release</span><time class="news-date" datetime="2026-07-27">July 27, 2026</time></div>
+                        <h3>v4.3.0 — Migration tooling</h3>
+                        <ul>
+                            <li>Capture retained source packages, inspect mappings, and review a plan before creating a staged target database.</li>
+                            <li>Resume interrupted applies and validate schema, row counts, and checksums before activation.</li>
+                            <li>Export retained snapshots as CSV, JSON, or NDJSON and use read-only dual-run query comparisons.</li>
+                        </ul>
+                        <p class="release-note"><strong>Before upgrading:</strong> Live Access, SQL Server, and MySQL provider qualification remains bounded; candidate capture is not a claim that every source is approved for migration.</p>
+                        <p><a href="https://github.com/MaxAkbar/CSharpDB/releases/tag/v4.3.0">Full v4.3.0 release notes &amp; downloads →</a></p>
+                    </article>
 
-                    <div class="news-entry">
-                        <div class="news-entry-header">
-                            <span class="news-badge news-badge-release">Release</span>
-                            <span class="news-date">May 2026</span>
-                        </div>
-                        <h3>v3.6.0 — Trusted C# Callbacks, Built-In Functions &amp; Admin Automation</h3>
-                        <p>Adds trusted in-process C# callbacks across SQL, formulas, procedures, forms, reports, and pipeline surfaces, then rounds the feature out with tableless scalar SQL, built-ins, and Admin discovery:</p>
+                    <article class="news-entry" id="v4.2.0" data-release-version="4.2.0" data-release-status="published">
+                        <div class="news-entry-header"><span class="news-badge news-badge-release">Release</span><time class="news-date" datetime="2026-07-21">July 21, 2026</time></div>
+                        <h3>v4.2.0 — Practical EF Core workflows</h3>
                         <ul>
-                            <li><strong>Trusted scalar functions and commands</strong> — Host applications can register scalar functions through <code>DbFunctionRegistry</code> and commands through <code>DbCommandRegistry</code>, including async command support, timeouts, and shared argument conversion.</li>
-                            <li><strong>Automation surfaces</strong> — Admin Forms now support lifecycle events, selected-control events, command buttons, reusable action sequences, built-in record actions, conditional action steps, and generated automation metadata. Reports and pipelines gained trusted command hooks.</li>
-                            <li><strong>Tableless scalar SQL</strong> — Added <code>SELECT</code> without <code>FROM</code> using a single-row planner source for scalar expressions and callbacks that do not need row context.</li>
-                            <li><strong>Built-in scalar functions</strong> — Added common Access-style text, date/time, numeric, conversion, and null helpers for SQL and Admin formula use.</li>
-                            <li><strong>Callback catalog polish</strong> — Added callback metadata including <code>CanRunWithoutFrom</code>, SQL editor autocomplete for built-ins and tableless-safe callbacks, and an Internal/External split in the Admin callback catalog.</li>
-                            <li><strong>Release validation</strong> — Final tableless/callback stabilization passed with <code>1,877</code> tests, plus build, pack, daemon publish, and callback benchmark validation.</li>
+                            <li>Expanded idempotent migrations, schema metadata, literal defaults, checks, and supported decimal mappings.</li>
+                            <li>Added generated rowversion concurrency tokens and broader bounded LINQ translations.</li>
+                            <li>Added warm embedded connection pooling, faster direct-client transaction sessions, and a bounded ASP.NET Core Identity readiness profile.</li>
                         </ul>
-                    </div>
+                        <p class="release-note"><strong>Before upgrading:</strong> Computed columns, SQL-expression defaults, savepoints, and unsupported migration shapes remain outside this release's contract.</p>
+                        <p><a href="https://github.com/MaxAkbar/CSharpDB/releases/tag/v4.2.0">Full v4.2.0 release notes &amp; downloads →</a></p>
+                    </article>
 
-                    <div class="news-entry">
-                        <div class="news-entry-header">
-                            <span class="news-badge news-badge-release">Release</span>
-                            <span class="news-date">April 2026</span>
-                        </div>
-                        <h3>v3.5.0 — Generated Collection Payload Fast Path &amp; Studio Mockups</h3>
-                        <p>Completes the opt-in generated collection binary payload fast path, refreshes release benchmark artifacts, and adds confirmed CSharpDB Studio Admin mockup documentation:</p>
+                    <article class="news-entry" id="v4.1.0" data-release-version="4.1.0" data-release-status="published">
+                        <div class="news-entry-header"><span class="news-badge news-badge-release">Release</span><time class="news-date" datetime="2026-07-18">July 18, 2026</time></div>
+                        <h3>v4.1.0 — Constraints and SQL compatibility</h3>
                         <ul>
-                            <li><strong>Generated collection binary payloads</strong> — Source-generated collection models now encode/decode fixed field order, compact type/null metadata, and raw values while non-generated collection paths keep their existing JSON and binary behavior.</li>
-                            <li><strong>Direct payload decode improvements</strong> — Avoids duplicated direct payload header parsing, adds single-segment <code>ReadOnlySpan&lt;byte&gt;</code> top-level field lookups, and improves targeted UTF-8 span plumbing for text index/read/compare paths.</li>
-                            <li><strong>Collection benchmark coverage</strong> — Added generated collection codec benchmarks and expanded binary codec/generator tests. Focused investigation showed material gains in direct payload decode, field reads, field compares, and path-index lookups.</li>
-                            <li><strong>Release-core refresh</strong> — Refreshed benchmark README/history from the April 26 release-core artifacts; final guardrail compare passed with <code>PASS=185, WARN=0, SKIP=0, FAIL=0</code>.</li>
-                            <li><strong>Admin UI planning</strong> — Added CSharpDB Studio access-parity notes and static Admin UI mockups under <code>www/admin-ui-mockups</code>.</li>
+                            <li>Added quoted identifiers, SQL three-valued logic, literal defaults, and row-local CHECK constraints.</li>
+                            <li>Persisted ordered composite primary/unique keys and table-level foreign keys across providers and catalogs.</li>
+                            <li>Added first-tier window functions, lazy UNION ALL, transactional schema changes, and a public compatibility matrix.</li>
                         </ul>
-                    </div>
+                        <p class="release-note"><strong>Before upgrading:</strong> Schema edits reject known dependent views, triggers, and validation rules before mutation. A failed write makes an explicit transaction rollback-only.</p>
+                        <p><a href="https://github.com/MaxAkbar/CSharpDB/releases/tag/v4.1.0">Full v4.1.0 release notes &amp; downloads →</a></p>
+                    </article>
 
-                    <div class="news-entry">
-                        <div class="news-entry-header">
-                            <span class="news-badge news-badge-release">Release</span>
-                            <span class="news-date">April 2026</span>
-                        </div>
-                        <h3>v3.4.0 — Admin Runtime, Fulfillment Hub Sample &amp; Docs Polish</h3>
-                        <p>Focuses on making CSharpDB easier to explore locally: a richer Admin experience, a complete Fulfillment Hub sample database, a run-only forms web host, and clearer docs for launching and learning from the project:</p>
+                    <article class="news-entry" id="v4.0.4" data-release-version="4.0.4" data-release-status="published">
+                        <div class="news-entry-header"><span class="news-badge news-badge-release">Release</span><time class="news-date" datetime="2026-07-17">July 17, 2026</time></div>
+                        <h3>v4.0.4 — Join and read-path performance</h3>
                         <ul>
-                            <li><strong>Fulfillment Hub sample</strong> — New end-to-end sample that seeds a working database with tables, views, stored procedures, forms, reports, pipelines, collections, and full-text search data. The walkthrough shows how to generate the database and open it through CSharpDB Admin.</li>
-                            <li><strong>Admin query workflow polish</strong> — Query autocomplete now handles <code>LIMIT</code>, <code>UPDATE ... SET</code>, <code>WHERE</code> column suggestions, and <code>INSERT INTO ... columns ... VALUES</code> flow more reliably.</li>
-                            <li><strong>Designer usability fixes</strong> — Form designer property fields now respect the current light/dark theme, and Query Designer views include resizable split bars so long SQL previews and result grids can be adjusted without losing context.</li>
-                            <li><strong>Forms-only web host</strong> — Added a run-only Forms Web project path for displaying saved forms from a CSharpDB database without exposing design mode. Static assets, shared styling, and the themed home screen now load correctly when started through the provided script.</li>
-                            <li><strong>Local Admin launcher guidance</strong> — New blog documentation explains how to create a small C# launcher executable that starts <code>CSharpDB.Admin.exe</code>, waits for the ASP.NET Core endpoint, and opens the default browser.</li>
-                            <li><strong>Website documentation polish</strong> — Added the Fulfillment Hub sample blog post, improved tutorial code color-coding across the static docs pages, refreshed release/PR notes, and kept the sitemap/blog index aligned with the new content.</li>
+                            <li>Eligible broad key-only primary-key/foreign-key joins can merge-scan existing indexes without a separate join index.</li>
+                            <li>Reduced checkpoint reader tracking and query-session allocation overhead.</li>
+                            <li>Removed the inline-value read regression introduced with overflow support and updated vulnerable dependency pins.</li>
                         </ul>
-                    </div>
+                        <p class="release-note"><strong>Before upgrading:</strong> The specialized join path is conservative; predicates, payload projections, limits, and other unsupported shapes retain existing plans.</p>
+                        <p><a href="https://github.com/MaxAkbar/CSharpDB/releases/tag/v4.0.4">Full v4.0.4 release notes &amp; downloads →</a></p>
+                    </article>
 
-                    <div class="news-entry">
-                        <div class="news-entry-header">
-                            <span class="news-badge news-badge-release">Release</span>
-                            <span class="news-date">April 2026</span>
-                        </div>
-                        <h3>v3.3.0 — Durable Write Performance &amp; Embedded Storage Tuning</h3>
-                        <p>Focused on durable write throughput, a new storage-tuning surface for embedded users, and release-stable benchmark publishing. Promoted from the April 21, 2026 release-core run after a clean guardrail compare (<code>PASS=185, WARN=0, SKIP=0, FAIL=0</code>):</p>
+                    <article class="news-entry" id="v4.0.3" data-release-version="4.0.3" data-release-status="published">
+                        <div class="news-entry-header"><span class="news-badge news-badge-release">Release</span><time class="news-date" datetime="2026-07-15">July 15, 2026</time></div>
+                        <h3>v4.0.3 — Large values and desktop file dialogs</h3>
                         <ul>
-                            <li><strong>Append-optimized indexed insert paths</strong> — Append-optimized row-id chains and hashed index payloads, overflow-store improvements, hot right-edge recovery, and expanded commit-path diagnostics. Promoted <code>InsertBatch B10000</code> durable ingest lands at <strong>798.25K rows/sec</strong> — 1.48&times; the matched SQLite WAL+FULL baseline on the same runner.</li>
-                            <li><strong>Trailing-integer composite grouped aggregates</strong> — The planner can now route grouped aggregates through a composite index when the grouping key prefixes the index and the trailing column is an integer.</li>
-                            <li><strong>SQL index metadata defaults</strong> — Multi-column indexes no longer receive trailing-integer hash options unless explicitly requested. Existing serialized options continue to resolve through the legacy compatibility path.</li>
-                            <li><strong>Embedded storage tuning for ADO.NET and EF Core</strong> — New <code>Storage Preset=</code> and <code>Embedded Open Mode=</code> connection-string keywords on <code>CSharpDb.Data</code>, matching <code>CSharpDbConnection.DirectDatabaseOptions</code> / <code>HybridDatabaseOptions</code>, and EF Core <code>UseStoragePreset()</code> / <code>UseEmbeddedOpenMode()</code>. Ships with five presets (<code>WriteOptimized</code>, <code>LowLatencyDurableWrite</code>, <code>DirectLookupOptimized</code>, <code>DirectColdFileLookup</code>, <code>HybridFileCache</code>) and three open modes (<code>Direct</code>, <code>HybridIncrementalDurable</code>, <code>HybridSnapshot</code>).</li>
-                            <li><strong>Same-runner SQLite comparison coverage</strong> — New SQLite C API, concurrent SQLite, concurrent ADO.NET, strict insert, and EF Core comparison harnesses. <code>--sqlite-compare</code>, <code>--concurrent-sqlite-capi-compare</code>, <code>--concurrent-adonet-compare</code>, and <code>--efcore-compare</code> commands; promoted comparison rows in <code>tests/CSharpDB.Benchmarks/SQLITE_COMPARISON.md</code>.</li>
-                            <li><strong>Release-stable benchmark publishing</strong> — Balanced <code>--release-core</code> suite (master, durable batching, concurrent writes, hybrid storage, hot-set reads, cold open, SQLite comparison), manifest-driven README generator, row-specific guardrail tolerances, and separate catalog/history/SQLite comparison files.</li>
-                            <li><strong>Refreshed package READMEs and website</strong> — Root README performance numbers updated (1.67M collection gets/sec, 10.77M concurrent reader-burst reads/sec, 798.25K durable <code>InsertBatch B10000</code> rows/sec, 1.04K concurrent durable commits/sec); package READMEs refreshed for Admin, Forms, Reports, CLI, MCP, Native, API, Data, Engine, EF Core, and the aggregate package surface.</li>
+                            <li>Large B-tree values use overflow pages across reads, writes, rollback, checkpoints, and reopen.</li>
+                            <li>Storage diagnostics validate overflow chains, and replaced/deleted chains are reclaimed.</li>
+                            <li>The Windows desktop Admin shell provides native Open, Save, and folder dialogs; browser sessions retain manual paths.</li>
                         </ul>
-                    </div>
+                        <p class="release-note"><strong>Before upgrading:</strong> Writing an older format-v1 database upgrades it to format v2. Older binaries cannot open the upgraded format; back up first if rollback may be needed.</p>
+                        <p><a href="https://github.com/MaxAkbar/CSharpDB/releases/tag/v4.0.3">Full v4.0.3 release notes &amp; downloads →</a></p>
+                    </article>
 
-                    <div class="news-entry">
-                        <div class="news-entry-header">
-                            <span class="news-badge news-badge-release">Release</span>
-                            <span class="news-date">April 2026</span>
-                        </div>
-                        <h3>v3.2.0 — Entity Framework Core 10 Provider &amp; Scalar Aggregate Optimization</h3>
-                        <p>Adds the first embedded EF Core provider, supporting planner/parser work, and a focused scalar aggregate optimization pass:</p>
+                    <article class="news-entry" id="v4.0.2" data-release-version="4.0.2" data-release-status="published">
+                        <div class="news-entry-header"><span class="news-badge news-badge-release">Release</span><time class="news-date" datetime="2026-07-09">July 9, 2026</time></div>
+                        <h3>v4.0.2 — Scalable full-text postings</h3>
                         <ul>
-                            <li><strong><code>CSharpDB.EntityFrameworkCore</code> (v1)</strong> — First embedded EF Core 10 provider layered over <code>CSharpDB.Data</code>. Adds <code>UseCSharpDb(...)</code> configuration, design-time services, migrations/history/lock plumbing, relational connection services, SQL generation, type mapping, update batching, and database creation. Packaged and published alongside the existing NuGet set; runnable example at <code>samples/efcore-provider</code>.</li>
-                            <li><strong>Parser and planner support for EF-emitted shapes</strong> — Extended tokenizer, parser, query planner, and result handling plus ADO.NET command/parameter plumbing so the provider can execute the required EF query and command shapes cleanly.</li>
-                            <li><strong>Scalar aggregate lookup optimization</strong> — Simple indexed and primary-key-backed <code>COUNT(...)</code> and <code>SUM(...)</code> cases now reuse lightweight lookup plans instead of materializing full scans. Focused baseline refresh checked in at <code>tests/CSharpDB.Benchmarks/baselines/focused-validation/20260418-185724</code>.</li>
-                            <li><strong>Benchmark guardrail stabilization</strong> — Scenario selection, durable SQL batching coverage, and guardrail scripting hardened for repeat runs. Internal cleanup removed the unused <code>FlushBufferedWritesAsync</code> method from <code>IWalFlushPolicy</code> to align with the current commit/flush contract.</li>
-                            <li><strong>New docs</strong> — the <a href="docs/entity-framework-core.html">EF Core provider guide</a>, <a href="docs/ado-ef-storage-tuning.html">ADO.NET / EF storage tuning guide</a>, and a benchmark-driven CSharpDB-versus-SQLite guide.</li>
+                            <li>Hot-token postings use bounded chunks instead of rewriting one growing value.</li>
+                            <li>Full-text updates and deletes rewrite only affected chunks while preserving rollback and search ordering.</li>
+                            <li>Indexed predicates can identify DELETE and UPDATE targets without a full table scan.</li>
                         </ul>
-                    </div>
+                        <p class="release-note"><strong>Before upgrading:</strong> Legacy postings remain readable and migrate to the chunked representation on the next write for that term.</p>
+                        <p><a href="https://github.com/MaxAkbar/CSharpDB/releases/tag/v4.0.2">Full v4.0.2 release notes &amp; downloads →</a></p>
+                    </article>
 
-                    <div class="news-entry">
-                        <div class="news-entry-header">
-                            <span class="news-badge news-badge-release">Release</span>
-                            <span class="news-date">April 2026</span>
-                        </div>
-                        <h3>v3.1.0 — Concurrent Writers, Daemon Hybrid Defaults &amp; Bulk Ingest Samples</h3>
-                        <p>Extends the initial phase-1 multi-writer work with richer transaction handling, commit-path optimization, transport integration, and new user-facing samples:</p>
+                    <article class="news-entry" id="v4.0.1" data-release-version="4.0.1" data-release-status="published">
+                        <div class="news-entry-header"><span class="news-badge news-badge-release">Release</span><time class="news-date" datetime="2026-07-05">July 5, 2026</time></div>
+                        <h3>v4.0.1 — Full-text large-posting fix</h3>
                         <ul>
-                            <li><strong>Concurrent insert execution (opt-in)</strong> — New <code>ImplicitInsertExecutionMode.ConcurrentWriteTransactions</code> routes shared auto-commit inserts through isolated <code>WriteTransaction</code> state for disjoint-key workloads. Richer explicit <code>WriteTransaction</code> handling with logical conflict tracking, disjunctive and range predicate validation, and insert-side rebase/split recovery.</li>
-                            <li><strong>Durable write fan-in (phase 3/4)</strong> — Snapshot checkpoint retention tuning and shared auto-commit fan-in on top of the phase-1 multi-writer base. Split-aware conflict handling and leaf/interior rebase hardening reduce insert-path retry tails under concurrency. New insert fan-in and commit-path diagnostics.</li>
-                            <li><strong>Commit-path optimizations</strong> — Insert commit allocation hot paths, single-insert commit cost, collection secondary-index maintenance, and reader-session <code>COUNT(*)</code> all received focused optimization. WAL publication and flush staging were split into explicit stages with dedicated diagnostics and refreshed baselines.</li>
-                            <li><strong>ADO.NET through Client and hybrid daemon defaults</strong> — The ADO.NET provider now routes through <code>CSharpDB.Client</code> for remote sessions, and the daemon host defaults moved to the newer hybrid multi-writer hosting model.</li>
-                            <li><strong>Samples and tutorials</strong> — New Atlas Platform Showcase sample (schema, workbook queries, procedures, and reports), an API-first CSV bulk import sample and tutorial, and a multi-writer follow-up planning document linked from the roadmap.</li>
+                            <li>Full-text index stores spill oversized values into overflow chains, preventing page-capacity failures for common terms.</li>
+                            <li>Search, deletion, and reopening are covered for large shared-token postings.</li>
                         </ul>
-                    </div>
+                        <p class="release-note"><strong>Before upgrading:</strong> Existing inline full-text values remain readable; oversized values spill on their next write.</p>
+                        <p><a href="https://github.com/MaxAkbar/CSharpDB/releases/tag/v4.0.1">Full v4.0.1 release notes &amp; downloads →</a></p>
+                    </article>
 
-                    <div class="news-entry">
-                        <div class="news-entry-header">
-                            <span class="news-badge news-badge-release">Release</span>
-                            <span class="news-date">April 2026</span>
-                        </div>
-                        <h3>v3.0.0 — Source-Generated Collections &amp; Performance Recovery</h3>
-                        <p>Source-generated collection models are now part of the engine, with a trim-safe generated collection API and focused write-path performance recovery:</p>
+                    <article class="news-entry" id="v4.0.0" data-release-version="4.0.0" data-release-status="published">
+                        <div class="news-entry-header"><span class="news-badge news-badge-release">Release</span><time class="news-date" datetime="2026-06-25">June 25, 2026</time></div>
+                        <h3>v4.0.0 — Route-aware sharding</h3>
                         <ul>
-                            <li><strong>CSharpDB.Generators</strong> — No-reflection, trim-safe typed collection API via <code>GetGeneratedCollectionAsync&lt;T&gt;()</code> and <code>GeneratedCollection&lt;T&gt;</code></li>
-                            <li><strong>Generated field metadata</strong> — Analyzer-packaged collection models, codecs, and field descriptors with NativeAOT-friendly model registration</li>
-                            <li><strong>Collection write-path recovery</strong> — Separated write probes from read-side B-tree routing-cache, reused traversal scratch during insert/replace, and buffered catalog mutation bookkeeping</li>
-                            <li><strong>Covered composite-index fast-path</strong> — Recovered covered composite-index lookup optimization for index-only queries</li>
+                            <li>Use explicit route contexts and shard-bound clients across direct, HTTP, gRPC, daemon, and ADO.NET access.</li>
+                            <li>Manage master-catalog shard maps, inspect routes and shard status, and perform read-only fan-out with per-shard results.</li>
+                            <li>Move exact route keys through manifest-driven migration workflows.</li>
                         </ul>
-                    </div>
+                        <p class="release-note"><strong>Before upgrading:</strong> Sharding is explicit and API-level: no route inference from SQL, distributed joins, distributed writes, or distributed transactions.</p>
+                        <p><a href="https://github.com/MaxAkbar/CSharpDB/releases/tag/v4.0.0">Full v4.0.0 release notes &amp; downloads →</a></p>
+                    </article>
 
-                    <div class="news-entry">
-                        <div class="news-entry-header">
-                            <span class="news-badge news-badge-release">Release</span>
-                            <span class="news-date">March 2026</span>
-                        </div>
-                        <h3>v2.9.0 — Cost-Based Optimizer, Multi-Writer &amp; CLI Refresh</h3>
-                        <p>A broad release carrying phase-2 planner statistics, durable-write batching, initial multi-writer support, and a richer CLI experience:</p>
+                    <article class="news-entry" id="v3.9.1" data-release-version="3.9.1" data-release-status="published">
+                        <div class="news-entry-header"><span class="news-badge news-badge-release">Release</span><time class="news-date" datetime="2026-06-11">June 11, 2026</time></div>
+                        <h3>v3.9.1 — Data Hygiene release follow-up</h3>
                         <ul>
-                            <li><strong>Phase-2 planner statistics</strong> — Internal histograms, heavy hitters, composite-prefix summaries, and bounded DP join reordering for richer selectivity and cardinality estimates</li>
-                            <li><strong>Durable group commit</strong> — Opt-in <code>UseDurableCommitBatchWindow(...)</code> batches durable WAL flushes across contending writers</li>
-                            <li><strong>Initial multi-writer support</strong> — Explicit <code>WriteTransaction</code> with conflict-detected retry, shared auto-commit non-insert isolation, and opt-in concurrent implicit inserts</li>
-                            <li><strong>Async I/O batching</strong> — WAL frame-chunk writes, chunked checkpoint copies, and reusable B-tree copy utilities</li>
-                            <li><strong>CLI refresh</strong> — Spectre.Console-based output, richer tables, interactive <code>.</code> dot-command menu, and branded ASCII startup banner</li>
-                            <li><strong>New docs</strong> — Configuration reference, query execution pipeline walkthrough, expanded SQL reference</li>
+                            <li>Published notes retain the 3.9 Data Hygiene and temporary-table feature set.</li>
+                            <li>See the linked release record for the exact published package and notes.</li>
                         </ul>
-                    </div>
+                        <p class="release-note"><strong>Release note:</strong> The published notes reuse the 3.9.0 heading and do not identify a separate patch feature delta.</p>
+                        <p><a href="https://github.com/MaxAkbar/CSharpDB/releases/tag/v3.9.1">Full v3.9.1 release notes &amp; downloads →</a></p>
+                    </article>
 
-                    <div class="news-entry">
-                        <div class="news-entry-header">
-                            <span class="news-badge news-badge-release">Release</span>
-                            <span class="news-date">March 2026</span>
-                        </div>
-                        <h3>v2.8.0 — Batch-First SQL Row Transport</h3>
-                        <p>The SQL execution engine now uses a batch-first row transport foundation. This is a significant internal architecture change that enables more efficient query processing:</p>
+                    <article class="news-entry" id="v3.9.0" data-release-version="3.9.0" data-release-status="published">
+                        <div class="news-entry-header"><span class="news-badge news-badge-release">Release</span><time class="news-date" datetime="2026-05-31">May 31, 2026</time></div>
+                        <h3>v3.9.0 — Data Hygiene and temporary tables</h3>
                         <ul>
-                            <li>Batch-capable result boundaries across scans, joins, and aggregates</li>
-                            <li>Foundation for future vectorized query execution</li>
-                            <li>Reduced per-row overhead for large result sets</li>
+                            <li>Find duplicates, deduplicate rows, merge data, and manage validation rules through SQL.</li>
+                            <li>Use the Admin Data Hygiene workspace and inspect validation metadata in system catalogs.</li>
+                            <li>Create session-scoped in-memory temporary tables and explicitly persist supported temp data into a durable table.</li>
                         </ul>
-                    </div>
+                        <p class="release-note"><strong>Before upgrading:</strong> Temporary state is excluded from durable catalogs, backups, and checkpoints; supported features are intentionally limited.</p>
+                        <p><a href="https://github.com/MaxAkbar/CSharpDB/releases/tag/v3.9.0">Full v3.9.0 release notes &amp; downloads →</a></p>
+                    </article>
 
-                    <div class="news-entry">
-                        <div class="news-entry-header">
-                            <span class="news-badge news-badge-release">Release</span>
-                            <span class="news-date">March 2026</span>
-                        </div>
-                        <h3>Full-Text Search</h3>
-                        <p>CSharpDB now includes built-in full-text search capabilities:</p>
+                    <article class="news-entry" id="v3.8.0" data-release-version="3.8.0" data-release-status="published">
+                        <div class="news-entry-header"><span class="news-badge news-badge-release">Release</span><time class="news-date" datetime="2026-05-17">May 17, 2026</time></div>
+                        <h3>v3.8.0 — Table archives and the original Data Model workspace</h3>
                         <ul>
-                            <li>Inverted index with tokenization and stemming</li>
-                            <li>Relevance ranking via MATCH() in SQL</li>
-                            <li>CREATE FULLTEXT INDEX syntax for easy setup</li>
+                            <li>Export native .csdbtable archives with schema, values, and optional primary-key lookup metadata.</li>
+                            <li>Register archives as read-only external tables and query them alongside normal tables.</li>
+                            <li>Use Admin Import / Export and the original saved Data Model canvas with staged schema changes.</li>
                         </ul>
-                    </div>
-
-                    <div class="news-entry">
-                        <div class="news-entry-header">
-                            <span class="news-badge news-badge-release">Release</span>
-                            <span class="news-date">February 2026</span>
-                        </div>
-                        <h3>Foreign Key Constraints</h3>
-                        <p>v1 foreign key support has landed with column-level REFERENCES and optional ON DELETE CASCADE:</p>
-                        <ul>
-                            <li>Single-column, column-level REFERENCES syntax</li>
-                            <li>ON DELETE CASCADE for automatic child row cleanup</li>
-                            <li>Metadata and tooling surfaces across direct, HTTP, gRPC, CLI, and Admin</li>
-                            <li>Retrofit migration for older databases</li>
-                        </ul>
-                    </div>
-
-                    <div class="news-entry">
-                        <div class="news-entry-header">
-                            <span class="news-badge news-badge-release">Release</span>
-                            <span class="news-date">January 2026</span>
-                        </div>
-                        <h3>Subqueries, Set Operations &amp; Visual Query Designer</h3>
-                        <p>Major SQL feature additions and tooling improvements:</p>
-                        <ul>
-                            <li>Scalar subqueries, IN/EXISTS (including correlated) subqueries</li>
-                            <li>UNION, INTERSECT, EXCEPT set operations</li>
-                            <li>Visual query builder in Admin UI with drag-and-drop source canvas, join editing, and SQL preview</li>
-                            <li>Collation support (BINARY, NOCASE, NOCASE_AI, ICU:&lt;locale&gt;)</li>
-                        </ul>
-                    </div>
-
-                    <div class="news-entry">
-                        <div class="news-entry-header">
-                            <span class="news-badge news-badge-release">Release</span>
-                            <span class="news-date">Q4 2025</span>
-                        </div>
-                        <h3>Ecosystem Expansion</h3>
-                        <p>Major tooling and ecosystem additions that shipped in late 2025:</p>
-                        <ul>
-                            <li><strong>Dedicated gRPC daemon</strong> — Full gRPC coverage for SQL, schema, procedures, collections, and maintenance</li>
-                            <li><strong>Hybrid storage mode</strong> — Hot tables in memory with durable checkpoint to disk</li>
-                            <li><strong>Client backup &amp; restore</strong> — First-class operations across all access methods</li>
-                            <li><strong>Background WAL checkpointing</strong> — Incremental auto-checkpointing off the commit path</li>
-                            <li><strong>MCP server</strong> — AI assistant integration for database operations</li>
-                            <li><strong>NativeAOT C library</strong> — Cross-language FFI for JavaScript, Python, and more</li>
-                        </ul>
-                    </div>
-                </div>
+                        <p class="release-note"><strong>Before upgrading:</strong> External archives are read-only. The later relationship-aware modeling, groups, and connector editing improvements are listed under Unreleased.</p>
+                        <p><a href="https://github.com/MaxAkbar/CSharpDB/releases/tag/v3.8.0">Full v3.8.0 release notes &amp; downloads →</a></p>
+                    </article>
+                </details>
+                <details class="release-archive">
+                    <summary>Older release archive · v2.8.0–v3.7.0</summary>
+                    <p>Original notes and downloads remain on GitHub. This archive uses published versions and dates rather than the former undated project milestones.</p>
+                    <ul class="older-releases">
+                        <li><a href="https://github.com/MaxAkbar/CSharpDB/releases/tag/v3.7.0">v3.7.0</a> · <time datetime="2026-05-09">May 9, 2026</time></li>
+                        <li><a href="https://github.com/MaxAkbar/CSharpDB/releases/tag/v3.6.0">v3.6.0</a> · <time datetime="2026-05-03">May 3, 2026</time></li>
+                        <li><a href="https://github.com/MaxAkbar/CSharpDB/releases/tag/v3.5.0">v3.5.0</a> · <time datetime="2026-04-28">April 28, 2026</time></li>
+                        <li><a href="https://github.com/MaxAkbar/CSharpDB/releases/tag/v3.4.0">v3.4.0</a> · <time datetime="2026-04-25">April 25, 2026</time></li>
+                        <li><a href="https://github.com/MaxAkbar/CSharpDB/releases/tag/v3.3.0">v3.3.0</a> · <time datetime="2026-04-23">April 23, 2026</time></li>
+                        <li><a href="https://github.com/MaxAkbar/CSharpDB/releases/tag/v3.2.0">v3.2.0</a> · <time datetime="2026-04-19">April 19, 2026</time></li>
+                        <li><a href="https://github.com/MaxAkbar/CSharpDB/releases/tag/v3.1.2">v3.1.2</a> · <time datetime="2026-04-15">April 15, 2026</time></li>
+                        <li><a href="https://github.com/MaxAkbar/CSharpDB/releases/tag/v3.1.0">v3.1.0</a> · <time datetime="2026-04-15">April 15, 2026</time></li>
+                        <li><a href="https://github.com/MaxAkbar/CSharpDB/releases/tag/v3.0.0">v3.0.0</a> · <time datetime="2026-04-08">April 8, 2026</time></li>
+                        <li><a href="https://github.com/MaxAkbar/CSharpDB/releases/tag/v2.9.1">v2.9.1</a> · <time datetime="2026-04-07">April 7, 2026</time></li>
+                        <li><a href="https://github.com/MaxAkbar/CSharpDB/releases/tag/v2.8.1">v2.8.1</a> · <time datetime="2026-04-06">April 6, 2026</time></li>
+                        <li><a href="https://github.com/MaxAkbar/CSharpDB/releases/tag/v2.8.0">v2.8.0</a> · <time datetime="2026-04-04">April 4, 2026</time></li>
+                    </ul>
+                </details>
+                <p>For older history, see <a href="https://github.com/MaxAkbar/CSharpDB/releases">all published releases</a>. For planned work, see the <a href="roadmap.html">roadmap</a>; for how-to guides, visit <a href="docs/tutorials/index.html">tutorials</a>.</p>
             </div>
         </div>
     </main>
-
     <div id="site-footer"></div>
     <script src="js/csharpdb.bundle.js" defer></script>
 </body>

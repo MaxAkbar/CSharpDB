@@ -385,108 +385,62 @@
         @if (ShouldShowGroup("system"))
         {
         <div class="tree-group">
-            <div class="tree-group-header" @onclick='() => ToggleGroup("systemTables")'>
-                <i class="bi @(_expandedGroups.Contains("systemTables") ? "bi-chevron-down" : "bi-chevron-right")"></i>
-                <i class="bi bi-hdd-stack icon-system"></i>
-                <span>System Tables</span>
-                <span class="group-count">@(_systemTableNames?.Count ?? 0)</span>
+            <div class="tree-group-header" @onclick='() => ToggleGroup("internalStorage")'>
+                <i class="bi @(_expandedGroups.Contains("internalStorage") ? "bi-chevron-down" : "bi-chevron-right")"></i>
+                <i class="bi bi-database-lock icon-system"></i>
+                <span>Internal Storage</span>
+                <span class="group-count">
+                    @if (_internalStorageLoading)
+                    {
+                        <i class="bi bi-arrow-repeat" title="Loading internal storage"></i>
+                    }
+                    else if (_internalStorageLoadError is not null)
+                    {
+                        <i class="bi bi-exclamation-triangle" title="Internal storage is unavailable"></i>
+                    }
+                    else
+                    {
+                        @(_internalStorageItems?.Count ?? 0)
+                    }
+                </span>
             </div>
-            @if (_expandedGroups.Contains("systemTables") && _systemTableNames is not null)
+            @if (_expandedGroups.Contains("internalStorage"))
             {
                 <div class="tree-items">
-                    @foreach (var name in FilterTableNames(_systemTableNames))
+                    @if (_internalStorageLoading)
                     {
-                        var tableName = name;
-                        <div class="tree-item table-tree-item @(IsActive("table", tableName) ? "active" : "")"
-                             @onclick="() => TabManager.OpenTableTab(tableName)">
+                        <div class="tree-child-state" role="status" aria-live="polite">Loading internal storage…</div>
+                    }
+                    else if (_internalStorageLoadError is not null)
+                    {
+                        <div class="tree-child-state" role="alert" title="@_internalStorageLoadError">
+                            <span>Internal storage is unavailable.</span>
                             <button type="button"
-                                    class="tree-disclosure"
-                                    title="Show table objects"
-                                    @onclick="() => ToggleTableNodeAsync(tableName)"
+                                    class="tree-child-more"
+                                    disabled="@_internalStorageLoading"
+                                    @onclick="RetryInternalStorageAsync"
                                     @onclick:stopPropagation="true">
-                                <i class="bi @(IsTableNodeExpanded(tableName) ? "bi-chevron-down" : "bi-chevron-right")"></i>
+                                Retry
                             </button>
-                            <i class="bi bi-hdd-stack icon-system"></i>
-                            <span class="item-label">@tableName</span>
                         </div>
-                        @if (ShouldShowTableChildren(tableName))
+                    }
+                    else if (_internalStorageItems is { Count: 0 })
+                    {
+                        <div class="tree-child-state">No internal storage tables.</div>
+                    }
+                    else
+                    {
+                        @foreach (var item in FilterInternalStorageItems())
                         {
-                            <div class="tree-child-group">
-                                @if (_tableSchemas.TryGetValue(tableName, out var schema))
-                                {
-                                    <div class="tree-child-head">Columns · @schema.Columns.Count</div>
-                                    @foreach (var column in schema.Columns.Take(SidebarColumnPreviewLimit))
-                                    {
-                                        var currentColumn = column;
-                                        <button type="button" class="tree-child-item" @onclick="() => TabManager.OpenTableSchemaTab(tableName)">
-                                            <i class="bi @GetColumnIconClass(currentColumn)"></i>
-                                            <span class="tree-child-label">@currentColumn.Name</span>
-                                            <span class="tree-child-type">@GetColumnTypeLabel(currentColumn)</span>
-                                        </button>
-                                    }
-                                    @if (schema.Columns.Count > SidebarColumnPreviewLimit)
-                                    {
-                                        <button type="button" class="tree-child-more" @onclick="() => TabManager.OpenTableSchemaTab(tableName)">
-                                            +@(schema.Columns.Count - SidebarColumnPreviewLimit) more columns
-                                        </button>
-                                    }
-                                }
-                                else
-                                {
-                                    <div class="tree-child-state">@GetSchemaLoadStateText(tableName)</div>
-                                }
-
-                                @{
-                                    var tableIndexes = GetIndexesForTable(tableName).ToList();
-                                    var tableTriggers = GetTriggersForTable(tableName).ToList();
-                                }
-                                @if (tableIndexes.Count > 0)
-                                {
-                                    <div class="tree-child-head">Indexes · @tableIndexes.Count</div>
-                                    @foreach (var index in tableIndexes.Take(SidebarIndexPreviewLimit))
-                                    {
-                                        var currentIndex = index;
-                                        <button type="button"
-                                                class="tree-child-item"
-                                                @onclick="() => TabManager.OpenTableSchemaTab(tableName)"
-                                                @oncontextmenu="e => ShowIndexItemMenu(e, currentIndex)"
-                                                @oncontextmenu:preventDefault>
-                                            <i class="bi bi-lightning icon-index"></i>
-                                            <span class="tree-child-label">@currentIndex.IndexName</span>
-                                            <span class="tree-child-type">@GetIndexTypeLabel(currentIndex)</span>
-                                        </button>
-                                    }
-                                    @if (tableIndexes.Count > SidebarIndexPreviewLimit)
-                                    {
-                                        <button type="button" class="tree-child-more" @onclick="() => TabManager.OpenTableSchemaTab(tableName)">
-                                            +@(tableIndexes.Count - SidebarIndexPreviewLimit) more indexes
-                                        </button>
-                                    }
-                                }
-                                @if (tableTriggers.Count > 0)
-                                {
-                                    <div class="tree-child-head">Triggers · @tableTriggers.Count</div>
-                                    @foreach (var trigger in tableTriggers.Take(SidebarTriggerPreviewLimit))
-                                    {
-                                        var currentTrigger = trigger;
-                                        <button type="button"
-                                                class="tree-child-item"
-                                                @onclick="() => TabManager.OpenTableSchemaTab(tableName)"
-                                                @oncontextmenu="e => ShowTriggerItemMenu(e, currentTrigger)"
-                                                @oncontextmenu:preventDefault>
-                                            <i class="bi bi-lightning-charge icon-trigger"></i>
-                                            <span class="tree-child-label">@currentTrigger.TriggerName</span>
-                                            <span class="tree-child-type">@GetTriggerTypeLabel(currentTrigger)</span>
-                                        </button>
-                                    }
-                                    @if (tableTriggers.Count > SidebarTriggerPreviewLimit)
-                                    {
-                                        <button type="button" class="tree-child-more" @onclick="() => TabManager.OpenTableSchemaTab(tableName)">
-                                            +@(tableTriggers.Count - SidebarTriggerPreviewLimit) more triggers
-                                        </button>
-                                    }
-                                }
-                            </div>
+                            var currentItem = item;
+                            <button type="button"
+                                    class="tree-item command-item @(IsActive("system", currentItem.TableName) ? "active" : "")"
+                                    title="@FormatInternalStorageTitle(currentItem)"
+                                    @onclick="() => OpenInternalStorageItem(currentItem)">
+                                <i class="bi bi-database-lock icon-system"></i>
+                                <span class="item-label">@currentItem.TableName</span>
+                                <span class="item-hint">@FormatInternalStorageHint(currentItem)</span>
+                            </button>
                         }
                     }
                 </div>
@@ -502,7 +456,7 @@
                 <i class="bi @(_expandedGroups.Contains("system") ? "bi-chevron-down" : "bi-chevron-right")"></i>
                 <i class="bi bi-hdd-stack icon-system"></i>
                 <span>System Catalog</span>
-                <span class="group-count">@s_systemCatalogItems.Count</span>
+                <span class="group-count">@CSharpDB.Primitives.DbSystemCatalogRegistry.Catalogs.Count</span>
             </div>
             @if (_expandedGroups.Contains("system"))
             {
@@ -717,35 +671,23 @@
     private ContextMenu? _contextMenu;
     private List<ContextMenuItem> _contextMenuItems = new();
 
-    private sealed record SystemCatalogItem(string Name, string Description, string Sql);
-
     private sealed record ExternalTableExplorerItem(
         string TableName,
         string Path,
         string SourceTableName,
         long RowCount);
 
-    private static readonly IReadOnlyList<SystemCatalogItem> s_systemCatalogItems = new[]
-    {
-        new SystemCatalogItem("sys.tables", "tables", "SELECT * FROM sys.tables ORDER BY table_name;"),
-        new SystemCatalogItem("sys.columns", "columns", "SELECT * FROM sys.columns ORDER BY table_name, ordinal_position;"),
-        new SystemCatalogItem("sys.indexes", "indexes", "SELECT * FROM sys.indexes ORDER BY table_name, index_name, ordinal_position;"),
-        new SystemCatalogItem("sys.table_stats", "table stats", "SELECT * FROM sys.table_stats ORDER BY table_name;"),
-        new SystemCatalogItem("sys.column_stats", "column stats", "SELECT * FROM sys.column_stats ORDER BY table_name, ordinal_position;"),
-        new SystemCatalogItem("sys.planner_histograms", "planner histograms", "SELECT * FROM sys.planner_histograms ORDER BY table_name, ordinal_position, bucket_index;"),
-        new SystemCatalogItem("sys.planner_heavy_hitters", "planner heavy hitters", "SELECT * FROM sys.planner_heavy_hitters ORDER BY table_name, ordinal_position, row_count DESC;"),
-        new SystemCatalogItem("sys.planner_index_prefix_stats", "planner prefix stats", "SELECT * FROM sys.planner_index_prefix_stats ORDER BY table_name, index_name, prefix_length;"),
-        new SystemCatalogItem("sys.views", "views", "SELECT * FROM sys.views ORDER BY view_name;"),
-        new SystemCatalogItem("sys.triggers", "triggers", "SELECT * FROM sys.triggers ORDER BY trigger_name;"),
-        new SystemCatalogItem("sys.objects", "all objects", "SELECT * FROM sys.objects ORDER BY object_type, object_name;"),
-        new SystemCatalogItem("sys.validation_rules", "validation rules", "SELECT * FROM sys.validation_rules ORDER BY table_name, column_name, rule_name;"),
-        new SystemCatalogItem("sys.saved_queries", "saved queries", "SELECT * FROM sys.saved_queries ORDER BY name;"),
-        new SystemCatalogItem("sys.external_tables", "external tables", "SELECT * FROM sys.external_tables ORDER BY table_name;"),
-        new SystemCatalogItem("sys.diagrams", "diagrams", "SELECT * FROM sys.diagrams ORDER BY name;"),
-    };
+    private sealed record InternalStorageExplorerItem(
+        string TableName,
+        string OwningFeature,
+        string? LogicalReplacement,
+        bool HiddenFromClientMetadata,
+        bool HiddenFromSystemCatalog);
 
     private IReadOnlyCollection<string>? _userTableNames;
-    private IReadOnlyCollection<string>? _systemTableNames;
+    private IReadOnlyList<InternalStorageExplorerItem>? _internalStorageItems;
+    private string? _internalStorageLoadError;
+    private bool _internalStorageLoading;
     private IReadOnlyList<ExternalTableExplorerItem>? _externalTables;
     private IReadOnlyCollection<string>? _viewNames;
     private IReadOnlyCollection<string>? _collectionNames;
@@ -837,8 +779,8 @@
         try
         {
             var allTables = (await DbClient.GetTableNamesAsync()).OrderBy(n => n).ToList();
-            _userTableNames = allTables.Where(static n => !IsSystemTableName(n)).ToList();
-            _systemTableNames = allTables.Where(IsSystemTableName).ToList();
+            _userTableNames = allTables.Where(static n => !CSharpDB.Primitives.DbInternalTableRegistry.IsInternalTable(n)).ToList();
+            await LoadInternalStorageItemsAsync();
             _externalTables = await LoadExternalTablesAsync();
             _viewNames = (await DbClient.GetViewNamesAsync()).OrderBy(n => n).ToList();
             _collectionNames = (await DbClient.GetCollectionNamesAsync()).OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
@@ -857,7 +799,9 @@
         catch
         {
             _userTableNames = null;
-            _systemTableNames = null;
+            _internalStorageItems = null;
+            _internalStorageLoadError ??= "Object Explorer metadata could not be loaded.";
+            _internalStorageLoading = false;
             _externalTables = null;
             _viewNames = null;
             _collectionNames = null;
@@ -869,6 +813,76 @@
             _tableSchemas.Clear();
             _tableSchemaLoadFailures.Clear();
         }
+    }
+
+    private async Task LoadInternalStorageItemsAsync()
+    {
+        if (_internalStorageLoading)
+            return;
+
+        _internalStorageLoading = true;
+        _internalStorageLoadError = null;
+        try
+        {
+            var result = await DbClient.ExecuteSqlAsync("""
+                SELECT table_name,
+                       owning_feature,
+                       logical_replacement,
+                       hidden_from_client_metadata,
+                       hidden_from_system_catalog
+                FROM sys.internal_tables
+                ORDER BY table_name;
+                """);
+
+            if (!string.IsNullOrWhiteSpace(result.Error))
+            {
+                _internalStorageItems = null;
+                _internalStorageLoadError = result.Error;
+                return;
+            }
+
+            var items = new List<InternalStorageExplorerItem>();
+            foreach (object?[] row in result.Rows ?? [])
+            {
+                if (row.Length < 5 || row[0] is null)
+                    continue;
+
+                string tableName = Convert.ToString(row[0], System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(tableName))
+                    continue;
+
+                string owningFeature = Convert.ToString(row[1], System.Globalization.CultureInfo.InvariantCulture) ?? "CSharpDB";
+                if (string.IsNullOrWhiteSpace(owningFeature))
+                    owningFeature = "CSharpDB";
+                string? logicalReplacement = Convert.ToString(row[2], System.Globalization.CultureInfo.InvariantCulture);
+                if (string.IsNullOrWhiteSpace(logicalReplacement))
+                    logicalReplacement = null;
+
+                items.Add(new InternalStorageExplorerItem(
+                    tableName,
+                    owningFeature,
+                    logicalReplacement,
+                    ConvertToBoolean(row[3]),
+                    ConvertToBoolean(row[4])));
+            }
+
+            _internalStorageItems = items;
+        }
+        catch (Exception ex)
+        {
+            _internalStorageItems = null;
+            _internalStorageLoadError = ex.Message;
+        }
+        finally
+        {
+            _internalStorageLoading = false;
+        }
+    }
+
+    private async Task RetryInternalStorageAsync()
+    {
+        await LoadInternalStorageItemsAsync();
+        await InvokeAsync(StateHasChanged);
     }
 
     private async Task<IReadOnlyList<ExternalTableExplorerItem>> LoadExternalTablesAsync()
@@ -982,6 +996,37 @@
             ? "archive"
             : table.SourceTableName;
         return $"{source} · {table.RowCount:N0} rows";
+    }
+
+    private IEnumerable<InternalStorageExplorerItem> FilterInternalStorageItems()
+    {
+        if (_internalStorageItems is null)
+            return Enumerable.Empty<InternalStorageExplorerItem>();
+
+        if (string.IsNullOrWhiteSpace(_searchQuery))
+            return _internalStorageItems;
+
+        return _internalStorageItems.Where(item =>
+            item.TableName.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
+            || item.OwningFeature.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
+            || item.LogicalReplacement?.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase) == true);
+    }
+
+    private static string FormatInternalStorageHint(InternalStorageExplorerItem item)
+        => item.LogicalReplacement is { Length: > 0 } replacement
+            ? $"→ {replacement}"
+            : item.OwningFeature;
+
+    private static string FormatInternalStorageTitle(InternalStorageExplorerItem item)
+    {
+        var details = new List<string> { $"Owned by {item.OwningFeature}" };
+        if (item.LogicalReplacement is { Length: > 0 } replacement)
+            details.Add($"Use {replacement}");
+        if (item.HiddenFromClientMetadata)
+            details.Add("hidden from client metadata");
+        if (item.HiddenFromSystemCatalog)
+            details.Add("hidden from the public system catalog");
+        return string.Join(" · ", details);
     }
 
     private IEnumerable<string> FilterTableNames(IReadOnlyCollection<string> tableNames)
@@ -1225,18 +1270,26 @@
             || report.Source.Name.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase));
     }
 
-    private IEnumerable<SystemCatalogItem> FilterSystemCatalogItems()
+    private IEnumerable<CSharpDB.Primitives.DbSystemCatalogDescriptor> FilterSystemCatalogItems()
     {
         if (string.IsNullOrWhiteSpace(_searchQuery))
-            return s_systemCatalogItems;
+            return CSharpDB.Primitives.DbSystemCatalogRegistry.Catalogs;
 
-        return s_systemCatalogItems.Where(i =>
+        return CSharpDB.Primitives.DbSystemCatalogRegistry.Catalogs.Where(i =>
             i.Name.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
             || i.Description.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase));
     }
 
-    private void OpenSystemCatalogTab(SystemCatalogItem item)
-        => TabManager.OpenSystemCatalogTab(item.Name, item.Sql);
+    private void OpenSystemCatalogTab(CSharpDB.Primitives.DbSystemCatalogDescriptor item)
+        => TabManager.OpenSystemCatalogTab(item.Name, item.DefaultSql);
+
+    private void OpenInternalStorageItem(InternalStorageExplorerItem item)
+        => TabManager.OpenSystemCatalogTab(
+            item.TableName,
+            BuildInternalStorageQuery(item.TableName));
+
+    internal static string BuildInternalStorageQuery(string tableName)
+        => $"SELECT * FROM sys.internal_tables WHERE table_name = {FormatSqlStringLiteral(tableName)};";
 
     private void OpenDataHygiene(string tableName, DataHygieneMode mode)
         => TabManager.OpenDataHygieneTab(new DataHygieneSeed(mode, TableName: tableName));
@@ -1442,7 +1495,7 @@
         {
             new() { Label = "Register External Table...", Icon = "bi-box-arrow-up-right", OnClick = () => TabManager.OpenImportExportTab() },
             new() { Label = "Data Model", Icon = "bi-diagram-3", OnClick = () => TabManager.OpenDataModelTab() },
-            new() { Label = "View Metadata", Icon = "bi-hdd-stack", OnClick = () => OpenSystemCatalogTab(s_systemCatalogItems.First(item => item.Name == "sys.external_tables")) },
+            new() { Label = "View Metadata", Icon = "bi-hdd-stack", OnClick = () => OpenSystemCatalogTab(CSharpDB.Primitives.DbSystemCatalogRegistry.Catalogs.First(item => item.Name == "sys.external_tables")) },
             ContextMenuItem.Separator(),
             new() { Label = "Refresh", Icon = "bi-arrow-clockwise", OnClick = async () => { await LoadObjects(); await InvokeAsync(StateHasChanged); } },
         });
@@ -1910,6 +1963,15 @@
     private static string FormatSqlStringLiteral(string value)
         => "'" + value.Replace("'", "''", StringComparison.Ordinal) + "'";
 
-    private static bool IsSystemTableName(string name) =>
-        name.StartsWith("_", StringComparison.Ordinal);
+    private static bool ConvertToBoolean(object? value)
+    {
+        if (value is null)
+            return false;
+        if (value is bool boolean)
+            return boolean;
+        if (bool.TryParse(Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture), out bool parsed))
+            return parsed;
+        return Convert.ToInt64(value, System.Globalization.CultureInfo.InvariantCulture) != 0;
+    }
+
 }

@@ -1432,7 +1432,7 @@
         try
         {
             _tableNames = (await ActiveClient.GetTableNamesAsync())
-                .Where(static name => !name.StartsWith("_", StringComparison.Ordinal))
+                .Where(static name => !CSharpDB.Primitives.DbInternalTableRegistry.IsInternalTable(name))
                 .OrderBy(static name => name).ToArray();
             _tableLoadError = null;
         }

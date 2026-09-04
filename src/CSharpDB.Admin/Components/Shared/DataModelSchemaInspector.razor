@@ -1,0 +1,147 @@
+@using CSharpDB.Client.Models
+<section class="model-schema-inspector">
+    <small>Schema preview includes pending edits. The database is unchanged until Apply.</small>
+    <details open><summary>Columns and declared properties</summary>
+        @foreach (var column in Node.Columns)
+        {
+            <div class="model-schema-definition"><strong>@column.Name</strong> <code>@column.TypeLabel</code>
+                <small>@(column.Nullable ? "Nullable" : "Not null") @(column.IsIdentity ? " · Identity" : "") @(column.IsRowVersion ? " · Generated rowversion" : "")</small>
+                @if (column.DefaultSql is not null) { <small>Default: <code>@column.DefaultSql</code></small> }
+                @if (column.Collation is not null) { <small>Collation: @column.Collation</small> }
+            </div>
+        }
+    </details>
+    <details><summary>Keys, checks, and indexes</summary>
+        @foreach (var key in Node.Keys)
+        {
+            <div class="model-schema-definition"><strong>@(key.Kind == KeyConstraintKind.PrimaryKey ? "Primary key" : "Unique constraint") @key.ConstraintName</strong><code>@string.Join(", ", key.Columns)</code>
+                @if (Editable && (key.Kind == KeyConstraintKind.PrimaryKey || key.ConstraintName is not null))
+                { <button class="toolbar-btn" @onclick="() => Drop(key.Kind == KeyConstraintKind.PrimaryKey ? DataModelPendingOperationKind.DropPrimaryKey : DataModelPendingOperationKind.DropConstraint, key.ConstraintName)">Stage removal</button> }
+            </div>
+        }
+        @foreach (var check in Node.Checks)
+        {
+            <div class="model-schema-definition"><strong>CHECK @check.ConstraintName</strong><small>@(check.ColumnName is null ? "Table scope" : $"Column: {check.ColumnName}")</small><code>@check.ExpressionSql</code>
+                @if (Editable && check.ConstraintName is not null) { <button class="toolbar-btn" @onclick="() => Drop(DataModelPendingOperationKind.DropConstraint, check.ConstraintName)">Stage removal</button> }
+            </div>
+        }
+        @foreach (var index in Node.Indexes)
+        {
+            <div class="model-schema-definition"><strong>@index.IndexName</strong><code>@string.Join(", ", index.Columns.Select((column, i) => column + (i < index.ColumnCollations.Count && !string.IsNullOrEmpty(index.ColumnCollations[i]) ? " COLLATE " + index.ColumnCollations[i] : "")))</code>
+                <small>@(index.IsUnique ? "Unique index" : "Index") · @(index.IsEngineManaged ? "Engine-maintained" : "User-managed")</small>
+                @if (Editable && !index.IsEngineManaged) { <button class="toolbar-btn" @onclick="() => Drop(DataModelPendingOperationKind.DropIndex, index.IndexName)">Stage removal</button> }
+            </div>
+        }
+    </details>
+    <details><summary>Known dependencies (@Node.Dependencies.Count)</summary>
+        <small>This list is not exhaustive. The engine remains authoritative for dependency checks.</small>
+        @foreach (var dependency in Node.Dependencies) { <div class="model-schema-definition"><strong>@dependency.Kind: @dependency.Name</strong><code>@dependency.Definition</code></div> }
+    </details>
+    @if (Editable)
+    {
+        <details><summary>Stage schema change</summary>
+            <fieldset disabled="@Disabled">
+            <label>Change</label>
+            <select class="schema-input" aria-label="Schema change kind" @bind="_kind">
+                @foreach (var kind in EditKinds) { <option value="@kind">@KindLabel(kind)</option> }
+            </select>
+            @if (UsesColumn)
+            {
+                @if (_kind == DataModelPendingOperationKind.AddColumn) { <input class="schema-input" aria-label="New column name" @bind="_column" @bind:event="oninput" placeholder="Column name" /> }
+                else { <select class="schema-input" aria-label="Column to change" @bind="_column"><option value="">Choose column</option>@foreach(var column in Node.Columns) { <option>@column.Name</option> }</select> }
+            }
+            @if (_kind == DataModelPendingOperationKind.RenameTable || _kind == DataModelPendingOperationKind.RenameColumn)
+            { <input class="schema-input" aria-label="New object name" placeholder="New name" @bind="_newName" @bind:event="oninput" /> }
+            @if (_kind == DataModelPendingOperationKind.AddColumn)
+            {
+                <SchemaColumnFacets @bind-Type="_type" @bind-NotNull="_notNull" @bind-DefaultSql="_expression" @bind-Collation="_collation" @bind-CheckName="_checkName" @bind-CheckExpression="_columnCheck" />
+            }
+            @if (_kind == DataModelPendingOperationKind.AlterColumnType) { <SchemaTypeInput @bind-Value="_type" /> }
+            @if (_kind is DataModelPendingOperationKind.AddPrimaryKey or DataModelPendingOperationKind.AddUniqueKey or DataModelPendingOperationKind.AddCheck or DataModelPendingOperationKind.AddForeignKey)
+            { <input class="schema-input" aria-label="Constraint name" placeholder="Constraint name" @bind="_name" @bind:event="oninput" /> }
+            @if (_kind is DataModelPendingOperationKind.SetDefault or DataModelPendingOperationKind.AddCheck)
+            { <textarea class="schema-input mono" aria-label="SQL expression" placeholder="@(_kind == DataModelPendingOperationKind.SetDefault ? "Literal, e.g. 0 or 'new'" : "Row-local CHECK expression")" @bind="_expression" @bind:event="oninput"></textarea> }
+            @if (_kind == DataModelPendingOperationKind.AddCheck)
+            { <small>ALTER adds a named table CHECK. Column-scoped checks can be declared when adding a column.</small> }
+            @if (_kind == DataModelPendingOperationKind.SetCollation)
+            { <input class="schema-input" aria-label="Column collation" placeholder="e.g. BINARY, NOCASE" @bind="_collation" @bind:event="oninput" /> }
+            @if (UsesColumns)
+            { <OrderedColumnPicker Label="Child/key/index columns" Available="Node.Columns.Select(column => column.Name)" Selection="_columns" /> }
+            @if (_kind == DataModelPendingOperationKind.CreateIndex)
+            {
+                <input class="schema-input" aria-label="Index name" placeholder="Index name" @bind="_name" @bind:event="oninput" />
+                <label><input type="checkbox" @bind="_unique" /> Unique index</label>
+                @foreach (string column in _columns)
+                { <input class="schema-input" aria-label="Index collation for @column" placeholder="@($"{column} collation (optional)")" value="@_indexCollations.GetValueOrDefault(column)" @oninput="e => _indexCollations[column] = e.Value?.ToString()" /> }
+                <small>Column order is preserved. ASC/DESC index directions are not supported by CSharpDB.</small>
+            }
+            @if (_kind == DataModelPendingOperationKind.AddForeignKey)
+            {
+                <select class="schema-input" aria-label="Referenced table" value="@_parent" @onchange="ChangeParent"><option value="">Referenced table</option>@foreach (var table in State.Nodes.Where(table => table.Kind == DataModelNodeKind.Table)) { <option>@table.Name</option> }</select>
+                <OrderedColumnPicker Label="Parent columns (matching order)" Available="ParentColumns" Selection="_parentColumns" />
+                <label>On delete</label><select class="schema-input" aria-label="On delete" @bind="_onDelete">@foreach(var action in Actions) { <option>@action</option> }</select>
+                <label>On update</label><select class="schema-input" aria-label="On update" @bind="_onUpdate">@foreach(var action in Actions) { <option>@action</option> }</select>
+                <select class="schema-input" aria-label="Relationship to replace" @bind="_replace"><option value="">Create new relationship</option>@foreach(var relationship in State.Relationships.Where(r => r.LeftTable == Node.Name && r.Kind == DataModelRelationshipKind.PhysicalForeignKey)) { <option value="@relationship.ConstraintName">Replace @relationship.ConstraintName</option> }</select>
+                <small>Each child column maps to the parent column at the same position. Replacement is one reviewed transaction.</small>
+            }
+            <button class="toolbar-btn primary" @onclick="Stage">Stage change</button>
+            @if (_error is not null) { <p role="alert">@_error</p> }
+            </fieldset>
+        </details>
+    }
+</section>
+@code {
+    [Parameter, EditorRequired] public DataModelState State { get; set; } = default!;
+    [Parameter, EditorRequired] public DataModelState Baseline { get; set; } = default!;
+    [Parameter, EditorRequired] public DataModelNode Node { get; set; } = default!;
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public EventCallback<IReadOnlyList<DataModelPendingOperation>> OnStage { get; set; }
+    private bool Editable => Node.Kind == DataModelNodeKind.Table;
+    private DataModelPendingOperationKind _kind = DataModelPendingOperationKind.AddColumn;
+    private string _column = "", _type = "TEXT", _name = "", _expression = "", _collation = "", _parent = "", _replace = "";
+    private string _checkName = "", _columnCheck = "";
+    private string _newName = "";
+    private string _onDelete = "RESTRICT", _onUpdate = "RESTRICT";
+    private bool _notNull, _unique;
+    private string? _error;
+    private List<string> _columns = [], _parentColumns = [];
+    private Dictionary<string, string?> _indexCollations = [];
+    private static readonly string[] Actions = ["RESTRICT", "NO ACTION", "CASCADE", "SET NULL", "SET DEFAULT"];
+    private static readonly DataModelPendingOperationKind[] EditKinds = [DataModelPendingOperationKind.AddColumn, DataModelPendingOperationKind.AlterColumnType,
+        DataModelPendingOperationKind.SetDefault, DataModelPendingOperationKind.DropDefault, DataModelPendingOperationKind.SetNotNull,
+        DataModelPendingOperationKind.DropNotNull, DataModelPendingOperationKind.SetCollation, DataModelPendingOperationKind.DropCollation,
+        DataModelPendingOperationKind.AddPrimaryKey, DataModelPendingOperationKind.AddUniqueKey, DataModelPendingOperationKind.AddCheck,
+        DataModelPendingOperationKind.AddForeignKey, DataModelPendingOperationKind.CreateIndex,
+        DataModelPendingOperationKind.RenameColumn, DataModelPendingOperationKind.DropColumn, DataModelPendingOperationKind.RenameTable, DataModelPendingOperationKind.DropTable];
+    private bool UsesColumns => _kind is DataModelPendingOperationKind.AddPrimaryKey or DataModelPendingOperationKind.AddUniqueKey or DataModelPendingOperationKind.AddForeignKey or DataModelPendingOperationKind.CreateIndex;
+    private bool UsesColumn => !UsesColumns && _kind is not (DataModelPendingOperationKind.AddCheck or DataModelPendingOperationKind.RenameTable or DataModelPendingOperationKind.DropTable);
+    private IEnumerable<string> ParentColumns => State.Nodes.FirstOrDefault(node => node.Name == _parent)?.Columns.Select(column => column.Name) ?? [];
+    private static string KindLabel(DataModelPendingOperationKind kind) => System.Text.RegularExpressions.Regex.Replace(kind.ToString(), "([a-z])([A-Z])", "$1 $2");
+    private void ChangeParent(ChangeEventArgs args) { _parent = args.Value?.ToString() ?? ""; _parentColumns.Clear(); }
+    private async Task Stage()
+    {
+        _error = null;
+        try
+        {
+            var operation = new DataModelPendingOperation { Kind = _kind, TableName = Node.Name, ColumnName = _column, ColumnType = _type, NotNull = _notNull,
+                NewTableName = _newName, NewColumnName = _newName,
+                ColumnNames = _columns.ToList(), ReferencedTableName = _parent, ReferencedColumnNames = _parentColumns.ToList(),
+                ConstraintName = _kind == DataModelPendingOperationKind.AddColumn ? _checkName : _name, CheckExpressionSql = _kind == DataModelPendingOperationKind.AddColumn ? _columnCheck : null,
+                IndexName = _name, IsUnique = _unique, ExpressionSql = _expression, Collation = _collation,
+                ColumnCollations = _columns.Select(column => _indexCollations.GetValueOrDefault(column)).ToList(), OnDelete = _onDelete, OnUpdate = _onUpdate };
+            var operations = new List<DataModelPendingOperation>();
+            if (_kind == DataModelPendingOperationKind.AddForeignKey && !string.IsNullOrEmpty(_replace))
+                operations.Add(new() { Kind = DataModelPendingOperationKind.DropForeignKey, TableName = Node.Name, ConstraintName = _replace });
+            operations.Add(operation);
+            DataModelService.ValidateBatchForStaging(Baseline ?? State, operations);
+            await OnStage.InvokeAsync(operations);
+        }
+        catch (Exception ex) { _error = ex.Message; }
+    }
+    private async Task Drop(DataModelPendingOperationKind kind, string? name)
+    {
+        _error = null;
+        try { await OnStage.InvokeAsync([new() { Kind = kind, TableName = Node.Name, ConstraintName = name, IndexName = name }]); }
+        catch (Exception ex) { _error = ex.Message; }
+    }
+}

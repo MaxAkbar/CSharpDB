@@ -2,6 +2,7 @@ using System.Globalization;
 using CSharpDB.Admin.Models;
 using CSharpDB.Client;
 using CSharpDB.Client.Models;
+using InternalTableRegistry = CSharpDB.Primitives.DbInternalTableRegistry;
 
 namespace CSharpDB.Admin.Services;
 
@@ -395,7 +396,7 @@ public sealed class DataHygieneAdminService(ICSharpDbClient client)
     }
 
     private static bool IsSystemTableName(string name)
-        => name.StartsWith("_", StringComparison.Ordinal)
+        => InternalTableRegistry.IsInternalTable(name)
         || name.StartsWith("sys.", StringComparison.OrdinalIgnoreCase);
 
     private readonly record struct ResultRow(IReadOnlyDictionary<string, int> ColumnIndex, object?[] Values)

@@ -171,6 +171,91 @@ public sealed class DatabaseMaintenanceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task MigrateForeignKeysAsync_AllowsUnknownUnderscorePrefixedUserTable()
+    {
+        await _client.ExecuteSqlAsync("CREATE TABLE customers (id INTEGER PRIMARY KEY);", Ct);
+        await _client.ExecuteSqlAsync(
+            "CREATE TABLE _custom_orders (id INTEGER PRIMARY KEY, customer_id INTEGER);",
+            Ct);
+
+        await _client.DisposeAsync();
+        await RewriteTableSchemaAsLegacyAsync(_dbPath, "_custom_orders", Ct);
+        _client = CreateClient();
+
+        ClientModels.ForeignKeyMigrationResult result = await _client.MigrateForeignKeysAsync(
+            new ClientModels.ForeignKeyMigrationRequest
+            {
+                ValidateOnly = true,
+                Constraints =
+                [
+                    new ClientModels.ForeignKeyMigrationConstraintSpec
+                    {
+                        TableName = "_custom_orders",
+                        ColumnName = "customer_id",
+                        ReferencedTableName = "customers",
+                        ReferencedColumnName = "id",
+                    },
+                ],
+            },
+            Ct);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal("_custom_orders", Assert.Single(result.AppliedConstraints).TableName);
+    }
+
+    [Theory]
+    [InlineData("_etl_pipeline_runs")]
+    [InlineData("_shard_catalog_active_maps")]
+    public async Task MigrateForeignKeysAsync_RejectsRegisteredProductStorage(string tableName)
+    {
+        CSharpDbException error = await Assert.ThrowsAsync<CSharpDbException>(
+            () => _client.MigrateForeignKeysAsync(
+                new ClientModels.ForeignKeyMigrationRequest
+                {
+                    ValidateOnly = true,
+                    Constraints =
+                    [
+                        new ClientModels.ForeignKeyMigrationConstraintSpec
+                        {
+                            TableName = tableName,
+                            ColumnName = "owner_id",
+                            ReferencedTableName = "customers",
+                            ReferencedColumnName = "id",
+                        },
+                    ],
+                },
+                Ct));
+
+        Assert.Equal(ErrorCode.ConstraintViolation, error.Code);
+        Assert.Contains("only supports user SQL tables", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task MigrateForeignKeysAsync_RejectsUnregisteredDoubleUnderscoreReservedTable()
+    {
+        CSharpDbException error = await Assert.ThrowsAsync<CSharpDbException>(
+            () => _client.MigrateForeignKeysAsync(
+                new ClientModels.ForeignKeyMigrationRequest
+                {
+                    ValidateOnly = true,
+                    Constraints =
+                    [
+                        new ClientModels.ForeignKeyMigrationConstraintSpec
+                        {
+                            TableName = "__custom_orders",
+                            ColumnName = "owner_id",
+                            ReferencedTableName = "customers",
+                            ReferencedColumnName = "id",
+                        },
+                    ],
+                },
+                Ct));
+
+        Assert.Equal(ErrorCode.ConstraintViolation, error.Code);
+        Assert.Contains("only supports user SQL tables", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task MigrateForeignKeysAsync_ValidateOnly_ReportsSampledOrphans()
     {
         await _client.ExecuteSqlAsync("CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT);", Ct);

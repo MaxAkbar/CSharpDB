@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../../css/style.css">
+    <link rel="preload" href="../../js/csharpdb.bundle.js" as="script">
+    <title>Data Modeler Tutorial — CSharpDB</title>
+    <meta name="description" content="Build a readable CSharpDB schema diagram: choose tables, inspect composite relationships, group cards, edit connector bends, save layouts, and safely review schema changes.">
+    <link rel="canonical" href="https://csharpdb.com/docs/tutorials/data-modeler.html">
+    <meta property="og:title" content="Build a Readable Data Model — CSharpDB">
+    <meta property="og:description" content="A hands-on Data Modeler tutorial with a reproducible five-table database and real CSharpDB Admin screenshots.">
+    <meta property="og:url" content="https://csharpdb.com/docs/tutorials/data-modeler.html">
+    <meta property="og:image" content="https://csharpdb.com/images/admin/data-modeler/groups.webp">
+    <link rel="icon" type="image/png" href="../../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "TechArticle",
+        "name": "Build a Readable Data Model",
+        "description": "A hands-on CSharpDB Data Modeler tutorial covering diagrams, composite relationships, groups, connector bends, persistence, and reviewed schema changes.",
+        "url": "https://csharpdb.com/docs/tutorials/data-modeler.html",
+        "image": "https://csharpdb.com/images/admin/data-modeler/groups.webp",
+        "isPartOf": { "@type": "WebSite", "name": "CSharpDB", "url": "https://csharpdb.com" }
+    }
+    </script>
+    <style>
+        .tutorial-contents > summary { cursor: pointer; font-weight: 700; margin-bottom: 12px; }
+        .tutorial-contents > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+        .modeler-tutorial figure { margin: 28px 0 36px; }
+        .modeler-tutorial figure a { display: block; }
+        .modeler-tutorial figure img { display: block; width: 100%; height: auto; border: 1px solid var(--border); border-radius: 10px; }
+        .modeler-tutorial figcaption { margin-top: 10px; font-size: 0.875rem; color: var(--text-secondary); line-height: 1.6; }
+        .modeler-tutorial .tutorial-meta { display: flex; flex-wrap: wrap; gap: 8px 20px; margin: 18px 0 26px; color: var(--text-secondary); font-size: 0.875rem; }
+        .modeler-tutorial .table-scroll { overflow-x: auto; }
+        .modeler-tutorial h2[id] { scroll-margin-top: 90px; }
+        .modeler-tutorial a:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+        .modeler-tutorial .step-result { border-left: 3px solid var(--accent); padding-left: 16px; }
+        .modeler-tutorial :not(pre) > code { overflow-wrap: anywhere; }
+        @media (max-width: 600px) {
+            .modeler-tutorial .tutorial-meta { display: block; }
+            .modeler-tutorial .tutorial-meta span { display: block; margin-bottom: 6px; }
+        }
+    </style>
+</head>
+<body>
+    <script>
+        window.currentPage = 'docs'; window.pagePathPrefix = '../../';
+        window.pageConfig = {
+            title: 'Data Modeler Tutorial',
+            description: 'Build a readable CSharpDB schema diagram, organize tables and connector bends, save layouts, and review supported schema changes safely.',
+            keywords: 'CSharpDB Data Modeler tutorial, database diagram, composite foreign keys, table groups, schema designer',
+            canonicalPath: 'docs/tutorials/data-modeler.html',
+            ogType: 'article',
+        };
+    </script>
+    <div id="site-nav"></div>
+    <main class="page">
+        <div class="container doc-container">
+            <aside class="doc-sidebar">
+                <details class="tutorial-contents" id="tutorial-contents" open>
+                    <summary>On This Page</summary>
+                <nav class="doc-toc" aria-label="Tutorial steps">
+                    <ul>
+                        <li><a href="#before-you-start">Before you start</a></li>
+                        <li><a href="#setup">1. Create the demo database</a></li>
+                        <li><a href="#choose-tables">2. Choose your tables</a></li>
+                        <li><a href="#read-relationships">3. Read a relationship</a></li>
+                        <li><a href="#arrange">4. Make the canvas readable</a></li>
+                        <li><a href="#groups">5. Create a table group</a></li>
+                        <li><a href="#connectors">6. Adjust a connector</a></li>
+                        <li><a href="#save-reopen">7. Save and reopen</a></li>
+                        <li><a href="#schema-change">8. Stage a schema change</a></li>
+                        <li><a href="#review-apply">9. Review and apply</a></li>
+                        <li><a href="#export">10. Export your work</a></li>
+                        <li><a href="#troubleshooting">Troubleshooting</a></li>
+                        <li><a href="#next-steps">What you built</a></li>
+                    </ul>
+                </nav>
+                </details>
+            </aside>
+
+            <article class="doc-content modeler-tutorial">
+                <h1>Build a Readable Data Model</h1>
+                <p class="lead">Turn five related tables into a diagram you can explain, organize, and reopen. Then use the same workspace to stage a small schema change and review exactly what will run.</p>
+                <div class="tutorial-meta">
+                    <span>Hands-on · approximately 20–30 minutes</span>
+                    <span>Five tables · fictional order data</span>
+                    <span>Current Admin source build</span>
+                </div>
+                <p>CSharpDB's Data Modeler is a practical visual workspace for its embedded schema features, not a separate conceptual modeling language. This tutorial uses real Admin screenshots captured from the accompanying demo. Select any image to open it at full size.</p>
+                <figure>
+                    <a href="../../images/admin/data-modeler/groups.webp"><img src="../../images/admin/data-modeler/groups.webp" width="1320" height="951" alt="Five-table order model with orders, shipments, and order_lines enclosed in a blue Fulfillment group"></a>
+                    <figcaption>The destination: a focused diagram with a named group, readable relationships, and a saved layout.</figcaption>
+                </figure>
+
+                <h2 id="before-you-start">Before you start</h2>
+                <p>You need a checkout of the CSharpDB repository, its required .NET SDK, and a browser. These screenshots use the current Admin source implementation; an older installed release may have fewer controls. For basic navigation, see the <a href="../admin-ui.html">Admin UI guide</a>.</p>
+                <div class="callout callout-warning"><strong>Use a disposable database.</strong> Setup creates tables and inserts fictional records. Steps 2–7 change diagram metadata only; steps 8–9 deliberately change the demo schema. Do not run the setup or practice Apply against your working database.</div>
+                <div class="table-scroll">
+                    <table class="doc-table">
+                        <thead><tr><th scope="col">Diagram work</th><th scope="col">Database work</th></tr></thead>
+                        <tbody>
+                            <tr><td>Add cards, move tables, group, or adjust bends</td><td>Stage a table, column, constraint, or index operation</td></tr>
+                            <tr><td>Save stores appearance and pending intent</td><td>Apply reviewed changes executes the reviewed schema SQL</td></tr>
+                            <tr><td>Remove from canvas / Ungroup / Delete diagram</td><td>Stage Drop Table or Drop Relationship, then review and apply</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <p>Saving a diagram does <strong>not</strong> apply its pending SQL. Likewise, removing a card or group does not drop a table.</p>
+
+                <h2 id="setup">1. Create the demo database</h2>
+                <p>From the repository root, start a separate Admin instance with a new database path. This PowerShell example generates a fresh folder, so it cannot overwrite an existing tutorial database:</p>
+                <pre><code class="language-powershell">$demoFolder = Join-Path ([IO.Path]::GetTempPath()) ("csharpdb-modeler-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path $demoFolder | Out-Null
+$demoDb = Join-Path $demoFolder "modeler-tutorial.db"
+
+dotnet run --project .\src\CSharpDB.Admin\CSharpDB.Admin.csproj --no-launch-profile -- `
+  --urls http://127.0.0.1:62821 `
+  --CSharpDB:Transport=direct `
+  --CSharpDB:Endpoint="$demoDb"</code></pre>
+                <p>Open <code>http://127.0.0.1:62821/</code> and confirm that the header says <strong>modeler-tutorial.db</strong>. If that port is occupied, choose another unused port. Keep this instance separate from any Admin window connected to your normal database.</p>
+                <ol>
+                    <li>Open the <a href="data-modeler.sql" download>demo setup SQL</a>, also available in the repository at <code>www/docs/tutorials/data-modeler.sql</code>.</li>
+                    <li>Choose <strong>New Query</strong>, paste the script, and choose <strong>Run</strong>. Run it once in this new database.</li>
+                    <li>Confirm the five user tables below appear. If Object Explorer has not refreshed yet, use its refresh button.</li>
+                </ol>
+                <div class="table-scroll">
+                    <table class="doc-table">
+                        <thead><tr><th scope="col">Table</th><th scope="col">Role in this example</th></tr></thead>
+                        <tbody>
+                            <tr><td><code>customers</code></td><td>Composite primary key: tenant_id + id.</td></tr>
+                            <tr><td><code>orders</code></td><td>References customers through tenant_id + customer_id.</td></tr>
+                            <tr><td><code>products</code></td><td>Product catalog with a unique SKU.</td></tr>
+                            <tr><td><code>order_lines</code></td><td>References both orders and products.</td></tr>
+                            <tr><td><code>shipments</code></td><td>References orders.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <p class="step-result"><strong>Checkpoint:</strong> the setup reports nine inserted rows. There are five user tables and four foreign-key constraints.</p>
+
+                <h2 id="choose-tables">2. Choose what belongs on the canvas</h2>
+                <ol>
+                    <li>In Object Explorer, choose <strong>Tools → Data Model</strong>.</li>
+                    <li>The new global workspace starts empty because this database has no saved Default Diagram. Open <strong>Sources</strong> if the pane is closed.</li>
+                    <li>Find <code>orders</code>. Choose its relationship icon, labeled <strong>Add orders with related tables</strong>, rather than the plain Add button.</li>
+                    <li>This adds orders plus its immediate neighbors: customers, order_lines, and shipments. It does not recursively add products.</li>
+                    <li>Find <code>products</code> in Sources and choose <strong>Add</strong>. Close Sources to expose more canvas.</li>
+                </ol>
+                <figure>
+                    <a href="../../images/admin/data-modeler/sources.webp"><img src="../../images/admin/data-modeler/sources.webp" width="1320" height="951" loading="lazy" alt="Empty Data Model workspace with five searchable sources and separate Add and add-with-related buttons"></a>
+                    <figcaption>Start deliberately: Add includes one table; the relationship action adds just its immediate parents and children.</figcaption>
+                </figure>
+                <p><strong>Load All</strong> is useful for an overview, but a smaller model is usually easier to discuss. Adding sources merges missing tables without moving existing cards. A table's <strong>Show in Data Model</strong> context action also starts with its direct relationships.</p>
+                <p class="step-result"><strong>Checkpoint:</strong> all five cards are visible and all four relationships have both endpoints on the canvas.</p>
+
+                <h2 id="read-relationships">3. Read the relationship, not just the line</h2>
+                <p>Select the connector between customers and orders. If it is hard to target, select orders, open <strong>Details</strong>, and choose <strong>fk_orders_customer</strong> under Known relationships.</p>
+                <p>The relationship name appears beside the line, clear of the table cards and connector. Hover or keyboard-focus the line or its label for the full, wrapped mappings. If there is no clear space for the popup, use <strong>Details</strong>. Labels reposition automatically without altering saved table positions or connector bends.</p>
+                <p>The inspector shows two ordered mappings:</p>
+                <pre><code class="language-text">orders.tenant_id   → customers.tenant_id
+orders.customer_id → customers.id</code></pre>
+                <p>This is <strong>one composite foreign-key constraint</strong>, so it has one connector. Selecting it highlights all four participating columns. The fact that customers.id belongs to a composite primary key does not mean it is individually unique.</p>
+                <figure>
+                    <a href="../../images/admin/data-modeler/relationship.webp"><img src="../../images/admin/data-modeler/relationship.webp" width="1320" height="951" loading="lazy" alt="Selected orders-to-customers relationship highlights both column pairs and lists their ordered mappings in Details"></a>
+                    <figcaption>Details explains the complete relationship; the label alone is not the full composite mapping.</figcaption>
+                </figure>
+                <p>Read the crow's-foot markers at each end:</p>
+                <ul>
+                    <li><strong>Exactly one (two bars):</strong> every order in this example must reference a customer because both child FK columns are required.</li>
+                    <li><strong>Zero or many (circle and crow's foot):</strong> a customer can have no orders or several.</li>
+                    <li><strong>Zero or one (circle and bar):</strong> shown at the parent end for a nullable child FK, or at the child end when the entire FK column set has a matching unique constraint or unique index.</li>
+                </ul>
+                <p>Solid lines are physical FKs, dotted lines are drafts, and dashed lines are archive relationships. External tables and archive relationships are read-only schema context, though their cards and routes can still be arranged.</p>
+
+                <h2 id="arrange">4. Make the canvas readable</h2>
+                <ol>
+                    <li>Click empty canvas or press <strong>Escape</strong> with the canvas focused to clear selection. Unrelated tables stop dimming.</li>
+                    <li>Choose <strong>Keys First</strong> to show primary keys, foreign keys, and relationship endpoints. Expand an individual card when you need its other columns.</li>
+                    <li>Choose <strong>Auto Arrange</strong>, then <strong>Fit Model</strong>. Parents generally appear left of children; independent components are separated.</li>
+                    <li>Drag a table's <strong>header</strong> to fine-tune its position. Avoid the header's detail and remove buttons.</li>
+                </ol>
+                <figure>
+                    <a href="../../images/admin/data-modeler/arranged.webp"><img src="../../images/admin/data-modeler/arranged.webp" width="1320" height="951" loading="lazy" alt="Automatically arranged model with customers and products at left, orders in the middle, and shipments and order_lines at right"></a>
+                    <figcaption>Keys First keeps the diagram compact. Fit Model changes the view, not the saved table coordinates.</figcaption>
+                </figure>
+                <p>Drag empty background to pan; use the wheel to zoom around your pointer. <strong>Locate table…</strong> finds an existing canvas card. <strong>Show Direct Relationships</strong> adds a selected table's immediate neighbors.</p>
+                <p><strong>Auto Arrange</strong> explicitly reflows the visible model. <strong>Tidy Model</strong> additionally resets custom routes, switches to Keys First, and fits the result; it confirms before discarding custom routes. Do not use Tidy when you intend to keep hand-adjusted bends.</p>
+
+                <h2 id="groups">5. Enclose the fulfillment tables</h2>
+                <ol>
+                    <li>Ctrl-click on Windows, Cmd-click on macOS, or Shift-click to select <code>orders</code>, <code>order_lines</code>, and <code>shipments</code>.</li>
+                    <li>Choose <strong>Group Selected</strong>. The frame appears without rearranging the tables.</li>
+                    <li>In Details, enter <strong>Fulfillment</strong> under Group name, choose <strong>Rename Group</strong>, and keep the blue color or select another palette color.</li>
+                    <li>Drag the group title to move the three tables together. Drag one table header to move only that member; the frame fits the members automatically.</li>
+                </ol>
+                <p>Dragging across a border does not change membership. Use <strong>Add/Move Selected Tables Here</strong> or <strong>Remove from Group</strong> explicitly. A table belongs to at most one group; a singleton group is retained, and an empty one is removed.</p>
+                <p><strong>Ungroup</strong> removes only the frame. Auto Arrange treats the group as one block, preserving its internal arrangement. Groups are organizational metadata, not schemas, transactions, or access-control boundaries.</p>
+
+                <h2 id="connectors">6. Give a connector a deliberate bend</h2>
+                <ol>
+                    <li>Select <code>fk_orders_customer</code> again. Open <strong>Details → Connector route</strong>.</li>
+                    <li>Choose <strong>Add Bend</strong>. A new guide is focused on the longest segment.</li>
+                    <li>Move it with the arrow keys. Each press moves 8 canvas units; Shift+Arrow moves 24. The example uses Shift+Up to move the guide above its original position.</li>
+                    <li>Drag a bend handle to move one guide, or drag an interior segment grip to slide the whole straight section without splitting it. Vertical sections slide left/right; horizontal sections slide up/down. Movement stops at the limits of the clear lane, while endpoint sections remain attached to their columns.</li>
+                    <li>After sliding the middle vertical section, move either table: the section keeps its horizontal lane while its ends follow the column rows. The lane stays outside a table moved toward it; other obstructions may require automatic routing.</li>
+                    <li>Use <strong>Add Bend</strong>, <kbd>Enter</kbd> on a segment grip, or double-click when you want another guide or detour. Adding or moving individual bends makes those guides fixed canvas positions instead. The lane and its behavior are saved with the diagram; <kbd>Escape</kbd> cancels a move in progress.</li>
+                </ol>
+                <figure>
+                    <a href="../../images/admin/data-modeler/connector.webp"><img src="../../images/admin/data-modeler/connector.webp" width="1320" height="951" loading="lazy" alt="Custom connector route with a focused bend handle and Add Bend, Remove Bend, and Reset to Automatic controls"></a>
+                    <figcaption>The custom route is diagram-only. The foreign key and its column mappings remain unchanged.</figcaption>
+                </figure>
+                <p>Escape cancels an active move. Delete or Backspace on a focused bend removes only that bend, not the FK. <strong>Reset to Automatic</strong> discards custom guides.</p>
+                <p>Moving a group translates bends for relationships entirely inside that group. Bends that cross its boundary stay fixed while endpoint legs follow the moved cards. If a card obstructs a saved bend, the modeler temporarily uses automatic routing and retains the saved guide.</p>
+
+                <h2 id="save-reopen">7. Save a diagram you can come back to</h2>
+                <ol>
+                    <li>Choose <strong>Save As</strong> in the diagram toolbar. In the naming panel, enter <strong>Order fulfillment</strong> and choose <strong>Save Copy</strong>. The new name must not already exist.</li>
+                    <li>Wait for <strong>Saved diagram</strong>. Named diagrams also save completed moves and layout edits automatically; pan and zoom saving is briefly debounced.</li>
+                    <li>Close the Data Model tab, open it again from Tools, then select <strong>Order fulfillment</strong> in the <strong>Diagram</strong> selector at the top. The global entry initially opens Default Diagram, so select your named copy explicitly.</li>
+                    <li>Confirm the five tables, Fulfillment group, table positions, and custom bend are restored. Select the connector to see that its route is still Custom.</li>
+                </ol>
+                <p>Diagram JSON stores membership, positions, groups, detail levels, connector guides and attachment sides, viewport, and pending schema intent. Storage is local to the database and active route. Inspect it through <strong>System Catalog → sys.diagrams</strong>; do not edit the <code>__data_model_diagrams</code> backing table directly.</p>
+                <h3>Keep several focused diagrams</h3>
+                <ul>
+                    <li><strong>New Diagram</strong> opens a naming panel. Enter a unique name and choose <strong>Create Diagram</strong> for a separate, empty canvas with no pending database changes. Your existing diagram stays saved.</li>
+                    <li><strong>Save As</strong> creates and activates a copy of the current diagram, including pending schema edits. Use the <strong>Diagram</strong> selector to switch between your saved views.</li>
+                    <li><strong>Delete Diagram</strong> asks you to confirm the active name. It deletes only that saved record, not database tables. The canvas and pending changes remain open but unsaved; editing it does not recreate the deleted record. Use Save As to keep it again.</li>
+                    <li><strong>Clear</strong> empties and saves the active canvas while retaining pending schema changes. Use New Diagram for a fresh workspace, or Save As before Clear to preserve the original layout.</li>
+                </ul>
+                <p>If the current canvas is unnamed or cannot be saved, save it successfully before creating or opening another diagram. Cancel or Escape closes a naming or deletion panel without changing anything.</p>
+                <p><strong>Undo / Redo</strong> covers diagram edits and unapplied schema changes, with each completed drag treated as one action. History is session-local and resets after load, refresh, or successful Apply. It cannot undo committed database changes.</p>
+                <p class="step-result"><strong>Checkpoint:</strong> closing and loading the named diagram restores the arrangement, without rebuilding it through Auto Arrange.</p>
+
+                <h2 id="schema-change">8. Stage a small schema change</h2>
+                <p>Now work only in the disposable database. Add a packing note to orders, then index the new column to demonstrate dependent staging. This index is an exercise, not a recommendation to index every text field.</p>
+                <ol>
+                    <li>Select only <strong>orders</strong> and open <strong>Details → Stage schema change</strong>.</li>
+                    <li>Choose <strong>Add Column</strong>. Enter <code>packing_note</code>, set Declared SQL type to <code>VARCHAR(120)</code>, leave Not null unchecked, and choose <strong>Stage change</strong>.</li>
+                    <li>Choose <strong>Create Index</strong>. In Child/key/index columns, add <code>packing_note</code>. Enter <code>ix_orders_packing_note</code>, leave Unique index unchecked, and stage it.</li>
+                    <li>Confirm the toolbar reports <strong>2 pending database changes</strong>. The inspector previews both operations in order; the live table has not changed.</li>
+                </ol>
+                <p>Later operations use the current preview names and definitions. If you rename a staged column, use its new name in subsequent edits. Stage a candidate primary/unique key before an FK that references it.</p>
+                <p>The inspector also supports engine-supported table and column changes, keys, checks, foreign keys, and indexes. Composite pickers preserve column order. Unsupported combinations are blocked rather than simulated through a table rebuild. Engine-maintained supporting indexes are changed through their owning constraints, not independently.</p>
+
+                <h2 id="review-apply">9. Review the exact SQL, then apply</h2>
+                <ol>
+                    <li>Choose <strong>Review Changes</strong>. Inspect each affected table, statement, warning, and destructive-change label.</li>
+                    <li>For this example, the plan adds the column first and creates the index second. Confirm the statements below match the review.</li>
+                    <li>Choose <strong>Apply reviewed changes</strong> only when ready. Confirm success and that the pending count returns to zero.</li>
+                    <li>Select orders again. Check Columns and declared properties for <code>packing_note</code>, and Keys, checks, and indexes for <code>ix_orders_packing_note</code>.</li>
+                </ol>
+                <pre><code class="language-sql">ALTER TABLE orders ADD COLUMN packing_note VARCHAR(120);
+CREATE INDEX ix_orders_packing_note ON orders (packing_note);</code></pre>
+                <figure>
+                    <a href="../../images/admin/data-modeler/review.webp"><img src="../../images/admin/data-modeler/review.webp" width="1320" height="225" loading="lazy" alt="Review database changes panel showing the exact add-column and create-index statements before Apply"></a>
+                    <figcaption>Review is separate from diagram saving. The reviewed batch executes in one transaction on the active database route.</figcaption>
+                </figure>
+                <p>For constraint work, <strong>Check existing data</strong> can explicitly check relevant NULLs, duplicates, and orphans, including related tables outside the canvas. These checks are cancellable and may scan substantial data; they do not run just because a diagram opens. Skipped checks are not passes, and the engine validates constraints again during Apply.</p>
+                <div class="callout callout-warning"><strong>Read the outcome carefully.</strong> Schema drift blocks stale plans: refresh and review again. A failed statement rolls back the batch and preserves pending intent. If the database commit succeeds but diagram saving fails afterward, do not reapply the old SQL—refresh, reconcile, and retry saving the diagram.</div>
+                <p>Clients without the required transaction support cannot apply through this workflow. Known view and trigger dependencies are helpful but are not an exhaustive guarantee that no other consumers are affected.</p>
+
+                <h2 id="export">10. Export and hand off your work</h2>
+                <p>Use <strong>Export SVG</strong> for a scalable diagram, or <strong>Export PNG</strong> for a raster image. These actions do not move tables or execute SQL. Large PNG exports are scaled down.</p>
+                <p>Before applying, <strong>Export pending SQL</strong> exports the reviewed transaction script without executing it. After successful Apply there is no pending batch left to export. An exported file does not perform a live schema-drift check if you later execute it elsewhere.</p>
+                <p>Use contextual actions to open table data, Query Designer, Data Hygiene, System Catalog, or Compare / Deploy for the next task. Views, collections, procedures, and pipelines stay in their own tools rather than becoming canvas nodes.</p>
+
+                <h2 id="troubleshooting">Troubleshooting</h2>
+                <div class="table-scroll">
+                    <table class="doc-table">
+                        <thead><tr><th scope="col">What you see</th><th scope="col">What to do</th></tr></thead>
+                        <tbody>
+                            <tr><td>Most cards are dimmed</td><td>Clear selection with an empty-canvas click or Escape while the canvas has focus.</td></tr>
+                            <tr><td>A table will not move</td><td>Drag its header, not a column, connector, or header button. The group title moves the whole group.</td></tr>
+                            <tr><td>A connector is missing</td><td>Both endpoint cards must be present. Use Known relationships to add missing endpoints, and read metadata warnings.</td></tr>
+                            <tr><td>The layout looks different after reopening</td><td>Check the database, route, and loaded diagram name. Default Diagram and Order fulfillment are separate saved records.</td></tr>
+                            <tr><td>A saved bend is not followed</td><td>Check for an obstructing table. Move it away, adjust the guide, or Reset to Automatic.</td></tr>
+                            <tr><td>The new column is not on the card after Apply</td><td>Keys First hides non-key columns. Expand the card or inspect its full column list in Details.</td></tr>
+                            <tr><td>Schema controls are missing</td><td>Select one writable table, not a group, several tables, or an external table.</td></tr>
+                            <tr><td>Saved diagram, unchanged database</td><td>This is expected until you review and apply the pending schema operations.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <h2 id="next-steps">What you built</h2>
+                <p>You created a focused schema view, understood a composite FK, organized a named group, adjusted a connector, reopened its saved layout, and applied a reviewed two-operation change. You can repeat the visual steps on a small part of your own schema without applying any database changes.</p>
+                <p>For the complete control reference, open <strong>Help → Data Modeler</strong> inside Admin's bundled offline help. To stop the tutorial instance, return to its terminal and press Ctrl+C. Keep its database if you want to revisit the diagram.</p>
+                <div class="next-steps">
+                    <h2>Continue Learning</h2>
+                    <div class="next-steps-grid">
+                        <a href="../admin-ui.html" class="next-step-card"><h4>Admin UI Guide</h4><p>Explore the surrounding Studio workspace.</p></a>
+                        <a href="../sql.html" class="next-step-card"><h4>SQL Reference</h4><p>Check supported types, constraints, and DDL.</p></a>
+                        <a href="fulfillment-ops-admin-automation.html" class="next-step-card"><h4>Fulfillment Ops</h4><p>Continue with forms, reports, and operational workflows.</p></a>
+                        <a href="index.html" class="next-step-card"><h4>All Tutorials</h4><p>Return to the tutorial collection.</p></a>
+                    </div>
+                </div>
+            </article>
+        </div>
+    </main>
+    <div id="site-footer"></div>
+    <script>
+        (() => {
+            const contents = document.getElementById('tutorial-contents');
+            const compact = window.matchMedia('(max-width: 900px)');
+            contents.open = !compact.matches;
+            compact.addEventListener('change', event => { contents.open = !event.matches; });
+        })();
+    </script>
+    <script src="../../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

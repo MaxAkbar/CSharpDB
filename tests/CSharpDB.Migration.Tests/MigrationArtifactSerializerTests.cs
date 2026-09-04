@@ -13,7 +13,8 @@ public sealed class MigrationArtifactSerializerTests
     [Fact]
     public void Catalog_RoundTripsWithDeterministicDigestAndGoldenJson()
     {
-        MigrationCatalog catalog = CreateCatalog();
+        // Keep the published fixture immutable while the default target advances.
+        MigrationCatalog catalog = CreateCatalog() with { TargetCSharpDbVersion = "4.6.2" };
 
         string first = MigrationArtifactSerializer.SerializeCatalog(catalog);
         string second = MigrationArtifactSerializer.SerializeCatalog(catalog);
@@ -22,6 +23,16 @@ public sealed class MigrationArtifactSerializerTests
 
         MigrationCatalog restored = MigrationArtifactSerializer.DeserializeCatalog(first);
         Assert.Equal(first, MigrationArtifactSerializer.SerializeCatalog(restored));
+    }
+
+    [Fact]
+    public void Catalog_CurrentReleaseRoundTripsWithoutChangingThePublishedFixture()
+    {
+        MigrationCatalog catalog = CreateCatalog();
+        Assert.Equal("4.6.3", catalog.TargetCSharpDbVersion);
+        string json = MigrationArtifactSerializer.SerializeCatalog(catalog);
+        MigrationCatalog restored = MigrationArtifactSerializer.DeserializeCatalog(json);
+        Assert.Equal(json, MigrationArtifactSerializer.SerializeCatalog(restored));
     }
 
     [Fact]

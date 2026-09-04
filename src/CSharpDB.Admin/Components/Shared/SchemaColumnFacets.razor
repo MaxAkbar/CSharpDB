@@ -1,0 +1,24 @@
+<div class="schema-column-facets">
+    @if (ShowType) { <SchemaTypeInput Value="Type" ValueChanged="TypeChanged" /> }
+    @if (ShowNullability) { <label><input type="checkbox" checked="@NotNull" @onchange="e => NotNullChanged.InvokeAsync((bool)(e.Value ?? false))" /> Not null</label> }
+    <input class="schema-input" aria-label="Column literal default" placeholder="Literal default (optional)" value="@DefaultSql" @oninput="e => DefaultSqlChanged.InvokeAsync(e.Value?.ToString() ?? string.Empty)" />
+    <input class="schema-input" aria-label="Column collation" placeholder="Collation (optional)" value="@Collation" @oninput="e => CollationChanged.InvokeAsync(e.Value?.ToString() ?? string.Empty)" />
+    <input class="schema-input" aria-label="Column check name" placeholder="Column check name (optional)" value="@CheckName" @oninput="e => CheckNameChanged.InvokeAsync(e.Value?.ToString() ?? string.Empty)" />
+    <textarea class="schema-input mono" aria-label="Column check expression" placeholder="Column CHECK expression (optional)" @bind:get="CheckExpression" @bind:set="value => CheckExpressionChanged.InvokeAsync(value)" @bind:event="oninput"></textarea>
+</div>
+@code {
+    [Parameter] public bool ShowType { get; set; } = true;
+    [Parameter] public bool ShowNullability { get; set; } = true;
+    [Parameter] public string Type { get; set; } = "TEXT";
+    [Parameter] public EventCallback<string> TypeChanged { get; set; }
+    [Parameter] public bool NotNull { get; set; }
+    [Parameter] public EventCallback<bool> NotNullChanged { get; set; }
+    [Parameter] public string DefaultSql { get; set; } = "";
+    [Parameter] public EventCallback<string> DefaultSqlChanged { get; set; }
+    [Parameter] public string Collation { get; set; } = "";
+    [Parameter] public EventCallback<string> CollationChanged { get; set; }
+    [Parameter] public string CheckName { get; set; } = "";
+    [Parameter] public EventCallback<string> CheckNameChanged { get; set; }
+    [Parameter] public string CheckExpression { get; set; } = "";
+    [Parameter] public EventCallback<string> CheckExpressionChanged { get; set; }
+}

@@ -214,7 +214,7 @@
         {
             IReadOnlyCollection<string> tables = await DbClient.GetTableNamesAsync();
             _userTables = tables
-                .Where(static name => !name.StartsWith("_", StringComparison.Ordinal))
+                .Where(static name => !CSharpDB.Primitives.DbInternalTableRegistry.IsInternalTable(name))
                 .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
                 .ToList();
             _rowCounts.Clear();

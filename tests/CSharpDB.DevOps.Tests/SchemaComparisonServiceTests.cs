@@ -860,6 +860,52 @@ public sealed class SchemaComparisonServiceTests
     }
 
     [Fact]
+    public async Task ClientTarget_LoadSchema_ExcludesRegisteredStorageButKeepsUnknownUnderscoreTables()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string path = Path.Combine(Path.GetTempPath(), $"csharpdb_devops_internal_{Guid.NewGuid():N}.db");
+
+        try
+        {
+            await using (var db = await Database.OpenAsync(path, ct))
+            {
+                await db.ExecuteAsync("CREATE TABLE customers (id INTEGER PRIMARY KEY);", ct);
+                await db.ExecuteAsync("CREATE TABLE _custom (id INTEGER PRIMARY KEY);", ct);
+                await db.ExecuteAsync("CREATE TABLE __custom (id INTEGER PRIMARY KEY);", ct);
+                await db.ExecuteAsync("CREATE TABLE _etl_pipeline_runs (id INTEGER PRIMARY KEY);", ct);
+                await db.ExecuteAsync("CREATE TABLE _shard_catalog_active_maps (id INTEGER PRIMARY KEY);", ct);
+                await db.ExecuteAsync("CREATE INDEX idx_custom_id ON _custom(id);", ct);
+                await db.ExecuteAsync("CREATE INDEX idx_etl_id ON _etl_pipeline_runs(id);", ct);
+            }
+
+            await using var client = CSharpDbClient.Create(new CSharpDbClientOptions { DataSource = path });
+            IReadOnlyList<string> clientTables = await client.GetTableNamesAsync(ct);
+            Assert.Contains("_custom", clientTables);
+            Assert.Contains("__custom", clientTables);
+            Assert.Contains("_etl_pipeline_runs", clientTables);
+            Assert.Contains("_shard_catalog_active_maps", clientTables);
+
+            var target = new ClientSchemaCompareTarget(client);
+            SchemaSnapshot snapshot = await target.LoadSchemaAsync(ct);
+
+            Assert.Contains(snapshot.Tables, table => table.TableName == "customers");
+            Assert.Contains(snapshot.Tables, table => table.TableName == "_custom");
+            Assert.DoesNotContain(snapshot.Tables, table => table.TableName == "__custom");
+            Assert.DoesNotContain(snapshot.Tables, table => table.TableName == "_etl_pipeline_runs");
+            Assert.DoesNotContain(snapshot.Tables, table => table.TableName == "_shard_catalog_active_maps");
+            Assert.Contains(snapshot.Indexes, index => index.IndexName == "idx_custom_id");
+            Assert.DoesNotContain(snapshot.Indexes, index => index.IndexName == "idx_etl_id");
+        }
+        finally
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+            if (File.Exists(path + ".wal"))
+                File.Delete(path + ".wal");
+        }
+    }
+
+    [Fact]
     public async Task DataCompare_ReportsKeyedDifferencesAndRendersSyncScript()
     {
         var schema = Table(

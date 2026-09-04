@@ -864,7 +864,7 @@
 
     private async Task RefreshTableNamesAsync()
     {
-        try { _tableNames = (await ActiveClient.GetTableNamesAsync()).Where(n => !n.StartsWith("_", StringComparison.Ordinal)).OrderBy(n => n).ToList(); }
+        try { _tableNames = (await ActiveClient.GetTableNamesAsync()).Where(n => !CSharpDB.Primitives.DbInternalTableRegistry.IsInternalTable(n)).OrderBy(n => n).ToList(); }
         catch { _tableNames = []; }
     }
 

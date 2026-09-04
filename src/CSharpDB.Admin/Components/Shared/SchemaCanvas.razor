@@ -5,50 +5,79 @@
 <div class="schema-canvas-wrap">
     <div id="@CanvasId"
          class="designer-canvas schema-canvas"
+         tabindex="0"
+         aria-label="Data model canvas. Click empty space or press Escape to clear the selection."
          data-canvas-scale="@ScaleText"
-         style="height:@HeightPx}px"
+         data-canvas-inset="@CanvasInset"
+         data-viewport-x="@Px(State.ViewportX)"
+         data-viewport-y="@Px(State.ViewportY)"
+         style="@(HeightPx > 0 ? $"height:{HeightPx}px" : null)"
          @ref="_canvasRef">
         <div class="schema-canvas-viewport" style="width:@Px(ScaledSvgWidth)px;height:@Px(ScaledSvgHeight)px">
-            <div class="schema-canvas-stage" style="width:@Px(SvgWidth)px;height:@Px(SvgHeight)px;transform:scale(@ScaleText)">
-                <svg class="designer-canvas-svg"
-                     width="@SvgWidth"
-                     height="@SvgHeight"
-                     xmlns="http://www.w3.org/2000/svg">
+            <div class="schema-canvas-stage" style="width:@Px(SvgWidth)px;height:@Px(SvgHeight)px;transform:scale(@ScaleText) translate(@(CanvasInset)px,@(CanvasInset)px)">
+                @foreach (var group in State.Groups)
+                {
+                    if (DataModelGroups.Bounds(State, group.Id) is not { } bounds) continue;
+                    <div @key="group.Id" class="schema-table-group group-@group.Color.ToString().ToLowerInvariant() @(SelectedGroupId == group.Id ? "selected" : "") @(DataModelGroups.Members(State, group.Id).All(IsNodeDimmed) ? "dimmed" : "")"
+                         data-group-id="@group.Id" style="left:@Px(bounds.X)px;top:@Px(bounds.Y)px;width:@Px(bounds.Width)px;height:@Px(bounds.Height)px">
+                        <button class="schema-group-title" data-group-title="@group.Id" aria-pressed="@((SelectedGroupId == group.Id).ToString().ToLowerInvariant())"
+                                aria-label="Group @group.Name, @DataModelGroups.Members(State, group.Id).Count tables"
+                                @onclick:stopPropagation="true" @onclick="() => OnGroupSelected.InvokeAsync(group.Id)">
+                            <span>@group.Name</span><small>@DataModelGroups.Members(State, group.Id).Count tables</small>
+                        </button>
+                    </div>
+                }
+                <svg class="designer-canvas-svg" width="@SvgWidth" height="@SvgHeight"
+                     xmlns="http://www.w3.org/2000/svg" aria-label="Database relationship diagram">
+                    <defs>
+                        <marker id="@MarkerId(DataModelCardinality.One)" markerWidth="18" markerHeight="16" refX="9" refY="0" orient="auto-start-reverse" markerUnits="userSpaceOnUse" viewBox="0 -8 18 16">
+                            <path d="M5,-6 V6 M9,-6 V6" fill="none" stroke="var(--text-secondary)" stroke-width="1.5" />
+                        </marker>
+                        <marker id="@MarkerId(DataModelCardinality.ZeroOrOne)" markerWidth="20" markerHeight="16" refX="10" refY="0" orient="auto-start-reverse" markerUnits="userSpaceOnUse" viewBox="0 -8 20 16">
+                            <circle cx="5" cy="0" r="3" fill="var(--bg-secondary)" stroke="var(--text-secondary)" stroke-width="1.5" />
+                            <path d="M11,-6 V6" fill="none" stroke="var(--text-secondary)" stroke-width="1.5" />
+                        </marker>
+                        <marker id="@MarkerId(DataModelCardinality.ZeroOrMany)" markerWidth="24" markerHeight="18" refX="12" refY="0" orient="auto-start-reverse" markerUnits="userSpaceOnUse" viewBox="0 -9 24 18">
+                            <circle cx="5" cy="0" r="3" fill="var(--bg-secondary)" stroke="var(--text-secondary)" stroke-width="1.5" />
+                            <path d="M12,0 L19,-7 M12,0 L19,0 M12,0 L19,7" fill="none" stroke="var(--text-secondary)" stroke-width="1.5" />
+                        </marker>
+                    </defs>
+
                     @foreach (DataModelRelationship relationship in State.Relationships.Where(ShouldRenderRelationship))
                     {
                         var current = relationship;
-                        var (x1, y1, x2, y2) = RelationshipPoints(current);
-                        double cx1 = x1 + 80, cy1 = y1, cx2 = x2 - 80, cy2 = y2;
-                        double mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+                        RelationshipGeometry geometry = GeometryFor(current);
                         bool selected = string.Equals(SelectedRelationshipId, current.Id, StringComparison.Ordinal);
-                        <g class="designer-join-line schema-relationship @(selected ? "selected" : "") @RelationshipClass(current)">
-                            <path d="M @Px(x1),@Px(y1) C @Px(cx1),@Px(cy1) @Px(cx2),@Px(cy2) @Px(x2),@Px(y2)"
-                                  stroke="transparent"
-                                  stroke-width="12"
-                                  fill="none"
+                        bool dimmed = IsRelationshipDimmed(current);
+                        <g class="designer-join-line schema-relationship @(selected ? "selected" : "") @(dimmed ? "dimmed" : "") @RelationshipClass(current)"
+                           data-relationship-id="@current.Id"
+                           data-connector-layout="@System.Text.Json.JsonSerializer.Serialize(current.ConnectorLayout)"
+                           data-route-fallback="@geometry.UsedAutomaticFallback.ToString().ToLowerInvariant()">
+                            <path d="@geometry.Path" stroke="transparent" stroke-width="14" fill="none"
                                   style="pointer-events:stroke;cursor:pointer"
+                                  data-model-edge="hit"
+                                  data-parent-table="@current.RightTable" data-parent-column="@current.RightColumn"
+                                  data-parent-lane="@Px(CollapsedLaneFraction(current.RightTable, current.Id))"
+                                  data-child-table="@current.LeftTable" data-child-column="@current.LeftColumn"
+                                  data-child-lane="@Px(CollapsedLaneFraction(current.LeftTable, current.Id))"
+                                  tabindex="0" role="button" aria-label="@RelationshipSelectionLabel(current)"
+                                  aria-describedby="@RelationshipTooltipId(current)"
                                   @onclick:stopPropagation="true"
-                                  @onclick="() => OnRelationshipSelected.InvokeAsync(current.Id)" />
-                            <path d="M @Px(x1),@Px(y1) C @Px(cx1),@Px(cy1) @Px(cx2),@Px(cy2) @Px(x2),@Px(y2)"
-                                  stroke="@RelationshipStroke(current, selected)"
+                                  @onclick="() => OnRelationshipSelected.InvokeAsync(current.Id)"
+                                  @onkeydown="eventArgs => SelectRelationshipFromKeyboardAsync(eventArgs, current.Id)" />
+                            <path d="@geometry.Path" stroke="@RelationshipStroke(current, selected)"
                                   stroke-width="@(selected ? "2.4" : "1.6")"
                                   stroke-dasharray="@RelationshipDash(current)"
-                                  fill="none"
+                                  marker-start="@MarkerUrl(current.ReferencedEndCardinality)"
+                                  marker-end="@MarkerUrl(current.ReferencingEndCardinality)"
+                                  fill="none" data-model-edge="visible"
+                                  data-parent-table="@current.RightTable" data-parent-column="@current.RightColumn"
+                                  data-parent-lane="@Px(CollapsedLaneFraction(current.RightTable, current.Id))"
+                                  data-child-table="@current.LeftTable" data-child-column="@current.LeftColumn"
+                                  data-child-lane="@Px(CollapsedLaneFraction(current.LeftTable, current.Id))"
                                   style="pointer-events:none" />
-                            <rect x="@Px(mx - 29)" y="@Px(my - 9)" width="58" height="16"
-                                  rx="3"
-                                  fill="var(--bg-elevated)"
-                                  stroke="var(--border-color)"
-                                  stroke-width="1"
-                                  style="pointer-events:none" />
-                            <text x="@Px(mx)" y="@Px(my + 2)"
-                                  text-anchor="middle"
-                                  font-size="9"
-                                  fill="var(--text-muted)"
-                                  font-family="var(--font-ui)"
-                                  style="pointer-events:none">
-                                @RelationshipLabel(current)
-                            </text>
+                            @* This container's children are owned by the pointer interop, not Blazor. *@
+                            <g data-model-route-handles></g>
                         </g>
                     }
                 </svg>
@@ -57,20 +86,24 @@
                 {
                     <div class="schema-canvas-empty">
                         <i class="bi bi-diagram-3"></i>
-                        <span>Add a table or load a layout to begin.</span>
+                        <span>Search Sources and add a table to begin modeling.</span>
                     </div>
                 }
 
                 @foreach (DataModelNode node in State.Nodes)
                 {
                     var current = node;
-                    bool selected = string.Equals(SelectedNodeName, current.Name, StringComparison.OrdinalIgnoreCase);
-                    <div class="designer-table-node schema-node @(selected ? "selected" : "") @(current.Kind == DataModelNodeKind.ExternalTable ? "external" : "physical") @(current.IsDraft ? "draft" : "") @(current.IsCollapsed ? "collapsed" : "")"
+                    bool selected = SelectedNodeNames.Contains(current.Name) || string.Equals(SelectedNodeName, current.Name, StringComparison.OrdinalIgnoreCase);
+                    bool dimmed = IsNodeDimmed(current);
+                    IReadOnlyList<DataModelColumn> visibleColumns = VisibleColumns(current);
+                    <div class="designer-table-node schema-node @(selected ? "selected" : "") @(dimmed ? "dimmed" : "") @(current.Kind == DataModelNodeKind.ExternalTable ? "external" : "physical") @(current.IsDraft ? "draft" : "") @(current.DetailLevel == DataModelNodeDetailLevel.Collapsed ? "collapsed" : "")"
                          id="@($"{CanvasId}-node-{current.Name}")"
                          style="left:@Px(current.X)px;top:@Px(current.Y)px"
-                         data-table="@current.Name"
+                         data-table="@current.Name" data-group-id="@current.GroupId" data-detail-level="@current.DetailLevel" aria-pressed="@selected.ToString().ToLowerInvariant()"
+                         tabindex="0" role="button" aria-label="Table @current.Name"
                          @onclick:stopPropagation="true"
-                         @onclick="() => OnNodeSelected.InvokeAsync(current.Name)">
+                         @onclick="args => SelectNodeAsync(current.Name, args.CtrlKey || args.MetaKey || args.ShiftKey)"
+                         @onkeydown="eventArgs => SelectNodeFromKeyboardAsync(eventArgs, current.Name)">
                         <div class="designer-table-node-header">
                             <i class="bi @(current.Kind == DataModelNodeKind.ExternalTable ? "bi-box-arrow-up-right" : "bi-table")"></i>
                             <span>@current.Name</span>
@@ -78,26 +111,28 @@
                             {
                                 <i class="bi bi-exclamation-triangle schema-node-warning" title="@string.Join("; ", current.Warnings)"></i>
                             }
-                            <button class="designer-node-close"
-                                    title="Remove from canvas"
-                                    @onclick:stopPropagation="true"
-                                    @onclick="() => OnNodeRemoved.InvokeAsync(current.Name)">
+                            <button class="designer-node-detail" title="@DetailToggleTitle(current)" aria-label="@DetailToggleTitle(current)"
+                                    @onclick:stopPropagation="true" @onclick="() => ToggleNodeDetailAsync(current)">
+                                <i class="bi @DetailToggleIcon(current)"></i>
+                            </button>
+                            <button class="designer-node-close" title="Remove from canvas"
+                                    @onclick:stopPropagation="true" @onclick="() => OnNodeRemoved.InvokeAsync(current.Name)">
                                 <i class="bi bi-x"></i>
                             </button>
                         </div>
-                        @if (!current.IsCollapsed)
+                        @if (current.DetailLevel != DataModelNodeDetailLevel.Collapsed)
                         {
                             <div class="schema-node-meta">
-                        @if (current.Kind == DataModelNodeKind.ExternalTable)
-                        {
-                            <span>external</span>
-                        }
-                        else if (current.IsDraft)
-                        {
-                            <span>pending create</span>
-                        }
-                        else
-                        {
+                                @if (current.Kind == DataModelNodeKind.ExternalTable)
+                                {
+                                    <span>external</span>
+                                }
+                                else if (current.IsDraft)
+                                {
+                                    <span>pending create</span>
+                                }
+                                else
+                                {
                                     <span>@current.IndexCount index@(current.IndexCount == 1 ? "" : "es")</span>
                                     <span>@current.TriggerCount trigger@(current.TriggerCount == 1 ? "" : "s")</span>
                                 }
@@ -105,70 +140,118 @@
                                 {
                                     <span>@current.RowCount rows</span>
                                 }
+                                @if (current.DetailLevel == DataModelNodeDetailLevel.Keys && visibleColumns.Count < current.Columns.Count)
+                                {
+                                    <span>@visibleColumns.Count/@current.Columns.Count columns</span>
+                                }
                             </div>
-                            @foreach (DataModelColumn column in current.Columns)
+                            @foreach (DataModelColumn column in visibleColumns)
                             {
-                                <div class="designer-table-node-col schema-node-col">
+                                bool endpoint = IsSelectedRelationshipEndpoint(current, column);
+                                <div class="designer-table-node-col schema-node-col @(endpoint ? "relationship-endpoint" : "")"
+                                     data-column="@column.Name">
                                     <span class="designer-col-type">@column.TypeLabel</span>
                                     <span class="designer-col-name @(column.IsPrimaryKey ? "pk" : "")">@column.Name</span>
                                     <span class="schema-column-icons">
-                                        @if (column.IsPrimaryKey)
-                                        {
-                                            <i class="bi bi-key-fill" title="Primary key"></i>
-                                        }
-                                        @if (column.IsRowVersion)
-                                        {
-                                            <span title="Store-generated row version">RV</span>
-                                        }
-                                        @if (column.IsForeignKey)
-                                        {
-                                            <i class="bi bi-link-45deg" title="Foreign key"></i>
-                                        }
-                                        @if (column.IsIndexed && !column.IsPrimaryKey)
-                                        {
-                                            <i class="bi bi-lightning" title="Indexed"></i>
-                                        }
-                                        @if (!column.Nullable && !column.IsPrimaryKey)
-                                        {
-                                            <i class="bi bi-asterisk" title="Not nullable"></i>
-                                        }
+                                        @if (column.IsPrimaryKey) { <i class="bi bi-key-fill" title="Primary key"></i> }
+                                        @if (column.IsRowVersion) { <span title="Store-generated row version">RV</span> }
+                                        @if (column.IsForeignKey) { <i class="bi bi-link-45deg" title="Foreign key"></i> }
+                                        @if (column.IsUnique && !column.IsPrimaryKey) { <i class="bi bi-1-circle" title="Unique"></i> }
+                                        @if (column.IsIndexed && !column.IsPrimaryKey) { <i class="bi bi-lightning" title="Indexed"></i> }
+                                        @if (!column.Nullable && !column.IsPrimaryKey) { <i class="bi bi-asterisk" title="Not nullable"></i> }
                                     </span>
                                 </div>
                             }
                         }
                     </div>
                 }
+                @* Labels are transient UI, above cards but separate from connector geometry.
+                   Interop measures and positions them without changing saved coordinates. *@
+                <div class="schema-relationship-label-layer">
+                    @foreach (var relationship in State.Relationships.Where(ShouldRenderRelationship))
+                    {
+                        var current = relationship;
+                        <div @key="current.Id" class="schema-relationship-label" data-model-label-id="@current.Id">
+                            <button class="schema-relationship-label-button" aria-label="@RelationshipSelectionLabel(current)"
+                                    aria-describedby="@RelationshipTooltipId(current)"
+                                    @onclick:stopPropagation="true" @onclick="() => OnRelationshipSelected.InvokeAsync(current.Id)">
+                                @RelationshipShortLabel(current)
+                            </button>
+                            <div class="schema-relationship-tooltip" id="@RelationshipTooltipId(current)" role="tooltip">
+                                <strong>@RelationshipShortLabel(current)</strong>
+                                @foreach (var pair in current.EffectiveColumnPairs)
+                                {
+                                    <div>@current.LeftTable.@pair.ChildColumn → @current.RightTable.@pair.ParentColumn</div>
+                                }
+                            </div>
+                        </div>
+                    }
+                </div>
             </div>
         </div>
+
+        <div class="schema-canvas-legend" aria-label="Relationship legend">
+            <span><i class="legend-line physical"></i> physical</span>
+            <span><i class="legend-line draft"></i> draft</span>
+            <span><i class="legend-line archive"></i> archive</span>
+            <span><strong>○|</strong> optional one</span>
+            <span><strong>○&lt;</strong> zero or many</span>
+        </div>
     </div>
+    @if (SelectedRelationshipId is not null && _geometry.TryGetValue(SelectedRelationshipId, out var selectedGeometry) && selectedGeometry.UsedAutomaticFallback)
+    {
+        <div class="schema-route-warning" role="status">A saved bend is obstructed. Showing a safe automatic route; move the table away or use Reset to Automatic in Details.</div>
+    }
+    <span class="schema-route-announcement" role="status" aria-live="polite" aria-atomic="true"><span @key="_connectorAnnouncementSequence">@_connectorAnnouncement</span></span>
 </div>
 
 @code {
-    private const int NodeWidth = 200;
-    private const int NodeHeaderHeight = 36;
-    private const int ColumnRowHeight = 28;
-    private const int NodeMetaHeight = 24;
-
     [Parameter] public DataModelState State { get; set; } = new();
     [Parameter] public string CanvasId { get; set; } = $"schema-canvas-{Guid.NewGuid():N}";
-    [Parameter] public int HeightPx { get; set; } = 560;
+    [Parameter] public int HeightPx { get; set; }
     [Parameter] public string? SelectedNodeName { get; set; }
+    [Parameter] public IReadOnlySet<string> SelectedNodeNames { get; set; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    [Parameter] public string? SelectedGroupId { get; set; }
+    [Parameter] public EventCallback<DataModelNodeSelection> OnNodeSelectionChanged { get; set; }
+    [Parameter] public EventCallback<string> OnGroupSelected { get; set; }
+    [Parameter] public EventCallback<DataModelGroupMove> OnGroupMoved { get; set; }
     [Parameter] public string? SelectedRelationshipId { get; set; }
     [Parameter] public EventCallback<string> OnNodeSelected { get; set; }
     [Parameter] public EventCallback<string> OnNodeRemoved { get; set; }
     [Parameter] public EventCallback<string> OnRelationshipSelected { get; set; }
+    [Parameter] public EventCallback OnSelectionCleared { get; set; }
     [Parameter] public EventCallback<DataModelNodeMove> OnNodeMoved { get; set; }
+    [Parameter] public EventCallback<DataModelNodeDetailChange> OnNodeDetailChanged { get; set; }
+    [Parameter] public EventCallback<DataModelViewportChange> OnViewportChanged { get; set; }
+    [Parameter] public EventCallback<DataModelConnectorLayoutChange> OnConnectorRouteChanged { get; set; }
+    [Parameter] public EventCallback<string?> OnConnectorWaypointSelected { get; set; }
 
     private DotNetObjectReference<SchemaCanvas>? _dotNetRef;
     private ElementReference _canvasRef;
+    private readonly Dictionary<string, RelationshipGeometry> _geometry = new(StringComparer.Ordinal);
+    // Leave room for pinned outward-facing connectors at a table's zero coordinate.
+    private const int CanvasInset = DataModelGroups.CanvasInset;
+    private string _connectorAnnouncement = "";
+    private long _connectorAnnouncementSequence;
+
+    protected override void OnParametersSet()
+    {
+        _geometry.Clear();
+        foreach (DataModelRelationship relationship in State.Relationships.Where(ShouldRenderRelationship))
+            _geometry[relationship.Id] = RelationshipPoints(relationship);
+    }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (!firstRender)
+        if (firstRender)
+        {
+            _dotNetRef = DotNetObjectReference.Create(this);
+            try { await JS.InvokeVoidAsync("schemaCanvasInterop.init", CanvasId, _dotNetRef, State.ViewportX, State.ViewportY); }
+            catch { }
             return;
+        }
 
-        _dotNetRef = DotNetObjectReference.Create(this);
-        try { await JS.InvokeVoidAsync("designerInterop.initDrag", _dotNetRef); }
+        try { await JS.InvokeVoidAsync("schemaCanvasInterop.sync", CanvasId, State.ViewportX, State.ViewportY, CanvasScale); }
         catch { }
     }
 
@@ -176,72 +259,251 @@
     public async Task OnTableMoved(string tableName, double x, double y)
     {
         DataModelNode? node = State.Nodes.FirstOrDefault(n => string.Equals(n.Name, tableName, StringComparison.OrdinalIgnoreCase));
-        if (node is null)
-            return;
-
+        if (node is null) return;
         node.X = x;
         node.Y = y;
         await OnNodeMoved.InvokeAsync(new DataModelNodeMove(tableName, x, y));
     }
 
-    private double SvgWidth => Math.Max(1200, State.Nodes.Select(static node => node.X + NodeWidth + 40).DefaultIfEmpty(1200).Max());
+    [JSInvokable]
+    public async Task OnCanvasViewportChanged(double x, double y, double scale)
+    {
+        State.ViewportX = Math.Max(0, x);
+        State.ViewportY = Math.Max(0, y);
+        State.Scale = NormalizeScale(scale);
+        await OnViewportChanged.InvokeAsync(new DataModelViewportChange(State.ViewportX, State.ViewportY, State.Scale));
+        await InvokeAsync(StateHasChanged);
+    }
 
-    private double SvgHeight => Math.Max(600, State.Nodes.Select(node => node.Y + NodeHeight(node) + 40).DefaultIfEmpty(600).Max());
+    [JSInvokable]
+    public Task OnCanvasSelectionCleared() => OnSelectionCleared.InvokeAsync();
 
+    [JSInvokable]
+    public async Task<bool> OnTableGroupMoved(string groupId, double dx, double dy)
+    {
+        if (!DataModelGroups.Move(State, groupId, dx, dy)) return false;
+        await OnGroupMoved.InvokeAsync(new(groupId, dx, dy));
+        await InvokeAsync(StateHasChanged);
+        return true;
+    }
+
+    [JSInvokable]
+    public async Task<bool> OnConnectorLayoutChanged(string relationshipId, DataModelConnectorLayout? layout)
+    {
+        DataModelRelationship? relationship = State.Relationships.FirstOrDefault(item => item.Id == relationshipId);
+        if (relationship is null || !ShouldRenderRelationship(relationship)) return false;
+        if (layout?.Waypoints?.Count == 0) layout = null;
+        if (!DataModelGraphBuilder.IsValidConnectorLayout(layout) ||
+            layout?.Waypoints.Any(point => !DataModelConnectorRouter.IsValidWaypoint(new DataModelConnectorPoint(point.X, point.Y), NodeObstacles())) == true)
+        {
+            await OnConnectorAnnouncement("Invalid connector bend. The previous route was kept.");
+            return false;
+        }
+
+        relationship.ConnectorLayout = DataModelGraphBuilder.CloneConnectorLayout(layout);
+        await OnConnectorRouteChanged.InvokeAsync(new DataModelConnectorLayoutChange(relationshipId, relationship.ConnectorLayout));
+        return true;
+    }
+
+    [JSInvokable]
+    public Task OnConnectorHandleSelected(string relationshipId, string? waypointId) =>
+        relationshipId == SelectedRelationshipId ? OnConnectorWaypointSelected.InvokeAsync(waypointId) : Task.CompletedTask;
+
+    [JSInvokable]
+    public async Task OnConnectorAnnouncement(string message)
+    {
+        _connectorAnnouncement = message;
+        _connectorAnnouncementSequence++;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    public ValueTask AddConnectorBendAsync(string relationshipId) => JS.InvokeVoidAsync("schemaCanvasInterop.addBend", CanvasId, relationshipId);
+    public ValueTask RemoveConnectorBendAsync(string relationshipId) => JS.InvokeVoidAsync("schemaCanvasInterop.removeBend", CanvasId, relationshipId);
+    public ValueTask FocusConnectorAsync(string relationshipId) => JS.InvokeVoidAsync("schemaCanvasInterop.focusConnector", CanvasId, relationshipId);
+
+    public async Task FitModelAsync()
+    {
+        try { await JS.InvokeVoidAsync("schemaCanvasInterop.fit", CanvasId); } catch { }
+    }
+
+    private IEnumerable<DataModelConnectorPoint> ConnectorExtentPoints => _geometry.Values.SelectMany(static geometry => geometry.Points)
+        .Concat(State.Relationships.Where(ShouldRenderRelationship).SelectMany(static relationship => relationship.ConnectorLayout?.Waypoints ?? [])
+            .Where(static point => double.IsFinite(point.X) && double.IsFinite(point.Y))
+            .Select(static point => new DataModelConnectorPoint(point.X, point.Y)))
+        .Concat(State.Groups.Select(group => DataModelGroups.Bounds(State, group.Id)).Where(bounds => bounds.HasValue)
+            .Select(bounds => new DataModelConnectorPoint(bounds!.Value.Right, bounds.Value.Bottom)));
+    private double SvgWidth => Math.Max(1200, Math.Max(State.Nodes.Select(static node => node.X + DataModelCanvasMetrics.NodeWidth + 80).DefaultIfEmpty(1200).Max(), ConnectorExtentPoints.Select(static point => point.X + 80).DefaultIfEmpty(0).Max()));
+    private double SvgHeight => Math.Max(600, Math.Max(State.Nodes.Select(node => node.Y + DataModelCanvasMetrics.NodeHeight(State, node) + 80).DefaultIfEmpty(600).Max(), ConnectorExtentPoints.Select(static point => point.Y + 80).DefaultIfEmpty(0).Max()));
     private double CanvasScale => NormalizeScale(State.Scale);
-
-    private double ScaledSvgWidth => SvgWidth * CanvasScale;
-
-    private double ScaledSvgHeight => SvgHeight * CanvasScale;
-
-    private string ScaleText =>
-        CanvasScale.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
-
-    private static int NodeHeight(DataModelNode node) =>
-        node.IsCollapsed ? NodeHeaderHeight : NodeHeaderHeight + NodeMetaHeight + node.Columns.Count * ColumnRowHeight;
+    private double ScaledSvgWidth => (SvgWidth + CanvasInset * 2) * CanvasScale;
+    private double ScaledSvgHeight => (SvgHeight + CanvasInset * 2) * CanvasScale;
+    private string ScaleText => CanvasScale.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+    private IReadOnlyList<DataModelColumn> VisibleColumns(DataModelNode node) => DataModelCanvasMetrics.GetVisibleColumns(State, node);
 
     private bool ShouldRenderRelationship(DataModelRelationship relationship) =>
         relationship.IsResolved
         && State.Nodes.Any(node => string.Equals(node.Name, relationship.LeftTable, StringComparison.OrdinalIgnoreCase))
         && State.Nodes.Any(node => string.Equals(node.Name, relationship.RightTable, StringComparison.OrdinalIgnoreCase));
 
-    private (double x1, double y1, double x2, double y2) RelationshipPoints(DataModelRelationship relationship)
+    private RelationshipGeometry GeometryFor(DataModelRelationship relationship) =>
+        _geometry.TryGetValue(relationship.Id, out RelationshipGeometry? geometry) ? geometry : RelationshipPoints(relationship);
+
+    private DataModelConnectorObstacle[] NodeObstacles() => State.Nodes.Select(node => new DataModelConnectorObstacle(
+        node.X, node.Y, DataModelCanvasMetrics.NodeWidth, DataModelCanvasMetrics.NodeHeight(State, node)))
+        .Concat(State.Groups.Select(group => DataModelGroups.Bounds(State, group.Id)).Where(bounds => bounds.HasValue)
+            .Select(bounds => new DataModelConnectorObstacle(bounds!.Value.X, bounds.Value.Y, bounds.Value.Width, DataModelGroups.TitleHeight))).ToArray();
+
+    private RelationshipGeometry RelationshipPoints(DataModelRelationship relationship)
     {
-        DataModelNode? left = State.Nodes.FirstOrDefault(node => string.Equals(node.Name, relationship.LeftTable, StringComparison.OrdinalIgnoreCase));
-        DataModelNode? right = State.Nodes.FirstOrDefault(node => string.Equals(node.Name, relationship.RightTable, StringComparison.OrdinalIgnoreCase));
-        double x1 = (left?.X ?? 0) + NodeWidth;
-        double y1 = (left?.Y ?? 0) + NodeHeaderHeight / 2.0;
-        double x2 = right?.X ?? 200;
-        double y2 = (right?.Y ?? 0) + NodeHeaderHeight / 2.0;
-        return (x1, y1, x2, y2);
+        DataModelNode? parent = State.Nodes.FirstOrDefault(node => string.Equals(node.Name, relationship.RightTable, StringComparison.OrdinalIgnoreCase));
+        DataModelNode? child = State.Nodes.FirstOrDefault(node => string.Equals(node.Name, relationship.LeftTable, StringComparison.OrdinalIgnoreCase));
+        if (parent is null || child is null) return new RelationshipGeometry("", 0, 0, [], false);
+        bool leftToRight = parent.X + DataModelCanvasMetrics.NodeWidth / 2 <= child.X + DataModelCanvasMetrics.NodeWidth / 2;
+        DataModelConnectorSide parentSide = relationship.ConnectorLayout?.ParentSide ?? (leftToRight ? DataModelConnectorSide.Right : DataModelConnectorSide.Left);
+        DataModelConnectorSide childSide = relationship.ConnectorLayout?.ChildSide ?? (leftToRight ? DataModelConnectorSide.Left : DataModelConnectorSide.Right);
+        double parentX = parentSide == DataModelConnectorSide.Right ? parent.X + DataModelCanvasMetrics.NodeWidth : parent.X;
+        double childX = childSide == DataModelConnectorSide.Right ? child.X + DataModelCanvasMetrics.NodeWidth : child.X;
+        double parentY = RelationshipAnchorY(parent, relationship.RightColumn, relationship.Id);
+        double childY = RelationshipAnchorY(child, relationship.LeftColumn, relationship.Id);
+        DataModelConnectorRoute route = DataModelConnectorRouter.Route(
+            new DataModelConnectorEndpoint(parentX, parentY, parentSide),
+            new DataModelConnectorEndpoint(childX, childY, childSide),
+            NodeObstacles(), relationship.ConnectorLayout);
+        string path = BuildPath(route.Points);
+        return new RelationshipGeometry(path, route.LabelX, route.LabelY, route.Points, route.UsedAutomaticFallback);
     }
 
-    private static string RelationshipLabel(DataModelRelationship relationship) => relationship.Kind switch
+    private static string BuildPath(IReadOnlyList<DataModelConnectorPoint> points)
     {
-        DataModelRelationshipKind.ExternalArchiveForeignKey => "ARCHIVE",
-        DataModelRelationshipKind.Draft => "DRAFT",
-        _ => "FK",
-    };
+        if (points.Count == 0)
+            return "";
 
+        var path = new System.Text.StringBuilder($"M {Px(points[0].X)},{Px(points[0].Y)}");
+        for (int index = 1; index < points.Count; index++)
+        {
+            DataModelConnectorPoint previous = points[index - 1];
+            DataModelConnectorPoint current = points[index];
+            path.Append(Math.Abs(previous.Y - current.Y) < 0.001 ? " H " : " V ");
+            path.Append(Px(Math.Abs(previous.Y - current.Y) < 0.001 ? current.X : current.Y));
+        }
+        return path.ToString();
+    }
+
+    private bool IsNodeDimmed(DataModelNode node)
+    {
+        if (!string.IsNullOrWhiteSpace(SelectedRelationshipId))
+        {
+            DataModelRelationship? selected = State.Relationships.FirstOrDefault(relationship => relationship.Id == SelectedRelationshipId);
+            return selected is not null
+                && !string.Equals(selected.LeftTable, node.Name, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(selected.RightTable, node.Name, StringComparison.OrdinalIgnoreCase);
+        }
+        var selectedNames = FocusedTables();
+        if (selectedNames.Count == 0 || selectedNames.Contains(node.Name)) return false;
+        return !State.Relationships.Any(relationship =>
+            (selectedNames.Contains(relationship.LeftTable) && string.Equals(relationship.RightTable, node.Name, StringComparison.OrdinalIgnoreCase)) ||
+            (selectedNames.Contains(relationship.RightTable) && string.Equals(relationship.LeftTable, node.Name, StringComparison.OrdinalIgnoreCase)));
+    }
+
+    private bool IsRelationshipDimmed(DataModelRelationship relationship)
+    {
+        if (!string.IsNullOrWhiteSpace(SelectedRelationshipId)) return !string.Equals(SelectedRelationshipId, relationship.Id, StringComparison.Ordinal);
+        var selectedNames = FocusedTables();
+        return selectedNames.Count > 0 && !selectedNames.Contains(relationship.LeftTable) && !selectedNames.Contains(relationship.RightTable);
+    }
+
+    private HashSet<string> FocusedTables()
+    {
+        var names = SelectedNodeNames.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (SelectedNodeName is not null) names.Add(SelectedNodeName);
+        if (SelectedGroupId is not null)
+            names.UnionWith(DataModelGroups.Members(State, SelectedGroupId).Select(node => node.Name));
+        return names;
+    }
+
+    private Task SelectNodeAsync(string name, bool toggle) => OnNodeSelectionChanged.HasDelegate
+        ? OnNodeSelectionChanged.InvokeAsync(new(name, toggle)) : OnNodeSelected.InvokeAsync(name);
+
+    private bool IsSelectedRelationshipEndpoint(DataModelNode node, DataModelColumn column)
+    {
+        DataModelRelationship? relationship = State.Relationships.FirstOrDefault(item => item.Id == SelectedRelationshipId);
+        return relationship is not null &&
+               relationship.EffectiveColumnPairs.Any(pair =>
+                (string.Equals(relationship.LeftTable, node.Name, StringComparison.OrdinalIgnoreCase) && string.Equals(pair.ChildColumn, column.Name, StringComparison.OrdinalIgnoreCase)) ||
+                (string.Equals(relationship.RightTable, node.Name, StringComparison.OrdinalIgnoreCase) && string.Equals(pair.ParentColumn, column.Name, StringComparison.OrdinalIgnoreCase)));
+    }
+
+    private async Task ToggleNodeDetailAsync(DataModelNode node)
+    {
+        DataModelNodeDetailLevel next = node.DetailLevel switch
+        {
+            DataModelNodeDetailLevel.Keys => DataModelNodeDetailLevel.All,
+            DataModelNodeDetailLevel.All => DataModelNodeDetailLevel.Collapsed,
+            _ => DataModelNodeDetailLevel.Keys,
+        };
+        await OnNodeDetailChanged.InvokeAsync(new DataModelNodeDetailChange(node.Name, next));
+    }
+
+    private double RelationshipAnchorY(DataModelNode node, string columnName, string relationshipId)
+    {
+        if (node.DetailLevel != DataModelNodeDetailLevel.Collapsed)
+            return DataModelCanvasMetrics.ColumnCenterY(State, node, columnName);
+
+        return node.Y + DataModelCanvasMetrics.NodeHeaderHeight * CollapsedLaneFraction(node.Name, relationshipId);
+    }
+
+    private double CollapsedLaneFraction(string tableName, string relationshipId)
+    {
+        string[] relationshipIds = State.Relationships
+            .Where(relationship => ShouldRenderRelationship(relationship) &&
+                (string.Equals(relationship.LeftTable, tableName, StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(relationship.RightTable, tableName, StringComparison.OrdinalIgnoreCase)))
+            .Select(static relationship => relationship.Id)
+            .OrderBy(static id => id, StringComparer.Ordinal)
+            .ToArray();
+        int index = Array.IndexOf(relationshipIds, relationshipId);
+        return index < 0 ? 0.5 : (index + 1d) / (relationshipIds.Length + 1d);
+    }
+
+    private Task SelectNodeFromKeyboardAsync(KeyboardEventArgs eventArgs, string nodeName) =>
+        eventArgs.Key is "Enter" or " "
+            ? SelectNodeAsync(nodeName, eventArgs.CtrlKey || eventArgs.MetaKey || eventArgs.ShiftKey)
+            : Task.CompletedTask;
+
+    private Task SelectRelationshipFromKeyboardAsync(KeyboardEventArgs eventArgs, string relationshipId) =>
+        eventArgs.Key is "Enter" or " "
+            ? OnRelationshipSelected.InvokeAsync(relationshipId)
+            : Task.CompletedTask;
+
+    private string MarkerId(DataModelCardinality cardinality) => $"{CanvasId}-cardinality-{cardinality}";
+    private string MarkerUrl(DataModelCardinality cardinality) => $"url(#{MarkerId(cardinality)})";
+    private string RelationshipTooltipId(DataModelRelationship relationship) => $"{CanvasId}-relationship-{Uri.EscapeDataString(relationship.Id)}-tooltip";
+    private static string RelationshipShortLabel(DataModelRelationship relationship) =>
+        string.IsNullOrWhiteSpace(relationship.ConstraintName)
+            ? $"{relationship.LeftTable} → {relationship.RightTable}"
+            : relationship.ConstraintName;
+    private static string RelationshipSelectionLabel(DataModelRelationship relationship)
+    {
+        string columns = string.Join(", ", relationship.EffectiveColumnPairs.Select(pair => $"{relationship.LeftTable}.{pair.ChildColumn} → {relationship.RightTable}.{pair.ParentColumn}"));
+        return string.IsNullOrWhiteSpace(relationship.ConstraintName)
+            ? columns
+            : $"{relationship.ConstraintName}: {columns}";
+    }
     private static string RelationshipClass(DataModelRelationship relationship) => relationship.Kind switch
     {
         DataModelRelationshipKind.ExternalArchiveForeignKey => "archive",
         DataModelRelationshipKind.Draft => "draft",
         _ => "physical",
     };
-
     private static string RelationshipDash(DataModelRelationship relationship) => relationship.Kind switch
     {
         DataModelRelationshipKind.ExternalArchiveForeignKey => "6 4",
         DataModelRelationshipKind.Draft => "2 4",
         _ => "",
     };
-
     private static string RelationshipStroke(DataModelRelationship relationship, bool selected)
     {
-        if (selected)
-            return "var(--accent-blue)";
-
+        if (selected) return "var(--accent-blue)";
         return relationship.Kind switch
         {
             DataModelRelationshipKind.ExternalArchiveForeignKey => "var(--accent-magenta)",
@@ -249,21 +511,28 @@
             _ => "var(--accent-green)",
         };
     }
-
-    private static string Px(double value) =>
-        value.ToString("F1", System.Globalization.CultureInfo.InvariantCulture);
-
+    private static string DetailToggleTitle(DataModelNode node) => node.DetailLevel switch
+    {
+        DataModelNodeDetailLevel.Keys => "Show all columns",
+        DataModelNodeDetailLevel.All => "Collapse table",
+        _ => "Show key columns",
+    };
+    private static string DetailToggleIcon(DataModelNode node) => node.DetailLevel switch
+    {
+        DataModelNodeDetailLevel.Keys => "bi-chevron-expand",
+        DataModelNodeDetailLevel.All => "bi-chevron-up",
+        _ => "bi-chevron-down",
+    };
+    private static string Px(double value) => value.ToString("F1", System.Globalization.CultureInfo.InvariantCulture);
     private static double NormalizeScale(double scale)
     {
-        if (double.IsNaN(scale) || double.IsInfinity(scale) || scale <= 0)
-            return 1;
-
+        if (double.IsNaN(scale) || double.IsInfinity(scale) || scale <= 0) return 1;
         return Math.Clamp(scale, 0.5, 2.0);
     }
-
     public void Dispose()
     {
-        try { _ = JS.InvokeVoidAsync("designerInterop.dispose"); } catch { }
+        try { _ = JS.InvokeVoidAsync("schemaCanvasInterop.dispose", CanvasId); } catch { }
         _dotNetRef?.Dispose();
     }
+    private sealed record RelationshipGeometry(string Path, double LabelX, double LabelY, IReadOnlyList<DataModelConnectorPoint> Points, bool UsedAutomaticFallback);
 }

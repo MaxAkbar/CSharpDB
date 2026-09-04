@@ -36,6 +36,8 @@
                       LogicalName="CSharpDB.Migration.Capabilities.csharpdb-4.6.1.json" />
     <EmbeddedResource Include="Capabilities\csharpdb-4.6.2.json"
                       LogicalName="CSharpDB.Migration.Capabilities.csharpdb-4.6.2.json" />
+    <EmbeddedResource Include="Capabilities\csharpdb-4.6.3.json"
+                      LogicalName="CSharpDB.Migration.Capabilities.csharpdb-4.6.3.json" />
   </ItemGroup>
 
 </Project>

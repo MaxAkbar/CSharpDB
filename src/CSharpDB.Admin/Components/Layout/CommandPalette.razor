@@ -119,7 +119,7 @@
             IReadOnlyCollection<string> tables = await DbClient.GetTableNamesAsync();
             if (generation != _loadGeneration)
                 return;
-            foreach (string tableName in tables.Where(static name => !name.StartsWith("_", StringComparison.Ordinal)).OrderBy(name => name))
+            foreach (string tableName in tables.Where(static name => !DbInternalTableRegistry.IsInternalTable(name)).OrderBy(name => name))
             {
                 string captured = tableName;
                 _items.Add(new PaletteItem(

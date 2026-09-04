@@ -6,6 +6,7 @@ using CSharpDB.Admin.Forms.Contracts;
 using CSharpDB.Admin.Forms.Models;
 using CSharpDB.Client;
 using CSharpDB.Client.Models;
+using InternalTableRegistry = CSharpDB.Primitives.DbInternalTableRegistry;
 
 namespace CSharpDB.Admin.Forms.Services;
 
@@ -394,6 +395,5 @@ public sealed class DbSchemaProvider(ICSharpDbClient dbClient) : ISchemaProvider
     }
 
     private static bool IsUserTableName(string name)
-        => !string.Equals(name, DbFormRepository.MetadataTableName, StringComparison.OrdinalIgnoreCase)
-           && !name.StartsWith("_", StringComparison.Ordinal);
+        => !InternalTableRegistry.IsInternalTable(name);
 }

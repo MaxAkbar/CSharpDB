@@ -728,6 +728,1437 @@ window.designerInterop = {
     }
 };
 
+// Data Model canvas — scoped pointer drag, pan, zoom, and viewport persistence.
+window.schemaCanvasInterop = {
+    _registrations: new Map(),
+
+    // Pure placement in model coordinates. Never move a table/bend to make room
+    // for transient UI, and never cover a card, title, connector, or another label.
+    placeRelationshipLabel: (points, width, height, obstacles, segments, view, preferred = null) => {
+        if (!points.length || width <= 0 || height <= 0 || width > view.right - view.left || height > view.bottom - view.top)
+            return null;
+        const overlaps = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+        const blocked = [
+            ...obstacles.map(rect => ({ left: rect.left - 6, top: rect.top - 6, right: rect.right + 6, bottom: rect.bottom + 6 })),
+            ...segments.map(([a, b]) => ({ left: Math.min(a.x, b.x) - 8, right: Math.max(a.x, b.x) + 8,
+                top: Math.min(a.y, b.y) - 8, bottom: Math.max(a.y, b.y) + 8 }))
+        ];
+        const centers = [];
+        for (let index = 1; index < points.length; index++) {
+            const a = points[index - 1], b = points[index];
+            centers.push({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, length: Math.abs(a.x - b.x) + Math.abs(a.y - b.y) });
+        }
+        centers.sort((a, b) => b.length - a.length || a.x - b.x || a.y - b.y);
+        const origin = preferred || centers[0] || points[0];
+        const candidates = [];
+        const add = (left, top) => {
+            left = Math.max(view.left, Math.min(view.right - width, left));
+            top = Math.max(view.top, Math.min(view.bottom - height, top));
+            candidates.push({ left, top, right: left + width, bottom: top + height });
+        };
+        for (const center of [origin, ...centers]) {
+            for (const gap of [12, 28, 48]) {
+                add(center.x - width / 2, center.y - gap - height);
+                add(center.x - width / 2, center.y + gap);
+                add(center.x - gap - width, center.y - height / 2);
+                add(center.x + gap, center.y - height / 2);
+            }
+        }
+        // Card edges offer useful clear lanes when the gap between endpoints is
+        // too narrow. A bounded candidate set keeps drag-time placement cheap.
+        const nearby = [...obstacles].sort((a, b) =>
+            Math.hypot((a.left + a.right) / 2 - origin.x, (a.top + a.bottom) / 2 - origin.y) -
+            Math.hypot((b.left + b.right) / 2 - origin.x, (b.top + b.bottom) / 2 - origin.y)).slice(0, 24);
+        for (const rect of nearby) {
+            for (const x of [origin.x - width / 2, rect.left, rect.right - width]) {
+                add(x, rect.top - height - 12); add(x, rect.bottom + 12);
+            }
+            add(rect.left - width - 12, origin.y - height / 2);
+            add(rect.right + 12, origin.y - height / 2);
+        }
+        candidates.sort((a, b) => {
+            const distance = rect => Math.hypot((rect.left + rect.right) / 2 - origin.x, (rect.top + rect.bottom) / 2 - origin.y);
+            return distance(a) - distance(b) || a.top - b.top || a.left - b.left;
+        });
+        return candidates.find(candidate => !blocked.some(rect => overlaps(candidate, rect))) || null;
+    },
+
+    init: (canvasId, dotNetRef, viewportX, viewportY) => {
+        window.schemaCanvasInterop.dispose(canvasId);
+        const canvas = document.getElementById(canvasId);
+        if (!canvas) return;
+
+        const registration = {
+            canvas,
+            dotNetRef,
+            draggingNode: null,
+            panning: false,
+            pointerId: null,
+            tableName: '',
+            startX: 0,
+            startY: 0,
+            originalLeft: 0,
+            originalTop: 0,
+            originalScrollLeft: 0,
+            originalScrollTop: 0,
+            pointerMoved: false,
+            dragStarted: false,
+            suppressClick: false,
+            captureElement: null,
+            viewportTimer: 0,
+            frame: 0,
+            pendingEdgeTable: null,
+            routeEdit: null,
+            groupEdit: null,
+            selectedHandle: null,
+            previewLayouts: new Map(),
+            routes: new Map(),
+            committingRoute: false,
+            pendingSync: null,
+            focusHandle: false,
+            hoveredLabelId: null,
+            dismissedLabelId: null,
+            labelTimer: 0,
+            labelFocusTimer: 0,
+            disposed: false
+        };
+
+        const cloneLayout = layout => layout == null ? null : ({
+            ParentSide: layout.ParentSide,
+            ChildSide: layout.ChildSide,
+            FollowEndpointRows: layout.FollowEndpointRows ?? null,
+            Waypoints: (layout.Waypoints || []).map(point => ({ Id: point.Id, X: point.X, Y: point.Y }))
+        });
+        const readLayout = group => {
+            if (registration.previewLayouts.has(group.dataset.relationshipId))
+                return cloneLayout(registration.previewLayouts.get(group.dataset.relationshipId));
+            try {
+                const value = JSON.parse(group.dataset.connectorLayout || 'null');
+                return value == null ? null : {
+                    ParentSide: value.ParentSide ?? value.parentSide,
+                    ChildSide: value.ChildSide ?? value.childSide,
+                    FollowEndpointRows: value.FollowEndpointRows ?? value.followEndpointRows ?? null,
+                    Waypoints: (value.Waypoints ?? value.waypoints ?? []).map(point => ({
+                        Id: point.Id ?? point.id, X: point.X ?? point.x, Y: point.Y ?? point.y
+                    }))
+                };
+            } catch { return null; }
+        };
+        const edgeGroup = relationshipId => Array.from(canvas.querySelectorAll('[data-relationship-id]'))
+            .find(group => group.matches('.schema-relationship') && group.dataset.relationshipId === relationshipId);
+        const canvasInset = () => {
+            const inset = Number(canvas.dataset.canvasInset ?? 32);
+            return Number.isFinite(inset) && inset >= 0 ? inset : 32;
+        };
+        const modelPoint = event => {
+            const rect = canvas.getBoundingClientRect();
+            const scale = parseFloat(canvas.dataset.canvasScale || '1') || 1;
+            const inset = canvasInset();
+            return { x: (event.clientX - rect.left + canvas.scrollLeft) / scale - inset,
+                y: (event.clientY - rect.top + canvas.scrollTop) / scale - inset };
+        };
+        const waypointId = () => window.crypto?.randomUUID?.() ||
+            'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, character => {
+                const value = Math.floor(Math.random() * 16);
+                return (character === 'x' ? value : (value & 3) | 8).toString(16);
+            });
+        const announce = message => registration.dotNetRef?.invokeMethodAsync('OnConnectorAnnouncement', message);
+
+        const nodeForTable = (tableName) => Array.from(canvas.querySelectorAll('.schema-node'))
+            .find(node => node.dataset.table === tableName);
+
+        const anchor = (tableName, columnName, towardRight, laneFraction) => {
+            const node = nodeForTable(tableName);
+            if (!node) return null;
+            const left = parseFloat(node.style.left) || 0;
+            const top = parseFloat(node.style.top) || 0;
+            const row = Array.from(node.querySelectorAll('[data-column]'))
+                .find(candidate => candidate.dataset.column === columnName);
+            const header = node.querySelector('.designer-table-node-header');
+            const y = top + (row
+                ? row.offsetTop + row.offsetHeight / 2
+                : (header?.offsetHeight || 36) * (parseFloat(laneFraction || '0.5') || 0.5));
+            return {
+                x: towardRight ? left + node.offsetWidth : left,
+                y,
+                left,
+                width: node.offsetWidth
+            };
+        };
+
+        const connectorRoute = (start, end, nodeObstacles, layout = null, interiorOnly = false, usePhysical = false) => {
+            const clearance = 18;
+            const endpointStub = 24;
+            const bendPenalty = 48;
+            const outerLaneGap = 24;
+            const epsilon = 0.001;
+            const horizontal = 1;
+            const vertical = 2;
+            const expanded = nodeObstacles.map(obstacle => ({
+                left: obstacle.left - (usePhysical ? 0 : clearance),
+                top: obstacle.top - (usePhysical ? 0 : clearance),
+                right: obstacle.right + (usePhysical ? 0 : clearance),
+                bottom: obstacle.bottom + (usePhysical ? 0 : clearance)
+            }));
+            const stubDistance = endpoint => {
+                if (interiorOnly) return 0;
+                let gap = Infinity;
+                nodeObstacles.forEach(obstacle => {
+                    if (endpoint.y <= obstacle.top + epsilon || endpoint.y >= obstacle.bottom - epsilon) return;
+                    const candidate = endpoint.side === 'right' ? obstacle.left - endpoint.x : endpoint.x - obstacle.right;
+                    if (candidate > epsilon) gap = Math.min(gap, candidate);
+                });
+                return gap < endpointStub ? gap / 2 : endpointStub;
+            };
+            const departure = {
+                x: start.x + (start.side === 'right' ? stubDistance(start) : -stubDistance(start)),
+                y: start.y
+            };
+            const approach = {
+                x: end.x + (end.side === 'right' ? stubDistance(end) : -stubDistance(end)),
+                y: end.y
+            };
+            // Match the server router: a slid middle lane keeps its X, not its old endpoint row Ys.
+            if (!interiorOnly && layout?.FollowEndpointRows !== false && layout?.Waypoints?.length === 2 &&
+                Math.abs(layout.Waypoints[0].X - layout.Waypoints[1].X) < epsilon) {
+                let x = layout.Waypoints[0].X;
+                const forward = start.side === 'right' && end.side === 'left';
+                const backward = start.side === 'left' && end.side === 'right';
+                const legacyLane = forward && start.x <= x && x <= end.x || backward && end.x <= x && x <= start.x;
+                if (layout.FollowEndpointRows === true || legacyLane) {
+                    const low = forward ? departure.x : approach.x, high = forward ? approach.x : departure.x;
+                    if ((forward || backward) && low <= high) x = Math.max(low, Math.min(high, x));
+                    layout = cloneLayout(layout);
+                    layout.FollowEndpointRows = true;
+                    layout.Waypoints[0].X = layout.Waypoints[1].X = x;
+                    layout.Waypoints[0].Y = start.y;
+                    layout.Waypoints[1].Y = end.y;
+                }
+            }
+            const insideAny = point => expanded.some(obstacle =>
+                point.x > obstacle.left + epsilon && point.x < obstacle.right - epsilon &&
+                point.y > obstacle.top + epsilon && point.y < obstacle.bottom - epsilon);
+            const segmentIsClear = (first, second) => {
+                if (Math.abs(first.y - second.y) < epsilon) {
+                    const left = Math.min(first.x, second.x);
+                    const right = Math.max(first.x, second.x);
+                    return expanded.every(obstacle =>
+                        first.y <= obstacle.top + epsilon || first.y >= obstacle.bottom - epsilon ||
+                        right <= obstacle.left + epsilon || left >= obstacle.right - epsilon);
+                }
+                if (Math.abs(first.x - second.x) < epsilon) {
+                    const top = Math.min(first.y, second.y);
+                    const bottom = Math.max(first.y, second.y);
+                    return expanded.every(obstacle =>
+                        first.x <= obstacle.left + epsilon || first.x >= obstacle.right - epsilon ||
+                        bottom <= obstacle.top + epsilon || top >= obstacle.bottom - epsilon);
+                }
+                return false;
+            };
+            const simplify = rawPoints => {
+                const result = [];
+                rawPoints.forEach(point => {
+                    const prior = result[result.length - 1];
+                    if (prior && Math.abs(prior.x - point.x) < epsilon && Math.abs(prior.y - point.y) < epsilon)
+                        return;
+                    while (result.length >= 2) {
+                        const first = result[result.length - 2];
+                        const second = result[result.length - 1];
+                        const collinear = Math.abs(first.x - second.x) < epsilon && Math.abs(second.x - point.x) < epsilon ||
+                            Math.abs(first.y - second.y) < epsilon && Math.abs(second.y - point.y) < epsilon;
+                        const protectedPoint = layout?.Waypoints?.some(guide =>
+                            Math.abs(guide.X - second.x) < epsilon && Math.abs(guide.Y - second.y) < epsilon);
+                        const between = second.x >= Math.min(first.x, point.x) - epsilon && second.x <= Math.max(first.x, point.x) + epsilon &&
+                            second.y >= Math.min(first.y, point.y) - epsilon && second.y <= Math.max(first.y, point.y) + epsilon;
+                        if (!collinear || protectedPoint || !between) break;
+                        result.pop();
+                    }
+                    result.push(point);
+                });
+                return result;
+            };
+            const fallback = () => {
+                const minTop = expanded.reduce((value, obstacle) => Math.min(value, obstacle.top), Math.min(departure.y, approach.y));
+                const maxBottom = expanded.reduce((value, obstacle) => Math.max(value, obstacle.bottom), Math.max(departure.y, approach.y));
+                const top = Math.max(4, minTop - outerLaneGap);
+                const bottom = maxBottom + outerLaneGap;
+                const routeY = Math.abs(departure.y - top) + Math.abs(approach.y - top) <=
+                    Math.abs(departure.y - bottom) + Math.abs(approach.y - bottom) ? top : bottom;
+                return [departure, { x: departure.x, y: routeY }, { x: approach.x, y: routeY }, approach];
+            };
+
+            let customInterior = null;
+            if (!interiorOnly && layout?.Waypoints?.length) {
+                const guides = layout.Waypoints.map(point => ({ x: point.X, y: point.Y }));
+                const valid = guides.length <= 128 && guides.every(point =>
+                    Number.isFinite(point.x) && Number.isFinite(point.y) && point.x >= 4 && point.y >= 4 && !insideAny(point));
+                if (valid) {
+                    customInterior = [departure];
+                    const targets = [...guides, approach];
+                    let prior = departure;
+                    for (const target of targets) {
+                        const leg = connectorRoute({ ...prior, side: 'right' }, { ...target, side: 'left' }, nodeObstacles, null, true);
+                        if (!leg.pathFound) { customInterior = null; break; }
+                        customInterior.push(...leg.points.slice(1));
+                        prior = target;
+                    }
+                }
+                if (!customInterior) {
+                    const automatic = connectorRoute(start, end, nodeObstacles);
+                    return { ...automatic, resolvedLayout: layout, usedAutomaticFallback: true };
+                }
+            }
+
+            let interior = customInterior;
+            if (!interior && !insideAny(departure) && !insideAny(approach)) {
+                const xValues = [departure.x, approach.x, (departure.x + approach.x) / 2];
+                const yValues = [departure.y, approach.y, (departure.y + approach.y) / 2];
+                expanded.forEach(obstacle => {
+                    xValues.push(obstacle.left, obstacle.right);
+                    yValues.push(obstacle.top, obstacle.bottom);
+                });
+                const minX = Math.min(departure.x, approach.x, ...expanded.map(obstacle => obstacle.left));
+                const maxX = Math.max(departure.x, approach.x, ...expanded.map(obstacle => obstacle.right));
+                const minY = Math.min(departure.y, approach.y, ...expanded.map(obstacle => obstacle.top));
+                const maxY = Math.max(departure.y, approach.y, ...expanded.map(obstacle => obstacle.bottom));
+                xValues.push(Math.max(4, minX - outerLaneGap), maxX + outerLaneGap);
+                yValues.push(Math.max(4, minY - outerLaneGap), maxY + outerLaneGap);
+                const uniqueSorted = values => Array.from(new Set(values))
+                    .sort((left, right) => left - right);
+                const xs = uniqueSorted(xValues);
+                const ys = uniqueSorted(yValues);
+                const points = [];
+                const pointIndex = new Map();
+                const pointKey = (x, y) => `${x}|${y}`;
+                ys.forEach(y => xs.forEach(x => {
+                    const point = { x, y };
+                    if (insideAny(point)) return;
+                    pointIndex.set(pointKey(x, y), points.length);
+                    points.push(point);
+                }));
+                const startIndex = pointIndex.get(pointKey(departure.x, departure.y));
+                const endIndex = pointIndex.get(pointKey(approach.x, approach.y));
+                if (startIndex !== undefined && endIndex !== undefined) {
+                    const adjacency = points.map(() => []);
+                    const connect = (indices, direction) => {
+                        indices.sort((left, right) => direction === horizontal
+                            ? points[left].x - points[right].x
+                            : points[left].y - points[right].y);
+                        for (let index = 1; index < indices.length; index++) {
+                            const prior = indices[index - 1];
+                            const current = indices[index];
+                            if (!segmentIsClear(points[prior], points[current])) continue;
+                            const length = Math.abs(points[current].x - points[prior].x) + Math.abs(points[current].y - points[prior].y);
+                            adjacency[prior].push({ target: current, direction, length });
+                            adjacency[current].push({ target: prior, direction, length });
+                        }
+                    };
+                    ys.forEach(y => connect(points.map((point, index) => point.y === y ? index : -1).filter(index => index >= 0), horizontal));
+                    xs.forEach(x => connect(points.map((point, index) => point.x === x ? index : -1).filter(index => index >= 0), vertical));
+
+                    const directionCount = 3;
+                    const distance = new Array(points.length * directionCount).fill(Number.POSITIVE_INFINITY);
+                    const previous = new Array(points.length * directionCount).fill(-1);
+                    const heap = [];
+                    let sequence = 0;
+                    const heapPush = item => {
+                        heap.push(item);
+                        let index = heap.length - 1;
+                        while (index > 0) {
+                            const parent = Math.floor((index - 1) / 2);
+                            const prior = heap[parent];
+                            if (prior.cost < item.cost || prior.cost === item.cost && prior.sequence <= item.sequence) break;
+                            heap[index] = prior;
+                            index = parent;
+                        }
+                        heap[index] = item;
+                    };
+                    const heapPop = () => {
+                        if (heap.length === 0) return null;
+                        const result = heap[0];
+                        const tail = heap.pop();
+                        if (heap.length > 0) {
+                            let index = 0;
+                            while (true) {
+                                let child = index * 2 + 1;
+                                if (child >= heap.length) break;
+                                if (child + 1 < heap.length) {
+                                    const left = heap[child];
+                                    const right = heap[child + 1];
+                                    if (right.cost < left.cost || right.cost === left.cost && right.sequence < left.sequence)
+                                        child++;
+                                }
+                                const candidate = heap[child];
+                                if (candidate.cost > tail.cost || candidate.cost === tail.cost && candidate.sequence >= tail.sequence) break;
+                                heap[index] = candidate;
+                                index = child;
+                            }
+                            heap[index] = tail;
+                        }
+                        return result;
+                    };
+                    const startState = startIndex * directionCount + horizontal;
+                    distance[startState] = 0;
+                    heapPush({ state: startState, cost: 0, sequence: sequence++ });
+                    while (heap.length > 0) {
+                        const item = heapPop();
+                        if (item.cost > distance[item.state] + epsilon) continue;
+                        const currentPoint = Math.floor(item.state / directionCount);
+                        const priorDirection = item.state % directionCount;
+                        adjacency[currentPoint]
+                            .sort((left, right) => left.direction - right.direction ||
+                                points[left.target].x - points[right.target].x || points[left.target].y - points[right.target].y)
+                            .forEach(edge => {
+                                const candidate = item.cost + edge.length + (priorDirection === edge.direction ? 0 : bendPenalty);
+                                const nextState = edge.target * directionCount + edge.direction;
+                                if (candidate >= distance[nextState] - epsilon) return;
+                                distance[nextState] = candidate;
+                                previous[nextState] = item.state;
+                                heapPush({ state: nextState, cost: candidate, sequence: sequence++ });
+                            });
+                    }
+                    const horizontalEnd = endIndex * directionCount + horizontal;
+                    const verticalEnd = endIndex * directionCount + vertical;
+                    let endState = distance[horizontalEnd] <= distance[verticalEnd] + bendPenalty ? horizontalEnd : verticalEnd;
+                    if (Number.isFinite(distance[endState])) {
+                        const reversed = [];
+                        for (let state = endState; state >= 0; state = previous[state]) {
+                            reversed.push(points[Math.floor(state / directionCount)]);
+                            if (state === startState) break;
+                        }
+                        interior = reversed.reverse();
+                    }
+                }
+            }
+
+            if (!interior && !interiorOnly && !usePhysical)
+                return connectorRoute(start, end, nodeObstacles, null, false, true);
+            const points = interiorOnly ? (interior || fallback())
+                : simplify([{ x: start.x, y: start.y }, ...(interior || fallback()), { x: end.x, y: end.y }]);
+            let longest = -1;
+            let labelX = (start.x + end.x) / 2;
+            let labelY = (start.y + end.y) / 2;
+            for (let index = 1; index < points.length; index++) {
+                const length = Math.abs(points[index].x - points[index - 1].x) + Math.abs(points[index].y - points[index - 1].y);
+                if (length <= longest) continue;
+                longest = length;
+                labelX = (points[index].x + points[index - 1].x) / 2;
+                labelY = (points[index].y + points[index - 1].y) / 2;
+            }
+            return { points, labelX, labelY, departure, approach, resolvedLayout: layout, pathFound: interior !== null, usedAutomaticFallback: false };
+        };
+
+        const updateGroupFrames = () => {
+            const nodes = Array.from(canvas.querySelectorAll('.schema-node'));
+            canvas.querySelectorAll('.schema-table-group').forEach(frame => {
+                const members = nodes.filter(node => node.dataset.groupId === frame.dataset.groupId);
+                if (!members.length) return;
+                const left = Math.min(...members.map(node => parseFloat(node.style.left) || 0)) - 16;
+                const top = Math.min(...members.map(node => parseFloat(node.style.top) || 0)) - 44;
+                const right = Math.max(...members.map(node => (parseFloat(node.style.left) || 0) + node.offsetWidth)) + 16;
+                const bottom = Math.max(...members.map(node => (parseFloat(node.style.top) || 0) + node.offsetHeight)) + 16;
+                frame.style.left = `${left}px`; frame.style.top = `${top}px`;
+                frame.style.width = `${right - left}px`; frame.style.height = `${bottom - top}px`;
+            });
+        };
+
+        const updateEdges = (tableName = null) => {
+            if (registration.disposed) return;
+            updateGroupFrames();
+            if (registration.frame) cancelAnimationFrame(registration.frame);
+            registration.frame = 0;
+            registration.pendingEdgeTable = null;
+            const editingRelationshipId = registration.routeEdit?.relationshipId;
+            if (!editingRelationshipId) registration.routes.clear();
+            const nodeObstacles = Array.from(canvas.querySelectorAll('.schema-node')).map(node => {
+                const left = parseFloat(node.style.left) || 0;
+                const top = parseFloat(node.style.top) || 0;
+                return { left, top, right: left + node.offsetWidth, bottom: top + node.offsetHeight };
+            });
+            const visibleEdges = canvas.querySelectorAll('path[data-model-edge="visible"]');
+            canvas.querySelectorAll('.schema-table-group').forEach(frame => {
+                const left = parseFloat(frame.style.left) || 0, top = parseFloat(frame.style.top) || 0;
+                nodeObstacles.push({ left, top, right: left + frame.offsetWidth, bottom: top + 28 });
+            });
+            visibleEdges.forEach(edge => {
+                const group = edge.closest('.schema-relationship');
+                if (!group) return;
+                if (editingRelationshipId && group.dataset.relationshipId !== editingRelationshipId) return;
+                const layout = readLayout(group);
+                const parentNode = nodeForTable(edge.dataset.parentTable);
+                const childNode = nodeForTable(edge.dataset.childTable);
+                if (!parentNode || !childNode) return;
+                const parentLeft = parseFloat(parentNode.style.left) || 0;
+                const childLeft = parseFloat(childNode.style.left) || 0;
+                const leftToRight = parentLeft + parentNode.offsetWidth / 2 <= childLeft + childNode.offsetWidth / 2;
+                const parentRight = layout ? layout.ParentSide === 1 : leftToRight;
+                const childRight = layout ? layout.ChildSide === 1 : !leftToRight;
+                const parent = anchor(edge.dataset.parentTable, edge.dataset.parentColumn, parentRight, edge.dataset.parentLane);
+                const child = anchor(edge.dataset.childTable, edge.dataset.childColumn, childRight, edge.dataset.childLane);
+                if (!parent || !child) return;
+                const start = { x: parent.x, y: parent.y, side: parentRight ? 'right' : 'left' };
+                const end = { x: child.x, y: child.y, side: childRight ? 'right' : 'left' };
+                const route = connectorRoute(
+                    start, end, nodeObstacles, layout);
+                registration.routes.set(group.dataset.relationshipId, { ...route, start, end, layout: route.resolvedLayout ?? layout, obstacles: nodeObstacles });
+                group.classList.toggle('invalid', route.usedAutomaticFallback);
+                let path = `M ${route.points[0].x.toFixed(1)},${route.points[0].y.toFixed(1)}`;
+                for (let index = 1; index < route.points.length; index++) {
+                    const previous = route.points[index - 1];
+                    const current = route.points[index];
+                    path += Math.abs(previous.y - current.y) < 0.001
+                        ? ` H ${current.x.toFixed(1)}`
+                        : ` V ${current.y.toFixed(1)}`;
+                }
+                edge.setAttribute('d', path);
+                const hit = edge.parentElement?.querySelector('path[data-model-edge="hit"]');
+                if (hit) hit.setAttribute('d', path);
+            });
+            updateBounds();
+            renderHandles();
+            updateLabels();
+        };
+
+        const labelIdFor = target => target?.closest?.('[data-model-label-id]')?.dataset.modelLabelId
+            || target?.closest?.('.schema-relationship')?.dataset.relationshipId;
+        const updateLabels = () => {
+            if (registration.disposed) return;
+            const scale = parseFloat(canvas.dataset.canvasScale || '1') || 1;
+            const inset = canvasInset();
+            const view = { left: canvas.scrollLeft / scale - inset + 8, top: canvas.scrollTop / scale - inset + 8,
+                right: (canvas.scrollLeft + canvas.clientWidth) / scale - inset - 8,
+                bottom: (canvas.scrollTop + canvas.clientHeight) / scale - inset - 40 };
+            const obstacles = Array.from(canvas.querySelectorAll('.schema-node, .schema-table-group')).map(node => {
+                const left = parseFloat(node.style.left) || 0, top = parseFloat(node.style.top) || 0;
+                return { left, top, right: left + node.offsetWidth,
+                    bottom: top + (node.matches('.schema-table-group') ? 28 : node.offsetHeight) };
+            });
+            const segments = [];
+            registration.routes.forEach(route => {
+                for (let index = 1; index < route.points.length; index++) segments.push([route.points[index - 1], route.points[index]]);
+                // Keep the grab area around custom guides unobscured as well.
+                route.layout?.Waypoints.forEach(point => obstacles.push({ left: point.X - 10, right: point.X + 10, top: point.Y - 10, bottom: point.Y + 10 }));
+            });
+            const focusedId = labelIdFor(document.activeElement);
+            const interactingId = registration.hoveredLabelId || focusedId;
+            const groups = new Map(Array.from(canvas.querySelectorAll('.schema-relationship')).map(group => [group.dataset.relationshipId, group]));
+            const labels = Array.from(canvas.querySelectorAll('[data-model-label-id]'));
+            // Give the actively inspected relationship first choice of free space.
+            labels.sort((a, b) => Number(b.dataset.modelLabelId === interactingId) - Number(a.dataset.modelLabelId === interactingId)
+                || a.dataset.modelLabelId.localeCompare(b.dataset.modelLabelId));
+            for (const label of labels) {
+                const id = label.dataset.modelLabelId, group = groups.get(id), route = registration.routes.get(id);
+                label.classList.remove('is-expanded');
+                if (!route || !(group?.classList.contains('selected') || id === interactingId)) {
+                    label.classList.remove('is-visible'); continue;
+                }
+                label.style.maxWidth = `${Math.max(1, Math.min(220, view.right - view.left))}px`;
+                const placement = window.schemaCanvasInterop.placeRelationshipLabel(route.points, label.offsetWidth, label.offsetHeight, obstacles, segments, view);
+                label.classList.toggle('is-visible', placement !== null);
+                if (!placement) continue; // Dense schemas still expose the full mappings through Details / the accessible edge name.
+                label.style.left = `${placement.left}px`; label.style.top = `${placement.top}px`;
+                obstacles.push(placement);
+                const tooltip = label.querySelector('.schema-relationship-tooltip');
+                const editing = registration.draggingNode || registration.groupEdit || registration.routeEdit
+                    || document.activeElement?.closest?.('[data-route-handle]');
+                if (!tooltip || editing || id !== interactingId || id === registration.dismissedLabelId) continue;
+                tooltip.style.width = `${Math.max(1, Math.min(300, view.right - view.left))}px`;
+                const popup = window.schemaCanvasInterop.placeRelationshipLabel(route.points, tooltip.offsetWidth, tooltip.offsetHeight,
+                    obstacles, segments, view, { x: (placement.left + placement.right) / 2, y: (placement.top + placement.bottom) / 2 });
+                if (!popup) continue;
+                tooltip.style.left = `${popup.left - placement.left}px`; tooltip.style.top = `${popup.top - placement.top}px`;
+                label.classList.add('is-expanded'); obstacles.push(popup);
+            }
+        };
+
+        const updateBounds = () => {
+            const bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+            const include = (x, y) => {
+                if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+                bounds.minX = Math.min(bounds.minX, x); bounds.minY = Math.min(bounds.minY, y);
+                bounds.maxX = Math.max(bounds.maxX, x); bounds.maxY = Math.max(bounds.maxY, y);
+            };
+            canvas.querySelectorAll('.schema-node, .schema-table-group').forEach(node => {
+                const left = parseFloat(node.style.left) || 0;
+                const top = parseFloat(node.style.top) || 0;
+                include(left, top); include(left + node.offsetWidth, top + node.offsetHeight);
+            });
+            registration.routes.forEach(route => {
+                route.points.forEach(point => include(point.x, point.y));
+                route.layout?.Waypoints.forEach(point => include(point.X, point.Y));
+            });
+            registration.modelBounds = bounds;
+            const width = Math.max(1200, Number.isFinite(bounds.maxX) ? bounds.maxX + 80 : 0);
+            const height = Math.max(600, Number.isFinite(bounds.maxY) ? bounds.maxY + 80 : 0);
+            const stage = canvas.querySelector('.schema-canvas-stage');
+            const viewport = canvas.querySelector('.schema-canvas-viewport');
+            const svg = canvas.querySelector('.designer-canvas-svg');
+            const scale = parseFloat(canvas.dataset.canvasScale || '1') || 1;
+            const inset = canvasInset();
+            if (stage) {
+                stage.style.width = `${width}px`; stage.style.height = `${height}px`;
+                stage.style.transform = `scale(${scale}) translate(${inset}px, ${inset}px)`;
+            }
+            if (viewport) {
+                viewport.style.width = `${(width + inset * 2) * scale}px`;
+                viewport.style.height = `${(height + inset * 2) * scale}px`;
+            }
+            if (svg) { svg.setAttribute('width', width); svg.setAttribute('height', height); }
+        };
+
+        const routeSegments = route => {
+            const segments = [];
+            for (let index = 0; index < route.points.length - 1; index++) {
+                const first = route.points[index], second = route.points[index + 1];
+                const length = Math.abs(first.x - second.x) + Math.abs(first.y - second.y);
+                if (length < 1) continue;
+                const horizontal = Math.abs(first.y - second.y) < 0.001;
+                const direction = Math.sign(horizontal ? second.x - first.x : second.y - first.y);
+                const prior = segments[segments.length - 1];
+                // Collinear saved guides do not split a visible straight segment.
+                // Keep deliberate reversals as separate segments, however.
+                if (prior?.horizontal === horizontal && prior.direction === direction && prior.endIndex === index) {
+                    prior.endIndex = index + 1;
+                    prior.length += length;
+                    prior.x = (route.points[prior.index].x + second.x) / 2;
+                    prior.y = (route.points[prior.index].y + second.y) / 2;
+                } else segments.push({ index, endIndex: index + 1, x: (first.x + second.x) / 2,
+                    y: (first.y + second.y) / 2, horizontal, direction, length });
+            }
+            return segments;
+        };
+        // Endpoint legs remain attached to their column rows. Add Bend / double
+        // click can still create a detour when a connector has no interior run.
+        const segmentHandles = route => routeSegments(route)
+            .filter(segment => segment.index > 0 && segment.endIndex < route.points.length - 1 && segment.length >= 24);
+
+        const renderHandles = () => {
+            const active = document.activeElement?.closest?.('[data-route-handle]');
+            const restoreFocus = active != null || registration.focusHandle;
+            const selectedGroup = Array.from(canvas.querySelectorAll('.schema-relationship')).find(group => group.classList.contains('selected'));
+            if (registration.selectedHandle && registration.selectedHandle.relationshipId !== selectedGroup?.dataset.relationshipId)
+                registration.selectedHandle = null;
+            const scale = parseFloat(canvas.dataset.canvasScale || '1') || 1;
+            canvas.querySelectorAll('.schema-relationship').forEach(group => {
+                const container = group.querySelector('[data-model-route-handles]');
+                if (!container) return;
+                container.replaceChildren();
+                if (!group.classList.contains('selected')) return;
+                const id = group.dataset.relationshipId;
+                const route = registration.routes.get(id);
+                if (!route) return;
+                const createHandle = (kind, point, key, invalid = false) => {
+                    const handle = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+                    handle.setAttribute('class', `schema-route-handle schema-route-${kind}${invalid ? ' invalid' : ''}`);
+                    handle.dataset.routeHandle = kind;
+                    handle.dataset.relationshipId = id;
+                    if (kind === 'waypoint') handle.dataset.waypointId = key;
+                    else handle.dataset.segmentIndex = key.toString();
+                    handle.setAttribute('transform', `translate(${point.x} ${point.y})`);
+                    handle.setAttribute('tabindex', '0');
+                    handle.setAttribute('role', 'button');
+                    handle.setAttribute('aria-label', kind === 'waypoint'
+                        ? `Connector bend. Use arrow keys to move, Shift for larger steps, Delete to remove, Escape to cancel.`
+                        : `Connector segment. Drag ${point.horizontal ? 'up or down' : 'left or right'} to slide the whole segment, or use arrow keys. Enter adds a bend. Escape cancels.`);
+                    handle.style.cursor = kind === 'waypoint' ? 'move' : point.horizontal ? 'ns-resize' : 'ew-resize';
+                    handle.style.pointerEvents = 'all';
+                    const hit = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                    hit.setAttribute('class', 'schema-route-handle-hit');
+                    hit.setAttribute('r', (14 / scale).toString());
+                    hit.setAttribute('fill', 'transparent');
+                    const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                    dot.setAttribute('class', 'schema-route-handle-dot');
+                    dot.setAttribute('r', ((kind === 'waypoint' ? 5 : 4) / scale).toString());
+                    dot.setAttribute('stroke-width', (1.5 / scale).toString());
+                    handle.append(hit, dot);
+                    const selected = registration.selectedHandle;
+                    const isSelected = selected?.relationshipId === id && (kind === 'waypoint'
+                        ? selected.waypointId === key : selected.waypointId == null && selected.segmentIndex === key);
+                    handle.classList.toggle('selected', isSelected);
+                    container.append(handle);
+                    if (restoreFocus && isSelected) {
+                        handle.focus({ preventScroll: true });
+                        registration.focusHandle = false;
+                    }
+                };
+                segmentHandles(route).forEach(segment => {
+                    const first = route.points[segment.index], last = route.points[segment.endIndex];
+                    // Do not put the segment grip on top of an explicit bend grip.
+                    const position = [0.5, 0.3, 0.7].map(fraction => ({
+                        x: first.x + (last.x - first.x) * fraction, y: first.y + (last.y - first.y) * fraction
+                    })).find(point => !route.layout?.Waypoints.some(guide => Math.hypot(guide.X - point.x, guide.Y - point.y) < 22 / scale));
+                    if (position) createHandle('segment', { ...segment, ...position }, segment.index);
+                });
+                route.layout?.Waypoints.forEach(point => {
+                    if (Number.isFinite(point.X) && Number.isFinite(point.Y))
+                        createHandle('waypoint', { x: point.X, y: point.Y }, point.Id, route.usedAutomaticFallback);
+                });
+            });
+        };
+
+        const editableLayout = (group, route) => cloneLayout(route.layout) || readLayout(group) || {
+            ParentSide: route.start.side === 'right' ? 1 : 0,
+            ChildSide: route.end.side === 'right' ? 1 : 0,
+            Waypoints: []
+        };
+        const selectHandle = (relationshipId, selectedWaypointId, segmentIndex = null) => {
+            const current = registration.selectedHandle;
+            if (current?.relationshipId === relationshipId && current.waypointId === selectedWaypointId && current.segmentIndex === segmentIndex) return;
+            registration.selectedHandle = { relationshipId, waypointId: selectedWaypointId, segmentIndex };
+            registration.dotNetRef?.invokeMethodAsync('OnConnectorHandleSelected', relationshipId, selectedWaypointId);
+        };
+        const insertionIndex = (route, layout, segmentIndex) => {
+            let guideIndex = 0;
+            for (let index = 0; index <= segmentIndex && guideIndex < layout.Waypoints.length; index++) {
+                const point = route.points[index], guide = layout.Waypoints[guideIndex];
+                if (Math.abs(point.x - guide.X) < 0.001 && Math.abs(point.y - guide.Y) < 0.001) guideIndex++;
+            }
+            return guideIndex;
+        };
+        const layoutIsValid = (layout, obstacles) => layout == null || layout.Waypoints.every(point =>
+            Number.isFinite(point.X) && Number.isFinite(point.Y) && point.X >= 4 && point.Y >= 4 &&
+            !obstacles.some(obstacle => point.X > obstacle.left - 18 + 0.001 && point.X < obstacle.right + 18 - 0.001 &&
+                point.Y > obstacle.top - 18 + 0.001 && point.Y < obstacle.bottom + 18 - 0.001));
+        const slidingSegment = (route, layout, segment) => {
+            if (route.usedAutomaticFallback) return null;
+            const first = route.points[segment.index], last = route.points[segment.endIndex];
+            const axis = segment.horizontal ? 'y' : 'x', along = segment.horizontal ? 'x' : 'y';
+            const original = first[axis];
+            let minimum = 4, maximum = Infinity;
+            const neighbors = [segment.index === 1 ? route.departure : route.points[segment.index - 1],
+                segment.endIndex === route.points.length - 2 ? route.approach : route.points[segment.endIndex + 1]];
+            for (const neighbor of neighbors) {
+                if (!neighbor) return null;
+                const distance = original - neighbor[axis], gap = Math.min(8, Math.abs(distance));
+                if (distance > 0) minimum = Math.max(minimum, neighbor[axis] + gap);
+                else if (distance < 0) maximum = Math.min(maximum, neighbor[axis] - gap);
+            }
+            // Restrict movement to this clear lane instead of letting the router
+            // split a segment around an obstacle or jump to its opposite side.
+            for (const obstacle of route.obstacles) {
+                const low = (segment.horizontal ? obstacle.top : obstacle.left) - 18;
+                const high = (segment.horizontal ? obstacle.bottom : obstacle.right) + 18;
+                const near = (segment.horizontal ? obstacle.left : obstacle.top) - 18;
+                const far = (segment.horizontal ? obstacle.right : obstacle.bottom) + 18;
+                if (Math.max(first[along], last[along]) < near + 0.001 || Math.min(first[along], last[along]) > far - 0.001) continue;
+                if (original <= low + 0.001) maximum = Math.min(maximum, low);
+                else if (original >= high - 0.001) minimum = Math.max(minimum, high);
+                else return null;
+            }
+            if (minimum > maximum) return null;
+            const same = (point, guide) => guide && Math.abs(point.x - guide.X) < 0.001 && Math.abs(point.y - guide.Y) < 0.001;
+            let cursor = 0;
+            const locations = layout.Waypoints.map(guide => {
+                while (cursor < route.points.length && !same(route.points[cursor], guide)) cursor++;
+                return cursor;
+            });
+            if (locations.some(index => index >= route.points.length)) return null;
+            let from = 0, to = 0;
+            while (from < locations.length && locations[from] < segment.index) from++;
+            to = from;
+            while (to < locations.length && locations[to] <= segment.endIndex) to++;
+            const guides = layout.Waypoints.slice(from, to).map(point => ({ ...point }));
+            if (!same(first, guides[0])) guides.unshift({ Id: waypointId(), X: first.x, Y: first.y });
+            if (!same(last, guides[guides.length - 1])) guides.push({ Id: waypointId(), X: last.x, Y: last.y });
+            if (layout.Waypoints.length - (to - from) + guides.length > 128) return null;
+            return { axis, original, minimum, maximum, from, count: to - from, guides,
+                followEndpointRows: !segment.horizontal && segment.index === 1 && segment.endIndex === route.points.length - 2 };
+        };
+        const completePendingSync = () => {
+            if (registration.disposed) return;
+            const pending = registration.pendingSync;
+            registration.pendingSync = null;
+            if (pending) window.schemaCanvasInterop.sync(canvasId, ...pending);
+            else updateEdges();
+        };
+        const reconcileHandleFocus = relationshipId => {
+            const selected = registration.selectedHandle;
+            const route = registration.routes.get(relationshipId);
+            if (selected?.relationshipId !== relationshipId) return;
+            if (selected.waypointId && !route?.layout?.Waypoints.some(point => point.Id === selected.waypointId)) {
+                selectHandle(relationshipId, null);
+                window.schemaCanvasInterop.focusConnector(canvasId, relationshipId);
+            } else if (!selected.waypointId && selected.segmentIndex == null) {
+                window.schemaCanvasInterop.focusConnector(canvasId, relationshipId);
+            }
+        };
+        const commitLayout = async (relationshipId, layout) => {
+            const route = registration.routes.get(relationshipId);
+            if (!route || !layoutIsValid(layout, route.obstacles) || (layout != null && route.usedAutomaticFallback)) {
+                registration.previewLayouts.delete(relationshipId);
+                updateEdges();
+                reconcileHandleFocus(relationshipId);
+                announce('Bends must stay outside tables and their connector clearance. Change canceled.');
+                return false;
+            }
+            registration.committingRoute = true;
+            registration.previewLayouts.set(relationshipId, cloneLayout(layout));
+            let accepted = false;
+            try {
+                accepted = await registration.dotNetRef?.invokeMethodAsync('OnConnectorLayoutChanged', relationshipId, cloneLayout(layout)) === true;
+            } catch { announce('Connector change could not be applied. Previous route restored.'); }
+            finally {
+                registration.previewLayouts.delete(relationshipId);
+                registration.committingRoute = false;
+                completePendingSync();
+                if (!registration.disposed) reconcileHandleFocus(relationshipId);
+            }
+            if (accepted) announce('Connector route updated');
+            return accepted;
+        };
+        const cancelRouteEdit = () => {
+            const edit = registration.routeEdit;
+            if (!edit) return false;
+            registration.routeEdit = null;
+            if (registration.frame) { cancelAnimationFrame(registration.frame); registration.frame = 0; }
+            registration.previewLayouts.delete(edit.relationshipId);
+            registration.pointerId = null;
+            try { canvas.releasePointerCapture?.(edit.pointerId); } catch { }
+            registration.captureElement = null;
+            selectHandle(edit.relationshipId, edit.sourceWaypointId, edit.segmentIndex);
+            completePendingSync();
+            announce('Connector change canceled. Previous route restored.');
+            return true;
+        };
+        const beginRouteEdit = (group, handle, input, event) => {
+            if (registration.committingRoute || registration.routeEdit || registration.groupEdit) return false;
+            const relationshipId = group.dataset.relationshipId;
+            const route = registration.routes.get(relationshipId);
+            if (!route) return false;
+            const segmentIndex = handle.dataset.routeHandle === 'segment' ? Number(handle.dataset.segmentIndex) : null;
+            const segment = segmentIndex == null ? null : segmentHandles(route).find(item => item.index === segmentIndex);
+            const layout = editableLayout(group, route);
+            const slide = segment && slidingSegment(route, layout, segment);
+            if (segmentIndex !== null && !slide) {
+                announce('This segment has no clear sliding lane. Move its bends or use Reset to Automatic in Details.');
+                return false;
+            }
+            registration.routeEdit = { relationshipId, input, pointerId: event.pointerId, sourceLayout: cloneLayout(layout),
+                layout, origin: input === 'pointer' ? modelPoint(event) : null, segment, segmentIndex, slide,
+                waypointId: handle.dataset.waypointId || null, sourceWaypointId: handle.dataset.waypointId || null,
+                changed: false };
+            selectHandle(relationshipId, handle.dataset.waypointId || null, segmentIndex);
+            return true;
+        };
+        const moveRouteEdit = (dx, dy) => {
+            const edit = registration.routeEdit;
+            if (!edit) return;
+            const layout = cloneLayout(edit.sourceLayout);
+            let point;
+            if (edit.segment) {
+                const slide = edit.slide;
+                const position = Math.max(slide.minimum, Math.min(slide.maximum, slide.original + (edit.segment.horizontal ? dy : dx)));
+                edit.changed = Math.abs(position - slide.original) >= 0.001;
+                if (edit.changed) {
+                    const guides = slide.guides.map(guide => ({ ...guide, [slide.axis === 'x' ? 'X' : 'Y']: position }));
+                    layout.Waypoints.splice(slide.from, slide.count, ...guides);
+                    layout.FollowEndpointRows = slide.followEndpointRows && layout.Waypoints.length === 2;
+                    registration.previewLayouts.set(edit.relationshipId, layout);
+                } else registration.previewLayouts.delete(edit.relationshipId);
+            } else {
+                point = layout.Waypoints.find(item => item.Id === edit.waypointId);
+                if (!point) return;
+                layout.FollowEndpointRows = false;
+                point.X += dx; point.Y += dy;
+                point.X = Math.max(4, point.X); point.Y = Math.max(4, point.Y);
+                edit.changed = true;
+                registration.previewLayouts.set(edit.relationshipId, layout);
+            }
+            edit.layout = layout;
+            scheduleEdgeUpdate(null);
+        };
+        const finishRouteEdit = () => {
+            const edit = registration.routeEdit;
+            if (!edit) return;
+            registration.routeEdit = null;
+            if (registration.frame) { cancelAnimationFrame(registration.frame); registration.frame = 0; }
+            updateEdges();
+            if (edit.changed) return commitLayout(edit.relationshipId, edit.layout);
+            registration.previewLayouts.delete(edit.relationshipId);
+            completePendingSync();
+        };
+        const addBend = (relationshipId, location = null) => {
+            if (registration.routeEdit || registration.groupEdit || registration.committingRoute) return;
+            const group = edgeGroup(relationshipId), route = registration.routes.get(relationshipId);
+            if (!group || !route) return;
+            const layout = editableLayout(group, route);
+            if (layout.Waypoints.length >= 128) { announce('A connector can have at most 128 bends.'); return; }
+            const interior = segmentHandles(route);
+            const segments = interior.length ? interior : routeSegments(route);
+            let segment = segments.slice().sort((left, right) => right.length - left.length)[0];
+            let point = segment;
+            const targetLocation = location || point;
+            if (targetLocation) {
+                let bestDistance = Infinity;
+                for (let index = 0; index < route.points.length - 1; index++) {
+                    const first = route.points[index], second = route.points[index + 1];
+                    const candidate = { x: Math.max(Math.min(first.x, second.x), Math.min(Math.max(first.x, second.x), targetLocation.x)),
+                        y: Math.max(Math.min(first.y, second.y), Math.min(Math.max(first.y, second.y), targetLocation.y)) };
+                    const distance = Math.abs(candidate.x - targetLocation.x) + Math.abs(candidate.y - targetLocation.y);
+                    if (distance < bestDistance) { bestDistance = distance; segment = { index }; point = candidate; }
+                }
+            }
+            if (!segment || !point) return;
+            const id = waypointId();
+            layout.FollowEndpointRows = false;
+            layout.Waypoints.splice(insertionIndex(route, layout, segment.index), 0, { Id: id, X: Math.max(4, point.x), Y: Math.max(4, point.y) });
+            registration.previewLayouts.set(relationshipId, layout);
+            selectHandle(relationshipId, id);
+            registration.focusHandle = true;
+            updateEdges();
+            return commitLayout(relationshipId, layout);
+        };
+        const removeBend = relationshipId => {
+            if (registration.routeEdit || registration.groupEdit || registration.committingRoute) return;
+            const group = edgeGroup(relationshipId);
+            const route = registration.routes.get(relationshipId);
+            const layout = group && route && editableLayout(group, route);
+            if (!layout?.Waypoints.length) return;
+            layout.FollowEndpointRows = false;
+            const selected = registration.selectedHandle;
+            let index = selected?.relationshipId === relationshipId
+                ? layout.Waypoints.findIndex(point => point.Id === selected.waypointId) : -1;
+            if (index < 0) index = layout.Waypoints.length - 1;
+            layout.Waypoints.splice(index, 1);
+            const next = layout.Waypoints[Math.min(index, layout.Waypoints.length - 1)];
+            const value = layout.Waypoints.length ? layout : null;
+            selectHandle(relationshipId, next?.Id || null);
+            registration.focusHandle = next != null;
+            registration.previewLayouts.set(relationshipId, value);
+            updateEdges();
+            return commitLayout(relationshipId, value);
+        };
+
+        const scheduleEdgeUpdate = (tableName) => {
+            registration.pendingEdgeTable = tableName;
+            if (!registration.frame)
+                registration.frame = requestAnimationFrame(() => updateEdges(registration.pendingEdgeTable));
+        };
+
+        const notifyViewport = () => {
+            clearTimeout(registration.viewportTimer);
+            registration.viewportTimer = setTimeout(() => {
+                const scale = parseFloat(canvas.dataset.canvasScale || '1') || 1;
+                registration.dotNetRef?.invokeMethodAsync(
+                    'OnCanvasViewportChanged',
+                    canvas.scrollLeft,
+                    canvas.scrollTop,
+                    scale);
+            }, 250);
+        };
+
+        const setScale = (newScale, clientX, clientY) => {
+            if (registration.routeEdit || registration.groupEdit || registration.committingRoute) return;
+            const stage = canvas.querySelector('.schema-canvas-stage');
+            const viewport = canvas.querySelector('.schema-canvas-viewport');
+            if (!stage || !viewport) return;
+            const oldScale = parseFloat(canvas.dataset.canvasScale || '1') || 1;
+            const bounded = Math.max(0.5, Math.min(2, newScale));
+            const rect = canvas.getBoundingClientRect();
+            const localX = clientX == null ? canvas.clientWidth / 2 : clientX - rect.left;
+            const localY = clientY == null ? canvas.clientHeight / 2 : clientY - rect.top;
+            const inset = canvasInset();
+            const worldX = (canvas.scrollLeft + localX) / oldScale - inset;
+            const worldY = (canvas.scrollTop + localY) / oldScale - inset;
+
+            canvas.dataset.canvasScale = bounded.toString();
+            stage.style.transform = `scale(${bounded}) translate(${inset}px, ${inset}px)`;
+            viewport.style.width = `${(stage.offsetWidth + inset * 2) * bounded}px`;
+            viewport.style.height = `${(stage.offsetHeight + inset * 2) * bounded}px`;
+            canvas.scrollLeft = Math.max(0, (worldX + inset) * bounded - localX);
+            canvas.scrollTop = Math.max(0, (worldY + inset) * bounded - localY);
+            renderHandles();
+            updateLabels();
+            notifyViewport();
+        };
+
+        const beginGroupEdit = (title, input, event) => {
+            if (registration.groupEdit || registration.routeEdit || registration.committingRoute || registration.pointerId != null) return false;
+            const id = title.dataset.groupTitle;
+            const members = Array.from(canvas.querySelectorAll('.schema-node')).filter(node => node.dataset.groupId === id);
+            if (!members.length) return false;
+            const names = new Set(members.map(node => node.dataset.table.toLowerCase()));
+            const layouts = new Map();
+            canvas.querySelectorAll('.schema-relationship').forEach(edge => {
+                const hit = edge.querySelector('[data-model-edge="hit"]');
+                if (!hit || !names.has(hit.dataset.parentTable.toLowerCase()) || !names.has(hit.dataset.childTable.toLowerCase())) return;
+                const layout = readLayout(edge);
+                if (layout) layouts.set(edge.dataset.relationshipId, layout);
+            });
+            registration.groupEdit = { id, title, input, pointerId: event.pointerId, dx: 0, dy: 0,
+                origin: input === 'pointer' ? modelPoint(event) : null, layouts,
+                members: members.map(node => ({ node, x: parseFloat(node.style.left) || 0, y: parseFloat(node.style.top) || 0 })) };
+            return true;
+        };
+        const moveGroupEdit = (dx, dy) => {
+            const edit = registration.groupEdit;
+            if (!edit) return;
+            const guides = Array.from(edit.layouts.values()).flatMap(layout => layout.Waypoints);
+            edit.dx = Math.max(dx, ...edit.members.map(item => -item.x), ...guides.map(point => 4 - point.X));
+            edit.dy = Math.max(dy, ...edit.members.map(item => -item.y), ...guides.map(point => 4 - point.Y));
+            edit.members.forEach(item => {
+                item.node.style.left = `${item.x + edit.dx}px`; item.node.style.top = `${item.y + edit.dy}px`;
+            });
+            edit.layouts.forEach((original, id) => {
+                const layout = cloneLayout(original);
+                layout.Waypoints.forEach(point => { point.X += edit.dx; point.Y += edit.dy; });
+                registration.previewLayouts.set(id, layout);
+            });
+            scheduleEdgeUpdate(null);
+        };
+        const restoreGroupEdit = edit => {
+            edit.members.forEach(item => { item.node.style.left = `${item.x}px`; item.node.style.top = `${item.y}px`; });
+        };
+        const releaseGroupPointer = edit => {
+            try { canvas.releasePointerCapture?.(edit.pointerId); } catch { }
+            registration.pointerId = null; registration.captureElement = null;
+        };
+        const cancelGroupEdit = () => {
+            const edit = registration.groupEdit;
+            if (!edit) return false;
+            restoreGroupEdit(edit);
+            edit.layouts.forEach((_, id) => registration.previewLayouts.delete(id));
+            registration.groupEdit = null;
+            releaseGroupPointer(edit);
+            completePendingSync();
+            announce('Group move canceled. Previous positions restored.');
+            return true;
+        };
+        const finishGroupEdit = async () => {
+            const edit = registration.groupEdit;
+            if (!edit) return;
+            registration.groupEdit = null;
+            releaseGroupPointer(edit);
+            if (edit.dx === 0 && edit.dy === 0) { completePendingSync(); return; }
+            registration.committingRoute = true;
+            let accepted = false;
+            try {
+                accepted = await registration.dotNetRef?.invokeMethodAsync('OnTableGroupMoved', edit.id, edit.dx, edit.dy) === true;
+            } catch { /* Restore all preview coordinates together on a rejected callback. */ }
+            finally {
+                if (!accepted) restoreGroupEdit(edit);
+                edit.layouts.forEach((_, id) => registration.previewLayouts.delete(id));
+                registration.committingRoute = false;
+                completePendingSync();
+            }
+            if (!registration.disposed) announce(accepted ? 'Group positions updated.' : 'Group move could not be applied. Previous positions restored.');
+        };
+
+        registration.onPointerDown = (event) => {
+            if (event.button !== 0) return;
+            if (registration.pointerId != null || registration.routeEdit || registration.groupEdit || registration.committingRoute) return;
+            if (!(event.target instanceof Element)) return;
+            if (event.target.closest('[data-model-label-id]')) return;
+            const title = event.target.closest('[data-group-title]');
+            if (title && beginGroupEdit(title, 'pointer', event)) {
+                registration.pointerId = event.pointerId;
+                registration.startX = event.clientX; registration.startY = event.clientY;
+                registration.pointerMoved = false;
+                return;
+            }
+            const handle = event.target.closest('[data-route-handle]');
+            if (handle) {
+                event.preventDefault();
+                event.stopPropagation();
+                const group = handle.closest('.schema-relationship');
+                if (!group || !beginRouteEdit(group, handle, 'pointer', event)) return;
+                handle.focus({ preventScroll: true });
+                registration.pointerId = event.pointerId;
+                registration.startX = event.clientX;
+                registration.startY = event.clientY;
+                registration.pointerMoved = false;
+                registration.captureElement = canvas;
+                canvas.setPointerCapture?.(event.pointerId);
+                return;
+            }
+            const node = event.target.closest('.schema-node');
+            const interactive = event.target.closest('button, a, input, select, textarea, [contenteditable="true"]');
+            if (node && !interactive) {
+                registration.draggingNode = node;
+                registration.pointerId = event.pointerId;
+                registration.tableName = node.dataset.table || '';
+                registration.startX = event.clientX;
+                registration.startY = event.clientY;
+                registration.originalLeft = parseFloat(node.style.left) || 0;
+                registration.originalTop = parseFloat(node.style.top) || 0;
+                registration.pointerMoved = false;
+                registration.dragStarted = false;
+                registration.captureElement = null;
+                return;
+            }
+
+            if (event.target.closest('.schema-node') || event.target.closest('[data-model-edge]')) return;
+            event.preventDefault();
+            canvas.focus({ preventScroll: true });
+            registration.panning = true;
+            registration.pointerId = event.pointerId;
+            registration.startX = event.clientX;
+            registration.startY = event.clientY;
+            registration.pointerMoved = false;
+            registration.originalScrollLeft = canvas.scrollLeft;
+            registration.originalScrollTop = canvas.scrollTop;
+            registration.captureElement = canvas;
+            canvas.classList.add('is-panning');
+            canvas.setPointerCapture?.(event.pointerId);
+        };
+
+        registration.onPointerMove = (event) => {
+            if (registration.pointerId !== event.pointerId) return;
+            if (Math.abs(event.clientX - registration.startX) > 4 || Math.abs(event.clientY - registration.startY) > 4)
+                registration.pointerMoved = true;
+            if (registration.groupEdit?.input === 'pointer') {
+                if (!registration.pointerMoved) return;
+                event.preventDefault(); event.stopPropagation();
+                registration.captureElement = canvas;
+                canvas.setPointerCapture?.(event.pointerId);
+                const point = modelPoint(event);
+                moveGroupEdit(point.x - registration.groupEdit.origin.x, point.y - registration.groupEdit.origin.y);
+                return;
+            }
+            if (registration.routeEdit?.input === 'pointer') {
+                if (!registration.pointerMoved) return;
+                event.preventDefault();
+                event.stopPropagation();
+                const point = modelPoint(event);
+                moveRouteEdit(point.x - registration.routeEdit.origin.x, point.y - registration.routeEdit.origin.y);
+                return;
+            }
+            if (registration.draggingNode) {
+                if (!registration.pointerMoved) return;
+                event.preventDefault();
+                if (!registration.dragStarted) {
+                    registration.dragStarted = true;
+                    registration.draggingNode.classList.add('is-dragging');
+                    registration.captureElement = registration.draggingNode;
+                    registration.draggingNode.setPointerCapture?.(event.pointerId);
+                }
+                const scale = parseFloat(canvas.dataset.canvasScale || '1') || 1;
+                registration.draggingNode.style.left = Math.max(0, registration.originalLeft + (event.clientX - registration.startX) / scale) + 'px';
+                registration.draggingNode.style.top = Math.max(0, registration.originalTop + (event.clientY - registration.startY) / scale) + 'px';
+                scheduleEdgeUpdate(registration.tableName);
+            } else if (registration.panning) {
+                canvas.scrollLeft = registration.originalScrollLeft - (event.clientX - registration.startX);
+                canvas.scrollTop = registration.originalScrollTop - (event.clientY - registration.startY);
+            }
+        };
+
+        registration.onPointerUp = (event) => {
+            if (registration.pointerId !== event.pointerId) return;
+            if (registration.groupEdit?.input === 'pointer') {
+                if (registration.pointerMoved) {
+                    event.preventDefault(); event.stopPropagation();
+                    registration.suppressClick = true;
+                    setTimeout(() => { registration.suppressClick = false; }, 0);
+                }
+                finishGroupEdit();
+                return;
+            }
+            if (registration.routeEdit?.input === 'pointer') {
+                event.preventDefault();
+                event.stopPropagation();
+                registration.pointerId = null;
+                registration.captureElement = null;
+                try { canvas.releasePointerCapture?.(event.pointerId); } catch { }
+                registration.suppressClick = true;
+                setTimeout(() => { registration.suppressClick = false; }, 0);
+                finishRouteEdit();
+                return;
+            }
+            if (registration.draggingNode) {
+                const node = registration.draggingNode;
+                const name = registration.tableName;
+                const left = parseFloat(node.style.left) || 0;
+                const top = parseFloat(node.style.top) || 0;
+                registration.draggingNode = null;
+                node.classList.remove('is-dragging');
+                if (registration.dragStarted) {
+                    registration.suppressClick = true;
+                    setTimeout(() => { registration.suppressClick = false; }, 0);
+                    registration.dotNetRef?.invokeMethodAsync('OnTableMoved', name, left, top);
+                }
+            }
+            if (registration.panning) {
+                registration.panning = false;
+                canvas.classList.remove('is-panning');
+                if (!registration.pointerMoved) {
+                    registration.selectedHandle = null;
+                    registration.dotNetRef?.invokeMethodAsync('OnCanvasSelectionCleared');
+                }
+                notifyViewport();
+            }
+            const captureElement = registration.captureElement;
+            registration.pointerId = null;
+            registration.captureElement = null;
+            registration.dragStarted = false;
+            try { captureElement?.releasePointerCapture?.(event.pointerId); } catch { }
+        };
+
+        registration.onPointerCancel = event => {
+            if (registration.pointerId !== event.pointerId) return;
+            if (cancelGroupEdit()) return;
+            if (cancelRouteEdit()) return;
+            if (registration.draggingNode) {
+                registration.draggingNode.style.left = `${registration.originalLeft}px`;
+                registration.draggingNode.style.top = `${registration.originalTop}px`;
+                registration.draggingNode.classList.remove('is-dragging');
+                registration.draggingNode = null;
+                updateEdges();
+            }
+            if (registration.panning) {
+                canvas.scrollLeft = registration.originalScrollLeft;
+                canvas.scrollTop = registration.originalScrollTop;
+                registration.panning = false;
+                canvas.classList.remove('is-panning');
+            }
+            try { registration.captureElement?.releasePointerCapture?.(event.pointerId); } catch { }
+            registration.pointerId = null;
+            registration.captureElement = null;
+            registration.dragStarted = false;
+        };
+
+        registration.onClickCapture = (event) => {
+            if (!registration.suppressClick) return;
+            registration.suppressClick = false;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+        };
+
+        registration.onWheel = (event) => {
+            event.preventDefault();
+            const scale = parseFloat(canvas.dataset.canvasScale || '1') || 1;
+            setScale(scale + (event.deltaY < 0 ? 0.1 : -0.1), event.clientX, event.clientY);
+        };
+
+        registration.onScroll = () => { updateLabels(); notifyViewport(); };
+        registration.onPointerOver = event => {
+            const id = labelIdFor(event.target);
+            if (!id) return;
+            clearTimeout(registration.labelTimer);
+            registration.hoveredLabelId = id;
+            registration.dismissedLabelId = null;
+            updateLabels();
+        };
+        registration.onPointerOut = event => {
+            if (!labelIdFor(event.target) || labelIdFor(event.target) === labelIdFor(event.relatedTarget)) return;
+            clearTimeout(registration.labelTimer);
+            // Allow crossing the small gap from the connector to its label/popup.
+            registration.labelTimer = setTimeout(() => { registration.hoveredLabelId = null; updateLabels(); }, 400);
+        };
+        registration.onKeyDown = (event) => {
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                event.stopPropagation();
+                if (cancelGroupEdit() || cancelRouteEdit()) return;
+                if (registration.pointerId != null) {
+                    registration.onPointerCancel({ pointerId: registration.pointerId });
+                    return;
+                }
+                registration.dismissedLabelId = registration.hoveredLabelId || labelIdFor(document.activeElement);
+                registration.hoveredLabelId = null;
+                updateLabels();
+                registration.selectedHandle = null;
+                registration.dotNetRef?.invokeMethodAsync('OnCanvasSelectionCleared');
+                canvas.focus({ preventScroll: true });
+                return;
+            }
+            const title = event.target.closest?.('[data-group-title]');
+            const groupDelta = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
+            if (title && groupDelta) {
+                event.preventDefault(); event.stopPropagation();
+                if (!registration.groupEdit && !beginGroupEdit(title, 'keyboard', event)) return;
+                const edit = registration.groupEdit;
+                if (edit?.input !== 'keyboard') return;
+                const step = event.shiftKey ? 24 : 8;
+                moveGroupEdit(edit.dx + groupDelta[0] * step, edit.dy + groupDelta[1] * step);
+                return;
+            }
+            if (registration.groupEdit) return;
+            const handle = event.target.closest?.('[data-route-handle]');
+            if (!handle) return;
+            if (event.key === 'Enter' && handle.dataset.routeHandle === 'segment') {
+                event.preventDefault(); event.stopPropagation();
+                const route = registration.routes.get(handle.dataset.relationshipId);
+                const index = Number(handle.dataset.segmentIndex);
+                const run = route && segmentHandles(route).find(segment => segment.index === index);
+                const first = route?.points[index], second = run && route.points[run.endIndex];
+                if (first && second) addBend(handle.dataset.relationshipId, { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 });
+                return;
+            }
+            if (event.key === 'Delete' || event.key === 'Backspace') {
+                event.preventDefault(); event.stopPropagation();
+                if (handle.dataset.waypointId) removeBend(handle.dataset.relationshipId);
+                return;
+            }
+            const deltas = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+            const delta = deltas[event.key];
+            if (!delta) return;
+            event.preventDefault(); event.stopPropagation();
+            if (!registration.routeEdit && !beginRouteEdit(handle.closest('.schema-relationship'), handle, 'keyboard', event)) return;
+            const edit = registration.routeEdit;
+            if (edit?.input !== 'keyboard') return;
+            const step = event.shiftKey ? 24 : 8;
+            edit.keyboardX = (edit.keyboardX || 0) + delta[0] * step;
+            edit.keyboardY = (edit.keyboardY || 0) + delta[1] * step;
+            moveRouteEdit(edit.keyboardX, edit.keyboardY);
+        };
+        registration.onKeyUp = event => {
+            if (registration.groupEdit?.input === 'keyboard' && event.key.startsWith('Arrow')) {
+                event.preventDefault(); event.stopPropagation(); finishGroupEdit(); return;
+            }
+            if (registration.routeEdit?.input !== 'keyboard' || !event.key.startsWith('Arrow')) return;
+            event.preventDefault(); event.stopPropagation();
+            finishRouteEdit();
+        };
+        registration.onFocusIn = event => {
+            registration.dismissedLabelId = null;
+            updateLabels();
+            const handle = event.target.closest?.('[data-route-handle]');
+            if (!handle) return;
+            selectHandle(handle.dataset.relationshipId, handle.dataset.waypointId || null,
+                handle.dataset.segmentIndex == null ? null : Number(handle.dataset.segmentIndex));
+        };
+        registration.onFocusOut = () => {
+            // Focusout precedes the browser updating activeElement.
+            // Keep the independent hover-exit timer: clicking another table must
+            // not leave the previous relationship's popup permanently hovered.
+            clearTimeout(registration.labelFocusTimer);
+            registration.labelFocusTimer = setTimeout(updateLabels, 0);
+        };
+        registration.onDoubleClick = event => {
+            const group = event.target.closest?.('.schema-relationship');
+            if (!group || event.target.closest?.('[data-route-handle="waypoint"]')) return;
+            event.preventDefault(); event.stopPropagation();
+            addBend(group.dataset.relationshipId, modelPoint(event));
+        };
+        registration.setScale = setScale;
+        registration.updateEdges = updateEdges;
+        registration.updateLabels = updateLabels;
+        registration.addBend = addBend;
+        registration.removeBend = removeBend;
+        registration.connectorRoute = connectorRoute;
+        registration.modelPoint = modelPoint;
+        registration.canvasInset = canvasInset;
+
+        canvas.addEventListener('pointerdown', registration.onPointerDown);
+        canvas.addEventListener('pointermove', registration.onPointerMove);
+        canvas.addEventListener('pointerup', registration.onPointerUp);
+        canvas.addEventListener('pointercancel', registration.onPointerCancel);
+        canvas.addEventListener('pointerover', registration.onPointerOver);
+        canvas.addEventListener('pointerout', registration.onPointerOut);
+        canvas.addEventListener('click', registration.onClickCapture, true);
+        canvas.addEventListener('wheel', registration.onWheel, { passive: false });
+        canvas.addEventListener('scroll', registration.onScroll, { passive: true });
+        canvas.addEventListener('keydown', registration.onKeyDown, true);
+        canvas.addEventListener('keyup', registration.onKeyUp, true);
+        canvas.addEventListener('focusin', registration.onFocusIn);
+        canvas.addEventListener('focusout', registration.onFocusOut);
+        canvas.addEventListener('dblclick', registration.onDoubleClick);
+        window.schemaCanvasInterop._registrations.set(canvasId, registration);
+        if (typeof ResizeObserver !== 'undefined') {
+            registration.labelResizeObserver = new ResizeObserver(updateLabels);
+            registration.labelResizeObserver.observe(canvas);
+        }
+
+        requestAnimationFrame(() => {
+            if (registration.disposed) return;
+            canvas.scrollLeft = Math.max(0, viewportX || 0);
+            canvas.scrollTop = Math.max(0, viewportY || 0);
+            updateEdges();
+        });
+    },
+
+    fit: (canvasId) => {
+        const registration = window.schemaCanvasInterop._registrations.get(canvasId);
+        if (!registration) return;
+        const { canvas } = registration;
+        if (registration.routeEdit || registration.groupEdit || registration.committingRoute) return;
+        registration.updateEdges();
+        const bounds = registration.modelBounds;
+        if (!bounds || !Number.isFinite(bounds.minX)) return;
+        const availableWidth = Math.max(1, canvas.clientWidth - 40);
+        const availableHeight = Math.max(1, canvas.clientHeight - 60);
+        const modelWidth = Math.max(1, bounds.maxX - bounds.minX);
+        const modelHeight = Math.max(1, bounds.maxY - bounds.minY);
+        const scale = Math.max(0.5, Math.min(2, Math.min(availableWidth / modelWidth, availableHeight / modelHeight)));
+        registration.setScale(scale, null, null);
+        const modelCenterX = (bounds.minX + bounds.maxX) / 2;
+        const modelCenterY = (bounds.minY + bounds.maxY) / 2;
+        const inset = registration.canvasInset();
+        canvas.scrollLeft = Math.max(0, (modelCenterX + inset) * scale - canvas.clientWidth / 2);
+        canvas.scrollTop = Math.max(0, (modelCenterY + inset) * scale - canvas.clientHeight / 2);
+        return registration.dotNetRef?.invokeMethodAsync(
+            'OnCanvasViewportChanged',
+            canvas.scrollLeft,
+            canvas.scrollTop,
+            scale);
+    },
+
+    addBend: (canvasId, relationshipId) => window.schemaCanvasInterop._registrations.get(canvasId)?.addBend(relationshipId),
+
+    removeBend: (canvasId, relationshipId) => window.schemaCanvasInterop._registrations.get(canvasId)?.removeBend(relationshipId),
+
+    focusConnector: (canvasId, relationshipId) => {
+        const registration = window.schemaCanvasInterop._registrations.get(canvasId);
+        if (!registration) return;
+        registration.selectedHandle = null;
+        const group = Array.from(registration.canvas.querySelectorAll('.schema-relationship'))
+            .find(item => item.dataset.relationshipId === relationshipId);
+        group?.querySelector('path[data-model-edge="hit"]')?.focus({ preventScroll: true });
+    },
+
+    sync: (canvasId, viewportX, viewportY, scale) => {
+        const registration = window.schemaCanvasInterop._registrations.get(canvasId);
+        if (!registration) return;
+        if (registration.routeEdit || registration.groupEdit || registration.committingRoute) {
+            registration.pendingSync = [viewportX, viewportY, scale];
+            return;
+        }
+        const { canvas } = registration;
+        const stage = canvas.querySelector('.schema-canvas-stage');
+        const viewport = canvas.querySelector('.schema-canvas-viewport');
+        if (!stage || !viewport) return;
+        const bounded = Math.max(0.5, Math.min(2, scale || 1));
+        const inset = registration.canvasInset();
+        canvas.dataset.canvasScale = bounded.toString();
+        stage.style.transform = `scale(${bounded}) translate(${inset}px, ${inset}px)`;
+        viewport.style.width = `${(stage.offsetWidth + inset * 2) * bounded}px`;
+        viewport.style.height = `${(stage.offsetHeight + inset * 2) * bounded}px`;
+        canvas.scrollLeft = Math.max(0, viewportX || 0);
+        canvas.scrollTop = Math.max(0, viewportY || 0);
+        registration.updateEdges();
+    },
+
+    dispose: (canvasId) => {
+        const registration = window.schemaCanvasInterop._registrations.get(canvasId);
+        if (!registration) return;
+        const { canvas } = registration;
+        registration.disposed = true;
+        registration.dotNetRef = null;
+        canvas.removeEventListener('pointerdown', registration.onPointerDown);
+        canvas.removeEventListener('pointermove', registration.onPointerMove);
+        canvas.removeEventListener('pointerup', registration.onPointerUp);
+        canvas.removeEventListener('pointercancel', registration.onPointerCancel);
+        canvas.removeEventListener('pointerover', registration.onPointerOver);
+        canvas.removeEventListener('pointerout', registration.onPointerOut);
+        canvas.removeEventListener('click', registration.onClickCapture, true);
+        canvas.removeEventListener('wheel', registration.onWheel);
+        canvas.removeEventListener('scroll', registration.onScroll);
+        canvas.removeEventListener('keydown', registration.onKeyDown, true);
+        canvas.removeEventListener('keyup', registration.onKeyUp, true);
+        canvas.removeEventListener('focusin', registration.onFocusIn);
+        canvas.removeEventListener('focusout', registration.onFocusOut);
+        canvas.removeEventListener('dblclick', registration.onDoubleClick);
+        canvas.querySelectorAll('[data-model-route-handles]').forEach(container => container.replaceChildren());
+        try { registration.captureElement?.releasePointerCapture?.(registration.pointerId); } catch { }
+        clearTimeout(registration.viewportTimer);
+        clearTimeout(registration.labelTimer);
+        clearTimeout(registration.labelFocusTimer);
+        registration.labelResizeObserver?.disconnect();
+        if (registration.frame) cancelAnimationFrame(registration.frame);
+        window.schemaCanvasInterop._registrations.delete(canvasId);
+    }
+};
+
 // Tablist key handling. Blazor receives the event and performs activation;
 // this listener suppresses browser scrolling/default button behavior only for
 // keys owned by the ARIA tab pattern. Tab and Shift+Tab remain untouched.

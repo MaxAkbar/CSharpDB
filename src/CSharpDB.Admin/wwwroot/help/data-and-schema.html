@@ -16,6 +16,7 @@
                 <a href="index.html">Overview</a>
                 <a href="workspace.html">Workspace</a>
                 <a class="active" href="data-and-schema.html">Data and schema</a>
+                <a href="data-modeler.html">Data Modeler</a>
                 <a href="forms-and-reports.html">Forms and reports</a>
                 <a href="operations.html">Operations</a>
                 <a href="shortcuts.html">Shortcuts</a>
@@ -40,6 +41,23 @@
                     <li>Use Add Row, Delete Rows, Save, and Discard for editable tables.</li>
                     <li>Use page size and pager controls for large tables.</li>
                 </ul>
+
+                <h2>System Catalog and Internal Storage</h2>
+                <p><strong>System Catalog</strong> contains the supported read-only <code>sys.*</code> views for tables, columns, relationships, constraints, functions, temporary objects, statistics, and feature metadata. Open an entry to inspect its current rows with the suggested query.</p>
+                <p><strong>Internal Storage</strong> shows the physical tables maintained by CSharpDB and Studio features. These backing tables are shown for troubleshooting and inventory only. Select one to open its filtered <code>sys.internal_tables</code> record; use the logical replacement shown beside it for normal work.</p>
+                <table>
+                    <thead><tr><th>Backing table</th><th>Use instead</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>__data_model_diagrams</code></td><td><code>sys.diagrams</code> and the Data Model workspace</td></tr>
+                        <tr><td><code>__external_tables</code></td><td><code>sys.external_tables</code> and External Tables</td></tr>
+                        <tr><td><code>__saved_queries</code></td><td><code>sys.saved_queries</code> and saved queries</td></tr>
+                        <tr><td><code>_col_*</code></td><td>The corresponding collection in Object Explorer</td></tr>
+                    </tbody>
+                </table>
+                <div class="callout warning">
+                    <strong>Do not treat backing tables as application tables.</strong>
+                    Their shape and lifecycle belong to the owning feature. Use the listed logical catalog or workspace so validation and metadata stay consistent.
+                </div>
 
                 <h2>Collections</h2>
                 <p>Collections contain JSON documents keyed by document id. Collection tabs show document keys, JSON kind, compact previews, and a formatted JSON detail panel.</p>
@@ -67,6 +85,17 @@
                     </tbody>
                 </table>
 
+                <h2>Data Modeler</h2>
+                <p>Use the Data Model workspace to choose tables, inspect relationships, organize groups, adjust connector bends, and save readable diagrams. Schema edits are staged separately, reviewed as SQL, and applied only when you choose to do so.</p>
+                <div class="callout">
+                    <strong>New to the modeler?</strong> The dedicated <a href="data-modeler.html">Data Modeler user guide</a> walks through creating a diagram, arranging and saving it, editing supported schema, and safely applying changes.
+                </div>
+                <div class="hero-actions">
+                    <a class="button primary" href="data-modeler.html#first-diagram">Create your first diagram</a>
+                    <a class="button" href="data-modeler.html#connectors">Adjust connectors</a>
+                    <a class="button" href="data-modeler.html#review-apply">Review and apply changes</a>
+                </div>
+
                 <h2>Query Editor</h2>
                 <p>Use query tabs for ad hoc SQL, saved queries, query plans, table stats, column stats, and result review.</p>
                 <table>
@@ -82,7 +111,7 @@
 
                 <div class="next">
                     <a class="button" href="workspace.html">Back: Workspace</a>
-                    <a class="button primary" href="forms-and-reports.html">Next: Forms and reports</a>
+                    <a class="button primary" href="data-modeler.html">Next: Data Modeler</a>
                 </div>
             </div>
         </main>
