@@ -1880,6 +1880,31 @@ public sealed class GrpcClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GrpcClient_CollectionWritesDuringStartup_PreserveAllDocuments()
+    {
+        using var transportClient = CreateGrpcHttpClient();
+        await using var client = CreateGrpcClient(transportClient);
+        using JsonDocument document = JsonDocument.Parse("""{"meta":{"score":9}}""");
+
+        // Do not wait for readiness: the first requests can overlap the host's
+        // GetInfoAsync catalog initialization, just as in the release failure.
+        Task[] writes = Enumerable.Range(0, 16)
+            .Select(index => client.PutDocumentAsync(
+                $"startup_docs_{index}", "one", document.RootElement, Ct))
+            .ToArray();
+        await Task.WhenAll(writes.Append(client.GetInfoAsync(Ct)));
+
+        for (int index = 0; index < writes.Length; index++)
+        {
+            string name = $"startup_docs_{index}";
+            JsonElement? fetched = await client.GetDocumentAsync(name, "one", Ct);
+            Assert.True(fetched.HasValue);
+            Assert.Equal(9, fetched.Value.GetProperty("meta").GetProperty("score").GetInt32());
+            Assert.Equal(1, await client.GetCollectionCountAsync(name, Ct));
+        }
+    }
+
+    [Fact]
     public async Task GrpcClient_ProcedureCrudAndValidation_WorkThroughTransport()
     {
         using var transportClient = CreateGrpcHttpClient();
