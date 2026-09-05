@@ -1069,6 +1069,7 @@ internal sealed partial class EngineTransportClient :
 
     public async Task<IReadOnlyList<string>> GetCollectionNamesAsync(CancellationToken ct = default)
     {
+        using ClientLockLease clientLock = await AcquireClientLockAsync(ct);
         var db = await GetDatabaseAsync(ct);
         return db.GetCollectionNames()
             .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
@@ -1077,12 +1078,14 @@ internal sealed partial class EngineTransportClient :
 
     public async Task<int> GetCollectionCountAsync(string collectionName, CancellationToken ct = default)
     {
+        using ClientLockLease clientLock = await AcquireClientLockAsync(ct);
         var collection = await (await GetDatabaseAsync(ct)).GetCollectionAsync<JsonElement>(RequireIdentifier(collectionName, nameof(collectionName)), ct);
         return checked((int)await collection.CountAsync(ct));
     }
 
     public async Task<CollectionBrowseResult> BrowseCollectionAsync(string collectionName, int page = 1, int pageSize = 50, CancellationToken ct = default)
     {
+        using ClientLockLease clientLock = await AcquireClientLockAsync(ct);
         string normalizedName = RequireIdentifier(collectionName, nameof(collectionName));
         var collection = await (await GetDatabaseAsync(ct)).GetCollectionAsync<JsonElement>(normalizedName, ct);
         var documents = new List<CollectionDocument>();
@@ -1112,6 +1115,7 @@ internal sealed partial class EngineTransportClient :
 
     public async Task<JsonElement?> GetDocumentAsync(string collectionName, string key, CancellationToken ct = default)
     {
+        using ClientLockLease clientLock = await AcquireClientLockAsync(ct);
         var collection = await (await GetDatabaseAsync(ct)).GetCollectionAsync<JsonElement>(RequireIdentifier(collectionName, nameof(collectionName)), ct);
         var document = await collection.GetAsync(key, ct);
         return document.ValueKind == JsonValueKind.Undefined ? null : document;
@@ -1119,18 +1123,23 @@ internal sealed partial class EngineTransportClient :
 
     public async Task PutDocumentAsync(string collectionName, string key, JsonElement document, CancellationToken ct = default)
     {
+        // Keep collection creation and use inside the same admission boundary
+        // as startup metadata DDL, which can reload the shared catalog.
+        using ClientLockLease clientLock = await AcquireClientLockAsync(ct);
         var collection = await (await GetDatabaseAsync(ct)).GetCollectionAsync<JsonElement>(RequireIdentifier(collectionName, nameof(collectionName)), ct);
         await collection.PutAsync(key, document, ct);
     }
 
     public async Task<bool> DeleteDocumentAsync(string collectionName, string key, CancellationToken ct = default)
     {
+        using ClientLockLease clientLock = await AcquireClientLockAsync(ct);
         var collection = await (await GetDatabaseAsync(ct)).GetCollectionAsync<JsonElement>(RequireIdentifier(collectionName, nameof(collectionName)), ct);
         return await collection.DeleteAsync(key, ct);
     }
 
     public async Task DropCollectionAsync(string collectionName, CancellationToken ct = default)
     {
+        using ClientLockLease clientLock = await AcquireClientLockAsync(ct);
         string normalizedName = RequireIdentifier(collectionName, nameof(collectionName));
         await (await GetDatabaseAsync(ct)).DropCollectionAsync(normalizedName, ct);
     }

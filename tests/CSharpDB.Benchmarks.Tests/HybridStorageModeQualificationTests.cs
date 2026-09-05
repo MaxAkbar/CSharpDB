@@ -887,15 +887,20 @@ public sealed class HybridStorageModeQualificationTests
         Assert.True(deadline.Token.IsCancellationRequested);
     }
 
-    [Fact]
-    public async Task ConcurrentPhase_PreCapReturnRemainsUnexpectedAfterDeadlineAdvances()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConcurrentPhase_PreCapReturnRemainsUnexpectedAfterDeadlineAdvances(
+        bool runContinuationsAsynchronously)
     {
         TimeSpan phaseDuration = TimeSpan.FromSeconds(2);
         using var deadline = new ManualQualificationDeadline();
-        var readerStarted = new TaskCompletionSource(
+        var readerRegistered = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseReader = new TaskCompletionSource(
-            TaskCreationOptions.RunContinuationsAsynchronously);
+            runContinuationsAsynchronously
+                ? TaskCreationOptions.RunContinuationsAsynchronously
+                : TaskCreationOptions.None);
 
         Task<HybridStorageModeBenchmark.ConcurrentReaderPhaseResult> phaseTask =
             HybridStorageModeBenchmark.RunConcurrentReaderPhaseCoreAsync(
@@ -906,15 +911,15 @@ public sealed class HybridStorageModeQualificationTests
                 minimumLatencySamples: 1,
                 maximumMeasuredDuration: phaseDuration,
                 failAtMaximum: true,
-                (_, _, _, _) =>
-                {
-                    readerStarted.TrySetResult();
-                    return releaseReader.Task;
-                },
+                (_, _, _, _) => releaseReader.Task,
                 deadline,
-                TimeSpan.FromMilliseconds(25));
+                BenchmarkTestWatchdog.SchedulingTimeout,
+                readerTaskAttached: _ => readerRegistered.TrySetResult());
 
-        await readerStarted.Task.WaitAsync(
+        // Returning a task from the reader delegate is not the same as the
+        // harness having registered it. Advance time only after registration,
+        // so this exercises a pre-cap completion rather than a startup race.
+        await readerRegistered.Task.WaitAsync(
             BenchmarkTestWatchdog.SchedulingTimeout,
             TestContext.Current.CancellationToken);
         deadline.AdvanceTo(TimeSpan.FromSeconds(1));

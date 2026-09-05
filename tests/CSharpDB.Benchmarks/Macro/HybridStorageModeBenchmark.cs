@@ -723,7 +723,8 @@ public static class HybridStorageModeBenchmark
         IQualificationDeadline deadline,
         TimeSpan cancellationDrainTimeout,
         Func<Func<Task>, Task>? scheduleReader = null,
-        Action<Task>? detachedWorkRegistrar = null)
+        Action<Task>? detachedWorkRegistrar = null,
+        Action<int>? readerTaskAttached = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(benchmarkName);
         ArgumentOutOfRangeException.ThrowIfLessThan(readerCount, 1);
@@ -804,6 +805,7 @@ public static class HybridStorageModeBenchmark
                         CancellationToken.None,
                         TaskContinuationOptions.ExecuteSynchronously,
                         TaskScheduler.Default);
+                    readerTaskAttached?.Invoke(capturedReaderIndex);
                     try
                     {
                         await readerLoopTask.ConfigureAwait(false);
