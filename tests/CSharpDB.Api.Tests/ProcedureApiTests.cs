@@ -31,6 +31,39 @@ public sealed class ProcedureApiTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task DeleteIfExistsAsync_RetriesPastLegacyTwoSecondWindowsLock()
+    {
+        Assert.SkipWhen(!OperatingSystem.IsWindows(), "Windows prevents deleting open files.");
+        string path = Path.Combine(Path.GetTempPath(), $"csharpdb_api_proc_cleanup_{Guid.NewGuid():N}.db");
+        FileStream? lockStream = null;
+        Task? deletion = null;
+        try
+        {
+            lockStream = new FileStream(path, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
+            deletion = DeleteIfExistsAsync(path).AsTask();
+
+            await Task.Delay(TimeSpan.FromMilliseconds(2250), Ct);
+            Assert.False(deletion.IsCompleted);
+
+            await lockStream.DisposeAsync();
+            lockStream = null;
+            await deletion.WaitAsync(TimeSpan.FromSeconds(10), Ct);
+            Assert.False(File.Exists(path));
+        }
+        finally
+        {
+            if (lockStream is not null)
+                await lockStream.DisposeAsync();
+            if (deletion is not null)
+            {
+                try { await deletion; }
+                catch (IOException) { } // Observe the failure without masking the assertion above.
+            }
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public async Task ProcedureCrudAndExecute_HappyPath()
     {
         var create = new CreateProcedureRequest(
@@ -284,38 +317,6 @@ public sealed class ProcedureApiTests : IAsyncLifetime
         }
     }
 
-    private static async ValueTask DeleteIfExistsAsync(string path)
-    {
-        if (!File.Exists(path))
-            return;
-
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        Exception? lastException = null;
-        while (true)
-        {
-            try
-            {
-                File.Delete(path);
-                return;
-            }
-            catch (IOException ex) when (sw.Elapsed < TimeSpan.FromSeconds(2))
-            {
-                lastException = ex;
-            }
-            catch (UnauthorizedAccessException ex) when (sw.Elapsed < TimeSpan.FromSeconds(2))
-            {
-                lastException = ex;
-            }
-
-            if (!File.Exists(path))
-                return;
-
-            if (sw.Elapsed >= TimeSpan.FromSeconds(2))
-                break;
-
-            await Task.Delay(25);
-        }
-
-        throw new IOException($"Failed to delete temporary database file '{path}' within the cleanup timeout.", lastException);
-    }
+    private static ValueTask DeleteIfExistsAsync(string path) =>
+        ApiTestFileCleanup.DeleteIfExistsAsync(path);
 }
