@@ -627,6 +627,70 @@ public sealed class DataEntryTests
         Assert.Equal("Closed", (await db.QueryRowsAsync("SELECT Status FROM Products WHERE Id = 1"))[0]["Status"]);
     }
 
+    [Theory]
+    [InlineData("/* @status */", "*/ OR 1 = 1 --")]
+    [InlineData("-- @status", "\nOR 1 = 1 --")]
+    [InlineData("", "' OR 1 = 1 --")]
+    public async Task RunSql_ParameterInjectionCannotUpdateUnmatchedRows(string comment, string value)
+    {
+        await using var db = await TestDatabaseScope.CreateAsync();
+        await db.ExecuteAsync(
+            """
+            CREATE TABLE Products (Id INTEGER PRIMARY KEY, Status TEXT NOT NULL);
+            INSERT INTO Products VALUES (1, 'Open');
+            INSERT INTO Products VALUES (2, 'Open');
+            """);
+        DataEntry component = await CreateComponentAsync(
+            form: CreateForm("products-form", "Products"),
+            schemaProvider: new DbSchemaProvider(db.Client),
+            recordService: new DbFormRecordService(db.Client));
+        SetProperty(component, nameof(DataEntry.DbClient), db.Client);
+        SetProperty(component, nameof(DataEntry.EnableSqlActions), true);
+
+        FormEventDispatchResult result = await ((IFormActionRuntime)component).RunSqlAsync(
+            CreateRuntimeContext(component),
+            $"UPDATE Products SET Status = @status WHERE Id = @id {comment}",
+            new Dictionary<string, object?> { ["status"] = value, ["id"] = 0L },
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded, result.Message);
+        var rows = await db.QueryRowsAsync("SELECT Status FROM Products ORDER BY Id");
+        Assert.Equal(2, rows.Count);
+        Assert.All(rows, row => Assert.Equal("Open", row["Status"]));
+    }
+
+    [Theory]
+    [InlineData("SELECT @value /* don't bind @missing */", "SELECT 'O''Brien' /* don't bind @missing */")]
+    [InlineData("SELECT @value -- @missing\r\n", "SELECT 'O''Brien' -- @missing\r\n")]
+    [InlineData("SELECT @value AS \"escaped\"\"@missing\"", "SELECT 'O''Brien' AS \"escaped\"\"@missing\"")]
+    [InlineData("SELECT 'it''s /* @missing */ -- text', @value", "SELECT 'it''s /* @missing */ -- text', 'O''Brien'")]
+    [InlineData("SELECT 1 /* @missing */", "SELECT 1 /* @missing */")]
+    [InlineData("SELECT @value; SELECT @value", "SELECT 'O''Brien'; SELECT 'O''Brien'")]
+    public void SqlParameterBinding_PreservesCommentsStringsAndQuotedIdentifiers(string sql, string expected)
+    {
+        MethodInfo method = typeof(DataEntry).GetMethod("TrySubstituteSqlParameters", BindingFlags.Static | BindingFlags.NonPublic)!;
+        object?[] args = [sql, new Dictionary<string, object?> { ["value"] = "O'Brien" }, null, null];
+
+        Assert.True((bool)method.Invoke(null, args)!);
+        Assert.Equal(expected, args[2]);
+        Assert.Null(args[3]);
+    }
+
+    [Theory]
+    [InlineData("SELECT @value /* unterminated")]
+    [InlineData("SELECT @value, 'unterminated")]
+    [InlineData("SELECT @value AS \"unterminated")]
+    [InlineData("SELECT @missing")]
+    public void SqlParameterBinding_InvalidSqlOrMissingParameter_ReturnsFailure(string sql)
+    {
+        MethodInfo method = typeof(DataEntry).GetMethod("TrySubstituteSqlParameters", BindingFlags.Static | BindingFlags.NonPublic)!;
+        object?[] args = [sql, new Dictionary<string, object?> { ["value"] = "safe" }, null, null];
+
+        Assert.False((bool)method.Invoke(null, args)!);
+        Assert.Equal(string.Empty, args[2]);
+        Assert.False(string.IsNullOrWhiteSpace(Assert.IsType<string>(args[3])));
+    }
+
     [Fact]
     public async Task ViewBackedForm_LoadsAndSearchesInReadOnlyMode()
     {

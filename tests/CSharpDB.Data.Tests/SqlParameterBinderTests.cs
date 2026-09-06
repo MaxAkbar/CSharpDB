@@ -152,6 +152,43 @@ public class SqlParameterBinderTests
         Assert.Equal("SELECT * FROM t WHERE name = '@id' AND id = 1", result);
     }
 
+    [Theory]
+    [InlineData("SELECT @id /* @missing */", "SELECT 7 /* @missing */")]
+    [InlineData("SELECT @id -- @missing\r\n", "SELECT 7 -- @missing\r\n")]
+    [InlineData("/* don't bind @missing */ SELECT @id", "/* don't bind @missing */ SELECT 7")]
+    [InlineData("SELECT @id AS \"@missing\"", "SELECT 7 AS \"@missing\"")]
+    [InlineData("SELECT @id AS \"escaped\"\"@missing\"", "SELECT 7 AS \"escaped\"\"@missing\"")]
+    [InlineData("SELECT 'it''s /* @missing */ -- text', @id", "SELECT 'it''s /* @missing */ -- text', 7")]
+    [InlineData("SELECT @id/* @missing */; SELECT @ID", "SELECT 7/* @missing */; SELECT 7")]
+    public void Bind_OnlySqlParameterTokensAreReplaced(string sql, string expected)
+    {
+        var parameters = new CSharpDbParameterCollection();
+        parameters.AddWithValue("id", 7);
+
+        Assert.Equal(expected, SqlParameterBinder.Bind(sql, parameters));
+    }
+
+    [Theory]
+    [InlineData("SELECT 1 /* @missing */")]
+    [InlineData("SELECT 1 -- @missing")]
+    [InlineData("SELECT '@missing' AS \"@missing\"")]
+    public void Bind_NoSqlParameterTokens_ReturnsOriginalSql(string sql)
+    {
+        Assert.Same(sql, SqlParameterBinder.Bind(sql, new CSharpDbParameterCollection()));
+    }
+
+    [Theory]
+    [InlineData("SELECT @id /* @missing")]
+    [InlineData("SELECT @id, 'unterminated @missing")]
+    [InlineData("SELECT @id AS \"unterminated @missing")]
+    public void Bind_MalformedSqlWithParameters_Throws(string sql)
+    {
+        var parameters = new CSharpDbParameterCollection();
+        parameters.AddWithValue("id", 7);
+
+        Assert.Throws<CSharpDbException>(() => SqlParameterBinder.Bind(sql, parameters));
+    }
+
     [Fact]
     public void Bind_MissingParameter_Throws()
     {

@@ -242,6 +242,31 @@ public static class DataModelConnectorRouter
         if (InsideAny(start, obstacles) || InsideAny(end, obstacles))
             return null;
 
+        // Start with an endpoint-defined lane, not coordinates borrowed from every
+        // table on the canvas. Add obstacles only when they block a candidate path.
+        // Keep this in sync with schemaCanvasInterop's live pointer preview.
+        double middleX = (start.X + end.X) / 2;
+        List<DataModelConnectorPoint> path = [start, new(middleX, start.Y), new(middleX, end.Y), end];
+        var relevant = new List<RoutingRect>();
+        while (true)
+        {
+            RoutingRect[] blockers = obstacles.Where(obstacle =>
+                path.Zip(path.Skip(1)).Any(pair => !SegmentIsClear(pair.First, pair.Second, [obstacle]))).ToArray();
+            if (blockers.Length == 0)
+                return path;
+            relevant.AddRange(blockers);
+            var detour = FindPathAroundObstacles(start, end, relevant);
+            if (detour is null)
+                return null;
+            path = detour;
+        }
+    }
+
+    private static List<DataModelConnectorPoint>? FindPathAroundObstacles(
+        DataModelConnectorPoint start,
+        DataModelConnectorPoint end,
+        IReadOnlyList<RoutingRect> obstacles)
+    {
         var xValues = new SortedSet<double> { start.X, end.X, (start.X + end.X) / 2 };
         var yValues = new SortedSet<double> { start.Y, end.Y, (start.Y + end.Y) / 2 };
         foreach (RoutingRect obstacle in obstacles)

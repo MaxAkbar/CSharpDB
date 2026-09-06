@@ -30,9 +30,6 @@ second SQL parser.
 - Ordinary snapshots never contain raw SQL, values, paths, or exception text
 - Cumulative counters are monotonic within a server-instance/counter-epoch pair
 
-The complete hierarchy, counter, privacy, host-state, and performance contract
-is recorded in the
-[Phase 0 observability contract](https://github.com/MaxAkbar/CSharpDB/blob/main/docs/observability-phase-0-contract.md).
 For application and operator setup, hosted exporters, health routes, Admin,
 scrape security, retention guidance, and troubleshooting, use the public
 [Observability and Diagnostics guide](https://csharpdb.com/docs/observability.html).

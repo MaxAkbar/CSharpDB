@@ -5,6 +5,7 @@
 @using CSharpDB.Admin.Forms.Contracts
 @using CSharpDB.Admin.Forms.Models
 @using CSharpDB.Primitives
+@using CSharpDB.Sql
 @implements IDisposable
 @implements IFormActionRuntime
 @inject IFormRepository FormRepository
@@ -1463,57 +1464,38 @@
         out string resolvedSql,
         out string? error)
     {
-        var builder = new System.Text.StringBuilder(sql.Length);
-        bool inString = false;
-        for (int i = 0; i < sql.Length;)
+        List<Token> tokens;
+        try
         {
-            char ch = sql[i];
-            if (ch == '\'')
-            {
-                builder.Append(ch);
-                if (inString && i + 1 < sql.Length && sql[i + 1] == '\'')
-                {
-                    builder.Append(sql[i + 1]);
-                    i += 2;
-                    continue;
-                }
-
-                inString = !inString;
-                i++;
-                continue;
-            }
-
-            if (!inString && ch == '@')
-            {
-                int start = i + 1;
-                int end = start;
-                while (end < sql.Length && (char.IsLetterOrDigit(sql[end]) || sql[end] == '_'))
-                    end++;
-
-                if (end == start)
-                {
-                    builder.Append(ch);
-                    i++;
-                    continue;
-                }
-
-                string parameterName = sql[start..end];
-                if (!arguments.TryGetValue(parameterName, out object? value))
-                {
-                    resolvedSql = string.Empty;
-                    error = $"RunSql action is missing parameter '@{parameterName}'.";
-                    return false;
-                }
-
-                builder.Append(FormSql.FormatLiteral(value));
-                i = end;
-                continue;
-            }
-
-            builder.Append(ch);
-            i++;
+            tokens = new Tokenizer(sql).Tokenize();
+        }
+        catch (CSharpDbException ex)
+        {
+            resolvedSql = string.Empty;
+            error = $"RunSql action has invalid SQL: {ex.Message}";
+            return false;
         }
 
+        var builder = new System.Text.StringBuilder(sql.Length);
+        int cursor = 0;
+        foreach (Token token in tokens)
+        {
+            if (token.Type != TokenType.Parameter)
+                continue;
+
+            if (!arguments.TryGetValue(token.Value, out object? value))
+            {
+                resolvedSql = string.Empty;
+                error = $"RunSql action is missing parameter '@{token.Value}'.";
+                return false;
+            }
+
+            builder.Append(sql, cursor, token.Position - cursor);
+            builder.Append(FormSql.FormatLiteral(value));
+            cursor = token.Position + token.Length;
+        }
+
+        builder.Append(sql, cursor, sql.Length - cursor);
         resolvedSql = builder.ToString();
         error = null;
         return true;
