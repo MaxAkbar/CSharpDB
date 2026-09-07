@@ -30,6 +30,14 @@ function Add-DocumentationError {
     $script:errors.Add($Message)
 }
 
+try {
+    & (Join-Path $PSScriptRoot 'Test-Website.ps1')
+    & (Join-Path $PSScriptRoot 'Test-WebsiteGuardrails.ps1')
+}
+catch {
+    Add-DocumentationError $_.Exception.Message
+}
+
 $internalLinkPattern = '(?i)(?:href|src)\s*=\s*["''](?<url>[^"'']+)["'']'
 foreach ($htmlFile in Get-ChildItem -LiteralPath $wwwRoot -Recurse -File -Filter '*.html') {
     $html = [IO.File]::ReadAllText($htmlFile.FullName)
