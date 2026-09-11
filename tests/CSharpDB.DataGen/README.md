@@ -4,6 +4,18 @@ Synthetic dataset generator for CSharpDB. It produces realistic, repeatable test
 
 Everything is spec-driven: dataset shape, field generation rules, row counts, output filenames, and indexes are all declared in JSON spec files under `Specs/`. No code changes are needed to reshape a dataset.
 
+The shared evaluator, specification models and stable random streams now live in
+`src/CSharpDB.DataGeneration`. This executable retains file output and direct loading.
+For appending to connected tables while preserving declared or explicit relationships,
+use [Test Data Generator in Studio](https://csharpdb.com/docs/test-data-generator.html).
+
+Generation uses version `sha256-splitmix64-v1/bogus-35.6.5/net10`. Keep the same
+specification, options, provider/runtime version and `--reference-date` to reproduce
+generated values across processes. The reference date defaults to `2026-03-28` UTC;
+set it explicitly for date-based fixtures. This version intentionally changes values
+from the old process-dependent seed algorithm. File paths and elapsed time in run
+summaries are operational metadata and are not byte-repeatability guarantees.
+
 ## When do you need this?
 
 Any time you want to test CSharpDB behavior beyond trivial hand-written rows. Typical situations:
@@ -39,7 +51,14 @@ The time-series spec skews both device selection and timestamps toward the recen
 
 Reads the schema of an existing CSharpDB database file -- tables, columns, types, indexes -- and generates synthetic data that matches the schema. This is the mode to reach for when you already have a database with a real schema and you want to fill it with test data without writing a JSON spec by hand.
 
-The generator uses column-name heuristics to pick realistic generation rules. A column named `Email` gets fake email addresses via Bogus, a column named `CreatedUtc` gets skewed timestamps, a column ending in `Id` that looks like a foreign key gets random integers in the row-count range, and so on. Columns that don't match any heuristic fall back to type-appropriate random values (random integers, random doubles, or lorem-ipsum text).
+The generator uses declared logical types first, then column names to suggest realistic
+fields. Text `Email` gets fake email addresses, date/time columns use a fixed date
+anchor, decimal and short text columns honor their facets, and randomized fields vary
+across rows. Internal tables are excluded. This developer mode does not reconstruct
+all constraints or general foreign-key relationships; it creates a separate dataset.
+Use Studio's planner for append validation and actual parent-key sources. Interval and
+bit-string inference require an explicit specification. Review suggestions for small
+unique domains and application-specific rules before loading.
 
 ## Walkthrough: your first relational benchmark
 
@@ -53,7 +72,9 @@ dotnet run --project tests/CSharpDB.DataGen/CSharpDB.DataGen.csproj -- relationa
 
 This writes `schema.sql`, one CSV per table, and `summary.json` into `artifacts/data-gen/relational/`. Open the CSV files to spot-check that the generated values look right. Open `summary.json` to confirm the resolved row counts and the seed that was used.
 
-Because the seed is fixed, running this command again produces byte-identical output. That means you can diff two runs if you suspect a spec change introduced a regression in the generated data.
+With the same generator version, specification, options and reference date, running
+this command again produces byte-identical data files. Run summaries also contain
+paths and timing metadata, so compare the generated data files themselves.
 
 **Step 2 -- bulk-load into CSharpDB and build indexes.**
 
@@ -176,6 +197,7 @@ Direct collection loads use `Collection<JsonElement>` with one explicit transact
 |---|---|---|
 | `--rows <n>` | 100K (relational/docs), 1M (timeseries) | Top-level row or document count |
 | `--seed <n>` | 42 | Deterministic generation seed |
+| `--reference-date <date>` | 2026-03-28 UTC | Fixed UTC date/time anchor for repeatable temporal values |
 | `--batch-size <n>` | 1000 | Batch size for direct database loading |
 | `--output-path <path>` | `artifacts/data-gen/<dataset>/` | Where CSV/JSONL files are written |
 | `--spec-path <path>` | built-in spec | Path to a custom dataset spec |

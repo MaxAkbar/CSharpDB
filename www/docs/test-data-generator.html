@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>Test Data Generator — CSharpDB</title>
+    <meta name="description" content="Generate realistic, repeatable test data in CSharpDB Studio. Configure fields and distributions, preview rows, preserve relationships, and append data in one transaction.">
+    <link rel="canonical" href="https://csharpdb.com/docs/test-data-generator.html">
+    <meta property="og:title" content="Test Data Generator — CSharpDB">
+    <meta property="og:description" content="Generate realistic, repeatable test data in CSharpDB Studio. Configure fields and distributions, preview rows, preserve relationships, and append data in one transaction.">
+    <meta property="og:url" content="https://csharpdb.com/docs/test-data-generator.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "TechArticle",
+        "name": "Test Data Generator",
+        "description": "Generate realistic, repeatable test data in CSharpDB Studio. Configure fields and distributions, preview rows, preserve relationships, and append data in one transaction.",
+        "url": "https://csharpdb.com/docs/test-data-generator.html",
+        "isPartOf": { "@type": "WebSite", "name": "CSharpDB", "url": "https://csharpdb.com" }
+    }
+    </script>
+    <style>
+        .doc-content code { overflow-wrap: anywhere; }
+        .doc-content .table-scroll { overflow-x: auto; margin: 1.5rem 0; }
+        .doc-content .table-scroll table { margin: 0; }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Test Data Generator',
+        description: 'Generate realistic, repeatable test data in CSharpDB Studio. Configure fields and distributions, preview rows, preserve relationships, and append data in one transaction.',
+        keywords: 'CSharpDB test data generator, Studio, synthetic data, seed, relationships, distributions, DataGeneration',
+        canonicalPath: 'docs/test-data-generator.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <aside class="doc-sidebar">
+                <nav class="doc-toc" aria-label="On this page">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#getting-started">Getting Started</a></li>
+                        <li><a href="#fields">Field Generators</a></li>
+                        <li><a href="#distributions">Distributions</a></li>
+                        <li><a href="#relationships">Relationships and Constraints</a></li>
+                        <li><a href="#preview">Preview and Repeatability</a></li>
+                        <li><a href="#profiles">Profiles and Run Summaries</a></li>
+                        <li><a href="#transactions">Transactions and Cancellation</a></li>
+                        <li><a href="#limits">Host Limits</a></li>
+                        <li><a href="#scope">Supported Scope</a></li>
+                        <li><a href="#library">Shared Library</a></li>
+                        <li><a href="#cli">Developer CLI</a></li>
+                        <li><a href="#verification">Verification</a></li>
+                    </ul>
+                </nav>
+            </aside>
+
+            <div class="doc-content">
+                <h1>Test Data Generator</h1>
+                <p class="lead">Select tables, configure realistic fields and distributions, preview related rows, and append repeatable test data from Studio.</p>
+                <div class="callout callout-info">
+                    <strong>Direct connections.</strong> The first version supports one directly connected database, including Studio's hybrid incremental-durable mode. Existing rows are preserved. Remote, routed and sharded targets are not enabled.
+                </div>
+
+                <h2 id="getting-started">Getting Started</h2>
+                <ol>
+                    <li>Open <strong>Tools → Test Data Generator</strong>, find it in the command palette, or choose a table's <strong>Generate Test Data...</strong> action.</li>
+                    <li>Select tables and enter the exact number of new rows for each. Zero rows is allowed.</li>
+                    <li>Review suggested generators in <strong>Fields</strong>. Use <strong>Options</strong> to configure ranges, weights, date windows, lengths and null rates.</li>
+                    <li>Open <strong>Relationships</strong> and choose whether each parent-key source is generated or existing. Select any missing generated parent explicitly.</li>
+                    <li>Set a repeatable seed and a UTC reference date. Choose <strong>Preview data</strong> to validate the full run and inspect a sample.</li>
+                    <li>Review the target, counts and generation order. Choose <strong>Generate data</strong> to append all selected tables in one transaction.</li>
+                    <li>Save a profile to reuse the settings and download a run summary to record the outcome.</li>
+                </ol>
+                <p>For example, generate 100 customers and 500 orders together, with the orders using generated customer keys. To add orders for customers already in the database, select only Orders and choose <strong>Use existing parent rows</strong>.</p>
+
+                <h2 id="fields">Field Generators</h2>
+                <p>Choices follow the column's declared SQL type. Generated values use the same assignment rules as the database, including integer ranges, decimal precision and scale, text/binary lengths and temporal facets.</p>
+                <div class="table-scroll">
+                    <table class="doc-table">
+                        <thead><tr><th>Field family</th><th>Available behavior</th></tr></thead>
+                        <tbody>
+                            <tr><td>Integer, real, decimal</td><td>Sequences and bounded numbers. Unique keys are checked against existing and generated values.</td></tr>
+                            <tr><td>Person and contact</td><td>First name, last name, full name, email and phone. Full name and email reuse FirstName/LastName in the same row when present.</td></tr>
+                            <tr><td>Address and descriptive text</td><td>Street, city, region, postal code, country, company, product and prose, with configurable lengths.</td></tr>
+                            <tr><td>Boolean, UUID, date/time, binary</td><td>Typed generation. Dates depend on the saved UTC reference date. Binary constants and list values use hexadecimal input.</td></tr>
+                            <tr><td>JSON and XML</td><td>Constants or value lists validated through the database's assignment rules.</td></tr>
+                            <tr><td>Constants, value lists, defaults</td><td>Type-checked values. Supported deterministic defaults are evaluated during preview and written explicitly.</td></tr>
+                            <tr><td>Rowversion</td><td>Omitted from inserts and labeled <strong>Engine generated</strong> in preview.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <p>Generated emails use <code>example.test</code> and preserve the domain within the configured length. Independently generated city, region and postal-code values are plausible samples; they do not guarantee a matching geographic address.</p>
+
+                <h2 id="distributions">Distributions</h2>
+                <div class="table-scroll">
+                    <table class="doc-table">
+                        <thead><tr><th>Distribution</th><th>Meaning</th></tr></thead>
+                        <tbody>
+                            <tr><td>Uniform</td><td>Equal probability across the configured choices or range.</td></tr>
+                            <tr><td>Weighted categories</td><td>One nonnegative relative weight per value, with a finite positive total. Zero-weight categories are excluded.</td></tr>
+                            <tr><td>Bounded normal</td><td>Numeric samples stay within the range. The mean must be in range and deviation must be positive and no larger than the range.</td></tr>
+                            <tr><td>Recent dates</td><td>The selected probability draws from the recent window; the remainder draws from the full window, which also includes recent dates.</td></tr>
+                            <tr><td>Hot keys</td><td>The selected probability draws from the first 20% of a stable parent-key order; the remainder draws from the entire pool. This does not rank real usage.</td></tr>
+                            <tr><td>Null rate</td><td>A per-row probability, subject to column and relationship nullability.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <p>Probabilities describe sampling behavior, not exact category quotas. A small preview will not necessarily match the configured percentages.</p>
+
+                <h2 id="relationships">Relationships and Constraints</h2>
+                <p>Declared foreign keys are included automatically. For a schema without a declared FK, add an explicit logical mapping and enter child and parent columns in matching order. Parent columns must identify an ordered primary or unique key.</p>
+                <ul>
+                    <li><strong>Generated parents:</strong> selected parent tables run before their children.</li>
+                    <li><strong>Existing parents:</strong> keys come from actual rows, including sparse integers, text and composite keys.</li>
+                    <li><strong>Composite keys:</strong> the generator selects complete parent tuples and preserves column order.</li>
+                    <li><strong>One-to-one mappings:</strong> parent keys are selected without replacement; parent tuples already used by existing unique children are excluded.</li>
+                    <li><strong>Overlapping columns:</strong> shared columns such as tenant IDs are coordinated; incompatible mappings fail validation.</li>
+                    <li><strong>Nullable references:</strong> an explicit null policy is supported where the mapped columns allow it.</li>
+                </ul>
+                <p>The planner checks primary and unique keys, collations, nullability, logical types, identity allocation and relationship membership. Supported CHECK/default expressions include literals, column references, arithmetic, comparisons, AND/OR/NOT, IN, BETWEEN, IS NULL and COLLATE. Unsupported expressions are reported, not skipped.</p>
+                <p>These checks validate the selected rules. They do not automatically solve arbitrary business constraints. Database constraints and indexes remain active during insertion.</p>
+
+                <h2 id="preview">Preview and Repeatability</h2>
+                <p><strong>Preview data</strong> validates every requested row, then displays up to 25 rows per page by default. Changing a setting invalidates the prepared preview. The parent-key disclosure shows the reference for the first displayed row, even if that parent lies outside its first preview page.</p>
+                <p>Preview reads schema and existing key projections in a consistent read transaction. It never inserts rows or fires INSERT triggers. Rowversion values are supplied by the engine during insertion and are labeled accordingly.</p>
+                <p>A resolved run depends on the seed, versioned profile, fixed UTC reference date, provider version and locale, schema identities, requested counts, relationship choices and existing keys. Paging, table display order and insert batch size do not consume or alter other rows' random streams.</p>
+                <p>The algorithm identifier is <code>sha256-splitmix64-v1/bogus-35.6.5/net10</code>, using the English provider catalog. Historical output from the old process-dependent seed algorithm is intentionally not preserved. Appending again changes existing key state and allocation, so it produces a new resolved run even with the same seed.</p>
+
+                <h2 id="profiles">Profiles and Run Summaries</h2>
+                <p><strong>Save profile</strong> downloads the configuration as JSON. <strong>Load profile</strong> restores it and checks its schema identities against the connected database. Recreated tables with different identities need a new configuration. Profiles are limited to 1 MB and reject unknown properties or incompatible versions.</p>
+                <p>Profiles contain settings and schema identities, not existing database rows or connection credentials. A profile is reusable configuration; it does not freeze a populated database's key state.</p>
+                <p><strong>Save run summary</strong> records the seed, algorithm, reference date, profile hash, schema/key snapshot fingerprints, target, requested and inserted row counts, duration and outcome.</p>
+
+                <h2 id="transactions">Transactions and Cancellation</h2>
+                <p>Generate pins the selected connection and opens one transaction for all selected tables. It rereads relevant schema, identity state, triggers, counts and keys before inserting. Changes since preview require a new preview.</p>
+                <p>Rows are streamed in bounded batches in dependency order. Progress is uncommitted until the final receipt says <strong>Committed</strong>. Persisted counts and key tuples are checked before commit, and a confirmed commit refreshes affected Studio views.</p>
+                <p>Cancellation, closing the tab and database switching stop pending work and await cleanup. A known failure before commit rolls back all inserted rows. Commit and rollback use an independent cleanup token; cancellation cannot undo a completed commit.</p>
+                <div class="callout callout-info">
+                    <strong>Unknown outcome.</strong> If a commit acknowledgement is lost or rollback cannot be confirmed, the receipt says <strong>Unknown</strong>, reports no confirmed inserted counts and blocks another run in that tab. Inspect the database before starting again. There is no automatic retry.
+                </div>
+
+                <h2 id="limits">Host Limits</h2>
+                <p>The optional top-level <code>TestDataGeneration</code> host configuration section overrides these defaults:</p>
+                <div class="table-scroll">
+                    <table class="doc-table">
+                        <thead><tr><th>Setting</th><th>Default</th></tr></thead>
+                        <tbody>
+                            <tr><td><code>MaxRows</code></td><td>10,000 across the run</td></tr>
+                            <tr><td><code>MaxGeneratedBytes</code></td><td>33,554,432 (32 MiB estimated generated values)</td></tr>
+                            <tr><td><code>MaxKeyBytes</code></td><td>33,554,432 (32 MiB estimated keys and validation structures)</td></tr>
+                            <tr><td><code>MaxExistingKeyRows</code></td><td>100,000 per table whose keys are read</td></tr>
+                            <tr><td><code>MaxStatementBytes</code></td><td>262,144 (256 KiB UTF-8 SQL)</td></tr>
+                            <tr><td><code>BatchSize</code></td><td>100 rows</td></tr>
+                            <tr><td><code>PreviewRows</code></td><td>25</td></tr>
+                            <tr><td><code>TimeoutSeconds</code></td><td>120 before commit/cleanup</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <p>Rows and existing-key rows can be configured up to 1,000,000, batches up to 1,000, preview pages up to 100, statements from 1 KiB to 4 MiB, and the pre-commit timeout up to 600 seconds. Invalid limits are rejected when the generator initializes. Larger limits need workload-specific qualification.</p>
+                <p>Size accounting estimates values and key structures; it does not cap total process memory or database WAL size. Oversized plans do not fall back to partial commits.</p>
+
+                <h2 id="scope">Supported Scope</h2>
+                <p>The first version appends to writable SQL tables through a direct connection, including direct hybrid incremental-durable mode. Self-references may use existing parent rows.</p>
+                <p>Generated relationship cycles and self-cycles, rowversion keys, INSERT-trigger tables, LIKE/CAST/function/subquery preflight expressions, interval and bit-string fields, internal/system tables, remote connections, routed/sharded targets, collections and replace/truncate operations are outside the enabled scope.</p>
+
+                <h2 id="library">Shared Library: CSharpDB.DataGeneration</h2>
+                <p>The .NET 10 library contains the shared generation engine and schema planner. Studio and the developer CLI reference it. It does not open database connections, manage transactions, render UI or write output files.</p>
+                <div class="table-scroll">
+                    <table class="doc-table">
+                        <thead><tr><th>API</th><th>Responsibility</th></tr></thead>
+                        <tbody>
+                            <tr><td><code>GenerationProfile</code></td><td>Versioned table, field and relationship settings, JSON serialization and profile hash.</td></tr>
+                            <tr><td><code>GenerationTableSnapshot</code></td><td>Caller-supplied schema, indexes, counts, key projections, triggers and fingerprint.</td></tr>
+                            <tr><td><code>GeneratorCatalog</code></td><td>Compatible providers, suggestions, field options and generated values.</td></tr>
+                            <tr><td><code>GenerationPlan</code></td><td>Full-run validation, dependency order, key allocation, indexed rows and referenced parent keys.</td></tr>
+                            <tr><td><code>GenerationValues</code></td><td>Engine-compatible assignment, collation-aware keys, supported expression evaluation and SQL formatting.</td></tr>
+                            <tr><td><code>StableRandom</code></td><td>Versioned seed derivation and independent random streams.</td></tr>
+                            <tr><td><code>SpecDataGenerator</code></td><td>The developer specification evaluator with lazy SQL and document row sources.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <p>Given a complete snapshot supplied by an adapter, callers can suggest rules, validate the run and request a preview page:</p>
+                <div class="code-block" data-title="C# — caller-supplied snapshot">
+                    <pre><code>using CSharpDB.DataGeneration;
+
+static GenerationPlan PreparePreview(GenerationTableSnapshot snapshot)
+{
+    var table = GenerationPlan.Suggest(snapshot);
+    table.Rows = 100;
+    var profile = new GenerationProfile
+    {
+        Seed = 42,
+        ReferenceUtc = new DateTime(2026, 9, 11, 0, 0, 0, DateTimeKind.Utc),
+        Tables = [table],
+    };
+
+    // Supply additional parent snapshots when the table has relationships.
+    return GenerationPlan.Build(profile, [snapshot]);
+}
+
+// The resulting plan exposes Rows(tableName, offset: 0, count: 25).</code></pre>
+                </div>
+                <p>Database adapters must supply actual schema identities, type facets, checks, key/index metadata, identity state, trigger metadata, counts and required existing keys. Include snapshots for unselected parent tables too. An empty snapshot is only appropriate for a truly empty table.</p>
+                <p>Studio's <code>TestDataGenerationAdminService</code> handles transaction-consistent reads, client capture, append execution, cancellation and outcome reporting. The library depends on <code>CSharpDB.Primitives</code>, <code>CSharpDB.Sql</code>, <code>CSharpDB.Execution</code> and Bogus 35.6.5, reusing engine assignment and collation rules.</p>
+                <p><strong>Package status:</strong> this project currently has <code>IsPackable=false</code> and is not included in the NuGet release list or the <code>CSharpDB</code> umbrella package. Consume it by project reference in the repository. Its project README provides the library overview; this page is the full feature documentation.</p>
+
+                <h2 id="cli">Developer CLI</h2>
+                <p><code>tests/CSharpDB.DataGen</code> remains the developer utility for specification-driven relational, document and time-series datasets, schema inference, file output and direct loading. Its evaluator and specification models now live in the shared library while retaining the <code>CSharpDB.DataGen</code> namespaces.</p>
+                <div class="code-block" data-title="Terminal — repository root">
+                    <pre><code>dotnet run --project tests/CSharpDB.DataGen/CSharpDB.DataGen.csproj -- relational --rows 1000 --seed 42 --reference-date 2026-09-11</code></pre>
+                </div>
+                <p>Keep the specification, options, seed, reference date and provider/runtime version unchanged to reproduce data files across processes. The CLI reference date defaults to 2026-03-28 UTC. Run summaries also contain operational paths and timings.</p>
+                <p>Schema inference uses declared types before name heuristics and excludes internal tables. It does not reconstruct arbitrary constraints or general foreign-key relationships. Use Studio's planner for validated appends against actual connected keys.</p>
+
+                <h2 id="verification">Verification</h2>
+                <p>The initial focused qualification passed 67 tests: 25 generator/CLI integration cases, 39 Studio lifecycle/navigation/client-holder cases and 3 transaction-snapshot cases. Coverage includes typed round trips, distribution samples, composite/overlapping/one-to-one keys, stale plans, limits, late SQL errors, cancellation, database switching, tab disposal and a lost commit acknowledgement.</p>
+                <p>Browser checks covered generated and existing parents, weighted-rule validation, profile save/load, paging, parent-key disclosure, commit/count refresh, summary downloads and dark/light layouts. The final checked browser session had no warnings or errors.</p>
+                <p>A local 10,000-row run on September 11, 2026 used Windows 11 build 26200, .NET 10.0.12, an Intel Core i9-11900K with 16 logical CPUs, and direct hybrid incremental-durable storage. The fixture contained 1,000 customers with names/emails and 9,000 orders with integer keys and decimal amounts, identity/primary keys, one FK, an FK lookup index and an amount CHECK.</p>
+                <div class="table-scroll">
+                    <table class="doc-table">
+                        <thead><tr><th>Measurement</th><th>Observed result</th></tr></thead>
+                        <tbody>
+                            <tr><td>Full validation and preview</td><td>2.53 seconds</td></tr>
+                            <tr><td>Insert, verify and commit</td><td>2.71 seconds</td></tr>
+                            <tr><td>Estimated generated values</td><td>About 1.03 MB</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <p>These are local observations, not throughput guarantees or general qualification for larger limits. To run the focused generator checks from the repository root:</p>
+                <div class="code-block" data-title="Terminal">
+                    <pre><code>dotnet test tests/CSharpDB.DataGeneration.Tests/CSharpDB.DataGeneration.Tests.csproj</code></pre>
+                </div>
+                <p>Related guides: <a href="admin-ui.html">Studio / Admin UI</a>, <a href="sql-reference.html#data-types">SQL Data Types</a>, <a href="database-modes.html">Database Modes</a>, and <a href="database-devops.html">Database DevOps</a>.</p>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

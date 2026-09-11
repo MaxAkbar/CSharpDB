@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="CSharpDB.Data" />
+    <InternalsVisibleTo Include="CSharpDB.DataGeneration" />
     <InternalsVisibleTo Include="CSharpDB.EntityFrameworkCore" />
     <InternalsVisibleTo Include="CSharpDB.EntityFrameworkCore.Tests" />
     <InternalsVisibleTo Include="CSharpDB.Engine" />

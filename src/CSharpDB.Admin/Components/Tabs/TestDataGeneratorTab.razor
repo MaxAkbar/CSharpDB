@@ -1,0 +1,209 @@
+@using CSharpDB.DataGeneration
+@using CSharpDB.Primitives
+@using Microsoft.AspNetCore.Components.Forms
+@implements IAsyncDisposable
+
+<div class="test-generator">
+    <div class="generator-heading">
+        <div><h2><i class="bi bi-dice-5"></i> Test Data Generator</h2><p>Create repeatable test data for related tables.</p></div>
+        <div class="generator-actions">
+            <button class="toolbar-btn" disabled="@_busy" @onclick="ReloadAsync">Reload schema</button>
+            <button class="toolbar-btn" disabled="@(_busy || _profile.Tables.Count == 0)" @onclick="SaveProfileAsync">Save profile</button>
+            <label class="toolbar-btn file-action">Load profile<InputFile OnChange="LoadProfileAsync" accept=".json" disabled="@_busy" /></label>
+        </div>
+    </div>
+    <details class="generator-help">
+        <summary>How generation works and supported schemas</summary>
+        <p>Select tables and new row counts, review field options and parent-key sources, then preview. Preview checks every requested row without inserting data. Generate appends the prepared rows in one transaction.</p>
+        <p>The same profile, seed, reference date, generator version, schema identities and existing keys reproduce the same values. Appending again allocates new keys. Save the profile to reuse settings and the run summary to record the outcome.</p>
+        <p>Supported relationships include composite keys, existing parents, acyclic generated parents and explicit logical mappings. Unique child keys use parent keys without replacement. Generated cycles, INSERT triggers, rowversion keys, remote connections and sharding are not enabled.</p>
+        <p>Common numeric, text, date/time, boolean, UUID and binary types are supported. JSON and XML use constants or value lists. CHECK expressions support arithmetic, comparisons, AND/OR, IN, BETWEEN and IS NULL. LIKE, casts, functions and subqueries require a separate workflow. Generated rowversion values are labeled in preview.</p>
+        <p>Distribution settings describe probabilities. Hot keys favor the first 20% of the stable parent-key order; recent dates favor the recent window within the full date window. Independent city, region and postal-code providers do not guarantee a matching geographic address.</p>
+        <p>Configured limits: @Generator.Limits.MaxRows.ToString("N0") new rows, @(Generator.Limits.MaxGeneratedBytes / 1024 / 1024) MiB estimated generated values, @(Generator.Limits.MaxKeyBytes / 1024 / 1024) MiB estimated keys and @Generator.Limits.TimeoutSeconds seconds before commit. Cancellation rolls back pending inserts; a lost commit acknowledgement is reported as an unknown outcome and is never retried automatically.</p>
+    </details>
+    @if (_error is not null) { <div class="generator-error" role="alert">@_error</div> }
+    @if (_receipt is not null)
+    {
+        <div class="generator-receipt @(_receipt.Status == "Committed" ? "success" : "")" role="status">
+            <strong>@_receipt.Status</strong> · @_receipt.InsertedRows.Values.Sum().ToString("N0") rows · @_receipt.Duration.TotalSeconds.ToString("N1") seconds
+            @if (_receipt.Message is not null) { <p>@_receipt.Message</p> }
+            <button class="toolbar-btn" @onclick="SaveReceiptAsync">Save run summary</button>
+        </div>
+    }
+    @if (Tab.HasRouteContext || !Generator.IsSupported)
+    {
+        <div class="generator-empty">Connect directly to one database to generate test data. Remote and sharded connections are not enabled for this version.</div>
+    }
+    else
+    {
+        <fieldset class="generator-settings" disabled="@_busy">
+            <label>Repeatable seed<input type="number" @bind="_profile.Seed" @bind:after="Invalidate" /></label>
+            <label>Reference date (UTC)<input type="date" @bind="ReferenceDate" @bind:after="Invalidate" /></label>
+            <div class="generator-total"><strong>@_profile.Tables.Sum(t => (long)t.Rows).ToString("N0") new rows</strong><span>@_profile.Tables.Count tables · limit @Generator.Limits.MaxRows.ToString("N0") rows</span></div>
+        </fieldset>
+        <div class="generator-workspace">
+            <aside>
+                <h3>1. Select tables</h3>
+                <input class="table-filter" aria-label="Search tables" placeholder="Search tables..." @bind="_filter" @bind:event="oninput" />
+                @if (_catalog.Count == 0) { <p class="muted">@(_busy ? "Reading schema..." : "No writable tables available.")</p> }
+                @foreach (var table in _catalog.Where(t => t.Schema.TableName.Contains(_filter, StringComparison.OrdinalIgnoreCase)))
+                {
+                    var configured = FindTable(table.Schema.TableName);
+                    <div class="generator-table @(Same(_table, table.Schema.TableName) ? "selected" : "")">
+                        <input type="checkbox" aria-label="@($"Select {table.Schema.TableName}")" checked="@(configured is not null)" disabled="@_busy" @onchange="e => ToggleTable(table, e.Value is true)" />
+                        <button @onclick="() => SelectTable(table.Schema.TableName)"><strong>@table.Schema.TableName</strong><small>@table.RowCount.ToString("N0") existing rows</small></button>
+                        @if (configured is not null)
+                        {
+                            <label>New rows<input type="number" min="0" max="@Generator.Limits.MaxRows" aria-label="@($"New rows for {table.Schema.TableName}")" disabled="@_busy" @bind="configured.Rows" @bind:after="Invalidate" /></label>
+                        }
+                    </div>
+                }
+            </aside>
+            <main>
+                <nav class="generator-sections" aria-label="Generator steps">
+                    @foreach (string step in new[] { "Fields", "Relationships", "Preview" })
+                    {
+                        <button class="@(_section == step ? "active" : "")" @onclick="() => _section = step">@step</button>
+                    }
+                </nav>
+                @if (_section == "Fields")
+                {
+                    @if (SelectedTable is { } selected && SelectedSchema is { } schema)
+                    {
+                        <h3>2. Configure @selected.TableName</h3>
+                        <p class="muted">Choose a field to edit its options. Relationship columns receive keys from their parent table.</p>
+                        <fieldset disabled="@_busy" class="fields-panel">
+                            <table class="generator-grid"><thead><tr><th>Field</th><th>Type</th><th>Generator</th><th>Null %</th><th></th></tr></thead><tbody>
+                            @foreach (var field in selected.Columns)
+                            {
+                                var column = schema.Columns.First(c => Same(c.Name, field.ColumnName));
+                                bool reference = selected.Relationships.Any(r => r.Columns.Contains(field.ColumnName, StringComparer.OrdinalIgnoreCase));
+                                <tr class="@(Same(_field, field.ColumnName) ? "selected" : "")">
+                                    <td><strong>@field.ColumnName</strong>@if (column.IsPrimaryKey) { <small> primary key</small> }</td>
+                                    <td>@column.EffectiveType.ToSql()</td>
+                                    <td>@if (reference) { <span class="reference-label">Parent key</span> } else {
+                                        <select aria-label="@($"Generator for {field.ColumnName}")" value="@field.Generator" @onchange="e => ChangeGenerator(field, e.Value?.ToString())">
+                                            @foreach (var choice in GeneratorCatalog.Available(column)) { <option value="@choice">@Label(choice)</option> }
+                                        </select>
+                                    }</td>
+                                    <td><input type="number" min="0" max="100" step="1" aria-label="@($"Null percentage for {field.ColumnName}")" value="@((field.NullRate * 100).ToString(System.Globalization.CultureInfo.InvariantCulture))" disabled="@(reference || !column.Nullable || column.IsPrimaryKey || column.IsRowVersion)" @onchange="e => SetNullRate(field, e.Value?.ToString())" /></td>
+                                    <td><button class="toolbar-btn" disabled="@(reference || column.IsRowVersion)" @onclick="() => _field = field.ColumnName">Options</button></td>
+                                </tr>
+                            }
+                            </tbody></table>
+                            @if (SelectedField is { } configuredField)
+                            {
+                                <div class="field-options">
+                                    <h4>@configuredField.ColumnName options</h4>
+                                    <label>Distribution<select @bind="configuredField.Distribution" @bind:after="Invalidate">
+                                        @foreach (var distribution in Distributions(configuredField.Generator)) { <option value="@distribution">@distribution</option> }
+                                    </select></label>
+                                    @if (configuredField.Generator is FieldGenerator.Number or FieldGenerator.Sequence)
+                                    {
+                                        <label>@(configuredField.Generator == FieldGenerator.Sequence ? "Minimum start (adjusted for existing keys)" : "Minimum")<input type="number" step="any" @bind="configuredField.Minimum" @bind:after="Invalidate" /></label>
+                                        @if (configuredField.Generator == FieldGenerator.Number) { <label>Maximum<input type="number" step="any" @bind="configuredField.Maximum" @bind:after="Invalidate" /></label> }
+                                    }
+                                    @if (configuredField.Distribution == FieldDistribution.Normal)
+                                    {
+                                        <label>Mean<input type="number" step="any" @bind="configuredField.Mean" @bind:after="Invalidate" /></label>
+                                        <label>Standard deviation<input type="number" step="any" @bind="configuredField.Deviation" @bind:after="Invalidate" /></label>
+                                    }
+                                    @if (configuredField.Generator == FieldGenerator.Boolean || configuredField.Distribution == FieldDistribution.Recent)
+                                    {
+                                        <label>@(configuredField.Generator == FieldGenerator.Boolean ? "Probability of true (0–1)" : "Probability in recent window (0–1)")<input type="number" min="0" max="1" step="0.05" @bind="configuredField.Probability" @bind:after="Invalidate" /></label>
+                                    }
+                                    @if (configuredField.Generator == FieldGenerator.DateTime)
+                                    {
+                                        <label>Full window (days)<input type="number" min="1" max="36500" @bind="configuredField.Days" @bind:after="Invalidate" /></label>
+                                        <label>Recent window (days)<input type="number" min="1" @bind="configuredField.RecentDays" @bind:after="Invalidate" /></label>
+                                    }
+                                    @if (configuredField.Generator == FieldGenerator.Constant) { <label class="wide">Value<input @bind="configuredField.Constant" @bind:after="Invalidate" /></label> }
+                                    @if (configuredField.Generator == FieldGenerator.ValueList)
+                                    {
+                                        <label class="wide">Values (one per line)<textarea rows="4" value="@string.Join('\n', configuredField.Values)" @onchange="e => SetValues(configuredField, e.Value?.ToString())"></textarea></label>
+                                        @if (configuredField.Distribution == FieldDistribution.Weighted) { <label class="wide">Weights (one per value, separated by commas)<input value="@string.Join(',', configuredField.Weights)" @onchange="e => SetWeights(configuredField, e.Value?.ToString())" /></label> }
+                                    }
+                                    @if (configuredField.Generator is not (FieldGenerator.Sequence or FieldGenerator.Number or FieldGenerator.Boolean or FieldGenerator.ValueList or FieldGenerator.Constant or FieldGenerator.Default or FieldGenerator.RowVersion or FieldGenerator.Uuid or FieldGenerator.DateTime))
+                                    { <label>Maximum text length / binary bytes<input type="number" min="1" max="4096" @bind="configuredField.Length" @bind:after="Invalidate" /></label> }
+                                    @if (configuredField.Generator == FieldGenerator.Default) { <p class="muted">Supported default expressions are evaluated during preview. Function-based defaults are not enabled.</p> }
+                                </div>
+                            }
+                        </fieldset>
+                    }
+                    else { <div class="generator-empty">Select a table to configure its fields.</div> }
+                }
+                else if (_section == "Relationships")
+                {
+                    <h3>3. Preserve relationships</h3>
+                    <p class="muted">Declared foreign keys are included automatically. Generated parents must be selected; existing parents can remain unselected.</p>
+                    <fieldset disabled="@_busy" class="relationship-panel">
+                    @foreach (var child in _profile.Tables)
+                    {
+                        <div class="relationship-table"><h4>@child.TableName</h4>
+                        @foreach (var relation in child.Relationships)
+                        {
+                            <div class="relationship-card">
+                                <strong>@relation.Name</strong><p>@string.Join(", ", relation.Columns) → @relation.ParentTable (@string.Join(", ", relation.ParentColumns))</p>
+                                <label>Parent keys<select @bind="relation.Source" @bind:after="Invalidate"><option value="Generated">Generate parent rows</option><option value="Existing">Use existing parent rows</option></select></label>
+                                <label>Selection<select @bind="relation.Distribution" @bind:after="Invalidate"><option value="Uniform">Uniform</option><option value="HotKeys">Hot keys</option></select></label>
+                                @if (relation.Distribution == FieldDistribution.HotKeys) { <label>Probability for hottest 20% (0–1)<input type="number" min="0" max="1" step="0.05" @bind="relation.HotKeyRate" @bind:after="Invalidate" /></label> }
+                                <label>Null probability (0–1)<input type="number" min="0" max="1" step="0.05" @bind="relation.NullRate" @bind:after="Invalidate" /></label>
+                                @if (relation.Source == ParentKeySource.Generated && FindTable(relation.ParentTable) is null)
+                                { <button class="toolbar-btn" @onclick="() => AddParent(relation.ParentTable)">Select @relation.ParentTable</button> }
+                                @if (!IsDeclared(child, relation)) { <button class="toolbar-btn" @onclick="() => RemoveRelationship(child, relation)">Remove mapping</button> }
+                            </div>
+                        }
+                        <button class="toolbar-btn" @onclick="() => StartMapping(child.TableName)">Add logical relationship</button></div>
+                    }
+                    @if (_mappingChild is not null)
+                    {
+                        <div class="field-options"><h4>Map @_mappingChild to a parent</h4>
+                            <label>Child columns (comma separated)<input @bind="_mappingColumns" /></label>
+                            <label>Parent table<select @bind="_mappingParent"><option value="">Select parent...</option>@foreach (var table in _catalog) { <option>@table.Schema.TableName</option> }</select></label>
+                            <label>Parent key columns (comma separated)<input @bind="_mappingParentColumns" /></label>
+                            <button class="toolbar-btn" @onclick="AddMapping">Add mapping</button>
+                        </div>
+                    }
+                    </fieldset>
+                }
+                else
+                {
+                    <h3>4. Preview and generate</h3>
+                    @if (_prepared is null) { <div class="generator-empty">Preview validates all requested rows and displays a sample of up to @Generator.Limits.PreviewRows rows per page. Your database is not modified.</div> }
+                    else
+                    {
+                        <div class="preview-summary"><strong>Ready to append @_prepared.Plan.Counts.Values.Sum().ToString("N0") rows</strong>
+                            <p>Target: @_prepared.Target</p><p>Order: @string.Join(" → ", _prepared.Plan.Order)</p>
+                            <p>Seed @_prepared.Plan.Seed · reference date @_prepared.Plan.ReferenceUtc.ToString("yyyy-MM-dd") · existing schema and keys will be checked again.</p>
+                        </div>
+                        <label class="preview-table">Table<select value="@_previewTable" @onchange="e => ChangePreviewTable(e.Value?.ToString())">@foreach (string table in _prepared.Plan.Order) { <option>@table</option> }</select></label>
+                        <div class="preview-scroll"><table class="generator-grid"><thead><tr><th>Row</th>@foreach (var column in PreviewSchema.Columns) { <th>@column.Name</th> }</tr></thead><tbody>
+                        @for (int i = 0; i < _previewRows.Count; i++)
+                        {
+                            var row = _previewRows[i]; int ordinal = _previewOffset + i + 1;
+                            <tr><td>@ordinal</td>@foreach (var column in PreviewSchema.Columns)
+                            { <td>@if (column.IsRowVersion) { <em>Engine generated</em> } else { @GenerationValues.Display(row.GetValueOrDefault(column.Name)) }</td> }</tr>
+                        }
+                        </tbody></table></div>
+                        <div class="preview-paging"><button class="toolbar-btn" disabled="@(_previewOffset == 0)" @onclick="PreviousPreview">Previous</button><span>Rows @(_previewRows.Count == 0 ? 0 : _previewOffset + 1)–@(_previewOffset + _previewRows.Count) of @_prepared.Plan.Counts[_previewTable]</span><button class="toolbar-btn" disabled="@(_previewOffset + _previewRows.Count >= _prepared.Plan.Counts[_previewTable])" @onclick="NextPreview">Next</button></div>
+                        @if (FindTable(_previewTable) is { Relationships.Count: > 0 } previewConfig && _previewRows.Count > 0)
+                        {
+                            <details class="parent-preview"><summary>Referenced parent keys for the first displayed row</summary>
+                            @foreach (var relationship in previewConfig.Relationships)
+                            {
+                                <p><strong>@relationship.Name:</strong> @ParentPreview(relationship.Name)</p>
+                            }
+                            </details>
+                        }
+                    }
+                }
+            </main>
+        </div>
+        <footer class="generator-footer">
+            <div aria-live="polite">@if (_progress is not null && _busy) { <span>@_progress.Stage · @_progress.Table · @_progress.Processed.ToString("N0") / @_progress.Total.ToString("N0") rows</span> } else { <span>Append only · one transaction · cancel rolls back pending inserts</span> }</div>
+            <div><button class="toolbar-btn" disabled="@(_busy || _profile.Tables.Count == 0 || _unknownOutcome)" @onclick="PreviewAsync">Preview data</button>
+                <button class="toolbar-btn generate-button" disabled="@(_busy || _prepared is null || _unknownOutcome)" @onclick="GenerateAsync">Generate data</button>
+                @if (_busy) { <button class="toolbar-btn" @onclick="Cancel">Cancel</button> }</div>
+        </footer>
+    }
+</div>

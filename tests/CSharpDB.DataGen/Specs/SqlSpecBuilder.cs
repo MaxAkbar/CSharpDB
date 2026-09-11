@@ -6,13 +6,14 @@ namespace CSharpDB.DataGen.Specs;
 
 public static class SqlSpecBuilder
 {
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SqlTypeDescriptor> Types = new(StringComparer.OrdinalIgnoreCase);
     public static string BuildSchemaScript(IEnumerable<SqlTableSpec> tables, bool includeIndexes)
     {
         var lines = new List<string>();
         foreach (SqlTableSpec table in tables)
         {
             string columns = string.Join(", ", table.Columns.Select(BuildColumnSql));
-            lines.Add($"CREATE TABLE {table.Name} ({columns});");
+            lines.Add($"CREATE TABLE {SqlIdentifierRules.Quote(table.Name)} ({columns});");
         }
 
         if (!includeIndexes)
@@ -82,7 +83,7 @@ public static class SqlSpecBuilder
     {
         var parts = new List<string>
         {
-            column.Name,
+            SqlIdentifierRules.Quote(column.Name),
             NormalizeType(column.Type),
         };
 
@@ -97,26 +98,27 @@ public static class SqlSpecBuilder
     private static string BuildIndexSql(SqlTableSpec table, SqlIndexSpec index)
     {
         string unique = index.Unique ? "UNIQUE " : string.Empty;
-        string columns = string.Join(", ", index.Columns);
-        return $"CREATE {unique}INDEX {index.Name} ON {table.Name}({columns});";
+        string columns = string.Join(", ", index.Columns.Select(SqlIdentifierRules.Quote));
+        return $"CREATE {unique}INDEX {SqlIdentifierRules.Quote(index.Name)} ON {SqlIdentifierRules.Quote(table.Name)}({columns});";
     }
 
     private static DbValue ConvertToDbValue(SqlColumnSpec column, object? value)
     {
-        if (value is null)
-            return DbValue.Null;
-
-        return NormalizeType(column.Type) switch
+        SqlTypeDescriptor type = Types.GetOrAdd(column.Type, sqlType =>
         {
-            "INTEGER" => DbValue.FromInteger(ConvertToInt64(value)),
-            "REAL" => DbValue.FromReal(ConvertToDouble(value)),
-            "TEXT" => DbValue.FromText(ConvertToText(value)),
-            "BLOB" => DbValue.FromBlob(ConvertToBlob(value)),
-            var type => throw new InvalidOperationException(
-                $"Unsupported SQL type '{type}' for column '{column.Name}'."),
-        };
+            var statement = (CSharpDB.Sql.CreateTableStatement)CSharpDB.Sql.Parser.Parse($"CREATE TABLE datagen_type (value {sqlType});");
+            if (statement.Columns.Count != 1) throw new InvalidOperationException("Expected one SQL type.");
+            return statement.Columns[0].DeclaredType;
+        });
+        if (type.StorageType == DbType.Blob && value is string text && type.Kind is not SqlTypeKind.Uuid)
+            value = System.Text.Encoding.UTF8.GetBytes(text);
+        if (type.StorageType == DbType.Decimal && value is double number) value = (decimal)number;
+        return CSharpDB.DataGeneration.GenerationValues.Assign(value, new ColumnDefinition
+        {
+            Name = column.Name, Type = type.StorageType, DeclaredType = type,
+            Nullable = column.Nullable, IsPrimaryKey = column.PrimaryKey,
+        }, "DataGen");
     }
-
     private static string FormatCsvValue(object? value)
     {
         return value switch

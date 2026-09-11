@@ -52,7 +52,7 @@
                 <div class="tree-group-header compact">
                     <i class="bi bi-tools icon-system"></i>
                     <span>Tools</span>
-                    <span class="group-count">8</span>
+                    <span class="group-count">9</span>
                 </div>
                 <div class="tree-items">
                     <button class="tree-item command-item @(IsActiveCompareDeploy() ? "active" : "")"
@@ -74,6 +74,10 @@
                     <button class="tree-item command-item @(TabManager.ActiveTab?.Kind == TabKind.DatabaseDocumenter ? "active" : "")"
                             @onclick="() => TabManager.OpenDatabaseDocumenterTab()">
                         <i class="bi bi-book icon-system"></i><span class="item-label">Database Documenter</span>
+                    </button>
+                    <button class="tree-item command-item @(TabManager.ActiveTab?.Kind == TabKind.TestDataGenerator ? "active" : "")"
+                            @onclick="() => TabManager.OpenTestDataGeneratorTab()">
+                        <i class="bi bi-dice-5 icon-system"></i><span class="item-label">Test Data Generator</span>
                     </button>
                     <button class="tree-item command-item @(IsActiveDataModel() ? "active" : "")"
                             @onclick="() => TabManager.OpenDataModelTab()">
@@ -1542,6 +1546,7 @@
             new() { Label = "Show in Data Model", Icon = "bi-diagram-3", OnClick = () => TabManager.OpenDataModelTab(tableName) },
             new() { Label = "Assess column impact...", Icon = "bi-search", OnClick = () => TabManager.OpenDefinitionExplorerTab(tableName) },
             new() { Label = "Document Table", Icon = "bi-book", OnClick = () => TabManager.OpenDatabaseDocumenterTab(tableName) },
+            new() { Label = "Generate Test Data...", Icon = "bi-dice-5", OnClick = () => TabManager.OpenTestDataGeneratorTab(tableName) },
             new() { Label = "Design Form...", Icon = "bi-ui-checks-grid", OnClick = () => TabManager.OpenFormDesignerTab(initialTableName: tableName, title: $"{tableName} Form") },
             new() { Label = "Design Report...", Icon = "bi-file-earmark-richtext", OnClick = () => TabManager.OpenReportDesignerTab(sourceKind: ReportSourceKind.Table.ToString(), sourceName: tableName, title: $"{tableName} Report") },
             new() { Label = "Import / Export...", Icon = "bi-arrow-left-right", OnClick = () => TabManager.OpenImportExportTab(tableName) },

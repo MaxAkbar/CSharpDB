@@ -65,7 +65,22 @@ public sealed class TabManagerService
             or TabKind.DataModel
             or TabKind.DataHygiene
             or TabKind.DefinitionExplorer
-            or TabKind.DatabaseDocumenter;
+            or TabKind.DatabaseDocumenter
+            or TabKind.TestDataGenerator;
+
+    public TabDescriptor OpenTestDataGeneratorTab(string? table = null)
+    {
+        var tab = _tabs.FirstOrDefault(t => t.Kind == TabKind.TestDataGenerator
+            && t.RouteKeyspace == ActiveTab?.RouteKeyspace && t.RouteKey == ActiveTab?.RouteKey)
+            ?? new TabDescriptor($"datagen:{Guid.NewGuid():N}", "Test Data Generator", "bi-dice-5", TabKind.TestDataGenerator);
+        if (table is not null)
+        {
+            tab.State["GeneratorTable"] = table;
+            tab.State["GeneratorRequest"] = new object();
+        }
+        OpenTab(tab);
+        return tab;
+    }
 
     public TabDescriptor OpenDatabaseDocumenterTab(string? table = null)
     {

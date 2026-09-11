@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\CSharpDB.Engine\CSharpDB.Engine.csproj" />
+    <ProjectReference Include="..\..\src\CSharpDB.DataGeneration\CSharpDB.DataGeneration.csproj" />
   </ItemGroup>
 
   <ItemGroup>

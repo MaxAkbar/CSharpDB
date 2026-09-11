@@ -845,6 +845,9 @@ internal sealed partial class EngineTransportClient :
             {
                 Schema = MapTableSchema(schema),
                 Indexes = indexes,
+                Triggers = session.Database.GetTriggers()
+                    .Where(trigger => string.Equals(trigger.TableName, normalizedTableName, StringComparison.OrdinalIgnoreCase))
+                    .Select(MapTriggerSchema).ToArray(),
             };
         }
         finally

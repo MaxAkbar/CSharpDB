@@ -9,6 +9,28 @@ namespace CSharpDB.DataGen.Generators;
 
 public static class SpecDataGenerator
 {
+    /// <summary>Generates one row without consuming the stream of any other row.</summary>
+    public static IReadOnlyDictionary<string, object?> GenerateRow(GenerationOptions options, SqlTableSpec table,
+        long rowIndex, IReadOnlyDictionary<string, long>? counts = null,
+        IReadOnlyDictionary<string, object?>? initialValues = null)
+    {
+        var context = RuleExecutionContext.CreateRowContext(options, counts ?? new Dictionary<string, long>(), table.GeneratorKey, rowIndex);
+        if (initialValues is not null)
+            foreach (var pair in initialValues) context.SetValue(pair.Key, pair.Value);
+        PopulateBindings(table.Locals, context, $"{table.GeneratorKey}.locals");
+        foreach (SqlColumnSpec column in table.Columns)
+        {
+            string source = GetSourceField(column);
+            if (initialValues?.ContainsKey(column.Name) == true) continue;
+            if (column.Generator.ValueKind != JsonValueKind.Undefined)
+                context.SetValue(source, RuleEvaluator.Evaluate(column.Generator, context, $"{table.GeneratorKey}.columns.{column.Name}"));
+            if (!context.TryResolveValue(source, out object? value))
+                throw new InvalidOperationException($"No generator or value for {table.Name}.{column.Name}.");
+            context.SetValue(column.Name, value);
+        }
+        return context.SnapshotValues();
+    }
+
     private static readonly JsonSerializerOptions s_jsonOptions = new()
     {
         WriteIndented = false,
@@ -16,7 +38,7 @@ public static class SpecDataGenerator
 
     private static readonly int[] s_defaultDocumentSizeBuckets = [256, 1024, 4096, 16 * 1024];
 
-    public static DatasetGenerationPlan CreatePlan(DataGenOptions options, DatasetSpec spec)
+    public static DatasetGenerationPlan CreatePlan(GenerationOptions options, DatasetSpec spec)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(spec);
@@ -46,7 +68,7 @@ public static class SpecDataGenerator
         return new DatasetGenerationPlan(counts, sqlSources, collectionSources);
     }
 
-    private static Dictionary<string, long> ResolveCounts(DataGenOptions options, DatasetSpec spec)
+    private static Dictionary<string, long> ResolveCounts(GenerationOptions options, DatasetSpec spec)
     {
         var counts = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
         var planContext = RuleExecutionContext.CreatePlanningContext(options, counts);
@@ -81,7 +103,7 @@ public static class SpecDataGenerator
     }
 
     private static IEnumerable<IReadOnlyDictionary<string, object?>> GenerateRows(
-        DataGenOptions options,
+        GenerationOptions options,
         IReadOnlyDictionary<string, long> counts,
         SqlTableSpec table,
         long rowCount)
@@ -117,7 +139,7 @@ public static class SpecDataGenerator
     }
 
     private static IEnumerable<GeneratedCollectionDocument> GenerateDocuments(
-        DataGenOptions options,
+        GenerationOptions options,
         IReadOnlyDictionary<string, long> counts,
         CollectionSpec collection,
         long rowCount)
@@ -172,7 +194,7 @@ public static class SpecDataGenerator
         private readonly Dictionary<string, Stack<object?>> _variables = new(StringComparer.OrdinalIgnoreCase);
 
         private RuleExecutionContext(
-            DataGenOptions options,
+            GenerationOptions options,
             IReadOnlyDictionary<string, long> counts,
             string scopeKey,
             long rowIndex)
@@ -183,7 +205,7 @@ public static class SpecDataGenerator
             RowIndex = rowIndex;
         }
 
-        public DataGenOptions Options { get; }
+        public GenerationOptions Options { get; }
 
         public IReadOnlyDictionary<string, long> Counts { get; }
 
@@ -194,12 +216,12 @@ public static class SpecDataGenerator
         public Dictionary<string, object?> Values { get; } = new(StringComparer.OrdinalIgnoreCase);
 
         public static RuleExecutionContext CreatePlanningContext(
-            DataGenOptions options,
+            GenerationOptions options,
             IReadOnlyDictionary<string, long> counts)
             => new(options, counts, "__plan__", 0);
 
         public static RuleExecutionContext CreateRowContext(
-            DataGenOptions options,
+            GenerationOptions options,
             IReadOnlyDictionary<string, long> counts,
             string scopeKey,
             long rowIndex)
@@ -263,18 +285,18 @@ public static class SpecDataGenerator
         public object? ResolveOption(string name)
             => name.ToLowerInvariant() switch
             {
-                "dataset" => Options.Dataset,
+                "dataset" => Options.DatasetLabel,
                 "datasetlabel" => Options.DatasetLabel,
                 "seed" => Options.Seed,
                 "rowcount" => Options.RowCount,
                 "batchsize" => Options.BatchSize,
                 "directload" => Options.DirectLoad,
-                "writefiles" => Options.WriteFiles,
-                "overwritedatabase" => Options.OverwriteDatabase,
-                "buildindexes" => Options.BuildIndexes,
-                "outputpath" => Options.OutputPath,
-                "databasepath" => Options.DatabasePath,
-                "specpath" => Options.SpecPath,
+                "writefiles" => Options.ExtraOptions.GetValueOrDefault("writefiles"),
+                "overwritedatabase" => Options.ExtraOptions.GetValueOrDefault("overwritedatabase"),
+                "buildindexes" => Options.ExtraOptions.GetValueOrDefault("buildindexes"),
+                "outputpath" => Options.ExtraOptions.GetValueOrDefault("outputpath"),
+                "databasepath" => Options.ExtraOptions.GetValueOrDefault("databasepath"),
+                "specpath" => Options.ExtraOptions.GetValueOrDefault("specpath"),
                 "nullrate" => Options.NullRate,
                 "hotkeyrate" => Options.HotKeyRate,
                 "recentrate" => Options.RecentRate,
@@ -296,28 +318,10 @@ public static class SpecDataGenerator
         }
 
         public Random CreatePathRandom(string operationName, string path)
-        {
-            var hash = new HashCode();
-            hash.Add(Options.Seed);
-            hash.Add(ScopeKey, StringComparer.OrdinalIgnoreCase);
-            hash.Add(RowIndex);
-            hash.Add(operationName, StringComparer.Ordinal);
-            hash.Add(path, StringComparer.Ordinal);
-            return new Random(hash.ToHashCode());
-        }
+            => CSharpDB.DataGeneration.StableRandom.Create(Options.Seed, ScopeKey.ToLowerInvariant(), RowIndex, operationName, path);
 
         public Random CreateSeededRandom(string operationName, IEnumerable<object?> seedParts)
-        {
-            var hash = new HashCode();
-            hash.Add(Options.Seed);
-            hash.Add(operationName, StringComparer.Ordinal);
-
-            foreach (object? part in seedParts)
-                AddSeedPart(ref hash, part);
-
-            return new Random(hash.ToHashCode());
-        }
-
+            => CSharpDB.DataGeneration.StableRandom.Create(Options.Seed, operationName, seedParts.ToArray());
         private void PopVariable(string name)
         {
             if (!_variables.TryGetValue(name, out Stack<object?>? stack) || stack.Count == 0)
@@ -326,69 +330,6 @@ public static class SpecDataGenerator
             stack.Pop();
             if (stack.Count == 0)
                 _variables.Remove(name);
-        }
-
-        private static void AddSeedPart(ref HashCode hash, object? value)
-        {
-            switch (value)
-            {
-                case null:
-                    hash.Add(0);
-                    return;
-                case bool boolean:
-                    hash.Add(boolean);
-                    return;
-                case byte byteValue:
-                    hash.Add(byteValue);
-                    return;
-                case sbyte sbyteValue:
-                    hash.Add(sbyteValue);
-                    return;
-                case short shortValue:
-                    hash.Add(shortValue);
-                    return;
-                case ushort ushortValue:
-                    hash.Add(ushortValue);
-                    return;
-                case int intValue:
-                    hash.Add(intValue);
-                    return;
-                case uint uintValue:
-                    hash.Add(uintValue);
-                    return;
-                case long longValue:
-                    hash.Add(longValue);
-                    return;
-                case ulong ulongValue:
-                    hash.Add(unchecked((long)ulongValue));
-                    return;
-                case float floatValue:
-                    hash.Add(floatValue);
-                    return;
-                case double doubleValue:
-                    hash.Add(doubleValue);
-                    return;
-                case decimal decimalValue:
-                    hash.Add(decimalValue);
-                    return;
-                case string text:
-                    hash.Add(text, StringComparer.Ordinal);
-                    return;
-                case DateTime dateTime:
-                    hash.Add(dateTime.ToUniversalTime().Ticks);
-                    return;
-                case Guid guid:
-                    hash.Add(guid.ToString("D"), StringComparer.Ordinal);
-                    return;
-                case IEnumerable enumerable when value is not string:
-                    foreach (object? item in enumerable)
-                        AddSeedPart(ref hash, item);
-
-                    return;
-                default:
-                    hash.Add(value.ToString(), StringComparer.Ordinal);
-                    return;
-            }
         }
 
         private static bool TryResolvePath(object? rootValue, string path, out object? value)
@@ -636,6 +577,8 @@ public static class SpecDataGenerator
                 "if" => EvaluateIf(rule, context, path),
                 "chance" => EvaluateChance(rule, context, path),
                 "pick" => EvaluatePick(rule, context, path),
+                "weighted" => EvaluateWeighted(rule, context, path),
+                "normal" => EvaluateNormal(rule, context, path),
                 "faker" => EvaluateFaker(rule, context, path),
                 "int" => EvaluateInteger(rule, context, path),
                 "double" => EvaluateDouble(rule, context, path),
@@ -648,6 +591,7 @@ public static class SpecDataGenerator
                 "concat" => string.Concat(EvaluateRequiredValues(rule, "values", context, path).Select((value, index) => ConvertToPrintableString(value, $"{path}.values[{index}]"))),
                 "lower" => ConvertToPrintableString(EvaluateRequired(rule, "value", context, path), path).ToLowerInvariant(),
                 "upper" => ConvertToPrintableString(EvaluateRequired(rule, "value", context, path), path).ToUpperInvariant(),
+                "truncate" => Truncate(rule, context, path),
                 "padleft" => ConvertToPrintableString(EvaluateRequired(rule, "value", context, path), path)
                     .PadLeft(GetOptionalInt32(rule, "length", context, path, 0), GetOptionalChar(rule, "char", context, path, '0')),
                 "sanitizeemail" => SanitizeForEmail(ConvertToPrintableString(EvaluateRequired(rule, "value", context, path), path)),
@@ -695,7 +639,7 @@ public static class SpecDataGenerator
         {
             string fakerName = GetRequiredString(rule, "name", path);
             Random rng = CreateRandom(rule, context, path, "faker");
-            var faker = new Faker("en")
+            var faker = new Faker(context.Options.Locale)
             {
                 Random = new Randomizer(rng.Next()),
             };
@@ -710,14 +654,55 @@ public static class SpecDataGenerator
                 "address.secondaryaddress" => faker.Address.SecondaryAddress(),
                 "address.city" => faker.Address.City(),
                 "address.stateabbr" => faker.Address.StateAbbr(),
+                "address.state" => faker.Address.State(),
+                "address.country" => faker.Address.Country(),
                 "address.zipcode" => faker.Address.ZipCode(),
                 "address.countrycode" => faker.Address.CountryCode(),
                 "commerce.productname" => faker.Commerce.ProductName(),
                 "internet.email" => faker.Internet.Email().ToLowerInvariant(),
+                "internet.url" => faker.Internet.Url(),
+                "internet.username" => faker.Internet.UserName(),
+                "company.companyname" => faker.Company.CompanyName(),
+                "lorem.word" => faker.Lorem.Word(),
                 "lorem.sentence" => faker.Lorem.Sentence(),
                 "lorem.paragraph" => faker.Lorem.Paragraph(),
                 _ => throw new InvalidOperationException($"Unsupported faker name '{fakerName}' at '{path}'."),
             };
+        }
+
+        private static object? EvaluateWeighted(JsonElement rule, RuleExecutionContext context, string path)
+        {
+            JsonElement[] values = GetRequiredProperty(rule, "values", path).EnumerateArray().ToArray();
+            double[] weights = GetRequiredProperty(rule, "weights", path).EnumerateArray().Select(e => e.GetDouble()).ToArray();
+            if (values.Length == 0 || values.Length != weights.Length || weights.Any(w => !double.IsFinite(w) || w < 0)
+                || !double.IsFinite(weights.Sum()) || weights.Sum() <= 0)
+                throw new InvalidOperationException($"{path}: weights must match the values, be nonnegative, and have a finite positive total.");
+            double pick = CreateRandom(rule, context, path, "weighted").NextDouble() * weights.Sum();
+            for (int i = 0; i < values.Length; i++)
+            {
+                pick -= weights[i];
+                if (pick < 0) return Evaluate(values[i], context, path);
+            }
+            return Evaluate(values[Array.FindLastIndex(weights, w => w > 0)], context, path);
+        }
+
+        private static double EvaluateNormal(JsonElement rule, RuleExecutionContext context, string path)
+        {
+            double min = ConvertToDouble(EvaluateRequired(rule, "min", context, path), path);
+            double max = ConvertToDouble(EvaluateRequired(rule, "max", context, path), path);
+            double mean = ConvertToDouble(EvaluateRequired(rule, "mean", context, path), path);
+            double deviation = ConvertToDouble(EvaluateRequired(rule, "deviation", context, path), path);
+            int digits = GetOptionalInt32(rule, "digits", context, path, 2);
+            if (!double.IsFinite(min) || !double.IsFinite(max) || !double.IsFinite(mean) || !double.IsFinite(deviation)
+                || min >= max || mean < min || mean > max || deviation <= 0 || deviation > max - min || digits is < 0 or > 15)
+                throw new InvalidOperationException($"{path}: normal distribution requires finite ordered bounds, a mean within them, and deviation in (0, range].");
+            Random rng = CreateRandom(rule, context, path, "normal");
+            for (int attempt = 0; attempt < 1024; attempt++)
+            {
+                double value = mean + deviation * Math.Sqrt(-2 * Math.Log(1 - rng.NextDouble())) * Math.Cos(2 * Math.PI * rng.NextDouble());
+                if (value >= min && value <= max) return Math.Clamp(Math.Round(value, digits), min, max);
+            }
+            throw new InvalidOperationException($"{path}: normal distribution could not produce a value within its bounds.");
         }
 
         private static long EvaluateInteger(JsonElement rule, RuleExecutionContext context, string path)
@@ -777,7 +762,7 @@ public static class SpecDataGenerator
             double recentRate = ConvertToDouble(EvaluateRequired(rule, "recentRate", context, path), path);
             DateTime anchorUtc = TryGetProperty(rule, "anchorUtc", out JsonElement anchorRule)
                 ? ConvertToDateTime(Evaluate(anchorRule, context, $"{path}.anchorUtc"), $"{path}.anchorUtc")
-                : GenerationPrimitives.AnchorUtc;
+                : context.Options.ReferenceUtc;
 
             Random rng = CreateRandom(rule, context, path, "skewedTimestamp");
             return GenerationPrimitives.PickSkewedTimestamp(rng, anchorUtc, recentWindowDays, fullWindowDays, recentRate);
@@ -804,6 +789,14 @@ public static class SpecDataGenerator
             string format = GetRequiredString(rule, "format", path);
             object?[] args = EvaluateRequiredValues(rule, "args", context, path);
             return string.Format(CultureInfo.InvariantCulture, format, args);
+        }
+
+        private static string Truncate(JsonElement rule, RuleExecutionContext context, string path)
+        {
+            string value = ConvertToPrintableString(EvaluateRequired(rule, "value", context, path), path);
+            int length = GetOptionalInt32(rule, "length", context, path, 32);
+            if (length < 1) throw new InvalidOperationException($"{path}: text length must be positive.");
+            return value.Length <= length ? value : value[..length];
         }
 
         private static object?[] EvaluateRepeat(JsonElement rule, RuleExecutionContext context, string path)
@@ -1266,6 +1259,7 @@ public static class SpecDataGenerator
 
         private static long NextInt64Inclusive(Random rng, long min, long max)
         {
+            if (rng is CSharpDB.DataGeneration.StableRandom stable) return stable.NextInclusive(min, max);
             if (min == max)
                 return min;
 

@@ -17,6 +17,9 @@ database objects.
 - table designer for creating tables
 - SQL query tabs with paged results and guided SQL completions
 - procedure editor and execution surface
+- [Test Data Generator](https://csharpdb.com/docs/test-data-generator.html) for table/count selection,
+  realistic fields, distributions, repeatable profiles, relationship-aware previews,
+  and transactional appends through direct database connections
 - [Database Documenter](../../docs/database-documenter.md) for a searchable data
   dictionary, shared descriptions, and offline HTML/Markdown exports
 - [SQL Search & Dependencies](../../www/docs/sql-search-and-dependencies.html) for definition search,

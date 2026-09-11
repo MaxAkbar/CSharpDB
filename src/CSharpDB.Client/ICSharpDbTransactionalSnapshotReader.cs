@@ -39,4 +39,6 @@ public sealed record TransactionTableSnapshot
 {
     public required TableSchema Schema { get; init; }
     public IReadOnlyList<IndexSchema> Indexes { get; init; } = Array.Empty<IndexSchema>();
+    /// <summary>Triggers captured from the same transaction as the schema.</summary>
+    public IReadOnlyList<TriggerSchema> Triggers { get; init; } = Array.Empty<TriggerSchema>();
 }

@@ -26,7 +26,8 @@ public enum TabKind
     DataHygiene,
     CompareDeploy,
     DefinitionExplorer,
-    DatabaseDocumenter
+    DatabaseDocumenter,
+    TestDataGenerator
 }
 
 public sealed class TabDescriptor

@@ -295,6 +295,7 @@
         _items.Add(new PaletteItem("Command", "New Pipeline", "Open pipeline builder", "bi-diagram-3", "icon-view", () => { TabManager.OpenPipelineTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "Data Model", "Open visual data modeling canvas", "bi-diagram-3", "icon-view", () => { TabManager.OpenDataModelTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "Database Documenter", "Search the data dictionary and export documentation", "bi-book", "icon-system", () => { TabManager.OpenDatabaseDocumenterTab(); return Task.CompletedTask; }));
+        _items.Add(new PaletteItem("Command", "Test Data Generator", "Generate repeatable related test data with previews", "bi-dice-5", "icon-system", () => { TabManager.OpenTestDataGeneratorTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "SQL Search & Dependencies", "Search definitions, explore uses and used by, assess column impact", "bi-search", "icon-system", () => { TabManager.OpenDefinitionExplorerTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "Code Modules", "Open C# code modules", "bi-filetype-cs", "icon-system", () => { TabManager.OpenCodeModulesTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "Import / Export", "Open table archive tools", "bi-arrow-left-right", "icon-system", () => { TabManager.OpenImportExportTab(); return Task.CompletedTask; }));
