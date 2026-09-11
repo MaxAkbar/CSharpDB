@@ -11,6 +11,10 @@ using CSharpDB.Primitives;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Unpublished launches also need the generated Blazor and component assets
+// when no Development launch profile is active.
+builder.WebHost.UseStaticWebAssets();
+
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 

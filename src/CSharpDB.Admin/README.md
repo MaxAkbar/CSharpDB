@@ -17,6 +17,8 @@ database objects.
 - table designer for creating tables
 - SQL query tabs with paged results and guided SQL completions
 - procedure editor and execution surface
+- [SQL Search & Dependencies](../../www/docs/sql-search-and-dependencies.html) for definition search,
+  Uses/Used by evidence, an interactive dependency graph, and advisory column-impact assessment
 - an Observability workspace for bounded live runtime, query, session,
   storage/WAL, and maintenance diagnostics
 - storage inspection and maintenance views

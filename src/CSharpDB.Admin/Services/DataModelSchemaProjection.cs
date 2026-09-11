@@ -24,6 +24,10 @@ public sealed class DataModelSchemaProjection
         State.PendingOperations.Clear();
         foreach (var node in State.Nodes)
         {
+            var inspected = (baseline.SchemaContext ?? baseline).Nodes.FirstOrDefault(source =>
+                source.Kind == node.Kind && (node.SchemaId != Guid.Empty ? source.SchemaId == node.SchemaId : Same(source.Name, node.Name)));
+            node.Dependencies = inspected?.Dependencies.ToList() ?? [];
+            node.DependencyWarnings = inspected?.DependencyWarnings.ToList() ?? [];
             _tables[node] = node.Name;
             _originalNames[node] = node.Name;
             if (!node.Keys.Any(key => key.Kind == KeyConstraintKind.PrimaryKey) && node.Columns.Any(column => column.IsPrimaryKey))

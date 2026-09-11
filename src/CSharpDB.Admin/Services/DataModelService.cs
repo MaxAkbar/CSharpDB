@@ -71,7 +71,7 @@ public sealed partial class DataModelService(ICSharpDbClient client) : IDataMode
 
     public async Task<IReadOnlyList<DataModelSourceOption>> GetSourceOptionsAsync(CancellationToken ct = default)
     {
-        IReadOnlyList<DataModelSourceMetadata> sources = await LoadSourcesAsync(ct);
+        IReadOnlyList<DataModelSourceMetadata> sources = await LoadSourcesAsync(ct, includeDependencies: false);
         return sources
             .Select(static source => new DataModelSourceOption
             {
@@ -455,13 +455,13 @@ public sealed partial class DataModelService(ICSharpDbClient client) : IDataMode
         };
     }
 
-    private async Task<IReadOnlyList<DataModelSourceMetadata>> LoadSourcesAsync(CancellationToken ct)
+    private async Task<IReadOnlyList<DataModelSourceMetadata>> LoadSourcesAsync(CancellationToken ct, bool includeDependencies = true)
     {
         var sources = new List<DataModelSourceMetadata>();
         IReadOnlyList<string> tableNames = await client.GetTableNamesAsync(ct);
         IReadOnlyList<IndexSchema> indexes = await client.GetIndexesAsync(ct);
         IReadOnlyList<TriggerSchema> triggers = await client.GetTriggersAsync(ct);
-        IReadOnlyList<ViewDefinition> views = await client.GetViewsAsync(ct);
+        var inspection = includeDependencies ? await ReadDependencyInspectionAsync(ct) : DataModelDependencyInspection.Empty;
 
         foreach (string tableName in tableNames.Where(static name => !IsSystemTableName(name)).OrderBy(static name => name, StringComparer.OrdinalIgnoreCase))
         {
@@ -474,9 +474,8 @@ public sealed partial class DataModelService(ICSharpDbClient client) : IDataMode
                 SchemaId = schema.SchemaId,
                 Keys = EffectiveKeys(schema),
                 Checks = schema.CheckConstraints,
-                Dependencies = views.Where(view => ReferencesIdentifier(view.Sql, schema.TableName)).Select(view => new DataModelDependency("View", view.Name, view.Sql))
-                    .Concat(triggers.Where(trigger => string.Equals(trigger.TableName, schema.TableName, StringComparison.OrdinalIgnoreCase) || ReferencesIdentifier(trigger.BodySql, schema.TableName))
-                        .Select(trigger => new DataModelDependency("Trigger", trigger.TriggerName, trigger.BodySql))).ToArray(),
+                Dependencies = inspection.ForSource("Table", schema.TableName),
+                DependencyWarnings = inspection.Warnings,
                 TableName = schema.TableName,
                 Kind = DataModelNodeKind.Table,
                 Columns = schema.Columns.Select(MapColumn).ToArray(),
@@ -495,7 +494,7 @@ public sealed partial class DataModelService(ICSharpDbClient client) : IDataMode
 
         foreach (ExternalTableRegistration registration in await LoadExternalRegistrationsAsync(ct))
         {
-            sources.Add(await LoadExternalSourceAsync(registration, ct));
+            sources.Add(await LoadExternalSourceAsync(registration, inspection, ct));
         }
 
         return sources;
@@ -511,6 +510,7 @@ public sealed partial class DataModelService(ICSharpDbClient client) : IDataMode
 
     private async Task<DataModelSourceMetadata> LoadExternalSourceAsync(
         ExternalTableRegistration registration,
+        DataModelDependencyInspection inspection,
         CancellationToken ct)
     {
         string resolvedPath = ResolveExternalPath(registration.Path);
@@ -527,6 +527,8 @@ public sealed partial class DataModelService(ICSharpDbClient client) : IDataMode
                     ColumnName = check.ColumnName, ExpressionSql = check.ExpressionSql }).ToArray(),
                 TableName = registration.TableName,
                 Kind = DataModelNodeKind.ExternalTable,
+                Dependencies = inspection.ForSource("External table", registration.TableName),
+                DependencyWarnings = inspection.Warnings,
                 SourceTableName = string.IsNullOrWhiteSpace(registration.SourceTableName) ? schema.TableName : registration.SourceTableName,
                 ArchivePath = registration.Path,
                 ArchiveCreatedUtc = manifest.CreatedUtc.ToString("O", CultureInfo.InvariantCulture),
@@ -542,6 +544,8 @@ public sealed partial class DataModelService(ICSharpDbClient client) : IDataMode
             {
                 TableName = registration.TableName,
                 Kind = DataModelNodeKind.ExternalTable,
+                Dependencies = inspection.ForSource("External table", registration.TableName),
+                DependencyWarnings = inspection.Warnings,
                 SourceTableName = registration.SourceTableName,
                 ArchivePath = registration.Path,
                 RowCount = registration.RowCount,

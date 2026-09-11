@@ -294,6 +294,7 @@
         _items.Add(new PaletteItem("Command", "New Procedure", "Open procedure editor", "bi-gear-wide-connected", "icon-trigger", () => { TabManager.OpenNewProcedureTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "New Pipeline", "Open pipeline builder", "bi-diagram-3", "icon-view", () => { TabManager.OpenPipelineTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "Data Model", "Open visual data modeling canvas", "bi-diagram-3", "icon-view", () => { TabManager.OpenDataModelTab(); return Task.CompletedTask; }));
+        _items.Add(new PaletteItem("Command", "SQL Search & Dependencies", "Search definitions, explore uses and used by, assess column impact", "bi-search", "icon-system", () => { TabManager.OpenDefinitionExplorerTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "Code Modules", "Open C# code modules", "bi-filetype-cs", "icon-system", () => { TabManager.OpenCodeModulesTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "Import / Export", "Open table archive tools", "bi-arrow-left-right", "icon-system", () => { TabManager.OpenImportExportTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "Compare / Deploy", "Open schema, data, and drift compare workspace", "bi-file-earmark-diff", "icon-system", () => { TabManager.OpenCompareDeployTab(); return Task.CompletedTask; }));

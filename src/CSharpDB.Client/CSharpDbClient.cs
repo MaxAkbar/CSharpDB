@@ -8,6 +8,7 @@ using ObservabilityTransport = CSharpDB.Observability.CSharpDbTransport;
 namespace CSharpDB.Client;
 
 public sealed class CSharpDbClient :
+    ICSharpDbDefinitionCatalogReader,
     ICSharpDbClient,
     ICSharpDbObservabilityClient,
     IEngineBackedClient,
@@ -56,6 +57,10 @@ public sealed class CSharpDbClient :
     }
 
     public string DataSource => _inner.DataSource;
+    public Task<DefinitionCatalogPage> ReadDefinitionCatalogAsync(string? continuationToken = null, int pageSize = 64, CancellationToken ct = default)
+        => _inner is ICSharpDbDefinitionCatalogReader reader
+            ? reader.ReadDefinitionCatalogAsync(continuationToken, pageSize, ct)
+            : throw new NotSupportedException("This connection does not support definition inspection. Upgrade the server.");
     public bool SupportsTableArchiveExport
         => _inner is ICSharpDbTableArchiveExporter exporter && exporter.SupportsTableArchiveExport;
     public bool SupportsTransactionalSnapshotReads

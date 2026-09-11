@@ -11,6 +11,7 @@ import "google/protobuf/timestamp.proto";
 import "google/protobuf/wrappers.proto";
 
 service CSharpDbRpc {
+  rpc ReadDefinitionCatalog (DefinitionCatalogRequest) returns (DefinitionCatalogResponse);
   rpc GetInfo (google.protobuf.Empty) returns (DatabaseInfoMessage);
   rpc GetShardMap (google.protobuf.Empty) returns (ShardMapSnapshotMessage);
   rpc ResolveShardRoute (ShardRouteRequest) returns (ShardResolutionMessage);
@@ -124,6 +125,15 @@ message DiagnosticsRecordsRequest {
 
 message DiagnosticsOperationRequest {
   string operation_id = 1;
+}
+
+message DefinitionCatalogRequest {
+  string continuation_token = 1;
+  int32 page_size = 2;
+}
+
+message DefinitionCatalogResponse {
+  bytes json_utf8 = 1;
 }
 
 message DiagnosticsJsonResponse {

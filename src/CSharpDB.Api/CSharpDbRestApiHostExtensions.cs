@@ -145,6 +145,7 @@ public static class CSharpDbRestApiHostExtensions
         api.MapTransactionEndpoints();
         api.MapCollectionEndpoints();
         api.MapSchemaEndpoints();
+        api.MapDefinitionCatalogEndpoints();
         api.MapInspectEndpoints();
         api.MapMaintenanceEndpoints();
         api.MapShardAdminEndpoints();

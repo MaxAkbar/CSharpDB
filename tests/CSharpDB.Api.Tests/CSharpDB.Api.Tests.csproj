@@ -1,4 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup><Compile Include="..\DefinitionCatalogTransportContract.cs" Link="DefinitionCatalogTransportContract.cs" /></ItemGroup>
 
   <Import Project="..\TestDefaults.props" />
 

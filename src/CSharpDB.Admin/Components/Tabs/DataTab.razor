@@ -280,6 +280,9 @@
                                         <td>@(col.Nullable ? "Yes" : "No")</td>
                                         <td>
                                             <div class="schema-column-actions">
+                                                <button type="button" class="schema-icon-btn" title="Assess column impact" aria-label="Assess impact for @col.Name" @onclick="() => TabManager.OpenDefinitionExplorerTab(ObjectName, col.Name)">
+                                                    <i class="bi bi-search"></i>
+                                                </button>
                                                 <button type="button" class="schema-icon-btn" title="Rename column" @onclick="() => StartRenameColumn(col)">
                                                     <i class="bi bi-pencil"></i>
                                                 </button>
@@ -393,6 +396,10 @@
                                         </div>
                                     }
                                 </div>
+                                @if (_tableOperation is TableOp.DropColumn or TableOp.RenameColumn)
+                                {
+                                    <button class="toolbar-btn" @onclick="() => TabManager.OpenDefinitionExplorerTab(ObjectName, _tableOperation == TableOp.DropColumn ? _dropColName : _renameOldCol, _tableOperation == TableOp.DropColumn ? CSharpDB.DevOps.ColumnChangeKind.Drop : CSharpDB.DevOps.ColumnChangeKind.Rename)">Assess column impact</button>
+                                }
                                 @if (_tableOperation == TableOp.DropColumn && GetDropColumnBlockMessage(_dropColName) is { Length: > 0 } dropMessage)
                                 {
                                     <div class="schema-dependency-note danger">

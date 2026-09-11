@@ -478,6 +478,7 @@ public static class DataModelGraphBuilder
             Checks = source.Checks.ToList(),
             Indexes = source.Indexes.ToList(),
             Dependencies = source.Dependencies.ToList(),
+            DependencyWarnings = source.DependencyWarnings.ToList(),
             Name = source.TableName,
             Kind = source.Kind,
             X = 20 + column * 250,
@@ -587,7 +588,7 @@ public static class DataModelGraphBuilder
     private static DataModelNode CloneNode(DataModelNode node) => new()
     {
         SchemaId = node.SchemaId,
-        Keys = node.Keys.ToList(), Checks = node.Checks.ToList(), Indexes = node.Indexes.ToList(), Dependencies = node.Dependencies.ToList(),
+        Keys = node.Keys.ToList(), Checks = node.Checks.ToList(), Indexes = node.Indexes.ToList(), Dependencies = node.Dependencies.ToList(), DependencyWarnings = node.DependencyWarnings.ToList(),
         Name = node.Name,
         GroupId = node.GroupId,
         Kind = node.Kind,

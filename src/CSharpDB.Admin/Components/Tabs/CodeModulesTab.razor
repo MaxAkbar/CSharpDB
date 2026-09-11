@@ -1,5 +1,6 @@
 @using CSharpDB.CodeModules
 @inject CSharpDbCodeModuleClient CodeModules
+@inject DatabaseChangeService Changes
 @inject ToastService Toast
 @inject IConfiguration Configuration
 @inject IJSRuntime JS
@@ -248,6 +249,7 @@
     private async Task ImportAsync()
     {
         _lastImport = await CodeModules.ImportAsync(GetWorkspacePath());
+        Changes.NotifyChanged();
         await RefreshAsync();
         Toast.Show(_lastImport.HasConflicts ? "Code module import completed with conflicts." : "Code module import completed.");
     }

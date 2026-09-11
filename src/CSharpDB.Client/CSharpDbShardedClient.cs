@@ -19,7 +19,7 @@ using CSharpDbStorageException = CSharpDB.Primitives.CSharpDbException;
 
 namespace CSharpDB.Client;
 
-public sealed partial class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdminClient, ICSharpDbShardDirectoryClient, IClientObservabilitySettingsProvider, ICSharpDbObservabilityClient
+public sealed partial class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbDefinitionCatalogReader, ICSharpDbShardAdminClient, ICSharpDbShardDirectoryClient, IClientObservabilitySettingsProvider, ICSharpDbObservabilityClient
 {
     private const string TransactionPrefix = "csdbshard";
 
@@ -3712,8 +3712,15 @@ public sealed partial class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbSh
     private CSharpDbRouteContext? GetCurrentRoute()
         => _routeContextAccessor?.Current;
 
-    private sealed partial class RoutedClient : ICSharpDbClient, IClientObservabilitySettingsProvider, ICSharpDbObservabilityClient
+    public Task<DefinitionCatalogPage> ReadDefinitionCatalogAsync(string? continuationToken = null, int pageSize = 64, CancellationToken ct = default)
+        => _requestRoutedClient.ReadDefinitionCatalogAsync(continuationToken, pageSize, ct);
+
+    private sealed partial class RoutedClient : ICSharpDbClient, ICSharpDbDefinitionCatalogReader, IClientObservabilitySettingsProvider, ICSharpDbObservabilityClient
     {
+        public Task<DefinitionCatalogPage> ReadDefinitionCatalogAsync(string? continuationToken = null, int pageSize = 64, CancellationToken ct = default)
+            => ResolveClient() is ICSharpDbDefinitionCatalogReader reader
+                ? reader.ReadDefinitionCatalogAsync(continuationToken, pageSize, ct)
+                : throw new NotSupportedException("This route does not support definition inspection.");
         private readonly CSharpDbShardedClient _owner;
         private readonly CSharpDbRouteContext? _fixedRoute;
 

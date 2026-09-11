@@ -106,6 +106,9 @@
                                 <DataModelTab @key="tab.Id"
                                               Tab="tab" />
                                 break;
+                            case TabKind.DefinitionExplorer:
+                                <DefinitionExplorerTab @key="tab.Id" Tab="tab" />
+                                break;
                             case TabKind.DataHygiene:
                                 <DataHygieneTab @key="tab.Id"
                                                 Tab="tab" />

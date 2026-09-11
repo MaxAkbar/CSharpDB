@@ -63,7 +63,47 @@ public sealed class TabManagerService
             or TabKind.ReportPreview
             or TabKind.ImportExport
             or TabKind.DataModel
-            or TabKind.DataHygiene;
+            or TabKind.DataHygiene
+            or TabKind.DefinitionExplorer;
+
+    public TabDescriptor OpenDefinitionExplorerTab(string? table = null, string? column = null,
+        CSharpDB.DevOps.ColumnChangeKind change = CSharpDB.DevOps.ColumnChangeKind.Rename)
+    {
+        var tab = GetDefinitionExplorerTab();
+        if (table is not null)
+            tab.State["DefinitionSeed"] = new DefinitionExplorerSeed(table, column, change);
+        OpenTab(tab);
+        return tab;
+    }
+
+    public TabDescriptor OpenDefinitionObjectTab(string definitionId, string view = "Definition", string? column = null)
+        => OpenDefinitionSeed(new DefinitionObjectSeed(definitionId, view, column));
+
+    public TabDescriptor OpenDefinitionReferencesTab(string table, string? column = null)
+        => OpenDefinitionSeed(new DefinitionObjectSeed(null, "Used by", column, table));
+
+    private TabDescriptor OpenDefinitionSeed(DefinitionObjectSeed seed)
+    {
+        var tab = GetDefinitionExplorerTab();
+        tab.State["DefinitionSeed"] = seed;
+        OpenTab(tab);
+        return tab;
+    }
+
+    private TabDescriptor GetDefinitionExplorerTab() => _tabs.FirstOrDefault(t => t.Kind == TabKind.DefinitionExplorer
+        && t.RouteKeyspace == ActiveTab?.RouteKeyspace && t.RouteKey == ActiveTab?.RouteKey)
+        ?? new TabDescriptor($"definitions:{Guid.NewGuid():N}", "SQL Search & Dependencies", "bi-search", TabKind.DefinitionExplorer);
+
+    public TabDescriptor OpenSavedDataModelTab(string diagramName)
+    {
+        var tab = _tabs.FirstOrDefault(t => t.Kind == TabKind.DataModel
+            && t.RouteKeyspace == ActiveTab?.RouteKeyspace && t.RouteKey == ActiveTab?.RouteKey
+            && string.Equals(t.State.GetValueOrDefault("InitialDiagramName") as string, diagramName, StringComparison.Ordinal))
+            ?? new TabDescriptor($"model:{Guid.NewGuid():N}", $"Model: {diagramName}", "bi-diagram-3", TabKind.DataModel);
+        tab.State["InitialDiagramName"] = diagramName;
+        OpenTab(tab);
+        return tab;
+    }
 
     public void ActivateTab(string tabId)
     {

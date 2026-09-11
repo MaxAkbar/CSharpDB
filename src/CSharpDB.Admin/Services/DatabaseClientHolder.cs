@@ -15,7 +15,7 @@ namespace CSharpDB.Admin.Services;
 /// at runtime (e.g. when the user opens a different database file).
 /// Registered as a singleton; all Blazor circuits share the same instance.
 /// </summary>
-public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbObservabilityClient, ICSharpDbTableArchiveProgressExporter, ICSharpDbTransactionalSnapshotReader, ICSharpDbShardAdminClient, ICSharpDbShardDirectoryClient
+public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbDefinitionCatalogReader, ICSharpDbObservabilityClient, ICSharpDbTableArchiveProgressExporter, ICSharpDbTransactionalSnapshotReader, ICSharpDbShardAdminClient, ICSharpDbShardDirectoryClient
 {
     private ICSharpDbClient _inner;
     private ICSharpDbShardAdminClient? _shardAdmin;
@@ -32,6 +32,10 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbObservabili
     private Task? _disposeTask;
 
     public event Action? DatabaseChanged;
+    public Task<DefinitionCatalogPage> ReadDefinitionCatalogAsync(string? continuationToken = null, int pageSize = 64, CancellationToken ct = default)
+        => _inner is ICSharpDbDefinitionCatalogReader reader
+            ? reader.ReadDefinitionCatalogAsync(continuationToken, pageSize, ct)
+            : throw new NotSupportedException("This connection does not support definition inspection. Upgrade the server.");
 
     public DatabaseClientHolder(
         ICSharpDbClient initial,
