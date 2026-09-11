@@ -1,5 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <ItemGroup><Compile Include="..\DefinitionCatalogTransportContract.cs" Link="DefinitionCatalogTransportContract.cs" /></ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\DefinitionCatalogTransportContract.cs" Link="DefinitionCatalogTransportContract.cs" />
+    <Compile Include="..\DatabaseDocumenterTransportContract.cs" Link="DatabaseDocumenterTransportContract.cs" />
+    <ProjectReference Include="..\..\src\CSharpDB.DevOps\CSharpDB.DevOps.csproj" />
+  </ItemGroup>
 
   <Import Project="..\TestDefaults.props" />
 

@@ -12,14 +12,27 @@ public sealed record DefinitionCatalogRecord
     public string? MetadataJson { get; init; }
     public string SourceHash { get; init; } = "";
     public bool IsEnabled { get; init; } = true;
+    public DefinitionDocumentation? Documentation { get; init; }
     public int PartIndex { get; init; }
     public int PartCount { get; init; } = 1;
+}
+
+/// <summary>Optional documentation metadata. A null override with a revision is a retained deletion.</summary>
+public sealed record DefinitionDocumentation
+{
+    public string? NativeDescription { get; init; }
+    public string? Description { get; init; }
+    public long Revision { get; init; }
+    public string DefinitionFingerprint { get; init; } = "";
+    public bool HasStableIdentity { get; init; }
+    public bool NeedsReview { get; init; }
 }
 
 public sealed record DefinitionCatalogDiagnostic(string Source, string Message);
 
 public sealed record DefinitionCatalogPage
 {
+    public int DocumentationVersion { get; init; }
     public string CatalogVersion { get; init; } = "";
     public DateTimeOffset CapturedUtc { get; init; }
     public IReadOnlyList<DefinitionCatalogRecord> Records { get; init; } = [];

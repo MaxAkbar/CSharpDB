@@ -45,6 +45,7 @@ public partial class MainWindow : Window
 
             await Browser.EnsureCoreWebView2Async(environment);
             Browser.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
+            Browser.CoreWebView2.PermissionRequested += OnPermissionRequested;
             Browser.CoreWebView2.Settings.AreDevToolsEnabled = false;
             Browser.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true;
             Browser.Source = _adminHostSession.BaseUri;
@@ -68,7 +69,10 @@ public partial class MainWindow : Window
         _shutdown.Cancel();
 
         if (Browser.CoreWebView2 is not null)
+        {
             Browser.CoreWebView2.WebMessageReceived -= OnWebMessageReceived;
+            Browser.CoreWebView2.PermissionRequested -= OnPermissionRequested;
+        }
 
         await _adminHost.DisposeAsync();
         _shutdown.Dispose();
@@ -93,6 +97,19 @@ public partial class MainWindow : Window
 
     private async void OnOpenDatabase(object sender, RoutedEventArgs e)
         => await OpenDatabaseAsync(showErrors: true);
+
+    private void OnPermissionRequested(object? sender, CoreWebView2PermissionRequestedEventArgs e)
+    {
+        // Studio export buttons generate their files asynchronously. WebView2 counts
+        // consecutive exports as automatic downloads after the user gesture expires.
+        if (e.PermissionKind == CoreWebView2PermissionKind.MultipleAutomaticDownloads &&
+            IsCurrentAdminSource(e.Uri) &&
+            IsCurrentAdminSource(Browser.CoreWebView2.Source))
+        {
+            e.SavesInProfile = false;
+            e.State = CoreWebView2PermissionState.Allow;
+        }
+    }
 
     private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {

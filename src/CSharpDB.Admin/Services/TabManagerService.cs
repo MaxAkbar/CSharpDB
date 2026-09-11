@@ -64,7 +64,22 @@ public sealed class TabManagerService
             or TabKind.ImportExport
             or TabKind.DataModel
             or TabKind.DataHygiene
-            or TabKind.DefinitionExplorer;
+            or TabKind.DefinitionExplorer
+            or TabKind.DatabaseDocumenter;
+
+    public TabDescriptor OpenDatabaseDocumenterTab(string? table = null)
+    {
+        var tab = _tabs.FirstOrDefault(t => t.Kind == TabKind.DatabaseDocumenter
+            && t.RouteKeyspace == ActiveTab?.RouteKeyspace && t.RouteKey == ActiveTab?.RouteKey)
+            ?? new TabDescriptor($"documenter:{Guid.NewGuid():N}", "Database Documenter", "bi-book", TabKind.DatabaseDocumenter);
+        if (table is not null)
+        {
+            tab.State["DocumenterTable"] = table;
+            tab.State["DocumenterRequest"] = new object();
+        }
+        OpenTab(tab);
+        return tab;
+    }
 
     public TabDescriptor OpenDefinitionExplorerTab(string? table = null, string? column = null,
         CSharpDB.DevOps.ColumnChangeKind change = CSharpDB.DevOps.ColumnChangeKind.Rename)

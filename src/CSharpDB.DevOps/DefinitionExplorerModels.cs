@@ -4,7 +4,8 @@ using CSharpDB.Sql;
 namespace CSharpDB.DevOps;
 
 public sealed record DefinitionCatalogSnapshot(string Version, DateTimeOffset CapturedUtc,
-    IReadOnlyList<DefinitionCatalogRecord> Definitions, IReadOnlyList<DefinitionCatalogDiagnostic> Diagnostics);
+    IReadOnlyList<DefinitionCatalogRecord> Definitions, IReadOnlyList<DefinitionCatalogDiagnostic> Diagnostics,
+    int DocumentationVersion = 0);
 public enum DependencyConfidence { Confirmed, Possible }
 public enum DependencyRelationshipKind { Usage, ModelMembership, ProposedChange, ExternalArchive }
 public sealed record DefinitionDependency(string SourceId, string TargetId, string? TargetColumn,

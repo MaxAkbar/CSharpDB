@@ -21,6 +21,7 @@ public sealed class DefinitionCatalogGrpcTests
             using var http = new HttpClient(factory.Server.CreateHandler()) { BaseAddress = new Uri("http://localhost"), DefaultRequestVersion = HttpVersion.Version20, DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact };
             await using var client = CSharpDbClient.Create(new CSharpDbClientOptions { Transport = CSharpDbTransport.Grpc, Endpoint = "http://localhost", HttpClient = http });
             await DefinitionCatalogTransportContract.VerifyAsync(client, expected, ct);
+            await DatabaseDocumenterTransportContract.VerifyAsync(client, ct);
         }
         finally { foreach (string file in new[] { path, path + ".wal", path + ".shm", path + ".archive.csdbtable" }) if (File.Exists(file)) File.Delete(file); }
     }

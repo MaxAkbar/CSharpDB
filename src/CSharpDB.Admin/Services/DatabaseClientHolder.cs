@@ -176,6 +176,47 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbDefinitionC
         return CSharpDbClient.Create(CloneOptionsWithRoute(baseClientOptions, routeContext));
     }
 
+    /// <summary>Pins one database, and optionally a route, for a complete multi-call operation.</summary>
+    public ClientLease CaptureClient(CSharpDbRouteContext? route = null)
+    {
+        lock (_lock)
+        {
+            ObjectDisposedException.ThrowIf(_disposeTask is not null, this);
+            ICSharpDbClient inner = _inner;
+            ICSharpDbClient client = route is null ? inner : CreateRouteBoundClient(route);
+            // Share the existing disposal drain with diagnostics leases.
+            _observabilityLeaseCounts.TryGetValue(inner, out int count);
+            _observabilityLeaseCounts[inner] = SaturatingIncrementLeaseCount(count);
+            return new ClientLease(this, inner, client);
+        }
+    }
+
+    public sealed class ClientLease : IAsyncDisposable
+    {
+        private DatabaseClientHolder? _owner;
+        private readonly ICSharpDbClient _inner;
+        internal ClientLease(DatabaseClientHolder owner, ICSharpDbClient inner, ICSharpDbClient client)
+        { _owner = owner; _inner = inner; Client = client; }
+        public ICSharpDbClient Client { get; }
+        internal object DatabaseIdentity => _inner;
+        public bool IsCurrent
+        {
+            get
+            {
+                var owner = _owner;
+                if (owner is null) return false;
+                lock (owner._lock) return ReferenceEquals(owner._inner, _inner) && owner._disposeTask is null;
+            }
+        }
+        public async ValueTask DisposeAsync()
+        {
+            var owner = Interlocked.Exchange(ref _owner, null);
+            if (owner is null) return;
+            try { if (!ReferenceEquals(Client, _inner)) await Client.DisposeAsync(); }
+            finally { owner.ReleaseObservabilityClient(_inner); }
+        }
+    }
+
     public async Task CreateShardCatalogAndReloadAsync(
         CSharpDbShardingOptions activeMap,
         CancellationToken ct = default)

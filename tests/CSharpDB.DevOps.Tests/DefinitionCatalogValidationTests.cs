@@ -32,6 +32,8 @@ public sealed class DefinitionCatalogValidationTests
             [record with { PartCount = 2 }],
             [record with { Source = "changed" }],
             [record with { PartCount = 2, PartIndex = 0, Source = "SELECT " }, record with { PartCount = 2, PartIndex = 1, Source = "1", OwnerName = "wrong route" }],
+            [record with { PartCount = 2, PartIndex = 0, Source = "SELECT ", Documentation = new() { Description = "Original" } },
+             record with { PartCount = 2, PartIndex = 1, Source = "1", Documentation = new() { Description = "Changed" } }],
         }) await Assert.ThrowsAsync<InvalidOperationException>(() => DefinitionCatalogService.ReadAsync(Client(() => new() { CatalogVersion = "1", Records = records }), ct: ct));
         var valid = await DefinitionCatalogService.ReadAsync(Client(() => new() { CatalogVersion = "1", Records = [record with { PartCount = 2, Source = "SELECT " }, record with { PartCount = 2, PartIndex = 1, Source = "1" }] }), ct: ct);
         Assert.Equal("SELECT 1", Assert.Single(valid.Definitions).Source);

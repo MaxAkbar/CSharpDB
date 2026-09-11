@@ -18,6 +18,7 @@ public sealed class DefinitionCatalogHttpTests
             await using var factory = new Factory(path); using var http = factory.CreateClient();
             await using var client = CSharpDbClient.Create(new CSharpDbClientOptions { Transport = CSharpDbTransport.Http, Endpoint = http.BaseAddress!.ToString(), HttpClient = http });
             await DefinitionCatalogTransportContract.VerifyAsync(client, expected, ct);
+            await DatabaseDocumenterTransportContract.VerifyAsync(client, ct);
             using var invalid = await http.GetAsync("api/catalog/definitions?pageSize=65", ct);
             Assert.Equal(System.Net.HttpStatusCode.BadRequest, invalid.StatusCode);
         }

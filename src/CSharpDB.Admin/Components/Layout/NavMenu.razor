@@ -52,7 +52,7 @@
                 <div class="tree-group-header compact">
                     <i class="bi bi-tools icon-system"></i>
                     <span>Tools</span>
-                    <span class="group-count">7</span>
+                    <span class="group-count">8</span>
                 </div>
                 <div class="tree-items">
                     <button class="tree-item command-item @(IsActiveCompareDeploy() ? "active" : "")"
@@ -70,6 +70,10 @@
                         <i class="bi bi-shield-check icon-system"></i>
                         <span class="item-label">Data Hygiene</span>
                         <span class="item-hint">quality checks</span>
+                    </button>
+                    <button class="tree-item command-item @(TabManager.ActiveTab?.Kind == TabKind.DatabaseDocumenter ? "active" : "")"
+                            @onclick="() => TabManager.OpenDatabaseDocumenterTab()">
+                        <i class="bi bi-book icon-system"></i><span class="item-label">Database Documenter</span>
                     </button>
                     <button class="tree-item command-item @(IsActiveDataModel() ? "active" : "")"
                             @onclick="() => TabManager.OpenDataModelTab()">
@@ -131,7 +135,7 @@
                                     @onclick="() => TabManager.ActivateTab(tab.Id)">
                                 <i class="bi @tab.Icon"></i>
                                 <span class="item-label">@tab.Title</span>
-                                <span class="item-hint">@(tab.Kind == TabKind.DefinitionExplorer ? "Search" : tab.Kind.ToString())</span>
+                                <span class="item-hint">@(tab.Kind == TabKind.DefinitionExplorer ? "Search" : tab.Kind == TabKind.DatabaseDocumenter ? "Dictionary" : tab.Kind.ToString())</span>
                             </button>
                         }
                     </div>
@@ -1537,6 +1541,7 @@
             new() { Label = "Script Table...", Icon = "bi-file-earmark-code", OnClick = () => OpenTableScript(tableName) },
             new() { Label = "Show in Data Model", Icon = "bi-diagram-3", OnClick = () => TabManager.OpenDataModelTab(tableName) },
             new() { Label = "Assess column impact...", Icon = "bi-search", OnClick = () => TabManager.OpenDefinitionExplorerTab(tableName) },
+            new() { Label = "Document Table", Icon = "bi-book", OnClick = () => TabManager.OpenDatabaseDocumenterTab(tableName) },
             new() { Label = "Design Form...", Icon = "bi-ui-checks-grid", OnClick = () => TabManager.OpenFormDesignerTab(initialTableName: tableName, title: $"{tableName} Form") },
             new() { Label = "Design Report...", Icon = "bi-file-earmark-richtext", OnClick = () => TabManager.OpenReportDesignerTab(sourceKind: ReportSourceKind.Table.ToString(), sourceName: tableName, title: $"{tableName} Report") },
             new() { Label = "Import / Export...", Icon = "bi-arrow-left-right", OnClick = () => TabManager.OpenImportExportTab(tableName) },

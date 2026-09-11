@@ -35,14 +35,23 @@ internal sealed partial class EngineTransportClient : ICSharpDbDefinitionCatalog
         var db = await GetDatabaseAsync(ct);
         using var reader = db.CreateReaderSession();
         var records = new List<DefinitionCatalogRecord>();
+        var stableIdentities = new HashSet<string>(StringComparer.Ordinal);
         var diagnostics = new List<DefinitionCatalogDiagnostic>();
         var names = db.GetTableNames().ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        string? SchemaIdentity(string kind, Guid schemaId)
+        {
+            if (schemaId == Guid.Empty) return null;
+            string identity = $"{kind}:{schemaId:N}";
+            stableIdentities.Add(identity);
+            return identity;
+        }
 
         void Add(string kind, string name, string source, string format = "sql", string? owner = null,
             string? identity = null, bool enabled = true, string? metadata = null)
         {
             ct.ThrowIfCancellationRequested();
-            string id = identity ?? $"{kind}:{owner}:{name}";
+            string id = identity ?? $"{kind}:{IdentityPart(owner)}:{IdentityPart(name)}";
             string hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(source)));
             // Bound even escaped JSON pages below the standard gRPC receive limit.
             const int fragmentLength = 8192;
@@ -72,28 +81,31 @@ internal sealed partial class EngineTransportClient : ICSharpDbDefinitionCatalog
             var schema = db.GetTableSchema(name);
             if (schema is null) continue;
             var mapped = MapTableSchema(schema);
-            Add("Table", name, JsonSerializer.Serialize(mapped, DefinitionJson), "table", identity: SchemaIdentity("Table", schema.SchemaId, name));
+            Add("Table", name, JsonSerializer.Serialize(mapped, DefinitionJson), "table", identity: SchemaIdentity("Table", schema.SchemaId));
             foreach (var column in mapped.Columns)
             {
                 Add("Column", column.Name, JsonSerializer.Serialize(column, DefinitionJson), "column", name,
-                    SchemaIdentity("Column", column.SchemaId, name + "." + column.Name));
+                    SchemaIdentity("Column", column.SchemaId));
                 if (!string.IsNullOrWhiteSpace(column.DefaultSql)) Add("Default", column.Name, column.DefaultSql, "expression", name);
             }
             foreach (var check in mapped.CheckConstraints)
                 Add("Check", check.ConstraintName ?? check.ColumnName ?? "CHECK", check.ExpressionSql, "expression", name,
-                    SchemaIdentity("Check", check.SchemaId, name + ":" + check.ExpressionSql), metadata: JsonSerializer.Serialize(new { check.ColumnName }, DefinitionJson));
+                    SchemaIdentity("Check", check.SchemaId), metadata: JsonSerializer.Serialize(new { check.ColumnName }, DefinitionJson));
             foreach (var key in mapped.KeyConstraints)
                 Add("Key", key.ConstraintName ?? key.Kind.ToString(), JsonSerializer.Serialize(key, DefinitionJson), "key", name,
-                    SchemaIdentity("Key", key.SchemaId, name + ":" + key.Kind + ":" + string.Join(",", key.Columns)));
+                    SchemaIdentity("Key", key.SchemaId));
             foreach (var key in mapped.ForeignKeys)
                 Add("Foreign key", key.ConstraintName, JsonSerializer.Serialize(key, DefinitionJson), "foreignKey", name,
-                    SchemaIdentity("ForeignKey", key.SchemaId, name + ":" + key.ConstraintName));
+                    SchemaIdentity("ForeignKey", key.SchemaId));
         }
         foreach (var index in db.GetIndexes())
             if (!DbInternalTableRegistry.TryGet(index.TableName, out _))
                 Add("Index", index.IndexName, JsonSerializer.Serialize(index, DefinitionJson), "index", index.TableName);
         foreach (string name in db.GetViewNames()) Add("View", name, db.GetViewSql(name) ?? "");
-        foreach (var trigger in db.GetTriggers()) Add("Trigger", trigger.TriggerName, trigger.BodySql, owner: trigger.TableName);
+        foreach (var trigger in db.GetTriggers())
+            if (!DbInternalTableRegistry.IsInternalTable(trigger.TableName))
+                Add("Trigger", trigger.TriggerName, trigger.BodySql, owner: trigger.TableName,
+                    metadata: JsonSerializer.Serialize(new { trigger.Timing, trigger.Event }, DefinitionJson));
 
         async Task<List<Dictionary<string, string?>>> Rows(string table, string? query = null)
         {
@@ -107,7 +119,7 @@ internal sealed partial class EngineTransportClient : ICSharpDbDefinitionCatalog
         {
             try { await action(); }
             catch (OperationCanceledException) { throw; }
-            catch (Exception ex) when (ex is CSharpDbException or InvalidOperationException or FormatException or JsonException)
+            catch (Exception ex) when (ex is CSharpDbException or InvalidOperationException or FormatException or JsonException or ArgumentException)
             { diagnostics.Add(new(table, ex.Message)); }
         }
         static string Value(Dictionary<string, string?> row, string key) => row.GetValueOrDefault(key) ?? "";
@@ -115,7 +127,12 @@ internal sealed partial class EngineTransportClient : ICSharpDbDefinitionCatalog
         await Read(ProcedureTableName, async () =>
         {
             foreach (var row in await Rows(ProcedureTableName))
-                Add("Procedure", Value(row, "name"), Value(row, "body_sql"), enabled: Value(row, "is_enabled") != "0");
+                Add("Procedure", Value(row, "name"), Value(row, "body_sql"), enabled: Value(row, "is_enabled") != "0",
+                    metadata: JsonSerializer.Serialize(new
+                    {
+                        description = row.GetValueOrDefault("description"),
+                        parameters = DeserializeProcedureParameters(Value(row, "params_json")),
+                    }, DefinitionJson));
         });
         await Read(SavedQueryTableName, async () =>
         {
@@ -180,24 +197,84 @@ internal sealed partial class EngineTransportClient : ICSharpDbDefinitionCatalog
             }
         });
 
+        var annotations = new Dictionary<string, Dictionary<string, string?>>(StringComparer.Ordinal);
+        await Read("__documentation_annotations", async () =>
+        {
+            foreach (var row in await Rows("__documentation_annotations"))
+                annotations.Add(Value(row, "object_id"), row);
+        });
+        var identities = records.Select(r => r.Id).ToHashSet(StringComparer.Ordinal);
+        int unmatched = annotations.Count(pair => !identities.Contains(pair.Key) && pair.Value.GetValueOrDefault("description") is not null);
+        if (unmatched > 0)
+            diagnostics.Add(new("Documentation", $"{unmatched} description(s) belong to unavailable objects and were retained without reassignment."));
+        for (int i = 0; i < records.Count; i++)
+        {
+            var record = records[i];
+            string fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+                JsonSerializer.Serialize(new { record.Id, record.Kind, record.Name, record.OwnerName, record.SourceHash, record.MetadataJson, record.IsEnabled }, DefinitionJson))));
+            bool stable = stableIdentities.Contains(record.Id);
+            string? nativeDescription = null;
+            if (record.Kind == "Procedure" && record.MetadataJson is not null)
+            {
+                using var metadata = JsonDocument.Parse(record.MetadataJson);
+                nativeDescription = metadata.RootElement.GetProperty("description").GetString();
+            }
+            annotations.TryGetValue(record.Id, out var annotation);
+            long revision = 0;
+            if (annotation is not null && (!long.TryParse(Value(annotation, "revision"), out revision) || revision < 1
+                || annotation.GetValueOrDefault("description")?.Length > 4000))
+            {
+                diagnostics.Add(new("Documentation", "An invalid description was excluded. Repair the documentation catalog before saving."));
+                annotation = null;
+                revision = 0;
+            }
+            records[i] = record with { Documentation = new()
+            {
+                NativeDescription = nativeDescription,
+                Description = annotation?.GetValueOrDefault("description"),
+                Revision = revision, DefinitionFingerprint = fingerprint, HasStableIdentity = stable,
+                NeedsReview = annotation?.GetValueOrDefault("description") is not null && !stable
+                    && annotation.GetValueOrDefault("definition_hash") != fingerprint,
+            } };
+        }
         records = records.OrderBy(r => r.Id, StringComparer.Ordinal).ThenBy(r => r.PartIndex).ToList();
         string versionHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
-            JsonSerializer.Serialize(records.Select(r => new { r.Id, r.Kind, r.Name, r.OwnerName, r.Format, r.SourceHash, r.MetadataJson, r.IsEnabled, r.PartIndex }), DefinitionJson) + JsonSerializer.Serialize(diagnostics))));
+            JsonSerializer.Serialize(records.Select(r => new { r.Id, r.Kind, r.Name, r.OwnerName, r.Format, r.SourceHash, r.MetadataJson, r.IsEnabled, r.PartIndex, r.Documentation }), DefinitionJson) + JsonSerializer.Serialize(diagnostics))));
         ct.ThrowIfCancellationRequested();
         // A bounded, short-lived snapshot avoids re-reading the entire catalog for every transport page.
         while (_definitionReads.Count >= 4) _definitionReads.Remove(_definitionReads.MinBy(p => p.Value.LastRead).Key);
         string snapshotId = Guid.NewGuid().ToString("N");
         var snapshot = new DefinitionReadSnapshot(versionHash, now, records.ToArray(), diagnostics.ToArray());
-        if (records.Count > pageSize) _definitionReads[snapshotId] = (snapshot, DateTimeOffset.UtcNow);
-        return DefinitionPage(snapshot, snapshotId, 0, pageSize);
+        var firstPage = DefinitionPage(snapshot, snapshotId, 0, pageSize);
+        if (firstPage.ContinuationToken is not null) _definitionReads[snapshotId] = (snapshot, DateTimeOffset.UtcNow);
+        return firstPage;
     }
 
-    private static DefinitionCatalogPage DefinitionPage(DefinitionReadSnapshot snapshot, string id, int offset, int pageSize) => new()
+    private static DefinitionCatalogPage DefinitionPage(DefinitionReadSnapshot snapshot, string id, int offset, int pageSize)
     {
-        CatalogVersion = snapshot.Version, CapturedUtc = snapshot.CapturedUtc,
-        Records = snapshot.Records.Skip(offset).Take(pageSize).ToArray(), Diagnostics = snapshot.Diagnostics,
-        ContinuationToken = offset + pageSize < snapshot.Records.Length ? $"{id}:{offset + pageSize}" : null,
-    };
+        // Metadata and descriptions count toward the same transport envelope as source fragments.
+        var selected = new List<DefinitionCatalogRecord>();
+        int bytes = JsonSerializer.SerializeToUtf8Bytes(snapshot.Diagnostics, DefinitionJson).Length + 1024;
+        foreach (var record in snapshot.Records.Skip(offset).Take(pageSize))
+        {
+            int size = JsonSerializer.SerializeToUtf8Bytes(record, DefinitionJson).Length + 1;
+            if (bytes + size > 3 * 1024 * 1024)
+            {
+                if (selected.Count == 0) throw new InvalidOperationException("Definition metadata exceeds the transport limit.");
+                break;
+            }
+            bytes += size;
+            selected.Add(record);
+        }
+        int next = offset + selected.Count;
+        return new()
+        {
+            DocumentationVersion = 1, CatalogVersion = snapshot.Version, CapturedUtc = snapshot.CapturedUtc,
+            Records = selected, Diagnostics = snapshot.Diagnostics,
+            ContinuationToken = next < snapshot.Records.Length ? $"{id}:{next}" : null,
+        };
+    }
 
-    private static string SchemaIdentity(string kind, Guid id, string fallback) => $"{kind}:{(id == Guid.Empty ? fallback : id.ToString("N"))}";
+    // Escape delimiters before composing a name identity, including the escape character itself.
+    private static string IdentityPart(string? value) => (value ?? "").Replace("%", "%25", StringComparison.Ordinal).Replace(":", "%3A", StringComparison.Ordinal);
 }

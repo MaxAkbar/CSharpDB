@@ -8,7 +8,7 @@ namespace CSharpDB.Admin.Services;
 public sealed class DatabaseChangeService
 {
     private static readonly HashSet<string> DefinitionTables = new(StringComparer.OrdinalIgnoreCase)
-    { "__procedures", "__saved_queries", "__forms", "__reports", "__report_definition_chunks", "__code_modules", "__validation_rules", "__data_model_diagrams", "__external_tables", "_etl_pipelines", "_etl_pipeline_versions" };
+    { "__procedures", "__saved_queries", "__forms", "__reports", "__report_definition_chunks", "__code_modules", "__validation_rules", "__data_model_diagrams", "__documentation_annotations", "__external_tables", "_etl_pipelines", "_etl_pipeline_versions" };
 
     public event Action? Changed;
 
