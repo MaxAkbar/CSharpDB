@@ -1,103 +1,102 @@
 # What's New
 
-## CSharpDB 4.6.3
+## CSharpDB 4.6.4
 
-CSharpDB 4.6.3 turns the Admin Data Model workspace into a relationship-aware
-schema modeler, makes internal storage easier to inspect, and fixes diagram
-persistence and shared table-count/cache issues. These notes cover changes
-since the published v4.6.2 release only.
+CSharpDB 4.6.4 adds SQL Search and Dependency Explorer, a Database Documenter
+with persistent descriptions, and repeatable test-data generation in Studio.
+It also improves Data Modeler connector stability, SQL parameter binding,
+and product documentation. These notes cover changes since v4.6.3 only.
 
-### Relationship-Aware Data Modeler
+### SQL Search and Dependency Explorer
 
-- Start an unsaved global workspace with an empty canvas and searchable Sources.
-  Add one table, add its immediate relationships, or explicitly Load All without
-  moving existing cards.
-- Arrange parent/child relationships deterministically, with cycle handling,
-  group-aware Auto Arrange, and compact Keys First, All, or Collapsed cards.
-  Manual positions survive metadata refresh and diagram reopening.
-- Read one crow's-foot connector per foreign-key constraint, including ordered
-  composite-column mappings and cardinality derived from complete keys and
-  nullability. Inspect declared type facets, defaults, collation, identity,
-  rowversion, keys, checks, and user-managed versus supporting indexes.
-- Pan, zoom, Fit Model, locate tables, and focus direct relationships. Multi-table
-  selection, keyboard movement, background/Escape deselection, and session-local
-  undo/redo support everyday diagram work.
-- Organize selected tables into named, colored groups. Move a group as one unit
-  and retain its internal arrangement during Auto Arrange; membership changes
-  are explicit and never change database schema.
-- Edit connector bends and move whole orthogonal segments without adding an
-  unwanted split. Saved segment guides follow endpoint-row movement; internal
-  routes move with their group, while crossing routes retain their guides.
-  Routing and relationship labels avoid table cards and protected group titles.
-- Create separate named diagrams, Save As a copy, switch between saved diagrams,
-  and confirm Delete Diagram by name. Save status and failed-save handling
-  protect the active canvas when switching. Deleting a diagram does not silently
-  recreate its saved record.
+- Search saved object names and definition text with object-type, case-sensitive,
+  and whole-word filters, highlighted matches, and source navigation.
+- Inspect tables, columns, constraints, indexes, views, triggers, procedures,
+  saved queries, C# modules, forms, reports, pipeline revisions, saved data
+  models, and registered external archive metadata.
+- Follow **Uses**, **Used by**, and a dependency graph. Distinguish database
+  references, diagram membership, saved proposed changes, and archive
+  relationships instead of treating them as equivalent constraints.
+- Assess column rename, drop, type, and nullability changes. Review confirmed
+  references, downstream effects, engine restrictions, and references requiring
+  manual review from table actions or the Data Modeler inspector.
+- Share dependency findings with Data Modeler's **Known dependencies** view.
+  Open related saved diagrams while preserving existing pending edits.
+- Inspect definitions through direct, HTTP, and gRPC connections, scoped to the
+  selected database and route. Background work supports cancellation and refresh;
+  incomplete analysis and stale results are identified explicitly.
 
-### Inspect, Review, and Apply Supported Schema Changes
+### Database Documenter
 
-- Stage supported table and column operations, type facets, literal defaults,
-  collation, scalar/composite primary and unique keys, checks, indexes, and
-  scalar/composite foreign keys with supported referential actions.
-- Review exact SQL, affected objects, warnings, destructive operations, and known
-  dependencies before applying. Unsupported engine combinations are blocked
-  rather than implemented through implicit table rebuilding.
-- Reject stale schema plans and apply the reviewed batch, including native
-  foreign-key DDL, in one route-local transaction when the client supports it.
-  Failed batches retain pending edits; a later diagram-save failure is reported
-  separately from successful schema application.
-- Explicitly check existing data for relevant nulls, duplicate candidate keys,
-  and orphaned relationships, with cancellation and skipped-check reporting.
-  Opening a diagram does not launch expensive data scans.
-- Export the visible model as SVG or PNG and export reviewed pending SQL without
-  executing it. Open related table data, Query Designer, Data Hygiene, System
-  Catalog, and Compare/Deploy workflows from the inspector.
+- Build a searchable data dictionary for tables, columns, keys, checks, defaults,
+  indexes, foreign keys, views, triggers, and procedures. Filter by object type
+  or missing descriptions, and follow declared relationship links.
+- Save plain-text descriptions in the database for reuse across sessions.
+  Stable table, column, and constraint identities preserve descriptions through
+  supported renames. Changed definitions can require description review, and
+  unmatched descriptions remain available as diagnostics.
+- Check both description revisions and object definitions when saving so a
+  stale edit cannot silently overwrite another user's changes. Failed saves
+  retain the draft.
+- Export the complete captured dictionary as one self-contained, searchable
+  HTML file or linked Markdown, including descriptions, definitions, column
+  and parameter details, relationships, and coverage diagnostics.
+- Allow consecutive user-requested exports in the Windows desktop host.
 
-### Internal Storage and System Catalog Visibility
+### Repeatable Test Data Generator
 
-- Centralize internal-table classification and virtual-catalog descriptions in
-  shared registries used by Admin and the relevant client/schema services.
-- Expose supported virtual catalogs in System Catalog and add a read-only
-  Internal Storage view, backed by `sys.internal_tables`, showing physical
-  backing tables, ownership, and logical replacements such as
-  `__data_model_diagrams -> sys.diagrams`.
-- Keep internal objects out of normal source pickers and schema comparisons
-  according to the shared visibility policy, without treating every
-  underscore-prefixed user table as product-owned storage.
+- Configure row counts and field generators, preview data, and append to selected
+  SQL tables from Studio. Download and reload versioned JSON profiles to reuse
+  the same configuration.
+- Generate person, contact, address, company, product, text, numeric, temporal,
+  UUID, binary, sequence, constant, and value-list data with supported uniform,
+  weighted, bounded-normal, recent-date, and hot-key distributions.
+- Plan parent-before-child insertion using generated or existing parent keys,
+  including supported composite, overlapping, one-to-one, and nullable
+  relationships. Inspect referenced key tuples during preview.
+- Validate the complete requested run against supported types, nullability,
+  collations, primary and unique keys, relationships, checks, defaults, identity
+  state, and configured limits before inserting.
+- Recheck schema and existing key state when generation starts. Insert all
+  selected tables in one transaction, preserve existing rows, verify counts
+  and keys, and roll back on cancellation or failures before commit. An
+  unconfirmed commit is reported as an unknown outcome without automatic retry.
+- Share the generation engine with the developer DataGen CLI, including stable
+  random streams, fixed reference dates, typed values, and improved schema
+  inference. Row batches and statements have configurable size limits.
 
-### Persistence and Storage Fixes
+### Fixes and Documentation
 
-- Fix negative row counts during diagram deletion and other table mutations:
-  recounts no longer apply an already-completed mutation twice, and stale shared
-  statistics do not overwrite a corrected committed count.
-- Invalidate shared B+tree read-routing caches when the pager changes, including
-  leaf redistribution that leaves the tree root unchanged.
-- Preserve diagram membership, groups, connector routes, pending schema intent,
-  and viewport through saving, refresh, compatible metadata changes, and load.
+- Bind SQL parameters using tokenizer spans in ADO.NET commands and Admin Forms
+  SQL actions, leaving comments, string literals, and quoted identifiers intact.
+- Keep unrelated Data Modeler connectors stable when another table moves;
+  reroute when an actual obstacle affects a connector.
+- Read archive definition metadata without scanning stored rows or index pages.
+  Full archive integrity validation remains a separate operation.
+- Add guides for SQL Search and dependencies, Database Documenter, Test Data
+  Generator, and form layout. Correct website examples and feature descriptions,
+  improve shared navigation accessibility, and validate local links and anchors.
 
-### Documentation and Release Maintenance
+### Compatibility and Scope
 
-- Add a dedicated offline Data Modeler guide and an illustrated website tutorial
-  with a runnable sample schema.
-- Refresh the public changelog and downloads page with verified release history,
-  platform-specific Admin/server/CLI assets, package coverage, prerequisites,
-  checksum guidance, and source-only Node client instructions.
-- Add offline documentation guardrails and optional read-only GitHub/NuGet
-  reconciliation for published release and download metadata.
-- Advance package and migration-tool defaults to 4.6.3. Add the matching migration
-  capability catalog while retaining immutable catalogs for prior targets.
-
-### Compatibility and Upgrade Notes
-
-- Diagram JSON is version 5. Versions 1–4 migrate on load without intentionally
-  discarding layout or pending intent. The diagram storage table schema and
-  database/route-local ownership are unchanged. Back up saved diagrams before
-  upgrading; older Admin versions may not preserve newer diagram metadata.
-- Removing cards, clearing the canvas, ungrouping tables, and deleting saved
-  diagrams do not drop database tables. Schema edits still require separate
-  review and application. External tables and archive relationships remain
-  read-only in the modeler.
-- This release does not introduce a new database file format or SQL dialect.
-  Existing migration capability catalogs remain available for replaying older
-  plans. The Admin plugin architecture document is a proposal, not a shipped
-  plugin system.
+- These changes do not introduce a database file-format revision. The first
+  description save creates the internal `__documentation_annotations` table;
+  opening, searching, and exporting a dictionary do not create it.
+- SQL Search and dependency assessment inspect saved definitions without
+  executing them. Impact findings are advisory: unresolved or dynamic references
+  can require review, and engine enforcement remains authoritative.
+- Database Documenter supports direct, HTTP, and gRPC connections. Older servers
+  may provide a partial dictionary; description editing requires the new
+  documentation metadata capability. Exports contain metadata, not user rows.
+- Studio test-data generation supports one directly connected database,
+  including direct hybrid incremental-durable mode. Remote, routed, and sharded
+  targets, collections, and replace/truncate operations are outside its scope.
+  Generated relationship cycles, INSERT-trigger tables, rowversion keys, and
+  unsupported types or preflight expressions are rejected.
+- Repeatability depends on the profile, seed, reference date, generator/provider
+  version, schema identities, and existing key state. The hardened DataGen
+  evaluator intentionally changes legacy generated output; old seeds alone do
+  not reproduce bytes from earlier versions.
+- `CSharpDB.DataGeneration` is currently consumed through project references by
+  Studio and the developer CLI; it is not a separately published NuGet package
+  or part of the `CSharpDB` umbrella package.

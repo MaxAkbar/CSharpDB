@@ -56,7 +56,7 @@ $Version = (Read-Host 'Release version without the v prefix').Trim()
 #>
 [CmdletBinding()]
 param(
-    [string] $Version = '4.6.3',
+    [string] $Version = '4.6.4',
 
     [ValidateSet('win-x64', 'linux-x64', 'osx-arm64')]
     [string[]] $Runtime = @(
