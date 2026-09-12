@@ -102,7 +102,7 @@ public sealed record CSharpDbCapabilityCatalog
 
 public static class CSharpDbCapabilityCatalogLoader
 {
-    public const string CurrentTargetVersion = "4.6.3";
+    public const string CurrentTargetVersion = "4.6.4";
     public const string Format = "csharpdb-target-capabilities/v1";
 
     private static readonly JsonSerializerOptions s_options = CreateOptions();
@@ -115,6 +115,7 @@ public static class CSharpDbCapabilityCatalogLoader
             ["4.5.1"] = CreateCatalog("4.5.1"),
             ["4.6.1"] = CreateCatalog("4.6.1"),
             ["4.6.2"] = CreateCatalog("4.6.2"),
+            ["4.6.3"] = CreateCatalog("4.6.3"),
             [CurrentTargetVersion] = CreateCatalog(CurrentTargetVersion),
         };
 

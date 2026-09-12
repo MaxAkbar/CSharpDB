@@ -75,14 +75,27 @@
                 <p>Short highlights from the published release notes. Dates use UTC publication dates; development work is listed separately below.</p>
                 <nav class="changelog-links" aria-label="Changelog sections">
                     <a href="#unreleased">Unreleased</a>
-                    <a href="#v4.6.2">Latest release</a>
+                    <a href="#v4.6.3">Latest release</a>
                     <a href="#release-history">Earlier releases</a>
                     <a href="https://github.com/MaxAkbar/CSharpDB/releases">All GitHub releases ↗</a>
                 </nav>
-                <article class="news-entry unreleased" id="unreleased" data-release-status="unreleased" data-release-version="4.6.3">
+                <article class="news-entry unreleased" id="unreleased" data-release-status="unreleased" data-release-version="4.6.4">
                     <div class="news-entry-header"><span class="news-badge news-badge-unreleased">Unreleased</span><span class="news-date">Development work · not in a published package</span></div>
-                    <h2>Data Modeler and Admin improvements</h2>
-                    <p>Prepared for v4.6.3, based on changes since v4.6.2. This candidate is not yet published; stable downloads remain on v4.6.2.</p>
+                    <h2>SQL Search, Database Documenter, and Test Data Generator</h2>
+                    <p>Prepared for v4.6.4, based on changes since v4.6.3. This candidate is not yet published; stable downloads remain on v4.6.3.</p>
+                    <ul>
+                        <li><strong>Find definitions and dependencies:</strong> search saved database definitions, follow Uses and Used by relationships, and assess column changes from SQL Search and Data Modeler.</li>
+                        <li><strong>Document your database:</strong> build a searchable dictionary, save descriptions with conflict checks, and export complete HTML or Markdown documentation.</li>
+                        <li><strong>Create repeatable test data:</strong> save generation profiles, preview every requested row, preserve supported relationships, and append in one transaction with cancellation and rollback.</li>
+                        <li><strong>Reliability:</strong> preserve comments and literals when binding SQL parameters, stabilize Data Modeler connectors, and correct nullable unique-key generation and database-switch state.</li>
+                    </ul>
+                    <p class="release-note">No database file-format revision is introduced. Description editing requires the new server capability; Studio generation supports one directly connected database and rejects unsupported schemas before inserting. An unconfirmed commit is reported without automatic retry.</p>
+                    <p><a href="docs/sql-search-and-dependencies.html">SQL Search guide →</a> · <a href="docs/test-data-generator.html">Test Data Generator guide →</a></p>
+                </article>
+                <h2 id="published-releases">Published releases</h2>
+                <article class="news-entry" id="v4.6.3" data-release-status="published" data-release-version="4.6.3">
+                    <div class="news-entry-header"><span class="news-badge news-badge-release">Latest release</span><time class="news-date" datetime="2026-09-05">September 5, 2026</time></div>
+                    <h3>v4.6.3 — Data Modeler and Admin improvements</h3>
                     <ul>
                         <li><strong>Readable diagrams:</strong> searchable Sources, relationship-aware arrangement, key-focused cards, composite foreign-key mappings, and crow’s-foot cardinality.</li>
                         <li><strong>Control your layout:</strong> named table groups, editable connectors, and middle segments that follow moved tables without unwanted splits. Positions, groups, routes, and viewport are saved with the diagram.</li>
@@ -92,10 +105,10 @@
                     </ul>
                     <p class="release-note">Removing a table from the canvas or deleting a diagram does not drop database tables. Schema changes require a separate review and apply action.</p>
                     <p><a href="docs/tutorials/data-modeler.html">Follow the Data Modeler tutorial →</a></p>
+                    <p><a href="https://github.com/MaxAkbar/CSharpDB/releases/tag/v4.6.3">Full v4.6.3 release notes &amp; downloads →</a></p>
                 </article>
-                <h2 id="published-releases">Published releases</h2>
                     <article class="news-entry" id="v4.6.2" data-release-version="4.6.2" data-release-status="published">
-                        <div class="news-entry-header"><span class="news-badge news-badge-release">Latest release</span><time class="news-date" datetime="2026-08-14">August 14, 2026</time></div>
+                        <div class="news-entry-header"><span class="news-badge news-badge-release">Release</span><time class="news-date" datetime="2026-08-14">August 14, 2026</time></div>
                         <h3>v4.6.2 — Observability and diagnostics</h3>
                         <ul>
                             <li>Inspect active and recent queries, sessions, storage, WAL, maintenance, and per-shard status in the Admin Observability workspace.</li>
