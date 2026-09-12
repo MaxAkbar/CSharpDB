@@ -20,7 +20,7 @@ database objects.
 - [Test Data Generator](https://csharpdb.com/docs/test-data-generator.html) for table/count selection,
   realistic fields, distributions, repeatable profiles, relationship-aware previews,
   and transactional appends through direct database connections
-- [Database Documenter](../../docs/database-documenter.md) for a searchable data
+- Database Documenter for a searchable data
   dictionary, shared descriptions, and offline HTML/Markdown exports
 - [SQL Search & Dependencies](../../www/docs/sql-search-and-dependencies.html) for definition search,
   Uses/Used by evidence, an interactive dependency graph, and advisory column-impact assessment

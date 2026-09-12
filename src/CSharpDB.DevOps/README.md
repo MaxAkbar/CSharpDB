@@ -1,6 +1,6 @@
 # CSharpDB.DevOps
 
-The [Database Documenter](../../docs/database-documenter.md) services generate an
+The Database Documenter services generate an
 immutable data dictionary, persist revision-checked descriptions, and render
 self-contained HTML or Markdown from saved metadata.
 

@@ -473,10 +473,6 @@ public sealed partial class SqlDocumentationExampleTests
         string publicReference = await File.ReadAllTextAsync(
             Path.Combine(repositoryRoot, "www", "docs", "sql-reference.html"),
             TestContext.Current.CancellationToken);
-        string localTypeContract = await File.ReadAllTextAsync(
-            Path.Combine(repositoryRoot, "docs", "sql-type-semantics-4.5.md"),
-            TestContext.Current.CancellationToken);
-
         Match[] kindMarkers = SqlTypeKindMarkerRegex()
             .Matches(publicReference)
             .Cast<Match>()
@@ -510,19 +506,6 @@ public sealed partial class SqlDocumentationExampleTests
             rowVersionMarker.Groups["tag"].Value,
             ExpectedRowVersionTypeNames,
             "RowVersion");
-
-        string[] allAcceptedNames = ExpectedSqlTypeNames.Values
-            .SelectMany(static names => names)
-            .Concat(ExpectedRowVersionTypeNames)
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
-        foreach (string acceptedName in allAcceptedNames)
-        {
-            Assert.Contains(
-                $"`{acceptedName}`",
-                localTypeContract,
-                StringComparison.Ordinal);
-        }
     }
 
     private static void AssertSqlTypeNames(
