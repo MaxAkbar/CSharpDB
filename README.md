@@ -13,7 +13,7 @@
   <a href="https://www.nuget.org/packages/CSharpDB"><img src="https://img.shields.io/nuget/v/CSharpDB" alt="NuGet"></a>
   <a href="https://www.nuget.org/packages/CSharpDB"><img src="https://img.shields.io/nuget/dt/CSharpDB?label=Downloads" alt="NuGet downloads"></a>
   <a href="https://github.com/MaxAkbar/CSharpDB/actions/workflows/perf-guardrails.yml"><img src="https://github.com/MaxAkbar/CSharpDB/actions/workflows/perf-guardrails.yml/badge.svg" alt="Perf Guardrails"></a>
-  <a href="https://github.com/MaxAkbar/CSharpDB/stargazers"><img src="https://img.shields.io/github/stars/MaxAkbar/CSharpDB?label=Stars" alt="GitHub stars"></a>
+  <a href="https://github.com/MaxAkbar/CSharpDB"><img src="https://img.shields.io/github/stars/MaxAkbar/CSharpDB?label=Stars" alt="GitHub stars"></a>
   <a href="https://dotnet.microsoft.com/download/dotnet/10.0"><img src="https://img.shields.io/badge/.NET-10-512bd4" alt=".NET 10"></a>
   <a href="https://github.com/MaxAkbar/CSharpDB"><img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-0f766e" alt="Platform: Windows, Linux, macOS"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
@@ -21,9 +21,9 @@
 </p>
 
 <p align="center">
-  <a href="https://csharpdb.com/getting-started.html">Getting Started</a> &middot;
+  <a href="https://csharpdb.com/docs/getting-started.html">Getting Started</a> &middot;
   <a href="https://csharpdb.com/docs/index.html">Docs</a> &middot;
-  <a href="https://csharpdb.com/benchmarks.html">Benchmarks</a> &middot;
+  <a href="https://csharpdb.com/docs/benchmarks.html">Benchmarks</a> &middot;
   <a href="https://csharpdb.com/roadmap.html">Roadmap</a> &middot;
   <a href="https://csharpdb.com">Website</a>
 </p>
