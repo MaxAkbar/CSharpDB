@@ -11,7 +11,9 @@
     <ProjectReference Include="..\..\src\CSharpDB.Admin\CSharpDB.Admin.csproj" />
     <ProjectReference Include="..\CSharpDB.DataGen\CSharpDB.DataGen.csproj" />
     <PackageReference Update="coverlet.collector" Version="10.0.1" />
-    <PackageReference Update="Microsoft.NET.Test.Sdk" Version="18.8.1" />
+    <PackageReference Update="Microsoft.NET.Test.Sdk" Version="18.10.0" />
+    <PackageReference Update="xunit.runner.visualstudio" Version="4.0.0" />
+    <PackageReference Update="xunit.v3" Version="4.0.1" />
     <Content Include="..\CSharpDB.DataGen\Specs\*.json" Link="Specs\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

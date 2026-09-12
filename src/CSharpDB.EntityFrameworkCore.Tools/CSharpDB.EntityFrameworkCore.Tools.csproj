@@ -16,16 +16,13 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\CSharpDB.Migration\CSharpDB.Migration.csproj"
-                      PrivateAssets="all" />
-    <ProjectReference Include="..\CSharpDB.Migration.CSharpDb.Ddl\CSharpDB.Migration.CSharpDb.Ddl.csproj"
-                      PrivateAssets="all" />
+    <ProjectReference Include="..\CSharpDB.Migration\CSharpDB.Migration.csproj" PrivateAssets="all" />
+    <ProjectReference Include="..\CSharpDB.Migration.CSharpDb.Ddl\CSharpDB.Migration.CSharpDb.Ddl.csproj" PrivateAssets="all" />
     <ProjectReference Include="..\CSharpDB.EntityFrameworkCore\CSharpDB.EntityFrameworkCore.csproj" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design"
-                      Version="$(CSharpDbQualifiedEfCoreVersion)">
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.12">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
   </ItemGroup>
