@@ -73,8 +73,8 @@ and product documentation. These notes cover changes since v4.6.3 only.
   reroute when an actual obstacle affects a connector.
 - Read archive definition metadata without scanning stored rows or index pages.
   Full archive integrity validation remains a separate operation.
-- Add guides for SQL Search and dependencies, Database Documenter, Test Data
-  Generator, and form layout. Correct website examples and feature descriptions,
+- Add guides for SQL Search and dependencies, Test Data Generator, and form
+  layout. Correct website examples and feature descriptions,
   improve shared navigation accessibility, and validate local links and anchors.
 
 ### Compatibility and Scope
