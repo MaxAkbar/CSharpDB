@@ -197,6 +197,7 @@ public partial class TestDataGeneratorTab
             if (_operation is { } operation) { try { await operation; } catch { } }
             if (_disposed) return;
             _profile = new() { ReferenceUtc = DateTime.UtcNow.Date }; _catalog = []; _prepared = null; _table = null;
+            _unknownOutcome = false; _receipt = null; _progress = null;
             _busy = false; await ReloadAsync(); StateHasChanged();
         });
     }

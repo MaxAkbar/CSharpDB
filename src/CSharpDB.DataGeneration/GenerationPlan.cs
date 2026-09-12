@@ -216,6 +216,20 @@ public sealed class GenerationPlan
                     throw new InvalidOperationException($"{name}.{relation.Rule.Name}: the parent key pool is empty.");
                 if (relation.Unique && table.Rule.Rows > relation.Pool.Count && relation.Rule.NullRate == 0)
                     throw new InvalidOperationException($"{name}.{relation.Rule.Name}: {table.Rule.Rows} unique children require at least that many parent keys.");
+                if (relation.Unique && relation.Rule.NullRate is > 0 and < 1)
+                {
+                    // Retain ranks so paged previews and execution use the same keys,
+                    // without counting null rows or rescanning every preceding row.
+                    AddKeyBytes(table.Rule.Rows * (long)sizeof(int) + 32);
+                    relation.UniqueParentIndexes = new int[table.Rule.Rows];
+                    int nextParent = 0;
+                    for (int ordinal = 1; ordinal <= table.Rule.Rows; ordinal++)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        bool useNull = RelationshipRandom(table, relation, ordinal).NextDouble() < relation.Rule.NullRate;
+                        relation.UniqueParentIndexes[ordinal - 1] = useNull ? -1 : nextParent++;
+                    }
+                }
             }
             var keys = UniqueKeys(table.Snapshot).ToArray();
             var seen = keys.Select(_ => new HashSet<string>(StringComparer.Ordinal)).ToArray();
@@ -272,7 +286,7 @@ public sealed class GenerationPlan
         foreach (var relation in table.Relations.OrderBy(r => r.Rule.Name, StringComparer.Ordinal))
         {
             ct.ThrowIfCancellationRequested();
-            var random = StableRandom.Create(_profile.Seed, table.Snapshot.Schema.SchemaId, table.Rule.TableName, relation.Rule.Name, ordinal);
+            var random = RelationshipRandom(table, relation, ordinal);
             bool useNull = relation.Rule.NullRate > 0 && random.NextDouble() < relation.Rule.NullRate;
             if (useNull)
             {
@@ -300,7 +314,7 @@ public sealed class GenerationPlan
                 }
             }
             if (candidates.Count == 0) throw new InvalidOperationException($"{table.Rule.TableName}.{relation.Rule.Name}: no parent keys satisfy the mapped columns.");
-            int index = relation.Unique ? ordinal - 1
+            int index = relation.Unique ? (relation.UniqueParentIndexes?[ordinal - 1] ?? ordinal - 1)
                 : relation.Rule.Distribution == FieldDistribution.HotKeys && random.NextDouble() < relation.Rule.HotKeyRate
                     ? random.Next(Math.Max(1, candidates.Count / 5)) : random.Next(candidates.Count);
             if (index >= candidates.Count) throw new InvalidOperationException($"{relation.Rule.Name}: insufficient parent keys for unique selection.");
@@ -318,6 +332,9 @@ public sealed class GenerationPlan
         }
         return values;
     }
+
+    private StableRandom RelationshipRandom(PlannedTable table, ResolvedRelationship relation, int ordinal)
+        => StableRandom.Create(_profile.Seed, table.Snapshot.Schema.SchemaId, table.Rule.TableName, relation.Rule.Name, ordinal);
 
     private static bool Matches(IReadOnlyDictionary<string, object?> child, ResolvedRelationship relation,
         IReadOnlyDictionary<string, object?> parent, IReadOnlyList<string>? subset = null)
@@ -364,6 +381,7 @@ public sealed class GenerationPlan
         public RelationshipGenerationRule Rule { get; } = rule;
         public GenerationTableSnapshot Parent { get; } = parent;
         public bool Unique { get; } = unique;
+        public int[]? UniqueParentIndexes { get; set; }
         public IReadOnlyList<IReadOnlyDictionary<string, object?>> Pool { get; set; } = [];
         public HashSet<string> Keys { get; } = new(StringComparer.Ordinal);
         public Dictionary<string, IReadOnlyList<IReadOnlyDictionary<string, object?>>> OverlapPools { get; } = new(StringComparer.Ordinal);

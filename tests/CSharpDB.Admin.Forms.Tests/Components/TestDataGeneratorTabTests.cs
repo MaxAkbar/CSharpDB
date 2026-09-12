@@ -53,6 +53,53 @@ public sealed class TestDataGeneratorTabTests
     }
 
     [Fact]
+    public async Task DatabaseSwitchClearsUnknownOutcomeButSchemaRefreshKeepsItLocked()
+    {
+        var original = DispatchProxy.Create<IGeneratorClient, ClientProxy>();
+        var replacement = DispatchProxy.Create<IGeneratorClient, ClientProxy>();
+        foreach (var client in new[] { original, replacement })
+        {
+            var proxy = (ClientProxy)(object)client;
+            proxy.Supported = true; proxy.BlockReads = false;
+        }
+        await using var holder = new DatabaseClientHolder(original, null, null, new AdminHostDatabaseOptions(), DbFunctionRegistry.Empty);
+        var activator = new GeneratorActivator();
+        await using var services = Services(holder, activator);
+        await using var renderer = new HtmlRenderer(services, NullLoggerFactory.Instance);
+        var root = await renderer.Dispatcher.InvokeAsync(() => renderer.RenderComponentAsync<TestDataGeneratorTab>(Parameters()));
+        var component = activator.Component;
+        await renderer.Dispatcher.InvokeAsync(async () =>
+        {
+            SetField(component, "_unknownOutcome", true);
+            SetField(component, "_receipt", new GenerationReceipt("Unknown", 42, "profile", StableRandom.Version,
+                DateTime.UtcNow, "original.db", new Dictionary<string, int>(), TimeSpan.Zero, "Lost acknowledgement for original database"));
+            SetField(component, "_progress", new GenerationProgress("OldTable", 1, 1, "Committing"));
+            SetField(component, "_profile", new GenerationProfile { Tables = [new() { TableName = "OldTable" }] });
+            await ((IComponent)component).SetParametersAsync(Parameters());
+            services.GetRequiredService<DatabaseChangeService>().NotifyChanged();
+        });
+        string before = await renderer.Dispatcher.InvokeAsync(root.ToHtmlString);
+        Assert.Matches("<button[^>]*disabled[^>]*>Preview data</button>", before);
+        Assert.Contains("Lost acknowledgement for original database", before);
+        Assert.True((bool)GetField(component, "_unknownOutcome")!);
+
+        await renderer.Dispatcher.InvokeAsync(() => holder.ReplaceClientAsync(replacement, null, null));
+        string after = await renderer.Dispatcher.InvokeAsync(root.ToHtmlString);
+        Assert.False((bool)GetField(component, "_unknownOutcome")!);
+        Assert.Null(GetField(component, "_receipt"));
+        Assert.Null(GetField(component, "_progress"));
+        Assert.DoesNotContain("Lost acknowledgement for original database", after);
+        Assert.DoesNotContain("OldTable", after);
+        Assert.Equal(1, ((ClientProxy)(object)replacement).Reads);
+        await renderer.Dispatcher.InvokeAsync(async () =>
+        {
+            SetField(component, "_profile", new GenerationProfile { Tables = [new() { TableName = "NewTable" }] });
+            await ((IComponent)component).SetParametersAsync(Parameters());
+        });
+        Assert.Matches("<button(?![^>]*disabled)[^>]*>Preview data</button>", await renderer.Dispatcher.InvokeAsync(root.ToHtmlString));
+    }
+
+    [Fact]
     public void TableEntryReusesItsTabAndKeepsRoutesSeparate()
     {
         var manager = new TabManagerService();
@@ -72,14 +119,27 @@ public sealed class TestDataGeneratorTabTests
     private static ParameterView Parameters() => ParameterView.FromDictionary(new Dictionary<string, object?>
     { [nameof(TestDataGeneratorTab.Tab)] = new TabDescriptor("generator", "Test Data Generator", "bi-dice-5", TabKind.TestDataGenerator) });
 
-    private static ServiceProvider Services(DatabaseClientHolder holder) => new ServiceCollection()
+    private static ServiceProvider Services(DatabaseClientHolder holder, GeneratorActivator? activator = null) => new ServiceCollection()
+        .AddSingleton<IComponentActivator>(activator ?? new GeneratorActivator())
         .AddSingleton(holder).AddSingleton<DatabaseChangeService>().AddSingleton<GenerationLimits>()
         .AddSingleton<TestDataGenerationAdminService>().AddSingleton<IJSRuntime, NoJs>().BuildServiceProvider();
+
+    private static object? GetField(TestDataGeneratorTab component, string name)
+        => typeof(TestDataGeneratorTab).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(component);
+    private static void SetField(TestDataGeneratorTab component, string name, object? value)
+        => typeof(TestDataGeneratorTab).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(component, value);
+    private sealed class GeneratorActivator : IComponentActivator
+    {
+        public TestDataGeneratorTab Component { get; private set; } = null!;
+        public IComponent CreateInstance(Type componentType)
+            => componentType == typeof(TestDataGeneratorTab) ? Component = new() : (IComponent)Activator.CreateInstance(componentType)!;
+    }
 
     public interface IGeneratorClient : ICSharpDbClient, ICSharpDbTransactionalSnapshotReader;
     public class ClientProxy : DispatchProxy
     {
         public bool Supported;
+        public bool BlockReads = true;
         public int Reads;
         public TaskCompletionSource Started = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Cancelled = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -95,6 +155,7 @@ public sealed class TestDataGeneratorTabTests
         private async Task<IReadOnlyList<string>> ReadAsync(CancellationToken ct)
         {
             Reads++; Started.TrySetResult();
+            if (!BlockReads) return [];
             try { await Task.Delay(Timeout.Infinite, ct); return []; }
             catch (OperationCanceledException) { Cancelled.TrySetResult(); throw; }
         }
