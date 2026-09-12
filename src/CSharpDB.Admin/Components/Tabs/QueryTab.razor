@@ -706,6 +706,7 @@
         try
         {
             var saved = await ActiveClient.UpsertSavedQueryAsync(name, _sqlText);
+            Changes.NotifyChanged();
             _savedQueryName = saved.Name;
             _selectedSavedQueryName = saved.Name;
             if (Tab is not null)

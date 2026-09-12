@@ -625,6 +625,7 @@
     private string? _error;
     private string? _diagramSaveError;
     private CancellationTokenSource? _viewportPersistCts;
+    private CancellationTokenSource _modelLoadCancellation = new();
     private AdminRouteClientLease? _routeLease;
     private DataModelService? _routeDataModelService;
 
@@ -821,6 +822,9 @@
 
     private async Task OnRouteChangedAsync(CSharpDbRouteContext? routeContext)
     {
+        _modelLoadCancellation.Cancel();
+        _modelLoadCancellation.Dispose();
+        _modelLoadCancellation = new();
         _loading = true;
         CancelViewportPersistence();
         await _diagramSaveGate.WaitAsync();
@@ -866,6 +870,7 @@
 
     private async Task LoadInitialAsync()
     {
+        var ct = _modelLoadCancellation.Token;
         ClearGroupSelection();
         _confirmTidyRoutes = false;
         _selectedWaypointId = null;
@@ -873,8 +878,8 @@
         _error = null;
         try
         {
-            _sourceOptions = await ActiveDataModels.GetSourceOptionsAsync();
-            _savedDiagrams = await ActiveDiagrams.GetDiagramsAsync();
+            _sourceOptions = await ActiveDataModels.GetSourceOptionsAsync(ct);
+            _savedDiagrams = await ActiveDiagrams.GetDiagramsAsync(ct);
             if (Tab?.DataModelStateJson is not null)
             {
                 DataModelState? saved = DataModelGraphBuilder.DeserializeState(Tab.DataModelStateJson);
@@ -886,15 +891,19 @@
                     _diagramName = _state.DiagramName ?? _state.SavedLayoutName ?? "";
                     _hasDiagramMutation = _state.Nodes.Count > 0 || _state.PendingOperations.Count > 0;
                     // Reload route-wide inspection metadata without silently rebasing saved pending DDL.
-                    _state.SchemaContext = (await ActiveDataModels.BuildSelectionAsync([])).SchemaContext;
+                    _state.SchemaContext = (await ActiveDataModels.BuildSelectionAsync([], ct: ct)).SchemaContext;
                     SaveState();
                 }
             }
             else
             {
-                DataModelState? defaultDiagram = UsesDefaultDiagram
-                    ? await ActiveDiagrams.LoadDiagramAsync(DefaultDiagramName)
-                    : null;
+                string? requestedDiagram = Tab?.State.GetValueOrDefault("InitialDiagramName") as string;
+                DataModelState? defaultDiagram = requestedDiagram is not null
+                    ? await ActiveDiagrams.LoadDiagramAsync(requestedDiagram, ct)
+                    : UsesDefaultDiagram ? await ActiveDiagrams.LoadDiagramAsync(DefaultDiagramName, ct) : null;
+                ct.ThrowIfCancellationRequested();
+                if (requestedDiagram is not null && defaultDiagram is null)
+                    throw new InvalidOperationException($"Saved data model diagram '{requestedDiagram}' no longer exists. Refresh SQL Search and choose another diagram.");
                 if (defaultDiagram is not null)
                 {
                     _state = defaultDiagram;
@@ -904,13 +913,13 @@
                 {
                     _state = await ActiveDataModels.BuildSelectionAsync(
                         [Tab.InitialDataModelSourceName],
-                        DataModelSelectionMode.IncludeDirectlyRelated);
+                        DataModelSelectionMode.IncludeDirectlyRelated, ct);
                     DataModelLayoutEngine.ArrangeAll(_state);
                     _hasDiagramMutation = _state.Nodes.Count > 0;
                 }
                 else
                 {
-                    _state = await ActiveDataModels.BuildSelectionAsync([]);
+                    _state = await ActiveDataModels.BuildSelectionAsync([], ct: ct);
                     _state.DiagramName = DefaultDiagramName;
                     _state.SavedLayoutName = DefaultDiagramName;
                     _showSourcesPane = true;
@@ -923,19 +932,20 @@
                 SaveState();
             }
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (Exception ex)
         {
             _error = $"Failed to load data model: {ex.Message}";
         }
         finally
         {
-            _loading = false;
-            ResetHistory();
+            if (!ct.IsCancellationRequested) { _loading = false; ResetHistory(); }
         }
     }
 
     private async Task RefreshAsync()
     {
+        var ct = _modelLoadCancellation.Token;
         ClearGroupSelection();
         _confirmTidyRoutes = false;
         _selectedWaypointId = null;
@@ -943,8 +953,9 @@
         _error = null;
         try
         {
-            _sourceOptions = await ActiveDataModels.GetSourceOptionsAsync();
-            DataModelState? live = await ActiveDataModels.RefreshModelAsync(_state);
+            _sourceOptions = await ActiveDataModels.GetSourceOptionsAsync(ct);
+            DataModelState? live = await ActiveDataModels.RefreshModelAsync(_state, ct);
+            ct.ThrowIfCancellationRequested();
             if (live is not null)
             {
                 _state = live;
@@ -960,7 +971,7 @@
                 .Where(static node => !node.IsDraft)
                 .Select(static node => node.Name)
                 .ToArray();
-            DataModelState refreshed = await ActiveDataModels.BuildSelectionAsync(sourceNames, DataModelSelectionMode.Exact);
+            DataModelState refreshed = await ActiveDataModels.BuildSelectionAsync(sourceNames, DataModelSelectionMode.Exact, ct);
             PreservePositions(refreshed);
             foreach (DataModelNode draftNode in previous.Nodes.Where(static node => node.IsDraft))
                 refreshed.Nodes.Add(draftNode);
@@ -977,14 +988,14 @@
             SaveState();
             await PersistActiveDiagramAsync();
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (Exception ex)
         {
             _error = $"Failed to refresh data model: {ex.Message}";
         }
         finally
         {
-            _loading = false;
-            ResetHistory();
+            if (!ct.IsCancellationRequested) { _loading = false; ResetHistory(); }
         }
     }
 
@@ -1530,6 +1541,7 @@
         try
         {
             await ActiveDiagrams.DeleteDiagramAsync(name);
+            Changes?.NotifyChanged();
             _state.DiagramName = null;
             _state.SavedLayoutName = null;
             _diagramName = "";
@@ -1874,7 +1886,25 @@
         if (_reviewedPlan is not null && !DataModelService.MatchesReview(_state, _reviewedPlan)) _reviewedPlan = null;
         if (_historyReady && !_restoringHistory) _history.Record(_state);
         if (Tab is not null)
+        {
             Tab.DataModelStateJson = DataModelGraphBuilder.SerializeState(_state);
+            // Search reuses tabs by saved diagram identity. Follow deliberate
+            // picker/Save As changes, and stop matching after deletion.
+            if (Tab.State.ContainsKey("InitialDiagramName") || Tab.State.ContainsKey("SavedDiagramTab"))
+            {
+                Tab.State["SavedDiagramTab"] = true;
+                if (string.IsNullOrWhiteSpace(_state.DiagramName))
+                {
+                    Tab.State.Remove("InitialDiagramName");
+                    Tab.Title = "Model: unsaved";
+                }
+                else
+                {
+                    Tab.State["InitialDiagramName"] = _state.DiagramName;
+                    Tab.Title = $"Model: {_state.DiagramName}";
+                }
+            }
+        }
     }
 
     private async Task PersistActiveDiagramAsync(bool markMutation = true)
@@ -1924,6 +1954,8 @@
 
     public async ValueTask DisposeAsync()
     {
+        _modelLoadCancellation.Cancel();
+        _modelLoadCancellation.Dispose();
         _dataCheckCancellation?.Cancel();
         _viewportPersistCts?.Cancel();
         _viewportPersistCts?.Dispose();

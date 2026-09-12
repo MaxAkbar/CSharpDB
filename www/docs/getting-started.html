@@ -122,8 +122,6 @@ cmd.Parameters.Add(<span class="kw">new</span> <span class="tp">CSharpDbParamete
                 <div class="code-block" data-title="Program.cs — Collections">
                     <pre><code><span class="kw">using</span> CSharpDB.Engine;
 
-<span class="kw">public record</span> <span class="tp">Product</span>(<span class="kw">string</span> Name, <span class="kw">double</span> Price, <span class="kw">string</span>[] Tags);
-
 <span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"myapp.db"</span>);
 <span class="kw">var</span> products = <span class="kw">await</span> db.GetCollectionAsync&lt;<span class="tp">Product</span>&gt;(<span class="str">"products"</span>);
 
@@ -141,7 +139,9 @@ cmd.Parameters.Add(<span class="kw">new</span> <span class="tp">CSharpDbParamete
 
 <span class="cm">// Scan all</span>
 <span class="kw">await foreach</span> (<span class="kw">var</span> entry <span class="kw">in</span> products.ScanAsync())
-    Console.WriteLine(<span class="str">$"{entry.Key}: {entry.Value.Name}: ${entry.Value.Price:F2}"</span>);</code></pre>
+    Console.WriteLine(<span class="str">$"{entry.Key}: {entry.Value.Name}: ${entry.Value.Price:F2}"</span>);
+
+<span class="kw">public record</span> <span class="tp">Product</span>(<span class="kw">string</span> Name, <span class="kw">double</span> Price, <span class="kw">string</span>[] Tags);</code></pre>
                 </div>
 
                 <h2>Option 4: Low-Level Storage API</h2>

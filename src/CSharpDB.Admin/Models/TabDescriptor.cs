@@ -24,7 +24,10 @@ public enum TabKind
     ImportExport,
     DataModel,
     DataHygiene,
-    CompareDeploy
+    CompareDeploy,
+    DefinitionExplorer,
+    DatabaseDocumenter,
+    TestDataGenerator
 }
 
 public sealed class TabDescriptor

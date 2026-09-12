@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Form Layout Tutorial — Labels, Inputs &amp; Anchors — CSharpDB</title>
+    <meta name="description" content="Build a CSharpDB Admin form step by step: place labels and bound inputs, align rows, distribute controls, choose anchor presets, and check responsive layouts.">
+    <link rel="canonical" href="https://csharpdb.com/docs/tutorials/form-layout.html">
+    <link rel="stylesheet" href="../../css/style.css">
+    <link rel="icon" type="image/png" href="../../favicon.png">
+    <style>
+        .form-tutorial { min-width: 0; }
+        .form-tutorial h2[id], .form-tutorial h3[id] { scroll-margin-top: 90px; }
+        .form-tutorial .tutorial-meta { display: flex; flex-wrap: wrap; gap: 8px 20px; color: var(--text-secondary); font-size: .875rem; margin: 18px 0 28px; }
+        .tutorial-contents summary { cursor: pointer; font-weight: 700; margin-bottom: 12px; }
+        .form-tutorial .table-scroll { overflow-x: auto; margin: 20px 0; }
+        .form-tutorial .table-scroll table { margin: 0; min-width: 580px; }
+        .form-tutorial .checkpoint { padding: 12px 16px; border-left: 3px solid var(--accent-2); background: var(--bg-secondary); margin: 20px 0 28px; }
+        .form-tutorial figure { margin: 26px 0; }
+        .form-tutorial figcaption, .form-tutorial .small-note { color: var(--text-secondary); font-size: .875rem; line-height: 1.6; }
+        .form-tutorial figcaption { margin-top: 10px; }
+        .form-tutorial :not(pre) > code { overflow-wrap: anywhere; }
+        .form-tutorial kbd { border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 2px 5px; font-size: .85em; white-space: nowrap; background: var(--bg-tertiary); }
+        .form-tutorial a:focus-visible, .form-tutorial button:focus-visible, .form-tutorial input:focus-visible, .form-tutorial select:focus-visible, summary:focus-visible { outline: 3px solid var(--accent-2); outline-offset: 4px; }
+        .form-tutorial figure a { display: block; width: fit-content; max-width: 100%; }
+        .form-tutorial figure img { display: block; width: 100%; height: auto; border: 1px solid var(--border); border-radius: 8px; }
+        .form-tutorial .screenshot-detail img { width: auto; max-width: 100%; }
+        .screenshot-pair { display: flex; flex-wrap: wrap; gap: 20px 32px; align-items: start; margin: 24px 0; }
+        .screenshot-pair figure { flex: 1 1 260px; margin: 0; min-width: 0; }
+        .anchor-lab { padding: 24px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-secondary); margin: 24px 0; }
+        .lab-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 18px 24px; }
+        .lab-field > label { display: block; font-weight: 600; font-size: .9rem; margin-bottom: 8px; }
+        .lab-field select { width: 100%; min-height: 42px; padding: 8px; font: inherit; border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary); background: var(--bg-card); }
+        .lab-field input[type="range"] { width: 100%; min-height: 32px; accent-color: var(--accent-2); }
+        .lab-anchors { margin: 20px 0; padding: 12px 16px; border: 1px solid var(--border); border-radius: 6px; }
+        .lab-anchors legend { padding: 0 6px; font-size: .9rem; }
+        .lab-anchors .anchor-options { display: flex; flex-wrap: wrap; gap: 14px 24px; }
+        .lab-anchors label { display: inline-flex; align-items: center; gap: 8px; min-height: 32px; }
+        .lab-anchors input { width: 18px; height: 18px; accent-color: var(--accent-2); }
+        .anchor-lab button { padding: 9px 16px; min-height: 42px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-primary); font: inherit; cursor: pointer; }
+        #lab-diagram { display: block; width: 100%; height: auto; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; }
+        #lab-diagram text { fill: var(--text-primary); font: 28px system-ui, sans-serif; }
+        #lab-baseline { fill: none; stroke: var(--text-muted); stroke-width: 3; stroke-dasharray: 12 10; }
+        #lab-frame { fill: var(--accent-soft); stroke: var(--accent-hover); stroke-width: 4; }
+        #lab-control { fill: var(--bg-tertiary); stroke: var(--accent-2); stroke-width: 4; }
+        .lab-legend { display: flex; flex-wrap: wrap; gap: 10px 24px; margin: 12px 0; font-size: .875rem; color: var(--text-secondary); }
+        .lab-legend span::before { content: ''; display: inline-block; width: 18px; border-top: 3px solid var(--accent-hover); margin-right: 7px; vertical-align: middle; }
+        .lab-legend .control-key::before { border-color: var(--accent-2); }
+        .lab-legend .baseline-key::before { border-color: var(--text-muted); border-top-style: dashed; }
+        #lab-result { display: block; margin: 16px 0; font-variant-numeric: tabular-nums; line-height: 1.7; }
+        #lab-explanation { min-height: 3.2em; }
+        .form-tutorial .recipe { padding: 18px 22px; margin: 20px 0; border: 1px solid var(--border); border-radius: 10px; }
+        .form-tutorial .recipe h3 { margin-top: 0; }
+        .form-tutorial .source-notes { border-top: 1px solid var(--border); margin-top: 36px; padding-top: 18px; }
+        @media (max-width: 700px) {
+            .lab-controls { grid-template-columns: 1fr; }
+            .anchor-lab { padding: 16px; }
+        }
+        @media print {
+            #site-nav, #site-footer, .doc-sidebar, .lab-controls, .lab-anchors, #lab-reset { display: none !important; }
+            .page { padding-top: 0 !important; }
+            .doc-content { max-width: none !important; width: 100%; }
+            .form-tutorial .table-scroll { overflow: visible; }
+            .form-tutorial table { min-width: 0 !important; font-size: 10pt; }
+            h2, h3 { break-after: avoid; }
+            figure, tr, .recipe { break-inside: avoid; }
+        }
+    </style>
+</head>
+<body>
+    <script>
+        window.currentPage = 'docs'; window.pagePathPrefix = '../../';
+        window.pageConfig = {
+            title: 'Form Layout Tutorial',
+            description: 'Place labels and bound input controls, align form rows, and understand anchor presets in CSharpDB Admin.',
+            keywords: 'CSharpDB form designer tutorial, labels, input controls, alignment, anchor presets, responsive forms',
+            canonicalPath: 'docs/tutorials/form-layout.html',
+            ogType: 'article'
+        };
+    </script>
+    <div id="site-nav"></div>
+    <main class="page">
+        <div class="container doc-container">
+            <aside class="doc-sidebar">
+                <details class="tutorial-contents" open>
+                    <summary>On This Page</summary>
+                    <nav class="doc-toc" aria-label="Tutorial contents">
+                        <ul>
+                            <li><a href="#start">1. Start a form</a></li>
+                            <li><a href="#workspace">2. Know the workspace</a></li>
+                            <li><a href="#place">3. Place a label and input</a></li>
+                            <li><a href="#bind">4. Connect inputs to data</a></li>
+                            <li><a href="#repeat">5. Build the remaining rows</a></li>
+                            <li><a href="#align">6. Align and distribute</a></li>
+                            <li><a href="#anchors">7. Understand anchors</a></li>
+                            <li><a href="#presets">8. Choose a preset</a></li>
+                            <li><a href="#anchor-lab">9. Try the anchor demo</a></li>
+                            <li><a href="#recipes">10. Apply layout recipes</a></li>
+                            <li><a href="#responsive">11. Check smaller layouts</a></li>
+                            <li><a href="#save">12. Save and verify</a></li>
+                            <li><a href="#troubleshooting">Troubleshooting</a></li>
+                            <li><a href="#reference">Quick reference</a></li>
+                        </ul>
+                    </nav>
+                </details>
+            </aside>
+            <article class="doc-content form-tutorial">
+                <h1>Lay Out a Form That Resizes Well</h1>
+                <p class="lead">Place labels and inputs, connect them to table columns, line up clean rows, and choose what should move or stretch when the form area changes size.</p>
+                <div class="tutorial-meta"><span>Hands-on · about 30–40 minutes</span><span>CSharpDB Admin · Forms designer</span><span>Real Admin screenshots + interactive example</span></div>
+                <p>This walkthrough follows the current Admin Forms implementation. Every screenshot was captured directly from the running <strong>CSharpDB.Admin</strong> project using a fictional customer record. Select a screenshot to open it at full size. Step 9 also includes an interactive example to demonstrate resizing. You will build a simple customer-details layout and learn exactly what the designer's alignment buttons and anchor presets do.</p>
+
+                <h2 id="start">1. Start a form</h2>
+                <p>Open CSharpDB Admin with a database containing a table you can use for practice. The examples call that table <code>customers</code>, with <code>first_name</code>, <code>email</code>, <code>credit_limit</code>, and <code>notes</code> columns. Use equivalent columns from your own table; these names are examples, and this tutorial does not create a table for you.</p>
+                <p>There are two useful starting points:</p>
+                <ol>
+                    <li><strong>Start with generated controls:</strong> right-click your table in Object Explorer and choose <strong>Design Form…</strong>. The designer creates a label and a bound input for each column. It chooses the input type from the column type and lays out a single vertical column of pairs.</li>
+                    <li><strong>Practice from a blank canvas:</strong> use <strong>New Form</strong>, then choose the table in <strong>Select source…</strong>. This route currently sets the source without generating controls. Use it for the manual placement exercises below.</li>
+                </ol>
+                <p>Double-click the form title to name it <strong>Customer Details Practice</strong>. Press Enter or leave the title box to commit the name. Choose <strong>Desktop</strong> and <strong>Fixed</strong> in the toolbar for the first exercises. The Desktop design width is 1200 pixels.</p>
+                <p>If you started with generated controls, select and adjust the existing pairs instead of adding a second copy of each field. Generated labels and inputs remain independently editable.</p>
+                <p class="checkpoint"><strong>Checkpoint:</strong> the correct table is selected, the form has a recognizable name, and Desktop / Fixed is active.</p>
+
+                <h2 id="workspace">2. Know the workspace</h2>
+                <figure>
+                    <a href="../../images/admin/form-layout/designer-workspace.png"><img src="../../images/admin/form-layout/designer-workspace.png" width="1960" height="720" alt="Actual CSharpDB Admin form designer with four customer label and input pairs, Toolbox on the left, and the selected Text input's Properties on the right."></a>
+                    <figcaption>The completed practice layout in Admin. Toolbox and Layers are on the left, the canvas is in the middle, and Properties is on the right. The selected input uses Stretch Across.</figcaption>
+                </figure>
+                <p><strong>Toolbox</strong> contains control types and the Align tools. <strong>Layers</strong> lists the controls already on the form and helps select items that overlap. The canvas shows their positions. <strong>Properties</strong> shows control settings when exactly one control is selected.</p>
+                <p>The boxes on the design canvas are previews. Enter real values in <strong>Data Entry</strong> after saving; a disabled-looking input in the designer is normal.</p>
+
+                <h2 id="place">3. Place your first label and input</h2>
+                <h3>Place the label</h3>
+                <ol>
+                    <li>In Toolbox, under <strong>Layout</strong>, click <strong>Label</strong>.</li>
+                    <li>Click an empty point near the top-left of the canvas. This places one label. You choose the tool and then click the canvas; you do not drag the toolbox item onto it.</li>
+                    <li>The designer returns to Pointer mode after placement. With the label selected, find the <strong>Text</strong> section in Properties and set <strong>Text</strong> to <code>First name</code>.</li>
+                    <li>Under <strong>Position &amp; Size</strong>, set <strong>X = 24</strong>, <strong>Y = 24</strong>, <strong>W = 168</strong>, and <strong>H = 32</strong>.</li>
+                </ol>
+                <h3>Place the input beside it</h3>
+                <ol>
+                    <li>In Toolbox, under <strong>Input Controls</strong>, click <strong>Text</strong>.</li>
+                    <li>Click an empty part of the canvas to the right of the label.</li>
+                    <li>Set <strong>X = 216</strong>, <strong>Y = 24</strong>, <strong>W = 960</strong>, and <strong>H = 32</strong>.</li>
+                    <li>Leave <strong>Resize Mode</strong> at <strong>Anchored</strong> for now. You will set its preset after arranging the rows.</li>
+                </ol>
+                <p>These values give the label a 24-pixel left margin, leave a 24-pixel gap between label and input, and end the input at X = 1176: 24 pixels before the Desktop canvas's right edge. Scroll the designer horizontally if your window cannot display all 1200 pixels.</p>
+                <div class="table-scroll"><table>
+                    <thead><tr><th scope="col">Setting</th><th scope="col">Meaning</th><th scope="col">How to change it</th></tr></thead>
+                    <tbody>
+                        <tr><td>X</td><td>Distance from the canvas's left edge to the control's left edge.</td><td>Drag horizontally, or enter a number.</td></tr>
+                        <tr><td>Y</td><td>Distance from the canvas's top edge to the control's top edge.</td><td>Drag vertically, or enter a number.</td></tr>
+                        <tr><td>W</td><td>The control's design width.</td><td>Drag a side/corner resize handle, or enter a number.</td></tr>
+                        <tr><td>H</td><td>The control's design height.</td><td>Drag a top/bottom/corner resize handle, or enter a number.</td></tr>
+                    </tbody>
+                </table></div>
+                <p>New forms use an 8-pixel snap grid. Placement, dragging, resizing, and numeric rectangle edits snap to that grid. Use multiples of 8 for predictable values. Existing generated controls can have other sizes—for example, the default generator uses a 34-pixel row height—so a numeric edit may snap an old value to the nearest grid step.</p>
+                <p class="checkpoint"><strong>Checkpoint:</strong> one static label and one input sit side by side with the same Y and H. They are two separate controls.</p>
+                <div class="screenshot-pair">
+                    <figure class="screenshot-detail">
+                        <a href="../../images/admin/form-layout/label-anchors.png"><img src="../../images/admin/form-layout/label-anchors.png" width="279" height="359" loading="lazy" alt="Admin Position and Size settings for the First name label: X 24, Y 24, W 168, H 32, Anchored, Top Left."></a>
+                        <figcaption>The actual label's Position &amp; Size settings. Its Left and Top anchors are enabled.</figcaption>
+                    </figure>
+                    <figure class="screenshot-detail">
+                        <a href="../../images/admin/form-layout/label-text.png"><img src="../../images/admin/form-layout/label-text.png" width="279" height="87" loading="lazy" alt="Admin Text property showing the label caption First name."></a>
+                        <figcaption>The same label's Text property supplies its caption.</figcaption>
+                    </figure>
+                </div>
+
+                <h2 id="bind">4. Connect the input to a data column</h2>
+                <ol>
+                    <li>Select the <strong>Text input</strong>, not its label.</li>
+                    <li>In Properties, find <strong>Data Binding → Field</strong> and select <code>first_name</code> from the source table.</li>
+                    <li>Keep <strong>Mode = Two Way</strong> for an ordinary editable input.</li>
+                    <li>Optionally set <strong>Input → Placeholder</strong> to <code>Enter first name</code>. Leave <strong>Read Only</strong> unchecked for an editable field.</li>
+                </ol>
+                <p><strong>Text</strong> on a Label changes its caption. <strong>Placeholder</strong> provides an input hint. <strong>Field</strong> connects an input to data. Changing a caption or placeholder never changes the input's binding. A Label is static text and has no Data Binding section.</p>
+                <p>If your table has identity or row-version columns, generated controls for those fields are read-only. View-backed forms are also read-only sources. Practice editing with ordinary writable table columns.</p>
+                <div class="table-scroll"><table>
+                    <thead><tr><th scope="col">Value you want to enter</th><th scope="col">Toolbox control</th><th scope="col">What to configure</th></tr></thead>
+                    <tbody>
+                        <tr><td>Short text or an email address</td><td>Text</td><td>Field; optional Placeholder and Max Length. The Text control is not a separate email validator.</td></tr>
+                        <tr><td>Several lines of notes</td><td>Textarea</td><td>Field, Placeholder, and a larger H.</td></tr>
+                        <tr><td>A numeric amount</td><td>Number</td><td>A compatible numeric Field.</td></tr>
+                        <tr><td>A date</td><td>Date</td><td>A compatible date Field. This is the designer's date picker.</td></tr>
+                        <tr><td>A yes/no value</td><td>Checkbox</td><td>A compatible boolean Field and its own Text caption.</td></tr>
+                        <tr><td>A fixed set of choices</td><td>Select</td><td>Field plus Choices → Static Options, one <code>value|Label</code> per line.</td></tr>
+                        <tr><td>A value selected from another table</td><td>Lookup</td><td>Field and the lookup source, display field, and value field.</td></tr>
+                    </tbody>
+                </table></div>
+                <p class="checkpoint"><strong>Checkpoint:</strong> selecting the input shows the intended Field. Selecting its label shows the caption instead.</p>
+                <figure class="screenshot-detail">
+                    <a href="../../images/admin/form-layout/input-binding.png"><img src="../../images/admin/form-layout/input-binding.png" width="279" height="188" loading="lazy" alt="Actual Admin Data Binding section with Field set to First Name (first_name) and Mode set to Two Way."></a>
+                    <figcaption>The input is bound to <code>first_name</code> through Admin's Field dropdown. Its label caption is configured separately.</figcaption>
+                </figure>
+
+                <h2 id="repeat">5. Build the remaining rows efficiently</h2>
+                <p>Use this layout as a target. The numbers refer to Desktop positions. You can enter them directly, or roughly place the controls and use the next section to tidy them.</p>
+                <div class="table-scroll"><table>
+                    <thead><tr><th scope="col">Row / Y</th><th scope="col">Label text</th><th scope="col">Input type / Field</th><th scope="col">Label X, W, H</th><th scope="col">Input X, W, H</th></tr></thead>
+                    <tbody>
+                        <tr><td>1 / 24</td><td>First name</td><td>Text / <code>first_name</code></td><td>24, 168, 32</td><td>216, 960, 32</td></tr>
+                        <tr><td>2 / 72</td><td>Email</td><td>Text / <code>email</code></td><td>24, 168, 32</td><td>216, 960, 32</td></tr>
+                        <tr><td>3 / 120</td><td>Credit limit</td><td>Number / <code>credit_limit</code></td><td>24, 168, 32</td><td>216, 960, 32</td></tr>
+                        <tr><td>4 / 168</td><td>Notes</td><td>Textarea / <code>notes</code></td><td>24, 168, 32</td><td>216, 960, 112</td></tr>
+                    </tbody>
+                </table></div>
+                <h3>Duplicate a pair</h3>
+                <ol>
+                    <li>Click the first label, then hold <kbd>Shift</kbd> and click its input. Both should show as selected. You can also Shift-click their entries in Layers.</li>
+                    <li>Choose <strong>Duplicate</strong> in the toolbar or Toolbox. <kbd>Ctrl</kbd> + <kbd>D</kbd> is the keyboard shortcut when the designer has focus.</li>
+                    <li>Select each new control separately and set its Y to <strong>72</strong>. Set the new label's X to <strong>24</strong> and the input's X to <strong>216</strong>.</li>
+                    <li>Change the new label's Text to <code>Email</code> and the new input's Field to <code>email</code>. Update any copied placeholder as well.</li>
+                    <li>Repeat for the remaining rows. For each new input, choose <strong>Control → Type</strong> to change Text to Number or Textarea, then verify its Field and size.</li>
+                </ol>
+                <p>A duplicate has a new control ID but keeps the original's binding and properties. Always change the copied Field when creating a different data point. A duplicated First name input still edits <code>first_name</code> until you rebind it.</p>
+                <h3>Select precisely</h3>
+                <p>A plain click selects one control. Shift-click <em>adds</em> another; it does not toggle an already selected control off. To rebuild a selection, click empty canvas first. In Pointer mode, dragging a rectangle across empty canvas selects intersecting controls; hold Shift to add that area to the selection.</p>
+                <p>Use Layers when selecting around overlapping items. Multi-selection supports actions such as alignment, copy, duplicate, and delete. The canvas drag currently moves the control you grabbed, rather than translating the entire selection as a group. Properties edits also require a single selected control.</p>
+
+                <h2 id="align">6. Align edges and distribute rows</h2>
+                <p>Alignment changes where controls are placed now. Anchors, covered next, describe how a control responds to a later change in the form area's size. Do the placement work in <strong>Desktop</strong> first.</p>
+                <h3>Make two clean columns</h3>
+                <ol>
+                    <li>Select only the labels. In <strong>Toolbox → Align</strong>, choose <strong>Left</strong>. Their left edges move to the smallest X among those labels.</li>
+                    <li>Clear the selection, select only the inputs, and choose <strong>Left</strong> again. Their left edges line up independently of the labels.</li>
+                    <li>Select a label and its matching input, then choose <strong>Top</strong> to put them on the same Y. Repeat for the other rows that need correction.</li>
+                    <li>For consistent input widths, select each input individually and enter the same W. Align does not equalize widths or heights.</li>
+                </ol>
+                <p>Keep label and input columns separate when aligning Left or Right. Selecting every label and input and choosing Left would move them into one overlapping column. Likewise, choosing Top for an entire vertical stack collapses it into one row.</p>
+                <div class="table-scroll"><table>
+                    <thead><tr><th scope="col">Button</th><th scope="col">Selection needed</th><th scope="col">Exact result</th></tr></thead>
+                    <tbody>
+                        <tr><td>Left</td><td>2 or more</td><td>All selected left edges move to the leftmost selected edge (smallest X).</td></tr>
+                        <tr><td>Right</td><td>2 or more</td><td>All selected right edges move to the rightmost selected edge (largest X + W).</td></tr>
+                        <tr><td>Top</td><td>2 or more</td><td>All selected top edges move to the topmost selected edge (smallest Y).</td></tr>
+                        <tr><td>Bottom</td><td>2 or more</td><td>All selected bottom edges move to the lowest selected edge (largest Y + H).</td></tr>
+                        <tr><td>Dist H</td><td>3 or more</td><td>Spaces left-edge X positions equally between the first and last controls in X order.</td></tr>
+                        <tr><td>Dist V</td><td>3 or more</td><td>Spaces top-edge Y positions equally between the first and last controls in Y order.</td></tr>
+                    </tbody>
+                </table></div>
+                <p>The reference edge is determined by the selection's outermost position, not by which control you clicked last. If you need X = 24 exactly, correct any stray label lying further left before using Left.</p>
+                <h3>Space a vertical stack evenly</h3>
+                <ol>
+                    <li>Put the first label at Y = <strong>24</strong> and the last label at Y = <strong>168</strong>.</li>
+                    <li>Select the four labels and choose <strong>Dist V</strong>. The two inner labels move to Y = <strong>72</strong> and <strong>120</strong>. The first and last keep their positions.</li>
+                    <li>Select each label/input pair and choose <strong>Top</strong> to match the input to its label, or repeat Dist V on the four inputs with the same endpoints.</li>
+                </ol>
+                <figure>
+                    <a href="../../images/admin/form-layout/align-before.png"><img src="../../images/admin/form-layout/align-before.png" width="1960" height="620" loading="lazy" alt="Actual Admin designer before alignment, with four selected labels at uneven X and Y positions and the Align tools visible in Toolbox."></a>
+                    <figcaption>Before: four labels selected in Admin. The labels have uneven positions, and the Toolbox has been scrolled down to expose Align.</figcaption>
+                </figure>
+                <figure>
+                    <a href="../../images/admin/form-layout/align-after.png"><img src="../../images/admin/form-layout/align-after.png" width="1960" height="620" loading="lazy" alt="Actual Admin designer after using Left and Dist V: all four selected labels form one evenly spaced column beside their inputs."></a>
+                    <figcaption>After choosing <strong>Left</strong>, then <strong>Dist V</strong> in the actual designer: the labels share X = 24 and sit at Y = 24, 72, 120, and 168.</figcaption>
+                </figure>
+                <p><strong>Dist V is not an equal-empty-gap command.</strong> It spaces top positions, so controls of different heights can have different gaps or overlap. For a tall Notes box, keep the same row start but leave sufficient space beneath it. Dist H has the same distinction for widths. These tools do not resize or automatically avoid collisions.</p>
+                <p>Use <strong>Undo</strong> immediately if an alignment result is wrong. Perform these operations on Desktop: the alignment tools and numeric Position &amp; Size fields edit the base rectangle, even when another breakpoint is selected.</p>
+                <p class="checkpoint"><strong>Checkpoint:</strong> all labels share X = 24, all inputs share X = 216, and every pair has the same Y.</p>
+
+                <h2 id="anchors">7. Understand what anchors preserve</h2>
+                <p>In <strong>Fixed</strong> layout with <strong>Resize Mode = Anchored</strong>, anchors preserve the control's distances from chosen edges of its containing form area. A right anchor refers to the form area's right edge, not the neighboring control. It does not attach a label to its input.</p>
+                <ul>
+                    <li><strong>Left only:</strong> keep the left distance and control width. More room appears on the right when the form widens.</li>
+                    <li><strong>Right only:</strong> keep the right distance and control width. The control moves horizontally as the form widens or narrows.</li>
+                    <li><strong>Left + Right:</strong> keep both distances. The control's width grows or shrinks to fit between them.</li>
+                    <li><strong>Top only / Bottom only:</strong> apply the same idea vertically, keeping height constant.</li>
+                    <li><strong>Top + Bottom:</strong> keep both vertical distances. Height grows or shrinks with the containing area.</li>
+                </ul>
+                <h3>The margin comes from where you placed the control</h3>
+                <p>The main form uses a 1200-pixel Desktop reference width. For the input you placed at X = 216 with W = 960, the right margin is <strong>1200 − 216 − 960 = 24</strong> pixels. With Stretch Across, a 1000-pixel form area gives it a width of <strong>1000 − 216 − 24 = 760</strong> pixels. Its left edge stays at 216.</p>
+                <p>Compare a default generated input at X = 220 with W = 320: its right margin is 660 pixels. Applying Stretch Across preserves that large right margin. To make it fill a row, first widen the input toward the Desktop right edge, then choose Stretch Across. The preset does not reposition the control or invent a smaller margin.</p>
+                <h3>Height and minimum sizes</h3>
+                <p>The main form's reference height is at least 500 pixels; if a control extends further down, it grows to the lowest control edge plus 24 pixels. The designer's visible canvas is not itself that reference height. Bottom anchors preserve the margin relative to the runtime reference area, not the bottom of your monitor. Vertical movement or stretching is visible only when the containing form area actually changes height.</p>
+                <p><strong>Min W</strong> and <strong>Min H</strong> are runtime lower limits, with default values of 24 and 16. For this exercise, set an input's Min W to <strong>160</strong> and Min H to <strong>32</strong>. Stretching cannot make it smaller than these limits in the wide Fixed layout. If there is too little room, minimum sizes may force overflow or overlap; they do not provide automatic collision handling. Narrow stacked mode uses its own sizing rules.</p>
+                <p>Controls hosted inside a Tab Control use that container's child form area as their anchor reference. The numeric examples here are for top-level controls on the main form.</p>
+
+                <h2 id="presets">8. Choose an anchor preset</h2>
+                <ol>
+                    <li>Select exactly one control.</li>
+                    <li>Open <strong>Properties → Position &amp; Size</strong>.</li>
+                    <li>Set <strong>Resize Mode</strong> to <strong>Anchored</strong>.</li>
+                    <li>Choose an <strong>Anchor Preset</strong>. The Left, Right, Top, and Bottom checkboxes below it update to show the combination.</li>
+                    <li>Save and check the result in Data Entry at another size.</li>
+                </ol>
+                <div class="screenshot-pair">
+                    <figure class="screenshot-detail">
+                        <a href="../../images/admin/form-layout/anchor-properties.png"><img src="../../images/admin/form-layout/anchor-properties.png" width="279" height="359" loading="lazy" alt="Actual Admin Properties with Anchored resize mode and Stretch Across preset; Left, Right, and Top are checked, Bottom is unchecked."></a>
+                        <figcaption><strong>Stretch Across</strong> on the First name input: Left + Right + Top.</figcaption>
+                    </figure>
+                    <figure class="screenshot-detail">
+                        <a href="../../images/admin/form-layout/stretch-both.png"><img src="../../images/admin/form-layout/stretch-both.png" width="279" height="359" loading="lazy" alt="Actual Admin Properties for the Notes Textarea with Stretch Both selected and all four anchor checkboxes checked."></a>
+                        <figcaption><strong>Stretch Both</strong> demonstrated on Notes: all four edges. This capture shows the optional taller-area recipe.</figcaption>
+                    </figure>
+                </div>
+                <div class="table-scroll"><table>
+                    <thead><tr><th scope="col">Preset</th><th scope="col">Enabled edges</th><th scope="col">When the form area grows</th><th scope="col">Typical use</th></tr></thead>
+                    <tbody>
+                        <tr><td>Top Left</td><td>Left, Top</td><td>Position from the top-left and size stay constant.</td><td>Labels; compact controls near the top-left.</td></tr>
+                        <tr><td>Top Right</td><td>Right, Top</td><td>Moves horizontally with the right edge; size stays constant.</td><td>A fixed-size control near the top-right.</td></tr>
+                        <tr><td>Bottom Left</td><td>Left, Bottom</td><td>Moves vertically with the bottom edge; size stays constant.</td><td>A footer item near the bottom-left.</td></tr>
+                        <tr><td>Bottom Right</td><td>Right, Bottom</td><td>Moves with both far edges; size stays constant.</td><td>A fixed-size action control near the bottom-right.</td></tr>
+                        <tr><td>Stretch Across</td><td>Left, Top, Right</td><td>Width changes; Y and height stay constant.</td><td>Text, Number, or Select inputs filling a row.</td></tr>
+                        <tr><td>Stretch Down</td><td>Left, Top, Bottom</td><td>Height changes; X and width stay constant.</td><td>A tall, fixed-width panel or text area.</td></tr>
+                        <tr><td>Stretch Both</td><td>Left, Top, Right, Bottom</td><td>Width and height change between the four margins.</td><td>A large Notes area or data region with room to expand.</td></tr>
+                        <tr><td>Custom</td><td>Your checkbox combination</td><td>Follows the selected edges.</td><td>For example, a bottom strip using Left + Right + Bottom.</td></tr>
+                    </tbody>
+                </table></div>
+                <p><strong>Custom is a description of the checkbox combination.</strong> Selecting Custom alone makes no changes. To build a bottom strip, start with Stretch Across, turn Bottom on, and turn Top off. The preset displays Custom because Left + Right + Bottom is not one of the named presets.</p>
+                <p>The editor keeps at least one horizontal and one vertical edge enabled. If you uncheck the only horizontal edge, it enables the opposite one; it does the equivalent vertically. There is no center or completely unanchored preset.</p>
+                <h3>Anchored versus Scale With Form</h3>
+                <p><strong>Scale With Form</strong> converts the control's X, Y, W, and H to percentages of the reference area. At a wider form size, it changes both horizontal position and width proportionally. It also scales vertical position and height when the containing height changes. This is percentage-based control geometry; it does not scale the font like an image zoom.</p>
+                <p>Anchor checkboxes remain visible, but their edge rules are not used for the Fixed layout's geometry while Scale With Form is selected. Choosing a preset does not automatically switch Resize Mode back to Anchored. Use Anchored for fixed margins and ordinary input heights; try Scale With Form when proportionally changing the whole control rectangle is the intended behavior.</p>
+
+                <h2 id="anchor-lab">9. Try the anchor demo</h2>
+                <p>Choose a preset and change the form's width or height. The dashed outline marks the original <strong>1200 × 500</strong> reference area. The sample control starts at <strong>X = 216, Y = 72, W = 960, H = 112</strong>, with Min W = 160 and Min H = 32.</p>
+                <p class="checkpoint"><strong>Interactive example:</strong> the sliders below resize this example so you can see how an anchored control would respond. They are tutorial controls; Admin does not have these sliders. To check your own form in Admin, save it, open <strong>Data Entry</strong>, and resize the browser window.</p>
+                <p>This example demonstrates anchor geometry in wide Fixed layout with a constant reference rectangle. It does not simulate Elastic grids, narrow-screen stacking, data binding, or reference-height changes caused by adding controls. See <a href="#responsive">step 11</a> for screenshots of the actual Admin form at different sizes.</p>
+                <div class="anchor-lab">
+                    <noscript><p>Enable JavaScript to interact with this demo. The preset table and worked margin example above explain the same behavior without it.</p></noscript>
+                    <div class="lab-controls">
+                        <div class="lab-field"><label for="lab-preset">Anchor Preset</label><select id="lab-preset"><option value="topLeft">Top Left</option><option value="topRight">Top Right</option><option value="bottomLeft">Bottom Left</option><option value="bottomRight">Bottom Right</option><option value="stretchAcross" selected="">Stretch Across</option><option value="stretchDown">Stretch Down</option><option value="stretchBoth">Stretch Both</option><option value="custom">Custom</option></select></div>
+                        <div class="lab-field"><label for="lab-mode">Resize Mode</label><select id="lab-mode"><option value="anchor">Anchored</option><option value="scale">Scale With Form</option></select></div>
+                        <div class="lab-field"><label for="lab-width">Example form width: <output id="lab-width-value" for="lab-width">1200</output> px</label><input id="lab-width" type="range" min="720" max="1440" step="24" value="1200" style=""></div>
+                        <div class="lab-field"><label for="lab-height">Example form height: <output id="lab-height-value" for="lab-height">500</output> px</label><input id="lab-height" type="range" min="500" max="800" step="20" value="500" style=""></div>
+                    </div>
+                    <fieldset class="lab-anchors"><legend>Anchors</legend><div class="anchor-options"><label><input id="lab-left" type="checkbox" checked="" style="">Left</label><label><input id="lab-right" type="checkbox" checked="" style="">Right</label><label><input id="lab-top" type="checkbox" checked="" style="">Top</label><label><input id="lab-bottom" type="checkbox" style="">Bottom</label></div></fieldset>
+                    <div class="lab-legend"><span>Current form area</span><span class="control-key">Input control</span><span class="baseline-key">Original area</span></div>
+                    <svg id="lab-diagram" viewBox="0 0 1560 920" role="img" aria-labelledby="lab-title lab-description">
+                        <title id="lab-title">Interactive anchor geometry</title><desc id="lab-description">The current form is 1200 by 500 pixels. X: 216 · Y: 72 · W: 960 · H: 112 px</desc>
+                        <rect id="lab-frame" x="60" y="60" width="1200" height="500" rx="6"></rect>
+                        <rect id="lab-baseline" x="60" y="60" width="1200" height="500"></rect>
+                        <rect id="lab-control" x="276" y="132" width="960" height="112" rx="6"></rect>
+                        <text id="lab-control-caption" x="292" y="177">Input control</text>
+                        <text id="lab-size-caption" x="60" y="606">1200 × 500 px</text>
+                    </svg>
+                    <output id="lab-result" aria-live="polite">X: 216 · Y: 72 · W: 960 · H: 112 px</output>
+                    <p id="lab-explanation">Left, Top, and Right are enabled. The control stretches horizontally while its top position and height stay fixed.</p>
+                    <button id="lab-reset" type="button">Reset demo</button>
+                </div>
+                <ol>
+                    <li><strong>Stretch Across:</strong> move width to 1440. X stays 216 and W becomes 1200; the right margin remains 24.</li>
+                    <li><strong>Top Right:</strong> at width 1440, W stays 960 and X becomes 456. The control moves instead of stretching.</li>
+                    <li><strong>Stretch Both:</strong> keep width 1440 and increase height to 800. The control becomes 1200 × 412, with X and Y unchanged.</li>
+                    <li><strong>Scale With Form:</strong> at 1440 × 800, X becomes 259.2, Y becomes 115.2, W becomes 1152, and H becomes 179.2. All four numbers scale proportionally.</li>
+                    <li><strong>Try a narrow width:</strong> return to Anchored and compare Top Right with Stretch Across. A fixed-width control can extend outside the form area; an anchor is not an automatic fit-to-screen command.</li>
+                </ol>
+
+                <h2 id="recipes">10. Apply the settings to your form</h2>
+                <div class="recipe"><h3>Recipe A · Labels stay put; inputs grow across</h3>
+                    <p>For each label, use <strong>Anchored → Top Left</strong>. For each input, use <strong>Anchored → Stretch Across</strong>. Keep the inputs near the Desktop right edge before applying the preset; the worked layout ends at X = 1176.</p>
+                    <p>This is a useful starting point for the four-row customer form. The label column stays 168 pixels wide, the gap stays 24 pixels, and the inputs absorb horizontal changes. Set all label/input pairs to the same Y within their row. Each pair remains independent, so select and configure both controls deliberately.</p>
+                </div>
+                <div class="recipe"><h3>Recipe B · A Notes area uses the spare height</h3>
+                    <p>Keep the Notes label at <strong>Top Left</strong>. Set its Textarea to <strong>Stretch Both</strong> if you want its height to follow the form area's height. Give it a usable Min H, such as <strong>96</strong>, and keep controls below it out of its expansion region.</p>
+                    <p>For the example at Y = 168 and H = 112 on a 500-pixel reference height, the bottom margin is 220 pixels. If you want the Notes box to reach closer to the bottom, first increase its design H; the preset preserves the margin you designed. If it should remain 112 pixels tall, use Stretch Across instead.</p>
+                </div>
+                <div class="recipe"><h3>Recipe C · A fixed-size control follows the right edge</h3>
+                    <p>For an existing action button near the right side, use <strong>Top Right</strong> or <strong>Bottom Right</strong>. Place it near that edge first. Its W and H remain fixed, while its position follows the edge. Configure the button's action separately; anchors only govern layout.</p>
+                    <p>For a footer area that should widen but remain at the bottom, use <strong>Custom: Left + Right + Bottom</strong>. It stretches horizontally and keeps its height. Verify it does not collide with a growing Notes area.</p>
+                </div>
+
+                <h2 id="responsive">11. Check Fixed, Elastic, and smaller layouts</h2>
+                <p>The toolbar's <strong>Fixed / Elastic</strong> choice applies to the form's runtime layout. The selected control's <strong>Anchored / Scale With Form</strong> choice is a separate setting.</p>
+                <div class="table-scroll"><table>
+                    <thead><tr><th scope="col">Runtime layout</th><th scope="col">What controls placement</th><th scope="col">What to verify</th></tr></thead>
+                    <tbody>
+                        <tr><td>Fixed, wider than the narrow stacked view</td><td>Absolute control rectangles, anchor margins, or percentage geometry from Scale With Form.</td><td>Margins, minimum sizes, overlap, and available height.</td></tr>
+                        <tr><td>Elastic, wide layout</td><td>A 12-column grid with automatic placement. Control widths determine column spans; the grid controls placement and sizing.</td><td>Whether each label stays beside its intended input and rows wrap as intended.</td></tr>
+                        <tr><td>Elastic, tablet-sized layout</td><td>An 8-column grid using the tablet rectangle widths for spans.</td><td>Column spans, order, and breakpoint visibility.</td></tr>
+                        <tr><td>Narrow layout, 640 pixels or less</td><td>Both modes switch to a vertical stack with full-width controls and touch-friendly input sizing.</td><td>Label/input order, hidden controls, and tall text areas.</td></tr>
+                    </tbody>
+                </table></div>
+                <p>Responsive CSS checks both the viewport and the named form-area container. A large browser window can still give the form a narrow area when surrounding panels occupy space. Elastic uses grid flow rather than anchored absolute placement; edge presets and Scale With Form do not control its geometry in the same way as Fixed.</p>
+                <h3>Use the designer's breakpoint buttons deliberately</h3>
+                <p><strong>Desktop</strong>, <strong>Tablet</strong>, and <strong>Mobile</strong> use design widths of 1200, 768, and 375 pixels. The design canvas shows rectangles; it is not a live simulation of all Data Entry CSS, anchor stretching, or Elastic flow.</p>
+                <ol>
+                    <li>Finish the base placement, numeric X/Y/W/H edits, and alignment on Desktop.</li>
+                    <li>Switch to Mobile or Tablet to inspect the corresponding design view. Select a control to find <strong>Breakpoint: mobile/tablet → Visible at this breakpoint</strong>.</li>
+                    <li>Dragging or using resize handles in those views stores breakpoint-specific rectangle overrides. The numeric Position &amp; Size fields and Align tools still edit the base rectangle; use the canvas handles for breakpoint-specific geometry.</li>
+                    <li>For mobile stacking, keep each label just before its input in reading order. Runtime stack order is derived from the Mobile rectangle's Y and then X; if there is no override, it uses the base rectangle. Matching Y and placing the label to the left works naturally.</li>
+                    <li>Save, open Data Entry, and resize the real browser/form area to verify the final result.</li>
+                </ol>
+                <p>Tablet overrides influence Elastic column spans, and Mobile overrides influence stack order. They are not a general replacement for the Fixed renderer's Desktop anchor geometry. If an item is hidden at a breakpoint, hide its separate label too when appropriate.</p>
+                <p>For an initial form, complete and verify the Fixed version first. If you try Elastic afterward, check the whole layout: its automatic grid placement does not preserve every Desktop X position or blank gap. Keep whichever mode matches how you want the form to behave.</p>
+                <h3>The same saved form at three real Admin sizes</h3>
+                <p>These captures show the customer form loaded in Admin's Data Entry view. The labels use Top Left and all inputs, including Notes, use Stretch Across. The sample values are fictional. The form-area crops below preserve the actual rendered pixels.</p>
+                <figure>
+                    <a href="../../images/admin/form-layout/entry-wide.png"><img src="../../images/admin/form-layout/entry-wide.png" width="1260" height="328" loading="lazy" alt="Actual Admin Data Entry at a wide size, showing Maya, maya@example.com, a credit limit of 1500, and notes in wide inputs beside fixed labels."></a>
+                    <figcaption>Wide form: the inner renderer is 1212 pixels wide, giving the anchored inputs a width of 972 pixels. Labels keep their original positions.</figcaption>
+                </figure>
+                <figure>
+                    <a href="../../images/admin/form-layout/entry-narrow.png"><img src="../../images/admin/form-layout/entry-narrow.png" width="910" height="328" loading="lazy" alt="The same actual Admin record at a smaller width: labels remain in position while the inputs shrink horizontally."></a>
+                    <figcaption>Smaller form: the inner renderer is 862 pixels wide and the inputs shrink to 622 pixels. The left margin, right margin, and input heights are preserved.</figcaption>
+                </figure>
+                <figure class="screenshot-detail">
+                    <a href="../../images/admin/form-layout/entry-stacked.png"><img src="../../images/admin/form-layout/entry-stacked.png" width="282" height="461" loading="lazy" alt="Actual Admin narrow form area with First name, Email, Credit limit, and Notes labels stacked above full-width inputs."></a>
+                    <figcaption>Narrow form: with only 234 pixels inside the renderer, Admin switches to stacked labels and full-width inputs. This can happen inside a wider window when neighboring panes use the remaining space.</figcaption>
+                </figure>
+
+                <h2 id="save">12. Save and verify in Data Entry</h2>
+                <ol>
+                    <li>Choose <strong>Save</strong> in the designer and wait for <strong>Saved!</strong>. A selected source is required.</li>
+                    <li>Choose <strong>Data Entry</strong>. This action becomes available after the form has been saved.</li>
+                    <li>Open a record and confirm each field displays the expected value. In your practice data, try editing an ordinary writable field and saving the record.</li>
+                    <li>At a wide form size, verify labels stay put and Stretch Across inputs maintain their intended left and right margins.</li>
+                    <li>Reduce the available width and check intermediate sizes for overlap. Then check the narrow stacked view for label/input order.</li>
+                    <li>If you used Bottom anchors or vertical stretching, change the available height too. Confirm the form's container actually changes height before expecting vertical movement.</li>
+                    <li>Return to the designer for adjustments. Save again, then reopen Data Entry to check the updated saved definition. Reopen the designer later to verify the layout persisted.</li>
+                </ol>
+                <p>Designer Save stores the form definition. Saving a record in Data Entry stores record data. Unsaved design edits are not the definition that Data Entry loads.</p>
+                <p class="checkpoint"><strong>Finished:</strong> your labels and inputs are bound correctly, rows line up, the chosen anchors behave as expected, and the saved form works at both wide and narrow sizes.</p>
+
+                <h2 id="troubleshooting">Troubleshooting</h2>
+                <div class="table-scroll"><table>
+                    <thead><tr><th scope="col">What you see</th><th scope="col">What to check</th></tr></thead>
+                    <tbody>
+                        <tr><td>Choosing a table leaves a blank form.</td><td>New Form sets the source only. Place controls manually, or create a form through the table's Design Form… action.</td></tr>
+                        <tr><td>The label is correct, but the input edits the wrong column.</td><td>Select the input and inspect Data Binding → Field. Copies keep the original binding.</td></tr>
+                        <tr><td>A control will not accept typing on the canvas.</td><td>The canvas is a design preview. Save and open Data Entry.</td></tr>
+                        <tr><td>Control properties disappear after selecting several items.</td><td>Properties edits one control at a time. Multi-selection exposes selection actions instead.</td></tr>
+                        <tr><td>Left / Top is disabled.</td><td>Select at least two controls. Dist H / Dist V require at least three.</td></tr>
+                        <tr><td>Alignment moves the wrong items together.</td><td>Undo; select just one column for Left/Right, or one label/input pair for Top.</td></tr>
+                        <tr><td>Distributed controls still have uneven gaps.</td><td>Distribution equalizes X or Y starting positions. Match W/H first when you need equal empty gaps.</td></tr>
+                        <tr><td>Stretch Across leaves a huge right-hand gap.</td><td>Its right margin comes from the Desktop X and W. Widen the control near the reference right edge before applying the preset.</td></tr>
+                        <tr><td>A preset seems to have no effect.</td><td>Check Resize Mode = Anchored and runtime Fixed layout. Resize Data Entry; the canvas itself does not animate anchor behavior.</td></tr>
+                        <tr><td>Bottom Right does not move to the bottom of the screen.</td><td>It preserves the existing margin within the containing form area. It does not dock to the browser window or change the original margin.</td></tr>
+                        <tr><td>Anchors behave differently on a small screen.</td><td>The narrow layout intentionally stacks controls. Check available form width, including surrounding panels.</td></tr>
+                        <tr><td>Inputs overlap while shrinking.</td><td>Review minimum sizes, design margins, and the space available before stacked mode begins. Anchors do not resolve collisions.</td></tr>
+                        <tr><td>A mobile adjustment changed Desktop too.</td><td>Numeric rectangle edits and alignment target the base rectangle. Use drag/resize handles for breakpoint overrides.</td></tr>
+                        <tr><td>Data Entry still shows the old arrangement.</td><td>Save the designer, then reopen Data Entry so it loads the updated form definition.</td></tr>
+                    </tbody>
+                </table></div>
+
+                <h2 id="reference">Quick reference</h2>
+                <div class="table-scroll"><table>
+                    <thead><tr><th scope="col">Action</th><th scope="col">How</th></tr></thead>
+                    <tbody>
+                        <tr><td>Place a control</td><td>Click its Toolbox type, then click empty canvas. It places once and returns to Pointer.</td></tr>
+                        <tr><td>Add to selection</td><td>Shift-click controls or Layers entries; Shift-drag a selection rectangle in Pointer mode.</td></tr>
+                        <tr><td>Clear selection / cancel a placement tool</td><td>Escape. Clicking empty canvas in Pointer mode also clears selection.</td></tr>
+                        <tr><td>Copy / paste / duplicate</td><td>Toolbar or Toolbox buttons; Ctrl+C / Ctrl+V / Ctrl+D with designer focus.</td></tr>
+                        <tr><td>Undo / redo a control edit</td><td>Undo / Redo buttons; Ctrl+Z / Ctrl+Y with designer focus.</td></tr>
+                        <tr><td>Remove selected controls</td><td>Delete button, or Delete / Backspace with canvas focus.</td></tr>
+                        <tr><td>Keep labels fixed</td><td>Fixed layout → Anchored → Top Left.</td></tr>
+                        <tr><td>Let inputs fill the row</td><td>Place near the Desktop right edge → Anchored → Stretch Across.</td></tr>
+                        <tr><td>Verify responsive behavior</td><td>Save → Data Entry → resize the actual form area.</td></tr>
+                    </tbody>
+                </table></div>
+                <p>For a predictable workflow while editing text or numeric properties, use the visible toolbar buttons for designer commands. Finish the property edit and return focus to the canvas before using keyboard shortcuts.</p>
+                <p>Continue with the <a href="../admin-ui.html">Admin UI guide</a>, <a href="../form-control-extensibility.html">custom form controls</a>, or <a href="index.html">more tutorials</a>.</p>
+                <details class="source-notes">
+                    <summary>Implementation reference for maintainers</summary>
+                    <p>Checked against the repository source on September 5, 2026. This tutorial describes the current source implementation; installed releases may differ. Placement and selection are implemented in <code>src/CSharpDB.Admin.Forms/Components/Designer/DesignCanvas.razor</code>; alignment and breakpoint state in <code>DesignerState.cs</code>; property labels and anchor presets in <code>PropertyInspector.razor</code>; runtime geometry in <code>FormRenderer.razor</code> and <code>src/CSharpDB.Admin.Forms/wwwroot/css/designer.css</code>. These component filenames are relative to the same Designer directory. New-form initialization lives in <code>src/CSharpDB.Admin.Forms/Pages/Designer.razor</code>, with generated pairs supplied by <code>Services/DefaultFormGenerator.cs</code> in the Forms project.</p>
+                </details>
+            </article>
+        </div>
+    </main>
+    <div id="site-footer"></div>
+    <script src="../../js/csharpdb.bundle.js" defer></script>
+    <script>
+        (() => {
+            'use strict';
+            const contents = document.querySelector('.tutorial-contents');
+            const narrowPage = window.matchMedia('(max-width: 900px)');
+            const sizeContents = () => { contents.open = !narrowPage.matches; };
+            sizeContents();
+            narrowPage.addEventListener('change', sizeContents);
+            const byId = id => document.getElementById(id);
+            const preset = byId('lab-preset');
+            const mode = byId('lab-mode');
+            const width = byId('lab-width');
+            const height = byId('lab-height');
+            const edges = ['left', 'top', 'right', 'bottom'];
+            const checks = edges.map(edge => byId('lab-' + edge));
+            const presets = {
+                topLeft: [true, true, false, false], topRight: [false, true, true, false],
+                bottomLeft: [true, false, false, true], bottomRight: [false, false, true, true],
+                stretchAcross: [true, true, true, false], stretchDown: [true, true, false, true],
+                stretchBoth: [true, true, true, true]
+            };
+            const descriptions = {
+                topLeft: 'The left and top distances stay fixed. Width and height stay fixed too.',
+                topRight: 'The right and top distances stay fixed. The control moves horizontally and keeps its size.',
+                bottomLeft: 'The left and bottom distances stay fixed. The control moves vertically and keeps its size.',
+                bottomRight: 'The right and bottom distances stay fixed. The control moves with both edges and keeps its size.',
+                stretchAcross: 'Left, Top, and Right are enabled. The control stretches horizontally while its top position and height stay fixed.',
+                stretchDown: 'Left, Top, and Bottom are enabled. The control stretches vertically while its left position and width stay fixed.',
+                stretchBoth: 'All four edges are enabled. The control stretches horizontally and vertically between its original margins.',
+                custom: 'The selected edges determine which margins stay fixed. Two opposing edges stretch the control along that axis.'
+            };
+            const format = number => Number(number.toFixed(1)).toString();
+            function draw() {
+                const w = Number(width.value), h = Number(height.value);
+                const [left, top, right, bottom] = checks.map(check => check.checked);
+                let x, y, cw, ch;
+                if (mode.value === 'scale') {
+                    x = 216 * w / 1200; y = 72 * h / 500;
+                    cw = Math.max(160, 960 * w / 1200); ch = Math.max(32, 112 * h / 500);
+                } else {
+                    cw = left && right ? Math.max(160, w - 216 - 24) : 960;
+                    ch = top && bottom ? Math.max(32, h - 72 - 316) : 112;
+                    x = left ? 216 : w - 24 - cw; y = top ? 72 : h - 316 - ch;
+                }
+                byId('lab-width-value').textContent = w;
+                byId('lab-height-value').textContent = h;
+                byId('lab-frame').setAttribute('width', w);
+                byId('lab-frame').setAttribute('height', h);
+                const rect = byId('lab-control');
+                for (const [key, value] of Object.entries({x: x + 60, y: y + 60, width: cw, height: ch})) rect.setAttribute(key, value);
+                byId('lab-control-caption').setAttribute('x', Math.max(12, x + 76));
+                byId('lab-control-caption').setAttribute('y', y + 105);
+                byId('lab-size-caption').setAttribute('y', h + 106);
+                byId('lab-size-caption').textContent = w + ' × ' + h + ' px';
+                const metrics = 'X: ' + format(x) + ' · Y: ' + format(y) + ' · W: ' + format(cw) + ' · H: ' + format(ch) + ' px';
+                byId('lab-result').textContent = metrics;
+                byId('lab-description').textContent = 'The current form is ' + w + ' by ' + h + ' pixels. ' + metrics;
+                let explanation = mode.value === 'scale'
+                    ? 'Scale With Form uses proportional positions and sizes. Anchor checkbox settings are not used for this geometry.'
+                    : descriptions[preset.value];
+                if (x < 0 || y < 0 || x + cw > w || y + ch > h) explanation += ' The control extends beyond the form area at this size.';
+                byId('lab-explanation').textContent = explanation;
+            }
+            preset.addEventListener('change', () => {
+                if (presets[preset.value]) checks.forEach((check, i) => { check.checked = presets[preset.value][i]; });
+                else syncPreset();
+                draw();
+            });
+            function syncPreset() {
+                const current = checks.map(check => check.checked);
+                preset.value = Object.keys(presets).find(key => presets[key].every((value, i) => value === current[i])) || 'custom';
+            }
+            checks.forEach((check, i) => check.addEventListener('change', () => {
+                const opposite = [2, 3, 0, 1][i];
+                if (!check.checked && !checks[opposite].checked) checks[opposite].checked = true;
+                syncPreset(); draw();
+            }));
+            [width, height].forEach(input => input.addEventListener('input', draw));
+            mode.addEventListener('change', draw);
+            byId('lab-reset').addEventListener('click', () => {
+                width.value = 1200; height.value = 500; mode.value = 'anchor'; preset.value = 'stretchAcross';
+                checks.forEach((check, i) => { check.checked = presets.stretchAcross[i]; }); draw();
+            });
+            draw();
+        })();
+    </script>
+</body>
+</html>

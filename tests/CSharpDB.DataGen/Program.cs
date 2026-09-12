@@ -67,7 +67,7 @@ public static class Program
     private static async Task<RunSummary> RunRelationalAsync(DataGenOptions options)
     {
         LoadedDatasetSpec loadedSpec = DatasetSpecLoader.Load(options);
-        DatasetGenerationPlan plan = SpecDataGenerator.CreatePlan(options, loadedSpec.Spec);
+        DatasetGenerationPlan plan = SpecDataGenerator.CreatePlan(options.ToGenerationOptions(), loadedSpec.Spec);
 
         Console.WriteLine(
             "Relational  : " +
@@ -82,7 +82,7 @@ public static class Program
     private static async Task<RunSummary> RunDocumentsAsync(DataGenOptions options)
     {
         LoadedDatasetSpec loadedSpec = DatasetSpecLoader.Load(options);
-        DatasetGenerationPlan plan = SpecDataGenerator.CreatePlan(options, loadedSpec.Spec);
+        DatasetGenerationPlan plan = SpecDataGenerator.CreatePlan(options.ToGenerationOptions(), loadedSpec.Spec);
         var files = new List<string>();
 
         if (options.WriteFiles)
@@ -115,7 +115,7 @@ public static class Program
     private static async Task<RunSummary> RunTimeSeriesAsync(DataGenOptions options)
     {
         LoadedDatasetSpec loadedSpec = DatasetSpecLoader.Load(options);
-        DatasetGenerationPlan plan = SpecDataGenerator.CreatePlan(options, loadedSpec.Spec);
+        DatasetGenerationPlan plan = SpecDataGenerator.CreatePlan(options.ToGenerationOptions(), loadedSpec.Spec);
         return await RunSqlDatasetAsync(options, loadedSpec, plan.SqlSources);
     }
 
@@ -130,7 +130,7 @@ public static class Program
             string.Join(", ", spec.Tables.Select(t => t.Name)));
 
         var loadedSpec = new LoadedDatasetSpec(options.SourceDatabasePath!, spec);
-        DatasetGenerationPlan plan = SpecDataGenerator.CreatePlan(options, loadedSpec.Spec);
+        DatasetGenerationPlan plan = SpecDataGenerator.CreatePlan(options.ToGenerationOptions(), loadedSpec.Spec);
 
         Console.WriteLine(
             "Generating  : " +
@@ -213,6 +213,8 @@ public static class Program
 
     private static SerializableOptions CreateSerializableOptions(DataGenOptions options, string resolvedSpecPath) => new(
         Seed: options.Seed,
+        ReferenceUtc: options.ReferenceUtc,
+        Algorithm: CSharpDB.DataGeneration.StableRandom.Version,
         RowCount: options.RowCount,
         BatchSize: options.BatchSize,
         DirectLoad: options.DirectLoad,
@@ -283,6 +285,8 @@ public static class Program
 
     private sealed record SerializableOptions(
         int Seed,
+        DateTime ReferenceUtc,
+        string Algorithm,
         long RowCount,
         int BatchSize,
         bool DirectLoad,

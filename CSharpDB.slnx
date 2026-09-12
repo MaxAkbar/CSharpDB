@@ -47,6 +47,7 @@
     <Project Path="src/CSharpDB.DevOps/CSharpDB.DevOps.csproj" />
     <Project Path="src/CSharpDB.Engine/CSharpDB.Engine.csproj" />
     <Project Path="src/CSharpDB.Generators/CSharpDB.Generators.csproj" />
+    <Project Path="src/CSharpDB.DataGeneration/CSharpDB.DataGeneration.csproj" />
     <Project Path="src/CSharpDB.Execution/CSharpDB.Execution.csproj" />
     <Project Path="src/CSharpDB.ImportExport/CSharpDB.ImportExport.csproj" />
     <Project Path="src/CSharpDB.Migration/CSharpDB.Migration.csproj" />
@@ -80,6 +81,7 @@
     <Project Path="src/CSharpDB.Mcp/CSharpDB.Mcp.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/CSharpDB.DataGeneration.Tests/CSharpDB.DataGeneration.Tests.csproj" />
     <Project Path="tests/CSharpDB.Tests/CSharpDB.Tests.csproj" />
     <Project Path="tests/CSharpDB.Observability.Tests/CSharpDB.Observability.Tests.csproj" />
     <Project Path="tests/CSharpDB.Observability.TrimSmoke/CSharpDB.Observability.TrimSmoke.csproj" />

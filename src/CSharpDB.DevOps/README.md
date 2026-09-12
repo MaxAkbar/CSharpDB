@@ -1,5 +1,9 @@
 # CSharpDB.DevOps
 
+The Database Documenter services generate an
+immutable data dictionary, persist revision-checked descriptions, and render
+self-contained HTML or Markdown from saved metadata.
+
 Shared database DevOps services for CSharpDB schema compare, data compare,
 drift reporting, and preview script generation.
 

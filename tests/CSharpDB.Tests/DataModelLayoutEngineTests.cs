@@ -175,6 +175,56 @@ public sealed class DataModelLayoutEngineTests
     }
 
     [Fact]
+    public void ConnectorRouter_MovingUnrelatedTablesDoesNotChangeBendPositions()
+    {
+        DataModelConnectorObstacle[] endpoints = [new(100, 100, 100, 80), new(500, 260, 100, 80)];
+        var start = new DataModelConnectorEndpoint(200, 118, DataModelConnectorSide.Right);
+        var end = new DataModelConnectorEndpoint(500, 278, DataModelConnectorSide.Left);
+        var original = DataModelConnectorRouter.Route(start, end, endpoints);
+
+        foreach (double x in new double[] { 240, 300, 320, 380, 450, 900 })
+        {
+            DataModelConnectorObstacle[] obstacles = [.. endpoints, new(x, 600, 100, 80), new(750, 500, 100, 80)];
+            var moved = DataModelConnectorRouter.Route(start, end, obstacles);
+            Assert.Equal(original.Points, moved.Points);
+            AssertOrthogonalAndClear(moved, obstacles);
+            Assert.Equal(original.Points, DataModelConnectorRouter.Route(start, end, obstacles.Reverse().ToArray()).Points);
+        }
+    }
+
+    [Fact]
+    public void ConnectorRouter_DetoursStayFixedWhenDistantObstaclesMove()
+    {
+        DataModelConnectorObstacle[] fixedObstacles = [new(0, 100, 220, 240), new(360, 100, 220, 240), new(720, 100, 220, 240)];
+        var start = new DataModelConnectorEndpoint(220, 200, DataModelConnectorSide.Right);
+        var end = new DataModelConnectorEndpoint(720, 220, DataModelConnectorSide.Left);
+        var original = DataModelConnectorRouter.Route(start, end, fixedObstacles);
+        foreach (double x in new double[] { 280, 330, 500, 650 })
+        {
+            DataModelConnectorObstacle[] obstacles = [.. fixedObstacles, new(x, 700, 100, 80)];
+            var moved = DataModelConnectorRouter.Route(start, end, obstacles);
+            Assert.Equal(original.Points, moved.Points);
+            AssertOrthogonalAndClear(moved, obstacles);
+        }
+    }
+
+    [Fact]
+    public void ConnectorRouter_ChecksDetoursAgainstOtherTablesToo()
+    {
+        DataModelConnectorObstacle[] obstacles =
+        [
+            new(0, 100, 220, 240), new(360, 100, 220, 240), new(720, 100, 220, 240),
+            // Does not block the preferred middle lane, but blocks the first detour above the middle table.
+            new(400, 60, 60, 40),
+        ];
+        var start = new DataModelConnectorEndpoint(220, 200, DataModelConnectorSide.Right);
+        var end = new DataModelConnectorEndpoint(720, 220, DataModelConnectorSide.Left);
+        var route = DataModelConnectorRouter.Route(start, end, obstacles);
+        AssertOrthogonalAndClear(route, obstacles);
+        Assert.Equal(route.Points, DataModelConnectorRouter.Route(start, end, obstacles.Reverse().ToArray()).Points);
+    }
+
+    [Fact]
     public void ConnectorRouter_IsDeterministicRegardlessOfObstacleOrder()
     {
         DataModelConnectorObstacle[] obstacles =

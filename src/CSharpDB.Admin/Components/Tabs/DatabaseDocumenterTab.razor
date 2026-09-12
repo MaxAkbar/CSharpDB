@@ -1,0 +1,253 @@
+@using CSharpDB.DevOps
+@using System.Text
+@implements IAsyncDisposable
+@inject DatabaseClientHolder DbHolder
+@inject DatabaseChangeService Changes
+@inject IJSRuntime JS
+
+<div class="database-documenter" @ref="_root">
+    <div class="documenter-toolbar">
+        <div><h1>Database Documenter</h1><span>A searchable guide to your database</span></div>
+        <button class="toolbar-btn" @onclick="RefreshAsync" disabled="@_saving"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+        @if (_loading) { <button class="toolbar-btn" @onclick="CancelLoad">Cancel</button> }
+        <button class="toolbar-btn" disabled="@(_document is null || _loading || _saving || _editing)" @onclick="() => ExportAsync(true)">Export HTML</button>
+        <button class="toolbar-btn" disabled="@(_document is null || _loading || _saving || _editing)" @onclick="() => ExportAsync(false)">Export Markdown</button>
+    </div>
+    <div class="search-controls">
+        <label class="search-label">Search<input type="search" placeholder="Names, descriptions, SQL…" value="@_query" @oninput="SearchInput" /></label>
+        <label>Object type<select @bind="_kind" @bind:after="SearchAsync"><option value="">All types</option>@foreach (string kind in Kinds) { <option>@kind</option> }</select></label>
+        <label class="missing"><input type="checkbox" @bind="_missingOnly" @bind:after="SearchAsync" /> Missing descriptions</label>
+    </div>
+    <div class="documenter-status" role="status">
+        @if (_loading) { <span>Reading saved database definitions… @_loaded loaded</span> }
+        else if (_document is not null) { <span>@_results.Count of @_document.Entries.Count objects · Captured @_document.CapturedUtc.ToLocalTime().ToString("g")</span> }
+        @if (_stale) { <span class="notice">The dictionary may be out of date. Refresh to capture changes.</span> }
+        @if (_message is not null) { <span>@_message</span> }
+    </div>
+    @if (_error is not null) { <div class="error" role="alert">@_error <button class="toolbar-btn" disabled="@_saving" @onclick="RefreshAsync">Refresh</button></div> }
+    @if (_document is { IsComplete: false })
+    {
+        <details class="coverage"><summary>Incomplete documentation · @_document.Diagnostics.Count items need review</summary>
+            @foreach (string diagnostic in _document.Diagnostics) { <p>@diagnostic</p> }
+        </details>
+    }
+    <div class="documenter-workspace">
+        <aside aria-label="Dictionary objects">
+            <div class="object-list">
+            @foreach (var entry in _results.Skip(_page * PageSize).Take(PageSize))
+            {
+                <button class="object-row @(entry.Id == _selectedId ? "selected" : "")" disabled="@_editing" aria-pressed="@(entry.Id == _selectedId)" @onclick="() => Select(entry.Id)">
+                    <strong>@entry.Name</strong><span>@entry.Kind @(entry.OwnerName is null ? "" : " · " + entry.OwnerName)</span>
+                    <small>@(entry.NeedsReview ? "Description needs review" : string.IsNullOrWhiteSpace(entry.Description) ? "No description provided." : entry.Description)</small>
+                </button>
+            }
+            @if (_results.Count == 0 && !_loading) { <p class="empty">No matching objects. Try another search or filter.</p> }
+            </div>
+            @if (_results.Count > PageSize)
+            {
+                <div class="pager"><button class="toolbar-btn" disabled="@(_page == 0)" @onclick="() => _page--">Previous</button><span>@(_page * PageSize + 1)–@Math.Min((_page + 1) * PageSize, _results.Count)</span><button class="toolbar-btn" disabled="@((_page + 1) * PageSize >= _results.Count)" @onclick="() => _page++">Next</button></div>
+            }
+        </aside>
+        <main class="detail-pane">
+            @if (Selected is { } selected)
+            {
+                <div class="description-tools">
+                    @if (_editing)
+                    {
+                        <label for="@("description-" + Tab.Id)">Description for @selected.Name</label>
+                        <textarea id="@("description-" + Tab.Id)" maxlength="4000" @bind="_draft" @bind:event="oninput" disabled="@_saving" rows="5"></textarea>
+                        <p class="editor-hint">@_draft.Length / 4,000 characters. Leave blank to use the original description, if available.</p>
+                        <div><button class="toolbar-btn primary" disabled="@(_saving || _loading)" @onclick="SaveAsync">@(_saving ? "Saving…" : selected.NeedsReview ? "Save reviewed description" : "Save description")</button>
+                        <button class="toolbar-btn" disabled="@_saving" @onclick="CancelEdit">Cancel</button></div>
+                    }
+                    else
+                    {
+                        <button class="toolbar-btn" disabled="@(!selected.CanEdit || _loading)" @onclick="BeginEdit"><i class="bi bi-pencil"></i> @(selected.NeedsReview ? "Review description" : "Edit description")</button>
+                    }
+                </div>
+                <div class="entry-content">@((MarkupString)DatabaseDocumentRenderer.RenderEntryHtml(selected))</div>
+            }
+            else if (_editing)
+            {
+                <div class="description-tools"><p>The edited object is unavailable. Your draft is retained below.</p><textarea aria-label="Retained description draft" @bind="_draft" rows="5"></textarea><button class="toolbar-btn" @onclick="CancelEdit">Cancel editing</button></div>
+            }
+            else if (!_loading) { <p class="empty">Select an object to explore its description, relationships, and definition.</p> }
+        </main>
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public TabDescriptor Tab { get; set; } = null!;
+    private const int PageSize = 50;
+    private readonly DatabaseDocumenterService _generator = new();
+    private readonly DatabaseDocumentationStore _store = new();
+    private DatabaseDocument? _document;
+    private IReadOnlyList<DatabaseDocumentEntry> _results = [];
+    private string _query = "", _kind = "", _draft = "";
+    private string? _selectedId, _error, _message, _routeKeyspace, _routeKey;
+    private object? _seed;
+    private object? _databaseIdentity;
+    private bool _missingOnly, _loading, _saving, _editing, _stale, _disposed, _scrollSelection;
+    private int _page, _loaded, _generation;
+    private CancellationTokenSource? _loadCts, _searchCts, _saveCts;
+    private ElementReference _root;
+    private DotNetObjectReference<DatabaseDocumenterTab>? _reference;
+    private IJSObjectReference? _module;
+    private DatabaseDocumentEntry? Selected => _document?.Entries.FirstOrDefault(e => e.Id == _selectedId);
+    private IEnumerable<string> Kinds => _document?.Entries.Select(e => e.Kind).Distinct() ?? [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        DbHolder.DatabaseChanged += DatabaseChanged;
+        Changes.Changed += DefinitionsChanged;
+        await RefreshAsync();
+    }
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_routeKeyspace != Tab.RouteKeyspace || _routeKey != Tab.RouteKey) await ResetScopeAsync();
+        ApplySeed();
+    }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _reference = DotNetObjectReference.Create(this);
+            _module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/documenter.js");
+            if (!_disposed) await _module.InvokeVoidAsync("attach", _root, _reference);
+        }
+        if (_scrollSelection && _module is not null && !_disposed)
+        {
+            _scrollSelection = false;
+            await _module.InvokeVoidAsync("resetDetailScroll", _root);
+        }
+    }
+    private async Task RefreshAsync()
+    {
+        _loadCts?.Cancel();
+        _searchCts?.Cancel();
+        using var cts = new CancellationTokenSource();
+        _loadCts = cts;
+        int generation = ++_generation;
+        _routeKeyspace = Tab.RouteKeyspace; _routeKey = Tab.RouteKey;
+        _loading = true; _loaded = 0; _error = null; _message = null;
+        if (_document is not null) _stale = true;
+        try
+        {
+            await using var lease = DbHolder.CaptureClient(Tab.RouteContext);
+            var progress = new Progress<int>(count => { if (Current(generation)) { _loaded = count; _ = InvokeAsync(StateHasChanged); } });
+            string displayName = DatabaseDocumenterService.SafeDisplayName(Path.GetFileNameWithoutExtension(lease.Client.DataSource));
+            var document = await Task.Run(() => _generator.GenerateAsync(lease.Client, displayName, progress, cts.Token), cts.Token);
+            cts.Token.ThrowIfCancellationRequested();
+            if (!Current(generation) || !lease.IsCurrent) return;
+            _document = document; _databaseIdentity = lease.DatabaseIdentity; _stale = false;
+            if (Selected is null)
+            {
+                if (_editing) _message = "The edited object is no longer available. Its draft has been retained until you cancel editing.";
+                else _selectedId = document.Entries.FirstOrDefault()?.Id;
+            }
+            ApplySeed();
+            await SearchAsync();
+        }
+        catch (OperationCanceledException) { if (Current(generation)) _message = "Loading cancelled."; }
+        catch (Exception ex) { if (Current(generation)) _error = ex.Message; }
+        finally { if (Current(generation)) { _loading = false; _loadCts = null; } }
+    }
+    private void ApplySeed()
+    {
+        string? seed = Tab.State.GetValueOrDefault("DocumenterTable") as string;
+        var request = Tab.State.GetValueOrDefault("DocumenterRequest");
+        if (_editing || seed is null || ReferenceEquals(request, _seed) || _document is null) return;
+        var entry = _document.Entries.FirstOrDefault(e => e.Kind == "Table" && string.Equals(e.Name, seed, StringComparison.OrdinalIgnoreCase));
+        if (entry is not null) { Select(entry.Id); _seed = request; }
+    }
+    private async Task SearchInput(ChangeEventArgs args) { _query = args.Value?.ToString() ?? ""; await SearchAsync(); }
+    private async Task SearchAsync()
+    {
+        _searchCts?.Cancel();
+        var document = _document;
+        if (document is null) return;
+        using var cts = new CancellationTokenSource(); _searchCts = cts;
+        string query = _query, kind = _kind; bool missing = _missingOnly;
+        try
+        {
+            await Task.Delay(120, cts.Token);
+            var results = await Task.Run(() => DatabaseDocumenterService.Search(document, query, kind, missing, cts.Token), cts.Token);
+            if (cts.IsCancellationRequested || _disposed || !ReferenceEquals(document, _document)) return;
+            _results = results; _page = 0;
+        }
+        catch (OperationCanceledException) { }
+        finally { if (ReferenceEquals(_searchCts, cts)) _searchCts = null; }
+    }
+    private void Select(string id) { if (!_editing) { _selectedId = id; _message = null; _scrollSelection = true; } }
+    [JSInvokable] public Task SelectAnchor(string anchor)
+    {
+        if (!_editing)
+        {
+            var entry = _document?.Entries.FirstOrDefault(e => DatabaseDocumentRenderer.Anchor(e.Id) == anchor);
+            if (entry is not null) Select(entry.Id);
+        }
+        return InvokeAsync(StateHasChanged);
+    }
+    private void BeginEdit() { if (Selected is { } entry) { _draft = entry.OverrideDescription ?? entry.Description ?? ""; _editing = true; _error = null; } }
+    private void CancelEdit() { _editing = false; _draft = ""; _error = null; }
+    private async Task SaveAsync()
+    {
+        if (Selected is not { } entry) return;
+        using var cts = new CancellationTokenSource(); _saveCts = cts;
+        int generation = _generation;
+        _saving = true; _error = null;
+        try
+        {
+            await using var lease = DbHolder.CaptureClient(Tab.RouteContext);
+            if (!ReferenceEquals(_databaseIdentity, lease.DatabaseIdentity) || _routeKey != Tab.RouteKey || _routeKeyspace != Tab.RouteKeyspace)
+                throw new InvalidOperationException("The active database or route changed. Refresh before saving.");
+            await Task.Run(() => _store.SaveAsync(lease.Client, entry.Id, entry.Fingerprint, entry.Revision, _draft, cts.Token), cts.Token);
+            if (!Current(generation) || !lease.IsCurrent) return;
+            CancelEdit();
+            Changes.NotifyChanged();
+            await RefreshAsync();
+            _message = "Description saved.";
+        }
+        catch (OperationCanceledException) { if (Current(generation)) _error = "Saving was cancelled. Refresh to check the saved state; your draft has been retained."; }
+        catch (Exception ex) { if (Current(generation)) _error = ex.Message; }
+        finally { if (ReferenceEquals(_saveCts, cts)) { _saving = false; _saveCts = null; } }
+    }
+    private async Task ExportAsync(bool html)
+    {
+        var document = _document;
+        if (document is null || _module is null) return;
+        try
+        {
+            string content = await Task.Run(() => html ? DatabaseDocumentRenderer.RenderHtml(document) : DatabaseDocumentRenderer.RenderMarkdown(document));
+            using var stream = new MemoryStream(Encoding.UTF8.GetBytes(content));
+            using var reference = new DotNetStreamReference(stream);
+            await _module.InvokeVoidAsync("download", html ? "database-dictionary.html" : "database-dictionary.md", html ? "text/html;charset=utf-8" : "text/markdown;charset=utf-8", reference);
+        }
+        catch (Exception ex) { if (!_disposed) _error = "Export failed: " + ex.Message; }
+    }
+    private bool Current(int generation) => !_disposed && _generation == generation;
+    private void CancelLoad() => _loadCts?.Cancel();
+    private void DefinitionsChanged() => _ = InvokeAsync(() => { if (!_disposed) { _stale = true; StateHasChanged(); } });
+    private void DatabaseChanged() { _loadCts?.Cancel(); _saveCts?.Cancel(); _ = InvokeAsync(ResetScopeAsync); }
+    private async Task ResetScopeAsync()
+    {
+        if (_disposed) return;
+        ++_generation; _loadCts?.Cancel(); _saveCts?.Cancel(); _searchCts?.Cancel();
+        _document = null; _results = []; _databaseIdentity = null; _selectedId = null; _seed = null;
+        _editing = false; _draft = ""; _stale = false;
+        await RefreshAsync();
+        if (!_disposed) StateHasChanged();
+    }
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true; ++_generation;
+        DbHolder.DatabaseChanged -= DatabaseChanged; Changes.Changed -= DefinitionsChanged;
+        _loadCts?.Cancel(); _saveCts?.Cancel(); _searchCts?.Cancel();
+        if (_module is not null)
+        {
+            try { await _module.InvokeVoidAsync("detach", _root); await _module.DisposeAsync(); }
+            catch (JSDisconnectedException) { }
+        }
+        _reference?.Dispose();
+    }
+}

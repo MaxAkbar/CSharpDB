@@ -331,9 +331,7 @@ or when an external migration has already copied data into the shard DBs.
 For a large existing unsharded DB, the data must be split first: choose a route
 key, create shard DBs, copy schema, backfill rows/documents into the correct
 shards, verify counts and checksums, fence writes for cutover, copy the final
-delta, and only then seed the master catalog. See
-[`docs/sharding-existing-database-migration.md`](../../docs/sharding-existing-database-migration.md)
-for the internal migration checklist.
+delta, and only then seed the master catalog.
 
 Shard definitions can include Phase 6 replica metadata:
 

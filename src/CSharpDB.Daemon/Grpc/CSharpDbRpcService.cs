@@ -20,6 +20,13 @@ namespace CSharpDB.Daemon.Grpc;
 
 public sealed class CSharpDbRpcService : CSharpDbRpc.CSharpDbRpcBase
 {
+    public override Task<DefinitionCatalogResponse> ReadDefinitionCatalog(DefinitionCatalogRequest request, ServerCallContext context)
+        => ExecuteAsync(context,
+            ct => client is ICSharpDbDefinitionCatalogReader reader
+                ? reader.ReadDefinitionCatalogAsync(string.IsNullOrEmpty(request.ContinuationToken) ? null : request.ContinuationToken, request.PageSize, ct)
+                : throw new RpcException(new Status(StatusCode.Unimplemented, "Definition inspection is unavailable.")),
+            page => new DefinitionCatalogResponse { JsonUtf8 = ByteString.CopyFrom(JsonSerializer.SerializeToUtf8Bytes(page, new JsonSerializerOptions(JsonSerializerDefaults.Web))) });
+
     private static readonly Empty EmptyResponse = new();
     private readonly ICSharpDbClient client;
     private readonly IOptions<CSharpDbApiSecurityOptions> securityOptions;

@@ -1,0 +1,127 @@
+@using CSharpDB.DevOps
+@using System.Globalization
+<div class="definition-graph">
+    <div class="graph-controls">
+        <button class="toolbar-btn" @onclick="Expand">Expand selected</button>
+        <button class="toolbar-btn" @onclick="() => Zoom(1.2)" aria-label="Zoom in">+</button>
+        <button class="toolbar-btn" @onclick="() => Zoom(1 / 1.2)" aria-label="Zoom out">−</button>
+        <button class="toolbar-btn" @onclick="Reset">Reset graph</button>
+        <select class="schema-input" aria-label="Graph relationship type" @bind="_relationship" @bind:after="Reset"><option value="">All relationships</option>@foreach (var relationship in Enum.GetValues<DependencyRelationshipKind>()) { <option value="@relationship">@DefinitionRelationshipLabels.Label(relationship)</option> }</select>
+        <span>@_nodes.Count of @_totalNodes connected objects · display limit @NodeLimit</span>
+        <span>@_edges.Count of @_totalEdges visible relationships · display limit @EdgeLimit</span>
+    </div>
+    <p>Arrows point from a definition to the object it references or includes. Select a node, then expand it. Drag to pan; use + / − to zoom. Cycles are retained.</p>
+    <div class="graph-legend" aria-label="Relationship legend">@foreach (var relationship in Enum.GetValues<DependencyRelationshipKind>()) { <span class="@DefinitionRelationshipLabels.CssClass(relationship)" title="@DefinitionRelationshipLabels.Description(relationship)">@DefinitionRelationshipLabels.Label(relationship)</span> }</div>
+    @if (_limited || _totalEdges > EdgeLimit) { <p class="graph-notice" role="status">Display limit reached. Select an object and reset to explore another part of the graph. Uses and Used by lists include all resolved evidence.</p> }
+    <svg viewBox="@ViewBox" role="img" aria-label="Dependency graph" @onpointerdown="StartPan" @onpointermove="Pan" @onpointerup="StopPan" @onpointerleave="StopPan" @onpointercancel="StopPan">
+        <defs><marker id="@_markerId" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs>
+        <g transform="@Transform">
+            @foreach (var edge in _edges)
+            {
+                var a = Position(edge.SourceId); var b = Position(edge.TargetId);
+                if (edge.SourceId == edge.TargetId) { <path class="graph-edge" data-relationship="@DefinitionRelationshipLabels.CssClass(edge.Relationship)" d="@($"M {F(a.X + 50)} {F(a.Y - 25)} C {F(a.X + 130)} {F(a.Y - 120)}, {F(a.X - 130)} {F(a.Y - 120)}, {F(a.X - 50)} {F(a.Y - 25)}")" marker-end="@($"url(#{_markerId})")"><title>@EdgeTitle(edge)</title></path> }
+                else
+                {
+                    double dx = b.X - a.X, dy = b.Y - a.Y;
+                    double t = Math.Min(100 / Math.Max(1, Math.Abs(dx)), 27 / Math.Max(1, Math.Abs(dy)));
+                    double offset = _parallelOffsets[(edge.SourceId, edge.TargetId, edge.Relationship)];
+                    double distance = Math.Max(1, Math.Sqrt(dx * dx + dy * dy));
+                    <path class="graph-edge @(edge.Confidence == DependencyConfidence.Possible ? "possible" : "")" data-relationship="@DefinitionRelationshipLabels.CssClass(edge.Relationship)" d="@($"M {F(a.X)} {F(a.Y)} Q {F((a.X + b.X) / 2 - dy / distance * offset)} {F((a.Y + b.Y) / 2 + dx / distance * offset)}, {F(b.X - dx * t)} {F(b.Y - dy * t)}")" marker-end="@($"url(#{_markerId})")"><title>@EdgeTitle(edge)</title></path>
+                }
+            }
+            @foreach (string id in _nodes)
+            {
+                var p = Position(id);
+                <g class="graph-node @(id == SelectedId ? "selected" : "")" transform="@($"translate({F(p.X)} {F(p.Y)})")" role="button" tabindex="0" aria-label="@Name(id)" @onpointerdown:stopPropagation @onclick="() => OnSelect.InvokeAsync(id)" @onkeydown="e => KeySelect(e, id)">
+                    <rect x="-100" y="-27" width="200" height="54" rx="6" />
+                    <text x="0" y="-3" text-anchor="middle">@ShortName(id)</text><text class="graph-kind" x="0" y="15" text-anchor="middle">@_definitions.GetValueOrDefault(id)?.Kind</text><title>@Name(id)</title>
+                </g>
+            }
+        </g>
+    </svg>
+</div>
+@code {
+    [Parameter, EditorRequired] public DefinitionAnalysis Analysis { get; set; } = default!;
+    [Parameter, EditorRequired] public string SelectedId { get; set; } = "";
+    [Parameter] public EventCallback<string> OnSelect { get; set; }
+    private const int NodeLimit = 50;
+    private const int EdgeLimit = 200;
+    private readonly string _markerId = "dep-arrow-" + Guid.NewGuid().ToString("N");
+    private Dictionary<string, DefinitionCatalogRecord> _definitions = [];
+    private List<string> _nodes = [];
+    private List<DefinitionDependency> _edges = [];
+    private Dictionary<string, (double X, double Y)> _positions = [];
+    private Dictionary<(string Source, string Target, DependencyRelationshipKind Relationship), double> _parallelOffsets = [];
+    private DefinitionAnalysis? _loaded;
+    private double _zoom = 1, _panX, _panY, _pointerX, _pointerY;
+    private bool _panning, _limited;
+    private int _totalNodes;
+    private int _totalEdges;
+    private string _relationship = "";
+    private IEnumerable<DefinitionDependency> VisibleDependencies => Analysis.Dependencies.Where(e => _relationship.Length == 0 || e.Relationship.ToString() == _relationship);
+    protected override void OnParametersSet()
+    {
+        if (!ReferenceEquals(_loaded, Analysis)) { _loaded = Analysis; _definitions = Analysis.Catalog.Definitions.ToDictionary(d => d.Id); Reset(); }
+        else if (!_nodes.Contains(SelectedId)) Reset();
+    }
+    private void Reset()
+    {
+        _nodes = [SelectedId]; _limited = false; _zoom = 1; _panX = _panY = 0;
+        var adjacency = VisibleDependencies.SelectMany(e => new[] { (e.SourceId, e.TargetId), (e.TargetId, e.SourceId) }).ToLookup(e => e.Item1, e => e.Item2);
+        var seen = new HashSet<string>(); var pending = new Queue<string>(); pending.Enqueue(SelectedId);
+        while (pending.TryDequeue(out string? id)) if (seen.Add(id)) foreach (string neighbor in adjacency[id]) pending.Enqueue(neighbor);
+        _totalNodes = seen.Count;
+        Expand();
+    }
+    private void Expand()
+    {
+        foreach (var edge in VisibleDependencies.Where(e => e.SourceId == SelectedId || e.TargetId == SelectedId))
+        {
+            string id = edge.SourceId == SelectedId ? edge.TargetId : edge.SourceId;
+            if (_nodes.Contains(id)) continue;
+            if (_nodes.Count >= NodeLimit) { _limited = true; continue; }
+            _nodes.Add(id);
+        }
+        var edges = VisibleDependencies.Where(e => _nodes.Contains(e.SourceId) && _nodes.Contains(e.TargetId)).DistinctBy(e => (e.SourceId, e.TargetId, e.Relationship)).ToList();
+        _totalEdges = edges.Count;
+        _edges = edges.Take(EdgeLimit).ToList();
+        _parallelOffsets.Clear();
+        foreach (var group in _edges.GroupBy(e => (e.SourceId, e.TargetId)))
+        {
+            var siblings = group.ToArray();
+            for (int i = 0; i < siblings.Length; i++) _parallelOffsets[(siblings[i].SourceId, siblings[i].TargetId, siblings[i].Relationship)] = (i - (siblings.Length - 1) / 2.0) * 36;
+        }
+        _positions.Clear(); _positions[_nodes[0]] = (500, 325);
+        for (int i = 1; i < _nodes.Count; i++)
+        {
+            int ring = (i - 1) / 8 + 1, slot = (i - 1) % 8;
+            double angle = slot * Math.PI / 4;
+            _positions[_nodes[i]] = (500 + Math.Cos(angle) * 310 * ring, 325 + Math.Sin(angle) * 190 * ring);
+        }
+    }
+    private string Transform => $"translate({F(_panX)} {F(_panY)}) translate(500 325) scale({F(_zoom)}) translate(-500 -325)";
+    private string ViewBox
+    {
+        get
+        {
+            if (_positions.Count == 0) return "0 0 1000 650";
+            double left = _positions.Values.Min(p => p.X) - 124, right = _positions.Values.Max(p => p.X) + 124;
+            double top = _positions.Values.Min(p => p.Y) - 51, bottom = _positions.Values.Max(p => p.Y) + 51;
+            foreach (var edge in _edges.Where(e => e.SourceId == e.TargetId)) top = Math.Min(top, Position(edge.SourceId).Y - 125);
+            // Fit small neighborhoods without shrinking dense graphs beyond their normal pan/zoom scale.
+            if (right - left > 1000) { left = 0; right = 1000; }
+            if (bottom - top > 650) { top = 0; bottom = 650; }
+            return $"{F(left)} {F(top)} {F(right - left)} {F(bottom - top)}";
+        }
+    }
+    private static string F(double value) => value.ToString("0.###", CultureInfo.InvariantCulture);
+    private (double X, double Y) Position(string id) => _positions[id];
+    private string Name(string id) => _definitions.GetValueOrDefault(id)?.Name ?? id;
+    private string EdgeTitle(DefinitionDependency edge) => $"{Name(edge.SourceId)} → {Name(edge.TargetId)} · {DefinitionRelationshipLabels.Label(edge.Relationship)} · {edge.Usage}";
+    private string ShortName(string id) => Name(id) is { Length: > 25 } s ? s[..22] + "…" : Name(id);
+    private void Zoom(double amount) => _zoom = Math.Clamp(_zoom * amount, .1, 3);
+    private void StartPan(PointerEventArgs e) { _panning = true; _pointerX = e.ClientX; _pointerY = e.ClientY; }
+    private void Pan(PointerEventArgs e) { if (!_panning) return; _panX += e.ClientX - _pointerX; _panY += e.ClientY - _pointerY; _pointerX = e.ClientX; _pointerY = e.ClientY; }
+    private void StopPan() => _panning = false;
+    private Task KeySelect(KeyboardEventArgs e, string id) => e.Key is "Enter" or " " ? OnSelect.InvokeAsync(id) : Task.CompletedTask;
+}

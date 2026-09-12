@@ -160,6 +160,46 @@ public sealed class DataModelConnectorEditingTests
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Canvas_MovingUnrelatedTablesKeepsRoutesThroughRenderingAndSavedState(bool moveGroup)
+    {
+        var state = Model();
+        state.Nodes.Add(new DataModelNode { Name = "Products", X = 380, Y = 650, Columns = [new() { Name = "Id", IsPrimaryKey = true }] });
+        state.Nodes.Add(new DataModelNode { Name = "Inventory", X = 1000, Y = 520, Columns = [new() { Name = "ProductId", IsForeignKey = true }] });
+        state.Relationships.Add(new DataModelRelationship { Id = "products-fk", RightTable = "Products", RightColumn = "Id", LeftTable = "Inventory", LeftColumn = "ProductId" });
+        var group = moveGroup ? DataModelGroups.Create(state, ["Products", "Inventory"]) : null;
+        IReadOnlyList<DataModelConnectorPoint> original = [];
+
+        await WithRenderedCanvasAsync(state, async (_, canvas, html) =>
+        {
+            original = GeometryPoints(canvas, state.Relationships[0]);
+            var connected = GeometryPoints(canvas, state.Relationships[1]);
+            if (group is not null)
+                Assert.True(await canvas.OnTableGroupMoved(group.Id, 40, 60));
+            else
+                await canvas.OnTableMoved("Products", 420, 710);
+            // Rebuild the server-side geometry cache just as the parent rerender does after saving.
+            await canvas.SetParametersAsync(ParameterView.FromDictionary(new Dictionary<string, object?> { [nameof(SchemaCanvas.State)] = state }));
+            var rendered = Invoke(canvas, "GeometryFor", state.Relationships[0])!;
+            Assert.Equal(original, GetProperty<IReadOnlyList<DataModelConnectorPoint>>(rendered, "Points"));
+            Assert.Contains($"d=\"{GetProperty<string>(rendered, "Path")}\"", html());
+            Assert.NotEqual(connected, GeometryPoints(canvas, state.Relationships[1]));
+            Assert.All(state.Relationships, edge => Assert.Null(edge.ConnectorLayout));
+            Assert.Empty(state.PendingOperations);
+        });
+
+        var reopened = DataModelGraphBuilder.DeserializeState(DataModelGraphBuilder.SerializeState(state))!;
+        await WithRenderedCanvasAsync(reopened, (_, canvas, _) =>
+        {
+            Assert.Equal(original, GeometryPoints(canvas, reopened.Relationships[0]));
+            Assert.Equal(420, reopened.Nodes.Single(node => node.Name == "Products").X);
+            Assert.Equal(710, reopened.Nodes.Single(node => node.Name == "Products").Y);
+            return Task.CompletedTask;
+        });
+    }
+
+    [Theory]
     [InlineData(DataModelNodeDetailLevel.Keys)]
     [InlineData(DataModelNodeDetailLevel.All)]
     public async Task Canvas_CompositeSelectionHighlightsEveryMappedColumn(DataModelNodeDetailLevel detail)

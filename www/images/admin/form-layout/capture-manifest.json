@@ -1,0 +1,76 @@
+{
+  "sourceProject": "src/CSharpDB.Admin/CSharpDB.Admin.csproj",
+  "componentsProject": "src/CSharpDB.Admin.Forms",
+  "capturedLocalDate": "2026-09-05",
+  "timezone": "America/Los_Angeles",
+  "method": "Native browser screenshots and region captures; copied without pixel editing",
+  "fixture": "Customer Details Practice form, fictional customers table",
+  "images": [
+    {
+      "file": "align-after.png",
+      "width": 1960,
+      "height": 620,
+      "sha256": "f9d7e2feb094fbec1701dc192ff0fea5ddccf077dd5701d17966b00db2bc63c9"
+    },
+    {
+      "file": "align-before.png",
+      "width": 1960,
+      "height": 620,
+      "sha256": "8418dfbab256cd297d760f8f9e5a73dc1c1713adb6ada1a48746b1fa99b2ce3f"
+    },
+    {
+      "file": "anchor-properties.png",
+      "width": 279,
+      "height": 359,
+      "sha256": "b2e6df56f91e916cf432d5fbad067a5cce32bb06b05cd8f0954124d18255a270"
+    },
+    {
+      "file": "designer-workspace.png",
+      "width": 1960,
+      "height": 720,
+      "sha256": "f90a6adaf2d27947b78553ee444af8c7fc9afa871773166f0a842fd9eab3ab29"
+    },
+    {
+      "file": "entry-narrow.png",
+      "width": 910,
+      "height": 328,
+      "sha256": "20aa8df8e862da0de9a642bd28c84667dce885726fd5a9508a139d5c1e95fc50"
+    },
+    {
+      "file": "entry-stacked.png",
+      "width": 282,
+      "height": 461,
+      "sha256": "4bf85a9b2f5a6d86fa8725963abec2eb69451fbecb198e05fa67cf89709c4578"
+    },
+    {
+      "file": "entry-wide.png",
+      "width": 1260,
+      "height": 328,
+      "sha256": "3b0a4e501120a05420ee672eaf90673aba3263e0ebc0fdbdb0ae9586eae7154e"
+    },
+    {
+      "file": "input-binding.png",
+      "width": 279,
+      "height": 188,
+      "sha256": "801c7f9128c0e0e00409b8ae0c6df4849fb0f505bdd813597279b2ee3ef702df"
+    },
+    {
+      "file": "label-anchors.png",
+      "width": 279,
+      "height": 359,
+      "sha256": "fba41ea71d39c456b5147054015627236ad17cefb81aaf2abc6aed988f2f5666"
+    },
+    {
+      "file": "label-text.png",
+      "width": 279,
+      "height": 87,
+      "sha256": "a625fa26823310926f0da833ef36168e4f390df45afd3e288292f70fba075971"
+    },
+    {
+      "file": "stretch-both.png",
+      "width": 279,
+      "height": 359,
+      "sha256": "d0d564552ca84304a4cc2f66dbee234218a45a7bc2aea1d33b7fa92f253a3d1e"
+    }
+  ]
+}

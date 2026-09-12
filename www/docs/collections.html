@@ -63,6 +63,10 @@
 <span class="kw">var</span> customers = <span class="kw">await</span> db.GetCollectionAsync&lt;<span class="tp">Customer</span>&gt;(<span class="str">"customers"</span>);</code></pre>
                 </div>
 
+                <h2 id="trimming-and-nativeaot">Trimming and NativeAOT</h2>
+                <p>The examples on this page use <code>GetCollectionAsync&lt;T&gt;</code>, which uses reflection-based JSON serialization and member binding. This API carries trimming and dynamic-code warnings; these examples should not be treated as NativeAOT-ready without changes.</p>
+                <p>The current source also provides <code>GetGeneratedCollectionAsync&lt;T&gt;</code> for a trim-safe typed collection. It requires a generated or manually registered <code>ICollectionModel&lt;T&gt;</code> and throws if no model is registered. The generated route uses <code>[CollectionModel(typeof(YourJsonSerializerContext))]</code> with the collection generator and a matching JSON serializer context. See the <a href="https://github.com/MaxAkbar/CSharpDB/tree/main/tests/CSharpDB.GeneratedCollections.TrimSmoke">generated collection smoke project</a> for the complete model and project setup, or use the SQL API for NativeAOT scenarios.</p>
+
                 <h2>CRUD Operations</h2>
                 <div class="code-block" data-title="Put / Get / Delete">
                     <pre><code><span class="cm">// Put (insert or update)</span>

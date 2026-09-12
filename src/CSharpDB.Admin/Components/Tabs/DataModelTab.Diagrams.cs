@@ -83,6 +83,7 @@ public partial class DataModelTab
                 ? await ActiveDataModels.BuildSelectionAsync([])
                 : CloneDiagram(_state);
             await ActiveDiagrams.SaveDiagramAsync(name, candidate);
+            Changes?.NotifyChanged();
             candidate.DiagramName = name;
             candidate.SavedLayoutName = name;
             _state = candidate;
@@ -124,6 +125,7 @@ public partial class DataModelTab
         string name = (_state.DiagramName ?? _diagramName).Trim();
         var snapshot = CloneDiagram(_state);
         await ActiveDiagrams.SaveDiagramAsync(name, snapshot);
+        Changes?.NotifyChanged();
         _state.DiagramName = name;
         _state.SavedLayoutName = name;
         if (!_showDiagramNamePanel) _diagramName = name;

@@ -161,12 +161,73 @@ function harness(layout = null, options = {}) {
             clientY: 20 + (y + inset) * scale - canvas.scrollTop };
     };
     return { interop, registration, canvas, group, handles, hit, visible, parent, child, stage, viewport, svg,
-        calls, commits, event, flush, flushTimers, frames, waypoint, segment, settle, screenPoint, document, tableGroup, groupTitle, label, tooltip, labelButton };
+        calls, commits, event, flush, flushTimers, frames, waypoint, segment, settle, screenPoint, document, node, tableGroup, groupTitle, label, tooltip, labelButton };
 }
+
+test('moving a separate related table pair leaves unrelated connectors fixed during preview, sync, and reopen', async () => {
+    const h = harness(null, { scale: 1.25 });
+    const products = h.node('products', 300, 600);
+    h.node('inventory', 750, 500);
+    const relationship = h.document.createElementNS('', 'g');
+    relationship.setAttribute('class', 'schema-relationship');
+    Object.assign(relationship.dataset, { relationshipId: 'products-inventory', connectorLayout: 'null' });
+    for (const kind of ['hit', 'visible']) {
+        const edge = h.document.createElementNS('', 'path');
+        Object.assign(edge.dataset, h.visible.dataset, { modelEdge: kind, parentTable: 'products', childTable: 'inventory' });
+        relationship.append(edge);
+    }
+    h.svg.append(relationship);
+    h.registration.updateEdges();
+    const original = copy(h.registration.routes.get('r1').points);
+    const connected = copy(h.registration.routes.get('products-inventory').points);
+    const header = products.children[0];
+    h.registration.onPointerDown(h.event(header));
+    for (const clientX of [25, 100, -75]) {
+        h.registration.onPointerMove(h.event(header, { clientX, clientY: 50 })); h.flush();
+        assert.deepEqual(copy(h.registration.routes.get('r1').points), original, 'An unrelated bend must not follow products');
+        assert.notDeepEqual(copy(h.registration.routes.get('products-inventory').points), connected, 'Connected endpoints must follow products');
+    }
+    h.registration.onPointerUp(h.event(header)); await h.settle();
+    h.interop.sync('canvas', 0, 0, 1.25); h.flush();
+    assert.deepEqual(copy(h.registration.routes.get('r1').points), original, 'The final render must not move unrelated bends either');
+    assert.equal(h.calls.filter(call => call.method === 'OnTableMoved').length, 1);
+    assert.equal(h.commits().length, 0, 'Moving tables must not rewrite connector layouts');
+    const reopened = harness();
+    reopened.node('products', parseFloat(products.style.left), parseFloat(products.style.top));
+    reopened.node('inventory', 750, 500);
+    reopened.registration.updateEdges();
+    assert.deepEqual(copy(reopened.registration.routes.get('r1').points), original);
+});
 
 const manual = (points = [{ Id: 'bend-1', X: 300, Y: 50 }]) => ({ ParentSide: 1, ChildSide: 0, FollowEndpointRows: false, Waypoints: points });
 
 const middleLane = () => ({ ...manual([{ Id: 'upper', X: 350, Y: 118 }, { Id: 'lower', X: 350, Y: 278 }]), FollowEndpointRows: true });
+
+for (const layout of [null, middleLane()]) {
+    test(`an unrelated table only reroutes an ${layout ? 'edited' : 'automatic'} connector when it becomes an obstacle`, () => {
+        const h = harness(layout);
+        const blocker = h.node('blocker', 300, 600);
+        h.registration.updateEdges();
+        const original = copy(h.registration.routes.get('r1').points);
+        const stored = h.group.dataset.connectorLayout;
+        h.registration.onPointerDown(h.event(blocker.children[0]));
+        h.registration.onPointerMove(h.event(blocker, { clientY: -500 })); h.flush();
+        const route = h.registration.routes.get('r1');
+        assert.notDeepEqual(copy(route.points), original, 'A table moved into the path must still be avoided');
+        for (let index = 1; index < route.points.length; index++) {
+            const a = route.points[index - 1], b = route.points[index];
+            const intersects = a.y === b.y
+                ? a.y > 100 && a.y < 180 && Math.max(a.x, b.x) > 300 && Math.min(a.x, b.x) < 400
+                : a.x > 300 && a.x < 400 && Math.max(a.y, b.y) > 100 && Math.min(a.y, b.y) < 180;
+            assert.equal(intersects, false, 'No connector leg may pass through the moved card');
+        }
+        assert.equal(route.usedAutomaticFallback, layout != null);
+        assert.equal(h.group.dataset.connectorLayout, stored, 'Obstacle avoidance must not rewrite saved guides');
+        h.registration.onPointerCancel(h.event(blocker));
+        assert.deepEqual(copy(h.registration.routes.get('r1').points), original);
+        assert.equal(h.calls.filter(call => call.method === 'OnTableMoved').length, 0);
+    });
+}
 
 for (const table of ['parent', 'child']) {
     test(`sliding then moving the ${table} keeps one middle segment through save, reopen, and another slide`, async () => {

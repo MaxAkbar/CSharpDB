@@ -935,21 +935,21 @@ window.schemaCanvasInterop = {
                     layout.Waypoints[1].Y = end.y;
                 }
             }
-            const insideAny = point => expanded.some(obstacle =>
+            const insideAny = (point, obstacles = expanded) => obstacles.some(obstacle =>
                 point.x > obstacle.left + epsilon && point.x < obstacle.right - epsilon &&
                 point.y > obstacle.top + epsilon && point.y < obstacle.bottom - epsilon);
-            const segmentIsClear = (first, second) => {
+            const segmentIsClear = (first, second, obstacles = expanded) => {
                 if (Math.abs(first.y - second.y) < epsilon) {
                     const left = Math.min(first.x, second.x);
                     const right = Math.max(first.x, second.x);
-                    return expanded.every(obstacle =>
+                    return obstacles.every(obstacle =>
                         first.y <= obstacle.top + epsilon || first.y >= obstacle.bottom - epsilon ||
                         right <= obstacle.left + epsilon || left >= obstacle.right - epsilon);
                 }
                 if (Math.abs(first.x - second.x) < epsilon) {
                     const top = Math.min(first.y, second.y);
                     const bottom = Math.max(first.y, second.y);
-                    return expanded.every(obstacle =>
+                    return obstacles.every(obstacle =>
                         first.x <= obstacle.left + epsilon || first.x >= obstacle.right - epsilon ||
                         bottom <= obstacle.top + epsilon || top >= obstacle.bottom - epsilon);
                 }
@@ -1011,123 +1011,137 @@ window.schemaCanvasInterop = {
 
             let interior = customInterior;
             if (!interior && !insideAny(departure) && !insideAny(approach)) {
-                const xValues = [departure.x, approach.x, (departure.x + approach.x) / 2];
-                const yValues = [departure.y, approach.y, (departure.y + approach.y) / 2];
-                expanded.forEach(obstacle => {
-                    xValues.push(obstacle.left, obstacle.right);
-                    yValues.push(obstacle.top, obstacle.bottom);
-                });
-                const minX = Math.min(departure.x, approach.x, ...expanded.map(obstacle => obstacle.left));
-                const maxX = Math.max(departure.x, approach.x, ...expanded.map(obstacle => obstacle.right));
-                const minY = Math.min(departure.y, approach.y, ...expanded.map(obstacle => obstacle.top));
-                const maxY = Math.max(departure.y, approach.y, ...expanded.map(obstacle => obstacle.bottom));
-                xValues.push(Math.max(4, minX - outerLaneGap), maxX + outerLaneGap);
-                yValues.push(Math.max(4, minY - outerLaneGap), maxY + outerLaneGap);
-                const uniqueSorted = values => Array.from(new Set(values))
-                    .sort((left, right) => left - right);
-                const xs = uniqueSorted(xValues);
-                const ys = uniqueSorted(yValues);
-                const points = [];
-                const pointIndex = new Map();
-                const pointKey = (x, y) => `${x}|${y}`;
-                ys.forEach(y => xs.forEach(x => {
-                    const point = { x, y };
-                    if (insideAny(point)) return;
-                    pointIndex.set(pointKey(x, y), points.length);
-                    points.push(point);
-                }));
-                const startIndex = pointIndex.get(pointKey(departure.x, departure.y));
-                const endIndex = pointIndex.get(pointKey(approach.x, approach.y));
-                if (startIndex !== undefined && endIndex !== undefined) {
-                    const adjacency = points.map(() => []);
-                    const connect = (indices, direction) => {
-                        indices.sort((left, right) => direction === horizontal
-                            ? points[left].x - points[right].x
-                            : points[left].y - points[right].y);
-                        for (let index = 1; index < indices.length; index++) {
-                            const prior = indices[index - 1];
-                            const current = indices[index];
-                            if (!segmentIsClear(points[prior], points[current])) continue;
-                            const length = Math.abs(points[current].x - points[prior].x) + Math.abs(points[current].y - points[prior].y);
-                            adjacency[prior].push({ target: current, direction, length });
-                            adjacency[current].push({ target: prior, direction, length });
-                        }
-                    };
-                    ys.forEach(y => connect(points.map((point, index) => point.y === y ? index : -1).filter(index => index >= 0), horizontal));
-                    xs.forEach(x => connect(points.map((point, index) => point.x === x ? index : -1).filter(index => index >= 0), vertical));
-
-                    const directionCount = 3;
-                    const distance = new Array(points.length * directionCount).fill(Number.POSITIVE_INFINITY);
-                    const previous = new Array(points.length * directionCount).fill(-1);
-                    const heap = [];
-                    let sequence = 0;
-                    const heapPush = item => {
-                        heap.push(item);
-                        let index = heap.length - 1;
-                        while (index > 0) {
-                            const parent = Math.floor((index - 1) / 2);
-                            const prior = heap[parent];
-                            if (prior.cost < item.cost || prior.cost === item.cost && prior.sequence <= item.sequence) break;
-                            heap[index] = prior;
-                            index = parent;
-                        }
-                        heap[index] = item;
-                    };
-                    const heapPop = () => {
-                        if (heap.length === 0) return null;
-                        const result = heap[0];
-                        const tail = heap.pop();
-                        if (heap.length > 0) {
-                            let index = 0;
-                            while (true) {
-                                let child = index * 2 + 1;
-                                if (child >= heap.length) break;
-                                if (child + 1 < heap.length) {
-                                    const left = heap[child];
-                                    const right = heap[child + 1];
-                                    if (right.cost < left.cost || right.cost === left.cost && right.sequence < left.sequence)
-                                        child++;
-                                }
-                                const candidate = heap[child];
-                                if (candidate.cost > tail.cost || candidate.cost === tail.cost && candidate.sequence >= tail.sequence) break;
-                                heap[index] = candidate;
-                                index = child;
+                // Only actual blockers may supply routing lanes. Otherwise a distant
+                // table's moving edge can pull an unrelated connector along with it.
+                // Match DataModelConnectorRouter for the final render and reopening.
+                const middleX = (departure.x + approach.x) / 2;
+                interior = [departure, { x: middleX, y: departure.y }, { x: middleX, y: approach.y }, approach];
+                const routingObstacles = [];
+                for (;;) {
+                    const blockers = expanded.filter(obstacle => interior.some((point, index) =>
+                        index > 0 && !segmentIsClear(interior[index - 1], point, [obstacle])));
+                    if (!blockers.length) break;
+                    routingObstacles.push(...blockers);
+                    interior = null;
+                    const xValues = [departure.x, approach.x, (departure.x + approach.x) / 2];
+                    const yValues = [departure.y, approach.y, (departure.y + approach.y) / 2];
+                    routingObstacles.forEach(obstacle => {
+                        xValues.push(obstacle.left, obstacle.right);
+                        yValues.push(obstacle.top, obstacle.bottom);
+                    });
+                    const minX = Math.min(departure.x, approach.x, ...routingObstacles.map(obstacle => obstacle.left));
+                    const maxX = Math.max(departure.x, approach.x, ...routingObstacles.map(obstacle => obstacle.right));
+                    const minY = Math.min(departure.y, approach.y, ...routingObstacles.map(obstacle => obstacle.top));
+                    const maxY = Math.max(departure.y, approach.y, ...routingObstacles.map(obstacle => obstacle.bottom));
+                    xValues.push(Math.max(4, minX - outerLaneGap), maxX + outerLaneGap);
+                    yValues.push(Math.max(4, minY - outerLaneGap), maxY + outerLaneGap);
+                    const uniqueSorted = values => Array.from(new Set(values))
+                        .sort((left, right) => left - right);
+                    const xs = uniqueSorted(xValues);
+                    const ys = uniqueSorted(yValues);
+                    const points = [];
+                    const pointIndex = new Map();
+                    const pointKey = (x, y) => `${x}|${y}`;
+                    ys.forEach(y => xs.forEach(x => {
+                        const point = { x, y };
+                        if (insideAny(point, routingObstacles)) return;
+                        pointIndex.set(pointKey(x, y), points.length);
+                        points.push(point);
+                    }));
+                    const startIndex = pointIndex.get(pointKey(departure.x, departure.y));
+                    const endIndex = pointIndex.get(pointKey(approach.x, approach.y));
+                    if (startIndex !== undefined && endIndex !== undefined) {
+                        const adjacency = points.map(() => []);
+                        const connect = (indices, direction) => {
+                            indices.sort((left, right) => direction === horizontal
+                                ? points[left].x - points[right].x
+                                : points[left].y - points[right].y);
+                            for (let index = 1; index < indices.length; index++) {
+                                const prior = indices[index - 1];
+                                const current = indices[index];
+                                if (!segmentIsClear(points[prior], points[current], routingObstacles)) continue;
+                                const length = Math.abs(points[current].x - points[prior].x) + Math.abs(points[current].y - points[prior].y);
+                                adjacency[prior].push({ target: current, direction, length });
+                                adjacency[current].push({ target: prior, direction, length });
                             }
-                            heap[index] = tail;
+                        };
+                        ys.forEach(y => connect(points.map((point, index) => point.y === y ? index : -1).filter(index => index >= 0), horizontal));
+                        xs.forEach(x => connect(points.map((point, index) => point.x === x ? index : -1).filter(index => index >= 0), vertical));
+
+                        const directionCount = 3;
+                        const distance = new Array(points.length * directionCount).fill(Number.POSITIVE_INFINITY);
+                        const previous = new Array(points.length * directionCount).fill(-1);
+                        const heap = [];
+                        let sequence = 0;
+                        const heapPush = item => {
+                            heap.push(item);
+                            let index = heap.length - 1;
+                            while (index > 0) {
+                                const parent = Math.floor((index - 1) / 2);
+                                const prior = heap[parent];
+                                if (prior.cost < item.cost || prior.cost === item.cost && prior.sequence <= item.sequence) break;
+                                heap[index] = prior;
+                                index = parent;
+                            }
+                            heap[index] = item;
+                        };
+                        const heapPop = () => {
+                            if (heap.length === 0) return null;
+                            const result = heap[0];
+                            const tail = heap.pop();
+                            if (heap.length > 0) {
+                                let index = 0;
+                                while (true) {
+                                    let child = index * 2 + 1;
+                                    if (child >= heap.length) break;
+                                    if (child + 1 < heap.length) {
+                                        const left = heap[child];
+                                        const right = heap[child + 1];
+                                        if (right.cost < left.cost || right.cost === left.cost && right.sequence < left.sequence)
+                                            child++;
+                                    }
+                                    const candidate = heap[child];
+                                    if (candidate.cost > tail.cost || candidate.cost === tail.cost && candidate.sequence >= tail.sequence) break;
+                                    heap[index] = candidate;
+                                    index = child;
+                                }
+                                heap[index] = tail;
+                            }
+                            return result;
+                        };
+                        const startState = startIndex * directionCount + horizontal;
+                        distance[startState] = 0;
+                        heapPush({ state: startState, cost: 0, sequence: sequence++ });
+                        while (heap.length > 0) {
+                            const item = heapPop();
+                            if (item.cost > distance[item.state] + epsilon) continue;
+                            const currentPoint = Math.floor(item.state / directionCount);
+                            const priorDirection = item.state % directionCount;
+                            adjacency[currentPoint]
+                                .sort((left, right) => left.direction - right.direction ||
+                                    points[left.target].x - points[right.target].x || points[left.target].y - points[right.target].y)
+                                .forEach(edge => {
+                                    const candidate = item.cost + edge.length + (priorDirection === edge.direction ? 0 : bendPenalty);
+                                    const nextState = edge.target * directionCount + edge.direction;
+                                    if (candidate >= distance[nextState] - epsilon) return;
+                                    distance[nextState] = candidate;
+                                    previous[nextState] = item.state;
+                                    heapPush({ state: nextState, cost: candidate, sequence: sequence++ });
+                                });
                         }
-                        return result;
-                    };
-                    const startState = startIndex * directionCount + horizontal;
-                    distance[startState] = 0;
-                    heapPush({ state: startState, cost: 0, sequence: sequence++ });
-                    while (heap.length > 0) {
-                        const item = heapPop();
-                        if (item.cost > distance[item.state] + epsilon) continue;
-                        const currentPoint = Math.floor(item.state / directionCount);
-                        const priorDirection = item.state % directionCount;
-                        adjacency[currentPoint]
-                            .sort((left, right) => left.direction - right.direction ||
-                                points[left.target].x - points[right.target].x || points[left.target].y - points[right.target].y)
-                            .forEach(edge => {
-                                const candidate = item.cost + edge.length + (priorDirection === edge.direction ? 0 : bendPenalty);
-                                const nextState = edge.target * directionCount + edge.direction;
-                                if (candidate >= distance[nextState] - epsilon) return;
-                                distance[nextState] = candidate;
-                                previous[nextState] = item.state;
-                                heapPush({ state: nextState, cost: candidate, sequence: sequence++ });
-                            });
-                    }
-                    const horizontalEnd = endIndex * directionCount + horizontal;
-                    const verticalEnd = endIndex * directionCount + vertical;
-                    let endState = distance[horizontalEnd] <= distance[verticalEnd] + bendPenalty ? horizontalEnd : verticalEnd;
-                    if (Number.isFinite(distance[endState])) {
-                        const reversed = [];
-                        for (let state = endState; state >= 0; state = previous[state]) {
-                            reversed.push(points[Math.floor(state / directionCount)]);
-                            if (state === startState) break;
+                        const horizontalEnd = endIndex * directionCount + horizontal;
+                        const verticalEnd = endIndex * directionCount + vertical;
+                        let endState = distance[horizontalEnd] <= distance[verticalEnd] + bendPenalty ? horizontalEnd : verticalEnd;
+                        if (Number.isFinite(distance[endState])) {
+                            const reversed = [];
+                            for (let state = endState; state >= 0; state = previous[state]) {
+                                reversed.push(points[Math.floor(state / directionCount)]);
+                                if (state === startState) break;
+                            }
+                            interior = reversed.reverse();
                         }
-                        interior = reversed.reverse();
                     }
+                    if (!interior) break;
                 }
             }
 

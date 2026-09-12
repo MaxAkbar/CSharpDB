@@ -1,0 +1,321 @@
+@using CSharpDB.DevOps
+@using CSharpDB.CodeModules
+@implements IAsyncDisposable
+@inject DatabaseClientHolder DbHolder
+@inject DatabaseChangeService Changes
+@inject TabManagerService TabManager
+
+<section class="definition-explorer" aria-label="SQL Search and Dependencies">
+    <div class="toolbar">
+        <strong>SQL Search &amp; Dependencies</strong>
+        <div class="toolbar-spacer"></div>
+        <AdminRouteSelector Tab="Tab" RouteChanged="RouteChangedAsync" />
+        <button class="toolbar-btn" @onclick="RefreshAsync" disabled="@_loading"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+        @if (_loading) { <button class="toolbar-btn" @onclick="Cancel">Cancel</button> }
+    </div>
+    <div class="search-controls">
+        <input class="schema-input search-box" aria-label="Search definitions" placeholder="Search inside SQL and saved definitions…" @bind="_query" @bind:event="oninput" @bind:after="SearchAsync" />
+        <select class="schema-input" aria-label="Object type" @bind="_kind" @bind:after="SearchAsync">
+            <option value="">All object types</option>
+            @foreach (var kind in Definitions.Select(d => d.Kind).Distinct().Order()) { <option>@kind</option> }
+        </select>
+        <label><input type="checkbox" @bind="_matchCase" @bind:after="SearchAsync" /> Match case</label>
+        <label><input type="checkbox" @bind="_wholeWord" @bind:after="SearchAsync" /> Whole word</label>
+        <button class="toolbar-btn" disabled="@(_analysis is null)" @onclick="OpenImpact">Assess column impact</button>
+    </div>
+    <div class="catalog-status" role="status">
+        @if (_loading) { <span>Reading and analyzing saved definitions… @_loaded parts read</span> }
+        else if (_searching) { <span>Searching…</span> }
+        else if (_analysis is not null) { <span>@Definitions.Count definitions · @_results.Count results · Updated @_analysis.Catalog.CapturedUtc.ToLocalTime().ToString("HH:mm:ss")</span> }
+        @if (_stale) { <strong class="notice">Results are stale. Refresh to use the latest definitions.</strong> }
+        @if (_cancelled) { <span>Cancelled.</span> }
+    </div>
+    @if (_error is not null) { <div class="explorer-message" role="alert">@_error <button class="toolbar-btn" @onclick="RefreshAsync">Retry</button></div> }
+    @if (_analysis is not null && (_analysis.Diagnostics.Count > 0 || _analysis.Catalog.Diagnostics.Count > 0))
+    {
+        <details class="coverage"><summary>Incomplete analysis coverage · @(_analysis.Diagnostics.Count + _analysis.Catalog.Diagnostics.Count) items need review</summary>
+            <p>Text search includes definitions that could not be fully resolved. Dependency and impact results may be incomplete.</p>
+            @foreach (var d in _analysis.Catalog.Diagnostics) { <p><strong>@d.Source:</strong> @d.Message</p> }
+            @foreach (var d in _analysis.Diagnostics.Take(_diagnosticLimit)) { <p><button class="text-link" @onclick="() => Select(d.ObjectId)">@Name(d.ObjectId)</button> · @d.Location: @d.Message</p> }
+            @if (_analysis.Diagnostics.Count > _diagnosticLimit) { <button class="toolbar-btn" @onclick="() => _diagnosticLimit += 100">Show 100 more</button> }
+        </details>
+    }
+    <div class="explorer-workspace">
+        <aside class="results-pane" aria-label="Search results">
+            @if (_results.Count == 0 && !_loading) { <div class="empty-state">@(_analysis is null ? "Refresh to load saved definitions." : "No matching definitions. Try another search or object type.")</div> }
+            <div class="result-list">
+            @foreach (var result in _results.Skip(_resultPage * 50).Take(50))
+            {
+                <button class="result-row @(result.Definition.Id == _selectedId ? "selected" : "")" @onclick="() => Select(result.Definition.Id)" aria-pressed="@(result.Definition.Id == _selectedId)">
+                    <span class="result-title">@result.Definition.Name</span><span class="object-kind">@result.Definition.Kind @(!result.Definition.IsEnabled ? " · Disabled" : "")</span>
+                    <span class="snippet">@Highlight(DefinitionTextSearch.Snippet(result.Definition.Source, result.Matches.FirstOrDefault()))</span>
+                    <small>@(result.Definition.OwnerName is { Length: > 0 } owner ? owner + " · " : "")@(result.Matches.Count > 0 ? $"{result.Matches.Count} matches · line {result.Matches[0].Line}" : result.NameMatched ? "Object name match" : "Saved definition")</small>
+                </button>
+            }
+            </div>
+            @if (_results.Count > 50)
+            {
+                <div class="pager"><button class="toolbar-btn" disabled="@(_resultPage == 0)" @onclick="() => _resultPage--">Previous</button><span>@(_resultPage * 50 + 1)–@Math.Min((_resultPage + 1) * 50, _results.Count) of @_results.Count</span><button class="toolbar-btn" disabled="@((_resultPage + 1) * 50 >= _results.Count)" @onclick="() => _resultPage++">Next</button></div>
+            }
+        </aside>
+        <main class="preview-pane">
+            @if (Selected is { } selected)
+            {
+                <div class="preview-title"><div><small>@selected.Kind @(selected.OwnerName is not null ? " / " + selected.OwnerName : "")</small><h2>@selected.Name</h2></div>
+                    @if (ModelName(selected) is { } modelName) { <button class="toolbar-btn" @onclick="() => TabManager.OpenSavedDataModelTab(modelName)">Open data model</button> }
+                    else if (selected.Kind is not ("External table" or "Archive relationship")) { <button class="toolbar-btn" @onclick="() => OpenImpactFor(selected)">Assess column impact</button> }
+                </div>
+            }
+            <div class="preview-tabs" role="tablist" aria-label="Definition views">
+                @foreach (string view in Views) { <button role="tab" aria-selected="@(_view == view)" class="@(_view == view ? "active" : "")" @onclick="() => SetView(view)">@view</button> }
+            </div>
+            <div class="preview-content @(_view == "Graph" ? "graph-preview" : "")">
+            @if (_view == "Impact")
+            {
+                <div class="impact-controls">
+                    <label>Table<select class="schema-input" aria-label="Impact table" @bind="_impactTable" @bind:after="ImpactTableChanged"><option value="">Choose table</option>@foreach(var t in Definitions.Where(d => d.Kind == "Table")) { <option>@t.Name</option> }</select></label>
+                    <label>Column<select class="schema-input" aria-label="Impact column" @bind="_impactColumn" @bind:after="ClearImpact"><option value="">Choose column</option>@foreach (string c in ImpactColumns) { <option>@c</option> }</select></label>
+                    <label>Change<select class="schema-input" aria-label="Impact change" @bind="_impactChange" @bind:after="ClearImpact">@foreach (var c in Enum.GetValues<ColumnChangeKind>()) { <option>@c</option> }</select></label>
+                    <button class="toolbar-btn primary" disabled="@(_loading || _analysis is null || string.IsNullOrEmpty(_impactColumn))" @onclick="AssessAsync">Assess impact</button>
+                </div>
+                <p class="advisory">Advisory assessment of saved definitions. Existing engine checks still apply when a change is submitted.</p>
+                @if (_impact is not null)
+                {
+                    <h3>@_impact.Change: @_impact.Table.@_impact.Column</h3>
+                    @foreach (var category in Enum.GetValues<ColumnImpactCategory>())
+                    {
+                        var findings = _impact.Findings.Where(f => f.Category == category).ToArray();
+                        <details class="impact-group" open><summary>@CategoryLabel(category) <span>@findings.Length</span></summary>
+                            @if (findings.Length == 0) { <p>No findings in this category.</p> }
+                            @foreach (var finding in findings.Take(_findingLimit))
+                            {
+                                <div class="finding"><button class="text-link" @onclick="() => Select(finding.ObjectId)">@Name(finding.ObjectId)</button><p>@finding.Reason</p>
+                                    @if (finding.Path.Count > 0) { <small>@string.Join(" → ", finding.Path.Select(e => Name(e.TargetId)).Append(Name(finding.ObjectId)))</small> }
+                                    <small>@finding.Location</small>
+                                </div>
+                            }
+                            @if (findings.Length > _findingLimit) { <button class="toolbar-btn" @onclick="() => _findingLimit += 100">Show 100 more</button> }
+                        </details>
+                    }
+                }
+            }
+            else if (Selected is { } definition)
+            {
+                @if (definition.Kind == "Data model") { <p class="advisory">Saved diagram. Model membership and proposed changes are listed separately from database usage.</p> }
+                @if (definition.Kind == "Proposed change") { <p class="advisory proposed-notice">Proposed — this saved design change has not been applied to the database.</p> }
+                @if (definition.Kind is "External table" or "Archive relationship") { <p class="advisory">Archive metadata only. Data rows and indexes are not scanned or integrity-verified.</p> }
+                @if (MetadataValue(definition, "archivePath") is { } archivePath) { <p class="source-location">Archive: @archivePath @((MetadataValue(definition, "sourceTableName") is { } sourceName) ? " · Source table: " + sourceName : "")</p> }
+                @if (_view == "Definition")
+                {
+                    var source = definition.Source;
+                    var matches = DefinitionTextSearch.Find(source, _query, _matchCase, _wholeWord);
+                    @if (matches.Count > 0) { <div class="match-navigation"><button class="toolbar-btn" @onclick="() => PreviousMatch(matches.Count)">Previous match</button><span>Match @(_matchIndex + 1) of @matches.Count</span><button class="toolbar-btn" @onclick="() => NextMatch(matches.Count)">Next match</button></div> }
+                    var start = matches.Count > 0 ? Math.Max(0, matches[Math.Min(_matchIndex, matches.Count - 1)].Start - 300) : _sourceOffset;
+                    var length = Math.Min(12000, source.Length - start);
+                    <small class="source-location">Source characters @(start + 1)–@(start + length) of @source.Length · @(matches.Count > 0 ? $"line {matches[Math.Min(_matchIndex, matches.Count - 1)].Line}, column {matches[Math.Min(_matchIndex, matches.Count - 1)].Column}" : definition.Format)</small>
+                    <pre class="source-code">@Highlight(source.Substring(start, length))</pre>
+                    @if (matches.Count == 0 && source.Length > 12000) { <div class="pager"><button class="toolbar-btn" disabled="@(_sourceOffset == 0)" @onclick="() => _sourceOffset = Math.Max(0, _sourceOffset - 12000)">Previous source page</button><button class="toolbar-btn" disabled="@(_sourceOffset + 12000 >= source.Length)" @onclick="() => _sourceOffset += 12000">Next source page</button></div> }
+                }
+                else if (_view == "Graph" && _analysis is not null)
+                {
+                    @if (definition.Kind == "Column") { <p class="advisory">Graph shows relationships for the owning table. Used by lists evidence for this column.</p> }
+                    <DefinitionDependencyGraph Analysis="_analysis" SelectedId="@RelationshipId(definition)" OnSelect="GraphSelect" />
+                }
+                else if (_analysis is not null)
+                {
+                    var uses = _view == "Uses";
+                    var edges = _analysis.Dependencies.Where(e => (uses ? e.SourceId == definition.Id : e.TargetId == RelationshipId(definition)
+                        && (RelationshipColumn(definition) is not { } column || string.Equals(e.TargetColumn, column, StringComparison.OrdinalIgnoreCase) || e.Usage is "Wildcard" or "Positional insert"))
+                        && (_relationship.Length == 0 || e.Relationship.ToString() == _relationship)).ToArray();
+                    <label class="relationship-filter">Relationship <select class="schema-input" aria-label="Relationship type" @bind="_relationship"><option value="">All relationships</option>@foreach (var relationship in Enum.GetValues<DependencyRelationshipKind>()) { <option value="@relationship">@DefinitionRelationshipLabels.Label(relationship)</option> }</select></label>
+                    <p class="advisory">@(uses ? "Objects referenced or included by this definition." : "Definitions that reference or include this object.") @edges.Length evidence entries.</p>
+                    @if (edges.Length == 0) { <div class="empty-state">No resolved relationships. Check coverage diagnostics for unresolved references.</div> }
+                    @foreach (var group in edges.GroupBy(e => e.Relationship).OrderBy(g => g.Key))
+                    {
+                        <h3 class="relationship-heading @DefinitionRelationshipLabels.CssClass(group.Key)">@DefinitionRelationshipLabels.Label(group.Key) · @group.Count()</h3>
+                        <p class="advisory">@DefinitionRelationshipLabels.Description(group.Key)</p>
+                        @foreach (var edge in group.Take(_edgeLimit))
+                        {
+                        <div class="dependency-row"><button class="text-link" @onclick="() => Select(uses ? edge.TargetId : edge.SourceId)">@Name(uses ? edge.TargetId : edge.SourceId)</button>
+                            <span>@edge.TargetColumn · @edge.Usage</span><small>@edge.Confidence · @edge.Location @(edge.Span is { } span ? $" · line {span.Line}" : "")</small>
+                            <button class="text-link" @onclick="() => SelectEvidence(edge)">View evidence</button>
+                        </div>
+                        }
+                        @if (group.Count() > _edgeLimit) { <button class="toolbar-btn" @onclick="() => _edgeLimit += 100">Show 100 more</button> }
+                    }
+                }
+            }
+            else { <div class="empty-state">Select a result to explore its definition and relationships.</div> }
+            </div>
+        </main>
+    </div>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public TabDescriptor Tab { get; set; } = default!;
+    private static readonly string[] Views = ["Definition", "Uses", "Used by", "Graph", "Impact"];
+    private readonly DefinitionDependencyService _analyzer = new(new ModuleDefinitionAnalyzer());
+    private AdminRouteClientLease _lease = default!;
+    private CancellationTokenSource? _loadCts, _searchCts;
+    private DefinitionAnalysis? _analysis;
+    private IReadOnlyList<DefinitionSearchResult> _results = [];
+    private Dictionary<string, DefinitionCatalogRecord> _byId = [];
+    private string _query = "", _kind = "", _view = "Definition", _impactTable = "", _impactColumn = "";
+    private string _relationship = "";
+    private string? _referenceColumn;
+    private string? _selectedId, _error;
+    private bool _matchCase, _wholeWord, _loading, _searching, _stale, _cancelled, _disposed;
+    private int _generation, _loaded, _resultPage, _matchIndex, _sourceOffset, _edgeLimit = 100, _findingLimit = 100, _diagnosticLimit = 100;
+    private ColumnChangeKind _impactChange;
+    private ColumnImpactReport? _impact;
+    private object? _lastSeed;
+    private IReadOnlyList<DefinitionCatalogRecord> Definitions => _analysis?.Catalog.Definitions ?? [];
+    private DefinitionCatalogRecord? Selected => _selectedId is not null ? _byId.GetValueOrDefault(_selectedId) : null;
+    private IReadOnlyList<string> ImpactColumns => Definitions.FirstOrDefault(d => d.Kind == "Table" && d.Name == _impactTable) is { } table
+        ? _analysis!.OutputColumns.GetValueOrDefault(table.Id, []) : [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        _lease = new(DbHolder);
+        Changes.Changed += DefinitionsChanged;
+        DbHolder.DatabaseChanged += DatabaseChanged;
+        await RefreshAsync();
+    }
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_lease is not null && _lease.IsRouteChanged(Tab)) await ResetScopeAsync();
+        if (ApplySeed()) await SearchAsync();
+    }
+    private bool ApplySeed()
+    {
+        var requested = Tab.State.GetValueOrDefault("DefinitionSeed");
+        if (requested is null || ReferenceEquals(requested, _lastSeed) || _analysis is null) return false;
+        _lastSeed = requested; _referenceColumn = null; _relationship = ""; _sourceOffset = _matchIndex = 0;
+        if (requested is DefinitionExplorerSeed seed)
+        {
+            _impactTable = seed.Table; _impactColumn = seed.Column ?? ""; _impactChange = seed.Change;
+            _selectedId = Definitions.FirstOrDefault(d => d.Kind == "Table" && d.Name == seed.Table)?.Id;
+            _view = "Impact"; _impact = null;
+        }
+        else if (requested is DefinitionObjectSeed objectSeed)
+        {
+            _query = _kind = "";
+            _selectedId = objectSeed.ObjectId ?? Definitions.FirstOrDefault(d => d.Kind is "Table" or "External table" && string.Equals(d.Name, objectSeed.Table, StringComparison.OrdinalIgnoreCase))?.Id;
+            _referenceColumn = objectSeed.Column;
+            _view = Views.Contains(objectSeed.View) ? objectSeed.View : "Definition";
+            if (_selectedId is null || !_byId.ContainsKey(_selectedId)) _error = "The selected definition is no longer available in this database or route. Refresh to inspect the current catalog.";
+        }
+        return true;
+    }
+    private async Task RefreshAsync()
+    {
+        _loadCts?.Cancel(); _searchCts?.Cancel();
+        using var cts = new CancellationTokenSource(); _loadCts = cts;
+        int generation = ++_generation;
+        _loading = true; _cancelled = false; _error = null; _loaded = 0;
+        if (_analysis is not null) _stale = true;
+        try
+        {
+            await _lease.UpdateAsync(Tab);
+            var client = _lease.GetActiveClient(DbHolder);
+            var progress = new Progress<int>(n => { if (!_disposed && generation == _generation) { _loaded = n; _ = InvokeAsync(StateHasChanged); } });
+            // Embedded catalog planning can synchronously wait for storage I/O. Keep it
+            // off the renderer context so those continuations and UI events can run.
+            var catalog = await Task.Run(() => DefinitionCatalogService.ReadAsync(client, progress, cts.Token), cts.Token);
+            var analysis = await Task.Run(() => _analyzer.Analyze(catalog, cts.Token), cts.Token);
+            cts.Token.ThrowIfCancellationRequested();
+            if (generation != _generation || _disposed) return;
+            _analysis = analysis; _byId = catalog.Definitions.ToDictionary(d => d.Id);
+            _stale = false; _impact = null; _sourceOffset = 0;
+            if (_selectedId is null || !_byId.ContainsKey(_selectedId)) _selectedId = catalog.Definitions.FirstOrDefault()?.Id;
+            ApplySeed(); await SearchAsync();
+        }
+        catch (OperationCanceledException) { if (generation == _generation) _cancelled = true; }
+        catch (Exception ex) { if (generation == _generation) _error = ex.Message; }
+        finally { if (generation == _generation) { _loading = false; _loadCts = null; } }
+    }
+    private async Task SearchAsync()
+    {
+        _searchCts?.Cancel();
+        using var cts = new CancellationTokenSource(); _searchCts = cts;
+        var definitions = Definitions; string query = _query, kind = _kind; bool matchCase = _matchCase, whole = _wholeWord;
+        _searching = true;
+        try
+        {
+            await Task.Delay(150, cts.Token);
+            var results = await Task.Run(() => DefinitionTextSearch.Search(definitions, query, kind, matchCase, whole, cts.Token), cts.Token);
+            if (cts.IsCancellationRequested || _disposed) return;
+            _results = results; _resultPage = 0; _matchIndex = 0;
+            if (_view != "Impact" && !results.Any(r => r.Definition.Id == _selectedId))
+            { _selectedId = results.FirstOrDefault()?.Definition.Id; _sourceOffset = 0; }
+        }
+        catch (OperationCanceledException) { }
+        finally { if (ReferenceEquals(_searchCts, cts)) { _searching = false; _searchCts = null; } }
+    }
+    private void Select(string id) { if (!_byId.ContainsKey(id)) return; _selectedId = id; _view = "Definition"; _referenceColumn = null; _relationship = ""; _matchIndex = _sourceOffset = 0; _edgeLimit = 100; }
+    private void GraphSelect(string id) { _selectedId = id; _referenceColumn = null; _matchIndex = _sourceOffset = 0; }
+    private string RelationshipId(DefinitionCatalogRecord definition) => definition.Kind == "Column" ? Definitions.FirstOrDefault(d => d.Kind is "Table" or "External table" && d.Name == definition.OwnerName)?.Id ?? definition.Id : definition.Id;
+    private string? RelationshipColumn(DefinitionCatalogRecord definition) => definition.Kind == "Column" ? definition.Name : _referenceColumn;
+    private static string? MetadataValue(DefinitionCatalogRecord definition, string property)
+    {
+        if (definition.MetadataJson is null) return null;
+        try { using var json = System.Text.Json.JsonDocument.Parse(definition.MetadataJson); return json.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object && json.RootElement.TryGetProperty(property, out var value) && value.ValueKind == System.Text.Json.JsonValueKind.String ? value.GetString() : null; }
+        catch (System.Text.Json.JsonException) { return null; }
+    }
+    private static string? ModelName(DefinitionCatalogRecord definition) => definition.Kind == "Data model" ? definition.Name : definition.Kind == "Proposed change" ? MetadataValue(definition, "modelName") ?? definition.OwnerName : null;
+    private void SelectEvidence(DefinitionDependency edge)
+    {
+        Select(edge.SourceId);
+        if (edge.Span is { } span && Selected is { Format: "sql" or "expression" } && edge.Location == "definition")
+        {
+            _sourceOffset = span.Start;
+            var matches = DefinitionTextSearch.Find(Selected.Source, _query, _matchCase, _wholeWord);
+            _matchIndex = Math.Max(0, matches.ToList().FindIndex(m => m.Start >= span.Start));
+        }
+    }
+    private string Name(string id) => _byId.GetValueOrDefault(id)?.Name ?? (id.Length == 0 ? "Catalog coverage" : id);
+    private void SetView(string view) { _view = view; _edgeLimit = 100; }
+    private void OpenImpact() { if (Selected is { } d) OpenImpactFor(d); else _view = "Impact"; }
+    private void OpenImpactFor(DefinitionCatalogRecord d)
+    {
+        _view = "Impact"; _impact = null;
+        string? table = d.Kind == "Table" ? d.Name : d.OwnerName;
+        if (table is not null && Definitions.Any(x => x.Kind == "Table" && x.Name == table)) { _impactTable = table; _impactColumn = d.Kind == "Column" ? d.Name : ""; }
+    }
+    private void ImpactTableChanged() { _impactColumn = ""; ClearImpact(); }
+    private void ClearImpact() => _impact = null;
+    private async Task AssessAsync()
+    {
+        if (_analysis is null) return;
+        var analysis = _analysis; string table = _impactTable, column = _impactColumn; var change = _impactChange;
+        using var cts = new CancellationTokenSource(); _loadCts?.Cancel(); _loadCts = cts; _loading = true;
+        try { var result = await Task.Run(() => ColumnImpactService.Assess(analysis, table, column, change, cts.Token), cts.Token); if (!cts.IsCancellationRequested && ReferenceEquals(_analysis, analysis) && table == _impactTable && column == _impactColumn && change == _impactChange) _impact = result; }
+        catch (OperationCanceledException) { _cancelled = true; }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { if (ReferenceEquals(_loadCts, cts)) { _loadCts = null; _loading = false; } }
+    }
+    private static string CategoryLabel(ColumnImpactCategory category) => category switch { ColumnImpactCategory.ConfirmedUsage => "Confirmed usage", ColumnImpactCategory.IndirectEffects => "Indirect effects", ColumnImpactCategory.EngineRestriction => "Engine restrictions", ColumnImpactCategory.ModelMembership => "Model membership", ColumnImpactCategory.ProposedChange => "Proposed changes", ColumnImpactCategory.ExternalArchive => "Archive relationships", _ => "Needs review" };
+    private void PreviousMatch(int count) => _matchIndex = (_matchIndex - 1 + count) % count;
+    private void NextMatch(int count) => _matchIndex = (_matchIndex + 1) % count;
+    private RenderFragment Highlight(string source) => builder =>
+    {
+        int offset = 0;
+        foreach (var match in DefinitionTextSearch.Find(source, _query, _matchCase, _wholeWord))
+        {
+            builder.AddContent(0, source[offset..match.Start]); builder.OpenElement(1, "mark"); builder.AddContent(2, source.Substring(match.Start, match.Length)); builder.CloseElement(); offset = match.Start + match.Length;
+        }
+        builder.AddContent(3, source[offset..]);
+    };
+    private void Cancel() { _loadCts?.Cancel(); _searchCts?.Cancel(); }
+    private void DefinitionsChanged() => _ = InvokeAsync(async () => { if (_disposed) return; _stale = true; StateHasChanged(); await RefreshAsync(); StateHasChanged(); });
+    private void DatabaseChanged() => _ = InvokeAsync(async () => { if (_disposed) return; _lastSeed = Tab.State.GetValueOrDefault("DefinitionSeed"); await ResetScopeAsync(); });
+    private Task RouteChangedAsync() { _lastSeed = Tab.State.GetValueOrDefault("DefinitionSeed"); return ResetScopeAsync(); }
+    private async Task ResetScopeAsync()
+    {
+        Cancel(); ++_generation; _analysis = null; _results = []; _byId.Clear(); _selectedId = null; _impact = null; _impactTable = _impactColumn = "";
+        _stale = false; _error = null; _cancelled = false;
+        _referenceColumn = null; _relationship = "";
+        await _lease.DisposeAsync(); await RefreshAsync(); StateHasChanged();
+    }
+    public async ValueTask DisposeAsync() { _disposed = true; ++_generation; Cancel(); Changes.Changed -= DefinitionsChanged; DbHolder.DatabaseChanged -= DatabaseChanged; await _lease.DisposeAsync(); }
+}

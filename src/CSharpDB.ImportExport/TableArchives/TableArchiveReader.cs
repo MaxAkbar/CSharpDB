@@ -52,6 +52,40 @@ public static class TableArchiveReader
         return (schema, manifest);
     }
 
+    /// <summary>
+    /// Inspects definition metadata without reading archive rows or index pages.
+    /// Validates the header, schema, manifest, index header, and schema digest;
+    /// row and physical-index payload integrity is not verified. Use
+    /// <see cref="ReadMetadataAsync(string, CancellationToken)"/> for full integrity validation.
+    /// </summary>
+    public static async ValueTask<(TableArchiveSchema Schema, TableArchiveManifest Manifest)> ReadDefinitionMetadataAsync(
+        string path,
+        CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        // Disable managed read-ahead: metadata inspection never requests adjacent row bytes.
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read,
+            bufferSize: 1, FileOptions.Asynchronous | FileOptions.RandomAccess);
+        return await ReadDefinitionMetadataAsync(stream, ct);
+    }
+
+    /// <summary>
+    /// Inspects definition metadata without reading rows or index pages, leaving the stream open.
+    /// The stream position is not preserved. Data payload integrity is not verified.
+    /// </summary>
+    public static async ValueTask<(TableArchiveSchema Schema, TableArchiveManifest Manifest)> ReadDefinitionMetadataAsync(
+        Stream stream,
+        CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        ValidateInputStream(stream);
+        NativeTableArchiveHeader header = await ReadNativeHeaderAsync(stream, ct);
+        TableArchiveSchema schema = await ReadNativeSchemaAsync(stream, header, ct);
+        TableArchiveManifest manifest = await ReadNativeManifestAsync(stream, header, ct);
+        await ValidateMetadataAsync(stream, header, schema, manifest, ct, validateDataPayloads: false);
+        return (schema, manifest);
+    }
+
     public static async ValueTask<TableArchiveSchema> ReadArchiveSchemaAsync(
         string path,
         CancellationToken ct = default)
@@ -367,7 +401,8 @@ public static class TableArchiveReader
         NativeTableArchiveHeader header,
         TableArchiveSchema schema,
         TableArchiveManifest manifest,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool validateDataPayloads = true)
     {
         ValidateSchema(schema, header.FormatVersion);
         if (manifest.Indexes is null)
@@ -408,7 +443,7 @@ public static class TableArchiveReader
             throw new InvalidDataException("The table archive manifest contains unsupported section identifiers.");
         }
 
-        await ValidateIntegrityAsync(stream, header, manifest, ct);
+        await ValidateIntegrityAsync(stream, header, manifest, ct, validateDataPayloads);
 
         return nativeIndexHeader;
     }
@@ -417,7 +452,8 @@ public static class TableArchiveReader
         Stream stream,
         NativeTableArchiveHeader header,
         TableArchiveManifest manifest,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool validateDataPayloads = true)
     {
         if (header.FormatVersion < TableArchiveManifest.IntegrityFormatVersion)
             return;
@@ -451,6 +487,8 @@ public static class TableArchiveReader
             digests.Schema,
             "schema",
             ct);
+        if (!validateDataPayloads)
+            return;
         await VerifySectionDigestAsync(
             stream,
             header.RowsOffset,

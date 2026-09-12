@@ -13,7 +13,7 @@
   <a href="https://www.nuget.org/packages/CSharpDB"><img src="https://img.shields.io/nuget/v/CSharpDB" alt="NuGet"></a>
   <a href="https://www.nuget.org/packages/CSharpDB"><img src="https://img.shields.io/nuget/dt/CSharpDB?label=Downloads" alt="NuGet downloads"></a>
   <a href="https://github.com/MaxAkbar/CSharpDB/actions/workflows/perf-guardrails.yml"><img src="https://github.com/MaxAkbar/CSharpDB/actions/workflows/perf-guardrails.yml/badge.svg" alt="Perf Guardrails"></a>
-  <a href="https://github.com/MaxAkbar/CSharpDB/stargazers"><img src="https://img.shields.io/github/stars/MaxAkbar/CSharpDB?label=Stars" alt="GitHub stars"></a>
+  <a href="https://github.com/MaxAkbar/CSharpDB"><img src="https://img.shields.io/github/stars/MaxAkbar/CSharpDB?label=Stars" alt="GitHub stars"></a>
   <a href="https://dotnet.microsoft.com/download/dotnet/10.0"><img src="https://img.shields.io/badge/.NET-10-512bd4" alt=".NET 10"></a>
   <a href="https://github.com/MaxAkbar/CSharpDB"><img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-0f766e" alt="Platform: Windows, Linux, macOS"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
@@ -21,9 +21,9 @@
 </p>
 
 <p align="center">
-  <a href="https://csharpdb.com/getting-started.html">Getting Started</a> &middot;
+  <a href="https://csharpdb.com/docs/getting-started.html">Getting Started</a> &middot;
   <a href="https://csharpdb.com/docs/index.html">Docs</a> &middot;
-  <a href="https://csharpdb.com/benchmarks.html">Benchmarks</a> &middot;
+  <a href="https://csharpdb.com/docs/benchmarks.html">Benchmarks</a> &middot;
   <a href="https://csharpdb.com/roadmap.html">Roadmap</a> &middot;
   <a href="https://csharpdb.com">Website</a>
 </p>
@@ -183,8 +183,8 @@ CSharpDB is more than an embedded SQL engine. The same database can be used thro
 
 CSharpDB includes a first-party embedded EF Core 10 provider for file-backed and private in-memory databases. It maps `int` to `INTEGER`, `long` to `BIGINT`, `bool` to `BOOLEAN`, `DateTime` to `DATETIME2`, `DateTimeOffset` to `DATETIMEOFFSET`, and one engine-generated nonnullable `byte[]` `[Timestamp]`/`IsRowVersion()` property per table to `ROWVERSION`. Rowversion tokens come from a persisted database-wide counter and advance for inserts and every successful update, including raw SQL, no-op, and trigger-issued updates. Standalone add/alter rowversion migrations remain unsupported. Conventional optional scalar and composite relationships support EF Core's default `ClientSetNull`: EF clears nullable FK components for tracked dependents, while a restrictive database constraint protects unloaded dependents. Database-side `DeleteBehavior.SetNull` remains unsupported.
 
-The complete 4.5 logical type contract and compatibility rules are documented
-in [SQL type semantics in 4.5](docs/sql-type-semantics-4.5.md).
+The logical type catalog and compatibility rules are documented in the
+[SQL reference](https://csharpdb.com/docs/sql-reference.html#data-types).
 
 Bounded `AlterColumn` migrations support exact `INTEGER`/`REAL` changes with
 atomic rebuilding of affected ready SQL indexes, plus dependency-free

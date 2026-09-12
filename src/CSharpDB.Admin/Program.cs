@@ -11,6 +11,10 @@ using CSharpDB.Primitives;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Unpublished launches also need the generated Blazor and component assets
+// when no Development launch profile is active.
+builder.WebHost.UseStaticWebAssets();
+
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
@@ -77,6 +81,13 @@ builder.Services.AddScoped<ToastService>();
 builder.Services.AddScoped<ModalService>();
 builder.Services.AddScoped<DatabaseChangeService>();
 builder.Services.AddScoped<DataHygieneAdminService>();
+builder.Services.AddSingleton(sp =>
+{
+    var limits = sp.GetRequiredService<IConfiguration>().GetSection("TestDataGeneration").Get<CSharpDB.DataGeneration.GenerationLimits>() ?? new();
+    limits.Validate();
+    return limits;
+});
+builder.Services.AddScoped<TestDataGenerationAdminService>();
 builder.Services.AddScoped<CompareDeployAdminService>();
 builder.Services.AddScoped<HostCallbackCatalogService>();
 builder.Services.AddScoped<HostCallbackPolicyService>();

@@ -28,7 +28,9 @@ public sealed class DataModelNode
     public List<KeyConstraintDefinition> Keys { get; set; } = [];
     public List<CheckConstraintDefinition> Checks { get; set; } = [];
     public List<DataModelIndexMetadata> Indexes { get; set; } = [];
-    public List<DataModelDependency> Dependencies { get; set; } = [];
+    // Inspection snapshots must not recursively embed other saved diagrams.
+    [JsonIgnore] public List<DataModelDependency> Dependencies { get; set; } = [];
+    [JsonIgnore] public List<string> DependencyWarnings { get; set; } = [];
     public string Name { get; set; } = "";
     public string? GroupId { get; set; }
     public DataModelNodeKind Kind { get; set; } = DataModelNodeKind.Table;
@@ -289,6 +291,7 @@ public sealed class DataModelSourceMetadata
     public IReadOnlyList<KeyConstraintDefinition> Keys { get; init; } = [];
     public IReadOnlyList<CheckConstraintDefinition> Checks { get; init; } = [];
     public IReadOnlyList<DataModelDependency> Dependencies { get; init; } = [];
+    public IReadOnlyList<string> DependencyWarnings { get; init; } = [];
     public required string TableName { get; init; }
     public DataModelNodeKind Kind { get; init; } = DataModelNodeKind.Table;
     public IReadOnlyList<DataModelColumnMetadata> Columns { get; init; } = [];
@@ -338,7 +341,15 @@ public sealed class DataModelIndexMetadata
 }
 
 public sealed record DataModelColumnPair(string ChildColumn, string ParentColumn);
-public sealed record DataModelDependency(string Kind, string Name, string Definition);
+public sealed record DataModelDependency(string Kind, string Name, string Definition)
+{
+    public string? ObjectId { get; init; }
+    public string Relationship { get; init; } = "Usage";
+    public bool IsIndirect { get; init; }
+    public bool NeedsReview { get; init; }
+    public IReadOnlyList<string> Columns { get; init; } = [];
+    public IReadOnlyList<string> Evidence { get; init; } = [];
+}
 public sealed record DataModelChangeStep(string OperationId, string TableName, string Sql, bool IsDestructive);
 public sealed record DataModelChangePlan(string SchemaFingerprint, string OperationFingerprint,
     IReadOnlyList<DataModelChangeStep> Steps, IReadOnlyList<string> Errors, IReadOnlyList<string> Warnings)

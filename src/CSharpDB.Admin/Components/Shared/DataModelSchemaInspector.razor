@@ -1,4 +1,5 @@
 @using CSharpDB.Client.Models
+@inject TabManagerService TabManager
 <section class="model-schema-inspector">
     <small>Schema preview includes pending edits. The database is unchanged until Apply.</small>
     <details open><summary>Columns and declared properties</summary>
@@ -8,6 +9,10 @@
                 <small>@(column.Nullable ? "Nullable" : "Not null") @(column.IsIdentity ? " · Identity" : "") @(column.IsRowVersion ? " · Generated rowversion" : "")</small>
                 @if (column.DefaultSql is not null) { <small>Default: <code>@column.DefaultSql</code></small> }
                 @if (column.Collation is not null) { <small>Collation: @column.Collation</small> }
+                @if (PersistedColumn(column) is { } target)
+                {
+                    <button class="toolbar-btn" @onclick="() => TabManager.OpenDefinitionExplorerTab(target.Table, target.Column)">Assess column impact</button>
+                }
             </div>
         }
     </details>
@@ -33,9 +38,37 @@
             </div>
         }
     </details>
-    <details><summary>Known dependencies (@Node.Dependencies.Count)</summary>
-        <small>This list is not exhaustive. The engine remains authoritative for dependency checks.</small>
-        @foreach (var dependency in Node.Dependencies) { <div class="model-schema-definition"><strong>@dependency.Kind: @dependency.Name</strong><code>@dependency.Definition</code></div> }
+    <details><summary>Known dependencies (@InspectionNode.Dependencies.Count)</summary>
+        <small>Uses the SQL Search dependency analysis from the last model refresh. Model membership, proposed changes, and archive metadata are separate from executable usage. The engine remains authoritative for schema changes.</small>
+        @if (!InspectionNode.IsDraft)
+        {
+            <button class="toolbar-btn" @onclick="() => TabManager.OpenDefinitionReferencesTab(InspectionNode.Name)">Explore all dependencies</button>
+        }
+        @if (InspectionNode.DependencyWarnings.Count > 0)
+        {
+            <div role="status"><strong>Incomplete coverage</strong>
+                @foreach (string warning in InspectionNode.DependencyWarnings.Take(5)) { <small>@warning</small> }
+                @if (InspectionNode.DependencyWarnings.Count > 5) { <small>@(InspectionNode.DependencyWarnings.Count - 5) more notices are available in SQL Search &amp; Dependencies.</small> }
+            </div>
+        }
+        @if (InspectionNode.Dependencies.Count == 0)
+        {
+            <small>@(InspectionNode.IsDraft ? "This table is proposed. SQL Search includes pending changes from saved diagrams." : "No references were resolved in the inspected definitions.")</small>
+        }
+        @foreach (var dependency in InspectionNode.Dependencies.Take(100))
+        {
+            <div class="model-schema-definition">
+                <strong>@dependency.Kind: @dependency.Name</strong>
+                <small>@dependency.Relationship @(dependency.IsIndirect ? " · Indirect" : "") @(dependency.NeedsReview ? " · Needs review" : "")</small>
+                @if (dependency.Columns.Count > 0) { <small>Columns: @string.Join(", ", dependency.Columns)</small> }
+                @foreach (string evidence in dependency.Evidence.Take(3)) { <small>@evidence</small> }
+                @if (dependency.ObjectId is not null)
+                {
+                    <button class="toolbar-btn" @onclick="() => TabManager.OpenDefinitionObjectTab(dependency.ObjectId)">Open in SQL Search</button>
+                }
+            </div>
+        }
+        @if (InspectionNode.Dependencies.Count > 100) { <small>Showing 100 of @InspectionNode.Dependencies.Count references. Open SQL Search to explore the complete list.</small> }
     </details>
     @if (Editable)
     {
@@ -97,6 +130,14 @@
     [Parameter] public bool Disabled { get; set; }
     [Parameter] public EventCallback<IReadOnlyList<DataModelPendingOperation>> OnStage { get; set; }
     private bool Editable => Node.Kind == DataModelNodeKind.Table;
+    private DataModelNode InspectionNode => (Baseline.SchemaContext ?? Baseline).Nodes.FirstOrDefault(n =>
+        n.Kind == Node.Kind && (Node.SchemaId != Guid.Empty ? n.SchemaId == Node.SchemaId : n.Name.Equals(Node.Name, StringComparison.OrdinalIgnoreCase))) ?? Node;
+    private (string Table, string Column)? PersistedColumn(DataModelColumn column)
+    {
+        var table = Baseline.Nodes.FirstOrDefault(n => n.Kind == DataModelNodeKind.Table && (Node.SchemaId != Guid.Empty ? n.SchemaId == Node.SchemaId : n.Name == Node.Name));
+        var saved = table?.Columns.FirstOrDefault(c => column.SchemaId != Guid.Empty ? c.SchemaId == column.SchemaId : c.Name == column.Name);
+        return table is not null && saved is not null ? (table.Name, saved.Name) : null;
+    }
     private DataModelPendingOperationKind _kind = DataModelPendingOperationKind.AddColumn;
     private string _column = "", _type = "TEXT", _name = "", _expression = "", _collation = "", _parent = "", _replace = "";
     private string _checkName = "", _columnCheck = "";

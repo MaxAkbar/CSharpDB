@@ -10,6 +10,7 @@ on:
       - ".github/workflows/pages.yml"
       - "README.md"
       - "scripts/Test-Documentation.ps1"
+      - "scripts/Test-Website*.ps1"
       - "www/**"
   workflow_dispatch:
 

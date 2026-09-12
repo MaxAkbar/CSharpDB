@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using CSharpDB.Primitives;
+using CSharpDB.Sql;
 using SysDbType = System.Data.DbType;
 using SqlBitString = CSharpDB.Client.Models.SqlBitString;
 
@@ -8,7 +9,7 @@ namespace CSharpDB.Data;
 
 /// <summary>
 /// Substitutes @param placeholders in SQL with properly escaped literal values.
-/// Single-pass scanner that respects string literals.
+/// Uses SQL tokens to leave comments, string literals, and quoted identifiers unchanged.
 /// </summary>
 internal static class SqlParameterBinder
 {
@@ -18,64 +19,21 @@ internal static class SqlParameterBinder
         if (sql.IndexOf('@') < 0)
             return sql;
 
-        ReadOnlySpan<char> sqlSpan = sql.AsSpan();
         StringBuilder? sb = null;
         int segmentStart = 0;
-        int i = 0;
 
-        while (i < sql.Length)
+        foreach (Token token in new Tokenizer(sql).Tokenize())
         {
-            char c = sqlSpan[i];
-
-            // Skip string literals ('...' with '' escaping)
-            if (c == '\'')
-            {
-                i++;
-                while (i < sql.Length)
-                {
-                    char sc = sqlSpan[i];
-                    if (sc == '\'')
-                    {
-                        i++;
-                        if (i < sql.Length && sqlSpan[i] == '\'')
-                        {
-                            i++;
-                        }
-                        else
-                        {
-                            break;
-                        }
-                    }
-                    else
-                    {
-                        i++;
-                    }
-                }
+            if (token.Type != TokenType.Parameter)
                 continue;
-            }
 
-            // Parameter placeholder
-            if (c == '@' && i + 1 < sql.Length && IsIdentStart(sqlSpan[i + 1]))
-            {
-                int placeholderStart = i;
-                i++; // skip @
-                int start = i;
-                while (i < sql.Length && IsIdentChar(sqlSpan[i]))
-                    i++;
+            if (!parameters.TryGetParameter(token.Value.AsSpan(), out CSharpDbParameter? parameter))
+                throw new InvalidOperationException($"Parameter '@{token.Value}' was not supplied.");
 
-                ReadOnlySpan<char> name = sqlSpan[start..i];
-                if (!parameters.TryGetParameter(name, out CSharpDbParameter? parameter))
-                    throw new InvalidOperationException($"Parameter '@{name.ToString()}' was not supplied.");
-
-                sb ??= new StringBuilder(sql.Length);
-                sb.Append(sql, segmentStart, placeholderStart - segmentStart);
-                sb.Append(EscapeParameter(parameter));
-                segmentStart = i;
-
-                continue;
-            }
-
-            i++;
+            sb ??= new StringBuilder(sql.Length);
+            sb.Append(sql, segmentStart, token.Position - segmentStart);
+            sb.Append(EscapeParameter(parameter));
+            segmentStart = token.Position + token.Length;
         }
 
         if (sb == null)
@@ -270,6 +228,4 @@ internal static class SqlParameterBinder
     private static string QuoteText(string value)
         => $"'{value.Replace("'", "''")}'";
 
-    private static bool IsIdentStart(char c) => char.IsLetter(c) || c == '_';
-    private static bool IsIdentChar(char c) => char.IsLetterOrDigit(c) || c == '_';
 }

@@ -79,9 +79,6 @@ the master DB is not part of fan-out. The existing data must be copied into
 shard DBs by route key, verified, and cut over before the master catalog becomes
 the active entry point.
 
-The required flow is documented in
-[`docs/sharding-existing-database-migration.md`](../../docs/sharding-existing-database-migration.md).
-
 ## Scenario
 
 The route context is:

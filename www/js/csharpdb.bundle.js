@@ -8,22 +8,31 @@
 
     const prefix = window.pagePathPrefix || '';
 
-    const logoSvg = `<img src="${prefix}images/icon3.png" alt="CSharpDB" width="28" height="28">`;
+    // Shared components are defined once here and reused by every page.
+    document.documentElement.classList.add('js');
 
-    const sunSvg = `<svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>`;
-    const moonSvg = `<svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`;
+    const logoSvg = `<img src="${prefix}images/icon3.png" alt="" width="28" height="28">`;
+
+    const sunSvg = `<svg aria-hidden="true" class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>`;
+    const moonSvg = `<svg aria-hidden="true" class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`;
 
     function navLink(href, id, label) {
         const current = window.currentPage || 'home';
         const cls = current === id ? 'nav-link active' : 'nav-link';
-        return `<a href="${prefix}${href}" class="${cls}">${label}</a>`;
+        return `<a href="${prefix}${href}" class="${cls}"${current === id ? ' aria-current="page"' : ''}>${label}</a>`;
     }
 
     function renderNav() {
         const el = document.getElementById('site-nav');
         if (!el) return;
+        const main = document.querySelector('main');
+        if (main) {
+            if (!main.id) main.id = 'main-content';
+            main.tabIndex = -1;
+        }
         el.innerHTML = `
-        <nav class="navbar" id="navbar">
+        <a class="skip-link" href="#${main?.id || 'main-content'}">Skip to content</a>
+        <nav class="navbar" id="navbar" aria-label="Main navigation">
             <div class="nav-container">
                 <a href="${prefix}index.html" class="nav-logo">
                     <span class="logo-icon">${logoSvg}</span>
@@ -38,11 +47,11 @@
                     ${navLink('roadmap.html', 'roadmap', 'Roadmap')}
                 </div>
                 <div class="nav-actions">
-                    <button class="theme-toggle" id="themeToggle" title="Toggle theme">
+                    <button type="button" class="theme-toggle" id="themeToggle" title="Switch to light theme" aria-label="Switch to light theme">
                         ${sunSvg}${moonSvg}
                     </button>
-                    <a href="https://github.com/MaxAkbar/CSharpDB" class="btn btn-outline btn-sm" target="_blank">GitHub</a>
-                    <button class="mobile-toggle" id="mobileToggle" aria-label="Toggle menu">
+                    <a href="https://github.com/MaxAkbar/CSharpDB" class="btn btn-outline btn-sm" target="_blank" rel="noopener noreferrer">GitHub</a>
+                    <button type="button" class="mobile-toggle" id="mobileToggle" aria-label="Open menu" aria-controls="navLinks" aria-expanded="false">
                         <span></span><span></span><span></span>
                     </button>
                 </div>
@@ -92,26 +101,69 @@
     }
 
     function initTheme() {
-        const saved = localStorage.getItem('csharpdb-theme') || 'dark';
-        document.documentElement.setAttribute('data-theme', saved);
-        document.addEventListener('click', (e) => {
-            if (e.target.closest('#themeToggle')) {
-                const cur = document.documentElement.getAttribute('data-theme');
-                const next = cur === 'dark' ? 'light' : 'dark';
-                document.documentElement.setAttribute('data-theme', next);
-                localStorage.setItem('csharpdb-theme', next);
-                renderMermaidDiagrams();
-            }
+        const button = document.getElementById('themeToggle');
+        function apply(theme) {
+            document.documentElement.setAttribute('data-theme', theme);
+            const label = `Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`;
+            button?.setAttribute('aria-label', label);
+            button?.setAttribute('title', label);
+        }
+        let saved = 'dark';
+        try { saved = localStorage.getItem('csharpdb-theme') || 'dark'; } catch { /* Storage is optional. */ }
+        apply(saved === 'light' ? 'light' : 'dark');
+        button?.addEventListener('click', () => {
+            const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+            apply(next);
+            try { localStorage.setItem('csharpdb-theme', next); } catch { /* Keep the in-page theme working. */ }
+            renderMermaidDiagrams();
         });
     }
 
     function initMobile() {
-        document.addEventListener('click', (e) => {
-            const btn = e.target.closest('#mobileToggle');
-            if (btn) {
-                document.getElementById('navLinks').classList.toggle('open');
-                btn.classList.toggle('open');
+        const button = document.getElementById('mobileToggle');
+        const links = document.getElementById('navLinks');
+        if (!button || !links) return;
+        function setOpen(open) {
+            button.setAttribute('aria-expanded', String(open));
+            button.setAttribute('aria-label', open ? 'Close menu' : 'Open menu');
+            button.classList.toggle('open', open);
+            links.classList.toggle('open', open);
+        }
+        button.addEventListener('click', () => setOpen(button.getAttribute('aria-expanded') !== 'true'));
+        links.addEventListener('click', e => { if (e.target.closest('a')) setOpen(false); });
+        document.addEventListener('keydown', e => {
+            if (e.key === 'Escape' && button.getAttribute('aria-expanded') === 'true') {
+                setOpen(false);
+                button.focus();
             }
+        });
+        window.matchMedia('(min-width: 1025px)').addEventListener('change', () => setOpen(false));
+    }
+
+    function initAccessibleTabs() {
+        document.querySelectorAll('.api-tabs[role="tablist"], .mermaid-tabs[role="tablist"]').forEach(list => {
+            const tabs = Array.from(list.querySelectorAll('[role="tab"]'));
+            function activate(tab, focus = false) {
+                tabs.forEach(item => {
+                    const selected = item === tab;
+                    item.setAttribute('aria-selected', String(selected));
+                    item.tabIndex = selected ? 0 : -1;
+                    item.classList.toggle('active', selected);
+                    const panel = document.getElementById(item.getAttribute('aria-controls'));
+                    if (panel) { panel.hidden = !selected; panel.classList.toggle('active', selected); }
+                });
+                if (focus) tab.focus();
+            }
+            tabs.forEach((tab, index) => {
+                tab.addEventListener('click', () => activate(tab));
+                tab.addEventListener('keydown', e => {
+                    const next = e.key === 'ArrowRight' ? (index + 1) % tabs.length
+                        : e.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length
+                        : e.key === 'Home' ? 0 : e.key === 'End' ? tabs.length - 1 : -1;
+                    if (next !== -1) { e.preventDefault(); activate(tabs[next], true); }
+                });
+            });
+            if (tabs.length) activate(tabs.find(tab => tab.getAttribute('aria-selected') === 'true') || tabs[0]);
         });
     }
 
@@ -123,17 +175,33 @@
     }
 
     function initCopyButtons() {
-        document.addEventListener('click', (e) => {
-            const btn = e.target.closest('.copy-btn');
-            if (btn) {
-                const code = btn.parentElement.querySelector('code')?.textContent;
-                if (code) {
-                    navigator.clipboard.writeText(code).then(() => {
-                        btn.style.color = 'var(--success)';
-                        setTimeout(() => { btn.style.color = ''; }, 1500);
-                    });
-                }
+        const status = document.createElement('div');
+        status.className = 'copy-status';
+        status.setAttribute('role', 'status');
+        status.setAttribute('aria-live', 'polite');
+        document.body.appendChild(status);
+        let timer;
+        document.addEventListener('click', async e => {
+            const button = e.target.closest('.copy-btn, .mermaid-copy-btn');
+            if (!button) return;
+            const container = button.classList.contains('mermaid-copy-btn')
+                ? button.closest('.mermaid-card')?.querySelector('.mermaid-panel-source')
+                : button.closest('.code-block, .hero-install') || button.parentElement;
+            const code = container?.querySelector('code');
+            if (!code) return;
+            try {
+                await navigator.clipboard.writeText(code.textContent);
+                status.textContent = 'Copied to clipboard.';
+            } catch {
+                const selection = window.getSelection();
+                const range = document.createRange();
+                range.selectNodeContents(code);
+                selection?.removeAllRanges();
+                selection?.addRange(range);
+                status.textContent = 'Copy is unavailable. Select the example and press Ctrl+C or Command+C.';
             }
+            clearTimeout(timer);
+            timer = setTimeout(() => { status.textContent = ''; }, 4500);
         });
     }
 
@@ -292,15 +360,17 @@
                 <div class="mermaid-header">
                     <span class="mermaid-title">Mermaid Diagram</span>
                     <div class="mermaid-actions">
-                        <button type="button" class="mermaid-tab active" data-mermaid-panel="diagram">Diagram</button>
-                        <button type="button" class="mermaid-tab" data-mermaid-panel="source">Source</button>
+                        <div class="mermaid-tabs" role="tablist" aria-label="Diagram display">
+                            <button type="button" class="mermaid-tab active" id="mermaid-${index}-diagram-tab" role="tab" aria-selected="true" aria-controls="mermaid-${index}-diagram">Diagram</button>
+                            <button type="button" class="mermaid-tab" id="mermaid-${index}-source-tab" role="tab" aria-selected="false" aria-controls="mermaid-${index}-source" tabindex="-1">Source</button>
+                        </div>
                         <button type="button" class="mermaid-copy-btn" title="Copy source">Copy</button>
                     </div>
                 </div>
-                <div class="mermaid-panel mermaid-panel-diagram active">
+                <div class="mermaid-panel mermaid-panel-diagram active" id="mermaid-${index}-diagram" role="tabpanel" aria-labelledby="mermaid-${index}-diagram-tab" tabindex="0">
                     <div class="mermaid-diagram" data-mermaid-index="${index}">Loading diagram...</div>
                 </div>
-                <div class="mermaid-panel mermaid-panel-source">
+                <div class="mermaid-panel mermaid-panel-source" id="mermaid-${index}-source" role="tabpanel" aria-labelledby="mermaid-${index}-source-tab" tabindex="0">
                     <pre><code class="language-mermaid"></code></pre>
                 </div>`;
 
@@ -348,34 +418,6 @@
         }
     }
 
-    function initMermaidInteractions() {
-        document.addEventListener('click', (e) => {
-            const tab = e.target.closest('.mermaid-tab');
-            if (tab) {
-                const card = tab.closest('.mermaid-card');
-                const panel = tab.dataset.mermaidPanel;
-                card.querySelectorAll('.mermaid-tab').forEach(button => {
-                    button.classList.toggle('active', button === tab);
-                });
-                card.querySelectorAll('.mermaid-panel').forEach(item => {
-                    item.classList.toggle('active', item.classList.contains(`mermaid-panel-${panel}`));
-                });
-                return;
-            }
-
-            const copy = e.target.closest('.mermaid-copy-btn');
-            if (copy) {
-                const source = copy.closest('.mermaid-card')?.querySelector('.mermaid-panel-source code')?.textContent;
-                if (source) {
-                    navigator.clipboard.writeText(source).then(() => {
-                        copy.textContent = 'Copied';
-                        setTimeout(() => { copy.textContent = 'Copy'; }, 1500);
-                    });
-                }
-            }
-        });
-    }
-
     document.addEventListener('DOMContentLoaded', () => {
         renderNav();
         renderFooter();
@@ -384,7 +426,7 @@
         initNavScroll();
         initCopyButtons();
         initMermaidBlocks();
-        initMermaidInteractions();
+        initAccessibleTabs();
         initCodeHighlighting();
         renderMermaidDiagrams();
     });
@@ -393,6 +435,8 @@
 // ─── Page-specific Interactions ───
 (function () {
     'use strict';
+
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
     // ─── Doc Section Router (for pages with sidebar tabs) ───
     function navigateToDoc(docId) {
@@ -454,6 +498,7 @@
     }, { threshold: 0.3 });
 
     document.addEventListener('DOMContentLoaded', () => {
+        if (reducedMotion.matches) return;
         document.querySelectorAll('.bench-chart-container').forEach(c => benchObserver.observe(c));
     });
 
@@ -476,6 +521,7 @@
     }, { threshold: 0.15 });
 
     document.addEventListener('DOMContentLoaded', () => {
+        if (reducedMotion.matches) return;
         document.querySelectorAll('.features-grid, .hub-grid').forEach(g => featureObserver.observe(g));
     });
 
@@ -498,21 +544,8 @@
     }, { threshold: 0.3 });
 
     document.addEventListener('DOMContentLoaded', () => {
+        if (reducedMotion.matches) return;
         document.querySelectorAll('.stats-grid').forEach(g => statsObserver.observe(g));
-    });
-
-    // ─── API tab switcher ───
-    document.addEventListener('DOMContentLoaded', () => {
-        document.querySelectorAll('.api-tab').forEach(tab => {
-            tab.addEventListener('click', () => {
-                const target = tab.dataset.tab;
-                document.querySelectorAll('.api-tab').forEach(t => t.classList.remove('active'));
-                document.querySelectorAll('.api-panel').forEach(p => p.classList.remove('active'));
-                tab.classList.add('active');
-                const panel = document.querySelector(`.api-panel[data-panel="${target}"]`);
-                if (panel) panel.classList.add('active');
-            });
-        });
     });
 
     // ─── Handle hash-based doc section navigation ───

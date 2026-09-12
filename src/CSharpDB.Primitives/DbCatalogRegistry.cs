@@ -62,6 +62,8 @@ public static class DbInternalTableRegistry
             HideFromClientMetadata: true, HideFromSystemCatalog: true),
         new("__data_model_diagrams", DbInternalTableMatchKind.Exact, "Data Modeler", "sys.diagrams",
             HideFromClientMetadata: true, HideFromSystemCatalog: true),
+        new("__documentation_annotations", DbInternalTableMatchKind.Exact, "Database Documenter",
+            HideFromClientMetadata: true, HideFromSystemCatalog: true),
         new("__validation_rules", DbInternalTableMatchKind.Exact, "Data Hygiene", "sys.validation_rules",
             HideFromClientMetadata: false, HideFromSystemCatalog: true),
 

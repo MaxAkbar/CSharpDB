@@ -24,6 +24,7 @@ public static class SchemaInferredSpecBuilder
 
         foreach (string tableName in tableNames)
         {
+            if (!CSharpDB.DataGeneration.GenerationPlan.IsUserTable(tableName)) continue;
             TableSchema? schema = db.GetTableSchema(tableName);
             if (schema is null)
                 continue;
@@ -88,6 +89,19 @@ public static class SchemaInferredSpecBuilder
 
     private static JsonElement InferGenerator(ColumnDefinition col, TableSchema schema)
     {
+        var type = col.EffectiveType;
+        // Logical type takes precedence over names such as Email INTEGER or Amount TEXT.
+        if (type.Kind == SqlTypeKind.Boolean) return WrapNullable(ParseRule("""{"op":"bool","probability":0.7}"""), col);
+        if (type.Kind == SqlTypeKind.Uuid) return WrapNullable(ParseRule("""{"op":"guid"}"""), col);
+        if (type.Kind is SqlTypeKind.Json or SqlTypeKind.Xml)
+            return WrapNullable(JsonSerializer.SerializeToElement(type.Kind == SqlTypeKind.Json ? "{}" : "<item />"), col);
+        if (type.Kind is SqlTypeKind.Date or SqlTypeKind.Time or SqlTypeKind.Timestamp or SqlTypeKind.TimestampWithTimeZone)
+        {
+            string format = type.Kind == SqlTypeKind.Date ? "{0:yyyy-MM-dd}" : type.Kind == SqlTypeKind.Time ? "{0:HH:mm:ss}" : "{0:O}";
+            return WrapNullable(JsonSerializer.SerializeToElement(new { op = "format", format, args = new[] { ParseRule("""{"op":"skewedTimestamp","recentWindowDays":30,"fullWindowDays":365,"recentRate":0.8}""") } }), col);
+        }
+        if (type.Kind is SqlTypeKind.IntervalYearToMonth or SqlTypeKind.IntervalDayToSecond or SqlTypeKind.Bit or SqlTypeKind.VarBit)
+            throw new InvalidOperationException($"{schema.TableName}.{col.Name}: automatic inference does not support {type}. Supply an explicit dataset specification.");
         // Identity / auto-increment primary keys use rowIndex.
         if (col.IsPrimaryKey && (col.IsIdentity || col.Type == Primitives.DbType.Integer))
             return ParseRule("""{"op":"value","name":"id"}""");
@@ -95,23 +109,42 @@ public static class SchemaInferredSpecBuilder
         string name = col.Name.ToLowerInvariant();
         string typeName = MapDbType(col.Type);
 
+        if (typeName == "INTEGER")
+        {
+            if (name.StartsWith("is") || name.StartsWith("has")) return WrapNullable(ParseRule("""{"op":"bool","probability":0.7}"""), col);
+            int maximum = type.Kind == SqlTypeKind.TinyInt ? 100 : type.Kind == SqlTypeKind.SmallInt ? 1000 : 1000000;
+            return WrapNullable(JsonSerializer.SerializeToElement(new { op = "int", min = 1, max = maximum }), col);
+        }
+        if (typeName is "REAL" or "DECIMAL")
+        {
+            int scale = type.Scale ?? 2;
+            double maximum = type.Kind == SqlTypeKind.Decimal ? Math.Min(1000, Math.Pow(10, (type.Precision ?? 18) - scale) - Math.Pow(10, -scale)) : 1000;
+            return WrapNullable(JsonSerializer.SerializeToElement(new { op = "double", min = 0, max = maximum, digits = Math.Min(scale, 15) }), col);
+        }
+        if (typeName == "BLOB")
+            return WrapNullable(JsonSerializer.SerializeToElement(new { op = "sizedText", length = Math.Min(type.Length ?? 64, 64) }), col);
+
         // Try name-based heuristics first.
         JsonElement? heuristic = TryNameHeuristic(name, typeName, col, schema);
         if (heuristic.HasValue)
-            return WrapNullable(heuristic.Value, col);
+            return WrapNullable(FitText(heuristic.Value, col), col);
 
         // Fall back to type-based defaults.
         JsonElement fallback = typeName switch
         {
-            "INTEGER" => ParseRule("""{"op":"int","min":1,"max":1000000,"seedParts":["col"]}"""),
-            "REAL" => ParseRule("""{"op":"double","min":0,"max":10000,"digits":2,"seedParts":["col"]}"""),
-            "TEXT" => ParseRule("""{"op":"faker","name":"lorem.sentence","seedParts":["col"]}"""),
-            "BLOB" => ParseRule("""{"op":"sizedText","length":64,"seedParts":["col"]}"""),
-            _ => ParseRule("""{"op":"faker","name":"lorem.word","seedParts":["col"]}"""),
+            "INTEGER" => ParseRule("""{"op":"int","min":1,"max":1000000}"""),
+            "REAL" or "DECIMAL" => ParseRule("""{"op":"double","min":0,"max":10000,"digits":2}"""),
+            "TEXT" => ParseRule("""{"op":"faker","name":"lorem.sentence"}"""),
+            "BLOB" => ParseRule("""{"op":"sizedText","length":64}"""),
+            _ => ParseRule("""{"op":"faker","name":"lorem.word"}"""),
         };
 
-        return WrapNullable(fallback, col);
+        return WrapNullable(FitText(fallback, col), col);
     }
+
+    private static JsonElement FitText(JsonElement rule, ColumnDefinition column)
+        => column.EffectiveType.Length is int length
+            ? JsonSerializer.SerializeToElement(new { op = "truncate", length, value = rule }) : rule;
 
     private static JsonElement? TryNameHeuristic(string name, string typeName, ColumnDefinition col, TableSchema schema)
     {
@@ -119,86 +152,86 @@ public static class SchemaInferredSpecBuilder
         if (name.EndsWith("id", StringComparison.Ordinal) && !col.IsPrimaryKey && typeName == "INTEGER")
         {
             // Try to guess a reasonable range based on option rowCount.
-            return ParseRule("""{"op":"int","min":1,"max":{"op":"option","name":"rowCount"},"seedParts":["fk"]}""");
+            return ParseRule("""{"op":"int","min":1,"max":{"op":"option","name":"rowCount"}}""");
         }
 
         // Email
         if (name.Contains("email"))
-            return ParseRule("""{"op":"faker","name":"internet.email","seedParts":["email"]}""");
+            return ParseRule("""{"op":"faker","name":"internet.email"}""");
 
         // First name
         if (name is "firstname" or "first_name" or "fname")
-            return ParseRule("""{"op":"faker","name":"name.firstName","seedParts":["fname"]}""");
+            return ParseRule("""{"op":"faker","name":"name.firstName"}""");
 
         // Last name
         if (name is "lastname" or "last_name" or "lname" or "surname")
-            return ParseRule("""{"op":"faker","name":"name.lastName","seedParts":["lname"]}""");
+            return ParseRule("""{"op":"faker","name":"name.lastName"}""");
 
         // Full name
         if (name is "name" or "fullname" or "full_name" or "displayname" or "display_name")
-            return ParseRule("""{"op":"faker","name":"name.fullName","seedParts":["name"]}""");
+            return ParseRule("""{"op":"faker","name":"name.fullName"}""");
 
         // Phone
         if (name.Contains("phone") || name.Contains("mobile") || name.Contains("fax"))
-            return ParseRule("""{"op":"faker","name":"phone.phoneNumber","seedParts":["phone"]}""");
+            return ParseRule("""{"op":"faker","name":"phone.phoneNumber"}""");
 
         // Address fields
         if (name is "street" or "street1" or "address1" or "addressline1" or "address_line_1")
-            return ParseRule("""{"op":"faker","name":"address.streetAddress","seedParts":["street"]}""");
+            return ParseRule("""{"op":"faker","name":"address.streetAddress"}""");
         if (name is "city")
-            return ParseRule("""{"op":"faker","name":"address.city","seedParts":["city"]}""");
+            return ParseRule("""{"op":"faker","name":"address.city"}""");
         if (name is "state" or "province" or "region")
-            return ParseRule("""{"op":"faker","name":"address.state","seedParts":["state"]}""");
+            return ParseRule("""{"op":"faker","name":"address.state"}""");
         if (name is "country")
-            return ParseRule("""{"op":"faker","name":"address.country","seedParts":["country"]}""");
+            return ParseRule("""{"op":"faker","name":"address.country"}""");
         if (name is "zip" or "zipcode" or "zip_code" or "postalcode" or "postal_code" or "postcode")
-            return ParseRule("""{"op":"faker","name":"address.zipCode","seedParts":["zip"]}""");
+            return ParseRule("""{"op":"faker","name":"address.zipCode"}""");
 
         // Company
         if (name is "company" or "companyname" or "company_name" or "organization" or "org")
-            return ParseRule("""{"op":"faker","name":"company.companyName","seedParts":["company"]}""");
+            return ParseRule("""{"op":"faker","name":"company.companyName"}""");
 
         // URL / website
         if (name.Contains("url") || name.Contains("website") || name.Contains("homepage"))
-            return ParseRule("""{"op":"faker","name":"internet.url","seedParts":["url"]}""");
+            return ParseRule("""{"op":"faker","name":"internet.url"}""");
 
         // Username
         if (name is "username" or "user_name" or "login")
-            return ParseRule("""{"op":"faker","name":"internet.userName","seedParts":["user"]}""");
+            return ParseRule("""{"op":"faker","name":"internet.userName"}""");
 
         // Description / notes / comments / bio
         if (name is "description" or "desc" or "notes" or "comment" or "comments" or "bio" or "summary")
-            return ParseRule("""{"op":"faker","name":"lorem.paragraph","seedParts":["text"]}""");
+            return ParseRule("""{"op":"faker","name":"lorem.paragraph"}""");
 
         // Title
         if (name is "title" or "subject" or "headline")
-            return ParseRule("""{"op":"faker","name":"lorem.sentence","seedParts":["title"]}""");
+            return ParseRule("""{"op":"faker","name":"lorem.sentence"}""");
 
         // SKU / code
         if (name is "sku" or "code" or "productcode" or "product_code" or "barcode")
-            return ParseRule("""{"op":"guid","seedParts":["sku"]}""");
+            return ParseRule("""{"op":"guid"}""");
 
         // Status fields
         if (name is "status" or "state")
-            return ParseRule("""{"op":"pick","values":["Active","Inactive","Pending","Archived"],"seedParts":["status"]}""");
+            return ParseRule("""{"op":"pick","values":["Active","Inactive","Pending","Archived"]}""");
 
         // Type / kind / category
         if (name is "type" or "kind" or "category")
-            return ParseRule("""{"op":"pick","values":["TypeA","TypeB","TypeC","TypeD"],"seedParts":["type"]}""");
+            return ParseRule("""{"op":"pick","values":["TypeA","TypeB","TypeC","TypeD"]}""");
 
         // Boolean-like fields
         if (name.StartsWith("is") || name.StartsWith("has") || name is "active" or "enabled" or "deleted" or "verified" or "published")
         {
             if (typeName == "INTEGER")
-                return ParseRule("""{"op":"if","condition":{"op":"bool","probability":0.7,"seedParts":["bool"]},"then":1,"else":0}""");
-            return ParseRule("""{"op":"bool","probability":0.7,"seedParts":["bool"]}""");
+                return ParseRule("""{"op":"if","condition":{"op":"bool","probability":0.7},"then":1,"else":0}""");
+            return ParseRule("""{"op":"bool","probability":0.7}""");
         }
 
         // Timestamp / date fields
         if (name.Contains("date") || name.Contains("time") || name.EndsWith("utc") || name.EndsWith("at")
             || name is "created" or "updated" or "modified" or "timestamp")
         {
-            return ParseRule("""{"op":"skewedTimestamp","recentWindowDays":30,"fullWindowDays":365,"recentRate":0.8,"seedParts":["ts"]}""");
+            return ParseRule("""{"op":"skewedTimestamp","recentWindowDays":30,"fullWindowDays":365,"recentRate":0.8}""");
         }
 
         // Price / cost / amount / total monetary values
@@ -206,28 +239,28 @@ public static class SchemaInferredSpecBuilder
             || name.Contains("total") || name.Contains("subtotal") || name.Contains("tax")
             || name.Contains("fee") || name.Contains("balance") || name.Contains("salary"))
         {
-            return ParseRule("""{"op":"money","min":1,"max":10000,"seedParts":["money"]}""");
+            return ParseRule("""{"op":"money","min":1,"max":10000}""");
         }
 
         // Quantity / count
         if (name is "qty" or "quantity" or "count" or "units" or "stock")
-            return ParseRule("""{"op":"int","min":1,"max":100,"seedParts":["qty"]}""");
+            return ParseRule("""{"op":"int","min":1,"max":100}""");
 
         // Percentage / rate
         if (name.Contains("percent") || name.Contains("rate") || name.Contains("ratio") || name.Contains("score"))
-            return ParseRule("""{"op":"double","min":0,"max":100,"digits":2,"seedParts":["pct"]}""");
+            return ParseRule("""{"op":"double","min":0,"max":100,"digits":2}""");
 
         // Currency code
         if (name is "currency" or "currencycode" or "currency_code")
-            return ParseRule("""{"op":"pick","values":["USD","EUR","GBP","CAD","AUD","JPY"],"seedParts":["ccy"]}""");
+            return ParseRule("""{"op":"pick","values":["USD","EUR","GBP","CAD","AUD","JPY"]}""");
 
         // Tenant
         if (name is "tenantid" or "tenant_id" or "tenant")
-            return ParseRule("""{"op":"format","template":"tenant-{0:D4}","args":[{"op":"int","min":1,"max":{"op":"option","name":"tenantCount"},"seedParts":["tenant"]}]}""");
+            return ParseRule("""{"op":"format","format":"tenant-{0:D4}","args":[{"op":"int","min":1,"max":{"op":"option","name":"tenantCount"}}]}""");
 
         // GUID / UUID fields
         if (name.Contains("guid") || name.Contains("uuid") || name is "externalid" or "external_id" or "correlationid" or "correlation_id")
-            return ParseRule("""{"op":"guid","seedParts":["guid"]}""");
+            return ParseRule("""{"op":"guid"}""");
 
         return null;
     }

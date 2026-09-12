@@ -14,6 +14,7 @@ public sealed class DataGenOptions
 {
     public required DatasetKind Dataset { get; init; }
     public int Seed { get; init; } = 42;
+    public DateTime ReferenceUtc { get; init; } = new(2026, 3, 28, 0, 0, 0, DateTimeKind.Utc);
     public long RowCount { get; init; }
     public int BatchSize { get; init; } = 1000;
     public bool DirectLoad { get; init; }
@@ -45,6 +46,19 @@ public sealed class DataGenOptions
 
     public string ResolvedDatabasePath =>
         Path.GetFullPath(DatabasePath ?? Path.Combine(OutputPath, $"{DatasetLabel}.db"));
+
+    public GenerationOptions ToGenerationOptions() => new()
+    {
+        Seed = Seed, ReferenceUtc = ReferenceUtc, RowCount = RowCount, DatasetLabel = DatasetLabel,
+        BatchSize = BatchSize, DirectLoad = DirectLoad, NullRate = NullRate, HotKeyRate = HotKeyRate,
+        RecentRate = RecentRate, AvgDocSizeBytes = AvgDocSizeBytes, MaxDirectDocumentSizeBytes = MaxDirectDocumentSizeBytes,
+        TenantCount = TenantCount, DeviceCount = DeviceCount, OrdersPerCustomer = OrdersPerCustomer, ItemsPerOrder = ItemsPerOrder,
+        ExtraOptions = new Dictionary<string, object?>
+        {
+            ["writefiles"] = WriteFiles, ["overwritedatabase"] = OverwriteDatabase, ["buildindexes"] = BuildIndexes,
+            ["outputpath"] = OutputPath, ["databasepath"] = DatabasePath, ["specpath"] = SpecPath,
+        },
+    };
 
     public static DataGenOptions Parse(string[] args)
     {
@@ -102,6 +116,9 @@ public sealed class DataGenOptions
         {
             Dataset = dataset,
             Seed = ParseInt(values, "seed", 42),
+            ReferenceUtc = values.TryGetValue("reference-date", out string? referenceDate)
+                ? DateTime.Parse(referenceDate, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal)
+                : new DateTime(2026, 3, 28, 0, 0, 0, DateTimeKind.Utc),
             RowCount = ParseLong(values, "rows", defaultRows),
             BatchSize = ParseInt(values, "batch-size", 1000),
             DirectLoad = HasFlag(flags, "load-direct"),

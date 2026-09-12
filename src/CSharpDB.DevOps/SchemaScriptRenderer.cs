@@ -521,7 +521,7 @@ public static partial class SchemaScriptRenderer
         if (string.IsNullOrWhiteSpace(identifier))
             throw new ArgumentException("Identifier is required.", nameof(identifier));
         if (!SafeIdentifierRegex().IsMatch(identifier))
-            throw new InvalidOperationException($"Identifier '{identifier}' cannot be emitted in a SQL script because quoted identifiers are not supported.");
+            return CSharpDB.Primitives.SqlIdentifierRules.Quote(identifier);
 
         return identifier;
     }

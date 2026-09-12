@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>SQL Search &amp; Dependencies — CSharpDB</title>
+    <meta name="description" content="Search saved CSharpDB definitions, explore Uses and Used by relationships, and assess column changes across SQL objects, forms, reports, pipelines, and C# modules.">
+    <link rel="canonical" href="https://csharpdb.com/docs/sql-search-and-dependencies.html">
+    <meta property="og:title" content="SQL Search &amp; Dependencies — CSharpDB">
+    <meta property="og:description" content="Search saved CSharpDB definitions, explore Uses and Used by relationships, and assess column changes across SQL objects, forms, reports, pipelines, and C# modules.">
+    <meta property="og:url" content="https://csharpdb.com/docs/sql-search-and-dependencies.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "TechArticle",
+        "name": "SQL Search & Dependencies",
+        "description": "Search saved CSharpDB definitions, explore Uses and Used by relationships, and assess column changes across SQL objects, forms, reports, pipelines, and C# modules.",
+        "url": "https://csharpdb.com/docs/sql-search-and-dependencies.html",
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": "CSharpDB",
+            "url": "https://csharpdb.com"
+        }
+    }
+    </script>
+    <style>
+        .doc-content code { overflow-wrap: anywhere; }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'SQL Search & Dependencies',
+        description: 'Search saved CSharpDB definitions, explore Uses and Used by relationships, and assess column changes across SQL objects, forms, reports, pipelines, and C# modules.',
+        keywords: 'CSharpDB SQL search, dependency explorer, column impact, definition search, lineage, Studio',
+        canonicalPath: 'docs/sql-search-and-dependencies.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <aside class="doc-sidebar">
+                <nav class="doc-toc" aria-label="On this page">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#getting-started">Getting Started</a></li>
+                        <li><a href="#search-and-navigation">Search and Navigation</a></li>
+                        <li><a href="#dependency-graph">Dependency Graph</a></li>
+                        <li><a href="#column-impact">Column Impact</a></li>
+                        <li><a href="#coverage">Definition Coverage</a></li>
+                        <li><a href="#dependency-analysis">Dependency Analysis</a></li>
+                        <li><a href="#coverage-diagnostics">Coverage Diagnostics</a></li>
+                        <li><a href="#refresh-and-cancellation">Refresh and Cancellation</a></li>
+                        <li><a href="#transport-contract">Read-only Transport Contract</a></li>
+                        <li><a href="#verification">Verification and Performance</a></li>
+                        <li><a href="#scope">Scope</a></li>
+                    </ul>
+                </nav>
+            </aside>
+
+            <div class="doc-content">
+                <h1>SQL Search &amp; Dependencies</h1>
+                <p class="lead">Find text inside saved definitions, trace what an object uses and what uses it, and review the impact of changing a column.</p>
+
+                <h2 id="getting-started">Getting Started</h2>
+                <ol>
+                    <li>Open <strong>Tools → SQL Search &amp; Dependencies</strong> in Studio, or find it in the command palette.</li>
+                    <li>Choose the active database and, when sharding is enabled, the route you want to inspect.</li>
+                    <li>Enter text such as a column name, narrow the results with the search options, and select a definition.</li>
+                    <li>Use <strong>Uses</strong>, <strong>Used by</strong>, or <strong>Graph</strong> to follow references. Select a column and open <strong>Impact</strong> to assess a proposed change.</li>
+                </ol>
+                <div class="callout callout-info">
+                    <strong>Read-only inspection.</strong> Searching and analyzing definitions does not initialize feature metadata tables, execute saved SQL, invoke callbacks or modules, or apply schema changes.
+                </div>
+
+                <h2 id="search-and-navigation">Search and Navigation</h2>
+                <p>Search matches plain text in object names and definition bodies. Use the object-type filter, <strong>Match case</strong>, and <strong>Whole word</strong> to narrow results. Comments and string literals are searchable; SQL dependency analysis does not treat them as references.</p>
+                <p>Results show highlighted excerpts and source positions. The preview provides match navigation and paged source text.</p>
+                <table class="doc-table">
+                    <thead><tr><th>View</th><th>What it shows</th></tr></thead>
+                    <tbody>
+                        <tr><td><strong>Definition</strong></td><td>The stored source. Schema objects display catalog JSON; C# modules display their source text.</td></tr>
+                        <tr><td><strong>Uses</strong></td><td>Outgoing references with the column, usage, confidence, and SQL statement location or JSON property path.</td></tr>
+                        <tr><td><strong>Used by</strong></td><td>Incoming references. Selecting a column limits this list to that column and dependencies on the table or query shape.</td></tr>
+                        <tr><td><strong>Graph</strong></td><td>Directed relationships from each using definition to its dependency.</td></tr>
+                        <tr><td><strong>Impact</strong></td><td>An advisory assessment of rename, drop, type, and nullability changes.</td></tr>
+                    </tbody>
+                </table>
+
+                <h2 id="dependency-graph">Dependency Graph</h2>
+                <p>Select a node and expand it to follow its relationships. Drag to pan, use <strong>+</strong> and <strong>−</strong> to zoom, or reset around the selected node. Cycles are retained.</p>
+                <p>The graph displays at most <strong>50 nodes</strong> and shows both the display limit and the connected object count. The relationship lists remain available beyond that visual limit.</p>
+
+                <h2 id="column-impact">Column Impact</h2>
+                <p>Choose the column and the kind of change: <strong>Rename</strong>, <strong>Drop</strong>, <strong>Type</strong>, or <strong>Nullability</strong>. The assessment separates four kinds of findings:</p>
+                <ul>
+                    <li><strong>Confirmed usage:</strong> resolved references to the selected column.</li>
+                    <li><strong>Indirect effects:</strong> downstream definitions affected through other objects and column lineage.</li>
+                    <li><strong>Engine restrictions:</strong> rules that may prevent the requested schema operation.</li>
+                    <li><strong>References needing review:</strong> unresolved or dynamic references and compatibility checks.</li>
+                    <li><strong>Model membership:</strong> saved diagrams containing the affected table or column, including downstream definitions where relevant.</li>
+                    <li><strong>Proposed changes:</strong> saved model edits that reference the affected object but have not been applied.</li>
+                    <li><strong>Archive relationships:</strong> links described by registered archive metadata, without treating them as local database constraints.</li>
+                </ul>
+                <p><strong>Assess column impact</strong> is also available in the table explorer context menu, column actions and rename/drop screens, and Data Modeler's persisted-column inspector. Pending model changes are assessed against the saved column identity.</p>
+                <p>Engine restrictions are reported separately from reference findings. For example, rename, drop, or type operations may be blocked by a dependent view even when that view does not select the target column. Nullability changes do not use that view guard. Keys, foreign keys, indexes, triggers, validation rules, primary-key and identity storage, defaults, and checks follow the relevant operation's restrictions or compatibility checks.</p>
+                <div class="callout callout-info">
+                    <strong>Advisory assessment.</strong> Impact analysis never applies a schema change or replaces engine enforcement. Type and nullability assessments do not scan stored row values or predict compatibility with a specific proposed type. The engine remains authoritative.
+                </div>
+
+                <h2 id="coverage">Definition Coverage</h2>
+                <p>The catalog captures saved definitions in the selected database or route:</p>
+                <ul>
+                    <li>Tables, columns, defaults, keys, foreign keys, checks, validation rules, and indexes.</li>
+                    <li>Views, triggers, procedures (including disabled procedures), and saved queries.</li>
+                    <li>C# modules, persisted forms and reports, and current pipeline revisions.</li>
+                    <li>Saved Data Modeler diagrams, including diagram names, groups, member tables and columns, relationships, and persisted proposed changes.</li>
+                    <li>Registered external tables and archive relationships, inspected through their schema metadata.</li>
+                </ul>
+                <p>Query Designer's internal layout records and historical pipeline revisions are excluded. Chunked reports, diagrams, and large source definitions are reassembled before searching.</p>
+
+                <h3>Data models and proposed changes</h3>
+                <p>Search a diagram name, table, column, or relationship name, then use the <strong>Data model</strong> or <strong>Proposed change</strong> object-type filter. Choose <strong>Open data model</strong> to open the saved diagram in the selected route. An existing open model retains its pending edits.</p>
+                <p>For a table or column, open <strong>Used by</strong> and choose <strong>Model membership</strong> to find diagrams containing it. <strong>Uses</strong>, <strong>Used by</strong>, the graph, and column-impact findings distinguish database usage, model membership, proposed changes, and archive relationships. The graph provides a relationship filter and a visible legend, with at most 50 objects and 200 relationships displayed at once.</p>
+                <p>Diagram membership describes documentation and maintenance impact; it does not enforce a schema constraint. Proposed changes are analyzed as saved design intent and never executed. Only changes persisted with a saved diagram are included. Existing schema identities are used to connect staged renames back to the current database when available.</p>
+                <p>Data Modeler's <strong>Known dependencies</strong> inspector uses the same analysis as Search, including SQL objects, forms, reports, modules, pipelines, and saved diagrams. Its Search links preserve the current route and object. Incomplete coverage is shown alongside the findings.</p>
+
+                <h3>External archive metadata</h3>
+                <p>Search inspects metadata from archives registered in the active database or route and identifies the archive path and source table. Archive aliases and relationships remain separate from same-named local tables. Missing or malformed archive metadata produces coverage diagnostics.</p>
+                <p>Only archive headers, schema, and metadata are inspected. Search does not scan stored rows or index pages, and this inspection does not verify the integrity of their payloads. Archive relationships are advisory metadata, not locally enforced database foreign keys.</p>
+
+                <h2 id="dependency-analysis">Dependency Analysis</h2>
+                <h3>SQL references and column lineage</h3>
+                <p>SQL analysis uses CSharpDB's parser. It handles aliases, joins, correlated and scalar subqueries, <code>EXISTS</code> and <code>IN</code> subqueries, CTE output aliases, compound queries, predicates, expressions, aggregates and windows, wildcard projections, read/write targets, positional inserts, and <code>OLD</code>/<code>NEW</code> trigger references.</p>
+                <p>Column lineage follows view and saved-query output names. Predicate changes affect a query's rows; rename and drop can invalidate the whole referencing definition. Type and nullability effects follow output lineage.</p>
+                <h3>Forms, reports, and pipelines</h3>
+                <ul>
+                    <li><strong>Forms:</strong> explicit bindings, child-table keys, lookup and display fields, SQL and procedure actions, and module bindings.</li>
+                    <li><strong>Reports:</strong> sources, bound fields, expressions, grouping, and sorting fields.</li>
+                    <li><strong>Pipelines:</strong> sources, transformations, destinations, and watermark fields. External connections and files are identified without opening them.</li>
+                </ul>
+                <h3>C# modules</h3>
+                <p>Static inspection uses Roslyn syntax and semantic models to resolve supported constant API arguments and form field access. It flags dynamic, unbound, host, reflection, and indirect calls for review. Inspection never compiles an executable assembly, invokes a module, or grants module trust.</p>
+
+                <h2 id="coverage-diagnostics">Coverage Diagnostics</h2>
+                <p>Unrecognized SQL syntax, ambiguous fields, missing objects, malformed definitions, cycles that prevent column resolution, runtime-computed references, and unavailable catalog sections produce coverage diagnostics. Text search remains available for captured definitions.</p>
+                <p>Review these diagnostics alongside dependency findings. A lack of findings does not establish that arbitrary C# helpers or external systems have no dependencies.</p>
+
+                <h2 id="refresh-and-cancellation">Refresh and Cancellation</h2>
+                <p>Catalog loading, dependency analysis, and text search run in the background so Studio can keep responding to navigation and cancellation while definitions are inspected.</p>
+                <p>Studio refreshes after local definition changes. Use manual refresh for changes made elsewhere. In-flight work can be cancelled; failed or cancelled refreshes retain clearly marked stale results for the same scope.</p>
+                <p>Changing the database or route cancels in-flight work and clears the previous results. Analysis caches SQL by source plus the complete relation/schema fingerprint and module inspection by source hash. The graph is rebuilt against each catalog.</p>
+
+                <h2 id="transport-contract">Read-only Transport Contract</h2>
+                <p><code>ICSharpDbDefinitionCatalogReader</code> is an optional capability on embedded, HTTP, and gRPC clients. It is forwarded through <code>CSharpDbClient</code>, the Studio database holder, and route-bound clients. Older servers produce a recoverable unsupported-capability message.</p>
+                <p><code>ReadDefinitionCatalogAsync(continuationToken, pageSize, cancellationToken)</code> returns a <code>DefinitionCatalogPage</code>. Page sizes are 1–64 records; a large definition uses consecutive source fragments of at most 8,192 UTF-16 code units.</p>
+                <p>Consumers follow continuation tokens until null, validate catalog versions, fragment metadata, and source SHA-256 hashes, then reassemble by definition ID and part index. <code>DefinitionCatalogService.ReadAsync</code> implements this consumer contract.</p>
+                <h3>Paging snapshots</h3>
+                <p>The first page captures definitions; later pages use the same immutable snapshot. Each embedded client keeps at most four paged snapshots, expiring after two minutes without a page read. Tokens are scoped to that client, database, and route, and expire on server restart. Expiration is recoverable by refreshing.</p>
+                <p>Manual refresh starts a fresh snapshot. This avoids rescanning the catalog for each page and mixing definitions captured at different times.</p>
+                <h3>Remote access</h3>
+                <ul>
+                    <li><strong>REST:</strong> <code>GET /api/catalog/definitions?pageSize=64&amp;continuationToken=...</code></li>
+                    <li><strong>gRPC:</strong> <code>ReadDefinitionCatalog</code>, with a JSON catalog-page payload in <code>json_utf8</code>.</li>
+                </ul>
+                <p>Inspection reads existing schema and known metadata rows through a read-only reader. It does not initialize feature metadata tables, execute saved SQL, or invoke callbacks.</p>
+
+                <h2 id="verification">Verification and Performance</h2>
+                <p>Focused tests cover matching, highlights and locations, SQL resolution and lineage, native bindings, malformed definitions, fragment integrity, cancellation, refresh, route and token isolation, actual engine restrictions, and non-invocation of stored SQL, modules, and callbacks. Model tests verify membership, proposed changes, stable identity resolution, relationship labels, navigation, and metadata-only archive reads. Embedded, REST, and gRPC contract tests compare every definition fragment, including Unicode source, chunked reports, saved models, external metadata, and current pipelines.</p>
+                <p>A local Debug run on September 9, 2026 measured 10,001 synthetic definitions with 30,000 reference edges:</p>
+                <table class="doc-table">
+                    <thead><tr><th>Operation</th><th>Observed time</th></tr></thead>
+                    <tbody>
+                        <tr><td>Initial dependency analysis</td><td>579 ms</td></tr>
+                        <tr><td>Text search</td><td>14 ms</td></tr>
+                        <tr><td>Analysis on refresh using the cache</td><td>71 ms</td></tr>
+                        <tr><td>Read all pages of 10,001 persisted definitions</td><td>182 ms</td></tr>
+                    </tbody>
+                </table>
+                <p>These are local observations, not performance guarantees. UI rendering is bounded independently: 50 search results per page, 12,000 source characters per page, and expandable batches of relationship and diagnostic findings.</p>
+
+                <h2 id="scope">Scope</h2>
+                <p>This feature analyzes saved definitions in the active database or selected route. Boolean, regex, fuzzy and semantic search, persistent indexes, automatic refactoring, and external repository scanning remain outside its scope.</p>
+                <p>FileSearcher was used for research only. The feature includes no FileSearcher code or dependencies.</p>
+                <p>Related guides: <a href="admin-ui.html">Studio / Admin UI</a>, <a href="sql.html">SQL Reference</a>, <a href="reports.html">Reports</a>, and <a href="pipelines.html">ETL Pipelines</a>.</p>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

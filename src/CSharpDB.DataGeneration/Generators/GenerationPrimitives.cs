@@ -36,7 +36,7 @@ internal static class GenerationPrimitives
     internal static readonly DateTime AnchorUtc = new(2026, 3, 28, 0, 0, 0, DateTimeKind.Utc);
 
     public static Random CreateRandom(int seed, long entityId, int salt = 0)
-        => new(unchecked(HashCode.Combine(seed, salt, entityId)));
+        => CSharpDB.DataGeneration.StableRandom.Create(seed, salt, entityId);
 
     public static long PickSkewedId(Random rng, long maxId, double hotKeyRate)
     {

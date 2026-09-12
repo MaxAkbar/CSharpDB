@@ -14,6 +14,7 @@
     <ProjectReference Include="..\CSharpDB.CodeModules\CSharpDB.CodeModules.csproj" />
     <ProjectReference Include="..\CSharpDB.Client\CSharpDB.Client.csproj" />
     <ProjectReference Include="..\CSharpDB.DevOps\CSharpDB.DevOps.csproj" />
+    <ProjectReference Include="..\CSharpDB.DataGeneration\CSharpDB.DataGeneration.csproj" />
     <ProjectReference Include="..\CSharpDB.ImportExport\CSharpDB.ImportExport.csproj" />
     <ProjectReference Include="..\CSharpDB.Admin.Forms\CSharpDB.Admin.Forms.csproj" />
     <ProjectReference Include="..\CSharpDB.Admin.ImportExport\CSharpDB.Admin.ImportExport.csproj" />

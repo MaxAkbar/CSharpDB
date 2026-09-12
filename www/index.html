@@ -95,7 +95,8 @@
         opacity: 0.45;
         white-space: pre;
         padding: 2rem 4rem;
-        animation: scrollCode 60s linear infinite;
+        /* Decorative code stays still; it is not an interactive example. */
+        animation: none;
         -webkit-user-select: none;
         user-select: none;
         pointer-events: none;
@@ -539,7 +540,7 @@
              Hero — Scrolling Code Background
              ═══════════════════════════════════════════════════════ -->
         <section class="hero-code-first">
-            <div class="hero-code-bg">
+            <div class="hero-code-bg" aria-hidden="true">
                 <pre class="hero-code-scroll"><span class="cm">// CSharpDB &mdash; Embedded Database Engine for .NET</span>
 <span class="cm">// Zero dependencies. ACID-compliant. Production-grade.</span>
 
@@ -756,7 +757,7 @@
                 </div>
                 <div class="hero-install">
                     <code>dotnet add package CSharpDB</code>
-                    <button type="button" class="copy-btn" title="Copy">
+                    <button type="button" class="copy-btn" title="Copy install command" aria-label="Copy install command">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
                     </button>
                 </div>
@@ -771,14 +772,14 @@
                 <h2 class="section-title">Ship in 30 Seconds</h2>
                 <p class="section-subtitle">Use SQL, the Collection API, or low-level storage — all powered by one engine.</p>
 
-                <div class="api-tabs">
-                    <button type="button" class="api-tab active" data-tab="sql">SQL</button>
-                    <button type="button" class="api-tab" data-tab="collection">Collection</button>
-                    <button type="button" class="api-tab" data-tab="storage">Storage</button>
+                <div class="api-tabs" role="tablist" aria-label="Choose a database API example">
+                    <button type="button" class="api-tab active" data-tab="sql" id="tab-sql" role="tab" aria-selected="true" aria-controls="panel-sql" tabindex="0">SQL</button>
+                    <button type="button" class="api-tab" data-tab="collection" id="tab-collection" role="tab" aria-selected="false" aria-controls="panel-collection" tabindex="-1">Collection</button>
+                    <button type="button" class="api-tab" data-tab="storage" id="tab-storage" role="tab" aria-selected="false" aria-controls="panel-storage" tabindex="-1">Storage</button>
                 </div>
 
                 <!-- SQL Panel -->
-                <div class="api-panel active" data-panel="sql">
+                <div class="api-panel active" data-panel="sql" id="panel-sql" role="tabpanel" aria-labelledby="tab-sql" tabindex="0">
                     <div class="code-block" data-title="SQL via ADO.NET">
                         <div class="code-header">
                             <div class="code-dots"><span></span><span></span><span></span></div>
@@ -807,7 +808,7 @@ cmd.Parameters.Add(<span class="kw">new</span> <span class="tp">CSharpDbParamete
                 </div>
 
                 <!-- Collection Panel -->
-                <div class="api-panel" data-panel="collection">
+                <div class="api-panel" data-panel="collection" id="panel-collection" role="tabpanel" aria-labelledby="tab-collection" tabindex="0">
                     <div class="code-block" data-title="Collection API">
                         <div class="code-header">
                             <div class="code-dots"><span></span><span></span><span></span></div>
@@ -833,7 +834,7 @@ cmd.Parameters.Add(<span class="kw">new</span> <span class="tp">CSharpDbParamete
                 </div>
 
                 <!-- Storage Panel -->
-                <div class="api-panel" data-panel="storage">
+                <div class="api-panel" data-panel="storage" id="panel-storage" role="tabpanel" aria-labelledby="tab-storage" tabindex="0">
                     <div class="code-block" data-title="B+Tree Storage">
                         <div class="code-header">
                             <div class="code-dots"><span></span><span></span><span></span></div>
@@ -1004,78 +1005,42 @@ cmd.Parameters.Add(<span class="kw">new</span> <span class="tp">CSharpDbParamete
 
                 <div class="lang-grid">
                     <div class="lang-card">
-                        <div class="lang-card-header">
-                            <span class="lang-dot lang-dot-python"></span>
-                            Python
-                        </div>
-                        <pre><code><span class="kw">import</span> ctypes
+                        <div class="lang-card-header"><span class="lang-dot lang-dot-python"></span>Python</div>
+                        <pre><code>from csharpdb import CSharpDB
 
-db = ctypes.CDLL(<span class="str">"./libcsharpdb.so"</span>)
-
-db.csharpdb_open(<span class="str">b"app.db"</span>)
-db.csharpdb_exec(<span class="str">b"INSERT INTO Users VALUES (1, 'Alice')"</span>)
-result = db.csharpdb_query(<span class="str">b"SELECT * FROM Users"</span>)
-db.csharpdb_close()</code></pre>
+with CSharpDB() as db:
+    db.open(&quot;app.db&quot;)
+    print(db.query(&quot;SELECT 1 AS value&quot;))</code></pre>
+                        <p class="lang-setup">Requires the native library and the wrapper from the <a href="docs/tutorials/native-ffi-python.html">Python setup tutorial</a>. Run from the folder containing the library, or pass its path to the wrapper.</p>
                     </div>
 
                     <div class="lang-card">
-                        <div class="lang-card-header">
-                            <span class="lang-dot lang-dot-rust"></span>
-                            Rust
-                        </div>
-                        <pre><code><span class="kw">extern</span> <span class="str">"C"</span> {
-    <span class="kw">fn</span> <span class="tp">csharpdb_open</span>(path: *<span class="kw">const</span> c_char);
-    <span class="kw">fn</span> <span class="tp">csharpdb_exec</span>(sql: *<span class="kw">const</span> c_char);
-    <span class="kw">fn</span> <span class="tp">csharpdb_query</span>(sql: *<span class="kw">const</span> c_char) -&gt; *<span class="kw">const</span> c_char;
-    <span class="kw">fn</span> <span class="tp">csharpdb_close</span>();
-}
+                        <div class="lang-card-header"><span class="lang-dot lang-dot-node"></span>Node.js</div>
+                        <pre><code>import { CSharpDB } from &#x27;./csharpdb.mjs&#x27;;
 
-<span class="kw">unsafe</span> {
-    <span class="tp">csharpdb_open</span>(c<span class="str">"app.db"</span>.as_ptr());
-    <span class="tp">csharpdb_exec</span>(c<span class="str">"SELECT * FROM Users"</span>.as_ptr());
-    <span class="tp">csharpdb_close</span>();
+const db = new CSharpDB();
+try {
+    db.open(&#x27;app.db&#x27;);
+    console.log(db.query(&#x27;SELECT 1 AS value&#x27;));
+} finally {
+    db.close();
 }</code></pre>
+                        <p class="lang-setup">Requires the native library and the wrapper from the <a href="docs/tutorials/native-ffi-javascript.html">Node.js setup tutorial</a>. Run from the folder containing the library, or pass its path to the wrapper.</p>
                     </div>
 
                     <div class="lang-card">
-                        <div class="lang-card-header">
-                            <span class="lang-dot lang-dot-go"></span>
-                            Go
-                        </div>
-                        <pre><code><span class="cm">// #cgo LDFLAGS: -L. -lcsharpdb</span>
-<span class="cm">// #include "csharpdb.h"</span>
-<span class="kw">import</span> <span class="str">"C"</span>
-
-<span class="kw">func</span> main() {
-    C.csharpdb_open(C.CString(<span class="str">"app.db"</span>))
-    C.csharpdb_exec(C.CString(<span class="str">"SELECT * FROM Users"</span>))
-    C.csharpdb_close()
-}</code></pre>
+                        <div class="lang-card-header"><span class="lang-dot lang-dot-rust"></span>Rust via the C ABI</div>
+                        <p class="lang-setup">Use the native header to define your bindings. <code>csharpdb_open(path)</code> returns a database handle; pass it to <code>csharpdb_execute(db, sql)</code> and <code>csharpdb_close(db)</code>. Check failed calls with <code>csharpdb_last_error()</code> and free each result with <code>csharpdb_result_free(result)</code>.</p>
+                        <p class="lang-setup"><a href="https://github.com/MaxAkbar/CSharpDB/blob/main/src/CSharpDB.Native/csharpdb.h">Read the C ABI header</a> and <a href="docs/tutorials/native-ffi.html">build the native library</a>. Rust bindings and linker configuration are supplied by your application.</p>
                     </div>
 
                     <div class="lang-card">
-                        <div class="lang-card-header">
-                            <span class="lang-dot lang-dot-node"></span>
-                            Node.js
-                        </div>
-                        <pre><code><span class="kw">const</span> ffi = require(<span class="str">'ffi-napi'</span>);
-
-<span class="kw">const</span> db = ffi.Library(<span class="str">'./libcsharpdb'</span>, {
-    <span class="str">'csharpdb_open'</span>:  [<span class="str">'void'</span>, [<span class="str">'string'</span>]],
-    <span class="str">'csharpdb_exec'</span>:  [<span class="str">'void'</span>, [<span class="str">'string'</span>]],
-    <span class="str">'csharpdb_query'</span>: [<span class="str">'string'</span>, [<span class="str">'string'</span>]],
-    <span class="str">'csharpdb_close'</span>: [<span class="str">'void'</span>, []],
-});
-
-db.csharpdb_open(<span class="str">"app.db"</span>);
-db.csharpdb_exec(<span class="str">"SELECT * FROM Users"</span>);
-db.csharpdb_close();</code></pre>
+                        <div class="lang-card-header"><span class="lang-dot lang-dot-go"></span>Go via the C ABI</div>
+                        <p class="lang-setup">Use the native header to define your bindings. <code>csharpdb_open(path)</code> returns a database handle; pass it to <code>csharpdb_execute(db, sql)</code> and <code>csharpdb_close(db)</code>. Check failed calls with <code>csharpdb_last_error()</code> and free each result with <code>csharpdb_result_free(result)</code>.</p>
+                        <p class="lang-setup"><a href="https://github.com/MaxAkbar/CSharpDB/blob/main/src/CSharpDB.Native/csharpdb.h">Read the C ABI header</a> and <a href="docs/tutorials/native-ffi.html">build the native library</a>. Go bindings and linker configuration are supplied by your application.</p>
                     </div>
                 </div>
-
-                <p class="aot-note">
-                    Built with <code>dotnet publish -r linux-x64 /p:NativeLib=Shared</code> — produces a standard <code>.so</code> / <code>.dll</code> / <code>.dylib</code> with no runtime required.
-                </p>
+                <p class="aot-note">Build the native project explicitly, for example: <code>dotnet publish src/CSharpDB.Native/CSharpDB.Native.csproj -c Release -r linux-x64</code>. The output is <code>CSharpDB.Native.so</code> on Linux, <code>CSharpDB.Native.dll</code> on Windows, or <code>CSharpDB.Native.dylib</code> on macOS. See the <a href="docs/tutorials/native-ffi.html">platform prerequisites</a>.</p>
             </div>
         </section>
 
@@ -1093,7 +1058,7 @@ db.csharpdb_close();</code></pre>
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
                         </div>
                         <h4>NativeAOT Ready</h4>
-                        <p>Ahead-of-time compile your app and CSharpDB together. Sub-millisecond cold starts with no JIT overhead.</p>
+                        <p>The native shared library is published with NativeAOT. For embedded applications, use the SQL API or registered generated collection models and review the trimming requirements for your chosen API.</p>
                     </div>
 
                     <div class="win-card">
@@ -1124,8 +1089,8 @@ db.csharpdb_close();</code></pre>
                         <div class="win-icon">
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
                         </div>
-                        <h4>No Reflection</h4>
-                        <p>Serialization uses source generators and compile-time analysis. Trimmer-safe, AOT-friendly, fully transparent.</p>
+                        <h4>Generated Collection Models</h4>
+                        <p>The regular <code>GetCollectionAsync&lt;T&gt;</code> API uses reflection-based serialization and member binding. Use <code>GetGeneratedCollectionAsync&lt;T&gt;</code> with a registered model for the trim-safe generated path. See <a href="docs/collections.html#trimming-and-nativeaot">collection API requirements</a>.</p>
                     </div>
                 </div>
             </div>
@@ -1137,107 +1102,21 @@ db.csharpdb_close();</code></pre>
         <section class="section" id="compare">
             <div class="container">
                 <h2 class="section-title">How CSharpDB Compares</h2>
-                <p class="section-subtitle">A fair look at where CSharpDB fits alongside other embedded options.</p>
-
+                <p class="section-subtitle">Compare the engine model and access APIs that fit your application.</p>
                 <div class="compare-table-wrap">
                     <table class="compare-table">
-                        <thead>
-                            <tr>
-                                <th>Feature</th>
-                                <th class="highlight-col">CSharpDB</th>
-                                <th>SQLite</th>
-                                <th>LiteDB</th>
-                                <th>RocksDB</th>
-                            </tr>
-                        </thead>
+                        <caption>Engine and API overview. Documentation reviewed September 7, 2026; capabilities depend on version and configuration.</caption>
+                        <thead><tr><th scope="col">Area</th><th scope="col" class="highlight-col">CSharpDB</th><th scope="col">SQLite</th><th scope="col">LiteDB v5</th><th scope="col">RocksDB</th></tr></thead>
                         <tbody>
-                            <tr>
-                                <td class="feature-name">Pure .NET / No native binaries</td>
-                                <td class="highlight-col"><span class="check">&#10003;</span></td>
-                                <td><span class="dash">&mdash;</span></td>
-                                <td><span class="check">&#10003;</span></td>
-                                <td><span class="dash">&mdash;</span></td>
-                            </tr>
-                            <tr>
-                                <td class="feature-name">SQL JOINs, CTEs, and subqueries</td>
-                                <td class="highlight-col"><span class="check">&#10003;</span></td>
-                                <td><span class="check">&#10003;</span></td>
-                                <td><span class="dash">&mdash;</span></td>
-                                <td><span class="dash">&mdash;</span></td>
-                            </tr>
-                            <tr>
-                                <td class="feature-name">NoSQL Collection API</td>
-                                <td class="highlight-col"><span class="check">&#10003;</span></td>
-                                <td><span class="dash">&mdash;</span></td>
-                                <td><span class="check">&#10003;</span></td>
-                                <td><span class="dash">&mdash;</span></td>
-                            </tr>
-                            <tr>
-                                <td class="feature-name">ACID transactions</td>
-                                <td class="highlight-col"><span class="check">&#10003;</span></td>
-                                <td><span class="check">&#10003;</span></td>
-                                <td><span class="check">&#10003;</span></td>
-                                <td><span class="check">&#10003;</span></td>
-                            </tr>
-                            <tr>
-                                <td class="feature-name">Built-in ETL pipelines</td>
-                                <td class="highlight-col"><span class="check">&#10003;</span></td>
-                                <td><span class="dash">&mdash;</span></td>
-                                <td><span class="dash">&mdash;</span></td>
-                                <td><span class="dash">&mdash;</span></td>
-                            </tr>
-                            <tr>
-                                <td class="feature-name">Full-text search</td>
-                                <td class="highlight-col"><span class="check">&#10003;</span></td>
-                                <td><span class="check">&#10003;</span></td>
-                                <td><span class="check">&#10003;</span></td>
-                                <td><span class="dash">&mdash;</span></td>
-                            </tr>
-                            <tr>
-                                <td class="feature-name">REST API / gRPC</td>
-                                <td class="highlight-col"><span class="check">&#10003;</span></td>
-                                <td><span class="dash">&mdash;</span></td>
-                                <td><span class="dash">&mdash;</span></td>
-                                <td><span class="dash">&mdash;</span></td>
-                            </tr>
-                            <tr>
-                                <td class="feature-name">Admin UI</td>
-                                <td class="highlight-col"><span class="check">&#10003;</span></td>
-                                <td><span class="dash">&mdash;</span></td>
-                                <td><span class="dash">&mdash;</span></td>
-                                <td><span class="dash">&mdash;</span></td>
-                            </tr>
-                            <tr>
-                                <td class="feature-name">MCP server (AI agents)</td>
-                                <td class="highlight-col"><span class="check">&#10003;</span></td>
-                                <td><span class="dash">&mdash;</span></td>
-                                <td><span class="dash">&mdash;</span></td>
-                                <td><span class="dash">&mdash;</span></td>
-                            </tr>
-                            <tr>
-                                <td class="feature-name">Mature ecosystem / battle-tested</td>
-                                <td class="highlight-col"><span class="dash">&mdash;</span></td>
-                                <td><span class="check">&#10003;</span></td>
-                                <td><span class="check">&#10003;</span></td>
-                                <td><span class="check">&#10003;</span></td>
-                            </tr>
-                            <tr>
-                                <td class="feature-name">Collation &amp; Unicode sorting</td>
-                                <td class="highlight-col"><span class="check">&#10003;</span></td>
-                                <td><span class="check">&#10003;</span></td>
-                                <td><span class="dash">&mdash;</span></td>
-                                <td><span class="dash">&mdash;</span></td>
-                            </tr>
-                            <tr>
-                                <td class="feature-name">Multi-language SDKs (Python, Java, …)</td>
-                                <td class="highlight-col"><span class="check">&#10003;</span></td>
-                                <td><span class="check">&#10003;</span></td>
-                                <td><span class="dash">&mdash;</span></td>
-                                <td><span class="check">&#10003;</span></td>
-                            </tr>
+                            <tr><th scope="row" class="feature-name">Data model</th><td class="highlight-col">SQL tables and typed collections</td><td>SQL tables</td><td>Document collections</td><td>Ordered key-value pairs</td></tr>
+                            <tr><th scope="row" class="feature-name">Application access</th><td class="highlight-col">Engine API, Collections, ADO.NET and EF Core</td><td>C API and language bindings</td><td>.NET collection API and object mapping</td><td>Key-value API and language bindings</td></tr>
+                            <tr><th scope="row" class="feature-name">Related data</th><td class="highlight-col">SQL JOINs and subqueries</td><td>SQL JOINs and subqueries</td><td>Embedded documents and document references</td><td>Application-defined keys and values</td></tr>
+                            <tr><th scope="row" class="feature-name">String ordering</th><td class="highlight-col"><a href="docs/collation-support.html">Collation support</a></td><td><a href="https://www.sqlite.org/datatype3.html#collation">Collating functions</a></td><td><a href="https://www.litedb.org/docs/collation/">Culture and comparison options</a></td><td><a href="https://rocksdb.org/docs/">Configurable key comparator</a></td></tr>
+                            <tr><th scope="row" class="feature-name">Documentation</th><td class="highlight-col"><a href="docs/sql.html">SQL support</a> · <a href="docs/ecosystem.html">Tools</a></td><td><a href="https://www.sqlite.org/features.html">SQLite features</a></td><td><a href="https://www.litedb.org/docs/">LiteDB overview</a></td><td><a href="https://rocksdb.org/docs/">RocksDB overview</a></td></tr>
                         </tbody>
                     </table>
                 </div>
+                <p class="comparison-note">CSharpDB includes separate Admin, CLI, REST, gRPC, and MCP tools. Other databases have their own tooling and integrations; this overview does not rate the completeness of those ecosystems. For measured CSharpDB workloads and storage-mode tradeoffs, see the <a href="docs/performance.html">performance guide</a>.</p>
             </div>
         </section>
 

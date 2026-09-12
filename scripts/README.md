@@ -8,6 +8,25 @@ the admin app config so the web UI starts in the expected transport mode.
 Daemon service install scripts live under [`deploy/daemon`](../deploy/daemon)
 and are included in daemon release archives.
 
+## Website maintenance
+
+The published site is static HTML under `www`. Navigation and footer markup have
+one shared implementation in `www/js/csharpdb.bundle.js`. Pages only contain the
+`site-nav` and `site-footer` placeholders. Edit the shared component once to update
+every page. Shared styles belong in `www/css/style.css`, and shared behavior in
+the bundle. Page-specific content and metadata stay in each HTML file.
+
+Validate website changes with:
+
+```powershell
+./scripts/Test-Documentation.ps1
+```
+
+The documentation check rejects missing metadata, broken local files and section
+links, missing shared component placeholders, and duplicated navigation/footer
+markup. It also runs fixtures that verify these failures are detected. No website
+build tool or package installation is required.
+
 ## How The Scripts Fit The Release Cycle
 
 The release and local workflow notes are grouped by audience:

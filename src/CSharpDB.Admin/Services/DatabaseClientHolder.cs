@@ -15,7 +15,7 @@ namespace CSharpDB.Admin.Services;
 /// at runtime (e.g. when the user opens a different database file).
 /// Registered as a singleton; all Blazor circuits share the same instance.
 /// </summary>
-public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbObservabilityClient, ICSharpDbTableArchiveProgressExporter, ICSharpDbTransactionalSnapshotReader, ICSharpDbShardAdminClient, ICSharpDbShardDirectoryClient
+public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbDefinitionCatalogReader, ICSharpDbObservabilityClient, ICSharpDbTableArchiveProgressExporter, ICSharpDbTransactionalSnapshotReader, ICSharpDbShardAdminClient, ICSharpDbShardDirectoryClient
 {
     private ICSharpDbClient _inner;
     private ICSharpDbShardAdminClient? _shardAdmin;
@@ -32,6 +32,10 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbObservabili
     private Task? _disposeTask;
 
     public event Action? DatabaseChanged;
+    public Task<DefinitionCatalogPage> ReadDefinitionCatalogAsync(string? continuationToken = null, int pageSize = 64, CancellationToken ct = default)
+        => _inner is ICSharpDbDefinitionCatalogReader reader
+            ? reader.ReadDefinitionCatalogAsync(continuationToken, pageSize, ct)
+            : throw new NotSupportedException("This connection does not support definition inspection. Upgrade the server.");
 
     public DatabaseClientHolder(
         ICSharpDbClient initial,
@@ -170,6 +174,47 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbObservabili
         }
 
         return CSharpDbClient.Create(CloneOptionsWithRoute(baseClientOptions, routeContext));
+    }
+
+    /// <summary>Pins one database, and optionally a route, for a complete multi-call operation.</summary>
+    public ClientLease CaptureClient(CSharpDbRouteContext? route = null)
+    {
+        lock (_lock)
+        {
+            ObjectDisposedException.ThrowIf(_disposeTask is not null, this);
+            ICSharpDbClient inner = _inner;
+            ICSharpDbClient client = route is null ? inner : CreateRouteBoundClient(route);
+            // Share the existing disposal drain with diagnostics leases.
+            _observabilityLeaseCounts.TryGetValue(inner, out int count);
+            _observabilityLeaseCounts[inner] = SaturatingIncrementLeaseCount(count);
+            return new ClientLease(this, inner, client);
+        }
+    }
+
+    public sealed class ClientLease : IAsyncDisposable
+    {
+        private DatabaseClientHolder? _owner;
+        private readonly ICSharpDbClient _inner;
+        internal ClientLease(DatabaseClientHolder owner, ICSharpDbClient inner, ICSharpDbClient client)
+        { _owner = owner; _inner = inner; Client = client; }
+        public ICSharpDbClient Client { get; }
+        internal object DatabaseIdentity => _inner;
+        public bool IsCurrent
+        {
+            get
+            {
+                var owner = _owner;
+                if (owner is null) return false;
+                lock (owner._lock) return ReferenceEquals(owner._inner, _inner) && owner._disposeTask is null;
+            }
+        }
+        public async ValueTask DisposeAsync()
+        {
+            var owner = Interlocked.Exchange(ref _owner, null);
+            if (owner is null) return;
+            try { if (!ReferenceEquals(Client, _inner)) await Client.DisposeAsync(); }
+            finally { owner.ReleaseObservabilityClient(_inner); }
+        }
     }
 
     public async Task CreateShardCatalogAndReloadAsync(

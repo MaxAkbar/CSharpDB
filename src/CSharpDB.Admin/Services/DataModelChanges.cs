@@ -2,7 +2,6 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using CSharpDB.Admin.Models;
 using CSharpDB.Client.Models;
 using CSharpDB.Sql;
@@ -310,7 +309,5 @@ public sealed partial class DataModelService
         }
     }
 
-    private static bool ReferencesIdentifier(string sql, string identifier) => Regex.IsMatch(sql,
-        @"(?<![\w])" + Regex.Escape(identifier) + @"(?![\w])", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
 
 }

@@ -1481,3 +1481,47 @@ code {
 ::-webkit-scrollbar-track { background: var(--bg-primary); }
 ::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* Shared keyboard access and interaction feedback. */
+.skip-link {
+    position: fixed;
+    top: -100px;
+    left: 16px;
+    z-index: 10000;
+    padding: 12px 18px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    border: 2px solid var(--accent-hover);
+    border-radius: var(--radius-sm);
+}
+.skip-link:focus { top: 12px; }
+:focus-visible { outline: 3px solid var(--accent-hover); outline-offset: 4px; }
+[role="tabpanel"][hidden] { display: none !important; }
+.mermaid-tabs { display: flex; gap: 6px; }
+.copy-status {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 10000;
+    max-width: calc(100% - 32px);
+    padding: 12px 18px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    border: 1px solid var(--accent-hover);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-md);
+}
+.copy-status:empty { display: none; }
+.lang-card .lang-setup { padding: 16px 20px; margin: 0; font-size: 0.9rem; line-height: 1.7; }
+.lang-setup code { overflow-wrap: anywhere; }
+.lang-setup a, .aot-note a, .comparison-note a, .win-card a { text-decoration: underline; text-underline-offset: 3px; }
+.compare-table caption { padding: 0 0 16px; text-align: left; color: var(--text-secondary); font-size: 0.9rem; }
+.compare-table a { text-decoration: underline; text-underline-offset: 3px; }
+.comparison-note { max-width: 1000px; margin: 20px auto 0; color: var(--text-secondary); line-height: 1.7; }
+html:not(.js) .theme-toggle, html:not(.js) .mobile-toggle, html:not(.js) .api-tabs { display: none; }
+html:not(.js) .api-panel, html:not(.js) .doc-section, html:not(.js) .api-section { display: block; }
+@media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+}

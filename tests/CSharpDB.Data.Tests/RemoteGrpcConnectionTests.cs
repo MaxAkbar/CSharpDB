@@ -192,6 +192,44 @@ public sealed class RemoteGrpcConnectionTests : IAsyncLifetime
         Assert.Equal(2L, await cmd.ExecuteScalarAsync(Ct));
     }
 
+    [Theory]
+    [InlineData("Grpc", false)]
+    [InlineData("Grpc", true)]
+    [InlineData("Http", false)]
+    [InlineData("Http", true)]
+    public async Task ParameterBinding_InjectionPayloadsCannotChangeQueryResults(string transport, bool prepare)
+    {
+        using HttpClient httpClient = _factory.CreateClient();
+        await using var conn = new CSharpDbConnection(
+            $"Transport={transport};Endpoint=http://localhost",
+            transport == "Grpc" ? _transportClient : httpClient);
+        await conn.OpenAsync(Ct);
+
+        (string Sql, string Value)[] cases =
+        [
+            ("SELECT 1 WHERE @p = 'expected' /* @p */", "*/ OR 1 = 1 --"),
+            ("SELECT 1 WHERE @p = 'expected' -- @p", "\nOR 1 = 1 --"),
+            ("SELECT @p AS \"@p\" WHERE 0 = 1", "\" WHERE 1 = 1 --"),
+            ("SELECT 1 WHERE @p = 'expected'", "' OR 1 = 1 --"),
+        ];
+
+        foreach (var testCase in cases)
+        {
+            using var command = conn.CreateCommand();
+            command.CommandText = testCase.Sql;
+            command.Parameters.AddWithValue("p", testCase.Value);
+            if (prepare)
+                command.Prepare();
+
+            Assert.Null(await command.ExecuteScalarAsync(Ct));
+
+            command.CommandText = "SELECT @p AS \"@missing\" /* @missing */";
+            if (prepare)
+                command.Prepare();
+            Assert.Equal(testCase.Value, await command.ExecuteScalarAsync(Ct));
+        }
+    }
+
     [Fact]
     public async Task Transactions_CommitAndRollback_OverGrpcDaemon()
     {
