@@ -5,6 +5,85 @@ namespace CSharpDB.Tests;
 
 public sealed class CheckpointCoordinatorTests
 {
+    [Theory]
+    [InlineData(null, 100L)]
+    [InlineData(100L, 100L)]
+    [InlineData(200L, 200L)]
+    public void SameStateSnapshots_ReleaseIndependentlyAndRetainWalUntilLastReader(
+        long? minimumWalOffset, long expectedMinimum)
+    {
+        using var coordinator = new CheckpointCoordinator();
+        WalIndex index = CreateIndexWithTwoWalOffsets();
+
+        WalSnapshot first = coordinator.AcquireReaderSnapshot(index, minimumWalOffset);
+        WalSnapshot second = coordinator.AcquireReaderSnapshot(index, minimumWalOffset);
+
+        Assert.NotSame(first, second);
+        Assert.Equal(first.CommitCounter, second.CommitCounter);
+        Assert.Equal(2, coordinator.ActiveReaderCount);
+        AssertMinimumRetainedWalOffset(coordinator, expectedMinimum);
+
+        coordinator.RequestDeferredCheckpoint();
+        Assert.False(coordinator.TryConsumeDeferredCheckpointRequest());
+
+        Assert.False(coordinator.ReleaseReaderSnapshot(first));
+        Assert.Equal(1, coordinator.ActiveReaderCount);
+        AssertMinimumRetainedWalOffset(coordinator, expectedMinimum);
+        Assert.False(coordinator.TryConsumeDeferredCheckpointRequest());
+
+        // Releasing the same handle twice must not unregister the other reader.
+        Assert.False(coordinator.ReleaseReaderSnapshot(first));
+        Assert.Equal(1, coordinator.ActiveReaderCount);
+        AssertMinimumRetainedWalOffset(coordinator, expectedMinimum);
+        Assert.True(second.TryGet(2, out long secondOffset));
+        Assert.Equal(200L, secondOffset);
+
+        Assert.True(coordinator.ReleaseReaderSnapshot(second));
+        Assert.Equal(0, coordinator.ActiveReaderCount);
+        Assert.False(coordinator.TryGetMinimumRetainedWalOffset(out _));
+        Assert.True(coordinator.TryConsumeDeferredCheckpointRequest());
+        Assert.False(coordinator.ReleaseReaderSnapshot(second));
+        Assert.Equal(0, coordinator.ActiveReaderCount);
+    }
+
+    [Theory]
+    [InlineData(201L)]
+    [InlineData(long.MaxValue)]
+    public void SameStateFloorFilteredEmptySnapshots_HaveIndependentLifetimesWithoutRetainingWal(
+        long minimumWalOffset)
+    {
+        using var coordinator = new CheckpointCoordinator();
+        WalIndex index = CreateIndexWithTwoWalOffsets();
+
+        WalSnapshot retaining = coordinator.AcquireReaderSnapshot(index);
+        WalSnapshot firstEmpty = coordinator.AcquireReaderSnapshot(index, minimumWalOffset);
+        WalSnapshot secondEmpty = coordinator.AcquireReaderSnapshot(index, minimumWalOffset);
+
+        Assert.NotSame(firstEmpty, secondEmpty);
+        Assert.False(firstEmpty.HasWalFrames);
+        Assert.False(secondEmpty.HasWalFrames);
+        Assert.False(firstEmpty.TryGet(1, out _));
+        Assert.False(secondEmpty.TryGet(2, out _));
+        Assert.Equal(3, coordinator.ActiveReaderCount);
+        AssertMinimumRetainedWalOffset(coordinator, 100);
+
+        coordinator.RequestDeferredCheckpoint();
+        Assert.False(coordinator.TryConsumeDeferredCheckpointRequest());
+        Assert.False(coordinator.ReleaseReaderSnapshot(retaining));
+        Assert.Equal(2, coordinator.ActiveReaderCount);
+        Assert.False(coordinator.TryGetMinimumRetainedWalOffset(out _));
+        // Readers whose floor excludes every frame must not defer finalization.
+        Assert.True(coordinator.TryConsumeDeferredCheckpointRequest());
+
+        Assert.False(coordinator.ReleaseReaderSnapshot(firstEmpty));
+        Assert.False(coordinator.ReleaseReaderSnapshot(firstEmpty));
+        Assert.Equal(1, coordinator.ActiveReaderCount);
+        Assert.False(coordinator.TryGetMinimumRetainedWalOffset(out _));
+        Assert.True(coordinator.ReleaseReaderSnapshot(secondEmpty));
+        Assert.Equal(0, coordinator.ActiveReaderCount);
+        Assert.False(coordinator.TryGetMinimumRetainedWalOffset(out _));
+    }
+
     [Fact]
     public void NoWalSnapshot_DoesNotCreateOrPreserveRetentionFloor()
     {

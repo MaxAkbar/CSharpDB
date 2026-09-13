@@ -6,14 +6,20 @@ namespace CSharpDB.Storage.Wal;
 /// </summary>
 public sealed class WalIndex
 {
-    // Shared only by snapshots with no retained frames. WalSnapshot must keep its
-    // empty-map guard before any in-place remapping so this dictionary stays immutable.
+    // Snapshot maps are privately owned copies and are never mutated after publication.
     private static readonly Dictionary<uint, long> s_emptyPageMap = new();
 
     private readonly object _gate = new();
 
     // Maps pageId → WAL file offset of the latest committed frame for that page.
     private readonly Dictionary<uint, long> _pageMap = new();
+
+    // Keep only the most recently requested floor for the current map state.
+    // Every map content change invalidates this copy under _gate; existing readers
+    // retain their old copy independently of the current cache entry.
+    private Dictionary<uint, long>? _snapshotPageMap;
+    private long? _snapshotWalOffsetFloor;
+    private long _snapshotMinimumWalOffset;
 
     // Number of committed frames currently in WAL.
     private int _frameCount;
@@ -80,6 +86,7 @@ public sealed class WalIndex
     {
         lock (_gate)
         {
+            _snapshotPageMap = null;
             _pageMap[pageId] = walFileOffset;
             _frameCount++;
         }
@@ -94,7 +101,10 @@ public sealed class WalIndex
         lock (_gate)
         {
             if (!frames.IsEmpty)
+            {
+                _snapshotPageMap = null;
                 _pageMap.EnsureCapacity(_pageMap.Count + frames.Length);
+            }
 
             foreach (var frame in frames)
                 _pageMap[frame.PageId] = frame.WalOffset;
@@ -112,7 +122,10 @@ public sealed class WalIndex
         lock (_gate)
         {
             if (!frames.IsEmpty)
+            {
+                _snapshotPageMap = null;
                 _pageMap.EnsureCapacity(_pageMap.Count + frames.Length);
+            }
 
             for (int i = 0; i < frames.Length; i++)
                 _pageMap[frames[i].PageId] = firstFrameOffset + (long)i * PageConstants.WalFrameSize;
@@ -189,12 +202,22 @@ public sealed class WalIndex
     {
         lock (_gate)
         {
-            Dictionary<uint, long> snapshot = _pageMap.Count == 0
-                ? s_emptyPageMap
-                : minimumWalOffset is long walOffsetFloor
-                    ? FilterPageMap(_pageMap, walOffsetFloor)
-                    : new Dictionary<uint, long>(_pageMap);
-            return new WalSnapshot(snapshot, _commitCounter);
+            if (_snapshotPageMap is null || _snapshotWalOffsetFloor != minimumWalOffset)
+            {
+                Dictionary<uint, long> snapshot = _pageMap.Count == 0
+                    ? s_emptyPageMap
+                    : minimumWalOffset is long walOffsetFloor
+                        ? FilterPageMap(_pageMap, walOffsetFloor)
+                        : new Dictionary<uint, long>(_pageMap);
+
+                _snapshotMinimumWalOffset = ComputeMinimumWalOffset(snapshot);
+                _snapshotWalOffsetFloor = minimumWalOffset;
+                _snapshotPageMap = snapshot;
+            }
+
+            // Reader registration uses wrapper identity, even when its map is shared.
+            // Read the counter afresh: counter-only advances can reuse the same map.
+            return new WalSnapshot(_snapshotPageMap, _commitCounter, _snapshotMinimumWalOffset);
         }
     }
 
@@ -236,6 +259,7 @@ public sealed class WalIndex
     {
         lock (_gate)
         {
+            _snapshotPageMap = null;
             _pageMap.Clear();
             _frameCount = 0;
         }
@@ -259,6 +283,7 @@ public sealed class WalIndex
 
         lock (_gate)
         {
+            _snapshotPageMap = null;
             _pageMap.Clear();
             _pageMap.EnsureCapacity(latestPageMap.Count);
 
@@ -284,6 +309,7 @@ public sealed class WalIndex
 
         lock (_gate)
         {
+            _snapshotPageMap = null;
             _pageMap.Clear();
             _pageMap.EnsureCapacity(latestPageMap.Count);
 
@@ -293,6 +319,18 @@ public sealed class WalIndex
             _frameCount = frameCount;
             _commitCounter = commitCounter;
         }
+    }
+
+    private static long ComputeMinimumWalOffset(Dictionary<uint, long> pageMap)
+    {
+        long minimumWalOffset = long.MaxValue;
+        foreach (long walOffset in pageMap.Values)
+        {
+            if (walOffset < minimumWalOffset)
+                minimumWalOffset = walOffset;
+        }
+
+        return minimumWalOffset;
     }
 
     private static Dictionary<uint, long> FilterPageMap(Dictionary<uint, long> pageMap, long minimumWalOffset)
@@ -323,13 +361,13 @@ public sealed class WalSnapshot
 {
     private readonly Dictionary<uint, long> _pageMap;
     private readonly long _commitCounter;
-    private long _minimumWalOffset;
+    private readonly long _minimumWalOffset;
 
-    internal WalSnapshot(Dictionary<uint, long> pageMap, long commitCounter)
+    internal WalSnapshot(Dictionary<uint, long> pageMap, long commitCounter, long minimumWalOffset)
     {
         _pageMap = pageMap;
         _commitCounter = commitCounter;
-        _minimumWalOffset = ComputeMinimumWalOffset(pageMap);
+        _minimumWalOffset = minimumWalOffset;
     }
 
     public long CommitCounter => _commitCounter;
@@ -342,53 +380,5 @@ public sealed class WalSnapshot
     public bool TryGet(uint pageId, out long walOffset)
     {
         return _pageMap.TryGetValue(pageId, out walOffset);
-    }
-
-    internal void RemapRetainedWalOffsets(long retainedWalStartOffset, long destinationStartOffset)
-    {
-        if (_pageMap.Count == 0 || retainedWalStartOffset <= destinationStartOffset)
-            return;
-
-        long shift = retainedWalStartOffset - destinationStartOffset;
-        var keys = _pageMap.Keys.ToArray();
-        for (int i = 0; i < keys.Length; i++)
-        {
-            uint pageId = keys[i];
-            long walOffset = _pageMap[pageId];
-            if (walOffset >= retainedWalStartOffset)
-                _pageMap[pageId] = walOffset - shift;
-        }
-
-        _minimumWalOffset = ComputeMinimumWalOffset(_pageMap);
-    }
-
-    private static long ComputeMinimumWalOffset(Dictionary<uint, long> pageMap)
-    {
-        if (pageMap.Count == 0)
-            return long.MaxValue;
-
-        long minimumWalOffset = long.MaxValue;
-        foreach (long walOffset in pageMap.Values)
-        {
-            if (walOffset < minimumWalOffset)
-                minimumWalOffset = walOffset;
-        }
-
-        return minimumWalOffset;
-    }
-
-    private static Dictionary<uint, long> FilterPageMap(Dictionary<uint, long> pageMap, long minimumWalOffset)
-    {
-        if (pageMap.Count == 0)
-            return new Dictionary<uint, long>();
-
-        var filtered = new Dictionary<uint, long>(pageMap.Count);
-        foreach ((uint pageId, long walOffset) in pageMap)
-        {
-            if (walOffset >= minimumWalOffset)
-                filtered[pageId] = walOffset;
-        }
-
-        return filtered;
     }
 }
