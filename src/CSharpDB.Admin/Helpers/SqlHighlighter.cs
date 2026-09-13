@@ -1,5 +1,4 @@
 using System.Text;
-using System.Text.RegularExpressions;
 
 namespace CSharpDB.Admin.Helpers;
 
@@ -9,25 +8,6 @@ namespace CSharpDB.Admin.Helpers;
 /// </summary>
 public static partial class SqlHighlighter
 {
-    private static readonly HashSet<string> Keywords = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "IN", "IS", "NULL",
-        "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE",
-        "CREATE", "ALTER", "DROP", "TABLE", "INDEX", "VIEW", "TRIGGER",
-        "JOIN", "INNER", "LEFT", "RIGHT", "OUTER", "CROSS", "ON",
-        "ORDER", "BY", "ASC", "DESC", "GROUP", "HAVING", "LIMIT", "OFFSET",
-        "AS", "DISTINCT", "ALL", "EXISTS", "BETWEEN", "LIKE", "COLLATE", "UNION",
-        "BEGIN", "END", "COMMIT", "ROLLBACK", "TRANSACTION",
-        "PRIMARY", "KEY", "UNIQUE", "NOT", "DEFAULT", "CHECK", "FOREIGN", "REFERENCES",
-        "IF", "ELSE", "CASE", "WHEN", "THEN", "COLUMN", "CONSTRAINT", "ADD", "RENAME", "TO",
-        "BEFORE", "AFTER", "FOR", "EACH", "ROW", "INSTEAD", "OF",
-        "IDENTITY", "AUTOINCREMENT",
-        "FIND", "DUPLICATES", "DEDUP", "KEEP", "FIRST", "LAST", "MERGE",
-        "VALIDATION", "RULE", "MESSAGE", "VALIDATE", "ORPHANS",
-        "INTEGER", "TEXT", "REAL", "BLOB", "BOOLEAN", "INT", "VARCHAR", "CHAR",
-        "TRUE", "FALSE"
-    };
-
     private static readonly HashSet<string> Functions = new(StringComparer.OrdinalIgnoreCase)
     {
         "COUNT", "SUM", "AVG", "MIN", "MAX", "CAST", "COALESCE", "IFNULL",
@@ -70,23 +50,26 @@ public static partial class SqlHighlighter
                 continue;
             }
 
-            // Strings: 'text'
-            if (sql[i] == '\'')
+            // Strings and quoted identifiers are opaque, including doubled quote escapes.
+            if (sql[i] is '\'' or '"')
             {
+                char quote = sql[i];
                 int end = i + 1;
                 while (end < sql.Length)
                 {
-                    if (sql[end] == '\'' && end + 1 < sql.Length && sql[end + 1] == '\'')
+                    if (sql[end] == quote && end + 1 < sql.Length && sql[end + 1] == quote)
                     {
                         end += 2; // escaped quote
                         continue;
                     }
-                    if (sql[end] == '\'') { end++; break; }
+                    if (sql[end] == quote) { end++; break; }
                     end++;
                 }
-                sb.Append("<span class=\"hl-string\">");
+                if (quote == '\'')
+                    sb.Append("<span class=\"hl-string\">");
                 AppendEscaped(sb, sql, i, end - i);
-                sb.Append("</span>");
+                if (quote == '\'')
+                    sb.Append("</span>");
                 i = end;
                 continue;
             }
@@ -112,15 +95,15 @@ public static partial class SqlHighlighter
                     end++;
                 string word = sql[i..end];
 
-                if (Keywords.Contains(word))
+                if (Functions.Contains(word))
                 {
-                    sb.Append("<span class=\"hl-keyword\">");
+                    sb.Append("<span class=\"hl-function\">");
                     AppendEscaped(sb, sql, i, end - i);
                     sb.Append("</span>");
                 }
-                else if (Functions.Contains(word))
+                else if (SqlKeywordCatalog.Keywords.Contains(word))
                 {
-                    sb.Append("<span class=\"hl-function\">");
+                    sb.Append("<span class=\"hl-keyword\">");
                     AppendEscaped(sb, sql, i, end - i);
                     sb.Append("</span>");
                 }

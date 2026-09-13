@@ -26,6 +26,39 @@ public sealed class SqlCompletionProviderTests
         Assert.Equal("LIMIT ", suggestion.InsertText);
     }
 
+    [Theory]
+    [InlineData("select * from customers where email li")]
+    [InlineData("SELECT * FROM Customers WHERE Email LIK")]
+    [InlineData("SELECT * FROM Customers c WHERE c.Email li")]
+    [InlineData("SELECT * FROM Customers WHERE Email NOT li")]
+    public void GetCompletions_EmailPredicate_SuggestsLike(string sql)
+    {
+        var result = SqlCompletionProvider.GetCompletions(sql, sql.Length, CreateCatalog());
+
+        var suggestion = Assert.Single(result.Suggestions, s => s.Label == "LIKE");
+        string expectedSql = sql[..(sql.LastIndexOf(' ') + 1)] + "LIKE ";
+        string completedSql = sql[..suggestion.ReplacementStart]
+            + suggestion.InsertText + sql[suggestion.ReplacementEnd..];
+        Assert.Equal(expectedSql, completedSql);
+        Assert.Equal(expectedSql.Length, suggestion.CaretPosition);
+        Assert.Equal(SqlCompletionSuggestionKind.Keyword, suggestion.Kind);
+    }
+
+    [Theory]
+    [InlineData("li", "LIKE")]
+    [InlineData("like", "LIKE")]
+    [InlineData("lim", "LIMIT")]
+    [InlineData("co", "COALESCE")]
+    public void GetCompletions_ExplicitKeywordTrigger_FiltersByTypedPrefix(string prefix, string expectedLabel)
+    {
+        string sql = "SELECT * FROM Customers WHERE Email " + prefix;
+
+        var result = SqlCompletionProvider.GetCompletions(sql, sql.Length, CreateCatalog(), explicitTrigger: true);
+
+        Assert.Contains(result.Suggestions, s => s.Label == expectedLabel);
+        Assert.All(result.Suggestions, s => Assert.StartsWith(prefix, s.Label, StringComparison.OrdinalIgnoreCase));
+    }
+
     [Fact]
     public void GetCompletions_AfterUpdateTableTypingSe_SuggestsSet()
     {

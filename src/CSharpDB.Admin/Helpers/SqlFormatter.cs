@@ -1,5 +1,4 @@
 using System.Text;
-using System.Text.RegularExpressions;
 
 namespace CSharpDB.Admin.Helpers;
 
@@ -8,39 +7,11 @@ namespace CSharpDB.Admin.Helpers;
 /// </summary>
 public static partial class SqlFormatter
 {
-    private static readonly HashSet<string> MajorClauses = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "SELECT", "FROM", "WHERE", "AND", "OR", "ORDER", "GROUP", "HAVING",
-        "LIMIT", "OFFSET", "JOIN", "INNER", "LEFT", "RIGHT", "CROSS",
-        "OUTER", "ON", "SET", "VALUES", "INTO", "INSERT", "UPDATE",
-        "DELETE", "CREATE", "ALTER", "DROP", "BEGIN", "END", "UNION",
-        "FIND", "DEDUP", "MERGE", "VALIDATE"
-    };
-
     private static readonly HashSet<string> NewlineBeforeClauses = new(StringComparer.OrdinalIgnoreCase)
     {
         "FROM", "WHERE", "AND", "OR", "ORDER", "GROUP", "HAVING",
         "LIMIT", "OFFSET", "JOIN", "INNER", "LEFT", "RIGHT", "CROSS",
         "ON", "SET", "VALUES", "UNION", "MESSAGE", "REFERENCES"
-    };
-
-    private static readonly HashSet<string> AllKeywords = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "IN", "IS", "NULL",
-        "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE",
-        "CREATE", "ALTER", "DROP", "TABLE", "INDEX", "VIEW", "TRIGGER",
-        "JOIN", "INNER", "LEFT", "RIGHT", "OUTER", "CROSS", "ON",
-        "ORDER", "BY", "ASC", "DESC", "GROUP", "HAVING", "LIMIT", "OFFSET",
-        "AS", "DISTINCT", "ALL", "EXISTS", "BETWEEN", "LIKE", "COLLATE", "UNION",
-        "BEGIN", "END", "COMMIT", "ROLLBACK", "TRANSACTION",
-        "PRIMARY", "KEY", "UNIQUE", "DEFAULT", "CHECK", "FOREIGN", "REFERENCES",
-        "IF", "ELSE", "CASE", "WHEN", "THEN", "COLUMN", "CONSTRAINT", "ADD", "RENAME", "TO",
-        "BEFORE", "AFTER", "FOR", "EACH", "ROW",
-        "IDENTITY", "AUTOINCREMENT",
-        "FIND", "DUPLICATES", "DEDUP", "KEEP", "FIRST", "LAST", "MERGE",
-        "VALIDATION", "RULE", "MESSAGE", "VALIDATE", "ORPHANS",
-        "INTEGER", "TEXT", "REAL", "BLOB", "BOOLEAN", "INT", "VARCHAR", "CHAR",
-        "TRUE", "FALSE", "NOT"
     };
 
     public static string Format(string sql)
@@ -54,7 +25,7 @@ public static partial class SqlFormatter
 
         foreach (var token in tokens)
         {
-            if (token.IsWord && AllKeywords.Contains(token.Text))
+            if (token.IsWord && SqlKeywordCatalog.Keywords.Contains(token.Text))
             {
                 string upper = token.Text.ToUpperInvariant();
 
@@ -63,7 +34,8 @@ public static partial class SqlFormatter
                     // Trim trailing whitespace before adding newline
                     while (sb.Length > 0 && sb[sb.Length - 1] == ' ')
                         sb.Length--;
-                    sb.Append('\n');
+                    if (sb.Length == 0 || sb[^1] != '\n')
+                        sb.Append('\n');
                 }
 
                 sb.Append(upper);
@@ -75,7 +47,10 @@ public static partial class SqlFormatter
             }
         }
 
-        return sb.ToString().Trim();
+        string formatted = sb.ToString();
+        return tokens.Count > 0 && tokens[^1].IsOpaque
+            ? formatted.TrimStart()
+            : formatted.Trim();
     }
 
     private static List<Token> Tokenize(string sql)
@@ -88,34 +63,45 @@ public static partial class SqlFormatter
             // Whitespace
             if (char.IsWhiteSpace(sql[i]))
             {
-                int start = i;
                 while (i < sql.Length && char.IsWhiteSpace(sql[i])) i++;
                 tokens.Add(new Token(" ", false)); // Normalize whitespace to single space
                 continue;
             }
 
-            // String literal
-            if (sql[i] == '\'')
+            // String literals and quoted identifiers, including doubled quote escapes.
+            if (sql[i] is '\'' or '"')
             {
+                char quote = sql[i];
                 int start = i;
                 i++;
                 while (i < sql.Length)
                 {
-                    if (sql[i] == '\'' && i + 1 < sql.Length && sql[i + 1] == '\'')
+                    if (sql[i] == quote && i + 1 < sql.Length && sql[i + 1] == quote)
                     { i += 2; continue; }
-                    if (sql[i] == '\'') { i++; break; }
+                    if (sql[i] == quote) { i++; break; }
                     i++;
                 }
-                tokens.Add(new Token(sql[start..i], false));
+                tokens.Add(new Token(sql[start..i], false, IsOpaque: true));
                 continue;
             }
 
-            // Comment
+            // Retain the line terminator so later SQL cannot become part of the comment.
             if (i < sql.Length - 1 && sql[i] == '-' && sql[i + 1] == '-')
             {
                 int end = sql.IndexOf('\n', i);
                 if (end < 0) end = sql.Length;
-                tokens.Add(new Token(sql[i..end], false));
+                else end++;
+                tokens.Add(new Token(sql[i..end], false, IsOpaque: true));
+                i = end;
+                continue;
+            }
+
+            // Block comments may contain whitespace, keywords and quotes verbatim.
+            if (i < sql.Length - 1 && sql[i] == '/' && sql[i + 1] == '*')
+            {
+                int end = sql.IndexOf("*/", i + 2, StringComparison.Ordinal);
+                end = end < 0 ? sql.Length : end + 2;
+                tokens.Add(new Token(sql[i..end], false, IsOpaque: true));
                 i = end;
                 continue;
             }
@@ -137,5 +123,5 @@ public static partial class SqlFormatter
         return tokens;
     }
 
-    private readonly record struct Token(string Text, bool IsWord);
+    private readonly record struct Token(string Text, bool IsWord, bool IsOpaque = false);
 }

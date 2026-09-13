@@ -77,6 +77,7 @@ public static partial class SqlCompletionProvider
         new("SELECT", "SELECT ", "query rows"),
         new("FROM", "FROM ", "choose source"),
         new("WHERE", "WHERE ", "filter rows"),
+        new("LIKE", "LIKE ", "match a text pattern"),
         new("SET", "SET ", "assign columns"),
         new("ORDER BY", "ORDER BY ", "sort rows"),
         new("GROUP BY", "GROUP BY ", "group rows"),
@@ -107,6 +108,7 @@ public static partial class SqlCompletionProvider
         new("AVG", "AVG()", "aggregate"),
         new("MIN", "MIN()", "aggregate"),
         new("MAX", "MAX()", "aggregate"),
+        new("CAST", "CAST()", "convert a value with AS"),
         new("ABS", "ABS()", "function"),
         new("COALESCE", "COALESCE()", "function"),
         new("DATE", "DATE()", "function"),
@@ -120,6 +122,16 @@ public static partial class SqlCompletionProvider
         new("UPPER", "UPPER()", "function"),
         new("LENGTH", "LENGTH()", "function"),
     ];
+
+    private static readonly SqlCompletionKeyword[] s_allKeywords = s_keywords
+        .Concat(SqlKeywordCatalog.CompletionKeywords
+            .Except(s_keywords.Select(static keyword => keyword.Label), StringComparer.OrdinalIgnoreCase)
+            .Except(s_functions
+                .Where(static function => function.Label is not ("DATE" or "TIME" or "DATETIME"))
+                .Select(static function => function.Label), StringComparer.OrdinalIgnoreCase)
+            .Order(StringComparer.Ordinal)
+            .Select(static keyword => new SqlCompletionKeyword(keyword, keyword + " ", "SQL keyword")))
+        .ToArray();
 
     public static SqlCompletionResult GetCompletions(
         string sql,
@@ -161,8 +173,9 @@ public static partial class SqlCompletionProvider
             && s_columnContextPreviousTokens.Contains(previousToken, StringComparer.OrdinalIgnoreCase)
             && TryFindPrimarySource(sql, caret, out string sourceName))
         {
+            var columns = BuildColumnSuggestions(catalog, sourceName, token.Prefix, token.Start, caret);
             return MaybeSuppressExactMatch(
-                BuildColumnSuggestions(catalog, sourceName, token.Prefix, token.Start, caret),
+                MergeKeywordSuggestions(columns, token.Prefix, token.Start, caret),
                 token.Prefix,
                 explicitTrigger);
         }
@@ -174,7 +187,7 @@ public static partial class SqlCompletionProvider
             return SqlCompletionResult.Empty;
 
         return MaybeSuppressExactMatch(
-            BuildKeywordSuggestions(token.Prefix, token.Start, caret, includeAllWhenEmpty: explicitTrigger),
+            BuildKeywordSuggestions(token.Prefix, token.Start, caret),
             token.Prefix,
             explicitTrigger);
     }
@@ -187,9 +200,45 @@ public static partial class SqlCompletionProvider
         if (explicitTrigger || prefix.Length == 0 || result.Suggestions.Count == 0)
             return result;
 
-        return result.Suggestions.Any(suggestion => suggestion.Label.Equals(prefix, StringComparison.OrdinalIgnoreCase))
+        bool hasExactMatch = result.Suggestions.Any(suggestion => suggestion.Label.Equals(prefix, StringComparison.OrdinalIgnoreCase));
+        bool hasLongerKeyword = result.Suggestions.Any(suggestion =>
+            suggestion.Kind == SqlCompletionSuggestionKind.Keyword
+            && suggestion.Label.Length > prefix.Length
+            && suggestion.Label.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+
+        return hasExactMatch && !hasLongerKeyword
             ? SqlCompletionResult.Empty
             : result;
+    }
+
+    private static SqlCompletionResult MergeKeywordSuggestions(
+        SqlCompletionResult primary,
+        string prefix,
+        int replacementStart,
+        int replacementEnd)
+    {
+        if (prefix.Length == 0)
+            return primary;
+
+        var keywords = BuildKeywordSuggestions(prefix, replacementStart, replacementEnd).Suggestions;
+        var exact = primary.Suggestions.Concat(keywords)
+            .Where(suggestion => suggestion.Label.Equals(prefix, StringComparison.OrdinalIgnoreCase))
+            .DistinctBy(static suggestion => (suggestion.Kind, suggestion.Label))
+            .ToArray();
+        var remainingKeywords = keywords
+            .Where(suggestion => !suggestion.Label.Equals(prefix, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        // Retain schema/function suggestions while reserving room for keyword
+        // matches, even when many column names share the user's prefix.
+        int primaryLimit = Math.Max(0, MaxSuggestions - exact.Length - Math.Min(3, remainingKeywords.Length));
+        var suggestions = exact.Concat(primary.Suggestions
+                .Where(suggestion => !suggestion.Label.Equals(prefix, StringComparison.OrdinalIgnoreCase))
+                .Take(primaryLimit))
+            .Concat(remainingKeywords)
+            .DistinctBy(static suggestion => (suggestion.Kind, suggestion.Label))
+            .Take(MaxSuggestions)
+            .ToArray();
+        return suggestions.Length == 0 ? SqlCompletionResult.Empty : new SqlCompletionResult(suggestions);
     }
 
     private static bool TryGetSelectListCompletions(
@@ -277,12 +326,12 @@ public static partial class SqlCompletionProvider
     private static SqlCompletionResult BuildKeywordSuggestions(
         string prefix,
         int replacementStart,
-        int replacementEnd,
-        bool includeAllWhenEmpty)
+        int replacementEnd)
     {
-        var suggestions = s_keywords
-            .Where(keyword => includeAllWhenEmpty || MatchesPrefix(keyword.Label, prefix))
-            .Concat(s_functions.Where(function => includeAllWhenEmpty || MatchesPrefix(function.Label, prefix)))
+        var suggestions = s_allKeywords
+            .Where(keyword => MatchesPrefix(keyword.Label, prefix))
+            .Concat(s_functions.Where(function => MatchesPrefix(function.Label, prefix)))
+            .OrderByDescending(keyword => keyword.Label.Equals(prefix, StringComparison.OrdinalIgnoreCase))
             .Select(keyword =>
             {
                 bool isFunction = s_functions.Contains(keyword);
@@ -330,7 +379,11 @@ public static partial class SqlCompletionProvider
             .Take(MaxSuggestions)
             .ToArray();
 
-        return distinct.Length == 0 ? SqlCompletionResult.Empty : new SqlCompletionResult(distinct);
+        return MergeKeywordSuggestions(
+            distinct.Length == 0 ? SqlCompletionResult.Empty : new SqlCompletionResult(distinct),
+            prefix,
+            replacementStart,
+            replacementEnd);
     }
 
     private static SqlCompletionResult BuildSourceSuggestions(
