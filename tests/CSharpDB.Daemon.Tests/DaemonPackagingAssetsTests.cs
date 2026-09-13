@@ -607,10 +607,15 @@ public sealed class DaemonPackagingAssetsTests
                 script,
                 @"(?s)-StepName 'full-test-suite'.*?-ArgumentList @\((?<arguments>.*?)\)");
         Assert.True(fullTestArguments.Success);
-        Assert.Contains(
+        Assert.DoesNotContain(
             "'--maxcpucount:1'",
             fullTestArguments.Groups["arguments"].Value,
             StringComparison.Ordinal);
+        Assert.Matches(
+            @"'--max-parallel-test-modules',\s*'1'",
+            fullTestArguments.Groups["arguments"].Value);
+        Assert.Contains("'--solution'", fullTestArguments.Groups["arguments"].Value, StringComparison.Ordinal);
+        Assert.Contains("'--report-trx'", fullTestArguments.Groups["arguments"].Value, StringComparison.Ordinal);
 
         System.Text.RegularExpressions.Match accessArguments =
             System.Text.RegularExpressions.Regex.Match(

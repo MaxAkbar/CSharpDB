@@ -881,11 +881,11 @@ Verification work:
 Existing verification commands to retain and extend:
 
 ```powershell
-dotnet test tests\CSharpDB.Api.Tests\CSharpDB.Api.Tests.csproj -c Release
-dotnet test tests\CSharpDB.Daemon.Tests\CSharpDB.Daemon.Tests.csproj -c Release
-dotnet test tests\CSharpDB.Data.Tests\CSharpDB.Data.Tests.csproj -c Release
-dotnet test tests\CSharpDB.Admin.Forms.Tests\CSharpDB.Admin.Forms.Tests.csproj -c Release
-dotnet test CSharpDB.slnx -c Release
+dotnet test --project tests\CSharpDB.Api.Tests\CSharpDB.Api.Tests.csproj -c Release
+dotnet test --project tests\CSharpDB.Daemon.Tests\CSharpDB.Daemon.Tests.csproj -c Release
+dotnet test --project tests\CSharpDB.Data.Tests\CSharpDB.Data.Tests.csproj -c Release
+dotnet test --project tests\CSharpDB.Admin.Forms.Tests\CSharpDB.Admin.Forms.Tests.csproj -c Release
+dotnet test --solution CSharpDB.slnx -c Release
 dotnet build CSharpDB.slnx -c Release
 ```
 

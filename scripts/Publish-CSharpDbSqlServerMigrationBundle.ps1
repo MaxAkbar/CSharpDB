@@ -140,10 +140,10 @@ function Assert-ReviewedWorkerPackageClosure {
 
     $reviewedPackages = @(
         'Microsoft.Bcl.Cryptography/9.0.13'
-        'Microsoft.Data.SqlClient.Extensions.Abstractions/7.0.2'
-        'Microsoft.Data.SqlClient.Internal.Logging/7.0.2'
-        'Microsoft.Data.SqlClient.SNI.runtime/6.0.2'
-        'Microsoft.Data.SqlClient/7.0.2'
+        'Microsoft.Data.SqlClient.Extensions.Abstractions/7.0.3'
+        'Microsoft.Data.SqlClient.Internal.Logging/7.0.3'
+        'Microsoft.Data.SqlClient.SNI.runtime/6.0.3'
+        'Microsoft.Data.SqlClient/7.0.3'
         'Microsoft.Extensions.Caching.Abstractions/9.0.13'
         'Microsoft.Extensions.Caching.Memory/9.0.13'
         'Microsoft.Extensions.DependencyInjection.Abstractions/10.0.0'
@@ -157,7 +157,7 @@ function Assert-ReviewedWorkerPackageClosure {
         'Microsoft.IdentityModel.Protocols/8.16.0'
         'Microsoft.IdentityModel.Tokens/8.16.0'
         'Microsoft.SqlServer.Server/1.0.0'
-        'Microsoft.SqlServer.TransactSql.ScriptDom/180.59.2'
+        'Microsoft.SqlServer.TransactSql.ScriptDom/180.107.0'
         'System.Configuration.ConfigurationManager/9.0.13'
         'System.Diagnostics.EventLog/9.0.13'
         'System.IdentityModel.Tokens.Jwt/8.16.0'
@@ -171,7 +171,7 @@ function Assert-ReviewedWorkerPackageClosure {
         @(
             $reviewedPackages |
                 Where-Object {
-                    $_ -ne 'Microsoft.Data.SqlClient.SNI.runtime/6.0.2'
+                    $_ -ne 'Microsoft.Data.SqlClient.SNI.runtime/6.0.3'
                 }
         )
     }
@@ -273,7 +273,7 @@ $requiredFiles = @(
     (Join-Path $workerOutput 'Microsoft.Data.SqlClient.dll'),
     (Join-Path $workerOutput 'Microsoft.SqlServer.TransactSql.ScriptDom.dll'),
     (Join-Path $workerOutput 'THIRD-PARTY-NOTICES.md'),
-    (Join-Path $workerOutput 'licenses/Microsoft.Data.SqlClient.SNI.runtime-6.0.2-LICENSE.txt'),
+    (Join-Path $workerOutput 'licenses/Microsoft.Data.SqlClient.SNI.runtime-6.0.3-LICENSE.txt'),
     (Join-Path $workerOutput 'csharpdb-migration-sqlserver-worker.deps.json')
 )
 
@@ -299,7 +299,7 @@ if ($missing.Count -gt 0) {
 
 $sniLicense = Join-Path `
     $workerOutput `
-    'licenses/Microsoft.Data.SqlClient.SNI.runtime-6.0.2-LICENSE.txt'
+    'licenses/Microsoft.Data.SqlClient.SNI.runtime-6.0.3-LICENSE.txt'
 $expectedSniLicenseHash =
     '9335E8BAD875DD7BE4EEBD55D2335EB6433D1CEA61AADB3817AF7807BEF8932A'
 $actualSniLicenseHash = (Get-FileHash `
@@ -309,7 +309,7 @@ if (-not $actualSniLicenseHash.Equals(
         $expectedSniLicenseHash,
         [StringComparison]::OrdinalIgnoreCase))
 {
-    throw 'The SQL Server SNI runtime license does not match the reviewed 6.0.2 terms.'
+    throw 'The SQL Server SNI runtime license does not match the reviewed 6.0.3 terms.'
 }
 
 Assert-ReviewedWorkerPackageClosure `

@@ -74,7 +74,7 @@ for REQUIRED_FILE in \
     README.md \
     adapters/sqlserver/csharpdb-migration-sqlserver-worker \
     adapters/sqlserver/THIRD-PARTY-NOTICES.md \
-    adapters/sqlserver/licenses/Microsoft.Data.SqlClient.SNI.runtime-6.0.2-LICENSE.txt \
+    adapters/sqlserver/licenses/Microsoft.Data.SqlClient.SNI.runtime-6.0.3-LICENSE.txt \
     adapters/mysql/csharpdb-migration-mysql-worker \
     adapters/mysql/THIRD-PARTY-NOTICES.md
 do

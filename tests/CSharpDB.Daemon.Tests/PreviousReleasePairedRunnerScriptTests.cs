@@ -2374,8 +2374,38 @@ public sealed class PreviousReleasePairedRunnerScriptTests
         catch (OperationCanceledException)
         {
             process.Kill(entireProcessTree: true);
+            static string Tail(string text) => text.Length <= 4096 ? text : text[^4096..];
+            string diagnostics;
+            try
+            {
+                string[] output = await Task.WhenAll(standardOutput, standardError)
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+                diagnostics = $"\nStandard output (tail):\n{Tail(output[0])}" +
+                    $"\nStandard error (tail):\n{Tail(output[1])}";
+            }
+            catch (Exception exception) when (exception is TimeoutException or IOException)
+            {
+                diagnostics = $"\nCould not drain process output: {exception.Message}";
+            }
+
+            if (environment is not null &&
+                environment.TryGetValue("FAKE_DOTNET_LOG", out string? invocationLog) &&
+                File.Exists(invocationLog))
+            {
+                try
+                {
+                    diagnostics += "\nFake dotnet invocation log (last 12 entries):\n" +
+                        Tail(string.Join(Environment.NewLine, File.ReadLines(invocationLog).TakeLast(12)));
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    diagnostics += $"\nCould not read fake dotnet invocation log: {exception.Message}";
+                }
+            }
+
             throw new TimeoutException(
-                $"{fileName} did not finish within {timeoutDuration.TotalSeconds:N0} seconds.");
+                $"{fileName} did not finish within {timeoutDuration.TotalSeconds:N0} seconds." +
+                diagnostics);
         }
 
         return new ProcessResult(

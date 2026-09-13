@@ -236,16 +236,17 @@ try {
         -FilePath 'dotnet' `
         -ArgumentList @(
             'test',
+            '--solution',
             $solutionPath,
             '--configuration',
             $Configuration,
             '--no-build',
             '--no-restore',
-            '--maxcpucount:1',
-            '--verbosity',
-            'minimal',
-            '--logger',
-            'trx',
+            '--max-parallel-test-modules',
+            '1',
+            '--output',
+            'Normal',
+            '--report-trx',
             '--results-directory',
             $testResultsPath)
 

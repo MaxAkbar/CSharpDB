@@ -7,6 +7,7 @@ using Microsoft.Win32.SafeHandles;
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 
 namespace CSharpDB.Storage.Wal;
 
@@ -1795,12 +1796,45 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
             }
             else
             {
-                for (int i = 0; i < pageCount; i++)
+                for (int i = 0; i < pageCount;)
                 {
-                    await ReadPageIntoAsync(
-                        checkpointBatchWalOffsets[i],
-                        checkpointWriteBuffer.AsMemory(i * PageConstants.PageSize, PageConstants.PageSize),
-                        cancellationToken);
+                    // A newer frame can interrupt an otherwise contiguous batch.
+                    // Keep combining the remaining adjacent frames into one read.
+                    long runOffset = checkpointBatchWalOffsets[i];
+                    int runLength = 1;
+                    while (i + runLength < pageCount &&
+                        checkpointBatchWalOffsets[i + runLength] ==
+                            runOffset + (long)runLength * PageConstants.WalFrameSize)
+                    {
+                        runLength++;
+                    }
+
+                    if (runLength == 1)
+                    {
+                        await ReadPageIntoAsync(
+                            runOffset,
+                            checkpointWriteBuffer.AsMemory(i * PageConstants.PageSize, PageConstants.PageSize),
+                            cancellationToken);
+                    }
+                    else
+                    {
+                        int readByteCount = runLength * PageConstants.WalFrameSize;
+                        await ReadWalRangeIntoAsync(
+                            runOffset,
+                            checkpointReadBuffer.AsMemory(0, readByteCount),
+                            cancellationToken);
+
+                        for (int j = 0; j < runLength; j++)
+                        {
+                            checkpointReadBuffer.AsSpan(
+                                j * PageConstants.WalFrameSize + PageConstants.WalFrameHeaderSize,
+                                PageConstants.PageSize)
+                                .CopyTo(checkpointWriteBuffer.AsSpan(
+                                    (i + j) * PageConstants.PageSize, PageConstants.PageSize));
+                        }
+                    }
+
+                    i += runLength;
                 }
             }
         }
@@ -2786,10 +2820,10 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
 
     private PendingCommitBatch CreatePendingBatch(ReadOnlyMemory<WalFrameWrite> frames, long firstFrameOffset)
     {
-        var entries = new PendingCommitEntry[frames.Length];
+        var entries = new (uint PageId, long WalOffset)[frames.Length];
         for (int i = 0; i < frames.Length; i++)
         {
-            entries[i] = new PendingCommitEntry(
+            entries[i] = (
                 frames.Span[i].PageId,
                 firstFrameOffset + (long)i * PageConstants.WalFrameSize);
         }
@@ -2802,10 +2836,10 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
 
     private PendingCommitBatch CreatePendingBatch(List<(uint PageId, long WalOffset)> frames, bool clearSource)
     {
-        var entries = new PendingCommitEntry[frames.Count];
+        var entries = new (uint PageId, long WalOffset)[frames.Count];
         for (int i = 0; i < frames.Count; i++)
         {
-            entries[i] = new PendingCommitEntry(frames[i].PageId, frames[i].WalOffset);
+            entries[i] = frames[i];
         }
 
         if (clearSource)
@@ -2819,41 +2853,20 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
 
     private void PublishCommittedFramesFromBatch(ReadOnlyMemory<WalFrameWrite> frames, long firstFrameOffset)
     {
-        _index.EnsurePageCapacity(frames.Length);
-
-        for (int i = 0; i < frames.Length; i++)
-        {
-            long frameOffset = firstFrameOffset + (long)i * PageConstants.WalFrameSize;
-            _index.AddCommittedFrame(frames.Span[i].PageId, frameOffset);
-        }
-
-        _index.AdvanceCommit(frames.Length);
+        _index.PublishCommittedFrames(frames.Span, firstFrameOffset);
         _lastUncommittedDataChecksum = 0;
     }
 
     private void PublishCommittedFrames()
     {
-        _index.EnsurePageCapacity(_uncommittedFrames.Count);
-
-        foreach (var (pageId, walOffset) in _uncommittedFrames)
-            _index.AddCommittedFrame(pageId, walOffset);
-
-        _index.AdvanceCommit(_uncommittedFrames.Count);
+        _index.PublishCommittedFrames(CollectionsMarshal.AsSpan(_uncommittedFrames));
         _uncommittedFrames.Clear();
         _lastUncommittedDataChecksum = 0;
     }
 
     private void PublishCommittedBatch(PendingCommitBatch batch)
     {
-        PendingCommitEntry[] entries = batch.Entries;
-        _index.EnsurePageCapacity(entries.Length);
-
-        foreach (var entry in entries)
-        {
-            _index.AddCommittedFrame(entry.PageId, entry.WalOffset);
-        }
-
-        _index.AdvanceCommit(entries.Length);
+        _index.PublishCommittedFrames(batch.Entries);
     }
 
     private async Task WriteStagedPendingCommitBytesAsync(long flushThroughSequence)
@@ -3583,8 +3596,6 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
         public long RetainedWalStartOffset { get; }
     }
 
-    private readonly record struct PendingCommitEntry(uint PageId, long WalOffset);
-
     private sealed class PreparedPendingCommit : IDisposable
     {
         private byte[]? _buffer;
@@ -3623,9 +3634,9 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
     {
         private byte[]? _stagedBytes;
         private uint[]? _stagedPageIds;
-        private PendingCommitEntry[]? _entries;
+        private (uint PageId, long WalOffset)[]? _entries;
 
-        public PendingCommitBatch(PendingCommitEntry[] entries)
+        public PendingCommitBatch((uint PageId, long WalOffset)[] entries)
         {
             _entries = entries;
             ByteCount = (long)entries.Length * PageConstants.WalFrameSize;
@@ -3640,7 +3651,7 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
         }
 
         public long Sequence { get; set; }
-        public PendingCommitEntry[] Entries => _entries
+        public (uint PageId, long WalOffset)[] Entries => _entries
             ?? throw new InvalidOperationException("Pending WAL commit entries have not been assigned yet.");
         public long ByteCount { get; }
         public int StagedByteCount { get; private set; }
@@ -3657,10 +3668,10 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
             if (_stagedPageIds is null)
                 throw new InvalidOperationException("No staged page ids are available for WAL offset assignment.");
 
-            var entries = new PendingCommitEntry[_stagedPageIds.Length];
+            var entries = new (uint PageId, long WalOffset)[_stagedPageIds.Length];
             for (int i = 0; i < _stagedPageIds.Length; i++)
             {
-                entries[i] = new PendingCommitEntry(
+                entries[i] = (
                     _stagedPageIds[i],
                     firstWalOffset + (long)i * PageConstants.WalFrameSize);
             }

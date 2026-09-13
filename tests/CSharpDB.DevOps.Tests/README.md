@@ -34,13 +34,13 @@ and UI/service behavior on top of these contracts.
 Run this project by itself:
 
 ```powershell
-dotnet test .\tests\CSharpDB.DevOps.Tests\CSharpDB.DevOps.Tests.csproj -m:1
+dotnet test --project .\tests\CSharpDB.DevOps.Tests\CSharpDB.DevOps.Tests.csproj
 ```
 
 Run the full repository suite serially:
 
 ```powershell
-dotnet test .\CSharpDB.slnx -m:1
+dotnet test --solution .\CSharpDB.slnx --max-parallel-test-modules 1
 ```
 
 ## Maintenance Notes

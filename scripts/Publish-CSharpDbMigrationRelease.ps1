@@ -516,7 +516,7 @@ function Assert-FrameworkDependentStage {
         (Join-Path $StageRoot 'VERSION.txt'),
         (Join-Path $StageRoot "adapters/sqlserver/csharpdb-migration-sqlserver-worker$executableSuffix"),
         (Join-Path $StageRoot 'adapters/sqlserver/THIRD-PARTY-NOTICES.md'),
-        (Join-Path $StageRoot 'adapters/sqlserver/licenses/Microsoft.Data.SqlClient.SNI.runtime-6.0.2-LICENSE.txt'),
+        (Join-Path $StageRoot 'adapters/sqlserver/licenses/Microsoft.Data.SqlClient.SNI.runtime-6.0.3-LICENSE.txt'),
         (Join-Path $StageRoot "adapters/mysql/csharpdb-migration-mysql-worker$executableSuffix"),
         (Join-Path $StageRoot 'adapters/mysql/THIRD-PARTY-NOTICES.md'),
         (Join-Path $StageRoot 'install/windows/install-csharpdb-migration-tool.ps1'),

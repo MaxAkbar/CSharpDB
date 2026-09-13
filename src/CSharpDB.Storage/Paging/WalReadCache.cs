@@ -13,7 +13,7 @@ internal sealed class WalReadCache
 
     private sealed class CacheEntry
     {
-        public required PageReadBuffer Page { get; init; }
+        public required PageReadBuffer Page { get; set; }
         public required LinkedListNode<long> Node { get; init; }
     }
 
@@ -50,11 +50,7 @@ internal sealed class WalReadCache
 
         if (_entries.TryGetValue(walOffset, out var existing))
         {
-            _entries[walOffset] = new CacheEntry
-            {
-                Page = page,
-                Node = existing.Node,
-            };
+            existing.Page = page;
             Touch(existing.Node);
             return;
         }

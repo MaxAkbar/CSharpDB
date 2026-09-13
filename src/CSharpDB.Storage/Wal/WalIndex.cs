@@ -86,6 +86,43 @@ public sealed class WalIndex
     }
 
     /// <summary>
+    /// Publish a complete live commit under one lock so snapshots observe its
+    /// page locations and counters together. The caller has already flushed it.
+    /// </summary>
+    internal void PublishCommittedFrames(ReadOnlySpan<(uint PageId, long WalOffset)> frames)
+    {
+        lock (_gate)
+        {
+            if (!frames.IsEmpty)
+                _pageMap.EnsureCapacity(_pageMap.Count + frames.Length);
+
+            foreach (var frame in frames)
+                _pageMap[frame.PageId] = frame.WalOffset;
+
+            _frameCount += frames.Length;
+            AdvanceCommitCore(frames.Length);
+        }
+    }
+
+    /// <summary>
+    /// Publish contiguous frame locations without materializing a location array.
+    /// </summary>
+    internal void PublishCommittedFrames(ReadOnlySpan<WalFrameWrite> frames, long firstFrameOffset)
+    {
+        lock (_gate)
+        {
+            if (!frames.IsEmpty)
+                _pageMap.EnsureCapacity(_pageMap.Count + frames.Length);
+
+            for (int i = 0; i < frames.Length; i++)
+                _pageMap[frames[i].PageId] = firstFrameOffset + (long)i * PageConstants.WalFrameSize;
+
+            _frameCount += frames.Length;
+            AdvanceCommitCore(frames.Length);
+        }
+    }
+
+    /// <summary>
     /// Advance the commit counter. Called once per commit, after all
     /// frames for that commit have been added.
     /// </summary>
@@ -103,14 +140,19 @@ public sealed class WalIndex
 
         lock (_gate)
         {
-            _commitCounter++;
-            if (_logicalCommitCount != long.MaxValue)
-                _logicalCommitCount++;
-            _logicalPageWriteCount = _logicalPageWriteCount >=
-                long.MaxValue - committedFrameCount
-                    ? long.MaxValue
-                    : _logicalPageWriteCount + committedFrameCount;
+            AdvanceCommitCore(committedFrameCount);
         }
+    }
+
+    private void AdvanceCommitCore(int committedFrameCount)
+    {
+        _commitCounter++;
+        if (_logicalCommitCount != long.MaxValue)
+            _logicalCommitCount++;
+        _logicalPageWriteCount = _logicalPageWriteCount >=
+            long.MaxValue - committedFrameCount
+                ? long.MaxValue
+                : _logicalPageWriteCount + committedFrameCount;
     }
 
     /// <summary>

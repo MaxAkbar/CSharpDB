@@ -173,7 +173,7 @@ $requiredFiles = @(
     (Join-Path $sourceRoot 'README.md'),
     (Join-Path $sourceRoot 'adapters/sqlserver/csharpdb-migration-sqlserver-worker.exe'),
     (Join-Path $sourceRoot 'adapters/sqlserver/THIRD-PARTY-NOTICES.md'),
-    (Join-Path $sourceRoot 'adapters/sqlserver/licenses/Microsoft.Data.SqlClient.SNI.runtime-6.0.2-LICENSE.txt'),
+    (Join-Path $sourceRoot 'adapters/sqlserver/licenses/Microsoft.Data.SqlClient.SNI.runtime-6.0.3-LICENSE.txt'),
     (Join-Path $sourceRoot 'adapters/mysql/csharpdb-migration-mysql-worker.exe'),
     (Join-Path $sourceRoot 'adapters/mysql/THIRD-PARTY-NOTICES.md'),
     (Join-Path $sourceRoot 'adapters/access/csharpdb-migration-access-worker.exe'),

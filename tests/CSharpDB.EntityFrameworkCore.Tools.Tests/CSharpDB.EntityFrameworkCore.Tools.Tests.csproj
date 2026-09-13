@@ -16,7 +16,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.12" PrivateAssets="all">
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="$(CSharpDbQualifiedEfCoreVersion)" PrivateAssets="all">
       <IncludeAssets>runtime</IncludeAssets>
     </PackageReference>
   </ItemGroup>

@@ -62,11 +62,11 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          dotnet test tests/CSharpDB.Migration.Tests/CSharpDB.Migration.Tests.csproj \
+          dotnet test --project tests/CSharpDB.Migration.Tests/CSharpDB.Migration.Tests.csproj \
             -c Release \
             --no-build \
             --filter "FullyQualifiedName~WriteAsync_PublishesHeaderOnlyArtifactForEmptyEvidence|FullyQualifiedName~WriteAsync_ReclaimsPrivateStaleTemporaryArtifact|FullyQualifiedName~WriteAsync_RemovesMacOsAclFromPrivateStaleTemporaryArtifact|FullyQualifiedName~WriteAsync_RejectsMacOsAclOnExistingArtifact" \
-            --logger "console;verbosity=detailed"
+            --output Detailed
 
       - name: Test smaller suites
         shell: bash
@@ -98,7 +98,7 @@ jobs:
 
           for project in "${projects[@]}"; do
             echo "::group::dotnet test ${project}"
-            dotnet test "${project}" -c Release --no-build --logger "console;verbosity=minimal"
+            dotnet test --project "${project}" -c Release --no-build --output Normal
             echo "::endgroup::"
           done
 
@@ -125,23 +125,19 @@ jobs:
           set -euo pipefail
 
           if [[ "${{ runner.os }}" == "Linux" ]]; then
-            dotnet test tests/CSharpDB.Tests/CSharpDB.Tests.csproj \
+            dotnet test --project tests/CSharpDB.Tests/CSharpDB.Tests.csproj \
               -c Release \
               --no-build \
-              --logger "console;verbosity=normal" \
-              --blame-hang \
-              --blame-hang-timeout 5m \
-              -- \
-              xUnit.ReporterSwitch=verbose \
-              xUnit.DiagnosticMessages=true \
-              xUnit.LongRunningTestSeconds=60
+              --output Detailed \
+              --hangdump \
+              --hangdump-timeout 5m \
+              --xunit-diagnostics on \
+              --long-running 60
           else
-            dotnet test tests/CSharpDB.Tests/CSharpDB.Tests.csproj \
+            dotnet test --project tests/CSharpDB.Tests/CSharpDB.Tests.csproj \
               -c Release \
               --no-build \
-              --logger "console;verbosity=normal" \
-              -- \
-              xUnit.ReporterSwitch=verbose
+              --output Detailed
           fi
 
   release-baseline-compatibility:
