@@ -8,6 +8,69 @@ public sealed class WalIndexPublicationTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public void FreshAndResetPublication_ResumeSnapshotInvalidationAndPreserveLifetimeCounts(bool contiguous)
+    {
+        var index = new WalIndex();
+        var retained = new List<(WalSnapshot Snapshot, Dictionary<uint, long> Expected)>();
+        uint[] initialPages = Enumerable.Range(0, 128).Select(i => (uint)i).Append(63u).ToArray();
+        var payload = new byte[PageConstants.PageSize];
+
+        for (int cycle = 0; cycle < 2; cycle++)
+        {
+            if (cycle != 0)
+            {
+                index.Reset();
+                Assert.Equal((0, 2L, 132L), index.GetRuntimeStateSnapshot());
+                Assert.Equal(2, index.CommitCounter);
+            }
+
+            long initialOffset = (cycle + 1) * 1_000_000L;
+            Publish(initialPages, initialOffset);
+            var expected = Enumerable.Range(0, 128).ToDictionary(
+                i => (uint)i, i => initialOffset + (long)i * PageConstants.WalFrameSize);
+            expected[63] = initialOffset + 128L * PageConstants.WalFrameSize;
+            var before = index.TakeSnapshot();
+            Assert.Equal(2L * cycle + 1, before.CommitCounter);
+            Assert.Equal((129, 2L * cycle + 1, 132L * cycle + 129), index.GetRuntimeStateSnapshot());
+            retained.Add((before, new(expected)));
+
+            // Both keys belong to segment 63. This capture must notice writes
+            // after the preceding snapshot has cleared the dirty state.
+            long updateOffset = initialOffset + 900_000;
+            Publish([63, 127, 63], updateOffset);
+            expected[63] = updateOffset + 2L * PageConstants.WalFrameSize;
+            expected[127] = updateOffset + PageConstants.WalFrameSize;
+            var after = index.TakeSnapshot();
+            Assert.Equal(2L * cycle + 2, after.CommitCounter);
+            Assert.Equal((132, 2L * cycle + 2, 132L * (cycle + 1)), index.GetRuntimeStateSnapshot());
+            Assert.Equal(128, index.GetAllCommittedPages().Count);
+            retained.Add((after, expected));
+
+            foreach (var view in retained)
+            {
+                Assert.Equal(view.Expected.Values.Min(), view.Snapshot.MinimumWalOffset);
+                foreach (var entry in view.Expected)
+                {
+                    Assert.True(view.Snapshot.TryGet(entry.Key, out long actual));
+                    Assert.Equal(entry.Value, actual);
+                }
+                Assert.False(view.Snapshot.TryGet(128, out _));
+            }
+        }
+
+        void Publish(uint[] pages, long firstOffset)
+        {
+            if (contiguous)
+                index.PublishCommittedFrames(pages.Select(page => new WalFrameWrite(page, payload)).ToArray(), firstOffset);
+            else
+                index.PublishCommittedFrames(pages.Select((page, i) =>
+                    (page, firstOffset + (long)i * PageConstants.WalFrameSize)).ToArray());
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public void Publication_PreservesOldSnapshotAndCountsRepeatedPageWrites(bool contiguous)
     {
         var index = new WalIndex();
@@ -45,11 +108,12 @@ public sealed class WalIndexPublicationTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task ConcurrentSnapshots_ObserveCompleteCommitGenerations(bool contiguous)
+    [InlineData(false, 64)]
+    [InlineData(true, 64)]
+    [InlineData(false, 128)]
+    [InlineData(true, 128)]
+    public async Task ConcurrentSnapshots_ObserveCompleteCommitGenerations(bool contiguous, int pageCount)
     {
-        const int pageCount = 64;
         const int commitCount = 1000;
         var index = new WalIndex();
         var frames = Enumerable.Range(0, pageCount)

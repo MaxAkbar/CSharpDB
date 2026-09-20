@@ -552,7 +552,18 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     // Configurable behavior
     private readonly PagerOptions _options;
     private readonly byte[] _fileHeaderBuffer = new byte[PageConstants.FileHeaderSize];
-    private readonly byte[] _walHeaderPageBuffer = new byte[PageConstants.PageSize];
+    private byte[]? _walHeaderPageBuffer;
+
+    private byte[] GetWalHeaderPageBuffer()
+    {
+        // Snapshot readers copy header state and normally never need this scratch page.
+        var buffer = Volatile.Read(ref _walHeaderPageBuffer);
+        if (buffer is not null)
+            return buffer;
+
+        buffer = new byte[PageConstants.PageSize];
+        return Interlocked.CompareExchange(ref _walHeaderPageBuffer, buffer, null) ?? buffer;
+    }
 
     /// <summary>
     /// Legacy threshold property preserved for compatibility.
@@ -2546,8 +2557,9 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         // If WAL has committed page 0, re-read header from WAL version
         if (_walIndex.TryGetLatest(0, out long walOffset))
         {
-            await _wal.ReadPageIntoAsync(walOffset, _walHeaderPageBuffer, ct);
-            ReadFileHeaderFrom(_walHeaderPageBuffer);
+            var headerPage = GetWalHeaderPageBuffer();
+            await _wal.ReadPageIntoAsync(walOffset, headerPage, ct);
+            ReadFileHeaderFrom(headerPage);
         }
     }
 
@@ -2652,8 +2664,9 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             // Read the latest header from WAL if page 0 was committed
             if (_walIndex.TryGetLatest(0, out long walOffset))
             {
-                await _wal.ReadPageIntoAsync(walOffset, _walHeaderPageBuffer, ct);
-                ReadFileHeaderFrom(_walHeaderPageBuffer);
+                var headerPage = GetWalHeaderPageBuffer();
+                await _wal.ReadPageIntoAsync(walOffset, headerPage, ct);
+                ReadFileHeaderFrom(headerPage);
             }
 
             await CheckpointAsync(StorageCheckpointOriginRaw.StartupRecovery, ct);
@@ -3351,11 +3364,10 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     /// </summary>
     public WalSnapshot AcquireReaderSnapshot()
     {
-        long? minimumWalOffset = GetMinimumWalOffsetForNewSnapshot();
         if (_checkpoints == null)
-            return _walIndex.TakeSnapshot(minimumWalOffset);
+            return _walIndex.TakeSnapshot(GetMinimumWalOffsetForNewSnapshot());
 
-        return _checkpoints.AcquireReaderSnapshot(_walIndex, minimumWalOffset);
+        return _checkpoints.AcquireReaderSnapshot(_walIndex, checkpointWal: _wal);
     }
 
     /// <summary>

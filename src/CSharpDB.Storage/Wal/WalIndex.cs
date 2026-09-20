@@ -1,3 +1,6 @@
+using System.Numerics;
+using System.Runtime.CompilerServices;
+
 namespace CSharpDB.Storage.Wal;
 
 /// <summary>
@@ -6,20 +9,27 @@ namespace CSharpDB.Storage.Wal;
 /// </summary>
 public sealed class WalIndex
 {
-    // Snapshot maps are privately owned copies and are never mutated after publication.
-    private static readonly Dictionary<uint, long> s_emptyPageMap = new();
+    static WalIndex()
+    {
+        // Initialize shared map storage before the first index is constructed,
+        // rather than allowing its first allocation during reader admission.
+        _ = WalSnapshotMap.Empty;
+    }
 
     private readonly object _gate = new();
 
-    // Maps pageId → WAL file offset of the latest committed frame for that page.
+    // One mutable map keeps bulk publication and checkpoint copies independent of
+    // page-ID distribution. Readers build the segment-key directory lazily, so
+    // writes and recovery without snapshots do not maintain a second index.
     private readonly Dictionary<uint, long> _pageMap = new();
+    private WalSnapshotKeys? _snapshotKeys;
+    private ulong _dirtySegments = ulong.MaxValue;
 
     // Keep only the most recently requested floor for the current map state.
-    // Every map content change invalidates this copy under _gate; existing readers
-    // retain their old copy independently of the current cache entry.
-    private Dictionary<uint, long>? _snapshotPageMap;
+    // Mutations mark segments dirty under _gate. Unchanged immutable segments are
+    // shared with the next directory; old readers retain their complete directory.
+    private WalSnapshotMap? _snapshotPageMap;
     private long? _snapshotWalOffsetFloor;
-    private long _snapshotMinimumWalOffset;
 
     // Number of committed frames currently in WAL.
     private int _frameCount;
@@ -74,7 +84,7 @@ public sealed class WalIndex
 
         lock (_gate)
         {
-            _pageMap.EnsureCapacity(_pageMap.Count + additionalEntries);
+            EnsurePageCapacityCore(additionalEntries);
         }
     }
 
@@ -86,8 +96,7 @@ public sealed class WalIndex
     {
         lock (_gate)
         {
-            _snapshotPageMap = null;
-            _pageMap[pageId] = walFileOffset;
+            SetPageCore(pageId, walFileOffset);
             _frameCount++;
         }
     }
@@ -102,12 +111,16 @@ public sealed class WalIndex
         {
             if (!frames.IsEmpty)
             {
-                _snapshotPageMap = null;
-                _pageMap.EnsureCapacity(_pageMap.Count + frames.Length);
+                EnsurePageCapacityCore(frames.Length);
             }
 
+            ulong dirty = _dirtySegments;
             foreach (var frame in frames)
+            {
                 _pageMap[frame.PageId] = frame.WalOffset;
+                dirty |= 1UL << WalSnapshotMap.GetSegmentIndex(frame.PageId);
+            }
+            _dirtySegments = dirty;
 
             _frameCount += frames.Length;
             AdvanceCommitCore(frames.Length);
@@ -123,12 +136,17 @@ public sealed class WalIndex
         {
             if (!frames.IsEmpty)
             {
-                _snapshotPageMap = null;
-                _pageMap.EnsureCapacity(_pageMap.Count + frames.Length);
+                EnsurePageCapacityCore(frames.Length);
             }
 
+            ulong dirty = _dirtySegments;
             for (int i = 0; i < frames.Length; i++)
-                _pageMap[frames[i].PageId] = firstFrameOffset + (long)i * PageConstants.WalFrameSize;
+            {
+                uint pageId = frames[i].PageId;
+                _pageMap[pageId] = firstFrameOffset + (long)i * PageConstants.WalFrameSize;
+                dirty |= 1UL << WalSnapshotMap.GetSegmentIndex(pageId);
+            }
+            _dirtySegments = dirty;
 
             _frameCount += frames.Length;
             AdvanceCommitCore(frames.Length);
@@ -200,24 +218,163 @@ public sealed class WalIndex
     /// </summary>
     public WalSnapshot TakeSnapshot(long? minimumWalOffset = null)
     {
+        var snapshot = new WalSnapshot();
+        InitializeSnapshot(snapshot, minimumWalOffset);
+        return snapshot;
+    }
+
+    /// <summary>
+    /// Capture the current generation into an exclusively owned, unpublished wrapper.
+    /// The caller must not hold checkpoint protection: cache misses prepare map storage
+    /// between attempts. Checkpoint admission uses TryInitializeSnapshot instead.
+    /// </summary>
+    internal void InitializeSnapshot(WalSnapshot snapshot, long? minimumWalOffset = null)
+    {
+        WalSnapshotPreparation? preparation = null;
+        Span<int> requiredCapacities = stackalloc int[WalSnapshotMap.SegmentCount];
+        while (!TryInitializeSnapshot(snapshot, preparation, minimumWalOffset, requiredCapacities, out int segmentCount, out int keyCapacity))
+        {
+            if (preparation is null || preparation.Buffers.Length != segmentCount)
+                preparation = new WalSnapshotPreparation(segmentCount);
+            preparation.EnsureCapacity(requiredCapacities, keyCapacity);
+        }
+    }
+
+    /// <summary>
+    /// Capture a reusable immutable map without preparing segmented storage.
+    /// The caller still holds checkpoint protection through reader registration.
+    /// A miss leaves the wrapper unpublished and requires the normal preparation path.
+    /// </summary>
+    internal bool TryInitializeCachedSnapshot(WalSnapshot snapshot, long? minimumWalOffset)
+    {
         lock (_gate)
         {
-            if (_snapshotPageMap is null || _snapshotWalOffsetFloor != minimumWalOffset)
-            {
-                Dictionary<uint, long> snapshot = _pageMap.Count == 0
-                    ? s_emptyPageMap
-                    : minimumWalOffset is long walOffsetFloor
-                        ? FilterPageMap(_pageMap, walOffsetFloor)
-                        : new Dictionary<uint, long>(_pageMap);
+            if (_snapshotPageMap is null || _dirtySegments != 0 || _snapshotWalOffsetFloor != minimumWalOffset)
+                return false;
 
-                _snapshotMinimumWalOffset = ComputeMinimumWalOffset(snapshot);
+            snapshot.Initialize(_snapshotPageMap, _commitCounter, _snapshotPageMap.MinimumWalOffset);
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Capture one complete generation without allocating snapshot-map storage under
+    /// the publication gate. On a capacity miss, report the segment capacities and
+    /// leave the wrapper and preparation unpublished. Only dirty segments are copied;
+    /// unchanged immutable segments are shared. Success consumes the preparation.
+    /// </summary>
+    internal bool TryInitializeSnapshot(
+        WalSnapshot snapshot,
+        WalSnapshotPreparation? preparation,
+        long? minimumWalOffset,
+        Span<int> requiredCapacities,
+        out int segmentCount,
+        out int keyCapacity)
+    {
+        lock (_gate)
+        {
+            segmentCount = _pageMap.Count <= WalSnapshotMap.CompactPageLimit ? 1 : WalSnapshotMap.SegmentCount;
+            keyCapacity = 0;
+            if (_snapshotPageMap is null || _dirtySegments != 0 || _snapshotWalOffsetFloor != minimumWalOffset)
+            {
+                WalSnapshotMap pageMap = WalSnapshotMap.Empty;
+                if (_pageMap.Count != 0)
+                {
+                    bool compact = segmentCount == 1;
+                    bool rebuildKeys = !compact && (_snapshotKeys is null || _snapshotKeys.Count != _pageMap.Count);
+                    if (rebuildKeys)
+                    {
+                        keyCapacity = _pageMap.Count;
+                        requiredCapacities.Clear();
+                        foreach (var entry in _pageMap)
+                            requiredCapacities[WalSnapshotMap.GetSegmentIndex(entry.Key)]++;
+                    }
+                    ulong dirty = compact || _snapshotPageMap is null ||
+                        _snapshotPageMap.Segments.Length != segmentCount || _snapshotWalOffsetFloor != minimumWalOffset
+                        ? ulong.MaxValue : _dirtySegments;
+                    bool ready = preparation is not null && preparation.Buffers.Length == segmentCount;
+                    if (rebuildKeys && (preparation?.Keys is null || preparation.Keys.PageIds.Length < keyCapacity))
+                        ready = false;
+                    if (preparation?.Published == true)
+                        throw new InvalidOperationException("The snapshot preparation was already published.");
+
+                    // Validate every capacity before filling anything: writers may
+                    // have changed a different segment while this reader allocated.
+                    int copiedPageCount = 0;
+                    for (int i = 0; i < segmentCount; i++)
+                    {
+                        int count = compact ? _pageMap.Count : (dirty & (1UL << i)) == 0 ? 0 :
+                            rebuildKeys ? requiredCapacities[i] : _snapshotKeys!.Offsets[i + 1] - _snapshotKeys.Offsets[i];
+                        requiredCapacities[i] = count;
+                        copiedPageCount += count;
+                        if (count == 0)
+                            continue;
+                        var buffer = preparation is not null && preparation.Buffers.Length == segmentCount
+                            ? preparation.Buffers[i] : null;
+                        if (buffer is null || buffer.Capacity < count)
+                            ready = false;
+                        else if (buffer.Count != 0)
+                            throw new ArgumentException("Snapshot buffers must be empty and unpublished.", nameof(preparation));
+                    }
+                    if (!ready)
+                        return false;
+
+                    if (rebuildKeys)
+                    {
+                        preparation!.Keys!.Initialize(_pageMap);
+                        _snapshotKeys = preparation.Keys;
+                    }
+                    pageMap = preparation!.Map;
+                    long floor = minimumWalOffset.GetValueOrDefault(long.MinValue);
+                    if (copiedPageCount == _pageMap.Count)
+                    {
+                        CopyFullSnapshotPages(preparation, compact, floor);
+                        for (int i = 0; i < segmentCount; i++)
+                        {
+                            if (compact || (dirty & (1UL << i)) != 0)
+                            {
+                                var buffer = preparation.Buffers[i];
+                                if (buffer is not null && buffer.Count != 0)
+                                    pageMap.Segments[i] = buffer;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // Share immutable references in bulk, then copy and
+                        // replace only dirty segments, including empty views.
+                        _snapshotPageMap!.Segments.CopyTo(pageMap.Segments, 0);
+                        var keys = _snapshotKeys!;
+                        for (ulong remaining = dirty; remaining != 0; remaining &= remaining - 1)
+                        {
+                            int i = BitOperations.TrailingZeroCount(remaining);
+                            for (int key = keys.Offsets[i]; key < keys.Offsets[i + 1]; key++)
+                            {
+                                uint pageId = keys.PageIds[key];
+                                long offset = _pageMap[pageId];
+                                if (offset >= floor)
+                                    CopySnapshotPage(preparation, i, pageId, offset);
+                            }
+                            var buffer = preparation.Buffers[i];
+                            pageMap.Segments[i] = buffer is not null && buffer.Count != 0 ? buffer : null;
+                        }
+                    }
+                    pageMap.Complete();
+                    preparation.Published = true;
+                    // An empty large view still caches its segment layout, so a
+                    // later update need not rebuild unrelated filtered segments.
+                    if (pageMap.Count == 0 && segmentCount == 1)
+                        pageMap = WalSnapshotMap.Empty;
+                }
+
                 _snapshotWalOffsetFloor = minimumWalOffset;
-                _snapshotPageMap = snapshot;
+                _snapshotPageMap = pageMap;
+                _dirtySegments = 0;
             }
 
-            // Reader registration uses wrapper identity, even when its map is shared.
-            // Read the counter afresh: counter-only advances can reuse the same map.
-            return new WalSnapshot(_snapshotPageMap, _commitCounter, _snapshotMinimumWalOffset);
+            // Capture one complete generation, including counter-only advances.
+            snapshot.Initialize(_snapshotPageMap, _commitCounter, _snapshotPageMap.MinimumWalOffset);
+            return true;
         }
     }
 
@@ -228,7 +385,7 @@ public sealed class WalIndex
     {
         lock (_gate)
         {
-            return new Dictionary<uint, long>(_pageMap);
+            return CopyCommittedPagesCore();
         }
     }
 
@@ -239,7 +396,7 @@ public sealed class WalIndex
     {
         lock (_gate)
         {
-            return new Dictionary<uint, long>(_pageMap);
+            return CopyCommittedPagesCore();
         }
     }
 
@@ -247,7 +404,7 @@ public sealed class WalIndex
     {
         lock (_gate)
         {
-            return (new Dictionary<uint, long>(_pageMap), _frameCount, _commitCounter);
+            return (CopyCommittedPagesCore(), _frameCount, _commitCounter);
         }
     }
 
@@ -259,8 +416,7 @@ public sealed class WalIndex
     {
         lock (_gate)
         {
-            _snapshotPageMap = null;
-            _pageMap.Clear();
+            ClearPagesCore();
             _frameCount = 0;
         }
     }
@@ -283,9 +439,8 @@ public sealed class WalIndex
 
         lock (_gate)
         {
-            _snapshotPageMap = null;
-            _pageMap.Clear();
-            _pageMap.EnsureCapacity(latestPageMap.Count);
+            ClearPagesCore();
+            EnsurePageCapacityCore(latestPageMap.Count);
 
             foreach (var entry in latestPageMap)
                 _pageMap[entry.Key] = entry.Value;
@@ -309,9 +464,8 @@ public sealed class WalIndex
 
         lock (_gate)
         {
-            _snapshotPageMap = null;
-            _pageMap.Clear();
-            _pageMap.EnsureCapacity(latestPageMap.Count);
+            ClearPagesCore();
+            EnsurePageCapacityCore(latestPageMap.Count);
 
             foreach (var entry in latestPageMap)
                 _pageMap[entry.Key] = entry.Value;
@@ -321,34 +475,74 @@ public sealed class WalIndex
         }
     }
 
-    private static long ComputeMinimumWalOffset(Dictionary<uint, long> pageMap)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void SetPageCore(uint pageId, long offset)
     {
-        long minimumWalOffset = long.MaxValue;
-        foreach (long walOffset in pageMap.Values)
-        {
-            if (walOffset < minimumWalOffset)
-                minimumWalOffset = walOffset;
-        }
-
-        return minimumWalOffset;
+        _pageMap[pageId] = offset;
+        _dirtySegments |= 1UL << WalSnapshotMap.GetSegmentIndex(pageId);
     }
 
-    private static Dictionary<uint, long> FilterPageMap(Dictionary<uint, long> pageMap, long minimumWalOffset)
+    private void EnsurePageCapacityCore(int additionalEntries)
     {
-        if (pageMap.Count == 0)
-            return s_emptyPageMap;
+        _pageMap.EnsureCapacity(_pageMap.Count + additionalEntries);
+    }
 
-        Dictionary<uint, long>? filtered = null;
-        foreach ((uint pageId, long walOffset) in pageMap)
+    private void ClearPagesCore()
+    {
+        _snapshotPageMap = null;
+        _dirtySegments = ulong.MaxValue;
+        _pageMap.Clear();
+        _snapshotKeys = null;
+    }
+
+    private Dictionary<uint, long> CopyCommittedPagesCore()
+    {
+        return new Dictionary<uint, long>(_pageMap);
+    }
+
+    // Called under _gate after validating every destination capacity. Keep the
+    // full-copy loops separate from the capture path used by narrow updates.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void CopyFullSnapshotPages(WalSnapshotPreparation preparation, bool compact, long floor)
+    {
+        // Stream the map once, choosing the layout and filter before copying.
+        if (compact)
         {
-            if (walOffset >= minimumWalOffset)
+            var buffer = preparation.Buffers[0]!;
+            if (floor == long.MinValue)
             {
-                filtered ??= new Dictionary<uint, long>(pageMap.Count);
-                filtered[pageId] = walOffset;
+                foreach (var entry in _pageMap)
+                    buffer.AddUnique(entry.Key, entry.Value);
+            }
+            else
+            {
+                foreach (var entry in _pageMap)
+                {
+                    if (entry.Value >= floor)
+                        buffer.AddUnique(entry.Key, entry.Value);
+                }
             }
         }
+        else if (floor == long.MinValue)
+        {
+            foreach (var entry in _pageMap)
+                CopySnapshotPage(preparation, WalSnapshotMap.GetSegmentIndex(entry.Key), entry.Key, entry.Value);
+        }
+        else
+        {
+            foreach (var entry in _pageMap)
+            {
+                if (entry.Value >= floor)
+                    CopySnapshotPage(preparation, WalSnapshotMap.GetSegmentIndex(entry.Key), entry.Key, entry.Value);
+            }
+        }
+    }
 
-        return filtered ?? s_emptyPageMap;
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void CopySnapshotPage(WalSnapshotPreparation preparation, int segment, uint pageId, long offset)
+    {
+        var buffer = preparation.Buffers[segment]!;
+        buffer.AddUnique(pageId, offset);
     }
 }
 
@@ -359,15 +553,25 @@ public sealed class WalIndex
 /// </summary>
 public sealed class WalSnapshot
 {
-    private readonly Dictionary<uint, long> _pageMap;
-    private readonly long _commitCounter;
-    private readonly long _minimumWalOffset;
+    // Written once while this wrapper is exclusively owned and unpublished.
+    // A non-null map marks initialization, including for an empty snapshot.
+    private WalSnapshotMap _pageMap = null!;
+    private long _commitCounter;
+    private long _minimumWalOffset;
 
-    internal WalSnapshot(Dictionary<uint, long> pageMap, long commitCounter, long minimumWalOffset)
+    internal WalSnapshot()
     {
-        _pageMap = pageMap;
+    }
+
+    internal void Initialize(WalSnapshotMap pageMap, long commitCounter, long minimumWalOffset)
+    {
+        if (_pageMap is not null)
+            throw new InvalidOperationException("The WAL snapshot is already initialized.");
+
+        ArgumentNullException.ThrowIfNull(pageMap);
         _commitCounter = commitCounter;
         _minimumWalOffset = minimumWalOffset;
+        _pageMap = pageMap;
     }
 
     public long CommitCounter => _commitCounter;

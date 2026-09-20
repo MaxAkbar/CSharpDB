@@ -2086,12 +2086,25 @@ public sealed class Database : IAsyncDisposable
 
         if (_inTransaction)
         {
-            return await ExecuteExplicitWriteAsync(
-                token => _planner.ExecuteSimpleInsertAsync(
+            if (_explicitTransactionFailed)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.Unknown,
+                    "The transaction is aborted because an earlier write failed; roll it back before issuing another write.");
+            }
+
+            try
+            {
+                return await _planner.ExecuteSimpleInsertAsync(
                     insert,
                     persistRootChanges: false,
-                    token),
-                ct);
+                    ct);
+            }
+            catch
+            {
+                _explicitTransactionFailed = true;
+                throw;
+            }
         }
 
         if (ImplicitInsertExecutionMode == ImplicitInsertExecutionMode.ConcurrentWriteTransactions)
