@@ -892,11 +892,14 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
         return await ReadRequiredAsync<VacuumResult>(response, ct);
     }
 
-    public async Task<DatabaseInspectReport> InspectStorageAsync(string? databasePath = null, bool includePages = false, CancellationToken ct = default)
+    public Task<DatabaseInspectReport> InspectStorageAsync(string? databasePath = null, bool includePages = false, CancellationToken ct = default)
+        => InspectStorageAsync(DatabaseInspectionMode.Full, databasePath, includePages, ct);
+
+    public async Task<DatabaseInspectReport> InspectStorageAsync(DatabaseInspectionMode mode, string? databasePath = null, bool includePages = false, CancellationToken ct = default)
     {
         using var response = await SendAsync(
             HttpMethod.Get,
-            BuildUri("api/inspect", Q("includePages", includePages ? "true" : "false"), Q("path", databasePath)),
+            BuildUri("api/inspect", Q("includePages", includePages ? "true" : "false"), Q("path", databasePath), Q("mode", mode.ToString())),
             payload: null,
             ct);
         return await ReadRequiredAsync<DatabaseInspectReport>(response, ct);

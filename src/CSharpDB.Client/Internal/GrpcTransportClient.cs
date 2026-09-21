@@ -541,10 +541,14 @@ internal sealed partial class GrpcTransportClient : ICSharpDbClient, ICSharpDbSh
         => CallAsync(_client.VacuumAsync(EmptyRequest, cancellationToken: ct), GrpcModelMapper.ToModel, ct);
 
     public Task<DatabaseInspectReport> InspectStorageAsync(string? databasePath = null, bool includePages = false, CancellationToken ct = default)
+        => InspectStorageAsync(DatabaseInspectionMode.Full, databasePath, includePages, ct);
+
+    public Task<DatabaseInspectReport> InspectStorageAsync(DatabaseInspectionMode mode, string? databasePath = null, bool includePages = false, CancellationToken ct = default)
         => CallAsync(_client.InspectStorageAsync(new InspectStorageRequest
         {
             DatabasePath = databasePath ?? string.Empty,
             IncludePages = includePages,
+            Mode = (int)mode,
         }, cancellationToken: ct), GrpcModelMapper.ToModel, ct);
 
     public Task<WalInspectReport> CheckWalAsync(string? databasePath = null, CancellationToken ct = default)

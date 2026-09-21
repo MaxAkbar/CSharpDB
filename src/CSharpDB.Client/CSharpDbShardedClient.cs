@@ -1805,7 +1805,10 @@ public sealed partial class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbDe
         => _requestRoutedClient.VacuumAsync(ct);
 
     public Task<DatabaseInspectReport> InspectStorageAsync(string? databasePath = null, bool includePages = false, CancellationToken ct = default)
-        => _requestRoutedClient.InspectStorageAsync(databasePath, includePages, ct);
+        => InspectStorageAsync(DatabaseInspectionMode.Full, databasePath, includePages, ct);
+
+    public Task<DatabaseInspectReport> InspectStorageAsync(DatabaseInspectionMode mode, string? databasePath = null, bool includePages = false, CancellationToken ct = default)
+        => _requestRoutedClient.InspectStorageAsync(mode, databasePath, includePages, ct);
 
     public Task<WalInspectReport> CheckWalAsync(string? databasePath = null, CancellationToken ct = default)
         => _requestRoutedClient.CheckWalAsync(databasePath, ct);
@@ -3956,7 +3959,10 @@ public sealed partial class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbDe
             => ResolveWritableClient().VacuumAsync(ct);
 
         public Task<DatabaseInspectReport> InspectStorageAsync(string? databasePath = null, bool includePages = false, CancellationToken ct = default)
-            => ResolveClient().InspectStorageAsync(databasePath, includePages, ct);
+            => InspectStorageAsync(DatabaseInspectionMode.Full, databasePath, includePages, ct);
+
+        public Task<DatabaseInspectReport> InspectStorageAsync(DatabaseInspectionMode mode, string? databasePath = null, bool includePages = false, CancellationToken ct = default)
+            => ResolveClient().InspectStorageAsync(mode, databasePath, includePages, ct);
 
         public Task<WalInspectReport> CheckWalAsync(string? databasePath = null, CancellationToken ct = default)
             => ResolveClient().CheckWalAsync(databasePath, ct);

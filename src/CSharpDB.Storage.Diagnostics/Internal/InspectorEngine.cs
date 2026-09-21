@@ -24,6 +24,7 @@ internal static class InspectorEngine
         public bool IsOverflowPayload { get; init; }
         public long? Key { get; init; }
         public byte[]? Payload { get; init; }
+        public int PayloadLength { get; init; }
     }
 
     internal sealed class ParsedInteriorCell
@@ -83,7 +84,8 @@ internal static class InspectorEngine
     internal static async ValueTask<DatabaseSnapshot> ReadDatabaseSnapshotAsync(
         string databasePath,
         bool captureLeafPayload,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        bool summaryOnly = false)
     {
         ct.ThrowIfCancellationRequested();
 
@@ -129,7 +131,7 @@ internal static class InspectorEngine
         }
 
         ParsedFileHeader parsedHeader = ParseFileHeader(fileHeader, headerRead);
-        CommittedWalOverlay? walOverlay = await TryReadCommittedWalOverlayAsync(databasePath, ct);
+        CommittedWalOverlay? walOverlay = summaryOnly ? null : await TryReadCommittedWalOverlayAsync(databasePath, ct);
         if (walOverlay is not null &&
             walOverlay.Pages.TryGetValue(0, out byte[]? headerPageBytes))
         {
@@ -202,6 +204,10 @@ internal static class InspectorEngine
         };
 
         var pages = new Dictionary<uint, ParsedPage>();
+        if (summaryOnly)
+            return new DatabaseSnapshot { DatabasePath = databasePath, Header = header,
+                PhysicalPageCount = physicalPageCount, Pages = pages, Issues = issues };
+
         byte[] pageBuffer = new byte[PageConstants.PageSize];
 
         for (uint pageId = 0; pageId < physicalPageCount; pageId++)
@@ -244,9 +250,41 @@ internal static class InspectorEngine
                 continue;
             }
 
-            ParsePageResult parsed = ParsePage(pageId, pageBytes, captureLeafPayload, ct);
+            ParsePageResult parsed = ParsePage(pageId, pageBytes, captureLeafPayload, ct, retainCellDetails: captureLeafPayload);
             pages[pageId] = parsed.Page;
             issues.AddRange(parsed.Issues);
+        }
+
+        if (!captureLeafPayload)
+        {
+            async ValueTask LoadCatalogAsync(uint root)
+            {
+                foreach (uint pageId in WalkBTree(root, pages, physicalPageCount, issues, "catalog", ct))
+                {
+                    if (!pages.TryGetValue(pageId, out var page) || page.PageType != PageConstants.PageTypeLeaf)
+                        continue;
+                    byte[] bytes = pageBuffer;
+                    if (walOverlay is not null && walOverlay.Pages.TryGetValue(pageId, out var walBytes))
+                        bytes = walBytes;
+                    else if (await ReadAtAsync(stream, (long)pageId * PageConstants.PageSize, pageBuffer, ct) != PageConstants.PageSize)
+                        continue;
+                    pages[pageId] = ParsePage(pageId, bytes, captureLeafPayload: true, ct).Page;
+                }
+            }
+
+            await LoadCatalogAsync(header.SchemaRootPage);
+            var catalogRoots = new HashSet<uint>();
+            foreach (uint pageId in WalkBTree(header.SchemaRootPage, pages, physicalPageCount, issues, "schema-catalog", ct))
+            {
+                if (!pages.TryGetValue(pageId, out var page)) continue;
+                foreach (var cell in page.LeafCells)
+                {
+                    if (cell.Key is IndexCatalogSentinel or ViewCatalogSentinel or TriggerCatalogSentinel && cell.Payload is { Length: >= 4 })
+                        catalogRoots.Add(BinaryPrimitives.ReadUInt32LittleEndian(cell.Payload));
+                }
+            }
+            foreach (uint root in catalogRoots)
+                await LoadCatalogAsync(root);
         }
 
         ValidateOverflowReferences(pages, physicalPageCount, issues, ct);
@@ -328,7 +366,8 @@ internal static class InspectorEngine
         uint pageId,
         byte[] pageBytes,
         bool captureLeafPayload,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        bool retainCellDetails = true)
     {
         ct.ThrowIfCancellationRequested();
 
@@ -652,7 +691,7 @@ internal static class InspectorEngine
                     continue;
                 }
 
-                byte[]? payload = captureLeafPayload
+                byte[]? payload = captureLeafPayload || isOverflowPayload
                     ? pageBytes.AsSpan(payloadStart, payloadLen).ToArray()
                     : null;
 
@@ -665,6 +704,7 @@ internal static class InspectorEngine
                     IsOverflowPayload = isOverflowPayload,
                     Key = key,
                     Payload = payload,
+                    PayloadLength = payloadLen,
                 });
             }
             else if (pageType == PageConstants.PageTypeInterior)
@@ -751,9 +791,9 @@ internal static class InspectorEngine
             CellContentStart = cellContentStart,
             RightChildOrNextLeaf = rightChildOrNextLeaf,
             FreeSpaceBytes = freeSpace,
-            CellOffsets = cellOffsets,
-            LeafCells = leafCells,
-            InteriorCells = interiorCells,
+            CellOffsets = retainCellDetails ? cellOffsets : [],
+            LeafCells = retainCellDetails ? leafCells : leafCells.FindAll(cell => cell.IsOverflowPayload),
+            InteriorCells = retainCellDetails ? interiorCells : [],
             ChildPageReferences = childRefs,
         };
 

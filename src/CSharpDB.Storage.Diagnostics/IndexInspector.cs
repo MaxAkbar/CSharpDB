@@ -20,14 +20,17 @@ public static class IndexInspector
     {
         ct.ThrowIfCancellationRequested();
 
+        var snapshot = await InspectorEngine.ReadDatabaseSnapshotAsync(dbPath, captureLeafPayload: false, ct);
+        return CheckSnapshot(snapshot, indexName, sampleSize, ct);
+    }
+
+    internal static IndexInspectReport CheckSnapshot(
+        InspectorEngine.DatabaseSnapshot snapshot, string? indexName, int? sampleSize, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
         int effectiveSampleSize = sampleSize.GetValueOrDefault(1000);
         if (effectiveSampleSize <= 0)
             effectiveSampleSize = 1000;
-
-        InspectorEngine.DatabaseSnapshot snapshot = await InspectorEngine.ReadDatabaseSnapshotAsync(
-            dbPath,
-            captureLeafPayload: true,
-            ct);
 
         List<IntegrityIssue> issues = InspectorEngine.CopyIssues(snapshot.Issues, ct);
         var tableSchemas = new Dictionary<string, TableSchema>(StringComparer.OrdinalIgnoreCase);
@@ -263,13 +266,16 @@ public static class IndexInspector
                 });
             }
 
-            bool columnsExist = tableExists;
+            bool collectionIndex = IsCollectionIndex(entry.Schema);
+            bool columnsExist = tableExists && (!collectionIndex ||
+                (tableSchema!.GetColumnIndex("_key") >= 0 && tableSchema.GetColumnIndex("_doc") >= 0 &&
+                 entry.Schema.Columns.Count == 1 && !string.IsNullOrWhiteSpace(entry.Schema.Columns[0])));
             var columns = new List<string>(entry.Schema.Columns.Count);
             foreach (string column in entry.Schema.Columns)
             {
                 ct.ThrowIfCancellationRequested();
                 columns.Add(column);
-                if (tableExists && tableSchema!.GetColumnIndex(column) < 0)
+                if (tableExists && !collectionIndex && tableSchema!.GetColumnIndex(column) < 0)
                     columnsExist = false;
             }
 
@@ -311,7 +317,7 @@ public static class IndexInspector
 
         return new IndexInspectReport
         {
-            DatabasePath = dbPath,
+            DatabasePath = snapshot.DatabasePath,
             RequestedIndexName = indexName,
             SampleSize = effectiveSampleSize,
             Indexes = items,
@@ -348,5 +354,18 @@ public static class IndexInspector
         }
 
         return ordered;
+    }
+
+    private static bool IsCollectionIndex(IndexSchema schema)
+    {
+        if (schema.Kind == IndexKind.Collection)
+            return true;
+        // Older catalogs predate IndexKind. Recognize the exact generated name,
+        // rather than treating every index on a collection table as a document path.
+        if (schema.Kind != IndexKind.Sql || !schema.TableName.StartsWith("_col_", StringComparison.Ordinal) || schema.Columns.Count != 1)
+            return false;
+        string table = Convert.ToHexString(System.Text.Encoding.UTF8.GetBytes(schema.TableName));
+        string field = Convert.ToHexString(System.Text.Encoding.UTF8.GetBytes(schema.Columns[0]));
+        return schema.IndexName.Equals($"_cidx_{table}_{field}", StringComparison.Ordinal);
     }
 }

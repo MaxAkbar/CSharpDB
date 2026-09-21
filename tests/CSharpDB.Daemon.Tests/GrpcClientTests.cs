@@ -48,6 +48,30 @@ public sealed class GrpcClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task StorageInspectionModes_RoundTripSummaryAndCombinedAnalysis()
+    {
+        using var transportClient = CreateGrpcHttpClient(_factory);
+        await using var client = CreateGrpcClient(transportClient);
+        await client.ExecuteSqlAsync("CREATE TABLE storage_modes (id INTEGER PRIMARY KEY, name TEXT); CREATE INDEX storage_modes_ix ON storage_modes (name)", Ct);
+        var summary = await client.InspectStorageAsync(CSharpDB.Storage.Diagnostics.DatabaseInspectionMode.Summary, ct: Ct);
+        Assert.True(summary.IsSummary);
+        Assert.Equal(0, summary.PageCountScanned);
+        Assert.Null(summary.IndexChecks);
+        Assert.Empty(summary.PageTypeHistogram);
+        var analysis = await client.InspectStorageAsync(CSharpDB.Storage.Diagnostics.DatabaseInspectionMode.FullWithIndexes, ct: Ct);
+        Assert.False(analysis.IsSummary);
+        Assert.True(analysis.PageCountScanned > 0);
+        Assert.True(analysis.BTreeFreeBytes > 0);
+        Assert.True(analysis.PagesWithFreeSpace > 0);
+        Assert.Null(analysis.Pages);
+        Assert.NotNull(analysis.IndexChecks);
+        var index = Assert.Single(analysis.IndexChecks.Indexes, item => item.IndexName == "storage_modes_ix");
+        Assert.Equal("storage_modes_ix", index.IndexName);
+        Assert.True(index.ColumnsExistInTable);
+        Assert.True(index.RootTreeReachable);
+    }
+
+    [Fact]
     public async Task ExecuteSql_ResourceLimitExceeded_ReturnsResourceExhausted()
     {
         string dbPath = Path.Combine(

@@ -251,7 +251,10 @@ internal sealed partial class EngineTransportClient
         => VacuumCoreAsync(ct);
 
     public Task<DatabaseInspectReport> InspectStorageAsync(string? databasePath = null, bool includePages = false, CancellationToken ct = default)
-        => InspectStorageCoreAsync(databasePath, includePages, ct);
+        => InspectStorageAsync(DatabaseInspectionMode.Full, databasePath, includePages, ct);
+
+    public Task<DatabaseInspectReport> InspectStorageAsync(DatabaseInspectionMode mode, string? databasePath = null, bool includePages = false, CancellationToken ct = default)
+        => InspectStorageCoreAsync(databasePath, includePages, ct, mode);
 
     public Task<WalInspectReport> CheckWalAsync(string? databasePath = null, CancellationToken ct = default)
         => WalInspector.InspectAsync(ResolveDatabasePath(databasePath), ct: ct).AsTask();
@@ -265,12 +268,13 @@ internal sealed partial class EngineTransportClient
     private async Task<DatabaseInspectReport> InspectStorageCoreAsync(
         string? databasePath,
         bool includePages,
-        CancellationToken ct)
+        CancellationToken ct,
+        DatabaseInspectionMode mode)
     {
         string dbPath = ResolveDatabasePath(databasePath);
         return await DatabaseInspector.InspectAsync(
             dbPath,
-            new DatabaseInspectOptions { IncludePages = includePages },
+            new DatabaseInspectOptions { IncludePages = includePages, Mode = mode },
             ct);
     }
 

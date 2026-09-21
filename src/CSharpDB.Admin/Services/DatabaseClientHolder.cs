@@ -381,7 +381,10 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbDefinitionC
     public Task<DatabaseMaintenanceReport> GetMaintenanceReportAsync(CancellationToken ct = default) => _inner.GetMaintenanceReportAsync(ct);
     public Task<ReindexResult> ReindexAsync(ReindexRequest request, CancellationToken ct = default) => _inner.ReindexAsync(request, ct);
     public Task<VacuumResult> VacuumAsync(CancellationToken ct = default) => _inner.VacuumAsync(ct);
-    public Task<DatabaseInspectReport> InspectStorageAsync(string? databasePath = null, bool includePages = false, CancellationToken ct = default) => _inner.InspectStorageAsync(databasePath, includePages, ct);
+    public Task<DatabaseInspectReport> InspectStorageAsync(string? databasePath = null, bool includePages = false, CancellationToken ct = default)
+        => InspectStorageAsync(DatabaseInspectionMode.Full, databasePath, includePages, ct);
+
+    public Task<DatabaseInspectReport> InspectStorageAsync(DatabaseInspectionMode mode, string? databasePath = null, bool includePages = false, CancellationToken ct = default) => _inner.InspectStorageAsync(mode, databasePath, includePages, ct);
     public Task<WalInspectReport> CheckWalAsync(string? databasePath = null, CancellationToken ct = default) => _inner.CheckWalAsync(databasePath, ct);
     public Task<PageInspectReport> InspectPageAsync(uint pageId, bool includeHex = false, string? databasePath = null, CancellationToken ct = default) => _inner.InspectPageAsync(pageId, includeHex, databasePath, ct);
     public Task<IndexInspectReport> CheckIndexesAsync(string? databasePath = null, string? indexName = null, int? sampleSize = null, CancellationToken ct = default) => _inner.CheckIndexesAsync(databasePath, indexName, sampleSize, ct);

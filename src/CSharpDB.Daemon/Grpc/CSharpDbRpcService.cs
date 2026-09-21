@@ -499,7 +499,7 @@ public sealed class CSharpDbRpcService : CSharpDbRpc.CSharpDbRpcBase
             GrpcModelMapper.ToMessage);
 
     public override Task<DatabaseInspectReportMessage> InspectStorage(InspectStorageRequest request, ServerCallContext context)
-        => ExecuteAsync(context, ct => client.InspectStorageAsync(NullIfEmpty(request.DatabasePath), request.IncludePages, ct), GrpcModelMapper.ToMessage);
+        => ExecuteAsync(context, ct => client.InspectStorageAsync((CSharpDB.Storage.Diagnostics.DatabaseInspectionMode)request.Mode, NullIfEmpty(request.DatabasePath), request.IncludePages, ct), GrpcModelMapper.ToMessage);
 
     public override Task<WalInspectReportMessage> CheckWal(CheckWalRequest request, ServerCallContext context)
         => ExecuteAsync(context, ct => client.CheckWalAsync(NullIfEmpty(request.DatabasePath), ct), GrpcModelMapper.ToMessage);

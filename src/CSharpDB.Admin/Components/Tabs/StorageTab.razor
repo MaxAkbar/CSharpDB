@@ -8,19 +8,27 @@
 @inject DatabaseChangeService Changes
 @inject IConfiguration Configuration
 @inject IJSRuntime JS
+@implements IDisposable
 
 <div class="storage-tab">
     <div class="toolbar">
-        <button class="toolbar-btn" @onclick="RefreshAllAsync" disabled="@_loading">
+        <button class="toolbar-btn" @onclick="RefreshAllAsync" disabled="@Busy">
             <i class="bi bi-arrow-clockwise"></i> Refresh
         </button>
+        <button class="toolbar-btn" @onclick="AnalyzeStorageAsync" disabled="@(Busy || _dbReport is null)">
+            <i class="bi bi-shield-check"></i> Analyze storage
+        </button>
+        @if (_analyzing)
+        {
+            <button class="toolbar-btn" @onclick="CancelAnalysis">Cancel analysis</button>
+        }
         <div class="toolbar-separator"></div>
         <label class="storage-check">
             <input type="checkbox" @bind="_includeHex" />
             Include Hex Dump
         </label>
         <input class="storage-input mono" type="number" min="0" @bind="_pageIdText" />
-        <button class="toolbar-btn" @onclick="InspectPageAsync" disabled="@_loadingPage">
+        <button class="toolbar-btn" @onclick="InspectPageAsync" disabled="@(_loadingPage || Busy)">
             <i class="bi bi-search"></i> Inspect Page
         </button>
         <div class="toolbar-spacer"></div>
@@ -45,7 +53,7 @@
             <div class="heavy-rail-section">
                 <div class="heavy-rail-label">Health</div>
                 <a class="heavy-rail-item" href="#storage-indexes"><i class="bi bi-shield-check"></i><span>Index checks</span><span class="badge">@IndexIssueBadge</span></a>
-                <a class="heavy-rail-item" href="#storage-issues"><i class="bi bi-exclamation-triangle"></i><span>Integrity issues</span><span class="badge @(_combinedIssues.Count > 0 ? "warn" : "")">@_combinedIssues.Count</span></a>
+                <a class="heavy-rail-item" href="#storage-issues"><i class="bi bi-exclamation-triangle"></i><span>Integrity issues</span><span class="badge @(_combinedIssues.Count > 0 ? "warn" : "")">@IssueBadge</span></a>
             </div>
             <div class="heavy-rail-section">
                 <div class="heavy-rail-label">Operations</div>
@@ -54,7 +62,7 @@
         </aside>
 
         <main class="heavy-pane">
-    @if (_loading)
+    @if (_loading && _dbReport is null)
     {
         <div class="loading-overlay">
             <span class="spinner"></span>
@@ -63,11 +71,14 @@
     else
     {
         <div class="storage-content" id="storage-summary">
+            <p class="schema-empty" role="status">@(_analysisStatus ?? (_dbReport?.IsSummary == true
+                ? "Showing saved file properties. Run Analyze storage for current committed data, fragmentation, WAL validation, and integrity checks."
+                : "Storage analysis complete."))</p>
             <div class="heavy-summary-strip">
-                <div><span>File</span><strong>@FormatBytes(_maintenanceReport?.SpaceUsage.DatabaseFileBytes ?? 0)</strong></div>
+                <div><span>File</span><strong>@FormatBytes(_dbReport?.Header.FileLengthBytes ?? 0)</strong></div>
                 <div><span>Pages</span><strong>@(_dbReport?.Header.PhysicalPageCount.ToString() ?? "-")</strong></div>
                 <div><span>Page size</span><strong>@(_dbReport?.Header.PageSize.ToString() ?? "-")</strong></div>
-                <div><span>Issues</span><strong>@_combinedIssues.Count</strong></div>
+                <div><span>Issues</span><strong>@IssueBadge</strong></div>
             </div>
 
             <div class="storage-grid">
@@ -109,23 +120,27 @@
                             </tbody>
                         </table>
                     }
+                    else
+                    {
+                        <p class="schema-empty">Not analyzed. Select Analyze storage to calculate these details.</p>
+                    }
                 </section>
             </div>
 
             <div class="storage-grid">
                 <section class="storage-card" id="storage-space">
                     <h3>Space Usage</h3>
-                    @if (_maintenanceReport is not null)
+                    @if (_dbReport is not null)
                     {
                         <table class="schema-table">
                             <tbody>
-                                <tr><th>Database File</th><td>@FormatBytes(_maintenanceReport.SpaceUsage.DatabaseFileBytes) (@_maintenanceReport.SpaceUsage.DatabaseFileBytes bytes)</td></tr>
-                                <tr><th>WAL File</th><td>@FormatBytes(_maintenanceReport.SpaceUsage.WalFileBytes) (@_maintenanceReport.SpaceUsage.WalFileBytes bytes)</td></tr>
-                                <tr><th>Page Size</th><td>@_maintenanceReport.SpaceUsage.PageSizeBytes bytes</td></tr>
-                                <tr><th>Physical Pages</th><td>@_maintenanceReport.SpaceUsage.PhysicalPageCount</td></tr>
-                                <tr><th>Declared Pages</th><td>@_maintenanceReport.SpaceUsage.DeclaredPageCount</td></tr>
-                                <tr><th>Freelist Pages</th><td>@_maintenanceReport.SpaceUsage.FreelistPageCount</td></tr>
-                                <tr><th>Freelist Bytes</th><td>@FormatBytes(_maintenanceReport.SpaceUsage.FreelistBytes) (@_maintenanceReport.SpaceUsage.FreelistBytes bytes)</td></tr>
+                                <tr><th>Database File</th><td>@FormatBytes(_dbReport.Header.FileLengthBytes) (@_dbReport.Header.FileLengthBytes bytes)</td></tr>
+                                <tr><th>WAL File</th><td>@FormatBytes(_dbReport.WalFileLengthBytes) (@_dbReport.WalFileLengthBytes bytes)</td></tr>
+                                <tr><th>Page Size</th><td>@_dbReport.Header.PageSize bytes</td></tr>
+                                <tr><th>Physical Pages</th><td>@_dbReport.Header.PhysicalPageCount</td></tr>
+                                <tr><th>Declared Pages</th><td>@_dbReport.Header.DeclaredPageCount</td></tr>
+                                <tr><th>Freelist Pages</th><td>@(_dbReport.IsSummary ? "Not analyzed" : _dbReport.PageTypeHistogram.GetValueOrDefault("freelist").ToString())</td></tr>
+                                <tr><th>Freelist Bytes</th><td>@(_dbReport.IsSummary ? "Not analyzed" : FormatBytes((long)_dbReport.PageTypeHistogram.GetValueOrDefault("freelist") * _dbReport.Header.PageSize))</td></tr>
                             </tbody>
                         </table>
                     }
@@ -133,16 +148,20 @@
 
                 <section class="storage-card" id="storage-fragmentation">
                     <h3>Fragmentation</h3>
-                    @if (_maintenanceReport is not null)
+                    @if (_dbReport is { IsSummary: false })
                     {
                         <table class="schema-table">
                             <tbody>
-                                <tr><th>B+tree Free Bytes</th><td>@FormatBytes(_maintenanceReport.Fragmentation.BTreeFreeBytes) (@_maintenanceReport.Fragmentation.BTreeFreeBytes bytes)</td></tr>
-                                <tr><th>Pages With Free Space</th><td>@_maintenanceReport.Fragmentation.PagesWithFreeSpace</td></tr>
-                                <tr><th>Tail Freelist Pages</th><td>@_maintenanceReport.Fragmentation.TailFreelistPageCount</td></tr>
-                                <tr><th>Tail Freelist Bytes</th><td>@FormatBytes(_maintenanceReport.Fragmentation.TailFreelistBytes) (@_maintenanceReport.Fragmentation.TailFreelistBytes bytes)</td></tr>
+                                <tr><th>B+tree Free Bytes</th><td>@FormatBytes(_dbReport.BTreeFreeBytes) (@_dbReport.BTreeFreeBytes bytes)</td></tr>
+                                <tr><th>Pages With Free Space</th><td>@_dbReport.PagesWithFreeSpace</td></tr>
+                                <tr><th>Tail Freelist Pages</th><td>@_dbReport.TailFreelistPageCount</td></tr>
+                                <tr><th>Tail Freelist Bytes</th><td>@FormatBytes(((long)_dbReport.TailFreelistPageCount * _dbReport.Header.PageSize)) (@((long)_dbReport.TailFreelistPageCount * _dbReport.Header.PageSize) bytes)</td></tr>
                             </tbody>
                         </table>
+                    }
+                    else
+                    {
+                        <p class="schema-empty">Not analyzed. Select Analyze storage to calculate these details.</p>
                     }
                 </section>
             </div>
@@ -153,7 +172,7 @@
                     <div class="toolbar">
                         <label class="storage-check">
                             Reindex Scope
-                            <select class="storage-input mono" value="@_reindexScope" @onchange="HandleReindexScopeChanged" disabled="@_maintenanceBusy">
+                            <select class="storage-input mono" value="@_reindexScope" @onchange="HandleReindexScopeChanged" disabled="@Busy">
                                 <option value="@ReindexScope.All">All</option>
                                 <option value="@ReindexScope.Table">Table</option>
                                 <option value="@ReindexScope.Index">Index</option>
@@ -162,7 +181,7 @@
 
                         @if (_reindexScope == ReindexScope.Table)
                         {
-                            <select class="storage-input mono" value="@_reindexName" @onchange="HandleReindexNameChanged" disabled="@_maintenanceBusy">
+                            <select class="storage-input mono" value="@_reindexName" @onchange="HandleReindexNameChanged" disabled="@Busy">
                                 @foreach (var tableName in _availableTables)
                                 {
                                     <option value="@tableName">@tableName</option>
@@ -171,7 +190,7 @@
                         }
                         else if (_reindexScope == ReindexScope.Index)
                         {
-                            <select class="storage-input mono" value="@_reindexName" @onchange="HandleReindexNameChanged" disabled="@_maintenanceBusy">
+                            <select class="storage-input mono" value="@_reindexName" @onchange="HandleReindexNameChanged" disabled="@Busy">
                                 @foreach (var indexName in _availableIndexes)
                                 {
                                     <option value="@indexName">@indexName</option>
@@ -180,20 +199,20 @@
                         }
 
                         <label class="storage-check">
-                            <input type="checkbox" @bind="_allowCorruptIndexRecovery" disabled="@_maintenanceBusy" />
+                            <input type="checkbox" @bind="_allowCorruptIndexRecovery" disabled="@Busy" />
                             Force rebuild corrupt indexes
                         </label>
 
-                        <button class="toolbar-btn" @onclick="RunReindexAsync" disabled="@_maintenanceBusy">
+                        <button class="toolbar-btn" @onclick="RunReindexAsync" disabled="@Busy">
                             <i class="bi bi-arrow-repeat"></i> Reindex
                         </button>
 
                         <label class="storage-check">
-                            <input type="checkbox" @bind="_vacuumConfirmArmed" disabled="@_maintenanceBusy" />
+                            <input type="checkbox" @bind="_vacuumConfirmArmed" disabled="@Busy" />
                             Confirm full vacuum rewrite
                         </label>
 
-                        <button class="toolbar-btn" @onclick="RunVacuumAsync" disabled="@(_maintenanceBusy || !_vacuumConfirmArmed)">
+                        <button class="toolbar-btn" @onclick="RunVacuumAsync" disabled="@(Busy || !_vacuumConfirmArmed)">
                             <i class="bi bi-bounding-box-circles"></i> Vacuum
                         </button>
                     </div>
@@ -214,7 +233,7 @@
                                    type="text"
                                    @bind="_backupPath"
                                    placeholder="Backup destination path"
-                                   disabled="@_maintenanceBusy" />
+                                   disabled="@Busy" />
 
                             @if (UseDesktopPickers)
                             {
@@ -223,18 +242,18 @@
                                         title="Choose backup destination"
                                         aria-label="Choose backup destination"
                                         @onclick="PickBackupPathAsync"
-                                        disabled="@_maintenanceBusy">
+                                        disabled="@Busy">
                                     <i class="bi bi-folder2-open"></i>
                                 </button>
                             }
                         </div>
 
                         <label class="storage-check">
-                            <input type="checkbox" @bind="_backupWithManifest" disabled="@_maintenanceBusy" />
+                            <input type="checkbox" @bind="_backupWithManifest" disabled="@Busy" />
                             Write manifest
                         </label>
 
-                        <button class="toolbar-btn" @onclick="RunBackupAsync" disabled="@(_maintenanceBusy || string.IsNullOrWhiteSpace(_backupPath))">
+                        <button class="toolbar-btn" @onclick="RunBackupAsync" disabled="@(Busy || string.IsNullOrWhiteSpace(_backupPath))">
                             <i class="bi bi-download"></i> Backup
                         </button>
                     </div>
@@ -245,7 +264,7 @@
                                    type="text"
                                    @bind="_restoreSourcePath"
                                    placeholder="Restore source path"
-                                   disabled="@_maintenanceBusy" />
+                                   disabled="@Busy" />
 
                             @if (UseDesktopPickers)
                             {
@@ -254,22 +273,22 @@
                                         title="Choose restore source"
                                         aria-label="Choose restore source"
                                         @onclick="PickRestorePathAsync"
-                                        disabled="@_maintenanceBusy">
+                                        disabled="@Busy">
                                     <i class="bi bi-folder2-open"></i>
                                 </button>
                             }
                         </div>
 
-                        <button class="toolbar-btn" @onclick="ValidateRestoreAsync" disabled="@(_maintenanceBusy || string.IsNullOrWhiteSpace(_restoreSourcePath))">
+                        <button class="toolbar-btn" @onclick="ValidateRestoreAsync" disabled="@(Busy || string.IsNullOrWhiteSpace(_restoreSourcePath))">
                             <i class="bi bi-shield-check"></i> Validate
                         </button>
 
                         <label class="storage-check">
-                            <input type="checkbox" @bind="_restoreConfirmArmed" disabled="@_maintenanceBusy" />
+                            <input type="checkbox" @bind="_restoreConfirmArmed" disabled="@Busy" />
                             Confirm replace current database
                         </label>
 
-                        <button class="toolbar-btn danger" @onclick="RunRestoreAsync" disabled="@(_maintenanceBusy || !_restoreConfirmArmed || string.IsNullOrWhiteSpace(_restoreSourcePath))">
+                        <button class="toolbar-btn danger" @onclick="RunRestoreAsync" disabled="@(Busy || !_restoreConfirmArmed || string.IsNullOrWhiteSpace(_restoreSourcePath))">
                             <i class="bi bi-arrow-counterclockwise"></i> Restore
                         </button>
                     </div>
@@ -287,7 +306,7 @@
                     <textarea class="storage-input mono"
                               rows="12"
                               @bind="_foreignKeyMigrationSpecJson"
-                              disabled="@_maintenanceBusy"
+                              disabled="@Busy"
                               placeholder='{"validateOnly":true,"violationSampleLimit":100,"constraints":[{"tableName":"orders","columnName":"customer_id","referencedTableName":"customers","referencedColumnName":"id","onDelete":"Restrict","onUpdate":"Restrict"}]}'></textarea>
 
                     <div class="storage-action-row">
@@ -296,7 +315,7 @@
                                    type="text"
                                    @bind="_foreignKeyMigrationBackupPath"
                                    placeholder="Optional backup destination path"
-                                   disabled="@_maintenanceBusy" />
+                                   disabled="@Busy" />
 
                             @if (UseDesktopPickers)
                             {
@@ -305,22 +324,22 @@
                                         title="Choose migration backup destination"
                                         aria-label="Choose migration backup destination"
                                         @onclick="PickForeignKeyMigrationBackupPathAsync"
-                                        disabled="@_maintenanceBusy">
+                                        disabled="@Busy">
                                     <i class="bi bi-folder2-open"></i>
                                 </button>
                             }
                         </div>
 
-                        <button class="toolbar-btn" @onclick="ValidateForeignKeyMigrationAsync" disabled="@(_maintenanceBusy || string.IsNullOrWhiteSpace(_foreignKeyMigrationSpecJson))">
+                        <button class="toolbar-btn" @onclick="ValidateForeignKeyMigrationAsync" disabled="@(Busy || string.IsNullOrWhiteSpace(_foreignKeyMigrationSpecJson))">
                             <i class="bi bi-shield-check"></i> Validate
                         </button>
 
                         <label class="storage-check">
-                            <input type="checkbox" @bind="_foreignKeyMigrationConfirmArmed" disabled="@_maintenanceBusy" />
+                            <input type="checkbox" @bind="_foreignKeyMigrationConfirmArmed" disabled="@Busy" />
                             Confirm apply migration
                         </label>
 
-                        <button class="toolbar-btn danger" @onclick="RunForeignKeyMigrationAsync" disabled="@(_maintenanceBusy || !_foreignKeyMigrationConfirmArmed || string.IsNullOrWhiteSpace(_foreignKeyMigrationSpecJson))">
+                        <button class="toolbar-btn danger" @onclick="RunForeignKeyMigrationAsync" disabled="@(Busy || !_foreignKeyMigrationConfirmArmed || string.IsNullOrWhiteSpace(_foreignKeyMigrationSpecJson))">
                             <i class="bi bi-link-45deg"></i> Apply
                         </button>
                     </div>
@@ -440,7 +459,7 @@
                 }
                 else
                 {
-                    <p class="schema-empty">No pages were scanned.</p>
+                    <p class="schema-empty">Not analyzed. Select Analyze storage to build the page histogram.</p>
                 }
             </section>
 
@@ -478,7 +497,7 @@
                 }
                 else
                 {
-                    <p class="schema-empty">No indexes found.</p>
+                    <p class="schema-empty">@(_indexReport is null ? "Not analyzed. Select Analyze storage to check indexes." : "No indexes found.")</p>
                 }
             </section>
 
@@ -514,7 +533,7 @@
                 }
                 else
                 {
-                    <p class="schema-empty">No warnings or errors detected.</p>
+                    <p class="schema-empty">@(_dbReport is null || _dbReport.IsSummary ? "Integrity checks have not run." : "No warnings or errors detected.")</p>
                 }
             </section>
 
@@ -574,11 +593,16 @@
 
 @code {
     private DatabaseInspectReport? _dbReport;
-    private DatabaseMaintenanceReport? _maintenanceReport;
     private WalInspectReport? _walReport;
     private IndexInspectReport? _indexReport;
     private PageInspectReport? _pageReport;
 
+    private readonly CancellationTokenSource _lifetime = new();
+    private CancellationTokenSource? _analysisCancellation;
+    private bool _analyzing;
+    private string? _analysisStatus;
+    private bool Busy => _loading || _analyzing || _maintenanceBusy;
+    private string IssueBadge => _dbReport is null || _dbReport.IsSummary ? "Not analyzed" : _combinedIssues.Count.ToString();
     private bool _loading;
     private bool _loadingPage;
     private bool _maintenanceBusy;
@@ -621,7 +645,7 @@
     private readonly List<IntegrityIssue> _combinedIssues = new();
     private string IndexIssueBadge
         => _indexReport?.Indexes is null
-            ? "-"
+            ? "Not analyzed"
             : _indexReport.Indexes.All(index => index.RootPageValid && index.TableExists && index.ColumnsExistInTable && index.RootTreeReachable)
                 ? "OK"
                 : "Check";
@@ -636,12 +660,17 @@
         _loading = true;
         try
         {
-            _dbReport = await DbClient.InspectStorageAsync(includePages: false);
-            _maintenanceReport = await DbClient.GetMaintenanceReportAsync();
-            _walReport = await DbClient.CheckWalAsync();
-            _indexReport = await DbClient.CheckIndexesAsync();
-            _availableTables = await DbClient.GetTableNamesAsync();
-            _availableIndexes = (await DbClient.GetIndexesAsync())
+            var ct = _lifetime.Token;
+            _analysisStatus = "Loading file properties...";
+            _dbReport = await DbClient.InspectStorageAsync(DatabaseInspectionMode.Summary, ct: ct);
+            _walReport = null;
+            _indexReport = null;
+            _pageReport = null;
+            RebuildIssueList();
+            _analysisStatus = null;
+            StateHasChanged();
+            _availableTables = await DbClient.GetTableNamesAsync(ct);
+            _availableIndexes = (await DbClient.GetIndexesAsync(ct))
                 .Select(index => index.IndexName)
                 .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
@@ -649,14 +678,65 @@
             EnsureReindexSelection();
             RebuildIssueList();
         }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
         catch (Exception ex)
         {
-            Toast.Error($"Storage inspection failed: {ex.Message}");
+            _analysisStatus = $"Storage properties could not be loaded: {ex.Message}";
+            Toast.Error(_analysisStatus);
         }
         finally
         {
             _loading = false;
         }
+    }
+
+    private async Task AnalyzeStorageAsync()
+    {
+        if (Busy) return;
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        _analysisCancellation = cancellation;
+        _analyzing = true;
+        _analysisStatus = "Analyzing storage. File properties remain available; this can take time for large databases.";
+        try
+        {
+            // Keep parsing and tree traversal off the renderer even when file reads complete synchronously.
+            var (report, wal) = await Task.Run(async () =>
+            {
+                var databaseReport = await DbClient.InspectStorageAsync(DatabaseInspectionMode.FullWithIndexes, ct: cancellation.Token);
+                var walReport = await DbClient.CheckWalAsync(ct: cancellation.Token);
+                return (databaseReport, walReport);
+            }, cancellation.Token);
+            cancellation.Token.ThrowIfCancellationRequested();
+            if (report.IsSummary || report.IndexChecks is null)
+                throw new NotSupportedException("The connected host does not support combined storage analysis.");
+            _dbReport = report;
+            _indexReport = report.IndexChecks;
+            _walReport = wal;
+            RebuildIssueList();
+            _analysisStatus = $"Analysis complete: {report.PageCountScanned:N0} pages scanned. Results reflect this analysis; Refresh returns to file properties.";
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            _analysisStatus = "Analysis canceled. Displayed results have not been updated.";
+        }
+        catch (Exception ex)
+        {
+            _analysisStatus = $"Analysis failed. Displayed results have not been updated: {ex.Message}";
+            Toast.Error(_analysisStatus);
+        }
+        finally
+        {
+            _analyzing = false;
+            _analysisCancellation = null;
+        }
+    }
+
+    private void CancelAnalysis() => _analysisCancellation?.Cancel();
+
+    public void Dispose()
+    {
+        _lifetime.Cancel();
+        _lifetime.Dispose();
     }
 
     private async Task RunBackupAsync()
