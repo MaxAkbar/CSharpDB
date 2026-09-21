@@ -8,6 +8,17 @@ public sealed class SqlKeywordCompletionTests
     public static IEnumerable<object[]> ReservedKeywordCases()
         => Tokenizer.ReservedKeywords.Select(static keyword => new object[] { keyword });
 
+    public static IEnumerable<object[]> EditorKeywordCases()
+        => SqlKeywordCatalog.CompletionKeywords.Select(static keyword => new object[] { keyword });
+
+    [Theory]
+    [MemberData(nameof(EditorKeywordCases))]
+    public void GetCompletions_CoversEntireEditorVocabulary(string keyword)
+    {
+        var result = SqlCompletionProvider.GetCompletions(keyword, keyword.Length, Catalog, explicitTrigger: true);
+        Assert.Contains(result.Suggestions, suggestion => suggestion.Label == keyword);
+    }
+
     [Theory]
     [MemberData(nameof(ReservedKeywordCases))]
     public void GetCompletions_CoversTokenizerVocabulary(string keyword)

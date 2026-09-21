@@ -1,4 +1,5 @@
-using System.Text.RegularExpressions;
+using CSharpDB.Primitives;
+using CSharpDB.Sql;
 
 namespace CSharpDB.Admin.Helpers;
 
@@ -66,11 +67,6 @@ public sealed record SqlCompletionResult(IReadOnlyList<SqlCompletionSuggestion> 
 public static partial class SqlCompletionProvider
 {
     private const int MaxSuggestions = 12;
-
-    private static readonly string[] s_columnContextPreviousTokens =
-    [
-        "WHERE", "AND", "OR", "ON", "BY", "HAVING", "SET"
-    ];
 
     private static readonly SqlCompletionKeyword[] s_keywords =
     [
@@ -143,54 +139,81 @@ public static partial class SqlCompletionProvider
         catalog ??= SqlCompletionCatalog.Empty;
         caret = Math.Clamp(caret, 0, sql.Length);
 
-        if (IsInsideSingleQuotedString(sql, caret))
+        var context = SqlCompletionContext.Read(sql, caret);
+        if (context.Suppressed)
             return SqlCompletionResult.Empty;
 
-        var token = ReadCurrentToken(sql, caret);
-        if (TryGetDotColumnCompletions(sql, caret, token, catalog, out var dotResult))
-            return MaybeSuppressExactMatch(dotResult, token.Prefix, explicitTrigger);
-
-        if (TryGetSelectListCompletions(sql, caret, token, catalog, out var selectResult))
-            return MaybeSuppressExactMatch(selectResult, token.Prefix, explicitTrigger);
-
-        string? previousToken = ReadPreviousToken(sql, token.Start);
-        if (IsSourceContext(previousToken))
-            return MaybeSuppressExactMatch(
-                BuildSourceSuggestions(catalog, token.Prefix, token.Start, caret, sourceForSelectList: false),
-                token.Prefix,
-                explicitTrigger);
-
-        if (IsExecContext(previousToken))
-            return MaybeSuppressExactMatch(
-                BuildProcedureSuggestions(catalog, token.Prefix, token.Start, caret),
-                token.Prefix,
-                explicitTrigger);
-
-        if (TryGetInsertCompletions(sql, caret, token, catalog, out var insertResult))
-            return MaybeSuppressExactMatch(insertResult, token.Prefix, explicitTrigger);
-
-        if (previousToken is not null
-            && s_columnContextPreviousTokens.Contains(previousToken, StringComparer.OrdinalIgnoreCase)
-            && TryFindPrimarySource(sql, caret, out string sourceName))
+        SqlCompletionResult result;
+        var nextKeywords = context.NextKeywords.Where(next => MatchesPrefix(next, context.Prefix)).ToArray();
+        if (nextKeywords.Length > 0)
+            result = new SqlCompletionResult(nextKeywords.Select(next => new SqlCompletionSuggestion(next, next + " ", "SQL keyword",
+                SqlCompletionSuggestionKind.Keyword, context.Start, context.End, next.Length + 1)).ToArray());
+        else if (context.SourcePosition)
+            result = BuildSourceSuggestions(catalog, context.Prefix, context.Start, context.End, sourceForSelectList: false);
+        else if (context.ProcedurePosition)
+            result = BuildProcedureSuggestions(catalog, context.Prefix, context.Start, context.End);
+        else if (context.Qualifier is not null)
         {
-            var columns = BuildColumnSuggestions(catalog, sourceName, token.Prefix, token.Start, caret);
-            return MaybeSuppressExactMatch(
-                MergeKeywordSuggestions(columns, token.Prefix, token.Start, caret),
-                token.Prefix,
-                explicitTrigger);
+            var source = context.Sources.FirstOrDefault(source =>
+                context.Qualifier.Equals(source.Alias ?? source.Name, StringComparison.OrdinalIgnoreCase));
+            result = BuildColumnSuggestions(catalog, source?.Name ?? context.Qualifier,
+                context.Prefix, context.Start, context.End, context.Wildcard, context.Quoted);
         }
-
-        if (TryGetUpdateSetCompletions(sql, caret, token, out var updateSetResult))
-            return updateSetResult;
-
-        if (token.Prefix.Length == 0 && !explicitTrigger)
+        else if (context.SelectList)
+            result = BuildSelectListSuggestions(
+                BuildScopeColumnSuggestions(catalog, context),
+                BuildFunctionSuggestions(catalog, context.Prefix, context.Start, context.End),
+                context.Prefix, context.Start, context.End, context.Sources.Count == 0, catalog);
+        else if (context.ColumnPosition)
+            result = MergeKeywordSuggestions(BuildScopeColumnSuggestions(catalog, context),
+                context.Prefix, context.Start, context.End);
+        else if (context.Prefix.Length == 0 && !explicitTrigger)
             return SqlCompletionResult.Empty;
+        else
+            result = BuildKeywordSuggestions(context.Prefix, context.Start, context.End);
 
-        return MaybeSuppressExactMatch(
-            BuildKeywordSuggestions(token.Prefix, token.Start, caret),
-            token.Prefix,
-            explicitTrigger);
+        if (context.Quoted)
+            result = new SqlCompletionResult(result.Suggestions
+                .Where(s => s.Kind is SqlCompletionSuggestionKind.Column or SqlCompletionSuggestionKind.Source or SqlCompletionSuggestionKind.Procedure)
+                .Select(s => s.Kind == SqlCompletionSuggestionKind.Column ? s
+                    : s with { InsertText = SqlIdentifierRules.Quote(s.Label), CaretOffset = SqlIdentifierRules.Quote(s.Label).Length })
+                .ToArray());
+        return MaybeSuppressExactMatch(result, context.Prefix, explicitTrigger);
     }
+
+    private static SqlCompletionResult BuildScopeColumnSuggestions(SqlCompletionCatalog catalog, SqlCompletionContext context)
+    {
+        var columns = context.Sources.SelectMany(source => catalog.GetColumnsForSource(source.Name)
+            .Select(column => (Source: source, Column: column))).ToArray();
+        var ambiguous = columns.GroupBy(c => c.Column.Name, StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Count() > 1).Select(group => group.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var suggestions = new List<SqlCompletionSuggestion>();
+        if (context.Wildcard && context.Prefix.Length == 0 && columns.Length > 0)
+            suggestions.Add(new("*", "*", "all columns", SqlCompletionSuggestionKind.Column, context.Start, context.End, 1));
+        suggestions.AddRange(columns.Where(c => MatchesPrefix(c.Column.Name, context.Prefix))
+            .OrderBy(c => c.Column.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(c =>
+            {
+                string name = context.Quoted ? SqlIdentifierRules.Quote(c.Column.Name) : FormatIdentifier(c.Column.Name);
+                string label = c.Column.Name;
+                if (ambiguous.Contains(c.Column.Name))
+                {
+                    string qualifier = c.Source.Alias ?? c.Source.Name;
+                    name = FormatIdentifier(qualifier) + "." + name;
+                    label = qualifier + "." + label;
+                }
+                return new SqlCompletionSuggestion(label, name,
+                    c.Column.Type is null ? c.Column.SourceName : $"{c.Column.SourceName} - {c.Column.Type}",
+                    SqlCompletionSuggestionKind.Column, context.Start, context.End, name.Length);
+            }).Take(MaxSuggestions - suggestions.Count));
+        return new SqlCompletionResult(suggestions);
+    }
+
+    private static string FormatIdentifier(string name)
+        => name.Length > 0 && (char.IsLetter(name[0]) || name[0] == '_')
+            && name.All(c => char.IsLetterOrDigit(c) || c == '_')
+            && !Tokenizer.ReservedKeywords.Contains(name, StringComparer.OrdinalIgnoreCase)
+                ? name : SqlIdentifierRules.Quote(name);
 
     private static SqlCompletionResult MaybeSuppressExactMatch(
         SqlCompletionResult result,
@@ -239,88 +262,6 @@ public static partial class SqlCompletionProvider
             .Take(MaxSuggestions)
             .ToArray();
         return suggestions.Length == 0 ? SqlCompletionResult.Empty : new SqlCompletionResult(suggestions);
-    }
-
-    private static bool TryGetSelectListCompletions(
-        string sql,
-        int caret,
-        SqlCompletionToken token,
-        SqlCompletionCatalog catalog,
-        out SqlCompletionResult result)
-    {
-        result = SqlCompletionResult.Empty;
-
-        if (!TryGetStatementBounds(sql, caret, out int statementStart, out int statementEnd))
-            return false;
-
-        string statement = sql[statementStart..statementEnd];
-        int relativeCaret = caret - statementStart;
-        if (!TryFindSelectList(statement, relativeCaret, out int selectEnd))
-            return false;
-
-        string betweenSelectAndCaret = statement[selectEnd..relativeCaret];
-        if (ContainsWholeWord(betweenSelectAndCaret, "FROM"))
-            return false;
-
-        if (TryFindSourceAfterCaret(statement, relativeCaret, out string sourceAfterCaret))
-        {
-            result = BuildSelectListSuggestions(
-                BuildColumnSuggestions(catalog, sourceAfterCaret, token.Prefix, token.Start, caret),
-                BuildFunctionSuggestions(catalog, token.Prefix, token.Start, caret),
-                token.Prefix,
-                token.Start,
-                caret,
-                includeSources: false,
-                catalog);
-            return result.Suggestions.Count > 0;
-        }
-
-        result = BuildSelectListSuggestions(
-            SqlCompletionResult.Empty,
-            BuildFunctionSuggestions(catalog, token.Prefix, token.Start, caret),
-            token.Prefix,
-            token.Start,
-            caret,
-            includeSources: true,
-            catalog);
-        return result.Suggestions.Count > 0;
-    }
-
-    private static bool TryGetDotColumnCompletions(
-        string sql,
-        int caret,
-        SqlCompletionToken token,
-        SqlCompletionCatalog catalog,
-        out SqlCompletionResult result)
-    {
-        result = SqlCompletionResult.Empty;
-        int dotOffset = token.Prefix.LastIndexOf('.');
-        if (dotOffset >= 0)
-        {
-            string embeddedQualifier = token.Prefix[..dotOffset];
-            string embeddedPrefix = token.Prefix[(dotOffset + 1)..];
-            if (embeddedQualifier.Length == 0)
-                return false;
-
-            string embeddedSourceName = ResolveSourceQualifier(sql, caret, embeddedQualifier);
-            result = BuildColumnSuggestions(
-                catalog,
-                embeddedSourceName,
-                embeddedPrefix,
-                token.Start + dotOffset + 1,
-                caret);
-            return result.Suggestions.Count > 0;
-        }
-
-        if (token.Start <= 0 || sql[token.Start - 1] != '.')
-            return false;
-
-        if (!TryReadIdentifierBefore(sql, token.Start - 1, out string qualifier))
-            return false;
-
-        string sourceName = ResolveSourceQualifier(sql, caret, qualifier);
-        result = BuildColumnSuggestions(catalog, sourceName, token.Prefix, token.Start, caret);
-        return result.Suggestions.Count > 0;
     }
 
     private static SqlCompletionResult BuildKeywordSuggestions(
@@ -400,9 +341,12 @@ public static partial class SqlCompletionProvider
             .Take(MaxSuggestions)
             .Select(source =>
             {
+                string sourceSql = source.Kind == SqlCompletionSourceKind.SystemCatalog
+                    ? string.Join(".", source.Name.Split('.').Select(FormatIdentifier))
+                    : FormatIdentifier(source.Name);
                 string insertText = sourceForSelectList
-                    ? $"{Environment.NewLine}FROM {source.Name}"
-                    : source.Name;
+                    ? $"{Environment.NewLine}FROM {sourceSql}"
+                    : sourceSql;
                 int caretOffset = sourceForSelectList ? 0 : insertText.Length;
                 return new SqlCompletionSuggestion(
                     source.Name,
@@ -429,7 +373,8 @@ public static partial class SqlCompletionProvider
         string prefix,
         int replacementStart,
         int replacementEnd,
-        bool includeWildcard = true)
+        bool includeWildcard = true,
+        bool quote = false)
     {
         var columns = catalog.GetColumnsForSource(sourceName);
         if (columns.Count == 0)
@@ -454,12 +399,12 @@ public static partial class SqlCompletionProvider
             .Take(MaxSuggestions - suggestions.Count)
             .Select(column => new SqlCompletionSuggestion(
                 column.Name,
-                column.Name,
+                quote ? SqlIdentifierRules.Quote(column.Name) : FormatIdentifier(column.Name),
                 column.Type is null ? column.SourceName : $"{column.SourceName} - {column.Type}",
                 SqlCompletionSuggestionKind.Column,
                 replacementStart,
                 replacementEnd,
-                column.Name.Length)));
+                (quote ? SqlIdentifierRules.Quote(column.Name) : FormatIdentifier(column.Name)).Length)));
 
         return suggestions.Count == 0 ? SqlCompletionResult.Empty : new SqlCompletionResult(suggestions);
     }
@@ -553,283 +498,9 @@ public static partial class SqlCompletionProvider
         return $"host function - {type} - {arity}{description}";
     }
 
-    private static SqlCompletionToken ReadCurrentToken(string sql, int caret)
-    {
-        int start = caret;
-        while (start > 0 && IsIdentifierPart(sql[start - 1]))
-            start--;
-
-        return new SqlCompletionToken(start, caret, sql[start..caret]);
-    }
-
-    private static string? ReadPreviousToken(string sql, int beforeIndex)
-    {
-        int index = Math.Clamp(beforeIndex, 0, sql.Length);
-        while (index > 0 && char.IsWhiteSpace(sql[index - 1]))
-            index--;
-
-        while (index > 0 && !IsIdentifierPart(sql[index - 1]))
-            index--;
-
-        int end = index;
-        while (index > 0 && IsIdentifierPart(sql[index - 1]))
-            index--;
-
-        return end > index ? sql[index..end] : null;
-    }
-
-    private static bool TryFindSelectList(string statement, int relativeCaret, out int selectEnd)
-    {
-        selectEnd = -1;
-        foreach (Match match in SelectKeywordRegex().Matches(statement[..relativeCaret]))
-            selectEnd = match.Index + match.Length;
-
-        return selectEnd >= 0 && relativeCaret >= selectEnd;
-    }
-
-    private static bool TryFindSourceAfterCaret(string statement, int relativeCaret, out string sourceName)
-    {
-        sourceName = string.Empty;
-        var match = FromSourceRegex().Match(statement[relativeCaret..]);
-        if (!match.Success)
-            return false;
-
-        sourceName = match.Groups["source"].Value;
-        return true;
-    }
-
-    private static bool TryFindPrimarySource(string sql, int caret, out string sourceName)
-    {
-        sourceName = string.Empty;
-        if (!TryGetStatementBounds(sql, caret, out int statementStart, out int statementEnd))
-            return false;
-
-        string statement = sql[statementStart..statementEnd];
-
-        var match = UpdateSourceRegex().Match(statement);
-        if (!match.Success)
-            match = FromSourceRegex().Match(statement);
-
-        if (!match.Success)
-            return false;
-
-        sourceName = match.Groups["source"].Value;
-        return true;
-    }
-
-    private static bool TryGetInsertCompletions(
-        string sql,
-        int caret,
-        SqlCompletionToken token,
-        SqlCompletionCatalog catalog,
-        out SqlCompletionResult result)
-    {
-        result = SqlCompletionResult.Empty;
-        if (!TryGetStatementBounds(sql, caret, out int statementStart, out _))
-            return false;
-
-        string beforeCaret = sql[statementStart..caret];
-        if (TryGetInsertColumnCompletions(beforeCaret, token, catalog, out result))
-            return true;
-
-        return TryGetInsertValuesCompletions(beforeCaret, token, out result);
-    }
-
-    private static bool TryGetInsertColumnCompletions(
-        string beforeCaret,
-        SqlCompletionToken token,
-        SqlCompletionCatalog catalog,
-        out SqlCompletionResult result)
-    {
-        result = SqlCompletionResult.Empty;
-        var match = InsertColumnListOpenRegex().Match(beforeCaret);
-        if (!match.Success)
-            return false;
-
-        string sourceName = match.Groups["source"].Value;
-        result = BuildColumnSuggestions(
-            catalog,
-            sourceName,
-            token.Prefix,
-            token.Start,
-            token.End,
-            includeWildcard: false);
-
-        return result.Suggestions.Count > 0;
-    }
-
-    private static bool TryGetInsertValuesCompletions(
-        string beforeCaret,
-        SqlCompletionToken token,
-        out SqlCompletionResult result)
-    {
-        result = SqlCompletionResult.Empty;
-        var match = InsertColumnListClosedRegex().Match(beforeCaret);
-        if (!match.Success || !MatchesPrefix("VALUES", token.Prefix))
-            return false;
-
-        result = new SqlCompletionResult(
-        [
-            new SqlCompletionSuggestion(
-                "VALUES",
-                "VALUES ",
-                "provide row values",
-                SqlCompletionSuggestionKind.Keyword,
-                token.Start,
-                token.End,
-                7)
-        ]);
-
-        return true;
-    }
-
-    private static bool TryGetUpdateSetCompletions(
-        string sql,
-        int caret,
-        SqlCompletionToken token,
-        out SqlCompletionResult result)
-    {
-        result = SqlCompletionResult.Empty;
-        if (!TryGetStatementBounds(sql, caret, out int statementStart, out _))
-            return false;
-
-        string beforeCaret = sql[statementStart..caret];
-        var match = UpdateSourceRegex().Match(beforeCaret);
-        if (!match.Success)
-            return false;
-
-        string trailingText = beforeCaret[match.Length..];
-        if (ContainsWholeWord(trailingText, "SET"))
-            return false;
-
-        string trimmedTrailingText = trailingText.Trim();
-        if (trimmedTrailingText.Length > 0
-            && (!trimmedTrailingText.Equals(token.Prefix, StringComparison.Ordinal)
-                || !MatchesPrefix("SET", token.Prefix)))
-        {
-            return false;
-        }
-
-        result = new SqlCompletionResult(
-        [
-            new SqlCompletionSuggestion(
-                "SET",
-                "SET ",
-                "assign columns",
-                SqlCompletionSuggestionKind.Keyword,
-                token.Start,
-                caret,
-                4)
-        ]);
-
-        return true;
-    }
-
-    private static string ResolveSourceQualifier(string sql, int caret, string qualifier)
-    {
-        if (!TryGetStatementBounds(sql, caret, out int statementStart, out int statementEnd))
-            return qualifier;
-
-        foreach (Match match in SourceWithAliasRegex().Matches(sql[statementStart..statementEnd]))
-        {
-            string source = match.Groups["source"].Value;
-            string alias = match.Groups["alias"].Success ? match.Groups["alias"].Value : string.Empty;
-            if (source.Equals(qualifier, StringComparison.OrdinalIgnoreCase)
-                || alias.Equals(qualifier, StringComparison.OrdinalIgnoreCase))
-            {
-                return source;
-            }
-        }
-
-        return qualifier;
-    }
-
-    private static bool TryGetStatementBounds(string sql, int caret, out int start, out int end)
-    {
-        start = sql.LastIndexOf(';', Math.Max(0, caret - 1)) + 1;
-        int nextSemicolon = sql.IndexOf(';', caret);
-        end = nextSemicolon < 0 ? sql.Length : nextSemicolon;
-        return start >= 0 && end >= start;
-    }
-
-    private static bool TryReadIdentifierBefore(string sql, int beforeDotIndex, out string identifier)
-    {
-        identifier = string.Empty;
-        int end = beforeDotIndex;
-        while (end > 0 && char.IsWhiteSpace(sql[end - 1]))
-            end--;
-
-        int start = end;
-        while (start > 0 && IsIdentifierPart(sql[start - 1]))
-            start--;
-
-        if (end <= start)
-            return false;
-
-        identifier = sql[start..end];
-        return true;
-    }
-
-    private static bool IsSourceContext(string? previousToken)
-        => previousToken is not null
-            && (previousToken.Equals("FROM", StringComparison.OrdinalIgnoreCase)
-                || previousToken.Equals("JOIN", StringComparison.OrdinalIgnoreCase)
-                || previousToken.Equals("UPDATE", StringComparison.OrdinalIgnoreCase)
-                || previousToken.Equals("INTO", StringComparison.OrdinalIgnoreCase));
-
-    private static bool IsExecContext(string? previousToken)
-        => previousToken is not null
-            && (previousToken.Equals("EXEC", StringComparison.OrdinalIgnoreCase)
-                || previousToken.Equals("EXECUTE", StringComparison.OrdinalIgnoreCase));
-
-    private static bool ContainsWholeWord(string text, string word)
-        => Regex.IsMatch(text, $@"\b{Regex.Escape(word)}\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-
     private static bool MatchesPrefix(string value, string prefix)
         => prefix.Length == 0 || value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
 
-    private static bool IsIdentifierPart(char value)
-        => char.IsLetterOrDigit(value) || value == '_' || value == '.';
-
-    private static bool IsInsideSingleQuotedString(string sql, int caret)
-    {
-        bool inString = false;
-        for (int i = 0; i < caret; i++)
-        {
-            if (sql[i] != '\'')
-                continue;
-
-            if (inString && i + 1 < caret && sql[i + 1] == '\'')
-            {
-                i++;
-                continue;
-            }
-
-            inString = !inString;
-        }
-
-        return inString;
-    }
-
-    [GeneratedRegex(@"\bSELECT\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex SelectKeywordRegex();
-
-    [GeneratedRegex(@"\bFROM\s+(?<source>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex FromSourceRegex();
-
-    [GeneratedRegex(@"^\s*INSERT\s+INTO\s+(?<source>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\s*\((?<columns>[^)]*)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex InsertColumnListOpenRegex();
-
-    [GeneratedRegex(@"^\s*INSERT\s+INTO\s+(?<source>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\s*\((?<columns>[^)]*)\)\s*(?<keyword>[A-Za-z_]*)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex InsertColumnListClosedRegex();
-
-    [GeneratedRegex(@"^\s*UPDATE\s+(?<source>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex UpdateSourceRegex();
-
-    [GeneratedRegex(@"\b(?:FROM|JOIN)\s+(?<source>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)(?:\s+(?:AS\s+)?(?<alias>[A-Za-z_][A-Za-z0-9_]*))?", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex SourceWithAliasRegex();
-
     private sealed record SqlCompletionKeyword(string Label, string InsertText, string Detail);
 
-    private sealed record SqlCompletionToken(int Start, int End, string Prefix);
 }

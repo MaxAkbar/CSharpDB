@@ -812,20 +812,7 @@
                 tableNamesTask.Result,
                 viewNamesTask.Result);
 
-            var columnsBySource = new Dictionary<string, IReadOnlyList<SqlCompletionColumn>>(StringComparer.OrdinalIgnoreCase);
-            foreach (SqlCompletionSource source in sources)
-            {
-                if (source.Kind != SqlCompletionSourceKind.Table)
-                    continue;
-
-                var schema = await ActiveClient.GetTableSchemaAsync(source.Name);
-                if (schema is null)
-                    continue;
-
-                columnsBySource[source.Name] = schema.Columns
-                    .Select(column => new SqlCompletionColumn(column.Name, column.EffectiveType.ToSql(), source.Name))
-                    .ToArray();
-            }
+            var columnsBySource = await SqlCompletionCatalogLoader.LoadColumnsAsync(ActiveClient, sources);
 
             _completionCatalog = new SqlCompletionCatalog
             {
