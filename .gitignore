@@ -107,3 +107,12 @@ Desktop.ini
 ## Node.js
 node_modules/
 dist/
+## Internal working notes live outside the source repository
+/docs/storage-performance/
+/docs/storage-performance-*.md
+/docs/csharpdb-admin-plugin-architecture-plan.md
+/docs/security-access-control-plan.md
+/docs/sharding-outstanding-work.md
+/docs/releases/*-pr-notes.md
+/docs/releases/*-validation.md
+/scripts/Verify-StoragePerformanceEvidence.py
