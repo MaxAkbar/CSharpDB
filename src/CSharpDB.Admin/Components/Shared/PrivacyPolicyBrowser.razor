@@ -1,0 +1,109 @@
+@using CSharpDB.DataPrivacy
+
+<section class="policy-browser" aria-labelledby="@_headingId">
+    <h3 id="@_headingId">Saved privacy rules</h3>
+    <p>Each row is a reusable policy. Its conditions select all matching records; you do not need a rule for each customer.</p>
+    <div class="policy-filters">
+        <label class="policy-search">Search rules
+            <input type="search" placeholder="Name, table, field, condition or operation…" @bind="_search" @bind:event="oninput" @bind:after="Filter" />
+        </label>
+        <label>Filter by table
+            <select @bind="_table" @bind:after="Filter"><option value="">All tables</option>
+                @foreach (var table in _tables) { <option>@table</option> }
+            </select>
+        </label>
+        <button type="button" class="toolbar-btn" @onclick="Clear" disabled="@(_search.Length == 0 && _table.Length == 0)">Clear filters</button>
+    </div>
+    <div class="policy-table-scroll">
+        <table class="schema-table policy-list" aria-label="Saved privacy rules">
+            <thead><tr><th scope="col">Policy name</th><th scope="col">Main table</th><th scope="col">Fields &amp; actions</th><th scope="col">Eligibility</th><th scope="col">Revision</th><th scope="col">Action</th></tr></thead>
+            <tbody>
+            @foreach (var entry in _filtered.Skip(_page * PageSize).Take(PageSize))
+            {
+                <tr @key="entry.Policy.Id" class="@(entry.Policy.Id.ToString() == SelectedId ? "selected-policy" : "")">
+                    <td><strong>@entry.Policy.Name</strong>@if (entry.Policy.Id.ToString() == SelectedId) { <small>Open in editor</small> }</td>
+                    <td>@entry.Policy.RootTable</td>
+                    <td><span class="policy-summary" title="@entry.Actions">@entry.Actions</span></td>
+                    <td><span class="policy-summary" title="@entry.Conditions">@entry.Conditions</span></td>
+                    <td>@entry.Policy.Revision</td>
+                    <td><button type="button" class="toolbar-btn" disabled="@Busy" aria-label="@($"Open policy {entry.Policy.Name}")" @onclick="() => Selected.InvokeAsync(entry.Policy)">Open / edit</button></td>
+                </tr>
+            }
+            @if (_filtered.Count == 0)
+            { <tr><td colspan="6">@(Policies.Count == 0 ? "No saved rules yet. Create a policy below, or import one." : "No rules match your search. Try another term or clear the filters.")</td></tr> }
+            </tbody>
+        </table>
+    </div>
+    <div class="policy-pagination">
+        <span role="status">@(_filtered.Count == 0 ? "0" : $"{_page * PageSize + 1:N0}–{Math.Min((_page + 1) * PageSize, _filtered.Count):N0}") of @_filtered.Count.ToString("N0") matching policies · @Policies.Count.ToString("N0") saved</span>
+        <button type="button" class="toolbar-btn" disabled="@(_page == 0)" @onclick="() => _page--">Previous rules</button>
+        <button type="button" class="toolbar-btn" disabled="@((_page + 1) * PageSize >= _filtered.Count)" @onclick="() => _page++">Next rules</button>
+    </div>
+</section>
+
+@code {
+    [Parameter] public IReadOnlyList<PrivacyPolicy> Policies { get; set; } = [];
+    [Parameter] public string SelectedId { get; set; } = "";
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public EventCallback<PrivacyPolicy> Selected { get; set; }
+    private const int PageSize = 20;
+    private readonly string _headingId = "privacy-rules-" + Guid.NewGuid().ToString("N");
+    private IReadOnlyList<PrivacyPolicy>? _source;
+    private List<Entry> _entries = [], _filtered = [];
+    private string[] _tables = [];
+    private string _search = "", _table = "";
+    private int _page;
+
+    protected override void OnParametersSet()
+    {
+        if (ReferenceEquals(_source, Policies)) return;
+        _source = Policies;
+        _entries = Policies.OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase).ThenBy(p => p.Id).Select(p =>
+        {
+            string actions = string.Join("; ", p.Targets.SelectMany(t => t.Columns.Select(c => $"{t.Table}.{c.Column}: {MaskLabel(c.Kind)}")));
+            string conditions = Describe(p.Eligibility, p);
+            string[] tables = p.Targets.Select(t => t.Table).Concat(p.Relationships.SelectMany(r => new[] { r.SourceTable, r.TargetTable })).Append(p.RootTable).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            return new Entry(p, actions.Length == 0 ? "No fields configured" : actions, conditions, tables,
+                string.Join(" ", new[] { p.Name, actions, conditions, string.Join(" ", tables) }));
+        }).ToList();
+        _tables = _entries.SelectMany(e => e.Tables).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToArray();
+        if (!_tables.Contains(_table, StringComparer.OrdinalIgnoreCase)) _table = "";
+        Filter();
+    }
+    private void Filter()
+    {
+        var terms = _search.Split((char[]?)null, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        _filtered = _entries.Where(e => (_table.Length == 0 || e.Tables.Contains(_table, StringComparer.OrdinalIgnoreCase))
+            && terms.All(term => e.SearchText.Contains(term, StringComparison.OrdinalIgnoreCase))).ToList();
+        _page = 0;
+    }
+    private void Clear() { _search = ""; _table = ""; Filter(); }
+    private static string MaskLabel(PrivacyMaskKind kind) => kind switch
+    {
+        PrivacyMaskKind.Erase => "Erase (NULL)", PrivacyMaskKind.Constant => "Replace with constant",
+        PrivacyMaskKind.Anonymous => "Anonymous placeholder", PrivacyMaskKind.Partial => "Partial mask", PrivacyMaskKind.Email => "Email mask", _ => kind.ToString()
+    };
+    private static string Describe(PrivacyCondition c, PrivacyPolicy policy)
+    {
+        string Children(string separator) => string.Join(separator, c.Children.Select(child => Describe(child, policy)));
+        string Related() => policy.Relationships.FirstOrDefault(r => r.Id == c.RelationshipId)?.TargetTable ?? "unmapped related table";
+        return c.Kind switch
+        {
+            PrivacyConditionKind.All or PrivacyConditionKind.Any => c.Children.Count == 0 ? "No conditions configured"
+                : c.Children.Count == 1 ? Describe(c.Children[0], policy) : "(" + Children(c.Kind == PrivacyConditionKind.All ? " AND " : " OR ") + ")",
+            PrivacyConditionKind.OlderThan => $"{c.Column} older than {c.Days} days",
+            PrivacyConditionKind.WithinLast => $"{c.Column} within last {c.Days} days",
+            PrivacyConditionKind.IsNull => $"{c.Column} IS NULL",
+            PrivacyConditionKind.IsNotNull => $"{c.Column} IS NOT NULL",
+            PrivacyConditionKind.Exists or PrivacyConditionKind.NotExists => $"{(c.Kind == PrivacyConditionKind.Exists ? "Has" : "Has no")} {Related()} records" + (c.Children.Count == 0 ? "" : " matching (" + Children(" AND ") + ")"),
+            PrivacyConditionKind.Compare => $"{c.Column} {CompareLabel(c.Comparison)} {c.Value}",
+            _ => "Unknown condition"
+        };
+    }
+    private static string CompareLabel(PrivacyComparison comparison) => comparison switch
+    {
+        PrivacyComparison.Equal => "=", PrivacyComparison.NotEqual => "≠", PrivacyComparison.Less => "<",
+        PrivacyComparison.LessOrEqual => "≤", PrivacyComparison.Greater => ">", PrivacyComparison.GreaterOrEqual => "≥", _ => comparison.ToString()
+    };
+    private sealed record Entry(PrivacyPolicy Policy, string Actions, string Conditions, string[] Tables, string SearchText);
+}

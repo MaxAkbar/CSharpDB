@@ -2848,6 +2848,20 @@ public sealed class Database : IAsyncDisposable
     /// </summary>
     public IReadOnlyCollection<TriggerSchema> GetTriggers() => _catalog.GetTriggers();
 
+    /// <summary>Whether table CHECK expressions can invoke registered host callbacks during an update.</summary>
+    public bool HasUpdateHostCallbacks(string tableName)
+    {
+        var schema = GetTableSchema(tableName);
+        if (schema is null) return true;
+        foreach (var check in schema.CheckConstraints)
+        {
+            var tokens = new Tokenizer(check.ExpressionSql).Tokenize();
+            for (int i = 0; i + 1 < tokens.Count; i++)
+                if (tokens[i + 1].Type == TokenType.LeftParen && _functions.ContainsScalarName(tokens[i].Value)) return true;
+        }
+        return false;
+    }
+
     /// <summary>
     /// Monotonic in-process token that advances on schema mutations (DDL).
     /// Useful for cache invalidation.

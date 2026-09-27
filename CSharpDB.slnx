@@ -48,6 +48,7 @@
     <Project Path="src/CSharpDB.Engine/CSharpDB.Engine.csproj" />
     <Project Path="src/CSharpDB.Generators/CSharpDB.Generators.csproj" />
     <Project Path="src/CSharpDB.DataGeneration/CSharpDB.DataGeneration.csproj" />
+    <Project Path="src/CSharpDB.DataPrivacy/CSharpDB.DataPrivacy.csproj" />
     <Project Path="src/CSharpDB.Execution/CSharpDB.Execution.csproj" />
     <Project Path="src/CSharpDB.ImportExport/CSharpDB.ImportExport.csproj" />
     <Project Path="src/CSharpDB.Migration/CSharpDB.Migration.csproj" />
@@ -91,6 +92,7 @@
     <Project Path="tests/CSharpDB.EntityFrameworkCore.Tools.Fixtures/CSharpDB.EntityFrameworkCore.Tools.Fixtures.csproj" />
     <Project Path="tests/CSharpDB.EntityFrameworkCore.Tools.Tests/CSharpDB.EntityFrameworkCore.Tools.Tests.csproj" />
     <Project Path="tests/CSharpDB.Cli.Tests/CSharpDB.Cli.Tests.csproj" />
+    <Project Path="tests/CSharpDB.DataPrivacy.Tests/CSharpDB.DataPrivacy.Tests.csproj" />
     <Project Path="tests/CSharpDB.DevOps.Tests/CSharpDB.DevOps.Tests.csproj" />
     <Project Path="tests/CSharpDB.Migration.CrashHarness/CSharpDB.Migration.CrashHarness.csproj" />
     <Project Path="tests/CSharpDB.Migration.Tests/CSharpDB.Migration.Tests.csproj" />

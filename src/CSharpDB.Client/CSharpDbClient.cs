@@ -15,6 +15,7 @@ public sealed class CSharpDbClient :
     IClientObservabilitySettingsProvider,
     ICSharpDbTableArchiveProgressExporter,
     ICSharpDbTransactionalSnapshotReader,
+    ICSharpDbExclusiveSessionProvider,
     ICSharpDbTransactionalSchemaIdentityWriter
 {
     private readonly ICSharpDbClient _inner;
@@ -65,6 +66,11 @@ public sealed class CSharpDbClient :
         => _inner is ICSharpDbTableArchiveExporter exporter && exporter.SupportsTableArchiveExport;
     public bool SupportsTransactionalSnapshotReads
         => _inner is ICSharpDbTransactionalSnapshotReader reader && reader.SupportsTransactionalSnapshotReads;
+    public bool SupportsExclusiveSessions => _inner is ICSharpDbExclusiveSessionProvider { SupportsExclusiveSessions: true };
+    public ValueTask<CSharpDbExclusiveSession> OpenExclusiveSessionAsync(CancellationToken ct = default)
+        => _inner is ICSharpDbExclusiveSessionProvider provider && provider.SupportsExclusiveSessions
+            ? provider.OpenExclusiveSessionAsync(ct)
+            : throw new NotSupportedException("This connection does not support exclusive file sessions.");
     public bool SupportsTransactionalSchemaIdentityWrites
         => _inner is ICSharpDbTransactionalSchemaIdentityWriter writer &&
            writer.SupportsTransactionalSchemaIdentityWrites;

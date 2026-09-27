@@ -81,6 +81,8 @@ builder.Services.AddScoped<ToastService>();
 builder.Services.AddScoped<ModalService>();
 builder.Services.AddScoped<DatabaseChangeService>();
 builder.Services.AddScoped<DataHygieneAdminService>();
+builder.Services.AddScoped<PrivacyAdminService>();
+builder.Services.AddSingleton(sp => sp.GetRequiredService<IConfiguration>().GetSection("DataPrivacy").Get<CSharpDB.DataPrivacy.PrivacyLimits>() ?? new());
 builder.Services.AddSingleton(sp =>
 {
     var limits = sp.GetRequiredService<IConfiguration>().GetSection("TestDataGeneration").Get<CSharpDB.DataGeneration.GenerationLimits>() ?? new();

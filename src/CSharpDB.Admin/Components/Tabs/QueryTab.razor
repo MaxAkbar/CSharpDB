@@ -443,6 +443,8 @@
     private DotNetObjectReference<QueryTab>? _dotNetRef;
     private readonly List<QueryHistoryItem> _queryHistory = [];
     private CancellationTokenSource? _queryCts;
+    private CancellationTokenSource? _completionCts;
+    private bool _disposed;
 
     private sealed record QueryHistoryItem(string Title, string Summary, string ElapsedText, string Sql);
 
@@ -794,51 +796,65 @@
     private async void OnDatabaseObjectsChanged()
     {
         await RefreshCompletionCatalogAsync();
-        await InvokeAsync(StateHasChanged);
+        if (!_disposed) await InvokeAsync(StateHasChanged);
     }
 
     private async Task RefreshCompletionCatalogAsync()
     {
+        if (_disposed) return;
+        _completionCts?.Cancel();
+        using var cancellation = new CancellationTokenSource();
+        _completionCts = cancellation;
+        var client = ActiveClient;
         try
         {
-            var tableNamesTask = ActiveClient.GetTableNamesAsync();
-            var viewNamesTask = ActiveClient.GetViewNamesAsync();
-            var proceduresTask = ActiveClient.GetProceduresAsync(includeDisabled: false);
             IReadOnlyList<DbHostCallbackDescriptor> callbacks = CallbackCatalog.GetCallbacks();
-
-            await Task.WhenAll(tableNamesTask, viewNamesTask, proceduresTask);
-
-            IReadOnlyList<SqlCompletionSource> sources = BuildCompletionSources(
-                tableNamesTask.Result,
-                viewNamesTask.Result);
-
-            var columnsBySource = await SqlCompletionCatalogLoader.LoadColumnsAsync(ActiveClient, sources);
-
-            _completionCatalog = new SqlCompletionCatalog
+            // View shape reads can open expensive query operators even with LIMIT 0.
+            // Keep them off the renderer and cancel them when this tab is closed.
+            var catalog = await Task.Run(async () =>
             {
-                Sources = sources,
-                ColumnsBySource = columnsBySource,
-                Procedures = proceduresTask.Result
-                    .Select(procedure => procedure.Name)
-                    .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
-                    .ToArray(),
-                Functions = callbacks
-                    .Where(callback => callback.Kind == AutomationCallbackKind.ScalarFunction
-                        && callback.CanRunWithoutFrom)
-                    .Select(callback => new SqlCompletionFunction(
-                        callback.Name,
-                        callback.Arity,
-                        callback.ReturnType?.ToString().ToUpperInvariant(),
-                        callback.Description,
-                        callback.CanRunWithoutFrom))
-                    .OrderBy(function => function.Name, StringComparer.OrdinalIgnoreCase)
-                    .ToArray(),
-            };
+                var ct = cancellation.Token;
+                var tableNamesTask = client.GetTableNamesAsync(ct);
+                var viewNamesTask = client.GetViewNamesAsync(ct);
+                var proceduresTask = client.GetProceduresAsync(includeDisabled: false, ct: ct);
+
+                await Task.WhenAll(tableNamesTask, viewNamesTask, proceduresTask);
+
+                IReadOnlyList<SqlCompletionSource> sources = BuildCompletionSources(
+                    tableNamesTask.Result,
+                    viewNamesTask.Result);
+
+                var columnsBySource = await SqlCompletionCatalogLoader.LoadColumnsAsync(client, sources, ct);
+
+                return new SqlCompletionCatalog
+                {
+                    Sources = sources,
+                    ColumnsBySource = columnsBySource,
+                    Procedures = proceduresTask.Result
+                        .Select(procedure => procedure.Name)
+                        .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+                        .ToArray(),
+                    Functions = callbacks
+                        .Where(callback => callback.Kind == AutomationCallbackKind.ScalarFunction
+                            && callback.CanRunWithoutFrom)
+                        .Select(callback => new SqlCompletionFunction(
+                            callback.Name,
+                            callback.Arity,
+                            callback.ReturnType?.ToString().ToUpperInvariant(),
+                            callback.Description,
+                            callback.CanRunWithoutFrom))
+                        .OrderBy(function => function.Name, StringComparer.OrdinalIgnoreCase)
+                        .ToArray(),
+                };
+            }, cancellation.Token);
+            if (!_disposed && !cancellation.IsCancellationRequested) _completionCatalog = catalog;
         }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
         catch
         {
-            _completionCatalog = SqlCompletionCatalog.Empty;
+            if (!_disposed && !cancellation.IsCancellationRequested) _completionCatalog = SqlCompletionCatalog.Empty;
         }
+        finally { if (ReferenceEquals(_completionCts, cancellation)) _completionCts = null; }
     }
 
     internal static IReadOnlyList<SqlCompletionSource> BuildCompletionSources(
@@ -1480,6 +1496,8 @@
 
     public async ValueTask DisposeAsync()
     {
+        _disposed = true;
+        _completionCts?.Cancel();
         Changes.Changed -= OnDatabaseObjectsChanged;
         _queryCts?.Cancel();
         _queryCts?.Dispose();

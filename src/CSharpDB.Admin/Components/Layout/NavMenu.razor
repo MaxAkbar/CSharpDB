@@ -1556,6 +1556,7 @@
             new() { Label = "Find Duplicates", Icon = "bi-intersect", OnClick = () => OpenDataHygiene(tableName, DataHygieneMode.Duplicates) },
             new() { Label = "Validate Table", Icon = "bi-shield-check", OnClick = () => OpenDataHygiene(tableName, DataHygieneMode.Validation) },
             new() { Label = "Find Orphans", Icon = "bi-link-45deg", OnClick = () => OpenDataHygiene(tableName, DataHygieneMode.Orphans) },
+            new() { Label = "Privacy & Retention...", Icon = "bi-person-lock", OnClick = () => OpenDataHygiene(tableName, DataHygieneMode.Privacy) },
             ContextMenuItem.Separator(),
             new() { Label = "Select Top 50", Icon = "bi-terminal", OnClick = () => TabManager.OpenQueryTab($"SELECT * FROM {tableName} LIMIT 50;") },
             new() { Label = "Select Count", Icon = "bi-123", OnClick = () => TabManager.OpenQueryTab($"SELECT COUNT(*) AS row_count FROM {tableName};") },

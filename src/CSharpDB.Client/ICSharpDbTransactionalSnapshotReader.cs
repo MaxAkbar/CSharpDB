@@ -37,6 +37,8 @@ public interface ICSharpDbTransactionalSnapshotReader
 /// </summary>
 public sealed record TransactionTableSnapshot
 {
+    /// <summary>Whether CHECK expressions can invoke host callbacks during UPDATE. Null means unverified; SQL triggers are reported separately.</summary>
+    public bool? HasUpdateHostCallbacks { get; init; }
     public required TableSchema Schema { get; init; }
     public IReadOnlyList<IndexSchema> Indexes { get; init; } = Array.Empty<IndexSchema>();
     /// <summary>Triggers captured from the same transaction as the schema.</summary>

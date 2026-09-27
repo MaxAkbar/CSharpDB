@@ -151,6 +151,7 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbDefinitionC
         => _inner is ICSharpDbTableArchiveExporter exporter && exporter.SupportsTableArchiveExport;
     public bool SupportsTransactionalSnapshotReads
         => _inner is ICSharpDbTransactionalSnapshotReader reader && reader.SupportsTransactionalSnapshotReads;
+    public bool SupportsExclusiveSessions => _inner is ICSharpDbExclusiveSessionProvider { SupportsExclusiveSessions: true };
 
     public ICSharpDbClient CreateRouteBoundClient(CSharpDbRouteContext routeContext)
     {

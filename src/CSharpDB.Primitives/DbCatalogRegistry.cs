@@ -64,6 +64,8 @@ public static class DbInternalTableRegistry
             HideFromClientMetadata: true, HideFromSystemCatalog: true),
         new("__documentation_annotations", DbInternalTableMatchKind.Exact, "Database Documenter",
             HideFromClientMetadata: true, HideFromSystemCatalog: true),
+        new("__privacy_policies", DbInternalTableMatchKind.Exact, "Privacy & Retention"),
+        new("__privacy_runs", DbInternalTableMatchKind.Exact, "Privacy & Retention"),
         new("__validation_rules", DbInternalTableMatchKind.Exact, "Data Hygiene", "sys.validation_rules",
             HideFromClientMetadata: false, HideFromSystemCatalog: true),
 
