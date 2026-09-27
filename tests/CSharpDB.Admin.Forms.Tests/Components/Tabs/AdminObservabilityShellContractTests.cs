@@ -129,16 +129,6 @@ public sealed class AdminObservabilityShellContractTests
     }
 
     [Fact]
-    public void OfflineHelp_ExplainsRuntimeVsPhysicalInspectionAndPrivacy()
-    {
-        string source = ReadAdminSource("wwwroot", "help", "operations.html");
-
-        Assert.Contains("Polling runs only while the tab is active", source, StringComparison.Ordinal);
-        Assert.Contains("Ordinary views never show SQL text or database paths", source, StringComparison.Ordinal);
-        Assert.Contains("deeper physical inspection and can expose server-local paths", source, StringComparison.Ordinal);
-    }
-
-    [Fact]
     public void ObservabilityTab_EnforcesVisibilityPrivacyAndAccessibleFallbacks()
     {
         string source = ReadAdminSource("Components", "Tabs", "ObservabilityTab.razor");

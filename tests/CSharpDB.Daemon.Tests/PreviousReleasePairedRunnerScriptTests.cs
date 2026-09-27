@@ -1008,8 +1008,8 @@ public sealed class PreviousReleasePairedRunnerScriptTests
             };
             string evidence = Path.Combine(temporaryRoot, "exact-master-durable-evidence");
             // This exact suite intentionally cold-starts PowerShell for 122 run invocations
-            // plus setup commands; hosted macOS can legitimately exceed the shared budget.
-            TimeSpan processTimeout = TimeSpan.FromMinutes(5);
+            // plus setup commands; slower hosts can need more than five minutes.
+            TimeSpan processTimeout = TimeSpan.FromMinutes(10);
 
             ProcessResult result = await RunProcessWithEnvironmentAsync(
                 "pwsh",

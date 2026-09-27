@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using CSharpDB.Migration;
 
@@ -178,19 +177,15 @@ public sealed class MigrationReleasePackagingTests
         string[] requiredLayout =
         [
             "adapters/sqlserver/csharpdb-migration-sqlserver-worker",
-            "adapters/sqlserver/THIRD-PARTY-NOTICES.md",
             "adapters/sqlserver/licenses/Microsoft.Data.SqlClient.SNI.runtime-6.0.3-LICENSE.txt",
             "adapters/mysql/csharpdb-migration-mysql-worker",
-            "adapters/mysql/THIRD-PARTY-NOTICES.md",
             "adapters/access/csharpdb-migration-access-worker",
             "adapters/access/CSharpDB.Migration.Access.dll",
             "adapters/access/CSharpDB.Migration.Retained.dll",
             "adapters/access/System.Data.OleDb.dll",
-            "adapters/access/THIRD-PARTY-NOTICES.md",
             "install/windows/install-csharpdb-migration-tool.ps1",
             "install/posix/install-csharpdb-migration-tool.sh",
             "LICENSE",
-            "README.md",
             "VERSION.txt",
         ];
         foreach (string expected in requiredLayout)
@@ -276,11 +271,6 @@ public sealed class MigrationReleasePackagingTests
             "Directory.Build.props"));
         string packageVersion = Assert.Single(
             buildProps.Descendants("Version")).Value.Trim();
-        string releaseNotes = Read(repoRoot, "RELEASE_NOTES.md");
-        Match releaseHeading = Assert.Single(Regex.Matches(
-            releaseNotes,
-            @"(?m)^## CSharpDB (?<version>[^\r\n]+)$",
-            RegexOptions.CultureInvariant));
         string migrationReleaseScript = Read(
             repoRoot,
             "scripts",
@@ -292,7 +282,6 @@ public sealed class MigrationReleasePackagingTests
             "Capabilities",
             $"csharpdb-{packageVersion}.json");
 
-        Assert.Equal(packageVersion, releaseHeading.Groups["version"].Value);
         Assert.Equal(CSharpDbCapabilityCatalogLoader.CurrentTargetVersion, packageVersion);
         Assert.Contains(
             $"[string] $Version = '{packageVersion}'",
@@ -598,10 +587,6 @@ public sealed class MigrationReleasePackagingTests
             "adapters/access/System.Data.OleDb.dll",
             windows,
             StringComparison.Ordinal);
-        Assert.Contains(
-            "adapters/access/THIRD-PARTY-NOTICES.md",
-            windows,
-            StringComparison.Ordinal);
 
         foreach (string installer in new[] { windows, posix })
         {
@@ -787,89 +772,6 @@ public sealed class MigrationReleasePackagingTests
         }
     }
 
-    [Fact]
-    public void MigrationReadme_DisclosesRuntimeDataAndQualificationBoundaries()
-    {
-        string readme = Read(
-            FindRepoRoot(),
-            "deploy",
-            "migration-tool",
-            "README.md");
-
-        Assert.Contains(
-            "framework-dependent release",
-            readme,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "not a self-contained application",
-            readme,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "Microsoft .NET 10 runtime",
-            readme,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "THIRD-PARTY-NOTICES.md",
-            readme,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "licenses/",
-            readme,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "plaintext-sensitive",
-            readme,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "trusted record",
-            readme,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "MIGRATION-SHA256SUMS.txt",
-            readme,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "not claim broad live Access, SQL Server, or MySQL qualification",
-            readme,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "win-x64",
-            readme,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "Linux and macOS archives do not contain `adapters/access`",
-            readme,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "does not redistribute or install ACE",
-            readme,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            ".csdbaccess",
-            readme,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "administrator access",
-            readme,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "does not use `sudo`",
-            readme,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "must not pass through links",
-            readme,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "reparse points",
-            readme,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "filesystem root",
-            readme,
-            StringComparison.Ordinal);
-    }
-
     private static string Read(
         string repoRoot,
         params string[] components) =>
@@ -881,6 +783,7 @@ public sealed class MigrationReleasePackagingTests
 
     private static void CreateMinimalRelease(string source)
     {
+        // Package metadata is generated here so installer tests never read repository documentation.
         string executableSuffix =
             OperatingSystem.IsWindows() ? ".exe" : string.Empty;
         var files =

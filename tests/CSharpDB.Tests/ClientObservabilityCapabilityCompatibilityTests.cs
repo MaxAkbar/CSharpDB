@@ -4,6 +4,7 @@ using System.Text;
 using CSharpDB.Client;
 using CSharpDB.Engine;
 using CSharpDB.Observability;
+using CSharpDB.Storage.Diagnostics;
 
 namespace CSharpDB.Tests;
 
@@ -55,19 +56,36 @@ public sealed class ClientObservabilityCapabilityCompatibilityTests
                 nameof(ICSharpDbObservabilityClient.GetRecentMaintenanceOperationsAsync) or
                 nameof(ICSharpDbObservabilityClient.GetQueryDetailAsync));
 
+        MethodInfo[] declaredMethods = contract.GetMethods(
+            BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly);
+        MethodInfo inspectionModeOverload = Assert.Single(
+            declaredMethods,
+            static method => method.Name == nameof(ICSharpDbClient.InspectStorageAsync) &&
+                method.GetParameters().FirstOrDefault()?.ParameterType ==
+                typeof(DatabaseInspectionMode));
+        ParameterInfo[] modeParameters = inspectionModeOverload.GetParameters();
+        Assert.Equal(typeof(Task<DatabaseInspectReport>), inspectionModeOverload.ReturnType);
+        Assert.False(inspectionModeOverload.IsAbstract);
+        Assert.Equal(
+            [typeof(DatabaseInspectionMode), typeof(string), typeof(bool), typeof(CancellationToken)],
+            modeParameters.Select(static parameter => parameter.ParameterType));
+        Assert.Equal(
+            ["mode", "databasePath", "includePages", "ct"],
+            modeParameters.Select(static parameter => parameter.Name));
+
         string binaryAndSourceShape = string.Join(
             '\n',
-            contract
-                .GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+            declaredMethods
+                .Where(method => method != inspectionModeOverload)
                 .OrderBy(static method => method.Name, StringComparer.Ordinal)
                 .ThenBy(FormatMethod, StringComparer.Ordinal)
                 .Select(FormatMethod));
         string fingerprint = Convert.ToHexString(
             SHA256.HashData(Encoding.UTF8.GetBytes(binaryAndSourceShape)));
 
-        // Frozen from the v4.5 ICSharpDbClient contract. Parameter names and
-        // optional defaults are included because they are source-compatibility
-        // surface; CLR types and method names cover the binary contract.
+        // Freeze every v4.5 member while allowing the separately checked
+        // inspection-mode overload. Parameter names and optional defaults are
+        // source-compatibility surface; CLR types and names cover the binary contract.
         Assert.Equal(
             "A21F122F31DB29F1986D21BCA64BAB93A3873099F2CFF2D9741B1B00399509B1",
             fingerprint);

@@ -2275,7 +2275,7 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
                 "ReindexAsync" => CaptureReindex((CancellationToken)args![1]!),
                 "VacuumAsync" => CaptureVacuum((CancellationToken)args![0]!),
                 "InspectStorageAsync" =>
-                    CaptureInspectStorage((CancellationToken)args![2]!),
+                    CaptureInspectStorage((CancellationToken)args![^1]!),
                 "CheckWalAsync" => CaptureCheckWal((CancellationToken)args![1]!),
                 "InspectPageAsync" => CaptureInspectPage((CancellationToken)args![3]!),
                 "CheckIndexesAsync" =>
