@@ -75,14 +75,27 @@
                 <p>Short highlights from the published release notes. Dates use UTC publication dates; development work is listed separately below.</p>
                 <nav class="changelog-links" aria-label="Changelog sections">
                     <a href="#unreleased">Unreleased</a>
-                    <a href="#v4.6.3">Latest release</a>
+                    <a href="#v4.6.4">Latest release</a>
                     <a href="#release-history">Earlier releases</a>
                     <a href="https://github.com/MaxAkbar/CSharpDB/releases">All GitHub releases ↗</a>
                 </nav>
-                <article class="news-entry unreleased" id="unreleased" data-release-status="unreleased" data-release-version="4.6.4">
+                <article class="news-entry unreleased" id="unreleased" data-release-status="unreleased" data-release-version="4.6.5">
                     <div class="news-entry-header"><span class="news-badge news-badge-unreleased">Unreleased</span><span class="news-date">Development work · not in a published package</span></div>
-                    <h2>SQL Search, Database Documenter, and Test Data Generator</h2>
-                    <p>Prepared for v4.6.4, based on changes since v4.6.3. This candidate is not yet published; stable downloads remain on v4.6.3.</p>
+                    <h2>Privacy &amp; Retention, Storage Inspector, and SQL editor improvements</h2>
+                    <p>Prepared for v4.6.5, based on changes since v4.6.4. This candidate is not yet published; stable downloads remain on v4.6.4.</p>
+                    <ul>
+                        <li><strong>Privacy &amp; Retention:</strong> save rules for selected live fields, preview eligible and changed records, then apply in one transaction with run receipts.</li>
+                        <li><strong>Storage Inspector:</strong> open on a persisted summary and request full page and WAL analysis explicitly.</li>
+                        <li><strong>SQL editor:</strong> restore context-aware table and column suggestions and expand keyword coverage.</li>
+                        <li><strong>Storage and writes:</strong> reuse WAL snapshot segments, share immutable snapshot maps, and streamline simple INSERT and checkpoint paths.</li>
+                    </ul>
+                    <p class="release-note">No database file-format revision is introduced. The initial privacy workflow requires a single directly connected, file-backed database; it changes selected fields but does not delete records or guarantee that a person is unidentifiable.</p>
+                    <p><a href="docs/privacy-retention.html">Privacy &amp; Retention guide →</a></p>
+                </article>
+                <h2 id="published-releases">Published releases</h2>
+                <article class="news-entry" id="v4.6.4" data-release-status="published" data-release-version="4.6.4">
+                    <div class="news-entry-header"><span class="news-badge news-badge-release">Latest release</span><time class="news-date" datetime="2026-09-12">September 12, 2026</time></div>
+                    <h3>v4.6.4 — SQL Search, Database Documenter, and Test Data Generator</h3>
                     <ul>
                         <li><strong>Find definitions and dependencies:</strong> search saved database definitions, follow Uses and Used by relationships, and assess column changes from SQL Search and Data Modeler.</li>
                         <li><strong>Document your database:</strong> build a searchable dictionary, save descriptions with conflict checks, and export complete HTML or Markdown documentation.</li>
@@ -91,10 +104,10 @@
                     </ul>
                     <p class="release-note">No database file-format revision is introduced. Description editing requires the new server capability; Studio generation supports one directly connected database and rejects unsupported schemas before inserting. An unconfirmed commit is reported without automatic retry.</p>
                     <p><a href="docs/sql-search-and-dependencies.html">SQL Search guide →</a> · <a href="docs/test-data-generator.html">Test Data Generator guide →</a></p>
+                    <p><a href="https://github.com/MaxAkbar/CSharpDB/releases/tag/v4.6.4">Full v4.6.4 release notes &amp; downloads →</a></p>
                 </article>
-                <h2 id="published-releases">Published releases</h2>
                 <article class="news-entry" id="v4.6.3" data-release-status="published" data-release-version="4.6.3">
-                    <div class="news-entry-header"><span class="news-badge news-badge-release">Latest release</span><time class="news-date" datetime="2026-09-05">September 5, 2026</time></div>
+                    <div class="news-entry-header"><span class="news-badge news-badge-release">Release</span><time class="news-date" datetime="2026-09-05">September 5, 2026</time></div>
                     <h3>v4.6.3 — Data Modeler and Admin improvements</h3>
                     <ul>
                         <li><strong>Readable diagrams:</strong> searchable Sources, relationship-aware arrangement, key-focused cards, composite foreign-key mappings, and crow’s-foot cardinality.</li>
