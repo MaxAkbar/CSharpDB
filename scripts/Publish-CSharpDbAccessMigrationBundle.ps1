@@ -169,11 +169,11 @@ function Assert-ReviewedWorkerPackageClosure {
     )
 
     $expectedPackages = @(
-        'System.Configuration.ConfigurationManager/10.0.9'
-        'System.Data.OleDb/10.0.9'
-        'System.Diagnostics.EventLog/10.0.9'
-        'System.Diagnostics.PerformanceCounter/10.0.9'
-        'System.Security.Cryptography.ProtectedData/10.0.9'
+        'System.Configuration.ConfigurationManager/10.0.12'
+        'System.Data.OleDb/10.0.12'
+        'System.Diagnostics.EventLog/10.0.12'
+        'System.Diagnostics.PerformanceCounter/10.0.12'
+        'System.Security.Cryptography.ProtectedData/10.0.12'
     ) | Sort-Object
     $dependencies =
         [IO.File]::ReadAllText($DependencyPath) |

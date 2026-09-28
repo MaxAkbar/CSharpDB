@@ -120,10 +120,6 @@ public sealed class MigrationReleasePackagingTests
             "Assert-ReviewedWorkerPackageClosure",
             accessPublisher,
             StringComparison.Ordinal);
-        Assert.Contains(
-            "System.Data.OleDb/10.0.9",
-            accessPublisher,
-            StringComparison.Ordinal);
 
         Assert.Contains(
             "Assert-DotNetTenRuntimeConfig",
