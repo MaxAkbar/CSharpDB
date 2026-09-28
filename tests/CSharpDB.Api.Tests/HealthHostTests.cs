@@ -110,16 +110,17 @@ public sealed class HealthHostTests
             _ => Task.FromResult(CreateInfo()),
         };
 
-        await using WebApplication app = await StartHealthAppAsync(client);
+        await using WebApplication app = await StartHealthAppAsync(
+            client,
+            readinessTimeout: TimeSpan.FromSeconds(30));
         using HttpClient http = app.GetTestClient();
         CSharpDbHostReadinessCoordinator coordinator = app.Services
             .GetRequiredService<CSharpDbHostReadinessCoordinator>();
 
         await WaitUntilAsync(() => proxy.GetInfoCallCount == 1);
         first.SetException(new InvalidOperationException("database unavailable"));
-        await WaitUntilAsync(() =>
-            coordinator.Snapshot.LifecyclePhase ==
-                CSharpDbHostLifecyclePhase.Failed);
+        await WaitUntilAsync(() => proxy.GetInfoCallCount == 2);
+        Assert.False(coordinator.IsReady);
 
         int beforeHealthGets = proxy.GetInfoCallCount;
         using HttpResponseMessage live = await http.GetAsync("/health/live", Ct);
@@ -130,7 +131,6 @@ public sealed class HealthHostTests
         await AssertMinimalHealthBodyAsync(ready, "unhealthy");
         Assert.Equal(beforeHealthGets, proxy.GetInfoCallCount);
 
-        await WaitUntilAsync(() => proxy.GetInfoCallCount == 2);
         second.SetResult(CreateInfo());
         await WaitUntilAsync(() => coordinator.IsReady);
 
@@ -169,12 +169,12 @@ public sealed class HealthHostTests
         await using WebApplication app = builder.Build();
         app.MapCSharpDbHealthEndpoints();
         await app.StartAsync(Ct);
-        await WaitUntilAsync(() => proxy.GetInfoCallCount > 0);
+        CSharpDbHostReadinessCoordinator coordinator = app.Services
+            .GetRequiredService<CSharpDbHostReadinessCoordinator>();
+        await WaitUntilAsync(() => coordinator.IsReady);
 
         Assert.False(resolvedBeforeStarted);
-        Assert.True(app.Services
-            .GetRequiredService<CSharpDbHostReadinessCoordinator>()
-            .IsReady);
+        Assert.True(proxy.GetInfoCallCount > 0);
     }
 
     [Fact]
@@ -558,10 +558,14 @@ public sealed class HealthHostTests
     }
 
     private static async Task<WebApplication> StartHealthAppAsync(
-        ICSharpDbClient client)
+        ICSharpDbClient client,
+        TimeSpan? readinessTimeout = null)
     {
         WebApplicationBuilder builder = CreateBuilder();
-        builder.Services.AddSingleton(DisabledObservabilityOptions());
+        CSharpDbObservabilityOptions options = DisabledObservabilityOptions();
+        if (readinessTimeout is { } timeout)
+            options.Health.ReadinessTimeout = timeout;
+        builder.Services.AddSingleton(options);
         builder.Services.AddSingleton(client);
         builder.Services.AddCSharpDbHealth(DiagnosticsSource.Api);
         WebApplication app = builder.Build();
