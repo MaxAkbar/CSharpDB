@@ -169,12 +169,12 @@ public sealed class HealthHostTests
         await using WebApplication app = builder.Build();
         app.MapCSharpDbHealthEndpoints();
         await app.StartAsync(Ct);
-        await WaitUntilAsync(() => proxy.GetInfoCallCount > 0);
+        CSharpDbHostReadinessCoordinator coordinator = app.Services
+            .GetRequiredService<CSharpDbHostReadinessCoordinator>();
+        await WaitUntilAsync(() => coordinator.IsReady);
 
         Assert.False(resolvedBeforeStarted);
-        Assert.True(app.Services
-            .GetRequiredService<CSharpDbHostReadinessCoordinator>()
-            .IsReady);
+        Assert.True(proxy.GetInfoCallCount > 0);
     }
 
     [Fact]
