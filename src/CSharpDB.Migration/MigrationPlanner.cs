@@ -44,14 +44,6 @@ public sealed class MigrationPlanner
         options ??= new MigrationPlanningOptions();
         ArgumentNullException.ThrowIfNull(options.Load);
         MigrationContractValidator.ValidateCatalog(catalog);
-        if (!string.Equals(
-                catalog.TargetCSharpDbVersion,
-                _capabilities.TargetCSharpDbVersion,
-                StringComparison.Ordinal))
-        {
-            throw new InvalidOperationException(
-                "The source catalog target version does not match the loaded capability catalog.");
-        }
         if (options.MappingProfile != MigrationMappingProfile.Custom &&
             options.CustomTargetTypes.Count != 0)
         {

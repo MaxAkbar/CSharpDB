@@ -1,4 +1,3 @@
-using System.Reflection;
 using System.Text.Json;
 using CSharpDB.Primitives;
 
@@ -11,7 +10,7 @@ public sealed class MigrationPlannerTests
     {
         CSharpDbCapabilityCatalog capabilities = CSharpDbCapabilityCatalogLoader.LoadEmbedded();
 
-        Assert.Equal("4.6.4", capabilities.TargetCSharpDbVersion);
+        Assert.Equal(CSharpDbCapabilityCatalogLoader.CurrentTargetVersion, capabilities.TargetCSharpDbVersion);
         Assert.Equal("local-typed-engine", capabilities.Surface);
         Assert.Equal(SqlIdentifierRules.MaxLength, capabilities.MaxIdentifierLength);
         Assert.Equal(64, capabilities.Digest.Length);
@@ -49,18 +48,20 @@ public sealed class MigrationPlannerTests
     }
 
     [Fact]
-    public void EmbeddedCapabilities_AreBoundToThe464ReleaseAssembliesAndResource()
+    public async Task CurrentCapabilities_PlanAndRoundTripWithADifferentTargetLabel()
     {
-        const string expectedVersion = "4.6.4";
-        Assembly migrationAssembly = typeof(CSharpDbCapabilityCatalogLoader).Assembly;
-        Assembly primitivesAssembly = typeof(DbType).Assembly;
+        MigrationCatalog catalog = await InspectAsync("4.6.5");
+        CSharpDbCapabilityCatalog capabilities = CSharpDbCapabilityCatalogLoader.LoadEmbedded();
+        MigrationPlan plan = new MigrationPlanner(capabilities).CreatePlan(catalog);
 
-        Assert.Equal(expectedVersion, CSharpDbCapabilityCatalogLoader.CurrentTargetVersion);
-        Assert.Equal(expectedVersion, InformationalVersion(migrationAssembly));
-        Assert.Equal(expectedVersion, InformationalVersion(primitivesAssembly));
-        Assert.Contains(
-            $"CSharpDB.Migration.Capabilities.csharpdb-{expectedVersion}.json",
-            migrationAssembly.GetManifestResourceNames());
+        Assert.Equal("4.6.5", plan.TargetCSharpDbVersion);
+        Assert.Equal(capabilities.Digest, plan.CapabilityDigest);
+        Assert.Same(capabilities, CSharpDbCapabilityCatalogLoader.LoadEmbeddedByDigest(plan.CapabilityDigest));
+
+        string serialized = MigrationArtifactSerializer.SerializePlan(plan, catalog);
+        MigrationPlan restored = MigrationArtifactSerializer.DeserializePlan(serialized, catalog);
+        Assert.Equal(serialized, MigrationArtifactSerializer.SerializePlan(restored, catalog));
+        Assert.NotNull(MigrationPlanReadinessValidator.Evaluate(restored, catalog));
     }
 
     [Fact]
@@ -712,13 +713,13 @@ public sealed class MigrationPlannerTests
 
     private static async Task<MigrationCatalog> InspectAsync(
         string targetVersion = CSharpDbCapabilityCatalogLoader.CurrentTargetVersion) =>
-        (await new SyntheticMigrationSourceInspector().InspectAsync(
+        await new SyntheticMigrationSourceInspector().InspectAsync(
             new MigrationInspectionRequest
             {
-                TargetCSharpDbVersion = CSharpDbCapabilityCatalogLoader.CurrentTargetVersion,
+                TargetCSharpDbVersion = targetVersion,
                 IncludeProfile = true,
                 ProfileSampleSize = 5,
-            })) with { TargetCSharpDbVersion = targetVersion };
+            });
 
     private static MigrationPlanObject Object(MigrationPlan plan, string objectId) =>
         plan.Objects.Single(item => item.SourceObjectId == objectId);
@@ -736,12 +737,6 @@ public sealed class MigrationPlannerTests
                 .Select(item => item.SourceObjectId == replacement.SourceObjectId ? replacement : item)
                 .ToArray(),
         };
-
-    private static string InformationalVersion(Assembly assembly) =>
-        assembly
-            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()!
-            .InformationalVersion
-            .Split('+', 2)[0];
 
     private static string ReadArtifactDigest(string json)
     {

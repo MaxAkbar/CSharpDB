@@ -55,8 +55,8 @@ public static partial class MigrationArtifactSerializer
         MigrationCatalog normalizedCatalog = MigrationArtifactNormalizer.Normalize(catalog);
         MigrationPlan normalizedPlan = MigrationArtifactNormalizer.Normalize(plan);
         string catalogDigest = ComputeCatalogDigest(normalizedCatalog);
-        CSharpDbCapabilityCatalog capabilities = CSharpDbCapabilityCatalogLoader.LoadEmbedded(
-            normalizedPlan.TargetCSharpDbVersion);
+        CSharpDbCapabilityCatalog capabilities = CSharpDbCapabilityCatalogLoader.LoadEmbeddedByDigest(
+            normalizedPlan.CapabilityDigest);
         MigrationContractValidator.ValidatePlan(
             normalizedPlan,
             normalizedCatalog,
@@ -87,8 +87,8 @@ public static partial class MigrationArtifactSerializer
         JsonElement payload = ReadVerifiedPayload(MigrationArtifactKind.Plan, json);
         MigrationPlan plan = DeserializePayload<MigrationPlan>(payload);
         MigrationPlan normalizedPlan = MigrationArtifactNormalizer.Normalize(plan);
-        CSharpDbCapabilityCatalog capabilities = CSharpDbCapabilityCatalogLoader.LoadEmbedded(
-            normalizedPlan.TargetCSharpDbVersion);
+        CSharpDbCapabilityCatalog capabilities = CSharpDbCapabilityCatalogLoader.LoadEmbeddedByDigest(
+            normalizedPlan.CapabilityDigest);
         MigrationContractValidator.ValidatePlan(
             normalizedPlan,
             normalizedCatalog,
