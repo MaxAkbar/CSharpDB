@@ -14,12 +14,24 @@ public static class DatabaseInspector
         ct.ThrowIfCancellationRequested();
         options ??= new DatabaseInspectOptions();
 
+        if (!Enum.IsDefined(options.Mode))
+            throw new ArgumentOutOfRangeException(nameof(options), "Unknown inspection mode.");
+
         InspectorEngine.DatabaseSnapshot snapshot = await InspectorEngine.ReadDatabaseSnapshotAsync(
             dbPath,
-            captureLeafPayload: true,
-            ct);
+            captureLeafPayload: options.IncludePages,
+            ct,
+            summaryOnly: options.Mode == DatabaseInspectionMode.Summary);
 
         List<IntegrityIssue> issues = InspectorEngine.CopyIssues(snapshot.Issues, ct);
+
+        long walFileLength = File.Exists(dbPath + ".wal") ? new FileInfo(dbPath + ".wal").Length : 0;
+        if (options.Mode == DatabaseInspectionMode.Summary)
+            return new DatabaseInspectReport
+            {
+                DatabasePath = dbPath, Header = snapshot.Header, IsSummary = true,
+                WalFileLengthBytes = walFileLength, PageTypeHistogram = [], Issues = issues,
+            };
 
         // Cross-check schema root and reachable trees.
         uint schemaRoot = snapshot.Header.SchemaRootPage;
@@ -90,6 +102,25 @@ public static class DatabaseInspector
             histogram[pageTypeName] = count + 1;
         }
 
+        long freeBytes = 0;
+        int pagesWithFreeSpace = 0;
+        foreach (var page in snapshot.Pages.Values)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (page.PageType is PageConstants.PageTypeLeaf or PageConstants.PageTypeInterior && page.FreeSpaceBytes > 0)
+            {
+                freeBytes += page.FreeSpaceBytes;
+                pagesWithFreeSpace++;
+            }
+        }
+        int tailFreelistPages = 0;
+        for (uint id = snapshot.Header.DeclaredPageCount; id > 0; id--)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!snapshot.Pages.TryGetValue(id - 1, out var page) || page.PageType != PageConstants.PageTypeFreelist) break;
+            tailFreelistPages++;
+        }
+
         List<PageReport>? pageReports = null;
         if (options.IncludePages)
         {
@@ -108,6 +139,12 @@ public static class DatabaseInspector
             Header = snapshot.Header,
             PageTypeHistogram = histogram,
             PageCountScanned = snapshot.Pages.Count,
+            WalFileLengthBytes = walFileLength,
+            BTreeFreeBytes = freeBytes,
+            PagesWithFreeSpace = pagesWithFreeSpace,
+            TailFreelistPageCount = tailFreelistPages,
+            IndexChecks = options.Mode == DatabaseInspectionMode.FullWithIndexes
+                ? IndexInspector.CheckSnapshot(snapshot, null, null, ct) : null,
             Pages = pageReports,
             Issues = issues,
         };
@@ -182,7 +219,7 @@ public static class DatabaseInspector
                     HeaderBytes = cell.HeaderBytes,
                     CellTotalBytes = cell.CellTotalBytes,
                     Key = cell.Key,
-                    PayloadBytes = cell.Payload?.Length ?? 0,
+                    PayloadBytes = cell.PayloadLength,
                 });
             }
         }

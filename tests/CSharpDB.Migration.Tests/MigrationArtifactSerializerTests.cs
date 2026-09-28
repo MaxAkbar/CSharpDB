@@ -26,10 +26,10 @@ public sealed class MigrationArtifactSerializerTests
     }
 
     [Fact]
-    public void Catalog_CurrentReleaseRoundTripsWithoutChangingThePublishedFixture()
+    public void Catalog_CurrentCapabilitiesRoundTripWithoutChangingThePublishedFixture()
     {
         MigrationCatalog catalog = CreateCatalog();
-        Assert.Equal("4.6.4", catalog.TargetCSharpDbVersion);
+        Assert.Equal(CSharpDbCapabilityCatalogLoader.CurrentTargetVersion, catalog.TargetCSharpDbVersion);
         string json = MigrationArtifactSerializer.SerializeCatalog(catalog);
         MigrationCatalog restored = MigrationArtifactSerializer.DeserializeCatalog(json);
         Assert.Equal(json, MigrationArtifactSerializer.SerializeCatalog(restored));

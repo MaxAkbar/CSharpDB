@@ -12,11 +12,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Data.SqlClient.SNI.runtime"
-                      Version="6.0.2"
-                      GeneratePathProperty="true"
-                      PrivateAssets="all"
-                      Publish="true" />
+    <PackageReference Include="Microsoft.Data.SqlClient.SNI.runtime" Version="6.0.3" GeneratePathProperty="true" PrivateAssets="all" Publish="true" />
   </ItemGroup>
 
   <ItemGroup>
@@ -29,14 +25,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="..\CSharpDB.Migration.SqlServer\THIRD-PARTY-NOTICES.md"
-          Link="THIRD-PARTY-NOTICES.md"
-          CopyToOutputDirectory="PreserveNewest"
-          CopyToPublishDirectory="PreserveNewest" />
-    <None Include="$(PkgMicrosoft_Data_SqlClient_SNI_runtime)\LICENSE.txt"
-          Link="licenses\Microsoft.Data.SqlClient.SNI.runtime-6.0.2-LICENSE.txt"
-          CopyToOutputDirectory="PreserveNewest"
-          CopyToPublishDirectory="PreserveNewest" />
+    <None Include="..\CSharpDB.Migration.SqlServer\THIRD-PARTY-NOTICES.md" Link="THIRD-PARTY-NOTICES.md" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="$(PkgMicrosoft_Data_SqlClient_SNI_runtime)\LICENSE.txt" Link="licenses\Microsoft.Data.SqlClient.SNI.runtime-6.0.3-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

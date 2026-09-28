@@ -245,7 +245,7 @@ uses a one-way digest of the normalized endpoint and database scope. Public
 adapter and worker errors are generic; provider exceptions and worker standard
 error are not relayed because their text can contain connection material.
 
-`Microsoft.Data.SqlClient` 7.0.2 keeps encryption mandatory by default. This
+`Microsoft.Data.SqlClient` 7.0.3 keeps encryption mandatory by default. This
 adapter never enables `TrustServerCertificate` or weakens a stricter caller
 setting. Authentication modes that require
 `Microsoft.Data.SqlClient.Extensions.Azure` are not bundled by this checkpoint.
@@ -378,7 +378,7 @@ SQL Server qualification.
 The resolved worker package closure is inventoried in
 `THIRD-PARTY-NOTICES.md`. Its MIT-licensed packages include
 Microsoft.Data.SqlClient and Microsoft.SqlServer.TransactSql.ScriptDom.
-Microsoft.Data.SqlClient.SNI.runtime 6.0.2 is not MIT; its separate Microsoft
+Microsoft.Data.SqlClient.SNI.runtime 6.0.3 is not MIT; its separate Microsoft
 Software License Terms accompany the worker under `licenses/`. The worker is
 not published as a NuGet package. It is carried only in the fixed migration
 release layout, whose live server, authentication, TLS, restricted-account,

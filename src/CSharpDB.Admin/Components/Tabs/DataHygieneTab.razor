@@ -20,6 +20,9 @@
         <button class="@GetModeClass(DataHygieneMode.History)" @onclick="() => SetMode(DataHygieneMode.History)">
             <i class="bi bi-clock-history"></i> History
         </button>
+        <button class="@GetModeClass(DataHygieneMode.Privacy)" @onclick="() => SetMode(DataHygieneMode.Privacy)">
+            <i class="bi bi-person-lock"></i> Privacy &amp; Retention
+        </button>
         <div class="toolbar-separator"></div>
         <button class="toolbar-btn" @onclick="RefreshMetadataAsync" disabled="@_loading">
             <i class="bi bi-arrow-clockwise"></i> Refresh
@@ -48,6 +51,10 @@
         <div class="query-error">
             <i class="bi bi-signpost-split"></i> Select a route before using data hygiene on a sharded database.
         </div>
+    }
+    else if (_mode == DataHygieneMode.Privacy)
+    {
+        <PrivacyRetentionPanel SeedTable="@(Tab?.InitialDataHygieneSeed?.TableName)" />
     }
     else if (_mode == DataHygieneMode.Duplicates)
     {

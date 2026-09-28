@@ -443,8 +443,8 @@ public static class MigrationContractValidator
             id => planObjectsById[id].DependsOn,
             "Plan dependency graph");
 
-        CSharpDbCapabilityCatalog capabilities = CSharpDbCapabilityCatalogLoader.LoadEmbedded(
-            plan.TargetCSharpDbVersion);
+        CSharpDbCapabilityCatalog capabilities = CSharpDbCapabilityCatalogLoader.LoadEmbeddedByDigest(
+            plan.CapabilityDigest);
         var capabilityEvaluator = new CSharpDbTargetCapabilityEvaluator(capabilities);
         IReadOnlyDictionary<string, MigrationTypeMapping> mappingsByObjectId = planObjects
             .SelectMany(item => item.TypeMappings)

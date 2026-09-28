@@ -13,8 +13,14 @@
     <ProjectReference Include="..\..\src\CSharpDB.Migration.Files\CSharpDB.Migration.Files.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Migration.CSharpDb\CSharpDB.Migration.CSharpDb.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Migration.CSharpDb.Ddl\CSharpDB.Migration.CSharpDb.Ddl.csproj" />
-    <ProjectReference Include="..\CSharpDB.Migration.CrashHarness\CSharpDB.Migration.CrashHarness.csproj"
-                      ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\CSharpDB.Migration.CrashHarness\CSharpDB.Migration.CrashHarness.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="coverlet.collector" Version="10.0.1" />
+    <PackageReference Update="Microsoft.NET.Test.Sdk" Version="18.10.0" />
+    <PackageReference Update="xunit.runner.visualstudio" Version="4.0.0" />
+    <PackageReference Update="xunit.v3" Version="4.0.1" />
   </ItemGroup>
 
 </Project>

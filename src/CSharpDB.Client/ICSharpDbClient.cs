@@ -82,6 +82,10 @@ public interface ICSharpDbClient : IAsyncDisposable
     Task<ReindexResult> ReindexAsync(ReindexRequest request, CancellationToken ct = default);
     Task<VacuumResult> VacuumAsync(CancellationToken ct = default);
     Task<DatabaseInspectReport> InspectStorageAsync(string? databasePath = null, bool includePages = false, CancellationToken ct = default);
+    Task<DatabaseInspectReport> InspectStorageAsync(DatabaseInspectionMode mode, string? databasePath = null, bool includePages = false, CancellationToken ct = default)
+        => mode == DatabaseInspectionMode.Full
+            ? InspectStorageAsync(databasePath, includePages, ct)
+            : throw new NotSupportedException("This client does not support the requested storage inspection mode.");
     Task<WalInspectReport> CheckWalAsync(string? databasePath = null, CancellationToken ct = default);
     Task<PageInspectReport> InspectPageAsync(uint pageId, bool includeHex = false, string? databasePath = null, CancellationToken ct = default);
     Task<IndexInspectReport> CheckIndexesAsync(string? databasePath = null, string? indexName = null, int? sampleSize = null, CancellationToken ct = default);

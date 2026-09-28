@@ -12,8 +12,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\CSharpDB.Migration\CSharpDB.Migration.csproj" />
-    <PackageReference Include="Microsoft.Data.Sqlite" Version="$(CSharpDbQualifiedEfCoreVersion)" />
-    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5" />
   </ItemGroup>
 
   <ItemGroup>

@@ -16,4 +16,11 @@
     <ProjectReference Include="..\..\src\CSharpDB.Migration.CSharpDb\CSharpDB.Migration.CSharpDb.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Update="coverlet.collector" Version="10.0.1" />
+    <PackageReference Update="Microsoft.NET.Test.Sdk" Version="18.10.0" />
+    <PackageReference Update="xunit.runner.visualstudio" Version="4.0.0" />
+    <PackageReference Update="xunit.v3" Version="4.0.1" />
+  </ItemGroup>
+
 </Project>

@@ -13,13 +13,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design"
-                      Version="$(CSharpDbQualifiedEfCoreVersion)"
-                      PrivateAssets="all">
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="$(CSharpDbQualifiedEfCoreVersion)" PrivateAssets="all">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
-    <PackageReference Include="Microsoft.Extensions.Hosting"
-                      Version="10.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.12" />
   </ItemGroup>
 
 </Project>

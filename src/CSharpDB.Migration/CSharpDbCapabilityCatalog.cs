@@ -1,4 +1,3 @@
-using System.Reflection;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -102,6 +101,7 @@ public sealed record CSharpDbCapabilityCatalog
 
 public static class CSharpDbCapabilityCatalogLoader
 {
+    // Identifies the latest capability snapshot, independently of package versions.
     public const string CurrentTargetVersion = "4.6.4";
     public const string Format = "csharpdb-target-capabilities/v1";
 
@@ -133,6 +133,20 @@ public static class CSharpDbCapabilityCatalogLoader
         return catalog.Value;
     }
 
+    public static CSharpDbCapabilityCatalog LoadEmbeddedByDigest(string capabilityDigest)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(capabilityDigest);
+
+        foreach (Lazy<CSharpDbCapabilityCatalog> entry in s_catalogs.Values)
+        {
+            CSharpDbCapabilityCatalog catalog = entry.Value;
+            if (string.Equals(catalog.Digest, capabilityDigest, StringComparison.Ordinal))
+                return catalog;
+        }
+
+        throw new InvalidDataException("No embedded capability catalog matches the plan capability digest.");
+    }
+
     private static Lazy<CSharpDbCapabilityCatalog> CreateCatalog(string targetVersion) =>
         new(
             () => Load(targetVersion),
@@ -140,12 +154,6 @@ public static class CSharpDbCapabilityCatalogLoader
 
     private static CSharpDbCapabilityCatalog Load(string targetVersion)
     {
-        if (string.Equals(targetVersion, CurrentTargetVersion, StringComparison.Ordinal))
-        {
-            RequireAssemblyVersion(typeof(CSharpDbCapabilityCatalogLoader).Assembly, "CSharpDB.Migration");
-            RequireAssemblyVersion(typeof(DbType).Assembly, "CSharpDB.Primitives");
-        }
-
         string resourceName = $"CSharpDB.Migration.Capabilities.csharpdb-{targetVersion}.json";
         using Stream stream = typeof(CSharpDbCapabilityCatalogLoader).Assembly
             .GetManifestResourceStream(resourceName)
@@ -271,20 +279,6 @@ public static class CSharpDbCapabilityCatalogLoader
             .ToArray();
         if (!objectKinds.SequenceEqual(coveredKinds))
             throw new InvalidDataException("Capability catalog must contain one object rule for every migration object kind.");
-    }
-
-    private static void RequireAssemblyVersion(Assembly assembly, string description)
-    {
-        string? informational = assembly
-            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
-            .InformationalVersion;
-        string version = (informational ?? assembly.GetName().Version?.ToString() ?? string.Empty)
-            .Split('+', 2)[0];
-        if (!string.Equals(version, CurrentTargetVersion, StringComparison.Ordinal))
-        {
-            throw new InvalidOperationException(
-                $"{description} binary version '{version}' does not match capability catalog version '{CurrentTargetVersion}'.");
-        }
     }
 
     private static void RejectDuplicateProperties(

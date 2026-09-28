@@ -5,7 +5,8 @@ public enum DataHygieneMode
     Duplicates,
     Validation,
     Orphans,
-    History
+    History,
+    Privacy
 }
 
 public enum DataHygieneKeepMode

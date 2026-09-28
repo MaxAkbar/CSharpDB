@@ -44,7 +44,7 @@ public class BTreeCursorBenchmarks
     [Benchmark(Description = "BTree cursor full scan")]
     public async Task CursorFullScan()
     {
-        var cursor = _tree.CreateCursor();
+        await using var cursor = _tree.CreateCursor();
         long sum = 0;
         int count = 0;
 
@@ -61,7 +61,7 @@ public class BTreeCursorBenchmarks
     [Benchmark(Description = "BTree cursor seek + 1024-row window")]
     public async Task CursorSeekWindow()
     {
-        var cursor = _tree.CreateCursor();
+        await using var cursor = _tree.CreateCursor();
         int windowCount = Math.Min(1024, RowCount);
         long startKey = Math.Max(0, (RowCount / 2) - (windowCount / 2));
 

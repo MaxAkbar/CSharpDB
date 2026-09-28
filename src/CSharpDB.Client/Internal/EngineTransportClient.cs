@@ -36,6 +36,7 @@ internal sealed partial class EngineTransportClient :
     IClientObservabilitySettingsProvider,
     ICSharpDbTableArchiveProgressExporter,
     ICSharpDbTransactionalSnapshotReader,
+    ICSharpDbExclusiveSessionProvider,
     ICSharpDbTransactionalSchemaIdentityWriter
 {
     private const string ProcedureTableName = "__procedures";
@@ -843,6 +844,8 @@ internal sealed partial class EngineTransportClient :
 
             return new TransactionTableSnapshot
             {
+                HasUpdateHostCallbacks = _directDatabaseOptions.StorageEngineOptions.PagerOptions.Interceptors.Count != 0
+                    || session.Database.HasUpdateHostCallbacks(normalizedTableName),
                 Schema = MapTableSchema(schema),
                 Indexes = indexes,
                 Triggers = session.Database.GetTriggers()

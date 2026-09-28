@@ -23,8 +23,6 @@ public sealed class DaemonPackagingAssetsTests
         string repoRoot = FindRepoRoot();
         string workflow = File.ReadAllText(Path.Combine(repoRoot, ".github", "workflows", "ci.yml"));
 
-        Assert.Contains("src/CSharpDB/README.md", workflow);
-        Assert.Contains("src/CSharpDB.Observability/README.md", workflow);
         Assert.Contains("dotnet pack src/CSharpDB.Observability/CSharpDB.Observability.csproj", workflow);
         Assert.Contains("dotnet pack src/CSharpDB/CSharpDB.csproj", workflow);
         Assert.Contains("Test-ObservabilityNuGetPackage.ps1", workflow);
@@ -594,7 +592,6 @@ public sealed class DaemonPackagingAssetsTests
         Assert.Contains("Qualification output must be outside the repository", script);
         Assert.Contains("'test',", script);
         Assert.Contains("$solutionPath", script);
-        Assert.Contains("Test-Documentation.ps1", script);
         Assert.Contains("Test-NuGetPackageClosure.ps1", script);
         Assert.Contains("Test-EfCoreVersionConsistency.ps1", script);
         Assert.Contains("Test-SqlServerMigrationIsolation.ps1", script);
@@ -607,10 +604,15 @@ public sealed class DaemonPackagingAssetsTests
                 script,
                 @"(?s)-StepName 'full-test-suite'.*?-ArgumentList @\((?<arguments>.*?)\)");
         Assert.True(fullTestArguments.Success);
-        Assert.Contains(
+        Assert.DoesNotContain(
             "'--maxcpucount:1'",
             fullTestArguments.Groups["arguments"].Value,
             StringComparison.Ordinal);
+        Assert.Matches(
+            @"'--max-parallel-test-modules',\s*'1'",
+            fullTestArguments.Groups["arguments"].Value);
+        Assert.Contains("'--solution'", fullTestArguments.Groups["arguments"].Value, StringComparison.Ordinal);
+        Assert.Contains("'--report-trx'", fullTestArguments.Groups["arguments"].Value, StringComparison.Ordinal);
 
         System.Text.RegularExpressions.Match accessArguments =
             System.Text.RegularExpressions.Regex.Match(

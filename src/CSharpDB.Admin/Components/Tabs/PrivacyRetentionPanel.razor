@@ -1,0 +1,120 @@
+@using CSharpDB.DataPrivacy
+@implements IAsyncDisposable
+
+<div class="privacy-panel">
+    <header><h2>Privacy &amp; Retention</h2><p>Define a reusable rule once and apply it to all matching records. Replace personal fields while preserving records, accounting values and relationships.</p></header>
+    @if (!Privacy.IsSupported)
+    { <div class="query-error">This workflow requires a standard file-backed direct connection to one database. Remote, memory-only, custom-storage and sharded connections are not enabled.</div> }
+    else
+    {
+        <PrivacyPolicyBrowser Policies="_policies" SelectedId="_selectedPolicy" Busy="_busy" Selected="LoadPolicy" @key="Holder.DataSource" />
+        <div class="privacy-toolbar">
+            <button class="toolbar-btn" disabled="@_busy" @onclick="NewPolicy">New policy</button>
+            <button class="toolbar-btn" disabled="@_busy" @onclick="Duplicate">Duplicate</button>
+            <button class="toolbar-btn" disabled="@_busy" @onclick="SaveAsync">Save policy</button>
+            <button class="toolbar-btn" disabled="@_busy" @onclick="ExportPolicyAsync">Export policy</button>
+            <label class="toolbar-btn">Import as new<InputFile OnChange="ImportAsync" accept=".json" disabled="@_busy" /></label>
+            <button class="toolbar-btn" disabled="@_busy" @onclick="ReloadAsync">Refresh</button>
+        </div>
+        @if (_error is not null) { <div class="query-error" role="alert">@_error</div> }
+        @if (_pending is not null)
+        { <div class="query-error">Run @_pending has an uncertain outcome. Further runs are blocked. <button class="toolbar-btn" disabled="@_busy" @onclick="ReconcileAsync">Reconcile run</button></div> }
+        <details class="privacy-help"><summary>Behavior and first-version limits</summary>
+            <p>Apply permanently replaces the selected live values. Partial masks retain information. Unselected fields and copies in backups are not anonymized.</p>
+            <p>Identity and relationship columns are preserved. A non-null primary or unique key is required for each target. UPDATE triggers and reachable host callbacks block apply. Shared related rows cannot be changed while they also belong to ineligible main records. Engine-generated rowversion values may advance normally.</p>
+            <p>Every run scans the configured tables, validates constraints, and commits all changes together. Limits: @Privacy.Limits.MaxAffectedRows.ToString("N0") affected rows, @Privacy.Limits.MaxEvaluatedRows.ToString("N0") evaluated rows, @(Privacy.Limits.MaxPreparedBytes / 1024 / 1024) MiB prepared data, @Privacy.Limits.TimeoutSeconds seconds. Cancel before commit rolls back pending changes.</p>
+        </details>
+        <h3>@(_policy.Revision == 0 ? "New policy" : $"Editing: {_policy.Name}")</h3>
+        <fieldset disabled="@_busy" class="privacy-settings">
+            <legend>1. Policy and main records</legend>
+            <label>Policy name<input @bind="_policy.Name" @bind:after="Invalidate" maxlength="200" /></label>
+            <label>Main table<select value="@_policy.RootTable" @onchange="ChangeRoot"><option value="">Choose table…</option>
+                @foreach (var table in _catalog) { <option>@table.TableName</option> }
+            </select></label>
+            <span>Revision @_policy.Revision @(_dirty ? "· unsaved changes" : "")</span>
+        </fieldset>
+        <fieldset disabled="@_busy">
+            <legend>2. Relationships</legend>
+            <p>Add the mappings used by eligibility conditions or target-table paths. Column order defines composite matches.</p>
+            <details><summary>Suggested declared relationships</summary>
+                @foreach (var suggestion in Suggestions())
+                { <button type="button" class="toolbar-btn" @onclick="() => AddSuggestion(suggestion)">@suggestion.SourceTable → @suggestion.TargetTable (@string.Join(",", suggestion.SourceColumns))</button> }
+            </details>
+            @foreach (var r in _policy.Relationships.ToArray())
+            {
+                <div class="privacy-mapping" @key="r">
+                    <strong>@r.SourceTable (@string.Join(", ", r.SourceColumns)) → @r.TargetTable (@string.Join(", ", r.TargetColumns))</strong>
+                    <button class="toolbar-btn" @onclick="() => RemoveMapping(r)">Remove</button>
+                </div>
+            }
+            <div class="privacy-settings">
+                <label>From table<select @bind="_sourceTable"><option value="">Choose…</option>@foreach (var t in _catalog) { <option>@t.TableName</option> }</select></label>
+                <label>From columns<input @bind="_sourceColumns" placeholder="TenantId, CustomerId" /></label>
+                <label>To table<select @bind="_targetTable"><option value="">Choose…</option>@foreach (var t in _catalog) { <option>@t.TableName</option> }</select></label>
+                <label>To columns<input @bind="_targetColumns" placeholder="TenantId, Id" /></label>
+                <button class="toolbar-btn" @onclick="AddMapping">Add mapping</button>
+            </div>
+        </fieldset>
+        <fieldset disabled="@_busy"><legend>3. Eligibility</legend>
+            <p>Select main records using age, field values and related activity. Missing or invalid dates do not satisfy age conditions or establish the absence of recent activity.</p>
+            <p>For example, <strong>Email IS NOT NULL</strong> selects every main record with an email. Add a status or age condition to narrow the group. A date condition is optional.</p>
+            <PrivacyConditionEditor Condition="_policy.Eligibility" Table="@_policy.RootTable" Catalog="_catalog" Relationships="_policy.Relationships" Changed="Invalidate" />
+        </fieldset>
+        <fieldset disabled="@_busy"><legend>4. Fields to mask</legend>
+            <div class="privacy-toolbar"><label>Target table<select @bind="_addTable"><option value="">Choose…</option>@foreach (var table in _catalog) { <option>@table.TableName</option> }</select></label>
+                <button class="toolbar-btn" @onclick="AddTarget">Add target</button></div>
+            @foreach (var target in _policy.Targets.ToArray())
+            {
+                <section class="privacy-target" @key="target">
+                    <div class="privacy-toolbar"><h3>@target.Table</h3><button class="toolbar-btn" @onclick="() => RemoveTarget(target)">Remove target</button></div>
+                    @if (!Same(target.Table, _policy.RootTable))
+                    { <label>Relationship path<select value="@string.Join('|', target.RelationshipPath)" @onchange="e => SetPath(target, e.Value?.ToString())"><option value="">Choose path…</option>
+                        @foreach (var path in Paths(target.Table)) { <option value="@string.Join('|', path)">@PathLabel(path)</option> }
+                    </select></label> }
+                    <div class="privacy-table-scroll"><table class="schema-table"><thead><tr><th>Mask</th><th>Column / type</th><th>Operation</th><th>Options</th></tr></thead><tbody>
+                    @foreach (var column in Schema(target.Table)?.Columns ?? [])
+                    {
+                        var mask = target.Columns.FirstOrDefault(m => Same(m.Column, column.Name));
+                        <tr><td><input type="checkbox" aria-label="@($"Mask {target.Table}.{column.Name}")" checked="@(mask is not null)" disabled="@(column.IsPrimaryKey || column.IsIdentity || column.IsRowVersion)" @onchange="e => ToggleColumn(target, column, e.Value is true)" /></td>
+                            <td>@column.Name <small>@column.EffectiveType.ToSql()</small></td>
+                            <td>@if (mask is not null) { <select aria-label="@($"Operation for {target.Table}.{column.Name}")" @bind="mask.Kind" @bind:after="Invalidate">@foreach (var kind in MaskOptions(column)) { <option value="@kind">@kind</option> }</select> } else { <span>Preserve</span> }</td>
+                            <td>@if (mask?.Kind == PrivacyMaskKind.Constant) { <label>Replacement<input @bind="mask.Replacement" @bind:after="Invalidate" /></label> }
+                                @if (mask?.Kind == PrivacyMaskKind.Partial) { <label>Keep prefix<input type="number" min="0" @bind="mask.KeepPrefix" @bind:after="Invalidate" /></label><label>Keep suffix<input type="number" min="0" @bind="mask.KeepSuffix" @bind:after="Invalidate" /></label><small>Retains personal information.</small> }
+                                @if (mask?.Kind == PrivacyMaskKind.Email) { <small>Masks the local part; retains the domain.</small> }
+                                @if (mask?.Kind == PrivacyMaskKind.Anonymous) { <small>Stable anonymous placeholder per record and field.</small> }
+                            </td></tr>
+                    }
+                    </tbody></table></div>
+                </section>
+            }
+        </fieldset>
+        <div class="privacy-toolbar">
+            <button class="toolbar-btn primary" disabled="@(_busy || _dirty || _policy.Revision == 0 || _pending is not null)" @onclick="PreviewAsync">Preview changes</button>
+            <button class="toolbar-btn danger" disabled="@(_busy || _preview is null || _pending is not null)" @onclick="ApplyAsync">Apply reviewed changes</button>
+            @if (_busy) { <button class="toolbar-btn" @onclick="Cancel">Cancel</button> }
+            @if (_dirty) { <span>Save the policy before previewing.</span> }
+            <span aria-live="polite">@(_busy ? $"{_progress?.Stage ?? "Working"} · {_progress?.Processed:N0}" : _status)</span>
+        </div>
+        @if (_preview is not null)
+        {
+            <section><h3>Reviewed changes</h3><p>@_preview.EligibleRecords.ToString("N0") eligible main records · reference time @_preview.ReferenceUtc.ToString("u") · samples show up to @Privacy.Limits.PreviewRows changed rows per table.</p>
+                @foreach (var warning in _preview.Warnings) { <p class="query-error">@warning</p> }
+                @foreach (var table in _preview.Tables)
+                {
+                    <details open><summary>@table.Table · @table.EligibleRows eligible · @table.ChangedRows changed</summary>
+                        <p>Preserved: @string.Join(", ", table.PreservedColumns)</p>
+                        <div class="privacy-table-scroll"><table class="schema-table"><thead><tr><th>Sample</th><th>Field</th><th>Before</th><th>After</th></tr></thead><tbody>
+                        @for (int i = 0; i < table.Samples.Count; i++)
+                        { var sample = table.Samples[i]; @foreach (var cell in sample.Before) { <tr><td>@(i + 1)</td><td>@cell.Key</td><td>@cell.Value</td><td>@sample.After[cell.Key]</td></tr> } }
+                        </tbody></table></div>
+                    </details>
+                }
+            </section>
+        }
+        @if (_receipt is not null)
+        { <section aria-live="polite"><h3>Run @_receipt.Status</h3><p>@_receipt.RunId · @_receipt.Message</p><p>@string.Join("; ", _receipt.ChangedRows.Select(c => $"{c.Key}: {c.Value:N0} changed"))</p><button class="toolbar-btn" @onclick="ExportReceiptAsync">Download summary</button></section> }
+        <details><summary>Recent committed runs (@_runs.Count)</summary>
+            @foreach (var run in _runs) { <p>@run.CompletedUtc.ToString("u") · policy @run.PolicyId / @run.PolicyRevision · @run.ChangedRows.Values.Sum() changes <button class="toolbar-btn" @onclick="() => SelectReceipt(run)">View summary</button></p> }
+        </details>
+    }
+</div>

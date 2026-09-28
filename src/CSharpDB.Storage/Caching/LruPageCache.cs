@@ -23,7 +23,7 @@ public sealed class LruPageCache :
 
     private sealed class CacheEntry
     {
-        public required byte[] Page { get; init; }
+        public required byte[] Page { get; set; }
         public required LinkedListNode<uint> Node { get; init; }
     }
 
@@ -56,11 +56,7 @@ public sealed class LruPageCache :
             if (!ReferenceEquals(existing.Page, page))
                 PageEvicted?.Invoke(pageId, existing.Page);
 
-            _entries[pageId] = new CacheEntry
-            {
-                Page = page,
-                Node = existing.Node,
-            };
+            existing.Page = page;
             Touch(existing.Node);
             return;
         }

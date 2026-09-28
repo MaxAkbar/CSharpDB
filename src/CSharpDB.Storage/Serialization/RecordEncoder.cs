@@ -31,7 +31,7 @@ public static class RecordEncoder
     {
         int size = GetEncodedLength(values);
         byte[] buffer = GC.AllocateUninitializedArray<byte>(size);
-        EncodeInto(values, buffer);
+        EncodeInto(values, buffer, size);
         return buffer;
     }
 

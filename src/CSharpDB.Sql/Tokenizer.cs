@@ -115,6 +115,13 @@ public sealed class Tokenizer
     private readonly string _input;
     private int _pos;
 
+    /// <summary>
+    /// Keyword spellings recognized by the tokenizer, including type aliases.
+    /// Contextual words parsed as identifiers are not included. Recognition does
+    /// not imply that every use of a keyword is supported by the parser.
+    /// </summary>
+    public static IReadOnlyCollection<string> ReservedKeywords => Keywords.Keys;
+
     internal static bool TryGetKeyword(
         ReadOnlySpan<char> value,
         out TokenType tokenType)

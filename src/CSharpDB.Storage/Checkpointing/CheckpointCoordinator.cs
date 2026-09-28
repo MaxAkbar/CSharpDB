@@ -44,25 +44,85 @@ internal sealed class CheckpointCoordinator : IDisposable
         }
     }
 
-    public WalSnapshot AcquireReaderSnapshot(WalIndex index, long? minimumWalOffset = null)
+    public WalSnapshot AcquireReaderSnapshot(
+        WalIndex index,
+        long? minimumWalOffset = null,
+        IWriteAheadLog? checkpointWal = null)
     {
+        // Allocation can wait for the GC. Do it before taking the checkpoint lock
+        // so that an allocating reader cannot block every other reader's admission.
+        var snapshot = new WalSnapshot();
         _checkpointLock.Wait();
         try
         {
-            WalSnapshot snapshot = index.TakeSnapshot(minimumWalOffset);
-            _activeSnapshots[snapshot] = 0;
-            Volatile.Write(ref _activeReaderCount, _activeSnapshots.Count);
-            if (snapshot.HasWalFrames &&
-                snapshot.MinimumWalOffset < _minimumRetainedWalOffset)
+            long? floor = checkpointWal is null
+                ? minimumWalOffset
+                : checkpointWal.IsCheckpointCopyComplete &&
+                  checkpointWal.TryGetCheckpointRetainedWalStartOffset(out long retainedStart)
+                    ? retainedStart
+                    : null;
+            if (index.TryInitializeCachedSnapshot(snapshot, floor))
             {
-                Volatile.Write(ref _minimumRetainedWalOffset, snapshot.MinimumWalOffset);
+                RegisterSnapshot_NoLock(snapshot);
+                return snapshot;
             }
-            return snapshot;
         }
         finally
         {
             _checkpointLock.Release();
         }
+
+        return AcquireReaderSnapshotSlow(index, snapshot, minimumWalOffset, checkpointWal);
+    }
+
+    // Keep segmented scratch storage and preparation out of the cached admission frame.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private WalSnapshot AcquireReaderSnapshotSlow(
+        WalIndex index, WalSnapshot snapshot, long? minimumWalOffset, IWriteAheadLog? checkpointWal)
+    {
+        WalSnapshotPreparation? preparation = null;
+        Span<int> requiredCapacities = stackalloc int[WalSnapshotMap.SegmentCount];
+        while (true)
+        {
+            int segmentCount;
+            int keyCapacity;
+            _checkpointLock.Wait();
+            try
+            {
+                // A checkpoint can finish while map storage is being allocated.
+                // Read its current floor only after admission, on every attempt.
+                long? floor = checkpointWal is null
+                    ? minimumWalOffset
+                    : checkpointWal.IsCheckpointCopyComplete &&
+                      checkpointWal.TryGetCheckpointRetainedWalStartOffset(out long retainedStart)
+                        ? retainedStart
+                        : null;
+
+                if (index.TryInitializeSnapshot(snapshot, preparation, floor, requiredCapacities, out segmentCount, out keyCapacity))
+                {
+                    RegisterSnapshot_NoLock(snapshot);
+                    return snapshot;
+                }
+            }
+            finally
+            {
+                _checkpointLock.Release();
+            }
+
+            // A failed attempt captured and registered nothing. Grow only this
+            // reader's unpublished buffer, with neither storage gate held.
+            if (preparation is null || preparation.Buffers.Length != segmentCount)
+                preparation = new WalSnapshotPreparation(segmentCount);
+            preparation.EnsureCapacity(requiredCapacities, keyCapacity);
+        }
+    }
+
+    private void RegisterSnapshot_NoLock(WalSnapshot snapshot)
+    {
+        _activeSnapshots[snapshot] = 0;
+        Volatile.Write(ref _activeReaderCount, _activeSnapshots.Count);
+        if (snapshot.HasWalFrames && snapshot.MinimumWalOffset < _minimumRetainedWalOffset)
+            Volatile.Write(ref _minimumRetainedWalOffset, snapshot.MinimumWalOffset);
     }
 
     public bool ReleaseReaderSnapshot(WalSnapshot snapshot)

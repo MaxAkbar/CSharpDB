@@ -1102,10 +1102,54 @@ public sealed class Parser
             if (!TryConsumeChar('('))
                 return false;
 
-            // Most INSERT statements in the hot path are full-row inserts into the benchmark/table shape,
-            // which commonly means four values. Start there and grow only when a wider row needs it.
-            DbValue[] buffer = new DbValue[4];
-            int count = 0;
+            // Parse the small-row prefix directly, avoiding per-value dispatch while
+            // keeping a single exact-size owned array for rows of up to four values.
+            if (!TryReadLiteral(out var first))
+                return false;
+            if (!TryConsumeChar(','))
+            {
+                if (!TryConsumeChar(')'))
+                    return false;
+                values = [first];
+                return true;
+            }
+
+            if (!TryReadLiteral(out var second))
+                return false;
+            if (!TryConsumeChar(','))
+            {
+                if (!TryConsumeChar(')'))
+                    return false;
+                values = [first, second];
+                return true;
+            }
+
+            if (!TryReadLiteral(out var third))
+                return false;
+            if (!TryConsumeChar(','))
+            {
+                if (!TryConsumeChar(')'))
+                    return false;
+                values = [first, second, third];
+                return true;
+            }
+
+            if (!TryReadLiteral(out var fourth))
+                return false;
+            if (!TryConsumeChar(','))
+            {
+                if (!TryConsumeChar(')'))
+                    return false;
+                values = [first, second, third, fourth];
+                return true;
+            }
+
+            DbValue[] buffer = new DbValue[8];
+            buffer[0] = first;
+            buffer[1] = second;
+            buffer[2] = third;
+            buffer[3] = fourth;
+            int count = 4;
 
             do
             {
@@ -1118,7 +1162,7 @@ public sealed class Parser
                 buffer[count++] = value;
             } while (TryConsumeChar(','));
 
-            if (!TryConsumeChar(')') || count == 0)
+            if (!TryConsumeChar(')'))
                 return false;
 
             if (count != buffer.Length)

@@ -2086,12 +2086,25 @@ public sealed class Database : IAsyncDisposable
 
         if (_inTransaction)
         {
-            return await ExecuteExplicitWriteAsync(
-                token => _planner.ExecuteSimpleInsertAsync(
+            if (_explicitTransactionFailed)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.Unknown,
+                    "The transaction is aborted because an earlier write failed; roll it back before issuing another write.");
+            }
+
+            try
+            {
+                return await _planner.ExecuteSimpleInsertAsync(
                     insert,
                     persistRootChanges: false,
-                    token),
-                ct);
+                    ct);
+            }
+            catch
+            {
+                _explicitTransactionFailed = true;
+                throw;
+            }
         }
 
         if (ImplicitInsertExecutionMode == ImplicitInsertExecutionMode.ConcurrentWriteTransactions)
@@ -2834,6 +2847,20 @@ public sealed class Database : IAsyncDisposable
     /// Returns all triggers defined in the database.
     /// </summary>
     public IReadOnlyCollection<TriggerSchema> GetTriggers() => _catalog.GetTriggers();
+
+    /// <summary>Whether table CHECK expressions can invoke registered host callbacks during an update.</summary>
+    public bool HasUpdateHostCallbacks(string tableName)
+    {
+        var schema = GetTableSchema(tableName);
+        if (schema is null) return true;
+        foreach (var check in schema.CheckConstraints)
+        {
+            var tokens = new Tokenizer(check.ExpressionSql).Tokenize();
+            for (int i = 0; i + 1 < tokens.Count; i++)
+                if (tokens[i + 1].Type == TokenType.LeftParen && _functions.ContainsScalarName(tokens[i].Value)) return true;
+        }
+        return false;
+    }
 
     /// <summary>
     /// Monotonic in-process token that advances on schema mutations (DDL).

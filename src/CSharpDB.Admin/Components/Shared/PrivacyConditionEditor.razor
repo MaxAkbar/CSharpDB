@@ -1,0 +1,89 @@
+@using CSharpDB.DataPrivacy
+
+<div class="privacy-condition">
+    <label>Condition
+        <select aria-label="Condition type" value="@Condition.Kind" @onchange="ChangeKind">
+            @foreach (var kind in Enum.GetValues<PrivacyConditionKind>()) { <option value="@kind">@Label(kind)</option> }
+        </select>
+    </label>
+    @if (Condition.Kind is PrivacyConditionKind.Exists or PrivacyConditionKind.NotExists)
+    {
+        <label>Related records
+            <select @bind="Condition.RelationshipId" @bind:after="Notify">
+                <option value="">Choose mapping…</option>
+                @foreach (var relation in Relationships.Where(r => r.SourceTable.Equals(Table, StringComparison.OrdinalIgnoreCase)))
+                { <option value="@relation.Id">@relation.SourceTable → @relation.TargetTable (@string.Join(", ", relation.SourceColumns))</option> }
+            </select>
+        </label>
+    }
+    else if (Condition.Kind is not (PrivacyConditionKind.All or PrivacyConditionKind.Any))
+    {
+        <label>Column<select @bind="Condition.Column" @bind:after="Notify"><option value="">Choose column…</option>
+            @foreach (var column in Columns) { <option>@column.Name</option> }
+        </select></label>
+        @if (Condition.Kind == PrivacyConditionKind.Compare)
+        {
+            <label>Comparison<select @bind="Condition.Comparison" @bind:after="Notify">
+                @foreach (var op in Enum.GetValues<PrivacyComparison>()) { <option value="@op">@op</option> }
+            </select></label>
+            <label>Value<input @bind="Condition.Value" @bind:after="Notify" /></label>
+        }
+        @if (Condition.Kind is PrivacyConditionKind.OlderThan or PrivacyConditionKind.WithinLast)
+        {
+            <label>Days<input type="number" min="1" max="365000" @bind="Condition.Days" @bind:after="Notify" /></label>
+            <label>Date storage<select @bind="Condition.DateEncoding" @bind:after="Notify">
+                @foreach (var encoding in Enum.GetValues<PrivacyDateEncoding>()) { <option value="@encoding">@encoding</option> }
+            </select></label>
+            @if (Condition.DateEncoding == PrivacyDateEncoding.ExactFormat)
+            {
+                <label>Date format<input @bind="Condition.DateFormat" @bind:after="Notify" placeholder="yyyy-MM-dd HH:mm:ss" /></label>
+                <label>Time zone<input @bind="Condition.TimeZoneId" @bind:after="Notify" placeholder="UTC" /></label>
+            }
+            else if (Condition.DateEncoding == PrivacyDateEncoding.Iso8601)
+            { <small>Dates without an offset use UTC.</small> }
+        }
+    }
+    @if (Condition.Kind is PrivacyConditionKind.All or PrivacyConditionKind.Any or PrivacyConditionKind.Exists or PrivacyConditionKind.NotExists)
+    {
+        <div class="privacy-children">
+            @foreach (var child in Condition.Children.ToArray())
+            {
+                <div @key="child">
+                    <PrivacyConditionEditor Condition="child" Table="@ChildTable" Catalog="Catalog" Relationships="Relationships" Changed="Changed" Depth="@(Depth + 1)" />
+                    <button type="button" class="toolbar-btn" @onclick="() => Remove(child)">Remove condition</button>
+                </div>
+            }
+            <button type="button" class="toolbar-btn" disabled="@(Depth >= 10)" @onclick="Add">Add condition</button>
+            @if (Condition.Children.Count == 0 && Condition.Kind is PrivacyConditionKind.Exists or PrivacyConditionKind.NotExists)
+            { <small>Matches any related record. Add conditions to restrict it.</small> }
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public PrivacyCondition Condition { get; set; } = null!;
+    [Parameter] public string Table { get; set; } = "";
+    [Parameter] public IReadOnlyList<TableSchema> Catalog { get; set; } = [];
+    [Parameter] public IReadOnlyList<PrivacyRelationship> Relationships { get; set; } = [];
+    [Parameter] public EventCallback Changed { get; set; }
+    [Parameter] public int Depth { get; set; }
+    private IReadOnlyList<ColumnDefinition> Columns => Catalog.FirstOrDefault(t => t.TableName.Equals(Table, StringComparison.OrdinalIgnoreCase))?.Columns ?? [];
+    private string ChildTable => Condition.Kind is PrivacyConditionKind.Exists or PrivacyConditionKind.NotExists
+        ? Relationships.FirstOrDefault(r => r.Id == Condition.RelationshipId)?.TargetTable ?? "" : Table;
+    private Task Notify() => Changed.InvokeAsync();
+    private async Task ChangeKind(ChangeEventArgs e)
+    {
+        if (Enum.TryParse<PrivacyConditionKind>(e.Value?.ToString(), out var kind))
+        { Condition.Kind = kind; Condition.Children.Clear(); Condition.RelationshipId = ""; Condition.Column = Columns.FirstOrDefault()?.Name ?? ""; }
+        await Notify();
+    }
+    private async Task Add() { Condition.Children.Add(new() { Kind = PrivacyConditionKind.Compare }); await Notify(); }
+    private async Task Remove(PrivacyCondition child) { Condition.Children.Remove(child); await Notify(); }
+    private static string Label(PrivacyConditionKind kind) => kind switch
+    {
+        PrivacyConditionKind.All => "All conditions (AND)", PrivacyConditionKind.Any => "Any condition (OR)",
+        PrivacyConditionKind.Compare => "Compare field", PrivacyConditionKind.IsNull => "Is NULL", PrivacyConditionKind.IsNotNull => "Is not NULL",
+        PrivacyConditionKind.OlderThan => "Older than N days", PrivacyConditionKind.WithinLast => "Within last N days",
+        PrivacyConditionKind.Exists => "Has related records", PrivacyConditionKind.NotExists => "Has no related records", _ => kind.ToString()
+    };
+}

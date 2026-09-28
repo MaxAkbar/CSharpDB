@@ -24,41 +24,16 @@ public static class DatabaseMaintenanceCoordinator
         CancellationToken ct = default)
     {
         string fullPath = Path.GetFullPath(databasePath);
-        var dbReport = await DatabaseInspector.InspectAsync(
-            fullPath,
-            new DatabaseInspectOptions { IncludePages = true },
-            ct);
-        var walReport = await WalInspector.InspectAsync(fullPath, options: null, ct);
-
-        int freelistPageCount = dbReport.PageTypeHistogram.TryGetValue("freelist", out int freelistCount)
-            ? freelistCount
-            : 0;
+        var dbReport = await DatabaseInspector.InspectAsync(fullPath, ct: ct);
+        int freelistPageCount = dbReport.PageTypeHistogram.GetValueOrDefault("freelist");
         int pageSizeBytes = dbReport.Header.PageSizeValid ? dbReport.Header.PageSize : PageConstants.PageSize;
-        IReadOnlyList<PageReport> pages = dbReport.Pages ?? [];
-        var btreePages = pages.Where(page =>
-            !string.Equals(page.PageTypeName, "freelist", StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(page.PageTypeName, "overflow", StringComparison.OrdinalIgnoreCase)).ToArray();
-
-        long btreeFreeBytes = 0;
-        int pagesWithFreeSpace = 0;
-        foreach (var page in btreePages)
-        {
-            if (page.FreeSpaceBytes <= 0)
-                continue;
-
-            btreeFreeBytes += page.FreeSpaceBytes;
-            pagesWithFreeSpace++;
-        }
-
-        int tailFreelistPageCount = ComputeTailFreelistPageCount(pages, dbReport.Header.DeclaredPageCount);
-
         return new DatabaseMaintenanceReport
         {
             DatabasePath = fullPath,
             SpaceUsage = new DatabaseSpaceUsageReport
             {
                 DatabaseFileBytes = dbReport.Header.FileLengthBytes,
-                WalFileBytes = walReport.Exists ? walReport.FileLengthBytes : 0,
+                WalFileBytes = dbReport.WalFileLengthBytes,
                 PageSizeBytes = pageSizeBytes,
                 PhysicalPageCount = dbReport.Header.PhysicalPageCount,
                 DeclaredPageCount = dbReport.Header.DeclaredPageCount,
@@ -67,10 +42,10 @@ public static class DatabaseMaintenanceCoordinator
             },
             Fragmentation = new DatabaseFragmentationReport
             {
-                BTreeFreeBytes = btreeFreeBytes,
-                PagesWithFreeSpace = pagesWithFreeSpace,
-                TailFreelistPageCount = tailFreelistPageCount,
-                TailFreelistBytes = (long)tailFreelistPageCount * pageSizeBytes,
+                BTreeFreeBytes = dbReport.BTreeFreeBytes,
+                PagesWithFreeSpace = dbReport.PagesWithFreeSpace,
+                TailFreelistPageCount = dbReport.TailFreelistPageCount,
+                TailFreelistBytes = (long)dbReport.TailFreelistPageCount * pageSizeBytes,
             },
             PageTypeHistogram = new Dictionary<string, int>(dbReport.PageTypeHistogram, StringComparer.OrdinalIgnoreCase),
         };
@@ -796,27 +771,6 @@ public static class DatabaseMaintenanceCoordinator
         return schema.IndexName.StartsWith(CollectionIndexPrefix, StringComparison.Ordinal) &&
                schema.TableName.StartsWith(CollectionPrefix, StringComparison.Ordinal) &&
                schema.Columns.Count == 1;
-    }
-
-    private static int ComputeTailFreelistPageCount(IReadOnlyList<PageReport> pages, uint declaredPageCount)
-    {
-        if (pages.Count == 0 || declaredPageCount == 0)
-            return 0;
-
-        var freelistPageIds = new HashSet<uint>(
-            pages.Where(page => string.Equals(page.PageTypeName, "freelist", StringComparison.OrdinalIgnoreCase))
-                .Select(page => page.PageId));
-
-        int count = 0;
-        for (uint pageId = declaredPageCount; pageId > 0; pageId--)
-        {
-            uint zeroBasedPageId = pageId - 1;
-            if (!freelistPageIds.Contains(zeroBasedPageId))
-                break;
-            count++;
-        }
-
-        return count;
     }
 
     private static TableSchema CloneTableSchema(TableSchema schema, bool includeForeignKeys)

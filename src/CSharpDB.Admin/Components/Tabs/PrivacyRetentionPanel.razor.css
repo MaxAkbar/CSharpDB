@@ -1,0 +1,18 @@
+.privacy-panel { padding: 18px; overflow: auto; min-height: 0; flex: 1; }
+.privacy-panel h2 { margin: 0 0 6px; font-size: 20px; }
+.privacy-panel h3 { margin: 8px 0; font-size: 15px; }
+.privacy-panel p { color: var(--text-secondary); line-height: 1.5; }
+.privacy-panel fieldset, .privacy-panel section, .privacy-panel details { border: 1px solid var(--border-color); border-radius: 6px; margin: 12px 0; padding: 12px; min-width: 0; }
+.privacy-panel legend { font-weight: 600; padding: 0 6px; }
+.privacy-toolbar, .privacy-settings { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; }
+.privacy-panel label, .privacy-panel ::deep .privacy-condition label { display: inline-flex; flex-direction: column; gap: 4px; margin: 4px; font-size: 12px; }
+.privacy-panel input, .privacy-panel select, .privacy-panel ::deep input, .privacy-panel ::deep select { padding: 7px; border: 1px solid var(--border-color); border-radius: 4px; color: var(--text-primary); background: var(--bg-secondary); max-width: 100%; }
+.privacy-panel input[type=number] { width: 95px; }
+.privacy-panel input[type=file] { width: 210px; }
+.privacy-panel ::deep .privacy-condition { padding: 8px; border-left: 3px solid var(--border-color); margin: 8px 0; }
+.privacy-panel ::deep .privacy-children { padding-left: 18px; }
+.privacy-panel small { display: block; color: var(--text-secondary); margin: 4px 0; }
+.privacy-mapping { display: flex; gap: 12px; align-items: center; padding: 6px; }
+.privacy-table-scroll { overflow: auto; max-height: 420px; }
+.privacy-table-scroll td { max-width: 320px; overflow-wrap: anywhere; white-space: normal; }
+.privacy-panel button:focus-visible, .privacy-panel ::deep input:focus-visible, .privacy-panel ::deep select:focus-visible { outline: 2px solid var(--accent-color, #629cf6); outline-offset: 2px; }

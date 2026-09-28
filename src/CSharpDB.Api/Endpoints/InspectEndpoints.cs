@@ -1,4 +1,5 @@
 using CSharpDB.Client;
+using CSharpDB.Storage.Diagnostics;
 
 namespace CSharpDB.Api.Endpoints;
 
@@ -17,9 +18,10 @@ public static class InspectEndpoints
         ICSharpDbClient db,
         HttpContext context,
         bool includePages = false,
-        string? path = null)
+        string? path = null,
+        DatabaseInspectionMode mode = DatabaseInspectionMode.Full)
     {
-        var report = await db.InspectStorageAsync(path, includePages, context.RequestAborted);
+        var report = await db.InspectStorageAsync(mode, path, includePages, context.RequestAborted);
         return Results.Ok(report);
     }
 

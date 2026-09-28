@@ -9,6 +9,7 @@ namespace CSharpDB.Storage.Paging;
 /// </summary>
 public struct SlottedPage
 {
+    private const int InsertionSortThreshold = 16;
     private readonly byte[] _data;
     private readonly int _baseOffset; // offset where the slotted page header starts within the raw page
 
@@ -200,6 +201,22 @@ public struct SlottedPage
 
     private static void SortByOffsetDescending(Span<CellMove> moves)
     {
+        if (moves.Length > InsertionSortThreshold)
+        {
+            // Append-ordered pages are already sorted. Preserve their linear fast
+            // path, while bounding the cost for randomly or reverse-ordered cells.
+            for (int i = 1; i < moves.Length; i++)
+            {
+                if (moves[i - 1].Offset < moves[i].Offset)
+                {
+                    moves.Sort(static (left, right) => right.Offset.CompareTo(left.Offset));
+                    return;
+                }
+            }
+
+            return;
+        }
+
         for (int i = 1; i < moves.Length; i++)
         {
             CellMove current = moves[i];

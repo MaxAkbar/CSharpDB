@@ -2227,7 +2227,13 @@ public static class GrpcModelMapper
             SchemaVersion = value.SchemaVersion,
             DatabasePath = value.DatabasePath,
             Header = ToMessage(value.Header),
+            IndexChecks = value.IndexChecks is null ? null : ToMessage(value.IndexChecks),
             PageCountScanned = value.PageCountScanned,
+            IsSummary = value.IsSummary,
+            WalFileLengthBytes = value.WalFileLengthBytes,
+            BTreeFreeBytes = value.BTreeFreeBytes,
+            PagesWithFreeSpace = value.PagesWithFreeSpace,
+            TailFreelistPageCount = value.TailFreelistPageCount,
         };
 
         foreach (KeyValuePair<string, int> entry in value.PageTypeHistogram)
@@ -2250,8 +2256,14 @@ public static class GrpcModelMapper
             SchemaVersion = value.SchemaVersion,
             DatabasePath = value.DatabasePath,
             Header = ToModel(value.Header),
+            IndexChecks = value.IndexChecks is null ? null : ToModel(value.IndexChecks),
             PageTypeHistogram = value.PageTypeHistogram.ToDictionary(entry => entry.Key, entry => entry.Value),
             PageCountScanned = value.PageCountScanned,
+            IsSummary = value.IsSummary,
+            WalFileLengthBytes = value.WalFileLengthBytes,
+            BTreeFreeBytes = value.BTreeFreeBytes,
+            PagesWithFreeSpace = value.PagesWithFreeSpace,
+            TailFreelistPageCount = value.TailFreelistPageCount,
             Pages = value.Pages?.Items.Select(ToModel).ToList(),
             Issues = value.Issues.Select(ToModel).ToList(),
         };

@@ -40,7 +40,7 @@
                 </ul>
 
                 <h2>Storage Inspector</h2>
-                <p>The Storage tab performs deeper physical inspection and can expose server-local paths. Open it deliberately when diagnosing file size, WAL layout, page distribution, index health, or maintenance actions; use Observability for lightweight live runtime status.</p>
+                <p>The Storage tab opens with saved database-header properties and database/WAL file sizes, without scanning pages or WAL frames. These values describe the persisted file and may not yet include committed WAL changes. Select <strong>Analyze storage</strong> to scan the committed database view for page distribution, free space, fragmentation, and index integrity, and validate the WAL. Properties stay visible during analysis; you can cancel it or close the tab. <strong>Refresh</strong> reloads file properties and clears previous analysis results. Panels marked <strong>Not analyzed</strong> have not been checked. Paths refer to the connected host. Use Observability for live runtime status.</p>
                 <div class="screen">
                     <img src="images/storage-tab.png" alt="Storage inspector diagnostics">
                     <p class="caption">Storage Inspector shows database header values, WAL state, page usage, fragmentation, integrity findings, and maintenance controls.</p>

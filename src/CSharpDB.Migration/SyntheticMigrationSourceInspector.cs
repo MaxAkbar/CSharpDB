@@ -19,14 +19,6 @@ public sealed class SyntheticMigrationSourceInspector : IMigrationSourceInspecto
     {
         ArgumentNullException.ThrowIfNull(request);
         cancellationToken.ThrowIfCancellationRequested();
-        if (!string.Equals(
-                request.TargetCSharpDbVersion,
-                CSharpDbCapabilityCatalogLoader.CurrentTargetVersion,
-                StringComparison.Ordinal))
-        {
-            throw new NotSupportedException(
-                $"The synthetic fixture is qualified for CSharpDB {CSharpDbCapabilityCatalogLoader.CurrentTargetVersion}.");
-        }
         if (request.ProfileSampleSize <= 0)
             throw new ArgumentOutOfRangeException(nameof(request), "Profile sample size must be positive.");
 

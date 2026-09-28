@@ -4,6 +4,6 @@
     <DefaultItemExcludes>$(DefaultItemExcludes);artifacts/**;**/artifacts/**;.tmp/**;**/.tmp/**;tmp/**;**/tmp/**;temp/**;**/temp/**;publish/**;**/publish/**</DefaultItemExcludes>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <!-- Keep the provider, its tests, and adoption samples on one EF Core patch. -->
-    <CSharpDbQualifiedEfCoreVersion>10.0.10</CSharpDbQualifiedEfCoreVersion>
+    <CSharpDbQualifiedEfCoreVersion>10.0.12</CSharpDbQualifiedEfCoreVersion>
   </PropertyGroup>
 </Project>

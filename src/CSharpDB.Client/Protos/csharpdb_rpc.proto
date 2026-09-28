@@ -816,6 +816,8 @@ message DeleteDocumentRequest {
 message InspectStorageRequest {
   string database_path = 1;
   bool include_pages = 2;
+  // 0: full (legacy default), 1: persisted file summary, 2: full with index checks.
+  int32 mode = 3;
 }
 
 message CheckWalRequest {
@@ -1294,6 +1296,12 @@ message DatabaseInspectReportMessage {
   int32 page_count_scanned = 5;
   PageReportList pages = 6;
   repeated IntegrityIssueMessage issues = 7;
+  bool is_summary = 8;
+  int64 wal_file_length_bytes = 9;
+  int64 b_tree_free_bytes = 10;
+  int32 pages_with_free_space = 11;
+  int32 tail_freelist_page_count = 12;
+  IndexInspectReportMessage index_checks = 13;
 }
 
 message PageInspectReportMessage {

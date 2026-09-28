@@ -35,8 +35,8 @@ public static class MigrationPlanReadinessValidator
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(catalog);
 
-        CSharpDbCapabilityCatalog capabilities = CSharpDbCapabilityCatalogLoader.LoadEmbedded(
-            plan.TargetCSharpDbVersion);
+        CSharpDbCapabilityCatalog capabilities = CSharpDbCapabilityCatalogLoader.LoadEmbeddedByDigest(
+            plan.CapabilityDigest);
         MigrationContractValidator.ValidatePlan(
             plan,
             catalog,

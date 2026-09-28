@@ -287,7 +287,7 @@ time-of-day semantic type.
 
 ## Dependencies
 
-MySqlConnector 2.6.1 is pinned directly and is managed-only. The reviewed
+MySqlConnector 2.6.2 is pinned directly and is managed-only. The reviewed
 `net10.0` worker runtime package closure is recorded in
 `THIRD-PARTY-NOTICES.md` and accompanies the optional worker distribution.
 This project deliberately does not reference Oracle's `MySql.Data` package or

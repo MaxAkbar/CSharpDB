@@ -4,6 +4,7 @@ using CSharpDB.Storage.Device;
 using CSharpDB.Storage.Paging;
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Runtime.InteropServices;
 
 namespace CSharpDB.Storage.Wal;
 
@@ -1074,26 +1075,13 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnostics
 
     private void PublishCommittedFramesFromBatch(ReadOnlyMemory<WalFrameWrite> frames, long firstFrameOffset)
     {
-        _index.EnsurePageCapacity(frames.Length);
-
-        for (int i = 0; i < frames.Length; i++)
-        {
-            long frameOffset = firstFrameOffset + (long)i * PageConstants.WalFrameSize;
-            _index.AddCommittedFrame(frames.Span[i].PageId, frameOffset);
-        }
-
-        _index.AdvanceCommit(frames.Length);
+        _index.PublishCommittedFrames(frames.Span, firstFrameOffset);
         _lastUncommittedDataChecksum = 0;
     }
 
     private void PublishCommittedFrames()
     {
-        _index.EnsurePageCapacity(_uncommittedFrames.Count);
-
-        foreach (var (pageId, walOffset) in _uncommittedFrames)
-            _index.AddCommittedFrame(pageId, walOffset);
-
-        _index.AdvanceCommit(_uncommittedFrames.Count);
+        _index.PublishCommittedFrames(CollectionsMarshal.AsSpan(_uncommittedFrames));
         _uncommittedFrames.Clear();
         _lastUncommittedDataChecksum = 0;
     }

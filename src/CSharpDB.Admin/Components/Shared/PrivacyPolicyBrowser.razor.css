@@ -1,0 +1,19 @@
+.policy-browser { border: 1px solid var(--border-color); border-radius: 6px; padding: 14px; margin: 14px 0; min-width: 0; }
+.policy-browser h3 { margin: 0 0 8px; font-size: 16px; }
+.policy-browser p { color: var(--text-secondary); line-height: 1.5; margin: 0 0 12px; }
+.policy-filters, .policy-pagination { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+.policy-filters label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; }
+.policy-search { flex: 1 1 260px; }
+.policy-filters input, .policy-filters select { padding: 8px; color: var(--text-primary); background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 4px; }
+.policy-table-scroll { overflow: auto; max-height: 480px; margin: 12px 0; }
+.policy-list { width: 100%; min-width: 760px; }
+.policy-list th { position: sticky; top: 0; z-index: 1; background: var(--bg-secondary); }
+.policy-list td { vertical-align: top; white-space: normal; min-width: 75px; max-width: 300px; overflow-wrap: anywhere; }
+.policy-list td:last-child { min-width: 104px; }
+.policy-list td:first-child { min-width: 150px; }
+.policy-summary { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.selected-policy { background: var(--bg-tertiary); box-shadow: inset 3px 0 var(--accent-color, #629cf6); }
+.policy-list small { display: block; color: var(--text-secondary); margin-top: 5px; }
+.policy-pagination { align-items: center; }
+.policy-pagination span { flex: 1; font-size: 12px; color: var(--text-secondary); }
+.policy-browser :is(input,select,button):focus-visible { outline: 2px solid var(--accent-color, #629cf6); outline-offset: 2px; }
