@@ -138,7 +138,7 @@ function Assert-ReviewedWorkerPackageClosure {
     $expectedPackages = @(
         'Microsoft.Extensions.DependencyInjection.Abstractions/8.0.2'
         'Microsoft.Extensions.Logging.Abstractions/8.0.2'
-        'MySqlConnector/2.6.1'
+        'MySqlConnector/2.6.2'
     ) | Sort-Object
 
     $dependencies = [System.IO.File]::ReadAllText($DependencyPath) |

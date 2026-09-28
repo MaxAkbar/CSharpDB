@@ -7,12 +7,12 @@ dependency closure for `net10.0`. All packages are MIT licensed.
 | --- | --- | --- |
 | Microsoft.Extensions.DependencyInjection.Abstractions | 8.0.2 | MIT |
 | Microsoft.Extensions.Logging.Abstractions | 8.0.2 | MIT |
-| MySqlConnector | 2.6.1 | MIT |
+| MySqlConnector | 2.6.2 | MIT |
 
 ## MySqlConnector
 
 - Package: MySqlConnector
-- Version: 2.6.1
+- Version: 2.6.2
 - Project: https://github.com/mysql-net/MySqlConnector
 - License: MIT
 
