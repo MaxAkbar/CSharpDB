@@ -109,8 +109,6 @@ internal sealed class PrivacyPlanner(PrivacyPolicy policy, Dictionary<string, Pr
         if (policy.Targets.Select(t => t.Table).Distinct(StringComparer.OrdinalIgnoreCase).Count() != policy.Targets.Count
             || policy.Relationships.Select(r => r.Id).Distinct().Count() != policy.Relationships.Count)
             throw new PrivacyException("Target tables and relationship identifiers must be unique.");
-        if (policy.Eligibility.Kind is PrivacyConditionKind.All or PrivacyConditionKind.Any && policy.Eligibility.Children.Count == 0)
-            throw new PrivacyException("Add at least one eligibility condition before previewing.");
         foreach (var relation in policy.Relationships)
         {
             if (relation.SourceColumns.Count == 0 || relation.SourceColumns.Count != relation.TargetColumns.Count
@@ -136,7 +134,10 @@ internal sealed class PrivacyPlanner(PrivacyPolicy policy, Dictionary<string, Pr
                 foreach (var child in condition.Children) ValidateCondition(child, relation.TargetTable, depth + 1);
             }
             else if (condition.Kind is PrivacyConditionKind.All or PrivacyConditionKind.Any)
+            {
+                if (condition.Children.Count == 0) throw new PrivacyException("Add at least one eligibility condition before previewing.");
                 foreach (var child in condition.Children) ValidateCondition(child, tableName, depth + 1);
+            }
             else
             {
                 if (condition.Children.Count > 0) throw new PrivacyException("Only groups and related conditions can contain child conditions.");

@@ -105,6 +105,38 @@ public sealed class PrivacyIntegrationTests
     }
 
     [Theory]
+    [InlineData(PrivacyConditionKind.All)]
+    [InlineData(PrivacyConditionKind.Any)]
+    public async Task EmptyNestedBooleanGroupCannotCreatePreview(PrivacyConditionKind kind)
+    {
+        await using var db = await Scope.CreateAsync(People);
+        var policy = Policy();
+        policy.Eligibility.Kind = PrivacyConditionKind.Any;
+        policy.Eligibility.Children.Add(new() { Kind = kind });
+        policy = await db.Save(policy);
+
+        var error = await Assert.ThrowsAsync<PrivacyException>(() => db.Preview(policy));
+        Assert.Contains("at least one eligibility condition", error.Message);
+        Assert.Equal("Alice Secret", await db.Value("SELECT Name FROM People WHERE Id=1;"));
+        Assert.Equal("Bob Secret", await db.Value("SELECT Name FROM People WHERE Id=2;"));
+    }
+
+    [Theory]
+    [InlineData(PrivacyConditionKind.Exists)]
+    [InlineData(PrivacyConditionKind.NotExists)]
+    public async Task EmptyRelatedConditionRetainsExistenceSemantics(PrivacyConditionKind kind)
+    {
+        await using var db = await Scope.CreateAsync(People + " CREATE TABLE Orders (Id INTEGER PRIMARY KEY, Person INTEGER); INSERT INTO Orders VALUES (1,1);");
+        var policy = Policy();
+        policy.Relationships = [Relation("orders", "People", ["Id"], "Orders", ["Person"])];
+        policy.Eligibility = new() { Kind = kind, RelationshipId = "orders" };
+        policy = await db.Save(policy);
+
+        using var preview = await db.Preview(policy);
+        Assert.Equal(1, preview.EligibleRecords);
+    }
+
+    [Theory]
     [InlineData(PrivacyDateEncoding.UnixSeconds, "1577836800", "", "UTC")]
     [InlineData(PrivacyDateEncoding.UnixMilliseconds, "1577836800000", "", "UTC")]
     [InlineData(PrivacyDateEncoding.ExactFormat, "01/01/2020 12:30", "MM/dd/yyyy HH:mm", "America/Los_Angeles")]
