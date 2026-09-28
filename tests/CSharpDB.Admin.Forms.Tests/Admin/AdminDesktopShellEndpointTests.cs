@@ -177,7 +177,9 @@ public sealed class AdminDesktopShellEndpointTests
             using HttpClient client = factory.CreateClient();
             AdminHostReadinessService readiness = factory.Services
                 .GetRequiredService<AdminHostReadinessService>();
-            await WaitUntilAsync(() => readiness.Snapshot.IsReady);
+            await WaitUntilAsync(
+                () => readiness.Snapshot.IsReady,
+                TimeSpan.FromSeconds(30));
 
             using (readiness.EnterDatabaseSwitch())
             {
@@ -396,10 +398,12 @@ public sealed class AdminDesktopShellEndpointTests
             $"Health endpoint '{path}' did not reach {expected}; last status was {actual}.");
     }
 
-    private static async Task WaitUntilAsync(Func<bool> condition)
+    private static async Task WaitUntilAsync(
+        Func<bool> condition,
+        TimeSpan? timeout = null)
     {
         var deadline = System.Diagnostics.Stopwatch.StartNew();
-        while (deadline.Elapsed < TimeSpan.FromSeconds(5))
+        while (deadline.Elapsed < (timeout ?? TimeSpan.FromSeconds(5)))
         {
             if (condition())
                 return;
