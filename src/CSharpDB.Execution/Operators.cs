@@ -3405,13 +3405,13 @@ public sealed class LimitOperator :
     IPhysicalOperatorChildren
 {
     private const int DefaultBatchSize = 64;
-    private const int SmallLimitRowModeThreshold = 4;
+    internal const int SmallLimitRowModeThreshold = 4;
 
     private readonly IOperator _source;
     private readonly int _limit;
     private int _count;
     private bool _reuseCurrentBatch = true;
-    private RowBatch _currentBatch;
+    private RowBatch? _currentBatch;
     private int _sourceBatchRowIndex = -1;
 
     public ColumnDefinition[] OutputSchema => _source.OutputSchema;
@@ -3425,13 +3425,12 @@ public sealed class LimitOperator :
     {
         _source = PhysicalPlanCapture.WrapIfActive(source);
         _limit = limit;
-        _currentBatch = CreateBatch(_source.OutputSchema.Length);
     }
 
     public async ValueTask OpenAsync(CancellationToken ct = default)
     {
         _count = 0;
-        _currentBatch = CreateBatch(_source.OutputSchema.Length);
+        _currentBatch = null;
         _sourceBatchRowIndex = -1;
         await _source.OpenAsync(ct);
     }
@@ -3491,13 +3490,13 @@ public sealed class LimitOperator :
     }
 
     bool IBatchOperator.ReusesCurrentBatch => _reuseCurrentBatch;
-    RowBatch IBatchOperator.CurrentBatch => _currentBatch;
+    RowBatch IBatchOperator.CurrentBatch => _currentBatch ??= CreateBatch(_source.OutputSchema.Length);
 
     public void SetReuseCurrentBatch(bool reuse)
     {
         _reuseCurrentBatch = reuse;
         if (!reuse)
-            _currentBatch = CreateBatch(_source.OutputSchema.Length);
+            _currentBatch = null;
     }
 
     private async ValueTask<bool> MoveNextBatchFromBatchSourceAsync(IBatchOperator batchSource, CancellationToken ct)
@@ -3554,7 +3553,7 @@ public sealed class LimitOperator :
 
     private RowBatch EnsureBatch(int columnCount)
     {
-        if (_currentBatch.ColumnCount != columnCount)
+        if (_currentBatch is null || _currentBatch.ColumnCount != columnCount)
             _currentBatch = CreateBatch(columnCount);
 
         return _currentBatch;
@@ -12427,7 +12426,7 @@ public sealed class IndexScanOperator :
     private bool _hasPreDecodeFilter;
     private PreDecodeFilterSpec[]? _additionalPreDecodeFilters;
     private ReadOnlyMemory<byte> _currentPayload;
-    private RowBatch _currentBatch;
+    private RowBatch? _currentBatch;
 
     public ColumnDefinition[] OutputSchema { get; }
     public bool ReusesCurrentRowBuffer => _reuseCurrentRowBuffer;
@@ -12476,7 +12475,6 @@ public sealed class IndexScanOperator :
             _expectedKeyTextBytes = BoundColumnAccessHelper.CreateTextLiteralBytes(expectedKeyComponents);
         }
         OutputSchema = schema.Columns as ColumnDefinition[] ?? schema.Columns.ToArray();
-        _currentBatch = CreateBatch(GetTargetColumnCount());
     }
 
     /// <summary>
@@ -12515,7 +12513,7 @@ public sealed class IndexScanOperator :
     public ValueTask OpenAsync(CancellationToken ct = default)
     {
         _currentPayload = ReadOnlyMemory<byte>.Empty;
-        _currentBatch = CreateBatch(GetTargetColumnCount());
+        _currentBatch = null;
         if (_indexStore is ICacheAwareIndexStore cacheAware &&
             cacheAware.TryFindCached(_seekValue, out var cachedPayload))
         {
@@ -12561,13 +12559,13 @@ public sealed class IndexScanOperator :
     }
 
     bool IBatchOperator.ReusesCurrentBatch => _reuseCurrentBatch;
-    RowBatch IBatchOperator.CurrentBatch => _currentBatch;
+    RowBatch IBatchOperator.CurrentBatch => _currentBatch ??= CreateBatch(GetTargetColumnCount());
 
     public void SetReuseCurrentBatch(bool reuse)
     {
         _reuseCurrentBatch = reuse;
         if (!reuse)
-            _currentBatch = CreateBatch(GetTargetColumnCount());
+            _currentBatch = null;
     }
 
     private async ValueTask<bool> TryMoveNextPayloadAsync(CancellationToken ct)
@@ -12649,7 +12647,7 @@ public sealed class IndexScanOperator :
 
     private RowBatch EnsureBatch(int columnCount)
     {
-        if (_currentBatch.ColumnCount != columnCount)
+        if (_currentBatch is null || _currentBatch.ColumnCount != columnCount)
             _currentBatch = CreateBatch(columnCount);
 
         return _currentBatch;
@@ -13058,7 +13056,7 @@ public sealed class IndexOrderedScanOperator :
     private bool _hasPreDecodeFilter;
     private PreDecodeFilterSpec[]? _additionalPreDecodeFilters;
     private ReadOnlyMemory<byte> _currentPayload;
-    private RowBatch _currentBatch;
+    private RowBatch? _currentBatch;
 
     public ColumnDefinition[] OutputSchema { get; }
     public bool ReusesCurrentRowBuffer => _reuseCurrentRowBuffer;
@@ -13099,7 +13097,6 @@ public sealed class IndexOrderedScanOperator :
         _orderedTextUpperInclusive = orderedTextUpperInclusive;
         _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
         OutputSchema = schema.Columns as ColumnDefinition[] ?? schema.Columns.ToArray();
-        _currentBatch = CreateBatch(GetTargetColumnCount());
     }
 
     /// <summary>
@@ -13144,7 +13141,7 @@ public sealed class IndexOrderedScanOperator :
         _orderedTextRowIds?.Clear();
         _currentPayload = ReadOnlyMemory<byte>.Empty;
         _rowBuffer = null;
-        _currentBatch = CreateBatch(GetTargetColumnCount());
+        _currentBatch = null;
         Current = Array.Empty<DbValue>();
         return ValueTask.CompletedTask;
     }
@@ -13206,13 +13203,13 @@ public sealed class IndexOrderedScanOperator :
     }
 
     bool IBatchOperator.ReusesCurrentBatch => _reuseCurrentBatch;
-    RowBatch IBatchOperator.CurrentBatch => _currentBatch;
+    RowBatch IBatchOperator.CurrentBatch => _currentBatch ??= CreateBatch(GetTargetColumnCount());
 
     public void SetReuseCurrentBatch(bool reuse)
     {
         _reuseCurrentBatch = reuse;
         if (!reuse)
-            _currentBatch = CreateBatch(GetTargetColumnCount());
+            _currentBatch = null;
     }
 
     private void EnsureRowBuffer(int columnCount)
@@ -13326,7 +13323,7 @@ public sealed class IndexOrderedScanOperator :
 
     private RowBatch EnsureBatch(int columnCount)
     {
-        if (_currentBatch.ColumnCount != columnCount)
+        if (_currentBatch is null || _currentBatch.ColumnCount != columnCount)
             _currentBatch = CreateBatch(columnCount);
 
         return _currentBatch;
@@ -14321,7 +14318,7 @@ public sealed class IndexOrderedProjectionScanOperator :
     private ReadOnlyMemory<byte> _rowIdPayload;
     private int _rowIdPayloadOffset;
     private bool _reuseCurrentBatch = true;
-    private RowBatch _currentBatch;
+    private RowBatch? _currentBatch;
 
     public ColumnDefinition[] OutputSchema { get; }
     public bool ReusesCurrentRowBuffer => true;
@@ -14343,7 +14340,6 @@ public sealed class IndexOrderedProjectionScanOperator :
         _projectionKinds = BuildProjectionKinds(projectionColumnIndices, primaryKeyColumnIndex, predicateColumnIndex);
         _requiresRowId = ProjectionRequiresRowId(_projectionKinds);
         _rowBuffer = outputSchema.Length == 0 ? Array.Empty<DbValue>() : new DbValue[outputSchema.Length];
-        _currentBatch = CreateBatch(outputSchema.Length);
     }
 
     public ValueTask OpenAsync(CancellationToken ct = default)
@@ -14351,7 +14347,7 @@ public sealed class IndexOrderedProjectionScanOperator :
         _cursor = _indexStore.CreateCursor(_scanRange);
         _rowIdPayload = ReadOnlyMemory<byte>.Empty;
         _rowIdPayloadOffset = 0;
-        _currentBatch = CreateBatch(OutputSchema.Length);
+        _currentBatch = null;
         Current = Array.Empty<DbValue>();
         return ValueTask.CompletedTask;
     }
@@ -14430,13 +14426,13 @@ public sealed class IndexOrderedProjectionScanOperator :
     }
 
     bool IBatchOperator.ReusesCurrentBatch => _reuseCurrentBatch;
-    RowBatch IBatchOperator.CurrentBatch => _currentBatch;
+    RowBatch IBatchOperator.CurrentBatch => _currentBatch ??= CreateBatch(OutputSchema.Length);
 
     public void SetReuseCurrentBatch(bool reuse)
     {
         _reuseCurrentBatch = reuse;
         if (!reuse)
-            _currentBatch = CreateBatch(OutputSchema.Length);
+            _currentBatch = null;
     }
 
     private void PopulateCurrent(long keyValue, long rowId)
@@ -14492,7 +14488,7 @@ public sealed class IndexOrderedProjectionScanOperator :
 
     private RowBatch EnsureBatch(int columnCount)
     {
-        if (_currentBatch.ColumnCount != columnCount)
+        if (_currentBatch is null || _currentBatch.ColumnCount != columnCount)
             _currentBatch = CreateBatch(columnCount);
 
         return _currentBatch;

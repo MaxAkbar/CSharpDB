@@ -149,6 +149,48 @@ public sealed class PreparedCommandObservabilityTests : IAsyncLifetime
         Assert.DoesNotContain(secret, serialized, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PreparedIndexedSelect_EmitsSourceFingerprintWithoutBoundValues(bool pooling)
+    {
+        const long secret = 726103829541;
+        const string sourceSql = "SELECT id FROM indexed_secrets WHERE marker = @marker";
+        string connectionString = $"Data Source={_databasePath};Pooling={pooling}";
+        using var events = new QueryEventRecorder();
+        try
+        {
+            await using var connection = new CSharpDbConnection(connectionString, CreateOptions(SqlTextCaptureMode.Normalized));
+            await connection.OpenAsync(Ct);
+            await ExecuteNonQueryAsync(connection, "CREATE TABLE indexed_secrets (id INTEGER PRIMARY KEY, marker BIGINT)");
+            await ExecuteNonQueryAsync(connection, $"INSERT INTO indexed_secrets VALUES (1, {secret})");
+            await ExecuteNonQueryAsync(connection, "CREATE INDEX ix_marker ON indexed_secrets(marker)");
+            using var command = connection.CreateCommand();
+            command.CommandText = sourceSql;
+            var parameter = command.Parameters.AddWithValue("marker", secret);
+            command.Prepare();
+            events.Clear();
+            Assert.Equal(1, await command.ExecuteScalarAsync(Ct));
+            parameter.Value = secret + 1;
+            Assert.Null(await command.ExecuteScalarAsync(Ct));
+            parameter.Value = secret;
+            Assert.Equal(1, await command.ExecuteScalarAsync(Ct));
+            var completed = events.Events<CSharpDbQueryCompletedEvent>();
+            Assert.Equal(3, completed.Length);
+            foreach (var item in completed)
+            {
+                Assert.Equal(SqlQueryFingerprintProvider.Instance.CreateFingerprint(sourceSql, Ct), item.Context.QueryFingerprint);
+                string serialized = JsonSerializer.Serialize(item, CSharpDbObservabilityJsonContext.Default.CSharpDbQueryCompletedEvent);
+                Assert.DoesNotContain(secret.ToString(), serialized, StringComparison.Ordinal);
+            }
+            Assert.Empty(events.Events<CSharpDbQueryFailedEvent>());
+        }
+        finally
+        {
+            if (pooling) await CSharpDbConnection.ClearPoolAsync(connectionString);
+        }
+    }
+
     [Fact]
     public async Task DisabledObservability_EmitsNoPreparedCommandEvents()
     {

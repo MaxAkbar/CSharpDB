@@ -4113,6 +4113,7 @@ public sealed class Database : IAsyncDisposable
                 windowExecution: _windowExecution)
             {
                 PlanRuntimeObserver = _queryPlanRuntimeObserver,
+                EnablePreparedPrimaryKeyRanges = false,
             };
             return planner;
         }

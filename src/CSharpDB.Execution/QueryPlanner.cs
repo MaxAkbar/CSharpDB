@@ -1195,6 +1195,9 @@ public sealed partial class QueryPlanner
         CancellationToken ct,
         bool suppressAdaptiveReoptimization = false)
     {
+        if (stmt is PreparedSelectStatement prepared)
+            return ValueTask.FromResult(ExecutePreparedSelect(prepared));
+
         WindowExpressionSupport.ValidateQuery(stmt);
         ValidateStarAggregateProjection(stmt);
 
@@ -1267,7 +1270,7 @@ public sealed partial class QueryPlanner
             _selectPlanCacheMissCount,
             _selectPlanCacheReclassificationCount,
             _selectPlanCacheStoreCount,
-            _selectPlanCache.Count);
+            _selectPlanCache.Count + _preparedSelectPlans.Count);
 
     internal void ResetSelectPlanCacheDiagnostics()
     {
@@ -1431,6 +1434,7 @@ public sealed partial class QueryPlanner
         _systemIndexesCountCache = null;
         _systemForeignKeysCountCache = null;
         _selectPlanCache.Clear();
+        ClearPreparedSelectPlans();
         _selectBatchPlanCache.Clear();
         _selectJoinReorderCache.Clear();
         _selectPlanInsertionOrder.Clear();
@@ -17102,6 +17106,19 @@ public sealed partial class QueryPlanner
         return true;
     }
 
+    private static DbValue[] DecodeRowWithNullPadding(IRecordSerializer serializer, ReadOnlySpan<byte> payload, int columnCount)
+    {
+        DbValue[] row = serializer.Decode(payload);
+        // Adding a nullable column without a default need not rewrite older stored records.
+        if (row.Length < columnCount)
+        {
+            int storedCount = row.Length;
+            Array.Resize(ref row, columnCount);
+            Array.Fill(row, DbValue.Null, storedCount, columnCount - storedCount);
+        }
+        return row;
+    }
+
     private bool TryMaterializeSyncIndexedLookupResult(
         IOperator lookupOp,
         TableSchema schema,
@@ -17130,7 +17147,7 @@ public sealed partial class QueryPlanner
         if (projectionColumnIndices == null)
         {
             DbValue[]? row = rowPayload is { } rowPayloadMemory
-                ? serializer.Decode(rowPayloadMemory.Span)
+                ? DecodeRowWithNullPadding(serializer, rowPayloadMemory.Span, outputSchema.Length)
                 : null;
             result = QueryResult.FromSyncLookup(row, outputSchema);
             return true;
@@ -21333,6 +21350,7 @@ public sealed partial class QueryPlanner
         _systemExternalTablesRowsCache = null;
         _systemObjectsRowsCache = null;
         _selectPlanCache.Clear();
+        ClearPreparedSelectPlans();
         _selectBatchPlanCache.Clear();
         _selectJoinReorderCache.Clear();
         _selectPlanInsertionOrder.Clear();

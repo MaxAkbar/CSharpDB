@@ -791,3 +791,17 @@ Related files:
 - `scripts/Test-PreviousReleasePerformance.ps1`: clean two-revision benchmark runner.
 - `scripts/Watch-LocalPerformanceEnvironment.ps1`: fail-closed observable external-load evidence monitor.
 - `scripts/Update-BenchmarkReadme.ps1`: generated-results updater.
+
+## Prepared SELECT plan reuse
+
+`PreparedQueryPlanReuseBenchmarks` exercises public ADO.NET prepared reads with 1, 64, 65, 256, and 2048 recurring parameter sets. Each execution validates a fixed one-row secondary-index or primary-key lookup, a decode-free primary-key projection, or a four-row ordered secondary-index or physical primary-key range. This covers changing values beyond the old 64-entry bound-statement cache, unlike stable-text plan-cache benchmarks.
+
+```powershell
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --micro --filter '*PreparedQueryPlanReuseBenchmarks*'
+```
+
+The prepared index path currently supports non-null integral parameters in comparisons against one indexed integer column, column/star projections, optional ascending order on that column, and constant LIMIT/OFFSET. Physical INTEGER/BIGINT primary-key equality and ranges also reuse plans, including additional bounds on the same key. Equality preserves cache-only and decode-free lookup paths; ranges seek to the lower bound and stop at the upper bound without requiring a secondary index. It caches up to 256 template plans per planner, invalidates them on schema changes, and gives each execution its own parameter frame and operators. Different values do not consume additional prepared-plan entries. Unsupported shapes, parameter types, catalogs, and physical EXPLAIN capture use the ordinary planner; its value-bound cache remains limited to 64 entries. Prepared metadata reuse does not imply that every parameterized query uses this path.
+
+The physical primary-key range extension applies to direct database and explicit write-transaction planners. `ReaderSession` planners, including pooled ADO reads, retain their previous primary-key range path because their shared catalog can expose roots newer than the reader snapshot after a tree split. A safe snapshot-catalog implementation needs separate performance qualification; existing prepared equality and secondary-index eligibility is unchanged. The benchmark fixture uses `Pooling=false`.
+
+For nullable indexed columns, supported comparison predicates exclude NULL rows, allowing ordered index access without losing matching rows. Broad equality values still consult the existing selectivity guard. Tiny LIMIT windows without an offset use the row boundary, and index-scan/limit batch buffers are allocated when requested. The fixture uses an in-memory database; use controlled file-backed paired runs when qualifying a release, and distinguish improvements from plan reuse from improvements in the chosen access path and result buffering.
