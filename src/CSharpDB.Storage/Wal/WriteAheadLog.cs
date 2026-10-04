@@ -1509,11 +1509,13 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
 
         try
         {
-            var checkpoint = await EnsureIncrementalCheckpointStateAsync(cancellationToken);
+            var checkpoint = await EnsureIncrementalCheckpointStateAsync(pageCount, cancellationToken);
             if (checkpoint is null)
                 return true;
 
-            long requiredLength = (long)pageCount * PageConstants.PageSize;
+            // New commits may grow the database between copy slices. Their
+            // pages belong to a later copy; avoid resizing for every append.
+            long requiredLength = (long)checkpoint.DatabasePageCount * PageConstants.PageSize;
             if (device.Length < requiredLength)
                 await device.SetLengthAsync(requiredLength, cancellationToken);
 
@@ -3127,7 +3129,8 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
         Interlocked.Increment(ref _runtimeCheckpointProgressVersion);
     }
 
-    private async ValueTask<IncrementalCheckpointState?> EnsureIncrementalCheckpointStateAsync(CancellationToken cancellationToken)
+    private async ValueTask<IncrementalCheckpointState?> EnsureIncrementalCheckpointStateAsync(
+        uint pageCount, CancellationToken cancellationToken)
     {
         if (_incrementalCheckpoint is not null)
             return _incrementalCheckpoint;
@@ -3267,7 +3270,7 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
 
         var snapshot = new KeyValuePair<uint, long>[committedPageCount];
         Array.Copy(sortedCommittedPages, 0, snapshot, 0, committedPageCount);
-        var checkpoint = new IncrementalCheckpointState(snapshot, committedPageCount, streamLength);
+        var checkpoint = new IncrementalCheckpointState(snapshot, committedPageCount, streamLength, pageCount);
         SetIncrementalCheckpointState(checkpoint);
         return checkpoint;
     }
@@ -3285,10 +3288,13 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
             return true;
 
         long maxFrameOffset = streamLength - PageConstants.WalFrameSize;
-        byte[] frameHeaderBuffer = _recoveryFrameHeaderBuffer;
+        EnsureCheckpointBuffers();
+        EnsureCheckpointCommittedPageCapacity(CheckpointWriteChunkPages);
+        var validationPages = _checkpointCommittedPages;
+        int validationCount = 0;
+        long validationStartOffset = 0;
         foreach (var entry in committedPages)
         {
-            uint expectedPageId = entry.Key;
             long walOffset = entry.Value;
             if (walOffset < PageConstants.WalHeaderSize || walOffset > maxFrameOffset)
                 return true;
@@ -3296,27 +3302,60 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
             if ((walOffset - PageConstants.WalHeaderSize) % PageConstants.WalFrameSize != 0)
                 return true;
 
-            await ReadWalRangeIntoAsync(
-                walOffset,
-                frameHeaderBuffer.AsMemory(0, PageConstants.WalFrameHeaderSize),
-                cancellationToken);
+            // Validate every indexed header, but coalesce adjacent WAL frames.
+            // One asynchronous header read per page makes checkpoint admission
+            // scale with the entire working set even for a bounded copy step.
+            if (validationCount > 0 &&
+                (validationCount == CheckpointWriteChunkPages ||
+                 walOffset != validationStartOffset + (long)validationCount * PageConstants.WalFrameSize))
+            {
+                if (await RequiresCommittedStateRebuildForBatchAsync(
+                        validationPages, validationCount, validationStartOffset, cancellationToken))
+                    return true;
+                validationCount = 0;
+            }
 
-            uint actualPageId = BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(0, 4));
-            if (actualPageId != expectedPageId)
+            if (validationCount == 0)
+                validationStartOffset = walOffset;
+            validationPages[validationCount++] = entry;
+        }
+
+        return validationCount > 0 &&
+            await RequiresCommittedStateRebuildForBatchAsync(
+                validationPages, validationCount, validationStartOffset, cancellationToken);
+    }
+
+    private async ValueTask<bool> RequiresCommittedStateRebuildForBatchAsync(
+        KeyValuePair<uint, long>[] validationPages,
+        int count,
+        long startOffset,
+        CancellationToken cancellationToken)
+    {
+        byte[] readBuffer = _checkpointReadBuffer!;
+        await ReadWalRangeIntoAsync(
+            startOffset,
+            readBuffer.AsMemory(0, (count - 1) * PageConstants.WalFrameSize + PageConstants.WalFrameHeaderSize),
+            cancellationToken);
+
+        for (int i = 0; i < count; i++)
+        {
+            var header = readBuffer.AsSpan(i * PageConstants.WalFrameSize, PageConstants.WalFrameHeaderSize);
+            uint actualPageId = BinaryPrimitives.ReadUInt32LittleEndian(header.Slice(0, 4));
+            if (actualPageId != validationPages[i].Key)
                 return true;
 
-            uint frameSalt1 = BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(8, 4));
-            uint frameSalt2 = BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(12, 4));
+            uint frameSalt1 = BinaryPrimitives.ReadUInt32LittleEndian(header.Slice(8, 4));
+            uint frameSalt2 = BinaryPrimitives.ReadUInt32LittleEndian(header.Slice(12, 4));
             if (frameSalt1 != _salt1 || frameSalt2 != _salt2)
                 return true;
 
-            uint expectedHeaderChecksum = BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(16, 4));
+            uint expectedHeaderChecksum = BinaryPrimitives.ReadUInt32LittleEndian(header.Slice(16, 4));
             uint actualHeaderChecksum = ComputeHeaderChecksum(
                 actualPageId,
-                BinaryPrimitives.ReadUInt32LittleEndian(frameHeaderBuffer.AsSpan(4, 4)),
+                BinaryPrimitives.ReadUInt32LittleEndian(header.Slice(4, 4)),
                 frameSalt1,
                 frameSalt2,
-                frameHeaderBuffer.AsSpan(0, 16));
+                header.Slice(0, 16));
             if (expectedHeaderChecksum != actualHeaderChecksum)
                 return true;
         }
@@ -3583,17 +3622,20 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
         public IncrementalCheckpointState(
             KeyValuePair<uint, long>[] committedPages,
             int committedPageCount,
-            long retainedWalStartOffset)
+            long retainedWalStartOffset,
+            uint databasePageCount)
         {
             CommittedPages = committedPages;
             CommittedPageCount = committedPageCount;
             RetainedWalStartOffset = retainedWalStartOffset;
+            DatabasePageCount = databasePageCount;
         }
 
         public KeyValuePair<uint, long>[] CommittedPages { get; }
         public int CommittedPageCount { get; }
         public int NextPageIndex { get; set; }
         public long RetainedWalStartOffset { get; }
+        public uint DatabasePageCount { get; }
     }
 
     private sealed class PreparedPendingCommit : IDisposable

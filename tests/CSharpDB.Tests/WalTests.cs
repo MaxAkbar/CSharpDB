@@ -8,6 +8,7 @@ using CSharpDB.Storage.Diagnostics;
 using CSharpDB.Storage.Paging;
 using CSharpDB.Storage.StorageEngine;
 using CSharpDB.Storage.Wal;
+using CSharpDB.Storage.Transactions;
 using Microsoft.Win32.SafeHandles;
 using System.Reflection;
 
@@ -828,6 +829,187 @@ public class WalTests : IAsyncLifetime
         await using var result = await _db.ExecuteAsync("SELECT COUNT(*) FROM t", ct);
         var rows = await result.ToListAsync(ct);
         Assert.Equal(1L, rows[0][0].AsInteger);
+    }
+
+    [Theory]
+    [InlineData(false, false, 2)]
+    [InlineData(true, false, 2)]
+    [InlineData(false, false, 4)]
+    [InlineData(true, false, 4)]
+    [InlineData(false, true, 1)]
+    [InlineData(true, true, 1)]
+    public async Task BackgroundAutoCheckpoint_AdmitsWaitingWriterAfterCommitCopyBudget(
+        bool explicitWriter, bool bulkCommit, int maxPagesPerStep)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_wal_checkpoint_writer_admission_{Guid.NewGuid():N}.db");
+        var interceptor = new SliceCheckpointInterceptor();
+        var options = new PagerOptions
+        {
+            CheckpointPolicy = new FrameCountCheckpointPolicy(bulkCommit ? 1 : 10000),
+            AutoCheckpointExecutionMode = AutoCheckpointExecutionMode.Background,
+            AutoCheckpointMaxPagesPerStep = maxPagesPerStep,
+            Interceptors = [interceptor],
+        };
+        try
+        {
+            await using var pager = await OpenPagerAsync(dbPath, options, createNew: true, ct);
+            await pager.BeginTransactionAsync(ct);
+            uint root = await BTree.CreateNewAsync(pager, ct);
+            var tree = new BTree(pager, root);
+            for (int i = 1; i <= 100; i++)
+                await tree.InsertAsync(i, new byte[160], ct);
+            await pager.CommitAsync(ct);
+
+            if (!bulkCommit)
+            {
+                // One slice covers this small commit but leaves older pages.
+                pager.CheckpointPolicy = new FrameCountCheckpointPolicy(1);
+                pager.CheckpointThreshold = 1;
+                await pager.BeginTransactionAsync(ct);
+                await tree.InsertAsync(101, new byte[160], ct);
+                await pager.CommitAsync(ct);
+            }
+            await interceptor.FirstStarted.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+
+            Task<PagerWriteTransaction>? explicitBegin = explicitWriter
+                ? pager.BeginWriteTransactionAsync(ct).AsTask() : null;
+            Task writer = explicitBegin is not null ? explicitBegin : pager.BeginTransactionAsync(ct).AsTask();
+            try
+            {
+                Assert.False(writer.IsCompleted);
+                interceptor.FirstRelease.TrySetResult();
+                Task winner = await Task.WhenAny(writer, interceptor.SecondStarted.Task).WaitAsync(TimeSpan.FromSeconds(10), ct);
+                bool copyMustContinue = bulkCommit || maxPagesPerStep == 4;
+                Assert.Same(copyMustContinue ? interceptor.SecondStarted.Task : writer, winner);
+                if (copyMustContinue)
+                    Assert.False(writer.IsCompleted);
+            }
+            finally
+            {
+                interceptor.FirstRelease.TrySetResult();
+                interceptor.SecondRelease.TrySetResult();
+                await writer.WaitAsync(TimeSpan.FromSeconds(10), ct);
+                if (explicitBegin is not null)
+                    await (await explicitBegin).DisposeAsync();
+                else
+                    await pager.RollbackAsync(ct);
+            }
+        }
+        finally
+        {
+            interceptor.FirstRelease.TrySetResult();
+            interceptor.SecondRelease.TrySetResult();
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+            if (File.Exists(dbPath + ".wal")) File.Delete(dbPath + ".wal");
+        }
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task BackgroundAutoCheckpoint_InterleavedGrowth_PreservesHeaderAndPolicy(
+        bool preserveOwnedPages, bool retainedBelowThreshold)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_wal_checkpoint_growth_{Guid.NewGuid():N}.db");
+        var interceptor = new SliceCheckpointInterceptor(blockThird: true, firstSlice: 2, thirdSlice: 8);
+        var options = new PagerOptions
+        {
+            CheckpointPolicy = new FrameCountCheckpointPolicy(10000),
+            AutoCheckpointExecutionMode = AutoCheckpointExecutionMode.Background,
+            AutoCheckpointMaxPagesPerStep = 1,
+            PreserveOwnedPagesOnCheckpoint = preserveOwnedPages,
+            Interceptors = [interceptor],
+        };
+        var expected = new Dictionary<uint, byte>();
+        try
+        {
+            await using (var pager = await OpenPagerAsync(dbPath, options, createNew: true, ct))
+            {
+                Task? followingWriter = null;
+                try
+                {
+                    await pager.BeginTransactionAsync(ct);
+                    for (int i = 1; i <= 6; i++)
+                    {
+                        uint pageId = await pager.AllocatePageAsync(ct);
+                        (await pager.GetPageAsync(pageId, ct))[0] = expected[pageId] = (byte)i;
+                        await pager.MarkDirtyAsync(pageId, ct);
+                    }
+                    await pager.CommitAsync(ct);
+                    pager.CheckpointPolicy = new FrameCountCheckpointPolicy(1);
+                    pager.CheckpointThreshold = 1;
+                    await pager.BeginTransactionAsync(ct);
+                    (await pager.GetPageAsync(1, ct))[0] = expected[1] = 99;
+                    await pager.MarkDirtyAsync(1, ct);
+                    await pager.CommitAsync(ct);
+                    await interceptor.FirstStarted.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+
+                    if (retainedBelowThreshold)
+                    {
+                        pager.CheckpointPolicy = new FrameCountCheckpointPolicy(1000);
+                        pager.CheckpointThreshold = 1000;
+                    }
+                    Task writer = pager.BeginTransactionAsync(ct).AsTask();
+                    interceptor.FirstRelease.TrySetResult();
+                    await writer.WaitAsync(TimeSpan.FromSeconds(10), ct);
+                    for (int i = 1; i <= 8; i++)
+                    {
+                        uint pageId = await pager.AllocatePageAsync(ct);
+                        (await pager.GetPageAsync(pageId, ct))[0] = expected[pageId] = (byte)(30 + i);
+                        await pager.MarkDirtyAsync(pageId, ct);
+                    }
+                    await pager.CommitAsync(ct);
+                    uint expectedPageCount = pager.PageCount;
+                    uint expectedChangeCounter = pager.ChangeCounter;
+                    await interceptor.SecondStarted.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+                    if (retainedBelowThreshold)
+                        followingWriter = pager.BeginTransactionAsync(ct).AsTask();
+                    interceptor.SecondRelease.TrySetResult();
+                    if (followingWriter is not null)
+                    {
+                        Task winner = await Task.WhenAny(followingWriter, interceptor.ThirdStarted.Task)
+                            .WaitAsync(TimeSpan.FromSeconds(10), ct);
+                        Assert.Same(followingWriter, winner);
+                    }
+                    else
+                    {
+                        await interceptor.ThirdStarted.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+                    }
+
+                    // The old copy is complete; newer page 0 is still in the WAL.
+                    Assert.Equal(expectedPageCount, pager.PageCount);
+                    Assert.Equal(expectedChangeCounter, pager.ChangeCounter);
+                }
+                finally
+                {
+                    interceptor.FirstRelease.TrySetResult();
+                    interceptor.SecondRelease.TrySetResult();
+                    interceptor.ThirdRelease.TrySetResult();
+                    if (followingWriter is not null)
+                    {
+                        await followingWriter.WaitAsync(TimeSpan.FromSeconds(10), ct);
+                        await pager.RollbackAsync(ct);
+                    }
+                }
+                await pager.CheckpointAsync(ct);
+            }
+            await using var reopened = await OpenPagerAsync(dbPath, new PagerOptions(), createNew: false, ct);
+            Assert.Equal((uint)expected.Count + 1, reopened.PageCount);
+            foreach (var page in expected)
+                Assert.Equal(page.Value, (await reopened.GetPageAsync(page.Key, ct))[0]);
+        }
+        finally
+        {
+            interceptor.FirstRelease.TrySetResult();
+            interceptor.SecondRelease.TrySetResult();
+            interceptor.ThirdRelease.TrySetResult();
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+            if (File.Exists(dbPath + ".wal")) File.Delete(dbPath + ".wal");
+        }
     }
 
     [Fact]
@@ -3884,6 +4066,35 @@ public class WalTests : IAsyncLifetime
 
         await pager.RecoverAsync(ct);
         return pager;
+    }
+
+    private sealed class SliceCheckpointInterceptor(
+        bool blockThird = false, int firstSlice = 1, int thirdSlice = 3) : IPageOperationInterceptor
+    {
+        private int _slice;
+        public TaskCompletionSource FirstStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource FirstRelease { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource SecondStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource SecondRelease { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ThirdStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ThirdRelease { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public ValueTask OnCheckpointStartAsync(int committedFrameCount, CancellationToken ct = default)
+        {
+            int slice = Interlocked.Increment(ref _slice);
+            if (slice == firstSlice) { FirstStarted.TrySetResult(); return new ValueTask(FirstRelease.Task.WaitAsync(ct)); }
+            if (slice == firstSlice + 1) { SecondStarted.TrySetResult(); return new ValueTask(SecondRelease.Task.WaitAsync(ct)); }
+            if (slice == thirdSlice && blockThird) { ThirdStarted.TrySetResult(); return new ValueTask(ThirdRelease.Task.WaitAsync(ct)); }
+            return ValueTask.CompletedTask;
+        }
+        public ValueTask OnBeforeReadAsync(uint pageId, CancellationToken ct = default) => ValueTask.CompletedTask;
+        public ValueTask OnAfterReadAsync(uint pageId, PageReadSource source, CancellationToken ct = default) => ValueTask.CompletedTask;
+        public ValueTask OnBeforeWriteAsync(uint pageId, CancellationToken ct = default) => ValueTask.CompletedTask;
+        public ValueTask OnAfterWriteAsync(uint pageId, bool succeeded, CancellationToken ct = default) => ValueTask.CompletedTask;
+        public ValueTask OnCommitStartAsync(int dirtyPageCount, CancellationToken ct = default) => ValueTask.CompletedTask;
+        public ValueTask OnCommitEndAsync(int dirtyPageCount, bool succeeded, CancellationToken ct = default) => ValueTask.CompletedTask;
+        public ValueTask OnCheckpointEndAsync(int committedFrameCount, bool succeeded, CancellationToken ct = default) => ValueTask.CompletedTask;
+        public ValueTask OnRecoveryStartAsync(CancellationToken ct = default) => ValueTask.CompletedTask;
+        public ValueTask OnRecoveryEndAsync(bool succeeded, CancellationToken ct = default) => ValueTask.CompletedTask;
     }
 
     private sealed class BlockingCheckpointInterceptor : IPageOperationInterceptor
