@@ -2,6 +2,64 @@
 
 This file preserves the benchmark release logs, failed-run notes, investigation records, and detailed historical snapshots that used to live in `README.md`. The main README is now intentionally user-first and release-stable; use this file when investigating why a past benchmark number changed or why a specific run was not promoted.
 
+## October 4, 2026 Isolated Pooled Prepared Primary-Key Ranges (Local Differential)
+
+Commit `0dc0a36f` retains the reader catalog and checkpoint correctness fixes with
+reader prepared primary-key ranges disabled. A separate candidate enables the
+existing bounded range planner for `ReaderSession`, including pooled ADO reads.
+That switch is the only functional product change; both arms share the same
+snapshot/catalog/checkpoint implementation. Existing prepared equality and
+secondary-index paths are unchanged.
+
+The candidate passed 3,249 engine tests and 315 ADO tests in Release, with no build
+warnings or errors in the final builds. Tests assert range operators over old
+snapshot roots after growth, one cached reader plan across 65/2,048 parameter
+sets, and bounded pooled reads while another connection commits or rolls back
+root-changing writes. The initial ADO test build exposed inaccessible internal
+inspection members; the test uses reflection for that assertion in the final
+passing build.
+
+Four fresh serial processes used one fixed harness against the committed guarded
+baseline and candidate: control-forward, candidate-reverse, candidate-forward,
+control-reverse. Six cases covered 1/256-table catalogs and 1/65/2,048 recurring
+parameter sets. Each file-backed fixture contained 10,000 rows; the public pooled
+ADO query selected four rows by primary-key range with `ORDER BY id LIMIT 4`.
+Each case used at least 8,192 warmups rounded to a complete parameter cycle and
+10,000 measured queries: 197,112 warmups and 240,000 measurements in total.
+Background activity was allowed as requested. Priority, affinity, durability and
+the 240-second process timeout were unchanged; no workload was retried.
+
+All six cases passed the declared checks: no median/allocation increase above
+5% in either pair, no P99 increase above 10% repeated in both pairs, and at least
+10% geometric-mean median improvement for cardinalities above 64. The observed
+geometric-mean median improvement for the 65/2,048-set cases was **73.38%**.
+Ranges below span both catalog sizes and both balanced pairs; allocations are
+decimal KB per query.
+
+| Recurring parameter sets | Baseline median | Candidate median | Baseline allocation | Candidate allocation |
+|---|---:|---:|---:|---:|
+| 1 | 78.6-82.9 us | 63.5-65.9 us | 39.44-39.50 KB | 25.44 KB |
+| 65 | 101.5-103.4 us | 63.6-66.1 us | 46.21-46.22 KB | 25.44-25.45 KB |
+| 2,048 | 567.6-595.1 us | 63.3-71.9 us | 192.10-192.22 KB | 25.43-25.44 KB |
+
+Every query validated its exact rows and disposed its reader. Before/after
+dispatch samples confirmed bounded primary-key scans for the candidate and the
+baseline table-scan path, with no leaked reader sessions. Pooled executions
+create fresh planners, so this is a bounded-access improvement, not shared plan
+reuse across pooled queries. Persistent reader sessions separately passed the
+one-plan/changing-values regression tests.
+
+Evidence is in `.tmp/pooled-prepared-range-20261004`. The first analyzer retained
+a 32-case loop bound from its parent harness; it failed after all four workloads
+had completed. The separate `analysis-r2` correction iterates the declared six
+cases without changing samples or thresholds. An independent Python check
+recomputed percentiles and ratios from all raw samples and verified all 196
+original evidence files. The original analysis failure remains preserved.
+
+This local comparison supports the isolated reader-range enablement. It does
+not qualify release-wide performance or clear the earlier durable-write P99
+diagnostics, whose changes and measurements were broader in scope.
+
 ## October 4, 2026 Reader Snapshot Catalog (Local Diagnostic, Not Qualified)
 
 The candidate replaces live reader catalog references with committed snapshot metadata,

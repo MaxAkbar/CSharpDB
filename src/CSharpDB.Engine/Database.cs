@@ -4169,7 +4169,7 @@ public sealed partial class Database : IAsyncDisposable
                 windowExecution: _windowExecution)
             {
                 PlanRuntimeObserver = _queryPlanRuntimeObserver,
-                EnablePreparedPrimaryKeyRanges = false,
+                EnablePreparedPrimaryKeyRanges = true,
             };
             return planner;
         }

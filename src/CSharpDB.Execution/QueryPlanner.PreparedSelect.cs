@@ -7,8 +7,7 @@ namespace CSharpDB.Execution;
 public sealed partial class QueryPlanner
 {
     private const int MaxPreparedSelectPlans = 256;
-    // ReaderSession has frozen snapshot metadata, but its prepared PK-range
-    // enablement remains disabled pending performance qualification.
+    // Reader planners resolve table roots through their frozen catalog view.
     internal bool EnablePreparedPrimaryKeyRanges { get; init; } = true;
     private readonly Dictionary<PreparedSelectTemplate, PreparedIndexPlan?> _preparedSelectPlans = new();
     private readonly Queue<PreparedSelectTemplate> _preparedSelectPlanOrder = new();

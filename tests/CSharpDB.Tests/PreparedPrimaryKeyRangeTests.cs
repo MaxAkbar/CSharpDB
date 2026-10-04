@@ -168,15 +168,16 @@ public sealed class PreparedPrimaryKeyRangeTests
         var template = Prepare("SELECT * FROM t WHERE id >= @lower AND id < @upper ORDER BY id", "lower", "upper");
         Assert.Equal(16, (await ReadAsync(db, template.Bind([0, 1024]))).Length);
         using var snapshot = db.CreateReaderSession();
-        // ReaderSession retains its range fallback. New executions are covered by snapshot-catalog tests.
+        // The prepared operator resolves its root through the reader's frozen catalog.
         await using var old = await snapshot.ExecuteReadAsync(template.Bind([0, 1024]), Ct);
-        Assert.IsNotType<PrimaryKeyRangeScanOperator>(old.PhysicalRootOperator);
+        Assert.IsType<PrimaryKeyRangeScanOperator>(old.PhysicalRootOperator);
         // Grow beyond a leaf page so the cached plan cannot retain a table root from preparation.
         await InsertAsync(db, 16, 1008);
         Assert.Equal(Enumerable.Range(0, 1024).Select(i => (long)i), await ReadAsync(db, template.Bind([0, 1024])));
         Assert.Equal(Enumerable.Range(0, 16).Select(i => (long)i), (await old.ToListAsync(Ct)).Select(row => row[0].AsInteger));
         using var latest = db.CreateReaderSession();
         await using var current = await latest.ExecuteReadAsync(template.Bind([1000, 1024]), Ct);
+        Assert.IsType<PrimaryKeyRangeScanOperator>(current.PhysicalRootOperator);
         Assert.Equal(Enumerable.Range(1000, 24).Select(i => (long)i), (await current.ToListAsync(Ct)).Select(row => row[0].AsInteger));
     }
 
@@ -206,7 +207,7 @@ public sealed class PreparedPrimaryKeyRangeTests
     }
 
     [Fact]
-    public async Task ReaderSession_RetainsRangeFallbackAndExistingLookupAndIndexPaths()
+    public async Task ReaderSession_UsesBoundedRangesAndPreservesLookupAndIndexPaths()
     {
         await using var db = await CreateAsync();
         await db.ExecuteAsync("CREATE INDEX ix_value ON t(value)", Ct);
@@ -215,8 +216,8 @@ public sealed class PreparedPrimaryKeyRangeTests
         foreach (long[] bounds in new long[][] { [2, 4], [7, 7], [10, 12] })
         {
             await using var result = await reader.ExecuteReadAsync(range.Bind(bounds), Ct);
-            Assert.IsNotType<PrimaryKeyRangeScanOperator>(result.PhysicalRootOperator);
-            Assert.IsNotType<PrimaryKeyLookupOperator>(result.PhysicalRootOperator);
+            if (bounds[0] != bounds[1])
+                Assert.IsType<PrimaryKeyRangeScanOperator>(result.PhysicalRootOperator);
             Assert.Equal(Enumerable.Range((int)bounds[0], (int)(bounds[1] - bounds[0] + 1)).Select(i => (long)i),
                 (await result.ToListAsync(Ct)).Select(row => row[0].AsInteger));
         }
@@ -229,5 +230,32 @@ public sealed class PreparedPrimaryKeyRangeTests
         await using var indexedResult = await reader.ExecuteReadAsync(indexed.Bind([20, 50]), Ct);
         Assert.IsType<IndexOrderedScanOperator>(indexedResult.PhysicalRootOperator);
         Assert.Equal(new long[] { 2, 3, 4 }, (await indexedResult.ToListAsync(Ct)).Select(row => row[0].AsInteger));
+    }
+
+    [Theory]
+    [InlineData(65)]
+    [InlineData(2048)]
+    public async Task ReaderSession_ChangingBoundsReusesOnePlanWithoutRetainingValues(int cardinality)
+    {
+        await using var db = await CreateAsync(cardinality + 2);
+        using var reader = db.CreateReaderSession();
+        var template = Prepare("SELECT id, value FROM t WHERE id >= @lower AND id < @upper ORDER BY id", "lower", "upper");
+        int executions = cardinality * 2;
+        for (int i = 0; i < executions; i++)
+        {
+            long lower = i % cardinality;
+            await using var result = await reader.ExecuteReadAsync(template.Bind([lower, lower + 3]), Ct);
+            Assert.IsType<PrimaryKeyRangeScanOperator>(result.PhysicalRootOperator);
+            var rows = await result.ToListAsync(Ct);
+            Assert.Equal(new[] { lower, lower + 1, lower + 2 }, rows.Select(row => row[0].AsInteger));
+            Assert.All(rows, row => Assert.Equal(row[0].AsInteger * 10, row[1].AsInteger));
+        }
+        var planner = Assert.IsType<QueryPlanner>(typeof(Database.ReaderSession)
+            .GetField("_planner", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .GetValue(reader));
+        var stats = planner.GetSelectPlanCacheDiagnostics();
+        Assert.Equal(1, stats.MissCount);
+        Assert.Equal(executions - 1, stats.HitCount);
+        Assert.Equal(1, stats.EntryCount);
     }
 }

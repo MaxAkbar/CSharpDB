@@ -1,4 +1,6 @@
 using CSharpDB.Data;
+using CSharpDB.Execution;
+using System.Reflection;
 
 namespace CSharpDB.Data.Tests;
 
@@ -66,6 +68,12 @@ public sealed class PooledPreparedSnapshotRangeTests
     private static async Task AssertRangeAsync(CSharpDbCommand command, int first, int count, CancellationToken ct)
     {
         await using var reader = await command.ExecuteReaderAsync(ct);
+        var result = Assert.IsType<QueryResult>(typeof(CSharpDbDataReader)
+            .GetField("_queryResult", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(reader));
+        object? root = typeof(QueryResult)
+            .GetProperty("PhysicalRootOperator", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(result);
+        Assert.NotNull(root);
+        Assert.Equal("PrimaryKeyRangeScanOperator", root.GetType().Name);
         for (int i = first; i < first + count; i++)
         {
             Assert.True(await reader.ReadAsync(ct));
