@@ -13,7 +13,17 @@ internal readonly record struct TableAndIndexStorageReplacement(
 /// </summary>
 public sealed class SchemaCatalog
 {
-    private readonly CatalogService _service;
+    private readonly CatalogService? _service;
+    private readonly CatalogReadSnapshot? _readSnapshot;
+    private readonly Pager? _readPager;
+    private CatalogService Service => _service
+        ?? throw new InvalidOperationException("Snapshot catalog views are read-only.");
+
+    internal SchemaCatalog(CatalogReadSnapshot snapshot, Pager pager)
+    {
+        _readSnapshot = snapshot;
+        _readPager = pager;
+    }
 
     private SchemaCatalog(CatalogService service)
     {
@@ -63,121 +73,155 @@ public sealed class SchemaCatalog
         return new SchemaCatalog(service);
     }
 
-    public long SchemaVersion => _service.SchemaVersion;
+    internal CatalogReadSnapshot CaptureReadSnapshot(CatalogReadSnapshot? previous = null)
+        => _readSnapshot ?? Service.CaptureReadSnapshot(previous);
 
-    public ulong RowVersionHighWater => _service.RowVersionHighWater;
+    internal bool TryGetReadTable(string name, out CatalogReadTable table)
+    {
+        if (_readSnapshot is not null)
+            return _readSnapshot.TryGetReadTable(name, out table);
+        TableSchema? schema = Service.GetTable(name);
+        if (schema is null)
+        {
+            table = default;
+            return false;
+        }
+        table = new(schema, Service.GetTableRootPage(name), Service.GetForeignKeysForTable(name), Service.GetReferencingForeignKeys(name));
+        return true;
+    }
+
+    internal static async ValueTask<CatalogReadSnapshot> LoadReadSnapshotAsync(
+        Pager snapshotPager,
+        ISchemaSerializer schemaSerializer,
+        IIndexProvider indexProvider,
+        ICatalogStore catalogStore,
+        AdvisoryStatisticsPersistenceMode advisoryStatisticsPersistenceMode,
+        CancellationToken ct = default)
+    {
+        await snapshotPager.LoadSnapshotHeaderAsync(ct);
+        var catalog = await CreateAsync(snapshotPager, schemaSerializer, indexProvider,
+            catalogStore, advisoryStatisticsPersistenceMode, ct);
+        // Explicit writers can publish data before merging their counts into the
+        // shared catalog, even with immediate advisory persistence. Keep persisted
+        // estimates for planning, but scan the snapshot for an exact COUNT.
+        return catalog.Service.CaptureReadSnapshot(trustExactRowCounts: false);
+    }
+
+    public long SchemaVersion => _readSnapshot?.SchemaVersion ?? Service.SchemaVersion;
+
+    public ulong RowVersionHighWater => _readSnapshot?.RowVersionHighWater ?? Service.RowVersionHighWater;
 
     public ValueTask PersistRowVersionHighWaterAsync(
         ulong rowVersionHighWater,
         CancellationToken ct = default) =>
-        _service.PersistRowVersionHighWaterAsync(rowVersionHighWater, ct);
+        Service.PersistRowVersionHighWaterAsync(rowVersionHighWater, ct);
 
-    internal void MarkLogicalSchemaChanged() => _service.MarkLogicalSchemaChanged();
+    internal void MarkLogicalSchemaChanged() => Service.MarkLogicalSchemaChanged();
 
-    public TableSchema? GetTable(string tableName) => _service.GetTable(tableName);
+    public TableSchema? GetTable(string tableName) => _readSnapshot is null ? Service.GetTable(tableName) : _readSnapshot.GetTable(tableName);
 
     public IReadOnlyList<ForeignKeyDefinition> GetForeignKeysForTable(string tableName) =>
-        _service.GetForeignKeysForTable(tableName);
+        _readSnapshot is null ? Service.GetForeignKeysForTable(tableName) : _readSnapshot.GetForeignKeysForTable(tableName);
 
     public IReadOnlyList<TableForeignKeyReference> GetReferencingForeignKeys(string parentTableName) =>
-        _service.GetReferencingForeignKeys(parentTableName);
+        _readSnapshot is null ? Service.GetReferencingForeignKeys(parentTableName) : _readSnapshot.GetReferencingForeignKeys(parentTableName);
 
-    public TableStatistics? GetTableStatistics(string tableName) => _service.GetTableStatistics(tableName);
+    public TableStatistics? GetTableStatistics(string tableName) => _readSnapshot is null ? Service.GetTableStatistics(tableName) : _readSnapshot.GetTableStatistics(tableName);
 
-    public IReadOnlyCollection<TableStatistics> GetTableStatistics() => _service.GetTableStatistics();
+    public IReadOnlyCollection<TableStatistics> GetTableStatistics() => _readSnapshot is null ? Service.GetTableStatistics() : _readSnapshot.GetTableStatistics();
 
-    public IReadOnlyCollection<TableStatistics> GetDirtyTableStatistics() => _service.GetDirtyTableStatistics();
+    public IReadOnlyCollection<TableStatistics> GetDirtyTableStatistics() => _readSnapshot is null ? Service.GetDirtyTableStatistics() : Array.Empty<TableStatistics>();
 
     public IReadOnlyCollection<KeyValuePair<string, long>> GetPendingTableRowCountDeltas() =>
-        _service.GetPendingTableRowCountDeltas();
+        _readSnapshot is null ? Service.GetPendingTableRowCountDeltas() : Array.Empty<KeyValuePair<string, long>>();
 
     public ColumnStatistics? GetColumnStatistics(string tableName, string columnName) =>
-        _service.GetColumnStatistics(tableName, columnName);
+        _readSnapshot is null ? Service.GetColumnStatistics(tableName, columnName) : _readSnapshot.GetColumnStatistics(tableName, columnName);
 
     public IReadOnlyCollection<ColumnStatistics> GetColumnStatistics(string tableName) =>
-        _service.GetColumnStatistics(tableName);
+        _readSnapshot is null ? Service.GetColumnStatistics(tableName) : _readSnapshot.GetColumnStatistics(tableName);
 
     public IReadOnlyCollection<ColumnStatistics> GetColumnStatistics() =>
-        _service.GetColumnStatistics();
+        _readSnapshot is null ? Service.GetColumnStatistics() : _readSnapshot.GetColumnStatistics();
 
     public IReadOnlyCollection<ColumnStatistics> GetDirtyColumnStatistics() =>
-        _service.GetDirtyColumnStatistics();
+        _readSnapshot is null ? Service.GetDirtyColumnStatistics() : Array.Empty<ColumnStatistics>();
 
     public void ApplyCommittedAdvisoryStatisticsSnapshot(
         IReadOnlyCollection<TableStatistics> tableStatistics,
         IReadOnlyCollection<ColumnStatistics> columnStatistics,
         bool markDirty = false) =>
-        _service.ApplyCommittedAdvisoryStatisticsSnapshot(tableStatistics, columnStatistics, markDirty);
+        Service.ApplyCommittedAdvisoryStatisticsSnapshot(tableStatistics, columnStatistics, markDirty);
 
     public void ApplyCommittedTableRowCountDeltas(IReadOnlyCollection<KeyValuePair<string, long>> rowCountDeltas) =>
-        _service.ApplyCommittedTableRowCountDeltas(rowCountDeltas);
+        Service.ApplyCommittedTableRowCountDeltas(rowCountDeltas);
 
     public void ApplyCommittedTableMetadataSnapshot(IReadOnlyCollection<KeyValuePair<string, long>> nextRowIds) =>
-        _service.ApplyCommittedTableMetadataSnapshot(nextRowIds);
+        Service.ApplyCommittedTableMetadataSnapshot(nextRowIds);
 
     public bool TryGetFreshColumnStatistics(string tableName, string columnName, out ColumnStatistics stats) =>
-        _service.TryGetFreshColumnStatistics(tableName, columnName, out stats);
+        _readSnapshot is null ? Service.TryGetFreshColumnStatistics(tableName, columnName, out stats) : _readSnapshot.TryGetFreshColumnStatistics(tableName, columnName, out stats);
 
     public bool TryGetFreshColumnDistributionStatistics(string tableName, string columnName, out ColumnDistributionStatistics stats) =>
-        _service.TryGetFreshColumnDistributionStatistics(tableName, columnName, out stats);
+        _readSnapshot is null ? Service.TryGetFreshColumnDistributionStatistics(tableName, columnName, out stats) : _readSnapshot.TryGetFreshColumnDistributionStatistics(tableName, columnName, out stats);
 
     public bool TryGetFreshIndexPrefixStatistics(string indexName, out IndexPrefixStatistics stats) =>
-        _service.TryGetFreshIndexPrefixStatistics(indexName, out stats);
+        _readSnapshot is null ? Service.TryGetFreshIndexPrefixStatistics(indexName, out stats) : _readSnapshot.TryGetFreshIndexPrefixStatistics(indexName, out stats);
 
     internal IReadOnlyCollection<ColumnDistributionStatistics> GetColumnDistributionStatistics() =>
-        _service.GetColumnDistributionStatistics();
+        _readSnapshot is null ? Service.GetColumnDistributionStatistics() : _readSnapshot.GetColumnDistributionStatistics();
 
     internal IReadOnlyCollection<IndexPrefixStatistics> GetIndexPrefixStatistics() =>
-        _service.GetIndexPrefixStatistics();
+        _readSnapshot is null ? Service.GetIndexPrefixStatistics() : _readSnapshot.GetIndexPrefixStatistics();
 
     public bool TryGetTableRowCount(string tableName, out long rowCount) =>
-        _service.TryGetEstimatedTableRowCount(tableName, out rowCount);
+        _readSnapshot is null ? Service.TryGetEstimatedTableRowCount(tableName, out rowCount) : _readSnapshot.TryGetEstimatedTableRowCount(tableName, out rowCount);
 
     public bool TryGetEstimatedTableRowCount(string tableName, out long rowCount) =>
-        _service.TryGetEstimatedTableRowCount(tableName, out rowCount);
+        _readSnapshot is null ? Service.TryGetEstimatedTableRowCount(tableName, out rowCount) : _readSnapshot.TryGetEstimatedTableRowCount(tableName, out rowCount);
 
     public bool TryGetExactTableRowCount(string tableName, out long rowCount) =>
-        _service.TryGetExactTableRowCount(tableName, out rowCount);
+        _readSnapshot is null ? Service.TryGetExactTableRowCount(tableName, out rowCount) : _readSnapshot.TryGetExactTableRowCount(tableName, out rowCount);
 
     public ValueTask<long> GetExactTableRowCountAsync(string tableName, CancellationToken ct = default) =>
-        _service.GetExactTableRowCountAsync(tableName, ct);
+        _readSnapshot is null ? Service.GetExactTableRowCountAsync(tableName, ct) : _readSnapshot.GetExactTableRowCountAsync(tableName, _readPager!, ct);
 
-    public bool HasDirtyAdvisoryStatistics => _service.HasDirtyAdvisoryStatistics;
-    public bool HasAdvisoryCatalogContentChanges => _service.HasAdvisoryCatalogContentChanges;
+    public bool HasDirtyAdvisoryStatistics => _readSnapshot is null && Service.HasDirtyAdvisoryStatistics;
+    public bool HasAdvisoryCatalogContentChanges => _readSnapshot is null && Service.HasAdvisoryCatalogContentChanges;
 
-    public uint GetTableRootPage(string tableName) => _service.GetTableRootPage(tableName);
+    public uint GetTableRootPage(string tableName) => _readSnapshot is null ? Service.GetTableRootPage(tableName) : _readSnapshot.GetTableRootPage(tableName);
 
-    public IReadOnlyCollection<string> GetTableNames() => _service.GetTableNames();
+    public IReadOnlyCollection<string> GetTableNames() => _readSnapshot is null ? Service.GetTableNames() : _readSnapshot.GetTableNames();
 
     public ValueTask PersistRootPageChangesAsync(string tableName, CancellationToken ct = default) =>
-        _service.PersistRootPageChangesAsync(tableName, ct);
+        Service.PersistRootPageChangesAsync(tableName, ct);
 
     public ValueTask PersistAllRootPageChangesAsync(CancellationToken ct = default) =>
-        _service.PersistAllRootPageChangesAsync(ct);
+        Service.PersistAllRootPageChangesAsync(ct);
 
     public ValueTask<bool> PersistAllRootPageChangesAndDetectChangesAsync(CancellationToken ct = default) =>
-        _service.PersistAllRootPageChangesAndDetectChangesAsync(ct);
+        Service.PersistAllRootPageChangesAndDetectChangesAsync(ct);
 
     public ValueTask ReloadAsync(CancellationToken ct = default) =>
-        _service.ReloadAsync(ct);
+        Service.ReloadAsync(ct);
 
     public ValueTask CreateTableAsync(TableSchema schema, CancellationToken ct = default) =>
-        _service.CreateTableAsync(schema, ct);
+        Service.CreateTableAsync(schema, ct);
 
     public ValueTask CreateTableExactAsync(TableSchema schema, CancellationToken ct = default) =>
-        _service.CreateTableExactAsync(schema, ct);
+        Service.CreateTableExactAsync(schema, ct);
 
     public ValueTask DropTableAsync(string tableName, CancellationToken ct = default) =>
-        _service.DropTableAsync(tableName, ct);
+        Service.DropTableAsync(tableName, ct);
 
     public ValueTask UpdateTableSchemaAsync(string oldTableName, TableSchema newSchema, CancellationToken ct = default) =>
-        _service.UpdateTableSchemaAsync(oldTableName, newSchema, ct);
+        Service.UpdateTableSchemaAsync(oldTableName, newSchema, ct);
 
     internal ValueTask ApplyTableSchemaIdentitiesAsync(
         string tableName,
         TableSchema identitySource,
         CancellationToken ct = default) =>
-        _service.ApplyTableSchemaIdentitiesAsync(tableName, identitySource, ct);
+        Service.ApplyTableSchemaIdentitiesAsync(tableName, identitySource, ct);
 
     public ValueTask<uint> ReplaceTableStorageAsync(
         string tableName,
@@ -185,12 +229,12 @@ public sealed class SchemaCatalog
         uint replacementRootPage,
         long exactRowCount,
         CancellationToken ct = default) =>
-        _service.ReplaceTableStorageAsync(tableName, newSchema, replacementRootPage, exactRowCount, ct);
+        Service.ReplaceTableStorageAsync(tableName, newSchema, replacementRootPage, exactRowCount, ct);
 
     internal ValueTask<IIndexStore> CreateDetachedIndexStoreAsync(
         IndexSchema schema,
         CancellationToken ct = default) =>
-        _service.CreateDetachedIndexStoreAsync(schema, ct);
+        Service.CreateDetachedIndexStoreAsync(schema, ct);
 
     internal ValueTask<TableAndIndexStorageReplacement> ReplaceTableAndIndexStorageAsync(
         string tableName,
@@ -199,7 +243,7 @@ public sealed class SchemaCatalog
         long exactRowCount,
         IReadOnlyDictionary<string, IIndexStore> replacementIndexes,
         CancellationToken ct = default) =>
-        _service.ReplaceTableAndIndexStorageAsync(
+        Service.ReplaceTableAndIndexStorageAsync(
             tableName,
             newSchema,
             replacementTableRootPage,
@@ -208,99 +252,99 @@ public sealed class SchemaCatalog
             ct);
 
     public ValueTask SetTableRowCountAsync(string tableName, long rowCount, CancellationToken ct = default) =>
-        _service.SetTableRowCountAsync(tableName, rowCount, ct);
+        Service.SetTableRowCountAsync(tableName, rowCount, ct);
 
     public ValueTask AdjustTableRowCountAsync(string tableName, long delta, CancellationToken ct = default) =>
-        _service.AdjustTableRowCountAsync(tableName, delta, ct);
+        Service.AdjustTableRowCountAsync(tableName, delta, ct);
 
     public ValueTask AdjustTableRowCountKnownExactAsync(string tableName, long delta, CancellationToken ct = default) =>
-        _service.AdjustTableRowCountKnownExactAsync(tableName, delta, ct);
+        Service.AdjustTableRowCountKnownExactAsync(tableName, delta, ct);
 
     public ValueTask PersistDirtyTableStatisticsAsync(CancellationToken ct = default) =>
-        _service.PersistDirtyTableStatisticsAsync(ct);
+        Service.PersistDirtyTableStatisticsAsync(ct);
 
     public ValueTask PersistDirtyAdvisoryStatisticsAsync(CancellationToken ct = default) =>
-        _service.PersistDirtyAdvisoryStatisticsAsync(ct);
+        Service.PersistDirtyAdvisoryStatisticsAsync(ct);
 
     public ValueTask ReplaceColumnStatisticsAsync(
         string tableName,
         IReadOnlyList<ColumnStatistics> columnStatistics,
         CancellationToken ct = default) =>
-        _service.ReplaceColumnStatisticsAsync(tableName, columnStatistics, ct);
+        Service.ReplaceColumnStatisticsAsync(tableName, columnStatistics, ct);
 
     public ValueTask ReplaceColumnDistributionStatisticsAsync(
         string tableName,
         IReadOnlyList<ColumnDistributionStatistics> columnStatistics,
         CancellationToken ct = default) =>
-        _service.ReplaceColumnDistributionStatisticsAsync(tableName, columnStatistics, ct);
+        Service.ReplaceColumnDistributionStatisticsAsync(tableName, columnStatistics, ct);
 
     public ValueTask ReplaceIndexPrefixStatisticsForTableAsync(
         string tableName,
         IReadOnlyList<IndexPrefixStatistics> indexStatistics,
         CancellationToken ct = default) =>
-        _service.ReplaceIndexPrefixStatisticsForTableAsync(tableName, indexStatistics, ct);
+        Service.ReplaceIndexPrefixStatisticsForTableAsync(tableName, indexStatistics, ct);
 
     public ValueTask MarkTableColumnStatisticsStaleAsync(string tableName, CancellationToken ct = default) =>
-        _service.MarkTableColumnStatisticsStaleAsync(tableName, ct);
+        Service.MarkTableColumnStatisticsStaleAsync(tableName, ct);
 
-    public BTree GetTableTree(string tableName) => _service.GetTableTree(tableName);
+    public BTree GetTableTree(string tableName) => _readSnapshot is null ? Service.GetTableTree(tableName) : _readSnapshot.GetTableTree(tableName, _readPager!);
 
-    public BTree GetTableTree(string tableName, Pager pager) => _service.GetTableTree(tableName, pager);
+    public BTree GetTableTree(string tableName, Pager pager) => _readSnapshot is null ? Service.GetTableTree(tableName, pager) : _readSnapshot.GetTableTree(tableName, pager);
 
-    public IndexSchema? GetIndex(string indexName) => _service.GetIndex(indexName);
+    public IndexSchema? GetIndex(string indexName) => _readSnapshot is null ? Service.GetIndex(indexName) : _readSnapshot.GetIndex(indexName);
 
-    public IReadOnlyCollection<IndexSchema> GetIndexes() => _service.GetIndexes();
+    public IReadOnlyCollection<IndexSchema> GetIndexes() => _readSnapshot is null ? Service.GetIndexes() : _readSnapshot.GetIndexes();
 
     public IReadOnlyList<IndexSchema> GetIndexesForTable(string tableName) =>
-        _service.GetIndexesForTable(tableName);
+        _readSnapshot is null ? Service.GetIndexesForTable(tableName) : _readSnapshot.GetIndexesForTable(tableName);
 
     public IReadOnlyList<IndexSchema> GetSqlIndexesForTable(string tableName) =>
-        _service.GetSqlIndexesForTable(tableName);
+        _readSnapshot is null ? Service.GetSqlIndexesForTable(tableName) : _readSnapshot.GetSqlIndexesForTable(tableName);
 
-    public IIndexStore GetIndexStore(string indexName) => _service.GetIndexStore(indexName);
+    public IIndexStore GetIndexStore(string indexName) => _readSnapshot is null ? Service.GetIndexStore(indexName) : _readSnapshot.GetIndexStore(indexName, _readPager!);
 
-    public IIndexStore GetIndexStore(string indexName, Pager pager) => _service.GetIndexStore(indexName, pager);
+    public IIndexStore GetIndexStore(string indexName, Pager pager) => _readSnapshot is null ? Service.GetIndexStore(indexName, pager) : _readSnapshot.GetIndexStore(indexName, pager);
 
     public ValueTask CreateIndexAsync(IndexSchema schema, CancellationToken ct = default) =>
-        _service.CreateIndexAsync(schema, ct);
+        Service.CreateIndexAsync(schema, ct);
 
     public ValueTask UpdateIndexSchemaAsync(string oldIndexName, IndexSchema newSchema, CancellationToken ct = default) =>
-        _service.UpdateIndexSchemaAsync(oldIndexName, newSchema, ct);
+        Service.UpdateIndexSchemaAsync(oldIndexName, newSchema, ct);
 
     public ValueTask DropIndexAsync(string indexName, CancellationToken ct = default) =>
-        _service.DropIndexAsync(indexName, ct);
+        Service.DropIndexAsync(indexName, ct);
 
     public ValueTask<bool> DropIndexAllowCorruptReclaimAsync(string indexName, CancellationToken ct = default) =>
-        _service.DropIndexAllowCorruptReclaimAsync(indexName, ct);
+        Service.DropIndexAllowCorruptReclaimAsync(indexName, ct);
 
     public ValueTask DropForeignKeyOwnedIndexAsync(string indexName, CancellationToken ct = default) =>
-        _service.DropForeignKeyOwnedIndexAsync(indexName, ct);
+        Service.DropForeignKeyOwnedIndexAsync(indexName, ct);
 
     public ValueTask DropConstraintOwnedIndexAsync(string indexName, CancellationToken ct = default) =>
-        _service.DropConstraintOwnedIndexAsync(indexName, ct);
+        Service.DropConstraintOwnedIndexAsync(indexName, ct);
 
-    public string? GetViewSql(string viewName) => _service.GetViewSql(viewName);
+    public string? GetViewSql(string viewName) => _readSnapshot is null ? Service.GetViewSql(viewName) : _readSnapshot.GetViewSql(viewName);
 
-    public IReadOnlyCollection<string> GetViewNames() => _service.GetViewNames();
+    public IReadOnlyCollection<string> GetViewNames() => _readSnapshot is null ? Service.GetViewNames() : _readSnapshot.GetViewNames();
 
-    public bool IsView(string name) => _service.IsView(name);
+    public bool IsView(string name) => _readSnapshot is null ? Service.IsView(name) : _readSnapshot.IsView(name);
 
     public ValueTask CreateViewAsync(string viewName, string sql, CancellationToken ct = default) =>
-        _service.CreateViewAsync(viewName, sql, ct);
+        Service.CreateViewAsync(viewName, sql, ct);
 
     public ValueTask DropViewAsync(string viewName, CancellationToken ct = default) =>
-        _service.DropViewAsync(viewName, ct);
+        Service.DropViewAsync(viewName, ct);
 
-    public TriggerSchema? GetTrigger(string triggerName) => _service.GetTrigger(triggerName);
+    public TriggerSchema? GetTrigger(string triggerName) => _readSnapshot is null ? Service.GetTrigger(triggerName) : _readSnapshot.GetTrigger(triggerName);
 
-    public IReadOnlyCollection<TriggerSchema> GetTriggers() => _service.GetTriggers();
+    public IReadOnlyCollection<TriggerSchema> GetTriggers() => _readSnapshot is null ? Service.GetTriggers() : _readSnapshot.GetTriggers();
 
     public IReadOnlyList<TriggerSchema> GetTriggersForTable(string tableName) =>
-        _service.GetTriggersForTable(tableName);
+        _readSnapshot is null ? Service.GetTriggersForTable(tableName) : _readSnapshot.GetTriggersForTable(tableName);
 
     public ValueTask CreateTriggerAsync(TriggerSchema schema, CancellationToken ct = default) =>
-        _service.CreateTriggerAsync(schema, ct);
+        Service.CreateTriggerAsync(schema, ct);
 
     public ValueTask DropTriggerAsync(string triggerName, CancellationToken ct = default) =>
-        _service.DropTriggerAsync(triggerName, ct);
+        Service.DropTriggerAsync(triggerName, ct);
 }

@@ -168,7 +168,7 @@ public sealed class PreparedPrimaryKeyRangeTests
         var template = Prepare("SELECT * FROM t WHERE id >= @lower AND id < @upper ORDER BY id", "lower", "upper");
         Assert.Equal(16, (await ReadAsync(db, template.Bind([0, 1024]))).Length);
         using var snapshot = db.CreateReaderSession();
-        // ReaderSession retains its existing plan path. Capture this result's tree before growth.
+        // ReaderSession retains its range fallback. New executions are covered by snapshot-catalog tests.
         await using var old = await snapshot.ExecuteReadAsync(template.Bind([0, 1024]), Ct);
         Assert.IsNotType<PrimaryKeyRangeScanOperator>(old.PhysicalRootOperator);
         // Grow beyond a leaf page so the cached plan cannot retain a table root from preparation.

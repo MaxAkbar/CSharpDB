@@ -14,7 +14,7 @@ namespace CSharpDB.Storage.Wal;
 /// </summary>
 public sealed class MemoryWriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvider, ICommitPathDiagnosticsProvider,
     ILiveWalRuntimeSnapshotProvider, IWalRecoveryRuntimeSnapshotProvider,
-    IWalCheckpointRuntimeSnapshotProvider
+    IWalCheckpointRuntimeSnapshotProvider, IWalCheckpointCopyPlan
 {
     private const int RuntimeDiagnosticsSnapshotMaxAttempts = 3;
     private const int AppendFrameChunkSize = 16;
@@ -554,6 +554,20 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnostics
         }
     }
 
+    internal Func<ValueTask>? CheckpointPlanCapturedForTests { get; set; }
+
+    async ValueTask<ReadOnlyMemory<KeyValuePair<uint, long>>> IWalCheckpointCopyPlan.PrepareCheckpointCopyAsync(
+        uint pageCount, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var checkpoint = Volatile.Read(ref _isOpen) ? await EnsureIncrementalCheckpointStateAsync() : null;
+        ReadOnlyMemory<KeyValuePair<uint, long>> pages = checkpoint is null
+            ? ReadOnlyMemory<KeyValuePair<uint, long>>.Empty
+            : checkpoint.CommittedPages.AsMemory(checkpoint.NextPageIndex,
+                checkpoint.CommittedPageCount - checkpoint.NextPageIndex);
+        return pages;
+    }
+
     public async ValueTask CheckpointAsync(
         IStorageDevice device,
         uint pageCount,
@@ -583,7 +597,7 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnostics
         long requiredLength = 0;
         try
         {
-            var checkpoint = EnsureIncrementalCheckpointState();
+            var checkpoint = await EnsureIncrementalCheckpointStateAsync();
             if (checkpoint is null)
                 return true;
 
@@ -782,7 +796,7 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnostics
                 foreach (var (committedPageId, committedOffset) in uncommittedBatch)
                     _index.AddCommittedFrame(committedPageId, committedOffset);
 
-                _index.AdvanceRecoveredCommit();
+                _index.AdvanceRecoveredCommit(frameOffset + PageConstants.WalFrameSize);
                 uncommittedBatch.Clear();
             }
         }
@@ -1350,12 +1364,14 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnostics
         Interlocked.Increment(ref _runtimeCheckpointProgressVersion);
     }
 
-    private IncrementalCheckpointState? EnsureIncrementalCheckpointState()
+    private async ValueTask<IncrementalCheckpointState?> EnsureIncrementalCheckpointStateAsync()
     {
         if (_incrementalCheckpoint is not null)
             return _incrementalCheckpoint;
 
         var committedPages = _index.GetCommittedPages();
+        if (CheckpointPlanCapturedForTests is { } captured)
+            await captured();
         int committedPageCount = committedPages.Count;
         if (committedPageCount == 0)
             return null;
@@ -1365,6 +1381,7 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnostics
         int sortedCount = 0;
         bool isPageIdSortedAscending = true;
         uint previousPageId = 0;
+        long retainedWalStartOffset = PageConstants.WalHeaderSize;
         foreach (var committedPage in committedPages)
         {
             if (sortedCount > 0 && committedPage.Key < previousPageId)
@@ -1372,6 +1389,8 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnostics
 
             sortedCommittedPages[sortedCount++] = committedPage;
             previousPageId = committedPage.Key;
+            retainedWalStartOffset = Math.Max(retainedWalStartOffset,
+                checked(committedPage.Value + PageConstants.WalFrameSize));
         }
 
         if (!isPageIdSortedAscending && committedPageCount > 1)
@@ -1379,7 +1398,7 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnostics
 
         var snapshot = new KeyValuePair<uint, long>[committedPageCount];
         Array.Copy(sortedCommittedPages, 0, snapshot, 0, committedPageCount);
-        var checkpoint = new IncrementalCheckpointState(snapshot, committedPageCount, _storage.Length);
+        var checkpoint = new IncrementalCheckpointState(snapshot, committedPageCount, retainedWalStartOffset);
         SetIncrementalCheckpointState(checkpoint);
         return checkpoint;
     }

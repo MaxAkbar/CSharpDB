@@ -34,6 +34,10 @@ public sealed class WalIndex
     // Number of committed frames currently in WAL.
     private int _frameCount;
 
+    // Physical end of the last published commit. Keep this independent of the
+    // mutable page map/count so checkpoint repair has a trusted scan boundary.
+    private long _publishedWalTail = PageConstants.WalHeaderSize;
+
     // Monotonically increasing commit counter.
     private long _commitCounter;
 
@@ -123,6 +127,8 @@ public sealed class WalIndex
             _dirtySegments = dirty;
 
             _frameCount += frames.Length;
+            if (!frames.IsEmpty)
+                _publishedWalTail = frames[^1].WalOffset + PageConstants.WalFrameSize;
             AdvanceCommitCore(frames.Length);
         }
     }
@@ -149,6 +155,8 @@ public sealed class WalIndex
             _dirtySegments = dirty;
 
             _frameCount += frames.Length;
+            if (!frames.IsEmpty)
+                _publishedWalTail = firstFrameOffset + (long)frames.Length * PageConstants.WalFrameSize;
             AdvanceCommitCore(frames.Length);
         }
     }
@@ -191,11 +199,13 @@ public sealed class WalIndex
     /// Recovered commits predate this live runtime epoch and therefore do not
     /// contribute to its logical lifetime commit count.
     /// </summary>
-    internal void AdvanceRecoveredCommit()
+    internal void AdvanceRecoveredCommit(long? publishedWalTail = null)
     {
         lock (_gate)
         {
             _commitCounter++;
+            if (publishedWalTail.HasValue)
+                _publishedWalTail = publishedWalTail.Value;
         }
     }
 
@@ -400,11 +410,11 @@ public sealed class WalIndex
         }
     }
 
-    internal (Dictionary<uint, long> LatestPageMap, int FrameCount, long CommitCounter) GetCommittedStateSnapshot()
+    internal (Dictionary<uint, long> LatestPageMap, int FrameCount, long CommitCounter, long PublishedWalTail) GetCommittedStateSnapshot()
     {
         lock (_gate)
         {
-            return (CopyCommittedPagesCore(), _frameCount, _commitCounter);
+            return (CopyCommittedPagesCore(), _frameCount, _commitCounter, _publishedWalTail);
         }
     }
 
@@ -418,6 +428,7 @@ public sealed class WalIndex
         {
             ClearPagesCore();
             _frameCount = 0;
+            _publishedWalTail = PageConstants.WalHeaderSize;
         }
     }
 
@@ -447,6 +458,7 @@ public sealed class WalIndex
 
             _frameCount = frameCount;
             _commitCounter += commitAdvanceCount;
+            _publishedWalTail = PageConstants.WalHeaderSize + (long)frameCount * PageConstants.WalFrameSize;
         }
     }
 
@@ -472,6 +484,29 @@ public sealed class WalIndex
 
             _frameCount = frameCount;
             _commitCounter = commitCounter;
+        }
+    }
+
+    internal bool TryRepairCommittedPages(
+        Dictionary<uint, long> latestPageMap,
+        int repairedFrameCount,
+        int expectedFrameCount,
+        long expectedCommitCounter,
+        long expectedPublishedWalTail)
+    {
+        lock (_gate)
+        {
+            if (_frameCount != expectedFrameCount || _commitCounter != expectedCommitCounter ||
+                _publishedWalTail != expectedPublishedWalTail)
+                return false;
+            ClearPagesCore();
+            EnsurePageCapacityCore(latestPageMap.Count);
+            foreach (var entry in latestPageMap)
+                _pageMap[entry.Key] = entry.Value;
+            _frameCount = repairedFrameCount;
+            // Keep the original physical boundary: finalization discards any
+            // invalid trailing commit while preserving later appended frames.
+            return true;
         }
     }
 
@@ -577,6 +612,11 @@ public sealed class WalSnapshot
     public long CommitCounter => _commitCounter;
     public bool HasWalFrames => _minimumWalOffset != long.MaxValue;
     public long MinimumWalOffset => _minimumWalOffset;
+
+    // Map identity also distinguishes replacement/compaction that can reuse counters.
+    // The counter is required because the empty map is a shared singleton.
+    internal bool SharesPageState(WalSnapshot other)
+        => ReferenceEquals(_pageMap, other._pageMap) && _commitCounter == other._commitCounter;
 
     /// <summary>
     /// Look up a page in this snapshot's WAL state.

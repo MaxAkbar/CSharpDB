@@ -2,6 +2,453 @@
 
 This file preserves the benchmark release logs, failed-run notes, investigation records, and detailed historical snapshots that used to live in `README.md`. The main README is now intentionally user-first and release-stable; use this file when investigating why a past benchmark number changed or why a specific run was not promoted.
 
+## October 4, 2026 Reader Snapshot Catalog (Local Diagnostic, Not Qualified)
+
+The candidate replaces live reader catalog references with committed snapshot metadata,
+including old table/index roots after splits, schema changes, and overlapping commits.
+Checkpoint tests also exposed unsafe copying over pages still read from the database
+file by an old snapshot; copying now respects the pages visible to every reader.
+
+An initial 32-case differential screen against `ebf0257` found full-catalog traversal
+after commits, warm-lookup overhead, and an extra commit-completion allocation.
+The next candidate uses a bounded catalog-change journal, shared immutable metadata,
+a per-reader table cache, and completion tracking within existing pager tasks.
+
+The second screen used four balanced serial processes, 7,076,864 measured operations,
+and 758,776 warmups. All median and allocation guards passed. Post-commit reader
+creation was 3.1–3.8 us across 1, 32, and 256 tables, allocating about 728 bytes;
+the control ranged from 5.2–32.1 us and 848–22,944 bytes. Experimental pooled
+prepared primary-key ranges with 65/2048 recurring parameter values had 75.52%
+lower geometric-mean median latency. Each pooled read creates a fresh planner,
+so this is an access-path result, not cross-query plan-cache reuse.
+
+The second screen still failed the repeated 10% P99 guard for the one-table
+commit-plus-lookup cycle. A separately frozen follow-up retained the same product
+binaries, timed cycle, fixtures, and gates, and covered all nine commit cases in
+four balanced processes with 4,096 measured and 512 warmup cycles per case
+(147,456 measured commits). It again passed median/allocation guards but failed
+P99 guards: 32-table commit-plus-lookup total was 38.86%/15.45% slower, driven
+by the write/commit phase, and one-table post-commit COUNT reader time was
+46.15%/14.53% slower. Temporal variability was observed; its cause is unproven.
+No samples, windows, or failed runs were removed to obtain a passing result.
+
+Reader/pooled prepared primary-key range enablement therefore remains disabled.
+The correctness changes are retained, but the candidate is not performance-qualified
+or promoted. Local evidence is retained under `.tmp/reader-snapshot-catalog-20261004`,
+including `iteration-2` and `iteration-2/commit-tail-investigation`; source/binary
+hashes, correctness receipts, raw phase samples, GC observations, and failed summaries
+are preserved. The guarded final source is recorded separately from the measured
+candidate. These results do not update release benchmark tables or establish a
+portable latency guarantee.
+
+The final guarded source passed all 3,247 engine tests and 315 ADO tests, with
+zero build warnings/errors. Final hashes and test receipts are in `final-guarded`.
+
+A fixed phase-attribution follow-up used the same archived product binaries in
+four balanced processes for one-table COUNT and 32-table lookup after commits:
+32,768 measured cycles and 4,096 warmups. All result, durable-reopen, raw-sample,
+binary-identity, and zero-event-loss checks passed. The analysis is retained in
+`phase-attribution/analysis-r2`. Its first analyzer incorrectly expected the declared
+EventSource GUID instead of TraceEvent's name-derived provider GUID; the narrow
+versioned correction, pinned-parser proof, and original failed analysis are retained.
+No workloads were repeated to repair that analysis error.
+
+Every case/arm had eight checkpoint frame drops among its 41 slowest commits,
+at identical sample positions. In the other 33 slow commits, recorded durable-flush
+wall time accounted for 89.0–96.9% of commit time. Six non-checkpoint samples had
+more than 1 ms outside that recorded flush interval; all coincided with GC counter
+increases. Aligned traces confirmed a complete nonconcurrent GC interval inside
+each of those six commits (0.926–4.497 ms). Queued write/drain, buffered flush,
+and group-window counters stayed zero. Commit stack samples included the durable
+flush policy calling Windows `FlushFileBuffers` in every arm.
+Every COUNT used metadata without creating a reader Pager for a scan.
+
+These instrumented captures did not repeat the earlier P99 flags, but cannot
+qualify performance or establish that the original failures were harmless noise.
+Observed sampling cadence was about 2 ms, and trace alignment uncertainty was
+10.4–15.8 us; neither resolves an individual microsecond COUNT tail. Flush wall
+time includes scheduling and runtime pauses, so native disk and scheduling evidence
+is still needed to separate device latency from time off CPU. The earlier failed
+screens remain authoritative, and reader/pooled prepared ranges remain disabled.
+
+A subsequent administrator-run native capture completed all four prescribed arms
+without retries: 32,768 measured cycles and 4,096 warmups. Frozen
+binary/input hashes, result checksums, durable reopen checks, and every scalar
+sample passed validation. TraceEvent and independent `xperf` statistics reported
+zero lost events/buffers. All 32,768 commits matched WAL file-flush requests by
+outstanding IRP, exact fixture path, and successful completion status. The 64
+checkpoint commits had multiple WAL flushes and are retained separately; each of
+the other 32,704 commits had one matched WAL flush. No file/disk IRP lifetime
+matched across layers, so disk timing proximity was not used to infer causality.
+
+The native capture did not meet its full acceptance contract. Control-forward
+is missing the COUNT measured-start marker, and candidate-reverse is missing
+the lookup measured-start marker, including after manifest priming and raw-event
+inspection. The cause of these missing events is unproven. Candidate-forward and
+control-reverse retain all four markers within the exact scalar QPC brackets.
+Kernel process/thread lifetimes and all 16 processor envelopes cover measurement.
+Conservative scheduler reconstruction retains ambiguous event ordering as unknown
+in 872 ordinary commits across all four arms; no samples are removed. Independent
+context-switch pairing validates the interval arithmetic and every reported wait
+duration, without promoting the unknown intervals or repairing absent markers.
+
+In the two fully marked runs, each case's 41 slowest commits again includes eight
+checkpoint commits. Across the remaining 33, native WAL file-flush time accounts
+for 99.52–99.56% of the instrumented durable-flush interval. Its issuing thread
+spends 87.0–92.4% waiting, 1.8–4.8% runnable but unscheduled, and 4.9–9.8% scheduled;
+up to 0.056% remains unknown. These are time-weighted cohort shares, not per-sample
+guarantees. Scheduling delay reaches 2.211 ms in one such commit, although waiting
+dominates the cohorts. Waiting during a file flush does not isolate physical-drive
+latency from the filesystem, filters, drivers, or other synchronization.
+
+Offline analysis is retained in `native-attribution/analysis-r2`, with independent
+audit and source/output hashes. The [pinned TraceEvent parser](https://github.com/microsoft/perfview/blob/v3.1.21/src/TraceEvent/Parsers/KernelTraceEventParser.cs#L4776-L4812) misdecodes the
+version-3 disk-flush completion thread ID; those header identities are excluded,
+and the join uses the initialization thread and outstanding IRP. The first failed
+analyzer's unsupported 10 us equality check between separately logged disk-event
+timestamps and the response-time payload is preserved, with both durations retained
+by the corrected analysis. The earlier marker-only acceptance field is superseded
+by the explicit failed full-coverage result in `analysis-r2`.
+
+These observations narrow the remaining write tail to time inside durable flushes,
+with scheduling contributing to some outliers. They do not establish a new C# bug,
+qualify the candidate, or justify changing durability guarantees. No product source
+was changed or rebuilt for this analysis. Further storage-stack attribution needs
+identity-preserving evidence; any candidate change still requires the original
+uninstrumented gates. Reader/pooled prepared ranges remain disabled.
+
+A source/trace follow-up confirmed that the serial workload has no concurrent
+commit to group and no redundant ordinary-commit WAL flush to remove. All target
+ReadyThread records in the two fully marked arms have unavailable emitter PID/TID
+(72,868 and 73,220 records); the first capture has no blocking/wake-up stacks.
+The missing causal evidence cannot be recovered by assigning nearby disk events.
+
+A second administrator-run capture, `native-stack-attribution`, completed the
+four frozen arms once each: 32,768 measured cycles and 4,096 warmups. It adds
+context-switch, wake-up, file-flush and disk-flush-init stacks plus driver events,
+with separate marker buffers. All 53 frozen inputs, runtime identities, scalar
+results and durable reopen checks passed. Every arm retained all four markers
+inside the exact scalar QPC brackets, complete target lifetimes and all 16 CPU
+envelopes. TraceEvent and independent `xperf` statistics reported zero lost
+events/buffers. No workload or capture was repeated to repair analysis.
+
+All measured commits matched successful WAL file-flush operations; 32,704 ordinary
+commits had one, and the 64 checkpoint commits remain separate. An independent
+context-switch audit validates every wait duration. Ambiguous scheduling intervals
+remain unknown in 782 ordinary commits. Across the 33 ordinary commits in each
+case/arm's fixed top-41 cohort, native WAL flush time accounts for 98.86–99.33% of
+the recorded durable-flush interval. The issuing thread spends 82.73–94.51% of
+native flush time waiting and 0.68–5.97% runnable but unscheduled; up to 0.096%
+remains unknown. These are time-weighted cohort shares.
+
+Exact original QPC/CPU keys and a separate scan of all stack-trigger events
+validate the originating events and thread roles. The context-switch stack belongs
+to the incoming thread, so attribution uses the issuer's resumption stack as wait-site
+evidence, paired with the exact ReadyThread stack. Of 98,959 reconstructed waits,
+98,958 have unique paired stacks wholly inside the WAL flush. One 3.449 ms wait
+crosses the file-operation completion boundary and remains unattributed under that
+containment rule. No nearest-timestamp joins or process-name guesses are used.
+Captured module identities and PDB GUID/age checks resolve 53 of 61 requested
+modules; unresolved addresses remain explicit.
+
+Across all ordinary commits in the eight case/arm combinations, 96.45–97.51% of
+waiting occurs in `ClassSendSrbSynchronous`, below `DiskFlushDispatch` and
+`NtfsCommonFlushBuffers`. The paired wake-up stacks contain
+`ClasspSendSynchronousCompletion` and Storport's `RaidUnitCompleteRequest`.
+In the fixed slow-commit cohorts this path accounts for 58.44–93.41% of waiting.
+Another disk-flush wait, directly under `DiskShutdownFlush` and readied through
+`DiskFlushComplete`/`RaUnitFlushSrb`, contributes 0–23.44% of those tail cohorts.
+
+The traces also identify Windows kernel heap-lock waits during `NtfsReportDirNotify`,
+accounting for 4.26–17.05% of tail-cohort waiting. Their wake-up stacks release the
+heap lock, usually from kernel heap compaction. Both control and candidate show
+these native paths. This locates wait sites and completion paths; it does not
+separate physical-media time from controller/driver work, identify a faulty filter,
+or prove the cause of the earlier uninstrumented regressions. No driver record
+shares an outstanding WAL file-flush IRP, and file/disk IRPs still differ; child
+requests are not connected using timing proximity.
+
+The final receipt is `native-stack-attribution/final-findings.json`, with raw ETLs,
+full typed exports, exact stack joins, symbol identities and independent audits
+retained alongside it. The first symbol lookup timed out on a missing driver PDB
+and skipped subsequent server lookups; bounded exact-identity downloads repaired
+that analysis without new captures. Independent audit r2 accounts for an explicit
+ReadyThread after an unknown switch-out state, retaining uncertainty before ready;
+the original failed audit is preserved and no tolerance was relaxed.
+
+This completes the bounded native-stack investigation without establishing another
+CSharpDB source fix. Ordinary serial commits already issue one durable flush with
+no concurrent commit to group. The [Windows flush contract](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers)
+remains unchanged. Product sources and binaries were not changed or rebuilt.
+Instrumentation affects timing, so these results cannot qualify performance or
+clear the earlier failed gates. Reader/pooled prepared ranges remain disabled.
+The next separate investigation is the microsecond COUNT reader tail; original
+uninstrumented qualification remains required before enabling the experimental path.
+
+### COUNT Reader Follow-up: Rejected Exact-Count Lookup Candidate
+
+An offline review of 49,152 COUNT samples from the three diagnostic captures
+confirmed metadata counts without a reader Pager scan. Reader creation contributes
+substantial wall time; COUNT execution also takes a larger share in the snapshot
+candidate than in the original control. These instrumented phase observations do
+not identify the cause of the original failed 23.4-to-34.2/26.8 us reader P99 checks.
+
+A narrow candidate stored snapshot exact-count eligibility and value in one
+immutable map, removing the second lookup on a fresh COUNT. The unchanged fixed
+nine-case commit-tail harness compared it against the final guarded pre-change
+code, rather than HEAD. Four serial balanced runs covered 147,456 measured commits
+and 18,432 warmups. The 18 runtime DLLs differed only in `CSharpDB.Storage.dll`;
+timing boundaries, fixtures, options, environment, and original thresholds were
+unchanged. Before timing, the candidate passed 3,249 engine and 315 ADO tests with
+zero build warnings/errors, including two additional count snapshot/trust tests.
+
+All raw evidence, checksums, and reader-lifecycle checks passed, but the performance
+screen failed nine median checks. There were no allocation flags or repeated P99
+flags. One-table COUNT reader medians changed from 10.6 to 15.4 us in the first
+pair and from 23.0 to 11.9 us in the second; its P99 changed from 63.5 to 62.2 us
+and from 82.0 to 62.9 us. Allocations remained 903.44 bytes per reader cycle.
+COUNT at 32/256 tables and other reader cases also varied across the pairs.
+The unchanged control's own order-dependent timings demonstrate substantial
+variation; this does not establish which environmental or execution effect caused it.
+
+The optimization was rejected. Its source, tests, binaries, successful correctness
+receipts, failed performance screen, and all samples are retained in
+`count-reader-tail`. Both edited files were restored byte-for-byte to the guarded
+pre-change versions, and rebuilt product DLLs were checked against the pre-change
+hashes. No selective rerun, threshold change, commit, or experimental range enablement
+followed. The COUNT tail remains unresolved.
+
+The subsequent identical-binary and thread-cycle diagnostic is recorded below.
+It preserves the original qualification gates and handles thread identity, GC,
+and observation overhead explicitly.
+
+### COUNT Repeatability and Thread-cycle Diagnostic
+
+A frozen two-stage diagnostic in `count-repeatability` completed once, without
+retries. Every process used the same 18 guarded product/dependency DLLs. The first
+stage reused the unchanged nine-case harness, with 512 warmups and 4,096 measured
+cycles per case in four balanced serial processes: 147,456 measured commits and
+18,432 warmups. Control/candidate are labels only; there is no product difference.
+All raw-data, checksum, lifecycle, environment and binary-identity checks passed.
+
+The original thresholds flagged 29 median comparisons and three repeated P99
+comparisons, with no allocation flags. The repeated P99 flags were the nested
+commit, write and total phases of one-table commit-plus-reader-creation, rather
+than three independent cases. Identical-binary one-table COUNT reader medians
+ranged from 19.6 to 38.9 us, with P99 from 91.2 to 150.3 us. All COUNT reader
+allocations were 903.4375 bytes per cycle. This establishes substantial repeatability
+variation on this host. It does not identify its cause, reproduce the exact earlier
+COUNT P99 guard failure, or clear any failed product screen.
+
+The second stage covered COUNT at 1 and 32 tables in four fresh serial processes:
+32,768 measured cycles, 4,096 warmups, and 32,768 empty calibration pairs around
+each process's cases. Native stamps around reader creation and COUNT execution retained
+core QPC boundaries, native thread IDs, observed processor IDs, thread cycles, GC
+counters and synchronous-completion status. All raw hashes, independent checksums,
+ordered boundaries, WAL/GC counters and durable reopen checks passed. Every COUNT
+used metadata without a scan Pager, every measured query completed synchronously,
+and both phases had valid same-thread cycle observations for all 32,768 rows.
+The 64 checkpoint cycles, 336 creation/299 execution observations with changed
+processor IDs, and all wall-time samples remain included.
+
+Across each case/process's fixed 41 slowest reader samples, median observed cycles
+were 1.95-3.74 times the corresponding full-case median for both creation and
+execution. Three creation observation envelopes overlapped a GC counter increase;
+none of the execution envelopes did. Four fixed 1,024-sample windows also show
+within-process drift: in control-forward one-table COUNT, reader medians were
+27.0, 73.7, 72.4 and 85.9 us, while creation median cycles were 33,288, 92,506,
+91,104 and 108,624. These are descriptive measurements, not a new qualification.
+
+Observation cost remains significant. Empty-pair calibration medians were
+1,402-1,752 cycles (1.63-3.88% of phase-observation medians), below the frozen
+25% calibration flag. However, the actual two cycle-query brackets around creation
+had median total wall times of 3.0-5.4 us, alongside creation core medians of
+11.1-22.9 us. Execution query brackets were 0.8-1.3 us. Warm empty-loop calibration
+does not establish negligible instrumentation cost after a durable commit. No
+overhead is subtracted, and instrumented timing is not compared with the plain
+harness as a performance gain or regression.
+
+[Windows thread cycles](https://learn.microsoft.com/en-us/windows/win32/api/realtimeapiset/nf-realtimeapiset-querythreadcycletime)
+remain cycle counts; they are not converted to elapsed CPU time or instruction
+counts. Cycle observations include probe work and may reflect cache, scheduling
+and processor effects. Equal observed thread/processor IDs do not rule out
+intermediate scheduling or migration. The diagnostic shows that slow reader
+cohorts also accumulate more observed cycles, but does not isolate a CSharpDB
+instruction path or establish the cause of the original COUNT tail regression.
+
+The final receipt is `count-repeatability/final-findings.json`; raw samples,
+calibration, frozen inputs and offline analyses are retained with hashes. All
+23 guarded source/test files and five unrelated files are unchanged. No product
+code was changed or rebuilt, no new correctness suite was claimed, and nothing
+was committed or pushed. Reader/pooled prepared ranges remain disabled and the
+candidate remains unqualified. The next step is to establish a repeatable benchmark
+environment before another optimization or qualification attempt, then profile
+reader creation/execution with lower disturbance. No further workload is started
+by this diagnostic.
+
+### Host Readiness Follow-up: External Activity Blocks Measurement
+
+A subsequent 45-second host-only observation reused the repository's unchanged
+`Watch-LocalPerformanceEnvironment.ps1` policy. It did not start a benchmark,
+modify product code, change Windows settings, or stop applications. Existing
+read-only installer, restart, pending-file-operation and Application event-log
+checks were imported from `Test-LocalDurablePerformance.ps1` without running its
+benchmark/publication wrapper.
+
+All 38 monitor samples exceeded the external CPU and process-I/O thresholds.
+Observable external CPU ranged from 2.92 to 4.19 logical-core equivalents,
+approximately 18.3-26.2% of this 16-thread machine. The policy limits are
+0.5 core or 8% CPU, and 4 MiB/s aggregate process transfer activity. Its five
+consecutive-busy-sample rule marked 34 samples contaminated, beginning with the
+fifth sample. No prohibited build/update process was observed.
+The monitor's maximum sample gap was 1.340 seconds, below its 5-second limit.
+
+Stable process identities observed at both endpoints attributed average CPU
+usage of 1.74 cores to `cod23-cod` (its window title identifies Call of Duty:
+Modern Warfare III), 0.90 to Windows `TextInputHost`, and 0.49 to the two busiest
+Claude processes. The monitor itself used about 0.21 core and
+was excluded from external load by its existing process-tree policy. There were
+169 enumerated external processes with inaccessible CPU/I/O counters per sample;
+they remain unknown, while observable load alone already exceeds the limits.
+Process transfer counters do not measure physical-disk bandwidth.
+
+The active power plan was already High performance, with the AC processor minimum
+and maximum set to 100%. CIM clock fields do not prove actual frequency or absence
+of throttling. Windows reported no blocking restart or installer condition; the
+46 pending-file-operation entries were stable deletion-only pairs accepted by the
+existing policy, and Application event-log continuity passed.
+
+The final observation is retained in `runner-stability/host-findings.json`, with
+raw telemetry, process CPU endpoints, policy/source hashes and system checks.
+Current background activity explains why this host is unsuitable for a new timing
+comparison; it does not prove which processes caused earlier benchmark variation.
+All prior failed screens remain retained. All 23 guarded source/test files, five
+unrelated files, and 253 prior diagnostic artifacts passed preservation checks.
+
+Further measurement waits for the busy applications to be paused or closed and
+remaining `TextInputHost` activity to be rechecked. A fresh acceptable host window
+is only admission to a continuously monitored, bounded identical-binary comparison;
+it does not qualify product performance. No benchmark retry was started, no thresholds
+were changed, and reader/pooled prepared ranges remain disabled.
+
+### Readiness Cleanup and Standalone Measurement Handoff
+
+After the user stopped Call of Duty and Claude, a fresh 45-second host observation
+still failed admission. Observable external CPU averaged 1.73 cores. Windows
+`TextInputHost` used 0.92 core and Edge processes approximately 0.47 core. The
+monitor also observed `VBCSCompiler`, which is prohibited by the existing policy,
+although its endpoint CPU counters did not increase during the window. All 39
+samples were contaminated. The raw window remains in `runner-stability-idle`.
+
+The idle VB/C# compiler server was shut down through `dotnet build-server shutdown
+--vbcscompiler`. With explicit user approval, the exact observed `TextInputHost`
+process was stopped after checking its creation time, executable path, signature,
+interactive session and owner. A replacement Windows input-host process was later
+observed; the stop script does not target replacements. The user also paused Edge.
+No product source, durability setting, priority, affinity or host threshold changed.
+
+One frozen monitored attempt then stopped during admission, before any fixture or
+measured workload started. Its six telemetry samples retained external CPU of
+0.39-0.86 core and process read traffic of approximately 52-85 MB/s. Sustained I/O
+crossed the existing 4 MiB/s gate. `count-monitored-repeatability/final-findings.json`
+records valid evidence, failed host admission and zero benchmark workloads; runtime
+validation invocations did not seed fixtures or measure operations.
+
+A separate bounded 12-second process CPU/I/O census then identified two processes
+whose executable paths and product metadata identify the Codex desktop app. Together
+they accounted for approximately 4.69 MB/s of process transfers, already above the
+4 MiB/s policy threshold. All observable external processes totalled 4.89 MB/s in
+that later window. The [Windows process-I/O API](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getprocessiocounters)
+accounts for all process I/O; these are not physical-disk bandwidth measurements.
+Similar read/write rates do not prove a specific IPC connection, and this later
+window does not attribute the earlier 52-85 MB/s bursts to Codex. No application
+was exempted from the policy to make admission pass.
+
+The first independent PowerShell launcher was prepared in
+`count-unattended-repeatability/Run-Unattended.ps1`. It waits 60 seconds for the user
+to fully exit Codex, refuses to start while Codex desktop processes remain, and
+then applies a fresh 45-second monitored admission window. Only an accepted host
+can start the same four serial nine-case processes, retaining 147,456 measured
+cycles and 18,432 warmups if all finish. The original harness, 18 runtime DLLs,
+fixtures, timing gates and 240-second child timeouts remain unchanged. Monitoring
+continues throughout; any failure stops the attempt without retries. Offline
+analysis and integrity manifests are generated after the run. This prepared run
+does not qualify performance, clear earlier failures or enable reader ranges.
+
+The user's first launch stopped after the countdown because 14 processes still
+had the Codex desktop executable path. It started no monitored admission or
+benchmark workload. Two further invocations correctly refused to reuse the same
+output directory. The original launcher, receipt and all 65 files in that attempt
+remain byte-for-byte intact.
+
+The replacement entrypoint is
+`.tmp/reader-snapshot-catalog-20261004/Run-CountRepeatability.ps1`. Each manual
+invocation creates a fresh sibling directory from the validated frozen inputs.
+It waits for the user to exit Codex and press Enter, records any remaining desktop
+processes and returns to the same prompt; Q cancels. An exclusive file lock prevents
+overlapping invocations. The measurement runner, analyzer, finalizer, runtime
+binaries and host policy are unchanged; a failed workload is never automatically
+retried. Preparation and isolated launcher tests exercised preservation, input
+validation, cancellation, desktop reappearance and lock behavior without running
+benchmarks. The full interactive measurement remains pending. Repair evidence is
+in `launcher-repair-20261004`; no product performance claim changes.
+
+The user's next independent launch, saved in
+`count-unattended-attempt-20261004-200941-738-2bad90aa`, passed the initial host
+admission. `control-forward` completed all nine cases. `candidate-reverse`
+completed eight cases and entered the final case before the monitor stopped it;
+the remaining two processes never started. Five consecutive busy samples at
+20:14:04-20:14:08 UTC triggered the unchanged policy. Across those samples,
+external CPU ranged from 0.70 to 1.82 cores; combined process I/O reached
+11.21 MB/s. The stop sample reported 1.32 external cores and 5.71 MB/s, above
+the 0.5-core and 4 MiB/s limits. No prohibited process or servicing issue was
+reported, and monitoring completed normally with 209 samples and no gap above
+1.17 seconds.
+
+The attempt's offline validator passed; a subsequent review verified all 125
+artifact-manifest entries, launcher integrity hashes and frozen inputs. This
+confirms a preserved stopped attempt, not a completed timing comparison. The
+current Codex process tree started after launcher completion. Aggregate telemetry
+does not identify the process responsible for the earlier burst, so process-level
+attribution is needed before another benchmark attempt. No timing results were
+promoted, thresholds relaxed, product files changed or workloads rerun during
+this review. Review evidence is in `count-attempt-review-20261004-200941`.
+
+### Complete Repeatability Run with Background Activity Allowed
+
+At the user's explicit direction, the full four-process comparison ran without
+desktop shutdown, idle admission or interruption for background CPU/I/O. This is
+a separate diagnostic in `count-background-tolerant-20261004-202439`; the earlier
+gated attempts and their evidence remain intact. The frozen harness, identical
+18-DLL runtime sets, nine cases, 512 warmups and 4,096 measurements per case,
+serial run order, durability, priority, affinity and 240-second process timeouts
+were retained. No background processes were stopped.
+
+All four processes exited successfully. The unchanged analyzer validated 147,456
+measured cycles, 18,432 warmups, 144 phase metric rows, raw sample hashes,
+checksums, allocation accounting and reader cleanup. The saved manifest covers
+302 input/output files and was independently rechecked. Measurement took about
+6 minutes 37 seconds; validation and closeout brought the total to 7 minutes
+16 seconds.
+
+There were no median or allocation flags. The same 32-table `commit-create`
+case exceeded the repeated P99 threshold in its nested commit, write and total
+phases. These three flags describe one case, not three independent failures:
+
+| Phase | Pair 1 control / candidate P99 | Pair 2 control / candidate P99 |
+|---|---:|---:|
+| Commit | 2.892 / 5.639 ms | 2.595 / 5.626 ms |
+| Write, including commit | 3.032 / 5.711 ms | 2.660 / 5.669 ms |
+| Total | 3.064 / 5.727 ms | 2.680 / 5.680 ms |
+
+For the one-table COUNT reader phase, the four runs had medians of 7.2-11.7 us,
+P99 of 37.5-49.8 us, and identical allocation of 903.4375 bytes per operation.
+The labels compare identical binaries, so their differences cannot establish a
+code-change speedup or regression. The comparison's timing flag remains visible
+(`passed=false`, analyzer exit 1) while measurement integrity passed
+(`evidenceValid=true`). This completed diagnostic does not clear earlier failed
+screens or enable reader/pooled prepared ranges. No product code changed.
+
 ---
 # CSharpDB Benchmark Suite
 

@@ -1893,7 +1893,7 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ActiveExplicitWriteTransaction_AllowsBackgroundCheckpointFinalizeWhenSnapshotDoesNotRetainWal()
+    public async Task ActiveExplicitWriteTransaction_WithEmptySnapshotDefersBackgroundCopyUntilSnapshotDrains()
     {
         var ct = TestContext.Current.CancellationToken;
         string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_concurrency_background_checkpoint_test_{Guid.NewGuid():N}.db");
@@ -1915,7 +1915,8 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
 
             await using (var tx = await db.BeginWriteTransactionAsync(ct))
             {
-                await tx.ExecuteAsync("SELECT COUNT(*) FROM tx_background_checkpoint", ct);
+                await using (var original = await tx.ExecuteAsync("SELECT COUNT(*) FROM tx_background_checkpoint", ct))
+                    Assert.Equal(0L, Assert.Single(await original.ToListAsync(ct))[0].AsInteger);
                 await db.ExecuteAsync("INSERT INTO tx_background_checkpoint VALUES (1, 10)", ct);
 
                 var appendDiagnostics = db.GetCommitPathDiagnosticsSnapshot();
@@ -1923,19 +1924,16 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
                     appendDiagnostics.WalAppendCount > 0,
                     $"Expected the insert to append WAL frames, observed walAppendCount={appendDiagnostics.WalAppendCount}.");
 
-                await WaitForConditionAsync(
-                    () => db.GetCommitPathDiagnosticsSnapshot().BackgroundCheckpointStartCount > 0,
-                    TimeSpan.FromSeconds(5),
-                    ct);
-
-                var commitDiagnostics = db.GetCommitPathDiagnosticsSnapshot();
+                // This snapshot has no WAL version of the changed table page:
+                // copying it would replace the transaction's old base-file view.
                 Assert.True(
-                    commitDiagnostics.BackgroundCheckpointStartCount > 0,
-                    $"Expected background checkpoint copying to start while the explicit write transaction was active, observed backgroundCheckpointStarts={commitDiagnostics.BackgroundCheckpointStartCount}.");
-
-                await WaitForWalLengthAsync(walPath, PageConstants.WalHeaderSize, TimeSpan.FromSeconds(5), ct);
+                    new FileInfo(walPath).Length > PageConstants.WalHeaderSize,
+                    "Expected WAL frames to remain while the explicit transaction needs unchanged base pages.");
+                await using var snapshotRows = await tx.ExecuteAsync("SELECT id, value FROM tx_background_checkpoint ORDER BY id", ct);
+                Assert.Empty(await snapshotRows.ToListAsync(ct));
             }
 
+            // Releasing the last snapshot must resume the deferred automatic work.
             await WaitForWalLengthAsync(walPath, PageConstants.WalHeaderSize, TimeSpan.FromSeconds(5), ct);
 
             await using var result = await db.ExecuteAsync("SELECT COUNT(*) FROM tx_background_checkpoint", ct);

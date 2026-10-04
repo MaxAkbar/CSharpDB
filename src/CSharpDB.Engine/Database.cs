@@ -39,7 +39,7 @@ internal readonly record struct MutationTargetCollectionDiagnosticsSnapshot(
 /// <summary>
 /// Top-level entry point for the CSharpDB embedded database engine.
 /// </summary>
-public sealed class Database : IAsyncDisposable
+public sealed partial class Database : IAsyncDisposable
 {
     private const int DefaultStatementCacheCapacity = 512;
     private const int DefaultImplicitConflictRetries = 10;
@@ -2503,30 +2503,16 @@ public sealed class Database : IAsyncDisposable
     /// Caller must dispose the returned ReaderSession when done.
     /// </summary>
     public ReaderSession CreateReaderSession()
-        => CreateReaderSession(
-            CaptureSnapshotRowCounts(),
-            allowCurrentCatalogRowCounts: true);
+        => CreateReaderSessionCore();
 
     internal ReaderSession CreateReaderSession(
-        IReadOnlyDictionary<string, long> snapshotRowCounts,
-        bool allowCurrentCatalogRowCounts)
+        IReadOnlyDictionary<string, long> snapshotRowCounts)
     {
         ArgumentNullException.ThrowIfNull(snapshotRowCounts);
 
-        var snapshot = _pager.AcquireReaderSnapshot();
-        return new ReaderSession(
-            _pager,
-            _catalog,
-            _recordSerializer,
-            snapshot,
-            _statementCache,
-            _functions,
-            _planner.AdaptiveQueryReoptimization,
-            _planner.WindowExecution,
-            _queryObservability,
-            _queryPlanRuntimeObserver,
-            snapshotRowCounts,
-            allowCurrentCatalogRowCounts);
+        // The pool holds its dispatch gate and captured these exact counts before beginning
+        // its legacy transaction. Roots and schema still come from the acquired WAL state.
+        return CreateReaderSessionCore(snapshotRowCounts);
     }
 
     internal IReadOnlyDictionary<string, long> CaptureReaderSnapshotRowCounts() =>
@@ -3700,15 +3686,15 @@ public sealed class Database : IAsyncDisposable
         ];
 
         private readonly Pager _pager;
-        private readonly SchemaCatalog _catalog;
+        private readonly Database _database;
+        private readonly ReaderCatalogState _catalogState;
+        private CatalogReadSnapshot? _catalog;
         private readonly IRecordSerializer _recordSerializer;
         private readonly IRecordSerializer? _collectionReadSerializer;
         private readonly DbFunctionRegistry _functions;
         private readonly Func<ValueTask> _releaseActiveQueryCallback;
         private readonly StatementCache _statementCache;
         private readonly WalSnapshot _snapshot;
-        private readonly IReadOnlyDictionary<string, long> _snapshotRowCounts;
-        private readonly bool _allowCurrentCatalogRowCounts;
         private readonly AdaptiveQueryReoptimizationOptions _adaptiveQueryReoptimization;
         private readonly WindowExecutionOptions _windowExecution;
         private readonly QueryObservability? _queryObservability;
@@ -3717,12 +3703,18 @@ public sealed class Database : IAsyncDisposable
         private QueryPlanner? _planner;
         private string? _lastSql;
         private Statement? _lastParsedStatement;
+        private TableSchema? _lastReadTableSchema;
+        private uint _lastReadTableRoot;
+        private long? _lastReadTableCount;
         private bool _disposed;
         private int _activeQuery;
 
+        private readonly IReadOnlyDictionary<string, long>? _snapshotRowCounts;
+
         internal ReaderSession(
+            Database database,
             Pager pager,
-            SchemaCatalog catalog,
+            ReaderCatalogState catalogState,
             IRecordSerializer recordSerializer,
             WalSnapshot snapshot,
             StatementCache statementCache,
@@ -3731,11 +3723,13 @@ public sealed class Database : IAsyncDisposable
             WindowExecutionOptions windowExecution,
             QueryObservability? queryObservability,
             IQueryPlanRuntimeObserver? queryPlanRuntimeObserver,
-            IReadOnlyDictionary<string, long> snapshotRowCounts,
-            bool allowCurrentCatalogRowCounts)
+            IReadOnlyDictionary<string, long>? snapshotRowCounts)
         {
+            _database = database;
             _pager = pager;
-            _catalog = catalog;
+            _catalogState = catalogState;
+            _catalog = catalogState.Catalog;
+            _snapshotRowCounts = snapshotRowCounts;
             _recordSerializer = recordSerializer;
             _collectionReadSerializer = recordSerializer is DefaultRecordSerializer
                 ? new CollectionAwareRecordSerializer(recordSerializer)
@@ -3748,8 +3742,6 @@ public sealed class Database : IAsyncDisposable
             _windowExecution = windowExecution;
             _queryObservability = queryObservability;
             _queryPlanRuntimeObserver = queryPlanRuntimeObserver;
-            _snapshotRowCounts = snapshotRowCounts;
-            _allowCurrentCatalogRowCounts = allowCurrentCatalogRowCounts;
         }
 
         /// <summary>
@@ -3826,8 +3818,16 @@ public sealed class Database : IAsyncDisposable
 
             AcquireActiveRead();
 
+            return ExecuteAcquiredReadAsync(stmt, ct);
+        }
+
+        private ValueTask<QueryResult> ExecuteAcquiredReadAsync(Statement stmt, CancellationToken ct)
+        {
             try
             {
+                if (_catalog is null)
+                    return InitializeCatalogAndExecuteReadAsync(stmt, ct);
+
                 if (stmt is SelectStatement select)
                 {
                     if (TryExecuteCountStarFastPath(select, out QueryResult fastCountResult))
@@ -3890,6 +3890,11 @@ public sealed class Database : IAsyncDisposable
             ArgumentException.ThrowIfNullOrWhiteSpace(tableName);
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxEncodedRowBytes);
 
+            // The synchronous physical-reader API rarely needs this fallback. Run the async
+            // snapshot load outside a caller's synchronization context before blocking.
+            _catalog ??= Task.Run(async () => await _database.LoadReaderCatalogAsync(
+                _catalogState, _snapshot, CancellationToken.None)).GetAwaiter().GetResult();
+
             if (IsReservedPhysicalTableName(tableName))
             {
                 throw new InvalidOperationException(
@@ -3909,7 +3914,7 @@ public sealed class Database : IAsyncDisposable
             AcquireActiveRead();
             try
             {
-                var tree = _catalog.GetTableTree(schema.TableName, GetOrCreateSnapshotPager());
+                var tree = new BTree(GetOrCreateSnapshotPager(), _catalog.GetTableRootPage(schema.TableName), schema.TableName);
                 return new RetainedDatabaseSnapshotTableReader(
                     schema,
                     tree.CreateCursor(maxEncodedRowBytes),
@@ -3947,6 +3952,20 @@ public sealed class Database : IAsyncDisposable
         {
             Volatile.Write(ref _activeQuery, 0);
             return ValueTask.CompletedTask;
+        }
+
+        private async ValueTask<QueryResult> InitializeCatalogAndExecuteReadAsync(Statement stmt, CancellationToken ct)
+        {
+            try
+            {
+                _catalog = await _database.LoadReaderCatalogAsync(_catalogState, _snapshot, ct);
+                return await ExecuteAcquiredReadAsync(stmt, ct);
+            }
+            catch
+            {
+                Volatile.Write(ref _activeQuery, 0);
+                throw;
+            }
         }
 
         private async ValueTask<QueryResult> CompleteReadWithPrimaryKeyFastPathAsync(
@@ -3999,8 +4018,6 @@ public sealed class Database : IAsyncDisposable
 
             if (stmt.From is not SimpleTableRef simpleRef)
                 return false;
-            if (IsSystemCatalogTable(simpleRef.TableName) || _catalog.IsView(simpleRef.TableName))
-                return false;
             if (stmt.Where != null || stmt.GroupBy != null || stmt.Having != null)
                 return false;
             if (stmt.OrderBy is { Count: > 0 })
@@ -4015,27 +4032,22 @@ public sealed class Database : IAsyncDisposable
                 return false;
             if (!string.Equals(func.FunctionName, "COUNT", StringComparison.OrdinalIgnoreCase))
                 return false;
-            if (_catalog.GetTable(simpleRef.TableName) == null)
+            if (!TryCacheReadTable(simpleRef.TableName))
                 return false;
 
             ColumnDefinition[] outputSchema = stmt.Columns[0].Alias is { Length: > 0 } alias
                 ? [new ColumnDefinition { Name = alias, Type = DbType.Integer, Nullable = false }]
                 : DefaultCountStarOutputSchema;
 
-            if (_snapshotRowCounts.TryGetValue(simpleRef.TableName, out long rowCount))
+            long rowCount;
+            if ((_snapshotRowCounts is not null && _snapshotRowCounts.TryGetValue(simpleRef.TableName, out rowCount)) ||
+                TryGetCachedReadTableCount(simpleRef.TableName, out rowCount))
             {
                 result = QueryResult.FromSyncScalar(DbValue.FromInteger(rowCount), outputSchema);
                 return true;
             }
 
-            if (_allowCurrentCatalogRowCounts &&
-                _catalog.TryGetExactTableRowCount(simpleRef.TableName, out rowCount))
-            {
-                result = QueryResult.FromSyncScalar(DbValue.FromInteger(rowCount), outputSchema);
-                return true;
-            }
-
-            var tableTree = _catalog.GetTableTree(simpleRef.TableName, GetOrCreateSnapshotPager());
+            var tableTree = new BTree(GetOrCreateSnapshotPager(), _lastReadTableRoot, simpleRef.TableName);
             result = new QueryResult(new CountStarTableOperator(tableTree, outputSchema, ignoreCachedCount: true));
             return true;
         }
@@ -4046,16 +4058,14 @@ public sealed class Database : IAsyncDisposable
                 return null;
             if (stmt.From is not SimpleTableRef simpleRef)
                 return null;
-            if (IsSystemCatalogTable(simpleRef.TableName) || _catalog.IsView(simpleRef.TableName))
-                return null;
             if (stmt.Where == null || stmt.GroupBy != null || stmt.Having != null)
                 return null;
             if (stmt.OrderBy is { Count: > 0 } || stmt.Limit.HasValue || stmt.Offset.HasValue)
                 return null;
 
-            var schema = _catalog.GetTable(simpleRef.TableName);
-            if (schema == null)
+            if (!TryCacheReadTable(simpleRef.TableName))
                 return null;
+            TableSchema schema = _lastReadTableSchema!;
 
             int pkIndex = schema.PrimaryKeyColumnIndex;
             if (pkIndex < 0 || pkIndex >= schema.Columns.Count || schema.Columns[pkIndex].Type != DbType.Integer)
@@ -4067,7 +4077,7 @@ public sealed class Database : IAsyncDisposable
             if (!TryBuildProjection(stmt.Columns, schema, out var projectionColumnIndices, out var outputColumns, out bool selectStar))
                 return null;
 
-            var tableTree = new BTree(_pager, _catalog.GetTableRootPage(simpleRef.TableName));
+            var tableTree = new BTree(_pager, _lastReadTableRoot);
             ReadOnlyMemory<byte>? payload = tableTree.TryFindSnapshotCachedMemory(
                 lookupValue,
                 _snapshot,
@@ -4080,7 +4090,14 @@ public sealed class Database : IAsyncDisposable
             if (selectStar)
             {
                 var serializer = GetReadSerializer(schema);
-                return QueryResult.FromSyncLookup(serializer.Decode(payload.Value.Span), outputColumns);
+                var row = serializer.Decode(payload.Value.Span);
+                if (row.Length < outputColumns.Length)
+                {
+                    int storedCount = row.Length;
+                    Array.Resize(ref row, outputColumns.Length);
+                    Array.Fill(row, DbValue.Null, storedCount, row.Length - storedCount);
+                }
+                return QueryResult.FromSyncLookup(row, outputColumns);
             }
 
             if (IsPrimaryKeyOnlyProjection(projectionColumnIndices, pkIndex))
@@ -4094,19 +4111,58 @@ public sealed class Database : IAsyncDisposable
             var decoded = GetReadSerializer(schema).Decode(payload.Value.Span);
             var projected = new DbValue[projectionColumnIndices.Length];
             for (int i = 0; i < projectionColumnIndices.Length; i++)
-                projected[i] = decoded[projectionColumnIndices[i]];
+                projected[i] = projectionColumnIndices[i] < decoded.Length ? decoded[projectionColumnIndices[i]] : DbValue.Null;
 
             return QueryResult.FromSyncLookup(projected, outputColumns);
         }
 
+        private bool TryCacheReadTable(string tableName)
+        {
+            // Schema and root stay fixed for this reader's lifetime. Repeated point reads
+            // and COUNTs need no further immutable-map lookups for the same table.
+            if (_lastReadTableSchema is not null &&
+                string.Equals(_lastReadTableSchema.TableName, tableName, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (IsSystemCatalogTable(tableName) || _catalog!.IsView(tableName) ||
+                !_catalog.TryGetReadTable(tableName, out CatalogReadTable table))
+                return false;
+
+            _lastReadTableSchema = table.Schema;
+            _lastReadTableRoot = table.RootPage;
+            _lastReadTableCount = null;
+            return true;
+        }
+
+        private bool TryGetCachedReadTableCount(string tableName, out long count)
+        {
+            if (_lastReadTableCount.HasValue)
+            {
+                count = _lastReadTableCount.Value;
+                return true;
+            }
+            if (!_catalog!.TryGetExactTableRowCount(tableName, out count))
+                return false;
+
+            _lastReadTableCount = count;
+            return true;
+        }
+
         private Pager GetOrCreateSnapshotPager()
-            => _snapshotPager ??= _pager.CreateSnapshotReader(_snapshot);
+        {
+            if (_snapshotPager is null)
+            {
+                _snapshotPager = _pager.CreateSnapshotReader(_snapshot);
+                _catalog!.ApplyHeader(_snapshotPager);
+            }
+            return _snapshotPager;
+        }
 
         private QueryPlanner CreatePlanner()
         {
             var planner = new QueryPlanner(
                 GetOrCreateSnapshotPager(),
-                _catalog,
+                _catalog!.CreateReaderView(GetOrCreateSnapshotPager()),
                 _recordSerializer,
                 functions: _functions,
                 adaptiveQueryReoptimization: _adaptiveQueryReoptimization,

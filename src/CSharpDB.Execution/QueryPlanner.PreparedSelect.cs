@@ -7,8 +7,8 @@ namespace CSharpDB.Execution;
 public sealed partial class QueryPlanner
 {
     private const int MaxPreparedSelectPlans = 256;
-    // ReaderSession currently shares the writer catalog, whose roots can outlive its snapshot.
-    // Keep its existing range path until snapshot catalog resolution is qualified separately.
+    // ReaderSession has frozen snapshot metadata, but its prepared PK-range
+    // enablement remains disabled pending performance qualification.
     internal bool EnablePreparedPrimaryKeyRanges { get; init; } = true;
     private readonly Dictionary<PreparedSelectTemplate, PreparedIndexPlan?> _preparedSelectPlans = new();
     private readonly Queue<PreparedSelectTemplate> _preparedSelectPlanOrder = new();
