@@ -6,7 +6,11 @@ param(
     [ValidateSet("pr", "release")]
     [string]$Mode = "release",
     [switch]$NoFailOnRegression,
-    [switch]$SkipMicroRun
+    [switch]$SkipMicroRun,
+    [string]$SnapshotOutputPath = "",
+    [switch]$CaptureOnly,
+    [switch]$NoBuild,
+    [string[]]$MicroArguments = @()
 )
 
 Set-StrictMode -Version Latest
@@ -27,7 +31,7 @@ function Get-OptionalProperty
 
     if ($Object.PSObject.Properties.Name -contains $Name)
     {
-        return $Object.$Name
+        return ,$Object.$Name
     }
 
     return $DefaultValue
@@ -337,6 +341,7 @@ function Add-SelectPlanDiagnosticsToReport
 }
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $scriptDir 'Perf-Evidence.ps1')
 $benchDir = (Resolve-Path (Join-Path $scriptDir "..")).Path
 $repoRoot = (Resolve-Path (Join-Path $benchDir "..\\..")).Path
 $benchmarkProject = Join-Path $benchDir "CSharpDB.Benchmarks.csproj"
@@ -350,6 +355,26 @@ $script:SelectPlanStatsPattern =
     'Select plan cache stats:\s*hits=(?<hits>\d+),\s*misses=(?<misses>\d+),\s*reclassifications=(?<reclass>\d+),\s*stores=(?<stores>\d+),\s*entries=(?<entries>\d+)'
 $script:BenchmarkRunDiagnostics = New-Object System.Collections.Generic.List[object]
 $script:BenchmarkRunOrdinal = 0
+$script:EvidenceRuns = [Collections.Generic.List[object]]::new()
+$productCommit = [string](& git -C $repoRoot rev-parse HEAD)
+if ($LASTEXITCODE -ne 0) { throw 'Could not resolve product commit.' }
+if ([string]::IsNullOrWhiteSpace($SnapshotOutputPath)) {
+    $SnapshotOutputPath = Join-Path $benchDir ('results/perf-snapshots/' + [Guid]::NewGuid().ToString('N'))
+}
+$SnapshotOutputPath = [IO.Path]::GetFullPath($SnapshotOutputPath)
+if (Test-Path -LiteralPath $SnapshotOutputPath) { throw "Snapshot output must be new: $SnapshotOutputPath" }
+New-Item -ItemType Directory -Path (Join-Path $SnapshotOutputPath 'logs') -Force | Out-Null
+if ($SkipMicroRun) { throw 'Guardrails require fresh execution; SkipMicroRun cannot satisfy evidence integrity.' }
+if (-not $NoBuild) {
+    Push-Location $benchDir
+    try {
+        & dotnet build $benchmarkProject -c $Configuration
+        if ($LASTEXITCODE -ne 0) { throw 'Benchmark build failed.' }
+    }
+    finally { Pop-Location }
+}
+$runtimeIdentity = Get-PerfRuntimeIdentity -Project $benchmarkProject -Configuration $Configuration
+$captureStartUtc = [DateTime]::UtcNow
 
 if (Test-Path $runLogsDir)
 {
@@ -412,13 +437,45 @@ function Invoke-BenchmarkRun
         $safeLabel = "benchmark-run"
     }
     $runLogPath = Join-Path $runLogsDir ("{0:D2}-{1}.log" -f $script:BenchmarkRunOrdinal, $safeLabel)
+    $runStart = [DateTime]::UtcNow
 
-    & dotnet run -c $Configuration --project $benchmarkProject -- @Arguments 2>&1 |
-        Tee-Object -FilePath $runLogPath
-    if ($LASTEXITCODE -ne 0)
+    Push-Location $benchDir
+    try
+    {
+        & dotnet run -c $Configuration --no-build --project $benchmarkProject -- @Arguments 2>&1 |
+            Tee-Object -FilePath $runLogPath
+        $runExitCode = $LASTEXITCODE
+    }
+    finally
+    {
+        Pop-Location
+    }
+    if ($runExitCode -ne 0)
     {
         throw "Benchmark step failed: $Label"
     }
+
+    if ($Arguments -contains "--micro")
+    {
+        $completedRuns = @(
+            Get-Content -Path $runLogPath |
+                Select-String -Pattern 'Global total time:.*executed benchmarks:\s*([1-9]\d*)\s*$'
+        )
+        if ($completedRuns.Count -ne 1)
+        {
+            throw "Micro benchmark step did not execute any benchmark cases: $Label. See $runLogPath"
+        }
+        $executedCases = Get-PerfExecutedMicroCases $runLogPath
+    }
+    else {
+        $freshCsvs = @(Get-ChildItem -LiteralPath $benchResultsDir -File -Filter '*.csv' | Where-Object LastWriteTimeUtc -ge $runStart)
+        $executedCases = 0
+        foreach ($csv in $freshCsvs) { $executedCases += @(Import-Csv -LiteralPath $csv.FullName).Count }
+        if ($executedCases -le 0) { throw "Benchmark step produced zero executed cases: $Label" }
+    }
+    $evidenceLog = 'logs/' + (Split-Path -Leaf $runLogPath)
+    Copy-Item -LiteralPath $runLogPath -Destination (Join-Path $SnapshotOutputPath $evidenceLog)
+    $script:EvidenceRuns.Add([pscustomobject]@{ label = $Label; arguments = $Arguments; executedCases = $executedCases; logPath = $evidenceLog; csvPaths = @() })
 
     $runStatsCount = 0
     foreach ($line in (Get-Content -Path $runLogPath))
@@ -449,7 +506,7 @@ function Invoke-BenchmarkRun
 
 if (-not $SkipMicroRun)
 {
-    if (@($microBenchmarks).Count -eq 0)
+    if (@($microBenchmarks).Count -eq 0 -and @($configuredSuites).Count -eq 0)
     {
         throw "No micro benchmark filters resolved from $resolvedThresholdsPath."
     }
@@ -457,7 +514,7 @@ if (-not $SkipMicroRun)
     foreach ($definition in $microBenchmarks)
     {
         $runStartUtc = (Get-Date).ToUniversalTime()
-        Invoke-BenchmarkRun -Label "Micro ($($definition.Filter))" -Arguments @("--micro", "--filter", $definition.Filter)
+        Invoke-BenchmarkRun -Label "Micro ($($definition.Filter))" -Arguments (@("--micro", "--filter", $definition.Filter) + $MicroArguments)
 
         foreach ($csvName in @($definition.Csvs))
         {
@@ -473,6 +530,10 @@ if (-not $SkipMicroRun)
 
             $destinationPath = Join-Path $microResultsStagingDir $csvName
             Copy-Item -Path $artifact.FullName -Destination $destinationPath -Force
+            $snapshotMicroDir = Join-Path $SnapshotOutputPath 'micro-results'
+            New-Item -ItemType Directory -Path $snapshotMicroDir -Force | Out-Null
+            Copy-Item -LiteralPath $artifact.FullName -Destination (Join-Path $snapshotMicroDir $csvName)
+            $script:EvidenceRuns[-1].csvPaths += 'micro-results/' + $csvName
             Write-Host "Staged $($artifact.Name) -> $destinationPath"
         }
     }
@@ -497,13 +558,31 @@ foreach ($suite in $configuredSuites)
     {
         $destinationPath = Join-Path $target.CurrentResultsDir $target.Csv
         Copy-Item -Path $artifact.FullName -Destination $destinationPath -Force
+        $check = @($thresholdConfig.checks | Where-Object csv -eq $target.Csv)[0]
+        $snapshotSuiteDir = Join-Path $SnapshotOutputPath ([string](Get-OptionalProperty $check 'baselineSubDir' 'macro-stress-scaling'))
+        New-Item -ItemType Directory -Path $snapshotSuiteDir -Force | Out-Null
+        Copy-Item -LiteralPath $artifact.FullName -Destination (Join-Path $snapshotSuiteDir $target.Csv)
+        $script:EvidenceRuns[-1].csvPaths += [IO.Path]::GetRelativePath($SnapshotOutputPath, (Join-Path $snapshotSuiteDir $target.Csv)).Replace('\', '/')
         Write-Host "Staged $($artifact.Name) -> $destinationPath"
     }
 }
 
+foreach ($root in @(@{ path = (Join-Path $repoRoot 'BenchmarkDotNet.Artifacts'); label = 'bdn-root' }, @{ path = (Join-Path $benchDir 'BenchmarkDotNet.Artifacts'); label = 'bdn-benchmark' }, @{ path = $benchResultsDir; label = 'raw-suite-results' })) {
+    if (Test-Path -LiteralPath $root.path) {
+        foreach ($file in @(Get-ChildItem -LiteralPath $root.path -File -Recurse | Where-Object { $_.LastWriteTimeUtc -ge $captureStartUtc -and $_.Extension -in @('.csv', '.json', '.log', '.md', '.html') })) {
+            $target = Join-Path $SnapshotOutputPath ($root.label + '/' + [IO.Path]::GetRelativePath($root.path, $file.FullName))
+            New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
+            Copy-Item -LiteralPath $file.FullName -Destination $target
+        }
+    }
+}
+Write-PerfSnapshotManifest -SnapshotDir $SnapshotOutputPath -ProductCommit $productCommit.Trim() -HarnessRoot $benchDir -Runtime $runtimeIdentity -Runs @($script:EvidenceRuns)
+if ($CaptureOnly) { return }
+
 $compareParams = @{
     ReportPath = $reportPath
     ThresholdsPath = $resolvedThresholdsPath
+    CurrentSnapshot = $SnapshotOutputPath
 }
 
 if ($NoFailOnRegression.IsPresent)

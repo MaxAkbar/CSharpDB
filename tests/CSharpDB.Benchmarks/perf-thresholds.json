@@ -7,6 +7,7 @@
   },
   "checks": [
     {
+      "minimumEnforceableComparisons": 1,
       "csv": "CSharpDB.Benchmarks.Micro.CollationIndexBenchmarks-report.csv",
       "baselineSnapshot": "focused-validation/20260330-122507",
       "keyColumns": [
@@ -111,6 +112,7 @@
       ]
     },
     {
+      "minimumEnforceableComparisons": 1,
       "csv": "CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv",
       "baselineSnapshot": "focused-validation/20260413-050945",
       "keyColumns": [
@@ -133,6 +135,7 @@
       ]
     },
     {
+      "minimumEnforceableComparisons": 1,
       "csv": "CSharpDB.Benchmarks.Micro.PointLookupBenchmarks-report.csv",
       "baselineSnapshot": "focused-validation/20260330-122507",
       "keyColumns": [
@@ -183,6 +186,7 @@
       ]
     },
     {
+      "minimumEnforceableComparisons": 1,
       "csv": "CSharpDB.Benchmarks.Micro.CollectionIndexBenchmarks-report.csv",
       "baselineSnapshot": "focused-validation/20260413-050945",
       "keyColumns": [
@@ -210,6 +214,7 @@
       "maxAllocRegressionBytes": 2048.0
     },
     {
+      "minimumEnforceableComparisons": 1,
       "csv": "CSharpDB.Benchmarks.Micro.JoinBenchmarks-report.csv",
       "baselineSnapshot": "focused-validation/20260330-122507",
       "keyColumns": [
@@ -226,6 +231,7 @@
       ]
     },
     {
+      "minimumEnforceableComparisons": 1,
       "csv": "CSharpDB.Benchmarks.Micro.ScanProjectionBenchmarks-report.csv",
       "baselineSnapshot": "focused-validation/20260330-122507",
       "keyColumns": [
@@ -301,6 +307,7 @@
       "maxMeanRegressionPercent": 25.0
     },
     {
+      "minimumEnforceableComparisons": 1,
       "csv": "CSharpDB.Benchmarks.Micro.OrderByIndexBenchmarks-report.csv",
       "baselineSnapshot": "focused-validation/20260330-122507",
       "keyColumns": [
@@ -324,6 +331,7 @@
       "maxMeanRegressionPercent": 25.0
     },
     {
+      "minimumEnforceableComparisons": 1,
       "csv": "CSharpDB.Benchmarks.Micro.IndexAggregateBenchmarks-report.csv",
       "baselineSnapshot": "focused-validation/20260330-122507",
       "keyColumns": [
@@ -351,6 +359,7 @@
       "maxMeanRegressionPercent": 25.0
     },
     {
+      "minimumEnforceableComparisons": 1,
       "csv": "CSharpDB.Benchmarks.Micro.ScalarAggregateBenchmarks-report.csv",
       "baselineSnapshot": "focused-validation/20260330-122507",
       "keyColumns": [
@@ -376,6 +385,7 @@
       ]
     },
     {
+      "minimumEnforceableComparisons": 1,
       "csv": "CSharpDB.Benchmarks.Micro.ScalarAggregateLookupBenchmarks-report.csv",
       "baselineSnapshot": "focused-validation/20260418-185724",
       "keyColumns": [
@@ -385,6 +395,7 @@
       "maxMeanRegressionPercent": 15.0
     },
     {
+      "minimumEnforceableComparisons": 1,
       "csv": "CSharpDB.Benchmarks.Micro.DistinctBenchmarks-report.csv",
       "baselineSnapshot": "focused-validation/20260330-122507",
       "keyColumns": [
@@ -414,6 +425,7 @@
       "maxAllocRegressionBytes": 131072.0
     },
     {
+      "minimumEnforceableComparisons": 1,
       "csv": "CSharpDB.Benchmarks.Micro.QueryPlanCacheBenchmarks-report.csv",
       "baselineSnapshot": "focused-validation/20260330-122507",
       "keyColumns": [
@@ -439,6 +451,7 @@
       "maxAllocRegressionBytes": 131072.0
     },
     {
+      "minimumEnforceableComparisons": 1,
       "csv": "CSharpDB.Benchmarks.Micro.CompositeIndexBenchmarks-report.csv",
       "baselineSnapshot": "focused-validation/20260330-122507",
       "keyColumns": [
@@ -476,6 +489,7 @@
       "maxAllocRegressionBytes": 262144.0
     },
     {
+      "minimumEnforceableComparisons": 1,
       "csv": "CSharpDB.Benchmarks.Micro.TextIndexBenchmarks-report.csv",
       "baselineSnapshot": "focused-validation/20260330-122507",
       "keyColumns": [
@@ -505,6 +519,7 @@
       "maxAllocRegressionBytes": 65536.0
     },
     {
+      "minimumEnforceableComparisons": 1,
       "csv": "write-diagnostics-median-of-3.csv",
       "baselineSnapshot": "focused-validation/20260330-122507",
       "baselineSubDir": "macro-stress-scaling",
@@ -536,6 +551,7 @@
       "outputPattern": "write-diagnostics-*-median-of-3.csv"
     },
     {
+      "minimumEnforceableComparisons": 1,
       "csv": "durable-sql-batching-median-of-3.csv",
       "baselineSnapshot": "focused-validation/20260330-122507",
       "baselineSubDir": "macro-stress-scaling",
@@ -584,6 +600,7 @@
       "outputPattern": "durable-sql-batching-*-median-of-3.csv"
     },
     {
+      "minimumEnforceableComparisons": 1,
       "csv": "write-transaction-diagnostics-median-of-3.csv",
       "baselineSnapshot": "focused-validation/20260413-033723",
       "baselineSubDir": "macro-stress-scaling",
@@ -626,6 +643,7 @@
       "outputPattern": "write-transaction-diagnostics-*-median-of-3.csv"
     },
     {
+      "minimumEnforceableComparisons": 1,
       "csv": "commit-fan-in-diagnostics.csv",
       "baselineSnapshot": "focused-validation/20260330-122507",
       "baselineSubDir": "macro-stress-scaling",
@@ -669,6 +687,7 @@
       "outputPattern": "commit-fan-in-diagnostics-*.csv"
     },
     {
+      "minimumEnforceableComparisons": 1,
       "csv": "insert-fan-in-diagnostics.csv",
       "baselineSnapshot": "focused-validation/20260412-172336",
       "baselineSubDir": "macro-stress-scaling",

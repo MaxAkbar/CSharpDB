@@ -44,6 +44,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $scriptDir 'Perf-Evidence.ps1')
 $benchDir = (Resolve-Path (Join-Path $scriptDir "..")).Path
 $repoRoot = (Resolve-Path (Join-Path $benchDir "..\\..")).Path
 
@@ -54,120 +55,14 @@ if ([string]::IsNullOrWhiteSpace($OutputRoot))
 
 $runTimestamp = (Get-Date).ToUniversalTime().ToString("yyyyMMdd-HHmmss")
 $snapshotDir = Join-Path $OutputRoot $runTimestamp
+if (Test-Path -LiteralPath $snapshotDir) { throw "Snapshot output already exists: $snapshotDir" }
 New-Item -ItemType Directory -Path $snapshotDir -Force | Out-Null
 
 $benchmarkProject = Join-Path $benchDir "CSharpDB.Benchmarks.csproj"
 $startUtc = (Get-Date).ToUniversalTime()
 
-function Get-OsPlatformName
-{
-    if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows))
-    {
-        return "Windows"
-    }
-
-    if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Linux))
-    {
-        return "Linux"
-    }
-
-    if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::OSX))
-    {
-        return "macOS"
-    }
-
-    return "Unknown"
-}
-
-function Get-ProcessorName
-{
-    $cpuName = ""
-
-    try
-    {
-        if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows) -and
-            (Get-Command Get-CimInstance -ErrorAction SilentlyContinue))
-        {
-            $cpuName = [string](Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name)
-        }
-    }
-    catch
-    {
-    }
-
-    if ([string]::IsNullOrWhiteSpace($cpuName))
-    {
-        try
-        {
-            if (Get-Command lscpu -ErrorAction SilentlyContinue)
-            {
-                $modelLine = & lscpu 2>$null | Where-Object { $_ -match "^Model name:\s*(.+)$" } | Select-Object -First 1
-                if ($modelLine -match "^Model name:\s*(.+)$")
-                {
-                    $cpuName = [string]$matches[1]
-                }
-            }
-        }
-        catch
-        {
-        }
-    }
-
-    if ([string]::IsNullOrWhiteSpace($cpuName))
-    {
-        try
-        {
-            if (Get-Command sysctl -ErrorAction SilentlyContinue)
-            {
-                $cpuName = [string]((& sysctl -n machdep.cpu.brand_string 2>$null) | Select-Object -First 1)
-            }
-        }
-        catch
-        {
-        }
-    }
-
-    if ([string]::IsNullOrWhiteSpace($cpuName))
-    {
-        $cpuName = [string]$env:PROCESSOR_IDENTIFIER
-    }
-
-    return $cpuName.Trim()
-}
-
-function Get-MachineFingerprint
-{
-    $dotnetVersion = ""
-    try
-    {
-        $dotnetVersion = [string]((& dotnet --version) | Select-Object -First 1)
-    }
-    catch
-    {
-    }
-
-    $dotnetVersion = $dotnetVersion.Trim()
-    $dotnetMajorMinor = ""
-    if ($dotnetVersion -match "^(?<major>\d+)\.(?<minor>\d+)")
-    {
-        $dotnetMajorMinor = "$($matches.major).$($matches.minor)"
-    }
-
-    return [ordered]@{
-        fingerprintVersion = 1
-        capturedUtc = (Get-Date).ToUniversalTime().ToString("o")
-        runnerId = [string]$env:CSHARPDB_PERF_RUNNER_ID
-        machineName = [Environment]::MachineName
-        cpuName = Get-ProcessorName
-        logicalCoreCount = [Environment]::ProcessorCount
-        osPlatform = Get-OsPlatformName
-        osDescription = [System.Runtime.InteropServices.RuntimeInformation]::OSDescription.Trim()
-        osArchitecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
-        processArchitecture = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
-        dotnetVersion = $dotnetVersion
-        dotnetMajorMinor = $dotnetMajorMinor
-    }
-}
+$script:CaptureRuns = [Collections.Generic.List[object]]::new()
+New-Item -ItemType Directory -Path (Join-Path $snapshotDir 'logs') -Force | Out-Null
 
 function Invoke-BenchmarkRun
 {
@@ -178,11 +73,25 @@ function Invoke-BenchmarkRun
 
     Write-Host ""
     Write-Host "=== $Label ==="
-    & dotnet run -c $Configuration --project $benchmarkProject -- @Arguments
-    if ($LASTEXITCODE -ne 0)
-    {
-        throw "Benchmark step failed: $Label"
+    $runStart = [DateTime]::UtcNow
+    $relativeLog = 'logs/{0:D2}.log' -f ($script:CaptureRuns.Count + 1)
+    $logPath = Join-Path $snapshotDir $relativeLog
+    Push-Location $benchDir
+    try {
+        & dotnet run -c $Configuration --project $benchmarkProject -- @Arguments 2>&1 | Tee-Object -FilePath $logPath
+        if ($LASTEXITCODE -ne 0) { throw "Benchmark step failed: $Label" }
     }
+    finally { Pop-Location }
+    if ($Arguments -contains '--micro') { $count = Get-PerfExecutedMicroCases $logPath }
+    else {
+        $count = 0
+        $resultsDir = Join-Path $benchDir "bin/$Configuration/net10.0/results"
+        foreach ($csv in @(Get-ChildItem -LiteralPath $resultsDir -Filter '*.csv' -File | Where-Object LastWriteTimeUtc -ge $runStart)) {
+            $count += @(Import-Csv -LiteralPath $csv.FullName).Count
+        }
+        if ($count -le 0) { throw "Benchmark step produced zero executed cases: $Label" }
+    }
+    $script:CaptureRuns.Add([pscustomobject]@{ label = $Label; arguments = $Arguments; executedCases = $count; logPath = $relativeLog })
 }
 
 function Get-LatestArtifactSince
@@ -394,16 +303,25 @@ function Copy-NewArtifacts
 $bdnRoot = Join-Path $repoRoot "BenchmarkDotNet.Artifacts"
 $benchResults = Join-Path $benchDir ("bin/{0}/net10.0/results" -f $Configuration)
 
-$copiedMicroCsv = Copy-NewArtifacts -SourceDir (Join-Path $bdnRoot "results") -TargetSubDir "micro-results" -Pattern "*.csv"
-$copiedMicroLogs = Copy-NewArtifacts -SourceDir $bdnRoot -TargetSubDir "micro-logs" -Pattern "*.log"
+$copiedMicroCsv = 0
+$copiedMicroLogs = 0
+foreach ($artifactRoot in @($bdnRoot, (Join-Path $benchDir 'BenchmarkDotNet.Artifacts'))) {
+    $copiedMicroCsv += Copy-NewArtifacts -SourceDir (Join-Path $artifactRoot 'results') -TargetSubDir 'micro-results' -Pattern '*.csv'
+    $copiedMicroLogs += Copy-NewArtifacts -SourceDir $artifactRoot -TargetSubDir 'micro-logs' -Pattern '*.log'
+}
+
 $copiedMacro = Copy-NewArtifacts -SourceDir $benchResults -TargetSubDir "macro-stress-scaling" -Pattern "*.csv"
 
 $metadataPath = Join-Path $snapshotDir "metadata.txt"
 $machineFingerprintPath = Join-Path $snapshotDir "machine.json"
 $gitHead = (& git -C $repoRoot rev-parse HEAD).Trim()
 $gitStatus = & git -C $repoRoot status --short
-$dotnetInfo = & dotnet --info
-$machineFingerprint = Get-MachineFingerprint
+Push-Location $benchDir
+try {
+    $dotnetInfo = & dotnet --info
+    $machineFingerprint = Get-PerfMachineFingerprint
+}
+finally { Pop-Location }
 
 @(
     "UTC Timestamp: $runTimestamp"
@@ -433,4 +351,6 @@ $machineFingerprint = Get-MachineFingerprint
 $machineFingerprint | ConvertTo-Json -Depth 4 | Set-Content -Path $machineFingerprintPath -Encoding UTF8
 
 Write-Host ""
+$runtime = Get-PerfRuntimeIdentity -Project $benchmarkProject -Configuration $Configuration
+Write-PerfSnapshotManifest -SnapshotDir $snapshotDir -ProductCommit $gitHead -HarnessRoot $benchDir -Runtime $runtime -Runs @($script:CaptureRuns)
 Write-Host "Baseline snapshot written to: $snapshotDir"

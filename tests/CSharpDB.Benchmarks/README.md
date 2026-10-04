@@ -463,6 +463,67 @@ tag exists. A failed gate therefore leaves the version untagged and retryable.
 The command then creates the protected tag with the maintainer's authenticated
 Git identity and starts a resumable hosted publication of that exact bundle.
 
+### Hosted guardrail evidence
+
+`Run-PairedPerfGuardrails.ps1` requires two clean, disposable product checkouts
+and runs from a separate harness checkout. It copies that harness into both
+products, builds both before measurement, then executes **base/head** followed
+by **head/base**. The PR lane retains its nine checks and the release lane its
+nineteen checks, including durable SQL batching and diagnostic suites. Product
+build properties and packages remain revision-specific and have separate hash
+manifests. The harness identity records source, project, script, and configuration
+hashes separately from the product commit SHA.
+The focused benchmark solution lists its product dependency closure so Release
+builds retain Release configuration throughout that graph.
+
+Hosted micro runs use two warmups and three measured iterations of 100 ms;
+diagnostic suite arguments and numeric thresholds are unchanged. Both revisions
+and both orders must use identical command arguments, runtime identities, and
+enforceable machine fingerprints. This shorter hosted sampling profile limits
+measurement time while preserving configured row coverage; it is not a
+dedicated-runner release qualification or a source for published performance tables.
+
+Every check must compare all of its `requiredRows`, or the entire identical
+base/head key set when that list is absent, and meet its positive
+`minimumEnforceableComparisons`. Required current-only rows remain required but
+cannot satisfy paired comparison coverage. Skipped or compatible-machine rows
+cannot make a check green. `-NoFailOnRegression` suppresses threshold failures;
+missing baselines, manifests, fingerprints, runtime identity, CSVs, logs, rows,
+nonnumeric metrics, zero executed cases, and incomplete coverage always fail.
+The exported micro CSV row count must also match the BenchmarkDotNet executed
+case count for each invocation. Duplicate exports cannot supply case coverage
+for one invocation or be reused across invocations. A failed recheck replaces
+the generated report with its current error instead of retaining a prior pass.
+
+Each capture contains `manifest.json`, `machine.json`, `runtime.json`, a harness
+file manifest, and hashes for every retained artifact. Comparisons validate those
+hashes and require every referenced CSV for both inputs. `Compare-Baseline.ps1`
+requires `-CurrentSnapshot`; raw CSV directories cannot supply captured
+provenance. Each product selects its own SDK through `global.json`; SDK changes
+remain enforceable when the actual measured runtime identity matches.
+Historical snapshots without this
+provenance remain historical evidence and are rejected as guardrail baselines;
+their missing metadata is never synthesized. An explicit `-BaselineSnapshot`
+overrides historical per-check baseline choices. Fresh local captures can be
+created with `Capture-Baseline.ps1` or `Run-Perf-Guardrails.ps1 -CaptureOnly`.
+
+```powershell
+# Run from the harness checkout; base/head directories are disposable.
+./tests/CSharpDB.Benchmarks/scripts/Run-PairedPerfGuardrails.ps1 `
+  -BaseRoot C:/perf/base -HeadRoot C:/perf/head `
+  -OutputPath C:/perf/evidence-new -Mode pr -NoFailOnRegression
+
+# Focused synthetic integrity, coverage, and paired-driver tests.
+./tests/CSharpDB.Benchmarks/scripts/Test-PerfGuardrails.ps1
+```
+
+The workflow uploads both repository-root and benchmark-directory
+`BenchmarkDotNet.Artifacts`, per-run logs, raw and aggregate CSVs for all four
+captures, the execution order, build-input manifests, and both order reports.
+`Compare-PairedPerfGuardrails.ps1 -OutputPath ...` revalidates retained evidence
+without rerunning measurements. Hosted runtime and job-duration verification
+must still be performed on GitHub after review.
+
 ### Optional local durable-write diagnostics
 
 During a new local diagnostic, the repository must remain clean because both
@@ -603,9 +664,10 @@ When explicitly requested, the local wrapper can still publish a diagnostic
 That status is retained for audit and tooling compatibility only; the hosted
 release path does not read it.
 
-The existing scheduled perf-guardrail workflow remains report-only and includes
-the durable SQL batching baseline plus its configured micro and diagnostic
-checks. The other supplemental two-revision suites remain selectable with
+The scheduled perf-guardrail workflow reports timing regressions and always
+fails invalid evidence. It compares the head product commit with its parent
+(PRs use the PR base SHA; manual runs can select `base_ref`) in the same job.
+The other supplemental two-revision suites remain selectable with
 `-SuiteName` (or together by omitting it) for manual investigation; they do not
 run again as part of SQL release qualification and do not block publishing.
 
