@@ -2,6 +2,66 @@
 
 This file preserves the benchmark release logs, failed-run notes, investigation records, and detailed historical snapshots that used to live in `README.md`. The main README is now intentionally user-first and release-stable; use this file when investigating why a past benchmark number changed or why a specific run was not promoted.
 
+## October 4, 2026 Snapshot Pager Setup (Local Allocation Follow-Up)
+
+After `b0de2b6f`, a synchronous component probe measured 3,472 allocated bytes
+for snapshot pager creation/disposal, 2,808 bytes for reader planner/catalog-view
+creation, and 344 bytes for reader-session creation/disposal. An unused writer
+resource-diagnostics dictionary alone allocated 1,016 bytes with the measured
+.NET processor count of 16. Each snapshot also constructed a write allocator
+and seven delegates whose operations immediately reject read-only writes.
+
+Snapshot pagers now omit the writer resource dictionary and use a shared,
+stateless read-only allocator. Allocation/free still return faulted ValueTasks
+with the same errors, including when cancellation is requested or page zero is
+passed. Writer pagers retain their normal allocator and diagnostics dictionary.
+The same component probe measured **1,928 bytes per snapshot pager**, a reduction
+of **1,544 bytes (44.47%)**. Reader sessions and planner/catalog-view creation
+retained their measured component costs.
+
+Three new regression cases cover snapshot diagnostics/reset isolation, exact
+write-rejection behavior, subsequent writer page allocation/free/reuse, and
+retained readers fetching old contents after new commits. Full Release suites
+passed **3,260 engine tests and 315 ADO tests**; both product builds had zero
+warnings or errors. An independent source review found no correctness issues.
+
+The unchanged ten-case pooled ADO harness compared the committed baseline with
+the candidate in control-forward, candidate-reverse, candidate-forward,
+control-reverse order. It validated every returned value and timed complete
+queries including reader disposal. Cases covered 1/256-table catalogs, four-row
+ranges with 1/65/2,048 parameter sets, and 256/4,096-row ranges with 65 parameter
+sets. The file-backed fixtures contained 10,000 rows and selected two columns.
+There were **249,600 measured queries** after 206,472 warmups. Normal background
+activity was allowed; tracing was disabled and no workload was retried.
+
+Four-row queries allocated **7.75% less** by geometric mean across catalog sizes
+and both pairs, exceeding the declared 7% target. The observed geometric-mean
+median latency was 2.05% lower, a modest local timing change. Individual timings
+varied in both directions. Ranges below span both catalog sizes and pairs;
+allocation uses decimal KB.
+
+| Rows returned | Baseline median | Candidate median | Baseline allocation | Candidate allocation |
+|---|---:|---:|---:|---:|
+| 4 | 46.7-49.5 us | 45.7-48.2 us | 19.80-19.97 KB | 18.26-18.43 KB |
+| 256 | 100.8-103.6 us | 99.3-107.1 us | 38.15-38.19 KB | 36.56-36.65 KB |
+| 4,096 | 790.0-808.2 us | 798.3-818.6 us | 183.14-183.82 KB | 181.86-182.48 KB |
+
+All cases stayed within the declared 5% median/allocation regression limit.
+No case had a P99 increase above 10% in both pairs. The 256-table, 65-parameter,
+four-row case had one P99 increase of 16.16% and a decrease of 9.93% in its other
+pair; the repeated-regression check passes without implying every tail improved.
+The larger-range checks
+support the allocation change without establishing a latency improvement for
+those ranges. Harness GC collection counters include post-loop serialization
+and are not used as measured-loop GC counts.
+
+Evidence is in `.tmp/pooled-reader-setup-20261004`: frozen source/runtime inputs,
+component measurements, test receipts, raw query durations, and comparison
+findings. An independent check verified all 92 pinned inputs and recomputed
+counts, row checksums, per-case metrics, ratios, and thresholds from the raw data.
+These local results do not qualify release-wide performance or
+resolve the separate durable-write tail-latency diagnostics.
+
 ## October 4, 2026 Bounded Cursor Read-Ahead (Local Allocation Follow-Up)
 
 Allocation profiling of the pooled prepared range path at `fcdfc7ea` found a

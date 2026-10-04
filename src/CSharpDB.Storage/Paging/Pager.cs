@@ -150,7 +150,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     private long _hashedIndexAppendNotApplicableCount;
     private long _hashedIndexDeferredAppendCount;
     private long _hashedIndexDeferredFlushCount;
-    private readonly ConcurrentDictionary<string, BTreeResourceDiagnosticsCounter> _btreeResourceDiagnostics = new();
+    private readonly ConcurrentDictionary<string, BTreeResourceDiagnosticsCounter>? _btreeResourceDiagnostics;
     private readonly object _explicitCommitStateGate = new();
     private readonly Dictionary<uint, long> _explicitCachedPageVersions = new();
     private uint _scheduledExplicitPageCount;
@@ -559,7 +559,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         Interlocked.Exchange(ref _hashedIndexAppendNotApplicableCount, 0);
         Interlocked.Exchange(ref _hashedIndexDeferredAppendCount, 0);
         Interlocked.Exchange(ref _hashedIndexDeferredFlushCount, 0);
-        _btreeResourceDiagnostics.Clear();
+        _btreeResourceDiagnostics?.Clear();
     }
 
     // Configurable behavior
@@ -598,6 +598,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         IStorageRuntimeDiagnosticsObserver? runtimeDiagnosticsObserver = null)
     {
         _device = device;
+        _btreeResourceDiagnostics = new();
         _options = options ?? new PagerOptions();
         ValidateOptions(_options);
         _storageIoRuntimeDiagnostics = runtimeDiagnosticsObserver is null
@@ -696,15 +697,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             _isSnapshotReader,
             _interceptor,
             _storageIoRuntimeDiagnostics);
-        _allocator = new PageAllocator(
-            _buffers,
-            () => FreelistHead,
-            value => FreelistHead = value,
-            () => PageCount,
-            value => PageCount = value,
-            GetPageAsync,
-            MarkDirtyAsync,
-            () => _isSnapshotReader);
+        // Readers reject allocation/free without capturing unused writer state.
+        _allocator = ReadOnlyPageAllocator.Instance;
         CheckpointPolicy = _options.CheckpointPolicy;
 
         if (_options.CheckpointPolicy is FrameCountCheckpointPolicy framePolicy)
@@ -1222,7 +1216,9 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         if (string.IsNullOrEmpty(resourceName))
             return;
 
-        BTreeResourceDiagnosticsCounter diagnostics = GetOrAddBTreeResourceDiagnostics(resourceName);
+        BTreeResourceDiagnosticsCounter? diagnostics = GetOrAddBTreeResourceDiagnostics(resourceName);
+        if (diagnostics is null)
+            return;
         Interlocked.Increment(ref diagnostics.LeafSplitCount);
         if (rightEdge)
             Interlocked.Increment(ref diagnostics.RightEdgeLeafSplitCount);
@@ -1240,7 +1236,9 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         if (string.IsNullOrEmpty(resourceName))
             return;
 
-        BTreeResourceDiagnosticsCounter diagnostics = GetOrAddBTreeResourceDiagnostics(resourceName);
+        BTreeResourceDiagnosticsCounter? diagnostics = GetOrAddBTreeResourceDiagnostics(resourceName);
+        if (diagnostics is null)
+            return;
         Interlocked.Increment(ref diagnostics.InteriorInsertCount);
         if (rightEdge)
             Interlocked.Increment(ref diagnostics.RightEdgeInteriorInsertCount);
@@ -1258,7 +1256,9 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         if (string.IsNullOrEmpty(resourceName))
             return;
 
-        BTreeResourceDiagnosticsCounter diagnostics = GetOrAddBTreeResourceDiagnostics(resourceName);
+        BTreeResourceDiagnosticsCounter? diagnostics = GetOrAddBTreeResourceDiagnostics(resourceName);
+        if (diagnostics is null)
+            return;
         Interlocked.Increment(ref diagnostics.InteriorSplitCount);
         if (rightEdge)
             Interlocked.Increment(ref diagnostics.RightEdgeInteriorSplitCount);
@@ -1273,7 +1273,9 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         if (string.IsNullOrEmpty(resourceName))
             return;
 
-        BTreeResourceDiagnosticsCounter diagnostics = GetOrAddBTreeResourceDiagnostics(resourceName);
+        BTreeResourceDiagnosticsCounter? diagnostics = GetOrAddBTreeResourceDiagnostics(resourceName);
+        if (diagnostics is null)
+            return;
         Interlocked.Increment(ref diagnostics.RootSplitCount);
     }
 
@@ -5171,12 +5173,12 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             $"WAL growth limit exceeded while snapshot readers are active (activeReaders={activeReaders}, projectedWalBytes={projectedBytes}, limitBytes={limitBytes.Value}).");
     }
 
-    private BTreeResourceDiagnosticsCounter GetOrAddBTreeResourceDiagnostics(string resourceName)
-        => _btreeResourceDiagnostics.GetOrAdd(resourceName, static name => new BTreeResourceDiagnosticsCounter(name));
+    private BTreeResourceDiagnosticsCounter? GetOrAddBTreeResourceDiagnostics(string resourceName)
+        => _btreeResourceDiagnostics?.GetOrAdd(resourceName, static name => new BTreeResourceDiagnosticsCounter(name));
 
     private CommitPathBTreeResourceDiagnosticsSnapshot[] GetBTreeResourceDiagnosticsSnapshot()
     {
-        if (_btreeResourceDiagnostics.IsEmpty)
+        if (_btreeResourceDiagnostics is null || _btreeResourceDiagnostics.IsEmpty)
             return [];
 
         CommitPathBTreeResourceDiagnosticsSnapshot[] snapshot =
