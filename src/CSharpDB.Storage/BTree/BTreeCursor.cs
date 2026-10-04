@@ -12,6 +12,7 @@ public sealed class BTreeCursor : IAsyncDisposable
     private readonly BTree _tree;
     private readonly Pager _pager;
     private readonly int _maxResolvedPayloadBytes;
+    private readonly long? _prefetchUpperBound;
     private uint _currentPageId;
     private int _currentIndex;
     private PageReadBuffer _currentLeafPage;
@@ -27,12 +28,14 @@ public sealed class BTreeCursor : IAsyncDisposable
     internal BTreeCursor(
         BTree tree,
         Pager pager,
-        int maxResolvedPayloadBytes = int.MaxValue)
+        int maxResolvedPayloadBytes = int.MaxValue,
+        long? prefetchUpperBound = null)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxResolvedPayloadBytes);
         _tree = tree;
         _pager = pager;
         _maxResolvedPayloadBytes = maxResolvedPayloadBytes;
+        _prefetchUpperBound = prefetchUpperBound;
         _currentPageId = 0;
         _currentIndex = -1;
         _currentLeafPage = default;
@@ -288,6 +291,16 @@ public sealed class BTreeCursor : IAsyncDisposable
     private void ScheduleLeafPrefetch(uint nextLeafPageId)
     {
         if (!_pager.CanSpeculativePageReads || nextLeafPageId == PageConstants.NullPageId)
+        {
+            ClearPrefetchedLeaf();
+            return;
+        }
+
+        // Later leaves contain strictly larger keys. If this leaf reaches the
+        // requested upper bound, reading ahead cannot help that range. This is
+        // only a prefetch hint: callers can still move or seek past the bound.
+        if (_prefetchUpperBound.HasValue && _currentLeaf.CellCount > 0 &&
+            BTree.ReadLeafKey(_currentLeaf, _currentLeaf.CellCount - 1) >= _prefetchUpperBound.Value)
         {
             ClearPrefetchedLeaf();
             return;

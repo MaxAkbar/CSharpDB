@@ -848,11 +848,12 @@ public sealed class BTree
 
     /// <summary>
     /// Create a cursor positioned before the first entry and record a logical read range.
+    /// The upper bound limits speculative read-ahead, not cursor traversal.
     /// </summary>
     public BTreeCursor CreateCursor(IndexScanRange range)
     {
         RecordLogicalRangeRead(range);
-        return new BTreeCursor(this, _pager);
+        return new BTreeCursor(this, _pager, prefetchUpperBound: range.UpperBound);
     }
 
     /// <summary>

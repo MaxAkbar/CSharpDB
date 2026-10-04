@@ -2,6 +2,60 @@
 
 This file preserves the benchmark release logs, failed-run notes, investigation records, and detailed historical snapshots that used to live in `README.md`. The main README is now intentionally user-first and release-stable; use this file when investigating why a past benchmark number changed or why a specific run was not promoted.
 
+## October 4, 2026 Bounded Cursor Read-Ahead (Local Allocation Follow-Up)
+
+Allocation profiling of the pooled prepared range path at `fcdfc7ea` found a
+speculative next-leaf read even when the requested upper bound was already on
+the current leaf. That read allocates a 4 KB page plus asynchronous I/O and
+cancellation state. The separate instrumented baseline measured about 25.35 KB
+per four-row query: 8.54 KB while opening the reader, 16.15 KB while reading rows,
+and 0.61 KB while disposing it. Creating a reader session alone used 344 bytes.
+Allocation stacks identify the read-ahead call path; sampled allocation ticks
+are not exact attribution of interval bytes to individual object types.
+
+`BTree.CreateCursor(range)` now passes the upper bound as a read-ahead hint.
+Once the current leaf's last key reaches that bound, the cursor skips speculative
+reads of later leaves. Traversal and reseeking remain unrestricted, and callers
+still enforce query bounds. Longer scans retain read-ahead through needed leaves.
+Snapshot ownership, isolation, durability, and plan reuse are unchanged.
+
+Eight focused tests cover inclusive/exclusive bounds, initial seek/iteration,
+cross-leaf prefetch, unbounded scans, and traversal/reseek beyond a hint. Six
+reproduced the unnecessary read before the fix; all eight passed afterward.
+Full Release suites passed **3,257 engine tests and 315 ADO tests**, with zero
+warnings or errors in the final product builds.
+
+The uninstrumented comparison used identical harnesses in four fresh serial
+processes: control-forward, candidate-reverse, candidate-forward, control-reverse.
+Each process tested 1/256-table catalogs, four-row ranges with 1/65/2,048 recurring
+parameter sets, and 256/4,096-row ranges with 65 parameter sets. Fixtures contained
+10,000 rows. Every query used the public pooled ADO path, checked every returned
+value, and included reader disposal in its timing. There were **249,600 measured
+queries** after 206,472 warmups; normal background load was allowed and no workload
+was retried. Tracing was disabled during the comparison.
+
+Four-row queries improved geometric-mean median latency by **23.15%** and
+allocation by **21.73%** across both catalog sizes and balanced pairs. The larger
+queries passed the same regression checks. Ranges below span both pairs and
+catalog sizes; KB is decimal.
+
+| Rows returned | Baseline median | Candidate median | Baseline allocation | Candidate allocation |
+|---|---:|---:|---:|---:|
+| 4 | 58.7-61.5 us | 44.4-47.7 us | 25.44-25.45 KB | 19.80-19.97 KB |
+| 256 | 109.1-111.3 us | 98.3-101.8 us | 43.23-43.27 KB | 38.13-38.18 KB |
+| 4,096 | 787.4-789.2 us | 776.5-788.2 us | 187.54-187.99 KB | 182.55-182.93 KB |
+
+No case exceeded the declared 5% median/allocation regression threshold. No case
+had a P99 increase above 10% in both pairs; individual P99 increases remain in
+the raw results. The declared four-row allocation improvement target was 10%.
+A separate candidate allocation trace measured 19.96 KB per four-row query,
+consistent with the uninstrumented comparison; its timings are not used above.
+
+Evidence, raw query durations, source/runtime hashes, test receipts, and traces
+are in `.tmp/pooled-query-allocation-20261004`. These are local results under normal
+background load, not release-wide qualification or a resolution of the earlier
+durable-write tail-latency diagnostics.
+
 ## October 4, 2026 Isolated Pooled Prepared Primary-Key Ranges (Local Differential)
 
 Commit `0dc0a36f` retains the reader catalog and checkpoint correctness fixes with
