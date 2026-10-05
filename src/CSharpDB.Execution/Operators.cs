@@ -507,7 +507,7 @@ public sealed class TableScanOperator :
     private bool _hasPreDecodeFilter;
     private PreDecodeFilterSpec[]? _additionalPreDecodeFilters;
     private Action? _logicalReadScope;
-    private RowBatch _currentBatch;
+    private RowBatch? _currentBatch;
 
     public ColumnDefinition[] OutputSchema { get; }
     public bool ReusesCurrentRowBuffer => _reuseCurrentRowBuffer;
@@ -534,7 +534,6 @@ public sealed class TableScanOperator :
         _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
         _estimatedRowCount = estimatedRowCount > 0 ? estimatedRowCount : null;
         OutputSchema = schema.Columns as ColumnDefinition[] ?? schema.Columns.ToArray();
-        _currentBatch = CreateBatch(GetTargetColumnCount());
     }
 
     /// <summary>
@@ -621,7 +620,7 @@ public sealed class TableScanOperator :
             : _tree.CreateCursorWithoutLogicalRead();
         _currentPayload = ReadOnlyMemory<byte>.Empty;
         _rowBuffer = null;
-        _currentBatch = CreateBatch(GetTargetColumnCount());
+        _currentBatch = null;
         Current = Array.Empty<DbValue>();
         return ValueTask.CompletedTask;
     }
@@ -748,13 +747,13 @@ public sealed class TableScanOperator :
     }
 
     bool IBatchOperator.ReusesCurrentBatch => _reuseCurrentBatch;
-    RowBatch IBatchOperator.CurrentBatch => _currentBatch;
+    RowBatch IBatchOperator.CurrentBatch => _currentBatch ??= CreateBatch(GetTargetColumnCount());
 
     public void SetReuseCurrentBatch(bool reuse)
     {
         _reuseCurrentBatch = reuse;
         if (!reuse)
-            _currentBatch = CreateBatch(GetTargetColumnCount());
+            _currentBatch = null;
     }
 
     private void EnsureRowBuffer(int columnCount)
@@ -770,7 +769,7 @@ public sealed class TableScanOperator :
 
     private RowBatch EnsureBatch(int columnCount)
     {
-        if (_currentBatch.ColumnCount != columnCount)
+        if (_currentBatch is null || _currentBatch.ColumnCount != columnCount)
             _currentBatch = CreateBatch(columnCount);
 
         return _currentBatch;

@@ -2,6 +2,78 @@
 
 This file preserves the benchmark release logs, failed-run notes, investigation records, and detailed historical snapshots that used to live in `README.md`. The main README is now intentionally user-first and release-stable; use this file when investigating why a past benchmark number changed or why a specific run was not promoted.
 
+## October 4, 2026 Lazy Table-Scan Batches (Local Allocation Follow-Up)
+
+After `9af89853`, allocation profiles still showed unused 64-row buffers in
+ordinary expression and join queries. `TableScanOperator` allocated a batch in
+its constructor and another when opened, even when planning replaced that scan
+or execution used only its row API. Batch storage now allocates on first batch
+access. Opening a scan and disabling reuse clear the reference; batch size,
+decoding, cursor traversal, and retained-batch ownership remain unchanged.
+
+Separate instrumented probes measured **31,179.39 to 27,020.29 bytes** per
+four-row expression query and **66,877.78 to 58,558.34 bytes** per four-row join.
+The reductions match one and two discarded two-column batches respectively
+(4,160 bytes each on this runtime). Reader-session creation stayed at 344 bytes.
+Each probe validated 2,000 queries after 1,040 warmups; instrumented durations
+are not latency evidence.
+
+All **3,296 engine tests and 319 ADO tests** passed in Release, with zero build
+warnings/errors. Eight new cases cover row-only laziness, empty inputs, batch
+boundaries, retained buffers with reuse disabled, reopen behavior, narrowed and
+sparse decoding, zero-column rows, and mixed row/batch cursor advancement.
+Independent source review found no actionable correctness issues.
+
+The original paired comparison used 20 cases per process with 65 parameter
+values and 1/256-table catalogs: prepared ranges returning 4/256/4,096 rows,
+ordinary expressions returning 4/256/4,096 rows, joins returning 4/256 rows,
+and full-table batch scans returning 4/256 rows. The full-scan SQL used
+non-sargable `id + 0` bounds and no LIMIT; 16 unmeasured EXPLAIN checks confirmed
+`table_scan` plus `filter_projection`. All returned values were checked.
+
+Four serial processes ran control-forward, candidate-reverse, candidate-forward,
+control-reverse: **169,600 measured queries** after **124,280 warmups**. The
+baseline Execution DLL is the previously validated implementation committed in
+`9af89853` (its build metadata still names `f82ed0b6`). Both arms used identical
+current dependency DLLs and harness; only the Execution DLL differed. The
+182 frozen inputs include runtime/source hashes, test receipts, and preserved
+unrelated files. This ran under ordinary background load without readiness gates.
+
+**The original comparison failed its latency checks.** Small expression/join
+queries allocated **12.89% less** by geometric mean across both catalogs/pairs,
+but median latency increased **6.12%**. There were no allocation flags, 13
+paired-median flags above 5%, and three cases whose P99 increased more than 10%
+in both pairs. Those repeated-P99 cases were the 256-table four-row expression,
+one-table 4,096-row prepared range, and 256-table 256-row full scan.
+
+Several large slowdowns also occurred in prepared controls that bypass the
+changed TableScan path. That observation does not establish their cause or
+erase the target-query failures. Allocation savings are established; these
+results do not establish a latency improvement or qualify release-wide
+performance. Raw timings, failures, diagnostics, and provenance are retained
+in `.tmp/lazy-table-scan-batches-20261004`.
+
+A separate, fixed four-case persistence check covered all three repeated-P99
+cases and the worst small-query median case (the one-table four-row join).
+It used the exact original runtime DLLs, an identical new harness in both arms,
+and candidate-forward, control-reverse, control-forward, candidate-reverse
+order. The unchanged 5% median/allocation and repeated 10% P99 limits applied
+to **64,000 measurements** after **44,980 warmups**; four EXPLAIN checks verified
+the full-scan path. All 240 inputs, including the original failed findings,
+were frozen before the single execution.
+
+The selected expression, join, and full-scan cases passed. The one-table
+4,096-row prepared range failed again: its paired medians increased **30.25%**
+(962.4 to 1,253.5 us) and **7.44%** (881.6 to 947.2 us), and P99 exceeded the
+10% limit in both pairs. Its allocations increased 0.20-0.87%, within the
+allocation limit. Small-query allocation savings remained **12.89%**.
+
+The original comparison and focused check both remain failed. The prepared
+range slowdown's cause is unresolved, and this candidate is not ready for a
+performance-qualified commit. Further work should isolate that control before
+advancing the buffer optimization. There were no automatic retries or changes
+to acceptance thresholds. The focused evidence is under `focused-check`.
+
 ## October 4, 2026 Ordinary Primary-Key Ranges (Local SELECT Follow-Up)
 
 The arithmetic-projection and join controls from the planner-setup investigation
